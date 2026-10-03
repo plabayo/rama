@@ -305,8 +305,9 @@ where
         self.ready = true;
         match result {
             // The flush completed the close handshake: end the transport, so the queued close
-            // reaches the peer followed by an orderly end of stream.
-            Err(err) if err.is_connection_error() && !self.inner.can_write() => {
+            // reaches the peer followed by an orderly end of stream. Only the peer's Close makes
+            // a lost connection an orderly end; our own Close alone does not.
+            Err(err) if err.is_connection_error() && !self.inner.can_read() => {
                 self.begin_shutdown();
                 ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
                 Poll::Ready(Ok(()))
@@ -348,7 +349,7 @@ where
                 Poll::Pending
             }
             Err(err) => {
-                if err.is_connection_error() && !self.inner.can_write() {
+                if err.is_connection_error() && !self.inner.can_read() {
                     self.begin_shutdown();
                     ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
                     Poll::Ready(Ok(()))
@@ -369,7 +370,7 @@ mod tests {
     };
     use rama_core::{
         ServiceInput,
-        futures::{SinkExt as _, StreamExt as _},
+        futures::{SinkExt, StreamExt as _},
     };
     use std::assert_matches;
     use std::{
@@ -500,6 +501,76 @@ mod tests {
             "{error:?}"
         );
         assert!(server.next().await.is_none());
+    }
+
+    /// A transport that takes every write, fails each flush after the first `flushes` with a
+    /// reset, and has nothing to read.
+    struct ResetOnFlush {
+        flushes: usize,
+    }
+
+    impl tokio::io::AsyncRead for ResetOnFlush {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl tokio::io::AsyncWrite for ResetOnFlush {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(match self.flushes.checked_sub(1) {
+                Some(left) => {
+                    self.flushes = left;
+                    Ok(())
+                }
+                None => Err(std::io::ErrorKind::ConnectionReset.into()),
+            })
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// RFC 6455 §7.1.5: our own Close does not make a later reset an orderly end; only the
+    /// peer's Close does. Sending Close and closing the sink both report the reset.
+    #[tokio::test]
+    async fn a_reset_after_only_our_close_fails() {
+        for role in [Role::Client, Role::Server] {
+            // Sending Close flushes once on its own; the sink's flush then meets the reset.
+            let mut socket = AsyncWebSocket::from_raw_socket(
+                ServiceInput::new(ResetOnFlush { flushes: 1 }),
+                role,
+                None,
+            )
+            .await;
+            let result = socket.send(Message::Close(None)).await;
+            assert!(result.is_err(), "{role:?} send Close: {result:?}");
+
+            let mut socket = AsyncWebSocket::from_raw_socket(
+                ServiceInput::new(ResetOnFlush { flushes: 0 }),
+                role,
+                None,
+            )
+            .await;
+            let result = SinkExt::close(&mut socket).await;
+            assert!(result.is_err(), "{role:?} close: {result:?}");
+        }
     }
 
     #[test]
