@@ -86,14 +86,15 @@ impl fmt::Debug for OpaqueGuard {
 ///
 /// Custom carriers publish it on their I/O's extensions. The callback must abort at once,
 /// without waiting for a later write or drop, and both directions must fail afterwards.
-#[derive(Clone, Extension)]
+/// Share it through [`Extensions::get_arc`].
+#[derive(Extension)]
 #[extension(tags(http))]
-pub struct OnMalformedMessage(Arc<dyn Fn() + Send + Sync>);
+pub struct OnMalformedMessage(Box<dyn Fn() + Send + Sync>);
 
 impl OnMalformedMessage {
     /// Install transport-specific malformed-message handling.
     pub fn new(callback: impl Fn() + Send + Sync + 'static) -> Self {
-        Self(Arc::new(callback))
+        Self(Box::new(callback))
     }
 
     /// Notify the transport. Repeated calls are harmless for built-in transports.

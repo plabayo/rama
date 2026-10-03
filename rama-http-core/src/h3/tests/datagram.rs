@@ -920,10 +920,7 @@ async fn local_ends_close_native_sending_for_every_holder() {
                 .get_ref::<NativeDatagrams>()
                 .cloned()
                 .unwrap();
-            let malformed = client_io
-                .extensions()
-                .get_ref::<OnMalformedMessage>()
-                .cloned();
+            let malformed = client_io.extensions().get_arc::<OnMalformedMessage>();
             let upstream = client_io.extensions().self_get_arc::<AbortIo>();
             let mut session = HttpDatagramSession::new(client_io);
             native_ready(&session).await;
@@ -1945,10 +1942,7 @@ async fn local_abort_hooks_end_both_directions_at_once() {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
             let (code, upstream) = if malformed {
-                let hook = server_io
-                    .extensions()
-                    .get_ref::<OnMalformedMessage>()
-                    .cloned();
+                let hook = server_io.extensions().get_arc::<OnMalformedMessage>();
                 hook.unwrap().call();
                 (Code::H3_MESSAGE_ERROR, false)
             } else {

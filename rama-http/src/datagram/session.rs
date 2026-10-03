@@ -193,7 +193,7 @@ where
     /// A session with `config`.
     pub fn with_config(io: T, config: SessionConfig) -> Self {
         let native = io.extensions().get_ref::<NativeDatagrams>().cloned();
-        let malformed = io.extensions().get_ref::<OnMalformedMessage>().cloned();
+        let malformed = io.extensions().get_arc::<OnMalformedMessage>();
         let io = SharedIo::new(io, malformed);
         Self {
             sender: SessionSender {
@@ -297,7 +297,7 @@ struct IoState<T> {
     io: Option<Pin<Box<T>>>,
     // The last task waiting on each direction, registered under the poll's lock.
     wakers: [Option<Waker>; 2],
-    malformed: Option<OnMalformedMessage>,
+    malformed: Option<Arc<OnMalformedMessage>>,
 }
 
 #[derive(Clone, Copy)]
@@ -313,7 +313,7 @@ impl<T> Clone for SharedIo<T> {
 }
 
 impl<T> SharedIo<T> {
-    fn new(io: T, malformed: Option<OnMalformedMessage>) -> Self {
+    fn new(io: T, malformed: Option<Arc<OnMalformedMessage>>) -> Self {
         Self(Arc::new(IoShared {
             state: Mutex::new(IoState {
                 io: Some(Box::pin(io)),
