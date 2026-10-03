@@ -104,7 +104,7 @@ impl ProxyRouteFailureCacheConfig {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct FailureCacheKey {
     protocol: Option<Protocol>,
     proxy: HostWithPort,
@@ -116,7 +116,7 @@ struct FailureCacheKey {
     http_version: Option<Version>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum FailureDestination {
     Proxy,
     Origin(HostWithPort),
@@ -125,7 +125,7 @@ enum FailureDestination {
 
 type SharedFailureCacheKey = Arc<FailureCacheKey>;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct FailureEntry {
     blocked_until: AtomicU64,
     probe_until: AtomicU64,
@@ -159,6 +159,19 @@ struct AttemptPermit {
     started_time: u64,
     probe_lease: Option<u64>,
     remove_on_drop: bool,
+}
+
+impl std::fmt::Debug for AttemptPermit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The shared cache is left out: it is every route's state, not this attempt's.
+        f.debug_struct("AttemptPermit")
+            .field("key", &self.key)
+            .field("entry", &self.entry)
+            .field("started_time", &self.started_time)
+            .field("probe_lease", &self.probe_lease)
+            .field("remove_on_drop", &self.remove_on_drop)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AttemptPermit {
@@ -195,6 +208,7 @@ impl Drop for AttemptPermit {
     }
 }
 
+#[derive(Debug)]
 enum CacheDecision {
     Attempt(AttemptPermit),
     Blocked {
@@ -610,6 +624,7 @@ impl<S> Layer<S> for ProxyRouteFailureCacheLayer {
 mod tests {
     use core::future::Future;
     use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::assert_matches;
     use std::{sync::Arc, time::Duration};
 
     use rama_core::{ServiceInput, error::error_chain, service::service_fn};
@@ -1414,10 +1429,10 @@ mod tests {
             Ordering::Release,
         );
 
-        assert!(matches!(
+        assert_matches!(
             failure_cache.begin(&request),
             Some(CacheDecision::Blocked { .. })
-        ));
+        );
     }
 
     #[test]
