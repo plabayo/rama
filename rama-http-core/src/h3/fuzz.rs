@@ -771,6 +771,27 @@ mod tests {
                 ],
                 2,
             ),
+            // A raw UTF-8 authority has no Host form, so a Host beside it goes, matching or not.
+            (
+                &[
+                    (path, ""),
+                    (method, "~"),
+                    (scheme, "-"),
+                    (authority, "\u{fffd}"),
+                    (host, "bad host"),
+                ],
+                2,
+            ),
+            (
+                &[
+                    (method, "GET"),
+                    (scheme, "https"),
+                    (authority, "bücher.example"),
+                    (path, "/"),
+                    (host, "bücher.example"),
+                ],
+                2,
+            ),
             // An authority without a host is refused, whatever its scheme.
             (
                 &[

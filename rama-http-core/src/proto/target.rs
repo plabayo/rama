@@ -26,7 +26,8 @@ pub(crate) fn several_hosts(headers: &HeaderMap) -> bool {
 
 /// Reconciles a received target's single `Host` with its request-target authority, so services
 /// and later hops see one: HTTP-family userinfo is dropped, and `Host` names the URI authority
-/// (as RFC 9112 §3.2.2 requires of HTTP/1 proxies). Decoders refuse several `Host` lines first.
+/// (as RFC 9112 §3.2.2 requires of HTTP/1 proxies), or is removed when that authority has no
+/// `Host` form (raw UTF-8). Decoders refuse several `Host` lines first.
 /// `authority_sensitive` is the never-index flag of the pseudo-header the URI authority came from.
 pub(crate) fn normalize_received(
     uri: &mut Uri,
@@ -47,8 +48,8 @@ pub(crate) fn normalize_received(
             }
         }
     }
-    if let Some(host) = replacement_host(uri.authority(), headers, authority_sensitive) {
-        set_host(headers, host);
+    if let Some(fix) = replacement_host(uri.authority(), headers, authority_sensitive) {
+        fix.apply(headers);
     }
 }
 
@@ -59,8 +60,26 @@ pub(crate) fn reconcile_host(
     headers: &mut HeaderMap,
     authority_sensitive: bool,
 ) {
-    if let Some(host) = replacement_host(Some(authority), headers, authority_sensitive) {
-        set_host(headers, host);
+    if let Some(fix) = replacement_host(Some(authority), headers, authority_sensitive) {
+        fix.apply(headers);
+    }
+}
+
+/// How a received `Host` changes to agree with the request authority.
+enum HostFix {
+    Replace(HeaderValue),
+    /// The authority has no `Host` form (raw UTF-8), so the line goes, as encoders drop it.
+    Remove,
+}
+
+impl HostFix {
+    fn apply(self, headers: &mut HeaderMap) {
+        match self {
+            Self::Replace(host) => set_host(headers, host),
+            Self::Remove => {
+                headers.remove(header::HOST);
+            }
+        }
     }
 }
 
@@ -68,7 +87,7 @@ fn replacement_host(
     authority: Option<AuthorityRef<'_>>,
     headers: &HeaderMap,
     authority_sensitive: bool,
-) -> Option<HeaderValue> {
+) -> Option<HostFix> {
     let values = headers.get_all(header::HOST);
     let host_sensitive = values.iter().any(HeaderValue::is_sensitive);
     // A Host derived from the authority keeps both never-index restrictions.
@@ -85,9 +104,11 @@ fn replacement_host(
                 parsed.userinfo().is_some() || !same_address(authority, parsed)
             }) =>
         {
-            host_value(authority, derived_sensitive)
+            Some(host_value(authority, derived_sensitive).map_or(HostFix::Remove, HostFix::Replace))
         }
-        (None, Some(parsed)) if parsed.userinfo().is_some() => host_value(parsed, host_sensitive),
+        (None, Some(parsed)) if parsed.userinfo().is_some() => {
+            host_value(parsed, host_sensitive).map(HostFix::Replace)
+        }
         _ => None,
     }
 }

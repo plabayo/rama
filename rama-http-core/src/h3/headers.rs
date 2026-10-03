@@ -1505,6 +1505,50 @@ mod tests {
         );
         assert_eq!(request(sent).unwrap().uri(), h3.uri());
 
+        // A Host beside it names its IDNA form, which exists only with rama-net's `idna`; else
+        // the authority has no Host form, so the Host is removed, as encoders drop it.
+        for (authority, idna_form) in [
+            ("bücher.example", Some("xn--bcher-kva.example")),
+            ("\u{fffd}.example", None),
+        ] {
+            for host in [authority, "[ve.ü]:", "other.example"] {
+                let h3 = request(fields(&[
+                    (":method", "GET"),
+                    (":scheme", "https"),
+                    (":authority", authority),
+                    (":path", "/"),
+                    ("host", host),
+                ]))
+                .unwrap();
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    header::HOST,
+                    HeaderValue::from_bytes(host.as_bytes()).unwrap(),
+                );
+                let pseudo = frame::Pseudo {
+                    method: Some(Method::GET),
+                    scheme: Some(hpack::BytesStr::try_from(Bytes::from_static(b"https")).unwrap()),
+                    authority: Some(hpack::BytesStr::try_from(Bytes::from(authority)).unwrap()),
+                    path: Some(hpack::BytesStr::try_from(Bytes::from_static(b"/")).unwrap()),
+                    ..Default::default()
+                };
+                let h2 = crate::h2::server::test_util::receive(pseudo, headers).unwrap();
+                let received = h3.headers().get(header::HOST);
+                assert!(
+                    received.is_none_or(|value| idna_form.is_some_and(|form| value == form)),
+                    "{authority} {host}: {received:?}"
+                );
+                assert_eq!(
+                    h2.headers().get(header::HOST),
+                    received,
+                    "{authority} {host}"
+                );
+                assert_eq!(h2.uri(), h3.uri(), "{authority} {host}");
+                let again = request(decode(encode_request(&shared(), 0, &h3).unwrap())).unwrap();
+                assert_eq!(again.headers(), h3.headers(), "{authority} {host}");
+            }
+        }
+
         // An authority without a host names nothing a Host could carry, on either version.
         for authority in ["@", "user@", ""] {
             for scheme in ["https", "custom"] {
