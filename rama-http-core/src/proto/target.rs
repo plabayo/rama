@@ -26,8 +26,8 @@ pub(crate) fn several_hosts(headers: &HeaderMap) -> bool {
 
 /// Reconciles a received target's single `Host` with its request-target authority, so services
 /// and later hops see one: HTTP-family userinfo is dropped, and `Host` names the URI authority
-/// (as RFC 9112 §3.2.2 requires of HTTP/1 proxies), or is removed when that authority has no
-/// `Host` form (raw UTF-8). Decoders refuse several `Host` lines first.
+/// (as RFC 9112 §3.2.2 requires of HTTP/1 proxies). `Host` is read with the grammar received
+/// authorities follow, raw UTF-8 included. Decoders refuse several `Host` lines first.
 /// `authority_sensitive` is the never-index flag of the pseudo-header the URI authority came from.
 pub(crate) fn normalize_received(
     uri: &mut Uri,
@@ -68,7 +68,7 @@ pub(crate) fn reconcile_host(
 /// How a received `Host` changes to agree with the request authority.
 enum HostFix {
     Replace(HeaderValue),
-    /// The authority has no `Host` form (raw UTF-8), so the line goes, as encoders drop it.
+    /// The authority cannot be written as a field value, so the line goes, as encoders drop it.
     Remove,
 }
 
@@ -97,7 +97,7 @@ fn replacement_host(
     let (Some(host), None) = (hosts.next(), hosts.next()) else {
         return None;
     };
-    let parsed = AuthorityRef::try_from(host.as_bytes()).ok();
+    let parsed = AuthorityRef::parse(host.as_bytes()).ok();
     match (authority, parsed) {
         (Some(authority), parsed)
             if parsed.is_none_or(|parsed| {
@@ -128,7 +128,7 @@ fn set_host(headers: &mut HeaderMap, host: HeaderValue) {
 /// The `Host` of an outgoing request, as an encoder may use it.
 pub(crate) enum OutgoingHost<'a> {
     Absent,
-    /// One parseable line without userinfo.
+    /// One line without userinfo, parseable as a received authority.
     Usable(&'a HeaderValue, AuthorityRef<'a>),
     /// Unparseable, carrying userinfo, or several lines: never sent next to a URI authority.
     Unusable,
@@ -138,7 +138,7 @@ pub(crate) fn outgoing_host(headers: &HeaderMap) -> OutgoingHost<'_> {
     let mut hosts = headers.get_all(header::HOST).iter();
     match (hosts.next(), hosts.next()) {
         (None, _) => OutgoingHost::Absent,
-        (Some(host), None) => match AuthorityRef::try_from(host.as_bytes()) {
+        (Some(host), None) => match AuthorityRef::parse(host.as_bytes()) {
             Ok(parsed) if parsed.userinfo().is_none() => OutgoingHost::Usable(host, parsed),
             _ => OutgoingHost::Unusable,
         },
@@ -183,7 +183,8 @@ fn same_address(a: AuthorityRef<'_>, b: AuthorityRef<'_>) -> bool {
 fn host_value(authority: AuthorityRef<'_>, sensitive: bool) -> Option<HeaderValue> {
     let mut address = String::new();
     authority.write_address(&mut address).ok()?;
-    let mut value = HeaderValue::try_from(address).ok()?;
+    // Raw UTF-8 stays raw, as received authorities and the typed `Host` header keep it.
+    let mut value = HeaderValue::try_from(address.into_bytes()).ok()?;
     value.set_sensitive(sensitive);
     Some(value)
 }

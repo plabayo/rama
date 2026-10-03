@@ -170,9 +170,10 @@ pub(crate) fn request_head(
     }
     // Only a parseable first Host stands in for a missing :authority; any other Host is
     // reconciled with the request authority once the request is built.
-    let host = fields.headers.get(header::HOST).filter(|host| {
-        fields.authority.is_none() && AuthorityRef::try_from(host.as_bytes()).is_ok()
-    });
+    let host = fields
+        .headers
+        .get(header::HOST)
+        .filter(|host| fields.authority.is_none() && AuthorityRef::parse(host.as_bytes()).is_ok());
     // Normalizing Host into the URI must retain its compression restriction
     // when a subsequent HTTP/2 or HTTP/3 encoder emits it as :authority.
     if fields.authority.is_none() && host.is_some_and(HeaderValue::is_sensitive) {
@@ -269,7 +270,7 @@ pub(crate) fn request_head(
         request.extensions().insert(scheme);
         // An asterisk URI cannot hold the explicit :authority, which still wins over Host.
         if let Some(authority) = fields.authority.as_deref()
-            && let Ok(authority) = AuthorityRef::try_from(authority)
+            && let Ok(authority) = AuthorityRef::parse(authority)
         {
             reconcile_host(authority, request.headers_mut(), authority_sensitive);
         }
@@ -383,7 +384,7 @@ pub(crate) fn encode_request<B>(
     match outgoing_host(request.headers()) {
         OutgoingHost::Usable(host, parsed_host) => {
             // Compared with the wire projection, as parsed host and port: `Host: h:02` is port 2.
-            authority_from_host = AuthorityRef::try_from(&target[..])
+            authority_from_host = AuthorityRef::parse(&target[..])
                 .is_ok_and(|projected| host_is_wire_authority(projected, parsed_host));
             if authority_from_host {
                 target.clear();
@@ -403,8 +404,7 @@ pub(crate) fn encode_request<B>(
     }
     // RFC 9114 §4.4: an ordinary CONNECT names a host and port, whichever field supplied them.
     if connect
-        && !AuthorityRef::try_from(&target[..])
-            .is_ok_and(|authority| authority.port_u16().is_some())
+        && !AuthorityRef::parse(&target[..]).is_ok_and(|authority| authority.port_u16().is_some())
     {
         return Err(malformed("invalid request target"));
     }
@@ -558,6 +558,7 @@ mod tests {
         frame::{self, StreamId},
         hpack,
     };
+    use rama_net::AuthorityInputExt as _;
 
     fn fields(values: &[(&'static str, &'static str)]) -> Vec<FieldPair> {
         values
@@ -1505,8 +1506,8 @@ mod tests {
         );
         assert_eq!(request(sent).unwrap().uri(), h3.uri());
 
-        // A Host beside it names its IDNA form, which exists only with rama-net's `idna`; else
-        // the authority has no Host form, so the Host is removed, as encoders drop it.
+        // A Host beside it becomes the authority's own Host form: raw, or its IDNA form with
+        // rama-net's `idna`.
         for (authority, idna_form) in [
             ("bücher.example", Some("xn--bcher-kva.example")),
             ("\u{fffd}.example", None),
@@ -1535,7 +1536,9 @@ mod tests {
                 let h2 = crate::h2::server::test_util::receive(pseudo, headers).unwrap();
                 let received = h3.headers().get(header::HOST);
                 assert!(
-                    received.is_none_or(|value| idna_form.is_some_and(|form| value == form)),
+                    received
+                        .is_some_and(|value| value == authority
+                            || idna_form.is_some_and(|form| value == form)),
                     "{authority} {host}: {received:?}"
                 );
                 assert_eq!(
@@ -2527,6 +2530,52 @@ mod tests {
         let decoded = request(decoder.decode_field_section(0, encoded).unwrap().unwrap()).unwrap();
         assert!(decoded.uri().is_asterisk());
         assert_eq!(decoded.headers()[header::HOST], "example.com");
+    }
+
+    /// A raw UTF-8 `:authority` routes ahead of `Host` for `*` as for `/`, whether `Host` is
+    /// absent, matching or conflicting, and still does after H2 and H3 re-encoding.
+    #[test]
+    fn utf8_authorities_route_ahead_of_host_for_every_target() {
+        let expected = received_authority("bücher.example").unwrap().address;
+        for path in ["/", "*"] {
+            for host in [None, Some("bücher.example"), Some("other.example")] {
+                let case = format!("{path} {host:?}");
+                let received = || {
+                    let mut input = vec![
+                        (":method", "OPTIONS"),
+                        (":scheme", "https"),
+                        (":authority", "bücher.example"),
+                        (":path", path),
+                    ];
+                    input.extend(host.map(|host| ("host", host)));
+                    request(fields(&input)).unwrap()
+                };
+                assert_eq!(
+                    received().target_authority(),
+                    Some(expected.clone()),
+                    "{case}"
+                );
+
+                let h3 =
+                    request(decode(encode_request(&shared(), 0, &received()).unwrap())).unwrap();
+                assert_eq!(h3.target_authority(), Some(expected.clone()), "h3 {case}");
+                assert_eq!(h3.headers(), received().headers(), "h3 {case}");
+
+                let (frame, _) = crate::h2::client::Peer::convert_send_message(
+                    StreamId::from(1),
+                    received(),
+                    None,
+                    true,
+                    None,
+                    None,
+                )
+                .unwrap();
+                let (pseudo, headers) = frame.into_parts();
+                let h2 = crate::h2::server::test_util::receive(pseudo, headers).unwrap();
+                assert_eq!(h2.target_authority(), Some(expected.clone()), "h2 {case}");
+                assert_eq!(h2.headers(), received().headers(), "h2 {case}");
+            }
+        }
     }
 
     #[test]

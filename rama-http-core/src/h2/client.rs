@@ -1860,7 +1860,11 @@ fn host_as_authority(
     let mut drop_host = false;
     match outgoing_host(headers) {
         OutgoingHost::Usable(host, parsed) => {
-            let projected = pseudo.authority.as_deref().map(AuthorityRef::try_from);
+            let projected = pseudo
+                .authority
+                .as_deref()
+                .map(str::as_bytes)
+                .map(AuthorityRef::parse);
             if let Some(Ok(projected)) = projected
                 && host_is_wire_authority(projected, parsed)
                 && let Ok(value) = BytesStr::try_from(Bytes::copy_from_slice(host.as_bytes()))
@@ -1889,7 +1893,7 @@ fn host_as_authority(
         && pseudo
             .authority
             .as_deref()
-            .and_then(|authority| AuthorityRef::try_from(authority).ok())
+            .and_then(|authority| AuthorityRef::parse(authority.as_bytes()).ok())
             .is_none_or(|authority| authority.port_u16().is_none())
     {
         return Err(UserError::MalformedHeaders);
