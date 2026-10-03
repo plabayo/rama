@@ -701,10 +701,7 @@ mod tests {
             } else {
                 datagram
             };
-            assert!(matches!(
-                send_now(&mut sender, &datagram),
-                Poll::Ready(Ok(()))
-            ));
+            assert_matches!(send_now(&mut sender, &datagram), Poll::Ready(Ok(())));
             let mut received = Vec::new();
             for _ in 0..payload.len() / 2 {
                 let mut buffer = [0; 2];
@@ -726,18 +723,18 @@ mod tests {
         let mut sender = socket.create_sender();
         let destination = receiver.local_addr().unwrap();
         // Held for reordering; its copy fills the only other slot.
-        assert!(matches!(
+        assert_matches!(
             send_now(&mut sender, &SendDatagram::new(destination, b"one")),
             Poll::Ready(Ok(()))
-        ));
+        );
         let mut buffer = [0; 3];
         receiver.recv(&mut buffer).await.unwrap();
         assert_eq!(&buffer, b"one");
         // The next send still fits beside the held datagram, now without a spare slot.
-        assert!(matches!(
+        assert_matches!(
             send_now(&mut sender, &SendDatagram::new(destination, b"two")),
             Poll::Ready(Ok(()))
-        ));
+        );
         let mut order = Vec::new();
         for _ in 0..2 {
             let mut buffer = [0; 3];

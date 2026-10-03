@@ -371,6 +371,7 @@ mod tests {
         ServiceInput,
         futures::{SinkExt as _, StreamExt as _},
     };
+    use std::assert_matches;
     use std::{
         io::{Read, Write},
         time::Duration,
@@ -390,11 +391,11 @@ mod tests {
         let mut client =
             AsyncWebSocket::from_raw_socket(ServiceInput::new(client_io), Role::Client, None).await;
         client.send(Message::Close(None)).await.unwrap();
-        assert!(matches!(server.next().await, Some(Ok(Message::Close(_)))));
+        assert_matches!(server.next().await, Some(Ok(Message::Close(_))));
         assert!(server.next().await.is_none());
         let end = tokio::time::timeout(Duration::from_secs(5), async {
             while let Some(message) = client.next().await {
-                assert!(matches!(message, Ok(Message::Close(_))), "{message:?}");
+                assert_matches!(message, Ok(Message::Close(_)), "{message:?}");
             }
         })
         .await;
@@ -472,7 +473,7 @@ mod tests {
     async fn a_reset_after_the_closing_handshake_is_a_clean_end() {
         let mut server = server_over(vec![PEER_CLOSE.to_vec()]).await;
         server.close(None).await.unwrap();
-        assert!(matches!(server.next().await, Some(Ok(Message::Close(_)))));
+        assert_matches!(server.next().await, Some(Ok(Message::Close(_))));
         assert!(server.next().await.is_none());
     }
 
@@ -480,7 +481,7 @@ mod tests {
     #[tokio::test]
     async fn a_reset_after_the_peers_close_is_a_clean_end() {
         let mut server = server_over(vec![PEER_CLOSE.to_vec()]).await;
-        assert!(matches!(server.next().await, Some(Ok(Message::Close(_)))));
+        assert_matches!(server.next().await, Some(Ok(Message::Close(_))));
         let after = server.next().await;
         assert!(
             after.is_none(),

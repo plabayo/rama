@@ -8,6 +8,7 @@ use rama_core::{
     futures::{Sink, Stream, StreamExt as _},
 };
 use rama_ws::{AsyncWebSocket, Message, protocol::Role};
+use std::assert_matches;
 use std::{
     io,
     pin::Pin,
@@ -110,7 +111,7 @@ async fn peer_closed(role: Role, gate: &Arc<Gate>) -> AsyncWebSocket<ServiceInpu
         gate: gate.clone(),
     });
     let mut socket = AsyncWebSocket::from_raw_socket(io, role, None).await;
-    assert!(matches!(socket.next().await, Some(Ok(Message::Close(_)))));
+    assert_matches!(socket.next().await, Some(Ok(Message::Close(_))));
     socket
 }
 
@@ -142,17 +143,17 @@ async fn split_halves_both_wake_when_the_shutdown_completes() {
         // Drive only the half the transport notified, as an executor would.
         if sink_first {
             assert!(read_wakes.count() > 0);
-            assert!(matches!(
+            assert_matches!(
                 Pin::new(&mut stream).poll_next(&mut read_cx),
                 Poll::Ready(None)
-            ));
+            );
             assert!(write_wakes.count() > 0, "the pending close was stranded");
         } else {
             assert!(write_wakes.count() > 0);
-            assert!(matches!(
+            assert_matches!(
                 Pin::new(&mut sink).poll_close(&mut write_cx),
                 Poll::Ready(Ok(()))
-            ));
+            );
             assert!(read_wakes.count() > 0, "the pending read was stranded");
         }
     }
@@ -220,15 +221,15 @@ async fn a_parked_reader_wakes_when_the_sink_ends_the_transport() {
 
         let closed = Pin::new(&mut sink).poll_close(&mut write_cx);
         if shutdown == "immediate" {
-            assert!(matches!(closed, Poll::Ready(Ok(()))));
+            assert_matches!(closed, Poll::Ready(Ok(())));
         } else {
             assert!(closed.is_pending());
             if !cancel_close {
                 gate.release();
-                assert!(matches!(
+                assert_matches!(
                     Pin::new(&mut sink).poll_close(&mut write_cx),
                     Poll::Ready(Ok(()))
-                ));
+                );
             } else {
                 // The close future is dropped; the reader completes the shutdown instead.
                 gate.release();
@@ -238,10 +239,10 @@ async fn a_parked_reader_wakes_when_the_sink_ends_the_transport() {
             read_wakes.count() > 0,
             "{shutdown} shutdown (cancelled close: {cancel_close}) left the reader parked"
         );
-        assert!(matches!(
+        assert_matches!(
             Pin::new(&mut stream).poll_next(&mut read_cx),
             Poll::Ready(None)
-        ));
+        );
     }
 }
 
@@ -251,7 +252,7 @@ async fn a_parked_reader_wakes_when_a_real_transport_ends_at_once() {
     peer.write_all(&[0x88, 0x00]).await.unwrap();
     let mut socket =
         AsyncWebSocket::from_raw_socket(ServiceInput::new(client_io), Role::Client, None).await;
-    assert!(matches!(socket.next().await, Some(Ok(Message::Close(_)))));
+    assert_matches!(socket.next().await, Some(Ok(Message::Close(_))));
     let (mut sink, mut stream) = socket.split();
     let read_wakes = Arc::new(CountWakes::default());
     let read_waker = Waker::from(read_wakes.clone());
@@ -260,19 +261,19 @@ async fn a_parked_reader_wakes_when_a_real_transport_ends_at_once() {
     let mut write_cx = Context::from_waker(&write_waker);
     assert!(Pin::new(&mut stream).poll_next(&mut read_cx).is_pending());
     read_wakes.0.store(0, Ordering::Release);
-    assert!(matches!(
+    assert_matches!(
         Pin::new(&mut sink).poll_close(&mut write_cx),
         Poll::Ready(Ok(()))
-    ));
+    );
     // The peer sees our masked close reply and our end, but keeps its own side open.
     let mut reply = Vec::new();
     peer.read_to_end(&mut reply).await.unwrap();
     assert_eq!(reply[..2], [0x88, 0x80]);
     assert_eq!(reply.len(), 6);
     assert!(read_wakes.count() > 0, "the reader was left parked");
-    assert!(matches!(
+    assert_matches!(
         Pin::new(&mut stream).poll_next(&mut read_cx),
         Poll::Ready(None)
-    ));
+    );
     drop(peer);
 }

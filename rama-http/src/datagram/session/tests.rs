@@ -5,6 +5,7 @@ use crate::datagram::{
 };
 use parking_lot::Mutex;
 use rama_core::{ServiceInput, extensions::Extensions};
+use std::assert_matches;
 use std::{
     collections::VecDeque,
     future::Future as _,
@@ -268,10 +269,10 @@ async fn native_carrier_is_preferred_without_oversize_fallback() {
         peer.recv().await.unwrap(),
         Some(datagram(b"early", DatagramTransport::Capsule))
     );
-    assert!(matches!(
+    assert_matches!(
         peer.recv().await.unwrap(),
         Some(SessionEvent::Capsule { .. })
-    ));
+    );
     assert_eq!(peer.recv().await.unwrap(), None);
 }
 
@@ -341,7 +342,7 @@ async fn malformed_streams_abort_through_the_transport_hook() {
         raw.shutdown().await.unwrap();
         for _ in 0..2 {
             let error = session.recv().await.unwrap_err();
-            assert!(matches!(error, SessionError::Malformed(_)), "{error:?}");
+            assert_matches!(error, SessionError::Malformed(_), "{error:?}");
         }
         assert_eq!(aborted.load(Ordering::Relaxed), 1, "{wire:?}");
     }
@@ -572,10 +573,10 @@ async fn streamed_capsules_reject_interleaving_and_overruns() {
     let native = FakeNative::default();
     native.0.lock().max = Some(64);
     let (mut local, mut peer) = native_pair(&native);
-    assert!(matches!(
+    assert_matches!(
         local.send_capsule_data(Bytes::from_static(b"x")).await,
         Err(SessionError::CapsuleNotStarted)
-    ));
+    );
     local.start_capsule(header(0x4242, 6)).await.unwrap();
     local
         .send_capsule_data(Bytes::from_static(b"ab"))
@@ -591,10 +592,10 @@ async fn streamed_capsules_reject_interleaving_and_overruns() {
             "{rejected:?}"
         );
     }
-    assert!(matches!(
+    assert_matches!(
         local.send_capsule_data(Bytes::from_static(b"cdefg")).await,
         Err(SessionError::CapsuleLengthMismatch)
-    ));
+    );
     // Native datagrams never wait for the reliable stream.
     assert_eq!(
         local
@@ -852,14 +853,14 @@ async fn recoverable_rejections_leave_the_sender_usable() {
     native.0.lock().max = Some(8);
     let (mut local, mut peer) = native_pair(&native);
     native.0.lock().next_error = Some(NativeSendError::Full);
-    assert!(matches!(
+    assert_matches!(
         local.send_datagram(Bytes::from_static(b"full")).await,
         Err(SessionError::Native(NativeSendError::Full))
-    ));
-    assert!(matches!(
+    );
+    assert_matches!(
         local.send_datagram(Bytes::from(vec![0; 9])).await,
         Err(SessionError::Native(NativeSendError::TooLarge { max: 8 }))
-    ));
+    );
     assert_eq!(
         local
             .send_datagram(Bytes::from_static(b"ok"))
@@ -877,10 +878,10 @@ async fn recoverable_rejections_leave_the_sender_usable() {
         DatagramTransport::Capsule
     );
     native.0.lock().next_error = Some(NativeSendError::Closed);
-    assert!(matches!(
+    assert_matches!(
         local.send_datagram(Bytes::from_static(b"closed")).await,
         Err(SessionError::Native(NativeSendError::Closed))
-    ));
+    );
     // Terminal for sending (see `native_closed_is_terminal_for_sending`).
     drop(local);
     assert_eq!(native.0.lock().sent, [Bytes::from_static(b"ok")]);
@@ -908,10 +909,10 @@ async fn dropping_the_receiver_releases_native_receive_only() {
         .await
         .unwrap();
     sender.close().await.unwrap();
-    assert!(matches!(
+    assert_matches!(
         peer.recv().await.unwrap(),
         Some(SessionEvent::Capsule { .. })
-    ));
+    );
 }
 
 /// An always-ready reader: one unknown capsule that never ends.
@@ -1048,7 +1049,7 @@ async fn stream_failures_are_sticky_per_direction() {
             "{error:?}"
         );
     }
-    assert!(matches!(session.close().await, Err(SessionError::Io(_))));
+    assert_matches!(session.close().await, Err(SessionError::Io(_)));
     for _ in 0..2 {
         let error = session.recv().await.unwrap_err();
         assert!(
@@ -1117,10 +1118,10 @@ async fn a_native_close_mid_capsule_still_aborts_on_drop() {
         .await
         .unwrap();
     native.0.lock().next_error = Some(NativeSendError::Closed);
-    assert!(matches!(
+    assert_matches!(
         session.send_datagram(Bytes::from_static(b"closed")).await,
         Err(SessionError::Native(NativeSendError::Closed))
-    ));
+    );
     // The stream itself still works: a clean end would cut the capsule short.
     drop(session);
     assert_eq!(aborted.load(Ordering::Relaxed), 1);
@@ -1133,17 +1134,17 @@ async fn native_closed_is_terminal_for_sending() {
     let (mut local, mut peer) = native_pair(&native);
     native.0.lock().next_error = Some(NativeSendError::Closed);
     for _ in 0..2 {
-        assert!(matches!(
+        assert_matches!(
             local.send_datagram(Bytes::from_static(b"closed")).await,
             Err(SessionError::Native(NativeSendError::Closed))
-        ));
+        );
     }
-    assert!(matches!(
+    assert_matches!(
         local
             .send_capsule(CONTROL, Bytes::from_static(b"after"))
             .await,
         Err(SessionError::Native(NativeSendError::Closed))
-    ));
+    );
     // Nothing was written after the terminal result.
     let mut cx = Context::from_waker(Waker::noop());
     assert!(peer.receiver.poll_recv(&mut cx).is_pending());
@@ -1177,10 +1178,10 @@ async fn dropping_a_partial_sender_closes_hookless_carriers() {
             }
             let (sender, _retained) = sender_session.split();
             drop(sender);
-            assert!(matches!(
+            assert_matches!(
                 peer.recv().await,
                 Err(SessionError::Malformed(CapsuleError::Truncated))
-            ));
+            );
             continue;
         }
         sender.start_capsule(header(0x4242, 4)).await.unwrap();
@@ -1190,12 +1191,12 @@ async fn dropping_a_partial_sender_closes_hookless_carriers() {
             .unwrap();
         drop(sender);
         // The peer sees the truncation instead of waiting for the missing value.
-        assert!(matches!(
+        assert_matches!(
             peer.recv().await,
             Err(SessionError::Malformed(CapsuleError::Truncated))
-        ));
+        );
         // The retained half fails instead of hanging.
-        assert!(matches!(receiver.recv().await, Err(SessionError::Io(_))));
+        assert_matches!(receiver.recv().await, Err(SessionError::Io(_)));
     }
 }
 
@@ -1206,17 +1207,14 @@ async fn malformed_input_closes_hookless_carriers_for_both_halves() {
         HttpDatagramSession::with_config(ServiceInput::new(a), config()).split();
     // A registered control capsule above its limit.
     raw.write_all(b"\x2a\x21").await.unwrap();
-    assert!(matches!(
-        receiver.recv().await,
-        Err(SessionError::Malformed(_))
-    ));
+    assert_matches!(receiver.recv().await, Err(SessionError::Malformed(_)));
     let mut rest = Vec::new();
     raw.read_to_end(&mut rest).await.unwrap();
     assert!(rest.is_empty());
-    assert!(matches!(
+    assert_matches!(
         sender.send_capsule(CONTROL, Bytes::from_static(b"x")).await,
         Err(SessionError::Io(_))
-    ));
+    );
 }
 
 /// Shutdown stays pending until allowed, to cancel `close` after its commit.
@@ -1289,12 +1287,12 @@ async fn close_cancelled_after_its_commit_resumes_shutdown() {
         assert!(close.as_mut().poll(&mut cx).is_pending());
     }
     assert_eq!(polled.load(Ordering::Relaxed), 1);
-    assert!(matches!(
+    assert_matches!(
         local
             .send_capsule(CONTROL, Bytes::from_static(b"after"))
             .await,
         Err(SessionError::SendClosed)
-    ));
+    );
     allowed.store(true, Ordering::Relaxed);
     local.close().await.unwrap();
     assert_eq!(polled.load(Ordering::Relaxed), 2);
@@ -1334,10 +1332,10 @@ async fn aborts_wake_a_receiver_already_waiting() {
     let before = wakes.0.load(Ordering::SeqCst);
     drop(sender);
     assert!(wakes.0.load(Ordering::SeqCst) > before);
-    assert!(matches!(
+    assert_matches!(
         receiver.poll_recv(&mut cx),
         Poll::Ready(Err(SessionError::Io(_)))
-    ));
+    );
 }
 
 #[tokio::test]
@@ -1353,15 +1351,12 @@ async fn aborts_wake_a_sender_already_waiting() {
     assert!(send.as_mut().poll(&mut cx).is_pending());
     // A registered control capsule above its limit: malformed input aborts both halves.
     raw.write_all(b"\x2a\x21").await.unwrap();
-    assert!(matches!(
-        receiver.recv().await,
-        Err(SessionError::Malformed(_))
-    ));
+    assert_matches!(receiver.recv().await, Err(SessionError::Malformed(_)));
     assert!(wakes.0.load(Ordering::SeqCst) > 0);
-    assert!(matches!(
+    assert_matches!(
         send.as_mut().poll(&mut cx),
         Poll::Ready(Err(SessionError::Io(_)))
-    ));
+    );
 }
 
 #[tokio::test]
@@ -1380,7 +1375,7 @@ async fn aborts_discard_already_decoded_events() {
     );
     sender.start_capsule(header(0x4242, 4)).await.unwrap();
     drop(sender);
-    assert!(matches!(receiver.recv().await, Err(SessionError::Io(_))));
+    assert_matches!(receiver.recv().await, Err(SessionError::Io(_)));
 }
 
 #[tokio::test]
@@ -1390,10 +1385,7 @@ async fn the_malformed_hook_runs_once_per_session() {
     let (mut sender, mut receiver) = HttpDatagramSession::with_config(io, config()).split();
     sender.start_capsule(header(0x4242, 4)).await.unwrap();
     raw.write_all(b"\x2a\x21").await.unwrap();
-    assert!(matches!(
-        receiver.recv().await,
-        Err(SessionError::Malformed(_))
-    ));
+    assert_matches!(receiver.recv().await, Err(SessionError::Malformed(_)));
     assert_eq!(aborted.load(Ordering::Relaxed), 1);
     // The partial sender is dropped after the carrier already aborted.
     drop(sender);
@@ -1421,10 +1413,10 @@ async fn aborts_wake_the_latest_receiver_task() {
     );
     drop(sender);
     assert!(latest.0.load(Ordering::SeqCst) > 0);
-    assert!(matches!(
+    assert_matches!(
         receiver.poll_recv(&mut Context::from_waker(&latest_waker)),
         Poll::Ready(Err(SessionError::Io(_)))
-    ));
+    );
 }
 
 #[tokio::test]
@@ -1444,15 +1436,12 @@ async fn aborts_wake_a_pending_close() {
     let mut close = std::pin::pin!(close);
     assert!(close.as_mut().poll(&mut cx).is_pending());
     raw.write_all(b"\x2a\x21").await.unwrap();
-    assert!(matches!(
-        receiver.recv().await,
-        Err(SessionError::Malformed(_))
-    ));
+    assert_matches!(receiver.recv().await, Err(SessionError::Malformed(_)));
     assert!(wakes.0.load(Ordering::SeqCst) > 0);
-    assert!(matches!(
+    assert_matches!(
         close.as_mut().poll(&mut cx),
         Poll::Ready(Err(SessionError::Io(_)))
-    ));
+    );
 }
 
 #[tokio::test]
@@ -1464,20 +1453,17 @@ async fn aborts_block_queued_native_events_and_native_sends() {
     sender.start_capsule(header(0x4242, 4)).await.unwrap();
     native.push(b"queued");
     drop(sender);
-    assert!(matches!(receiver.recv().await, Err(SessionError::Io(_))));
+    assert_matches!(receiver.recv().await, Err(SessionError::Io(_)));
     let (a, mut raw) = tokio::io::duplex(256);
     let io = ServiceInput::new(a);
     io.extensions().insert(NativeDatagrams::new(native.clone()));
     let (mut sender, mut receiver) = HttpDatagramSession::with_config(io, config()).split();
     raw.write_all(b"\x2a\x21").await.unwrap();
-    assert!(matches!(
-        receiver.recv().await,
-        Err(SessionError::Malformed(_))
-    ));
-    assert!(matches!(
+    assert_matches!(receiver.recv().await, Err(SessionError::Malformed(_)));
+    assert_matches!(
         sender.send_datagram(Bytes::from_static(b"after")).await,
         Err(SessionError::Io(_))
-    ));
+    );
     assert!(native.0.lock().sent.is_empty());
 }
 
@@ -1498,7 +1484,7 @@ async fn buffers_stay_bounded_after_a_burst() {
     });
     let mut received = 0;
     while let Some(event) = receiver.recv().await.unwrap() {
-        assert!(matches!(event, SessionEvent::Datagram { .. }));
+        assert_matches!(event, SessionEvent::Datagram { .. });
         received += 1;
     }
     assert_eq!(received, 256);
@@ -1612,7 +1598,7 @@ async fn failed_sends_release_accepted_payloads() {
         .send_capsule(CONTROL, owned(32, &dropped))
         .await
         .unwrap_err();
-    assert!(matches!(&error, SessionError::Io(error) if error.kind() == io::ErrorKind::BrokenPipe));
+    assert_matches!(&error, SessionError::Io(error) if error.kind() == io::ErrorKind::BrokenPipe);
     // Sending is over for good: the accepted payload is gone while the session lives on.
     assert_eq!(dropped.load(Ordering::Acquire), 1);
 }
@@ -1684,10 +1670,7 @@ async fn aborted_sessions_release_accepted_payloads_on_any_next_send() {
                 .unwrap()
                 .encode(&mut oversized);
             peer.write_all(&oversized).await.unwrap();
-            assert!(matches!(
-                receiver.recv().await,
-                Err(SessionError::Malformed(_))
-            ));
+            assert_matches!(receiver.recv().await, Err(SessionError::Malformed(_)));
             assert_eq!(dropped.load(Ordering::Acquire), 0, "{accepted}/{operation}");
             let result = match operation {
                 "send_capsule" => sender.send_capsule(CONTROL, Bytes::from_static(b"x")).await,

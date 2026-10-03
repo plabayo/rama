@@ -61,6 +61,7 @@ use rama_ws::{
     },
     layer::har::HARWebSocketLayer,
 };
+use std::assert_matches;
 use std::{convert::Infallible, num::NonZeroUsize, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -526,7 +527,7 @@ async fn assert_relay(ingress: Version, egress: Version, closer: Closer) {
     let close = timeout(LIMIT, socket.recv_message())
         .await
         .expect("close in time");
-    assert!(matches!(close, Ok(Message::Close(_))), "{cell}: {close:?}");
+    assert_matches!(close, Ok(Message::Close(_)), "{cell}: {close:?}");
     // Sends our reply when the origin closed first.
     socket.flush().await.expect("flush");
     let origin_end = timeout(LIMIT, origin_end.recv())

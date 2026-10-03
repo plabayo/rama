@@ -6,6 +6,7 @@ use crate::h3::datagram::{
 };
 use rama_core::bytes::Bytes;
 use rama_http::datagram::{NativeRecvError, ViolationPolicy};
+use std::assert_matches;
 use std::{
     sync::{
         Arc,
@@ -363,7 +364,7 @@ fn bursts_and_churn_leave_bounded_storage() {
     for stream in (80..10_080).map(|index| index * 4) {
         register(&mut demux, &config, stream, now);
         deliver(&mut demux, &config, stream, 1024, now);
-        assert!(matches!(poll(&mut demux, stream), Poll::Ready(Ok(Some(_)))));
+        assert_matches!(poll(&mut demux, stream), Poll::Ready(Ok(Some(_))));
         _ = demux.unregister(stream);
     }
     let churned = demux.capacities();

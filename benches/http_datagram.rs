@@ -33,6 +33,7 @@ use rama::{
     },
     utils::octets::{kib, mib},
 };
+use std::assert_matches;
 use std::{sync::Arc, time::Duration};
 use tokio::runtime::Runtime;
 
@@ -262,7 +263,7 @@ async fn round_trip(sessions: &mut [HttpDatagramSession], payload: &Bytes) {
             .await
             .expect("a datagram was lost on localhost")
             .unwrap();
-        assert!(matches!(echoed, Some(SessionEvent::Datagram { .. })));
+        assert_matches!(echoed, Some(SessionEvent::Datagram { .. }));
     }
 }
 

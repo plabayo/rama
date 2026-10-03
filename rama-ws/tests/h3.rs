@@ -35,6 +35,7 @@ use rama_ws::{
         server::{ServerWebSocket, WebSocketAcceptor},
     },
 };
+use std::assert_matches;
 use std::{convert::Infallible, num::NonZeroUsize, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -292,10 +293,7 @@ async fn round_trip(client: &H3Client, text: &'static str) {
     socket.send_message(Message::text(text)).await.unwrap();
     assert_eq!(socket.recv_message().await.unwrap(), Message::text(text));
     socket.close(None).await.unwrap();
-    assert!(matches!(
-        socket.recv_message().await.unwrap(),
-        Message::Close(_)
-    ));
+    assert_matches!(socket.recv_message().await.unwrap(), Message::Close(_));
 }
 
 #[tokio::test]
@@ -586,10 +584,7 @@ async fn flushing_after_a_received_close_replies_and_finishes() {
         let pair = Pair::new().await;
         let service = WebSocketAcceptor::new().into_service(service_fn(
             |mut socket: ServerWebSocket| async move {
-                assert!(matches!(
-                    socket.recv_message().await.unwrap(),
-                    Message::Close(_)
-                ));
+                assert_matches!(socket.recv_message().await.unwrap(), Message::Close(_));
                 socket.flush().await.unwrap();
                 // The socket is dropped right away: the flush already ended the stream.
                 Ok::<_, Infallible>(())
@@ -743,10 +738,7 @@ async fn closing_a_client_after_the_close_exchange_finishes_its_stream() {
             .await
             .expect("handshake");
         socket.close(None).await.unwrap();
-        assert!(matches!(
-            socket.recv_message().await.unwrap(),
-            Message::Close(_)
-        ));
+        assert_matches!(socket.recv_message().await.unwrap(), Message::Close(_));
         socket.flush().await.unwrap();
         // The exchange is complete: closing the sink ends the transport, before the server's.
         SinkExt::close(&mut socket).await.unwrap();

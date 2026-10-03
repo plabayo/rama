@@ -513,7 +513,8 @@ mod tests {
             let mut read = ReadBuf::new(&mut buf);
             let result = Pin::new(&mut tunnel).poll_read(&mut cx, &mut read);
             if code == Code::H3_NO_ERROR {
-                assert!(matches!(result, Poll::Ready(Ok(()))) && read.filled().is_empty());
+                assert_matches!(result, Poll::Ready(Ok(())));
+                assert!(read.filled().is_empty());
             } else {
                 let Poll::Ready(Err(error)) = result else {
                     panic!("{code:?}: a reset with error must fail the read");

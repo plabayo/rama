@@ -12,6 +12,7 @@ use rama::{
     tls::{client::TlsClientConfig, server::ServerAuthData},
     utils::fs::tempdir,
 };
+use std::assert_matches;
 use std::{net::SocketAddr, time::Duration};
 use tokio::{
     fs,
@@ -165,7 +166,7 @@ async fn test_ws_over_h3() {
     for socket in [&mut first, &mut second] {
         socket.close(None).await.unwrap();
         let reply = timeout(LIMIT, socket.next()).await.unwrap();
-        assert!(matches!(reply, Some(Ok(Message::Close(_)))), "{reply:?}");
+        assert_matches!(reply, Some(Ok(Message::Close(_))), "{reply:?}");
     }
     // On the wire: nothing but a FIN after the reply; a reset would fail this read.
     let mut io = first.into_inner().into_inner();

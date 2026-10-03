@@ -1257,10 +1257,10 @@ mod tests {
         drop(reused);
         state.set_in_use(false);
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(matches!(
+        assert_matches!(
             pool.get_conn(&TestId(0), &EMPTY_INPUT).await,
             Ok(ConnectionResult::CreatePermit(_))
-        ));
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1304,10 +1304,10 @@ mod tests {
         // Before the timeout, a lookup that cannot use the connection still sees its work.
         state.set_limit(0);
         tokio::time::sleep(Duration::from_millis(20)).await;
-        assert!(matches!(
+        assert_matches!(
             pool.get_conn(&TestId(0), &EMPTY_INPUT).await,
             Ok(ConnectionResult::CreatePermit(_))
-        ));
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
         state.set_in_use(false);
         state.set_limit(4);

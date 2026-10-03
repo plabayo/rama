@@ -27,6 +27,7 @@ use rama_http::{
     },
 };
 use rama_http_core::{body::Incoming, client::conn, server, service::RamaHttpService};
+use std::assert_matches;
 use std::{
     convert::Infallible,
     future::{Future as _, poll_fn},
@@ -108,7 +109,7 @@ fn closing_service()
             let mut session = HttpDatagramSession::with_config(upgrade.await.unwrap(), config);
             session.close().await.unwrap();
             let error = session.recv().await.unwrap_err();
-            assert!(matches!(error, SessionError::Malformed(_)), "{error:?}");
+            assert_matches!(error, SessionError::Malformed(_), "{error:?}");
             // Neither a write nor a drop may be needed for the reset.
             std::future::pending::<()>().await;
             drop(session);
@@ -448,10 +449,8 @@ async fn echoes(upgraded: Upgraded) {
         .send_datagram(Bytes::from_static(b"after"))
         .await
         .unwrap();
-    assert!(matches!(
-        session.recv().await.unwrap(),
-        Some(SessionEvent::Datagram { payload, .. }) if payload == "after"
-    ));
+    assert_matches!(session.recv().await.unwrap(),
+        Some(SessionEvent::Datagram { payload, .. }) if payload == "after");
 }
 
 /// A refused Extended CONNECT or Upgrade is an ordinary response with its body.

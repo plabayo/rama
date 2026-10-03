@@ -34,6 +34,7 @@ use rama_quic::TransportConfig;
 use rama_quic_proto::coding::Codec as _;
 use rama_udp::test_utils::{MemoryDatagramControl, MemoryDatagramFaultStats};
 use rama_utils::octets::mib;
+use std::assert_matches;
 use std::{
     pin::Pin,
     task::{Context, Poll, Waker},
@@ -247,12 +248,12 @@ async fn native_datagrams_round_trip_beside_reliable_capsules() {
                 .send(Bytes::from_static(b"late"), Default::default()),
             Err(NativeSendError::Closed)
         );
-        assert!(matches!(
+        assert_matches!(
             client_session
                 .send_datagram(Bytes::from_static(b"late"))
                 .await,
             Err(SessionError::SendClosed)
-        ));
+        );
         // The reverse direction keeps working after the half-close.
         server_session
             .send_datagram(Bytes::from_static(b"reverse"))
@@ -887,10 +888,10 @@ async fn native_sends_follow_the_transport_without_writer_polls() {
             .unwrap();
         recv.stop(VarInt::from_u32(0x33)).unwrap();
         native_closed(&clone).await;
-        assert!(matches!(
+        assert_matches!(
             sender.send_datagram(Bytes::from_static(b"stopped")).await,
             Err(SessionError::Native(NativeSendError::Closed))
-        ));
+        );
         // Other requests on the connection are unaffected.
         let (response, _raw) =
             tokio::join!(client.send_request(connect(TOKEN, true)), raw_accept(&pair));
@@ -1676,7 +1677,7 @@ async fn truncated_capsules_reset_http3_streams_as_malformed() {
         client_io.write_all(b"\x00\x05ab").await.unwrap();
         client_io.shutdown().await.unwrap();
         let error = session.recv().await.unwrap_err();
-        assert!(matches!(error, SessionError::Malformed(_)), "{error:?}");
+        assert_matches!(error, SessionError::Malformed(_), "{error:?}");
         let mut rest = Vec::new();
         let error = client_io.read_to_end(&mut rest).await.unwrap_err();
         let error = error
@@ -1746,7 +1747,7 @@ async fn http3_capsule_limits_apply_before_values_arrive() {
             .unwrap();
         client_io.flush().await.unwrap();
         let error = receiver.recv().await.unwrap_err();
-        assert!(matches!(error, SessionError::Malformed(_)), "{error:?}");
+        assert_matches!(error, SessionError::Malformed(_), "{error:?}");
         let mut rest = Vec::new();
         let error = client_io.read_to_end(&mut rest).await.unwrap_err();
         let error = error

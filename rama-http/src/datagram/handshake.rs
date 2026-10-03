@@ -267,6 +267,7 @@ fn is_zero_length(value: &HeaderValue) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     const TOKEN: Protocol = Protocol::from_static("connect-udp");
     const VERSIONS: [Version; 3] = [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3];
@@ -362,10 +363,10 @@ mod tests {
                 .header(header::UPGRADE, "connect-udp")
                 .body(())
                 .unwrap();
-            assert!(matches!(
+            assert_matches!(
                 validate_capsule_request(&upgrade_style, ViolationPolicy::Ignore),
                 Err(CapsuleHandshakeError::ConnectionSpecificField(_))
-            ));
+            );
             let bare = Request::builder()
                 .method(Method::CONNECT)
                 .version(version)
@@ -415,10 +416,10 @@ mod tests {
             for status in [204, 205, 206] {
                 let mut forbidden = Response::new(());
                 *forbidden.status_mut() = StatusCode::from_u16(status).unwrap();
-                assert!(matches!(
+                assert_matches!(
                     validate_capsule_response(version, &TOKEN, &forbidden, ViolationPolicy::Ignore),
                     Err(CapsuleHandshakeError::ForbiddenStatus(_))
-                ));
+                );
             }
         }
     }

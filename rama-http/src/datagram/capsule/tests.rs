@@ -1,4 +1,5 @@
 use super::*;
+use std::assert_matches;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -266,14 +267,8 @@ fn undrained_input_is_rejected_without_loss() {
         decoder.feed(Bytes::from_static(b"x")),
         Err(CapsuleError::InputNotDrained)
     );
-    assert!(matches!(
-        decoder.poll(),
-        Ok(Some(CapsuleEvent::Capsule { .. }))
-    ));
-    assert!(matches!(
-        decoder.poll(),
-        Ok(Some(CapsuleEvent::Capsule { .. }))
-    ));
+    assert_matches!(decoder.poll(), Ok(Some(CapsuleEvent::Capsule { .. })));
+    assert_matches!(decoder.poll(), Ok(Some(CapsuleEvent::Capsule { .. })));
     assert_eq!(decoder.poll(), Ok(None));
     decoder.feed(Bytes::new()).unwrap();
 }
