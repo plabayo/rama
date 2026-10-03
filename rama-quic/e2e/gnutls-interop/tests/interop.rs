@@ -35,9 +35,10 @@ async fn gnutls_client_exchanges_streams_and_datagrams_with_aioquic_after_key_up
     let before = payload(17, octets::kib(64));
     exchange(&connection, &before).await;
     // Stream data can arrive before HANDSHAKE_DONE; wait for confirmation before
-    // requesting the update, as required by RFC 9001 section 6.1.
+    // requesting the update, as required by RFC 9001 section 6.1. A routine update may
+    // already be in flight, unacknowledged until the next exchange carries it.
     within(async {
-        while !connection.force_key_update() {
+        while connection.stats().key_updates == 0 && !connection.force_key_update() {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
