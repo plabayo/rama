@@ -457,10 +457,12 @@ where
                     (Some(request_extensions), Some(allowed_extensions)) => {
                         request_extensions.0.iter().find_map(|request_ext| {
                             for allowed_ext in allowed_extensions.0.iter() {
+                                // an offer is only answered under its own name (RFC 6455 §9)
                                 if let (
                                     Extension::PerMessageDeflate(request_pmd),
                                     Extension::PerMessageDeflate(allowed_pmd),
                                 ) = (&request_ext, allowed_ext)
+                                    && request_pmd.identifier == allowed_pmd.identifier
                                 {
                                     let mut resp = PerMessageDeflateConfig {
                                         identifier: allowed_pmd.identifier.clone(),
@@ -1019,6 +1021,8 @@ mod tests {
 
     use super::*;
     use crate::layer::har::{HARWebSocket, HARWebSocketLayer};
+    #[cfg(feature = "compression")]
+    use rama_http::headers::sec_websocket_extensions::PerMessageDeflateIdentifier;
 
     #[derive(Default)]
     struct CaptureState {
@@ -1322,6 +1326,52 @@ mod tests {
                         .await
                         .as_deref(),
                     Some(accepted),
+                    "{version:?} {offer}"
+                );
+            }
+        }
+    }
+
+    /// RFC 6455 §9: an offer is answered under its own name or not at all, on every HTTP
+    /// version; parameters of an offer under another name do not count.
+    #[cfg(feature = "compression")]
+    #[tokio::test]
+    async fn a_pmd_offer_is_only_answered_under_its_own_name() {
+        let standard = WebSocketAcceptor::new().with_per_message_deflate();
+        let webkit = WebSocketAcceptor::new().with_per_message_deflate_with_config(
+            PerMessageDeflateConfig {
+                identifier: PerMessageDeflateIdentifier::XWebKitDeflateFrame,
+                ..Default::default()
+            },
+        );
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            for (acceptor, offer, accepted) in [
+                (&standard, "permessage-deflate", Some("permessage-deflate")),
+                (&standard, "perframe-deflate", None),
+                (&standard, "x-webkit-deflate-frame", None),
+                (
+                    &standard,
+                    "x-webkit-deflate-frame, permessage-deflate",
+                    Some("permessage-deflate"),
+                ),
+                (
+                    &standard,
+                    "perframe-deflate; server_no_context_takeover, permessage-deflate",
+                    Some("permessage-deflate"),
+                ),
+                (
+                    &webkit,
+                    "x-webkit-deflate-frame",
+                    Some("x-webkit-deflate-frame"),
+                ),
+                (&webkit, "permessage-deflate", None),
+                (&webkit, "perframe-deflate", None),
+            ] {
+                assert_eq!(
+                    negotiated_extensions_on(acceptor, version, offer)
+                        .await
+                        .as_deref(),
+                    accepted,
                     "{version:?} {offer}"
                 );
             }

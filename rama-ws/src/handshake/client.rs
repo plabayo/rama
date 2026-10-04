@@ -308,13 +308,17 @@ pub struct AcceptedWebSocketData {
 }
 
 /// The configuration a permessage-deflate response accepts for `offer`, if it answers it
-/// (RFC 7692 §7). A server constraint the offer makes must be echoed, `server_max_window_bits`
-/// at most the offered value; `client_max_window_bits` may only answer an offer naming it,
-/// whose value is a hint; the server may impose no context takeover on the client.
+/// (RFC 7692 §§3, 7): under the same extension name; a server constraint the offer makes
+/// must be echoed, `server_max_window_bits` at most the offered value; `client_max_window_bits`
+/// may only answer an offer naming it, whose value is a hint; the server may impose no
+/// context takeover on the client.
 fn accept_pmd(
     offer: &PerMessageDeflateConfig,
     response: &PerMessageDeflateConfig,
 ) -> Option<PerMessageDeflateConfig> {
+    if offer.identifier != response.identifier {
+        return None;
+    }
     let client_max_window_bits = match response.client_max_window_bits {
         None => None,
         // zlib cannot compress within an 8-bit window
@@ -2181,9 +2185,9 @@ mod tests {
         );
     }
 
-    /// RFC 7692 §7, on every HTTP version: a response answers one compatible offer, whichever
-    /// it is; server constraints of that offer are echoed, client window bits only answer an
-    /// offer naming them, and a server may impose more than asked.
+    /// RFC 7692 §§3, 7, on every HTTP version: a response answers one compatible offer under
+    /// the same name, whichever it is; server constraints of that offer are echoed, client
+    /// window bits only answer an offer naming them, and a server may impose more than asked.
     #[test]
     fn a_pmd_response_answers_one_compatible_offer() {
         const PMD: &str = "permessage-deflate";
@@ -2248,6 +2252,43 @@ mod tests {
                 "permessage-deflate; client_no_context_takeover",
                 PMD,
                 Some((None, None, false, true)),
+            ),
+            (
+                "permessage-deflate",
+                "permessage-deflate",
+                Some((None, None, false, false)),
+            ),
+            ("permessage-deflate", "perframe-deflate", None),
+            ("permessage-deflate", "x-webkit-deflate-frame", None),
+            ("perframe-deflate", "permessage-deflate", None),
+            (
+                "perframe-deflate",
+                "perframe-deflate",
+                Some((None, None, false, false)),
+            ),
+            ("perframe-deflate", "x-webkit-deflate-frame", None),
+            ("x-webkit-deflate-frame", "permessage-deflate", None),
+            ("x-webkit-deflate-frame", "perframe-deflate", None),
+            (
+                "x-webkit-deflate-frame",
+                "x-webkit-deflate-frame",
+                Some((None, None, false, false)),
+            ),
+            // parameters of an offer under another name never answer the selected one
+            (
+                "perframe-deflate; server_max_window_bits=15, permessage-deflate; server_max_window_bits=10",
+                "permessage-deflate; server_max_window_bits=15",
+                None,
+            ),
+            (
+                "x-webkit-deflate-frame; client_max_window_bits, permessage-deflate",
+                "permessage-deflate; client_max_window_bits=15",
+                None,
+            ),
+            (
+                "x-webkit-deflate-frame, permessage-deflate; server_no_context_takeover",
+                "permessage-deflate; server_no_context_takeover",
+                Some((None, None, true, false)),
             ),
         ];
         let key = headers::SecWebSocketKey::random();
