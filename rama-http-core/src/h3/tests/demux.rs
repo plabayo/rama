@@ -528,3 +528,47 @@ fn a_payload_crowded_out_by_held_datagrams_leaves_queues_alone() {
     assert_eq!(demux.buffered(), 262_144);
     assert_matches!(poll(&mut demux, 0), Poll::Ready(Ok(Some(payload))) if payload.len() == 2_144);
 }
+
+/// Registering a stream again starts it afresh: what was queued for it is released, from the
+/// budget and from the largest-queue order alike.
+#[test]
+fn registering_a_stream_again_releases_its_queue() {
+    let config = config(4, 4, 64 * C);
+    let now = Instant::now();
+    let mut demux = Demux::default();
+    register(&mut demux, &config, 0, now);
+    deliver(&mut demux, &config, 0, 10, now);
+    deliver(&mut demux, &config, 0, 10, now);
+    assert_eq!(demux.buffered(), 2 * C);
+    register(&mut demux, &config, 0, now);
+    demux.assert_consistent(&config.limits);
+    assert_eq!(demux.buffered(), 0);
+    assert!(poll(&mut demux, 0).is_pending());
+}
+
+/// Over budget the largest queue gives up its oldest datagram, so a stalled consumer pays and
+/// a small, healthy queue keeps what it has, whatever the order of registration.
+#[test]
+fn the_largest_queue_makes_room() {
+    for stalled in [0, 4] {
+        let healthy = 4 - stalled;
+        let config = config(8, 4, 4 * C);
+        let now = Instant::now();
+        let mut demux = Demux::default();
+        for stream in [0, 4, 8] {
+            register(&mut demux, &config, stream, now);
+        }
+        deliver(&mut demux, &config, healthy, 10, now);
+        for len in [11, 12, 13] {
+            deliver(&mut demux, &config, stalled, len, now);
+        }
+        assert_eq!(demux.buffered(), 4 * C);
+        deliver(&mut demux, &config, 8, 20, now);
+        demux.assert_consistent(&config.limits);
+        assert_eq!(demux.slot_dropped(healthy), 0, "stalled={stalled}");
+        assert_eq!(demux.slot_dropped(stalled), 1, "stalled={stalled}");
+        assert_matches!(poll(&mut demux, healthy), Poll::Ready(Ok(Some(payload))) if payload.len() == 10);
+        // The stalled queue lost its oldest.
+        assert_matches!(poll(&mut demux, stalled), Poll::Ready(Ok(Some(payload))) if payload.len() == 12);
+    }
+}

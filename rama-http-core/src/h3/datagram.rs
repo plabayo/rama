@@ -17,7 +17,7 @@ use rama_quic::{Connection as QuicConnection, SendDatagramError, StreamAbortHand
 use rama_quic_proto::{Dir, Side, StreamId, VarInt};
 use rama_utils::octets::kib;
 use std::{
-    collections::VecDeque,
+    collections::{BTreeSet, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -139,6 +139,19 @@ fn charge(payload: &Bytes) -> usize {
     payload.len().max(MIN_DATAGRAM_CHARGE)
 }
 
+/// Keep the non-empty queues' index in step with a queue's charges going from `before` to
+/// `after`.
+fn reindex(index: &mut BTreeSet<(usize, u64)>, stream: u64, before: usize, after: usize) {
+    if before != after {
+        if before != 0 {
+            index.remove(&(before, stream));
+        }
+        if after != 0 {
+            index.insert((after, stream));
+        }
+    }
+}
+
 /// A received payload shares its packet's allocation, up to the endpoint's receive limit
 /// (64 KiB): a buffered copy keeps only its own bytes alive, so its charge bounds them.
 fn compact(payload: &Bytes) -> Bytes {
@@ -195,6 +208,9 @@ impl<A: AbortRequest> Action<A> {
 /// Connection-wide datagram routing state, guarded by one short-held lock.
 pub(crate) struct Demux<A = StreamAbortHandle> {
     slots: HashMap<u64, Slot<A>>,
+    // The non-empty queues by their charges, so over budget the largest is found at once,
+    // whatever the number of registered requests.
+    by_bytes: BTreeSet<(usize, u64)>,
     pending: VecDeque<Pending>,
     // Charges of `pending`, part of `buffered`.
     held: usize,
@@ -209,6 +225,7 @@ impl<A> Default for Demux<A> {
     fn default() -> Self {
         Self {
             slots: HashMap::default(),
+            by_bytes: BTreeSet::new(),
             pending: VecDeque::new(),
             held: 0,
             buffered: 0,
@@ -270,7 +287,7 @@ impl<A: AbortRequest> Demux<A> {
     ) -> Action<A> {
         self.expire(now);
         self.watermark = self.watermark.max(stream.saturating_add(4));
-        self.slots.insert(
+        let replaced = self.slots.insert(
             stream,
             Slot {
                 semantics,
@@ -284,6 +301,10 @@ impl<A: AbortRequest> Demux<A> {
                 violated,
             },
         );
+        if let Some(replaced) = replaced {
+            self.buffered -= replaced.bytes;
+            reindex(&mut self.by_bytes, stream, replaced.bytes, 0);
+        }
         let mut action = Action::default();
         let mut held = Vec::new();
         let mut expired = 0;
@@ -337,7 +358,9 @@ impl<A: AbortRequest> Demux<A> {
         slot.semantics = Semantics::None;
         self.drops.no_semantics += slot.queue.len() as u64;
         slot.queue.clear();
-        self.buffered -= std::mem::take(&mut slot.bytes);
+        let released = std::mem::take(&mut slot.bytes);
+        self.buffered -= released;
+        reindex(&mut self.by_bytes, stream, released, 0);
         if !slot.observed {
             return Action::default();
         }
@@ -357,13 +380,16 @@ impl<A: AbortRequest> Demux<A> {
         slot.semantics = Semantics::None;
         self.drops.no_semantics += slot.queue.len() as u64;
         slot.queue.clear();
-        self.buffered -= std::mem::take(&mut slot.bytes);
+        let released = std::mem::take(&mut slot.bytes);
+        self.buffered -= released;
+        reindex(&mut self.by_bytes, stream, released, 0);
     }
 
     /// Release a stream and anything still buffered for it.
     pub(crate) fn unregister(&mut self, stream: u64) -> Option<Waker> {
         let slot = self.slots.remove(&stream)?;
         self.buffered -= slot.bytes;
+        reindex(&mut self.by_bytes, stream, slot.bytes, 0);
         slot.waker
     }
 
@@ -380,7 +406,9 @@ impl<A: AbortRequest> Demux<A> {
         if local {
             self.drops.receive_closed += slot.queue.len() as u64;
             slot.queue.clear();
-            self.buffered -= std::mem::take(&mut slot.bytes);
+            let released = std::mem::take(&mut slot.bytes);
+            self.buffered -= released;
+            reindex(&mut self.by_bytes, stream, released, 0);
         }
         slot.waker.take()
     }
@@ -394,7 +422,9 @@ impl<A: AbortRequest> Demux<A> {
             return Poll::Ready(Ok(None));
         };
         if let Some(payload) = slot.queue.pop_front() {
+            let before = slot.bytes;
             slot.bytes -= charge(&payload);
+            reindex(&mut self.by_bytes, stream, before, slot.bytes);
             self.buffered -= charge(&payload);
             return Poll::Ready(Ok(Some(payload)));
         }
@@ -484,6 +514,13 @@ impl<A: AbortRequest> Demux<A> {
         assert_eq!(self.buffered, queued + pending);
         assert!(self.buffered <= limits.max_buffered_bytes);
         assert!(self.pending.len() <= limits.pending_len);
+        let indexed: BTreeSet<_> = self
+            .slots
+            .iter()
+            .filter(|(_, slot)| slot.bytes > 0)
+            .map(|(stream, slot)| (slot.bytes, *stream))
+            .collect();
+        assert_eq!(self.by_bytes, indexed);
         for slot in self.slots.values() {
             assert!(slot.queue.len() <= limits.queue_len);
             assert_eq!(slot.bytes, slot.queue.iter().map(charge).sum::<usize>());
@@ -526,36 +563,32 @@ impl<A: AbortRequest> Demux<A> {
         if slot.queue.len() >= limits.queue_len
             && let Some(oldest) = slot.queue.pop_front()
         {
+            let before = slot.bytes;
             slot.bytes -= charge(&oldest);
+            reindex(&mut self.by_bytes, stream, before, slot.bytes);
             self.buffered -= charge(&oldest);
             slot.dropped += 1;
             self.drops.queue_full += 1;
         }
-        while self.buffered + cost > limits.max_buffered_bytes {
-            let Some(largest) = self
-                .slots
-                .values_mut()
-                .filter(|slot| slot.bytes > 0)
-                .max_by_key(|slot| slot.bytes)
-            else {
-                if let Some(slot) = self.slots.get_mut(&stream) {
-                    slot.dropped += 1;
-                }
-                self.drops.over_budget += 1;
-                return Action::default();
-            };
-            if let Some(oldest) = largest.queue.pop_front() {
-                largest.bytes -= charge(&oldest);
-                self.buffered -= charge(&oldest);
-                largest.dropped += 1;
-                self.drops.over_budget += 1;
-            }
+        // The held check above leaves a queued datagram to evict for as long as this runs.
+        while self.buffered + cost > limits.max_buffered_bytes
+            && let Some((before, largest)) = self.by_bytes.last().copied()
+            && let Some(slot) = self.slots.get_mut(&largest)
+            && let Some(oldest) = slot.queue.pop_front()
+        {
+            slot.bytes -= charge(&oldest);
+            reindex(&mut self.by_bytes, largest, before, slot.bytes);
+            self.buffered -= charge(&oldest);
+            slot.dropped += 1;
+            self.drops.over_budget += 1;
         }
         let Some(slot) = self.slots.get_mut(&stream) else {
             return Action::default();
         };
         self.buffered += cost;
+        let before = slot.bytes;
         slot.bytes += cost;
+        reindex(&mut self.by_bytes, stream, before, slot.bytes);
         slot.queue.push_back(compact(payload));
         Action {
             wake: slot.waker.take(),
