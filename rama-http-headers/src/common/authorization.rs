@@ -87,8 +87,10 @@ impl<C: Credentials> TypedHeader for Authorization<C> {
 
 impl<C: Credentials> HeaderDecode for Authorization<C> {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
-        values
-            .next()
+        // Credentials are one value (RFC 9110 §11.6.2, §11.7.2): a second line, which an upstream
+        // could read instead, makes the field invalid.
+        let val = crate::util::single_value(values)?;
+        Some(&val)
             .and_then(|val| {
                 // Scheme-less credential types (e.g. `RawToken`) declare an
                 // empty `SCHEME` and treat the whole header value as the
@@ -353,6 +355,23 @@ mod tests {
     use super::{Authorization, Basic, Bearer, Credentials, HeaderValue};
     use crate::common::{test_decode, test_encode};
     use crate::{HeaderDecode, HeaderMapExt};
+
+    /// Credentials are one value: a second line, equal or not, makes either header invalid.
+    #[test]
+    fn credentials_appear_once() {
+        let basic = "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==";
+        assert!(test_decode::<Authorization<Basic>>(&[basic]).is_some());
+        for lines in [&[basic, basic][..], &[basic, "Basic b3RoZXI6dXNlcg=="]] {
+            assert!(
+                test_decode::<Authorization<Basic>>(lines).is_none(),
+                "{lines:?}"
+            );
+            assert!(
+                test_decode::<crate::ProxyAuthorization<Basic>>(lines).is_none(),
+                "{lines:?}"
+            );
+        }
+    }
 
     fn decode_bytes<C: Credentials>(value: &str) -> Option<Authorization<C>> {
         let value = HeaderValue::from_bytes(value.as_bytes()).unwrap();

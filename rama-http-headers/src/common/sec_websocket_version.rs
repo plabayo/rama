@@ -19,10 +19,13 @@ impl TypedHeader for SecWebSocketVersion {
 
 impl HeaderDecode for SecWebSocketVersion {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
-        values
-            .next()
-            .and_then(|value| if value == "13" { Some(Self::V13) } else { None })
-            .ok_or_else(Error::invalid)
+        // RFC 6455 §11.3.5: a request carries it once.
+        let value = crate::util::single_value(values)?;
+        if value == "13" {
+            Ok(Self::V13)
+        } else {
+            Err(Error::invalid())
+        }
     }
 }
 
@@ -38,6 +41,17 @@ impl HeaderEncode for SecWebSocketVersion {
 mod tests {
     use super::SecWebSocketVersion;
     use crate::common::{test_decode, test_encode};
+
+    /// RFC 6455 §11.3.5: a request carries its version once.
+    #[test]
+    fn version_appears_once() {
+        assert_eq!(
+            test_decode::<SecWebSocketVersion>(&["13"]),
+            Some(SecWebSocketVersion::V13)
+        );
+        assert_eq!(test_decode::<SecWebSocketVersion>(&["13", "8"]), None);
+        assert_eq!(test_decode::<SecWebSocketVersion>(&["13", "13"]), None);
+    }
 
     #[test]
     fn decode_v13() {
