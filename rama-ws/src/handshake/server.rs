@@ -467,8 +467,10 @@ where
                                         client_no_context_takeover: request_pmd
                                             .client_no_context_takeover
                                             && allowed_pmd.client_no_context_takeover,
+                                        // a requested one must be honoured (RFC 7692 §7.1.1.1)
                                         server_no_context_takeover: allowed_pmd
-                                            .server_no_context_takeover,
+                                            .server_no_context_takeover
+                                            || request_pmd.server_no_context_takeover,
                                         ..Default::default()
                                     };
 
@@ -1268,6 +1270,62 @@ mod tests {
             .headers()
             .get("sec-websocket-extensions")
             .map(|value| value.to_str().unwrap().to_owned())
+    }
+
+    #[cfg(feature = "compression")]
+    async fn negotiated_extensions_on(
+        acceptor: &WebSocketAcceptor,
+        version: Version,
+        offer: &str,
+    ) -> Option<String> {
+        let request = if version == Version::HTTP_11 {
+            Request::builder()
+                .uri("/")
+                .method(Method::GET)
+                .header("Connection", "upgrade")
+                .header("Upgrade", "websocket")
+                .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        } else {
+            Request::builder()
+                .uri("https://example.test/")
+                .method(Method::CONNECT)
+                .extension(Protocol::from_static("websocket"))
+        }
+        .version(version)
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Extensions", offer)
+        .body(Body::empty())
+        .unwrap();
+        let UpgradeResponse { response, .. } = acceptor.serve(request).await.unwrap();
+        response
+            .headers()
+            .get("sec-websocket-extensions")
+            .map(|value| value.to_str().unwrap().to_owned())
+    }
+
+    /// RFC 7692 §7.1.1.1: a server accepting an offer that asks it to forgo context takeover
+    /// says so in its response (and then compresses that way), on every HTTP version.
+    #[cfg(feature = "compression")]
+    #[tokio::test]
+    async fn a_requested_server_no_context_takeover_is_honoured() {
+        let acceptor = WebSocketAcceptor::new().with_per_message_deflate();
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            for (offer, accepted) in [
+                (
+                    "permessage-deflate; server_no_context_takeover",
+                    "permessage-deflate; server_no_context_takeover",
+                ),
+                ("permessage-deflate", "permessage-deflate"),
+            ] {
+                assert_eq!(
+                    negotiated_extensions_on(&acceptor, version, offer)
+                        .await
+                        .as_deref(),
+                    Some(accepted),
+                    "{version:?} {offer}"
+                );
+            }
+        }
     }
 
     #[cfg(feature = "compression")]

@@ -307,6 +307,46 @@ pub struct AcceptedWebSocketData {
     pub extension: Option<Extension>,
 }
 
+/// The configuration a permessage-deflate response accepts for `offer`, if it answers it
+/// (RFC 7692 §7). A server constraint the offer makes must be echoed, `server_max_window_bits`
+/// at most the offered value; `client_max_window_bits` may only answer an offer naming it,
+/// whose value is a hint; the server may impose no context takeover on the client.
+fn accept_pmd(
+    offer: &PerMessageDeflateConfig,
+    response: &PerMessageDeflateConfig,
+) -> Option<PerMessageDeflateConfig> {
+    let client_max_window_bits = match response.client_max_window_bits {
+        None => None,
+        // zlib cannot compress within an 8-bit window
+        Some(bits) if offer.client_max_window_bits.is_some() && (9..=15).contains(&bits) => {
+            Some(bits)
+        }
+        Some(_) => return None,
+    };
+    let offered_server_bits = offer.server_max_window_bits.filter(|bits| *bits != 0);
+    let server_max_window_bits = match (response.server_max_window_bits, offered_server_bits) {
+        (None, None) => None,
+        (Some(bits), limit)
+            if (8..=15).contains(&bits) && limit.is_none_or(|limit| bits <= limit) =>
+        {
+            Some(bits)
+        }
+        // an offered limit unanswered, out of range or exceeded
+        _ => return None,
+    };
+    if offer.server_no_context_takeover && !response.server_no_context_takeover {
+        return None;
+    }
+    Some(PerMessageDeflateConfig {
+        identifier: response.identifier.clone(),
+        server_no_context_takeover: response.server_no_context_takeover,
+        client_no_context_takeover: response.client_no_context_takeover
+            || offer.client_no_context_takeover,
+        server_max_window_bits,
+        client_max_window_bits,
+    })
+}
+
 /// The extension and subprotocol a server response selects: at most one of each
 /// (RFC 6455 §4.2.2, RFC 7692 §5), and a value that does not parse fails.
 fn server_selection(
@@ -441,66 +481,17 @@ pub fn validate_http_server_response<Body>(
             );
         }
         (Some(Extension::PerMessageDeflate(server_cfg)), Some(client_extensions)) => {
-            accepted_extension = client_extensions
-                .0.iter()
-                .find_map(|client_ext| {
-                    if let Extension::PerMessageDeflate(client_cfg) = client_ext {
-                        return Some(Ok(Extension::PerMessageDeflate(PerMessageDeflateConfig {
-                            client_max_window_bits: match (
-                                server_cfg.client_max_window_bits,
-                                client_cfg.client_max_window_bits,
-                            ) {
-                                (None, None | Some(_)) => None,
-                                (Some(srv), maybe_offered) => {
-                                    // zlib cannot compress within an 8-bit window
-                                    if !(9..=15).contains(&srv) || maybe_offered.map(|offered| offered != 0 && srv > offered).unwrap_or_default() {
-                                        tracing::debug!("server offered invalid client_max_window_bits (pmd)... ext mismatch!");
-                                        return Some(Err(
-                                            ResponseValidateError::ExtensionMismatch(Some(
-                                                Extension::PerMessageDeflate(server_cfg.clone()),
-                                            )),
-                                        ));
-                                    }
-                                    Some(srv)
-                                }
-                            },
-                            server_max_window_bits: match (
-                                server_cfg.server_max_window_bits,
-                                client_cfg.server_max_window_bits,
-                            ) {
-                                (None, None | Some(_)) => None,
-                                (Some(their_bits), maybe_our_bits) => {
-                                    if !(8..=15).contains(&their_bits)
-                                        || maybe_our_bits
-                                            .map(|our_bits| our_bits != 0 && their_bits > our_bits)
-                                            .unwrap_or_default()
-                                    {
-                                        tracing::debug!("server offered invalid server_max_window_bits (pmd)... ext mismatch!");
-                                        return Some(Err(
-                                            ResponseValidateError::ExtensionMismatch(Some(
-                                                Extension::PerMessageDeflate(server_cfg.clone()),
-                                            )),
-                                        ));
-                                    }
-                                    Some(their_bits)
-                                }
-                            },
-                            server_no_context_takeover: server_cfg.server_no_context_takeover,
-                            client_no_context_takeover: client_cfg.client_no_context_takeover,
-                            identifier: server_cfg.identifier.clone(),
-                        })));
-                    }
-                    None
-                })
-                .transpose()?;
-            if accepted_extension.is_none() {
-                tracing::debug!(
-                    "server selected permessage-deflate, which client (we) did not offer"
-                );
+            let accepted = client_extensions.0.iter().find_map(|offer| match offer {
+                Extension::PerMessageDeflate(offer) => accept_pmd(offer, &server_cfg),
+                _ => None,
+            });
+            let Some(accepted) = accepted else {
+                tracing::debug!("server's permessage-deflate answers none of our offers");
                 return Err(ResponseValidateError::ExtensionMismatch(Some(
                     Extension::PerMessageDeflate(server_cfg),
                 )));
-            }
+            };
+            accepted_extension = Some(Extension::PerMessageDeflate(accepted));
         }
         (Some(server_ext), _) => {
             tracing::debug!("server offered ext, but client (we) not!");
@@ -2177,14 +2168,134 @@ mod tests {
     }
 
     #[test]
-    fn explicit_client_max_window_bits_rejects_larger_server_choice() {
-        assert_matches!(
+    fn explicit_client_max_window_bits_is_only_a_hint() {
+        // RFC 7692 §7.1.2.2: the offered value hints what the client will use; it does not cap
+        // the server's answer
+        assert_eq!(
+            Some(15),
             validate_pmd(
                 "permessage-deflate; client_max_window_bits=15",
                 "permessage-deflate; client_max_window_bits=10",
-            ),
-            Err(ResponseValidateError::ExtensionMismatch(_)),
+            )
+            .unwrap(),
         );
+    }
+
+    /// RFC 7692 §7, on every HTTP version: a response answers one compatible offer, whichever
+    /// it is; server constraints of that offer are echoed, client window bits only answer an
+    /// offer naming them, and a server may impose more than asked.
+    #[test]
+    fn a_pmd_response_answers_one_compatible_offer() {
+        const PMD: &str = "permessage-deflate";
+        // (offers, response, accepted (server bits, client bits, server nct, client nct))
+        type Accepted = Option<(Option<u8>, Option<u8>, bool, bool)>;
+        let cases: &[(&str, &str, Accepted)] = &[
+            (PMD, PMD, Some((None, None, false, false))),
+            (PMD, "permessage-deflate; client_max_window_bits=15", None),
+            (
+                "permessage-deflate; client_max_window_bits",
+                "permessage-deflate; client_max_window_bits=15",
+                Some((None, Some(15), false, false)),
+            ),
+            (
+                "permessage-deflate; client_max_window_bits=10",
+                "permessage-deflate; client_max_window_bits=15",
+                Some((None, Some(15), false, false)),
+            ),
+            (
+                "permessage-deflate; client_max_window_bits",
+                "permessage-deflate; client_max_window_bits=8",
+                None,
+            ),
+            ("permessage-deflate; server_max_window_bits=10", PMD, None),
+            (
+                "permessage-deflate; server_max_window_bits=10",
+                "permessage-deflate; server_max_window_bits=12",
+                None,
+            ),
+            (
+                "permessage-deflate; server_max_window_bits=10",
+                "permessage-deflate; server_max_window_bits=9",
+                Some((Some(9), None, false, false)),
+            ),
+            (
+                "permessage-deflate; server_max_window_bits=10, permessage-deflate; server_max_window_bits=15",
+                "permessage-deflate; server_max_window_bits=15",
+                Some((Some(15), None, false, false)),
+            ),
+            ("permessage-deflate; server_no_context_takeover", PMD, None),
+            (
+                "permessage-deflate; server_no_context_takeover",
+                "permessage-deflate; server_no_context_takeover",
+                Some((None, None, true, false)),
+            ),
+            (
+                PMD,
+                "permessage-deflate; server_no_context_takeover",
+                Some((None, None, true, false)),
+            ),
+            (
+                PMD,
+                "permessage-deflate; server_max_window_bits=12",
+                Some((Some(12), None, false, false)),
+            ),
+            (
+                PMD,
+                "permessage-deflate; client_no_context_takeover",
+                Some((None, None, false, true)),
+            ),
+            (
+                "permessage-deflate; client_no_context_takeover",
+                PMD,
+                Some((None, None, false, true)),
+            ),
+        ];
+        let key = headers::SecWebSocketKey::random();
+        let mut scratch = HeaderMap::new();
+        scratch.typed_insert(headers::SecWebSocketAccept::try_from(key.clone()).unwrap());
+        let accept = scratch[header::SEC_WEBSOCKET_ACCEPT].clone();
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            for (offers, response_raw, expected) in cases {
+                let mut response = Response::builder().version(version).body(()).unwrap();
+                if version == Version::HTTP_11 {
+                    *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+                    let headers = response.headers_mut();
+                    headers.insert(
+                        header::UPGRADE,
+                        header::HeaderValue::from_static("websocket"),
+                    );
+                    headers.insert(
+                        header::CONNECTION,
+                        header::HeaderValue::from_static("Upgrade"),
+                    );
+                    headers.insert(header::SEC_WEBSOCKET_ACCEPT, accept.clone());
+                }
+                response.headers_mut().insert(
+                    header::SEC_WEBSOCKET_EXTENSIONS,
+                    header::HeaderValue::from_static(response_raw),
+                );
+                let result = validate_http_server_response(
+                    &response,
+                    (version == Version::HTTP_11).then(|| key.clone()),
+                    None,
+                    offered_pmd(offers),
+                );
+                let accepted = match result {
+                    Ok(AcceptedWebSocketData {
+                        extension: Some(Extension::PerMessageDeflate(cfg)),
+                        ..
+                    }) => Some((
+                        cfg.server_max_window_bits,
+                        cfg.client_max_window_bits,
+                        cfg.server_no_context_takeover,
+                        cfg.client_no_context_takeover,
+                    )),
+                    Err(ResponseValidateError::ExtensionMismatch(_)) => None,
+                    other => panic!("{version:?} {offers} / {response_raw}: {other:?}"),
+                };
+                assert_eq!(&accepted, expected, "{version:?} {offers} / {response_raw}");
+            }
+        }
     }
 
     #[test]
