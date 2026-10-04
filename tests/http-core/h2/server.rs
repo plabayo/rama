@@ -1271,6 +1271,58 @@ async fn too_many_continuation_frames_sends_goaway() {
     join(client, srv).await;
 }
 
+/// Every Content-Length line counts (RFC 9110 §8.6), as on HTTP/1 and HTTP/3: lines that
+/// disagree reset the stream before it reaches the service; equal ones hold the body to them.
+#[tokio::test]
+async fn every_content_length_line_counts() {
+    h2_support::trace_init!();
+    for (lengths, accepted) in [(["5", "100"], false), (["5", "5"], true)] {
+        let (io, mut client) = mock::new();
+        let client = async move {
+            let settings = client.assert_server_handshake().await;
+            assert_default_settings!(settings);
+            client
+                .send_frame(
+                    frames::headers(1)
+                        .request("POST", "https://a.b")
+                        .field("content-length", lengths[0])
+                        .field("content-length", lengths[1]),
+                )
+                .await;
+            client
+                .send_frame(frames::data(1, &b"hello"[..]).eos())
+                .await;
+            if accepted {
+                client
+                    .recv_frame(frames::headers(1).response(200).eos())
+                    .await;
+            } else {
+                client.recv_frame(frames::reset(1).protocol_error()).await;
+            }
+            idle_ms(10).await;
+        };
+        let srv = async move {
+            let mut srv = server::Builder::new()
+                .handshake::<_, Bytes>(io)
+                .await
+                .expect("handshake");
+            if accepted {
+                let (req, mut stream) = srv.next().await.unwrap().unwrap();
+                let mut body = req.into_body();
+                assert_eq!(body.data().await.unwrap().unwrap(), &b"hello"[..]);
+                assert!(body.data().await.is_none());
+                stream
+                    .send_response(rama::http::Response::new(()), true)
+                    .unwrap();
+                assert!(srv.next().await.is_none());
+            } else {
+                assert!(srv.next().await.is_none_or(|result| result.is_err()));
+            }
+        };
+        join(client, srv).await;
+    }
+}
+
 #[tokio::test]
 #[ignore]
 async fn pending_accept_recv_illegal_content_length_data() {

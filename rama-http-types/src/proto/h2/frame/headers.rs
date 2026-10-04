@@ -473,7 +473,8 @@ impl PushPromise {
 
         // A promised request "that indicates the presence of a request body
         // MUST reset the promised stream with a stream error"
-        if let Some(content_length) = req.headers().get(header::CONTENT_LENGTH) {
+        // Every line counts.
+        for content_length in req.headers().get_all(header::CONTENT_LENGTH) {
             let parsed_length = parse_u64(content_length.as_bytes());
             if parsed_length != Ok(0) {
                 return Err(PushPromiseHeaderError::InvalidContentLength(parsed_length));
@@ -1217,6 +1218,29 @@ fn decoded_header_size(name: usize, value: usize) -> usize {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn every_promised_content_length_line_counts() {
+        for (lengths, valid) in [
+            (&[][..], true),
+            (&["0"][..], true),
+            (&["0", "0"][..], true),
+            (&["5"][..], false),
+            (&["0", "5"][..], false),
+            (&["5", "0"][..], false),
+        ] {
+            let mut req = Request::new(());
+            for length in lengths {
+                req.headers_mut()
+                    .append(header::CONTENT_LENGTH, HeaderValue::from_static(length));
+            }
+            assert_eq!(
+                PushPromise::validate_request(&req).is_ok(),
+                valid,
+                "{lengths:?}"
+            );
+        }
+    }
 
     #[test]
     fn authority_userinfo_is_kept_outside_the_http_family_and_never_indexed() {
