@@ -1833,7 +1833,6 @@ mod tests {
         assert_eq!(leases_dropped.load(Ordering::Acquire), 3);
     }
 
-    #[cfg(feature = "dial9")]
     /// RFC 6455 §4.1 and §11.3.3, over HTTP/1.0 and HTTP/1.1: every `Upgrade` line counts and
     /// `Sec-WebSocket-Accept` appears once, while `Connection` stays a list over its lines.
     #[test]
@@ -1876,6 +1875,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "dial9")]
     #[test]
     fn blocking_handshake_runs_inside_dial9_session() {
         let temp_dir = rama_utils::fs::tempdir().unwrap();
