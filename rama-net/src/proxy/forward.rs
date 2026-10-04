@@ -463,9 +463,9 @@ where
         (left_err, BridgeCloseReason::WriteErrorLeft),
         (right_err, BridgeCloseReason::WriteErrorRight),
     ] {
-        if let Some(err) = err.filter(reflects_as_abort) {
+        if let Some(err) = err.filter(AbortIo::reflects) {
             aborts.trigger();
-            if !fatal_error.as_ref().is_some_and(reflects_as_abort) {
+            if !fatal_error.as_ref().is_some_and(AbortIo::reflects) {
                 reason = side_reason;
                 fatal_error = Some(err);
             }
@@ -705,13 +705,13 @@ where
 
     // A failure resets both sides (RFC 9113 §8.5, RFC 9114 §4.4); else one bounded orderly
     // shutdown, so a TLS writer waiting on close_notify cannot wedge this future.
-    if copy_err.as_ref().is_some_and(reflects_as_abort) {
+    if copy_err.as_ref().is_some_and(AbortIo::reflects) {
         aborts.trigger();
     }
     if !aborts.aborted(writer_side)
         && let Ok(Err(err)) = tokio::time::timeout(shutdown_grace, writer.shutdown()).await
-        && !copy_err.as_ref().is_some_and(reflects_as_abort)
-        && reflects_as_abort(&err)
+        && !copy_err.as_ref().is_some_and(AbortIo::reflects)
+        && AbortIo::reflects(&err)
     {
         // The half-close itself found the peer reset, also after an orderly-looking end: fail
         // as a write would, ending the relay.
@@ -781,15 +781,6 @@ impl Aborts {
 enum Side {
     Left,
     Right,
-}
-
-/// A side that failed is reflected as a reset. A peer that stopped reading (`BrokenPipe`)
-/// or closed without TLS close_notify (`UnexpectedEof`, common in the wild) ended in order.
-fn reflects_as_abort(err: &std::io::Error) -> bool {
-    !matches!(
-        err.kind(),
-        std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::UnexpectedEof
-    )
 }
 
 fn classify_copy_error(err: &std::io::Error, direction: CopyDirection) -> BridgeCloseReason {

@@ -32,6 +32,17 @@ impl AbortIo {
     pub fn abort(&self) {
         (self.0)();
     }
+
+    /// Whether a relay reflects `err` of one side as a reset of both. A peer that
+    /// stopped reading (`BrokenPipe`) or closed without TLS close_notify
+    /// (`UnexpectedEof`, common in the wild) ended in order.
+    #[must_use]
+    pub fn reflects(err: &std::io::Error) -> bool {
+        !matches!(
+            err.kind(),
+            std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::UnexpectedEof
+        )
+    }
 }
 
 impl fmt::Debug for AbortIo {
