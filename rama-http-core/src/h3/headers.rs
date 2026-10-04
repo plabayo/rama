@@ -1075,16 +1075,41 @@ mod tests {
 
     /// The `:authority` actually sent, or `None` when encoding refuses the request.
     fn wire_authority(uri: &str, host: Option<&str>) -> Option<Bytes> {
-        let mut builder = Request::builder().uri(uri);
-        if let Some(host) = host {
-            builder = builder.header(header::HOST, host);
-        }
-        let encoded = encode_request(&shared(), 0, &builder.body(()).unwrap()).ok()?;
+        let encoded = encode_request(&shared(), 0, &authority_request(uri, host)).ok()?;
         let fields = decode(encoded);
         fields
             .into_iter()
             .find(|field| field.name == ":authority")
             .map(|field| field.value)
+    }
+
+    fn h2_wire_authority(uri: &str, host: Option<&str>) -> Option<Bytes> {
+        let (frame, _) = crate::h2::client::Peer::convert_send_message(
+            StreamId::from(1),
+            authority_request(uri, host),
+            None,
+            true,
+            None,
+            None,
+        )
+        .ok()?;
+        frame
+            .pseudo()
+            .authority
+            .as_deref()
+            .map(|authority| Bytes::copy_from_slice(authority.as_bytes()))
+    }
+
+    /// A GET for `uri`, with `host` taken as raw bytes so raw UTF-8 can be sent.
+    fn authority_request(uri: &str, host: Option<&str>) -> Request<()> {
+        let mut request = Request::builder().uri(uri).body(()).unwrap();
+        if let Some(host) = host {
+            request.headers_mut().insert(
+                header::HOST,
+                HeaderValue::from_bytes(host.as_bytes()).unwrap(),
+            );
+        }
+        request
     }
 
     /// Host is compared with the projected wire authority, not the raw URI.
@@ -1133,11 +1158,29 @@ mod tests {
                 Some("user@example.com"),
                 Some("example.com"),
             ),
+            // Both sides are read with the received grammar: a raw UTF-8 authority without an
+            // IDNA form compares like any other.
+            (
+                "https://\u{fffd}.example/",
+                Some("other.example"),
+                Some("other.example"),
+            ),
+            (
+                "https://\u{fffd}.example/",
+                Some("\u{fffd}.example"),
+                Some("\u{fffd}.example"),
+            ),
         ] {
+            let expected = expected.map(|value: &str| Bytes::copy_from_slice(value.as_bytes()));
             assert_eq!(
                 wire_authority(uri, host),
-                expected.map(|value: &str| Bytes::copy_from_slice(value.as_bytes())),
-                "{uri} with Host {host:?}"
+                expected,
+                "h3 {uri} with Host {host:?}"
+            );
+            assert_eq!(
+                h2_wire_authority(uri, host),
+                expected,
+                "h2 {uri} with Host {host:?}"
             );
         }
     }

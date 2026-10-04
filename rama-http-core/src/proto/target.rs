@@ -199,6 +199,23 @@ fn host_value(authority: AuthorityRef<'_>, sensitive: bool) -> Option<HeaderValu
 mod tests {
     use super::*;
 
+    /// A `Host` that is the only authority is read with the received grammar too: raw UTF-8
+    /// with userinfo loses the userinfo, as an ASCII one does.
+    #[test]
+    fn raw_utf8_hosts_without_a_uri_authority_lose_their_userinfo() {
+        let mut uri = Uri::parse("/").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::HOST,
+            HeaderValue::from_bytes("user@\u{fffd}.example".as_bytes()).unwrap(),
+        );
+        normalize_received(&mut uri, &mut headers, false);
+        assert_eq!(
+            headers[header::HOST].as_bytes(),
+            "\u{fffd}.example".as_bytes()
+        );
+    }
+
     fn normalized(uri: &str, hosts: &[&str]) -> (String, Vec<String>) {
         let mut uri = Uri::parse(uri).unwrap();
         let mut headers = HeaderMap::new();
