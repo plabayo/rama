@@ -275,7 +275,7 @@ fn proxy_source(input: &impl ExtensionsRef, conn: &impl ExtensionsRef) -> Option
                 .forwarded_for()?
                 .socket_address()
         })
-        .or_else(|| input.get_ref::<SocketInfo>().map(SocketInfo::peer_addr))
+        .or_else(|| SocketInfo::ingress(input).map(SocketInfo::peer_addr))
 }
 
 impl<S: Clone, P, V: Clone> Clone for HaProxyService<S, P, V> {
@@ -513,7 +513,9 @@ pub mod protocol {
 mod tests {
     use super::*;
     use rama_core::{
-        Layer, ServiceInput, extensions::Extensions, extensions::ExtensionsRef, service::service_fn,
+        Layer, ServiceInput,
+        extensions::{Egress, Extensions, ExtensionsRef, Ingress},
+        service::service_fn,
     };
     use rama_net::{
         address::SocketAddress,
@@ -810,6 +812,31 @@ mod tests {
             let result = svc.serve(input).await;
             assert_eq!(result.is_ok(), expected.is_some(), "{input_peer:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_fallback_source_is_the_ingress_peer() {
+        let upstream: SocketAddress = "192.168.1.101:443".parse().unwrap();
+        let svc = HaProxyLayer::tcp()
+            .v1()
+            .layer(service_fn(move |input: ServiceInput<()>| {
+                let conn = SocketConnection {
+                    socket: upstream,
+                    conn: Builder::new()
+                        .write(b"PROXY TCP4 127.0.1.2 192.168.1.101 54321 443\r\n")
+                        .build(),
+                    extensions: Extensions::new(),
+                };
+                async move { Ok::<_, Infallible>(EstablishedClientConnection { input, conn }) }
+            }));
+        let input = ServiceInput::new(());
+        let ingress = Extensions::new();
+        ingress.insert(SocketInfo::new(None, "127.0.1.2:54321".parse().unwrap()));
+        input.extensions().insert(Ingress(ingress));
+        let egress = Extensions::new();
+        egress.insert(SocketInfo::new(None, "10.9.9.9:1".parse().unwrap()));
+        input.extensions().insert(Egress(egress));
+        svc.serve(input).await.unwrap();
     }
 
     #[tokio::test]

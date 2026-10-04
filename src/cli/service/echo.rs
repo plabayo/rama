@@ -810,7 +810,7 @@ impl Service<Request> for EchoService {
             "socket_addr": parts.extensions.forwarded_client_socket_addr()
                 .map(|addr| addr.to_string())
                 .or_else(|| parts.extensions.forwarded_client_ip().map(|ip| ip.to_string()))
-                .or_else(|| parts.extensions.get_ref::<SocketInfo>().map(|v| v.peer_addr().to_string())),
+                .or_else(|| SocketInfo::ingress(&parts.extensions).map(|v| v.peer_addr().to_string())),
         }))
         .into_response())
     }

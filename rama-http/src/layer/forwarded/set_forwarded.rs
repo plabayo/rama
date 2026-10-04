@@ -318,11 +318,7 @@ where
 
         let mut forwarded_element = ForwardedElement::new_forwarded_by(self.by_node.clone());
 
-        if let Some(peer_addr) = req
-            .extensions()
-            .get_ref::<SocketInfo>()
-            .map(|socket| socket.peer_addr())
-        {
+        if let Some(peer_addr) = SocketInfo::ingress(req.extensions()).map(SocketInfo::peer_addr) {
             forwarded_element.set_forwarded_for(peer_addr);
         }
         let authority = req
@@ -362,7 +358,12 @@ mod tests {
         headers::forwarded::{TrueClientIp, XRealIp},
         service::web::response::IntoResponse,
     };
-    use rama_core::{Layer, error::BoxError, extensions::ExtensionsRef, service::service_fn};
+    use rama_core::{
+        Layer,
+        error::BoxError,
+        extensions::{Egress, Extensions, ExtensionsRef, Ingress},
+        service::service_fn,
+    };
     use std::{convert::Infallible, net::IpAddr};
 
     fn assert_is_service<T: Service<Request<()>>>(_: T) {}
@@ -433,6 +434,30 @@ mod tests {
         ));
         req.extensions()
             .insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
+        service.serve(req).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_forwarded_for_is_the_ingress_peer() {
+        async fn svc(request: Request<()>) -> Result<(), Infallible> {
+            assert_eq!(
+                request.headers().get("X-Forwarded-For").unwrap(),
+                "127.0.0.1"
+            );
+            Ok(())
+        }
+
+        let service = SetForwardedHeaderService::x_forwarded_for(service_fn(svc));
+        let req = Request::builder()
+            .uri("https://www.example.com")
+            .body(())
+            .unwrap();
+        let ingress = Extensions::new();
+        ingress.insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
+        req.extensions().insert(Ingress(ingress));
+        let egress = Extensions::new();
+        egress.insert(SocketInfo::new(None, "198.51.100.7:443".parse().unwrap()));
+        req.extensions().insert(Egress(egress));
         service.serve(req).await.unwrap();
     }
 

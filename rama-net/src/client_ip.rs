@@ -27,11 +27,7 @@ pub fn client_ip(ext: &impl ExtensionsRef) -> Option<IpAddr> {
     let forwarded = extensions.forwarded_client_ip();
     #[cfg(feature = "std")]
     {
-        forwarded.or_else(|| {
-            extensions
-                .get_ref::<SocketInfo>()
-                .map(|info| info.peer_addr().ip_addr)
-        })
+        forwarded.or_else(|| SocketInfo::ingress(extensions).map(|info| info.peer_addr().ip_addr))
     }
     #[cfg(not(feature = "std"))]
     {
@@ -57,6 +53,8 @@ mod tests {
     use super::*;
 
     use rama_core::extensions::Extensions;
+    #[cfg(feature = "std")]
+    use rama_core::extensions::{Egress, Ingress};
 
     #[cfg(feature = "std")]
     use crate::address::SocketAddress;
@@ -88,6 +86,19 @@ mod tests {
     fn falls_back_to_socket_info_peer() {
         let ext = Extensions::new();
         ext.insert(socket_info("203.0.113.5"));
+        assert_eq!(client_ip(&ext), Some("203.0.113.5".parse().unwrap()));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn the_socket_fallback_is_the_ingress_peer() {
+        let ext = Extensions::new();
+        let ingress = Extensions::new();
+        ingress.insert(socket_info("203.0.113.5"));
+        ext.insert(Ingress(ingress));
+        let egress = Extensions::new();
+        egress.insert(socket_info("198.51.100.7"));
+        ext.insert(Egress(egress));
         assert_eq!(client_ip(&ext), Some("203.0.113.5".parse().unwrap()));
     }
 
