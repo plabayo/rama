@@ -366,6 +366,37 @@ impl DemuxDriver {
         driver
     }
 
+    /// A demux of `registered` requests whose queues fill a byte budget of `budget` bytes in
+    /// small datagrams, spread over the first `filled` requests; the others stay registered
+    /// with empty queues, as retained but idle handles do.
+    #[must_use]
+    pub fn filled(registered: usize, filled: usize, budget: usize) -> Self {
+        let charge = super::datagram::MIN_DATAGRAM_CHARGE;
+        let mut driver = Self {
+            demux: Demux::default(),
+            config: DatagramConfig {
+                limits: super::datagram::DatagramLimits {
+                    queue_len: budget / charge + 1,
+                    pending_len: 1,
+                    max_buffered_bytes: budget,
+                },
+                violations: ViolationPolicy::default(),
+            },
+            now: Instant::now(),
+            registered: registered as u64,
+            next_stream: 0,
+        };
+        for _ in 0..registered {
+            driver.register_next();
+        }
+        let payload = Bytes::from_static(&[7]);
+        let filled = filled.clamp(1, registered.max(1)) as u64;
+        for index in 0..budget / charge {
+            driver.deliver((index as u64 % filled) * 4, &payload);
+        }
+        driver
+    }
+
     /// Deliver a datagram to request `index` without taking it out.
     pub fn deliver_to(&mut self, index: usize, payload: &Bytes) {
         let stream = (index as u64 % self.registered.max(1)) * 4;

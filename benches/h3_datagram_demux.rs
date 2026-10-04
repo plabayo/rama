@@ -58,3 +58,24 @@ fn deliver_over_budget_beside_held(bencher: divan::Bencher, held: usize) {
         driver.deliver_to(index, &payload);
     });
 }
+
+/// A datagram over the full budget when only one of many registered requests has a queue, as
+/// when idle handles stay registered: finding the largest queue skips the empty ones.
+#[divan::bench(args = [1, 256, 4096])]
+fn deliver_over_budget_beside_idle_registrations(bencher: divan::Bencher, registered: usize) {
+    let mut driver = DemuxDriver::filled(registered, 1, 64 * 1200);
+    let payload = Bytes::from_static(&[7; 64]);
+    bencher.bench_local(|| {
+        driver.deliver_to(0, &payload);
+    });
+}
+
+/// One datagram of 64 KiB over a full 256 KiB budget of small queued datagrams: one admission
+/// evicts dozens of them, oldest of the largest queue first.
+#[divan::bench(args = [1, 256, 4096])]
+fn one_large_datagram_evicts_many(bencher: divan::Bencher, registered: usize) {
+    let large = Bytes::from(vec![7; 64 * 1024]);
+    bencher
+        .with_inputs(|| DemuxDriver::filled(registered, registered, 256 * 1024))
+        .bench_local_refs(|driver| driver.deliver_to(0, &large));
+}
