@@ -438,8 +438,7 @@ pub(crate) fn encode_request<B>(
     {
         // RFC 9112 §3.2.4: an OPTIONS request without a path is for the whole server.
         target.extend_from_slice(b"*");
-    } else if !connect
-        && (request.uri().is_asterisk() || http_scheme || !request.uri().is_path_empty())
+    } else if !connect && !scheme.is_some_and(|scheme| ext::sends_empty_path(request.uri(), scheme))
     {
         request.uri().write_h2_path(&mut target);
     }
@@ -1484,6 +1483,128 @@ mod tests {
             ..Default::default()
         };
         crate::h2::server::test_util::receive(pseudo, HeaderMap::new()).unwrap_err();
+    }
+
+    /// HTTP/2 and HTTP/3 send an empty `:path` only for a non-http(s) wire scheme without path
+    /// and query; a query is always sent, after a `/`, and a ws/wss root is `/` as its
+    /// http/https `:scheme` requires. Each reads back to the same target on both versions.
+    #[test]
+    fn queries_and_websocket_roots_survive_encoding() {
+        for (method, protocol, uri, wire_scheme, wire_path) in [
+            ("GET", None, "custom://example.com", "custom", ""),
+            (
+                "GET",
+                None,
+                "custom://example.com?name=value",
+                "custom",
+                "/?name=value",
+            ),
+            ("OPTIONS", None, "custom://example.com", "custom", "*"),
+            (
+                "OPTIONS",
+                None,
+                "custom://example.com?name=value",
+                "custom",
+                "/?name=value",
+            ),
+            (
+                "CONNECT",
+                Some("x-custom"),
+                "custom://example.com",
+                "custom",
+                "",
+            ),
+            (
+                "CONNECT",
+                Some("x-custom"),
+                "custom://example.com?name=value",
+                "custom",
+                "/?name=value",
+            ),
+            (
+                "CONNECT",
+                Some("websocket"),
+                "ws://example.com",
+                "http",
+                "/",
+            ),
+            (
+                "CONNECT",
+                Some("websocket"),
+                "wss://example.com",
+                "https",
+                "/",
+            ),
+            (
+                "CONNECT",
+                Some("websocket"),
+                "wss://example.com?room=1",
+                "https",
+                "/?room=1",
+            ),
+            (
+                "CONNECT",
+                Some("websocket"),
+                "wss://example.com/chat",
+                "https",
+                "/chat",
+            ),
+        ] {
+            let case = format!("{method} {uri}");
+            let request = || {
+                let request = Request::builder().method(method).uri(uri).body(()).unwrap();
+                if let Some(protocol) = protocol {
+                    request
+                        .extensions()
+                        .insert(rama_http_types::proto::ext::Protocol::from_static(protocol));
+                }
+                request
+            };
+
+            let sent = decode(encode_request(&shared(), 0, &request()).unwrap());
+            let field = |name: &str| {
+                sent.iter()
+                    .find(|field| field.name == name)
+                    .map(|field| field.value.clone())
+            };
+            assert_eq!(
+                field(":path").as_deref(),
+                Some(wire_path.as_bytes()),
+                "h3 {case}"
+            );
+            assert_eq!(
+                field(":scheme").as_deref(),
+                Some(wire_scheme.as_bytes()),
+                "h3 {case}"
+            );
+            let h3 = request_head(sent, true).unwrap();
+
+            let (frame, _) = crate::h2::client::Peer::convert_send_message(
+                StreamId::from(1),
+                request(),
+                protocol.map(rama_http_types::proto::ext::Protocol::from_static),
+                true,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(frame.pseudo().path.as_deref(), Some(wire_path), "h2 {case}");
+            assert_eq!(
+                frame.pseudo().scheme.as_deref(),
+                Some(wire_scheme),
+                "h2 {case}"
+            );
+            let (pseudo, headers) = frame.into_parts();
+            let h2 = crate::h2::server::test_util::receive(pseudo, headers)
+                .unwrap_or_else(|error| panic!("h2 {case}: {error:?}"));
+
+            assert_eq!(h2.uri(), h3.uri(), "{case}");
+            assert_eq!(
+                h3.uri().query(),
+                request().uri().query(),
+                "the query reads back: {case}"
+            );
+        }
     }
 
     /// `OPTIONS *` reads alike on HTTP/1, HTTP/2 and HTTP/3: an asterisk URI, its scheme beside

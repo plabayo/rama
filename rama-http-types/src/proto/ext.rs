@@ -127,6 +127,15 @@ pub fn extended_connect_pseudo_scheme(scheme: &rama_net::Protocol) -> &rama_net:
     }
 }
 
+/// Whether an HTTP/2 or HTTP/3 request for `uri` sends an empty `:path`: only a target without
+/// path and query whose `:scheme` on the wire, `wire_scheme` (after
+/// [`extended_connect_pseudo_scheme`]), is not http(s), which turn a missing path into `/`
+/// (RFC 9113 §8.3.1, RFC 9114 §4.3.1). A query is always sent, after a `/`.
+#[must_use]
+pub fn sends_empty_path(uri: &rama_net::uri::Uri, wire_scheme: &rama_net::Protocol) -> bool {
+    !uri.is_asterisk() && uri.is_path_empty() && uri.query().is_none() && !wire_scheme.is_http()
+}
+
 rama_utils::macros::error::static_str_error! {
     #[doc = "`:protocol` pseudo-header value is not a non-empty HTTP token"]
     #[derive(Copy)]

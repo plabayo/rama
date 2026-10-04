@@ -698,11 +698,14 @@ impl Pseudo {
                 && uri.query().is_none()
             {
                 BytesStr::from_static("*")
-            } else if !uri.is_asterisk()
-                && uri.is_path_empty()
-                && uri.scheme().is_some_and(|scheme| !scheme.is_http())
-            {
-                // RFC 9113 §8.3.1: only http(s) turns a missing path into `/`.
+            } else if uri.scheme().is_some_and(|scheme| {
+                let wire_scheme = if protocol.is_some() {
+                    crate::proto::ext::extended_connect_pseudo_scheme(scheme)
+                } else {
+                    scheme
+                };
+                crate::proto::ext::sends_empty_path(uri, wire_scheme)
+            }) {
                 BytesStr::from_static("")
             } else {
                 path
