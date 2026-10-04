@@ -26,9 +26,26 @@ use super::SecWebSocketKey;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SecWebSocketAccept(HeaderValue);
 
-derive_header! {
-    SecWebSocketAccept(_),
-    name: SEC_WEBSOCKET_ACCEPT
+impl crate::TypedHeader for SecWebSocketAccept {
+    fn name() -> &'static ::rama_http_types::header::HeaderName {
+        &::rama_http_types::header::SEC_WEBSOCKET_ACCEPT
+    }
+}
+
+impl crate::HeaderDecode for SecWebSocketAccept {
+    // RFC 6455 §11.3.3: it appears only once in a response.
+    fn decode<'i, I>(values: &mut I) -> Result<Self, crate::Error>
+    where
+        I: Iterator<Item = &'i HeaderValue>,
+    {
+        crate::util::single_value(values).map(Self)
+    }
+}
+
+impl crate::HeaderEncode for SecWebSocketAccept {
+    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+        values.extend(::std::iter::once(self.0.clone()));
+    }
 }
 
 impl TryFrom<SecWebSocketKey> for SecWebSocketAccept {
@@ -55,6 +72,18 @@ fn try_sign(key: &[u8]) -> Result<SecWebSocketAccept, BoxError> {
 mod tests {
     use super::*;
     use crate::common::{test_decode, test_encode};
+
+    /// RFC 6455 §11.3.1 and §11.3.3: the key and the accept each appear only once, so a second
+    /// line, even an equal one, makes either invalid.
+    #[test]
+    fn key_and_accept_appear_once() {
+        let key = "dGhlIHNhbXBsZSBub25jZQ==";
+        assert!(test_decode::<SecWebSocketKey>(&[key]).is_some());
+        assert!(test_decode::<SecWebSocketKey>(&[key, key]).is_none());
+        let accept = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
+        assert!(test_decode::<SecWebSocketAccept>(&[accept]).is_some());
+        assert!(test_decode::<SecWebSocketAccept>(&[accept, accept]).is_none());
+    }
 
     #[test]
     fn key_to_accept() {

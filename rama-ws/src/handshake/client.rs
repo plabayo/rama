@@ -1834,6 +1834,48 @@ mod tests {
     }
 
     #[cfg(feature = "dial9")]
+    /// RFC 6455 §4.1 and §11.3.3, over HTTP/1.0 and HTTP/1.1: every `Upgrade` line counts and
+    /// `Sec-WebSocket-Accept` appears once, while `Connection` stays a list over its lines.
+    #[test]
+    fn repeated_handshake_fields_are_validated_in_full() {
+        let key = headers::SecWebSocketKey::random();
+        let mut scratch = HeaderMap::new();
+        scratch.typed_insert(headers::SecWebSocketAccept::try_from(key.clone()).unwrap());
+        let accept = scratch[header::SEC_WEBSOCKET_ACCEPT].clone();
+        for version in [Version::HTTP_10, Version::HTTP_11] {
+            for (upgrade, connection, accepts, valid) in [
+                (&["websocket"][..], &["Upgrade"][..], 1, true),
+                (&["websocket"], &["keep-alive", "Upgrade"], 1, true),
+                (&["websocket", "h2c"], &["Upgrade"], 1, false),
+                (&["h2c", "websocket"], &["Upgrade"], 1, false),
+                (&["websocket"], &["Upgrade"], 2, false),
+            ] {
+                let mut response = Response::builder()
+                    .version(version)
+                    .status(StatusCode::SWITCHING_PROTOCOLS)
+                    .body(())
+                    .unwrap();
+                let headers = response.headers_mut();
+                for line in upgrade {
+                    headers.append(header::UPGRADE, header::HeaderValue::from_static(line));
+                }
+                for line in connection {
+                    headers.append(header::CONNECTION, header::HeaderValue::from_static(line));
+                }
+                for _ in 0..accepts {
+                    headers.append(header::SEC_WEBSOCKET_ACCEPT, accept.clone());
+                }
+                let result =
+                    validate_http_server_response(&response, Some(key.clone()), None, None);
+                assert_eq!(
+                    result.is_ok(),
+                    valid,
+                    "{version:?} {upgrade:?} {connection:?} accepts={accepts}: {result:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn blocking_handshake_runs_inside_dial9_session() {
         let temp_dir = rama_utils::fs::tempdir().unwrap();

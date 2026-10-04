@@ -486,34 +486,45 @@ mod tests {
     #[tokio::test]
     async fn the_adapter_checks_a_downgraded_websocket_upgrade() {
         for version in [Version::HTTP_2, Version::HTTP_3] {
-            for (upgrade, connection, valid) in [
-                (Some("websocket"), Some("Upgrade"), true),
-                (Some("WebSocket"), Some("keep-alive, upgrade"), true),
-                (None, Some("Upgrade"), false),
-                (Some("h2c"), Some("Upgrade"), false),
-                (Some("websocket, h2c"), Some("Upgrade"), false),
-                (Some("websocket"), None, false),
-                (Some("websocket"), Some("keep-alive"), false),
+            for (upgrade, connection, accepts, valid) in [
+                (&["websocket"][..], &["Upgrade"][..], 1, true),
+                (&["WebSocket"], &["keep-alive, upgrade"], 1, true),
+                // Connection is a list over its lines too.
+                (&["websocket"], &["keep-alive", "Upgrade"], 1, true),
+                (&[], &["Upgrade"], 1, false),
+                (&["h2c"], &["Upgrade"], 1, false),
+                (&["websocket, h2c"], &["Upgrade"], 1, false),
+                // Every Upgrade line counts, as one list.
+                (&["websocket", "h2c"], &["Upgrade"], 1, false),
+                (&["websocket"], &[], 1, false),
+                (&["websocket"], &["keep-alive"], 1, false),
+                // Sec-WebSocket-Accept appears only once, also when repeated as is.
+                (&["websocket"], &["Upgrade"], 2, false),
             ] {
                 let service =
                     ResponseVersionAdapter::new(service_fn(move |mut req: Request| async move {
                         adapt_request_version(&mut req, Version::HTTP_11).unwrap();
                         let key = req.headers().typed_get::<SecWebSocketKey>().unwrap();
+                        let mut scratch = rama_http_types::HeaderMap::new();
+                        scratch.typed_insert(SecWebSocketAccept::try_from(key).unwrap());
+                        let accept = scratch[SEC_WEBSOCKET_ACCEPT].clone();
                         let mut resp = Response::builder()
                             .version(Version::HTTP_11)
                             .status(StatusCode::SWITCHING_PROTOCOLS)
                             .body(Body::empty())
                             .unwrap();
-                        if let Some(upgrade) = upgrade {
+                        for line in upgrade {
                             resp.headers_mut()
-                                .insert(UPGRADE, HeaderValue::from_static(upgrade));
+                                .append(UPGRADE, HeaderValue::from_static(line));
                         }
-                        if let Some(connection) = connection {
+                        for line in connection {
                             resp.headers_mut()
-                                .insert(CONNECTION, HeaderValue::from_static(connection));
+                                .append(CONNECTION, HeaderValue::from_static(line));
                         }
-                        resp.headers_mut()
-                            .typed_insert(SecWebSocketAccept::try_from(key).unwrap());
+                        for _ in 0..accepts {
+                            resp.headers_mut()
+                                .append(SEC_WEBSOCKET_ACCEPT, accept.clone());
+                        }
                         Ok::<_, Infallible>(resp)
                     }));
                 let req = Request::builder()
@@ -523,7 +534,7 @@ mod tests {
                     .body(Body::empty())
                     .unwrap();
                 req.extensions().insert(Protocol::WEBSOCKET);
-                let case = format!("{version:?} {upgrade:?} {connection:?}");
+                let case = format!("{version:?} {upgrade:?} {connection:?} accepts={accepts}");
                 match service.serve(req).await {
                     Ok(resp) => {
                         assert!(valid, "{case}");

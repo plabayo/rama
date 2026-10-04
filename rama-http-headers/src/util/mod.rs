@@ -304,6 +304,35 @@ pub(crate) fn for_each_small_input(alphabet: &[u8], max_len: usize, mut f: impl 
     recurse(alphabet, max_len, &mut Vec::with_capacity(max_len), &mut f);
 }
 
+/// The one line of a field that may appear only once; a second line, even an equal one, makes
+/// it invalid.
+pub(crate) fn single_value<'i, I>(values: &mut I) -> Result<HeaderValue, Error>
+where
+    I: Iterator<Item = &'i HeaderValue>,
+{
+    match (values.next(), values.next()) {
+        (Some(value), None) => Ok(value.clone()),
+        _ => Err(Error::invalid()),
+    }
+}
+
+/// Every line of a list field, as the one value they combine to (RFC 9110 §5.3).
+pub(crate) fn combined_value<'i, I>(values: &mut I) -> Result<HeaderValue, Error>
+where
+    I: Iterator<Item = &'i HeaderValue>,
+{
+    let first = values.next().ok_or_else(Error::invalid)?;
+    let Some(second) = values.next() else {
+        return Ok(first.clone());
+    };
+    let mut combined = first.as_bytes().to_vec();
+    for value in std::iter::once(second).chain(values) {
+        combined.extend_from_slice(b", ");
+        combined.extend_from_slice(value.as_bytes());
+    }
+    HeaderValue::from_bytes(&combined).map_err(|_error| Error::invalid())
+}
+
 /// A helper trait for use when deriving `Header`.
 pub(crate) trait TryFromValues: Sized {
     /// Try to convert from the values into an instance of `Self`.

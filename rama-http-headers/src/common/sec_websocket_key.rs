@@ -26,7 +26,8 @@ impl HeaderDecode for SecWebSocketKey {
     where
         I: Iterator<Item = &'i ::rama_http_types::header::HeaderValue>,
     {
-        let value = crate::util::TryFromValues::try_from_values(values).map(SecWebSocketKey)?;
+        // RFC 6455 §11.3.1: it appears only once in a request.
+        let value = crate::util::single_value(values).map(SecWebSocketKey)?;
         let mut k = [0u8; 16];
         if STANDARD.decode_slice(value.0.as_bytes(), &mut k[..]).ok() != Some(16) {
             Err(crate::Error::invalid())
