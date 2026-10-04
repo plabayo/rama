@@ -400,7 +400,7 @@ where
     let left_w_shut = Arc::new(AtomicBool::new(false));
     let right_w_shut = Arc::new(AtomicBool::new(false));
 
-    let (reason, fatal_error) = {
+    let (mut reason, mut fatal_error) = {
         let l_to_r = std::pin::pin!(copy_one_way(
             &mut left_r,
             &mut right_w,
@@ -453,20 +453,23 @@ where
     let left_pending_shutdown = !aborts.aborted(Side::Left) && !left_w_shut.load(Ordering::Acquire);
     let right_pending_shutdown =
         !aborts.aborted(Side::Right) && !right_w_shut.load(Ordering::Acquire);
-    match (left_pending_shutdown, right_pending_shutdown) {
-        (true, true) => {
-            _ = tokio::join!(
-                tokio::time::timeout(shutdown_grace, left_w.shutdown()),
-                tokio::time::timeout(shutdown_grace, right_w.shutdown()),
-            );
+    let (left_err, right_err) = tokio::join!(
+        close_within(left_pending_shutdown, &mut left_w, shutdown_grace),
+        close_within(right_pending_shutdown, &mut right_w, shutdown_grace),
+    );
+    // A reset found by this last close is reflected too, unless an earlier one already was;
+    // an expired grace window is not a reset.
+    for (err, side_reason) in [
+        (left_err, BridgeCloseReason::WriteErrorLeft),
+        (right_err, BridgeCloseReason::WriteErrorRight),
+    ] {
+        if let Some(err) = err.filter(reflects_as_abort) {
+            aborts.trigger();
+            if !fatal_error.as_ref().is_some_and(reflects_as_abort) {
+                reason = side_reason;
+                fatal_error = Some(err);
+            }
         }
-        (true, false) => {
-            _ = tokio::time::timeout(shutdown_grace, left_w.shutdown()).await;
-        }
-        (false, true) => {
-            _ = tokio::time::timeout(shutdown_grace, right_w.shutdown()).await;
-        }
-        (false, false) => {}
     }
 
     IoForwardOutcome {
@@ -707,10 +710,11 @@ where
     }
     if !aborts.aborted(writer_side)
         && let Ok(Err(err)) = tokio::time::timeout(shutdown_grace, writer.shutdown()).await
-        && copy_err.is_none()
+        && !copy_err.as_ref().is_some_and(reflects_as_abort)
         && reflects_as_abort(&err)
     {
-        // The half-close itself found the peer reset: fail as a write would, ending the relay.
+        // The half-close itself found the peer reset, also after an orderly-looking end: fail
+        // as a write would, ending the relay.
         aborts.trigger();
         copy_err = Some(err);
     }
@@ -720,6 +724,21 @@ where
         Some(err) => Err(err),
         None => Ok(()),
     }
+}
+
+/// Close `writer` in order within `grace`, if `pending`: the error it returns, if any. An
+/// expired grace window is no error.
+async fn close_within<W>(pending: bool, writer: &mut W, grace: Duration) -> Option<std::io::Error>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    if !pending {
+        return None;
+    }
+    tokio::time::timeout(grace, writer.shutdown())
+        .await
+        .ok()
+        .and_then(Result::err)
 }
 
 /// The [`AbortIo`] each side publishes in its own extensions, if any.
@@ -1709,6 +1728,70 @@ mod tests {
                     let ending_shutdowns = u64::from(reflected && !abortable);
                     assert_eq!(ending_counts.get(), (ending_shutdowns, aborts), "{case}");
                     assert_eq!(failing_counts.get(), (1, aborts), "{case}");
+                }
+            }
+        }
+    }
+
+    /// A reset found by any close is reflected, also after an orderly-looking end (a stopped
+    /// reader, a close without close_notify): by the half-close that follows it, and by the
+    /// relay's last close of the other side. It is what the relay reports, naming that side.
+    #[tokio::test]
+    async fn a_reset_found_by_any_close_is_reflected() {
+        use std::io::ErrorKind::{BrokenPipe, ConnectionReset, UnexpectedEof};
+        for ending_left in [true, false] {
+            for benign in [BrokenPipe, UnexpectedEof] {
+                for abortable in [true, false] {
+                    // The half-close after the benign end resets (`inline`), or the last close
+                    // of the side that ended does.
+                    for inline in [true, false] {
+                        let case = format!(
+                            "left={ending_left} {benign:?} abortable={abortable} inline={inline}"
+                        );
+                        let (ending, ending_counts) = side_failing_shutdown(
+                            ReadEnd::Fail(benign),
+                            abortable,
+                            (!inline).then_some(ConnectionReset),
+                        );
+                        let (other, other_counts) = side_failing_shutdown(
+                            ReadEnd::Pend,
+                            abortable,
+                            inline.then_some(ConnectionReset),
+                        );
+                        let outcome = tokio::time::timeout(Duration::from_secs(1), async {
+                            if ending_left {
+                                IoForwardService::default()
+                                    .serve(BridgeIo(ending, other))
+                                    .await
+                            } else {
+                                IoForwardService::default()
+                                    .serve(BridgeIo(other, ending))
+                                    .await
+                            }
+                        })
+                        .await
+                        .expect(&case)
+                        .expect(&case);
+                        let aborts = u64::from(abortable);
+                        // The other side is closed by the half-close; the ending side by the
+                        // last close unless the inline reset already reset it.
+                        let ending_shutdowns = u64::from(!(inline && abortable));
+                        assert_eq!(ending_counts.get(), (ending_shutdowns, aborts), "{case}");
+                        assert_eq!(other_counts.get(), (1, aborts), "{case}");
+                        assert_eq!(
+                            outcome.fatal_error().map(std::io::Error::kind),
+                            Some(ConnectionReset),
+                            "{case}"
+                        );
+                        if !inline {
+                            let expected = if ending_left {
+                                BridgeCloseReason::WriteErrorLeft
+                            } else {
+                                BridgeCloseReason::WriteErrorRight
+                            };
+                            assert_eq!(outcome.reason(), expected, "{case}");
+                        }
+                    }
                 }
             }
         }
