@@ -282,6 +282,21 @@ where
             }
         }
 
+        match crate::handshake::client::apply_response_data_to_base_websocket_config(
+            *websocket_config,
+            &mut svc_match.input,
+        ) {
+            Ok(Some(cfg)) => {
+                insert_upgrade_extension(svc_match.input.extensions(), RelayWebSocketConfig(cfg));
+            }
+            Ok(None) => (),
+            // a client refuses this response, so it is not relayed as a WebSocket
+            Err(err) => {
+                tracing::debug!("WS response failed to match: {err}");
+                return Ok(svc_match);
+            }
+        }
+
         if *store_handshake_res_header {
             let mut head = svc_match.input.clone_parts();
             head.extensions = Extensions::new();
@@ -289,13 +304,6 @@ where
                 svc_match.input.extensions(),
                 HttpWebSocketRelayHandshakeResponse(head.into()),
             );
-        }
-
-        if let Some(cfg) = crate::handshake::client::apply_response_data_to_base_websocket_config(
-            *websocket_config,
-            &mut svc_match.input,
-        ) {
-            insert_upgrade_extension(svc_match.input.extensions(), RelayWebSocketConfig(cfg));
         }
         if let Some(protocol) = svc_match
             .input
@@ -341,6 +349,21 @@ where
             }
         }
 
+        match crate::handshake::client::apply_response_data_to_base_websocket_config(
+            websocket_config,
+            &mut svc_match.input,
+        ) {
+            Ok(Some(cfg)) => {
+                insert_upgrade_extension(svc_match.input.extensions(), RelayWebSocketConfig(cfg));
+            }
+            Ok(None) => (),
+            // a client refuses this response, so it is not relayed as a WebSocket
+            Err(err) => {
+                tracing::debug!("WS response failed to match: {err}");
+                return Ok(svc_match);
+            }
+        }
+
         if store_handshake_res_header {
             let mut head = svc_match.input.clone_parts();
             head.extensions = Extensions::new();
@@ -348,13 +371,6 @@ where
                 svc_match.input.extensions(),
                 HttpWebSocketRelayHandshakeResponse(head.into()),
             );
-        }
-
-        if let Some(cfg) = crate::handshake::client::apply_response_data_to_base_websocket_config(
-            websocket_config,
-            &mut svc_match.input,
-        ) {
-            insert_upgrade_extension(svc_match.input.extensions(), RelayWebSocketConfig(cfg));
         }
         if let Some(protocol) = svc_match
             .input
@@ -617,6 +633,57 @@ mod tests {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// A response a client refuses (RFC 6455 §4.1, RFC 7692 §5) is not relayed as a WebSocket.
+    #[tokio::test]
+    async fn a_response_a_client_refuses_is_not_relayed() {
+        for owned in [false, true] {
+            for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+                for (protocols, extensions, selected) in [
+                    (&["chat"][..], &[][..], true),
+                    (&["chat", "superchat"], &[], false),
+                    (&["chat, superchat"], &[], false),
+                    (&[], &["permessage-deflate, permessage-deflate"], false),
+                    (&[], &["permessage-deflate; server_max_window_bits"], false),
+                ] {
+                    let matcher = HttpWebSocketRelayServiceRequestMatcher::new(())
+                        .with_store_handshake_response_header(true)
+                        .match_service(websocket_request(version))
+                        .await
+                        .unwrap()
+                        .service
+                        .unwrap();
+                    let mut response = websocket_response(version);
+                    for line in protocols {
+                        response
+                            .headers_mut()
+                            .append("sec-websocket-protocol", line.parse().unwrap());
+                    }
+                    for line in extensions {
+                        response
+                            .headers_mut()
+                            .append("sec-websocket-extensions", line.parse().unwrap());
+                    }
+                    let matched = if owned {
+                        matcher.into_match_service(response).await.unwrap()
+                    } else {
+                        matcher.match_service(response).await.unwrap()
+                    };
+                    let context = format!("{owned} {version:?} {protocols:?} {extensions:?}");
+                    assert_eq!(matched.service.is_some(), selected, "{context}");
+                    assert_eq!(
+                        matched
+                            .input
+                            .extensions()
+                            .self_get_ref::<HttpWebSocketRelayHandshakeResponse>()
+                            .is_some(),
+                        selected,
+                        "{context}"
+                    );
                 }
             }
         }

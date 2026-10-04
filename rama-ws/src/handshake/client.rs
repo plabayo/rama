@@ -31,7 +31,7 @@ use rama_http::proto::ext::Protocol;
 use rama_http::service::client::blocking::Client as BlockingHttpClient;
 use rama_http::service::client::ext::{IntoHeaderName, IntoHeaderValue};
 use rama_http::service::client::{HttpClientExt, IntoUrl, RequestBuilder};
-use rama_http::{Body, Method, Request, Response, StatusCode, Version, header, headers};
+use rama_http::{Body, HeaderMap, Method, Request, Response, StatusCode, Version, header, headers};
 use rama_http::{request, response};
 use rama_net::extensions::StreamTransformed;
 use rama_utils::str::NonEmptyStr;
@@ -307,6 +307,39 @@ pub struct AcceptedWebSocketData {
     pub extension: Option<Extension>,
 }
 
+/// The extension and subprotocol a server response selects: at most one of each
+/// (RFC 6455 §4.2.2, RFC 7692 §5), and a value that does not parse fails.
+fn server_selection(
+    headers: &HeaderMap,
+) -> Result<(Option<Extension>, Option<NonEmptyStr>), ResponseValidateError> {
+    let extension = match headers.typed_try_get::<SecWebSocketExtensions>() {
+        Ok(None) => None,
+        Ok(Some(SecWebSocketExtensions(mut selected))) => {
+            if !selected.tail.is_empty() {
+                return Err(ResponseValidateError::ExtensionMismatch(Some(
+                    selected.tail.swap_remove(0),
+                )));
+            }
+            Some(selected.head)
+        }
+        // RFC 7692 §7.1: an extension response that does not parse fails the connection
+        Err(_) => return Err(ResponseValidateError::ExtensionMismatch(None)),
+    };
+    let protocol = match headers.typed_try_get::<SecWebSocketProtocol>() {
+        Ok(None) => None,
+        Ok(Some(SecWebSocketProtocol(mut selected))) => {
+            if !selected.tail.is_empty() {
+                return Err(ResponseValidateError::ProtocolMismatch(Some(
+                    selected.tail.swap_remove(0),
+                )));
+            }
+            Some(selected.head)
+        }
+        Err(_) => return Err(ResponseValidateError::ProtocolMismatch(None)),
+    };
+    Ok((extension, protocol))
+}
+
 /// Validate the "accept" response from the http server
 /// with whom the client is trying to establish a WebSocket connection.
 pub fn validate_http_server_response<Body>(
@@ -399,12 +432,8 @@ pub fn validate_http_server_response<Body>(
     // indicated an extension not requested by the client), the client
     // MUST _Fail the WebSocket Connection_. (RFC 6455)
     let mut accepted_extension = None;
-    // RFC 7692 §7.1: an extension response that does not parse fails the connection
-    let Ok(response_extension) = response.headers().typed_try_get::<SecWebSocketExtensions>()
-    else {
-        return Err(ResponseValidateError::ExtensionMismatch(None));
-    };
-    match (response_extension.map(|ext| ext.0.head), extensions) {
+    let (response_extension, response_protocol) = server_selection(response.headers())?;
+    match (response_extension, extensions) {
         (None, Some(allowed_extensions)) => {
             tracing::trace!(
                 ws.extensions = ?allowed_extensions,
@@ -464,6 +493,14 @@ pub fn validate_http_server_response<Body>(
                     None
                 })
                 .transpose()?;
+            if accepted_extension.is_none() {
+                tracing::debug!(
+                    "server selected permessage-deflate, which client (we) did not offer"
+                );
+                return Err(ResponseValidateError::ExtensionMismatch(Some(
+                    Extension::PerMessageDeflate(server_cfg),
+                )));
+            }
         }
         (Some(server_ext), _) => {
             tracing::debug!("server offered ext, but client (we) not!");
@@ -478,13 +515,7 @@ pub fn validate_http_server_response<Body>(
     // subprotocol not requested by the client), the client MUST _Fail
     // the WebSocket Connection_. (RFC 6455)
     let mut accepted_protocol = None;
-    match (
-        response
-            .headers()
-            .typed_get::<SecWebSocketProtocol>()
-            .map(|h| h.accept_first_protocol()),
-        protocols,
-    ) {
+    match (response_protocol, protocols) {
         (None, None) => (),
         (None, Some(allowed_protocols)) => {
             // RFC 6455 only mandates failure when the server selects a protocol
@@ -495,16 +526,14 @@ pub fn validate_http_server_response<Body>(
                 "server selected no WS subprotocol despite client proposing some (valid, proceed without)",
             );
         }
-        (Some(header), None) => {
-            return Err(ResponseValidateError::ProtocolMismatch(Some(header.0)));
+        (Some(selected), None) => {
+            return Err(ResponseValidateError::ProtocolMismatch(Some(selected)));
         }
-        (Some(protocol_header), Some(sub_protocols)) => {
-            match sub_protocols.contains(&protocol_header.0) {
+        (Some(selected), Some(sub_protocols)) => {
+            match sub_protocols.contains(&selected) {
                 Some(protocol) => accepted_protocol = Some(protocol),
                 None => {
-                    return Err(ResponseValidateError::ProtocolMismatch(Some(
-                        protocol_header.0,
-                    )));
+                    return Err(ResponseValidateError::ProtocolMismatch(Some(selected)));
                 }
             };
         }
@@ -1112,33 +1141,26 @@ impl<B> WebSocketRequestBuilder<B> {
 
 /// Utility which can be used my Mitm proxies to
 /// update the base config of a client websocket config.
+///
+/// Fails for a response a client must refuse: several or unparsable
+/// extensions or subprotocols.
 pub fn apply_response_data_to_base_websocket_config<Body>(
     base_cfg: Option<WebSocketConfig>,
     res: &mut Response<Body>,
-) -> Option<WebSocketConfig> {
-    let accepted_pmd_cfg = res
-        .headers()
-        .typed_get::<SecWebSocketExtensions>()
-        .map(|ext| ext.0.head)
-        .and_then(|ext| {
-            if let Extension::PerMessageDeflate(cfg) = ext {
-                Some(cfg)
-            } else {
-                None
-            }
-        });
+) -> Result<Option<WebSocketConfig>, ResponseValidateError> {
+    let (extension, protocol) = server_selection(res.headers())?;
+    let accepted_pmd_cfg = match extension {
+        Some(Extension::PerMessageDeflate(cfg)) => Some(cfg),
+        _ => None,
+    };
 
-    if let Some(accepted_protocol) = res
-        .headers()
-        .typed_get::<SecWebSocketProtocol>()
-        .map(|h| h.accept_first_protocol())
-    {
-        res.extensions().insert(accepted_protocol);
+    if let Some(protocol) = protocol {
+        res.extensions().insert(AcceptedWebSocketProtocol(protocol));
     }
 
     #[cfg(feature = "compression")]
     {
-        if let Some(pmd_cfg) = accepted_pmd_cfg {
+        Ok(if let Some(pmd_cfg) = accepted_pmd_cfg {
             let mut ws_cfg = base_cfg.unwrap_or_default();
             ws_cfg.per_message_deflate = Some(pmd_cfg.into());
             Some(ws_cfg)
@@ -1147,7 +1169,7 @@ pub fn apply_response_data_to_base_websocket_config<Body>(
             Some(ws_cfg)
         } else {
             base_cfg
-        }
+        })
     }
 
     #[cfg(not(feature = "compression"))]
@@ -1158,7 +1180,7 @@ pub fn apply_response_data_to_base_websocket_config<Body>(
             );
         }
 
-        base_cfg
+        Ok(base_cfg)
     }
 }
 
@@ -1654,7 +1676,10 @@ mod tests {
             let mut res = Response::new(());
             res.headers_mut()
                 .insert(header::SEC_WEBSOCKET_EXTENSIONS, raw.parse().unwrap());
-            let cfg = apply_response_data_to_base_websocket_config(None, &mut res);
+            // a response that does not parse is refused, not relayed
+            let Ok(cfg) = apply_response_data_to_base_websocket_config(None, &mut res) else {
+                continue;
+            };
             for role in [Role::Client, Role::Server] {
                 drop(WebSocket::from_raw_socket(
                     Cursor::new(Vec::<u8>::new()),
@@ -1871,6 +1896,106 @@ mod tests {
                     valid,
                     "{version:?} {upgrade:?} {connection:?} accepts={accepts}: {result:?}"
                 );
+            }
+        }
+    }
+
+    /// RFC 6455 §4.1 and RFC 7692 §5, on every version: the server selects at most one
+    /// subprotocol and one extension, each among those offered, and every line counts.
+    #[test]
+    fn the_server_selects_one_offered_protocol_and_extension() {
+        const PMD: &str = "permessage-deflate";
+        let mut scratch = HeaderMap::new();
+        scratch.insert(
+            header::SEC_WEBSOCKET_PROTOCOL,
+            header::HeaderValue::from_static("chat, superchat"),
+        );
+        let offered_protocols = scratch.typed_get::<SecWebSocketProtocol>().unwrap();
+        let key = headers::SecWebSocketKey::random();
+        scratch.typed_insert(headers::SecWebSocketAccept::try_from(key.clone()).unwrap());
+        let accept = scratch[header::SEC_WEBSOCKET_ACCEPT].clone();
+        // (protocol lines, extension lines, protocols offered, extensions offered, outcome)
+        let cases: &[(
+            &[&str],
+            &[&str],
+            bool,
+            Option<&str>,
+            Result<Option<&str>, &str>,
+        )] = &[
+            (&[], &[], true, Some(PMD), Ok(None)),
+            (&["chat"], &[PMD], true, Some(PMD), Ok(Some("chat"))),
+            (&["superchat"], &[], true, None, Ok(Some("superchat"))),
+            (&["other"], &[], true, None, Err("protocol")),
+            (&["chat", "superchat"], &[], true, None, Err("protocol")),
+            (&["chat, superchat"], &[], true, None, Err("protocol")),
+            (&["chat", "chat"], &[], true, None, Err("protocol")),
+            (&["chat"], &[], false, None, Err("protocol")),
+            (&["bad protocol"], &[], true, None, Err("protocol")),
+            (&[], &[PMD, PMD], false, Some(PMD), Err("extension")),
+            (
+                &[],
+                &["permessage-deflate, x-foo"],
+                false,
+                Some(PMD),
+                Err("extension"),
+            ),
+            (&[], &["x-foo"], false, Some(PMD), Err("extension")),
+            (&[], &[PMD], false, Some("x-foo"), Err("extension")),
+            (&[], &[PMD], false, None, Err("extension")),
+        ];
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            for (protocols, extensions, offer_protocols, offer_extensions, outcome) in cases {
+                let mut response = Response::builder().version(version).body(()).unwrap();
+                if version == Version::HTTP_11 {
+                    *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+                    let headers = response.headers_mut();
+                    headers.insert(
+                        header::UPGRADE,
+                        header::HeaderValue::from_static("websocket"),
+                    );
+                    headers.insert(
+                        header::CONNECTION,
+                        header::HeaderValue::from_static("Upgrade"),
+                    );
+                    headers.insert(header::SEC_WEBSOCKET_ACCEPT, accept.clone());
+                }
+                let headers = response.headers_mut();
+                for line in *protocols {
+                    headers.append(
+                        header::SEC_WEBSOCKET_PROTOCOL,
+                        header::HeaderValue::from_static(line),
+                    );
+                }
+                for line in *extensions {
+                    headers.append(
+                        header::SEC_WEBSOCKET_EXTENSIONS,
+                        header::HeaderValue::from_static(line),
+                    );
+                }
+                let result = validate_http_server_response(
+                    &response,
+                    (version == Version::HTTP_11).then(|| key.clone()),
+                    offer_protocols.then(|| offered_protocols.clone()),
+                    offer_extensions.and_then(offered_pmd),
+                );
+                let context = format!("{version:?} {protocols:?} {extensions:?}: {result:?}");
+                match (outcome, result) {
+                    (Ok(protocol), Ok(accepted)) => {
+                        assert_eq!(
+                            accepted.protocol.as_ref().map(|p| p.0.as_ref()),
+                            *protocol,
+                            "{context}"
+                        );
+                        assert_eq!(
+                            accepted.extension.is_some(),
+                            !extensions.is_empty(),
+                            "{context}"
+                        );
+                    }
+                    (Err("protocol"), Err(ResponseValidateError::ProtocolMismatch(_)))
+                    | (Err("extension"), Err(ResponseValidateError::ExtensionMismatch(_))) => {}
+                    _ => panic!("{context}"),
+                }
             }
         }
     }
