@@ -508,3 +508,23 @@ fn buffered_datagrams_do_not_pin_their_packets() {
         }
     }
 }
+
+/// Held datagrams that leave no room drop the new one before any queued datagram is evicted,
+/// also when the budget's arithmetic could overflow a narrower `usize`.
+#[test]
+fn a_payload_crowded_out_by_held_datagrams_leaves_queues_alone() {
+    let config = config(32, 4, 262_144);
+    let now = Instant::now();
+    let mut demux = Demux::default();
+    register(&mut demux, &config, 0, now);
+    deliver(&mut demux, &config, 0, 2_144, now);
+    for stream in [4, 8, 12, 16] {
+        deliver(&mut demux, &config, stream, 65_000, now);
+    }
+    assert_eq!(demux.buffered(), 262_144);
+    deliver(&mut demux, &config, 0, 16_384, now);
+    demux.assert_consistent(&config.limits);
+    assert_eq!(demux.drops().over_budget, 1);
+    assert_eq!(demux.buffered(), 262_144);
+    assert_matches!(poll(&mut demux, 0), Poll::Ready(Ok(Some(payload))) if payload.len() == 2_144);
+}
