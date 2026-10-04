@@ -102,17 +102,24 @@ prioritization and flow control also apply, enabling better resource sharing.
 The core WebSocket protocol (RFC 6455) remains unchanged beyond the handshake;
 only the transport bootstrap differs.
 
+Extended CONNECT is opt-in: a server announces it in its HTTP/2 settings, and Rama's servers
+leave it off unless you enable it. Rama's MITM proxy is an exception: it enables it so that it
+can relay WebSockets, mirroring what the upstream server announces.
+
 ### h3 WebSocket support
 
 > RFC: Bootstrapping WebSockets with HTTP/3: <https://github.com/plabayo/rama/blob/main/rama-http-core/specifications/rfc9220.txt>
 
-RFC 9220 reuses the same Extended CONNECT mechanism on an HTTP/3 request stream.
-Enable it on a server with `HttpServer::new_http3(..).http3_mut().extended_connect = true`
-and route `CONNECT` requests to a `WebSocketAcceptor`; clients use `websocket_h3`
-(or `WebSocketRequestBuilder::new_h3`) on an HTTP client with HTTP/3 support.
-A client only sends the request once the server's SETTINGS enabled Extended CONNECT.
-An orderly close ends the QUIC stream with a FIN; an abort resets it.
-See the `ws_over_h3` example.
+RFC 9220 reuses the same Extended CONNECT mechanism on an HTTP/3 request stream:
+the handshake is a `CONNECT` request with `:protocol: websocket`, and the stream that follows
+carries the WebSocket frames.
+
+As with HTTP/2, a server has to opt in, by announcing Extended CONNECT in its settings,
+and a client only starts such a handshake once it has seen that announcement.
+Rama's HTTP/3 servers leave it off unless you enable it.
+Once the WebSocket runs, an orderly close ends the QUIC stream normally,
+while a failure resets it, so the peer can tell the two apart.
+The `ws_over_h3` example shows both sides.
 
 ## Rama Support
 
