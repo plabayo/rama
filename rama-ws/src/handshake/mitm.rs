@@ -1061,12 +1061,16 @@ async fn writer_loop<Socket>(
             WriterCommand::Flush { response } => (socket.flush().await, response),
             WriterCommand::Close { response } => (socket.close().await, response),
         };
-        // every write counts, also those whose result nobody awaits
-        if let Err(error) = &result {
-            reflect_failure(&signals, error);
-        }
+        // every write counts, also an injected one or one whose result nobody awaits
+        let failed = result
+            .as_ref()
+            .err()
+            .map(|error| reflect_failure(&signals, error));
         if response.send(result).is_err() {
             tracing::trace!("{socket_name} WS writer response receiver was dropped");
+        }
+        if let Some(reset) = failed {
+            signal(&signals, RelaySignal::WriteFailed { reset });
         }
     }
 }
@@ -1124,6 +1128,10 @@ enum RelaySignal {
     ClosingStarted,
     SideFinished(WebSocketRelayDirection),
     Terminate,
+    /// A write failed, whoever awaits its result; `reset` when it was a transport failure.
+    WriteFailed {
+        reset: bool,
+    },
 }
 
 #[derive(Clone)]
@@ -1138,15 +1146,15 @@ fn signal(signals: &RelaySignals, signal: RelaySignal) {
 }
 
 /// A transport failure of one side resets both, as [`AbortIo::reflects`] decides;
-/// protocol errors and orderly ends do not.
-fn reflect_failure(signals: &RelaySignals, error: &ProtocolError) {
-    if let ProtocolError::Io(err) = error
-        && AbortIo::reflects(err)
-    {
+/// protocol errors and orderly ends do not. Returns whether it reset.
+fn reflect_failure(signals: &RelaySignals, error: &ProtocolError) -> bool {
+    let reset = matches!(error, ProtocolError::Io(err) if AbortIo::reflects(err));
+    if reset {
         for abort in signals.aborts.iter().flatten() {
             abort.abort();
         }
     }
+    reset
 }
 
 async fn supervise_relay(
@@ -1165,7 +1173,7 @@ async fn supervise_relay(
             Some(RelaySignal::SideFinished(WebSocketRelayDirection::Egress)) => {
                 egress_finished = true;
             }
-            Some(RelaySignal::Terminate) | None => return,
+            Some(RelaySignal::Terminate | RelaySignal::WriteFailed { .. }) | None => return,
         }
     }
 
@@ -1178,8 +1186,11 @@ async fn supervise_relay(
                 Some(RelaySignal::SideFinished(WebSocketRelayDirection::Egress)) => {
                     egress_finished = true;
                 }
-                Some(RelaySignal::ClosingStarted) => {}
-                Some(RelaySignal::Terminate) | None => return,
+                // the close exchange is bounded by its timeout; a reset ends it at once
+                Some(RelaySignal::ClosingStarted | RelaySignal::WriteFailed { reset: false }) => {}
+                Some(RelaySignal::Terminate | RelaySignal::WriteFailed { reset: true }) | None => {
+                    return;
+                }
             }
         }
     };
@@ -1650,7 +1661,9 @@ async fn drain_close<Source>(
                 tracing::debug!(
                     "{source_name} WS socket ended while closing with protocol error: {error}"
                 );
-                reflect_failure(signals, &error);
+                if reflect_failure(signals, &error) {
+                    signal(signals, RelaySignal::Terminate);
+                }
                 signal(signals, RelaySignal::SideFinished(direction));
                 return;
             }
@@ -2428,6 +2441,14 @@ mod tests {
         writes: tokio_mpsc::UnboundedSender<Message>,
         write_error: Option<fn() -> ProtocolError>,
         extensions: Extensions,
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Drop for ScriptedSide {
+        fn drop(&mut self) {
+            self.dropped
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     impl rama_core::futures::Stream for ScriptedSide {
@@ -2481,12 +2502,14 @@ mod tests {
         reads: tokio_mpsc::UnboundedSender<Result<Message, ProtocolError>>,
         writes: tokio_mpsc::UnboundedReceiver<Message>,
         aborts: Arc<std::sync::atomic::AtomicUsize>,
+        dropped: Arc<std::sync::atomic::AtomicBool>,
     }
 
     fn scripted_side(write_error: Option<fn() -> ProtocolError>) -> (ScriptedSide, ScriptedPeer) {
         let (reads_tx, reads) = tokio_mpsc::unbounded_channel();
         let (writes, writes_rx) = tokio_mpsc::unbounded_channel();
         let aborts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let extensions = Extensions::new();
         extensions.insert(AbortIo::new({
             let aborts = aborts.clone();
@@ -2500,11 +2523,13 @@ mod tests {
                 writes,
                 write_error,
                 extensions,
+                dropped: dropped.clone(),
             },
             ScriptedPeer {
                 reads: reads_tx,
                 writes: writes_rx,
                 aborts,
+                dropped,
             },
         )
     }
@@ -2556,8 +2581,14 @@ mod tests {
                     } else {
                         (other, failing)
                     };
+                    // a reset ends the relay at once, never by the close timeout
+                    let close_timeout = if resets {
+                        Duration::from_secs(30)
+                    } else {
+                        Duration::from_millis(50)
+                    };
                     let service = WebSocketRelayService::new(MirrorService::new())
-                        .with_close_handshake_timeout(Duration::from_millis(50));
+                        .with_close_handshake_timeout(close_timeout);
                     let relay = tokio::spawn(async move {
                         service.serve(WebSocketBridge { ingress, egress }).await
                     });
@@ -2598,6 +2629,162 @@ mod tests {
                             "{context}"
                         );
                     }
+                }
+            }
+        }
+    }
+
+    /// An injected write that fails ends the relay as any other write would, with idle readers:
+    /// the injector gets the error, both transports are dropped, and only a transport
+    /// failure resets them.
+    #[tokio::test]
+    async fn a_failed_injected_write_ends_the_relay() {
+        let failures: [(&str, fn() -> ProtocolError, bool); 3] = [
+            (
+                "reset",
+                || ProtocolError::Io(std::io::ErrorKind::ConnectionReset.into()),
+                true,
+            ),
+            (
+                "broken pipe",
+                || ProtocolError::Io(std::io::ErrorKind::BrokenPipe.into()),
+                false,
+            ),
+            ("protocol", || ProtocolError::SendAfterClosing, false),
+        ];
+        // spawned, or driven inline so the relay may end before the injector is polled again
+        for spawned in [true, false] {
+            for failing_ingress in [true, false] {
+                for (name, failure, resets) in failures {
+                    let (failing, failing_peer) = scripted_side(Some(failure));
+                    let (other, other_peer) = scripted_side(None);
+                    let (ingress, egress, direction) = if failing_ingress {
+                        (failing, other, WebSocketRelayDirection::Egress)
+                    } else {
+                        (other, failing, WebSocketRelayDirection::Ingress)
+                    };
+                    let (sender, receiver) = oneshot::channel();
+                    let service = WebSocketRelayEventService::new(CaptureEventInjector {
+                        sender: Arc::new(Mutex::new(Some(sender))),
+                    })
+                    .with_message_injection(true);
+                    let relay =
+                        async move { service.serve(WebSocketBridge { ingress, egress }).await };
+                    let inject = async {
+                        let injector = receiver.await.expect("injector captured");
+                        let sent = injector
+                            .send(direction, WebSocketRelayMessage::Text("injected".into()))
+                            .await;
+                        (injector, sent)
+                    };
+                    let context =
+                        format!("spawned={spawned} ingress fails={failing_ingress} {name}");
+                    let (injector, sent) = if spawned {
+                        let relay = tokio::spawn(relay);
+                        let injected = timeout(Duration::from_secs(1), inject)
+                            .await
+                            .expect(&context);
+                        timeout(Duration::from_secs(1), relay)
+                            .await
+                            .expect(&context)
+                            .expect(&context)
+                            .expect(&context);
+                        injected
+                    } else {
+                        let (relayed, injected) = timeout(
+                            Duration::from_secs(1),
+                            Box::pin(async { tokio::join!(relay, inject) }),
+                        )
+                        .await
+                        .expect(&context);
+                        relayed.expect(&context);
+                        injected
+                    };
+                    assert_eq!(
+                        sent.map_err(|error| error.to_string()),
+                        Err(failure().to_string()),
+                        "{context}"
+                    );
+                    assert!(!injector.is_open(), "{context}");
+                    for peer in [&failing_peer, &other_peer] {
+                        assert!(
+                            peer.dropped.load(std::sync::atomic::Ordering::Relaxed),
+                            "{context}"
+                        );
+                        assert_eq!(
+                            peer.aborts.load(std::sync::atomic::Ordering::Relaxed) > 0,
+                            resets,
+                            "{context}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A transport failure read while the other side still owes its close reply ends the
+    /// relay at once, as a reset; anything else waits for that reply or the close timeout.
+    #[tokio::test]
+    async fn a_reset_read_while_closing_ends_the_relay_at_once() {
+        let failures: [(&str, fn() -> ProtocolError, bool); 2] = [
+            (
+                "reset",
+                || ProtocolError::Io(std::io::ErrorKind::ConnectionReset.into()),
+                true,
+            ),
+            (
+                "eof",
+                || ProtocolError::Io(std::io::ErrorKind::UnexpectedEof.into()),
+                false,
+            ),
+        ];
+        for failing_ingress in [true, false] {
+            for (name, failure, resets) in failures {
+                let (failing, mut failing_peer) = scripted_side(None);
+                let (other, other_peer) = scripted_side(None);
+                let (ingress, egress) = if failing_ingress {
+                    (failing, other)
+                } else {
+                    (other, failing)
+                };
+                let close_timeout = if resets {
+                    Duration::from_secs(30)
+                } else {
+                    Duration::from_millis(50)
+                };
+                let service = WebSocketRelayEventService::new(CloseAfterDataMiddleware {
+                    close: WebSocketRelayClose::WithoutFrame,
+                })
+                .with_close_handshake_timeout(close_timeout);
+                let relay = tokio::spawn(async move {
+                    service.serve(WebSocketBridge { ingress, egress }).await
+                });
+
+                _ = failing_peer
+                    .reads
+                    .send(Ok(Message::text("starts the close")));
+                let context = format!("ingress fails={failing_ingress} {name}");
+                loop {
+                    let written = timeout(Duration::from_secs(1), failing_peer.writes.recv())
+                        .await
+                        .expect(&context);
+                    if matches!(written, Some(Message::Close(_))) {
+                        break;
+                    }
+                }
+                _ = failing_peer.reads.send(Err(failure()));
+
+                timeout(Duration::from_secs(2), relay)
+                    .await
+                    .expect(&context)
+                    .expect(&context)
+                    .expect(&context);
+                for peer in [&failing_peer, &other_peer] {
+                    assert_eq!(
+                        peer.aborts.load(std::sync::atomic::Ordering::Relaxed) > 0,
+                        resets,
+                        "{context}"
+                    );
                 }
             }
         }
