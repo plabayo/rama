@@ -323,6 +323,41 @@ mod tests {
         service.serve(req).await.unwrap();
     }
 
+    /// A client's own X-Forwarded-Host and -Proto lines cannot win over the ones a proxy appends:
+    /// every line counts, nearest last, so the default policy reads the proxy's.
+    #[tokio::test]
+    async fn appended_x_forwarded_lines_are_the_nearest() {
+        use crate::headers::forwarded::{XForwardedFor, XForwardedHost, XForwardedProto};
+        use rama_net::forwarded::ForwardedClientExt as _;
+        for (hosts, protos) in [
+            (&["evil.test", "public.test"][..], &["http", "https"][..]),
+            (&["evil.test, public.test"], &["http, https"]),
+        ] {
+            let service =
+                GetForwardedHeadersLayer::<(XForwardedFor, XForwardedHost, XForwardedProto)>::new()
+                    .into_layer(service_fn(async |req: Request<()>| {
+                        assert_eq!(req.forwarded_client_ip(), Some(IpAddr::from([10, 0, 0, 1])));
+                        assert_eq!(
+                            req.forwarded_client_host()
+                                .map(|host| host.to_string())
+                                .as_deref(),
+                            Some("public.test")
+                        );
+                        assert_eq!(req.forwarded_client_proto(), Some(ForwardedProtocol::HTTPS));
+                        Ok::<_, Infallible>(())
+                    }));
+            let mut builder =
+                Request::builder().header("X-Forwarded-For", "198.51.100.7, 10.0.0.1");
+            for host in hosts {
+                builder = builder.header("X-Forwarded-Host", *host);
+            }
+            for proto in protos {
+                builder = builder.header("X-Forwarded-Proto", *proto);
+            }
+            service.serve(builder.body(()).unwrap()).await.unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn test_get_forwarded_headers() {
         let service = GetForwardedHeadersLayer::<(rama_http_headers::forwarded::Forwarded,)>::new()
