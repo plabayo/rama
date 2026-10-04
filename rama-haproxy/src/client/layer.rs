@@ -258,7 +258,8 @@ impl<S: fmt::Debug, P, V: fmt::Debug> fmt::Debug for HaProxyService<S, P, V> {
 
 /// The PROXY source address: the client of the connection's [`Forwarded`] chain, selected by
 /// its [`ForwardedSelectionPolicy`], else the input's peer. The input's chain and policy become
-/// the connection's where it has none of its own.
+/// the connection's where it has none of its own; the connection's own [`SocketInfo`] describes
+/// its outbound transport, never the source.
 fn proxy_source(input: &impl ExtensionsRef, conn: &impl ExtensionsRef) -> Option<SocketAddress> {
     let (input, conn) = (input.extensions(), conn.extensions());
     input
@@ -274,11 +275,7 @@ fn proxy_source(input: &impl ExtensionsRef, conn: &impl ExtensionsRef) -> Option
                 .forwarded_for()?
                 .socket_address()
         })
-        .or_else(|| {
-            input
-                .clone_to_if_absent::<SocketInfo>(conn)
-                .map(|info| info.peer_addr())
-        })
+        .or_else(|| input.get_ref::<SocketInfo>().map(SocketInfo::peer_addr))
 }
 
 impl<S: Clone, P, V: Clone> Clone for HaProxyService<S, P, V> {
@@ -772,6 +769,47 @@ mod tests {
             },
         ));
         svc.serve(ServiceInput::new(())).await.unwrap();
+    }
+
+    /// Without a usable [`Forwarded`] chain the source is the input's peer, also when the
+    /// connection records its own (outbound) [`SocketInfo`], as a TCP connector does; without
+    /// an input peer there is no source, whatever the connection knows.
+    #[tokio::test]
+    async fn the_fallback_source_is_the_inputs_peer() {
+        let upstream: SocketAddress = "192.168.1.101:443".parse().unwrap();
+        for (input_peer, expected) in [
+            (
+                Some("127.0.1.2:54321"),
+                Some("PROXY TCP4 127.0.1.2 192.168.1.101 54321 443\r\n"),
+            ),
+            (None, None),
+        ] {
+            let conn_extensions = Extensions::new();
+            conn_extensions.insert(SocketInfo::new(
+                Some("10.0.0.1:40000".parse().unwrap()),
+                upstream,
+            ));
+            let svc = HaProxyLayer::tcp()
+                .v1()
+                .layer(service_fn(move |input: ServiceInput<()>| {
+                    let conn = SocketConnection {
+                        socket: upstream,
+                        conn: Builder::new()
+                            .write(expected.unwrap_or_default().as_bytes())
+                            .build(),
+                        extensions: conn_extensions.clone(),
+                    };
+                    async move { Ok::<_, Infallible>(EstablishedClientConnection { input, conn }) }
+                }));
+            let input = ServiceInput::new(());
+            if let Some(peer) = input_peer {
+                input
+                    .extensions()
+                    .insert(SocketInfo::new(None, peer.parse().unwrap()));
+            }
+            let result = svc.serve(input).await;
+            assert_eq!(result.is_ok(), expected.is_some(), "{input_peer:?}");
+        }
     }
 
     #[tokio::test]

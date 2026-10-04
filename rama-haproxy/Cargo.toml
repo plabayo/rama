@@ -36,6 +36,8 @@ tokio = { workspace = true, features = ["macros", "io-std"] }
 [dev-dependencies]
 parking_lot = { workspace = true }
 rama-net = { workspace = true, features = ["test-utils"] }
+rama-tcp = { workspace = true }
+tokio = { workspace = true, features = ["net", "io-util", "rt"] }
 tokio-test = { workspace = true }
 
 [lints]

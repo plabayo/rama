@@ -4316,6 +4316,7 @@ dependencies = [
  "parking_lot",
  "rama-core",
  "rama-net",
+ "rama-tcp",
  "rama-utils",
  "tokio",
  "tokio-test",
