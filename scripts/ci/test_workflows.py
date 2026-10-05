@@ -2,10 +2,14 @@
 
 import copy
 import itertools
+import json
+import os
 import re
 import subprocess
+import tempfile
 import tomllib
 import unittest
+from pathlib import Path
 
 import yaml
 
@@ -303,6 +307,75 @@ class WorkflowPolicyTests(unittest.TestCase):
         for workflow in (self.workflow, self.daily):
             name = workflow["jobs"]["ci-success"]["name"]
             self.assertIn(f'.name != "{name}"', command)
+
+    def test_badges_mirror_finished_main_ci_without_skipped_runs(self):
+        workflow = yaml.safe_load((self.path.parent / "CI-status.yml").read_text())
+        triggers = workflow.get("on", workflow.get(True))
+        self.assertEqual(triggers["workflow_run"]["workflows"], [self.workflow["name"]])
+        self.assertEqual(triggers["workflow_run"]["branches"], ["main"])
+        # A skipped run would decide the badge as well.
+        self.assertTrue(all("if" not in job for job in workflow["jobs"].values()))
+        badges = [path for path in ROOT.glob("**/README.md")
+                  if "target" not in path.parts and "actions/workflows/CI" in path.read_text()]
+        self.assertTrue(badges)
+        for path in badges:
+            with self.subTest(readme=str(path.relative_to(ROOT))):
+                self.assertNotIn("workflows/CI.yml/badge.svg", path.read_text())
+
+    def test_badge_mirrors_the_newest_finished_main_push_run(self):
+        workflow = yaml.safe_load((self.path.parent / "CI-status.yml").read_text())
+        command = workflow["jobs"]["ci-status"]["steps"][0]["run"]
+        repo = "plabayo/rama"
+
+        def run(number, conclusion, attempt=1, event="push", branch="main",
+                status="completed", owner=repo):
+            return {"id": number * 10 + attempt, "workflow_id": 7, "run_number": number,
+                    "run_attempt": attempt, "event": event, "head_branch": branch,
+                    "status": status, "conclusion": conclusion,
+                    "head_repository": {"full_name": owner}}
+
+        def mirror(trigger, listed, failures=0):
+            with tempfile.TemporaryDirectory() as tmp:
+                bin_dir = Path(tmp)
+                (bin_dir / "runs.json").write_text(json.dumps({"workflow_runs": listed}))
+                (bin_dir / "event.json").write_text(json.dumps({"workflow_run": trigger}))
+                (bin_dir / "gh").write_text(
+                    "#!/usr/bin/env bash\n"
+                    f'n=$(cat "{tmp}/calls" 2>/dev/null || echo 0); echo $((n + 1)) > "{tmp}/calls"\n'
+                    f"(( n < {failures} )) && exit 1\n"
+                    f'cat "{tmp}/runs.json"\n')
+                (bin_dir / "sleep").write_text("#!/usr/bin/env bash\n")
+                for stub in ("gh", "sleep"):
+                    (bin_dir / stub).chmod(0o755)
+                result = subprocess.run(
+                    ["bash", "-e", "-c", command], capture_output=True, text=True,
+                    env={"PATH": f"{tmp}:{os.environ['PATH']}", "GITHUB_REPOSITORY": repo,
+                         "GITHUB_EVENT_PATH": str(bin_dir / "event.json")})
+                return result.returncode == 0
+
+        cases = [
+            # The listing has not caught up with the run that triggered this.
+            ("fresh payload", run(5, "success"), [run(4, "failure")], True),
+            ("cancelled payload, older success", run(5, "cancelled"), [run(4, "success")], True),
+            ("cancelled payload, older failure", run(5, "cancelled"), [run(4, "failure")], False),
+            ("newer finished run", run(4, "success"), [run(5, "failure")], False),
+            ("newer finished attempt", run(4, "success"), [run(4, "failure", attempt=2)], False),
+            ("stale listed attempt", run(4, "success", attempt=2), [run(4, "failure")], True),
+            ("newer run in progress", run(4, "success"),
+             [run(5, None, status="in_progress")], True),
+            ("non-push trigger", run(6, "success", event="workflow_dispatch"),
+             [run(5, "failure")], False),
+            ("fork branch named main", run(4, "success"),
+             [run(5, "failure", owner="someone/rama")], True),
+            ("nothing finished", run(4, "cancelled"), [], False),
+        ]
+        for name, trigger, listed, success in cases:
+            with self.subTest(case=name):
+                self.assertEqual(mirror(trigger, listed), success)
+        with self.subTest(case="listing retried"):
+            self.assertTrue(mirror(run(5, "success"), [], failures=2))
+        with self.subTest(case="listing unavailable"):
+            self.assertFalse(mirror(run(5, "success"), [], failures=3))
 
     def test_matrix_expansion_does_not_create_phantom_rows(self):
         self.assertEqual(matrix_rows({"include": [{"os": "macos-15"}, {"os": "windows-latest"}]}),

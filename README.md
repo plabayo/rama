@@ -18,7 +18,7 @@
 [license-apache-url]: https://github.com/plabayo/rama/blob/main/LICENSE-APACHE
 [rust-version-badge]: https://img.shields.io/badge/rustc-1.96+-blue?style=flat-square&logo=rust
 [rust-version-url]: https://www.rust-lang.org
-[actions-badge]: https://github.com/plabayo/rama/actions/workflows/CI.yml/badge.svg?branch=main
+[actions-badge]: https://github.com/plabayo/rama/actions/workflows/CI-status.yml/badge.svg?branch=main
 [actions-url]: https://github.com/plabayo/rama/actions/workflows/CI.yml
 [loc-badge]: https://img.shields.io/endpoint?url=https://ghloc.vercel.app/api/plabayo/rama/badge?filter=.rs,.swift,.c,.h$&style=flat&logoColor=white&label=LoC
 [loc-url]: https://github.com/plabayo/rama
