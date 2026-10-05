@@ -48,7 +48,7 @@ use std::{
 };
 use tokio::{
     fs,
-    io::{AsyncReadExt as _, AsyncWriteExt as _, copy_bidirectional},
+    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
     net::{TcpListener as TokioTcpListener, TcpStream},
     process::{Child, ChildStdin, Command},
     sync::oneshot,
@@ -287,6 +287,49 @@ impl WsServer {
 /// A message larger than every flow-control window on the way.
 const LARGE: usize = 8 * 1024 * 1024;
 const CLOSE_NORMAL: [u8; 2] = 1000u16.to_be_bytes();
+
+/// Relays both ways until each side is done, returning the bytes carried each way. A side
+/// that goes away abortively, as an exiting process with unread data does on Windows,
+/// ends its direction like an orderly close.
+async fn relay_counting(a: &mut TcpStream, b: &mut TcpStream) -> TestResult<(u64, u64)> {
+    async fn copy_until_gone(
+        mut from: impl AsyncRead + Unpin,
+        mut to: impl AsyncWrite + Unpin,
+    ) -> std::io::Result<u64> {
+        let gone = |err: &std::io::Error| {
+            matches!(
+                err.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+            )
+        };
+        let mut buf = vec![0; 16 * 1024];
+        let mut total = 0;
+        loop {
+            let n = match from.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(err) if gone(&err) => break,
+                Err(err) => return Err(err),
+            };
+            match to.write_all(&buf[..n]).await {
+                Ok(()) => total += n as u64,
+                Err(err) if gone(&err) => break,
+                Err(err) => return Err(err),
+            }
+        }
+        _ = to.shutdown().await;
+        Ok(total)
+    }
+    let (a_read, a_write) = a.split();
+    let (b_read, b_write) = b.split();
+    let (up, down) = tokio::join!(
+        copy_until_gone(a_read, b_write),
+        copy_until_gone(b_read, a_write)
+    );
+    Ok((up?, down?))
+}
 
 fn check(condition: bool, violation: &'static str) -> TestResult {
     if condition {
@@ -646,7 +689,7 @@ async fn h1_h2_websockets_use_the_explicit_http_connect_proxy() -> TestResult {
                     .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                     .await?;
                 downstream.flush().await?;
-                let (up, down) = copy_bidirectional(&mut downstream, &mut upstream).await?;
+                let (up, down) = relay_counting(&mut downstream, &mut upstream).await?;
                 check(
                     up > 0 && down > 0,
                     "the proxy tunnel carried no traffic both ways",
