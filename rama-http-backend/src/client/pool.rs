@@ -746,10 +746,7 @@ mod tests {
                 assert_eq!(id(socket.clone(), version), id(origin.clone(), version));
             }
             // An HTTP/1.1 upgrade takes over its connection; it keeps its own pool.
-            assert_ne!(
-                id(socket.clone(), Version::HTTP_11),
-                id(origin.clone(), Version::HTTP_11)
-            );
+            assert_ne!(id(socket, Version::HTTP_11), id(origin, Version::HTTP_11));
         }
     }
 

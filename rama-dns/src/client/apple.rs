@@ -165,7 +165,14 @@ impl AppleDnsResolver {
         P: Fn(&[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync + 'static,
     {
         if let Some(err) = leading_dot_refusal(&domain) {
-            return Either::Left(stream::once(std::future::ready(Err(err))));
+            return Either::Left(stream::iter(Some(Err(err))));
+        }
+        // RFC 6761 §6.3: localhost has only address records; macOS 15 never answers the rest
+        if domain.is_loopback()
+            && rrtype != ffi::K_DNS_SERVICE_TYPE_A
+            && rrtype != ffi::K_DNS_SERVICE_TYPE_AAAA
+        {
+            return Either::Left(stream::iter(None));
         }
         let (timeout, limit) = (self.timeout, self.limit.clone());
         // the name goes out without its root dot: `x` and `x.` are one query
@@ -1429,21 +1436,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_negative_answers_end_the_lookup_at_once() {
-        // mDNSResponder answers for localhost itself
+    async fn localhost_non_address_lookups_answer_locally() {
+        // macOS 15's mDNSResponder never answers these, so they must not reach it
         let resolver = AppleDnsResolver::new().with_timeout(Duration::from_secs(3));
-        let started = Instant::now();
-        let cnames: Vec<_> = resolver
-            .lookup_cname(Domain::from_static("localhost"))
-            .collect()
-            .await;
-        let https: Vec<_> = resolver
-            .lookup_https(Domain::from_static("localhost"))
-            .collect()
-            .await;
-        assert!(cnames.is_empty(), "{cnames:?}");
-        assert!(https.is_empty(), "{https:?}");
-        assert!(started.elapsed() < Duration::from_secs(1));
+        for name in ["localhost", "localhost.", "api.localhost"] {
+            let domain = Domain::from_static(name);
+            let started = Instant::now();
+            let cnames: Vec<_> = resolver.lookup_cname(domain.clone()).collect().await;
+            let txts: Vec<_> = resolver.lookup_txt(domain.clone()).collect().await;
+            let svcbs: Vec<_> = resolver.lookup_svcb(domain.clone()).collect().await;
+            let https: Vec<_> = resolver.lookup_https(domain).collect().await;
+            assert!(cnames.is_empty(), "{name}: {cnames:?}");
+            assert!(txts.is_empty(), "{name}: {txts:?}");
+            assert!(svcbs.is_empty(), "{name}: {svcbs:?}");
+            assert!(https.is_empty(), "{name}: {https:?}");
+            assert!(started.elapsed() < Duration::from_secs(1), "{name}");
+        }
     }
 
     #[test]

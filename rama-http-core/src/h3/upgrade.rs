@@ -675,7 +675,7 @@ mod tests {
                 );
                 tunnel.permit = Some(permit.clone());
                 tunnel.priority_lease = Some(Lease {
-                    shared: shared.clone(),
+                    shared,
                     id: 0,
                     permit,
                 });

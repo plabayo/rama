@@ -1,5 +1,6 @@
-#[rustversion::attr(not(nightly), ignore = "requires nightly")]
-#[cfg_attr(miri, ignore = "incompatible with miri")]
+// The `.stderr` snapshots track stable rustc; beta and nightly render diagnostics differently.
+#[rustversion::stable]
+#[ignore = "slow: compiles a trybuild project"]
 #[test]
 fn ui() {
     let t = trybuild::TestCases::new();

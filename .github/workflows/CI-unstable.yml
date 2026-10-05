@@ -45,6 +45,8 @@ jobs:
     permissions:
       contents: read
     strategy:
+      # One OS's lint failure must not hide the others' (Windows-only lints).
+      fail-fast: false
       matrix:
         toolchain:
           - beta
@@ -75,6 +77,8 @@ jobs:
         with:
           env-vars: RUST_TOOLCHAIN
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
+          # Match CI.yml: beta's per-crate build dirs overflow sccache's rustc argv (os error 206).
+          sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
       - name: rustfmt
         run: |
           cargo fmt --all --check
@@ -134,6 +138,8 @@ jobs:
         with:
           env-vars: RUST_TOOLCHAIN
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-test-${{ matrix.profile }}
+          # Match CI.yml: beta's per-crate build dirs overflow sccache's rustc argv (os error 206).
+          sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
       - name: Build tests (${{ matrix.profile }})
         id: build_tests
         # A cold macOS release build already took 108m on a successful run.
@@ -206,7 +212,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
       with:
         toolchain: beta
-        components: clippy
+        components: clippy, rustfmt
     - uses: ./.github/actions/rust-cache
       with:
         env-vars: RUST_TOOLCHAIN
@@ -214,9 +220,15 @@ jobs:
         key: ubuntu-latest-beta
     - name: cargo clippy --fix
       continue-on-error: true
+      # A second pass fixes lints the first pass introduces (e.g. `shared: shared`).
       run: |
         cargo clippy --workspace --all-targets --all-features \
+          --fix --allow-dirty --allow-staged || true
+        cargo clippy --workspace --all-targets --all-features \
           --fix --allow-dirty --allow-staged
+    - name: cargo fmt
+      continue-on-error: true
+      run: cargo fmt --all
     - name: Export tracked source changes as data
       id: patch
       shell: bash

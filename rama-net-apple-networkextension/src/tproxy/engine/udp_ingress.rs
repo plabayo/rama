@@ -1733,18 +1733,17 @@ impl UdpIngressFlowControl {
 
     fn pause(&self, state: u8, blocked_bytes: usize) -> bool {
         self.blocked_bytes.store(blocked_bytes, Ordering::Release);
-        if self
+        let paused = self
             .state
             .compare_exchange(INGRESS_OPEN, state, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return false;
-        }
+            .is_ok();
         #[cfg(test)]
-        self.global
-            .paused_transitions
-            .fetch_add(1, Ordering::Relaxed);
-        true
+        if paused {
+            self.global
+                .paused_transitions
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        paused
     }
 
     fn resume(&self, expected_state: u8, probe_id: u64) -> bool {
