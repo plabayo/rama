@@ -213,15 +213,16 @@ async fn invalid_informational_status_returns_error() {
 
         assert_eq!(req.method(), &http::Method::GET);
 
-        // Try to send invalid informational response (200 is not 1xx)
-        // This should return an error
-        let invalid_response = Response::builder().status(StatusCode::OK).body(()).unwrap();
-        let result = stream.send_informational(invalid_response);
-
-        // Expect error for invalid status code
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(err_msg.contains("invalid informational status code"));
+        // 200 is not 1xx, and HTTP/2 has no 101 (RFC 9113 §8.6).
+        for status in [StatusCode::OK, StatusCode::SWITCHING_PROTOCOLS] {
+            let invalid_response = Response::builder().status(status).body(()).unwrap();
+            let err = stream.send_informational(invalid_response).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("invalid informational status code"),
+                "{status}"
+            );
+        }
 
         // Send actual final response after error
         let rsp = Response::builder().status(StatusCode::OK).body(()).unwrap();
@@ -450,6 +451,151 @@ async fn informational_responses_with_body_streaming() {
 
         send_stream.send_data("response data".into(), true).unwrap();
 
+        assert!(srv.next().await.is_none());
+    };
+
+    join(client, srv).await;
+}
+
+/// A 1xx only precedes the final response: once that is sent, or the stream reset, it errors
+/// without reaching the peer.
+#[tokio::test]
+async fn informational_only_precedes_the_final_response() {
+    h2_support::trace_init!();
+    let (io, mut client) = mock::new();
+
+    let client = async move {
+        let settings = client.assert_server_handshake().await;
+        assert_default_settings!(settings);
+        client
+            .send_frame(
+                frames::headers(1)
+                    .request("GET", "https://example.com/")
+                    .eos(),
+            )
+            .await;
+        client
+            .send_frame(
+                frames::headers(3)
+                    .request("GET", "https://example.com/")
+                    .eos(),
+            )
+            .await;
+        client.send_frame(frames::reset(3).cancel()).await;
+        client
+            .send_frame(
+                frames::headers(5)
+                    .request("GET", "https://example.com/")
+                    .eos(),
+            )
+            .await;
+        client
+            .recv_frame(frames::headers(1).response(StatusCode::OK))
+            .await;
+        client
+            .recv_frame(frames::headers(5).response(StatusCode::OK).eos())
+            .await;
+        client.recv_frame(frames::data(1, &b"done"[..]).eos()).await;
+    };
+
+    let srv = async move {
+        let mut srv = server::handshake(io).await.expect("handshake");
+        let (_req, mut answered) = srv.next().await.unwrap().unwrap();
+        let (_req, mut reset) = srv.next().await.unwrap().unwrap();
+        // Frames are read in order: the reset of stream 3 came before this request.
+        let (_req, mut last) = srv.next().await.unwrap().unwrap();
+
+        let early_hints = || {
+            Response::builder()
+                .status(StatusCode::EARLY_HINTS)
+                .body(())
+                .unwrap()
+        };
+        let ok = || Response::builder().status(StatusCode::OK).body(()).unwrap();
+
+        let mut body = answered.send_response(ok(), false).unwrap();
+        answered.send_informational(early_hints()).unwrap_err();
+        body.send_data("done".into(), true).unwrap();
+        answered.send_informational(early_hints()).unwrap_err();
+        reset.send_informational(early_hints()).unwrap_err();
+        last.send_response(ok(), true).unwrap();
+
+        assert!(srv.next().await.is_none());
+    };
+
+    join(client, srv).await;
+}
+
+#[tokio::test]
+async fn informational_after_the_connection_is_gone_errors() {
+    h2_support::trace_init!();
+    let (io, mut client) = mock::new();
+
+    let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+
+    let client = async move {
+        let settings = client.assert_server_handshake().await;
+        assert_default_settings!(settings);
+        client
+            .send_frame(
+                frames::headers(1)
+                    .request("GET", "https://example.com/")
+                    .eos(),
+            )
+            .await;
+        accepted_rx.await.unwrap();
+    };
+
+    let srv = async move {
+        let mut srv = server::handshake(io).await.expect("handshake");
+        let (_req, mut stream) = srv.next().await.unwrap().unwrap();
+        accepted_tx.send(()).unwrap();
+        assert!(srv.next().await.is_none());
+        drop(srv);
+        let early_hints = Response::builder()
+            .status(StatusCode::EARLY_HINTS)
+            .body(())
+            .unwrap();
+        stream.send_informational(early_hints).unwrap_err();
+    };
+
+    join(client, srv).await;
+}
+
+/// A final response is never 1xx; the stream still takes its real one after.
+#[tokio::test]
+async fn final_response_cannot_be_informational() {
+    h2_support::trace_init!();
+    let (io, mut client) = mock::new();
+
+    let client = async move {
+        let settings = client.assert_server_handshake().await;
+        assert_default_settings!(settings);
+        client
+            .send_frame(
+                frames::headers(1)
+                    .request("GET", "https://example.com/")
+                    .eos(),
+            )
+            .await;
+        client
+            .recv_frame(frames::headers(1).response(StatusCode::OK).eos())
+            .await;
+    };
+
+    let srv = async move {
+        let mut srv = server::handshake(io).await.expect("handshake");
+        let (_req, mut stream) = srv.next().await.unwrap().unwrap();
+        for status in [StatusCode::SWITCHING_PROTOCOLS, StatusCode::EARLY_HINTS] {
+            let response = Response::builder().status(status).body(()).unwrap();
+            let err = stream.send_response(response, true).unwrap_err();
+            assert!(
+                err.to_string().contains("cannot be informational"),
+                "{status}"
+            );
+        }
+        let ok = Response::builder().status(StatusCode::OK).body(()).unwrap();
+        stream.send_response(ok, true).unwrap();
         assert!(srv.next().await.is_none());
     };
 

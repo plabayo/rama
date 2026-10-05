@@ -1505,6 +1505,9 @@ impl<B> StreamRef<B> {
         response: Response<()>,
         end_of_stream: bool,
     ) -> Result<(), UserError> {
+        if response.status().is_informational() {
+            return Err(UserError::InformationalFinalResponse);
+        }
         // We need to only drop extensions after we release our locks or there is risk for deadlocking
         let _extensions_ref = &mut Option::None;
 
@@ -1538,6 +1541,10 @@ impl<B> StreamRef<B> {
         let send_buffer = &mut *send_buffer;
 
         let actions = &mut me.actions;
+        actions.ensure_no_conn_error()?;
+        if !me.store.resolve(self.opaque.key).state.is_push_open() {
+            return Err(UserError::UnexpectedFrameType.into());
+        }
         let promised_id = actions.send.reserve_local()?;
 
         let child_key = {

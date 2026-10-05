@@ -142,7 +142,7 @@ use rama_http_types::proto::{
     ext,
     h2::{PseudoHeader, PseudoHeaderOrder, PseudoHeaderSensitivity},
 };
-use rama_http_types::{HeaderMap, Method, Request, Response, Version};
+use rama_http_types::{HeaderMap, Method, Request, Response, StatusCode, Version};
 use rama_net::extensions::StreamTransformed;
 use rama_net::uri;
 use std::pin::Pin;
@@ -1260,7 +1260,7 @@ impl<B: Buf> SendResponse<B> {
     ///
     /// # Errors
     /// This method will return an error if:
-    /// - The response status code is not in the 1xx range
+    /// - The response status code is not in the 1xx range, or is 101
     /// - The final response has already been sent
     /// - There is a connection-level error
     pub fn send_informational(&mut self, response: Response<()>) -> Result<(), crate::h2::Error> {
@@ -1273,8 +1273,9 @@ impl<B: Buf> SendResponse<B> {
             stream_id
         );
 
-        // Validate that this is an informational response (1xx status code)
-        if !response.status().is_informational() {
+        // Validate that this is an informational response (1xx status code);
+        // HTTP/2 has no 101 (RFC 9113 §8.6).
+        if !response.status().is_informational() || status == StatusCode::SWITCHING_PROTOCOLS {
             tracing::trace!(
                 "invalid informational status code: {} on stream: {:?}",
                 status,

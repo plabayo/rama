@@ -202,6 +202,11 @@ impl Send {
             "Informational frames must not have end_stream flag set. Validation should happen at the internal send informational header streams."
         );
 
+        // A 1xx precedes the final response (RFC 9110 §15.2), on a stream still open for it.
+        if !stream.state.is_send_headers() {
+            return Err(UserError::UnexpectedFrameType);
+        }
+
         // Queue the frame for sending WITHOUT changing stream state
         // This is the key difference from send_headers - we don't call stream.state.send_open()
         self.prioritize

@@ -54,6 +54,9 @@ pub enum UserError {
     /// Invalid status code for informational response (must be 1xx)
     InvalidInformationalStatusCode,
 
+    /// A final response with an informational (1xx) status code.
+    InformationalFinalResponse,
+
     /// Tries to set a value invalid for the relevant setting.
     InvalidSettingValue,
 
@@ -115,6 +118,7 @@ impl fmt::Display for UserError {
             Self::SendSettingsWhilePending => "sending SETTINGS before received previous ACK",
             Self::PeerDisabledServerPush => "sending PUSH_PROMISE to peer who disabled server push",
             Self::InvalidInformationalStatusCode => "invalid informational status code",
+            Self::InformationalFinalResponse => "final response cannot be informational",
             Self::InvalidSettingValue => "value is invalid for the relevant setting",
             Self::PollAfterReady => "future was polled after it was already ready",
             Self::ExtendedConnectNotEnabled => "peer did not enable extended CONNECT",
