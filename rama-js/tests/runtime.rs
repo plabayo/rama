@@ -109,8 +109,8 @@ fn eval_state_persists_and_call() {
         .eval("function next(by) { counter += by; return counter; }")
         .unwrap();
 
-    assert!(runtime.has_global_fn("next"));
-    assert!(!runtime.has_global_fn("previous"));
+    assert!(runtime.has_global_fn("next").unwrap());
+    assert!(!runtime.has_global_fn("previous").unwrap());
 
     assert_eq!(runtime.call("next", [2]).unwrap(), JsValue::Number(2.0));
     assert_eq!(runtime.call("next", [3]).unwrap(), JsValue::Number(5.0));
@@ -184,7 +184,7 @@ fn global_function_declaration_cannot_delete_itself_while_loading() {
         .unwrap();
 
     assert_eq!(runtime.eval("deletedStable").unwrap(), JsValue::Bool(false));
-    assert!(runtime.has_global_fn("stable"));
+    assert!(runtime.has_global_fn("stable").unwrap());
     assert_eq!(
         runtime.call("stable", [] as [JsValue; 0]).unwrap(),
         JsValue::Number(42.0),
@@ -336,7 +336,9 @@ fn execution_time_limit_bounds_total_work() {
     assert!(runtime.is_poisoned());
     let err = runtime.eval("1").unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::Setup);
-    assert!(!runtime.has_global_fn("f"));
+    // no answer about `f`, rather than a wrong one
+    let err = runtime.has_global_fn("f").unwrap_err();
+    assert_eq!(err.kind(), JsErrorKind::Setup);
 }
 
 #[test]
@@ -471,12 +473,12 @@ fn call_reaches_function_declarations_not_lexical_bindings() {
 
     // a function declaration lands on the global object: callable
     assert_eq!(runtime.call("decl", [21.0]).unwrap(), JsValue::Number(42.0));
-    assert!(runtime.has_global_fn("decl"));
+    assert!(runtime.has_global_fn("decl").unwrap());
 
     // a top-level const arrow lives in the declarative scope: not callable
     let err = runtime.call("arrow", [21.0]).unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::NotFound);
-    assert!(!runtime.has_global_fn("arrow"));
+    assert!(!runtime.has_global_fn("arrow").unwrap());
 }
 
 #[test]
@@ -1619,7 +1621,7 @@ fn an_accessor_entry_point_is_not_invoked() {
         )
         .unwrap();
 
-    assert!(!runtime.has_global_fn("evil"));
+    assert!(!runtime.has_global_fn("evil").unwrap());
     let err = runtime.call("evil", [1.0]).unwrap_err();
     assert_eq!(err.kind(), JsErrorKind::NotFound);
     assert_eq!(runtime.eval("getterRan").unwrap(), JsValue::Bool(false));

@@ -651,14 +651,13 @@ impl LoadedScript {
     }
 
     /// Whether the loaded script defines the global function `name`.
+    ///
+    /// The probe runs no script code, so its failure is never a verdict on the script.
     async fn probe(worker: &JsWorker, name: &'static str) -> Result<bool, LoadError> {
         worker
-            .run(move |runtime| Ok(runtime.has_global_fn(name)))
+            .run(move |runtime| runtime.has_global_fn(name))
             .await
-            .map_err(|err| {
-                let kind = err.kind();
-                LoadError::classify(kind, err.context("probe pac entry point"))
-            })
+            .map_err(|err| LoadError::Environment(err.context("probe pac entry point")))
     }
 }
 

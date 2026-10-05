@@ -465,21 +465,13 @@ impl Engine {
         self.finish_value(result)
     }
 
-    pub(crate) fn has_global_fn(&mut self, name: &str) -> bool {
-        if self.prepare_operation().is_err() {
-            return false;
-        }
-        match self
+    pub(crate) fn has_global_fn(&mut self, name: &str) -> Result<bool, JsError> {
+        self.prepare_operation()?;
+        let result = self
             .bindings
             .rama_js_engine_runtime()
-            .call_has_global_function(&mut self.store, name)
-        {
-            Ok(found) => found,
-            Err(_error) => {
-                self.poisoned = true;
-                false
-            }
-        }
+            .call_has_global_function(&mut self.store, name);
+        result.map_err(|error| self.trap_error(&error))
     }
 
     pub(crate) fn set_host_global(
