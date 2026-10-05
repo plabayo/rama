@@ -29,6 +29,7 @@ jobs:
         run: |
           workflow_id=$(jq -r .workflow_run.workflow_id "${GITHUB_EVENT_PATH}")
           # Finished main pushes of this repo as `[run_number, run_attempt, conclusion]`.
+          # shellcheck disable=SC2016 # `$repo` is a jq variable
           finished='[.[] | select(.event == "push" and .head_branch == "main"
               and .head_repository.full_name == $repo
               and .status == "completed" and .conclusion != "cancelled")
