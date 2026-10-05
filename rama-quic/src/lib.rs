@@ -74,8 +74,10 @@ pub mod tls {
     /// Interfaces for supplying a QUIC TLS 1.3 implementation.
     ///
     /// Implement [`provider::ClientConfig`] and [`provider::ServerConfig`] and pass them to
-    /// [`crate::ClientConfig::new`] and [`crate::ServerConfig::new`]. The latter also
-    /// accepts a custom address-token key, so no built-in crypto feature is required.
+    /// [`crate::ClientConfig::new`] and [`crate::ServerConfig::new`]; a
+    /// [`provider::ServerConfigResolver`] that resolves the server configuration per
+    /// ClientHello goes to [`crate::ServerConfig::new_resolving`]. The server constructors also
+    /// take a custom address-token key, so no built-in crypto feature is required.
     /// A provider encodes local [`rama_quic_proto::transport_parameters::TransportParameters`]
     /// into its TLS extension and decodes its peer's extension with that type's `read`.
     ///
@@ -84,8 +86,9 @@ pub mod tls {
     pub mod provider {
         pub use crate::proto::crypto::{
             AeadKey, ClientConfig, ClientHelloMessage, DirectionalKeys, ExportKeyingMaterialError,
-            HandshakeEvent, HandshakeTokenKey, InitialKeysError, KeyPair, Keys,
-            ResolveServerConfig, ServerConfig, Session, UnsupportedVersion,
+            HandshakeEvent, HandshakeTokenKey, InitialKeysError, InitialServerConfig, KeyPair,
+            Keys, ServerConfig, ServerConfigResolution, ServerConfigResolver, Session,
+            UnsupportedVersion,
         };
     }
 

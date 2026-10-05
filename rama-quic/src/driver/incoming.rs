@@ -9,7 +9,8 @@ use std::{
 
 use crate::driver::sockets::Lease;
 use crate::proto::{
-    ClientHelloPeek, ConnectionError, RetryRefused, ServerConfig, crypto::ClientHelloMessage,
+    ClientHelloPeek, ConnectionError, RetryRefused, ServerConfig, ServerCrypto,
+    crypto::ClientHelloMessage,
 };
 use rama_core::telemetry::tracing;
 use rama_quic_proto::{ConnectionId, TransportError};
@@ -194,9 +195,11 @@ impl Incoming {
         self,
         admitted: Arc<ServerConfig>,
     ) -> Result<Connection, ConnectionError> {
+        let ServerCrypto::Resolver(resolver) = &admitted.crypto else {
+            return self.accept_with(admitted)?.await;
+        };
         let client_hello = self.client_hello_message().await?;
-        let resolved = admitted
-            .crypto
+        let resolved = resolver
             .clone()
             .resolve(client_hello)
             .await
@@ -206,13 +209,8 @@ impl Incoming {
                     "server configuration unresolved",
                 ))
             })?;
-        if resolved.requires_client_hello() {
-            return Err(ConnectionError::TransportError(
-                TransportError::INTERNAL_ERROR("resolved server configuration is not final"),
-            ));
-        }
         let mut config = ServerConfig::clone(&admitted);
-        config.crypto = resolved;
+        config.crypto = ServerCrypto::Fixed(resolved);
         self.accept_with(Arc::new(config))?.await
     }
 }

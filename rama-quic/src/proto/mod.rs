@@ -69,6 +69,7 @@ pub(crate) use connection::qlog::ConnectionQlog;
 mod config;
 #[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
 pub use config::AddressTokenKey;
+pub(crate) use config::ServerCrypto;
 pub use config::{
     AckFrequencyConfig, ClientConfig, ConfigError, CongestionControl, EndpointConfig, IdleTimeout,
     MIN_INITIAL_CONGESTION_WINDOW, MtuDiscoveryConfig, PreferredAddressPolicy, ReceiveQueueLimits,

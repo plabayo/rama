@@ -212,7 +212,11 @@ fn invalid_first_accepted_initial_logs_drop_without_plaintext_length() {
     server.transport = Arc::new(transport);
     let version = DEFAULT_SUPPORTED_VERSIONS[0];
     let destination = ConnectionId::new(&[1; 8]);
-    let keys = server.crypto.initial_keys(version, &destination).unwrap();
+    let keys = server
+        .crypto
+        .initial()
+        .initial_keys(version, &destination)
+        .unwrap();
     let mut pair = Pair::new(
         Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         server,

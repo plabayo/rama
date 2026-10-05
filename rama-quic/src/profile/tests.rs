@@ -46,7 +46,7 @@ fn include_fixture(name: &str) -> &'static str {
 fn provider() -> std::sync::Arc<dyn crate::proto::crypto::ServerConfig> {
     let identity = crate::test_helpers::identity();
     let server = crate::test_helpers::server(&identity);
-    server.crypto.clone()
+    server.crypto.into_fixed()
 }
 
 /// The parameter identifiers a capture carried, in order.

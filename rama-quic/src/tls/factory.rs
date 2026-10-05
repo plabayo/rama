@@ -124,7 +124,7 @@ impl QuicServerConfigProvider for RustlsTlsProvider {
         config: &TlsServerConfig,
         options: TlsOptions,
     ) -> Result<ServerConfig, TlsConfigError> {
-        Ok(ServerConfig::with_crypto(
+        Ok(ServerConfig::with_random_token_key(
             rustls_crypto::server_config_from_rama(config, self.crypto.clone(), options)?,
         ))
     }
@@ -166,9 +166,9 @@ impl QuicServerConfigProvider for BoringTlsProvider {
         config: &TlsServerConfig,
         options: TlsOptions,
     ) -> Result<ServerConfig, TlsConfigError> {
-        Ok(ServerConfig::with_crypto(Arc::new(
-            boring_crypto::QuicServerConfig::from_rama(config, options)?,
-        )))
+        Ok(ServerConfig::with_random_token_key(
+            boring_crypto::server_config_from_rama(config, options)?,
+        ))
     }
 }
 

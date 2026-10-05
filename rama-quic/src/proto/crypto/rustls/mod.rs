@@ -761,6 +761,25 @@ impl QuicServerConfig {
     }
 }
 
+impl crypto::InitialServerConfig for QuicServerConfig {
+    fn initial_keys(
+        &self,
+        version: rama_quic_proto::Version,
+        dst_cid: &ConnectionId,
+    ) -> Result<Keys, crypto::InitialKeysError> {
+        server_initial_keys(version, dst_cid, &self.initial)
+    }
+
+    fn retry_tag(
+        &self,
+        version: rama_quic_proto::Version,
+        orig_dst_cid: &ConnectionId,
+        packet: &[u8],
+    ) -> Result<[u8; 16], CryptoError> {
+        retry_tag(version, orig_dst_cid, packet)
+    }
+}
+
 impl crypto::ServerConfig for QuicServerConfig {
     fn start_session(
         self: Arc<Self>,
@@ -781,23 +800,6 @@ impl crypto::ServerConfig for QuicServerConfig {
         params: &TransportParameters,
     ) -> Result<Box<dyn crypto::Session>, TransportError> {
         self.start_with(self.config_for(negotiated, false), negotiated, params)
-    }
-
-    fn initial_keys(
-        &self,
-        version: rama_quic_proto::Version,
-        dst_cid: &ConnectionId,
-    ) -> Result<Keys, crypto::InitialKeysError> {
-        server_initial_keys(version, dst_cid, &self.initial)
-    }
-
-    fn retry_tag(
-        &self,
-        version: rama_quic_proto::Version,
-        orig_dst_cid: &ConnectionId,
-        packet: &[u8],
-    ) -> Result<[u8; 16], CryptoError> {
-        retry_tag(version, orig_dst_cid, packet)
     }
 }
 
@@ -831,7 +833,7 @@ impl QuicDynamicServerConfig {
     }
 }
 
-impl crypto::ServerConfig for QuicDynamicServerConfig {
+impl crypto::InitialServerConfig for QuicDynamicServerConfig {
     fn initial_keys(
         &self,
         version: rama_quic_proto::Version,
@@ -848,25 +850,13 @@ impl crypto::ServerConfig for QuicDynamicServerConfig {
     ) -> Result<[u8; 16], CryptoError> {
         retry_tag(version, orig_dst_cid, packet)
     }
+}
 
-    fn start_session(
-        self: Arc<Self>,
-        _version: rama_quic_proto::Version,
-        _params: &TransportParameters,
-    ) -> Result<Box<dyn crypto::Session>, TransportError> {
-        Err(TransportError::INTERNAL_ERROR(
-            "a dynamic configuration needs the ClientHello first: await the Incoming",
-        ))
-    }
-
-    fn requires_client_hello(&self) -> bool {
-        true
-    }
-
+impl crypto::ServerConfigResolver for QuicDynamicServerConfig {
     fn resolve(
         self: Arc<Self>,
         client_hello: crypto::ClientHelloMessage,
-    ) -> crypto::ResolveServerConfig {
+    ) -> crypto::ServerConfigResolution {
         Box::pin(async move {
             // rustls hands its own ClientHello view only to an acceptor reading TLS records,
             // so the bare handshake message is framed as handshake records first.

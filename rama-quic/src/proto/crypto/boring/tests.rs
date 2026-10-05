@@ -656,7 +656,8 @@ fn client_authentication_is_verified_and_retained_on_resumption() {
             server_backend,
         )
         .unwrap()
-        .crypto;
+        .crypto
+        .into_fixed();
         for (identity, accepted) in [
             (Some(trusted.clone()), true),
             (Some(stranger.clone()), false),

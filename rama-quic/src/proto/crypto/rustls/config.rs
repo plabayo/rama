@@ -1,5 +1,5 @@
 use super::{QuicClientConfig, QuicDynamicServerConfig, QuicServerConfig, rustls};
-use crate::proto::crypto;
+use crate::proto::ServerCrypto;
 pub(crate) use crate::proto::crypto::config::{AlpnPolicy, TlsConfigError, TlsOptions};
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions, client::TlsClientConfig, server::TlsServerConfig,
@@ -56,18 +56,18 @@ pub(crate) fn server_config_from_rama(
     config: &TlsServerConfig,
     provider: Arc<rustls::crypto::CryptoProvider>,
     options: TlsOptions,
-) -> Result<Arc<dyn crypto::ServerConfig>, TlsConfigError> {
+) -> Result<ServerCrypto, TlsConfigError> {
     let pieces = RustlsTlsAcceptorConfig::from_extensions(config.as_extensions());
-    match pieces.dynamic {
-        Some(dynamic) => Ok(Arc::new(QuicDynamicServerConfig::new(
+    Ok(match pieces.dynamic {
+        Some(dynamic) => ServerCrypto::Resolver(Arc::new(QuicDynamicServerConfig::new(
             dynamic.clone(),
             &provider,
             options,
         )?)),
-        None => Ok(Arc::new(QuicServerConfig::from_rama(
+        None => ServerCrypto::Fixed(Arc::new(QuicServerConfig::from_rama(
             config, provider, options,
         )?)),
-    }
+    })
 }
 
 impl QuicServerConfig {
@@ -311,9 +311,7 @@ mod tests {
         ));
         let resolving =
             server_config_from_rama(&config, configured_provider(), TlsOptions::default()).unwrap();
-        assert!(crypto::ServerConfig::requires_client_hello(
-            resolving.as_ref()
-        ));
+        assert!(matches!(resolving, ServerCrypto::Resolver(_)));
     }
 
     #[test]

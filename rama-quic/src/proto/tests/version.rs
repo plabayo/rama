@@ -43,6 +43,7 @@ fn rfc9369_server_initial_is_protected_with_v2_salt_and_labels() {
     let payload = hex(SERVER_INITIAL_PAYLOAD);
     let server = server_config()
         .crypto
+        .initial()
         .initial_keys(Version::V2, &cid)
         .unwrap();
     let mut packet = header.clone();
@@ -80,6 +81,7 @@ fn v1_initial_keys_do_not_open_a_v2_initial() {
     let mut packet = hex(SERVER_INITIAL_PROTECTED);
     let read = server_config()
         .crypto
+        .initial()
         .initial_keys(Version::V1, &cid)
         .unwrap()
         .remote
@@ -95,11 +97,19 @@ fn rfc9369_retry_tag_uses_the_v2_key_and_nonce() {
     let packet = hex(RETRY_WITHOUT_TAG);
     let server = server_config();
     assert_eq!(
-        server.crypto.retry_tag(Version::V2, &cid, &packet).unwrap()[..],
+        server
+            .crypto
+            .initial()
+            .retry_tag(Version::V2, &cid, &packet)
+            .unwrap()[..],
         hex(RETRY_TAG)[..]
     );
     assert_ne!(
-        server.crypto.retry_tag(Version::V1, &cid, &packet).unwrap()[..],
+        server
+            .crypto
+            .initial()
+            .retry_tag(Version::V1, &cid, &packet)
+            .unwrap()[..],
         hex(RETRY_TAG)[..]
     );
 
@@ -125,7 +135,10 @@ fn unknown_versions_are_refused_by_the_provider() {
     let cid = ConnectionId::new(&hex("8394c8f03e515708"));
     let reserved = Version::from_u32(0x0a1a_2a3a);
     assert!(matches!(
-        server_config().crypto.initial_keys(reserved, &cid),
+        server_config()
+            .crypto
+            .initial()
+            .initial_keys(reserved, &cid),
         Err(crypto::InitialKeysError::UnsupportedVersion)
     ));
     assert_matches!(

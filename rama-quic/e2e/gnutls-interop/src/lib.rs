@@ -79,7 +79,7 @@ impl provider::ClientConfig for Client {
     }
 }
 
-impl provider::ServerConfig for Server {
+impl provider::InitialServerConfig for Server {
     fn initial_keys(&self, version: Version, cid: &ConnectionId) -> Result<Keys, InitialKeysError> {
         if version != Version::V1 {
             return Err(InitialKeysError::UnsupportedVersion);
@@ -95,7 +95,9 @@ impl provider::ServerConfig for Server {
     ) -> Result<[u8; 16], CryptoError> {
         packet::retry_tag(cid, packet).map_err(|_| CryptoError::new())
     }
+}
 
+impl provider::ServerConfig for Server {
     fn start_session(
         self: Arc<Self>,
         _: Version,
@@ -114,6 +116,21 @@ impl provider::ServerConfig for Server {
         })
         .map_err(failure)?;
         Ok(Box::new(Session::new(native, Side::Server)?))
+    }
+
+    fn supports_compatible_negotiation(&self) -> bool {
+        false
+    }
+
+    fn start_negotiated_session(
+        self: Arc<Self>,
+        _: Version,
+        _: Version,
+        _: &TransportParameters,
+    ) -> Result<Box<dyn provider::Session>, TransportError> {
+        Err(TransportError::INTERNAL_ERROR(
+            "GnuTLS sessions stay in the version they start in",
+        ))
     }
 }
 

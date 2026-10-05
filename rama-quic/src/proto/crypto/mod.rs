@@ -9,10 +9,7 @@
 
 use std::{fmt, future::Future, pin::Pin, str, sync::Arc};
 
-use rama_core::{
-    bytes::Bytes,
-    error::{BoxError, BoxErrorExt as _},
-};
+use rama_core::{bytes::Bytes, error::BoxError};
 use rama_crypto::pki_types::CertificateDer;
 use rama_tls::client::ClientHello;
 pub use rama_tls::client::NegotiatedTlsParameters;
@@ -203,8 +200,9 @@ pub trait ClientConfig: Send + Sync {
     }
 }
 
-/// Server-side configuration for the crypto protocol
-pub trait ServerConfig: Send + Sync {
+/// What a server needs before any session starts: the keys of a client's Initial packets and
+/// the integrity tags of Retry packets.
+pub trait InitialServerConfig: Send + Sync {
     /// Create the initial set of keys given the client's initial destination ConnectionId
     fn initial_keys(
         &self,
@@ -221,7 +219,10 @@ pub trait ServerConfig: Send + Sync {
         orig_dst_cid: &ConnectionId,
         packet: &[u8],
     ) -> Result<[u8; 16], CryptoError>;
+}
 
+/// Server-side configuration for the crypto protocol: every session starts from it.
+pub trait ServerConfig: InitialServerConfig {
     /// Start a server session with this configuration
     ///
     /// Never called if `initial_keys` rejected `version`.
@@ -231,10 +232,8 @@ pub trait ServerConfig: Send + Sync {
         params: &TransportParameters,
     ) -> Result<Box<dyn Session>, TransportError>;
 
-    /// Whether [`Self::start_negotiated_session`] is implemented.
-    fn supports_compatible_negotiation(&self) -> bool {
-        false
-    }
+    /// Whether [`Self::start_negotiated_session`] can start sessions.
+    fn supports_compatible_negotiation(&self) -> bool;
 
     /// Start a server session for a connection the server moves from the client's `original`
     /// version to the compatible `negotiated` version (RFC 9368 §2.3).
@@ -248,47 +247,25 @@ pub trait ServerConfig: Send + Sync {
         original: Version,
         negotiated: Version,
         params: &TransportParameters,
-    ) -> Result<Box<dyn Session>, TransportError> {
-        let _ = (original, negotiated, params);
-        Err(TransportError::INTERNAL_ERROR(
-            "TLS provider cannot move a connection to another version",
-        ))
-    }
-
-    /// Whether sessions from this configuration can switch to a compatible version during
-    /// the handshake; see [`ClientConfig::supports_version_switch`].
-    fn supports_version_switch(&self) -> bool {
-        false
-    }
-
-    /// Whether a session needs the client's ClientHello before it can start, for instance to
-    /// issue a certificate for the requested server name; see [`Self::resolve`].
-    ///
-    /// Such an attempt is accepted only once its whole ClientHello arrived and resolved:
-    /// awaiting the `Incoming` does both. A ClientHello larger than 16 KiB is refused, and
-    /// until the attempt is accepted nothing is acknowledged, so the resolution time adds to
-    /// the client's first round-trip sample.
-    fn requires_client_hello(&self) -> bool {
-        false
-    }
-
-    /// Resolve the configuration a connection's session starts from, given its ClientHello.
-    ///
-    /// Called before any session starts, and only when [`Self::requires_client_hello`] is
-    /// `true`. The resolved configuration must not require a ClientHello itself. A failure
-    /// refuses the attempt.
-    fn resolve(self: Arc<Self>, client_hello: ClientHelloMessage) -> ResolveServerConfig {
-        let _ = client_hello;
-        Box::pin(async {
-            Err(BoxError::from_static_str(
-                "TLS provider does not resolve server configurations",
-            ))
-        })
-    }
+    ) -> Result<Box<dyn Session>, TransportError>;
 }
 
-/// The configuration a [`ServerConfig::resolve`] call produces.
-pub type ResolveServerConfig =
+/// Server-side configuration resolved per connection from its ClientHello, for instance to
+/// issue a certificate for the requested server name.
+///
+/// A connection is accepted only once its whole ClientHello arrived and resolved: awaiting
+/// the `Incoming` does both. A ClientHello larger than 16 KiB is refused, and until the
+/// connection is accepted nothing is acknowledged, so the resolution time adds to the
+/// client's first round-trip sample.
+pub trait ServerConfigResolver: InitialServerConfig {
+    /// Resolve the configuration a connection's session starts from, given its ClientHello.
+    ///
+    /// A failure refuses the connection.
+    fn resolve(self: Arc<Self>, client_hello: ClientHelloMessage) -> ServerConfigResolution;
+}
+
+/// The configuration a [`ServerConfigResolver`] resolves.
+pub type ServerConfigResolution =
     Pin<Box<dyn Future<Output = Result<Arc<dyn ServerConfig>, BoxError>> + Send>>;
 
 /// A client's ClientHello as its first flight carried it.
@@ -303,8 +280,8 @@ pub struct ClientHelloMessage {
 impl ClientHelloMessage {
     /// A ClientHello `message`, from its type byte to the end of its body, and what it says.
     ///
-    /// Useful to exercise [`ServerConfig::resolve`]; the endpoint only hands out consistent
-    /// pairs.
+    /// Useful to exercise [`ServerConfigResolver::resolve`]; the endpoint only hands out
+    /// consistent pairs.
     #[must_use]
     pub fn new(message: Bytes, client_hello: ClientHello) -> Self {
         Self {

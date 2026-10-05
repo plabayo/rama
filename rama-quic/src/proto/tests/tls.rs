@@ -19,7 +19,7 @@ impl crypto::ClientConfig for FailingClient {
 }
 
 struct FailingServer(Arc<dyn crypto::ServerConfig>, bool);
-impl crypto::ServerConfig for FailingServer {
+impl crypto::InitialServerConfig for FailingServer {
     fn initial_keys(
         &self,
         version: Version,
@@ -35,6 +35,8 @@ impl crypto::ServerConfig for FailingServer {
     ) -> Result<[u8; 16], rama_quic_proto::crypto::CryptoError> {
         self.0.retry_tag(version, cid, packet)
     }
+}
+impl crypto::ServerConfig for FailingServer {
     fn start_session(
         self: Arc<Self>,
         _: Version,
@@ -45,6 +47,17 @@ impl crypto::ServerConfig for FailingServer {
         } else {
             Err(failure())
         }
+    }
+    fn supports_compatible_negotiation(&self) -> bool {
+        false
+    }
+    fn start_negotiated_session(
+        self: Arc<Self>,
+        _: Version,
+        _: Version,
+        _: &TransportParameters,
+    ) -> Result<Box<dyn crypto::Session>, TransportError> {
+        Err(failure())
     }
 }
 
@@ -149,7 +162,10 @@ fn failed_server_session_releases_reserved_and_preferred_cids() {
     use std::error::Error as _;
     for initial_keys in [false, true] {
         let mut config = server_config();
-        config.crypto = Arc::new(FailingServer(config.crypto, initial_keys));
+        config.crypto = ServerCrypto::Fixed(Arc::new(FailingServer(
+            config.crypto.into_fixed(),
+            initial_keys,
+        )));
         config.preferred_address_v4 = Some("127.0.0.1:444".parse().unwrap());
         let mut pair = Pair::new(
             Arc::new(EndpointConfig::try_with_rand_key().unwrap()),

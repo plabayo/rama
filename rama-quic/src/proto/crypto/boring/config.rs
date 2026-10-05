@@ -26,7 +26,7 @@ use super::{
     session::{TlsSession, crypto_error},
 };
 use crate::proto::{
-    ConnectError,
+    ConnectError, ServerCrypto,
     crypto::{
         self,
         config::{TlsConfigError, TlsOptions},
@@ -231,44 +231,70 @@ impl QuicClientConfig {
 }
 
 pub(crate) struct QuicServerConfig {
-    identity: ServerIdentity,
+    /// The certificate issued for this connection, installed on its session; without one the
+    /// contexts carry the identity.
+    issued: Option<IssuedCertificate>,
     /// One context per standardized version: BoringSSL resumes a session only under the
     /// session-ID context that issued it, which scopes tickets by version (RFC 9369 §5).
     contexts: [SslContext; 2],
     early_data: bool,
 }
 
-enum ServerIdentity {
-    /// The contexts carry the identity.
-    Fixed,
-    /// Certificates are issued per ClientHello and installed on each session; every
-    /// connection shares the contexts, and with them the session tickets they issue.
-    Issued(Box<TlsAcceptorData>),
-    /// A connection resolved from [`Self::Issued`], with the certificate it was issued.
-    Installed(IssuedCertificate),
+/// Issues a certificate per ClientHello, installed on the session of a connection that shares
+/// the contexts, and with them the session tickets they issue.
+pub(crate) struct QuicServerCertIssuer {
+    data: TlsAcceptorData,
+    contexts: [SslContext; 2],
+    early_data: bool,
+}
+
+/// The server TLS configured by `config`: fixed, or resolved per ClientHello when it issues
+/// certificates.
+pub(crate) fn server_config_from_rama(
+    config: &TlsServerConfig,
+    options: TlsOptions,
+) -> Result<ServerCrypto, TlsConfigError> {
+    let data = acceptor_data(config, options)?;
+    Ok(if data.issues_certificates() {
+        ServerCrypto::Resolver(Arc::new(QuicServerCertIssuer {
+            contexts: contexts(|| data.acceptor_builder_without_identity())?,
+            data,
+            early_data: options.early_data,
+        }))
+    } else {
+        ServerCrypto::Fixed(Arc::new(QuicServerConfig::fixed(&data, options)?))
+    })
+}
+
+fn acceptor_data(
+    config: &TlsServerConfig,
+    options: TlsOptions,
+) -> Result<TlsAcceptorData, TlsConfigError> {
+    let pieces = BoringTlsAcceptorConfig::from_extensions(config.as_extensions());
+    validate_versions(pieces.versions)?;
+    validate_alpn(pieces.alpn, options)?;
+    Ok(TlsAcceptorData::try_from(pieces)?)
 }
 
 impl QuicServerConfig {
+    /// A fixed identity; [`server_config_from_rama`] also takes certificate issuers.
+    #[cfg(test)]
     pub(crate) fn from_rama(
         config: &TlsServerConfig,
         options: TlsOptions,
     ) -> Result<Self, TlsConfigError> {
-        let pieces = BoringTlsAcceptorConfig::from_extensions(config.as_extensions());
-        validate_versions(pieces.versions)?;
-        validate_alpn(pieces.alpn, options)?;
-        let data = TlsAcceptorData::try_from(pieces)?;
-        Ok(if data.issues_certificates() {
-            Self {
-                contexts: contexts(|| data.acceptor_builder_without_identity())?,
-                identity: ServerIdentity::Issued(Box::new(data)),
-                early_data: options.early_data,
-            }
-        } else {
-            Self {
-                contexts: contexts(|| data.clone().into_static_acceptor_builder())?,
-                identity: ServerIdentity::Fixed,
-                early_data: options.early_data,
-            }
+        let data = acceptor_data(config, options)?;
+        if data.issues_certificates() {
+            return Err(TlsConfigError::UnsupportedDynamicConfig);
+        }
+        Self::fixed(&data, options)
+    }
+
+    fn fixed(data: &TlsAcceptorData, options: TlsOptions) -> Result<Self, TlsConfigError> {
+        Ok(Self {
+            issued: None,
+            contexts: contexts(|| data.clone().into_static_acceptor_builder())?,
+            early_data: options.early_data,
         })
     }
 }
@@ -293,14 +319,30 @@ fn contexts(
     Ok([context(Version::V1)?, context(Version::V2)?])
 }
 
-impl crypto::ServerConfig for QuicServerConfig {
+fn server_initial_keys(
+    version: Version,
+    cid: &ConnectionId,
+) -> Result<crypto::Keys, crypto::InitialKeysError> {
+    let wire = packet::wire(version).ok_or(crypto::InitialKeysError::UnsupportedVersion)?;
+    packet::initial_keys(wire, cid, Side::Server).map_err(crypto::InitialKeysError::Crypto)
+}
+
+fn retry_tag(
+    version: Version,
+    cid: &ConnectionId,
+    packet: &[u8],
+) -> Result<[u8; 16], crypto::CryptoError> {
+    let wire = packet::wire(version).ok_or(crypto::CryptoError::new())?;
+    packet::retry_tag(wire, cid, packet).map_err(|_error| crypto::CryptoError::new())
+}
+
+impl crypto::InitialServerConfig for QuicServerConfig {
     fn initial_keys(
         &self,
         version: Version,
         cid: &ConnectionId,
     ) -> Result<crypto::Keys, crypto::InitialKeysError> {
-        let wire = packet::wire(version).ok_or(crypto::InitialKeysError::UnsupportedVersion)?;
-        packet::initial_keys(wire, cid, Side::Server).map_err(crypto::InitialKeysError::Crypto)
+        server_initial_keys(version, cid)
     }
     fn retry_tag(
         &self,
@@ -308,9 +350,11 @@ impl crypto::ServerConfig for QuicServerConfig {
         cid: &ConnectionId,
         packet: &[u8],
     ) -> Result<[u8; 16], crypto::CryptoError> {
-        let wire = packet::wire(version).ok_or(crypto::CryptoError::new())?;
-        packet::retry_tag(wire, cid, packet).map_err(|_error| crypto::CryptoError::new())
+        retry_tag(version, cid, packet)
     }
+}
+
+impl crypto::ServerConfig for QuicServerConfig {
     fn start_session(
         self: Arc<Self>,
         version: Version,
@@ -329,23 +373,38 @@ impl crypto::ServerConfig for QuicServerConfig {
     ) -> Result<Box<dyn crypto::Session>, TransportError> {
         self.start_with(original, negotiated, params)
     }
-    fn supports_version_switch(&self) -> bool {
-        true
+}
+
+impl crypto::InitialServerConfig for QuicServerCertIssuer {
+    fn initial_keys(
+        &self,
+        version: Version,
+        cid: &ConnectionId,
+    ) -> Result<crypto::Keys, crypto::InitialKeysError> {
+        server_initial_keys(version, cid)
     }
-    fn requires_client_hello(&self) -> bool {
-        matches!(self.identity, ServerIdentity::Issued(_))
+    fn retry_tag(
+        &self,
+        version: Version,
+        cid: &ConnectionId,
+        packet: &[u8],
+    ) -> Result<[u8; 16], crypto::CryptoError> {
+        retry_tag(version, cid, packet)
     }
+}
+
+impl crypto::ServerConfigResolver for QuicServerCertIssuer {
     fn resolve(
         self: Arc<Self>,
         client_hello: crypto::ClientHelloMessage,
-    ) -> crypto::ResolveServerConfig {
+    ) -> crypto::ServerConfigResolution {
         Box::pin(async move {
-            let ServerIdentity::Issued(data) = &self.identity else {
-                return Ok(self as Arc<dyn crypto::ServerConfig>);
-            };
-            let certificate = data.issue_certificate(client_hello.client_hello()).await?;
-            let resolved: Arc<dyn crypto::ServerConfig> = Arc::new(Self {
-                identity: ServerIdentity::Installed(certificate),
+            let certificate = self
+                .data
+                .issue_certificate(client_hello.client_hello())
+                .await?;
+            let resolved: Arc<dyn crypto::ServerConfig> = Arc::new(QuicServerConfig {
+                issued: Some(certificate),
                 contexts: self.contexts.clone(),
                 early_data: self.early_data,
             });
@@ -369,19 +428,11 @@ impl QuicServerConfig {
             _ => &self.contexts[0],
         };
         let mut ssl = Ssl::new(context).map_err(|error| crypto_error(error.into()))?;
-        match &self.identity {
-            ServerIdentity::Fixed => {}
-            ServerIdentity::Installed(certificate) => {
-                certificate.install(&mut ssl).map_err(|error| {
-                    TransportError::INTERNAL_ERROR("install the issued certificate")
-                        .with_cause(ArcError::from_box_error(error))
-                })?;
-            }
-            ServerIdentity::Issued(_) => {
-                return Err(TransportError::INTERNAL_ERROR(
-                    "issued certificates need the ClientHello first: await the Incoming",
-                ));
-            }
+        if let Some(certificate) = &self.issued {
+            certificate.install(&mut ssl).map_err(|error| {
+                TransportError::INTERNAL_ERROR("install the issued certificate")
+                    .with_cause(ArcError::from_box_error(error))
+            })?;
         }
         Ok(Box::new(TlsSession::new(
             ssl,

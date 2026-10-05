@@ -6877,7 +6877,7 @@ async fn handshake_confirmed_fails_when_the_connection_ends_unconfirmed() {
 #[tokio::test]
 async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
     struct FailingServer(Arc<dyn crate::proto::crypto::ServerConfig>);
-    impl crate::proto::crypto::ServerConfig for FailingServer {
+    impl crate::proto::crypto::InitialServerConfig for FailingServer {
         fn initial_keys(
             &self,
             version: Version,
@@ -6893,8 +6893,24 @@ async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
         ) -> Result<[u8; 16], rama_quic_proto::crypto::CryptoError> {
             self.0.retry_tag(version, cid, packet)
         }
+    }
+    impl crate::proto::crypto::ServerConfig for FailingServer {
         fn start_session(
             self: Arc<Self>,
+            _: Version,
+            _: &rama_quic_proto::transport_parameters::TransportParameters,
+        ) -> Result<Box<dyn crate::proto::crypto::Session>, rama_quic_proto::TransportError>
+        {
+            Err(rama_quic_proto::TransportError::INTERNAL_ERROR(
+                "injected accept failure",
+            ))
+        }
+        fn supports_compatible_negotiation(&self) -> bool {
+            false
+        }
+        fn start_negotiated_session(
+            self: Arc<Self>,
+            _: Version,
             _: Version,
             _: &rama_quic_proto::transport_parameters::TransportParameters,
         ) -> Result<Box<dyn crate::proto::crypto::Session>, rama_quic_proto::TransportError>
@@ -6916,7 +6932,9 @@ async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
     }
 
     let (client_config, mut server_config) = configs();
-    server_config.crypto = Arc::new(FailingServer(server_config.crypto));
+    server_config.crypto = crate::proto::ServerCrypto::Fixed(Arc::new(FailingServer(
+        server_config.crypto.into_fixed(),
+    )));
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let client = endpoint(None, Executor::new(), Duration::from_secs(1));
     let connecting = client

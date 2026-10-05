@@ -26,7 +26,7 @@ use crate::proto::{
     Duration, INITIAL_MTU, Instant, MIN_INITIAL_SIZE, Transmit, TransportConfig,
     cid_generator::ConnectionIdGenerator,
     cid_queue::{CidQueue, RemCid},
-    config::{ClientConfig, EndpointConfig, ServerConfig},
+    config::{ClientConfig, EndpointConfig, ServerConfig, ServerCrypto},
     connection::{Connection, ConnectionError, SideArgs},
     crypto::{self, Keys},
     first_flight::{ClientHelloPeek, HelloAssembly, IncomingProgress},
@@ -624,6 +624,7 @@ impl Endpoint {
 
         let crypto = match server_config
             .crypto
+            .initial()
             .initial_keys(header.version.version(), dst_cid)
         {
             Ok(keys) => keys,
@@ -712,9 +713,7 @@ impl Endpoint {
             progress: progress.clone(),
             hello: HelloAssembly::default(),
         });
-        let resolving = server_config
-            .crypto
-            .requires_client_hello()
+        let resolving = matches!(server_config.crypto, ServerCrypto::Resolver(_))
             .then(|| server_config.clone());
         self.incoming_deadlines.insert((deadline, incoming_idx));
         self.index
@@ -834,8 +833,10 @@ impl Endpoint {
         // RFC 9368 §2.3: a server that prefers another compatible version needs the client's
         // offer, which is in the ClientHello. It is looked for in what has arrived so far; a
         // ClientHello still incomplete leaves the connection in the client's version.
-        let negotiated = if server_config.crypto.supports_compatible_negotiation()
-            && server_config.versions.may_switch()
+        let negotiated = if matches!(
+            &server_config.crypto,
+            ServerCrypto::Fixed(crypto) if crypto.supports_compatible_negotiation()
+        ) && server_config.versions.may_switch()
         {
             match self.client_offer(
                 version,
@@ -893,11 +894,16 @@ impl Endpoint {
             });
         }
 
-        let crypto_config = server_config.crypto.clone();
-        let tls = if negotiated == version {
-            crypto_config.start_session(version, &params)
-        } else {
-            crypto_config.start_negotiated_session(version, negotiated, &params)
+        let tls = match &server_config.crypto {
+            ServerCrypto::Fixed(crypto) if negotiated == version => {
+                crypto.clone().start_session(version, &params)
+            }
+            ServerCrypto::Fixed(crypto) => crypto
+                .clone()
+                .start_negotiated_session(version, negotiated, &params),
+            ServerCrypto::Resolver(_) => Err(TransportError::INTERNAL_ERROR(
+                "a resolving configuration needs the ClientHello first: await the Incoming",
+            )),
         };
         let tls = match tls {
             Ok(tls) => tls,
@@ -1178,7 +1184,7 @@ impl Endpoint {
         let original_len = buf.len();
         header.encode(buf);
         buf.put_slice(&token);
-        let tag = match server_config.crypto.retry_tag(
+        let tag = match server_config.crypto.initial().retry_tag(
             incoming.packet.header.version.version(),
             &incoming.packet.header.dst_cid,
             &buf[original_len..],

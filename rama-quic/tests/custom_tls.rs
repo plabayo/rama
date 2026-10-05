@@ -6,8 +6,8 @@ use rama_quic::{
     ClientConfig, ConnectError, Endpoint, ServerConfig,
     tls::provider::{
         AeadKey, ClientConfig as ClientProvider, ExportKeyingMaterialError, HandshakeEvent,
-        HandshakeTokenKey, InitialKeysError, KeyPair, Keys, ServerConfig as ServerProvider,
-        Session,
+        HandshakeTokenKey, InitialKeysError, InitialServerConfig, KeyPair, Keys,
+        ServerConfig as ServerProvider, Session,
     },
 };
 use rama_quic_proto::{
@@ -45,7 +45,7 @@ impl ClientProvider for Provider {
     }
 }
 
-impl ServerProvider for Provider {
+impl InitialServerConfig for Provider {
     fn initial_keys(&self, _: Version, _: &ConnectionId) -> Result<Keys, InitialKeysError> {
         Err(InitialKeysError::Crypto(BoxError::from(
             std::io::Error::other("custom Initial failure"),
@@ -54,8 +54,22 @@ impl ServerProvider for Provider {
     fn retry_tag(&self, _: Version, _: &ConnectionId, _: &[u8]) -> Result<[u8; 16], CryptoError> {
         Err(CryptoError::new())
     }
+}
+
+impl ServerProvider for Provider {
     fn start_session(
         self: Arc<Self>,
+        _: Version,
+        _: &TransportParameters,
+    ) -> Result<Box<dyn Session>, TransportError> {
+        Ok(Box::new(TestSession))
+    }
+    fn supports_compatible_negotiation(&self) -> bool {
+        false
+    }
+    fn start_negotiated_session(
+        self: Arc<Self>,
+        _: Version,
         _: Version,
         _: &TransportParameters,
     ) -> Result<Box<dyn Session>, TransportError> {
