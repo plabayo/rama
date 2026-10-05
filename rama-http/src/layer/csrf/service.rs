@@ -91,8 +91,7 @@ impl<S, T> Csrf<S, T> {
             Some(SecFetchSite::Unknown(_)) | None => {}
         }
 
-        // No usable cross-origin signal at all → same-origin or non-browser request. Any
-        // non-empty line counts, so an empty first one cannot hide a second.
+        // No non-empty Origin line → same-origin or non-browser request.
         if req
             .headers()
             .get_all(header::ORIGIN)

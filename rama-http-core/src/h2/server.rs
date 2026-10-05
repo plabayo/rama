@@ -1273,8 +1273,7 @@ impl<B: Buf> SendResponse<B> {
             stream_id
         );
 
-        // Validate that this is an informational response (1xx status code);
-        // HTTP/2 has no 101 (RFC 9113 §8.6).
+        // Only a 1xx is informational, and HTTP/2 has no 101 (RFC 9113 §8.6).
         if !response.status().is_informational() || status == StatusCode::SWITCHING_PROTOCOLS {
             tracing::trace!(
                 "invalid informational status code: {} on stream: {:?}",

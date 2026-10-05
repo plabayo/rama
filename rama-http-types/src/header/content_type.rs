@@ -15,8 +15,8 @@ use crate::{HeaderValue, header::is_token, mime::Mime};
 
 /// The extracted type with its parameters, `None` when no line holds a valid one.
 ///
-/// A parameter the `mime` crate cannot hold (an escaped quote, a tab, an empty or non-ASCII
-/// value) is left out.
+/// A parameter is left out unless it re-encodes to the octets it came from: printable ASCII
+/// without a quote or backslash, and not empty.
 pub fn extract_mime_type<'i>(lines: impl IntoIterator<Item = &'i HeaderValue>) -> Option<Mime> {
     let value = combined(lines)?;
     let (winner, inherited_charset) = extract(&value)?;
@@ -267,6 +267,7 @@ fn to_mime(essence: &str, parameters: &[(&str, Cow<'_, str>)]) -> Option<Mime> {
     serialized.push_str(essence);
     for (name, value) in parameters {
         let quoted = !is_token(value.as_bytes());
+        // `mime` holds a quoted value raw: UTF-8 or a backslash would not re-encode as sent.
         if quoted
             && (value.is_empty()
                 || !value
@@ -433,6 +434,8 @@ mod tests {
             ("text/html;x=\"a b\"", "text/html", &[("x", "a b")]),
             // The `mime` crate holds no escaped quote: left out.
             ("text/html;x=\"a\\\"b\";y=2", "text/html", &[("y", "2")]),
+            // Nor a backslash, which a re-encoded value would turn into an escape.
+            ("text/html;x=\"a\\\\b\";y=2", "text/html", &[("y", "2")]),
             (
                 "text/html;x=\"unterminated",
                 "text/html",
@@ -458,15 +461,11 @@ mod tests {
         ] {
             let mime = extract_mime_type(&values(&[line])).unwrap();
             assert_eq!(mime.essence_str(), essence, "{line}");
-            let kept: Vec<(String, String)> = mime
+            let kept: Vec<_> = mime
                 .params()
-                .map(|(name, value)| (name.as_str().to_owned(), value.as_str().to_owned()))
+                .map(|(name, value)| (name.as_str(), value.as_str()))
                 .collect();
-            let expected: Vec<(String, String)> = parameters
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-                .collect();
-            assert_eq!(kept, expected, "{line}");
+            assert_eq!(kept, parameters, "{line}");
         }
     }
 
@@ -489,8 +488,7 @@ mod tests {
             extract_mime_type(&values).unwrap().essence_str(),
             "text/html"
         );
-        // `\xff` is a valid parameter code point: the line keeps its own charset, inheriting
-        // none, which the `mime` crate cannot hold.
+        // `\xff` is a valid code point, so nothing is inherited; as UTF-8 it would not re-encode.
         let values = [
             HeaderValue::from_static("text/html;charset=gbk"),
             HeaderValue::from_bytes(b"text/html;charset=\xff").unwrap(),
@@ -498,6 +496,10 @@ mod tests {
         let mime = extract_mime_type(&values).unwrap();
         assert_eq!(mime.essence_str(), "text/html");
         assert_eq!(mime.get_param(mime::CHARSET), None);
+        let values = [HeaderValue::from_bytes(b"text/plain; name=\"caf\xe9.txt\"; x=1").unwrap()];
+        let mime = extract_mime_type(&values).unwrap();
+        assert_eq!(mime.get_param("name"), None);
+        assert_eq!(mime.get_param("x").map(|value| value.as_str()), Some("1"));
     }
 
     /// A request is judged as the CORS safelist judges it: the whole value as one type.

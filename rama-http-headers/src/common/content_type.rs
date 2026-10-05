@@ -509,16 +509,31 @@ mod tests {
 
     #[test]
     fn several_lines_decode_as_fetch_extracts_them() {
-        let content_type =
-            test_decode::<ContentType>(&["text/html;charset=gbk", "text/html;x=y"]).unwrap();
-        assert_eq!(content_type.mime().essence_str(), "text/html");
-        assert_eq!(
-            content_type
-                .mime()
-                .get_param(mime::CHARSET)
-                .map(|c| c.as_str()),
-            Some("gbk")
-        );
+        // The last type wins, inheriting the charset of an earlier one of the same essence.
+        for (lines, essence, charset, x) in [
+            (
+                &["text/html;charset=gbk", "text/html;x=y"][..],
+                "text/html",
+                Some("gbk"),
+                Some("y"),
+            ),
+            (
+                &["text/plain;x=1", "application/json"],
+                "application/json",
+                None,
+                None,
+            ),
+        ] {
+            let content_type = test_decode::<ContentType>(lines).unwrap();
+            let mime = content_type.mime();
+            assert_eq!(mime.essence_str(), essence, "{lines:?}");
+            assert_eq!(
+                mime.get_param(mime::CHARSET).map(|c| c.as_str()),
+                charset,
+                "{lines:?}"
+            );
+            assert_eq!(mime.get_param("x").map(|x| x.as_str()), x, "{lines:?}");
+        }
         assert!(test_decode::<ContentType>(&["cannot-parse"]).is_none());
     }
 

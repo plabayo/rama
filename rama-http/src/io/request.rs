@@ -164,7 +164,7 @@ mod tests {
             write_http_request(&mut buf, req, true, false)
                 .await
                 .unwrap();
-            let written = String::from_utf8(buf).unwrap();
+            let written = std::str::from_utf8(&buf).unwrap();
             let (_, rest) = written.split_once("\r\n").unwrap();
             assert_eq!(rest, expected, "{uri}");
         }
