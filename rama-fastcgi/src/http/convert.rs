@@ -151,7 +151,7 @@ fn io_error(e: BoxError) -> std::io::Error {
 pub(super) async fn http_request_to_fastcgi(
     req: Request,
 ) -> Result<FastCgiClientRequest, BoxError> {
-    let peer = req.extensions().get_ref::<SocketInfo>().cloned();
+    let peer = SocketInfo::ingress(req.extensions()).cloned();
     let env = req
         .extensions()
         .get_ref::<FastCgiHttpEnv>()
@@ -559,6 +559,7 @@ pub(super) fn split_cgi_response(data: &[u8]) -> (&[u8], &[u8]) {
 mod tests {
     use super::*;
     use rama_core::bytes::Bytes;
+    use rama_core::extensions::{Egress, Extensions, Ingress};
 
     #[test]
     fn test_split_cgi_response_crlf() {
@@ -715,6 +716,27 @@ mod tests {
         );
         // Host should NOT be forwarded as HTTP_HOST.
         assert!(find(b"HTTP_HOST").is_none());
+    }
+
+    #[tokio::test]
+    async fn the_remote_addr_is_the_ingress_peer() {
+        let req = Request::builder()
+            .uri("http://example.com/")
+            .body(Body::empty())
+            .unwrap();
+        let ingress = Extensions::new();
+        ingress.insert(SocketInfo::new(None, "203.0.113.5:1000".parse().unwrap()));
+        req.extensions().insert(Ingress(ingress));
+        let egress = Extensions::new();
+        egress.insert(SocketInfo::new(None, "198.51.100.7:9000".parse().unwrap()));
+        req.extensions().insert(Egress(egress));
+        let fcgi = http_request_to_fastcgi(req).await.unwrap();
+        let remote_addr = fcgi
+            .params
+            .iter()
+            .find(|(name, _)| name.as_ref() == b"REMOTE_ADDR")
+            .map(|(_, value)| value.clone());
+        assert_eq!(remote_addr.as_deref(), Some(b"203.0.113.5".as_ref()));
     }
 
     #[tokio::test]

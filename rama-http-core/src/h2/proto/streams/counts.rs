@@ -1,5 +1,45 @@
 use super::*;
 use rama_core::telemetry::tracing;
+use rama_utils::reactive::{Changed, Reactive};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
+/// Locally initiated streams from creation until they close, including sends still buffered
+/// behind flow control (RFC 9113 §5.1.2: half-closed streams still count). A pool admits by it.
+#[derive(Debug)]
+pub(crate) struct LocalStreams {
+    live: AtomicUsize,
+    retired: Reactive<usize>,
+}
+
+impl LocalStreams {
+    fn new() -> Self {
+        Self {
+            live: AtomicUsize::new(0),
+            retired: Reactive::new(0),
+        }
+    }
+
+    pub(crate) fn live(&self) -> usize {
+        self.live.load(Ordering::Acquire)
+    }
+
+    /// Subscribe to retirements.
+    pub(crate) fn watch(&self) -> Changed<usize> {
+        self.retired.watch()
+    }
+
+    fn opened(&self) {
+        self.live.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn retired(&self) {
+        self.live.fetch_sub(1, Ordering::AcqRel);
+        self.retired.set(self.retired.get().wrapping_add(1));
+    }
+}
 
 #[derive(Debug)]
 struct Budget {
@@ -70,6 +110,9 @@ pub(super) struct Counts {
 
     /// Credit for receiving DATA frames without excessive framing overhead.
     data_frame_budget: Budget,
+
+    /// Local streams not yet closed, shared with pool admission.
+    local_streams: Arc<LocalStreams>,
 }
 
 impl Counts {
@@ -88,7 +131,19 @@ impl Counts {
             max_local_error_reset_streams: config.local_max_error_reset_streams,
             num_local_error_reset_streams: 0,
             data_frame_budget: Budget::new(DEFAULT_DATA_FRAME_BUDGET),
+            local_streams: Arc::new(LocalStreams::new()),
         }
+    }
+
+    pub(super) fn local_streams(&self) -> Arc<LocalStreams> {
+        self.local_streams.clone()
+    }
+
+    /// A local stream now exists; it counts until it closes.
+    pub(super) fn open_local(&self, stream: &mut store::Ptr) {
+        debug_assert!(!stream.is_live_local);
+        stream.is_live_local = true;
+        self.local_streams.opened();
     }
 
     /// Records the framing overhead of a DATA frame.
@@ -282,10 +337,16 @@ impl Counts {
                 }
             }
 
-            if !stream.state.is_scheduled_reset() && stream.is_counted {
-                tracing::trace!("dec_num_streams; stream={:?}", stream.id);
-                // Decrement the number of active streams.
-                self.dec_num_streams(&mut stream);
+            if !stream.state.is_scheduled_reset() {
+                if stream.is_counted {
+                    tracing::trace!("dec_num_streams; stream={:?}", stream.id);
+                    // Decrement the number of active streams.
+                    self.dec_num_streams(&mut stream);
+                }
+                // Retired with h2's own count: a scheduled reset still occupies the stream.
+                if std::mem::take(&mut stream.is_live_local) {
+                    self.local_streams.retired();
+                }
             }
         }
 

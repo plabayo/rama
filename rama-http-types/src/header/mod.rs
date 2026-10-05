@@ -70,6 +70,9 @@ mod map;
 mod name;
 mod value;
 
+mod token;
+pub(crate) use self::token::is_token;
+
 pub mod hop_by_hop;
 pub mod proxy_auth;
 pub mod proxy_connect;
@@ -108,6 +111,7 @@ pub use self::name::{
     AUTHORIZATION,
     CACHE_CONTROL,
     CACHE_STATUS,
+    CAPSULE_PROTOCOL,
     CDN_CACHE_CONTROL,
     CONNECTION,
     CONTENT_DISPOSITION,

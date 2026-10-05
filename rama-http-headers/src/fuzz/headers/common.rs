@@ -14,8 +14,8 @@ use crate::{
     AccessControlAllowMethods, AccessControlAllowOrigin, AccessControlAllowPrivateNetwork,
     AccessControlExposeHeaders, AccessControlMaxAge, AccessControlRequestHeaders,
     AccessControlRequestMethod, AccessControlRequestPrivateNetwork, Age, Allow, AltSvc, AltUsed,
-    Authorization, CacheControl, Connection, ContentDisposition, ContentEncoding, ContentLength,
-    ContentLocation, ContentRange, ContentSecurityPolicy, ContentType, Cookie,
+    Authorization, CacheControl, CapsuleProtocol, Connection, ContentDisposition, ContentEncoding,
+    ContentLength, ContentLocation, ContentRange, ContentSecurityPolicy, ContentType, Cookie,
     CrossOriginEmbedderPolicy, CrossOriginEmbedderPolicyReportOnly, CrossOriginOpenerPolicy,
     CrossOriginOpenerPolicyReportOnly, CrossOriginResourcePolicy, Date, ETag, Expect, Expires,
     Host, IfMatch, IfModifiedSince, IfNoneMatch, IfRange, IfUnmodifiedSince, LastEventId,
@@ -142,6 +142,9 @@ pub(super) const HEADERS: &[ValuesExercise] = &[
         sink(h.0.token());
         display(&h.0);
         roundtrip(&Authorization::new(h.0));
+    }),
+    decode!(CapsuleProtocol, |h| {
+        sink(h.is_enabled());
     }),
     decode!(CacheControl, |h| {
         sink((

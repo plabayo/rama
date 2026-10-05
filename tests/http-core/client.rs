@@ -2948,7 +2948,7 @@ mod conn {
             conn.await.expect("client conn shouldn't error");
         });
 
-        let req = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+        let req = Request::connect(Uri::parse_authority_form("localhost:80").unwrap())
             .body(Empty::<Bytes>::new())
             .unwrap();
         let res = client.send_request(req).await.expect("send_request");
@@ -2964,6 +2964,136 @@ mod conn {
 
         upgraded.shutdown().await.unwrap();
         server_task.await.unwrap();
+    }
+
+    /// RFC 9113 §8.5: a peer reset reaches the tunnel as a `ConnectionReset` carrying its
+    /// reason, for a relay to reflect; a reset without error ends it as END_STREAM would.
+    #[tokio::test]
+    async fn h2_connect_tunnel_reads_a_peer_reset_by_its_reason() {
+        use rama::http::core::h2::{Error as H2Error, Reason};
+        for reason in [Reason::NO_ERROR, Reason::CANCEL, Reason::CONNECT_ERROR] {
+            let (client_io, server_io, _) = setup_duplex_test_server();
+            let (reset_tx, reset_rx) = oneshot::channel::<()>();
+            let (done_tx, done_rx) = oneshot::channel::<()>();
+            tokio::spawn(async move {
+                let sock = ServiceInput::new(server_io);
+                let mut h2 = rama::http::core::h2::server::handshake(sock).await.unwrap();
+                let (req, mut respond) = h2.accept().await.unwrap().unwrap();
+                tokio::spawn(async move {
+                    _ = poll_fn(|cx| h2.poll_closed(cx)).await;
+                });
+                assert_eq!(req.method(), Method::CONNECT);
+                let res = Response::builder().status(200).body(()).unwrap();
+                let mut send = respond.send_response(res, false).unwrap();
+                send.send_data("partial".into(), false).unwrap();
+                reset_rx.await.unwrap();
+                send.send_reset(reason);
+                _ = done_rx.await;
+            });
+
+            let io = ServiceInput::new(client_io);
+            let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+                .handshake::<_, Empty<Bytes>>(io)
+                .await
+                .unwrap();
+            tokio::spawn(conn);
+            let req = Request::connect(Uri::parse_authority_form("localhost:80").unwrap())
+                .body(Empty::new())
+                .unwrap();
+            let res = client.send_request(req).await.unwrap();
+            let mut tunnel = rama::http::io::upgrade::handle_upgrade(res).await.unwrap();
+            let mut partial = [0; 7];
+            tunnel.read_exact(&mut partial).await.unwrap();
+            reset_tx.send(()).unwrap();
+
+            let mut rest = [0; 1];
+            if reason == Reason::NO_ERROR {
+                assert_eq!(tunnel.read(&mut rest).await.unwrap(), 0);
+            } else {
+                let error = tunnel.read(&mut rest).await.unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::ConnectionReset, "{reason:?}");
+                let cause = error
+                    .get_ref()
+                    .and_then(|cause| cause.downcast_ref::<H2Error>());
+                assert_eq!(cause.and_then(H2Error::reason), Some(reason));
+            }
+            let error = tunnel.write_all(b"late").await.unwrap_err();
+            let expected = if reason == Reason::NO_ERROR {
+                io::ErrorKind::BrokenPipe
+            } else {
+                io::ErrorKind::ConnectionReset
+            };
+            assert_eq!(error.kind(), expected, "{reason:?}");
+            done_tx.send(()).unwrap();
+        }
+    }
+
+    /// A tunnel's `AbortIo` resets it with CONNECT_ERROR for CONNECT (RFC 9113 §8.5) and
+    /// with CANCEL for Extended CONNECT (RFC 8441 §5).
+    #[tokio::test]
+    async fn h2_connect_tunnel_aborts_with_the_code_of_its_kind() {
+        use rama::http::core::h2::Reason;
+        use rama::http::proto::ext::Protocol;
+        use rama::io::AbortIo;
+        for extended in [false, true] {
+            let (client_io, server_io, _) = setup_duplex_test_server();
+            let server = tokio::spawn(async move {
+                let sock = ServiceInput::new(server_io);
+                let mut h2 = rama::http::core::h2::server::Builder::new()
+                    .with_enable_connect_protocol()
+                    .handshake::<_, Bytes>(sock)
+                    .await
+                    .unwrap();
+                let (req, mut respond) = h2.accept().await.unwrap().unwrap();
+                tokio::spawn(async move {
+                    _ = poll_fn(|cx| h2.poll_closed(cx)).await;
+                });
+                let res = Response::builder().status(200).body(()).unwrap();
+                let _send = respond.send_response(res, false).unwrap();
+                let mut body = req.into_body();
+                poll_fn(|cx| body.poll_data(cx))
+                    .await
+                    .unwrap()
+                    .unwrap_err()
+                    .reason()
+            });
+
+            let io = ServiceInput::new(client_io);
+            let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+                .handshake::<_, Empty<Bytes>>(io)
+                .await
+                .unwrap();
+            tokio::spawn(conn);
+            let req = if extended {
+                let req = Request::connect(Uri::parse("https://localhost/tunnel").unwrap())
+                    .body(Empty::new())
+                    .unwrap();
+                req.extensions().insert(Protocol::from_static("relay-test"));
+                req
+            } else {
+                Request::connect(Uri::parse_authority_form("localhost:80").unwrap())
+                    .body(Empty::new())
+                    .unwrap()
+            };
+            let res = client.send_request(req).await.unwrap();
+            let mut tunnel = rama::http::io::upgrade::handle_upgrade(res).await.unwrap();
+            tunnel
+                .extensions()
+                .self_get_arc::<AbortIo>()
+                .expect("the upgraded tunnel publishes its abort")
+                .abort();
+            let expected = if extended {
+                Reason::CANCEL
+            } else {
+                Reason::CONNECT_ERROR
+            };
+            assert_eq!(server.await.unwrap(), Some(expected));
+            // Both directions fail locally after the abort.
+            let error = tunnel.read(&mut [0; 1]).await.unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::ConnectionAborted);
+            let error = tunnel.write_all(b"late").await.unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::ConnectionAborted);
+        }
     }
 
     #[tokio::test]
@@ -2999,7 +3129,7 @@ mod conn {
             conn.await.expect("client conn shouldn't error");
         });
 
-        let req = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+        let req = Request::connect(Uri::parse_authority_form("localhost:80").unwrap())
             .body(Empty::new())
             .unwrap();
         let res = client.send_request(req).await.expect("send_request");
@@ -3061,7 +3191,7 @@ mod conn {
                     .expect("stream errors must not close the connection");
             });
 
-            let req = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+            let req = Request::connect(Uri::parse_authority_form("localhost:80").unwrap())
                 .body(Empty::new())
                 .unwrap();
             let res = tokio::time::timeout(Duration::from_secs(2), client.send_request(req))

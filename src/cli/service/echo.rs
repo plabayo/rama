@@ -35,7 +35,7 @@ use crate::{
         limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy},
     },
     net::address::ip::geo::IpGeoDb,
-    net::forwarded::Forwarded,
+    net::forwarded::ForwardedClientExt as _,
     net::stream::SocketInfo,
     net::stream::layer::{ThrottleLayer, ThrottleMode},
     net::{AuthorityInputExt, Protocol, ProtocolInputExt},
@@ -785,17 +785,7 @@ impl Service<Request> for EchoService {
             .geo_db
             .as_ref()
             .and_then(|db| {
-                parts
-                    .extensions
-                    .get_ref::<Forwarded>()
-                    .and_then(|f| f.client_ip())
-                    .or_else(|| {
-                        parts
-                            .extensions
-                            .get_ref::<SocketInfo>()
-                            .map(|s| s.peer_addr().ip_addr)
-                    })
-                    .and_then(|ip| db.resolve(ip))
+                crate::net::client_ip::client_ip(&parts.extensions).and_then(|ip| db.resolve(ip))
             })
             .map(|info| serde_json::to_value(&info).unwrap_or_default())
             .unwrap_or(serde_json::Value::Null);
@@ -817,11 +807,10 @@ impl Service<Request> for EchoService {
                 "curl": curl_request,
             },
             "tls": tls_info,
-            "socket_addr": parts.extensions.get_ref::<Forwarded>()
-                .and_then(|f|
-                        f.client_socket_addr().map(|addr| addr.to_string())
-                            .or_else(|| f.client_ip().map(|ip| ip.to_string()))
-                ).or_else(|| parts.extensions.get_ref::<SocketInfo>().map(|v| v.peer_addr().to_string())),
+            "socket_addr": parts.extensions.forwarded_client_socket_addr()
+                .map(|addr| addr.to_string())
+                .or_else(|| parts.extensions.forwarded_client_ip().map(|ip| ip.to_string()))
+                .or_else(|| SocketInfo::ingress(&parts.extensions).map(|v| v.peer_addr().to_string())),
         }))
         .into_response())
     }

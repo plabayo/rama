@@ -11,14 +11,28 @@ use crate::{
         support::{display, sink},
     },
 };
+use rama_net::forwarded::{ForwardedSelectionPolicy, ForwardedSide, NodeId};
 
 pub(super) const HEADERS: &[ValuesExercise] = &[
     decode!(Forwarded, |h| {
         display(&*h);
-        sink((h.client_port(), h.client_ip(), h.client_proto()));
-        sink((h.client_version(), h.client_socket_addr()));
-        if let Some(authority) = h.client_host() {
-            forwarded_authority(authority);
+        // The client element as either side of the selection policy picks it.
+        for side in [ForwardedSide::Rightmost, ForwardedSide::Leftmost] {
+            if let Some(client) = h.client(&ForwardedSelectionPolicy::new().with_side(side)) {
+                let node = client.forwarded_for();
+                sink((
+                    node.and_then(NodeId::port),
+                    node.and_then(NodeId::ip),
+                    client.forwarded_proto(),
+                ));
+                sink((
+                    client.forwarded_version(),
+                    node.and_then(NodeId::socket_address),
+                ));
+                if let Some(authority) = client.forwarded_host() {
+                    forwarded_authority(authority);
+                }
+            }
         }
         for element in h.iter() {
             forwarded_element(element);

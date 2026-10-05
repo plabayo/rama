@@ -104,11 +104,12 @@ mod proto;
 #[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
 pub mod proto;
 
+pub(crate) use self::proto::LocalStreams;
+
 pub mod client;
 pub mod server;
 mod share;
 
-pub use rama_http_types::proto::h2::ext;
 pub use rama_http_types::proto::h2::frame;
 pub use rama_http_types::proto::h2::hpack;
 

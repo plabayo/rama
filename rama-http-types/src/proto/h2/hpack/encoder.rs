@@ -576,7 +576,7 @@ mod test {
             Header::Method(crate::Method::GET),
             Header::Scheme(BytesStr::from_static("https")),
             Header::Path(BytesStr::from_static("/")),
-            Header::Protocol(crate::proto::h2::ext::Protocol::from_static("websocket")),
+            Header::Protocol(crate::proto::ext::Protocol::from_static("websocket")),
             Header::Status(crate::StatusCode::OK),
         ];
         let mut encoder = Encoder::default();

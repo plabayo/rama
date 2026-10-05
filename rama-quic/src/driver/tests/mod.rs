@@ -35,7 +35,7 @@ use tokio::{
 };
 use tracing_subscriber::EnvFilter;
 
-use super::{Endpoint, EndpointConfig, RecvStream, SendStream, TransportConfig};
+use super::{Endpoint, EndpointConfig, RecvStream, SendDatagramError, SendStream, TransportConfig};
 
 mod closing;
 mod owned;
@@ -878,6 +878,110 @@ async fn stream_id_flow_control() {
             server.accept_uni().await.unwrap();
             server.accept_uni().await.unwrap();
         }
+    );
+}
+
+#[tokio::test]
+async fn try_send_datagram_reports_a_full_buffer_without_discarding() {
+    let _guard = subscribe();
+    let mut transport = TransportConfig::default();
+    transport.set_datagram_send_buffer_size(64);
+    let endpoint = endpoint_with_config(transport);
+    let (client, server) = tokio::join!(
+        endpoint
+            .connect(endpoint.local_addr().unwrap(), "localhost")
+            .unwrap(),
+        async { endpoint.accept().await.unwrap().await }
+    );
+    let client = client.unwrap();
+    let server = server.unwrap();
+    let mut queued = 0;
+    // Fill synchronously: the driver cannot drain the buffer between these calls.
+    loop {
+        match client.try_send_datagram(vec![queued; 16].into()) {
+            Ok(()) => queued += 1,
+            Err(SendDatagramError::Blocked) => break,
+            Err(error) => panic!("unexpected {error:?}"),
+        }
+    }
+    assert!(queued > 0);
+    for expected in 0..queued {
+        // A lost datagram fails the test instead of waiting forever.
+        let datagram = tokio::time::timeout(Duration::from_secs(10), server.read_datagram())
+            .await
+            .expect("every queued datagram arrives")
+            .unwrap();
+        assert_eq!(datagram[0], expected, "no queued datagram may be discarded");
+    }
+}
+
+#[tokio::test]
+async fn stream_datagrams_follow_the_transport_send_state() {
+    let _guard = subscribe();
+    let endpoint = endpoint();
+    let (client, server) = tokio::join!(
+        endpoint
+            .connect(endpoint.local_addr().unwrap(), "localhost")
+            .unwrap(),
+        async { endpoint.accept().await.unwrap().await }
+    );
+    let client = client.unwrap();
+    let server = server.unwrap();
+
+    // Peer STOP_SENDING: the writer is never polled again, the handle and its clone see it.
+    let (mut send, _recv) = client.open_bi().await.unwrap();
+    send.write_all(b"x").await.unwrap();
+    let handle = send.abort_handle();
+    let clone = handle.clone();
+    handle.send_datagram(Bytes::from_static(b"open")).unwrap();
+    clone
+        .try_send_datagram(Bytes::from_static(b"open"))
+        .unwrap();
+    let (_server_send, mut server_recv) = server.accept_bi().await.unwrap();
+    server_recv.stop(7u32).unwrap();
+    assert_eq!(send.stopped().await.unwrap(), Some(7u32.into()));
+    for handle in [&handle, &clone] {
+        assert_matches!(
+            handle.send_datagram(Bytes::from_static(b"stopped")),
+            Err(SendDatagramError::StreamClosed)
+        );
+        assert_matches!(
+            handle.try_send_datagram(Bytes::from_static(b"stopped")),
+            Err(SendDatagramError::StreamClosed)
+        );
+    }
+
+    // A local FIN closes it at once, before the peer acknowledges it.
+    let (mut send, _recv) = client.open_bi().await.unwrap();
+    let handle = send.abort_handle();
+    handle.send_datagram(Bytes::from_static(b"open")).unwrap();
+    send.finish().unwrap();
+    assert_matches!(
+        handle.send_datagram(Bytes::from_static(b"finished")),
+        Err(SendDatagramError::StreamClosed)
+    );
+
+    // A local reset through any handle.
+    let (send, _recv) = client.open_bi().await.unwrap();
+    let handle = send.abort_handle();
+    handle.clone().abort(9u32);
+    assert_matches!(
+        handle.send_datagram(Bytes::from_static(b"reset")),
+        Err(SendDatagramError::StreamClosed)
+    );
+
+    // Connection-wide datagrams and the connection itself are unaffected by closed streams.
+    let (send, _recv) = client.open_bi().await.unwrap();
+    let handle = send.abort_handle();
+    client.send_datagram(Bytes::from_static(b"conn")).unwrap();
+    handle
+        .send_datagram(Bytes::from_static(b"still open"))
+        .unwrap();
+
+    client.close(0u32, b"done");
+    assert_matches!(
+        handle.send_datagram(Bytes::from_static(b"lost")),
+        Err(SendDatagramError::ConnectionLost(_))
     );
 }
 

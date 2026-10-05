@@ -9,9 +9,9 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_net::address::Domain;
-use rama_net::forwarded::{Forwarded, ForwardedElement};
+use rama_net::forwarded::{Forwarded, ForwardedElement, ForwardedSelectionPolicy};
 use rama_utils::macros::generate_set_and_with;
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 use tokio::io::AsyncReadExt;
 
 /// Absolute upper bound on a single PROXY header: the v2 fixed header (16 bytes)
@@ -218,6 +218,8 @@ impl From<v2::Command> for HaProxyCommand {
 pub struct HaProxyLayer {
     peek: bool,
     strictness: HaProxyStrictness,
+    selection_policy: Option<Arc<ForwardedSelectionPolicy>>,
+    keep_existing_selection_policy: bool,
 }
 
 impl HaProxyLayer {
@@ -227,6 +229,8 @@ impl HaProxyLayer {
         Self {
             peek: false,
             strictness: HaProxyStrictness::DEFAULT,
+            selection_policy: None,
+            keep_existing_selection_policy: false,
         }
     }
 
@@ -249,6 +253,23 @@ impl HaProxyLayer {
             self
         }
     );
+
+    generate_set_and_with!(
+        /// Install this [`ForwardedSelectionPolicy`], which selects the client element of the
+        /// [`Forwarded`] chain, overwriting one set already unless keeping existing ones.
+        pub fn forwarded_selection_policy(mut self, policy: ForwardedSelectionPolicy) -> Self {
+            self.selection_policy = Some(Arc::new(policy));
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Install the [`ForwardedSelectionPolicy`] only where none is set yet.
+        pub fn keep_existing_selection_policy(mut self, keep: bool) -> Self {
+            self.keep_existing_selection_policy = keep;
+            self
+        }
+    );
 }
 
 impl<S> Layer<S> for HaProxyLayer {
@@ -259,6 +280,8 @@ impl<S> Layer<S> for HaProxyLayer {
             inner,
             peek: self.peek,
             strictness: self.strictness,
+            selection_policy: self.selection_policy.clone(),
+            keep_existing_selection_policy: self.keep_existing_selection_policy,
         }
     }
 }
@@ -272,6 +295,8 @@ pub struct HaProxyService<S> {
     inner: S,
     peek: bool,
     strictness: HaProxyStrictness,
+    selection_policy: Option<Arc<ForwardedSelectionPolicy>>,
+    keep_existing_selection_policy: bool,
 }
 
 impl<S> HaProxyService<S> {
@@ -281,6 +306,8 @@ impl<S> HaProxyService<S> {
             inner,
             peek: false,
             strictness: HaProxyStrictness::DEFAULT,
+            selection_policy: None,
+            keep_existing_selection_policy: false,
         }
     }
 
@@ -300,6 +327,23 @@ impl<S> HaProxyService<S> {
         /// Override the strictness configuration applied to incoming PROXY headers.
         pub fn strictness(mut self, value: HaProxyStrictness) -> Self {
             self.strictness = value;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Install this [`ForwardedSelectionPolicy`], which selects the client element of the
+        /// [`Forwarded`] chain, overwriting one set already unless keeping existing ones.
+        pub fn forwarded_selection_policy(mut self, policy: ForwardedSelectionPolicy) -> Self {
+            self.selection_policy = Some(Arc::new(policy));
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Install the [`ForwardedSelectionPolicy`] only where none is set yet.
+        pub fn keep_existing_selection_policy(mut self, keep: bool) -> Self {
+            self.keep_existing_selection_policy = keep;
             self
         }
     );
@@ -401,6 +445,9 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut stream: IO) -> Result<Self::Output, Self::Error> {
+        if let Some(policy) = &self.selection_policy {
+            policy.install(stream.extensions(), self.keep_existing_selection_policy);
+        }
         let max_header_length = self
             .strictness
             .max_header_length
@@ -615,15 +662,10 @@ impl<S> HaProxyService<S> {
 }
 
 fn insert_forwarded<IO: ExtensionsRef>(stream: &IO, peer_addr: SocketAddr) {
-    let el = ForwardedElement::new_forwarded_for(peer_addr);
-    let forwarded = if let Some(mut forwarded) = stream.extensions().get_ref::<Forwarded>().cloned()
-    {
-        forwarded.append(el);
-        forwarded
-    } else {
-        Forwarded::new(el)
-    };
-    stream.extensions().insert(forwarded);
+    Forwarded::record(
+        stream.extensions(),
+        [ForwardedElement::new_forwarded_for(peer_addr)],
+    );
 }
 
 #[cfg(test)]
@@ -636,6 +678,31 @@ mod test {
         let mut v = Vec::default();
         _ = stream.read_to_end(&mut v).await?;
         Ok(v)
+    }
+
+    /// The layer installs its selection policy for the connection; the PROXY header names
+    /// the nearest hop.
+    #[tokio::test]
+    async fn the_layer_installs_its_forwarded_selection_policy() {
+        use rama_net::forwarded::{ForwardedClientExt as _, ForwardedSide};
+        async fn check(stream: impl Io + Unpin + ExtensionsRef) -> Result<(), BoxError> {
+            assert_eq!(
+                stream.forwarded_client_socket_addr(),
+                Some("192.0.2.1:12345".parse().unwrap())
+            );
+            assert_eq!(
+                stream.extensions().get_ref::<ForwardedSelectionPolicy>(),
+                Some(&ForwardedSelectionPolicy::new().with_side(ForwardedSide::Leftmost))
+            );
+            Ok(())
+        }
+        let proxy_svc = HaProxyService::new(service_fn(check)).with_forwarded_selection_policy(
+            ForwardedSelectionPolicy::new().with_side(ForwardedSide::Leftmost),
+        );
+        let request = ServiceInput::new(std::io::Cursor::new(
+            b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\n".to_vec(),
+        ));
+        proxy_svc.serve(request).await.unwrap();
     }
 
     #[tokio::test]

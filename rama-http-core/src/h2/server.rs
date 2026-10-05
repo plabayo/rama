@@ -121,6 +121,9 @@
 use crate::h2::codec::{Codec, UserError};
 use crate::h2::proto::{self, Config, Error, Prioritized};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
+use crate::proto::target::{
+    AsteriskHostError, asterisk_host, normalize_received, received_authority, several_hosts,
+};
 
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::extensions::{Extensions, ExtensionsRef};
@@ -135,7 +138,10 @@ use rama_http_types::proto::h2::alt_svc::AltSvcSendError;
 use rama_http_types::proto::h2::frame::{
     self, Pseudo, PushPromiseHeaderError, Reason, Settings, StreamId,
 };
-use rama_http_types::proto::h2::{PseudoHeaderOrder, PseudoHeaderSensitivity, ext};
+use rama_http_types::proto::{
+    ext,
+    h2::{PseudoHeader, PseudoHeaderOrder, PseudoHeaderSensitivity},
+};
 use rama_http_types::{HeaderMap, Method, Request, Response, Version};
 use rama_net::extensions::StreamTransformed;
 use rama_net::uri;
@@ -1798,13 +1804,16 @@ impl proto::Peer for Peer {
         b = b.version(Version::HTTP_2);
 
         let is_connect;
+        let is_options;
         if let Some(method) = pseudo.method {
             is_connect = method == Method::CONNECT;
+            is_options = method == Method::OPTIONS;
             b = b.method(method);
         } else {
             malformed!("malformed headers: missing method");
         }
 
+        let authority_sensitive = pseudo.sensitivity.is_sensitive(PseudoHeader::Authority);
         let has_protocol = if let Some(protocol) = pseudo.protocol {
             if is_connect {
                 // Assert that we have the right type.
@@ -1826,15 +1835,12 @@ impl proto::Peer for Peer {
 
         // A request translated from HTTP/1 must not include the :authority
         // header.
-        let authority = if let Some(authority) = pseudo.authority {
-            match rama_net::address::Authority::try_from(&*authority) {
-                Ok(authority) => Some(authority),
-                Err(why) => malformed!(
-                    "malformed headers: malformed authority ({:?}): {}",
-                    authority,
-                    why,
-                ),
-            }
+        let raw_authority = pseudo.authority;
+        let authority = if let Some(authority) = raw_authority.as_ref() {
+            let Some(received) = received_authority(authority) else {
+                malformed!("malformed headers: malformed authority ({:?})", authority);
+            };
+            Some(received)
         } else {
             None
         };
@@ -1845,10 +1851,12 @@ impl proto::Peer for Peer {
                 malformed!("malformed headers: :scheme in CONNECT");
             }
             match scheme.parse::<rama_net::Protocol>() {
-                // It's not possible to build a URI from a scheme and no
-                // authority, so — after validating it — the scheme is dropped
-                // when there is no :authority (mirrors the original behavior).
-                Ok(scheme) => authority.is_some().then_some(scheme),
+                // RFC 8441 §5: a ws/wss target is carried as http/https, whatever the peer sent.
+                Ok(scheme) if has_protocol => {
+                    Some(ext::extended_connect_pseudo_scheme(&scheme).clone())
+                }
+                // Kept with or without an authority, as on HTTP/3.
+                Ok(scheme) => Some(scheme),
                 Err(why) => malformed!(
                     "malformed headers: malformed scheme ({:?}): {}",
                     scheme,
@@ -1865,8 +1873,8 @@ impl proto::Peer for Peer {
             if is_connect && !has_protocol {
                 malformed!("malformed headers: :path in CONNECT");
             }
-            // This cannot be empty
-            if path.is_empty() {
+            // RFC 9113 §8.3.1: only an http(s) target needs a non-empty path.
+            if path.is_empty() && scheme.as_ref().is_none_or(rama_net::Protocol::is_http) {
                 malformed!("malformed headers: missing path");
             }
             Some(path)
@@ -1881,23 +1889,35 @@ impl proto::Peer for Peer {
             malformed!("malformed headers: missing path");
         };
 
-        let uri = match path.as_deref() {
-            // OPTIONS-`*`: the wire `*` denotes "no path"; rebuild the
-            // scheme/authority context from the typed components (a bare `*`
-            // when there is none).
-            Some("*") => match authority {
-                Some(authority) => {
-                    let mut uri = uri::Uri::default().without_path();
+        let mut asterisk = false;
+        let mut asterisk_scheme = None;
+        let target = match path.as_deref() {
+            // A path-less OPTIONS is the server-wide request, as on every version.
+            Some("") if is_options => Some("*"),
+            target => target,
+        };
+        let uri = match target {
+            // RFC 9113 §8.3.1: `*` is only for a server-wide OPTIONS.
+            Some("*") if !is_options => malformed!("malformed headers: `*` path without OPTIONS"),
+            // The asterisk URI holds neither scheme nor authority: the scheme is kept beside
+            // it and the authority becomes `Host`, as on HTTP/1 and HTTP/3.
+            Some("*") => {
+                asterisk = true;
+                asterisk_scheme = scheme;
+                uri::Uri::from_static("*")
+            }
+            // A target of another scheme without a path (RFC 9113 §8.3.1).
+            Some("") => {
+                let mut uri = uri::Uri::default().without_path();
+                if let Some(authority) = authority {
                     uri.set_authority(authority);
-                    if let Some(scheme) = scheme {
-                        uri.set_scheme(scheme);
-                    }
-                    uri
                 }
-                None => uri::Uri::from_static("*"),
-            },
-            // origin-form: parse the path/query, then graft the typed
-            // authority (and scheme, which is only meaningful with one).
+                if let Some(scheme) = scheme {
+                    uri.set_scheme(scheme);
+                }
+                uri
+            }
+            // origin-form: parse the path/query, then graft the typed authority and scheme.
             Some(path) => {
                 let mut uri = match uri::Uri::parse(path) {
                     Ok(uri) => uri,
@@ -1918,9 +1938,9 @@ impl proto::Peer for Peer {
                 }
                 if let Some(authority) = authority {
                     uri.set_authority(authority);
-                    if let Some(scheme) = scheme {
-                        uri.set_scheme(scheme);
-                    }
+                }
+                if let Some(scheme) = scheme {
+                    uri.set_scheme(scheme);
                 }
                 uri
             }
@@ -1928,8 +1948,11 @@ impl proto::Peer for Peer {
             None => match authority {
                 // The authority is already parsed; build the authority-form URI
                 // directly instead of re-serializing and re-parsing it.
-                Some(authority) => uri::Uri::from_authority_form(authority),
-                None => uri::Uri::default(),
+                Some(authority) if authority.port_u16().is_some() => {
+                    uri::Uri::from_authority_form(authority)
+                }
+                // RFC 9113 §8.5: CONNECT names a host and port; there is no default to guess.
+                _ => malformed!("malformed headers: CONNECT without a host and port"),
             },
         };
 
@@ -1945,6 +1968,9 @@ impl proto::Peer for Peer {
             }
         };
 
+        if let Some(scheme) = asterisk_scheme {
+            request.extensions().insert(scheme);
+        }
         if !pseudo.order.is_empty() {
             request.extensions().insert(pseudo.order);
         }
@@ -1954,7 +1980,29 @@ impl proto::Peer for Peer {
 
         request.extensions().insert(HeaderByteLength(header_size));
 
+        // Several Host lines leave the routed authority ambiguous.
+        if several_hosts(&fields) {
+            malformed!("malformed headers: several Host lines");
+        }
         *request.headers_mut() = fields;
+        if asterisk && let Some(authority) = raw_authority.as_deref() {
+            match asterisk_host(
+                authority.as_bytes(),
+                request.headers_mut(),
+                authority_sensitive,
+            ) {
+                Ok(()) => {}
+                Err(AsteriskHostError::InvalidAuthority) => {
+                    malformed!("malformed headers: malformed authority ({:?})", authority);
+                }
+                Err(AsteriskHostError::TooManyFields) => {
+                    malformed!("malformed headers: too many header fields");
+                }
+            }
+        }
+        let mut uri = std::mem::take(request.uri_mut());
+        normalize_received(&mut uri, request.headers_mut(), authority_sensitive);
+        *request.uri_mut() = uri;
 
         Ok(request)
     }
@@ -1973,6 +2021,22 @@ where
             Self::ReadingPreface(_) => f.write_str("ReadingPreface(_)"),
             Self::Done => f.write_str("Done"),
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_util {
+    use super::*;
+
+    /// The request an HTTP/2 server receives for these fields.
+    pub(crate) fn receive(pseudo: Pseudo, headers: HeaderMap) -> Result<Request<()>, Error> {
+        <Peer as proto::Peer>::convert_poll_message(
+            pseudo,
+            headers,
+            0,
+            StreamId::from(1),
+            Extensions::new(),
+        )
     }
 }
 
@@ -2088,5 +2152,65 @@ mod path_form_tests {
         let req = decode(pseudo).expect("CONNECT without :path is valid");
         assert_eq!(req.method(), Method::CONNECT);
         assert_eq!(req.uri().host_str().as_deref(), Some("real.example"),);
+    }
+
+    // Every Extended CONNECT scheme is accepted; ws/wss is carried as http/https (RFC 8441 §5).
+    #[test]
+    fn extended_connect_schemes_are_accepted_and_ws_is_carried_as_http() {
+        for (protocol, scheme, carried) in [
+            ("websocket", "https", "https"),
+            ("websocket", "http", "http"),
+            ("WebSocket", "https", "https"),
+            ("websocket", "custom", "custom"),
+            ("WebSocket", "ftp", "ftp"),
+            ("websocket", "wss", "https"),
+            ("x", "custom", "custom"),
+            ("x", "ws", "http"),
+            ("x", "wss", "https"),
+        ] {
+            let pseudo = Pseudo {
+                method: Some(Method::CONNECT),
+                scheme: Some(bs(scheme)),
+                authority: Some(bs("real.example")),
+                path: Some(bs("/chat")),
+                protocol: Some(ext::Protocol::from_static(protocol)),
+                ..Default::default()
+            };
+            let request = decode(pseudo).unwrap();
+            assert_eq!(
+                request.uri().scheme_str(),
+                Some(carried),
+                "{protocol} {scheme}"
+            );
+        }
+    }
+
+    #[test]
+    fn received_targets_are_normalized() {
+        let pseudo = Pseudo {
+            method: Some(Method::GET),
+            scheme: Some(bs("https")),
+            authority: Some(bs("user:pw@real.example")),
+            path: Some(bs("/x")),
+            ..Default::default()
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            rama_http_types::header::HOST,
+            rama_http_types::HeaderValue::from_static("other.example"),
+        );
+        let request = <Peer as proto::Peer>::convert_poll_message(
+            pseudo,
+            headers,
+            0,
+            StreamId::from(1),
+            Extensions::new(),
+        )
+        .unwrap();
+        assert_eq!(request.uri().to_string(), "https://real.example/x");
+        assert_eq!(
+            request.headers()[rama_http_types::header::HOST],
+            "real.example"
+        );
     }
 }

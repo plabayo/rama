@@ -14,10 +14,10 @@ use rama_core::{
 use rama_http_types::{
     Body, HeaderMap, Request as HttpRequest, Response as HttpResponse,
     body::{Frame, StreamingBody, util::BodyStream},
-    header::HeaderName,
+    header::{self, HeaderName},
     proto::h1::head::{self, HeadError, HeadParser},
 };
-use rama_net::uri::Uri;
+use rama_net::{address::Authority, uri::Uri};
 
 use crate::{
     client::{
@@ -314,6 +314,9 @@ impl Encapsulated {
                 if let Some(version) = request_version {
                     *request.version_mut() = version;
                 }
+                if let Some(original) = original.request() {
+                    restore_target_form(&mut request, original);
+                }
                 let extensions = request.extensions().with_base(request_base);
                 request.with_extensions(extensions)
             }),
@@ -327,6 +330,38 @@ impl Encapsulated {
             body_kind: self.body_kind,
         }
     }
+}
+
+/// An encapsulated head is HTTP/1 origin-form (RFC 3507 §4.8): an adapted request whose
+/// original had an absolute target gets one back, its scheme kept and its authority as the
+/// (possibly rewritten) `Host` names it, so it can be forwarded on any version.
+fn restore_target_form(adapted: &mut HttpRequest<()>, original: &HttpRequest<()>) {
+    let target = adapted.uri();
+    if target.scheme().is_some() || target.authority().is_some() || target.is_asterisk() {
+        return;
+    }
+    let Some(scheme) = original.uri().scheme().cloned() else {
+        return;
+    };
+    let authority = adapted
+        .headers()
+        .get(header::HOST)
+        .and_then(|host| host.to_str().ok())
+        .and_then(|host| Authority::try_from(host).ok())
+        .filter(|authority| authority.user_info.is_none())
+        .or_else(|| {
+            original
+                .uri()
+                .authority()
+                .map(|authority| authority.into_owned())
+        });
+    let Some(authority) = authority else {
+        return;
+    };
+    let mut uri = target.clone();
+    uri.set_authority(authority);
+    uri.set_scheme(scheme);
+    *adapted.uri_mut() = uri;
 }
 
 impl EncapsulatedParts {
@@ -3359,6 +3394,57 @@ mod tests {
                 .extensions()
                 .contains::<ConnectionMarker>()
         );
+    }
+
+    #[test]
+    fn adapted_requests_get_their_absolute_target_back() {
+        let original = |uri: &str| {
+            HttpRequest::builder()
+                .version(rama_http_types::Version::HTTP_2)
+                .uri(uri)
+                .body(())
+                .unwrap()
+        };
+        for (original_uri, adapted_uri, host, expected) in [
+            // The Host the ICAP service left names the authority.
+            (
+                "https://example.com/x",
+                "/y",
+                Some("other.example:8443"),
+                "https://other.example:8443/y",
+            ),
+            ("https://example.com/x", "/y", None, "https://example.com/y"),
+            (
+                "https://example.com/x",
+                "/y",
+                Some("bad host"),
+                "https://example.com/y",
+            ),
+            // A target the service wrote in full, or an origin-form original, stays as it is.
+            (
+                "https://example.com/x",
+                "http://elsewhere.example/z",
+                None,
+                "http://elsewhere.example/z",
+            ),
+            ("/x", "/y", Some("example.com"), "/y"),
+        ] {
+            let mut adapted = HttpRequest::builder().uri(adapted_uri);
+            if let Some(host) = host {
+                adapted = adapted.header(header::HOST, host);
+            }
+            let parsed = Encapsulated {
+                request: Some(adapted.body(()).unwrap()),
+                response: None,
+                body_kind: EncapsulatedKind::NullBody,
+            }
+            .inherit_original_context(&OriginalHead::Request(original(original_uri)));
+            assert_eq!(
+                parsed.request().unwrap().uri().to_string(),
+                expected,
+                "{original_uri} {adapted_uri} {host:?}"
+            );
+        }
     }
 
     #[test]

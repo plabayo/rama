@@ -59,6 +59,9 @@ pub enum UserError {
 
     /// Tries to poll a future after it was already ready.
     PollAfterReady,
+
+    /// Sends `:protocol` without the peer's `SETTINGS_ENABLE_CONNECT_PROTOCOL` (RFC 8441 §3).
+    ExtendedConnectNotEnabled,
 }
 
 // ===== impl SendError =====
@@ -114,6 +117,7 @@ impl fmt::Display for UserError {
             Self::InvalidInformationalStatusCode => "invalid informational status code",
             Self::InvalidSettingValue => "value is invalid for the relevant setting",
             Self::PollAfterReady => "future was polled after it was already ready",
+            Self::ExtendedConnectNotEnabled => "peer did not enable extended CONNECT",
         })
     }
 }

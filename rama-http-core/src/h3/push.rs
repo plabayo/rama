@@ -191,7 +191,7 @@ impl Shared {
         let explicit_authority = fields
             .iter()
             .any(|field| field.name.as_ref() == b":authority" && !field.value.is_empty());
-        let request = headers::request(fields.clone())?;
+        let request = headers::request_head(fields.clone(), false)?;
         let valid = explicit_authority
             && matches!(*request.method(), Method::GET | Method::HEAD)
             && headers::content_length(request.headers())?.is_none_or(|length| length == 0)

@@ -1,11 +1,16 @@
 //! Real TCP/TLS coverage of protocol-independent alternative-service selection.
 
+mod connect_aborts;
 mod deployment;
 mod discovery_outcomes;
+#[cfg(feature = "icap")]
+mod icap_h3;
 mod ip_policy;
 #[cfg(all(feature = "boring", feature = "rustls"))]
 mod mixed_tls;
+mod pool_admission;
 mod redirects;
+mod websocket_pool;
 
 use rama::{
     Layer, Service,
@@ -508,6 +513,41 @@ async fn default_client_request_trust_does_not_publish_shared_discovery() {
     drop(client);
     alternative.close().await;
     origin.close().await;
+}
+
+/// Forwarded context describes the client's request, not this hop: a reverse proxy that
+/// trusted it and points the request at its backend connects to, names in SNI and sends the
+/// backend's own target, on every version.
+#[tokio::test]
+async fn forwarded_context_never_steers_where_a_client_connects() {
+    for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+        let (auth, tls) = credentials();
+        let backend = Server::start(auth, version).await;
+        let (client, endpoint) = client_with_http3(tls).await;
+        let request = backend.request();
+        request.extensions().insert(
+            rama::net::forwarded::Forwarded::try_from(r#"host="public.test";proto=http"#).unwrap(),
+        );
+        assert_eq!(
+            complete(&client, request).await.0,
+            StatusCode::OK,
+            "{version:?}"
+        );
+        let (sni, authority) = {
+            let observations = backend.observations.lock();
+            (
+                observations[0].sni.clone(),
+                observations[0].authority.clone(),
+            )
+        };
+        assert_eq!(sni.as_deref(), Some("localhost"), "{version:?}");
+        assert_eq!(
+            authority,
+            format!("localhost:{}", backend.address.port()),
+            "{version:?}"
+        );
+        close_client_endpoint(endpoint).await;
+    }
 }
 
 #[tokio::test]

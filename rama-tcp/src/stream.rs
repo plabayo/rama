@@ -1,29 +1,50 @@
 use pin_project_lite::pin_project;
-use rama_core::{extensions::Extensions, extensions::ExtensionsRef};
+use rama_core::{extensions::Extensions, extensions::ExtensionsRef, io::AbortIo};
 use rama_net::{address::SocketAddress, stream::Socket};
-use std::{io, time::Duration};
+use std::{
+    io,
+    mem::ManuallyDrop,
+    ptr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 pub use tokio::net::TcpStream as TokioTcpStream;
 
 #[cfg(any(target_os = "windows", target_family = "unix"))]
 use rama_net::socket;
 
 pin_project! {
-    #[non_exhaustive]
+    /// A TCP stream with its [`Extensions`].
+    ///
+    /// It publishes an [`AbortIo`] in its own extensions: once called, dropping the
+    /// stream sends a TCP RST instead of a FIN: SO_LINGER 0 only takes effect on close, which
+    /// is the owner's to do.
     #[derive(Debug)]
     pub struct TcpStream {
         #[pin]
         pub stream: TokioTcpStream,
         pub extensions: Extensions,
+        abort: Arc<AtomicBool>,
+    }
+
+    impl PinnedDrop for TcpStream {
+        fn drop(this: Pin<&mut Self>) {
+            let this = this.project();
+            if this.abort.load(Ordering::Acquire) {
+                // SO_LINGER 0: the close discards unsent data and sends an RST.
+                _ = this.stream.set_zero_linger();
+            }
+        }
     }
 }
 
 impl TcpStream {
     #[inline(always)]
     pub fn new(stream: TokioTcpStream) -> Self {
-        Self {
-            stream,
-            extensions: Extensions::new(),
-        }
+        Self::from_tokio_tcp_stream(stream, Extensions::new())
     }
 
     #[cfg(any(target_os = "windows", target_family = "unix"))]
@@ -158,9 +179,17 @@ impl TcpStream {
         Ok(Self::from_tokio_tcp_stream(stream, extensions))
     }
 
-    #[inline(always)]
     pub fn from_tokio_tcp_stream(stream: TokioTcpStream, extensions: Extensions) -> Self {
-        Self { stream, extensions }
+        let abort = Arc::new(AtomicBool::new(false));
+        extensions.insert(AbortIo::new({
+            let abort = abort.clone();
+            move || abort.store(true, Ordering::Release)
+        }));
+        Self {
+            stream,
+            extensions,
+            abort,
+        }
     }
 }
 
@@ -171,8 +200,16 @@ impl From<TokioTcpStream> for TcpStream {
 }
 
 impl From<TcpStream> for TokioTcpStream {
+    /// The caller takes over the socket, and with it how it closes.
     fn from(value: TcpStream) -> Self {
-        value.stream
+        // Every field is read exactly once and `value` itself is never dropped.
+        let value = ManuallyDrop::new(value);
+        // SAFETY: read once, see above.
+        drop(unsafe { ptr::read(&value.extensions) });
+        // SAFETY: read once, see above.
+        drop(unsafe { ptr::read(&value.abort) });
+        // SAFETY: read once, see above.
+        unsafe { ptr::read(&value.stream) }
     }
 }
 
@@ -248,6 +285,51 @@ mod windows {
 mod tests {
     use super::*;
     use rama_net::socket::core::{Domain, Protocol, Socket as CoreSocket, Type};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    /// A connected loopback pair: our [`TcpStream`] and the peer's plain socket.
+    async fn pair() -> io::Result<(TcpStream, TokioTcpStream)> {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+        let ours = TokioTcpStream::connect(listener.local_addr()?).await?;
+        let (peer, _) = listener.accept().await?;
+        Ok((TcpStream::new(ours), peer))
+    }
+
+    #[tokio::test]
+    async fn an_aborted_stream_resets_its_peer_on_drop() {
+        let (stream, mut peer) = pair().await.unwrap();
+        let abort = stream.extensions().self_get_arc::<AbortIo>().unwrap();
+        abort.abort();
+        drop(stream);
+        let error = peer.read(&mut [0; 8]).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_stream_still_ends_in_order() {
+        let (mut stream, mut peer) = pair().await.unwrap();
+        stream.write_all(b"whole").await.unwrap();
+        drop(stream);
+        let mut received = Vec::new();
+        peer.read_to_end(&mut received).await.unwrap();
+        assert_eq!(received, b"whole");
+    }
+
+    #[tokio::test]
+    async fn taking_the_tokio_stream_out_keeps_it_open() {
+        let (stream, mut peer) = pair().await.unwrap();
+        stream
+            .extensions()
+            .self_get_arc::<AbortIo>()
+            .unwrap()
+            .abort();
+        // The caller owns the socket now: neither a close nor a reset happens here.
+        let mut ours = TokioTcpStream::from(stream);
+        ours.write_all(b"still").await.unwrap();
+        let mut buf = [0; 5];
+        peer.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"still");
+    }
 
     #[tokio::test]
     async fn try_from_connecting_socket_finishes_manual_nonblocking_connect() {

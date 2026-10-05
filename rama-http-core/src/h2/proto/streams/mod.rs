@@ -10,6 +10,7 @@ mod stream;
 #[expect(clippy::module_inception)]
 mod streams;
 
+pub(crate) use self::counts::LocalStreams;
 pub(crate) use self::prioritize::Prioritized;
 pub(crate) use self::recv::Open;
 pub(crate) use self::send::PollReset;

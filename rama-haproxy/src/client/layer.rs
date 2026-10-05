@@ -4,8 +4,9 @@ use std::{fmt, marker::PhantomData, net::IpAddr};
 use crate::protocol::{v1, v2};
 use rama_core::{Layer, Service, bytes::Bytes, error::BoxError, extensions::ExtensionsRef, io::Io};
 use rama_net::{
+    address::SocketAddress,
     client::{ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection},
-    forwarded::Forwarded,
+    forwarded::{Forwarded, ForwardedSelectionPolicy},
     stream::{Socket, SocketInfo},
 };
 use tokio::io::AsyncWriteExt;
@@ -255,6 +256,28 @@ impl<S: fmt::Debug, P, V: fmt::Debug> fmt::Debug for HaProxyService<S, P, V> {
     }
 }
 
+/// The PROXY source address: the client of the connection's [`Forwarded`] chain, selected by
+/// its [`ForwardedSelectionPolicy`], else the input's peer. The input's chain and policy become
+/// the connection's where it has none of its own; the connection's own [`SocketInfo`] describes
+/// its outbound transport, never the source.
+fn proxy_source(input: &impl ExtensionsRef, conn: &impl ExtensionsRef) -> Option<SocketAddress> {
+    let (input, conn) = (input.extensions(), conn.extensions());
+    input
+        .clone_to_if_absent::<Forwarded>(conn)
+        .and_then(|forwarded| {
+            let policy = input.clone_to_if_absent::<ForwardedSelectionPolicy>(conn);
+            forwarded
+                .client(
+                    policy
+                        .as_deref()
+                        .unwrap_or(&ForwardedSelectionPolicy::new()),
+                )?
+                .forwarded_for()?
+                .socket_address()
+        })
+        .or_else(|| SocketInfo::ingress(input).map(SocketInfo::peer_addr))
+}
+
 impl<S: Clone, P, V: Clone> Clone for HaProxyService<S, P, V> {
     fn clone(&self) -> Self {
         Self {
@@ -277,22 +300,12 @@ where
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { input, mut conn } = self.inner.connect(input).await?;
 
-        let src = input
-            .extensions()
-            .clone_to_if_absent::<Forwarded>(conn.extensions())
-            .and_then(|f| f.client_socket_addr())
-            .or_else(|| {
-                input
-                    .extensions()
-                    .clone_to_if_absent::<SocketInfo>(conn.extensions())
-                    .map(|info| info.peer_addr())
-            })
-            .ok_or_else(|| {
-                ConnectionError::local(
-                    BoxError::from_static_str("PROXY client (v1): missing src socket address"),
-                    ConnectionErrorKind::InvalidInput,
-                )
-            })?;
+        let src = proxy_source(&input, &conn).ok_or_else(|| {
+            ConnectionError::local(
+                BoxError::from_static_str("PROXY client (v1): missing src socket address"),
+                ConnectionErrorKind::InvalidInput,
+            )
+        })?;
 
         let peer_addr = conn.peer_addr().map_err(|error| {
             ConnectionError::local(error, ConnectionErrorKind::Internal)
@@ -339,22 +352,12 @@ where
         let EstablishedClientConnection { input, mut conn } = self.inner.connect(input).await?;
 
         let src = {
-            input
-                .extensions()
-                .clone_to_if_absent::<Forwarded>(conn.extensions())
-                .and_then(|f| f.client_socket_addr())
-                .or_else(|| {
-                    input
-                        .extensions()
-                        .clone_to_if_absent::<SocketInfo>(conn.extensions())
-                        .map(|info| info.peer_addr())
-                })
-                .ok_or_else(|| {
-                    ConnectionError::local(
-                        BoxError::from_static_str("PROXY client (v2): missing src socket address"),
-                        ConnectionErrorKind::InvalidInput,
-                    )
-                })?
+            proxy_source(&input, &conn).ok_or_else(|| {
+                ConnectionError::local(
+                    BoxError::from_static_str("PROXY client (v2): missing src socket address"),
+                    ConnectionErrorKind::InvalidInput,
+                )
+            })?
         };
 
         let peer_addr = conn.peer_addr().map_err(|error| {
@@ -510,11 +513,13 @@ pub mod protocol {
 mod tests {
     use super::*;
     use rama_core::{
-        Layer, ServiceInput, extensions::Extensions, extensions::ExtensionsRef, service::service_fn,
+        Layer, ServiceInput,
+        extensions::{Egress, Extensions, ExtensionsRef, Ingress},
+        service::service_fn,
     };
     use rama_net::{
         address::SocketAddress,
-        forwarded::{ForwardedElement, NodeId},
+        forwarded::{ForwardedElement, ForwardedSide, NodeId},
     };
     use std::{convert::Infallible, pin::Pin};
     use tokio::io::{AsyncRead, AsyncWrite};
@@ -664,6 +669,174 @@ mod tests {
             input.extensions().extend(&ext);
             svc.serve(input).await.unwrap();
         }
+    }
+
+    fn chain(addresses: &[&str]) -> Forwarded {
+        let mut elements = addresses.iter().map(|address| {
+            ForwardedElement::new_forwarded_for(NodeId::try_from(*address).unwrap())
+        });
+        let mut forwarded = Forwarded::new(elements.next().unwrap());
+        forwarded.extend(elements);
+        forwarded
+    }
+
+    /// The source is the client of the chain the connection keeps, whether a connector set it
+    /// or it came from the input, selected by the policy that travels with it.
+    #[tokio::test]
+    async fn the_source_is_the_client_of_the_connections_chain() {
+        let leftmost = ForwardedSelectionPolicy::new().with_side(ForwardedSide::Leftmost);
+        for (case, on_input, on_conn, policy, client) in [
+            (
+                "connection only",
+                None,
+                Some(&["127.0.1.2:80"][..]),
+                None,
+                "127.0.1.2:80",
+            ),
+            (
+                "input only",
+                Some(&["127.0.1.2:80"][..]),
+                None,
+                None,
+                "127.0.1.2:80",
+            ),
+            (
+                "connection wins",
+                Some(&["10.0.0.1:1"][..]),
+                Some(&["127.0.1.2:80"][..]),
+                None,
+                "127.0.1.2:80",
+            ),
+            (
+                "rightmost by default",
+                Some(&["10.0.0.9:9", "127.0.1.2:80"][..]),
+                None,
+                None,
+                "127.0.1.2:80",
+            ),
+            (
+                "leftmost by policy",
+                None,
+                Some(&["127.0.1.2:80", "10.0.0.9:9"][..]),
+                Some(leftmost.clone()),
+                "127.0.1.2:80",
+            ),
+        ] {
+            let source: SocketAddress = client.parse().unwrap();
+            let expected = format!(
+                "PROXY TCP4 {} 192.168.1.101 {} 443\r\n",
+                source.ip_addr, source.port
+            );
+            let conn_extensions = Extensions::new();
+            if let Some(on_conn) = on_conn {
+                conn_extensions.insert(chain(on_conn));
+            }
+            let svc = HaProxyLayer::tcp()
+                .v1()
+                .layer(service_fn(move |input: ServiceInput<()>| {
+                    let conn = SocketConnection {
+                        socket: "192.168.1.101:443".parse().unwrap(),
+                        conn: Builder::new().write(expected.as_bytes()).build(),
+                        extensions: conn_extensions.clone(),
+                    };
+                    async move { Ok::<_, Infallible>(EstablishedClientConnection { input, conn }) }
+                }));
+            let input = ServiceInput::new(());
+            if let Some(on_input) = on_input {
+                input.extensions().insert(chain(on_input));
+            }
+            if let Some(policy) = policy {
+                input.extensions().insert(policy);
+            }
+            svc.serve(input).await.expect(case);
+        }
+
+        // As on v2.
+        let conn_extensions = Extensions::new();
+        conn_extensions.insert(chain(&["127.0.0.1:80"]));
+        let svc = HaProxyLayer::tcp().with_payload(vec![42]).layer(service_fn(
+            move |input: ServiceInput<()>| {
+                let conn = SocketConnection {
+                    socket: "192.168.1.1:443".parse().unwrap(),
+                    extensions: conn_extensions.clone(),
+                    conn: Builder::new()
+                        .write(&[
+                            b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U', b'I',
+                            b'T', b'\n', 0x21, 0x11, 0, 13, 127, 0, 0, 1, 192, 168, 1, 1, 0, 80, 1,
+                            187, 42,
+                        ])
+                        .build(),
+                };
+                async move { Ok::<_, Infallible>(EstablishedClientConnection { input, conn }) }
+            },
+        ));
+        svc.serve(ServiceInput::new(())).await.unwrap();
+    }
+
+    /// Without a usable [`Forwarded`] chain the source is the input's peer, also when the
+    /// connection records its own (outbound) [`SocketInfo`], as a TCP connector does; without
+    /// an input peer there is no source, whatever the connection knows.
+    #[tokio::test]
+    async fn the_fallback_source_is_the_inputs_peer() {
+        let upstream: SocketAddress = "192.168.1.101:443".parse().unwrap();
+        for (input_peer, expected) in [
+            (
+                Some("127.0.1.2:54321"),
+                Some("PROXY TCP4 127.0.1.2 192.168.1.101 54321 443\r\n"),
+            ),
+            (None, None),
+        ] {
+            let conn_extensions = Extensions::new();
+            conn_extensions.insert(SocketInfo::new(
+                Some("10.0.0.1:40000".parse().unwrap()),
+                upstream,
+            ));
+            let svc = HaProxyLayer::tcp()
+                .v1()
+                .layer(service_fn(move |input: ServiceInput<()>| {
+                    let conn = SocketConnection {
+                        socket: upstream,
+                        conn: Builder::new()
+                            .write(expected.unwrap_or_default().as_bytes())
+                            .build(),
+                        extensions: conn_extensions.clone(),
+                    };
+                    async move { Ok::<_, Infallible>(EstablishedClientConnection { input, conn }) }
+                }));
+            let input = ServiceInput::new(());
+            if let Some(peer) = input_peer {
+                input
+                    .extensions()
+                    .insert(SocketInfo::new(None, peer.parse().unwrap()));
+            }
+            let result = svc.serve(input).await;
+            assert_eq!(result.is_ok(), expected.is_some(), "{input_peer:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_fallback_source_is_the_ingress_peer() {
+        let upstream: SocketAddress = "192.168.1.101:443".parse().unwrap();
+        let svc = HaProxyLayer::tcp()
+            .v1()
+            .layer(service_fn(move |input: ServiceInput<()>| {
+                let conn = SocketConnection {
+                    socket: upstream,
+                    conn: Builder::new()
+                        .write(b"PROXY TCP4 127.0.1.2 192.168.1.101 54321 443\r\n")
+                        .build(),
+                    extensions: Extensions::new(),
+                };
+                async move { Ok::<_, Infallible>(EstablishedClientConnection { input, conn }) }
+            }));
+        let input = ServiceInput::new(());
+        let ingress = Extensions::new();
+        ingress.insert(SocketInfo::new(None, "127.0.1.2:54321".parse().unwrap()));
+        input.extensions().insert(Ingress(ingress));
+        let egress = Extensions::new();
+        egress.insert(SocketInfo::new(None, "10.9.9.9:1".parse().unwrap()));
+        input.extensions().insert(Egress(egress));
+        svc.serve(input).await.unwrap();
     }
 
     #[tokio::test]

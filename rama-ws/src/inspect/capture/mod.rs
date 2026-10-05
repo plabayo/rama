@@ -184,7 +184,7 @@ pub fn observe_handshake(
 ) -> bool {
     let websocket = is_http_req_websocket_handshake(parts);
     if websocket {
-        let secure = parts.protocol().is_some_and(Protocol::is_secure);
+        let secure = parts.target_protocol().is_some_and(Protocol::is_secure);
         metadata
             .exchange
             .insert(if secure { Protocol::WSS } else { Protocol::WS });

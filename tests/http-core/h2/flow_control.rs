@@ -1110,6 +1110,62 @@ async fn send_enqueued_during_unlocked_flush_wakes_connection() {
     join(srv, h2).await;
 }
 
+/// A stream closed while it waited for connection capacity is released once that capacity
+/// arrives, not kept until the connection ends.
+#[tokio::test]
+async fn a_stream_closed_while_waiting_for_capacity_is_released() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+    let (dropped_tx, dropped_rx) = futures::channel::oneshot::channel();
+    let (released_tx, released_rx) = futures::channel::oneshot::channel();
+
+    let h2 = async move {
+        let (mut client, mut h2) = client::handshake(io).await.unwrap();
+        let request = || {
+            Request::builder()
+                .method(Method::POST)
+                .uri("https://http2.akamai.com/")
+                .body(())
+                .unwrap()
+        };
+        // Stream 1 takes the whole connection window; stream 3 waits for more.
+        let (_response1, mut stream1) = client.send_request(request(), false).unwrap();
+        let payload = vec![0; frame::DEFAULT_INITIAL_WINDOW_SIZE as usize];
+        stream1.send_data(payload.into(), false).unwrap();
+        let (response3, mut stream3) = client.send_request(request(), false).unwrap();
+        stream3.send_data(vec![0; 10].into(), false).unwrap();
+
+        // The GOAWAY closes stream 3 while it still waits.
+        h2.drive(response3).await.unwrap_err();
+        drop(stream3);
+        dropped_tx.send(()).unwrap();
+        h2.drive(released_rx).await.unwrap();
+        h2.drive(idle_ms(50)).await;
+        assert_eq!(client.num_wired_streams(), 1, "only stream 1 remains");
+        drop(stream1);
+    };
+
+    let srv = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+        // Both heads and stream 1's whole window, in whatever order they are written.
+        let (mut heads, mut data) = (0, 0);
+        while heads < 2 || data < frame::DEFAULT_INITIAL_WINDOW_SIZE as usize {
+            match srv.next().await.unwrap().unwrap() {
+                frame::Frame::Headers(_) => heads += 1,
+                frame::Frame::Data(frame) => data += frame.payload().len(),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        srv.send_frame(frames::go_away(1)).await;
+        dropped_rx.await.unwrap();
+        srv.send_frame(frames::window_update(0, 100)).await;
+        released_tx.send(()).unwrap();
+        idle_ms(100).await;
+    };
+    join(srv, h2).await;
+}
+
 #[tokio::test]
 async fn reserved_capacity_assigned_in_multi_window_updates() {
     h2_support::trace_init!();

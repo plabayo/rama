@@ -32,6 +32,10 @@ pub(super) struct Stream {
     /// concurrent streams.
     pub is_counted: bool,
 
+    /// Set to `true` while a local stream is counted in the connection's
+    /// [`LocalStreams`](super::counts::LocalStreams), from creation until it closes.
+    pub is_live_local: bool,
+
     /// Number of outstanding handles pointing to this stream
     pub ref_count: usize,
 
@@ -255,6 +259,7 @@ impl Stream {
             alt_svc_origin: None,
             ref_count: 0,
             is_counted: false,
+            is_live_local: false,
 
             // ===== Fields related to sending =====
             next_pending_send: None,

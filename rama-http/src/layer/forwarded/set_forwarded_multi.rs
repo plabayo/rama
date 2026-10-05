@@ -156,23 +156,17 @@ macro_rules! set_forwarded_service_for_tuple {
 
                 let mut forwarded_element = ForwardedElement::new_forwarded_by(self.by_node.clone());
 
-                if let Some(peer_addr) = req
-                    .extensions()
-                    .ingress()
-                    .and_then(|ext|ext.get_ref::<SocketInfo>())
-                    .map(|socket| socket.peer_addr())
-                {
-
+                if let Some(peer_addr) = SocketInfo::ingress(req.extensions()).map(SocketInfo::peer_addr) {
                     forwarded_element.set_forwarded_for(peer_addr);
                 }
 
                 let authority = req
-                    .authority()
+                    .target_authority()
                     .ok_or_else(|| BoxError::from_static_str("set forwarded: no authority"))?;
 
                 forwarded_element.set_forwarded_host(authority);
 
-                let protocol = req.protocol().unwrap_or(&Protocol::HTTP);
+                let protocol = req.target_protocol().unwrap_or(&Protocol::HTTP);
                 if let Ok(forwarded_proto) = protocol.try_into() {
                     forwarded_element.set_forwarded_proto(forwarded_proto);
                 }
@@ -208,8 +202,14 @@ mod tests {
         headers::forwarded::{TrueClientIp, XClientIp, XRealIp},
         service::web::response::IntoResponse,
     };
-    use rama_core::{Layer, error::BoxError, service::service_fn};
+    use rama_core::{
+        Layer,
+        error::BoxError,
+        extensions::{Egress, Extensions, Ingress},
+        service::service_fn,
+    };
     use rama_http_headers::forwarded::XForwardedProto;
+    use rama_net::stream::SocketInfo;
     use std::convert::Infallible;
 
     fn assert_is_service<T: Service<Request<()>>>(_: T) {}
@@ -235,11 +235,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_forwarded_for_is_the_ingress_peer() {
+        async fn svc(request: Request<()>) -> Result<(), Infallible> {
+            assert_eq!(
+                request.headers().get("X-Real-Ip").unwrap(),
+                "127.0.0.1:62345"
+            );
+            Ok(())
+        }
+
+        let service = SetForwardedHeadersService::<_, (XRealIp,)>::new(service_fn(svc));
+        for own in [false, true] {
+            let req = Request::builder()
+                .uri("http://example.com")
+                .body(())
+                .unwrap();
+            let client = SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap());
+            if own {
+                req.extensions().insert(client);
+            } else {
+                let ingress = Extensions::new();
+                ingress.insert(client);
+                req.extensions().insert(Ingress(ingress));
+            }
+            let egress = Extensions::new();
+            egress.insert(SocketInfo::new(None, "198.51.100.7:443".parse().unwrap()));
+            req.extensions().insert(Egress(egress));
+            service.serve(req).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn test_set_forwarded_service_forwarded() {
         async fn svc(request: Request<()>) -> Result<(), Infallible> {
             assert_eq!(
                 request.headers().get("Forwarded").unwrap(),
-                "by=rama;host=\"example.com:80\";proto=http"
+                "by=rama;host=example.com;proto=http"
             );
             Ok(())
         }

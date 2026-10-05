@@ -424,6 +424,16 @@ impl<'a> SendStream<'a> {
         Ok(written)
     }
 
+    /// Whether new data may still be sent: not finished (even before the FIN is acknowledged),
+    /// reset, stopped by the peer or closed.
+    pub(crate) fn is_open(&self) -> bool {
+        match self.state.send.get(&self.id) {
+            Some(Some(s)) => matches!(s.state, send::SendState::Ready) && s.stop_reason.is_none(),
+            Some(None) => true,
+            None => false,
+        }
+    }
+
     /// Check if this stream was stopped, get the reason if it was
     pub(crate) fn stopped(&self) -> Result<Option<VarInt>, ClosedStream> {
         match self.state.send.get(&self.id).as_ref() {

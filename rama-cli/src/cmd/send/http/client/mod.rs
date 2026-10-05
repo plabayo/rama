@@ -27,6 +27,7 @@ use rama::{
             NoProxyEnvLayer, ProxyAddressLayer, ProxyEnvLayer, ProxyRoutesLayer, SystemProxyLayer,
             SystemProxyPacService,
         },
+        uri::Uri,
         user::{Basic, ProxyCredential},
     },
     proxy::socks5::Socks5ProxyConnectorLayer,
@@ -254,6 +255,23 @@ fn compute_redirect_limit(location: bool, location_trusted: bool, max_redirs: is
     }
 }
 
+/// Whether this command may open a QUIC connection for HTTP/3.
+fn uses_quic(cfg: &SendCommand, uri: &Uri) -> bool {
+    // Local URI handlers do not need a QUIC socket; WebSockets use one only for
+    // explicit `--http3` (RFC 9220), never through Alt-Svc discovery.
+    let network_http = uri
+        .scheme()
+        .is_some_and(|scheme| scheme.is_http() || (cfg.http_3 && scheme.is_ws()));
+    // Honor an older TLS ceiling without making an ordinary HTTP request fail
+    // merely because the client also supports HTTP/3.
+    network_http
+        && !cfg.http_09
+        && !cfg.http_10
+        && !cfg.http_11
+        && !cfg.http_2
+        && (cfg.http_3 || (cfg.alt_svc && matches!(cfg.tls_max, None | Some(TlsVersion::V13))))
+}
+
 async fn new_inner_client(
     cfg: &SendCommand,
     executor: Executor,
@@ -318,19 +336,10 @@ async fn new_inner_client(
         .with_default_http_connector(executor.clone());
 
     let uri = parse_user_uri(&cfg.uri)?;
-    // Local URI handlers and WebSocket connections do not need a QUIC socket.
-    let network_http = uri.scheme().is_some_and(|scheme| scheme.is_http());
-    // Honor an older TLS ceiling without making an ordinary HTTP request fail
-    // merely because the client also supports HTTP/3.
-    let allows_h3 = !cfg.http_09
-        && !cfg.http_10
-        && !cfg.http_11
-        && !cfg.http_2
-        && (cfg.http_3 || (cfg.alt_svc && matches!(cfg.tls_max, None | Some(TlsVersion::V13))));
     // Erase the deep transport futures before adding diagnostics and timeouts.
     // Otherwise constructing their combined future can exhaust a worker stack.
     // This boundary is only crossed for a new connection; pool hits bypass it.
-    let builder = if network_http && allows_h3 {
+    let builder = if uses_quic(cfg, &uri) {
         let connector = Http3Connector::builder(executor)
             .with_tls_provider(Arc::new(BoringTlsProvider))
             .with_tls_config(tls_config)
@@ -448,6 +457,29 @@ mod tests {
 
     fn send_cfg(args: &[&str]) -> SendCommand {
         TestCli::parse_from(std::iter::once("rama-send-test").chain(args.iter().copied())).send
+    }
+
+    #[test]
+    fn quic_is_used_only_where_http3_may_be_selected() {
+        for (args, expected) in [
+            (&["--http3", "https://example.com/"][..], true),
+            (&["--alt-svc", "https://example.com/"], true),
+            (&["https://example.com/"], false),
+            (&["--alt-svc", "--http2", "https://example.com/"], false),
+            (
+                &["--alt-svc", "--tls-max", "1.2", "https://example.com/"],
+                false,
+            ),
+            (&["--http3", "wss://example.com/"], true),
+            // RFC 9220 needs explicit prior knowledge: discovery never moves a WebSocket.
+            (&["--alt-svc", "wss://example.com/"], false),
+            (&["--alt-svc", "ws://example.com/"], false),
+            (&["--alt-svc", "file:///tmp/request.txt"], false),
+        ] {
+            let cfg = send_cfg(args);
+            let uri = parse_user_uri(&cfg.uri).unwrap();
+            assert_eq!(uses_quic(&cfg, &uri), expected, "{args:?}");
+        }
     }
 
     #[test]

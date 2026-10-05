@@ -12,11 +12,14 @@ use super::utils;
 async fn test_quic_client_server() {
     utils::init_tracing();
 
-    let exit_status = tokio::process::Command::new(env!("CARGO_BIN_EXE_quic_client_server"))
-        .kill_on_drop(true)
-        .status()
-        .await
-        .unwrap();
+    let exit_status = tokio::process::Command::from(utils::ExampleRunner::command(
+        "quic_client_server",
+        Some(utils::QUIC_BACKEND),
+    ))
+    .kill_on_drop(true)
+    .status()
+    .await
+    .unwrap();
     assert!(
         exit_status.success(),
         "the example completed its exchange and its shutdown joined: {exit_status}"
@@ -29,9 +32,10 @@ async fn test_quic_client_server_qlog_is_complete_on_exit() {
     utils::init_tracing();
     let directory = rama::utils::fs::tempdir().unwrap();
     let path = directory.path().join("client.qlog");
+    let command = utils::ExampleRunner::command("quic_client_server", Some(utils::QUIC_BACKEND));
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(60),
-        tokio::process::Command::new(env!("CARGO_BIN_EXE_quic_client_server"))
+        tokio::process::Command::from(command)
             .kill_on_drop(true)
             .arg("--qlog")
             .arg(&path)

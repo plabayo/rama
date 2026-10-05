@@ -1466,27 +1466,18 @@ impl Connection {
     ///
     /// Previously queued datagrams which are still unsent may be discarded to make space for this
     /// datagram, in order of oldest to newest.
-    #[expect(
-        clippy::unreachable,
-        reason = "the engine never returns Blocked when its drop-oldest send policy is enabled"
-    )]
     pub fn send_datagram(&self, data: Bytes) -> Result<(), SendDatagramError> {
-        let conn = &mut *self.0.state.lock();
-        if let Some(ref x) = conn.error {
-            return Err(SendDatagramError::ConnectionLost(x.clone()));
-        }
-        match conn.inner.datagrams().send(data, true) {
-            Ok(()) => {
-                conn.wake();
-                Ok(())
-            }
-            Err(e) => Err(match e {
-                ProtoSendDatagramError::Blocked(..) => unreachable!(),
-                ProtoSendDatagramError::UnsupportedByPeer => SendDatagramError::UnsupportedByPeer,
-                ProtoSendDatagramError::Disabled => SendDatagramError::Disabled,
-                ProtoSendDatagramError::TooLarge => SendDatagramError::TooLarge,
-            }),
-        }
+        self.0.state.lock().send_datagram(data, true)
+    }
+
+    /// Transmit `data` as an unreliable, unordered application datagram without waiting or
+    /// discarding queued datagrams: a full send buffer returns [`SendDatagramError::Blocked`].
+    ///
+    /// See [`send_datagram()`] for details.
+    ///
+    /// [`send_datagram()`]: Connection::send_datagram
+    pub fn try_send_datagram(&self, data: Bytes) -> Result<(), SendDatagramError> {
+        self.0.state.lock().send_datagram(data, false)
     }
 
     /// Transmit `data` as an unreliable, unordered application datagram
@@ -1518,6 +1509,12 @@ impl Connection {
     /// [`send_datagram()`]: Connection::send_datagram
     pub fn max_datagram_size(&self) -> Option<usize> {
         self.0.state.lock().inner.datagrams().max_size()
+    }
+
+    /// Whether this connection accepts QUIC DATAGRAM frames from its peer: this endpoint
+    /// advertised `max_datagram_frame_size` (RFC 9221 §3), whatever the peer supports.
+    pub fn datagram_receive_enabled(&self) -> bool {
+        self.0.state.lock().inner.datagrams().receive_enabled()
     }
 
     /// Bytes available in the outgoing datagram buffer
@@ -3420,6 +3417,34 @@ impl State {
         self.close(0u32.into(), Bytes::new(), shared);
     }
 
+    /// Queue a datagram, dropping the oldest queued ones for space when `drop_oldest`.
+    #[expect(
+        clippy::unreachable,
+        reason = "the engine never returns Blocked when its drop-oldest send policy is enabled"
+    )]
+    pub(crate) fn send_datagram(
+        &mut self,
+        data: Bytes,
+        drop_oldest: bool,
+    ) -> Result<(), SendDatagramError> {
+        if let Some(ref x) = self.error {
+            return Err(SendDatagramError::ConnectionLost(x.clone()));
+        }
+        match self.inner.datagrams().send(data, drop_oldest) {
+            Ok(()) => {
+                self.wake();
+                Ok(())
+            }
+            Err(e) => Err(match e {
+                ProtoSendDatagramError::Blocked(..) if drop_oldest => unreachable!(),
+                ProtoSendDatagramError::Blocked(..) => SendDatagramError::Blocked,
+                ProtoSendDatagramError::UnsupportedByPeer => SendDatagramError::UnsupportedByPeer,
+                ProtoSendDatagramError::Disabled => SendDatagramError::Disabled,
+                ProtoSendDatagramError::TooLarge => SendDatagramError::TooLarge,
+            }),
+        }
+    }
+
     pub(crate) fn check_0rtt(&self) -> Result<(), ()> {
         if self.inner.is_handshaking()
             || self.inner.accepted_0rtt()
@@ -3486,6 +3511,11 @@ pub enum SendDatagramError {
     /// Exceeds the path MTU minus overhead, the peer's advertised limit, or the configured send
     /// buffer budget including queue-entry overhead.
     TooLarge,
+    /// The send buffer is full; only returned by the `try_send_datagram` methods
+    Blocked,
+    /// The stream the datagram is bound to can no longer send; see
+    /// [`StreamAbortHandle::send_datagram`](crate::StreamAbortHandle::send_datagram)
+    StreamClosed,
     /// The connection was lost
     ConnectionLost(ConnectionError),
 }
@@ -3496,6 +3526,8 @@ impl core::fmt::Display for SendDatagramError {
             Self::UnsupportedByPeer => f.write_str("datagrams not supported by peer"),
             Self::Disabled => f.write_str("datagram support disabled"),
             Self::TooLarge => f.write_str("datagram too large"),
+            Self::Blocked => f.write_str("datagram send buffer full"),
+            Self::StreamClosed => f.write_str("datagram stream closed for sending"),
             Self::ConnectionLost(_) => f.write_str("connection lost"),
         }
     }

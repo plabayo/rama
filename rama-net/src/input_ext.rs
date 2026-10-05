@@ -9,7 +9,7 @@
 //! no [`ExtensionsRef`] bound and is never
 //! blanket-derived from another trait — every input type opts in with the
 //! resolution that fits it (the http `Request`/`Parts` impls in `rama-http-types`
-//! walk the uri → TLS SNI → `Forwarded` → `Host` fallback chain;
+//! walk the `Forwarded` → uri → `Host` → TLS SNI chain, their target view skips `Forwarded`;
 //! a transport target resolves its authority directly). The only blanket impls
 //! are the trivial reference-forwarding ones and the composed connector
 //! accessors, whose methods are purely derived.
@@ -98,7 +98,16 @@ impl PathInputExt for Uri {
 /// routing). Returns `None` when no authority can be resolved.
 pub trait AuthorityInputExt {
     /// The routing authority (`host[:port]`), or `None` if none is resolvable.
+    ///
+    /// For an HTTP request this is what the end client asked for, and may come from
+    /// forwarded context. Where to connect is [`Self::target_authority`].
     fn authority(&self) -> Option<HostWithOptPort>;
+
+    /// The input's own target (`host[:port]`), never resolved from forwarded context: what
+    /// a connector dials, names in TLS SNI and keys its pool by.
+    fn target_authority(&self) -> Option<HostWithOptPort> {
+        self.authority()
+    }
 
     /// The authority [`Host`], dropping any port.
     fn host(&self) -> Option<Host> {
@@ -130,18 +139,45 @@ pub trait AuthorityInputExt {
             authority.into_host_with_port(self.protocol_default_port().or(fallback))
         })
     }
+
+    /// [`Self::authority_with_default_port`] for the [target](Self::target_authority): the
+    /// [target protocol](ProtocolInputExt::target_protocol)'s default port, then `fallback`.
+    fn target_authority_with_default_port(&self, fallback: Option<u16>) -> Option<HostWithPort>
+    where
+        Self: ProtocolInputExt,
+    {
+        self.target_authority().and_then(|authority| {
+            authority.into_host_with_port(
+                self.target_protocol()
+                    .and_then(Protocol::default_port)
+                    .or(fallback),
+            )
+        })
+    }
 }
 
 impl<T: AuthorityInputExt + ?Sized> AuthorityInputExt for &T {
     fn authority(&self) -> Option<HostWithOptPort> {
         (**self).authority()
     }
+
+    fn target_authority(&self) -> Option<HostWithOptPort> {
+        (**self).target_authority()
+    }
 }
 
 /// Read the application-layer [`Protocol`] (scheme) of a service input.
 pub trait ProtocolInputExt {
     /// The application protocol, or `None` if it can't be determined.
+    ///
+    /// For an HTTP request this is what the end client used, and may come from forwarded
+    /// context. The protocol to connect with is [`Self::target_protocol`].
     fn protocol(&self) -> Option<&Protocol>;
+
+    /// The input's own application protocol, never resolved from forwarded context.
+    fn target_protocol(&self) -> Option<&Protocol> {
+        self.protocol()
+    }
 
     /// The default port of the resolved [`Protocol`] (e.g. 443 for HTTPS), or
     /// `None` if the protocol is unknown or portless.
@@ -153,6 +189,10 @@ pub trait ProtocolInputExt {
 impl<T: ProtocolInputExt + ?Sized> ProtocolInputExt for &T {
     fn protocol(&self) -> Option<&Protocol> {
         (**self).protocol()
+    }
+
+    fn target_protocol(&self) -> Option<&Protocol> {
+        (**self).target_protocol()
     }
 }
 
@@ -281,7 +321,7 @@ pub trait ConnectorTargetInputExt:
             return Some(target.clone());
         }
 
-        self.authority_with_default_port(None)
+        self.target_authority_with_default_port(None)
     }
 
     /// Like [`connector_target`](Self::connector_target) but with `default_port` as
@@ -295,7 +335,7 @@ pub trait ConnectorTargetInputExt:
             return Some(target.clone());
         }
 
-        self.authority_with_default_port(Some(default_port))
+        self.target_authority_with_default_port(Some(default_port))
     }
 }
 

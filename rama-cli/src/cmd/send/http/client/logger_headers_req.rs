@@ -3,7 +3,10 @@ use rama::{
     extensions::ExtensionsRef,
     http::{
         Request, Version,
-        proto::h2::{self, PseudoHeader, PseudoHeaderOrder},
+        proto::{
+            ext,
+            h2::{PseudoHeader, PseudoHeaderOrder},
+        },
     },
 };
 
@@ -70,8 +73,7 @@ where
                             PseudoHeader::Path => req.uri().path_or_root().into_owned(),
                             PseudoHeader::Status => "<???>".to_owned(),
                             PseudoHeader::Protocol => {
-                                if let Some(proto) = req.extensions().get_ref::<h2::ext::Protocol>()
-                                {
+                                if let Some(proto) = req.extensions().get_ref::<ext::Protocol>() {
                                     proto.as_str().to_owned()
                                 } else {
                                     continue;

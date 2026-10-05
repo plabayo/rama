@@ -202,13 +202,13 @@ fn alternative_for_request(
 /// Resolve the logical request target, never the physical alternative endpoint.
 /// WebSocket opening handshakes belong to the corresponding HTTP(S) origin.
 fn request_origin<B>(request: &Request<B>) -> Option<HttpOrigin> {
-    let protocol = match request.protocol()? {
+    let protocol = match request.target_protocol()? {
         protocol if protocol == &Protocol::WS => Protocol::HTTP,
         protocol if protocol == &Protocol::WSS => Protocol::HTTPS,
         protocol => protocol.clone(),
     };
     let authority = request
-        .authority()?
+        .target_authority()?
         .into_host_with_port(protocol.default_port())?;
     HttpOrigin::new(protocol, authority).ok()
 }

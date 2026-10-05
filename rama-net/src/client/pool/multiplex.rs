@@ -35,7 +35,9 @@ use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::time::AtomicInstant;
 use std::fmt::Debug;
+use std::future::Future;
 use std::num::NonZeroUsize;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -68,6 +70,7 @@ struct StoredConnection<C, ID> {
     conn: C,
     id: ID,
     max_concurrency: Option<Arc<MaxConcurrency>>,
+    admission: Option<ConnectionAdmission>,
     active: AtomicUsize,
     capacity_notify: Arc<Notify>,
     notify: Arc<Notify>,
@@ -83,9 +86,25 @@ struct ConnectionSlot {
 }
 
 impl<C, ID> StoredConnection<C, ID> {
-    /// A connection is idle when none of its handouts are in flight.
+    /// A connection is idle when none of its handouts are in flight and no work
+    /// they outlived still occupies it.
     fn is_idle(&self) -> bool {
-        self.active.load(Ordering::Relaxed) == 0
+        if self.active.load(Ordering::Relaxed) != 0 {
+            return false;
+        }
+        if self.in_use_unleased() {
+            // Such work is activity: the idle clock starts once it ends.
+            self.last_idle.set_now();
+            return false;
+        }
+        true
+    }
+
+    /// Work outlived its handouts, such as an upgraded tunnel.
+    fn in_use_unleased(&self) -> bool {
+        self.admission
+            .as_ref()
+            .is_some_and(ConnectionAdmission::in_use)
     }
 
     /// Effective per-connection concurrency: the connection's [`MaxConcurrency`]
@@ -117,7 +136,7 @@ impl<C, ID> StoredConnection<C, ID> {
     {
         // Resource providers run outside all pool locks. If admission loses a
         // race below, dropping this reservation immediately returns its credit.
-        let admission = match self.conn.extensions().get_ref::<ConnectionAdmission>() {
+        let admission = match &self.admission {
             Some(provider) => match provider.try_acquire(input) {
                 Ok(Some(lease)) => Some(lease),
                 Ok(None) => return None,
@@ -182,11 +201,16 @@ impl<C, ID> Drop for MultiplexedConnection<C, ID> {
         self.admission.take();
         let prev = self.inner.active.fetch_sub(1, Ordering::Release);
         if prev == 1 {
-            // last in-flight stream released: the connection just went idle
             self.inner.last_idle.set_now();
-            // An idle connection is globally evictable, so a waiter for any
-            // ID can make progress by claiming its pool slot.
-            self.inner.notify.notify_one();
+            if self.inner.in_use_unleased() {
+                // Evictable only once that work ends: every waiter subscribes to it,
+                // so none depends on another one staying to pass the news on.
+                self.inner.notify.notify_waiters();
+            } else {
+                // An idle connection is globally evictable, so a waiter for any
+                // ID can make progress by claiming its pool slot.
+                self.inner.notify.notify_one();
+            }
         }
         // One released handout creates one unit of capacity for this exact
         // connection ID. Wake one compatible waiter without broadcasting to
@@ -376,6 +400,7 @@ where
     /// connection alive via the outstanding handles, but it is no longer
     /// handed out).
     fn is_eligible(&self, conn: &StoredConnection<C, ID>) -> bool {
+        // Idle first: seeing work that outlived its handouts restarts the idle clock.
         if let Some(idle_timeout) = self.idle_timeout
             && conn.is_idle()
             && conn.last_idle.elapsed() >= idle_timeout
@@ -448,7 +473,7 @@ where
             for (id, bucket) in &storage.by_id {
                 for (pos, conn) in bucket.iter().enumerate() {
                     let last_idle = conn.last_idle.as_nanos();
-                    if !conn.is_idle() || last_idle >= oldest {
+                    if last_idle >= oldest || !conn.is_idle() {
                         continue;
                     }
                     let slot = conn.pool_slot.lock();
@@ -594,15 +619,23 @@ where
                 FuturesUnordered::new()
             };
 
-            let admission_changes: FuturesUnordered<_> = if want_cap_changes {
+            let mut admission_changes: FuturesUnordered<_> = if want_cap_changes {
                 same_id
                     .iter()
-                    .filter_map(|conn| {
-                        conn.conn
+                    .filter_map(|conn| conn.admission.as_ref().map(ConnectionAdmission::watch))
+                    // A candidate going broken is swept on the next look, which may free a slot.
+                    .chain(same_id.iter().filter_map(|conn| {
+                        let mut changed = conn
+                            .conn
                             .extensions()
-                            .get_ref::<ConnectionAdmission>()
-                            .map(ConnectionAdmission::watch)
-                    })
+                            .get_ref::<ConnectionHealthWatcher>()?
+                            .watch();
+                        let changed: Pin<Box<dyn Future<Output = ()> + Send>> =
+                            Box::pin(async move {
+                                _ = changed.changed().await;
+                            });
+                        Some(changed)
+                    }))
                     .collect()
             } else {
                 FuturesUnordered::new()
@@ -646,7 +679,26 @@ where
                 if let Ok(permit) = self.total_slots.clone().try_acquire_owned() {
                     Some(PoolSlot(permit))
                 } else {
-                    let evicted = Self::evict_lru_idle(&mut self.storage.lock());
+                    let mut storage = self.storage.lock();
+                    if want_cap_changes {
+                        // Subscribed before eviction looks: a connection whose handouts
+                        // are gone becomes evictable once its remaining work ends.
+                        admission_changes.extend(
+                            storage
+                                .by_id
+                                .values()
+                                .flatten()
+                                .filter(|conn| {
+                                    conn.active.load(Ordering::Relaxed) == 0
+                                        && conn.in_use_unleased()
+                                })
+                                .filter_map(|conn| {
+                                    conn.admission.as_ref().map(ConnectionAdmission::watch)
+                                }),
+                        );
+                    }
+                    let evicted = Self::evict_lru_idle(&mut storage);
+                    drop(storage);
                     match evicted {
                         Some((evicted, slot)) => {
                             drop(evicted);
@@ -762,7 +814,7 @@ where
     ) -> Result<Self::Connection, BoxError> {
         // The establishing request owns the first reservation before concurrent
         // checkouts can see this connection in storage.
-        let admission = match conn.extensions().get_ref::<ConnectionAdmission>() {
+        let admission = match conn.extensions().self_get_ref::<ConnectionAdmission>() {
             Some(provider) => Some(provider.acquire(input).await?),
             None => None,
         };
@@ -773,6 +825,10 @@ where
                 .is_none_or(ConnectionReuse::is_reusable);
         let conn = Arc::new(StoredConnection {
             max_concurrency: conn.extensions().get_arc::<MaxConcurrency>(),
+            admission: conn
+                .extensions()
+                .self_get_ref::<ConnectionAdmission>()
+                .cloned(),
             conn,
             id,
             active: AtomicUsize::new(1),
@@ -931,6 +987,7 @@ mod tests {
         limit: AtomicUsize,
         reserved: AtomicUsize,
         failed: AtomicBool,
+        in_use: AtomicBool,
         changed: Arc<Notify>,
         storage: Weak<Mutex<Storage<Conn, TestId>>>,
     }
@@ -938,6 +995,11 @@ mod tests {
     impl AdmissionState {
         fn set_limit(&self, limit: usize) {
             self.limit.store(limit, Ordering::SeqCst);
+            self.changed.notify_waiters();
+        }
+
+        fn set_in_use(&self, in_use: bool) {
+            self.in_use.store(in_use, Ordering::SeqCst);
             self.changed.notify_waiters();
         }
     }
@@ -992,6 +1054,10 @@ mod tests {
             changed.as_mut().enable();
             changed
         }
+
+        fn in_use(&self) -> bool {
+            self.0.in_use.load(Ordering::SeqCst)
+        }
     }
 
     fn admission_connection(
@@ -1002,6 +1068,7 @@ mod tests {
             limit: AtomicUsize::new(limit),
             reserved: AtomicUsize::new(0),
             failed: AtomicBool::new(false),
+            in_use: AtomicBool::new(false),
             changed: Arc::new(Notify::new()),
             storage: Arc::downgrade(&pool.storage),
         });
@@ -1111,6 +1178,197 @@ mod tests {
             drop((first, second));
             assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
         }
+    }
+
+    #[tokio::test]
+    async fn work_outliving_its_handouts_keeps_a_connection_from_eviction() {
+        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let permit = new_slot(&pool).await;
+        let (conn, state) = admission_connection(&pool, 4);
+        let input = Extensions::new();
+        let first = pool.create(TestId(0), conn, permit, &input).await.unwrap();
+        // An upgraded tunnel, say: the handout is gone, the connection is not idle.
+        state.set_in_use(true);
+        drop(first);
+
+        let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT));
+        assert!(other.poll().is_pending(), "a busy connection was evicted");
+        assert!(pool.storage.lock().by_id.contains_key(&TestId(0)));
+
+        state.set_in_use(false);
+        assert!(
+            other.is_woken(),
+            "the end of that work must wake the waiter"
+        );
+        let Poll::Ready(Ok(ConnectionResult::CreatePermit(_))) = other.poll() else {
+            panic!("the now idle connection must be evicted for the waiter")
+        };
+        assert!(pool.storage.lock().by_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn every_waiter_learns_of_work_outliving_the_last_handout() {
+        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let permit = new_slot(&pool).await;
+        let (conn, state) = admission_connection(&pool, 4);
+        let input = Extensions::new();
+        let first = pool.create(TestId(0), conn, permit, &input).await.unwrap();
+        // Both wait while the connection is leased, so neither watches its work yet.
+        let mut leaving = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT));
+        let mut staying = tokio_test::task::spawn(pool.get_conn(&TestId(2), &EMPTY_INPUT));
+        assert!(leaving.poll().is_pending());
+        assert!(staying.poll().is_pending());
+
+        state.set_in_use(true);
+        drop(first);
+        assert!(leaving.is_woken() && staying.is_woken());
+        assert!(leaving.poll().is_pending());
+        assert!(staying.poll().is_pending());
+        drop(leaving);
+
+        state.set_in_use(false);
+        assert!(
+            staying.is_woken(),
+            "a waiter that left took the news with it"
+        );
+        let Poll::Ready(Ok(ConnectionResult::CreatePermit(_))) = staying.poll() else {
+            panic!("the now idle connection must be evicted for the remaining waiter")
+        };
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn work_outliving_its_handouts_keeps_a_connection_from_expiring() {
+        let pool = MultiplexPool::try_new(32, 1)
+            .unwrap()
+            .with_idle_timeout(Duration::from_micros(1));
+        let permit = new_slot(&pool).await;
+        let (conn, state) = admission_connection(&pool, 4);
+        let input = Extensions::new();
+        let first = pool.create(TestId(0), conn, permit, &input).await.unwrap();
+        state.set_in_use(true);
+        drop(first);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let Ok(ConnectionResult::Connection(reused)) =
+            pool.get_conn(&TestId(0), &EMPTY_INPUT).await
+        else {
+            panic!("a busy connection expired as idle")
+        };
+        drop(reused);
+        state.set_in_use(false);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_matches!(
+            pool.get_conn(&TestId(0), &EMPTY_INPUT).await,
+            Ok(ConnectionResult::CreatePermit(_))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_idle_clock_restarts_when_the_pool_sees_outliving_work() {
+        let pool = MultiplexPool::try_new(32, 1)
+            .unwrap()
+            .with_idle_timeout(Duration::from_millis(30));
+        let permit = new_slot(&pool).await;
+        let (conn, state) = admission_connection(&pool, 4);
+        let input = Extensions::new();
+        let first = pool.create(TestId(0), conn, permit, &input).await.unwrap();
+        state.set_in_use(true);
+        drop(first);
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        // A full pool sweeps every connection for another destination's request.
+        let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT));
+        assert!(other.poll().is_pending());
+        drop(other);
+
+        state.set_in_use(false);
+        assert_matches!(
+            pool.get_conn(&TestId(0), &EMPTY_INPUT).await,
+            Ok(ConnectionResult::Connection(_)),
+            "work that just ended does not count as idle time"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_lookup_during_outliving_work_restarts_the_idle_clock() {
+        let pool = MultiplexPool::try_new(32, 2)
+            .unwrap()
+            .with_idle_timeout(Duration::from_millis(30));
+        let permit = new_slot(&pool).await;
+        let (conn, state) = admission_connection(&pool, 4);
+        let input = Extensions::new();
+        let first = pool.create(TestId(0), conn, permit, &input).await.unwrap();
+        state.set_in_use(true);
+        drop(first);
+        // Before the timeout, a lookup that cannot use the connection still sees its work.
+        state.set_limit(0);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_matches!(
+            pool.get_conn(&TestId(0), &EMPTY_INPUT).await,
+            Ok(ConnectionResult::CreatePermit(_))
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        state.set_in_use(false);
+        state.set_limit(4);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert_matches!(
+            pool.get_conn(&TestId(0), &EMPTY_INPUT).await,
+            Ok(ConnectionResult::Connection(_)),
+            "idle for 5ms of a 30ms timeout"
+        );
+    }
+
+    /// A connection forked from another one's metadata, a tunnel through it say, is admitted
+    /// by its own policy only, never the outer connection's.
+    #[tokio::test]
+    async fn admission_is_the_connections_own_not_an_ancestors() {
+        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let permit = new_slot(&pool).await;
+        let (outer, state) = admission_connection(&pool, 0);
+        let inner = Conn {
+            serial: 2,
+            extensions: outer.extensions.fork(),
+        };
+        let input = Extensions::new();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            pool.create(TestId(0), inner, permit, &input),
+        )
+        .await
+        .expect("the outer connection's admission does not apply")
+        .unwrap();
+        assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
+    }
+
+    /// A saturated candidate that goes broken wakes its waiters, so they look again rather
+    /// than wait for its handouts.
+    #[tokio::test]
+    async fn a_saturated_candidate_going_broken_wakes_its_waiters() {
+        let pool = MultiplexPool::try_new(1, 1).unwrap();
+        let svc = connector(pool);
+        let held = connect(&svc, 0).await;
+        let mut waiter = tokio_test::task::spawn(connect(&svc, 0));
+        assert!(waiter.poll().is_pending());
+        // Settle until it waits on nothing but the pool.
+        for _ in 0..16 {
+            if !waiter.is_woken() {
+                break;
+            }
+            assert!(waiter.poll().is_pending());
+        }
+        assert!(!waiter.is_woken());
+        held.conn
+            .extensions()
+            .get_ref::<ConnectionHealthWatcher>()
+            .unwrap()
+            .mark_broken();
+        assert!(waiter.is_woken(), "a broken candidate woke nobody");
+        assert!(
+            waiter.poll().is_pending(),
+            "its handout still holds the slot"
+        );
+        drop(held);
+        assert!(waiter.is_woken());
+        assert!(waiter.poll().is_ready());
     }
 
     #[tokio::test]
@@ -1320,6 +1578,7 @@ mod tests {
             limit: AtomicUsize::new(1),
             reserved: AtomicUsize::new(0),
             failed: AtomicBool::new(false),
+            in_use: AtomicBool::new(false),
             changed: Arc::new(Notify::new()),
             storage: Weak::new(),
         });

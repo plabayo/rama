@@ -400,8 +400,12 @@ impl Prioritize {
             // Streams pending capacity may have been reset before capacity
             // became available. In that case, the stream won't want any
             // capacity, and so we shouldn't "transition" on it, but just evict
-            // it and continue the loop.
+            // it and continue the loop. Leaving this queue may have been all
+            // that kept it, so a released one is removed.
             if !(stream.state.is_send_streaming() || stream.buffered_send_data > 0) {
+                if stream.is_released() {
+                    stream.remove();
+                }
                 continue;
             }
 

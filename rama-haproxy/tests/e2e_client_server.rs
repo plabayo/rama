@@ -28,7 +28,7 @@ use rama_haproxy::{
 use rama_net::{
     address::{Domain, SocketAddress},
     client::{ConnectionError, ConnectionErrorDomain, ConnectionErrorKind},
-    forwarded::Forwarded,
+    forwarded::{Forwarded, ForwardedElement, ForwardedSelectionPolicy, NodeId},
     stream::SocketInfo,
     test_utils::client::MockConnectorService,
 };
@@ -129,7 +129,11 @@ where
 async fn roundtrip_minimal_v2() {
     let out = run_e2e(|l| l).await;
     let fwd = out.forwarded.expect("Forwarded must be present");
-    let socket = fwd.client_socket_addr().expect("client socket addr");
+    let socket = fwd
+        .client(&ForwardedSelectionPolicy::default())
+        .and_then(ForwardedElement::forwarded_for)
+        .and_then(NodeId::socket_address)
+        .expect("client socket addr");
     assert_eq!(socket.ip_addr, SRC.ip_addr);
     assert_eq!(socket.port, SRC.port);
     assert_eq!(out.command, Some(HaProxyCommand::Proxy));

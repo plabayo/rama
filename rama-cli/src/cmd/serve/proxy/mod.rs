@@ -1997,10 +1997,8 @@ fn request_targets_dashboard(request: &Request, dashboard_address: SocketAddress
         return false;
     }
     let dashboard_address: std::net::SocketAddr = dashboard_address.into();
-    let local_address = request
-        .extensions()
-        .get_ref::<SocketInfo>()
-        .and_then(|socket| socket.local_addr())
+    let local_address = SocketInfo::ingress(request.extensions())
+        .and_then(SocketInfo::local_addr)
         .map(Into::<std::net::SocketAddr>::into);
     if !dashboard_address.ip().is_unspecified()
         && local_address.is_none_or(|local_address| local_address != dashboard_address)

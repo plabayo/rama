@@ -1,5 +1,5 @@
 use super::{StreamDependency, StreamId, util};
-use crate::proto::h2::ext::Protocol;
+use crate::proto::ext::Protocol;
 use crate::proto::h2::frame::{Error, Frame, Head, Kind};
 use crate::proto::h2::hpack::{self, BytesStr};
 
@@ -473,7 +473,8 @@ impl PushPromise {
 
         // A promised request "that indicates the presence of a request body
         // MUST reset the promised stream with a stream error"
-        if let Some(content_length) = req.headers().get(header::CONTENT_LENGTH) {
+        // Every line counts.
+        for content_length in req.headers().get_all(header::CONTENT_LENGTH) {
             let parsed_length = parse_u64(content_length.as_bytes());
             if parsed_length != Ok(0) {
                 return Err(PushPromiseHeaderError::InvalidContentLength(parsed_length));
@@ -665,7 +666,9 @@ impl Pseudo {
             PseudoHeader::Protocol => self.protocol.take().map(hpack::Header::Protocol),
             PseudoHeader::Status => self.status.take().map(hpack::Header::Status),
         }?;
-        Some(header.with_sensitive(self.sensitivity.is_sensitive(name)))
+        // Userinfo, kept only outside the HTTP family, is never indexed.
+        let credentials = matches!(&header, hpack::Header::Authority(value) if value.contains('@'));
+        Some(header.with_sensitive(self.sensitivity.is_sensitive(name) || credentials))
     }
 
     pub fn request(method: Method, uri: &Uri, protocol: Option<Protocol>) -> Self {
@@ -686,23 +689,39 @@ impl Pseudo {
             uri.write_h2_path(&mut path_buf);
             let path = bytes_str_from(path_buf);
 
-            // RFC 9113 §8.3.1: an OPTIONS request whose target has no path
-            // component is the "OPTIONS *" form and MUST carry `:path = *`.
-            // The origin-form writer normalises an absent path to `/`, so the
-            // absent path is detected via the typed accessor instead.
-            let path = if method == Method::OPTIONS && !uri.is_asterisk() && uri.is_path_empty() {
+            // RFC 9113 §8.3.1: an OPTIONS request without a path is the "OPTIONS *"
+            // form and carries `:path = *`, required for http(s) and how a received
+            // `*` reads back for every scheme. The origin-form writer normalises an
+            // absent path to `/`, so the absent path is detected via the typed accessor.
+            let path = if method == Method::OPTIONS
+                && !uri.is_asterisk()
+                && uri.is_path_empty()
+                && uri.query().is_none()
+            {
                 BytesStr::from_static("*")
+            } else if uri.scheme().is_some_and(|scheme| {
+                let wire_scheme = if protocol.is_some() {
+                    crate::proto::ext::extended_connect_pseudo_scheme(scheme)
+                } else {
+                    scheme
+                };
+                crate::proto::ext::sends_empty_path(uri, wire_scheme)
+            }) {
+                BytesStr::from_static("")
             } else {
                 path
             };
 
             // `:scheme` is only present when the URI carries one.
-            let scheme = {
+            let scheme = if let (Some(_), Some(scheme)) = (&protocol, uri.scheme()) {
+                Some(BytesStr::from(
+                    crate::proto::ext::extended_connect_pseudo_scheme(scheme).as_str(),
+                ))
+            } else {
                 let mut scheme_buf = BytesMut::new();
-                match uri.write_h2_scheme(&mut scheme_buf) {
-                    Ok(()) => Some(bytes_str_from(scheme_buf)),
-                    Err(_) => None,
-                }
+                uri.write_h2_scheme(&mut scheme_buf)
+                    .ok()
+                    .map(|()| bytes_str_from(scheme_buf))
             };
 
             (scheme, Some(path))
@@ -1201,6 +1220,54 @@ mod test {
     use super::*;
 
     #[test]
+    fn every_promised_content_length_line_counts() {
+        for (lengths, valid) in [
+            (&[][..], true),
+            (&["0"][..], true),
+            (&["0", "0"][..], true),
+            (&["5"][..], false),
+            (&["0", "5"][..], false),
+            (&["5", "0"][..], false),
+        ] {
+            let mut req = Request::new(());
+            for length in lengths {
+                req.headers_mut()
+                    .append(header::CONTENT_LENGTH, HeaderValue::from_static(length));
+            }
+            assert_eq!(
+                PushPromise::validate_request(&req).is_ok(),
+                valid,
+                "{lengths:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn authority_userinfo_is_kept_outside_the_http_family_and_never_indexed() {
+        for (uri, authority, sensitive) in [
+            ("https://user@example.com/", "example.com", false),
+            ("ftp://user:pw@example.com/f", "user:pw@example.com", true),
+        ] {
+            let mut pseudo = Pseudo::request(Method::GET, &uri.parse().unwrap(), None);
+            let (value, never_indexed) = match pseudo.take_header(PseudoHeader::Authority) {
+                Some(hpack::Header::Authority(value)) => (value, false),
+                Some(hpack::Header::NeverIndexed(value)) => {
+                    match value.into_header::<Option<HeaderName>>() {
+                        hpack::Header::Authority(value) => (value, true),
+                        other => panic!("{other:?}"),
+                    }
+                }
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(
+                (value.as_str(), never_indexed),
+                (authority, sensitive),
+                "{uri}"
+            );
+        }
+    }
+
+    #[test]
     fn removed_pseudo_fields_do_not_discard_remaining_order_or_sensitivity() {
         let mut pseudo =
             Pseudo::request(Method::GET, &"https://example.com/".parse().unwrap(), None);
@@ -1270,6 +1337,23 @@ mod test {
                 ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn extended_connect_websocket_uses_the_http_scheme() {
+        // RFC 8441 §5: `https` for `wss`-schemed WebSockets, `http` for `ws`.
+        for (uri, scheme) in [
+            ("wss://example.com/chat", "https"),
+            ("ws://example.com/chat", "http"),
+        ] {
+            let pseudo = Pseudo::request(
+                Method::CONNECT,
+                &Uri::from_static(uri),
+                Protocol::WEBSOCKET.into(),
+            );
+            assert_eq!(pseudo.scheme.as_deref(), Some(scheme), "{uri}");
+            assert_eq!(pseudo.path.as_deref(), Some("/chat"));
+        }
     }
 
     #[test]
@@ -1346,6 +1430,19 @@ mod test {
                 ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn options_without_a_path_is_asterisk_for_every_scheme() {
+        for (uri, path) in [
+            ("https://example.com", "*"),
+            ("http://example.com:8080", "*"),
+            ("foo://example.com", "*"),
+            ("foo://example.com/", "/"),
+        ] {
+            let pseudo = Pseudo::request(Method::OPTIONS, &Uri::parse(uri).unwrap(), None);
+            assert_eq!(pseudo.path.as_deref(), Some(path), "{uri}");
+        }
     }
 
     #[test]

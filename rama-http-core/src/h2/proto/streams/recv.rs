@@ -222,8 +222,10 @@ impl Recv {
         if !ignore_content_length {
             use rama_http_types::header;
 
-            if let Some(content_length) = frame.fields().get(header::CONTENT_LENGTH) {
-                let Ok(content_length) = frame::parse_u64(content_length.as_bytes()) else {
+            if frame.fields().contains_key(header::CONTENT_LENGTH) {
+                // Every line counts and must agree (RFC 9110 §8.6), as on HTTP/1 and HTTP/3.
+                let Some(content_length) = crate::headers::content_length_parse_all(frame.fields())
+                else {
                     proto_err!(stream: "could not parse content-length; stream={:?}", stream.id);
                     return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR).into());
                 };
@@ -299,6 +301,12 @@ impl Recv {
 
         if pseudo.status.is_some() && counts.peer().is_server() {
             proto_err!(stream: "cannot use :status header for requests; stream={:?}", stream.id);
+            return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR).into());
+        }
+
+        // RFC 9113 §8.3.2: every response carries `:status`.
+        if pseudo.status.is_none() && !counts.peer().is_server() {
+            proto_err!(stream: "missing :status in response; stream={:?}", stream.id);
             return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR).into());
         }
 

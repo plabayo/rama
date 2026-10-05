@@ -1,12 +1,12 @@
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _};
 use rama_core::telemetry::tracing;
-use rama_core::{Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsRef as _};
 use rama_http_headers::{Connection, HeaderMapExt, SecWebSocketAccept, SecWebSocketKey, Upgrade};
 use rama_http_types::header::{CONTENT_LENGTH, SEC_WEBSOCKET_ACCEPT};
-use rama_http_types::proto::h2::ext::Protocol;
+use rama_http_types::proto::ext::Protocol;
 use rama_http_types::{Request, Response, StatusCode, Version};
 
-use super::request::is_websocket_protocol;
+use super::request::{DowngradeWebSocketKey, is_websocket_protocol};
 use crate::layer::remove_header::remove_illegal_h2_response_headers;
 use crate::utils::request_connect_protocol;
 
@@ -39,7 +39,17 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
-        let request_ctx = ResponseVersionAdaptCtx::from_request(&req);
+        let mut request_ctx = ResponseVersionAdaptCtx::from_request(&req);
+        // Sent on as HTTP/1, the WebSocket handshake is signed with this key, so the origin's
+        // `Sec-WebSocket-Accept` can be checked (RFC 6455 §4.1).
+        if request_ctx.version >= Version::HTTP_2
+            && request_ctx.is_websocket()
+            && request_ctx.websocket_key.is_none()
+        {
+            let key = SecWebSocketKey::random();
+            req.extensions().insert(DowngradeWebSocketKey(key.clone()));
+            request_ctx.websocket_key = Some(key);
+        }
 
         let mut resp = self.inner.serve(req).await.into_box_error()?;
         adapt_response_version(&mut resp, &request_ctx)?;
@@ -168,6 +178,36 @@ fn upgrade_response_to_h2_or_h3<Body>(
 
     if response.status() == StatusCode::SWITCHING_PROTOCOLS {
         if request_ctx.is_websocket() {
+            // RFC 6455 §4.1: a client fails the handshake unless the response upgrades to
+            // websocket over a `Connection: Upgrade`, and its accept answers the key. These
+            // fields are gone once translated, so they are checked here, as a client would.
+            if !response
+                .headers()
+                .typed_get::<Upgrade>()
+                .is_some_and(|upgrade| upgrade.is_websocket())
+            {
+                return Err(BoxError::from_static_str(
+                    "the HTTP/1 WebSocket accept does not upgrade to websocket",
+                ));
+            }
+            if !response
+                .headers()
+                .typed_get::<Connection>()
+                .is_some_and(|connection| connection.contains_upgrade())
+            {
+                return Err(BoxError::from_static_str(
+                    "the HTTP/1 WebSocket accept does not name Upgrade in Connection",
+                ));
+            }
+            if let Some(key) = request_ctx.websocket_key.clone() {
+                let expected = SecWebSocketAccept::try_from(key)
+                    .context("derive the expected Sec-WebSocket-Accept")?;
+                if response.headers().typed_get::<SecWebSocketAccept>() != Some(expected) {
+                    return Err(BoxError::from_static_str(
+                        "the HTTP/1 WebSocket accept does not answer the request's key",
+                    ));
+                }
+            }
             tracing::trace!("translating h1 websocket 101 response into h2/h3 200 OK");
             *response.status_mut() = StatusCode::OK;
             // Successful CONNECT responses switch to tunnel framing. A
@@ -247,9 +287,11 @@ fn downgrade_response_to_h1<Body>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::extensions::ExtensionsRef;
-    use rama_http_types::Method;
+    use crate::layer::version_adapter::adapt_request_version;
+    use rama_core::{extensions::ExtensionsRef, service::service_fn};
     use rama_http_types::header::{CONNECTION, SEC_WEBSOCKET_KEY, TRANSFER_ENCODING, UPGRADE};
+    use rama_http_types::{Body, HeaderValue, Method};
+    use std::convert::Infallible;
 
     const SAMPLE_KEY: &str = "dGhlIHNhbXBsZSBub25jZQ==";
     // RFC 6455 §1.3 worked example: accept for the key above.
@@ -417,6 +459,131 @@ mod tests {
                 assert_eq!(resp.status(), status);
                 assert_eq!(resp.headers()["proxy-authenticate"], "Basic realm=upstream");
                 assert_eq!(*resp.body(), "handshake rejected");
+            }
+        }
+    }
+
+    /// RFC 6455 §4.1: a 101 whose accept does not answer the key fails the handshake.
+    #[test]
+    fn test_h1_to_h2_websocket_101_must_answer_the_key() {
+        for accept in [Some("dGhpcyBpcyBub3QgaXQ="), None] {
+            let mut builder = Response::builder()
+                .version(Version::HTTP_11)
+                .status(StatusCode::SWITCHING_PROTOCOLS)
+                .header(UPGRADE, "websocket")
+                .header(CONNECTION, "Upgrade");
+            if let Some(accept) = accept {
+                builder = builder.header("sec-websocket-accept", accept);
+            }
+            let mut resp = builder.body(()).unwrap();
+            adapt_response_version(&mut resp, &websocket_ctx(Version::HTTP_2)).unwrap_err();
+        }
+    }
+
+    /// RFC 6455 §4.1: a 101 that does not upgrade to websocket over `Connection: Upgrade`
+    /// fails the handshake, whichever version it is translated to; valid tokens match without
+    /// case, `Connection` as one of a list.
+    #[tokio::test]
+    async fn the_adapter_checks_a_downgraded_websocket_upgrade() {
+        for version in [Version::HTTP_2, Version::HTTP_3] {
+            for (upgrade, connection, accepts, valid) in [
+                (&["websocket"][..], &["Upgrade"][..], 1, true),
+                (&["WebSocket"], &["keep-alive, upgrade"], 1, true),
+                // Connection is a list over its lines too.
+                (&["websocket"], &["keep-alive", "Upgrade"], 1, true),
+                (&[], &["Upgrade"], 1, false),
+                (&["h2c"], &["Upgrade"], 1, false),
+                (&["websocket, h2c"], &["Upgrade"], 1, false),
+                // Every Upgrade line counts, as one list.
+                (&["websocket", "h2c"], &["Upgrade"], 1, false),
+                (&["websocket"], &[], 1, false),
+                (&["websocket"], &["keep-alive"], 1, false),
+                // Sec-WebSocket-Accept appears only once, also when repeated as is.
+                (&["websocket"], &["Upgrade"], 2, false),
+            ] {
+                let service =
+                    ResponseVersionAdapter::new(service_fn(move |mut req: Request| async move {
+                        adapt_request_version(&mut req, Version::HTTP_11).unwrap();
+                        let key = req.headers().typed_get::<SecWebSocketKey>().unwrap();
+                        let mut scratch = rama_http_types::HeaderMap::new();
+                        scratch.typed_insert(SecWebSocketAccept::try_from(key).unwrap());
+                        let accept = scratch[SEC_WEBSOCKET_ACCEPT].clone();
+                        let mut resp = Response::builder()
+                            .version(Version::HTTP_11)
+                            .status(StatusCode::SWITCHING_PROTOCOLS)
+                            .body(Body::empty())
+                            .unwrap();
+                        for line in upgrade {
+                            resp.headers_mut()
+                                .append(UPGRADE, HeaderValue::from_static(line));
+                        }
+                        for line in connection {
+                            resp.headers_mut()
+                                .append(CONNECTION, HeaderValue::from_static(line));
+                        }
+                        for _ in 0..accepts {
+                            resp.headers_mut()
+                                .append(SEC_WEBSOCKET_ACCEPT, accept.clone());
+                        }
+                        Ok::<_, Infallible>(resp)
+                    }));
+                let req = Request::builder()
+                    .version(version)
+                    .method(Method::CONNECT)
+                    .uri("https://example.com/chat")
+                    .body(Body::empty())
+                    .unwrap();
+                req.extensions().insert(Protocol::WEBSOCKET);
+                let case = format!("{version:?} {upgrade:?} {connection:?} accepts={accepts}");
+                match service.serve(req).await {
+                    Ok(resp) => {
+                        assert!(valid, "{case}");
+                        assert_eq!(resp.status(), StatusCode::OK, "{case}");
+                        assert!(resp.headers().get(UPGRADE).is_none(), "{case}");
+                    }
+                    Err(_) => assert!(!valid, "{case}"),
+                }
+            }
+        }
+    }
+
+    /// A WebSocket Extended CONNECT sent on as HTTP/1 is signed with the adapter's key, so an
+    /// origin's 101 is only accepted when its accept answers that key.
+    #[tokio::test]
+    async fn the_adapter_checks_a_downgraded_websocket_accept() {
+        for honest in [true, false] {
+            let service =
+                ResponseVersionAdapter::new(service_fn(move |mut req: Request| async move {
+                    adapt_request_version(&mut req, Version::HTTP_11).unwrap();
+                    let key = if honest {
+                        req.headers().typed_get::<SecWebSocketKey>().unwrap()
+                    } else {
+                        SecWebSocketKey::random()
+                    };
+                    let mut resp = Response::builder()
+                        .version(Version::HTTP_11)
+                        .status(StatusCode::SWITCHING_PROTOCOLS)
+                        .header(UPGRADE, "websocket")
+                        .header(CONNECTION, "Upgrade")
+                        .body(Body::empty())
+                        .unwrap();
+                    resp.headers_mut()
+                        .typed_insert(SecWebSocketAccept::try_from(key).unwrap());
+                    Ok::<_, Infallible>(resp)
+                }));
+            let req = Request::builder()
+                .version(Version::HTTP_2)
+                .method(Method::CONNECT)
+                .uri("https://example.com/chat")
+                .body(Body::empty())
+                .unwrap();
+            req.extensions().insert(Protocol::WEBSOCKET);
+            match service.serve(req).await {
+                Ok(resp) => {
+                    assert!(honest);
+                    assert_eq!(resp.status(), StatusCode::OK);
+                }
+                Err(_) => assert!(!honest),
             }
         }
     }

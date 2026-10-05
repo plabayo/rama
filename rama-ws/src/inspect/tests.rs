@@ -72,9 +72,7 @@ async fn handshake(store: &CaptureStore, version: Version, status: StatusCode) -
     let request = if version == Version::HTTP_2 {
         request
             .method("CONNECT")
-            .extension(rama_http::proto::h2::ext::Protocol::from_static(
-                "websocket",
-            ))
+            .extension(rama_http::proto::ext::Protocol::from_static("websocket"))
     } else {
         request
             .header("upgrade", "websocket")
@@ -799,9 +797,9 @@ async fn outer_http_capture_metadata_reaches_default_websocket_relay() {
             .version(version)
             .extension(ingress_upgrade);
         let request = if version == Version::HTTP_2 {
-            request.method(Method::CONNECT).extension(
-                rama_http::proto::h2::ext::Protocol::from_static("websocket"),
-            )
+            request
+                .method(Method::CONNECT)
+                .extension(rama_http::proto::ext::Protocol::from_static("websocket"))
         } else {
             request
                 .header("upgrade", "websocket")

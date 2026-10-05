@@ -4,18 +4,25 @@ use super::{LIMIT, Pair};
 use crate::h3::{
     client,
     connection::{Config, initial_control},
+    control::Role,
     server,
 };
 use rama_core::{
     bytes::BytesMut,
-    extensions::Extensions,
+    extensions::{Extensions, ExtensionsRef},
     rt::{Executor, spawn},
 };
 use rama_http_types::{
     Body,
     proto::h3::{Code, FrameHeader, FrameType, StreamType},
 };
-use rama_net::client::{ConnectionError, ConnectionErrorDomain, ConnectionErrorKind};
+use rama_net::{
+    client::{
+        ConnectionError, ConnectionErrorDomain, ConnectionErrorKind,
+        pool::{ConnID, ConnectionResult, MultiplexPool, Pool},
+    },
+    conn::ConnectionHealthWatcher,
+};
 use rama_quic::{Connection, TransportConfig};
 use rama_quic_proto::{Dir, Side, StreamId, coding::Codec as _};
 use std::assert_matches;
@@ -43,7 +50,11 @@ async fn priority_update_checks_exact_advertised_stream_limit() {
             let mut payload = BytesMut::new();
             StreamId::new(Side::Client, Dir::Bi, index).encode(&mut payload);
             payload.extend_from_slice(b"u=1");
-            let mut bytes = BytesMut::from(initial_control(&Config::default()).unwrap().as_ref());
+            let mut bytes = BytesMut::from(
+                initial_control(&Config::default(), Role::Client, false)
+                    .unwrap()
+                    .as_ref(),
+            );
             FrameHeader::new(FrameType::PRIORITY_UPDATE_REQUEST, payload.len() as u64)
                 .encode(&mut bytes)
                 .unwrap();
@@ -85,7 +96,11 @@ async fn priority_updates_cover_transport_credit_beyond_application_admission() 
                 server::handshake(pair.server.clone(), Config::default()).unwrap();
             let driver = spawn(driver.run());
             let limit = pair.server.remote_stream_limit(Dir::Bi);
-            let mut bytes = BytesMut::from(initial_control(&Config::default()).unwrap().as_ref());
+            let mut bytes = BytesMut::from(
+                initial_control(&Config::default(), Role::Client, false)
+                    .unwrap()
+                    .as_ref(),
+            );
             for index in 0..limit {
                 let mut payload = BytesMut::new();
                 StreamId::new(Side::Client, Dir::Bi, index).encode(&mut payload);
@@ -291,11 +306,22 @@ async fn draining_connection_wakes_admission_waiters_without_stream_credit() {
         let server_driver = spawn(driver.run());
         let admission = sender.connection_admission();
         let first = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
+        assert!(admission.in_use());
         let changed = admission.watch();
         assert!(admission.try_acquire(&Extensions::new()).unwrap().is_none());
         server.shutdown().unwrap();
         changed.await;
         admission.try_acquire(&Extensions::new()).unwrap_err();
+        // Its work goes on, but a draining connection is left for the pool to retire.
+        assert!(!admission.in_use());
+        // Nothing changes any more, so its watch cannot spin pool waiters.
+        let mut watch = pin!(admission.watch());
+        assert!(
+            watch
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
         drop(first);
         pair.close().await;
         _ = client_driver.await;
@@ -388,4 +414,71 @@ async fn admission_after_remote_close_preserves_retryable_transport_classificati
     })
     .await
     .unwrap();
+}
+
+/// A connection whose QUIC transport closed is never busy: its admission watch cannot fire any
+/// more, so a busy answer would leave pool waiters for it without a wake.
+#[tokio::test(start_paused = true)]
+async fn closed_transports_are_never_busy() {
+    let pair = Pair::in_memory(None, None).await;
+    let (sender, driver) =
+        client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new()).unwrap();
+    let admission = sender.connection_admission();
+    let held = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
+    assert!(admission.in_use());
+    // QUIC records the closure before the HTTP/3 driver observes it.
+    pair.client.close(0u32, b"closed");
+    assert!(!admission.in_use());
+    drop(held);
+    assert!(!admission.in_use());
+    drop(driver);
+    drop(sender);
+    pair.close().await;
+}
+
+/// A full pool whose only connection still holds work on a QUIC transport that closed lets a
+/// waiter for another connection proceed, before the HTTP/3 driver noticed the closure.
+#[tokio::test(start_paused = true)]
+async fn pool_waiters_for_other_ids_pass_a_closed_connection() {
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    struct Id(u8);
+    impl ConnID for Id {}
+    struct Conn(Extensions);
+    impl ExtensionsRef for Conn {
+        fn extensions(&self) -> &Extensions {
+            &self.0
+        }
+    }
+
+    let pair = Pair::in_memory(None, None).await;
+    let (sender, driver) =
+        client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new()).unwrap();
+    let admission = sender.connection_admission();
+    let input = Extensions::new();
+    // Work that outlives its pool handout, as an upgraded tunnel does.
+    let held = admission.try_acquire(&input).unwrap().unwrap();
+    let pool = MultiplexPool::try_new(32, 1).unwrap();
+    let ConnectionResult::CreatePermit(permit) = pool.get_conn(&Id(0), &input).await.unwrap()
+    else {
+        panic!("a fresh pool creates");
+    };
+    let extensions = Extensions::new();
+    extensions.insert_arc(Arc::new(ConnectionHealthWatcher::default()));
+    extensions.insert(admission.clone());
+    let handout = pool
+        .create(Id(0), Conn(extensions), permit, &input)
+        .await
+        .unwrap();
+    drop(handout);
+
+    pair.client.close(0u32, b"closed");
+    let waiting = tokio::time::timeout(LIMIT, pool.get_conn(&Id(1), &input))
+        .await
+        .expect("a waiter for another id is not parked behind a closed connection")
+        .unwrap();
+    assert_matches!(waiting, ConnectionResult::CreatePermit(_));
+    drop(held);
+    drop(driver);
+    drop(sender);
+    pair.close().await;
 }

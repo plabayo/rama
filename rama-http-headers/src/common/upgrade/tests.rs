@@ -15,3 +15,14 @@ fn websocket_offer_can_contain_other_protocols() {
     assert!(Upgrade::websocket().contains_websocket());
     assert!(Upgrade::websocket().is_websocket());
 }
+
+/// A list field's lines combine (RFC 9110 §5.3): a second line cannot hide behind the first.
+#[test]
+fn every_upgrade_line_counts() {
+    let upgrade: Upgrade = test_decode(&["websocket", "h2c"]).unwrap();
+    assert_eq!(upgrade.as_bytes(), b"websocket, h2c");
+    assert!(!upgrade.is_websocket());
+    assert!(upgrade.contains_websocket());
+    let upgrade: Upgrade = test_decode(&["WebSocket"]).unwrap();
+    assert!(upgrade.is_websocket());
+}

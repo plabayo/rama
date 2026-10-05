@@ -1,6 +1,6 @@
 //! Pacing of packet transmissions.
 
-use crate::proto::{Duration, Instant};
+use crate::proto::{Duration, Instant, TIMER_GRANULARITY};
 
 use rama_core::telemetry::tracing::warn;
 
@@ -110,7 +110,8 @@ impl Pacer {
 
         // divisions come before multiplications to prevent overflow
         // this is the time at which the pacing window becomes empty
-        Some(now + (unscaled_delay / 5) * 4)
+        // A zero pause re-arms a due timer that spins while no time passes; the floor is ours.
+        Some(now + ((unscaled_delay / 5) * 4).max(TIMER_GRANULARITY))
     }
 }
 
@@ -316,5 +317,31 @@ mod tests {
             None
         );
         assert_eq!(pacer.tokens, pacer.capacity);
+    }
+
+    #[test]
+    fn delays_always_lie_ahead_of_now() {
+        // A tiny RTT against a large window: the exact pause rounds down to zero.
+        let now = Instant::now();
+        for (rtt, window) in [
+            (Duration::from_nanos(1), 10_000_000_u64),
+            (Duration::from_nanos(100), 1_000_000),
+            (Duration::from_micros(1), 4_000_000),
+        ] {
+            let mtu = 1200;
+            let mut pacer = Pacer::new(rtt, window, mtu, now);
+            while pacer.delay(rtt, u64::from(mtu), mtu, window, now).is_none() {
+                pacer.on_transmit(mtu);
+            }
+            let until = pacer
+                .delay(rtt, u64::from(mtu), mtu, window, now)
+                .expect("blocked by pacing");
+            // Never a deadline that is already due: the driver would spin without time passing.
+            assert!(
+                until >= now + TIMER_GRANULARITY,
+                "rtt={rtt:?} window={window}: {:?}",
+                until.duration_since(now)
+            );
+        }
     }
 }

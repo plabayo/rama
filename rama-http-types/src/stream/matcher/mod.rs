@@ -47,10 +47,7 @@ macro_rules! impl_request_matcher {
     ($matcher:ty) => {
         impl<Body> Matcher<Request<Body>> for $matcher {
             fn matches(&self, _ext: Option<&Extensions>, req: &Request<Body>) -> bool {
-                let peer = req
-                    .extensions()
-                    .get_ref::<SocketInfo>()
-                    .map(|info| info.peer_addr());
+                let peer = SocketInfo::ingress(req.extensions()).map(SocketInfo::peer_addr);
                 self.matches(None, &PeerSocket(peer))
             }
         }
@@ -69,5 +66,33 @@ impl_request_matcher!(PrivateIpNetMatcher);
 impl<Body: 'static> Matcher<Request<Body>> for SocketMatcher<Request<Body>> {
     fn matches(&self, ext: Option<&Extensions>, req: &Request<Body>) -> bool {
         self.matches_input(ext, req)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_core::extensions::{Egress, Ingress};
+
+    #[test]
+    fn requests_match_on_their_ingress_peer() {
+        let socket = |peer: &str| {
+            let extensions = Extensions::new();
+            extensions.insert(SocketInfo::new(None, peer.parse().unwrap()));
+            extensions
+        };
+        for (client, upstream, loopback) in [
+            ("127.0.0.1:1000", "198.51.100.7:443", true),
+            ("198.51.100.7:1000", "127.0.0.1:443", false),
+        ] {
+            let req = Request::new(());
+            req.extensions().insert(Ingress(socket(client)));
+            req.extensions().insert(Egress(socket(upstream)));
+            assert_eq!(
+                LoopbackMatcher::new().matches(None, &req),
+                loopback,
+                "{client} via {upstream}"
+            );
+        }
     }
 }

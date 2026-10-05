@@ -85,7 +85,7 @@ Messages can be either text or binary.
 
 ### h2 WebSocket support
 
-> RFC: Bootstrapping WebSockets with HTTP/2: <https://github.com/plabayo/rama/blob/main/rama-ws/specifications/rfc8441.txt>
+> RFC: Bootstrapping WebSockets with HTTP/2: <https://github.com/plabayo/rama/blob/main/rama-http-core/specifications/rfc8441.txt>
 
 While traditional WebSockets rely on HTTP/1.1's `Upgrade` and `Connection: upgrade` headers to switch protocols,
 HTTP/2 doesn’t support these connection-wide semantics due to its stream-multiplexing architecture.
@@ -101,6 +101,25 @@ prioritization and flow control also apply, enabling better resource sharing.
 
 The core WebSocket protocol (RFC 6455) remains unchanged beyond the handshake;
 only the transport bootstrap differs.
+
+Extended CONNECT is opt-in: a server announces it in its HTTP/2 settings, and Rama's servers
+leave it off unless you enable it. Rama's MITM proxy is an exception: it enables it so that it
+can relay WebSockets, mirroring what the upstream server announces.
+
+### h3 WebSocket support
+
+> RFC: Bootstrapping WebSockets with HTTP/3: <https://github.com/plabayo/rama/blob/main/rama-http-core/specifications/rfc9220.txt>
+
+RFC 9220 reuses the same Extended CONNECT mechanism on an HTTP/3 request stream:
+the handshake is a `CONNECT` request with `:protocol: websocket`, and the stream that follows
+carries the WebSocket frames.
+
+As with HTTP/2, a server has to opt in, by announcing Extended CONNECT in its settings,
+and a client only starts such a handshake once it has seen that announcement.
+Rama's HTTP/3 servers leave it off unless you enable it.
+Once the WebSocket runs, an orderly close ends the QUIC stream normally,
+while a failure resets it, so the peer can tell the two apart.
+The `ws_over_h3` example shows both sides.
 
 ## Rama Support
 
@@ -162,6 +181,8 @@ You can find working WebSocket examples in the Rama repository:
    Secure WebSocket server example (WSS).
 - [`ws_over_h2.rs`](https://github.com/plabayo/rama/blob/main/examples/src/ws_over_h2.rs)
    Secure WebSocket server using h2.
+- [`ws_over_h3.rs`](https://github.com/plabayo/rama/blob/main/examples/src/ws_over_h3.rs)
+   WebSocket echo client and server over HTTP/3 (RFC 9220).
 - [`autobahn_client.rs`](https://github.com/plabayo/rama/blob/main/examples/src/autobahn_client.rs)
    Run autobahn WebSocket test suite.
 

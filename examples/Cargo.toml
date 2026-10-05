@@ -524,6 +524,16 @@ name = "ws_over_h2"
 path = "src/ws_over_h2.rs"
 required-features = ["http-full", "boring"]
 
+[[bin]]
+name = "http_datagram_echo"
+path = "src/http_datagram_echo.rs"
+required-features = ["http-full"]
+
+[[bin]]
+name = "ws_over_h3"
+path = "src/ws_over_h3.rs"
+required-features = ["http-full"]
+
 # Each feature forwards to the matching `rama` feature, so per-example `required-features`
 # read the same as they did when these lived in the `rama` crate. `ttrpc` additionally
 # wires up protobuf codegen (see its comment below).

@@ -410,7 +410,7 @@ where
             let Some((idx, conn)) = self.take_compatible(id, input, &mut doomed) else {
                 break None;
             };
-            let admission = match conn.extensions().get_ref::<ConnectionAdmission>() {
+            let admission = match conn.extensions().self_get_ref::<ConnectionAdmission>() {
                 Some(provider) => match provider.try_acquire(input) {
                     Ok(Some(lease)) => Some(lease),
                     Ok(None) => {
@@ -498,7 +498,7 @@ where
         permit: Self::CreatePermit,
         input: &Extensions,
     ) -> Result<Self::Connection, BoxError> {
-        let admission = match conn.extensions().get_ref::<ConnectionAdmission>() {
+        let admission = match conn.extensions().self_get_ref::<ConnectionAdmission>() {
             Some(provider) => Some(provider.acquire(input).await?),
             None => None,
         };

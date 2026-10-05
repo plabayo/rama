@@ -1,29 +1,26 @@
-use crate::utils::request_connect_protocol;
-use rama_core::Layer;
-use rama_core::Service;
-use rama_core::error::BoxError;
-use rama_core::error::ErrorContext;
-use rama_core::extensions::ExtensionsRef;
-use rama_core::telemetry::tracing;
-use rama_http_headers::Connection;
-use rama_http_headers::HeaderMapExt;
-use rama_http_headers::Host;
-use rama_http_headers::SecWebSocketKey;
-use rama_http_headers::SecWebSocketVersion;
-use rama_http_headers::Upgrade;
-use rama_http_types::Method;
-use rama_http_types::Request;
-use rama_http_types::Version;
-use rama_http_types::conn::TargetHttpVersion;
-use rama_http_types::header::HOST;
-use rama_http_types::header::{SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION};
-use rama_http_types::proto::h2::ext::Protocol;
-use rama_net::client::{
-    ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
+use crate::{
+    layer::remove_header::{coalesce_cookie_headers, remove_illegal_h2_request_headers},
+    utils::{is_plain_connect, request_connect_protocol},
 };
-use rama_net::{AuthorityInputExt, Protocol as Scheme, ProtocolInputExt};
-
-use crate::layer::remove_header::{coalesce_cookie_headers, remove_illegal_h2_request_headers};
+use rama_core::{
+    Layer, Service,
+    error::{BoxError, BoxErrorExt as _, ErrorContext, ErrorExt as _},
+    extensions::{Extension, ExtensionsRef},
+    telemetry::tracing,
+};
+use rama_http_headers::{
+    Connection, HeaderMapExt, Host, SecWebSocketKey, SecWebSocketVersion, Upgrade,
+};
+use rama_http_types::{
+    HeaderMap, Method, Request, Version,
+    conn::TargetHttpVersion,
+    header::{CONTENT_LENGTH, HOST, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION, TRANSFER_ENCODING},
+    proto::ext::Protocol,
+};
+use rama_net::{
+    AuthorityInputExt, Protocol as Scheme, ProtocolInputExt,
+    client::{ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection},
+};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 
 #[derive(Clone, Debug)]
@@ -221,6 +218,13 @@ pub fn ensure_valid_h2_or_h3_request<Body>(request: &mut Request<Body>) -> Resul
     Ok(())
 }
 
+/// The `Sec-WebSocket-Key` an Extended CONNECT WebSocket gets if it is sent on as HTTP/1,
+/// chosen by [`ResponseVersionAdapter`](super::ResponseVersionAdapter) so it can check the
+/// origin's `Sec-WebSocket-Accept` (RFC 6455 §4.1).
+#[derive(Clone, Debug, Extension)]
+#[extension(tags(http))]
+pub(crate) struct DowngradeWebSocketKey(pub(crate) SecWebSocketKey);
+
 /// Whether a [`Protocol`] is the WebSocket Extended CONNECT / `Upgrade` protocol.
 pub(crate) fn is_websocket_protocol(protocol: &Protocol) -> bool {
     protocol.as_str().eq_ignore_ascii_case("websocket")
@@ -239,15 +243,18 @@ fn translate_request_upgrade<Body>(request: &mut Request<Body>) -> Result<(), Bo
             // `GET` + `Upgrade: websocket` -> `CONNECT` + `:protocol: websocket`.
             tracing::trace!("translating h1 websocket upgrade into h2/h3 extended CONNECT");
             *request.method_mut() = Method::CONNECT;
+            // The tunnel bytes are the Extended CONNECT stream itself, which no
+            // Content-Length of the upgrade request describes.
+            remove_body_framing(request.headers_mut());
             request
                 .extensions()
                 .insert(Protocol::from_static("websocket"));
         }
         Some(protocol) => {
-            return Err(BoxError::from(format!(
-                "cannot translate HTTP/1 `Upgrade: {}` into an HTTP/2+ Extended CONNECT: only websocket is supported",
-                protocol.as_str(),
-            )));
+            return Err(BoxError::from_static_str(
+                "cannot translate an HTTP/1 upgrade into an HTTP/2+ Extended CONNECT: only websocket is supported",
+            )
+            .context_str_field("protocol", protocol.as_str()));
         }
         None => {}
     }
@@ -266,12 +273,19 @@ fn translate_request_downgrade<Body>(request: &mut Request<Body>) -> Result<(), 
             // `CONNECT` + `:protocol: websocket` -> `GET` + `Upgrade: websocket`.
             tracing::trace!("translating h2/h3 extended CONNECT websocket into h1 upgrade");
             *request.method_mut() = Method::GET;
+            // The key the response adapter checks the origin's accept against, else a fresh one.
+            let key = request
+                .extensions()
+                .get_ref::<DowngradeWebSocketKey>()
+                .map(|key| key.0.clone());
 
             let headers = request.headers_mut();
+            // An HTTP/1 upgrade request has no body: the tunnel follows the 101.
+            remove_body_framing(headers);
             headers.typed_insert(Upgrade::websocket());
             headers.typed_insert(Connection::upgrade());
             if !headers.contains_key(SEC_WEBSOCKET_KEY) {
-                headers.typed_insert(SecWebSocketKey::random());
+                headers.typed_insert(key.unwrap_or_else(SecWebSocketKey::random));
             }
             if !headers.contains_key(SEC_WEBSOCKET_VERSION) {
                 headers.typed_insert(SecWebSocketVersion::V13);
@@ -282,14 +296,19 @@ fn translate_request_downgrade<Body>(request: &mut Request<Body>) -> Result<(), 
             // for HTTP/1 and `Extensions` has no removal API, so we leave it in place.
         }
         Some(protocol) => {
-            return Err(BoxError::from(format!(
-                "cannot translate an HTTP/2+ Extended CONNECT `:protocol: {}` request to HTTP/1: only websocket is supported",
-                protocol.as_str(),
-            )));
+            return Err(BoxError::from_static_str(
+                "cannot translate an HTTP/2+ Extended CONNECT request to HTTP/1: only websocket is supported",
+            )
+            .context_str_field("protocol", protocol.as_str()));
         }
         None => {}
     }
     Ok(())
+}
+
+fn remove_body_framing(headers: &mut HeaderMap) {
+    headers.remove(CONTENT_LENGTH);
+    headers.remove(TRANSFER_ENCODING);
 }
 
 /// Ensure an HTTP/1.x request carries a `Host` header.
@@ -303,12 +322,15 @@ pub fn ensure_h1_host_header<Body>(request: &mut Request<Body>) -> Result<(), Bo
         return Ok(());
     }
     let authority = request
-        .authority()
+        .target_authority()
         .context("ensure h1 Host header: request has no resolvable authority")?;
-    let protocol = request.protocol().cloned();
     // Strip the default port (browsers do this, and some reverse proxies 404 on a
-    // non-exact authority match).
-    let authority = authority.without_default_port_for(protocol.as_ref());
+    // non-exact authority match), except from a plain CONNECT, which names its port.
+    let authority = if is_plain_connect(request) {
+        authority
+    } else {
+        authority.without_default_port_for(request.target_protocol())
+    };
     tracing::trace!("adding Host header {authority} derived from request authority");
     request.headers_mut().typed_insert(Host::from(authority));
     Ok(())
@@ -326,9 +348,9 @@ pub fn ensure_h2_or_h3_uri_authority<Body>(request: &mut Request<Body>) -> Resul
         return Ok(());
     }
     let authority = request
-        .authority()
+        .target_authority()
         .context("ensure h2 URI authority: request has no resolvable authority")?;
-    let protocol = request.protocol().cloned();
+    let protocol = request.target_protocol().cloned();
     let authority = authority.without_default_port_for(protocol.as_ref());
     tracing::trace!("materializing authority {authority} and scheme into request URI");
     let uri = request.uri_mut();
@@ -433,6 +455,44 @@ mod tests {
         assert_eq!(req.headers().get(SEC_WEBSOCKET_VERSION).unwrap(), "13");
     }
 
+    /// The translated WebSocket handshake never advertises a body it will not send.
+    #[test]
+    fn websocket_translations_drop_body_framing() {
+        for (from, to) in [
+            (Version::HTTP_2, Version::HTTP_11),
+            (Version::HTTP_3, Version::HTTP_11),
+        ] {
+            let mut req = Request::builder()
+                .version(from)
+                .method(Method::CONNECT)
+                .uri("https://example.com/chat")
+                .header(CONTENT_LENGTH, "5")
+                .header(TRANSFER_ENCODING, "chunked")
+                .header(SEC_WEBSOCKET_VERSION, "13")
+                .body(())
+                .unwrap();
+            req.extensions().insert(Protocol::from_static("websocket"));
+            adapt_request_version(&mut req, to).unwrap();
+            assert_eq!(req.method(), Method::GET, "{from:?}");
+            assert!(!req.headers().contains_key(CONTENT_LENGTH), "{from:?}");
+            assert!(!req.headers().contains_key(TRANSFER_ENCODING), "{from:?}");
+        }
+        for to in [Version::HTTP_2, Version::HTTP_3] {
+            let mut req = Request::builder()
+                .version(Version::HTTP_11)
+                .method(Method::GET)
+                .uri("https://example.com/chat")
+                .header(UPGRADE, "websocket")
+                .header(CONNECTION, "Upgrade")
+                .header(CONTENT_LENGTH, "0")
+                .body(())
+                .unwrap();
+            adapt_request_version(&mut req, to).unwrap();
+            assert_eq!(req.method(), Method::CONNECT, "{to:?}");
+            assert!(!req.headers().contains_key(CONTENT_LENGTH), "{to:?}");
+        }
+    }
+
     #[test]
     fn test_h2_to_h1_non_websocket_connect_untouched() {
         let mut req = Request::builder()
@@ -464,6 +524,28 @@ mod tests {
         // HTTP/1 carries the authority in the Host header, derived from the URI
         assert_eq!(req.version(), Version::HTTP_11);
         assert_eq!(req.headers().get(HOST).unwrap(), "example.com");
+    }
+
+    #[test]
+    fn plain_connect_keeps_its_port_in_a_derived_host() {
+        for (method, uri, host) in [
+            (
+                Method::CONNECT,
+                "https://example.com:443",
+                "example.com:443",
+            ),
+            (Method::CONNECT, "http://example.com:80", "example.com:80"),
+            (Method::GET, "https://example.com:443/", "example.com"),
+        ] {
+            let mut req = Request::builder()
+                .version(Version::HTTP_2)
+                .method(method)
+                .uri(uri)
+                .body(())
+                .unwrap();
+            adapt_request_version(&mut req, Version::HTTP_11).unwrap();
+            assert_eq!(req.headers()[HOST], host, "{uri}");
+        }
     }
 
     #[test]

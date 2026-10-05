@@ -12,6 +12,9 @@ mod prefix;
 #[doc(inline)]
 pub use prefix::PrefixedIo;
 
+mod abort;
+pub use abort::AbortIo;
+
 mod graceful;
 pub use graceful::{CancelIo, GracefulIo};
 

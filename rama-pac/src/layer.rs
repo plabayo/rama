@@ -188,7 +188,7 @@ where
 /// rule matches or misses on how the target happened to arrive.
 fn pac_uri<Body>(req: &Request<Body>) -> Result<Uri, BoxError> {
     let protocol = pac_protocol(req);
-    proxy_request_uri(req.uri(), req.authority(), protocol)
+    proxy_request_uri(req.uri(), req.target_authority(), protocol)
 }
 
 /// The scheme the script is to see for `req`.
@@ -203,7 +203,7 @@ fn pac_protocol<Body>(req: &Request<Body>) -> Protocol {
     if req.uri().scheme().is_none() && req.method() == Method::CONNECT {
         return Protocol::HTTPS;
     }
-    req.protocol().cloned().unwrap_or(Protocol::HTTP)
+    req.target_protocol().cloned().unwrap_or(Protocol::HTTP)
 }
 
 /// Whether someone already decided how this request should be routed.

@@ -13,7 +13,7 @@ use rama_http::{
     headers::sec_websocket_protocol::AcceptedWebSocketProtocol,
     io::upgrade::{self, OnUpgrade, Upgraded},
     layer::upgrade::mitm::{HttpUpgradeMitmRelay, HttpUpgradeMitmRelayExtensions},
-    proto::h2::ext::Protocol,
+    proto::ext::Protocol,
 };
 use rama_http_core::{client::conn, server, service::RamaHttpService};
 use rama_ws::{

@@ -112,10 +112,13 @@ impl Message {
 }
 
 pub fn http_message(parts: &Parts) -> Message {
-    let protocol = parts.protocol().unwrap_or(&Protocol::HTTP);
-    let (host, port) = match parts.authority_with_default_port(None) {
+    let protocol = parts.target_protocol().unwrap_or(&Protocol::HTTP);
+    let (host, port) = match parts.target_authority_with_default_port(None) {
         Some(authority) => (Some(authority.host), Some(authority.port)),
-        None => (parts.host(), parts.protocol_default_port()),
+        None => (
+            parts.target_authority().map(|authority| authority.host),
+            protocol.default_port(),
+        ),
     };
     Message {
         protocol: protocol.clone(),

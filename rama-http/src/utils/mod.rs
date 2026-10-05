@@ -1,6 +1,7 @@
 //! Utilities for HTTP.
 
 mod upgrade;
+pub(crate) use upgrade::is_plain_connect;
 #[doc(inline)]
 pub use upgrade::request_connect_protocol;
 

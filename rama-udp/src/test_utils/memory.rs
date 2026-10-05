@@ -158,6 +158,8 @@ impl std::fmt::Debug for MemoryDatagramControl {
 pub struct MemoryDatagramFaultStats {
     /// Datagrams discarded while reporting a successful send.
     pub dropped: usize,
+    /// Datagrams delivered twice.
+    pub duplicated: usize,
     /// Pairs delivered in reverse send order.
     pub reordered_pairs: usize,
 }
@@ -169,6 +171,21 @@ impl MemoryDatagramControl {
         let mut state = self.shared.state.lock();
         let endpoint = &mut state.endpoints[self.side];
         endpoint.drop_next = count;
+        let waiters = take_waiters(&mut endpoint.send_waiters);
+        drop(state);
+        wake_all(waiters);
+    }
+
+    /// Deliver each of the next `count` surviving outbound datagrams twice, including
+    /// individual GSO segments. Replaces any remaining duplication count.
+    ///
+    /// Duplicates never take part in admission: a copy uses a queue slot only when one is
+    /// spare after the whole send was admitted, and is otherwise skipped without consuming
+    /// the count. Drops happen first; a copy is delivered before a held reordered original.
+    pub fn duplicate_next(&self, count: usize) {
+        let mut state = self.shared.state.lock();
+        let endpoint = &mut state.endpoints[self.side];
+        endpoint.duplicate_next = count;
         let waiters = take_waiters(&mut endpoint.send_waiters);
         drop(state);
         wake_all(waiters);
@@ -393,6 +410,8 @@ impl DatagramSender for MemoryDatagramSender {
                 .unwrap_or(self.shared.addresses[self.side].ip_addr),
             self.shared.addresses[self.side].port,
         );
+        // Slots left once every admitted original is placed: only these can hold copies.
+        let mut spare = self.shared.capacity - (retained + incoming);
         let chunks: Box<dyn Iterator<Item = &[u8]> + '_> = if datagram.segment_size().is_some() {
             Box::new(datagram.payload().chunks(segment_size))
         } else {
@@ -420,6 +439,17 @@ impl DatagramSender for MemoryDatagramSender {
                     truncated: false,
                 },
             };
+            if endpoint.duplicate_next > 0 && spare > 0 {
+                spare -= 1;
+                endpoint.duplicate_next -= 1;
+                endpoint.fault_stats.duplicated += 1;
+                let copy = OwnedDatagram {
+                    payload: packet.payload.clone(),
+                    metadata: packet.metadata,
+                };
+                state.deliver(peer, copy);
+            }
+            let endpoint = &mut state.endpoints[self.side];
             if endpoint.reorder_next {
                 if let Some(held) = endpoint.held.take() {
                     endpoint.reorder_next = false;
@@ -475,6 +505,7 @@ struct EndpointState {
     recv_waker: Option<Waker>,
     send_waiters: Vec<Weak<SendWaiter>>,
     drop_next: usize,
+    duplicate_next: usize,
     reorder_next: bool,
     held: Option<OwnedDatagram>,
     fault_stats: MemoryDatagramFaultStats,
@@ -494,6 +525,7 @@ impl EndpointState {
             recv_waker: None,
             send_waiters: Vec::new(),
             drop_next: 0,
+            duplicate_next: 0,
             reorder_next: false,
             held: None,
             fault_stats: MemoryDatagramFaultStats::default(),
@@ -575,7 +607,7 @@ mod tests {
     use std::{
         pin::pin,
         sync::atomic::AtomicUsize,
-        task::{Poll, Wake, Waker},
+        task::{Context, Poll, Wake, Waker},
     };
 
     use super::*;
@@ -618,6 +650,118 @@ mod tests {
         assert_eq!(control.stats().dropped, 2);
         assert_eq!(control.stats().reordered_pairs, 0);
         assert_eq!(socket.fault_control().stats(), control.stats());
+    }
+
+    #[tokio::test]
+    async fn duplication_delivers_each_surviving_segment_twice() {
+        let (mut receiver, socket) = memory_pair(NonZeroUsize::new(4).unwrap());
+        let control = socket.fault_control();
+        control.drop_next(1);
+        control.duplicate_next(1);
+        let mut sender = socket.create_sender();
+        sender
+            .send(
+                SendDatagram::new(receiver.local_addr().unwrap(), b"aabbcc")
+                    .with_segment_size(NonZeroUsize::new(2).unwrap()),
+            )
+            .await
+            .unwrap();
+
+        let mut received = Vec::new();
+        for _ in 0..3 {
+            let mut buffer = [0; 2];
+            assert_eq!(receiver.recv(&mut buffer).await.unwrap().len, 2);
+            received.push(buffer);
+        }
+        assert_eq!(received, [*b"bb", *b"bb", *b"cc"]);
+        assert_eq!(control.stats().dropped, 1);
+        assert_eq!(control.stats().duplicated, 1);
+    }
+
+    /// One send poll: an admissible send completes without being woken.
+    fn send_now(
+        sender: &mut MemoryDatagramSender,
+        datagram: &SendDatagram<'_>,
+    ) -> Poll<Result<(), DatagramError>> {
+        sender.poll_send(&mut Context::from_waker(Waker::noop()), datagram)
+    }
+
+    #[tokio::test]
+    async fn duplication_never_blocks_an_admissible_send() {
+        // A single slot, and a full-size GSO batch: no room for copies, nothing parked.
+        for (capacity, payload) in [(1, &b"xx"[..]), (4, &b"aabbccdd"[..])] {
+            let (mut receiver, socket) = memory_pair(NonZeroUsize::new(capacity).unwrap());
+            let control = socket.fault_control();
+            control.duplicate_next(1);
+            let mut sender = socket.create_sender();
+            let destination = receiver.local_addr().unwrap();
+            let datagram = SendDatagram::new(destination, payload);
+            let datagram = if payload.len() > 2 {
+                datagram.with_segment_size(NonZeroUsize::new(2).unwrap())
+            } else {
+                datagram
+            };
+            assert_matches!(send_now(&mut sender, &datagram), Poll::Ready(Ok(())));
+            let mut received = Vec::new();
+            for _ in 0..payload.len() / 2 {
+                let mut buffer = [0; 2];
+                receiver.recv(&mut buffer).await.unwrap();
+                received.push(buffer);
+            }
+            assert_eq!(received.len(), payload.len() / 2);
+            assert!(receiver.shared.state.lock().endpoints[0].queue.is_empty());
+            assert_eq!(control.stats().duplicated, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn duplication_uses_only_spare_slots_beside_a_held_reorder() {
+        let (mut receiver, socket) = memory_pair(NonZeroUsize::new(2).unwrap());
+        let control = socket.fault_control();
+        control.reorder_next_pair().unwrap();
+        control.duplicate_next(2);
+        let mut sender = socket.create_sender();
+        let destination = receiver.local_addr().unwrap();
+        // Held for reordering; its copy fills the only other slot.
+        assert_matches!(
+            send_now(&mut sender, &SendDatagram::new(destination, b"one")),
+            Poll::Ready(Ok(()))
+        );
+        let mut buffer = [0; 3];
+        receiver.recv(&mut buffer).await.unwrap();
+        assert_eq!(&buffer, b"one");
+        // The next send still fits beside the held datagram, now without a spare slot.
+        assert_matches!(
+            send_now(&mut sender, &SendDatagram::new(destination, b"two")),
+            Poll::Ready(Ok(()))
+        );
+        let mut order = Vec::new();
+        for _ in 0..2 {
+            let mut buffer = [0; 3];
+            receiver.recv(&mut buffer).await.unwrap();
+            order.push(buffer);
+        }
+        assert_eq!(order, [*b"two", *b"one"]);
+        assert_eq!(control.stats().duplicated, 1);
+        assert_eq!(control.stats().reordered_pairs, 1);
+    }
+
+    #[tokio::test]
+    async fn changing_duplication_wakes_waiting_senders() {
+        let (receiver, socket) = memory_pair(NonZeroUsize::new(1).unwrap());
+        let mut sender = socket.create_sender();
+        let destination = receiver.local_addr().unwrap();
+        sender
+            .send(SendDatagram::new(destination, b"full"))
+            .await
+            .unwrap();
+        let wakes = Arc::new(WakeCounter::default());
+        let waker = Waker::from(wakes.clone());
+        let mut cx = Context::from_waker(&waker);
+        let datagram = SendDatagram::new(destination, b"wait");
+        assert!(sender.poll_send(&mut cx, &datagram).is_pending());
+        socket.fault_control().duplicate_next(3);
+        assert!(wakes.0.load(Ordering::Relaxed) > 0);
     }
 
     #[tokio::test]

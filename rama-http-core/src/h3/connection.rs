@@ -1,7 +1,7 @@
 //! Connection-owned compression and critical-stream state.
 
 use super::{
-    Error,
+    DatagramConfig, Error,
     control::{Control, Role},
     frame::{FrameDecoder, FrameEvent},
     qpack::{Decoder, DecoderConfig, Encoder, EncoderConfig, FieldPair, QpackError},
@@ -12,23 +12,33 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     futures::{StreamExt, stream::FuturesUnordered},
 };
-use rama_http::headers::Priority;
+use rama_http::{
+    datagram::{NativeRecvError, ViolationPolicy},
+    headers::Priority,
+};
 use rama_http_types::proto::h3::{
     Code, FrameHeader, FrameType, SettingId, Settings, StreamType, VarInt, VarIntDecoder,
 };
 use rama_net::{stream::SocketInfo, tls::ApplicationProtocol};
 use rama_quic::{
     Connection as QuicConnection, NegotiatedTlsParameters, RecvStream as QuicRecvStream,
-    SendStream as QuicSendStream, TransportConfig,
+    SendStream as QuicSendStream, StreamAbortHandle, TransportConfig,
 };
 use rama_quic_proto::{Dir, coding::Codec};
 use rama_utils::octets::{kib, mib};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     pin::pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll, Waker},
 };
-use tokio::sync::{Notify, oneshot};
+use tokio::{
+    sync::{Notify, oneshot},
+    time::Instant,
+};
 
 /// Local HTTP/3 connection budgets. Peer limits are negotiated independently.
 #[derive(Clone, Debug)]
@@ -52,6 +62,16 @@ pub struct Config {
     pub read_chunk_size: usize,
     /// Maximum unclassified peer unidirectional streams retained simultaneously.
     pub max_pending_uni_streams: usize,
+    /// Accept Extended CONNECT (RFC 9220) as a server, advertising
+    /// `SETTINGS_ENABLE_CONNECT_PROTOCOL`. The service decides which `:protocol`
+    /// tokens it serves; RFC 9220 §3 recommends `501` for others.
+    pub extended_connect: bool,
+    /// Receive HTTP/3 datagrams (RFC 9297). When QUIC DATAGRAM is negotiated this advertises
+    /// `SETTINGS_H3_DATAGRAM`, as RFC 9297 §2.1.1 recommends for every endpoint able to
+    /// receive them; `None` never advertises nor delivers them. A request only has datagram
+    /// semantics once declared with
+    /// [`HttpDatagrams`](rama_http_types::proto::ext::HttpDatagrams).
+    pub datagrams: Option<DatagramConfig>,
 }
 
 impl Default for Config {
@@ -64,6 +84,8 @@ impl Default for Config {
             max_frame_size: kib(64),
             read_chunk_size: kib(16),
             max_pending_uni_streams: 32,
+            extended_connect: false,
+            datagrams: Some(DatagramConfig::default()),
         }
     }
 }
@@ -86,6 +108,24 @@ impl Config {
         transport.set_stream_receive_window(VarInt::from_u32(kib(256) as u32));
         transport.set_receive_window(VarInt::from_u32(mib(8) as u32));
         Ok(())
+    }
+
+    /// The SETTINGS this endpoint sends; Extended CONNECT is a server setting (RFC 8441 §3).
+    /// `datagrams` is whether QUIC DATAGRAM was negotiated and datagrams are enabled.
+    pub(crate) fn local_settings(&self, role: Role, datagrams: bool) -> Result<Settings, Error> {
+        let mut settings = self.settings()?;
+        let extended_connect = role == Role::Server && self.extended_connect;
+        for (enabled, id) in [
+            (extended_connect, SettingId::ENABLE_CONNECT_PROTOCOL),
+            (datagrams, SettingId::H3_DATAGRAM),
+        ] {
+            if enabled {
+                settings.set(id, 1).map_err(|_error| {
+                    Error::connection(Code::H3_INTERNAL_ERROR, "invalid local settings")
+                })?;
+            }
+        }
+        Ok(settings)
     }
 
     pub(crate) fn settings(&self) -> Result<Settings, Error> {
@@ -131,6 +171,15 @@ impl Config {
     }
 }
 
+/// Capabilities the peer advertised in its SETTINGS.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PeerSettings {
+    pub(crate) extended_connect: bool,
+}
+
+// Uncontended in steady state: the driver files, one consumer per association drains.
+type DatagramDemux = Mutex<super::datagram::Demux>;
+
 // Enough for multiple decoder acknowledgements and GOAWAY; ordinary writes leave
 // this credit for critical streams. QUIC caps it for very small peer windows.
 pub(crate) const CRITICAL_SEND_RESERVE: u64 = 64;
@@ -162,6 +211,12 @@ pub(crate) struct Shared {
     request_rejected: Notify,
     failure: Notify,
     control_ready: Notify,
+    settings_ready: Notify,
+    datagrams: DatagramDemux,
+    local_datagrams: AtomicBool,
+    peer_datagrams: AtomicBool,
+    // Our initial SETTINGS reached the QUIC control stream.
+    settings_sent: AtomicBool,
     pub(crate) schedule: super::priority::Schedule,
 }
 
@@ -180,7 +235,19 @@ impl Shared {
             extensions.insert(parameters);
         }
         extensions.get_ref_or_insert(|| SocketInfo::new(None, connection.remote_address().into()));
-        Self::new(config, role, extensions)
+        let shared = Self::new(config, role, extensions)?;
+        // Known from the transport parameters: request streams register from the start.
+        shared.local_datagrams.store(
+            shared.local_datagrams_supported(connection),
+            Ordering::Release,
+        );
+        Ok(shared)
+    }
+
+    /// Datagrams are enabled and this endpoint receives QUIC DATAGRAM frames, whatever the
+    /// peer supports: what `SETTINGS_H3_DATAGRAM` advertises (RFC 9297 §2.1.1).
+    fn local_datagrams_supported(&self, connection: &QuicConnection) -> bool {
+        self.config.datagrams.is_some() && connection.datagram_receive_enabled()
     }
 
     pub(crate) fn new(
@@ -216,6 +283,11 @@ impl Shared {
             request_rejected: Notify::new(),
             failure: Notify::new(),
             control_ready: Notify::new(),
+            settings_ready: Notify::new(),
+            datagrams: Mutex::default(),
+            local_datagrams: AtomicBool::new(false),
+            peer_datagrams: AtomicBool::new(false),
+            settings_sent: AtomicBool::new(false),
         }))
     }
 
@@ -269,10 +341,13 @@ impl Shared {
             _ = tx.send(Err(error));
         }
         drop(state);
+        let wakers = self.datagrams.lock().close();
+        wakers.into_iter().for_each(Waker::wake);
         self.progress.notify_waiters();
         self.push_ready.notify_waiters();
         self.failure.notify_waiters();
         self.request_rejected.notify_waiters();
+        self.settings_ready.notify_waiters();
         for output in &self.output {
             output.notify_one();
         }
@@ -429,6 +504,165 @@ impl Shared {
 
     pub(crate) fn goaway(&self) -> Option<u64> {
         self.state.lock().control.goaway()
+    }
+
+    /// Whether native HTTP/3 datagrams may be sent: `SETTINGS_H3_DATAGRAM` was both sent
+    /// and received with value 1 (RFC 9297 §2.1.1).
+    pub(crate) fn native_datagrams(&self) -> bool {
+        self.local_datagrams.load(Ordering::Acquire)
+            && self.settings_sent.load(Ordering::Acquire)
+            && self.peer_datagrams.load(Ordering::Acquire)
+    }
+
+    /// Register a request stream with the datagram demux, before any of its bytes are sent
+    /// (client) or as it is accepted (server). `None` when this connection cannot receive
+    /// datagrams.
+    pub(crate) fn register_datagrams(
+        self: &Arc<Self>,
+        stream: u64,
+        semantics: super::datagram::Semantics,
+        abort: StreamAbortHandle,
+    ) -> Option<Arc<super::datagram::Registration>> {
+        let config = self.config.datagrams.as_ref()?;
+        if !self.local_datagrams.load(Ordering::Acquire) {
+            return None;
+        }
+        let violated = Arc::new(AtomicBool::new(false));
+        let action = self.datagrams.lock().register(
+            config,
+            stream,
+            semantics,
+            abort,
+            violated.clone(),
+            Instant::now(),
+        );
+        action.run();
+        Some(Arc::new(super::datagram::Registration::new(
+            self.clone(),
+            stream,
+            violated,
+        )))
+    }
+
+    pub(crate) fn decide_datagrams(&self, stream: u64, claimed: bool) {
+        if let Some(config) = &self.config.datagrams {
+            let action = self.datagrams.lock().decide(config, stream, claimed);
+            action.run();
+        }
+    }
+
+    pub(crate) fn refuse_datagrams(&self, stream: u64) {
+        if self.config.datagrams.is_some() {
+            self.datagrams.lock().refuse(stream);
+        }
+    }
+
+    pub(crate) fn unregister_datagrams(&self, stream: u64) {
+        let waker = self.datagrams.lock().unregister(stream);
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    /// The stream's receive side or consumer ended; later datagrams for it are dropped.
+    pub(crate) fn datagram_receive_ended(&self, stream: u64, end: super::datagram::ReceiveEnd) {
+        let waker = self.datagrams.lock().receive_ended(stream, end);
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    pub(crate) fn poll_datagram(
+        &self,
+        stream: u64,
+        cx: &Context<'_>,
+    ) -> Poll<Result<Option<Bytes>, NativeRecvError>> {
+        self.datagrams.lock().poll_recv(stream, cx)
+    }
+
+    /// The local encoder's dynamic insertions and sections awaiting the peer's decoder.
+    #[cfg(test)]
+    pub(crate) fn qpack_sections(&self) -> (u64, usize) {
+        let state = self.state.lock();
+        (
+            state.encoder.insert_count(),
+            state.encoder.tracked_section_count(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn datagram_demux(&self) -> parking_lot::MutexGuard<'_, super::datagram::Demux> {
+        self.datagrams.lock()
+    }
+
+    pub(crate) fn datagrams_dropped(&self, stream: u64) -> u64 {
+        self.datagrams.lock().slot_dropped(stream)
+    }
+
+    pub(crate) fn datagram_drops(&self) -> super::datagram::DatagramDrops {
+        self.datagrams.lock().drops()
+    }
+
+    /// File one QUIC DATAGRAM payload under its request stream.
+    pub(crate) fn receive_datagram(
+        &self,
+        datagram: Bytes,
+        connection: &QuicConnection,
+    ) -> Result<(), Error> {
+        let Some(config) = self
+            .config
+            .datagrams
+            .as_ref()
+            .filter(|_| self.local_datagrams.load(Ordering::Acquire))
+        else {
+            // RFC 9297 §2.1.1: the peer may not send until we advertise support.
+            self.datagrams.lock().count_unadvertised();
+            return Ok(());
+        };
+        let split = super::datagram::split(
+            datagram,
+            self.role == Role::Server,
+            connection.remote_stream_limit(Dir::Bi),
+        );
+        let (stream, payload) = match split {
+            super::datagram::Split::Datagram(stream, payload) => (stream, payload),
+            super::datagram::Split::InvalidId | super::datagram::Split::BeyondLimit => {
+                let beyond_limit = matches!(split, super::datagram::Split::BeyondLimit);
+                if config.violations == ViolationPolicy::Reject {
+                    return Err(super::datagram::invalid_prefix_error(beyond_limit));
+                }
+                self.datagrams.lock().count_invalid(beyond_limit);
+                return Ok(());
+            }
+        };
+        let lifetime = super::datagram::pending_lifetime(connection.rtt());
+        let action =
+            self.datagrams
+                .lock()
+                .deliver(config, stream, &payload, Instant::now(), lifetime);
+        action.run();
+        Ok(())
+    }
+
+    /// Wait for the peer's SETTINGS, which arrive once at the start of its control stream.
+    pub(crate) async fn peer_settings(&self) -> Result<PeerSettings, Error> {
+        loop {
+            let ready = self.settings_ready.notified();
+            let mut ready = pin!(ready);
+            ready.as_mut().enable();
+            {
+                let state = self.state.lock();
+                if let Some(settings) = state.control.settings() {
+                    return Ok(PeerSettings {
+                        extended_connect: settings.enable_connect_protocol(),
+                    });
+                }
+                if let Some(error) = state.error {
+                    return Err(error);
+                }
+            }
+            ready.await;
+        }
     }
 
     pub(crate) fn cancel(&self, id: u64) {
@@ -773,8 +1007,14 @@ pub(crate) async fn receive_uni(
                         .encoder
                         .apply_peer_settings(settings)
                         .map_err(compression_error)?;
+                    drop(state);
+                    shared
+                        .peer_datagrams
+                        .store(settings.h3_datagram(), Ordering::Release);
+                    shared.settings_ready.notify_waiters();
+                } else {
+                    drop(state);
                 }
-                drop(state);
                 if let FrameEvent::MaxPushId(id) = event {
                     shared.pushes.lock().max_id(id);
                     shared.push_ready.notify_waiters();
@@ -862,8 +1102,12 @@ fn critical_receive_closed(connection: &QuicConnection) -> Error {
     )
 }
 
-pub(crate) fn initial_control(config: &Config) -> Result<Bytes, Error> {
-    let settings = config.settings()?;
+pub(crate) fn initial_control(
+    config: &Config,
+    role: Role,
+    datagrams: bool,
+) -> Result<Bytes, Error> {
+    let settings = config.local_settings(role, datagrams)?;
     let mut payload = BytesMut::new();
     settings
         .encode_payload(&mut payload)
@@ -995,7 +1239,12 @@ impl Driver {
                 control.set_priority(i32::MAX).map_err(|_error| {
                     Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "control stream closed")
                 })?;
-                let mut bytes = [initial_control(&self.shared.config)?];
+                // Advertise datagrams only when QUIC DATAGRAM can carry them.
+                let datagrams = self.shared.local_datagrams_supported(&self.connection);
+                self.shared
+                    .local_datagrams
+                    .store(datagrams, Ordering::Release);
+                let mut bytes = [initial_control(&self.shared.config, self.role, datagrams)?];
                 if self.role == Role::Client && self.shared.config.max_pushes != 0 {
                     self.shared.send_control_id(
                         FrameType::MAX_PUSH_ID,
@@ -1008,6 +1257,8 @@ impl Driver {
                         Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "control stream stopped")
                     })?;
                 }
+                // QUIC holds our SETTINGS now: native datagrams may follow them.
+                self.shared.settings_sent.store(true, Ordering::Release);
                 loop {
                     let next = {
                         let mut state = self.shared.state.lock();
@@ -1102,8 +1353,21 @@ impl Driver {
                         .abort(VarInt::from_u32(Code::H3_REQUEST_REJECTED.value() as u32));
                 }
             };
+            // The driver is the only QUIC DATAGRAM reader; sessions never race for it.
+            let datagrams = async {
+                let mut budget = super::cooperative::Budget::default();
+                loop {
+                    let Ok(datagram) = self.connection.read_datagram().await else {
+                        // Connection closure is reported by the other branches.
+                        return std::future::pending().await;
+                    };
+                    self.shared.receive_datagram(datagram, &self.connection)?;
+                    budget.consume().await;
+                }
+            };
             tokio::select! {
                 error = self.shared.failed() => Err(error),
+                result = datagrams => result,
                 result = control_task => result,
                 result = write_instructions(self.shared.clone(), encoder, true) => result,
                 result = write_instructions(self.shared.clone(), decoder, false) => result,

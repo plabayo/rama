@@ -52,7 +52,8 @@ use rama::{
     io::Io,
     layer::ConsumeErrLayer,
     net::{
-        address::HostWithPort, forwarded::Forwarded, proxy::IoForwardService, stream::SocketInfo,
+        address::HostWithPort, forwarded::ForwardedClientExt as _, proxy::IoForwardService,
+        stream::SocketInfo,
     },
     proxy::haproxy::{
         client::HaProxyLayer as HaProxyClientLayer, server::HaProxyLayer as HaProxyServerLayer,
@@ -137,12 +138,7 @@ where
     S: Io + Unpin + ExtensionsRef,
 {
     // REMARK: builds on the assumption that we are using the haproxy protocol
-    let client_addr = stream
-        .extensions()
-        .get_ref::<Forwarded>()
-        .unwrap()
-        .client_socket_addr()
-        .unwrap();
+    let client_addr = stream.forwarded_client_socket_addr().unwrap();
     // REMARK: builds on the assumption that rama's TCP service sets this for you :)
     let proxy_addr = stream
         .extensions()

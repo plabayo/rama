@@ -14,6 +14,15 @@ use std::{
     time::Duration,
 };
 
+/// Extra features for a QUIC or HTTP/3 example: the TLS backend this test build selected.
+pub(super) const QUIC_BACKEND: &str = if cfg!(feature = "boring") {
+    "quic,boring"
+} else if cfg!(feature = "aws-lc") {
+    "quic,rustls,aws-lc"
+} else {
+    "quic,rustls,ring"
+};
+
 /// One of the child's output streams, so both are drained the same way.
 enum StdioStream {
     Out(ChildStdout),
@@ -231,6 +240,28 @@ impl ExampleRunner {
     }
 }
 
+/// A child inherits whether ctrl-c is ignored: a runner started from a shell that ignores
+/// it would otherwise spawn examples the raised event can never stop.
+#[cfg(windows)]
+#[expect(
+    unsafe_code,
+    reason = "restoring default ctrl-c processing requires Windows FFI"
+)]
+fn process_ctrl_c_in_children() {
+    unsafe extern "system" {
+        fn SetConsoleCtrlHandler(
+            handler: Option<unsafe extern "system" fn(u32) -> i32>,
+            add: i32,
+        ) -> i32;
+    }
+    static RESTORED: Once = Once::new();
+    RESTORED.call_once(|| {
+        // SAFETY: a null handler with add=0 requests the documented default ctrl-c processing.
+        // Best effort: without a console of its own there is nothing to restore.
+        _ = unsafe { SetConsoleCtrlHandler(None, 0) };
+    });
+}
+
 /// Owns the ctrl-c helper while the interrupt is in flight. It is a child of this process, so
 /// every way out of the wait — its own exit, a panic, or the waiting test being dropped — has
 /// to end it.
@@ -364,6 +395,27 @@ impl ExampleRunner {
         )
     }
 
+    /// The example built with the runner's features plus `extra_features`, to run from the
+    /// workspace root; a test that drives its client side runs it with this directly.
+    pub(super) fn command(
+        example_name: impl AsRef<str>,
+        extra_features: Option<&'static str>,
+    ) -> std::process::Command {
+        let mut command = escargot::CargoBuild::new()
+            .arg(format!(
+                "--features=cli,tcp,http-full,proxy-full,{}",
+                extra_features.unwrap_or_default()
+            ))
+            .bin(example_name.as_ref())
+            .manifest_path(examples_manifest_path())
+            .target_dir(examples_target_dir())
+            .run()
+            .unwrap()
+            .command();
+        command.current_dir(workspace_root());
+        command
+    }
+
     fn interactive_with_args_and_envs(
         example_name: impl AsRef<str>,
         extra_features: Option<&'static str>,
@@ -383,30 +435,8 @@ impl ExampleRunner {
         envs: impl IntoIterator<Item = (&'static str, &'static str)>,
         capture: bool,
     ) -> Self {
-        // QUIC tests must execute the binary built with this test's selected backend.
-        let mut command = match example_name.as_ref() {
-            #[cfg(feature = "http-full")]
-            "http3_client_server" => {
-                std::process::Command::new(env!("CARGO_BIN_EXE_http3_client_server"))
-            }
-            #[cfg(all(feature = "quic", feature = "tls"))]
-            "quic_terminating_relay" => {
-                std::process::Command::new(env!("CARGO_BIN_EXE_quic_terminating_relay"))
-            }
-            _ => escargot::CargoBuild::new()
-                .arg(format!(
-                    "--features=cli,tcp,http-full,proxy-full,{}",
-                    extra_features.unwrap_or_default()
-                ))
-                .bin(example_name.as_ref())
-                .manifest_path(examples_manifest_path())
-                .target_dir(examples_target_dir())
-                .run()
-                .unwrap()
-                .command(),
-        };
+        let mut command = Self::command(example_name.as_ref(), extra_features);
         command
-            .current_dir(workspace_root())
             .env(
                 "RUST_LOG",
                 // A captured example's output is read line by line, so its own target is kept at
@@ -433,6 +463,7 @@ impl ExampleRunner {
                 use std::os::windows::process::CommandExt as _;
                 const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
                 command.creation_flags(CREATE_NEW_CONSOLE);
+                process_ctrl_c_in_children();
             }
         }
         let mut child = command.spawn().unwrap();

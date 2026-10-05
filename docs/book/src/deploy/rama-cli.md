@@ -49,8 +49,11 @@ or written. Alternative-service discovery is disabled by default in the CLI.
 
 `--http3` requires HTTP/3 directly, without an advertisement or `--alt-svc`.
 Explicit HTTP version flags continue to constrain selection when `--alt-svc`
-is enabled. WebSockets over HTTP/3 require Extended CONNECT support, which is
-not yet implemented.
+is enabled. `rama send --http3 wss://…` opens a WebSocket over HTTP/3 with
+Extended CONNECT (RFC 9220) when the server enables it; WebSockets use HTTP/3
+only with `--http3`, never through alternative-service discovery. Without a
+terminal on stdin and stdout, `rama send ws(s)://…` sends each input line as a
+text message and prints received messages, which suits scripts and pipes.
 
 ## Proxies
 

@@ -12,6 +12,7 @@ use rama_http_types::HeaderMap;
 use rama_http_types::header::{CONNECTION, TE, hop_by_hop::CONNECTION_SPECIFIC_HEADERS};
 use std::task::ready;
 
+pub(crate) mod admission;
 pub(crate) mod ping;
 pub(crate) mod upgrade;
 

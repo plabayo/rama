@@ -17,7 +17,7 @@ use rama::{
     net::{
         AuthorityInputExt, Protocol, ProtocolInputExt,
         address::ip::geo::{IpGeoDb, IpGeoInfo},
-        forwarded::Forwarded,
+        forwarded::ForwardedClientExt as _,
         stream::SocketInfo,
     },
     telemetry::tracing,
@@ -196,15 +196,7 @@ where
         .set_host(host)
         .set_port(port);
 
-    let client_ip = req
-        .extensions()
-        .get_ref::<Forwarded>()
-        .and_then(|f| f.client_ip())
-        .or_else(|| {
-            req.extensions()
-                .get_ref::<SocketInfo>()
-                .map(|s| s.peer_addr().ip_addr)
-        });
+    let client_ip = rama::net::client_ip::client_ip(&req);
     let geo = geo_db.and_then(|db| client_ip.and_then(|ip| db.resolve(ip)));
 
     Ok(RequestInfo {
@@ -223,18 +215,10 @@ where
         path: req.uri().path_or_root().into_owned(),
         uri: uri.to_string(),
         peer_addr: req
-            .extensions()
-            .get_ref::<Forwarded>()
-            .and_then(|f| {
-                f.client_socket_addr()
-                    .map(|addr| addr.to_string())
-                    .or_else(|| f.client_ip().map(|ip| ip.to_string()))
-            })
-            .or_else(|| {
-                req.extensions()
-                    .get_ref::<SocketInfo>()
-                    .map(|v| v.peer_addr().to_string())
-            }),
+            .forwarded_client_socket_addr()
+            .map(|addr| addr.to_string())
+            .or_else(|| req.forwarded_client_ip().map(|ip| ip.to_string()))
+            .or_else(|| SocketInfo::ingress(req.extensions()).map(|v| v.peer_addr().to_string())),
         geo,
     })
 }

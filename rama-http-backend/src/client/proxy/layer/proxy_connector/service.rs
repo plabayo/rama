@@ -210,7 +210,7 @@ where
             ));
         }
 
-        let authority = input.authority().ok_or_else(|| {
+        let authority = input.target_authority().ok_or_else(|| {
             ConnectionError::local(
                 BoxError::from_static_str("http proxy connector: authority missing from input"),
                 ConnectionErrorKind::InvalidInput,
@@ -225,7 +225,7 @@ where
                 ConnectionErrorKind::InvalidInput,
             )
         })?;
-        let app_protocol = input.protocol().cloned();
+        let app_protocol = input.target_protocol().cloned();
         let app_is_http = app_protocol.as_ref().is_some_and(Protocol::is_http_based);
         let app_is_plaintext_http = app_protocol
             .as_ref()
@@ -1360,7 +1360,7 @@ mod tests {
                     assert_eq!(req.method(), Method::CONNECT);
                     assert!(
                         !req.extensions()
-                            .contains::<rama_http_types::proto::h2::ext::Protocol>()
+                            .contains::<rama_http_types::proto::ext::Protocol>()
                     );
                     Ok::<_, Infallible>(
                         Response::builder()
@@ -1376,7 +1376,7 @@ mod tests {
                 .with_application_protocol(protocol.clone());
             request
                 .extensions
-                .insert(rama_http_types::proto::h2::ext::Protocol::from_static(
+                .insert(rama_http_types::proto::ext::Protocol::from_static(
                     "websocket",
                 ));
             request.extensions.insert(ProxyRoute::Proxy(ProxyAddress {

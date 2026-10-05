@@ -5,7 +5,8 @@
 //! `:scheme` / `:authority` / `:path` pseudo-headers (RFC 9113 §8.3.1).
 //! Each form strips a different subset of URI components — for example,
 //! fragments are never on the wire (RFC 9110 §7.1) and userinfo is
-//! forbidden in any URI sent inside an HTTP message (RFC 9110 §4.2.4).
+//! forbidden for http(s) targets (RFC 9110 §4.2.4, RFC 9113 §8.3.1,
+//! RFC 9114 §4.3.1); other schemes keep it, identically in every version.
 //!
 //! These writers serialize a [`Uri`] into a caller-provided buffer
 //! according to the rules for each form. Most are HTTP-context; protocol
@@ -13,7 +14,10 @@
 //! a scheme or port without reconstructing the URI themselves.
 
 use super::{Uri, UriInner};
-use crate::{Protocol, address::OptPort};
+use crate::{
+    Protocol,
+    address::{AuthorityRef, OptPort},
+};
 
 use rama_core::bytes::BytesMut;
 
@@ -69,8 +73,9 @@ impl Uri {
     /// HTTP/1.1 absolute-form request-target:
     /// `scheme:[//authority]path[?query]`.
     ///
-    /// Used by clients sending through a forward proxy. Userinfo and
-    /// fragment are stripped (RFC 9110 §§4.2.4, 7.1).
+    /// Used by clients sending through a forward proxy. The fragment is stripped
+    /// (RFC 9110 §7.1); userinfo is stripped for HTTP-family schemes (RFC 9110 §4.2.4)
+    /// and kept for others, which that rule does not cover.
     pub fn write_http_absolute_form(&self, buf: &mut BytesMut) -> Result<(), WireError> {
         if matches!(self.inner, UriInner::Asterisk) {
             return Err(WireError::AsteriskMismatch);
@@ -82,6 +87,7 @@ impl Uri {
         buf.extend_from_slice(b":");
         if let Some(authority) = self.authority() {
             buf.extend_from_slice(b"//");
+            write_userinfo_outside_http(scheme, authority, buf);
             let result = authority.write_address_with_port(&mut BytesMutWriter(buf), self.port());
             debug_assert!(result.is_ok(), "BytesMutWriter is infallible");
         }
@@ -148,7 +154,8 @@ impl Uri {
 
     /// HTTP/2 / HTTP/3 `:authority` pseudo-header content: `host[:port]`.
     ///
-    /// Userinfo is omitted per RFC 9113 §8.3.1.
+    /// Userinfo is omitted for HTTP-family schemes and scheme-less CONNECT targets
+    /// (RFC 9113 §8.3.1, RFC 9114 §4.3.1); other schemes keep it, as those rules allow.
     ///
     /// **Wire fidelity**: see [`write_http_authority_form`](Self::write_http_authority_form)
     /// for the `OptPort::Empty` round-trip behavior.
@@ -156,8 +163,9 @@ impl Uri {
         if matches!(self.inner, UriInner::Asterisk) {
             return Err(WireError::AsteriskMismatch);
         }
-        if self.authority().is_none() {
-            return Err(WireError::NoAuthority);
+        let authority = self.authority().ok_or(WireError::NoAuthority)?;
+        if let Some(scheme) = self.scheme() {
+            write_userinfo_outside_http(scheme, authority, buf);
         }
         write_host_port(self, buf)?;
         Ok(())
@@ -179,6 +187,18 @@ impl Uri {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Write `userinfo@` for schemes outside the HTTP family. RFC 9110 §4.2.4,
+/// RFC 9113 §8.3.1 and RFC 9114 §4.3.1 forbid it only for http(s) targets;
+/// WebSocket targets map onto those (RFC 8441 §5, RFC 9220 §3).
+fn write_userinfo_outside_http(scheme: &Protocol, authority: AuthorityRef<'_>, buf: &mut BytesMut) {
+    if let Some(userinfo) = authority.userinfo()
+        && !scheme.is_http_based()
+    {
+        buf.extend_from_slice(userinfo.as_str().as_bytes());
+        buf.extend_from_slice(b"@");
+    }
+}
 
 /// Write `host[:port]` to `buf`. IPv6 addresses are bracketed per
 /// RFC 3986 §3.2.2 (`IP-literal = "[" IPv6address "]"`). Userinfo is

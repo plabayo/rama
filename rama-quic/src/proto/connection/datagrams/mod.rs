@@ -97,6 +97,11 @@ impl Datagrams<'_> {
         Some(limit.min(max_size as u64) as usize)
     }
 
+    /// Whether this endpoint accepts DATAGRAM frames, as its `max_datagram_frame_size` says.
+    pub(crate) fn receive_enabled(&self) -> bool {
+        self.conn.config.datagram_receive_buffer_size.is_some()
+    }
+
     /// Receive an unreliable, unordered datagram
     pub(crate) fn recv(&mut self) -> Option<Bytes> {
         self.conn.datagrams.recv()
