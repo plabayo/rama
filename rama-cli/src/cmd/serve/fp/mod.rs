@@ -373,6 +373,9 @@ where
     });
     // Limit the body size to 1MB for both request and response
     let body_limit = BodyLimitLayer::symmetric(mib(1));
+    // One layer for both: QUIC paces all streams of a connection against one budget.
+    let throttle = opt_per_sec(Some(cfg.throttle))
+        .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate)));
 
     if let Some(endpoint) = listeners.http3 {
         let mut http3 = HttpServer::new_http3(exec.clone());
@@ -382,6 +385,7 @@ where
             ConsumeErrLayer::trace_as(tracing::Level::WARN),
             connection_timeout.clone(),
             connection_limit.clone(),
+            throttle.clone(),
             body_limit.clone(),
         )
             .into_layer(http3.service(http_service.clone()));
@@ -400,8 +404,7 @@ where
         maybe_ha_proxy_layer,
         connection_timeout,
         connection_limit,
-        opt_per_sec(Some(cfg.throttle))
-            .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
+        throttle,
         body_limit,
         maybe_tls_server_config.map(|cfg| TlsAcceptorLayer::new(cfg).with_store_client_hello(true)),
     );

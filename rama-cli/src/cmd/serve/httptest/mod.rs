@@ -223,12 +223,16 @@ where
     // stress endpoints (`/bytes`, `/octet-stream`) to exercise
     // multi-megabyte bodies without third-party infrastructure.
     let body_limit = BodyLimitLayer::symmetric(mib(32));
+    // One layer for both: QUIC paces all streams of a connection against one budget.
+    let throttle = opt_per_sec(Some(cfg.throttle))
+        .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate)));
 
     if let Some(endpoint) = listeners.http3 {
         let http3_service = (
             ConsumeErrLayer::trace_as(tracing::Level::WARN),
             connection_timeout.clone(),
             connection_limit.clone(),
+            throttle.clone(),
             body_limit.clone(),
         )
             .into_layer(HttpServer::new_http3(exec.clone()).service(http_service.clone()));
@@ -246,8 +250,7 @@ where
         ConsumeErrLayer::trace_as(tracing::Level::WARN),
         connection_timeout,
         connection_limit,
-        opt_per_sec(Some(cfg.throttle))
-            .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
+        throttle,
         body_limit,
         maybe_tls_server_config.map(|cfg| TlsAcceptorLayer::new(cfg).with_store_client_hello(true)),
     );

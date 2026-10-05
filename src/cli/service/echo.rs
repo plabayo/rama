@@ -304,8 +304,9 @@ where
     /// build a tcp service and an HTTP/3 service, for accepted QUIC connections, ready to
     /// echo http traffic back
     ///
-    /// Both serve one http service: they share its rate limit, the connection limit and
-    /// the connection timeout. TLS for QUIC is configured on its endpoint.
+    /// Both serve one http service: they share its rate limit, the connection limit,
+    /// the connection timeout and the per-connection throttle. TLS for QUIC is
+    /// configured on its endpoint.
     pub fn build_with_http3(
         self,
         exec: Executor,
@@ -334,12 +335,15 @@ where
             TimeoutLayer::never()
         };
 
+        // One layer for both: QUIC paces all streams of a connection against one budget.
+        let throttle = self
+            .throttle
+            .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate)));
         let tcp_service_builder = (
             ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
             connection_limit.clone(),
             connection_timeout.clone(),
-            self.throttle
-                .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
+            throttle.clone(),
             tcp_forwarded_layer,
             BodyLimitLayer::request_only(self.body_limit),
             #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -378,6 +382,7 @@ where
             ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
             connection_limit,
             connection_timeout,
+            throttle,
             BodyLimitLayer::request_only(self.body_limit),
         )
             .into_layer(http3.service(http_service));

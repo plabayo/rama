@@ -228,8 +228,9 @@ impl IpServiceBuilder<mode::Http> {
     /// build a tcp service and an HTTP/3 service, for accepted QUIC connections, ready to
     /// echo the client IP back
     ///
-    /// Both serve one http service: they share its rate limit, the connection limit and
-    /// the connection timeout. TLS for QUIC is configured on its endpoint.
+    /// Both serve one http service: they share its rate limit, the connection limit,
+    /// the connection timeout and the per-connection throttle. TLS for QUIC is
+    /// configured on its endpoint.
     pub fn build_with_http3(
         self,
         executor: Executor,
@@ -285,12 +286,15 @@ impl IpServiceBuilder<mode::Http> {
         let connection_limit = (self.concurrent_limit > 0)
             .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit)));
         let connection_timeout = (!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout));
+        // One layer for both: QUIC paces all streams of a connection against one budget.
+        let throttle = self
+            .throttle
+            .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate)));
         let tcp_service_builder = (
             ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
             connection_limit.clone(),
             connection_timeout.clone(),
-            self.throttle
-                .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
+            throttle.clone(),
             tcp_forwarded_layer,
             // Limit the body size to 1MB for requests
             BodyLimitLayer::request_only(mib(1)),
@@ -374,6 +378,7 @@ impl IpServiceBuilder<mode::Http> {
             ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
             connection_limit,
             connection_timeout,
+            throttle,
             BodyLimitLayer::request_only(mib(1)),
         )
             .into_layer(HttpServer::new_http3(executor).service(http_service));

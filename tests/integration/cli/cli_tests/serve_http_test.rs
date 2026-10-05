@@ -1,4 +1,4 @@
-use std::io::Write as _;
+use std::{io::Write as _, time::Instant};
 
 use rama::{
     Layer as _, Service,
@@ -52,14 +52,40 @@ async fn test_http_tests_over_tls() {
     .await;
 }
 
-async fn run_http_tests(base_uri: &'static str, versions: &[Version]) {
+/// `--throttle` paces each connection, an HTTP/3 one as much as a TCP one.
+#[ignore]
+#[tokio::test]
+async fn test_http_tests_throttled() {
+    utils::init_tracing();
+    let _guard =
+        utils::RamaService::serve_http_test_with_args(63148, true, &["--throttle", "65536"]);
+    let client = http_client().await;
+    for version in [Version::HTTP_2, Version::HTTP_3] {
+        let start = Instant::now();
+        let resp = client
+            .get("https://127.0.0.1:63148/bytes?size=131072")
+            .version(version)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(StatusCode::OK, resp.status());
+        assert_eq!(version, resp.version());
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(131072, body.len());
+        // Past the one-second burst, the other 64 KiB take another second.
+        let elapsed = start.elapsed();
+        assert!(elapsed.as_millis() >= 750, "{version:?} took {elapsed:?}");
+    }
+}
+
+async fn http_client() -> BoxService<Request, Response, OpaqueError> {
     let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
     let http3 = Http3Connector::builder(Executor::default())
         .with_tls_config(tls.clone())
         .build()
         .await
         .unwrap();
-    let client = EasyHttpWebClient::connector_builder()
+    EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .with_default_dns_connector()
         .without_tls_proxy_support()
@@ -69,8 +95,11 @@ async fn run_http_tests(base_uri: &'static str, versions: &[Version]) {
         .with_http3_support(http3)
         .without_connection_pool()
         .build_client()
-        .boxed();
+        .boxed()
+}
 
+async fn run_http_tests(base_uri: &'static str, versions: &[Version]) {
+    let client = http_client().await;
     for &http_version in versions {
         run_http_test_endpoint_method(client.clone(), base_uri, http_version).await;
         run_http_test_endpoint_request_compression(client.clone(), base_uri, http_version).await;

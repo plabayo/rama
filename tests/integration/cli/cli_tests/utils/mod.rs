@@ -494,6 +494,11 @@ impl RamaService {
 
     // Start the rama http-test service with the given port.
     pub(super) fn serve_http_test(port: u16, secure: bool) -> Self {
+        Self::serve_http_test_with_args(port, secure, &[])
+    }
+
+    /// Start the rama http-test service with the given port and extra arguments.
+    pub(super) fn serve_http_test_with_args(port: u16, secure: bool, args: &[&str]) -> Self {
         let mut builder = escargot::CargoBuild::new()
             .package("rama-cli")
             .bin("rama")
@@ -530,6 +535,7 @@ impl RamaService {
         if secure {
             builder.arg("--secure");
         }
+        builder.args(args);
 
         let mut process = builder.spawn().unwrap();
 

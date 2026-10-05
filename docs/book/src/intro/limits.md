@@ -79,6 +79,17 @@ drops into any transport stack (TCP, TLS-wrapped,
 proxied bridges) exactly like the byte-tracker layers, and an
 `OutgoingThrottleLayer` covers the client-connector side.
 
+The same layers take a QUIC
+[`Connection`](https://ramaproxy.org/docs/rama/quic/struct.Connection.html),
+such as one serving HTTP/3: all the streams of that connection then spend
+from its one budget per direction, with `PerConn` and `Shared` scoping it
+as for TCP. Throttle layers stack: a byte stream nests one `ThrottledIo` per
+layer, a QUIC connection adds one budget per layer, and every one applies.
+Only stream data waits for budget; datagrams are not throttled. A QUIC
+connection paces its streams through the
+[stream gates](https://ramaproxy.org/docs/rama/net/gate/index.html) added to
+it, so the same hook serves other policies, such as byte accounting.
+
 See [/examples/src/tcp_listener_layers.rs](https://github.com/plabayo/rama/tree/main/examples/src/tcp_listener_layers.rs).
 
 ## Pacing datagrams
@@ -105,7 +116,8 @@ discard) expose these limits as flags:
   is one aggregate datagram stream rather than one service call per peer;
   http rejections are `429` responses with a `Retry-After` header;
 - `--throttle <BYTES_PER_SEC>`: per-connection byte-rate shaping, applied
-  to each direction independently (`0` disables it). UDP discard mode has no
+  to each direction independently (`0` disables it); an HTTP/3 connection
+  is throttled as one, across all its streams. UDP discard mode has no
   connection boundary, so its read throttle is one aggregate socket budget.
 
 For the same reason, discard mode's `--concurrent` and `--timeout` settings
