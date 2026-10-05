@@ -374,9 +374,7 @@ where
             return Err(Error::aborted("udp relay failed").with_context(reply_kind));
         };
         let client_address = SocketAddress::new(dest_addr, dest_port);
-        let tcp_peer_ip = extensions
-            .get_ref::<SocketInfo>()
-            .map(|info| info.peer_addr().ip_addr);
+        let tcp_peer_ip = SocketInfo::ingress(&extensions).map(|info| info.peer_addr().ip_addr);
 
         if client_address.ip_addr.is_unspecified()
             && self.unspecified_client_udp_address_policy
