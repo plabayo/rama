@@ -1,4 +1,5 @@
-use super::{QuicClientConfig, QuicServerConfig, rustls};
+use super::{QuicClientConfig, QuicDynamicServerConfig, QuicServerConfig, rustls};
+use crate::proto::crypto;
 pub(crate) use crate::proto::crypto::config::{AlpnPolicy, TlsConfigError, TlsOptions};
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions, client::TlsClientConfig, server::TlsServerConfig,
@@ -49,6 +50,26 @@ impl QuicClientConfig {
     }
 }
 
+/// The server TLS configuration for QUIC: fixed, or resolved per ClientHello when the
+/// common configuration carries a rustls dynamic configuration.
+pub(crate) fn server_config_from_rama(
+    config: &TlsServerConfig,
+    provider: Arc<rustls::crypto::CryptoProvider>,
+    options: TlsOptions,
+) -> Result<Arc<dyn crypto::ServerConfig>, TlsConfigError> {
+    let pieces = RustlsTlsAcceptorConfig::from_extensions(config.as_extensions());
+    match pieces.dynamic {
+        Some(dynamic) => Ok(Arc::new(QuicDynamicServerConfig::new(
+            dynamic.clone(),
+            &provider,
+            options,
+        )?)),
+        None => Ok(Arc::new(QuicServerConfig::from_rama(
+            config, provider, options,
+        )?)),
+    }
+}
+
 impl QuicServerConfig {
     pub(crate) fn from_rama(
         config: &TlsServerConfig,
@@ -68,6 +89,14 @@ impl QuicServerConfig {
         if let Some(modify) = modify {
             native = (modify.0)(native)?;
         }
+        Self::from_native(native, options)
+    }
+
+    /// Check a native configuration against QUIC's requirements, then take it.
+    pub(super) fn from_native(
+        native: rustls::ServerConfig,
+        options: TlsOptions,
+    ) -> Result<Self, TlsConfigError> {
         validate_alpn(&native.alpn_protocols, options.alpn)?;
         if native.max_early_data_size != 0 && !options.early_data {
             return Err(TlsConfigError::EarlyDataNotEnabled);
@@ -269,16 +298,21 @@ mod tests {
             &self,
             _: rustls::server::ClientHello<'_>,
         ) -> Result<Arc<rustls::ServerConfig>, BoxError> {
-            panic!("unsupported dynamic config must never be invoked");
+            panic!("resolution happens only for an accepted ClientHello");
         }
     }
 
     #[test]
-    fn dynamic_config_is_rejected_explicitly() {
+    fn dynamic_config_resolves_per_client_hello() {
         let config = TlsServerConfig::new().with_dynamic_config(Arc::new(Dynamic));
         assert!(matches!(
             QuicServerConfig::from_rama(&config, configured_provider(), TlsOptions::default()),
             Err(TlsConfigError::UnsupportedDynamicConfig)
+        ));
+        let resolving =
+            server_config_from_rama(&config, configured_provider(), TlsOptions::default()).unwrap();
+        assert!(crypto::ServerConfig::requires_client_hello(
+            resolving.as_ref()
         ));
     }
 

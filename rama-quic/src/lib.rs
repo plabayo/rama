@@ -83,9 +83,9 @@ pub mod tls {
     /// and write keys, and report TLS failures through Rama's transport error types.
     pub mod provider {
         pub use crate::proto::crypto::{
-            AeadKey, ClientConfig, DirectionalKeys, ExportKeyingMaterialError, HandshakeEvent,
-            HandshakeTokenKey, InitialKeysError, KeyPair, Keys, ServerConfig, Session,
-            UnsupportedVersion,
+            AeadKey, ClientConfig, ClientHelloMessage, DirectionalKeys, ExportKeyingMaterialError,
+            HandshakeEvent, HandshakeTokenKey, InitialKeysError, KeyPair, Keys,
+            ResolveServerConfig, ServerConfig, Session, UnsupportedVersion,
         };
     }
 

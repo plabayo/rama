@@ -124,9 +124,9 @@ impl QuicServerConfigProvider for RustlsTlsProvider {
         config: &TlsServerConfig,
         options: TlsOptions,
     ) -> Result<ServerConfig, TlsConfigError> {
-        Ok(ServerConfig::with_crypto(Arc::new(
-            rustls_crypto::QuicServerConfig::from_rama(config, self.crypto.clone(), options)?,
-        )))
+        Ok(ServerConfig::with_crypto(
+            rustls_crypto::server_config_from_rama(config, self.crypto.clone(), options)?,
+        ))
     }
 }
 

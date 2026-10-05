@@ -7,9 +7,14 @@
 //! Note that usage of any protocol (version) other than TLS 1.3 does not conform to any
 //! published versions of the specification, and will not be supported in QUIC v1.
 
-use std::{str, sync::Arc};
+use std::{fmt, future::Future, pin::Pin, str, sync::Arc};
 
+use rama_core::{
+    bytes::Bytes,
+    error::{BoxError, BoxErrorExt as _},
+};
 use rama_crypto::pki_types::CertificateDer;
+use rama_tls::client::ClientHello;
 pub use rama_tls::client::NegotiatedTlsParameters;
 
 use rama_quic_proto::{
@@ -254,6 +259,74 @@ pub trait ServerConfig: Send + Sync {
     /// the handshake; see [`ClientConfig::supports_version_switch`].
     fn supports_version_switch(&self) -> bool {
         false
+    }
+
+    /// Whether a session needs the client's ClientHello before it can start, for instance to
+    /// issue a certificate for the requested server name; see [`Self::resolve`].
+    fn requires_client_hello(&self) -> bool {
+        false
+    }
+
+    /// Resolve the configuration a connection's session starts from, given its ClientHello.
+    ///
+    /// Called before any session starts, and only when [`Self::requires_client_hello`] is
+    /// `true`. The resolved configuration must not require a ClientHello itself.
+    fn resolve(self: Arc<Self>, client_hello: ClientHelloMessage) -> ResolveServerConfig {
+        let _ = client_hello;
+        Box::pin(async {
+            Err(BoxError::from_static_str(
+                "TLS provider does not resolve server configurations",
+            ))
+        })
+    }
+}
+
+/// The configuration a [`ServerConfig::resolve`] call produces.
+pub type ResolveServerConfig =
+    Pin<Box<dyn Future<Output = Result<Arc<dyn ServerConfig>, BoxError>> + Send>>;
+
+/// A client's ClientHello as its first flight carried it.
+///
+/// QUIC carries the bare TLS handshake message, without a record layer (RFC 9001 §4).
+#[derive(Clone)]
+pub struct ClientHelloMessage {
+    message: Bytes,
+    client_hello: ClientHello,
+}
+
+impl ClientHelloMessage {
+    pub(crate) fn new(message: Bytes, client_hello: ClientHello) -> Self {
+        Self {
+            message,
+            client_hello,
+        }
+    }
+
+    /// The handshake message, from its type byte to the end of its body.
+    #[must_use]
+    pub fn message(&self) -> &[u8] {
+        &self.message
+    }
+
+    /// What the ClientHello says.
+    #[must_use]
+    pub fn client_hello(&self) -> &ClientHello {
+        &self.client_hello
+    }
+
+    /// Take what the ClientHello says.
+    #[must_use]
+    pub fn into_client_hello(self) -> ClientHello {
+        self.client_hello
+    }
+}
+
+impl fmt::Debug for ClientHelloMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClientHelloMessage")
+            .field("len", &self.message.len())
+            .field("client_hello", &self.client_hello)
+            .finish()
     }
 }
 

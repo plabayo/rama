@@ -3,7 +3,10 @@ use std::{io, str, sync::Arc};
 use ahash::HashMap;
 use parking_lot::Mutex;
 
-use rama_core::bytes::BytesMut;
+use rama_core::{
+    bytes::BytesMut,
+    error::{BoxError, BoxErrorExt as _},
+};
 #[cfg(all(feature = "aws-lc", not(feature = "ring")))]
 use rama_crypto::dep::aws_lc_rs::aead;
 #[cfg(feature = "ring")]
@@ -20,6 +23,7 @@ use rama_tls_rustls::dep::rustls::{
     client::danger::ServerCertVerifier,
     pki_types::{CertificateDer, PrivateKeyDer},
 };
+use rama_tls_rustls::server::RustlsDynamicConfig;
 
 use crate::proto::{
     ConnectError,
@@ -58,6 +62,7 @@ pub(crate) use super::config::NoInitialCipherSuite;
 use config::AlpnPolicy;
 #[cfg(test)]
 pub(crate) use config::TlsOptions;
+pub(crate) use config::server_config_from_rama;
 
 /// A rustls TLS session
 pub(crate) struct TlsSession {
@@ -783,8 +788,7 @@ impl crypto::ServerConfig for QuicServerConfig {
         version: rama_quic_proto::Version,
         dst_cid: &ConnectionId,
     ) -> Result<Keys, crypto::InitialKeysError> {
-        let version = interpret_version(version)?;
-        Ok(initial_keys(version, *dst_cid, Side::Server, &self.initial))
+        server_initial_keys(version, dst_cid, &self.initial)
     }
 
     fn retry_tag(
@@ -793,27 +797,131 @@ impl crypto::ServerConfig for QuicServerConfig {
         orig_dst_cid: &ConnectionId,
         packet: &[u8],
     ) -> Result<[u8; 16], CryptoError> {
-        let wire = interpret_version(version)
-            .map(retry_wire)
-            .map_err(|_error| CryptoError::new())?;
-
-        let mut pseudo_packet = Vec::with_capacity(packet.len() + orig_dst_cid.len() + 1);
-        pseudo_packet.push(orig_dst_cid.len() as u8);
-        pseudo_packet.extend_from_slice(orig_dst_cid);
-        pseudo_packet.extend_from_slice(packet);
-
-        let nonce = aead::Nonce::assume_unique_for_key(wire.retry_nonce);
-        let key = aead::LessSafeKey::new(
-            aead::UnboundKey::new(&aead::AES_128_GCM, &wire.retry_key)
-                .map_err(|_error| CryptoError::new())?,
-        );
-        let tag = key
-            .seal_in_place_separate_tag(nonce, aead::Aad::from(pseudo_packet), &mut [])
-            .map_err(|_error| CryptoError::new())?;
-        let mut result = [0; 16];
-        result.copy_from_slice(tag.as_ref());
-        Ok(result)
+        retry_tag(version, orig_dst_cid, packet)
     }
+}
+
+/// A server configuration whose rustls configuration a [`RustlsDynamicConfig`] resolves per
+/// ClientHello, before each connection's session starts.
+pub(crate) struct QuicDynamicServerConfig {
+    dynamic: RustlsDynamicConfig,
+    initial: Suite,
+    options: config::TlsOptions,
+}
+
+impl QuicDynamicServerConfig {
+    pub(crate) fn new(
+        dynamic: RustlsDynamicConfig,
+        provider: &Arc<rustls::crypto::CryptoProvider>,
+        options: config::TlsOptions,
+    ) -> Result<Self, NoInitialCipherSuite> {
+        Ok(Self {
+            dynamic,
+            initial: initial_suite_from_provider(provider)
+                .ok_or(NoInitialCipherSuite { specific: false })?,
+            options,
+        })
+    }
+}
+
+impl crypto::ServerConfig for QuicDynamicServerConfig {
+    fn initial_keys(
+        &self,
+        version: rama_quic_proto::Version,
+        dst_cid: &ConnectionId,
+    ) -> Result<Keys, crypto::InitialKeysError> {
+        server_initial_keys(version, dst_cid, &self.initial)
+    }
+
+    fn retry_tag(
+        &self,
+        version: rama_quic_proto::Version,
+        orig_dst_cid: &ConnectionId,
+        packet: &[u8],
+    ) -> Result<[u8; 16], CryptoError> {
+        retry_tag(version, orig_dst_cid, packet)
+    }
+
+    fn start_session(
+        self: Arc<Self>,
+        _version: rama_quic_proto::Version,
+        _params: &TransportParameters,
+    ) -> Result<Box<dyn crypto::Session>, TransportError> {
+        Err(TransportError::INTERNAL_ERROR(
+            "a dynamic configuration needs the ClientHello first: await the Incoming",
+        ))
+    }
+
+    fn requires_client_hello(&self) -> bool {
+        true
+    }
+
+    fn resolve(
+        self: Arc<Self>,
+        client_hello: crypto::ClientHelloMessage,
+    ) -> crypto::ResolveServerConfig {
+        Box::pin(async move {
+            // rustls hands its own ClientHello view only to an acceptor reading TLS records,
+            // so the bare handshake message is framed as handshake records first.
+            let mut records = Vec::with_capacity(client_hello.message().len() + 5);
+            for fragment in client_hello.message().chunks(MAX_RECORD_PAYLOAD) {
+                records.extend_from_slice(&[0x16, 0x03, 0x01]);
+                records.extend_from_slice(&(fragment.len() as u16).to_be_bytes());
+                records.extend_from_slice(fragment);
+            }
+            let mut acceptor = rustls::server::Acceptor::default();
+            acceptor.read_tls(&mut records.as_slice())?;
+            let accepted = acceptor
+                .accept()
+                .map_err(|(error, _alert)| error)?
+                .ok_or_else(|| BoxError::from_static_str("incomplete ClientHello"))?;
+            let native = self.dynamic.get_config(accepted.client_hello()).await?;
+            let mut native = rustls::ServerConfig::clone(&native);
+            native.max_early_data_size = if self.options.early_data { u32::MAX } else { 0 };
+            let resolved: Arc<dyn crypto::ServerConfig> =
+                Arc::new(QuicServerConfig::from_native(native, self.options)?);
+            Ok(resolved)
+        })
+    }
+}
+
+/// The most plaintext one TLS record carries (RFC 8446 §5.1).
+const MAX_RECORD_PAYLOAD: usize = 1 << 14;
+
+fn server_initial_keys(
+    version: rama_quic_proto::Version,
+    dst_cid: &ConnectionId,
+    initial: &Suite,
+) -> Result<Keys, crypto::InitialKeysError> {
+    let version = interpret_version(version)?;
+    Ok(initial_keys(version, *dst_cid, Side::Server, initial))
+}
+
+fn retry_tag(
+    version: rama_quic_proto::Version,
+    orig_dst_cid: &ConnectionId,
+    packet: &[u8],
+) -> Result<[u8; 16], CryptoError> {
+    let wire = interpret_version(version)
+        .map(retry_wire)
+        .map_err(|_error| CryptoError::new())?;
+
+    let mut pseudo_packet = Vec::with_capacity(packet.len() + orig_dst_cid.len() + 1);
+    pseudo_packet.push(orig_dst_cid.len() as u8);
+    pseudo_packet.extend_from_slice(orig_dst_cid);
+    pseudo_packet.extend_from_slice(packet);
+
+    let nonce = aead::Nonce::assume_unique_for_key(wire.retry_nonce);
+    let key = aead::LessSafeKey::new(
+        aead::UnboundKey::new(&aead::AES_128_GCM, &wire.retry_key)
+            .map_err(|_error| CryptoError::new())?,
+    );
+    let tag = key
+        .seal_in_place_separate_tag(nonce, aead::Aad::from(pseudo_packet), &mut [])
+        .map_err(|_error| CryptoError::new())?;
+    let mut result = [0; 16];
+    result.copy_from_slice(tag.as_ref());
+    Ok(result)
 }
 
 pub(crate) fn initial_suite_from_provider(

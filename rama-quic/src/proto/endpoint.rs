@@ -118,6 +118,11 @@ impl Endpoint {
         self.server_config = server_config;
     }
 
+    /// The server configuration new incoming connections are accepted with.
+    pub(crate) fn server_config(&self) -> Option<&Arc<ServerConfig>> {
+        self.server_config.as_ref()
+    }
+
     /// Stop advertising `address` as preferred: the endpoint no longer owns a usable socket there,
     /// so connections that have not handshaked yet must not be sent to it. Connections already
     /// established keep whatever path they have; their transport parameters are long since sent.
@@ -367,6 +372,7 @@ impl Endpoint {
                         incoming_buffer.datagrams.push(event);
                         incoming_buffer.total_bytes += datagram_len as u64;
                         self.all_incoming_buffers_total_bytes += datagram_len as u64;
+                        return Some(DatagramEvent::Buffered);
                     }
 
                     None
@@ -1000,11 +1006,80 @@ impl Endpoint {
         first_payload: &BytesMut,
         buffered: &IncomingBuffer,
     ) -> Option<ClientOffer> {
-        /// A ClientHello larger than this is not looked at; the connection stays in the
-        /// client's version.
+        let ClientHelloPeek::Complete(message) =
+            self.reassemble_client_hello(version, crypto, first_payload, buffered)
+        else {
+            return None;
+        };
+        let hello = message.client_hello();
+        let resuming = hello
+            .extensions()
+            .iter()
+            .any(|ext| ext.id() == ExtensionId::PRE_SHARED_KEY);
+        let params = hello.extensions().iter().find_map(|ext| match ext {
+            ClientHelloExtension::Opaque { id, data }
+                if *id == ExtensionId::QUIC_TRANSPORT_PARAMETERS =>
+            {
+                Some(data)
+            }
+            _ => None,
+        })?;
+        let available = TransportParameters::read(Side::Server, &mut &params[..])
+            .ok()?
+            .version_information?
+            .available()
+            .to_vec();
+        Some(ClientOffer {
+            available,
+            resuming,
+        })
+    }
+
+    /// The client's ClientHello, as far as the first packet of a pending attempt and what was
+    /// buffered behind it carry it, without accepting the attempt.
+    pub(crate) fn client_hello(&self, incoming: &Incoming) -> ClientHelloPeek {
+        let Some(buffered) = self.incoming_buffers.get(incoming.incoming_idx) else {
+            return ClientHelloPeek::Invalid;
+        };
+        let Some(keys) = incoming.crypto.remote.as_ref() else {
+            return ClientHelloPeek::Invalid;
+        };
+        // The first packet stays protected until accepted, so a copy is opened.
+        let mut payload = incoming.packet.payload.clone();
+        if keys
+            .packet
+            .decrypt(
+                incoming.packet.header.number.expand(0),
+                &incoming.packet.header_data,
+                &mut payload,
+            )
+            .is_err()
+        {
+            return ClientHelloPeek::Invalid;
+        }
+        self.reassemble_client_hello(
+            incoming.packet.header.version.version(),
+            &incoming.crypto,
+            &payload,
+            buffered,
+        )
+    }
+
+    /// Reassemble the start of the CRYPTO stream from the first packet's opened payload and
+    /// copies of the Initial packets buffered behind it.
+    fn reassemble_client_hello(
+        &self,
+        version: Version,
+        crypto: &Keys,
+        first_payload: &BytesMut,
+        buffered: &IncomingBuffer,
+    ) -> ClientHelloPeek {
+        /// A ClientHello larger than this is not looked at.
         const LIMIT: usize = 16 * 1024;
 
-        let keys = crypto.remote.as_ref()?;
+        let Some(keys) = crypto.remote.as_ref() else {
+            return ClientHelloPeek::Invalid;
+        };
         let mut chunks: Vec<(u64, Bytes)> = Vec::new();
         let mut collect = |payload: Bytes| {
             if let Ok(frames) = frame::Iter::new(payload) {
@@ -1051,48 +1126,37 @@ impl Endpoint {
             }
         }
 
-        // Reassemble the start of the CRYPTO stream: the ClientHello is one handshake message
-        // with a one-byte type and three-byte length.
+        // The ClientHello is one handshake message with a one-byte type and three-byte length.
         chunks.sort_by_key(|(offset, _)| *offset);
         let mut stream: Vec<u8> = Vec::new();
         for (offset, data) in chunks {
-            let offset = usize::try_from(offset).ok()?;
+            let Ok(offset) = usize::try_from(offset) else {
+                return ClientHelloPeek::Invalid;
+            };
             if offset > stream.len() {
-                return None;
+                // A gap: an earlier part of the CRYPTO stream has not arrived.
+                break;
             }
-            let fresh = data.get(stream.len() - offset..)?;
+            let Some(fresh) = data.get(stream.len() - offset..) else {
+                continue;
+            };
             if stream.len() + fresh.len() > LIMIT {
-                return None;
+                return ClientHelloPeek::Invalid;
             }
             stream.extend_from_slice(fresh);
         }
         // The CRYPTO stream carries a bare handshake message with no TLS record layer.
-        let ClientHelloHandshakePrefix::Complete(hello) =
-            parse_client_hello_message_prefix(&stream)
-        else {
-            return None;
-        };
-        let resuming = hello
-            .extensions()
-            .iter()
-            .any(|ext| ext.id() == ExtensionId::PRE_SHARED_KEY);
-        let params = hello.extensions().iter().find_map(|ext| match ext {
-            ClientHelloExtension::Opaque { id, data }
-                if *id == ExtensionId::QUIC_TRANSPORT_PARAMETERS =>
-            {
-                Some(data)
+        match parse_client_hello_message_prefix(&stream) {
+            ClientHelloHandshakePrefix::Complete(hello) => {
+                if let [_, a, b, c, ..] = stream[..] {
+                    let body = usize::from(a) << 16 | usize::from(b) << 8 | usize::from(c);
+                    stream.truncate(4 + body);
+                }
+                ClientHelloPeek::Complete(crypto::ClientHelloMessage::new(stream.into(), hello))
             }
-            _ => None,
-        })?;
-        let available = TransportParameters::read(Side::Server, &mut &params[..])
-            .ok()?
-            .version_information?
-            .available()
-            .to_vec();
-        Some(ClientOffer {
-            available,
-            resuming,
-        })
+            ClientHelloHandshakePrefix::Incomplete => ClientHelloPeek::Incomplete,
+            ClientHelloHandshakePrefix::Invalid => ClientHelloPeek::Invalid,
+        }
     }
 
     /// Check if we should refuse a connection attempt regardless of the packet's contents
@@ -1991,6 +2055,18 @@ pub(crate) enum DatagramEvent {
     NewConnection(Incoming),
     /// Response generated directly by the endpoint
     Response(Transmit),
+    /// The datagram is held for an attempt the application has not accepted yet
+    Buffered,
+}
+
+/// How much of a client's ClientHello its first flight has delivered so far.
+pub(crate) enum ClientHelloPeek {
+    /// The whole ClientHello.
+    Complete(crypto::ClientHelloMessage),
+    /// The start of a ClientHello whose remainder has not arrived.
+    Incomplete,
+    /// Bytes that are not, and cannot become, a ClientHello this endpoint looks at.
+    Invalid,
 }
 
 /// An incoming connection for which the server has not yet begun its part of the handshake.
@@ -2009,6 +2085,11 @@ pub(crate) struct Incoming {
 }
 
 impl Incoming {
+    /// When the endpoint stops holding this attempt for the application.
+    pub(crate) fn deadline(&self) -> Instant {
+        self.deadline
+    }
+
     /// Whether this admission has expired or already been consumed by the endpoint.
     pub(crate) fn is_expired(&self) -> bool {
         !self.live.load(Ordering::Acquire)

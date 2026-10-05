@@ -1,4 +1,5 @@
 use std::{
+    fmt,
     future::{Future, IntoFuture},
     net::{IpAddr, SocketAddr},
     pin::Pin,
@@ -7,8 +8,13 @@ use std::{
 };
 
 use crate::driver::sockets::Lease;
-use crate::proto::{ConnectionError, RetryRefused, ServerConfig};
-use rama_quic_proto::ConnectionId;
+use crate::proto::{
+    ClientHelloPeek, ConnectionError, RetryRefused, ServerConfig,
+    crypto::{self, ClientHelloMessage},
+};
+use rama_core::telemetry::tracing;
+use rama_quic_proto::{ConnectionId, TransportError};
+use rama_tls::client::ClientHello;
 
 use crate::driver::{
     connection::{Connecting, Connection},
@@ -45,6 +51,10 @@ impl Incoming {
     }
 
     /// Attempt to accept this incoming connection (an error may still occur)
+    ///
+    /// A server configuration whose TLS provider resolves its configuration per ClientHello,
+    /// such as one issuing certificates on demand, cannot start here: `await` this attempt
+    /// instead, or resolve one with [`Self::client_hello`] and use [`Self::accept_with`].
     pub fn accept(self) -> Result<Connecting, ConnectionError> {
         let state = self.into_state();
         state.endpoint.accept(state.inner, state.lease, None)
@@ -134,6 +144,74 @@ impl Incoming {
     pub fn orig_dst_cid(&self) -> ConnectionId {
         *self.state().inner.orig_dst_cid()
     }
+
+    /// The client's ClientHello, once its first flight delivered all of it.
+    ///
+    /// A ClientHello can span several Initial packets; this waits for the rest until the
+    /// attempt expires. Use it to choose a configuration for [`Self::accept_with`].
+    pub async fn client_hello(&self) -> Result<ClientHello, ConnectionError> {
+        self.client_hello_message()
+            .await
+            .map(ClientHelloMessage::into_client_hello)
+    }
+
+    async fn client_hello_message(&self) -> Result<ClientHelloMessage, ConnectionError> {
+        let state = self.state();
+        let deadline = tokio::time::Instant::from_std(state.inner.deadline());
+        loop {
+            let (peek, wakeup) = state.endpoint.peek_client_hello(&state.inner)?;
+            match (peek, wakeup) {
+                (ClientHelloPeek::Complete(message), _) => return Ok(message),
+                (ClientHelloPeek::Incomplete, Some(wakeup)) => {
+                    if tokio::time::timeout_at(deadline, wakeup).await.is_err() {
+                        return Err(ConnectionError::TimedOut);
+                    }
+                }
+                _ => {
+                    return Err(ConnectionError::TransportError(
+                        TransportError::PROTOCOL_VIOLATION("unreadable ClientHello"),
+                    ));
+                }
+            }
+        }
+    }
+
+    /// The TLS configuration to resolve per ClientHello, when the endpoint's needs it.
+    fn resolving_crypto(&self) -> Option<Arc<dyn crypto::ServerConfig>> {
+        let config = self.state().endpoint.server_config()?;
+        config
+            .crypto
+            .requires_client_hello()
+            .then(|| config.crypto.clone())
+    }
+
+    /// Resolve this attempt's TLS configuration from its ClientHello, then accept it.
+    ///
+    /// Any failure drops the attempt, which refuses it.
+    async fn resolve_and_accept(
+        self,
+        crypto: Arc<dyn crypto::ServerConfig>,
+    ) -> Result<Connection, ConnectionError> {
+        let client_hello = self.client_hello_message().await?;
+        let resolved = crypto.resolve(client_hello).await.map_err(|error| {
+            tracing::debug!(%error, "QUIC: resolve server configuration from ClientHello");
+            ConnectionError::TransportError(TransportError::CONNECTION_REFUSED(
+                "server configuration unresolved",
+            ))
+        })?;
+        if resolved.requires_client_hello() {
+            return Err(ConnectionError::TransportError(
+                TransportError::INTERNAL_ERROR("resolved server configuration is not final"),
+            ));
+        }
+        // The rest of the configuration is read now: it may have changed while resolving.
+        let Some(base) = self.state().endpoint.server_config() else {
+            return Err(ConnectionError::LocallyClosed);
+        };
+        let mut config = ServerConfig::clone(&base);
+        config.crypto = resolved;
+        self.accept_with(Arc::new(config))?.await
+    }
 }
 
 impl Drop for Incoming {
@@ -195,17 +273,40 @@ impl RetryError {
     }
 }
 
-/// Basic adapter to let [`Incoming`] be `await`-ed like a [`Connecting`]
-#[derive(Debug)]
-pub struct IncomingFuture(Result<Connecting, ConnectionError>);
+/// Adapter to let [`Incoming`] be `await`-ed like a [`Connecting`]
+///
+/// When the server's TLS configuration resolves per ClientHello, the attempt waits for its
+/// ClientHello and that resolution before it is accepted.
+pub struct IncomingFuture(IncomingFutureState);
+
+#[expect(
+    clippy::large_enum_variant,
+    reason = "accepting is the common path; only the rare resolving future is boxed"
+)]
+enum IncomingFutureState {
+    Accepting(Result<Connecting, ConnectionError>),
+    Resolving(Pin<Box<dyn Future<Output = Result<Connection, ConnectionError>> + Send>>),
+}
+
+impl fmt::Debug for IncomingFuture {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            IncomingFutureState::Accepting(accepting) => {
+                f.debug_tuple("IncomingFuture").field(accepting).finish()
+            }
+            IncomingFutureState::Resolving(_) => f.write_str("IncomingFuture(Resolving)"),
+        }
+    }
+}
 
 impl Future for IncomingFuture {
     type Output = Result<Connection, ConnectionError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         match &mut self.0 {
-            Ok(connecting) => Pin::new(connecting).poll(cx),
-            Err(e) => Poll::Ready(Err(e.clone())),
+            IncomingFutureState::Accepting(Ok(connecting)) => Pin::new(connecting).poll(cx),
+            IncomingFutureState::Accepting(Err(e)) => Poll::Ready(Err(e.clone())),
+            IncomingFutureState::Resolving(resolving) => resolving.as_mut().poll(cx),
         }
     }
 }
@@ -215,6 +316,11 @@ impl IntoFuture for Incoming {
     type IntoFuture = IncomingFuture;
 
     fn into_future(self) -> Self::IntoFuture {
-        IncomingFuture(self.accept())
+        IncomingFuture(match self.resolving_crypto() {
+            None => IncomingFutureState::Accepting(self.accept()),
+            Some(crypto) => {
+                IncomingFutureState::Resolving(Box::pin(self.resolve_and_accept(crypto)))
+            }
+        })
     }
 }

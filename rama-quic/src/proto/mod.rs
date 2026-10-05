@@ -95,7 +95,7 @@ mod endpoint;
 pub use crate::proto::endpoint::ConnectError;
 pub use crate::proto::endpoint::RetryRefused;
 pub(crate) use crate::proto::endpoint::{
-    ConnectionHandle, DatagramEvent, Endpoint, Incoming, RetryError,
+    ClientHelloPeek, ConnectionHandle, DatagramEvent, Endpoint, Incoming, RetryError,
 };
 
 pub use crate::proto::crypto::{ExportKeyingMaterialError, NegotiatedTlsParameters};
