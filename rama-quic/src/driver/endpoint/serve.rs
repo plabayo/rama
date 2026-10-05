@@ -48,7 +48,7 @@ impl Endpoint {
                     tracing::trace!("signal received: initiate graceful shutdown");
                     break;
                 }
-                Some(_) = served.next(), if !served.is_empty() => {}
+                Some(served) = served.next(), if !served.is_empty() => log_join(served),
                 incoming = self.accept() => {
                     let Some(incoming) = incoming else {
                         break;
@@ -90,12 +90,20 @@ impl Endpoint {
         // Refuse new attempts, so their clients fall back at once, while served connections drain.
         while !served.is_empty() {
             tokio::select! {
-                _ = served.next() => {}
+                Some(served) = served.next() => log_join(served),
                 Some(incoming) = self.accept() => incoming.refuse(),
             }
         }
 
         _ = self.shutdown().await;
+    }
+}
+
+fn log_join(served: Result<(), tokio::task::JoinError>) {
+    if let Err(error) = served
+        && error.is_panic()
+    {
+        tracing::error!(%error, "QUIC connection service panicked");
     }
 }
 

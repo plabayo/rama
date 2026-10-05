@@ -50,7 +50,16 @@ fn alpn() -> SmallVec<[ApplicationProtocol; 2]> {
 
 /// Enough offered protocols to push the ClientHello past one Initial packet.
 fn padded_alpn() -> SmallVec<[ApplicationProtocol; 2]> {
-    (0..24u8)
+    alpn_padded_with(24)
+}
+
+/// A ClientHello of several KiB: more than one read of a TLS record layer takes.
+fn large_alpn() -> SmallVec<[ApplicationProtocol; 2]> {
+    alpn_padded_with(64)
+}
+
+fn alpn_padded_with(protocols: u8) -> SmallVec<[ApplicationProtocol; 2]> {
+    (0..protocols)
         .map(|n| ApplicationProtocol::from(vec![b'a' + n % 26; 96]))
         .chain([ApplicationProtocol::from(ALPN)])
         .collect()
@@ -130,6 +139,17 @@ fn refused(error: &ConnectionError) -> bool {
 /// Relay UDP between a client and `server`, holding the client's second datagram back for
 /// `delay`, so a ClientHello spanning two Initial packets arrives in two steps.
 async fn delaying_relay(server: SocketAddr, delay: Duration) -> SocketAddr {
+    relay(server, Some(delay)).await
+}
+
+/// Relay UDP between a client and `server` passing only the client's first datagram, so a
+/// ClientHello spanning several Initial packets never completes.
+#[cfg(feature = "boring")]
+async fn truncating_relay(server: SocketAddr) -> SocketAddr {
+    relay(server, None).await
+}
+
+async fn relay(server: SocketAddr, delay: Option<Duration>) -> SocketAddr {
     let front = Arc::new(UdpSocket::bind(localhost()).await.unwrap());
     let back = Arc::new(UdpSocket::bind(localhost()).await.unwrap());
     back.connect(server).await.unwrap();
@@ -146,13 +166,15 @@ async fn delaying_relay(server: SocketAddr, delay: Duration) -> SocketAddr {
                 seen += 1;
                 let datagram = buf[..len].to_vec();
                 let back = back.clone();
-                if seen == 2 {
-                    tokio::spawn(async move {
-                        tokio::time::sleep(delay).await;
-                        _ = back.send(&datagram).await;
-                    });
-                } else {
-                    _ = back.send(&datagram).await;
+                match delay {
+                    Some(delay) if seen == 2 => {
+                        tokio::spawn(async move {
+                            tokio::time::sleep(delay).await;
+                            _ = back.send(&datagram).await;
+                        });
+                    }
+                    None if seen > 1 => {}
+                    _ => _ = back.send(&datagram).await,
                 }
             }
         }
@@ -174,9 +196,13 @@ async fn delaying_relay(server: SocketAddr, delay: Duration) -> SocketAddr {
 mod boring {
     use super::*;
     use parking_lot::Mutex;
+    use rama_crypto::cert::LeafCertConfig;
+    use rama_quic::EndpointConfig;
     use rama_quic::tls::BoringTlsProvider;
     use rama_tls::server::{CertificateIssuanceContext, DynamicCertIssuer};
-    use rama_tls_boring::server::{BoringServerConfigExt as _, CacheKind, ServerCertIssuerData};
+    use rama_tls_boring::server::{
+        BoringServerConfigExt as _, CacheKind, ServerCertIssuerData, ServerCertIssuerKind,
+    };
     use std::future::IntoFuture as _;
 
     /// Issues a leaf for whatever name is asked, and records each request.
@@ -327,6 +353,147 @@ mod boring {
 
         server.close(VarInt::from(0u32), b"done");
         timeout(DEADLINE, served).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_large_client_hello_resolves() {
+        let ca =
+            Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
+        let issuer = RecordingIssuer::new(&ca);
+        let server = server(&tls(&issuer), &BoringTlsProvider).await;
+        let addr = server.local_addr().unwrap();
+        let served = serve(&server);
+
+        let client = client().await;
+        let connection = connect(
+            &client,
+            client_config(&ca, large_alpn(), &BoringTlsProvider),
+            addr,
+            "large.test",
+        )
+        .await
+        .expect("a ClientHello of several KiB resolves");
+        connection.close(VarInt::from(0u32), b"done");
+        assert_eq!(issuer.seen(), [dns("large.test")]);
+
+        server.close(VarInt::from(0u32), b"done");
+        timeout(DEADLINE, served).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_in_memory_ca_issues_per_server_name() {
+        let ca = CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap();
+        let tls =
+            TlsServerConfig::new()
+                .with_alpn(alpn())
+                .with_cert_issuer(ServerCertIssuerData::new(
+                    ServerCertIssuerKind::ProvidedCa {
+                        ca: CertificateAuthorityData::try_new(
+                            ca.certificate_chain().to_vec(),
+                            ca.private_key().clone_key(),
+                        )
+                        .unwrap(),
+                        leaf: LeafCertConfig::default(),
+                    },
+                ));
+        let server = server(&tls, &BoringTlsProvider).await;
+        let addr = server.local_addr().unwrap();
+        let served = serve(&server);
+
+        let client = client().await;
+        for name in ["a.test", "b.test"] {
+            let connection = connect(
+                &client,
+                client_config(&ca, alpn(), &BoringTlsProvider),
+                addr,
+                name,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{name} connects: {error}"));
+            connection.close(VarInt::from(0u32), b"done");
+        }
+
+        server.close(VarInt::from(0u32), b"done");
+        timeout(DEADLINE, served).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_incomplete_client_hello_times_out() {
+        let ca =
+            Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
+        let issuer = RecordingIssuer::new(&ca);
+        let mut endpoint_config =
+            EndpointConfig::new(rama_crypto::hmac::HmacSha2::try_rand_256().unwrap());
+        endpoint_config
+            .handshake_timeout(Duration::from_millis(300))
+            .unwrap();
+        let server = Endpoint::build(Executor::new())
+            .with_config(endpoint_config)
+            .with_server_config(
+                ServerConfig::try_from_rama_tls_with_provider(
+                    &tls(&issuer),
+                    TlsOptions::default(),
+                    &BoringTlsProvider,
+                )
+                .unwrap(),
+            )
+            .bind_address(localhost())
+            .await
+            .unwrap();
+        let relay = truncating_relay(server.local_addr().unwrap()).await;
+
+        let client = client().await;
+        let config = client_config(&ca, padded_alpn(), &BoringTlsProvider);
+        tokio::spawn({
+            let client = client.clone();
+            async move {
+                client
+                    .connect_with(config, relay, "late.test")
+                    .unwrap()
+                    .await
+            }
+        });
+        let incoming = server.accept().await.unwrap();
+        let started = tokio::time::Instant::now();
+        let error = timeout(DEADLINE, incoming.client_hello())
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(matches!(error, ConnectionError::TimedOut), "{error:?}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(issuer.seen().is_empty());
+    }
+
+    #[tokio::test]
+    async fn closing_the_endpoint_ends_the_wait_for_a_client_hello() {
+        let ca =
+            Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
+        let issuer = RecordingIssuer::new(&ca);
+        let server = server(&tls(&issuer), &BoringTlsProvider).await;
+        let relay = truncating_relay(server.local_addr().unwrap()).await;
+
+        let client = client().await;
+        let config = client_config(&ca, padded_alpn(), &BoringTlsProvider);
+        tokio::spawn({
+            let client = client.clone();
+            async move {
+                client
+                    .connect_with(config, relay, "late.test")
+                    .unwrap()
+                    .await
+            }
+        });
+        let incoming = server.accept().await.unwrap();
+        let waiting = tokio::spawn(async move { incoming.client_hello().await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!waiting.is_finished());
+        server.close(VarInt::from(0u32), b"done");
+        let error = timeout(Duration::from_secs(2), waiting)
+            .await
+            .expect("the wait ends with the endpoint")
+            .unwrap()
+            .unwrap_err();
+        assert!(matches!(error, ConnectionError::LocallyClosed), "{error:?}");
     }
 
     #[tokio::test]
@@ -501,6 +668,39 @@ mod rustls {
             *seen.lock(),
             [Some("a.test".to_owned()), Some("b.test".to_owned())]
         );
+
+        server.close(VarInt::from(0u32), b"done");
+        timeout(DEADLINE, served).await.unwrap().unwrap();
+    }
+
+    /// rustls reads the record layer a few KiB at a time: a larger ClientHello must still be
+    /// handed over whole.
+    #[tokio::test]
+    async fn a_large_client_hello_resolves() {
+        let ca =
+            Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let provider = RustlsTlsProvider::new(crypto());
+        let tls = TlsServerConfig::new().with_dynamic_config(Arc::new(PerName {
+            ca: ca.clone(),
+            seen: seen.clone(),
+            fail: false,
+        }));
+        let server = server(&tls, &provider).await;
+        let addr = server.local_addr().unwrap();
+        let served = serve(&server);
+
+        let client = client().await;
+        let connection = connect(
+            &client,
+            client_config(&ca, large_alpn(), &provider),
+            addr,
+            "large.test",
+        )
+        .await
+        .expect("a ClientHello of several KiB resolves");
+        connection.close(VarInt::from(0u32), b"done");
+        assert_eq!(*seen.lock(), [Some("large.test".to_owned())]);
 
         server.close(VarInt::from(0u32), b"done");
         timeout(DEADLINE, served).await.unwrap().unwrap();

@@ -9,8 +9,7 @@ use std::{
 
 use crate::driver::sockets::Lease;
 use crate::proto::{
-    ClientHelloPeek, ConnectionError, RetryRefused, ServerConfig,
-    crypto::{self, ClientHelloMessage},
+    ClientHelloPeek, ConnectionError, RetryRefused, ServerConfig, crypto::ClientHelloMessage,
 };
 use rama_core::telemetry::tracing;
 use rama_quic_proto::{ConnectionId, TransportError};
@@ -148,7 +147,8 @@ impl Incoming {
     /// The client's ClientHello, once its first flight delivered all of it.
     ///
     /// A ClientHello can span several Initial packets; this waits for the rest until the
-    /// attempt expires. Use it to choose a configuration for [`Self::accept_with`].
+    /// attempt expires or the endpoint closes. One larger than 16 KiB is refused. Use it to
+    /// choose a configuration for [`Self::accept_with`].
     pub async fn client_hello(&self) -> Result<ClientHello, ConnectionError> {
         self.client_hello_message()
             .await
@@ -159,30 +159,32 @@ impl Incoming {
         let state = self.state();
         let deadline = tokio::time::Instant::from_std(state.inner.deadline());
         loop {
-            let (peek, wakeup) = state.endpoint.peek_client_hello(&state.inner)?;
-            match (peek, wakeup) {
-                (ClientHelloPeek::Complete(message), _) => return Ok(message),
-                (ClientHelloPeek::Incomplete, Some(wakeup)) => {
-                    if tokio::time::timeout_at(deadline, wakeup).await.is_err() {
-                        return Err(ConnectionError::TimedOut);
-                    }
-                }
-                _ => {
+            if state.inner.is_expired() {
+                return Err(ConnectionError::TimedOut);
+            }
+            let (peek, seen) = state.endpoint.client_hello_progress(&state.inner)?;
+            match peek {
+                ClientHelloPeek::Complete(message) => return Ok(message),
+                ClientHelloPeek::Incomplete => {}
+                ClientHelloPeek::Invalid => {
                     return Err(ConnectionError::TransportError(
                         TransportError::PROTOCOL_VIOLATION("unreadable ClientHello"),
                     ));
                 }
             }
+            let progress = state.inner.progress();
+            let progressed = std::future::poll_fn(|cx| {
+                progress.register(cx.waker());
+                if progress.generation() == seen {
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            });
+            if tokio::time::timeout_at(deadline, progressed).await.is_err() {
+                return Err(ConnectionError::TimedOut);
+            }
         }
-    }
-
-    /// The TLS configuration to resolve per ClientHello, when the endpoint's needs it.
-    fn resolving_crypto(&self) -> Option<Arc<dyn crypto::ServerConfig>> {
-        let config = self.state().endpoint.server_config()?;
-        config
-            .crypto
-            .requires_client_hello()
-            .then(|| config.crypto.clone())
     }
 
     /// Resolve this attempt's TLS configuration from its ClientHello, then accept it.
@@ -190,25 +192,26 @@ impl Incoming {
     /// Any failure drops the attempt, which refuses it.
     async fn resolve_and_accept(
         self,
-        crypto: Arc<dyn crypto::ServerConfig>,
+        admitted: Arc<ServerConfig>,
     ) -> Result<Connection, ConnectionError> {
         let client_hello = self.client_hello_message().await?;
-        let resolved = crypto.resolve(client_hello).await.map_err(|error| {
-            tracing::debug!(%error, "QUIC: resolve server configuration from ClientHello");
-            ConnectionError::TransportError(TransportError::CONNECTION_REFUSED(
-                "server configuration unresolved",
-            ))
-        })?;
+        let resolved = admitted
+            .crypto
+            .clone()
+            .resolve(client_hello)
+            .await
+            .map_err(|error| {
+                tracing::warn!(%error, "QUIC: resolve server TLS configuration from ClientHello");
+                ConnectionError::TransportError(TransportError::CONNECTION_REFUSED(
+                    "server configuration unresolved",
+                ))
+            })?;
         if resolved.requires_client_hello() {
             return Err(ConnectionError::TransportError(
                 TransportError::INTERNAL_ERROR("resolved server configuration is not final"),
             ));
         }
-        // The rest of the configuration is read now: it may have changed while resolving.
-        let Some(base) = self.state().endpoint.server_config() else {
-            return Err(ConnectionError::LocallyClosed);
-        };
-        let mut config = ServerConfig::clone(&base);
+        let mut config = ServerConfig::clone(&admitted);
         config.crypto = resolved;
         self.accept_with(Arc::new(config))?.await
     }
@@ -316,10 +319,10 @@ impl IntoFuture for Incoming {
     type IntoFuture = IncomingFuture;
 
     fn into_future(self) -> Self::IntoFuture {
-        IncomingFuture(match self.resolving_crypto() {
+        IncomingFuture(match self.state().inner.resolving().cloned() {
             None => IncomingFutureState::Accepting(self.accept()),
-            Some(crypto) => {
-                IncomingFutureState::Resolving(Box::pin(self.resolve_and_accept(crypto)))
+            Some(admitted) => {
+                IncomingFutureState::Resolving(Box::pin(self.resolve_and_accept(admitted)))
             }
         })
     }

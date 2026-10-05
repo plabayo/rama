@@ -94,8 +94,11 @@ pub(crate) enum SendPermit {
 mod endpoint;
 pub use crate::proto::endpoint::ConnectError;
 pub use crate::proto::endpoint::RetryRefused;
+mod first_flight;
+pub(crate) use first_flight::ClientHelloPeek;
+
 pub(crate) use crate::proto::endpoint::{
-    ClientHelloPeek, ConnectionHandle, DatagramEvent, Endpoint, Incoming, RetryError,
+    ConnectionHandle, DatagramEvent, Endpoint, Incoming, RetryError,
 };
 
 pub use crate::proto::crypto::{ExportKeyingMaterialError, NegotiatedTlsParameters};

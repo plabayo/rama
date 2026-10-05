@@ -20,10 +20,7 @@ use rand::{
 use rustc_hash::FxHashMap;
 use slab::Slab;
 
-use rama_tls::{
-    ExtensionId,
-    client::{ClientHelloExtension, ClientHelloHandshakePrefix, parse_client_hello_message_prefix},
-};
+use rama_tls::{ExtensionId, client::ClientHelloExtension};
 
 use crate::proto::{
     Duration, INITIAL_MTU, Instant, MIN_INITIAL_SIZE, Transmit, TransportConfig,
@@ -32,6 +29,7 @@ use crate::proto::{
     config::{ClientConfig, EndpointConfig, ServerConfig},
     connection::{Connection, ConnectionError, SideArgs},
     crypto::{self, Keys},
+    first_flight::{ClientHelloPeek, HelloAssembly, IncomingProgress},
     shared::{
         ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent, EndpointEvent,
         EndpointEventInner, IssuedCid,
@@ -116,11 +114,6 @@ impl Endpoint {
     /// Replace the server configuration, affecting new incoming connections only
     pub(crate) fn set_server_config(&mut self, server_config: Option<Arc<ServerConfig>>) {
         self.server_config = server_config;
-    }
-
-    /// The server configuration new incoming connections are accepted with.
-    pub(crate) fn server_config(&self) -> Option<&Arc<ServerConfig>> {
-        self.server_config.as_ref()
     }
 
     /// Stop advertising `address` as preferred: the endpoint no longer owns a usable socket there,
@@ -372,7 +365,7 @@ impl Endpoint {
                         incoming_buffer.datagrams.push(event);
                         incoming_buffer.total_bytes += datagram_len as u64;
                         self.all_incoming_buffers_total_bytes += datagram_len as u64;
-                        return Some(DatagramEvent::Buffered);
+                        incoming_buffer.progress.advance();
                     }
 
                     None
@@ -709,13 +702,20 @@ impl Endpoint {
 
         let deadline = event.now.checked_add(self.config.handshake_timeout)?;
         let live = Arc::new(AtomicBool::new(true));
+        let progress = Arc::new(IncomingProgress::default());
         let incoming_idx = self.incoming_buffers.insert(IncomingBuffer {
             deadline,
             dst_cid: header.dst_cid,
             live: live.clone(),
             datagrams: Vec::new(),
             total_bytes: 0,
+            progress: progress.clone(),
+            hello: HelloAssembly::default(),
         });
+        let resolving = server_config
+            .crypto
+            .requires_client_hello()
+            .then(|| server_config.clone());
         self.incoming_deadlines.insert((deadline, incoming_idx));
         self.index
             .insert_initial_incoming(header.dst_cid, incoming_idx);
@@ -735,6 +735,8 @@ impl Endpoint {
             incoming_idx,
             live,
             deadline,
+            progress,
+            resolving,
             improper_drop_warner: IncomingImproperDropWarner::armed(),
         }))
     }
@@ -768,7 +770,7 @@ impl Endpoint {
         // Keep initial routing until accept succeeds or its existing error paths remove it.
         let incoming_buffer = self.take_incoming_buffer(&incoming);
         incoming.improper_drop_warner.dismiss();
-        let incoming_buffer = incoming_buffer.ok_or(AcceptError {
+        let mut incoming_buffer = incoming_buffer.ok_or(AcceptError {
             cause: ConnectionError::TimedOut,
             response: None,
         })?;
@@ -835,11 +837,12 @@ impl Endpoint {
         let negotiated = if server_config.crypto.supports_compatible_negotiation()
             && server_config.versions.may_switch()
         {
-            match self.peek_client_hello(
+            match self.client_offer(
                 version,
                 &incoming.crypto,
                 &incoming.packet.payload,
-                &incoming_buffer,
+                incoming.rest.as_ref(),
+                &mut incoming_buffer,
             ) {
                 // A ticket belongs to the version the client initiated in, and a ticket this
                 // connection issues would belong to the negotiated one (RFC 9369 §5); no TLS
@@ -999,15 +1002,27 @@ impl Endpoint {
 
     /// What the client's ClientHello says about versions, when the whole ClientHello has
     /// arrived in the first packet and what was buffered behind it (RFC 9368 §2.3).
-    fn peek_client_hello(
+    ///
+    /// The first packet of `incoming` is already opened.
+    fn client_offer(
         &self,
         version: Version,
         crypto: &Keys,
         first_payload: &BytesMut,
-        buffered: &IncomingBuffer,
+        rest: Option<&BytesMut>,
+        buffer: &mut IncomingBuffer,
     ) -> Option<ClientOffer> {
+        let flight = FirstFlight {
+            version,
+            crypto,
+            rest,
+            parser: FixedLengthConnectionIdParser::new(self.local_cid_generator.cid_len()),
+            grease_quic_bit: self.config.grease_quic_bit,
+        };
         let ClientHelloPeek::Complete(message) =
-            self.reassemble_client_hello(version, crypto, first_payload, buffered)
+            assemble_client_hello(&mut buffer.hello, &buffer.datagrams, &flight, || {
+                Some(first_payload.clone().freeze())
+            })
         else {
             return None;
         };
@@ -1035,127 +1050,42 @@ impl Endpoint {
         })
     }
 
-    /// The client's ClientHello, as far as the first packet of a pending attempt and what was
-    /// buffered behind it carry it, without accepting the attempt.
-    pub(crate) fn client_hello(&self, incoming: &Incoming) -> ClientHelloPeek {
-        let Some(buffered) = self.incoming_buffers.get(incoming.incoming_idx) else {
+    /// The client's ClientHello, as far as the first flight of a pending attempt has
+    /// arrived, without accepting the attempt.
+    pub(crate) fn client_hello(&mut self, incoming: &Incoming) -> ClientHelloPeek {
+        if incoming.is_expired() {
             return ClientHelloPeek::Invalid;
+        }
+        let flight = FirstFlight {
+            version: incoming.packet.header.version.version(),
+            crypto: &incoming.crypto,
+            rest: incoming.rest.as_ref(),
+            parser: FixedLengthConnectionIdParser::new(self.local_cid_generator.cid_len()),
+            grease_quic_bit: self.config.grease_quic_bit,
         };
-        let Some(keys) = incoming.crypto.remote.as_ref() else {
+        let Some(buffer) = self.incoming_buffers.get_mut(incoming.incoming_idx) else {
             return ClientHelloPeek::Invalid;
         };
         // The first packet stays protected until accepted, so a copy is opened.
-        let mut payload = incoming.packet.payload.clone();
-        if keys
-            .packet
-            .decrypt(
-                incoming.packet.header.number.expand(0),
-                &incoming.packet.header_data,
-                &mut payload,
-            )
-            .is_err()
-        {
-            return ClientHelloPeek::Invalid;
-        }
-        self.reassemble_client_hello(
-            incoming.packet.header.version.version(),
-            &incoming.crypto,
-            &payload,
-            buffered,
-        )
+        let first = || {
+            let keys = incoming.crypto.remote.as_ref()?;
+            let mut payload = incoming.packet.payload.clone();
+            keys.packet
+                .decrypt(
+                    incoming.packet.header.number.expand(0),
+                    &incoming.packet.header_data,
+                    &mut payload,
+                )
+                .ok()?;
+            Some(payload.freeze())
+        };
+        assemble_client_hello(&mut buffer.hello, &buffer.datagrams, &flight, first)
     }
 
-    /// Reassemble the start of the CRYPTO stream from the first packet's opened payload and
-    /// copies of the Initial packets buffered behind it.
-    fn reassemble_client_hello(
-        &self,
-        version: Version,
-        crypto: &Keys,
-        first_payload: &BytesMut,
-        buffered: &IncomingBuffer,
-    ) -> ClientHelloPeek {
-        /// A ClientHello larger than this is not looked at.
-        const LIMIT: usize = 16 * 1024;
-
-        let Some(keys) = crypto.remote.as_ref() else {
-            return ClientHelloPeek::Invalid;
-        };
-        let mut chunks: Vec<(u64, Bytes)> = Vec::new();
-        let mut collect = |payload: Bytes| {
-            if let Ok(frames) = frame::Iter::new(payload) {
-                for frame in frames.flatten() {
-                    if let frame::Frame::Crypto(frame::Crypto { offset, data }) = frame {
-                        chunks.push((offset, data));
-                    }
-                }
-            }
-        };
-        collect(first_payload.clone().freeze());
-
-        // Later Initial packets are decrypted on copies; the buffered events themselves are
-        // delivered to the connection untouched once it exists.
-        let mut later: Vec<BytesMut> = Vec::new();
-        for event in &buffered.datagrams {
-            later.push(BytesMut::from(event.first_decode.data()));
-            if let Some(rest) = &event.remaining {
-                later.push(rest.clone());
-            }
-        }
-        let parser = FixedLengthConnectionIdParser::new(self.local_cid_generator.cid_len());
-        for mut bytes in later {
-            loop {
-                let Ok((decode, rest)) =
-                    PartialDecode::new(bytes, &parser, &[version], self.config.grease_quic_bit)
-                else {
-                    break;
-                };
-                if decode.is_initial()
-                    && let Ok(mut packet) = decode.finish_protected(&*keys.header)
-                    && let Some(number) = packet.header.number()
-                    && keys
-                        .packet
-                        .decrypt(number.expand(0), &packet.header_data, &mut packet.payload)
-                        .is_ok()
-                {
-                    collect(packet.payload.freeze());
-                }
-                match rest {
-                    Some(rest) => bytes = rest,
-                    None => break,
-                }
-            }
-        }
-
-        // The ClientHello is one handshake message with a one-byte type and three-byte length.
-        chunks.sort_by_key(|(offset, _)| *offset);
-        let mut stream: Vec<u8> = Vec::new();
-        for (offset, data) in chunks {
-            let Ok(offset) = usize::try_from(offset) else {
-                return ClientHelloPeek::Invalid;
-            };
-            if offset > stream.len() {
-                // A gap: an earlier part of the CRYPTO stream has not arrived.
-                break;
-            }
-            let Some(fresh) = data.get(stream.len() - offset..) else {
-                continue;
-            };
-            if stream.len() + fresh.len() > LIMIT {
-                return ClientHelloPeek::Invalid;
-            }
-            stream.extend_from_slice(fresh);
-        }
-        // The CRYPTO stream carries a bare handshake message with no TLS record layer.
-        match parse_client_hello_message_prefix(&stream) {
-            ClientHelloHandshakePrefix::Complete(hello) => {
-                if let [_, a, b, c, ..] = stream[..] {
-                    let body = usize::from(a) << 16 | usize::from(b) << 8 | usize::from(c);
-                    stream.truncate(4 + body);
-                }
-                ClientHelloPeek::Complete(crypto::ClientHelloMessage::new(stream.into(), hello))
-            }
-            ClientHelloHandshakePrefix::Incomplete => ClientHelloPeek::Incomplete,
-            ClientHelloHandshakePrefix::Invalid => ClientHelloPeek::Invalid,
+    /// Wake every application waiting on a pending attempt: none of them will progress.
+    pub(crate) fn wake_pending_incoming(&self) {
+        for (_, buffer) in &self.incoming_buffers {
+            buffer.progress.advance();
         }
     }
 
@@ -1363,6 +1293,7 @@ impl Endpoint {
     fn discard_incoming_buffer(&mut self, index: usize) {
         let buffer = self.incoming_buffers.remove(index);
         buffer.live.store(false, Ordering::Release);
+        buffer.progress.advance();
         self.all_incoming_buffers_total_bytes -= buffer.total_bytes;
         self.index.remove_initial(buffer.dst_cid);
     }
@@ -1734,6 +1665,88 @@ struct IncomingBuffer {
     live: Arc<AtomicBool>,
     datagrams: Vec<DatagramConnectionEvent>,
     total_bytes: u64,
+    progress: Arc<IncomingProgress>,
+    /// The ClientHello taken in so far, packet by packet.
+    hello: HelloAssembly,
+}
+
+/// Take a pending attempt's Initial packets into its ClientHello assembly: the first packet
+/// (`first` opens it) and what was coalesced behind it once, then each datagram buffered
+/// since the previous look.
+struct FirstFlight<'a> {
+    version: Version,
+    crypto: &'a Keys,
+    /// What was coalesced behind the first packet.
+    rest: Option<&'a BytesMut>,
+    parser: FixedLengthConnectionIdParser,
+    grease_quic_bit: bool,
+}
+
+fn assemble_client_hello(
+    assembly: &mut HelloAssembly,
+    datagrams: &[DatagramConnectionEvent],
+    flight: &FirstFlight<'_>,
+    first: impl FnOnce() -> Option<Bytes>,
+) -> ClientHelloPeek {
+    if !assembly.started {
+        let Some(payload) = first() else {
+            return ClientHelloPeek::Invalid;
+        };
+        take_in_frames(assembly, payload);
+        if let Some(rest) = flight.rest {
+            take_in_initials(assembly, rest.clone(), flight);
+        }
+        assembly.started = true;
+    }
+    for event in datagrams.get(assembly.taken..).unwrap_or_default() {
+        take_in_initials(assembly, BytesMut::from(event.first_decode.data()), flight);
+        if let Some(rest) = &event.remaining {
+            take_in_initials(assembly, rest.clone(), flight);
+        }
+    }
+    assembly.taken = datagrams.len();
+    assembly.peek()
+}
+
+/// Open the Initial packets of a datagram copy and take in their CRYPTO frames.
+fn take_in_initials(assembly: &mut HelloAssembly, mut bytes: BytesMut, flight: &FirstFlight<'_>) {
+    let Some(keys) = flight.crypto.remote.as_ref() else {
+        return;
+    };
+    loop {
+        let Ok((decode, rest)) = PartialDecode::new(
+            bytes,
+            &flight.parser,
+            &[flight.version],
+            flight.grease_quic_bit,
+        ) else {
+            return;
+        };
+        if decode.is_initial()
+            && let Ok(mut packet) = decode.finish_protected(&*keys.header)
+            && let Some(number) = packet.header.number()
+            && keys
+                .packet
+                .decrypt(number.expand(0), &packet.header_data, &mut packet.payload)
+                .is_ok()
+        {
+            take_in_frames(assembly, packet.payload.freeze());
+        }
+        match rest {
+            Some(rest) => bytes = rest,
+            None => return,
+        }
+    }
+}
+
+fn take_in_frames(assembly: &mut HelloAssembly, payload: Bytes) {
+    if let Ok(frames) = frame::Iter::new(payload) {
+        for frame in frames.flatten() {
+            if let frame::Frame::Crypto(frame::Crypto { offset, data }) = frame {
+                assembly.take_in(offset, data);
+            }
+        }
+    }
 }
 
 /// What a client's first flight offers for version negotiation.
@@ -2055,18 +2068,6 @@ pub(crate) enum DatagramEvent {
     NewConnection(Incoming),
     /// Response generated directly by the endpoint
     Response(Transmit),
-    /// The datagram is held for an attempt the application has not accepted yet
-    Buffered,
-}
-
-/// How much of a client's ClientHello its first flight has delivered so far.
-pub(crate) enum ClientHelloPeek {
-    /// The whole ClientHello.
-    Complete(crypto::ClientHelloMessage),
-    /// The start of a ClientHello whose remainder has not arrived.
-    Incomplete,
-    /// Bytes that are not, and cannot become, a ClientHello this endpoint looks at.
-    Invalid,
 }
 
 /// An incoming connection for which the server has not yet begun its part of the handshake.
@@ -2081,6 +2082,9 @@ pub(crate) struct Incoming {
     incoming_idx: usize,
     live: Arc<AtomicBool>,
     deadline: Instant,
+    progress: Arc<IncomingProgress>,
+    /// The server configuration at admission, when its TLS resolves per ClientHello.
+    resolving: Option<Arc<ServerConfig>>,
     improper_drop_warner: IncomingImproperDropWarner,
 }
 
@@ -2088,6 +2092,18 @@ impl Incoming {
     /// When the endpoint stops holding this attempt for the application.
     pub(crate) fn deadline(&self) -> Instant {
         self.deadline
+    }
+
+    /// Advances as more of the first flight arrives, and when the attempt can no longer
+    /// progress.
+    pub(crate) fn progress(&self) -> &Arc<IncomingProgress> {
+        &self.progress
+    }
+
+    /// The server configuration this attempt was admitted under, when its TLS configuration
+    /// resolves per ClientHello.
+    pub(crate) fn resolving(&self) -> Option<&Arc<ServerConfig>> {
+        self.resolving.as_ref()
     }
 
     /// Whether this admission has expired or already been consumed by the endpoint.

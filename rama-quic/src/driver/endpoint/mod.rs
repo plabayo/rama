@@ -785,9 +785,6 @@ impl EndpointDriver {
         if !endpoint.recv_state.incoming.is_empty() {
             self.0.shared.incoming.notify_waiters();
         }
-        if std::mem::take(&mut endpoint.recv_state.buffered_incoming) {
-            self.0.shared.incoming_progress.notify_waiters();
-        }
 
         let finished = (self.0.shared.ref_count.load(Ordering::Relaxed) == 0 || endpoint.shutdown)
             && endpoint.recv_state.connections.is_empty();
@@ -809,7 +806,7 @@ impl Drop for EndpointDriver {
         }
         self.0.shared.idle.notify_waiters();
         self.0.shared.incoming.notify_waiters();
-        self.0.shared.incoming_progress.notify_waiters();
+        endpoint.inner.wake_pending_incoming();
         // Closing the packet channels tells every connection driver that the endpoint is gone.
         // Connection state is released outside the endpoint lock (lock order).
         let channels = std::mem::take(&mut endpoint.recv_state.connections.channels);
@@ -1007,26 +1004,18 @@ impl EndpointInner {
 }
 
 impl EndpointRef {
-    /// The server configuration new attempts are accepted with.
-    pub(crate) fn server_config(&self) -> Option<Arc<ServerConfig>> {
-        self.state.lock().inner.server_config().cloned()
-    }
-
-    /// How much of a pending attempt's ClientHello has arrived. While it is incomplete, the
-    /// returned wakeup fires once more of the first flight arrives or the endpoint stops.
-    pub(crate) fn peek_client_hello(
+    /// How much of a pending attempt's ClientHello has arrived, and the attempt's progress
+    /// generation that was current when looking.
+    pub(crate) fn client_hello_progress(
         &self,
         incoming: &crate::proto::Incoming,
-    ) -> Result<(ClientHelloPeek, Option<Notified<'_>>), ConnectionError> {
-        let state = self.state.lock();
+    ) -> Result<(ClientHelloPeek, u64), ConnectionError> {
+        let mut state = self.state.lock();
         if state.driver_lost || state.shutdown || state.recv_state.connections.close.is_some() {
             return Err(ConnectionError::LocallyClosed);
         }
-        let peek = state.inner.client_hello(incoming);
-        // Created under the lock, so no arrival between this peek and the wait is missed.
-        let wakeup = matches!(peek, ClientHelloPeek::Incomplete)
-            .then(|| self.shared.incoming_progress.notified());
-        Ok((peek, wakeup))
+        let generation = incoming.progress().generation();
+        Ok((state.inner.client_hello(incoming), generation))
     }
 
     /// Tests: stop applying route installations, so a datagram that needs one can be observed
@@ -1298,9 +1287,6 @@ pub(crate) struct State {
 #[derive(Debug)]
 pub(crate) struct Shared {
     incoming: Notify,
-    /// Wakes those waiting on a pending attempt's first flight: more of it arrived, or the
-    /// endpoint closed.
-    incoming_progress: Notify,
     idle: Notify,
     lifecycle: Lifecycle,
     /// Number of live handles that can be used to initiate or handle I/O; excludes the driver
@@ -1326,7 +1312,7 @@ impl State {
             }
         }
         shared.incoming.notify_waiters();
-        shared.incoming_progress.notify_waiters();
+        self.inner.wake_pending_incoming();
         if let Some(driver) = self.driver.take() {
             driver.wake();
         }
@@ -1497,7 +1483,6 @@ impl State {
             let progress =
                 recv_state.poll_socket(cx, inner, socket, now, packet_budget, &mut cycle);
             keep_going |= progress.keep_going;
-            recv_state.buffered_incoming |= progress.buffered_incoming;
             // Attempts admitted from this socket are queued now that the socket borrow is over:
             // each takes a lease on it, or is ignored when no room is left or the socket failed.
             let failed = progress.error.is_some();
@@ -1676,7 +1661,6 @@ impl EndpointRef {
         Self(Arc::new(EndpointInner {
             shared: Shared {
                 incoming: Notify::new(),
-                incoming_progress: Notify::new(),
                 idle: Notify::new(),
                 lifecycle: Lifecycle::default(),
                 ref_count: AtomicUsize::new(1),
@@ -1744,8 +1728,6 @@ struct RecvState {
     ignored_receive_errors: u64,
     /// Datagrams refused by a saturated endpoint or connection budget before any engine work.
     dropped_packets: u64,
-    /// Whether a datagram was held for a pending attempt since its waiters were last woken.
-    buffered_incoming: bool,
     /// Tests: a fixed per-poll receive allowance in place of the measured one.
     #[cfg(test)]
     forced_recv_allowance: Option<usize>,
@@ -1783,7 +1765,6 @@ impl RecvState {
             truncated_receive_entries: 0,
             ignored_receive_errors: 0,
             dropped_packets: 0,
-            buffered_incoming: false,
             #[cfg(test)]
             forced_recv_allowance: None,
         }
@@ -1923,9 +1904,6 @@ impl RecvState {
                                 Some(DatagramEvent::Response(transmit)) => {
                                     respond(transmit, &response_buffer, socket);
                                 }
-                                Some(DatagramEvent::Buffered) => {
-                                    progress.buffered_incoming = true;
-                                }
                                 None => {}
                             }
                         }
@@ -1976,8 +1954,6 @@ struct PollProgress {
     keep_going: bool,
     /// Attempts admitted during this poll, still to be queued with a lease on the socket.
     admitted: Vec<(crate::proto::Incoming, PacketPermit)>,
-    /// Whether a datagram was held for an attempt the application has not accepted yet
-    buffered_incoming: bool,
     /// The receive error that ended this poll, after everything received before it.
     error: Option<io::Error>,
 }

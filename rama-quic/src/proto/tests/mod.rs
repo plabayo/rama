@@ -9250,3 +9250,42 @@ fn a_client_hello_spanning_initials_leaves_in_one_burst() {
         "the whole ClientHello leaves at once: {initials}"
     );
 }
+
+/// A datagram buffered for one pending attempt advances only that attempt's progress, so only
+/// its waiter wakes, and each ClientHello assembles from its own packets.
+#[test]
+fn buffered_datagrams_advance_only_their_own_attempt() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    pair.server.handle_incoming = Box::new(|_| IncomingConnectionBehavior::Wait);
+    pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    let other = pair.server.waiting_incoming.pop().unwrap();
+    let other_before = other.progress().generation();
+
+    let protocols = (0..24u8).map(|n| vec![b'a' + n; 96]).collect();
+    pair.begin_connect(ClientConfig::new(Arc::new(client_crypto_with_alpn(
+        protocols,
+    ))));
+    pair.drive_client();
+    pair.drive_server();
+    let large = pair.server.waiting_incoming.pop().unwrap();
+    assert!(
+        large.progress().generation() > 0,
+        "the rest of the large ClientHello was buffered for its attempt"
+    );
+    assert_eq!(
+        other.progress().generation(),
+        other_before,
+        "nothing arrived for the other attempt"
+    );
+    for incoming in [&large, &other] {
+        assert!(matches!(
+            pair.server.client_hello(incoming),
+            ClientHelloPeek::Complete(_)
+        ));
+    }
+    pair.server.ignore(large);
+    pair.server.ignore(other);
+}

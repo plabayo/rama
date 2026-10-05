@@ -263,6 +263,11 @@ pub trait ServerConfig: Send + Sync {
 
     /// Whether a session needs the client's ClientHello before it can start, for instance to
     /// issue a certificate for the requested server name; see [`Self::resolve`].
+    ///
+    /// Such an attempt is accepted only once its whole ClientHello arrived and resolved:
+    /// awaiting the `Incoming` does both. A ClientHello larger than 16 KiB is refused, and
+    /// until the attempt is accepted nothing is acknowledged, so the resolution time adds to
+    /// the client's first round-trip sample.
     fn requires_client_hello(&self) -> bool {
         false
     }
@@ -270,7 +275,8 @@ pub trait ServerConfig: Send + Sync {
     /// Resolve the configuration a connection's session starts from, given its ClientHello.
     ///
     /// Called before any session starts, and only when [`Self::requires_client_hello`] is
-    /// `true`. The resolved configuration must not require a ClientHello itself.
+    /// `true`. The resolved configuration must not require a ClientHello itself. A failure
+    /// refuses the attempt.
     fn resolve(self: Arc<Self>, client_hello: ClientHelloMessage) -> ResolveServerConfig {
         let _ = client_hello;
         Box::pin(async {
@@ -295,7 +301,12 @@ pub struct ClientHelloMessage {
 }
 
 impl ClientHelloMessage {
-    pub(crate) fn new(message: Bytes, client_hello: ClientHello) -> Self {
+    /// A ClientHello `message`, from its type byte to the end of its body, and what it says.
+    ///
+    /// Useful to exercise [`ServerConfig::resolve`]; the endpoint only hands out consistent
+    /// pairs.
+    #[must_use]
+    pub fn new(message: Bytes, client_hello: ClientHello) -> Self {
         Self {
             message,
             client_hello,
