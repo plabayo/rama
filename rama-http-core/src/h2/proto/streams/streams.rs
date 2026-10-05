@@ -118,6 +118,9 @@ struct Actions {
 
     /// If the connection errors, a copy is kept for any StreamRefs.
     conn_error: Option<proto::Error>,
+
+    /// The connection was dropped: nothing drains the queues any more.
+    conn_dropped: bool,
 }
 
 /// Contains the buffer of frames to be written to the wire.
@@ -644,6 +647,7 @@ impl Inner {
                 send: Send::try_new(&config)?,
                 task: None,
                 conn_error: None,
+                conn_dropped: false,
             },
             store: Store::new(),
             refs: 1,
@@ -1119,6 +1123,9 @@ impl Inner {
         let counts = &mut self.counts;
         let mut send_buffer = send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
+
+        // Only `Connection::drop` clears the pending accepts.
+        actions.conn_dropped |= clear_pending_accept;
 
         if actions.conn_error.is_none() {
             actions.conn_error = Some(
@@ -1899,6 +1906,11 @@ fn drop_stream_ref(inner: &Mutex<Inner>, key: store::Key) {
             }
         }
     });
+
+    // A dropped connection drains no queue: what a handle queued would hold its stream.
+    if me.actions.conn_dropped {
+        me.actions.clear_queues(true, &mut me.store, &mut me.counts);
+    }
 }
 
 fn maybe_cancel(stream: &mut store::Ptr, actions: &mut Actions, counts: &mut Counts) {

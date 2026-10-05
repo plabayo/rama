@@ -841,26 +841,23 @@ async fn the_executable_keeps_receiving_while_a_send_is_blocked() -> TestResult 
         assert!(output.stdout.is_empty(), "{version:?}\n{}", report(&output));
         outcome(version, closed).await?;
 
-        // Killed while its send is blocked. Not on HTTP/2 until a stream abandoned mid-send by a
-        // reset connection is released before the store drops (rama-sprints/followup-pr9-class-sweep.md).
-        if version != Version::HTTP_2 {
-            let (stall, stalled) = oneshot::channel();
-            let (release, released) = oneshot::channel();
-            let aborted = peer.expect(Scenario::Stall(stall, released));
-            let (mut child, writer) = fixture.spawn_feeding(&url, &[flag], large_input())?;
-            timeout(DEADLINE, stalled).await??;
-            // The peer reads nothing more until released: the send is still stuck mid-frame.
-            assert!(
-                child.try_wait()?.is_none(),
-                "{version:?}: exited while blocked"
-            );
-            child.kill().await?;
-            writer.abort();
-            _ = release.send(());
-            // A killed process sends no QUIC CONNECTION_CLOSE: only the idle timeout would tell.
-            if version != Version::HTTP_3 {
-                outcome(version, aborted).await?;
-            }
+        // Killed while its send is blocked.
+        let (stall, stalled) = oneshot::channel();
+        let (release, released) = oneshot::channel();
+        let aborted = peer.expect(Scenario::Stall(stall, released));
+        let (mut child, writer) = fixture.spawn_feeding(&url, &[flag], large_input())?;
+        timeout(DEADLINE, stalled).await??;
+        // The peer reads nothing more until released: the send is still stuck mid-frame.
+        assert!(
+            child.try_wait()?.is_none(),
+            "{version:?}: exited while blocked"
+        );
+        child.kill().await?;
+        writer.abort();
+        _ = release.send(());
+        // A killed process sends no QUIC CONNECTION_CLOSE: only the idle timeout would tell.
+        if version != Version::HTTP_3 {
+            outcome(version, aborted).await?;
         }
 
         // The server serves the next client as before.

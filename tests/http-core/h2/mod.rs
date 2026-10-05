@@ -9,5 +9,6 @@ mod ping_pong;
 mod prioritization;
 mod push_promise;
 mod server;
+mod stream_release;
 mod stream_states;
 mod trailers;
