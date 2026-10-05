@@ -1,12 +1,12 @@
 use crate::BodyLimit;
-use rama_core::{Layer, Service, extensions::ExtensionsRef, io::Io};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
 /// Limit the size of the request and/or response bodies.
 ///
-/// As this layer operates on the transport layer ([`Stream`]),
-/// it only is used to add the [`BodyLimit`] value to input [`Extensions`],
+/// As this layer operates on the transport layer (a [`Stream`] or a multiplexed
+/// connection such as QUIC's), it only is used to add the [`BodyLimit`] value to input [`Extensions`],
 /// such that the L7 http service can apply the limit when found in those [`Extensions`].
 /// The limit is enforced lazily while request and response bodies are polled;
 /// it does not buffer them or generate a replacement HTTP response. See
@@ -124,7 +124,7 @@ impl<S> BodyLimitService<S> {
 impl<S, IO> Service<IO> for BodyLimitService<S>
 where
     S: Service<IO>,
-    IO: Io + ExtensionsRef,
+    IO: ExtensionsRef + Send + 'static,
 {
     type Output = S::Output;
     type Error = S::Error;
@@ -144,5 +144,37 @@ where
             .field("inner", &self.inner)
             .field("limit", &self.limit)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_core::{extensions::Extensions, service::service_fn};
+    use std::convert::Infallible;
+
+    // A connection that is not a byte stream, as a QUIC connection is not.
+    struct Connection(Extensions);
+
+    impl ExtensionsRef for Connection {
+        fn extensions(&self) -> &Extensions {
+            &self.0
+        }
+    }
+
+    #[tokio::test]
+    async fn limit_reaches_a_connection_that_is_not_a_stream() {
+        let service = BodyLimitLayer::asymmetric(7, 11).into_layer(service_fn(
+            async |connection: Connection| {
+                Ok::<_, Infallible>(connection.extensions().get_ref::<BodyLimit>().copied())
+            },
+        ));
+        let limit = service
+            .serve(Connection(Extensions::new()))
+            .await
+            .unwrap()
+            .expect("the limit is inserted");
+        assert_eq!(limit.request(), Some(7));
+        assert_eq!(limit.response(), Some(11));
     }
 }
