@@ -48,6 +48,7 @@ use rustc_hash::FxHashMap;
 use tokio::sync::{Notify, futures::Notified};
 
 mod builder;
+mod serve;
 pub use builder::{DEFAULT_SHUTDOWN_BUDGET, EndpointBuilder};
 
 const BATCH_SIZE: usize = 32;
