@@ -2,9 +2,9 @@
 //! ClientHello (the dynamic issuer and the in-memory CA, both with a warm cache).
 //!
 //! Each iteration is one client handshake on loopback against a serving endpoint, closed
-//! once established. Issued cases add the ClientHello read before accepting, the cache hit
-//! and a per-connection TLS context. The `split` cases offer enough ALPN protocols for the
-//! ClientHello to span two Initial packets.
+//! once established. Issued cases add the ClientHello read before accepting and the cache
+//! hit; `in_memory_ca_cold` issues a fresh leaf for every handshake. The `split` cases offer
+//! enough ALPN protocols for the ClientHello to span two Initial packets.
 //!
 //! ```sh
 //! cargo bench --bench quic_handshake --features quic,boring,crypto
@@ -23,7 +23,9 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tls::{
-        boring::server::{BoringServerConfigExt as _, ServerCertIssuerData, ServerCertIssuerKind},
+        boring::server::{
+            BoringServerConfigExt as _, CacheKind, ServerCertIssuerData, ServerCertIssuerKind,
+        },
         client::TlsClientConfig,
         server::{
             CertificateIssuanceContext, DynamicCertIssuer, LeafCertConfig, SelfSignedCaConfig,
@@ -47,13 +49,14 @@ static ALLOC: AllocProfiler = AllocProfiler::system();
 
 const ALPN: &[u8] = b"rama-quic/handshake-bench";
 const DEADLINE: Duration = Duration::from_secs(30);
-const CASES: [&str; 6] = [
+const CASES: [&str; 7] = [
     "fixed",
     "fixed_split",
     "dynamic_issuer",
     "dynamic_issuer_split",
     "in_memory_ca",
     "in_memory_ca_split",
+    "in_memory_ca_cold",
 ];
 
 fn main() {
@@ -93,19 +96,24 @@ impl Loopback {
         let ca = CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap();
         let leaf = ServerAuthData::new_issued_by(&ca, Default::default()).unwrap();
         let base = TlsServerConfig::new().with_alpn(alpn(false));
-        let server_tls = match case.trim_end_matches("_split") {
+        let server_tls = match case.trim_end_matches("_split").trim_end_matches("_cold") {
             "fixed" => base.with_server_auth(leaf),
             "dynamic_issuer" => base.with_cert_issuer(ServerCertIssuerData::new(PreIssued(leaf))),
-            _ => base.with_cert_issuer(ServerCertIssuerData::new(
-                ServerCertIssuerKind::ProvidedCa {
+            _ => base.with_cert_issuer(
+                ServerCertIssuerData::new(ServerCertIssuerKind::ProvidedCa {
                     ca: CertificateAuthorityData::try_new(
                         ca.certificate_chain().to_vec(),
                         ca.private_key().clone_key(),
                     )
                     .unwrap(),
                     leaf: LeafCertConfig::default(),
-                },
-            )),
+                })
+                .with_cache_kind(if case.ends_with("_cold") {
+                    CacheKind::Disabled
+                } else {
+                    CacheKind::default()
+                }),
+            ),
         };
         let client_tls = TlsClientConfig::new()
             .with_alpn(alpn(case.ends_with("_split")))
