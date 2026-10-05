@@ -550,6 +550,33 @@ async fn forwarded_context_never_steers_where_a_client_connects() {
     }
 }
 
+#[derive(Debug, Clone, rama::extensions::Extension)]
+struct RequestMarker;
+
+/// A response forks its request's extensions on every version, so request-scoped context
+/// (such as a client's logging switch) is visible from the response.
+#[tokio::test]
+async fn responses_fork_their_request_extensions_on_every_version() {
+    for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+        let (auth, tls) = credentials();
+        let backend = Server::start(auth, version).await;
+        let (client, endpoint) = client_with_http3(tls).await;
+        let request = backend.request();
+        request.extensions().insert(RequestMarker);
+        let response = timeout(TEST_TIMEOUT, client.serve(request))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.version(), version);
+        assert!(
+            response.extensions().get_ref::<RequestMarker>().is_some(),
+            "{version:?}"
+        );
+        drop(response);
+        close_client_endpoint(endpoint).await;
+    }
+}
+
 #[tokio::test]
 async fn default_client_supports_h3_prior_knowledge() {
     let (auth, tls) = credentials();

@@ -10,7 +10,7 @@ use crate::proto::target::{
 };
 use rama_core::{
     bytes::{Bytes, BytesMut},
-    extensions::ExtensionsRef,
+    extensions::{Extensions, ExtensionsRef},
 };
 use rama_http_types::proto::{
     ext,
@@ -290,12 +290,15 @@ pub(crate) fn request_head(
 
 #[cfg(test)]
 pub(crate) fn response(fields: Vec<FieldPair>) -> Result<Response<()>, Error> {
-    response_for_method(fields, false)
+    response_for_method(fields, false, Extensions::new())
 }
 
+/// A response decoded from `fields`, on top of `extensions`: a client passes a fork of the
+/// request's, as responses fork their request on every HTTP version.
 pub(crate) fn response_for_method(
     fields: Vec<FieldPair>,
     connect: bool,
+    extensions: Extensions,
 ) -> Result<Response<()>, Error> {
     let fields = parse(fields, false)?;
     if fields.headers.contains_key(header::TE) {
@@ -331,10 +334,12 @@ pub(crate) fn response_for_method(
     {
         return Err(malformed("content-length forbidden on this response"));
     }
-    let mut response = Response::new(());
-    *response.status_mut() = status;
-    *response.version_mut() = Version::HTTP_3;
-    *response.headers_mut() = fields.headers;
+    let (mut parts, ()) = Response::new(()).into_parts();
+    parts.status = status;
+    parts.version = Version::HTTP_3;
+    parts.headers = fields.headers;
+    parts.extensions = extensions;
+    let response = Response::from_parts(parts, ());
     response.extensions().insert(fields.order);
     if fields.sensitivity != PseudoHeaderSensitivity::default() {
         response.extensions().insert(fields.sensitivity);
@@ -959,6 +964,7 @@ mod tests {
         let response = response_for_method(
             fields(&[(":status", "200"), ("content-length", "invalid")]),
             true,
+            Extensions::new(),
         )
         .unwrap();
         assert_eq!(response.headers()[header::CONTENT_LENGTH], "invalid");
@@ -972,6 +978,7 @@ mod tests {
                 let response = response_for_method(
                     fields(&[(":status", status), ("content-length", length)]),
                     true,
+                    Extensions::new(),
                 )
                 .unwrap_or_else(|error| panic!("CONNECT {status} CL={length}: {error:?}"));
                 assert_eq!(response.headers()[header::CONTENT_LENGTH], length);
@@ -983,12 +990,16 @@ mod tests {
             response_for_method(
                 fields(&[(":status", status), ("content-length", length)]),
                 connect,
+                Extensions::new(),
             )
             .unwrap_err();
         }
-        let refused =
-            response_for_method(fields(&[(":status", "403"), ("content-length", "5")]), true)
-                .unwrap();
+        let refused = response_for_method(
+            fields(&[(":status", "403"), ("content-length", "5")]),
+            true,
+            Extensions::new(),
+        )
+        .unwrap();
         assert_eq!(refused.headers()[header::CONTENT_LENGTH], "5");
     }
 

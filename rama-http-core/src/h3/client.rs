@@ -441,6 +441,8 @@ where
             ));
         }
         reader.origin = Some(request.uri().clone());
+        // Responses fork their request's extensions, as on HTTP/1.1 and h2.
+        let request_extensions = request.extensions().clone();
         let method = request.method().clone();
         let extended = method == Method::CONNECT && request.extensions().contains::<Protocol>();
         // Registered before HEADERS leave, so early replies wait for the session. Only a
@@ -493,8 +495,12 @@ where
                         Err(error) => return Err(self.response_error(id, error).await),
                     },
                 };
-                let response = headers::response_for_method(fields, method == Method::CONNECT)
-                    .map_err(|error| reader.reject(error.remote()))?;
+                let response = headers::response_for_method(
+                    fields,
+                    method == Method::CONNECT,
+                    request_extensions.fork(),
+                )
+                .map_err(|error| reader.reject(error.remote()))?;
                 response
                     .extensions()
                     .insert(super::PriorityHandle::new(&self.shared, id, false));
@@ -586,8 +592,12 @@ where
                     }
                 }
             };
-            let response = headers::response_for_method(fields, method == Method::CONNECT)
-                .map_err(|error| reader.reject(error.remote()))?;
+            let response = headers::response_for_method(
+                fields,
+                method == Method::CONNECT,
+                request_extensions.fork(),
+            )
+            .map_err(|error| reader.reject(error.remote()))?;
             response
                 .extensions()
                 .insert(super::PriorityHandle::new(&self.shared, id, false));
