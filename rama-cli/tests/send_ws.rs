@@ -102,7 +102,7 @@ impl Fixture {
     async fn send(&self, url: &str, args: &[&str], input: &[u8]) -> TestResult<Output> {
         let mut child = self.spawn(url, args)?;
         let mut stdin = child.stdin.take().expect("piped stdin");
-        stdin.write_all(input).await?;
+        exited_first(stdin.write_all(input).await)?;
         drop(stdin);
         Ok(timeout(DEADLINE, child.wait_with_output()).await??)
     }
@@ -116,8 +116,8 @@ impl Fixture {
     ) -> TestResult<Output> {
         let (child, writer) = self.spawn_feeding(url, args, input)?;
         let output = timeout(DEADLINE, child.wait_with_output()).await??;
-        // The process exited while its stdin was still open.
-        drop(writer.await??);
+        // The process exited while its stdin was still open, maybe before reading all of it.
+        exited_first(writer.await?.map(drop))?;
         Ok(output)
     }
 
@@ -296,6 +296,15 @@ impl WsServer {
 /// A message larger than every flow-control window on the way.
 const LARGE: usize = 8 * 1024 * 1024;
 const CLOSE_NORMAL: [u8; 2] = 1000u16.to_be_bytes();
+
+/// A process may exit before reading all of its input; its exit status and output are what
+/// a test checks.
+fn exited_first(written: std::io::Result<()>) -> std::io::Result<()> {
+    match written {
+        Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        written => written,
+    }
+}
 
 /// Relays both ways until each side is done, returning the bytes carried each way. A side
 /// that goes away abortively, as an exiting process with unread data does on Windows,
