@@ -24,7 +24,20 @@ endpoints=(
     "http://http-test.ramaproxy.org;--http2"
     "https://http-test.ramaproxy.org;--http1.1"
     "https://http-test.ramaproxy.org;--http2"
+    "https://echo.ramaproxy.org;--http3"
+    "https://ipv4.ramaproxy.org;--http3"
+    "https://http-test.ramaproxy.org;--http3"
 )
+
+# curl rarely ships HTTP/3: those checks use rama itself, a local binary when
+# RAMA_BIN is set or else the published image.
+http3_check() {
+  if [ -n "${RAMA_BIN:-}" ]; then
+    "$RAMA_BIN" --http3 --fail --max-time 15 -o /dev/null "$1"
+  else
+    docker run --rm "${RAMA_IMAGE:-glendc/rama:edge}" --http3 --fail --max-time 15 -o /dev/null "$1"
+  fi
+}
 
 failed=0
 
@@ -33,6 +46,17 @@ for entry in "${endpoints[@]}"; do
 
   echo "Checking $url"
   echo "Flags: ${flags:-<none>}"
+
+  if [ "$flags" = "--http3" ]; then
+    if http3_check "$url"; then
+      echo "OK $url over HTTP/3"
+    else
+      echo "FAIL $url over HTTP/3"
+      failed=1
+    fi
+    echo
+    continue
+  fi
 
   status=$(curl -s -o /dev/null -w "%{http_code}" $flags "$url" || echo "curl_failed")
 
