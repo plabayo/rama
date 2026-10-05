@@ -537,6 +537,9 @@ where
         return Ok(ReqmodOutcome::Request(request));
     }
     let version = request.version();
+    let upgrade = service
+        .upgrade_encapsulation()
+        .tokens(Some(&request), None::<&HttpResponse<()>>);
     let original_head = SanitizedHttpHead::take(request.headers_mut(), version);
     normalize_request_authority(&mut request)?;
     let preview = (!request.body().is_end_stream())
@@ -560,7 +563,7 @@ where
         allow_206,
         policy.allow_icap_trailers,
     )?;
-    let request = ClientRequest::reqmod_for_uri(service.uri(), &headers, request, preview)
+    let request = ClientRequest::reqmod_for_uri(service.uri(), &headers, request, preview, upgrade)
         .context("build ICAP REQMOD request")?
         .with_additional_trailer_forbidden(original_head.nominated_headers())
         .with_replay_limits(service.replay_limits());
@@ -655,6 +658,9 @@ where
     }
     let mut request = HttpRequest::from_parts(request.clone_parts(), ());
     let request_version = request.version();
+    let upgrade = service
+        .upgrade_encapsulation()
+        .tokens(Some(&request), Some(&response));
     let request_head = SanitizedHttpHead::take(request.headers_mut(), request_version);
     normalize_request_authority(&mut request)?;
     let response_version = response.version();
@@ -680,11 +686,17 @@ where
     let allow_206 = policy.allow_206 && replayable && (preview.is_some() || allow_204);
     let headers =
         service.adaptation_headers(&forwarded, allow_204, allow_206, policy.allow_icap_trailers)?;
-    let request =
-        ClientRequest::respmod_for_uri(service.uri(), &headers, &request, response, preview)
-            .context("build ICAP RESPMOD request")?
-            .with_additional_trailer_forbidden(original_response_head.nominated_headers())
-            .with_replay_limits(service.replay_limits());
+    let request = ClientRequest::respmod_for_uri(
+        service.uri(),
+        &headers,
+        &request,
+        response,
+        preview,
+        upgrade,
+    )
+    .context("build ICAP RESPMOD request")?
+    .with_additional_trailer_forbidden(original_response_head.nominated_headers())
+    .with_replay_limits(service.replay_limits());
     let connect = service.connect_request();
     let EstablishedClientConnection { conn, .. } = client
         .connect(connect)

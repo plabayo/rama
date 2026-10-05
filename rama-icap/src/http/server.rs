@@ -2,13 +2,13 @@ use core::{convert::Infallible, fmt, future::poll_fn, pin::Pin};
 
 use rama_core::futures::stream;
 use rama_http_types::{
-    Body, HeaderMap, HeaderValue, Response as HttpResponse,
+    Body, HeaderMap, HeaderValue, Request as HttpRequest, Response as HttpResponse,
     body::{Frame, StreamingBody},
 };
 
 use super::{
     Encapsulated, Error, IncomingRequest, IncomingRequestParts, ParsedEncapsulatedParts,
-    prepare_response_head, with_promoted_headers,
+    UpgradeEncapsulation, prepare_response_head, with_promoted_headers,
 };
 use crate::{
     codec::{Header, ResponseLine},
@@ -139,7 +139,10 @@ impl IncomingRequest {
                         "response-head adaptation requires Allow: 204 and Allow: 206",
                     ));
                 }
-                let (prepared, promoted, _trailer_forbidden) = prepare_response_head(&response);
+                let upgrade = UpgradeEncapsulation::default()
+                    .tokens(None::<&HttpRequest<()>>, Some(&response));
+                let (prepared, promoted, _trailer_forbidden) =
+                    prepare_response_head(&response, upgrade.response, false);
                 let parts = Encapsulated::from_prepared_response(
                     &prepared,
                     EncapsulatedKind::ResponseBody,
@@ -166,7 +169,10 @@ impl IncomingRequest {
                 )
             }
             OriginalBodyKind::Empty => {
-                let (prepared, promoted, _trailer_forbidden) = prepare_response_head(&response);
+                let upgrade = UpgradeEncapsulation::default()
+                    .tokens(None::<&HttpRequest<()>>, Some(&response));
+                let (prepared, promoted, _trailer_forbidden) =
+                    prepare_response_head(&response, upgrade.response, false);
                 let parts =
                     Encapsulated::from_prepared_response(&prepared, EncapsulatedKind::NullBody)?;
                 let fields = with_promoted_headers(&fields, &promoted)?;
