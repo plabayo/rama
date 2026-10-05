@@ -23,7 +23,7 @@ use rama::{
     telemetry::tracing,
     tls::fingerprint::{Ja3, Ja4, PeetPrint},
     tls::{
-        SecureTransport,
+        ExtensionId, SecureTransport,
         client::{ClientHello, ClientHelloExtension, ECHClientHello},
     },
     ua::{
@@ -384,6 +384,7 @@ pub(super) async fn get_and_store_http_info(
                     }
                 }
             }
+            // HTTP/3 profiles are not collected yet: such requests are shown, never stored.
             _ => (),
         }
     }
@@ -466,7 +467,13 @@ pub(super) async fn get_tls_display_info_and_store(
         None => return Ok(None),
     };
 
-    if let Some(storage) = state.storage.as_ref() {
+    // A QUIC ClientHello carries transport parameters and differs from the TCP one: it must
+    // never replace the TLS profile, which is only collected over TCP.
+    let from_quic = hello
+        .extensions()
+        .iter()
+        .any(|ext| ext.id() == ExtensionId::QUIC_TRANSPORT_PARAMETERS);
+    if !from_quic && let Some(storage) = state.storage.as_ref() {
         let auth = extensions.contains::<StorageAuthorized>();
         storage
             .store_tls_client_hello(ua, auth, hello.clone())

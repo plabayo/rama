@@ -1,10 +1,10 @@
 use rama::{
     error::{BoxError, ErrorContext},
-    extensions::ExtensionsRef,
+    extensions::{Extensions, ExtensionsRef},
     http::{
         BodyExtractExt, Response, StatusCode, Version,
         headers::{ContentType, all_client_hints},
-        proto::h2,
+        proto::h2::{self, PseudoHeaderOrder},
         protocols::html::*,
         request::Parts,
         service::web::{
@@ -105,7 +105,7 @@ fn consent_body() -> impl IntoHtml {
                             href = "https://echo.ramaproxy.org:443",
                             "https://echo.ramaproxy.org"
                         ),
-                        ": echo service, TLS (incl. WSS support)",
+                        ": echo service, TLS and HTTP/3 (incl. WSS support)",
                     ),
                 ),
             ),
@@ -117,14 +117,14 @@ fn consent_body() -> impl IntoHtml {
                             href = "https://ipv4.ramaproxy.org",
                             "https://ipv4.ramaproxy.org"
                         ),
-                        ": return your pubic IPv4 address",
+                        ": return your public IPv4 address (also over HTTP/3)",
                     ),
                     li!(
                         a!(
                             href = "https://ipv6.ramaproxy.org",
                             "https://ipv6.ramaproxy.org"
                         ),
-                        ": return your pubic IPv6 address",
+                        ": return your public IPv6 address",
                     ),
                 ),
             ),
@@ -143,7 +143,7 @@ fn consent_body() -> impl IntoHtml {
                             href = "https://http-test.ramaproxy.org:443",
                             "https://http-test.ramaproxy.org"
                         ),
-                        ": https test service, TLS",
+                        ": https test service, TLS and HTTP/3",
                     ),
                 ),
             ),
@@ -252,6 +252,10 @@ pub(super) async fn get_report(
         extend_tables_with_h2_settings(h2_settings, &mut tables);
     }
 
+    if parts.version == Version::HTTP_3 {
+        tables.push(http3_table(&parts.extensions));
+    }
+
     let tls_info = get_tls_display_info_and_store(&state, &parts.extensions, user_agent)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
@@ -279,6 +283,21 @@ pub(super) async fn get_report(
         (geo_comment, report_body(None::<&str>, tables)),
     )
     .into_response())
+}
+
+/// HTTP/3 requests are shown but not collected into UA profiles yet.
+fn http3_table(extensions: &Extensions) -> Table {
+    let mut rows = vec![(
+        "profile collection".to_owned(),
+        "not collected yet: HTTP/3 requests are shown, never stored".to_owned(),
+    )];
+    if let Some(pseudo) = extensions.get_ref::<PseudoHeaderOrder>() {
+        rows.push(("pseudo header order".to_owned(), pseudo.iter().join(", ")));
+    }
+    Table {
+        title: "🚀 HTTP/3".to_owned(),
+        rows,
+    }
 }
 
 fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<Table>) {
@@ -632,6 +651,10 @@ pub(super) async fn form(
 
     if let Some(h2_settings) = http_info.h2_settings {
         extend_tables_with_h2_settings(h2_settings, &mut tables);
+    }
+
+    if parts.version == Version::HTTP_3 {
+        tables.push(http3_table(&parts.extensions));
     }
 
     let tls_info = get_tls_display_info_and_store(&state, &parts.extensions, user_agent)
