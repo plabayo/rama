@@ -4,7 +4,7 @@ use super::cert_issuer::{
 use super::config::BoringTlsAuth;
 use crate::core::{
     pkey::{PKey, Private},
-    x509::X509,
+    x509::{X509, X509Ref},
 };
 use moka::future::Cache;
 use parking_lot::Mutex;
@@ -97,8 +97,57 @@ pub struct TlsAcceptorData {
 }
 
 impl TlsAcceptorData {
+    /// Whether certificates are issued per handshake, which needs its ClientHello first.
+    #[must_use]
+    pub fn issues_certificates(&self) -> bool {
+        self.config.cert_source.issues_per_identity()
+    }
+
+    /// This configuration with the certificate `client_hello` asks for, issued now or reused
+    /// from the issuer's cache.
+    ///
+    /// The identity is the ClientHello's server name, else the issuer's fallback identity.
+    /// The result has that one fixed identity, for TLS stacks that cannot wait on issuance in
+    /// the middle of a handshake, such as QUIC's. A fixed identity is returned unchanged.
+    pub async fn with_issued_certificate(
+        &self,
+        client_hello: &RamaClientHello,
+    ) -> Result<Self, BoxError> {
+        let source = self.config.cert_source.clone();
+        if !source.issues_per_identity() {
+            return Ok(self.clone());
+        }
+        let identity = match client_hello.ext_server_name() {
+            Some(name) => Some(CertificateIdentity::from(name.clone())),
+            None => source.fallback_identity().cloned(),
+        };
+        let issued_cert = source
+            .issue_for(identity, Some(client_hello.clone()))
+            .await?;
+        let mut config = self.config.clone();
+        config.cert_source = TlsCertSource {
+            kind: TlsCertSourceKind::InMemory(issued_cert),
+        };
+        Ok(Self { config })
+    }
+
+    /// The leaf certificate of a fixed identity; `None` while certificates are issued per
+    /// handshake.
+    #[must_use]
+    pub fn leaf_certificate(&self) -> Option<&X509Ref> {
+        match &self.config.cert_source.kind {
+            TlsCertSourceKind::InMemory(issued_cert) => {
+                issued_cert.cert_chain.first().map(|leaf| &**leaf)
+            }
+            TlsCertSourceKind::InMemoryIssuer { .. } | TlsCertSourceKind::DynamicIssuer { .. } => {
+                None
+            }
+        }
+    }
+
     /// Prepare a server context with a fixed identity, without starting a transport.
-    /// Certificate issuers require the asynchronous acceptor path and are rejected here.
+    /// Certificate issuers require the asynchronous acceptor path and are rejected here;
+    /// see [`Self::with_issued_certificate`].
     pub fn into_static_acceptor_builder(self) -> Result<SslAcceptorBuilder, BoxError> {
         let mut builder = self.config.acceptor_builder()?;
         let TlsCertSourceKind::InMemory(cert) = self.config.cert_source.kind else {
@@ -235,203 +284,169 @@ enum TlsCertSourceKind {
 }
 
 impl TlsCertSource {
+    fn issues_per_identity(&self) -> bool {
+        !matches!(self.kind, TlsCertSourceKind::InMemory(_))
+    }
+
+    fn fallback_identity(&self) -> Option<&CertificateIdentity> {
+        match &self.kind {
+            TlsCertSourceKind::InMemory(_) => None,
+            TlsCertSourceKind::InMemoryIssuer {
+                fallback_identity, ..
+            }
+            | TlsCertSourceKind::DynamicIssuer {
+                fallback_identity, ..
+            } => fallback_identity.as_ref(),
+        }
+    }
+
+    /// The certificate for `identity`, issued now or reused from the cache.
+    ///
+    /// A dynamic issuer decides from the ClientHello and may accept no identity at all;
+    /// leaves issued by an in-memory CA need one.
+    async fn issue_for(
+        self,
+        identity: Option<CertificateIdentity>,
+        client_hello: Option<RamaClientHello>,
+    ) -> Result<IssuedCert, BoxError> {
+        match self.kind {
+            TlsCertSourceKind::InMemory(issued_cert) => Ok(issued_cert),
+            TlsCertSourceKind::InMemoryIssuer {
+                cert_cache,
+                ca_key,
+                ca_chain,
+                leaf_config,
+                ..
+            } => {
+                let identity = identity.ok_or_else(|| {
+                    BoxError::from_static_str("no DNS SNI or target identity for leaf issuance")
+                })?;
+                tracing::trace!(
+                    ?identity,
+                    "try to use cached issued cert or generate new one"
+                );
+                let issue = {
+                    let identity = identity.clone();
+                    issue_blocking(move || {
+                        issue_cert_for_ca(&identity, &leaf_config, &ca_chain, &ca_key)
+                    })
+                };
+                match &cert_cache {
+                    None => issue.await.context("fresh issue of cert"),
+                    Some(cert_cache) => get_or_issue_cached(cert_cache, &identity, issue).await,
+                }
+            }
+            TlsCertSourceKind::DynamicIssuer {
+                issuer, cert_cache, ..
+            } => {
+                let client_hello = client_hello.ok_or_else(|| {
+                    BoxError::from_static_str("dynamic cert issuer requires the client hello")
+                })?;
+                let cache_key = identity.as_ref().map(|identity| {
+                    issuer
+                        .normalize_identity(identity)
+                        .unwrap_or_else(|| identity.clone())
+                });
+                let issue = async move {
+                    let auth_data = issuer
+                        .issue_cert(CertificateIssuanceContext {
+                            client_hello,
+                            server_identity: identity,
+                        })
+                        .await
+                        .context("dynamic cert issuer")?;
+                    // DER parsing of the returned material is cheap; only the
+                    // issuer's own work (remote or local signing) is async here.
+                    server_auth_data_to_private_key_and_ca_chain(&auth_data)
+                        .context("server_auth_data to key and ca chain")
+                };
+                match (cache_key.as_ref(), cert_cache.as_ref()) {
+                    (Some(cache_key), Some(cert_cache)) => {
+                        get_or_issue_cached(cert_cache, cache_key, issue).await
+                    }
+                    _ => issue.await,
+                }
+            }
+        }
+    }
+
     pub(super) async fn issue_certs(
         self,
         mut builder: SslAcceptorBuilder,
         target_identity: Option<CertificateIdentity>,
         maybe_client_hello: Option<&Arc<Mutex<Option<RamaClientHello>>>>,
     ) -> Result<SslAcceptorBuilder, BoxError> {
-        match self.kind {
-            TlsCertSourceKind::InMemory(issued_cert) => {
-                install_identity(&mut builder, &issued_cert)?;
+        if let TlsCertSourceKind::InMemory(issued_cert) = &self.kind {
+            install_identity(&mut builder, issued_cert)?;
 
-                if let Some(maybe_client_hello) = maybe_client_hello {
-                    let cb_maybe_client_hello = maybe_client_hello.clone();
-                    builder.set_select_certificate_callback(move |boring_client_hello| {
-                        let maybe_client_hello =
-                            match RamaClientHello::rama_try_from(boring_client_hello) {
-                                Ok(ch) => Some(ch),
-                                Err(err) => {
-                                    tracing::warn!(
-                                        "failed to extract boringssl client hello: {err:?}"
-                                    );
-                                    None
-                                }
-                            };
-                        *cb_maybe_client_hello.lock() = maybe_client_hello;
-                        Ok(())
-                    });
-                }
-            }
-            TlsCertSourceKind::InMemoryIssuer {
-                cert_cache,
-                ca_key,
-                ca_chain,
-                leaf_config,
-                fallback_identity,
-            } => {
-                let cb_maybe_client_hello = maybe_client_hello.cloned();
-                let fallback_identity = target_identity.or(fallback_identity);
-                builder.set_async_select_certificate_callback(move |client_hello| {
-                    if let Some(cb_maybe_client_hello) = &cb_maybe_client_hello {
-                        let maybe_client_hello = match RamaClientHello::rama_try_from(
-                            &*client_hello,
-                        ) {
+            if let Some(maybe_client_hello) = maybe_client_hello {
+                let cb_maybe_client_hello = maybe_client_hello.clone();
+                builder.set_select_certificate_callback(move |boring_client_hello| {
+                    let maybe_client_hello =
+                        match RamaClientHello::rama_try_from(boring_client_hello) {
                             Ok(ch) => Some(ch),
                             Err(err) => {
                                 tracing::warn!("failed to extract boringssl client hello: {err:?}");
                                 None
                             }
                         };
-                        *cb_maybe_client_hello.lock() = maybe_client_hello;
-                    }
-
-                    let ssl_ref = client_hello.ssl_mut();
-
-                    let identity = to_opt_identity(ssl_ref, fallback_identity.as_ref())
-                        .map_err(|err| {
-                            tracing::error!("boring: failed getting host: {err:?}");
-                            AsyncSelectCertError {}
-                        })?
-                        .ok_or_else(|| {
-                            tracing::error!(
-                                "boring: no DNS SNI or target identity for leaf issuance"
-                            );
-                            AsyncSelectCertError {}
-                        })?;
-
-                    let cert_cache = cert_cache.clone();
-                    let ca_key = ca_key.clone();
-                    let ca_chain = ca_chain.clone();
-                    let leaf_config = leaf_config.clone();
-
-                    Ok(Box::pin(async move {
-                        tracing::trace!(
-                            ?identity,
-                            "try to use cached issued cert or generate new one"
-                        );
-                        let issue = {
-                            let identity = identity.clone();
-                            issue_blocking(move || {
-                                issue_cert_for_ca(&identity, &leaf_config, &ca_chain, &ca_key)
-                            })
-                        };
-                        let issued_cert = match &cert_cache {
-                            None => issue.await.context("fresh issue of cert"),
-                            Some(cert_cache) => {
-                                get_or_issue_cached(cert_cache, &identity, issue).await
-                            }
-                        }
-                        .map_err(|err| {
-                            tracing::error!(
-                                "boring: select certificate callback: issue failed: {err:?}"
-                            );
-                            AsyncSelectCertError {}
-                        })?;
-
-                        let apply_cert = Box::new(move |client_hello: ClientHello<'_>| {
-                            let mut client_hello = client_hello;
-                            let ssl_ref = client_hello.ssl_mut();
-
-                            add_issued_cert_to_ssl_ref(Some(&identity), &issued_cert, ssl_ref)
-                                .map_err(|err| {
-                                    tracing::error!(
-                                        "boring: select certificate callback: add certs to ssl ref: {err:?}"
-                                    );
-                                    AsyncSelectCertError {}
-                                })?;
-                            Ok(())
-                        }) as BoxSelectCertFinish;
-
-                        Ok(apply_cert)
-                    }))
+                    *cb_maybe_client_hello.lock() = maybe_client_hello;
+                    Ok(())
                 });
             }
-            TlsCertSourceKind::DynamicIssuer {
-                issuer,
-                cert_cache,
-                fallback_identity,
-            } => {
-                let cb_maybe_client_hello = maybe_client_hello.cloned();
-                let cert_cache = cert_cache;
-                let fallback_identity = target_identity.or(fallback_identity);
+            return Ok(builder);
+        }
 
-                builder.set_async_select_certificate_callback(move |client_hello| {
-                    let rama_client_hello =
-                        RamaClientHello::rama_try_from(&*client_hello).map_err(|err| {
-                            tracing::error!("boring: failed converting to rama client hello: {err:?}");
-                            AsyncSelectCertError{}
-                        })?;
+        let cb_maybe_client_hello = maybe_client_hello.cloned();
+        let fallback_identity = target_identity.or_else(|| self.fallback_identity().cloned());
+        builder.set_async_select_certificate_callback(move |client_hello| {
+            let rama_client_hello = match RamaClientHello::rama_try_from(&*client_hello) {
+                Ok(ch) => Some(ch),
+                Err(err) => {
+                    tracing::warn!("failed to extract boringssl client hello: {err:?}");
+                    None
+                }
+            };
+            if let Some(cb_maybe_client_hello) = &cb_maybe_client_hello {
+                *cb_maybe_client_hello.lock() = rama_client_hello.clone();
+            }
 
-                    if let Some(cb_maybe_client_hello) = &cb_maybe_client_hello {
-                        *cb_maybe_client_hello.lock() = Some(rama_client_hello.clone());
-                    }
+            let ssl_ref = client_hello.ssl_mut();
+            let identity = to_opt_identity(ssl_ref, fallback_identity.as_ref()).map_err(|err| {
+                tracing::error!("boring: failed getting host: {err:?}");
+                AsyncSelectCertError {}
+            })?;
 
-                    let ssl_ref = client_hello.ssl_mut();
-                    let server_identity = to_opt_identity(ssl_ref, fallback_identity.as_ref()).map_err(|err| {
-                        tracing::error!("boring: failed getting host: {err:?}");
-                        AsyncSelectCertError{}
+            let source = self.clone();
+            Ok(Box::pin(async move {
+                let issued_cert = source
+                    .issue_for(identity.clone(), rama_client_hello)
+                    .await
+                    .map_err(|err| {
+                        tracing::error!(
+                            "boring: select certificate callback: issue failed: {err:?}"
+                        );
+                        AsyncSelectCertError {}
                     })?;
 
+                let apply_cert = Box::new(move |client_hello: ClientHello<'_>| {
+                    let mut client_hello = client_hello;
+                    let ssl_ref = client_hello.ssl_mut();
 
-                    let issuer = issuer.clone();
-                    let cert_cache = cert_cache.clone();
-
-                    Ok(Box::pin(async move {
-                        let maybe_cache_key = server_identity.as_ref().map(|identity| {
-                            issuer
-                                .normalize_identity(identity)
-                                .unwrap_or_else(|| identity.clone())
-                        });
-
-                        let issue = {
-                            let issuer = issuer.clone();
-                            let server_identity = server_identity.clone();
-                            async move {
-                                let auth_data = issuer
-                                    .issue_cert(CertificateIssuanceContext {
-                                        client_hello: rama_client_hello,
-                                        server_identity,
-                                    })
-                                    .await
-                                    .context("dynamic cert issuer")?;
-                                // DER parsing of the returned material is cheap; only the
-                                // issuer's own work (remote or local signing) is async here.
-                                server_auth_data_to_private_key_and_ca_chain(&auth_data)
-                                    .context("server_auth_data to key and ca chain")
-                            }
-                        };
-                        let issued_cert = match (maybe_cache_key.as_ref(), cert_cache.as_ref()) {
-                            (Some(cache_key), Some(cert_cache)) => {
-                                get_or_issue_cached(cert_cache, cache_key, issue).await
-                            }
-                            _ => issue.await,
-                        }
-                        .map_err(|err| {
-                            tracing::error!("boring: dynamic cert issuance failed: {err:?}");
+                    add_issued_cert_to_ssl_ref(identity.as_ref(), &issued_cert, ssl_ref).map_err(
+                        |err| {
+                            tracing::error!(
+                                "boring: select certificate callback: add certs to ssl ref: {err:?}"
+                            );
                             AsyncSelectCertError {}
-                        })?;
+                        },
+                    )?;
+                    Ok(())
+                }) as BoxSelectCertFinish;
 
-                        let apply_cert = Box::new(move |client_hello: ClientHello<'_>| {
-                            let mut client_hello = client_hello;
-                            let ssl_ref = client_hello.ssl_mut();
-
-                            add_issued_cert_to_ssl_ref(
-                                server_identity.as_ref(),
-                                &issued_cert,
-                                ssl_ref,
-                            ).map_err(|err| {
-                                tracing::error!("boring: async select certificate callback: add certs to ssl ref: {err:?}");
-                                AsyncSelectCertError{}
-                            })?;
-                            Ok(())
-                        }) as BoxSelectCertFinish;
-
-                        Ok(apply_cert)
-                    }))
-                });
-            }
-        }
+                Ok(apply_cert)
+            }))
+        });
 
         Ok(builder)
     }

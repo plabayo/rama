@@ -85,9 +85,19 @@ impl RustlsServerConfigExt for rama_tls::server::TlsServerConfig {
 
 /// A [`DynamicConfigProvider`] piece: resolves a full rustls config per
 /// ClientHello
-#[derive(Extension)]
+#[derive(Clone, Extension)]
 #[extension(tags(tls))]
 pub struct RustlsDynamicConfig(pub(crate) Arc<dyn DynDynamicConfigProvider + Send + Sync>);
+
+impl RustlsDynamicConfig {
+    /// Resolve the rustls [`ServerConfig`] for this ClientHello.
+    pub async fn get_config(
+        &self,
+        client_hello: crate::dep::rustls::server::ClientHello<'_>,
+    ) -> Result<Arc<ServerConfig>, BoxError> {
+        self.0.get_config(client_hello).await
+    }
+}
 
 impl std::fmt::Debug for RustlsDynamicConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
