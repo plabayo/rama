@@ -990,6 +990,13 @@ impl TransparentProxyTcpSession {
         self.signals.terminal_error_code()
     }
 
+    /// Whether the service aborted the egress stream: its peer is to see a reset, not the
+    /// queued tail and a FIN. Unlike [`Self::terminal_error_code`] no earlier reason masks it.
+    /// Published before the egress close callback and retained until session release.
+    pub fn egress_aborted(&self) -> bool {
+        self.signals.egress_aborted()
+    }
+
     /// Return the handler-supplied egress connect options, if any.
     pub fn egress_connect_options(&self) -> Option<&NwTcpConnectOptions> {
         self.pending
@@ -1481,7 +1488,8 @@ where
                     result = serve.as_mut() => {
                         break match result {
                             Ok(service_result) => {
-                                _ = service_result;
+                                // Infallible: a failure reaches the flow through its `AbortIo`.
+                                let Ok(()) = service_result;
                                 BridgeCloseReason::PeerEofLeft
                             }
                             Err(panic) => {
@@ -2184,7 +2192,7 @@ where
                 res = &mut serve_fut => {
                     match res {
                         Ok(service_result) => {
-                            _ = service_result;
+                            let Ok(()) = service_result;
                             BridgeCloseReason::PeerEofLeft
                         }
                         Err(panic) => {
@@ -2689,6 +2697,7 @@ impl std::fmt::Display for BridgeDirection {
 /// one (see `FfiBridgeStream::poll_write`).
 pub(crate) struct TcpPerFlowSignals {
     terminal_error: AtomicI32,
+    egress_aborted: AtomicBool,
     ingress_paused: AtomicBool,
     ingress_pause_gate: parking_lot::Mutex<()>,
     ingress_drain: AtomicWaker,
@@ -2703,6 +2712,7 @@ impl TcpPerFlowSignals {
     pub(crate) fn new() -> Self {
         Self {
             terminal_error: AtomicI32::new(0),
+            egress_aborted: AtomicBool::new(false),
             ingress_paused: AtomicBool::new(false),
             ingress_pause_gate: parking_lot::Mutex::new(()),
             ingress_drain: AtomicWaker::new(),
@@ -2718,6 +2728,14 @@ impl TcpPerFlowSignals {
         self.terminal_error.load(Ordering::Acquire)
     }
 
+    pub(crate) fn egress_aborted(&self) -> bool {
+        self.egress_aborted.load(Ordering::Acquire)
+    }
+
+    fn record_egress_abort(&self) {
+        self.egress_aborted.store(true, Ordering::Release);
+    }
+
     /// Unlike diagnostic first-reason cells, a clean half-close must not mask a
     /// later write failure. Keep the first abnormal reason across both halves.
     fn record_terminal_error(&self, reason: BridgeCloseReason) {
@@ -2729,9 +2747,9 @@ impl TcpPerFlowSignals {
             | BridgeCloseReason::HandlerDeadline
             | BridgeCloseReason::FirstByteTimeout
             | BridgeCloseReason::MaxLifetime => libc::ETIMEDOUT,
-            BridgeCloseReason::ReadErrorLeft | BridgeCloseReason::ReadErrorRight => {
-                libc::ECONNRESET
-            }
+            BridgeCloseReason::ReadErrorLeft
+            | BridgeCloseReason::ReadErrorRight
+            | BridgeCloseReason::Aborted => libc::ECONNRESET,
             BridgeCloseReason::WriteErrorLeft | BridgeCloseReason::WriteErrorRight => libc::EPIPE,
             BridgeCloseReason::Shutdown => libc::ECANCELED,
             // Service panics and future abnormal reasons fail closed.

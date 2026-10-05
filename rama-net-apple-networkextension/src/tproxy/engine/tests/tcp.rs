@@ -6,16 +6,25 @@ use super::common::*;
 use crate::tproxy::engine::*;
 use crate::tproxy::{TransparentProxyFlowMeta, TransparentProxyFlowProtocol};
 use parking_lot::Mutex;
-use rama_core::io::BridgeIo;
-use rama_core::service::service_fn;
-use rama_net::address::HostWithPort;
-use std::convert::Infallible;
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use rama_core::{
+    extensions::{Extensions, ExtensionsRef},
+    io::{AbortIo, BridgeIo},
+    rt::Executor,
+    service::{Service, service_fn},
 };
-use std::time::{Duration, Instant};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use rama_net::{address::HostWithPort, proxy::IoForwardService};
+use std::{
+    convert::Infallible,
+    io::{self, ErrorKind},
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    task::{Context, Poll, Waker},
+    time::{Duration, Instant},
+};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 #[test]
 fn tcp_bridge_delivers_server_bytes() {
@@ -1175,4 +1184,172 @@ fn tcp_client_eof_after_activate_with_no_bytes_half_closes() {
     assert_eq!(egress_closed.load(Ordering::Relaxed), 1);
 
     engine.stop(0);
+}
+
+/// Upstream that ends with `end` (EOF when `None`) once the client's bytes reached it.
+struct EndingUpstream {
+    end: Option<ErrorKind>,
+    received: bool,
+    reader: Option<Waker>,
+    extensions: Extensions,
+}
+
+impl EndingUpstream {
+    fn new(end: Option<ErrorKind>) -> Self {
+        Self {
+            end,
+            received: false,
+            reader: None,
+            extensions: Extensions::new(),
+        }
+    }
+}
+
+impl ExtensionsRef for EndingUpstream {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl AsyncRead for EndingUpstream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        _: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        if !this.received {
+            this.reader = Some(cx.waker().clone());
+            return Poll::Pending;
+        }
+        Poll::Ready(match this.end {
+            Some(kind) => Err(kind.into()),
+            None => Ok(()),
+        })
+    }
+}
+
+impl AsyncWrite for EndingUpstream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        this.received = true;
+        if let Some(reader) = this.reader.take() {
+            reader.wake();
+        }
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// Serve `service`, send one client chunk, and return the flow's terminal error code and
+/// whether its egress was aborted, once the client-facing close callback fired.
+fn terminal_state_at_close(service: TestTcpService) -> (i32, bool) {
+    let (closed_tx, closed_rx) = std::sync::mpsc::channel::<()>();
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(move |meta| FlowAction::Intercept {
+            meta,
+            service: service.clone(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_engine(handler);
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(443)),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        move || {
+            _ = closed_tx.send(());
+        },
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+    assert_eq!(
+        session.on_client_bytes(b"request"),
+        TcpDeliverStatus::Accepted
+    );
+    closed_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the flow must close");
+    let state = (session.terminal_error_code(), session.egress_aborted());
+    engine.stop(0);
+    state
+}
+
+#[test]
+fn tcp_relay_reflects_an_upstream_reset_and_keeps_an_orderly_end() {
+    for (end, expected) in [
+        (Some(ErrorKind::ConnectionReset), libc::ECONNRESET),
+        (Some(ErrorKind::ConnectionAborted), libc::ECONNRESET),
+        (None, 0),
+        (Some(ErrorKind::BrokenPipe), 0),
+        (Some(ErrorKind::UnexpectedEof), 0),
+    ] {
+        let service = service_fn(
+            move |BridgeIo(ingress, _egress): BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
+                _ = IoForwardService::new(Executor::new())
+                    .serve(BridgeIo(ingress, EndingUpstream::new(end)))
+                    .await;
+                Ok::<_, Infallible>(())
+            },
+        )
+        .boxed();
+        assert_eq!(
+            terminal_state_at_close(service),
+            (expected, false),
+            "{end:?}"
+        );
+    }
+}
+
+#[test]
+fn tcp_bridge_ends_each_publish_their_own_abort() {
+    // (abort ingress, abort egress): an egress abort shows even after an earlier abnormal end.
+    for (abort_ingress, abort_egress) in [(true, false), (false, true), (true, true)] {
+        let service = service_fn(
+            move |BridgeIo(ingress, egress): BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
+                let ingress_abort = ingress
+                    .extensions()
+                    .self_get_arc::<AbortIo>()
+                    .expect("the ingress publishes an AbortIo");
+                let egress_abort = egress
+                    .extensions()
+                    .self_get_arc::<AbortIo>()
+                    .expect("the egress publishes an AbortIo");
+                assert!(
+                    !Arc::ptr_eq(&ingress_abort, &egress_abort),
+                    "each end publishes its own"
+                );
+                for (abort, enabled) in [(ingress_abort, abort_ingress), (egress_abort, abort_egress)] {
+                    if enabled {
+                        abort.abort();
+                        abort.abort();
+                    }
+                }
+                Ok::<_, Infallible>(())
+            },
+        )
+        .boxed();
+        assert_eq!(
+            terminal_state_at_close(service),
+            (libc::ECONNRESET, abort_egress),
+            "abort ingress: {abort_ingress}, abort egress: {abort_egress}"
+        );
+    }
 }

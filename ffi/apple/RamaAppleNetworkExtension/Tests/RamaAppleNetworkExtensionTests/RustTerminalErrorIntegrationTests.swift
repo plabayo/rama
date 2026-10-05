@@ -130,10 +130,11 @@ final class RustTerminalErrorIntegrationTests: XCTestCase {
                 }
             }
             h.drain()
-            // Completing the upload FIN must not discard the held response.
-            while h.connection.completePendingSend(error: nil) { h.drain() }
+            // The relay reflects the reset onto the egress too: it is reset at once,
+            // without an upload FIN, while the held response still drains.
+            XCTAssertNil(h.connection.sentChunks.first(where: { $0.content == nil }), "no FIN")
+            XCTAssertEqual(h.connection.forceCancelCount, 1)
             XCTAssertEqual(h.flow.closeWriteCallCount, 0)
-            XCTAssertEqual(h.connection.cancelCount, 0)
             h.session.flowQueue.sync { XCTAssertFalse(h.session.ctx.isDone) }
             while h.flow.completeNextWrite() { h.drain() }
             waitFor("error-carrying close after the final response completion") {
@@ -145,6 +146,7 @@ final class RustTerminalErrorIntegrationTests: XCTestCase {
             XCTAssertEqual((h.flow.lastCloseReadError as NSError?)?.code, Int(ECONNRESET))
             XCTAssertEqual(h.flow.closeReadCallCount, 1)
             XCTAssertEqual(h.connection.cancelCount, 1)
+            XCTAssertEqual(h.connection.forceCancelCount, 1, "an abnormal end resets the egress")
             h.session.flowQueue.sync {
                 h.session.closeClientAfterRustDrain()
                 h.session.closeEgressAfterRustDrain()
@@ -160,6 +162,7 @@ final class RustTerminalErrorIntegrationTests: XCTestCase {
         let h = Harness()
         produceReadErrorAfterClientEOF(h, tail: Data([1, 2, 3, 4]))
         XCTAssertEqual((h.handle.terminalError() as NSError?)?.code, Int(ECONNRESET))
+        XCTAssertTrue(h.handle.egressAborted(), "the relay reflects a reset onto both sides")
         h.handle.cancel()
         XCTAssertEqual((h.handle.terminalError() as NSError?)?.code, Int(ECONNRESET))
         h.handle.cancel()

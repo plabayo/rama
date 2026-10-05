@@ -640,7 +640,7 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// sticky `done` flag makes this a no-op; if the path recovered,
     /// `lastPathViable` is `true` again and it is left alone.
     private func checkDeadPath(_ ctx: TcpFlowContext, trigger: String) {
-        guard ctx.egressReady, ctx.connection != nil else { return }
+        guard ctx.egressReady, ctx.connection != nil, !ctx.egressReset else { return }
         // Don't act on a flow whose teardown already ran/started — it may
         // still be observable here during the window before its async
         // `removeTcpFlow` lands (e.g. a promoted flow that hit
@@ -4017,6 +4017,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         // back to the in-Rust path.
         guard let session = ctx.session,
             let connection = ctx.connection,
+            !ctx.egressReset,
             let clientWritePump = ctx.clientWritePump,
             let egressWritePump = ctx.egressWritePump,
             ctx.clientReadPump != nil

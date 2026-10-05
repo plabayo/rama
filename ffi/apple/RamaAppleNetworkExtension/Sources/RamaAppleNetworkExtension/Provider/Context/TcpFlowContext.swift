@@ -272,6 +272,8 @@ final class TcpFlowContext: @unchecked Sendable {
     /// Sticky one-shot teardown guard. Mutated and read only on
     /// `flowQueue` (single-threaded by construction), so it needs no lock.
     private(set) var isDone = false
+    /// Rust aborted the egress, which `resetEgress` already cancelled.
+    private(set) var egressReset = false
     /// Each `NEAppProxyTCPFlow` half has one terminal close operation. Keep
     /// those edges separate from whole-flow teardown so a later aggregate
     /// terminal cannot repeat a close or replace its original error.
@@ -385,8 +387,7 @@ final class TcpFlowContext: @unchecked Sendable {
         let err = tcpUpstreamUnavailableError()
         closeClientReadOnce(err)
         closeClientWriteOnce(err)
-        connection?.cancelAndDetach()
-        connection = nil
+        releaseConnection(force: false)
         session?.cancel()
         if let flowId {
             core?.removeTcpFlow(
@@ -432,14 +433,37 @@ final class TcpFlowContext: @unchecked Sendable {
             closeClientReadOnce(error)
             closeClientWriteOnce(error)
         }
-        connection?.cancelAndDetach()
-        connection = nil
+        // An abnormal end resets the egress as well.
+        releaseConnection(force: error != nil)
         if let flowId {
             core?.removeTcpFlow(
                 flowId,
                 context: self,
                 engineGeneration: engineGeneration)
         }
+    }
+
+    /// Rust aborted the egress: reset it now, without its queued tail or a FIN,
+    /// while the client half keeps draining toward its own close. The read pump
+    /// stops first, so the failing receive cannot mask Rust's terminal error.
+    func resetEgress() {
+        guard !isDone, !egressReset else { return }
+        egressReset = true
+        egressReadPump?.cancel()
+        egressWritePump?.cancel()
+        connection?.forceCancelAndDetach()
+    }
+
+    /// Cancel and drop the egress connection, unless `resetEgress` already did.
+    func releaseConnection(force: Bool) {
+        if !egressReset {
+            if force {
+                connection?.forceCancelAndDetach()
+            } else {
+                connection?.cancelAndDetach()
+            }
+        }
+        connection = nil
     }
 
     /// Clean server→client half-close. Keep accepting client→server bytes
@@ -451,13 +475,14 @@ final class TcpFlowContext: @unchecked Sendable {
 
     /// Both Rust write directions have drained. The client write half was
     /// already closed when its drain completed, so close only the remaining
-    /// read half before releasing the connection and registry ownership.
-    func applyFullyDrainedClose() {
+    /// read half before releasing the connection and registry ownership,
+    /// with `error` when the flow ended abnormally after that half-close.
+    func applyFullyDrainedClose(error: Error? = nil) {
         guard !isDone else { return }
         isDone = true
-        closeClientReadOnce(nil)
-        connection?.cancelAndDetach()
-        connection = nil
+        closeClientReadOnce(error)
+        // An abnormal end resets the egress as well.
+        releaseConnection(force: error != nil)
         if let flowId {
             core?.removeTcpFlow(
                 flowId,
@@ -638,8 +663,7 @@ final class TcpFlowContext: @unchecked Sendable {
         clientWritePump?.cancel()
         closeClientReadOnce(error)
         closeClientWriteOnce(error)
-        connection?.cancelAndDetach()
-        connection = nil
+        releaseConnection(force: true)
         egressReadPump?.cancel()
         egressReadPump = nil
         egressWritePump?.cancel()

@@ -1649,6 +1649,7 @@ private final class ReceiveLengthObservingConnection: NwConnectionLike, @uncheck
 
     func start(queue: DispatchQueue) { base.start(queue: queue) }
     func cancel() { base.cancel() }
+    func forceCancel() { base.forceCancel() }
 
     func send(
         content: Data?,

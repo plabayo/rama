@@ -143,11 +143,10 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         let ctx = self.ctx
         if let queue = ctx.flowQueue {
             queue.async {
-                ctx.connection?.cancelAndDetach()
-                ctx.connection = nil
+                ctx.releaseConnection(force: false)
             }
         } else {
-            ctx.connection?.cancelAndDetach()
+            ctx.releaseConnection(force: false)
         }
     }
 
@@ -538,7 +537,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         terminalDrainBackstop?.cancel()
         terminalDrainBackstop = nil
         ctx.drainClosePending = false
-        ctx.applyFullyDrainedClose()
+        // A Rust abort after the clean client half-close still ends the flow abnormally.
+        ctx.applyFullyDrainedClose(error: sessionHandle?.terminalError())
     }
 
     /// Rust publishes abnormal bridge termination before its close callback.
@@ -718,6 +718,11 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     func closeEgressAfterRustDrain() {
         guard !closeForRustTerminalError() else { return }
         guard beginTerminalDrain(.egressWriter) else { return }
+        if sessionHandle?.egressAborted() == true {
+            ctx.resetEgress()
+            finishTerminalDrain(.egressWriter)
+            return
+        }
         ctx.egressWritePump?.closeWhenDrained { [weak self] in
             self?.finishTerminalDrain(.egressWriter)
         }

@@ -37,6 +37,7 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
     private var _pendingSendCompletions: [SendCompletion] = []
     private var _pendingReceiveCompletions: [ReceiveCompletion] = []
     private var _cancelCount: Int = 0
+    private var _forceCancelCount: Int = 0
     private var _startInvocations: [DispatchQueue] = []
 
     // MARK: - NwConnectionLike
@@ -82,6 +83,14 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
     func cancel() {
         lock.lock()
         _cancelCount += 1
+        lock.unlock()
+    }
+
+    /// Counted in `cancelCount` too: it cancels, without a graceful close.
+    func forceCancel() {
+        lock.lock()
+        _cancelCount += 1
+        _forceCancelCount += 1
         lock.unlock()
     }
 
@@ -262,6 +271,12 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return _cancelCount
+    }
+
+    var forceCancelCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _forceCancelCount
     }
 
     var startInvocations: [DispatchQueue] {

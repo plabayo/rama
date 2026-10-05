@@ -218,6 +218,7 @@ final class NwTcpConnectionWritePumpFinContextTests: XCTestCase {
             return XCTFail("original FIN send error was not preserved")
         }
         XCTAssertEqual(mock.cancelCount, 1)
+        XCTAssertEqual(mock.forceCancelCount, 1, "a failed FIN resets the connection")
     }
 
     func testPendingFinCompletionDoesNotRetainPump() {
