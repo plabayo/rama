@@ -1358,6 +1358,53 @@ mod tests {
         );
     }
 
+    /// A throttle's budget caps what a write admits without blocking it, and leaves the
+    /// flow-control bookkeeping as for any partial write.
+    #[test]
+    fn a_budget_caps_what_a_write_admits() {
+        let mut state = make(Side::Client);
+        state.set_params(&TransportParameters {
+            initial_max_data: 100u32.into(),
+            initial_max_stream_data_uni: 200u32.into(),
+            initial_max_streams_uni: 2u32.into(),
+            ..TransportParameters::default()
+        });
+        let conn_state = ConnState::Established;
+        let mut pending = Retransmits::default();
+        let id = (Streams {
+            state: &mut state,
+            conn_state: &conn_state,
+        })
+        .open(Dir::Uni)
+        .unwrap();
+        let mut chunks = [Bytes::from(vec![0; 40]), Bytes::from(vec![1; 40])];
+        let mut write = |chunks: &mut [Bytes], budget| {
+            SendStream {
+                id,
+                state: &mut state,
+                pending: &mut pending,
+                conn_state: &conn_state,
+            }
+            .write_chunks_within(chunks, 0, budget)
+        };
+        let written = write(&mut chunks, 50).unwrap();
+        assert_eq!((written.bytes, written.chunks), (50, 1));
+        assert_eq!(chunks[1].len(), 30, "the partial chunk keeps its suffix");
+        let written = write(&mut chunks[1..], u64::MAX).unwrap();
+        assert_eq!((written.bytes, written.chunks), (30, 1));
+        assert_eq!(
+            SendStream {
+                id,
+                state: &mut state,
+                pending: &mut pending,
+                conn_state: &conn_state,
+            }
+            .write_within(&[0; 50], 1),
+            Ok(1)
+        );
+        assert_eq!(state.data_sent, 81);
+    }
+
     #[test]
     fn reserve_wakes_only_above_credit_threshold() {
         let mut state = make(Side::Client);
@@ -1383,7 +1430,7 @@ mod tests {
                 pending,
                 conn_state: &conn_state,
             }
-            .write_chunks_with_reserve(chunks, 20)
+            .write_chunks_within(chunks, 20, u64::MAX)
         };
         assert_eq!(
             write(&mut state, &mut pending, &mut chunks).unwrap().bytes,

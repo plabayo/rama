@@ -12,7 +12,7 @@ use rama_core::bytes::Bytes;
 use rama_quic_proto::{StreamId, VarInt};
 use tokio::io::ReadBuf;
 
-use crate::driver::connection::ConnectionRef;
+use crate::driver::{connection::ConnectionRef, gate::GateStack};
 
 /// A stream that can only be used to receive data
 ///
@@ -57,20 +57,29 @@ pub struct RecvStream {
     is_0rtt: bool,
     all_data_read: bool,
     reset: Option<VarInt>,
+    gates: Option<GateStack>,
 }
 
 impl RecvStream {
-    pub(crate) fn new(conn: ConnectionRef, stream: StreamId, is_0rtt: bool) -> Self {
+    pub(crate) fn new(
+        conn: ConnectionRef,
+        stream: StreamId,
+        is_0rtt: bool,
+        gates: Option<GateStack>,
+    ) -> Self {
         Self {
             conn,
             stream,
             is_0rtt,
             all_data_read: false,
             reset: None,
+            gates,
         }
     }
 
     /// Read data contiguously from the stream.
+    ///
+    /// [Stream gates](crate::Connection::add_stream_gates) may admit less than is buffered.
     ///
     /// Yields the number of bytes read into `buf` on success, or `None` if the stream was finished.
     ///
@@ -138,7 +147,8 @@ impl RecvStream {
             return Poll::Ready(Ok(()));
         }
 
-        self.poll_read_generic(cx, true, |chunks| {
+        let want = buf.remaining();
+        self.poll_read_generic(cx, true, want, |chunks| {
             let mut read = false;
             loop {
                 if buf.remaining() == 0 {
@@ -198,9 +208,11 @@ impl RecvStream {
         max_length: usize,
         ordered: bool,
     ) -> Poll<Result<Option<Chunk>, ReadError>> {
-        self.poll_read_generic(cx, ordered, |chunks| match chunks.next(max_length) {
-            Ok(Some(chunk)) => ReadStatus::Readable(chunk),
-            res => (None, res.err()).into(),
+        self.poll_read_generic(cx, ordered, max_length, |chunks| {
+            match chunks.next(max_length) {
+                Ok(Some(chunk)) => ReadStatus::Readable(chunk),
+                res => (None, res.err()).into(),
+            }
         })
     }
 
@@ -228,7 +240,7 @@ impl RecvStream {
             return Poll::Ready(Ok(Some(0)));
         }
 
-        self.poll_read_generic(cx, true, |chunks| {
+        self.poll_read_generic(cx, true, usize::MAX, |chunks| {
             let mut read = 0;
             loop {
                 if read >= bufs.len() {
@@ -351,21 +363,80 @@ impl RecvStream {
     ///
     /// This takes an `FnMut` closure that takes care of the actual reading process, matching
     /// the detailed read semantics for the calling function with a particular return type.
-    /// The closure can read from the passed `&mut Chunks` and has to return the status after
-    /// reading: the amount of data read, and the status after the final read call.
+    /// The closure can read from the passed `&mut BudgetedChunks` and has to return the status
+    /// after reading: the amount of data read, and the status after the final read call.
+    ///
+    /// A gated stream reads (up to) `want` bytes only as its gates admit them.
     fn poll_read_generic<T, U>(
         &mut self,
         cx: &mut Context,
         ordered: bool,
+        want: usize,
         mut read_fn: T,
     ) -> Poll<Result<Option<U>, ReadError>>
     where
-        T: FnMut(&mut Chunks) -> ReadStatus<U>,
+        T: FnMut(&mut BudgetedChunks<'_, '_>) -> ReadStatus<U>,
     {
         if self.all_data_read {
             return Poll::Ready(Ok(None));
         }
+        if want == 0 || self.gates.is_none() {
+            return self
+                .poll_read_pass(cx, ordered, usize::MAX, &mut read_fn)
+                .poll;
+        }
+        // Only data waits for the gates: a pass that admits nothing reports the stream's end,
+        // reset or failure at once and registers this task for its events. Data it held back
+        // is read first, even past a lost connection, as an ungated stream reads it.
+        let pass = self.poll_read_pass(cx, ordered, 0, &mut read_fn);
+        if !pass.held_back {
+            return pass.poll;
+        }
+        let Some(gates) = self.gates.as_mut() else {
+            return pass.poll;
+        };
+        let admitted = ready!(gates.poll_admit(cx, want as u64));
+        let budget = usize::try_from(admitted).unwrap_or(usize::MAX);
+        let pass = self.poll_read_pass(cx, ordered, budget, &mut read_fn);
+        if let Some(gates) = self.gates.as_mut() {
+            gates.settle(pass.read as u64);
+        }
+        pass.poll
+    }
 
+    /// One read under the connection lock, of at most `budget` bytes.
+    fn poll_read_pass<T, U>(
+        &mut self,
+        cx: &mut Context,
+        ordered: bool,
+        budget: usize,
+        read_fn: &mut T,
+    ) -> ReadPass<U>
+    where
+        T: FnMut(&mut BudgetedChunks<'_, '_>) -> ReadStatus<U>,
+    {
+        let mut read = 0;
+        let mut held_back = false;
+        let poll = self.poll_read_inner(cx, ordered, budget, read_fn, &mut read, &mut held_back);
+        ReadPass {
+            poll,
+            read,
+            held_back,
+        }
+    }
+
+    fn poll_read_inner<T, U>(
+        &mut self,
+        cx: &mut Context,
+        ordered: bool,
+        budget: usize,
+        read_fn: &mut T,
+        read: &mut usize,
+        held_back: &mut bool,
+    ) -> Poll<Result<Option<U>, ReadError>>
+    where
+        T: FnMut(&mut BudgetedChunks<'_, '_>) -> ReadStatus<U>,
+    {
         let mut conn = self.conn.state.lock();
         if self.is_0rtt {
             conn.check_0rtt().map_err(|()| ReadError::ZeroRttRejected)?;
@@ -381,7 +452,14 @@ impl RecvStream {
         } else {
             let mut recv = conn.inner.recv_stream(self.stream);
             let mut chunks = recv.read(ordered)?;
-            let status = read_fn(&mut chunks);
+            let mut budgeted = BudgetedChunks {
+                chunks: &mut chunks,
+                left: budget,
+                held_back: false,
+            };
+            let status = read_fn(&mut budgeted);
+            *read = budget - budgeted.left;
+            *held_back = budgeted.held_back;
             if chunks.finalize().should_transmit() {
                 conn.wake();
             }
@@ -420,6 +498,43 @@ impl RecvStream {
                 }
             },
         }
+    }
+}
+
+/// One read pass and what it left for the gates.
+struct ReadPass<U> {
+    poll: Poll<Result<Option<U>, ReadError>>,
+    read: usize,
+    /// Data is waiting that the pass had no budget for.
+    held_back: bool,
+}
+
+/// The chunks of a stream, yielded within the budget its gates admitted.
+struct BudgetedChunks<'a, 'b> {
+    chunks: &'a mut Chunks<'b>,
+    left: usize,
+    held_back: bool,
+}
+
+impl BudgetedChunks<'_, '_> {
+    /// Like [`Chunks::next`]; data past the budget reads as [`ProtoReadError::Blocked`], while
+    /// what ends the stream passes.
+    fn next(&mut self, max_length: usize) -> Result<Option<Chunk>, ProtoReadError> {
+        if self.left == 0 {
+            // An empty read looks without consuming.
+            return match self.chunks.next(0) {
+                Ok(Some(_)) => {
+                    self.held_back = true;
+                    Err(ProtoReadError::Blocked)
+                }
+                other => other,
+            };
+        }
+        let chunk = self.chunks.next(max_length.min(self.left))?;
+        if let Some(chunk) = &chunk {
+            self.left -= chunk.bytes.len();
+        }
+        Ok(chunk)
     }
 }
 

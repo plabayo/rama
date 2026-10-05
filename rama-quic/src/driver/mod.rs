@@ -39,6 +39,7 @@
 
 mod connection;
 mod endpoint;
+mod gate;
 mod incoming;
 mod lifecycle;
 pub(crate) mod queue;

@@ -306,9 +306,15 @@ impl<'a> SendStream<'a> {
     /// Send data on the given stream
     ///
     /// Returns the number of bytes successfully written.
+    #[cfg(test)]
     pub(crate) fn write(&mut self, data: &[u8]) -> Result<usize, WriteError> {
+        self.write_within(data, u64::MAX)
+    }
+
+    /// [`Self::write`] admitting at most `budget` bytes.
+    pub(crate) fn write_within(&mut self, data: &[u8], budget: u64) -> Result<usize, WriteError> {
         Ok(self
-            .write_source(&mut ByteSlice::from_slice(data), 0)?
+            .write_source(&mut ByteSlice::from_slice(data), 0, budget)?
             .bytes)
     }
 
@@ -319,15 +325,18 @@ impl<'a> SendStream<'a> {
     /// [`Written::chunks`] will not count this chunk as fully written. However
     /// the chunk will be advanced and contain only non-written data after the call.
     pub(crate) fn write_chunks(&mut self, data: &mut [Bytes]) -> Result<Written, WriteError> {
-        self.write_source(&mut BytesArray::from_chunks(data), 0)
+        self.write_chunks_within(data, 0, u64::MAX)
     }
 
-    pub(crate) fn write_chunks_with_reserve(
+    /// [`Self::write_chunks`] leaving `reserve` connection credit to other streams and
+    /// admitting at most `budget` bytes.
+    pub(crate) fn write_chunks_within(
         &mut self,
         data: &mut [Bytes],
         reserve: u64,
+        budget: u64,
     ) -> Result<Written, WriteError> {
-        self.write_source(&mut BytesArray::from_chunks(data), reserve)
+        self.write_source(&mut BytesArray::from_chunks(data), reserve, budget)
     }
 
     /// Build an optional chunk using the exact currently available credit.
@@ -372,10 +381,12 @@ impl<'a> SendStream<'a> {
         Ok(result)
     }
 
+    /// `budget` is what stream gates admitted: at least 1, so it never blocks a write itself.
     fn write_source<B: BytesSource>(
         &mut self,
         source: &mut B,
         reserve: u64,
+        budget: u64,
     ) -> Result<Written, WriteError> {
         if self.conn_state.is_closed() {
             trace!(%self.id, "write blocked; connection draining");
@@ -414,7 +425,7 @@ impl<'a> SendStream<'a> {
         }
 
         let was_pending = stream.is_pending();
-        let written = stream.write(source, limit)?;
+        let written = stream.write(source, limit.min(budget))?;
         self.state.data_sent += written.bytes as u64;
         self.state.buffered_data += written.bytes as u64;
         trace!(stream = %self.id, "wrote {} bytes", written.bytes);

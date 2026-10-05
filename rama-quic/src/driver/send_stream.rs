@@ -6,17 +6,21 @@ use std::{
         Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
-    task::{Context, Poll},
+    task::{Context, Poll, ready},
 };
 
 use crate::proto::{
-    ClosedStream, ConnectionError, FinishError, WriteError as ProtoWriteError, Written,
+    ClosedStream, ConnectionError, FinishError, SendStream as ProtoSendStream,
+    WriteError as ProtoWriteError, Written,
 };
 use rama_core::bytes::Bytes;
 use rama_quic_proto::{StreamId, VarInt};
 use tokio::sync::Notify;
 
-use crate::driver::connection::{ConnectionRef, SendDatagramError, State};
+use crate::driver::{
+    connection::{ConnectionRef, SendDatagramError, State},
+    gate::GateStack,
+};
 
 /// A stream that can only be used to send data
 ///
@@ -44,6 +48,7 @@ pub struct SendStream {
     // Zero means not reset; QUIC's 62-bit code plus one fits losslessly.
     local_reset: u64,
     events: OnceLock<Arc<SendStreamEvents>>,
+    gates: Option<GateStack>,
 }
 
 /// Cloneable cancellation handle independent of the stream's I/O owner.
@@ -120,13 +125,19 @@ impl StreamAbortHandle {
 }
 
 impl SendStream {
-    pub(crate) fn new(conn: ConnectionRef, stream: StreamId, is_0rtt: bool) -> Self {
+    pub(crate) fn new(
+        conn: ConnectionRef,
+        stream: StreamId,
+        is_0rtt: bool,
+        gates: Option<GateStack>,
+    ) -> Self {
         Self {
             conn,
             stream,
             is_0rtt,
             local_reset: 0,
             events: OnceLock::new(),
+            gates,
         }
     }
 
@@ -153,15 +164,16 @@ impl SendStream {
     /// Write a buffer into this stream, returning how many bytes were written
     ///
     /// Unless this method errors, it waits until some amount of `buf` can be written into this
-    /// stream, and then writes as much as it can without waiting again. Due to congestion and flow
-    /// control, this may be shorter than `buf.len()`. On success this yields the length of the
-    /// prefix that was written.
+    /// stream, and then writes as much as it can without waiting again. Due to congestion, flow
+    /// control and [stream gates](crate::Connection::add_stream_gates), this may be shorter than
+    /// `buf.len()`. On success this yields the length of the prefix that was written.
     ///
     /// # Cancel safety
     ///
     /// This method is cancellation safe. If this does not resolve, no bytes were written.
     pub async fn write(&mut self, buf: &[u8]) -> Result<usize, WriteError> {
-        poll_fn(|cx| self.execute_poll(cx, |s| s.write(buf))).await
+        poll_fn(|cx| self.execute_poll(cx, buf.len(), |s, budget| s.write_within(buf, budget)))
+            .await
     }
 
     /// Write a buffer into this stream in its entirety
@@ -185,8 +197,9 @@ impl SendStream {
     ///
     /// Bytes to try to write are provided to this method as an array of cheaply cloneable chunks.
     /// Unless this method errors, it waits until some amount of those bytes can be written into
-    /// this stream, and then writes as much as it can without waiting again. Due to congestion and
-    /// flow control, this may be less than the total number of bytes.
+    /// this stream, and then writes as much as it can without waiting again. Due to congestion,
+    /// flow control and [stream gates](crate::Connection::add_stream_gates), this may be less than the
+    /// total number of bytes.
     ///
     /// On success, this method both mutates `bufs` and yields an informative [`Written`] struct
     /// indicating how much was written:
@@ -214,7 +227,8 @@ impl SendStream {
         cx: &mut Context<'_>,
         bufs: &mut [Bytes],
     ) -> Poll<Result<Written, WriteError>> {
-        self.execute_poll(cx, |s| s.write_chunks(bufs))
+        let want = self.gated_len(bufs);
+        self.execute_poll(cx, want, |s, budget| s.write_chunks_within(bufs, 0, budget))
     }
 
     /// Write a single [`Bytes`] into this stream in its entirety
@@ -242,12 +256,16 @@ impl SendStream {
         chunks: &mut [Bytes],
         reserve: u64,
     ) -> Poll<Result<Written, WriteError>> {
-        self.execute_poll(cx, |stream| {
-            stream.write_chunks_with_reserve(chunks, reserve)
+        let want = self.gated_len(chunks);
+        self.execute_poll(cx, want, |stream, budget| {
+            stream.write_chunks_within(chunks, reserve, budget)
         })
     }
 
     /// Generate and atomically admit one bounded chunk without waiting for credit.
+    ///
+    /// Never waits on [stream gates](crate::Connection::add_stream_gates) either: it is
+    /// meant for small control data, such as QPACK encoder instructions.
     ///
     /// `generate` receives the available stream and connection credit and returns
     /// a chunk plus an application result. `reserve` leaves connection credit for
@@ -303,13 +321,77 @@ impl SendStream {
         Ok(())
     }
 
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "polling takes the context by exclusive reference"
-    )]
-    fn execute_poll<F, R>(&mut self, cx: &mut Context, write_fn: F) -> Poll<Result<R, WriteError>>
+    /// The bytes `chunks` would ask a gated stream's gates for; never summed ungated.
+    fn gated_len(&self, chunks: &[Bytes]) -> usize {
+        if self.gates.is_none() {
+            return 0;
+        }
+        chunks
+            .iter()
+            .fold(0, |total: usize, chunk| total.saturating_add(chunk.len()))
+    }
+
+    /// Run a write of (up to) `want` bytes; a gated stream writes only what its gates admit.
+    fn execute_poll<F, R>(
+        &mut self,
+        cx: &mut Context,
+        want: usize,
+        write_fn: F,
+    ) -> Poll<Result<R, WriteError>>
     where
-        F: FnOnce(&mut crate::proto::SendStream) -> Result<R, crate::proto::WriteError>,
+        F: FnOnce(&mut ProtoSendStream, u64) -> Result<R, ProtoWriteError>,
+        R: WrittenBytes,
+    {
+        if want == 0 || self.gates.is_none() {
+            return self.execute_write(cx, u64::MAX, write_fn);
+        }
+        // Only data waits for the gates: a lost connection or a closed stream is reported at
+        // once, and a stop wakes this task while it waits.
+        match self.writable(cx) {
+            Err(error) => return Poll::Ready(Err(error)),
+            Ok(false) => return self.execute_write(cx, u64::MAX, write_fn),
+            Ok(true) => {}
+        }
+        let Some(gates) = self.gates.as_mut() else {
+            return self.execute_write(cx, u64::MAX, write_fn);
+        };
+        let admitted = ready!(gates.poll_admit(cx, want as u64));
+        let poll = self.execute_write(cx, admitted, write_fn);
+        if let Some(gates) = self.gates.as_mut() {
+            let written = match &poll {
+                Poll::Ready(Ok(written)) => written.bytes() as u64,
+                _ => 0,
+            };
+            gates.settle(written);
+        }
+        poll
+    }
+
+    /// Whether this stream may still send, registering the task to hear of its events.
+    fn writable(&self, cx: &Context<'_>) -> Result<bool, WriteError> {
+        let mut conn = self.conn.state.lock();
+        if self.is_0rtt {
+            conn.check_0rtt()
+                .map_err(|()| WriteError::ZeroRttRejected)?;
+        }
+        if let Some(ref x) = conn.error {
+            return Err(WriteError::ConnectionLost(x.clone()));
+        }
+        if !conn.inner.send_stream(self.stream).is_open() {
+            return Ok(false);
+        }
+        conn.blocked_writers.insert(self.stream, cx.waker().clone());
+        Ok(true)
+    }
+
+    fn execute_write<F, R>(
+        &self,
+        cx: &Context<'_>,
+        budget: u64,
+        write_fn: F,
+    ) -> Poll<Result<R, WriteError>>
+    where
+        F: FnOnce(&mut ProtoSendStream, u64) -> Result<R, ProtoWriteError>,
     {
         let mut conn = self.conn.state.lock();
         if self.is_0rtt {
@@ -320,7 +402,9 @@ impl SendStream {
             return Poll::Ready(Err(WriteError::ConnectionLost(x.clone())));
         }
 
-        let result = match write_fn(&mut conn.inner.send_stream(self.stream)) {
+        // This write replaces a registration made while the gates were asked.
+        conn.blocked_writers.remove(&self.stream);
+        let result = match write_fn(&mut conn.inner.send_stream(self.stream), budget) {
             Ok(result) => result,
             Err(ProtoWriteError::Blocked) => {
                 conn.blocked_writers.insert(self.stream, cx.waker().clone());
@@ -497,6 +581,23 @@ impl SendStream {
         buf: &[u8],
     ) -> Poll<Result<usize, WriteError>> {
         pin!(self.get_mut().write(buf)).as_mut().poll(cx)
+    }
+}
+
+/// How many bytes a write admitted.
+trait WrittenBytes {
+    fn bytes(&self) -> usize;
+}
+
+impl WrittenBytes for usize {
+    fn bytes(&self) -> usize {
+        *self
+    }
+}
+
+impl WrittenBytes for Written {
+    fn bytes(&self) -> usize {
+        self.bytes
     }
 }
 

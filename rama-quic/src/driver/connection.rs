@@ -16,6 +16,7 @@ use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing::{Instrument, Span, debug, debug_span};
+use rama_net::gate::{GateDirection, StreamGates};
 use rama_udp::SendFailure;
 use rama_utils::reactive::{Changed, Reactive};
 use rustc_hash::FxHashMap;
@@ -24,6 +25,7 @@ use tokio::sync::{Notify, futures::Notified, oneshot};
 use crate::driver::{
     Duration, IO_LOOP_BOUND, QueuedPacket,
     endpoint::{EndpointInner, LocalSocket},
+    gate::{ConnectionGates, GateStack},
     now,
     queue::{BoundedReceiver, PacketBudget, PacketQueueStats},
     recv_stream::RecvStream,
@@ -1787,6 +1789,19 @@ impl Connection {
         // May need to send MAX_STREAMS to make progress
         conn.wake();
     }
+
+    /// Pace the streams opened or accepted from now on through `gates`, on top of any gates
+    /// added before: a stream's bytes move only as all of them admit.
+    ///
+    /// A gate is consulted only when its stream has data to read or may still send, and
+    /// never under this connection's lock. A stream's end, reset or stop reaches a task
+    /// waiting on a gate at once, as does a lost connection once the data a gate held back
+    /// was read. Datagrams and writes that never wait
+    /// ([`SendStream::try_write_generated`]) pass ungated.
+    pub fn add_stream_gates(&self, gates: impl StreamGates) {
+        let mut state = self.0.state.lock();
+        state.gates = Some(ConnectionGates::add(state.gates.as_ref(), gates));
+    }
 }
 
 pin_project! {
@@ -1802,8 +1817,8 @@ impl Future for OpenUni<'_> {
     type Output = Result<SendStream, ConnectionError>;
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        let (conn, id, is_0rtt) = ready!(poll_open(ctx, this.conn, this.notify, Dir::Uni))?;
-        Poll::Ready(Ok(SendStream::new(conn, id, is_0rtt)))
+        let stream = ready!(poll_open(ctx, this.conn, this.notify, Dir::Uni))?;
+        Poll::Ready(Ok(stream.send()))
     }
 }
 
@@ -1826,6 +1841,7 @@ impl BiStreamReservation {
         let connection = self.connection.take().expect("unconsumed reservation");
         let mut state = connection.state.lock();
         state.reserved_streams[Dir::Bi as usize] -= 1;
+        let (gates, side) = (state.gates.clone(), state.inner.side());
         let result = if let Some(error) = &state.error {
             Err(error.clone())
         } else {
@@ -1842,11 +1858,14 @@ impl BiStreamReservation {
         let changed = state.refresh_stream_budget();
         drop(state);
         connection.shared.notify_stream_budget(changed);
-        let id = result?;
-        Ok((
-            SendStream::new(connection.clone(), id, false),
-            RecvStream::new(connection, id, false),
-        ))
+        let stream = NewStream {
+            conn: connection,
+            id: result?,
+            is_0rtt: false,
+            gates,
+            side,
+        };
+        Ok((stream.send(), stream.recv()))
     }
 }
 
@@ -1876,12 +1895,8 @@ impl Future for OpenBi<'_> {
     type Output = Result<(SendStream, RecvStream), ConnectionError>;
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        let (conn, id, is_0rtt) = ready!(poll_open(ctx, this.conn, this.notify, Dir::Bi))?;
-
-        Poll::Ready(Ok((
-            SendStream::new(conn.clone(), id, is_0rtt),
-            RecvStream::new(conn, id, is_0rtt),
-        )))
+        let stream = ready!(poll_open(ctx, this.conn, this.notify, Dir::Bi))?;
+        Poll::Ready(Ok((stream.send(), stream.recv())))
     }
 }
 
@@ -1890,7 +1905,7 @@ fn poll_open<'a>(
     conn: &'a ConnectionRef,
     mut notify: Pin<&mut Notified<'a>>,
     dir: Dir,
-) -> Poll<Result<(ConnectionRef, StreamId, bool), ConnectionError>> {
+) -> Poll<Result<NewStream, ConnectionError>> {
     let mut state = conn.state.lock();
     if let Some(ref e) = state.error {
         return Poll::Ready(Err(e.clone()));
@@ -1901,8 +1916,15 @@ fn poll_open<'a>(
     {
         let is_0rtt = state.inner.side().is_client() && state.inner.is_handshaking();
         _ = state.refresh_stream_budget();
+        let (gates, side) = (state.gates.clone(), state.inner.side());
         drop(state); // Release the lock so clone can take it
-        return Poll::Ready(Ok((conn.clone(), id, is_0rtt)));
+        return Poll::Ready(Ok(NewStream {
+            conn: conn.clone(),
+            id,
+            is_0rtt,
+            gates,
+            side,
+        }));
     }
     // Advertise actual peer-credit exhaustion, not a locally reserved slot.
     if available == 0 {
@@ -1935,8 +1957,8 @@ impl Future for AcceptUni<'_> {
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        let (conn, id, is_0rtt) = ready!(poll_accept(ctx, this.conn, this.notify, Dir::Uni))?;
-        Poll::Ready(Ok(RecvStream::new(conn, id, is_0rtt)))
+        let stream = ready!(poll_accept(ctx, this.conn, this.notify, Dir::Uni))?;
+        Poll::Ready(Ok(stream.recv()))
     }
 }
 
@@ -1954,11 +1976,8 @@ impl Future for AcceptBi<'_> {
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        let (conn, id, is_0rtt) = ready!(poll_accept(ctx, this.conn, this.notify, Dir::Bi))?;
-        Poll::Ready(Ok((
-            SendStream::new(conn.clone(), id, is_0rtt),
-            RecvStream::new(conn, id, is_0rtt),
-        )))
+        let stream = ready!(poll_accept(ctx, this.conn, this.notify, Dir::Bi))?;
+        Poll::Ready(Ok((stream.send(), stream.recv())))
     }
 }
 
@@ -1967,15 +1986,22 @@ fn poll_accept<'a>(
     conn: &'a ConnectionRef,
     mut notify: Pin<&mut Notified<'a>>,
     dir: Dir,
-) -> Poll<Result<(ConnectionRef, StreamId, bool), ConnectionError>> {
+) -> Poll<Result<NewStream, ConnectionError>> {
     let mut state = conn.state.lock();
     // Check for incoming streams before checking `state.error` so that already-received streams,
     // which are necessarily finite, can be drained from a closed connection.
     if let Some(id) = state.inner.streams().accept(dir) {
         let is_0rtt = state.inner.is_handshaking();
         state.wake(); // To send additional stream ID credit
+        let (gates, side) = (state.gates.clone(), state.inner.side());
         drop(state); // Release the lock so clone can take it
-        return Poll::Ready(Ok((conn.clone(), id, is_0rtt)));
+        return Poll::Ready(Ok(NewStream {
+            conn: conn.clone(),
+            id,
+            is_0rtt,
+            gates,
+            side,
+        }));
     } else if let Some(ref e) = state.error {
         return Poll::Ready(Err(e.clone()));
     }
@@ -1986,6 +2012,31 @@ fn poll_accept<'a>(
             // Spurious wakeup, get a new future
             Poll::Ready(()) => notify.set(conn.shared.stream_incoming[dir as usize].notified()),
         }
+    }
+}
+
+/// A stream just opened or accepted, before its handles exist.
+struct NewStream {
+    conn: ConnectionRef,
+    id: StreamId,
+    is_0rtt: bool,
+    gates: Option<ConnectionGates>,
+    side: Side,
+}
+
+impl NewStream {
+    fn send(&self) -> SendStream {
+        let gates = self.gates(GateDirection::Write);
+        SendStream::new(self.conn.clone(), self.id, self.is_0rtt, gates)
+    }
+
+    fn recv(self) -> RecvStream {
+        let gates = self.gates(GateDirection::Read);
+        RecvStream::new(self.conn, self.id, self.is_0rtt, gates)
+    }
+
+    fn gates(&self, direction: GateDirection) -> Option<GateStack> {
+        self.gates.as_ref()?.open(self.id, self.side, direction)
     }
 }
 
@@ -2112,6 +2163,7 @@ impl ConnectionRef {
                 pending_endpoint_events: Vec::new(),
                 blocked_writers: FxHashMap::default(),
                 blocked_readers: FxHashMap::default(),
+                gates: None,
                 stopped: FxHashMap::default(),
                 error: None,
                 socket: Some(socket),
@@ -2444,6 +2496,8 @@ pub(crate) struct State {
     pending_endpoint_events: Vec<EndpointEvent>,
     pub(crate) blocked_writers: FxHashMap<StreamId, Waker>,
     pub(crate) blocked_readers: FxHashMap<StreamId, Waker>,
+    /// What the streams opened or accepted from now on move their bytes through.
+    gates: Option<ConnectionGates>,
     pub(crate) stopped: FxHashMap<StreamId, super::send_stream::StoppedNotify>,
     /// Always set to Some before the connection becomes drained
     pub(crate) error: Option<ConnectionError>,
