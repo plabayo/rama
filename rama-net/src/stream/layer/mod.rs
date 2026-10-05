@@ -5,8 +5,8 @@
 mod throttle;
 #[doc(inline)]
 pub use throttle::{
-    OutgoingThrottleLayer, OutgoingThrottleService, ThrottleLayer, ThrottleMode, ThrottleService,
-    ThrottledIo,
+    OutgoingThrottleLayer, OutgoingThrottleService, ThrottleBudget, ThrottleConfig, ThrottleGates,
+    ThrottleLayer, ThrottleMode, ThrottleService, Throttleable, ThrottledIo,
 };
 
 mod tcp_options;
