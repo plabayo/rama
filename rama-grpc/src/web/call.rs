@@ -18,7 +18,7 @@ use rama_http::headers::ContentType;
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue,
     body::{Frame, SizeHint, StreamingBody},
-    header,
+    header::{self, content_type::parse_essence},
 };
 use rama_utils::{bytes::trim_ows, octets::kib};
 
@@ -30,7 +30,10 @@ use self::content_types::*;
 const GRPC_HEADER_SIZE: usize = 1 + 4;
 
 pub(crate) mod content_types {
-    use rama_http_types::{HeaderMap, header::CONTENT_TYPE};
+    use rama_http_types::{
+        HeaderMap,
+        header::{CONTENT_TYPE, content_type::parse_essence},
+    };
 
     pub(crate) const GRPC_WEB: &str = "application/grpc-web";
     pub(crate) const GRPC_WEB_PROTO: &str = "application/grpc-web+proto";
@@ -38,14 +41,11 @@ pub(crate) mod content_types {
     pub(crate) const GRPC_WEB_TEXT_PROTO: &str = "application/grpc-web-text+proto";
 
     pub(crate) fn is_grpc_web(headers: &HeaderMap) -> bool {
-        matches!(
-            content_type(headers),
-            Some(GRPC_WEB | GRPC_WEB_PROTO | GRPC_WEB_TEXT | GRPC_WEB_TEXT_PROTO)
-        )
-    }
-
-    fn content_type(headers: &HeaderMap) -> Option<&str> {
-        headers.get(CONTENT_TYPE).and_then(|val| val.to_str().ok())
+        parse_essence(headers.get_all(CONTENT_TYPE)).is_some_and(|essence| {
+            [GRPC_WEB, GRPC_WEB_PROTO, GRPC_WEB_TEXT, GRPC_WEB_TEXT_PROTO]
+                .iter()
+                .any(|known| essence.eq_ignore_ascii_case(known))
+        })
     }
 }
 
@@ -376,7 +376,15 @@ where
 
 impl Encoding {
     pub(crate) fn from_content_type(headers: &HeaderMap) -> Self {
-        Self::from_header(headers.get(header::CONTENT_TYPE))
+        match parse_essence(headers.get_all(header::CONTENT_TYPE)) {
+            Some(essence)
+                if essence.eq_ignore_ascii_case(GRPC_WEB_TEXT_PROTO)
+                    || essence.eq_ignore_ascii_case(GRPC_WEB_TEXT) =>
+            {
+                Self::Base64
+            }
+            _ => Self::None,
+        }
     }
 
     pub(crate) fn from_accept(headers: &HeaderMap) -> Self {
@@ -550,6 +558,34 @@ mod tests {
 
             assert_eq!(Encoding::from_content_type(&headers), case.1, "{}", case.0);
             assert_eq!(Encoding::from_accept(&headers), case.1, "{}", case.0);
+        }
+    }
+
+    /// The content type is the whole value as one type, parameters aside: a browser cannot
+    /// send a gRPC-web type cross-site without preflight.
+    #[test]
+    fn content_type_is_the_whole_value() {
+        for (lines, grpc_web, encoding) in [
+            (
+                &["application/grpc-web-text; charset=utf-8"][..],
+                true,
+                Encoding::Base64,
+            ),
+            (&["text/plain", GRPC_WEB_PROTO], false, Encoding::None),
+            (&[GRPC_WEB_TEXT, "text/plain"], false, Encoding::None),
+            (
+                &["text/plain;,application/grpc-web-text"],
+                false,
+                Encoding::None,
+            ),
+            (&["application/grpc"], false, Encoding::None),
+        ] {
+            let mut headers = HeaderMap::new();
+            for line in lines {
+                headers.append(header::CONTENT_TYPE, line.parse().unwrap());
+            }
+            assert_eq!(content_types::is_grpc_web(&headers), grpc_web, "{lines:?}");
+            assert_eq!(Encoding::from_content_type(&headers), encoding, "{lines:?}");
         }
     }
 

@@ -20,8 +20,8 @@ pub struct GrpcWebService<S> {
 
 #[derive(Debug, PartialEq)]
 enum RequestKind<'a> {
-    // The request is considered a grpc-web request if its `content-type`
-    // header is exactly one of:
+    // The request is considered a grpc-web request if the media type a browser
+    // extracts from its `content-type` lines is one of:
     //
     //  - "application/grpc-web"
     //  - "application/grpc-web+proto"

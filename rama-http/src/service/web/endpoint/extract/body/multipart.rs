@@ -16,13 +16,14 @@
 //! ignores preamble and epilogue bytes.
 
 use crate::Request;
+use crate::headers::{ContentType, HeaderMapExt as _};
 use crate::service::web::extract::{FromRequest, FromRequestBody};
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use ahash::HashMap;
 use rama_core::bytes::Bytes;
 use rama_core::extensions::Extension;
 use rama_core::futures::{Stream, TryStream};
-use rama_http_types::{HeaderMap, StatusCode, header};
+use rama_http_types::{HeaderMap, StatusCode};
 use rama_utils::macros::generate_set_and_with;
 use std::borrow::Cow;
 use std::marker::PhantomData;
@@ -390,19 +391,21 @@ impl FromRequestBody for Multipart {
         let prepared: Result<_, MultipartRejection> = (|| {
             let content_type = parts
                 .headers
-                .get(header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
+                .typed_get::<ContentType>()
                 .ok_or(InvalidMultipartContentType)?;
+            let content_type = content_type.mime();
 
             // RFC 7578 §4.1 requires the media type to be `multipart/form-data`.
             // `multer::parse_boundary` only checks for a `boundary=` parameter
             // and would otherwise accept `multipart/mixed`, `application/foo`,
             // etc. Reject anything else with 415.
-            if !is_multipart_form_data(content_type) {
+            if content_type.type_() != crate::mime::MULTIPART
+                || content_type.subtype() != crate::mime::FORM_DATA
+            {
                 return Err(InvalidMultipartContentType.into());
             }
-            let boundary =
-                multer::parse_boundary(content_type).map_err(|_e| InvalidMultipartBoundary)?;
+            let boundary = multer::parse_boundary(content_type.as_ref())
+                .map_err(|_e| InvalidMultipartBoundary)?;
 
             // Look up the optional `MultipartConfig` extension via `get_arc` to
             // avoid cloning the inner field-limits map on every request. When no
@@ -420,15 +423,6 @@ impl FromRequestBody for Multipart {
             ))
         }
     }
-}
-
-fn is_multipart_form_data(content_type: &str) -> bool {
-    content_type
-        .parse::<crate::mime::Mime>()
-        .ok()
-        .is_some_and(|m| {
-            m.type_() == crate::mime::MULTIPART && m.subtype() == crate::mime::FORM_DATA
-        })
 }
 
 #[cfg(test)]
@@ -474,6 +468,38 @@ mod test {
 
     fn ct() -> String {
         format!("multipart/form-data; boundary={BOUNDARY}")
+    }
+
+    /// The boundary comes from the type a browser extracts from several lines: the last valid
+    /// one, so the parts read are the ones it framed.
+    #[tokio::test]
+    async fn test_multipart_boundary_from_several_content_type_lines() {
+        let service =
+            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+                let field = mp.next_field().await.unwrap().unwrap();
+                assert_eq!(field.name(), Some("name"));
+                StatusCode::OK
+            });
+        for (lines, status) in [
+            (
+                vec!["multipart/form-data; boundary=wrong".to_owned(), ct()],
+                StatusCode::OK,
+            ),
+            (
+                vec![ct(), "text/plain".to_owned()],
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            ),
+        ] {
+            let mut req = crate::Request::builder().method(crate::Method::POST);
+            for line in &lines {
+                req = req.header(crate::header::CONTENT_TYPE, line);
+            }
+            let req = req
+                .body(body_with(&[("name", None, None, b"glen")]).into())
+                .unwrap();
+            let resp = service.serve(req).await.unwrap();
+            assert_eq!(resp.status(), status, "{lines:?}");
+        }
     }
 
     #[tokio::test]

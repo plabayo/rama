@@ -725,7 +725,12 @@ where
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let (parts, body) = req.into_parts();
-        let origin = parts.headers.get(&header::ORIGIN);
+        // One origin (RFC 6454 §7): several lines name none, so none is allowed or reflected.
+        let mut origins = parts.headers.get_all(&header::ORIGIN).iter();
+        let origin = match (origins.next(), origins.next()) {
+            (origin, None) => origin,
+            (_, Some(_)) => None,
+        };
 
         let mut headers = HeaderMap::new();
 

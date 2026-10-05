@@ -3,6 +3,7 @@ use std::{fmt, str::FromStr, sync::OnceLock};
 use rama_core::telemetry::tracing;
 use rama_http_types::{
     HeaderName, HeaderValue,
+    header::content_type::extract_mime_type,
     mime::{self, Mime},
 };
 
@@ -446,9 +447,8 @@ impl TypedHeader for ContentType {
 
 impl HeaderDecode for ContentType {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
-        values
-            .next()
-            .and_then(|v| v.to_str().ok()?.parse().ok())
+        // As browsers read it, over every line (Fetch §3.5).
+        extract_mime_type(values)
             .map(Self::new)
             .ok_or_else(Error::invalid)
     }
@@ -503,9 +503,24 @@ impl FromStr for ContentType {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContentType, HeaderValue};
+    use super::{ContentType, HeaderValue, mime};
     use crate::HeaderDecode;
     use crate::common::{test_decode, test_encode};
+
+    #[test]
+    fn several_lines_decode_as_fetch_extracts_them() {
+        let content_type =
+            test_decode::<ContentType>(&["text/html;charset=gbk", "text/html;x=y"]).unwrap();
+        assert_eq!(content_type.mime().essence_str(), "text/html");
+        assert_eq!(
+            content_type
+                .mime()
+                .get_param(mime::CHARSET)
+                .map(|c| c.as_str()),
+            Some("gbk")
+        );
+        assert!(test_decode::<ContentType>(&["cannot-parse"]).is_none());
+    }
 
     #[test]
     fn jose_json_is_valid() {

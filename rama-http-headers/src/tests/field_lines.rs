@@ -9,10 +9,11 @@ use crate::forwarded::{
     XForwardedProto, XRealIp,
 };
 use crate::{
-    AccessControlAllowHeaders, Allow, AltUsed, Authorization, CapsuleProtocol, Connection, Date,
-    HeaderDecode, HeaderEncode, Host, Origin, ProxyAuthorization, SecFetchSite, SecWebSocketAccept,
-    SecWebSocketExtensions, SecWebSocketKey, SecWebSocketProtocol, SecWebSocketVersion, Upgrade,
-    Vary,
+    AccessControlAllowCredentials, AccessControlAllowHeaders, AccessControlAllowPrivateNetwork,
+    AccessControlRequestMethod, AccessControlRequestPrivateNetwork, Allow, AltUsed, Authorization,
+    CapsuleProtocol, Connection, Date, HeaderDecode, HeaderEncode, Host, Location, Origin,
+    ProxyAuthorization, SecFetchSite, SecWebSocketAccept, SecWebSocketExtensions, SecWebSocketKey,
+    SecWebSocketProtocol, SecWebSocketVersion, Upgrade, Vary,
 };
 
 fn values(lines: &[&str]) -> Vec<HeaderValue> {
@@ -58,6 +59,11 @@ fn singleton_fields_refuse_a_second_line() {
         ClientIp => "203.0.113.5", "198.51.100.7",
         CFConnectingIp => "203.0.113.5", "198.51.100.7",
         TrueClientIp => "203.0.113.5", "198.51.100.7",
+        AccessControlRequestPrivateNetwork => "true", "true",
+        AccessControlRequestMethod => "PUT", "DELETE",
+        AccessControlAllowCredentials => "true", "true",
+        AccessControlAllowPrivateNetwork => "true", "true",
+        Location => "/a", "https://attacker.example/",
     ] {
         assert!(decoded(&[first]).is_some(), "{name}: one line");
         assert!(decoded(&[second]).is_some(), "{name}: the other line");

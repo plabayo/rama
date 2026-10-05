@@ -1,8 +1,14 @@
 //! Predicates for influencing compression of responses.
 
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
-use rama_http_types::{HeaderMap, StatusCode, StreamingBody, Version, header};
-use rama_utils::str::arcstr::{ArcStr, arcstr};
+use rama_http_types::{
+    HeaderMap, StatusCode, StreamingBody, Version,
+    header::{self, content_type::extract_essence},
+};
+use rama_utils::str::{
+    arcstr::{ArcStr, arcstr},
+    starts_with_ignore_ascii_case,
+};
 
 use crate::headers::encoding::Encoding;
 use crate::layer::decompression::DecompressedFrom;
@@ -331,21 +337,46 @@ impl Predicate for NotForContentType {
     where
         B: StreamingBody,
     {
-        let cty = content_type(response);
+        let essence = extract_essence(response.headers().get_all(header::CONTENT_TYPE));
+        let essence = essence.as_deref().unwrap_or_default();
         if let Some(except) = &self.exception
-            && cty.starts_with(except.as_str())
+            && starts_with_ignore_ascii_case(essence, except.as_str())
         {
             return true;
         }
 
-        !cty.starts_with(self.content_type.as_str())
+        !starts_with_ignore_ascii_case(essence, self.content_type.as_str())
     }
 }
 
-fn content_type<B>(response: &rama_http_types::Response<B>) -> &str {
-    response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or_default()
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Body, Response};
+
+    /// The type is the one a browser extracts from several lines: the last valid one.
+    #[test]
+    fn not_for_content_type_reads_every_line() {
+        for (lines, compress) in [
+            (&["image/png"][..], false),
+            (&["Image/PNG"], false),
+            (&["image/svg+xml"], true),
+            (&["text/html", "image/png"], false),
+            (&["image/png", "text/html"], true),
+            (&["image/png", "cannot-parse"], false),
+        ] {
+            let mut response = Response::new(Body::empty());
+            for line in lines {
+                response.headers_mut().append(
+                    header::CONTENT_TYPE,
+                    rama_http_types::HeaderValue::from_static(line),
+                );
+            }
+            assert_eq!(
+                NotForContentType::IMAGES.should_compress(&mut response),
+                compress,
+                "{lines:?}"
+            );
+        }
+    }
 }
