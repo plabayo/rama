@@ -173,6 +173,14 @@ mod tests {
         ) -> Result<Box<dyn Session>, ConnectError> {
             Err(ConnectError::EndpointStopping)
         }
+
+        fn supports_version_switch(&self) -> bool {
+            false
+        }
+
+        fn resumable_version(&self, _: &str) -> Option<Version> {
+            None
+        }
     }
 
     #[derive(Debug, Extension)]

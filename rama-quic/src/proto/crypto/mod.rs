@@ -49,45 +49,28 @@ pub trait Session: Send + Sync + 'static {
         side: Side,
     ) -> Result<Keys, TransportError>;
 
-    /// Whether [`Self::switch_version`] can succeed on this session.
-    ///
-    /// A provider that derives its own packet keys from TLS secrets can re-label them for a
-    /// compatible version; one that receives finished keys cannot. Defaults to `false`.
-    fn supports_version_switch(&self) -> bool {
-        false
-    }
-
     /// Move the session to a compatible `version` before any Handshake or 1-RTT key is
     /// derived (RFC 9368 §2.3, RFC 9369 §4.1).
     ///
-    /// Called at most once, before the handshake keys are drained. Providers that cannot
-    /// switch return [`UnsupportedVersion`]; the transport then never asks them to.
-    fn switch_version(&mut self, version: Version) -> Result<(), UnsupportedVersion> {
-        let _ = version;
-        Err(UnsupportedVersion)
-    }
+    /// Called at most once, before the handshake keys are drained, and only for sessions of a
+    /// [`ClientConfig`] that [supports switching](ClientConfig::supports_version_switch). A
+    /// provider that derives its own packet keys from TLS secrets can re-label them for a
+    /// compatible version; one that receives finished keys returns [`UnsupportedVersion`].
+    fn switch_version(&mut self, version: Version) -> Result<(), UnsupportedVersion>;
 
     /// What the handshake has settled, when the session has it. `None` until the connection
     /// emits `HandshakeDataReady`.
-    fn handshake_summary(&self) -> Option<NegotiatedTlsParameters> {
-        None
-    }
+    fn handshake_summary(&self) -> Option<NegotiatedTlsParameters>;
 
     /// Borrow negotiated ALPN bytes for diagnostics without allocating a handshake summary.
-    fn negotiated_alpn(&self) -> Option<&[u8]> {
-        None
-    }
+    fn negotiated_alpn(&self) -> Option<&[u8]>;
 
     /// The certificate chain the peer presented, if it presented one.
-    fn peer_certificates(&self) -> Option<Vec<CertificateDer<'static>>> {
-        None
-    }
+    fn peer_certificates(&self) -> Option<Vec<CertificateDer<'static>>>;
 
     /// The negotiated key exchange group as an IANA `NamedGroup` code (test observation point)
     #[cfg(test)]
-    fn negotiated_key_exchange_group(&self) -> Option<u16> {
-        None
-    }
+    fn negotiated_key_exchange_group(&self) -> Option<u16>;
 
     /// Get the 0-RTT keys if available (clients only)
     ///
@@ -182,22 +165,17 @@ pub trait ClientConfig: Send + Sync {
         params: &TransportParameters,
     ) -> Result<Box<dyn Session>, ConnectError>;
 
-    /// Whether sessions from this configuration can switch to a compatible version during
-    /// the handshake. Decides at configuration time whether a version policy that needs a
-    /// switch is usable; defaults to `false`.
-    fn supports_version_switch(&self) -> bool {
-        false
-    }
+    /// Whether every session from this configuration can [switch](Session::switch_version) to
+    /// a compatible version during the handshake. Decides at configuration time whether a
+    /// version policy that needs a switch is usable.
+    fn supports_version_switch(&self) -> bool;
 
     /// The version of the newest session ticket held for `server_name`, if the provider can
     /// tell without consuming it.
     ///
     /// A ticket resumes only a connection in the version that issued it (RFC 9369 §5), so a
-    /// client that wants to resume starts in that version. Defaults to `None`.
-    fn resumable_version(&self, server_name: &str) -> Option<Version> {
-        let _ = server_name;
-        None
-    }
+    /// client that wants to resume starts in that version.
+    fn resumable_version(&self, server_name: &str) -> Option<Version>;
 }
 
 /// What a server needs before any session starts: the keys of a client's Initial packets and

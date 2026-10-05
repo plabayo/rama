@@ -135,6 +135,14 @@ impl crypto::Session for TlsSession {
         Ok(initial_keys(version, *dst_cid, side, &self.suite))
     }
 
+    fn switch_version(
+        &mut self,
+        _version: rama_quic_proto::Version,
+    ) -> Result<(), crypto::UnsupportedVersion> {
+        // rustls hands out finished packet keys, which cannot be re-labelled.
+        Err(crypto::UnsupportedVersion)
+    }
+
     #[cfg(test)]
     fn negotiated_key_exchange_group(&self) -> Option<u16> {
         self.inner
@@ -513,6 +521,15 @@ impl crypto::ClientConfig for QuicClientConfig {
             ),
             suite: self.initial,
         }))
+    }
+
+    fn supports_version_switch(&self) -> bool {
+        false
+    }
+
+    fn resumable_version(&self, _server_name: &str) -> Option<rama_quic_proto::Version> {
+        // rustls keeps its tickets to itself; a resuming client starts in its default version.
+        None
     }
 }
 

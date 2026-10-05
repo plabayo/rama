@@ -354,9 +354,6 @@ impl crypto::Session for TlsSession {
             .ok_or_else(|| TransportError::INTERNAL_ERROR("unsupported QUIC version"))?;
         packet::initial_keys(wire, cid, side).map_err(crypto_error)
     }
-    fn supports_version_switch(&self) -> bool {
-        true
-    }
     fn switch_version(&mut self, version: Version) -> Result<(), UnsupportedVersion> {
         // Keys are derived from secrets as they are drained, so re-labelling is free until
         // the first Handshake secret has been turned into keys.

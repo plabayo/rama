@@ -16,6 +16,12 @@ impl crypto::ClientConfig for FailingClient {
             Err(ConnectError::Crypto(failure()))
         }
     }
+    fn supports_version_switch(&self) -> bool {
+        false
+    }
+    fn resumable_version(&self, _: &str) -> Option<Version> {
+        None
+    }
 }
 
 struct FailingServer(Arc<dyn crypto::ServerConfig>, bool);
@@ -70,6 +76,21 @@ impl crypto::Session for FailingInitialKeys {
         _: Side,
     ) -> Result<crypto::Keys, TransportError> {
         Err(failure())
+    }
+    fn switch_version(&mut self, _: Version) -> Result<(), crypto::UnsupportedVersion> {
+        Err(crypto::UnsupportedVersion)
+    }
+    fn handshake_summary(&self) -> Option<crypto::NegotiatedTlsParameters> {
+        None
+    }
+    fn negotiated_alpn(&self) -> Option<&[u8]> {
+        None
+    }
+    fn peer_certificates(&self) -> Option<Vec<rama_crypto::pki_types::CertificateDer<'static>>> {
+        None
+    }
+    fn negotiated_key_exchange_group(&self) -> Option<u16> {
+        None
     }
     fn early_crypto(
         &self,

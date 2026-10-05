@@ -2,12 +2,14 @@
 //! any built-in TLS or packet-crypto feature.
 
 use rama_core::error::BoxError;
+use rama_crypto::pki_types::CertificateDer;
+use rama_quic::NegotiatedTlsParameters;
 use rama_quic::{
     ClientConfig, ConnectError, Endpoint, ServerConfig,
     tls::provider::{
         AeadKey, ClientConfig as ClientProvider, ExportKeyingMaterialError, HandshakeEvent,
         HandshakeTokenKey, InitialKeysError, InitialServerConfig, KeyPair, Keys,
-        ServerConfig as ServerProvider, Session,
+        ServerConfig as ServerProvider, Session, UnsupportedVersion,
     },
 };
 use rama_quic_proto::{
@@ -42,6 +44,12 @@ impl ClientProvider for Provider {
         params.write(&mut extension);
         TransportParameters::read(Side::Server, &mut extension.as_slice()).unwrap();
         Ok(Box::new(TestSession))
+    }
+    fn supports_version_switch(&self) -> bool {
+        false
+    }
+    fn resumable_version(&self, _: &str) -> Option<Version> {
+        None
     }
 }
 
@@ -83,6 +91,18 @@ impl Session for TestSession {
             TransportError::new(TransportErrorCode::INTERNAL_ERROR, "custom Initial failure")
                 .with_cause(std::io::Error::other("custom provider cause")),
         )
+    }
+    fn switch_version(&mut self, _: Version) -> Result<(), UnsupportedVersion> {
+        Err(UnsupportedVersion)
+    }
+    fn handshake_summary(&self) -> Option<NegotiatedTlsParameters> {
+        None
+    }
+    fn negotiated_alpn(&self) -> Option<&[u8]> {
+        None
+    }
+    fn peer_certificates(&self) -> Option<Vec<CertificateDer<'static>>> {
+        None
     }
     fn early_crypto(&self) -> Option<(Box<dyn HeaderKey>, Box<dyn PacketKey>)> {
         None

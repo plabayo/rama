@@ -77,6 +77,14 @@ impl provider::ClientConfig for Client {
             Session::new(native, Side::Client).map_err(ConnectError::Crypto)?,
         ))
     }
+
+    fn supports_version_switch(&self) -> bool {
+        false
+    }
+
+    fn resumable_version(&self, _: &str) -> Option<Version> {
+        None
+    }
 }
 
 impl provider::InitialServerConfig for Server {
@@ -274,6 +282,10 @@ impl provider::Session for Session {
             ));
         }
         packet::initial(cid, side).map_err(failure)
+    }
+
+    fn switch_version(&mut self, _: Version) -> Result<(), UnsupportedVersion> {
+        Err(UnsupportedVersion)
     }
 
     fn handshake_summary(&self) -> Option<NegotiatedTlsParameters> {
