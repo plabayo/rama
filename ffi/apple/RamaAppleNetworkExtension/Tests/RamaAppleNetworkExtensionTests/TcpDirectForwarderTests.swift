@@ -1378,8 +1378,9 @@ final class TcpDirectForwarderTests: XCTestCase {
         // `small` stay ordered behind it.
         h.forwarder.markRustS2CDone()
 
+        // The mock records a write before its completion: wait for both.
         waitFor("first bounded prefix reached the kernel flow", timeout: 1.0) {
-            h.flow.writes.first?.count == viewLimit
+            h.flow.writes.first?.count == viewLimit && h.flow.pendingWriteCompletionCount == 1
         }
         h.drain()
         XCTAssertEqual(h.flow.pendingWriteCompletionCount, 1, "exactly the first chunk in flight")
@@ -1391,7 +1392,7 @@ final class TcpDirectForwarderTests: XCTestCase {
             let previous = h.flow.writes.count
             XCTAssertTrue(h.flow.completeNextWrite())
             waitFor("next bounded cursor view reached the kernel flow", timeout: 2.0) {
-                h.flow.writes.count > previous
+                h.flow.writes.count > previous && h.flow.pendingWriteCompletionCount > 0
             }
             // A stalled replay must not start another failed wait forever.
             guard h.flow.writes.count > previous else { return }
