@@ -140,18 +140,6 @@ impl Fixture {
         let mut command = Command::new(env!("CARGO_BIN_EXE_rama"));
         let no_proxy = if args.contains(&"--proxy") { "" } else { "*" };
         command.kill_on_drop(true).arg("send").arg(url).args(args);
-        // The servers listen on 127.0.0.1, and a native resolver can answer `localhost` with
-        // ::1 alone (rama-sprints/followup-pr9-class-sweep.md); a proxy resolves on its own.
-        if !args.contains(&"--resolve")
-            && !args.contains(&"--proxy")
-            && let Some(port) = url
-                .split_once("://localhost:")
-                .and_then(|(_, rest)| rest.split(['/', '?']).next())
-        {
-            command
-                .arg("--resolve")
-                .arg(format!("localhost:{port}:127.0.0.1"));
-        }
         command
             .arg("--trace")
             .arg(self.directory.path().join("trace.log"))
