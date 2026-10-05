@@ -11,6 +11,7 @@ use crate::proto::target::{
 use rama_core::{
     bytes::{Bytes, BytesMut},
     extensions::{Extensions, ExtensionsRef},
+    telemetry::tracing::debug,
 };
 use rama_http_types::proto::{
     ext,
@@ -106,6 +107,55 @@ pub(crate) fn validate_regular(headers: &HeaderMap, trailers: bool) -> Result<()
         validate_name(name, value.as_bytes(), trailers)?;
         // Applications can construct HeaderValue through its unchecked API.
         // Recheck wire constraints at the outgoing boundary as well.
+        if !header::is_valid_h2_h3_field_value(value.as_bytes()) {
+            return Err(malformed("invalid field value"));
+        }
+    }
+    content_length(headers)?;
+    Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Outgoing {
+    Request,
+    Response,
+}
+
+/// The fields of an outgoing message that go on the wire.
+///
+/// HTTP/3, like HTTP/2, carries no connection-specific fields: they are dropped with the
+/// fields a `Connection` field nominates, as is `TE` other than a request's `trailers`
+/// (RFC 9114 §4.2). Received messages carrying them stay malformed.
+fn outgoing_fields(
+    headers: &HeaderMap,
+    kind: Outgoing,
+) -> impl Iterator<Item = (&HeaderName, &HeaderValue)> {
+    let nominated: Vec<&[u8]> = headers
+        .get_all(header::CONNECTION)
+        .iter()
+        .flat_map(|value| value.as_bytes().split(|byte| *byte == b','))
+        .map(<[u8]>::trim_ascii)
+        .filter(|name| !name.is_empty())
+        .collect();
+    headers.ordered_iter().filter(move |(name, value)| {
+        let sent = if *name == header::TE {
+            kind == Outgoing::Request && value.as_bytes().eq_ignore_ascii_case(b"trailers")
+        } else {
+            !header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS.contains(name)
+                && !nominated
+                    .iter()
+                    .any(|nominated| nominated.eq_ignore_ascii_case(name.as_str().as_bytes()))
+        };
+        if !sent {
+            debug!(header.name = %name, "dropped connection-specific field from HTTP/3 message");
+        }
+        sent
+    })
+}
+
+fn validate_outgoing(headers: &HeaderMap, kind: Outgoing) -> Result<(), Error> {
+    for (_, value) in outgoing_fields(headers, kind) {
+        // Applications can construct HeaderValue through its unchecked API.
         if !header::is_valid_h2_h3_field_value(value.as_bytes()) {
             return Err(malformed("invalid field value"));
         }
@@ -356,7 +406,7 @@ pub(crate) fn encode_request<B>(
     id: u64,
     request: &Request<B>,
 ) -> Result<Bytes, Error> {
-    validate_regular(request.headers(), false)?;
+    validate_outgoing(request.headers(), Outgoing::Request)?;
     let protocol = request.extensions().get_ref::<ext::Protocol>();
     if protocol.is_some() && request.method() != Method::CONNECT {
         return Err(malformed(":protocol requires CONNECT"));
@@ -500,9 +550,7 @@ pub(crate) fn encode_request<B>(
     shared.encode(
         id,
         pseudo.chain(
-            request
-                .headers()
-                .ordered_iter()
+            outgoing_fields(request.headers(), Outgoing::Request)
                 .filter(|(name, _)| !drop_host || *name != header::HOST)
                 .map(|(name, value)| EncodeField::from_header(name, value)),
         ),
@@ -514,10 +562,7 @@ pub(crate) fn encode_response<B>(
     id: u64,
     response: &Response<B>,
 ) -> Result<Bytes, Error> {
-    validate_regular(response.headers(), false)?;
-    if response.headers().contains_key(header::TE) {
-        return Err(malformed("TE forbidden in response"));
-    }
+    validate_outgoing(response.headers(), Outgoing::Response)?;
     if response.status() == StatusCode::SWITCHING_PROTOCOLS
         || ((response.status().is_informational() || response.status() == StatusCode::NO_CONTENT)
             && response.headers().contains_key(header::CONTENT_LENGTH))
@@ -535,9 +580,7 @@ pub(crate) fn encode_response<B>(
                 .is_some_and(|sensitivity| sensitivity.is_sensitive(PseudoHeader::Status)),
         })
         .chain(
-            response
-                .headers()
-                .ordered_iter()
+            outgoing_fields(response.headers(), Outgoing::Response)
                 .map(|(name, value)| EncodeField::from_header(name, value)),
         ),
     )
@@ -802,6 +845,64 @@ mod tests {
             decode(crate::h3::stream::encode_trailers(&shared(), 0, &trailers).unwrap()),
             regular
         );
+    }
+
+    fn names(fields: &[FieldPair]) -> Vec<String> {
+        fields
+            .iter()
+            .map(|field| String::from_utf8_lossy(&field.name).into_owned())
+            .collect()
+    }
+
+    /// Like HTTP/2, an outgoing message drops connection-specific fields, those `Connection`
+    /// nominates and TE other than a request's `trailers`, instead of failing the stream: an
+    /// HTTP/1-shaped message, such as a server-sent events response, can be served over HTTP/3.
+    #[test]
+    fn outgoing_messages_drop_connection_specific_fields() {
+        let mut response = Response::new(());
+        let headers = response.headers_mut();
+        for (name, value) in [
+            ("content-type", "text/event-stream"),
+            ("connection", "keep-alive, X-Hop"),
+            ("keep-alive", "timeout=5"),
+            ("proxy-connection", "keep-alive"),
+            ("transfer-encoding", "chunked"),
+            ("upgrade", "websocket"),
+            ("x-hop", "nominated"),
+            ("te", "trailers"),
+            ("cache-control", "no-cache"),
+        ] {
+            headers.append(
+                HeaderName::from_static(name),
+                HeaderValue::from_static(value),
+            );
+        }
+        let sent = decode(encode_response(&shared(), 0, &response).unwrap());
+        assert_eq!(names(&sent), [":status", "content-type", "cache-control"]);
+        assert!(
+            response.headers().contains_key(header::CONNECTION),
+            "input untouched"
+        );
+
+        for (te, kept) in [("trailers", true), ("Trailers", true), ("gzip", false)] {
+            let request = Request::builder()
+                .uri("https://example.com/")
+                .header(header::TE, te)
+                .header(header::CONNECTION, "close")
+                .body(())
+                .unwrap();
+            let sent = names(&decode(encode_request(&shared(), 0, &request).unwrap()));
+            assert_eq!(sent.iter().any(|name| name == "te"), kept, "{te}");
+            assert!(!sent.iter().any(|name| name == "connection"));
+        }
+    }
+
+    /// What arrives with connection-specific fields stays malformed (RFC 9114 §4.2).
+    #[test]
+    fn received_connection_specific_fields_stay_malformed() {
+        let error =
+            response(fields(&[(":status", "200"), ("connection", "keep-alive")])).unwrap_err();
+        assert_eq!(error.code(), Code::H3_MESSAGE_ERROR);
     }
 
     #[test]
