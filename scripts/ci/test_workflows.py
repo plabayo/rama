@@ -334,16 +334,18 @@ class WorkflowPolicyTests(unittest.TestCase):
                     "status": status, "conclusion": conclusion,
                     "head_repository": {"full_name": owner}}
 
-        def mirror(trigger, listed, failures=0):
+        def mirror(trigger, listed, failures=0, pages=None):
             with tempfile.TemporaryDirectory() as tmp:
                 bin_dir = Path(tmp)
-                (bin_dir / "runs.json").write_text(json.dumps({"workflow_runs": listed}))
+                for number, page in enumerate(pages or [listed], start=1):
+                    (bin_dir / f"runs_{number}.json").write_text(json.dumps({"workflow_runs": page}))
                 (bin_dir / "event.json").write_text(json.dumps({"workflow_run": trigger}))
                 (bin_dir / "gh").write_text(
                     "#!/usr/bin/env bash\n"
                     f'n=$(cat "{tmp}/calls" 2>/dev/null || echo 0); echo $((n + 1)) > "{tmp}/calls"\n'
                     f"(( n < {failures} )) && exit 1\n"
-                    f'cat "{tmp}/runs.json"\n')
+                    'page=$(sed -n "s/.*[?&]page=\\([0-9]*\\).*/\\1/p" <<<"$2")\n'
+                    f'cat "{tmp}/runs_${{page:-1}}.json" 2>/dev/null || echo \'{{"workflow_runs": []}}\'\n')
                 (bin_dir / "sleep").write_text("#!/usr/bin/env bash\n")
                 for stub in ("gh", "sleep"):
                     (bin_dir / stub).chmod(0o755)
@@ -372,6 +374,15 @@ class WorkflowPolicyTests(unittest.TestCase):
         for name, trigger, listed, success in cases:
             with self.subTest(case=name):
                 self.assertEqual(mirror(trigger, listed), success)
+        # A hundred newer pull request runs push the newest main push to the next page.
+        pulls = [run(100 + n, "failure", event="pull_request", branch=f"pr-{n}") for n in range(100)]
+        for name, older, success in [
+            ("second page success", [run(4, "success")], True),
+            ("second page failure", [run(4, "failure")], False),
+            ("nothing on the second page", [], False),
+        ]:
+            with self.subTest(case=name):
+                self.assertEqual(mirror(run(5, "cancelled"), None, pages=[pulls, older]), success)
         with self.subTest(case="listing retried"):
             self.assertTrue(mirror(run(5, "success"), [], failures=2))
         with self.subTest(case="listing unavailable"):

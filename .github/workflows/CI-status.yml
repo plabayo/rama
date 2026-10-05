@@ -27,20 +27,28 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # The unfiltered listing: GitHub's branch/event/status filters can lag behind.
           workflow_id=$(jq -r .workflow_run.workflow_id "${GITHUB_EVENT_PATH}")
-          for attempt in 1 2 3; do
-            runs=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_id}/runs?per_page=100") && break
-            [[ ${attempt} == 3 ]] && exit 1
-            sleep $((attempt * 10))
+          # Finished main pushes of this repo as `[run_number, run_attempt, conclusion]`.
+          finished='[.[] | select(.event == "push" and .head_branch == "main"
+              and .head_repository.full_name == $repo
+              and .status == "completed" and .conclusion != "cancelled")
+            | [.run_number, .run_attempt, .conclusion]]'
+          # The listing can trail this event, so its run counts too.
+          runs=$(jq -c --arg repo "${GITHUB_REPOSITORY}" "[.workflow_run] | ${finished}" "${GITHUB_EVENT_PATH}")
+          # The unfiltered listing, newest first: GitHub's branch/event/status filters can lag behind.
+          for page in {1..10}; do
+            for attempt in 1 2 3; do
+              listed=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_id}/runs?per_page=100&page=${page}") && break
+              [[ ${attempt} == 3 ]] && exit 1
+              sleep $((attempt * 10))
+            done
+            found=$(jq -c --arg repo "${GITHUB_REPOSITORY}" ".workflow_runs | ${finished}" <<<"${listed}")
+            runs=$(jq -c --argjson found "${found}" '. + $found' <<<"${runs}")
+            # The first page holding one holds the newest; a short page is the last.
+            if [[ "${found}" != "[]" ]] || (( $(jq '.workflow_runs | length' <<<"${listed}") < 100 )); then
+              break
+            fi
           done
-          # The listing can trail this event, so its run counts too; in-progress and
-          # cancelled runs or attempts decide nothing.
-          conclusion=$(jq -r --arg repo "${GITHUB_REPOSITORY}" --slurpfile event "${GITHUB_EVENT_PATH}" '
-            [.workflow_runs[], $event[0].workflow_run]
-            | map(select(.event == "push" and .head_branch == "main"
-                and .head_repository.full_name == $repo
-                and .status == "completed" and .conclusion != "cancelled"))
-            | max_by([.run_number, .run_attempt]).conclusion // "unknown"' <<<"${runs}")
+          conclusion=$(jq -r 'max_by(.[0:2]) | .[2] // "unknown"' <<<"${runs}")
           echo "newest finished main CI run: ${conclusion}"
           [[ "${conclusion}" == "success" ]]
