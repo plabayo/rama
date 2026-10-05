@@ -584,7 +584,8 @@ fn advertised_input() -> ConnectRequest {
 }
 
 #[cfg(feature = "tls")]
-#[tokio::test]
+// paused time: a deadline only fires once the fake connector is pending, never before it ran
+#[tokio::test(start_paused = true)]
 async fn terminal_failure_latch_survives_timeout_or_later_unavailability() {
     for outcome in [Outcome::Pending(true), Outcome::RejectedAvailability] {
         let fake = FakeConnector::new([outcome]);
@@ -604,7 +605,8 @@ async fn terminal_failure_latch_survives_timeout_or_later_unavailability() {
 }
 
 #[cfg(feature = "tls")]
-#[tokio::test]
+// paused time: a deadline only fires once the fake connector is pending, never before it ran
+#[tokio::test(start_paused = true)]
 async fn speculative_timeout_allows_fallback_but_overall_timeout_does_not() {
     let fake = FakeConnector::new([
         Outcome::Pending(false),
@@ -1233,7 +1235,8 @@ async fn direct_only_route_plan_respects_direct_failure_backoff() {
 }
 
 #[cfg(feature = "tls")]
-#[tokio::test]
+// paused time: a deadline only fires once the fake connector is pending, never before it ran
+#[tokio::test(start_paused = true)]
 async fn speculative_deadline_preserves_recorded_protocol_failure_kind() {
     let inner = rama_core::service::service_fn(async |request: ConnectRequest| {
         request
@@ -1790,7 +1793,8 @@ async fn address_race_preserves_authentication_over_protocol_and_timeout_results
 }
 
 #[cfg(feature = "tls")]
-#[tokio::test]
+// paused time: a deadline only fires once the fake connector is pending, never before it ran
+#[tokio::test(start_paused = true)]
 async fn connector_reported_request_and_unknown_policies_do_not_poison_shared_cache() {
     for scope in [
         ConnectionPolicyScope::Request,
