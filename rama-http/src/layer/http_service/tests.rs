@@ -1754,7 +1754,8 @@ fn address_race_authentication_failures_dominate_in_every_order() {
 }
 
 #[cfg(feature = "tls")]
-#[tokio::test]
+// paused time: the attempt timeout only fires once the connector is pending, never before it ran
+#[tokio::test(start_paused = true)]
 async fn address_race_preserves_authentication_over_protocol_and_timeout_results() {
     for timeout in [false, true] {
         let inner = rama_core::service::service_fn(move |request: ConnectRequest| async move {
