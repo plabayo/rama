@@ -807,7 +807,13 @@ pub(crate) struct QuicDynamicServerConfig {
     dynamic: RustlsDynamicConfig,
     initial: Suite,
     options: config::TlsOptions,
+    /// Configurations already checked for QUIC, by the native configuration they wrap:
+    /// a provider handing out the same one for many connections pays for that once.
+    resolved: Mutex<Vec<(Arc<rustls::ServerConfig>, Arc<QuicServerConfig>)>>,
 }
+
+/// Native configurations whose QUIC configuration stays resolved.
+const RESOLVED_CAPACITY: usize = 16;
 
 impl QuicDynamicServerConfig {
     pub(crate) fn new(
@@ -820,6 +826,7 @@ impl QuicDynamicServerConfig {
             initial: initial_suite_from_provider(provider)
                 .ok_or(NoInitialCipherSuite { specific: false })?,
             options,
+            resolved: Mutex::new(Vec::with_capacity(RESOLVED_CAPACITY)),
         })
     }
 }
@@ -863,24 +870,40 @@ impl crypto::ServerConfig for QuicDynamicServerConfig {
         Box::pin(async move {
             // rustls hands its own ClientHello view only to an acceptor reading TLS records,
             // so the bare handshake message is framed as handshake records first.
-            let mut records = Vec::with_capacity(client_hello.message().len() + 5);
+            let mut framed = Vec::with_capacity(client_hello.message().len() + 5);
             for fragment in client_hello.message().chunks(MAX_RECORD_PAYLOAD) {
-                records.extend_from_slice(&[0x16, 0x03, 0x01]);
-                records.extend_from_slice(&(fragment.len() as u16).to_be_bytes());
-                records.extend_from_slice(fragment);
+                framed.extend_from_slice(&[0x16, 0x03, 0x01]);
+                framed.extend_from_slice(&(fragment.len() as u16).to_be_bytes());
+                framed.extend_from_slice(fragment);
             }
             let mut acceptor = rustls::server::Acceptor::default();
-            acceptor.read_tls(&mut records.as_slice())?;
+            // Each read takes at most a few KiB; feed every record.
+            let mut records = framed.as_slice();
+            while !records.is_empty() {
+                acceptor.read_tls(&mut records)?;
+            }
             let accepted = acceptor
                 .accept()
                 .map_err(|(error, _alert)| error)?
                 .ok_or_else(|| BoxError::from_static_str("incomplete ClientHello"))?;
             let native = self.dynamic.get_config(accepted.client_hello()).await?;
-            let mut native = rustls::ServerConfig::clone(&native);
-            native.max_early_data_size = if self.options.early_data { u32::MAX } else { 0 };
-            let resolved: Arc<dyn crypto::ServerConfig> =
-                Arc::new(QuicServerConfig::from_native(native, self.options)?);
-            Ok(resolved)
+            if let Some((_, config)) = self
+                .resolved
+                .lock()
+                .iter()
+                .find(|(held, _)| Arc::ptr_eq(held, &native))
+            {
+                return Ok(config.clone() as Arc<dyn crypto::ServerConfig>);
+            }
+            let mut quic = rustls::ServerConfig::clone(&native);
+            quic.max_early_data_size = if self.options.early_data { u32::MAX } else { 0 };
+            let config = Arc::new(QuicServerConfig::from_native(quic, self.options)?);
+            let mut resolved = self.resolved.lock();
+            if resolved.len() == RESOLVED_CAPACITY {
+                resolved.remove(0);
+            }
+            resolved.push((native, config.clone()));
+            Ok(config as Arc<dyn crypto::ServerConfig>)
         })
     }
 }
