@@ -1,10 +1,9 @@
 use parking_lot::Mutex;
-use rama_core::error::{BoxError, BoxErrorExt as _};
+use rama_core::error::{ArcError, BoxError};
 use rama_crypto::dep::boring::{
     error::ErrorStack,
     ex_data::Index,
-    ssl::{Ssl, SslContext, SslSession, SslSessionCacheMode, SslVersion},
-    x509::X509,
+    ssl::{Ssl, SslAcceptorBuilder, SslContext, SslSession, SslSessionCacheMode, SslVersion},
 };
 use rama_net::address::Host;
 use rama_tls::{
@@ -15,7 +14,7 @@ use rama_tls::{
 };
 use rama_tls_boring::{
     client::{BoringTlsConnectorConfig, TlsConnectorContext, TlsConnectorContextBuilder},
-    server::{BoringTlsAcceptorConfig, TlsAcceptorData},
+    server::{BoringTlsAcceptorConfig, IssuedCertificate, TlsAcceptorData},
 };
 use std::{
     collections::VecDeque,
@@ -233,60 +232,20 @@ impl QuicClientConfig {
 
 pub(crate) struct QuicServerConfig {
     identity: ServerIdentity,
+    /// One context per standardized version: BoringSSL resumes a session only under the
+    /// session-ID context that issued it, which scopes tickets by version (RFC 9369 §5).
+    contexts: [SslContext; 2],
     early_data: bool,
 }
 
 enum ServerIdentity {
-    /// One context per standardized version: BoringSSL resumes a session only under the
-    /// session-ID context that issued it, which scopes tickets by version (RFC 9369 §5).
-    Fixed([SslContext; 2]),
-    /// Certificates issued per ClientHello; each connection resolves its own fixed identity.
-    Issued(Box<IssuedIdentity>),
-}
-
-struct IssuedIdentity {
-    data: TlsAcceptorData,
-    /// Configurations already resolved, by the leaf they present. Connections issued the
-    /// same certificate share its contexts, and with them the session tickets they issue.
-    resolved: Mutex<VecDeque<(X509, Arc<QuicServerConfig>)>>,
-}
-
-/// Distinct issued certificates whose configurations stay resolved.
-const RESOLVED_CAPACITY: usize = 64;
-
-impl IssuedIdentity {
-    async fn resolve(
-        &self,
-        client_hello: &crypto::ClientHelloMessage,
-        early_data: bool,
-    ) -> Result<Arc<QuicServerConfig>, BoxError> {
-        let issued = self
-            .data
-            .with_issued_certificate(client_hello.client_hello())
-            .await?;
-        let leaf = issued
-            .leaf_certificate()
-            .ok_or_else(|| BoxError::from_static_str("issued identity has no certificate"))?;
-        // A held reference keeps each cached leaf alive, so its address identifies it.
-        if let Some((_, config)) = self
-            .resolved
-            .lock()
-            .iter()
-            .find(|(cached, _)| std::ptr::eq(&**cached, leaf))
-        {
-            return Ok(config.clone());
-        }
-        let config = Arc::new(QuicServerConfig {
-            identity: ServerIdentity::Fixed(contexts(&issued)?),
-            early_data,
-        });
-        let mut resolved = self.resolved.lock();
-        if resolved.len() == RESOLVED_CAPACITY {
-            resolved.pop_front();
-        }
-        resolved.push_back((leaf.to_owned(), config.clone()));
-        Ok(config)
-    }
+    /// The contexts carry the identity.
+    Fixed,
+    /// Certificates are issued per ClientHello and installed on each session; every
+    /// connection shares the contexts, and with them the session tickets they issue.
+    Issued(Box<TlsAcceptorData>),
+    /// A connection resolved from [`Self::Issued`], with the certificate it was issued.
+    Installed(IssuedCertificate),
 }
 
 impl QuicServerConfig {
@@ -298,24 +257,27 @@ impl QuicServerConfig {
         validate_versions(pieces.versions)?;
         validate_alpn(pieces.alpn, options)?;
         let data = TlsAcceptorData::try_from(pieces)?;
-        let identity = if data.issues_certificates() {
-            ServerIdentity::Issued(Box::new(IssuedIdentity {
-                data,
-                resolved: Mutex::new(VecDeque::with_capacity(RESOLVED_CAPACITY)),
-            }))
+        Ok(if data.issues_certificates() {
+            Self {
+                contexts: contexts(|| data.acceptor_builder_without_identity())?,
+                identity: ServerIdentity::Issued(Box::new(data)),
+                early_data: options.early_data,
+            }
         } else {
-            ServerIdentity::Fixed(contexts(&data)?)
-        };
-        Ok(Self {
-            identity,
-            early_data: options.early_data,
+            Self {
+                contexts: contexts(|| data.clone().into_static_acceptor_builder())?,
+                identity: ServerIdentity::Fixed,
+                early_data: options.early_data,
+            }
         })
     }
 }
 
-fn contexts(data: &TlsAcceptorData) -> Result<[SslContext; 2], TlsConfigError> {
+fn contexts(
+    builder: impl Fn() -> Result<SslAcceptorBuilder, BoxError>,
+) -> Result<[SslContext; 2], TlsConfigError> {
     let context = |version: Version| -> Result<SslContext, TlsConfigError> {
-        let mut builder = data.clone().into_static_acceptor_builder()?;
+        let mut builder = builder()?;
         let invalid = |error: ErrorStack| TlsConfigError::InvalidConfiguration(error.into());
         builder
             .set_min_proto_version(Some(SslVersion::TLS1_3))
@@ -378,11 +340,15 @@ impl crypto::ServerConfig for QuicServerConfig {
         client_hello: crypto::ClientHelloMessage,
     ) -> crypto::ResolveServerConfig {
         Box::pin(async move {
-            let ServerIdentity::Issued(issued) = &self.identity else {
+            let ServerIdentity::Issued(data) = &self.identity else {
                 return Ok(self as Arc<dyn crypto::ServerConfig>);
             };
-            let resolved: Arc<dyn crypto::ServerConfig> =
-                issued.resolve(&client_hello, self.early_data).await?;
+            let certificate = data.issue_certificate(client_hello.client_hello()).await?;
+            let resolved: Arc<dyn crypto::ServerConfig> = Arc::new(Self {
+                identity: ServerIdentity::Installed(certificate),
+                contexts: self.contexts.clone(),
+                early_data: self.early_data,
+            });
             Ok(resolved)
         })
     }
@@ -398,16 +364,25 @@ impl QuicServerConfig {
         let unsupported = || TransportError::INTERNAL_ERROR("unsupported QUIC version");
         let wire = packet::wire(negotiated).ok_or_else(unsupported)?;
         let early_wire = packet::wire(original).ok_or_else(unsupported)?;
-        let ServerIdentity::Fixed(contexts) = &self.identity else {
-            return Err(TransportError::INTERNAL_ERROR(
-                "issued certificates need the ClientHello first: await the Incoming",
-            ));
-        };
         let context = match negotiated {
-            Version::V2 => &contexts[1],
-            _ => &contexts[0],
+            Version::V2 => &self.contexts[1],
+            _ => &self.contexts[0],
         };
-        let ssl = Ssl::new(context).map_err(|error| crypto_error(error.into()))?;
+        let mut ssl = Ssl::new(context).map_err(|error| crypto_error(error.into()))?;
+        match &self.identity {
+            ServerIdentity::Fixed => {}
+            ServerIdentity::Installed(certificate) => {
+                certificate.install(&mut ssl).map_err(|error| {
+                    TransportError::INTERNAL_ERROR("install the issued certificate")
+                        .with_cause(ArcError::from_box_error(error))
+                })?;
+            }
+            ServerIdentity::Issued(_) => {
+                return Err(TransportError::INTERNAL_ERROR(
+                    "issued certificates need the ClientHello first: await the Incoming",
+                ));
+            }
+        }
         Ok(Box::new(TlsSession::new(
             ssl,
             Side::Server,

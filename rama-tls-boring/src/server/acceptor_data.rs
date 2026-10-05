@@ -4,7 +4,7 @@ use super::cert_issuer::{
 use super::config::BoringTlsAuth;
 use crate::core::{
     pkey::{PKey, Private},
-    x509::{X509, X509Ref},
+    x509::X509,
 };
 use moka::future::Cache;
 use parking_lot::Mutex;
@@ -103,51 +103,36 @@ impl TlsAcceptorData {
         self.config.cert_source.issues_per_identity()
     }
 
-    /// This configuration with the certificate `client_hello` asks for, issued now or reused
-    /// from the issuer's cache.
+    /// Issue the certificate `client_hello` asks for, or reuse it from the issuer's cache.
     ///
     /// The identity is the ClientHello's server name, else the issuer's fallback identity.
-    /// The result has that one fixed identity, for TLS stacks that cannot wait on issuance in
-    /// the middle of a handshake, such as QUIC's. A fixed identity is returned unchanged.
-    pub async fn with_issued_certificate(
+    /// For TLS stacks that cannot wait on issuance in the middle of a handshake, such as
+    /// QUIC's: install the result on the session before it starts, over a context from
+    /// [`Self::acceptor_builder_without_identity`]. A fixed identity is returned as is.
+    pub async fn issue_certificate(
         &self,
         client_hello: &RamaClientHello,
-    ) -> Result<Self, BoxError> {
+    ) -> Result<IssuedCertificate, BoxError> {
         let source = self.config.cert_source.clone();
-        if !source.issues_per_identity() {
-            return Ok(self.clone());
-        }
         let identity = match client_hello.ext_server_name() {
             Some(name) => Some(CertificateIdentity::from(name.clone())),
             None => source.fallback_identity().cloned(),
         };
-        let issued_cert = source
-            .issue_for(identity, Some(client_hello.clone()))
+        let cert = source
+            .issue_for(identity.clone(), Some(client_hello.clone()))
             .await?;
-        let mut config = self.config.clone();
-        config.cert_source = TlsCertSource {
-            kind: TlsCertSourceKind::InMemory(issued_cert),
-        };
-        Ok(Self { config })
+        Ok(IssuedCertificate { identity, cert })
     }
 
-    /// The leaf certificate of a fixed identity; `None` while certificates are issued per
-    /// handshake.
-    #[must_use]
-    pub fn leaf_certificate(&self) -> Option<&X509Ref> {
-        match &self.config.cert_source.kind {
-            TlsCertSourceKind::InMemory(issued_cert) => {
-                issued_cert.cert_chain.first().map(|leaf| &**leaf)
-            }
-            TlsCertSourceKind::InMemoryIssuer { .. } | TlsCertSourceKind::DynamicIssuer { .. } => {
-                None
-            }
-        }
+    /// A server context builder with every setting of this configuration but its identity,
+    /// which is installed per session instead; see [`Self::issue_certificate`].
+    pub fn acceptor_builder_without_identity(&self) -> Result<SslAcceptorBuilder, BoxError> {
+        self.config.acceptor_builder()
     }
 
     /// Prepare a server context with a fixed identity, without starting a transport.
     /// Certificate issuers require the asynchronous acceptor path and are rejected here;
-    /// see [`Self::with_issued_certificate`].
+    /// see [`Self::issue_certificate`].
     pub fn into_static_acceptor_builder(self) -> Result<SslAcceptorBuilder, BoxError> {
         let mut builder = self.config.acceptor_builder()?;
         let TlsCertSourceKind::InMemory(cert) = self.config.cert_source.kind else {
@@ -157,6 +142,26 @@ impl TlsAcceptorData {
         };
         install_identity(&mut builder, &cert)?;
         Ok(builder)
+    }
+}
+
+/// A certificate issued for one handshake, with its private key.
+#[derive(Debug, Clone)]
+pub struct IssuedCertificate {
+    identity: Option<CertificateIdentity>,
+    cert: IssuedCert,
+}
+
+impl IssuedCertificate {
+    /// The identity it was issued for, if the handshake named one.
+    #[must_use]
+    pub fn identity(&self) -> Option<&CertificateIdentity> {
+        self.identity.as_ref()
+    }
+
+    /// Present this certificate on `ssl`, before its handshake starts.
+    pub fn install(&self, ssl: &mut SslRef) -> Result<(), BoxError> {
+        add_issued_cert_to_ssl_ref(self.identity.as_ref(), &self.cert, ssl)
     }
 }
 
