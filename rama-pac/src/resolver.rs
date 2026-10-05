@@ -652,7 +652,7 @@ impl LoadedScript {
 
     /// Whether the loaded script defines the global function `name`.
     ///
-    /// The probe runs no script code, so its failure is never a verdict on the script.
+    /// The probe runs no script code, so its failure stays retryable, bounded by the spawn budget.
     async fn probe(worker: &JsWorker, name: &'static str) -> Result<bool, LoadError> {
         worker
             .run(move |runtime| runtime.has_global_fn(name))

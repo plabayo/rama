@@ -363,8 +363,7 @@ async fn a_runaway_script_is_bounded_and_the_worker_recovers() {
     assert_eq!(directives.as_slice(), [PacDirective::Direct]);
 }
 
-/// A spinning script poisons its worker on the execution time limit; the
-/// loop-iteration limit is off so nothing else cuts the call short first.
+/// A script whose entry point never returns.
 const SPINNING_SCRIPT: &str = "countLoad(); function FindProxyForURL(u, h) { while (true) {} }";
 
 fn counting_runtime(loads: &Arc<AtomicUsize>) -> JsRuntimeBuilder {
@@ -374,7 +373,8 @@ fn counting_runtime(loads: &Arc<AtomicUsize>) -> JsRuntimeBuilder {
     })
 }
 
-/// Each call spins until `limit`, a wall-clock bound, stops it.
+/// Each call spins until `limit`, a wall-clock bound, stops it: the loop iteration limit is
+/// off, so nothing else cuts it short first.
 fn spinning_resolver_builder(loads: &Arc<AtomicUsize>, limit: Duration) -> rama_pac::PacResolver {
     #[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
     PacResolver::builder()
@@ -469,12 +469,14 @@ async fn a_script_that_keeps_killing_its_worker_is_never_rejected() {
     // (see `a_script_wedging_every_load_stops_costing_workers`)
     let loads = loads.load(Ordering::SeqCst);
     assert!(loads > 0, "the script was never given a worker at all");
+    let err = resolver
+        .find_proxy(&uri("http://example.com/"))
+        .await
+        .expect_err("a script that never returns cannot resolve");
+    let err = format!("{err} {err:?}");
     assert!(
-        resolver
-            .find_proxy(&uri("http://example.com/"))
-            .await
-            .is_err(),
-        "the resolver must still be answering, not cooling down",
+        !err.contains("cooling down"),
+        "the resolver must still be answering, not cooling down: {err}",
     );
 }
 
