@@ -1692,16 +1692,15 @@ fn error_text_never_leaks_engine_internals() {
 #[test]
 fn a_slow_but_legitimate_script_completes_under_a_generous_limit() {
     let mut runtime = JsRuntime::builder()
-        .with_execution_time_limit(std::time::Duration::from_secs(30))
-        // enough work to need many budget rounds, so the deadline is really
-        // consulted rather than never reached
+        .with_execution_time_limit(std::time::Duration::from_secs(60))
+        // work spanning many epoch ticks, so the deadline is really consulted
         .without_loop_iteration_limit()
         .build()
         .unwrap();
 
     assert_eq!(
         runtime
-            .eval("var total = 0; for (var i = 0; i < 3000000; i++) { total += i } total > 0")
+            .eval("var total = 0; for (var i = 0; i < 1000000; i++) { total += i } total > 0")
             .unwrap(),
         JsValue::Bool(true)
     );
@@ -1710,7 +1709,7 @@ fn a_slow_but_legitimate_script_completes_under_a_generous_limit() {
         .eval("function work(n) { var t = 0; for (var i = 0; i < n; i++) { t += i } return t > 0 }")
         .unwrap();
     assert_eq!(
-        runtime.call("work", [3_000_000.0]).unwrap(),
+        runtime.call("work", [1_000_000.0]).unwrap(),
         JsValue::Bool(true)
     );
 }

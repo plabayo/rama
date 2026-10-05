@@ -829,7 +829,10 @@ async fn a_script_that_discards_its_entry_point_keeps_being_served() {
 async fn one_wedging_host_is_not_an_outage_for_every_host() {
     // the default worker spawn window: what an operator actually deploys
     let resolver = PacResolver::builder()
-        .with_execution_time_limit(Duration::from_millis(100))
+        // the lookup timeout wedges the hostile host's worker; the deadline stays generous so
+        // descheduling cannot fail every other host's trivial respawn and lookup
+        .with_execution_time_limit(Duration::from_secs(5))
+        .with_timeout(Duration::from_millis(500))
         .build_static(
             split_brain(&format!(
                 "new Array(100).fill(0).map(function() {{ {SHIELDED_SPIN} }});"
@@ -839,7 +842,10 @@ async fn one_wedging_host_is_not_an_outage_for_every_host() {
         .expect("build resolver");
 
     for round in 1..=2 {
-        let _wedged = find_proxy(&resolver, EVIL).await;
+        assert!(
+            find_proxy(&resolver, EVIL).await.is_err(),
+            "round {round}: the hostile host must not route"
+        );
 
         let directives = find_proxy(&resolver, GOOD).await.unwrap_or_else(|err| {
             panic!("round {round}: an unrelated host must still route: {err}")
