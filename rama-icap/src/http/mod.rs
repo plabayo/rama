@@ -394,12 +394,12 @@ impl Encapsulated {
                     if let Some(version) = response_version {
                         *response.version_mut() = version;
                     }
-                    if let OriginalHead::Tunnel {
+                    if let OriginalHead::Connect {
                         response: original,
                         switched,
                     } = original
                     {
-                        restore_tunnel_response(&mut response, original, *switched)?;
+                        restore_connect_response(&mut response, original, *switched)?;
                     }
                     let extensions = response.extensions().with_base(response_base);
                     Some(response.with_extensions(extensions))
@@ -675,10 +675,10 @@ where
 enum OriginalHead {
     Request(HttpRequest<()>),
     Response(HttpResponse<()>),
-    /// The acceptance of an Extended CONNECT: the tunnel it opens carries no body.
-    Tunnel {
+    /// The response to a CONNECT, classic or Extended: an acceptance opens a tunnel.
+    Connect {
         response: HttpResponse<()>,
-        /// Encapsulated as the `101` it stands for.
+        /// An Extended CONNECT acceptance, encapsulated as the `101` it stands for.
         switched: bool,
     },
 }
@@ -687,24 +687,24 @@ impl OriginalHead {
     fn request(&self) -> Option<&HttpRequest<()>> {
         match self {
             Self::Request(request) => Some(request),
-            Self::Response(_) | Self::Tunnel { .. } => None,
+            Self::Response(_) | Self::Connect { .. } => None,
         }
     }
 
     fn response(&self) -> Option<&HttpResponse<()>> {
         match self {
             Self::Request(_) => None,
-            Self::Response(response) | Self::Tunnel { response, .. } => Some(response),
+            Self::Response(response) | Self::Connect { response, .. } => Some(response),
         }
     }
 
-    /// Whether the message opens a tunnel, which carries no body of its own: an Extended
-    /// CONNECT or its acceptance.
+    /// Whether the message opens a tunnel, which carries no body of its own: a CONNECT or its
+    /// acceptance (RFC 9110 §9.3.6).
     fn is_tunnel(&self) -> bool {
         match self {
-            Self::Request(request) => extended_connect_protocol(request).is_some(),
+            Self::Request(request) => request.method() == HttpMethod::CONNECT,
             Self::Response(_) => false,
-            Self::Tunnel { .. } => true,
+            Self::Connect { response, .. } => response.status().is_success(),
         }
     }
 }
@@ -878,8 +878,8 @@ impl ClientRequest {
         }
         Ok(Self {
             icap,
-            original: if switches_protocols(request, &original) {
-                OriginalHead::Tunnel {
+            original: if request.method() == HttpMethod::CONNECT {
+                OriginalHead::Connect {
                     response: original,
                     switched: switching,
                 }
@@ -1793,11 +1793,12 @@ fn resolve_result_head(
 
     // A tunnel carries no body, which would go ahead of it; a refusal of one may.
     let still_tunnel = match &selected {
-        Some(ResultHead::EncapsulatedRequest | ResultHead::Request(_)) => original.is_tunnel(),
-        Some(ResultHead::Response(_)) => matches!(original, OriginalHead::Tunnel { .. }),
+        Some(
+            ResultHead::EncapsulatedRequest | ResultHead::Request(_) | ResultHead::Response(_),
+        ) => original.is_tunnel(),
         Some(ResultHead::EncapsulatedResponse) => {
-            // A 2xx still accepts the tunnel, see `restore_tunnel_response`.
-            matches!(original, OriginalHead::Tunnel { .. })
+            // A 2xx still accepts the tunnel, see `restore_connect_response`.
+            matches!(original, OriginalHead::Connect { .. })
                 && encapsulated
                     .and_then(Encapsulated::response)
                     .is_some_and(|response| response.status().is_success())
@@ -2449,9 +2450,9 @@ fn prepare_request_head<T>(
     (request, promoted, trailer_forbidden)
 }
 
-/// The acceptance of an Extended CONNECT comes back as it was encapsulated: a `101` as its
-/// original status again, without upgrade fields, else as the 2xx it stayed.
-fn restore_tunnel_response(
+/// The response to a CONNECT comes back as it was encapsulated: a `101` as its original status
+/// again, without upgrade fields; a 2xx only where the origin accepted, as it opens the tunnel.
+fn restore_connect_response(
     adapted: &mut HttpResponse<()>,
     original: &HttpResponse<()>,
     switched: bool,
@@ -2465,14 +2466,21 @@ fn restore_tunnel_response(
     }
     if adapted.status().is_informational() {
         return Err(Error::invalid_sequence(
-            "adapted Extended CONNECT acceptance is informational",
+            "adapted CONNECT response is informational",
         ));
     }
-    // Any other status refuses the tunnel, but a 2xx for a `101` lost its protocol.
-    if switched && adapted.status().is_success() {
-        return Err(Error::invalid_sequence(
-            "adapted Extended CONNECT acceptance is no longer a 101",
-        ));
+    if adapted.status().is_success() {
+        if switched {
+            // the `101` named the protocol a 2xx no longer does
+            return Err(Error::invalid_sequence(
+                "adapted Extended CONNECT acceptance is no longer a 101",
+            ));
+        }
+        if !original.status().is_success() {
+            return Err(Error::invalid_sequence(
+                "adapted CONNECT refusal opens a tunnel",
+            ));
+        }
     }
     Ok(())
 }

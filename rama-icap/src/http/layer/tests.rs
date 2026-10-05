@@ -34,6 +34,7 @@ use rama_net::{
         pool::{BasicConnIdentifier, ConnID, LruDropPool, PooledConnector},
     },
     test_utils::client::{MockConnectorService, MockSocket},
+    uri::Uri,
 };
 use rama_tls::{
     SecureTransport,
@@ -2808,7 +2809,7 @@ fn transfer_defaults_to_complete_and_uses_decoded_target_extension() {
     assert!(policy.adapt);
     assert_eq!(policy.preview, None);
 
-    let uri = rama_net::uri::Uri::parse_strict("http://origin.test/a%2EHTML?download=1").unwrap();
+    let uri = Uri::parse_strict("http://origin.test/a%2EHTML?download=1").unwrap();
     assert_eq!(request_target_extension(&uri).as_deref(), Some("HTML"));
 }
 
@@ -2893,6 +2894,12 @@ fn extended_connect(uri: &'static str) -> Request<Body> {
         .unwrap();
     request.extensions().insert(UpgradeProtocol::WEBSOCKET);
     request
+}
+
+fn classic_connect(authority: &'static str) -> Request<Body> {
+    Request::connect(Uri::parse_authority_form(authority).unwrap())
+        .body(Body::empty())
+        .unwrap()
 }
 
 /// An adapting service that checks the encapsulated GET upgrade, then rewrites it as `adapt` says.
@@ -3071,10 +3078,11 @@ async fn respmod_sees_an_extended_connect_acceptance_as_switching_protocols() {
     }
 }
 
-/// A RESPMOD service answering for an Extended CONNECT acceptance as `adapt` says.
-macro_rules! extended_connect_respmod {
-    ($encapsulation:expr, $adapt:expr) => {{
-        let switched = $encapsulation == UpgradeEncapsulation::Keep;
+/// A RESPMOD service answering for a CONNECT response, encapsulated with `status`, as `adapt`
+/// says.
+macro_rules! connect_respmod {
+    ($status:expr, $adapt:expr) => {{
+        let status: u16 = $status;
         let adapt: fn(&mut Response<()>) -> Body = $adapt;
         mock_icap_client(
             move || {
@@ -3082,7 +3090,7 @@ macro_rules! extended_connect_respmod {
                     HttpService::new(service_fn(move |request: IncomingRequest| async move {
                         let (parts, _body) = request.into_parts();
                         let mut response = parts.encapsulated.unwrap().response.unwrap();
-                        assert_eq!(response.status(), if switched { 101 } else { 200 });
+                        assert_eq!(response.status(), status);
                         let body = adapt(&mut response);
                         OutgoingResponse::from_http_response(
                             MethodKind::Respmod,
@@ -3166,7 +3174,8 @@ async fn respmod_refusing_an_extended_connect_never_opens_the_tunnel() {
             None,
         ),
     ] {
-        let connector = extended_connect_respmod!(encapsulation, adapt);
+        let switched = encapsulation == UpgradeEncapsulation::Keep;
+        let connector = connect_respmod!(if switched { 101 } else { 200 }, adapt);
         let inner = service_fn(async |_request: Request<Body>| {
             Ok::<_, Infallible>(
                 Response::builder()
@@ -3237,8 +3246,21 @@ async fn respmod_never_attaches_a_headless_body_to_a_tunnel() {
 
 /// A body without a head, or a block page for the request, is judged the same as with one.
 #[tokio::test]
-async fn reqmod_never_attaches_a_body_to_an_extended_connect() {
-    for (body_only, expected) in [(true, None), (false, Some(403))] {
+async fn reqmod_never_attaches_a_body_to_a_connect() {
+    for (connect, body_only, expected) in [
+        (
+            (|| extended_connect("https://origin.test/chat?x=1")) as fn() -> Request<Body>,
+            true,
+            None,
+        ),
+        (
+            || extended_connect("https://origin.test/chat?x=1"),
+            false,
+            Some(403),
+        ),
+        (|| classic_connect("origin.test:443"), true, None),
+        (|| classic_connect("origin.test:443"), false, Some(403)),
+    ] {
         let connector = mock_icap_client(
             move || {
                 Server::new(
@@ -3281,13 +3303,91 @@ async fn reqmod_never_attaches_a_body_to_an_extended_connect() {
         let service = AdaptationLayer::new(connector)
             .with_request_service(endpoint("reqmod"))
             .layer(inner);
-        let response = service
-            .serve(extended_connect("https://origin.test/chat?x=1"))
-            .await;
+        let request = connect();
+        let target = request.uri().to_string();
+        let response = service.serve(request).await;
         assert_eq!(
             response.ok().map(|response| response.status().as_u16()),
             expected,
-            "body only: {body_only}"
+            "{target} body only: {body_only}"
+        );
+    }
+}
+
+/// A CONNECT the origin refused never becomes a tunnel: an adapted refusal page passes, an
+/// adapted acceptance does not, with or without a body.
+#[tokio::test]
+async fn respmod_never_opens_a_tunnel_the_origin_refused() {
+    for connect in [
+        (|| extended_connect("https://origin.test/chat?x=1")) as fn() -> Request<Body>,
+        || classic_connect("origin.test:443"),
+    ] {
+        for (adapt, expected) in [
+            (
+                (|response: &mut Response<()>| {
+                    with_status(response, 200);
+                    Body::from("injected")
+                }) as fn(&mut Response<()>) -> Body,
+                None,
+            ),
+            (
+                |response| {
+                    with_status(response, 200);
+                    Body::empty()
+                },
+                None,
+            ),
+            (|_response| Body::from("blocked"), Some(403)),
+        ] {
+            let request = connect();
+            let version = request.version();
+            let connector = connect_respmod!(403, adapt);
+            let inner = service_fn(move |_request: Request<Body>| async move {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(403)
+                        .version(version)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            });
+            let service = AdaptationLayer::new(connector)
+                .with_response_service(endpoint("respmod"))
+                .layer(inner);
+            let target = request.uri().to_string();
+            let response = service.serve(request).await;
+            assert_eq!(
+                response.ok().map(|response| response.status().as_u16()),
+                expected,
+                "{target} {expected:?}"
+            );
+        }
+    }
+}
+
+/// The acceptance of a classic CONNECT opens its tunnel too: no adapted body goes ahead of it.
+#[tokio::test]
+async fn respmod_never_attaches_a_body_to_a_classic_connect_acceptance() {
+    for (adapt, expected) in [
+        (
+            (|_response: &mut Response<()>| Body::from("smuggled"))
+                as fn(&mut Response<()>) -> Body,
+            None,
+        ),
+        (|_response| Body::empty(), Some(200)),
+    ] {
+        let connector = connect_respmod!(200, adapt);
+        let inner = service_fn(async |_request: Request<Body>| {
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        });
+        let service = AdaptationLayer::new(connector)
+            .with_response_service(endpoint("respmod"))
+            .layer(inner);
+        let response = service.serve(classic_connect("origin.test:443")).await;
+        assert_eq!(
+            response.ok().map(|response| response.status().as_u16()),
+            expected,
+            "{expected:?}"
         );
     }
 }
