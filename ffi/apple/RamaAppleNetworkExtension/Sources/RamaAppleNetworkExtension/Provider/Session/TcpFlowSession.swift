@@ -719,6 +719,12 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         guard !closeForRustTerminalError() else { return }
         guard beginTerminalDrain(.egressWriter) else { return }
         if sessionHandle?.egressAborted() == true {
+            // No egress timer may tear the flow down while the client half drains.
+            timeoutWork?.cancel()
+            timeoutWork = nil
+            waitingWork?.cancel()
+            waitingWork = nil
+            ctx.postReadyWaitingArmed = false
             ctx.resetEgress()
             finishTerminalDrain(.egressWriter)
             return

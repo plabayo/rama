@@ -130,8 +130,7 @@ final class RustTerminalErrorIntegrationTests: XCTestCase {
                 }
             }
             h.drain()
-            // The relay reflects the reset onto the egress too: it is reset at once,
-            // without an upload FIN, while the held response still drains.
+            // The relay resets the egress too, with no upload FIN, while the response drains.
             XCTAssertNil(h.connection.sentChunks.first(where: { $0.content == nil }), "no FIN")
             XCTAssertEqual(h.connection.forceCancelCount, 1)
             XCTAssertEqual(h.flow.closeWriteCallCount, 0)
@@ -156,6 +155,28 @@ final class RustTerminalErrorIntegrationTests: XCTestCase {
             XCTAssertEqual(h.flow.closeWriteCallCount, 1)
             XCTAssertEqual(h.flow.closeReadCallCount, 1)
         }
+    }
+
+    func testAnEgressResetCancelsItsWaitingTeardownSoTheClientDrains() {
+        let h = Harness()
+        let tail = Data((0..<(48 * 1024 + 17)).map { UInt8($0 % 251) })
+        produceReadErrorAfterClientEOF(h, tail: tail)
+        h.session.flowQueue.sync {
+            // An established egress losing its path arms a teardown timer.
+            h.session.handleEgressWaiting(nil)
+            XCTAssertNotNil(h.session.waitingWork)
+            h.session.closeEgressAfterRustDrain()
+            XCTAssertNil(h.session.waitingWork)
+            XCTAssertFalse(h.session.ctx.postReadyWaitingArmed)
+            h.session.closeClientAfterRustDrain()
+        }
+        h.drain()
+        while h.flow.completeNextWrite() { h.drain() }
+        waitFor("error-carrying close after the final response completion") {
+            h.flow.closeWriteCallCount == 1
+        }
+        XCTAssertEqual(h.flow.writes.reduce(into: Data()) { $0.append($1) }, tail)
+        XCTAssertEqual(h.connection.forceCancelCount, 1)
     }
 
     func testRealHandleRetainsRecordedErrorAcrossCancellation() {
