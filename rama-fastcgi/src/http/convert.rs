@@ -33,6 +33,7 @@ use crate::server::{FastCgiRequest, FastCgiResponse};
 
 static KEEP_ALIVE: HeaderName = HeaderName::from_static("keep-alive");
 static PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
+static PROXY: HeaderName = HeaderName::from_static("proxy");
 
 /// HTTP request headers we don't forward as `HTTP_*` CGI variables —
 /// either hop-by-hop (RFC 7230 §6.1) or because they have a dedicated CGI
@@ -276,7 +277,14 @@ pub(super) async fn http_request_to_fastcgi(
 
     // ── HTTP_* header mapping (RFC 3875 §4.1.18): one variable per field ──
     for name in parts.headers.keys() {
-        if HOP_BY_HOP_OR_DEDICATED.contains(&name) {
+        // As Apache: other names could shadow a variable; `HTTP_PROXY` sets a proxy (httpoxy).
+        if HOP_BY_HOP_OR_DEDICATED.contains(&name)
+            || name == PROXY
+            || !name
+                .as_str()
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
             continue;
         }
         params.push((
@@ -806,6 +814,35 @@ mod tests {
             [Bytes::from_static(b"203.0.113.5, 198.51.100.7")]
         );
         assert_eq!(values(b"HTTP_COOKIE"), [Bytes::from_static(b"a=1; b=2")]);
+    }
+
+    /// No field may shadow another's variable or set a CGI application's proxy (httpoxy).
+    #[tokio::test]
+    async fn fields_that_would_collide_are_not_passed() {
+        let req = Request::builder()
+            .method("GET")
+            .uri("http://example.com/")
+            .header("x-real-ip", "203.0.113.5")
+            .header("x_real_ip", "198.51.100.7")
+            .header("x-real.ip", "198.51.100.8")
+            .header("proxy", "http://attacker.test")
+            .body(Body::empty())
+            .unwrap();
+        let fcgi = http_request_to_fastcgi(req).await.unwrap();
+        let values = |name: &[u8]| -> Vec<Bytes> {
+            fcgi.params
+                .iter()
+                .filter(|(n, _)| n.as_ref() == name)
+                .map(|(_, v)| v.clone())
+                .collect()
+        };
+        assert_eq!(
+            values(b"HTTP_X_REAL_IP"),
+            [Bytes::from_static(b"203.0.113.5")]
+        );
+        // PHP reads `HTTP_X_REAL.IP` as `HTTP_X_REAL_IP`.
+        assert!(values(b"HTTP_X_REAL.IP").is_empty());
+        assert!(values(b"HTTP_PROXY").is_empty());
     }
 
     #[tokio::test]
