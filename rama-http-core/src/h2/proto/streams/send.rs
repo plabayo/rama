@@ -95,8 +95,10 @@ impl Send {
         {
             tracing::debug!("illegal connection-specific headers found");
             return Err(UserError::MalformedHeaders);
-        } else if let Some(te) = fields.get(rama_http_types::header::TE)
-            && te != "trailers"
+        } else if fields
+            .get_all(rama_http_types::header::TE)
+            .iter()
+            .any(|te| !rama_http_types::header::hop_by_hop::is_te_trailers(te.as_bytes()))
         {
             tracing::debug!("illegal connection-specific headers found");
             return Err(UserError::MalformedHeaders);

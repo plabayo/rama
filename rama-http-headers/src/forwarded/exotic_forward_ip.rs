@@ -102,10 +102,13 @@ macro_rules! exotic_forward_ip_headers {
                 fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(
                     values: &mut I,
                 ) -> Result<Self, crate::Error> {
+                    // One client address: a second line, as an appending proxy adds, is refused.
+                    let value = crate::util::single_value(values)?;
                     Ok($name(
-                        values
-                            .next()
-                            .and_then(|value| value.to_str().ok().and_then(|s| s.parse().ok()))
+                        value
+                            .to_str()
+                            .ok()
+                            .and_then(|s| s.parse().ok())
                             .ok_or_else(crate::Error::invalid)?,
                     ))
                 }

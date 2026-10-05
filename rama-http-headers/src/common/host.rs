@@ -5,7 +5,7 @@ use rama_core::{bytes::Bytes, telemetry::tracing};
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_net::address::{self, HostWithOptPort};
 
-use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util::single_value};
 
 /// The `Host` header.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -19,10 +19,9 @@ impl TypedHeader for Host {
 
 impl HeaderDecode for Host {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
-        let addr = values
-            .next()
-            .and_then(|val| HostWithOptPort::try_from(val.as_bytes()).ok())
-            .ok_or_else(Error::invalid)?;
+        // Several lines are refused, as received requests are (RFC 9112 §3.2).
+        let value = single_value(values)?;
+        let addr = HostWithOptPort::try_from(value.as_bytes()).map_err(|_err| Error::invalid())?;
         Ok(Self(addr))
     }
 }

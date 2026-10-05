@@ -1084,7 +1084,9 @@ impl HeaderBlock {
                     if header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS.contains(&&name) {
                         tracing::trace!("load_hpack; connection level header");
                         malformed = true;
-                    } else if name == header::TE && value != "trailers" {
+                    } else if name == header::TE
+                        && !header::hop_by_hop::is_te_trailers(value.as_bytes())
+                    {
                         tracing::trace!(
                             "load_hpack; TE header not set to trailers; val={:?}",
                             value

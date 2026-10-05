@@ -335,6 +335,7 @@ mod tests {
             .header(CONNECTION, "keep-alive")
             .header("keep-alive", "timeout=5")
             .header(TRANSFER_ENCODING, "chunked")
+            .header("te", "trailers")
             .header("content-type", "text/plain")
             // legal in HTTP/2 — must be preserved (not a protocol-illegal header)
             .header("trailer", "expires")
@@ -348,6 +349,7 @@ mod tests {
         assert!(!resp.headers().contains_key(CONNECTION));
         assert!(!resp.headers().contains_key("keep-alive"));
         assert!(!resp.headers().contains_key(TRANSFER_ENCODING));
+        assert!(!resp.headers().contains_key("te"), "a request field");
         assert_eq!(resp.headers().get("content-type").unwrap(), "text/plain");
         // legal-in-HTTP/2 headers survive a pure version change
         assert_eq!(resp.headers().get("trailer").unwrap(), "expires");
