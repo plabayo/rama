@@ -17,6 +17,7 @@ use crate::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
     proto::{
         HeaderByteLength,
+        ext::Protocol,
         h1::ext::{ReasonPhrase, RequestTargetForm},
     },
 };
@@ -295,9 +296,8 @@ fn encode_request_target_preserving_form(
             RequestTargetForm::Absolute if *method != Method::CONNECT && !uri.is_asterisk() => {
                 write_absolute_form(method, uri, output)
             }
-            // RFC 9112 §3.2.3: a CONNECT target is `host:port`.
             RequestTargetForm::Authority
-                if *method == Method::CONNECT && uri.port_u16().is_some() =>
+                if *method == Method::CONNECT && is_http1_connect_target(uri, extensions) =>
             {
                 uri.write_http_authority_form(output)
             }
@@ -310,6 +310,13 @@ fn encode_request_target_preserving_form(
         return result.map_err(|_error| HeadError::new(HeadErrorKind::InvalidTarget));
     }
     encode_request_target(method, uri, extensions, output)
+}
+
+/// Whether an HTTP/1 `CONNECT` can name `uri`: as `host:port` (RFC 9112 §3.2.3), and never as
+/// an Extended CONNECT, whose HTTP/1.1 form is an `Upgrade` request instead (RFC 8441 §5).
+#[must_use]
+pub fn is_http1_connect_target(uri: &Uri, extensions: &Extensions) -> bool {
+    uri.port_u16().is_some() && !extensions.contains::<Protocol>()
 }
 
 /// Encode the HTTP/1 request-target selected by Rama connection metadata.
@@ -330,8 +337,7 @@ pub fn encode_request_target(
     output: &mut BytesMut,
 ) -> Result<(), HeadError> {
     let result = if *method == Method::CONNECT {
-        // RFC 9112 §3.2.3: a CONNECT target is `host:port`.
-        if uri.port_u16().is_none() {
+        if !is_http1_connect_target(uri, extensions) {
             return Err(HeadError::new(HeadErrorKind::InvalidTarget));
         }
         uri.write_http_authority_form(output)
@@ -468,6 +474,56 @@ impl std::error::Error for HeadError {}
 mod tests {
     use super::*;
     use rama_net::address::ProxyAddress;
+
+    #[test]
+    fn http1_connect_names_host_and_port_and_never_carries_a_protocol() {
+        for (uri, protocol, form, expected) in [
+            (
+                "https://example.test:443",
+                false,
+                None,
+                Some("CONNECT example.test:443 "),
+            ),
+            ("https://example.test", false, None, None),
+            ("https://example.test:443/chat", true, None, None),
+            (
+                "https://example.test:443",
+                false,
+                Some(RequestTargetForm::Authority),
+                Some("CONNECT example.test:443 "),
+            ),
+            (
+                "https://example.test:443",
+                true,
+                Some(RequestTargetForm::Authority),
+                None,
+            ),
+        ] {
+            let request = Request::builder()
+                .method(Method::CONNECT)
+                .uri(uri)
+                .body(())
+                .unwrap();
+            if protocol {
+                request.extensions().insert(Protocol::WEBSOCKET);
+            }
+            if let Some(form) = form {
+                request.extensions().insert(form);
+            }
+            let encoded = encode_request(&request);
+            match expected {
+                Some(line) => assert!(
+                    encoded.as_ref().unwrap().starts_with(line.as_bytes()),
+                    "{uri} {protocol} {form:?}: {encoded:?}"
+                ),
+                None => assert_eq!(
+                    encoded.unwrap_err().kind(),
+                    HeadErrorKind::InvalidTarget,
+                    "{uri} {protocol} {form:?}"
+                ),
+            }
+        }
+    }
 
     #[test]
     fn parses_request_without_copying_header_values() {
