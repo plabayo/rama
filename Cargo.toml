@@ -232,7 +232,7 @@ rama-utils = { version = "0.5.0", path = "./rama-utils", default-features = fals
 rama-ws = { version = "0.5.0", path = "./rama-ws", default-features = false }
 rand = "0.10"
 rand_pcg = "0.10"
-ratatui = "0.30"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache", "macros", "underline-color"] }
 rawzip = { version = "0.5" }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "x509-parser"] }
 regex = { version = "1.13", default-features = false }
