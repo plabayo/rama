@@ -47,6 +47,16 @@ pub(super) enum IcapTlsMode {
 impl RamaService {
     /// Start the rama Ip service with the given port.
     pub(super) fn serve_ip(port: u16, transport: bool, secure: bool) -> Self {
+        Self::serve_ip_with_args(port, transport, secure, &[])
+    }
+
+    /// Start the rama Ip service with the given port and extra arguments.
+    pub(super) fn serve_ip_with_args(
+        port: u16,
+        transport: bool,
+        secure: bool,
+        args: &[&str],
+    ) -> Self {
         let mut builder = escargot::CargoBuild::new()
             .package("rama-cli")
             .bin("rama")
@@ -84,6 +94,7 @@ impl RamaService {
         if transport {
             builder.arg("-T");
         }
+        builder.args(args);
 
         let mut process = builder.spawn().unwrap();
 

@@ -163,3 +163,14 @@ async fn run(cmds: CliCommands) -> Result<(), BoxError> {
         CliCommands::Probe(cfg) => Box::pin(cmd::probe::run(cfg)).await,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory as _;
+
+    #[test]
+    fn cli_arguments_are_well_formed() {
+        Cli::command().debug_assert();
+    }
+}

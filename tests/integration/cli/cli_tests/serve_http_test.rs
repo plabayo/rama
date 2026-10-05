@@ -7,7 +7,7 @@ use rama::{
     http::{
         Body, BodyExtractExt, Method, Request, Response, StatusCode, Version,
         body::util::BodyExt,
-        client::EasyHttpWebClient,
+        client::{EasyHttpWebClient, Http3Connector},
         header::{ACCEPT_ENCODING, CONTENT_ENCODING},
         headers::{ContentLength, HeaderMapExt, encoding::AcceptEncoding},
         layer::decompression::DecompressionLayer,
@@ -28,7 +28,11 @@ use flate2::{Compression, write::GzEncoder};
 async fn test_http_tests() {
     utils::init_tracing();
     let _guard = utils::RamaService::serve_http_test(63133, false);
-    run_http_tests("http://127.0.0.1:63133").await;
+    run_http_tests(
+        "http://127.0.0.1:63133",
+        &[Version::HTTP_10, Version::HTTP_11, Version::HTTP_2],
+    )
+    .await;
 }
 
 #[ignore]
@@ -36,24 +40,38 @@ async fn test_http_tests() {
 async fn test_http_tests_over_tls() {
     utils::init_tracing();
     let _guard = utils::RamaService::serve_http_test(63134, true);
-    run_http_tests("https://127.0.0.1:63134").await;
+    run_http_tests(
+        "https://127.0.0.1:63134",
+        &[
+            Version::HTTP_10,
+            Version::HTTP_11,
+            Version::HTTP_2,
+            Version::HTTP_3,
+        ],
+    )
+    .await;
 }
 
-async fn run_http_tests(base_uri: &'static str) {
+async fn run_http_tests(base_uri: &'static str, versions: &[Version]) {
+    let tls = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
+    let http3 = Http3Connector::builder(Executor::default())
+        .with_tls_config(tls.clone())
+        .build()
+        .await
+        .unwrap();
     let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .with_default_dns_connector()
         .without_tls_proxy_support()
         .without_proxy_support()
-        .with_tls_support_using_boringssl(
-            TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
-        )
+        .with_tls_support_using_boringssl(tls)
         .with_default_http_connector(Executor::default())
+        .with_http3_support(http3)
         .without_connection_pool()
         .build_client()
         .boxed();
 
-    for http_version in [Version::HTTP_10, Version::HTTP_11, Version::HTTP_2] {
+    for &http_version in versions {
         run_http_test_endpoint_method(client.clone(), base_uri, http_version).await;
         run_http_test_endpoint_request_compression(client.clone(), base_uri, http_version).await;
         run_http_test_endpoint_response_compression(client.clone(), base_uri, http_version).await;

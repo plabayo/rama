@@ -356,6 +356,85 @@ async fn test_https_echo() {
     );
 }
 
+#[ignore]
+#[tokio::test]
+#[cfg(feature = "boring")]
+async fn test_http3_echo() {
+    use rama::{
+        futures::StreamExt as _,
+        http::{client::Http3Connector, ws::Message},
+        rt::Executor,
+    };
+
+    utils::init_tracing();
+
+    let _guard = utils::RamaService::serve_echo(63144, utils::EchoMode::Https);
+
+    let lines = utils::RamaService::http(vec![
+        "--http3",
+        "https://127.0.0.1:63144?q=1",
+        "-H",
+        "foo: bar",
+        "-d",
+        r##"{"a":4}"##,
+        "--json",
+    ])
+    .unwrap();
+    assert!(lines.contains("* using HTTP/3.0"), "lines: {lines:?}");
+    assert!(lines.contains("HTTP/3.0 200 OK"), "lines: {lines:?}");
+    assert!(lines.contains(r##""method":"POST""##), "lines: {lines:?}");
+    assert!(lines.contains(r##""foo","bar""##), "lines: {lines:?}");
+    assert!(lines.contains(r##""query":"q=1""##), "lines: {lines:?}");
+
+    // TCP responses advertise HTTP/3 on the same port.
+    let lines = utils::RamaService::http(vec!["--http2", "https://127.0.0.1:63144"]).unwrap();
+    assert!(
+        lines.contains(r#"alt-svc: h3=":63144""#),
+        "lines: {lines:?}"
+    );
+
+    // WebSockets over HTTP/3 (RFC 9220)
+    let tls = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
+    let connector = Http3Connector::builder(Executor::default())
+        .with_tls_config(tls.clone())
+        .build()
+        .await
+        .unwrap();
+    let client = EasyHttpWebClient::connector_builder()
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .without_tls_proxy_support()
+        .without_proxy_support()
+        .with_tls_support_using_boringssl(tls)
+        .with_default_http_connector(Executor::default())
+        .with_http3_support(connector)
+        .without_connection_pool()
+        .build_client();
+    let mut ws = client
+        .websocket_h3("wss://127.0.0.1:63144")
+        .handshake(Extensions::default())
+        .await
+        .expect("ws over h3 handshake to work");
+    ws.send_message("Cheerios".into())
+        .await
+        .expect("ws message to be sent");
+    assert_eq!(
+        "Cheerios",
+        ws.recv_message()
+            .await
+            .expect("echo ws message to be received")
+            .into_text()
+            .expect("echo ws message to be a text message")
+            .as_str()
+    );
+    ws.close(None).await.expect("ws close to be sent");
+    while let Some(message) = ws.next().await {
+        if matches!(message, Ok(Message::Close(_)) | Err(_)) {
+            break;
+        }
+    }
+}
+
 #[cfg(feature = "boring")]
 fn assert_contains(lines: &str, needle: &str, cli_flag: &str) {
     if !rama::utils::str::submatch_ignore_ascii_case(lines, needle) {

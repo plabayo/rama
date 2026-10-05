@@ -27,16 +27,20 @@ use rama::{
         tls::ApplicationProtocol,
     },
     rt::Executor,
-    tcp::server::TcpListener,
     telemetry::tracing,
-    tls::boring::server::TlsAcceptorLayer,
+    tls::{boring::server::TlsAcceptorLayer, server::TlsServerConfig},
     utils::{backoff::ExponentialBackoff, octets::mib},
 };
 
 use clap::Args;
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
-use crate::utils::{http::HttpVersion, rate::opt_per_sec, tls::try_new_server_config};
+use crate::utils::{
+    http::{HttpVersions, TcpHttpVersion},
+    http3::{Http3Args, HttpListeners, serve_http3},
+    rate::opt_per_sec,
+    tls::try_new_server_config,
+};
 
 mod endpoint;
 
@@ -53,9 +57,14 @@ pub struct CliCommandHttpTest {
     /// (0 = no limit)
     concurrent: usize,
 
-    /// http version to serve FP Service from
+    /// http versions to serve: `auto` or a comma separated list of h1, h2 and h3
+    ///
+    /// `auto` serves HTTP/1.1 and h2 over TCP and, in secure mode, HTTP/3 over QUIC.
     #[arg(long, default_value = "auto")]
-    http_version: HttpVersion,
+    http_version: HttpVersions,
+
+    #[command(flatten)]
+    http3: Http3Args,
 
     #[arg(short = 't', long, default_value_t = 60.)]
     /// the timeout in seconds for each connection
@@ -83,6 +92,40 @@ pub struct CliCommandHttpTest {
 
 /// run the rama http test service
 pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(), BoxError> {
+    let exec = Executor::graceful(graceful);
+    let tcp_version = cfg.http_version.tcp();
+    let maybe_tls_server_config = cfg
+        .secure
+        .then(|| {
+            try_new_server_config(
+                Some(match tcp_version {
+                    Some(TcpHttpVersion::Auto) | None => vec![
+                        ApplicationProtocol::HTTP_2,
+                        ApplicationProtocol::HTTP_11,
+                        ApplicationProtocol::HTTP_10,
+                        ApplicationProtocol::HTTP_09,
+                    ],
+                    Some(TcpHttpVersion::H1) => vec![
+                        ApplicationProtocol::HTTP_11,
+                        ApplicationProtocol::HTTP_10,
+                        ApplicationProtocol::HTTP_09,
+                    ],
+                    Some(TcpHttpVersion::H2) => vec![ApplicationProtocol::HTTP_2],
+                }),
+                exec.clone(),
+            )
+        })
+        .transpose()?;
+    let listeners = HttpListeners::bind(
+        exec.clone(),
+        cfg.bind,
+        cfg.http_version,
+        maybe_tls_server_config.as_ref(),
+        &cfg.http3,
+    )
+    .await
+    .context("bind http test service")?;
+
     // Defence-in-depth response headers. The HTML index page now serves
     // its CSS from `/style/index.css`, the test endpoints emit either
     // streamed HTML with no scripts or JSON / octet-stream bodies, and
@@ -102,6 +145,9 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
         }),
         CatchPanicLayer::new(),
         SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
+        listeners
+            .alt_svc()?
+            .map(SetResponseHeaderLayer::if_not_present_typed),
         AddRequiredResponseHeadersLayer::default(),
         SetResponseHeaderLayer::overriding(
             HeaderName::from_static("x-sponsored-by"),
@@ -147,81 +193,73 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
 
     let http_service = Arc::new(middlewares.into_layer(router));
 
-    serve_http(graceful, cfg, http_service).await
+    serve_http(exec, &cfg, listeners, maybe_tls_server_config, http_service)
 }
 
-async fn serve_http<Response>(
-    graceful: ShutdownGuard,
-    cfg: CliCommandHttpTest,
+fn serve_http<Response>(
+    exec: Executor,
+    cfg: &CliCommandHttpTest,
+    listeners: HttpListeners,
+    maybe_tls_server_config: Option<TlsServerConfig>,
     http_service: impl Service<Request, Output = Response, Error = Infallible> + Clone,
 ) -> Result<(), BoxError>
 where
     Response: IntoResponse + Send + 'static,
 {
-    let exec = Executor::graceful(graceful);
-    let maybe_tls_server_config = cfg
-        .secure
-        .then(|| {
-            try_new_server_config(
-                Some(match cfg.http_version {
-                    HttpVersion::Auto => vec![
-                        ApplicationProtocol::HTTP_2,
-                        ApplicationProtocol::HTTP_11,
-                        ApplicationProtocol::HTTP_10,
-                        ApplicationProtocol::HTTP_09,
-                    ],
-                    HttpVersion::H1 => vec![
-                        ApplicationProtocol::HTTP_11,
-                        ApplicationProtocol::HTTP_10,
-                        ApplicationProtocol::HTTP_09,
-                    ],
-                    HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
-                }),
-                exec.clone(),
-            )
-        })
-        .transpose()?;
+    let connection_timeout = if cfg.timeout > 0. {
+        TimeoutLayer::new(Duration::from_secs_f64(cfg.timeout))
+    } else {
+        TimeoutLayer::never()
+    };
+    let connection_limit = LimitLayer::new(if cfg.concurrent > 0 {
+        Either::A(ConcurrentPolicy::max_with_backoff(
+            cfg.concurrent,
+            ExponentialBackoff::default(),
+        ))
+    } else {
+        Either::B(UnlimitedPolicy::new())
+    });
+    // Keep a public-service-wide cap while still allowing the
+    // stress endpoints (`/bytes`, `/octet-stream`) to exercise
+    // multi-megabyte bodies without third-party infrastructure.
+    let body_limit = BodyLimitLayer::symmetric(mib(32));
 
-    let tcp_listener = TcpListener::build(exec.clone())
-        .bind_address(cfg.bind)
-        .await
-        .context("bind http test service")?;
+    if let Some(endpoint) = listeners.http3 {
+        let http3_service = (
+            ConsumeErrLayer::trace_as(tracing::Level::WARN),
+            connection_timeout.clone(),
+            connection_limit.clone(),
+            body_limit.clone(),
+        )
+            .into_layer(HttpServer::new_http3(exec.clone()).service(http_service.clone()));
+        serve_http3(&exec, "HTTP Test", endpoint, Arc::new(http3_service));
+    }
 
+    let Some((tcp_listener, tcp_version)) = listeners.tcp.zip(cfg.http_version.tcp()) else {
+        return Ok(());
+    };
     let bind_address = tcp_listener
         .local_addr()
         .context("get local addr of tcp listener")?;
 
     let tcp_service_builder = (
         ConsumeErrLayer::trace_as(tracing::Level::WARN),
-        if cfg.timeout > 0. {
-            TimeoutLayer::new(Duration::from_secs_f64(cfg.timeout))
-        } else {
-            TimeoutLayer::never()
-        },
-        LimitLayer::new(if cfg.concurrent > 0 {
-            Either::A(ConcurrentPolicy::max_with_backoff(
-                cfg.concurrent,
-                ExponentialBackoff::default(),
-            ))
-        } else {
-            Either::B(UnlimitedPolicy::new())
-        }),
+        connection_timeout,
+        connection_limit,
         opt_per_sec(Some(cfg.throttle))
             .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
-        // Keep a public-service-wide cap while still allowing the
-        // stress endpoints (`/bytes`, `/octet-stream`) to exercise
-        // multi-megabyte bodies without third-party infrastructure.
-        BodyLimitLayer::symmetric(mib(32)),
+        body_limit,
         maybe_tls_server_config.map(|cfg| TlsAcceptorLayer::new(cfg).with_store_client_hello(true)),
     );
 
+    let bind = cfg.bind;
     exec.clone().into_spawn_task(async move {
-        match cfg.http_version {
-            HttpVersion::Auto => {
+        match tcp_version {
+            TcpHttpVersion::Auto => {
                 tracing::info!(
                     network.local.address = %bind_address.ip(),
                     network.local.port = %bind_address.port(),
-                    "HTTP Test Service (auto) listening: bind interface = {}", cfg.bind,
+                    "HTTP Test Service (auto) listening: bind interface = {}", bind,
                 );
                 tcp_listener
                     .serve(
@@ -230,11 +268,11 @@ where
                     )
                     .await;
             }
-            HttpVersion::H1 => {
+            TcpHttpVersion::H1 => {
                 tracing::info!(
                     network.local.address = %bind_address.ip(),
                     network.local.port = %bind_address.port(),
-                    "HTTP Test Service (<= HTTP/1.1) listening: bind interface = {}", cfg.bind,
+                    "HTTP Test Service (<= HTTP/1.1) listening: bind interface = {}", bind,
                 );
                 tcp_listener
                     .serve(
@@ -243,11 +281,11 @@ where
                     )
                     .await;
             }
-            HttpVersion::H2 => {
+            TcpHttpVersion::H2 => {
                 tracing::info!(
                     network.local.address = %bind_address.ip(),
                     network.local.port = %bind_address.port(),
-                    "HTTP Test Service (h2) listening: bind interface = {}", cfg.bind,
+                    "HTTP Test Service (h2) listening: bind interface = {}", bind,
                 );
                 tcp_listener
                     .serve(

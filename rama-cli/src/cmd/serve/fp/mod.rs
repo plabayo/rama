@@ -43,9 +43,8 @@ use rama::{
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     service::service_fn,
-    tcp::server::TcpListener,
     telemetry::tracing,
-    tls::boring::server::TlsAcceptorLayer,
+    tls::{boring::server::TlsAcceptorLayer, server::TlsServerConfig},
     ua::layer::classifier::UserAgentClassifierLayer,
     utils::{
         backoff::ExponentialBackoff,
@@ -67,7 +66,12 @@ mod storage;
 #[doc(inline)]
 use state::State;
 
-use crate::utils::{http::HttpVersion, rate::opt_per_sec, tls::try_new_server_config};
+use crate::utils::{
+    http::{HttpVersions, TcpHttpVersion},
+    http3::{Http3Args, HttpListeners, serve_http3},
+    rate::opt_per_sec,
+    tls::try_new_server_config,
+};
 
 #[derive(Debug, Clone, Copy, Default, Extension)]
 pub struct StorageAuthorized;
@@ -122,9 +126,15 @@ pub struct CliCommandFingerprint {
     /// Or using HaProxy protocol.
     forward: Option<ForwardKind>,
 
-    /// http version to serve FP Service from
+    /// http versions to serve: `auto` or a comma separated list of h1, h2 and h3
+    ///
+    /// `auto` serves HTTP/1.1 and h2 over TCP and, in secure mode, HTTP/3 over QUIC.
+    /// HTTP/3 requests are shown but not collected into the profile storage.
     #[arg(long, default_value = "auto")]
-    http_version: HttpVersion,
+    http_version: HttpVersions,
+
+    #[command(flatten)]
+    http3: Http3Args,
 
     #[arg(long, short = 's')]
     /// run service in secure mode (enable TLS)
@@ -164,6 +174,32 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
         ),
         Some(ForwardKind::HaProxy) => (Some(HaProxyLayer::default()), None),
     };
+
+    let exec = Executor::graceful(graceful);
+    let maybe_tls_server_config = cfg
+        .secure
+        .then(|| {
+            try_new_server_config(
+                Some(match cfg.http_version.tcp() {
+                    Some(TcpHttpVersion::H1) => vec![ApplicationProtocol::HTTP_11],
+                    Some(TcpHttpVersion::H2) => vec![ApplicationProtocol::HTTP_2],
+                    Some(TcpHttpVersion::Auto) | None => {
+                        vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
+                    }
+                }),
+                exec.clone(),
+            )
+        })
+        .transpose()?;
+    let listeners = HttpListeners::bind(
+        exec.clone(),
+        cfg.bind,
+        cfg.http_version,
+        maybe_tls_server_config.as_ref(),
+        &cfg.http3,
+    )
+    .await
+    .context("bind fp service")?;
 
     let pg_url = std::env::var("DATABASE_URL").ok();
     let storage_auth = std::env::var("RAMA_FP_STORAGE_COOKIE").ok();
@@ -243,7 +279,13 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
         CatchPanicLayer::new(),
         SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
         // nested with the attribution layer to keep the outer tuple arity low
-        (AddRequiredResponseHeadersLayer::default(), geo_attribution),
+        (
+            AddRequiredResponseHeadersLayer::default(),
+            geo_attribution,
+            listeners
+                .alt_svc()?
+                .map(SetResponseHeaderLayer::if_not_present_typed),
+        ),
         SetResponseHeaderLayer::overriding(
             HeaderName::from_static("x-sponsored-by"),
             HeaderValue::from_static("fly.io"),
@@ -295,41 +337,60 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
 
     let http_service = Arc::new(middlewares.into_layer(router));
 
-    serve_http(graceful, cfg, http_service, tcp_forwarded_layer).await
+    serve_http(
+        exec,
+        &cfg,
+        listeners,
+        maybe_tls_server_config,
+        http_service,
+        tcp_forwarded_layer,
+    )
 }
 
-async fn serve_http<Response>(
-    graceful: ShutdownGuard,
-    cfg: CliCommandFingerprint,
+fn serve_http<Response>(
+    exec: Executor,
+    cfg: &CliCommandFingerprint,
+    listeners: HttpListeners,
+    maybe_tls_server_config: Option<TlsServerConfig>,
     http_service: impl Service<Request, Output = Response, Error = Infallible> + Clone,
     maybe_ha_proxy_layer: Option<HaProxyLayer>,
 ) -> Result<(), BoxError>
 where
     Response: IntoResponse + Send + 'static,
 {
-    let exec = Executor::graceful(graceful);
+    let connection_timeout = if cfg.timeout > 0. {
+        TimeoutLayer::new(Duration::from_secs_f64(cfg.timeout))
+    } else {
+        TimeoutLayer::never()
+    };
+    let connection_limit = LimitLayer::new(if cfg.concurrent > 0 {
+        Either::A(ConcurrentPolicy::max_with_backoff(
+            cfg.concurrent,
+            ExponentialBackoff::default(),
+        ))
+    } else {
+        Either::B(UnlimitedPolicy::new())
+    });
+    // Limit the body size to 1MB for both request and response
+    let body_limit = BodyLimitLayer::symmetric(mib(1));
 
-    let maybe_tls_server_config = cfg
-        .secure
-        .then(|| {
-            try_new_server_config(
-                Some(match cfg.http_version {
-                    HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
-                    HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
-                    HttpVersion::Auto => {
-                        vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
-                    }
-                }),
-                exec.clone(),
-            )
-        })
-        .transpose()?;
+    if let Some(endpoint) = listeners.http3 {
+        let mut http3 = HttpServer::new_http3(exec.clone());
+        // RFC 9220: WebSockets over HTTP/3 use Extended CONNECT — see the `/api/ws` route.
+        http3.http3_mut().extended_connect = true;
+        let http3_service = (
+            ConsumeErrLayer::trace_as(tracing::Level::WARN),
+            connection_timeout.clone(),
+            connection_limit.clone(),
+            body_limit.clone(),
+        )
+            .into_layer(http3.service(http_service.clone()));
+        serve_http3(&exec, "FP", endpoint, Arc::new(http3_service));
+    }
 
-    let tcp_listener = TcpListener::build(exec.clone())
-        .bind_address(cfg.bind)
-        .await
-        .context("bind fp service")?;
-
+    let Some((tcp_listener, tcp_version)) = listeners.tcp.zip(cfg.http_version.tcp()) else {
+        return Ok(());
+    };
     let bind_address = tcp_listener
         .local_addr()
         .context("get local addr of tcp listener")?;
@@ -337,33 +398,22 @@ where
     let tcp_service_builder = (
         ConsumeErrLayer::trace_as(tracing::Level::WARN),
         maybe_ha_proxy_layer,
-        if cfg.timeout > 0. {
-            TimeoutLayer::new(Duration::from_secs_f64(cfg.timeout))
-        } else {
-            TimeoutLayer::never()
-        },
-        LimitLayer::new(if cfg.concurrent > 0 {
-            Either::A(ConcurrentPolicy::max_with_backoff(
-                cfg.concurrent,
-                ExponentialBackoff::default(),
-            ))
-        } else {
-            Either::B(UnlimitedPolicy::new())
-        }),
+        connection_timeout,
+        connection_limit,
         opt_per_sec(Some(cfg.throttle))
             .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
-        // Limit the body size to 1MB for both request and response
-        BodyLimitLayer::symmetric(mib(1)),
+        body_limit,
         maybe_tls_server_config.map(|cfg| TlsAcceptorLayer::new(cfg).with_store_client_hello(true)),
     );
 
+    let bind = cfg.bind;
     exec.clone().into_spawn_task(async move {
-        match cfg.http_version {
-            HttpVersion::Auto => {
+        match tcp_version {
+            TcpHttpVersion::Auto => {
                 tracing::info!(
                     network.local.address = %bind_address.ip(),
                     network.local.port = %bind_address.port(),
-                    "FP Service (auto) listening: bind interface = {}", cfg.bind,
+                    "FP Service (auto) listening: bind interface = {}", bind,
                 );
                 let mut http_server = HttpServer::auto(exec);
                 // Advertise RFC 8441 so h2 clients can open WebSockets
@@ -373,11 +423,11 @@ where
                     .serve(tcp_service_builder.into_layer(http_server.service(http_service)))
                     .await;
             }
-            HttpVersion::H1 => {
+            TcpHttpVersion::H1 => {
                 tracing::info!(
                     network.local.address = %bind_address.ip(),
                     network.local.port = %bind_address.port(),
-                    "FP Service (HTTP/1.1) listening: bind interface = {}", cfg.bind,
+                    "FP Service (HTTP/1.1) listening: bind interface = {}", bind,
                 );
                 tcp_listener
                     .serve(
@@ -386,11 +436,11 @@ where
                     )
                     .await;
             }
-            HttpVersion::H2 => {
+            TcpHttpVersion::H2 => {
                 tracing::info!(
                     network.local.address = %bind_address.ip(),
                     network.local.port = %bind_address.port(),
-                    "FP Service (H2) listening: bind interface = {}", cfg.bind,
+                    "FP Service (H2) listening: bind interface = {}", bind,
                 );
                 let mut http_server = HttpServer::new_h2(exec);
                 // Advertise RFC 8441 so h2 clients can open WebSockets

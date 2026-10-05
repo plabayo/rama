@@ -32,7 +32,12 @@ use clap::{Args, ValueEnum};
 use std::{fmt, sync::Arc, time::Duration};
 use tokio::sync::mpsc::Sender;
 
-use crate::utils::{http::HttpVersion, rate::opt_per_sec, tls::try_new_server_config};
+use crate::utils::{
+    http::{HttpVersions, TcpHttpVersion},
+    http3::{Http3Args, HttpListeners, serve_http3},
+    rate::opt_per_sec,
+    tls::try_new_server_config,
+};
 
 #[derive(Debug, Clone, Args)]
 /// rama echo service (rich https echo or else raw tcp/udp bytes)
@@ -91,9 +96,15 @@ pub struct CliCommandEcho {
     /// the transport mode to use
     mode: Mode,
 
-    /// http version to serve echo Service from (only in http(s) mode)
+    /// http versions to serve: `auto` or a comma separated list of h1, h2 and h3
+    /// (only in http(s) mode)
+    ///
+    /// `auto` serves HTTP/1.1 and h2 over TCP and, in https mode, HTTP/3 over QUIC.
     #[arg(long, default_value = "auto")]
-    http_version: HttpVersion,
+    http_version: HttpVersions,
+
+    #[command(flatten)]
+    http3: Http3Args,
 
     #[arg(long)]
     /// enable ws support (only in http(s) mode)
@@ -144,11 +155,13 @@ pub async fn run(
         .then(|| {
             tracing::info!("create tls server config...");
             try_new_server_config(
-                matches!(cfg.mode, Mode::Http | Mode::Https).then(|| match cfg.http_version {
-                    HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
-                    HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
-                    HttpVersion::Auto => {
-                        vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
+                matches!(cfg.mode, Mode::Http | Mode::Https).then(|| {
+                    match cfg.http_version.tcp() {
+                        Some(TcpHttpVersion::H1) => vec![ApplicationProtocol::HTTP_11],
+                        Some(TcpHttpVersion::H2) => vec![ApplicationProtocol::HTTP_2],
+                        Some(TcpHttpVersion::Auto) | None => {
+                            vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
+                        }
                     }
                 }),
                 Executor::graceful(graceful.clone()),
@@ -180,29 +193,43 @@ async fn bind_echo_http_service(
     let exec = Executor::graceful(graceful);
     // opt-in IP geolocation, configured via the RAMA_IP_GEO_DB env var
     let geo_db = crate::utils::geo::load_geo_db_from_env();
-    let tcp_service = EchoServiceBuilder::new()
-        .with_concurrent(cfg.concurrent.unwrap_or_default())
-        .maybe_with_rate_limit(opt_per_sec(cfg.rate))
-        .maybe_with_throttle(opt_per_sec(cfg.throttle))
-        .with_timeout(Duration::from_secs(cfg.timeout.unwrap_or(300)))
-        .with_ws_support(cfg.ws)
-        .maybe_with_http_version(cfg.http_version.into())
-        .maybe_with_forward(cfg.forward)
-        .maybe_with_tls_server_config(maybe_tls_config)
-        .with_user_agent_database(Arc::new(UserAgentDatabase::try_embedded()?))
-        .maybe_with_geo_db(geo_db)
-        .build(exec.clone())
-        .context("build http(s) echo service")?;
 
     tracing::info!(
         "starting http(s) echo service: bind interface = {:?}",
         cfg.bind
     );
-    let tcp_listener = TcpListener::build(exec.clone())
-        .bind_address(cfg.bind)
-        .await
-        .context("bind tcp socker for http(s) echo service")?;
+    let listeners = HttpListeners::bind(
+        exec.clone(),
+        cfg.bind,
+        cfg.http_version,
+        maybe_tls_config.as_ref(),
+        &cfg.http3,
+    )
+    .await
+    .context("bind http(s) echo service")?;
 
+    let (tcp_service, http3_service) = EchoServiceBuilder::new()
+        .with_concurrent(cfg.concurrent.unwrap_or_default())
+        .maybe_with_rate_limit(opt_per_sec(cfg.rate))
+        .maybe_with_throttle(opt_per_sec(cfg.throttle))
+        .with_timeout(Duration::from_secs(cfg.timeout.unwrap_or(300)))
+        .with_ws_support(cfg.ws)
+        .maybe_with_http_version(cfg.http_version.tcp().and_then(Into::into))
+        .maybe_with_forward(cfg.forward)
+        .maybe_with_tls_server_config(maybe_tls_config)
+        .maybe_with_alt_svc(listeners.alt_svc()?)
+        .with_user_agent_database(Arc::new(UserAgentDatabase::try_embedded()?))
+        .maybe_with_geo_db(geo_db)
+        .build_with_http3(exec.clone())
+        .context("build http(s) echo service")?;
+
+    if let Some(endpoint) = listeners.http3 {
+        serve_http3(&exec, "echo", endpoint, Arc::new(http3_service));
+    }
+
+    let Some(tcp_listener) = listeners.tcp else {
+        return Ok(());
+    };
     let bind_address = tcp_listener
         .local_addr()
         .context("get local addr of tcp listener")?;
@@ -237,7 +264,7 @@ async fn bind_echo_tcp_service(
             "websocket support is only possible in http(s) mode",
         ));
     }
-    if cfg.http_version != HttpVersion::Auto {
+    if cfg.http_version != HttpVersions::AUTO || cfg.http3.h3_bind.is_some() {
         return Err(BoxError::from_static_str(
             "http version selection is only possible in http(s) mode",
         ));
@@ -321,7 +348,7 @@ async fn bind_echo_udp_service(
             "websocket support is only possible in http(s) mode",
         ));
     }
-    if cfg.http_version != HttpVersion::Auto {
+    if cfg.http_version != HttpVersions::AUTO || cfg.http3.h3_bind.is_some() {
         return Err(BoxError::from_static_str(
             "http version selection is only possible in http(s) mode",
         ));

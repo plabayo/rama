@@ -31,6 +31,50 @@ async fn test_https_ip() {
     test_http_ip_inner("https://127.0.0.1:63118");
 }
 
+#[ignore]
+#[tokio::test]
+#[cfg(feature = "boring")]
+async fn test_http3_ip() {
+    utils::init_tracing();
+    let _guard = utils::RamaService::serve_ip(63143, false, true);
+
+    let lines = utils::RamaService::http(vec!["--http3", "https://127.0.0.1:63143"]).unwrap();
+    assert!(lines.contains("* using HTTP/3.0"), "lines: {lines}");
+    assert!(lines.contains("HTTP/3.0 200 OK"), "lines: {lines}");
+    assert!(
+        lines.split("\r\n").any(|line| line.contains("127.0.0.1")),
+        "lines: {lines}"
+    );
+
+    // TCP responses advertise HTTP/3 on the same port.
+    let lines = utils::RamaService::http(vec!["--http2", "https://127.0.0.1:63143"]).unwrap();
+    assert!(lines.contains("HTTP/2.0 200 OK"), "lines: {lines}");
+    assert!(lines.contains(r#"alt-svc: h3=":63143""#), "lines: {lines}");
+}
+
+#[ignore]
+#[tokio::test]
+#[cfg(feature = "boring")]
+async fn test_https_ip_without_http3() {
+    utils::init_tracing();
+    let _guard =
+        utils::RamaService::serve_ip_with_args(63147, false, true, &["--http-version", "h1,h2"]);
+
+    let lines = utils::RamaService::http(vec!["--http2", "https://127.0.0.1:63147"]).unwrap();
+    assert!(lines.contains("HTTP/2.0 200 OK"), "lines: {lines}");
+    assert!(!lines.contains("alt-svc"), "lines: {lines}");
+
+    let (success, _, stderr) = utils::RamaService::run_capture(&[
+        "-k",
+        "--http3",
+        "--connect-timeout",
+        "2",
+        "https://127.0.0.1:63147",
+    ])
+    .unwrap();
+    assert!(!success, "no HTTP/3 without h3 in --http-version: {stderr}");
+}
+
 fn test_http_ip_inner(addr: &'static str) {
     // default: txt
     let lines = utils::RamaService::http(vec!["--http1.1", addr]).unwrap();
