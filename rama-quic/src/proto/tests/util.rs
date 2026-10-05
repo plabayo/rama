@@ -879,8 +879,9 @@ impl TestEndpoint {
         min_opt(next_timeout, next_inbound)
     }
 
+    /// Idle: no datagram waits to be received and every connection is idle.
     pub(super) fn is_idle(&self) -> bool {
-        self.connections.values().all(|x| x.is_idle())
+        self.inbound.is_empty() && self.connections.values().all(|x| x.is_idle())
     }
 
     pub(super) fn delay_outbound(&mut self) {

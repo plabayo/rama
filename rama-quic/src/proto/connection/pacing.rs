@@ -33,6 +33,23 @@ impl Pacer {
         }
     }
 
+    /// Obtains a [`Pacer`] for a path starting with fresh congestion state, which may send
+    /// its whole initial congestion window as one burst (RFC 9002 §7.7).
+    ///
+    /// Before an RTT sample the derived capacity is about one datagram, so a first flight of
+    /// several datagrams, such as a ClientHello carrying a post-quantum key share, would
+    /// otherwise wait out a pacing interval or the peer's acknowledgement.
+    pub(super) fn starting(
+        smoothed_rtt: Duration,
+        initial_window: u64,
+        mtu: u16,
+        now: Instant,
+    ) -> Self {
+        let mut pacer = Self::new(smoothed_rtt, initial_window, mtu, now);
+        pacer.tokens = pacer.tokens.max(initial_window);
+        pacer
+    }
+
     /// Record that a packet has been transmitted.
     pub(super) fn on_transmit(&mut self, packet_length: u16) {
         self.tokens = self.tokens.saturating_sub(packet_length.into())
@@ -210,6 +227,36 @@ mod tests {
 
         let pacer = Pacer::new(rtt, 1, mtu, now);
         assert_eq!(pacer.capacity, mtu as u64);
+        assert_eq!(pacer.tokens, pacer.capacity);
+    }
+
+    #[test]
+    fn a_fresh_path_sends_its_initial_window_unpaced() {
+        let mtu = 1200;
+        let window = 14_720;
+        let rtt = Duration::from_millis(333);
+        let now = Instant::now();
+
+        let mut pacer = Pacer::starting(rtt, window, mtu, now);
+        assert_eq!(pacer.capacity, u64::from(mtu));
+        let mut sent = 0;
+        while pacer.delay(rtt, u64::from(mtu), mtu, window, now).is_none() {
+            pacer.on_transmit(mtu);
+            sent += 1;
+        }
+        assert_eq!(sent, window / u64::from(mtu));
+
+        // Once spent, the burst is gone: the pacer refills to its derived capacity only.
+        let later = now + rtt;
+        assert!(
+            pacer
+                .delay(rtt, u64::from(mtu), mtu, window, later)
+                .is_none()
+        );
+        assert_eq!(pacer.tokens, pacer.capacity);
+
+        // An inherited, larger window bursts no more than the derived capacity.
+        let pacer = Pacer::new(rtt, window * 8, mtu, now);
         assert_eq!(pacer.tokens, pacer.capacity);
     }
 

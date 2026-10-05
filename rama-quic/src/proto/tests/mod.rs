@@ -2895,8 +2895,8 @@ fn cid_rotation() {
 
     while pair.time < end {
         stop += CID_TIMEOUT;
-        // Run a while until PushNewCID timer fires
-        while pair.time < stop {
+        // Run a while until PushNewCID timer fires, including one due as the window ends
+        while pair.time <= stop {
             if !pair.step()
                 && let Some(time) = min_opt(pair.client.next_wakeup(), pair.server.next_wakeup())
             {
@@ -5420,11 +5420,17 @@ fn classic_fixture_negotiates_x25519_in_one_initial() {
         "classic ClientHello fits one datagram"
     );
     // The classic server flight (ServerHello, certificate, Finished) coalesces into one padded
-    // datagram; compare with `post_quantum_handshake_and_transfer`
+    // datagram; compare with `post_quantum_handshake_and_transfer`. Within the initial window
+    // the server's first 1-RTT packets leave with it.
     pair.drive_server();
-    let server_flight: usize = pair.client.inbound.iter().map(|x| x.packet.len()).sum();
-    assert_eq!(pair.client.inbound.len(), 1);
-    assert_eq!(server_flight, usize::from(INITIAL_MTU));
+    let handshake: Vec<usize> = pair
+        .client
+        .inbound
+        .iter()
+        .filter(|x| x.packet[0] & rama_quic_proto::packet::LONG_HEADER_FORM != 0)
+        .map(|x| x.packet.len())
+        .collect();
+    assert_eq!(handshake, [usize::from(INITIAL_MTU)]);
     pair.drive();
     let server_ch = pair.server.assert_accept();
     assert_eq!(
@@ -9215,5 +9221,32 @@ fn blocked_early_open_does_not_generate_extra_initial_packets() {
         conn.poll_transmit(now + Duration::from_secs(1), 1, &mut buf)
             .is_none(),
         "the blocked stream must not create another Initial packet"
+    );
+}
+
+/// A ClientHello spanning several Initial packets leaves in one burst: the first flight is
+/// within the initial congestion window, so it neither waits for a pacing interval nor for
+/// the server's acknowledgement of its first packet (RFC 9002 §7.7).
+#[test]
+fn a_client_hello_spanning_initials_leaves_in_one_burst() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let protocols = (0..24u8).map(|n| vec![b'a' + n; 96]).collect();
+    pair.begin_connect(ClientConfig::new(Arc::new(client_crypto_with_alpn(
+        protocols,
+    ))));
+    pair.drive_client();
+    let initials = pair
+        .client_sent
+        .iter()
+        .filter(|sent| {
+            sent.packets.iter().any(|packet| {
+                packet.long_kind() == Some(rama_quic_proto::version::LongKind::Initial)
+            })
+        })
+        .count();
+    assert!(
+        initials >= 2,
+        "the whole ClientHello leaves at once: {initials}"
     );
 }

@@ -207,7 +207,7 @@ impl PathData {
             received_dcid: None,
             rtt: RttEstimator::new(config.initial_rtt),
             sending_ecn: true,
-            pacing: Pacer::new(
+            pacing: Pacer::starting(
                 config.initial_rtt,
                 congestion.initial_window(),
                 config.get_initial_mtu(),
@@ -289,7 +289,7 @@ impl PathData {
             .build(now, config.get_initial_mtu());
         self.mtud.reset(config.get_initial_mtu(), config.min_mtu);
         // A budget spent on the old path would hold back the first sends on the new one.
-        self.pacing = Pacer::new(
+        self.pacing = Pacer::starting(
             self.rtt.get(),
             self.congestion.initial_window(),
             self.current_mtu(),

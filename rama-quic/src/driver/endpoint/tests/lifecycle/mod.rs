@@ -1306,13 +1306,13 @@ async fn an_attempt_that_cannot_widen_its_permit_is_ignored_and_counted() {
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
-    wait_until(|| server.stats().dropped_packets > dropped_baseline).await;
-    assert_eq!(server.stats().dropped_packets, dropped_baseline + 1);
-    assert_eq!(
-        budget.stats().dropped_datagrams,
-        budget_baseline + 1,
-        "the refused widening is the budget's drop"
-    );
+    // The first flight may span several Initial datagrams, all leaving at once: each refused
+    // widening is counted once, as the budget's drop.
+    wait_until(|| {
+        let dropped = server.stats().dropped_packets - dropped_baseline;
+        dropped > 0 && budget.stats().dropped_datagrams - budget_baseline == dropped
+    })
+    .await;
     assert_eq!(
         budget.stats().queued_datagrams,
         1,
