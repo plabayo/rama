@@ -7,6 +7,10 @@
 //! A gate is consulted only when there is data to read or the stream may still send; a
 //! write blocked by flow control settles zero. It is never called while the transport holds
 //! a lock, and it is dropped with the handle of its stream direction.
+//!
+//! Only QUIC opens gates today. HTTP/2 could open them per stream too, should it need
+//! per-stream budgets: when sending in `PipeToSendStream` (rama-http-core `proto/h2/mod.rs`),
+//! when receiving where `Incoming` releases window capacity (rama-http-core `body/incoming.rs`).
 
 use core::task::{Context, Poll};
 
