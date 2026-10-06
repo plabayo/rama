@@ -283,11 +283,15 @@ mod tests {
         assert!(error.to_string().contains("--h3-bind"), "{error}");
     }
 
-    /// A UDP socket holding the port of a TCP listener bound next.
+    /// A port free for TCP whose UDP side is held, so that only HTTP/3 fails to bind it.
     fn occupied_udp_port() -> (std::net::UdpSocket, SocketAddress) {
-        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-        let addr = socket.local_addr().unwrap().into();
-        (socket, addr)
+        loop {
+            let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = tcp.local_addr().unwrap();
+            if let Ok(socket) = std::net::UdpSocket::bind(addr) {
+                return (socket, addr.into());
+            }
+        }
     }
 
     #[tokio::test]
@@ -302,7 +306,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(listeners.tcp.is_some());
+        let tcp = listeners.tcp.as_ref().unwrap().local_addr().unwrap();
+        assert_eq!(tcp, addr);
         assert!(listeners.http3.is_none());
         assert_eq!(listeners.alt_svc().unwrap(), None, "nothing to advertise");
     }
@@ -323,7 +328,10 @@ mod tests {
                 &Http3Args { h3_bind },
             )
             .await;
-            assert!(result.is_err(), "{versions:?} with --h3-bind {h3_bind:?}");
+            let Err(error) = result else {
+                panic!("{versions:?} with --h3-bind {h3_bind:?} must fail");
+            };
+            assert!(error.to_string().contains("QUIC"), "{error}");
         }
     }
 
