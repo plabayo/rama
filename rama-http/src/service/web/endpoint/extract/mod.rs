@@ -179,5 +179,5 @@ fn has_any_content_type(headers: &HeaderMap, expected_content_types: &[&mime::Mi
     };
     expected_content_types
         .iter()
-        .any(|ct| ct.essence_str().eq_ignore_ascii_case(&essence))
+        .any(|ct| ct.essence_str().eq_ignore_ascii_case(essence))
 }
