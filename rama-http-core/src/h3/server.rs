@@ -17,6 +17,7 @@ use rama_http::{
 use rama_http_types::{
     Method, Request, Response, StatusCode,
     body::StreamingBody,
+    header::trailer::ForbiddenTrailers,
     proto::{
         ext::{HttpDatagrams, Protocol},
         h3::{Code, FrameType, StreamType},
@@ -446,9 +447,17 @@ impl SendResponse {
             return Ok(());
         }
         let remaining = headers::content_length(response.headers())?;
+        let allowed_trailers = response.extensions().get_arc::<ForbiddenTrailers>();
         let (_, response_body) = response.into_parts();
         let shared = self.shared.clone();
-        let result = body::send(self.writer, response_body, self.shared, self.id, remaining);
+        let result = body::send(
+            self.writer,
+            response_body,
+            self.shared,
+            self.id,
+            remaining,
+            allowed_trailers,
+        );
         if let Some(mut push) = self.outgoing_push {
             tokio::select! {
                 error = shared.push_cancelled(push.id()) => Err(error),

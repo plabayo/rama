@@ -6,7 +6,7 @@ use std::task::{Context, Poll};
 use rama_core::bytes::{BufMut, Bytes, BytesMut};
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http_types::body::Frame;
-use rama_http_types::{HeaderMap, HeaderName, HeaderValue};
+use rama_http_types::{HeaderMap, HeaderName, HeaderValue, header::trailer::is_never_a_trailer};
 use std::task::ready;
 
 use super::DecodedLength;
@@ -658,8 +658,9 @@ fn decode_trailers(buf: &mut BytesMut, count: usize) -> Result<HeaderMap, io::Er
                     ));
                 };
 
-                if !name.is_allowed_in_trailers() {
-                    debug!("dropping disallowed trailer field: {name:?}");
+                // Kept for relays to forward, but never what frames or routes the message.
+                if is_never_a_trailer(&name) {
+                    debug!("dropping trailer field that frames or routes the message: {name:?}");
                     continue;
                 }
 
@@ -1091,17 +1092,19 @@ mod tests {
               X-Stream-Error: failed to decode\r\n\r\n",
         );
         let headers = decode_trailers(&mut buf, 3).expect("decode_trailers");
-        assert_eq!(headers.len(), 2);
-        assert!(!headers.contains_key("Expires"));
+        assert_eq!(headers.len(), 3);
+        assert_eq!(
+            headers.get("Expires").unwrap(),
+            "Wed, 21 Oct 2015 07:28:00 GMT"
+        );
         assert_eq!(headers.get("ETag").unwrap(), "\"generated-after-body\"");
         assert_eq!(headers.get("X-Stream-Error").unwrap(), "failed to decode");
     }
 
-    /// RFC 9110 §6.5.1: framing/control fields (Content-Length, Trailer,
-    /// Transfer-Encoding, TE, Host, Authorization, Set-Cookie, etc.) MUST
-    /// NOT appear in trailers. They must be silently dropped on decode so
-    /// they cannot be smuggled past a downstream peer that merges trailers
-    /// into the header section.
+    /// Fields that frame or route a message are dropped on decode, so they cannot be smuggled
+    /// past a downstream peer that merges trailers into the header section. Other fields not
+    /// allowed in trailers are kept as trailers, as over HTTP/2 and HTTP/3: a relay can forward
+    /// them, and merging them stays forbidden (RFC 9110 §6.5.1).
     #[test]
     fn test_decode_trailers_drops_framing_fields() {
         let mut buf = BytesMut::new();
@@ -1121,10 +1124,10 @@ mod tests {
         assert!(headers.get("content-length").is_none());
         assert!(headers.get("transfer-encoding").is_none());
         assert!(headers.get("host").is_none());
-        assert!(headers.get("authorization").is_none());
-        assert!(headers.get("set-cookie").is_none());
-        assert!(headers.get("trailer").is_none());
         assert!(headers.get("te").is_none());
+        assert_eq!(headers.get("authorization").unwrap(), "Bearer x");
+        assert_eq!(headers.get("set-cookie").unwrap(), "a=b");
+        assert_eq!(headers.get("trailer").unwrap(), "x");
     }
 
     #[test]

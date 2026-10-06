@@ -23,6 +23,7 @@ use rama_http::{
 };
 use rama_http_types::{
     Method, Request, Response, Version,
+    header::trailer::ForbiddenTrailers,
     opentelemetry::version_as_protocol_version,
     proto::{ext::Protocol, h2::frame::SettingOrder},
 };
@@ -513,6 +514,7 @@ where
     fut: ResponseFuture,
     body_tx: SendStream<SendBuf<B::Data>>,
     body: B,
+    allowed_trailers: Option<Arc<ForbiddenTrailers>>,
     cb: Callback<Request<B>, Response<IncomingBody>>,
 }
 
@@ -664,7 +666,7 @@ where
 
         let send_stream = if !f.is_connect {
             if !f.eos {
-                let mut pipe = PipeToSendStream::new(f.body, f.body_tx);
+                let mut pipe = PipeToSendStream::new(f.body, f.body_tx, f.allowed_trailers);
 
                 // eagerly see if the body pipe is ready and
                 // can thus skip allocating in the executor
@@ -897,6 +899,7 @@ where
                         headers::set_content_length_if_missing(req.headers_mut(), len);
                     }
 
+                    let allowed_trailers = req.extensions().get_arc::<ForbiddenTrailers>();
                     let is_connect = req.method() == Method::CONNECT;
                     let extended = is_connect && req.extensions().contains::<Protocol>();
 
@@ -937,6 +940,7 @@ where
                         fut,
                         body_tx,
                         body,
+                        allowed_trailers,
                         cb,
                     };
 

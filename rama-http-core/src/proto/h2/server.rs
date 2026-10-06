@@ -16,7 +16,8 @@ use rama_http::StreamingBody;
 use rama_http::io::upgrade::{self, Pending, Upgraded};
 use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http_types::{
-    Method, Request, Response, header,
+    Method, Request, Response,
+    header::{self, trailer::ForbiddenTrailers},
     proto::{ext::Protocol, h2::ext::ResetStream},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -541,9 +542,10 @@ where
                             headers::set_content_length_if_missing(res.headers_mut(), len);
                         }
 
+                        let allowed_trailers = res.extensions().get_arc::<ForbiddenTrailers>();
                         let body_tx = reply!(me, res, false);
                         H2StreamState::Body {
-                            pipe: PipeToSendStream::new(body, body_tx),
+                            pipe: PipeToSendStream::new(body, body_tx, allowed_trailers),
                         }
                     } else {
                         reply!(me, res, true);

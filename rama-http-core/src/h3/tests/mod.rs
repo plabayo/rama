@@ -293,6 +293,7 @@ async fn streaming_round_trip_reuses_connection_and_dynamic_qpack() {
 async fn header_order_survives_transport_and_message_forwarding() {
     use rama_http_types::{
         HeaderMap, HeaderValue,
+        header::trailer::ForbiddenTrailers,
         proto::h3::{PseudoHeader, PseudoHeaderOrder},
     };
 
@@ -356,6 +357,8 @@ async fn header_order_survives_transport_and_message_forwarding() {
             ]));
             let mut reply = Response::new(body);
             *reply.headers_mut() = parts.headers;
+            // A relay forwards `cookie` trailers as received.
+            reply.extensions().insert(ForbiddenTrailers::AllowAll);
             response.send_response(reply).await.unwrap();
         });
         let body = Body::from_frame_stream(rama_core::futures::stream::iter([
@@ -368,6 +371,7 @@ async fn header_order_survives_transport_and_message_forwarding() {
             .unwrap();
         *request.headers_mut() = headers();
         request.extensions().insert(order);
+        request.extensions().insert(ForbiddenTrailers::AllowAll);
         let response = client.send_request(request).await.unwrap();
         assert_headers(response.headers());
         let body = response.into_body().collect().await.unwrap();

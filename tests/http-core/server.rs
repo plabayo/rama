@@ -3371,7 +3371,7 @@ fn http1_trailer_send_fields() {
     headers.insert("chunky-trailer", "header data".parse().unwrap());
     // Invalid trailer field that should not be sent
     headers.insert("Host", "www.example.com".parse().unwrap());
-    // Not specified in Trailer header, so should not be sent
+    // Not declared in `Trailer`, still sent: declaring is only a SHOULD (RFC 9110 §6.6.2)
     headers.insert("foo", "bar".parse().unwrap());
 
     let server = serve();
@@ -3392,7 +3392,7 @@ fn http1_trailer_send_fields() {
     )
     .expect("writing");
 
-    let chunky_trailer_chunk = b"\r\nchunky-trailer: header data\r\n\r\n";
+    let chunky_trailer_chunk = b"\r\nchunky-trailer: header data\r\nfoo: bar\r\n\r\n";
     let res = read_until(&mut req, |buf| buf.ends_with(chunky_trailer_chunk)).expect("reading");
     let sres = s(&res);
 
@@ -3405,7 +3405,7 @@ fn http1_trailer_send_fields() {
     let pos = sres.find(date_fragment).expect("find GMT");
     let body = &sres[pos + date_fragment.len()..];
 
-    let expected_body = "5\r\nhello\r\n0\r\nchunky-trailer: header data\r\n\r\n";
+    let expected_body = "5\r\nhello\r\n0\r\nchunky-trailer: header data\r\nfoo: bar\r\n\r\n";
     assert_eq!(body, expected_body);
 }
 
@@ -3416,7 +3416,7 @@ fn http1_trailer_send_fields_titlecase() {
     headers.insert("chunky-trailer", "header data".parse().unwrap());
     // Invalid trailer field that should not be sent
     headers.insert("Host", "www.example.com".parse().unwrap());
-    // Not specified in Trailer header, so should not be sent
+    // Not declared in `Trailer`, still sent: declaring is only a SHOULD (RFC 9110 §6.6.2)
     headers.insert("foo", "bar".parse().unwrap());
 
     let server = serve();
@@ -3437,7 +3437,7 @@ fn http1_trailer_send_fields_titlecase() {
     )
     .expect("writing");
 
-    let chunky_trailer_chunk = b"\r\nchunky-trailer: header data\r\n\r\n";
+    let chunky_trailer_chunk = b"\r\nchunky-trailer: header data\r\nfoo: bar\r\n\r\n";
     let res = read_until(&mut req, |buf| buf.ends_with(chunky_trailer_chunk)).expect("reading");
     let sres = s(&res);
 
@@ -3450,7 +3450,7 @@ fn http1_trailer_send_fields_titlecase() {
     let pos = sres.find(date_fragment).expect("find GMT");
     let body = &sres[pos + date_fragment.len()..];
 
-    let expected_body = "5\r\nhello\r\n0\r\nchunky-trailer: header data\r\n\r\n";
+    let expected_body = "5\r\nhello\r\n0\r\nchunky-trailer: header data\r\nfoo: bar\r\n\r\n";
     assert_eq!(body, expected_body);
 }
 

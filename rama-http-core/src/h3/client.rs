@@ -20,6 +20,7 @@ use rama_http::io::upgrade as http_upgrade;
 use rama_http_types::{
     Method, Request, Response, StatusCode,
     body::StreamingBody,
+    header::trailer::ForbiddenTrailers,
     proto::{
         ext::{HttpDatagrams, Protocol},
         h1::ext::informational::OnInformational,
@@ -544,11 +545,20 @@ where
         let upload_permit = permit.clone();
         let upload_lifetime = self.lifetime.clone();
         let remaining = headers::content_length(request.headers())?;
+        let allowed_trailers = request.extensions().get_arc::<ForbiddenTrailers>();
         let (_, request_body) = request.into_parts();
         let task = self.executor.spawn_task(async move {
             let _permit = upload_permit;
             let _lifetime = upload_lifetime;
-            let result = body::send(writer, request_body, shared.clone(), id, remaining).await;
+            let result = body::send(
+                writer,
+                request_body,
+                shared.clone(),
+                id,
+                remaining,
+                allowed_trailers,
+            )
+            .await;
             if let Err(error) = result
                 && error.scope() == super::qpack::ErrorScope::Connection
                 && !error.is_clean_close()

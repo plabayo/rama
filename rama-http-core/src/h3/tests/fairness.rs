@@ -181,6 +181,7 @@ fn immediately_ready_empty_body_frames_yield_before_reaching_payload() {
         shared,
         0,
         Some(7),
+        None,
     ));
     let wakes = Arc::new(WakeCount::default());
     let waker = Waker::from(wakes.clone());
@@ -217,6 +218,7 @@ fn finished_upload_waits_for_fin_acknowledgement() {
         shared,
         0,
         Some(0),
+        None,
     ));
     let mut cx = Context::from_waker(Waker::noop());
     assert!(send.as_mut().poll(&mut cx).is_pending());
@@ -242,6 +244,7 @@ fn cancelling_upload_after_queued_fin_resets_unacknowledged_stream() {
             shared,
             0,
             Some(0),
+            None,
         ));
         let mut cx = Context::from_waker(Waker::noop());
         assert!(send.as_mut().poll(&mut cx).is_pending());

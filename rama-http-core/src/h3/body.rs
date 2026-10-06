@@ -14,6 +14,7 @@ use rama_http_types::proto::h3::{Code, FrameType};
 use rama_http_types::{
     HeaderMap,
     body::{Frame, SizeHint, StreamingBody},
+    header::trailer::ForbiddenTrailers,
 };
 use std::{
     pin::{Pin, pin},
@@ -180,6 +181,7 @@ pub(crate) async fn send<B, S>(
     shared: Arc<Shared>,
     id: u64,
     remaining: Option<u64>,
+    allowed_trailers: Option<Arc<ForbiddenTrailers>>,
 ) -> Result<(), Error>
 where
     B: StreamingBody + Unpin,
@@ -193,7 +195,7 @@ where
     // misses cancellation while awaiting the next application frame.
     let result = tokio::select! {
         biased;
-        result = send_inner(&mut writer, body, shared.clone(), id, remaining) => {
+        result = send_inner(&mut writer, body, shared.clone(), id, remaining, allowed_trailers.as_deref()) => {
             match result {
                 // RFC 9114 Appendix A.1: queued FIN is not stream completion.
                 // Keep server admission alive while QUIC transmits and retries it.
@@ -217,6 +219,7 @@ async fn send_inner<B, S>(
     shared: Arc<Shared>,
     id: u64,
     mut remaining: Option<u64>,
+    allowed_trailers: Option<&ForbiddenTrailers>,
 ) -> Result<(), Error>
 where
     B: StreamingBody + Unpin,
@@ -272,7 +275,8 @@ where
                         ));
                     }
                     trailers_seen = true;
-                    let bytes = super::stream::encode_trailers(&shared, id, &trailers)?;
+                    let bytes =
+                        super::stream::encode_trailers(&shared, id, &trailers, allowed_trailers)?;
                     writer.queue(FrameType::HEADERS, bytes)?;
                     flush(&shared, id, writer).await?;
                 }

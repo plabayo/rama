@@ -10,6 +10,7 @@ use super::{
 use rama_core::bytes::Bytes;
 use rama_http_types::{
     HeaderMap,
+    header::trailer::ForbiddenTrailers,
     proto::h3::{Code, FrameType, VarInt},
 };
 use rama_net::uri::Uri;
@@ -313,11 +314,12 @@ pub(crate) fn encode_trailers(
     shared: &Shared,
     id: u64,
     headers: &HeaderMap,
+    allowed: Option<&ForbiddenTrailers>,
 ) -> Result<Bytes, Error> {
-    super::headers::validate_outgoing_trailers(headers)?;
+    super::headers::validate_outgoing_trailers(headers, allowed)?;
     shared.encode(
         id,
-        super::headers::outgoing_trailer_fields(headers)
+        super::headers::outgoing_trailer_fields(headers, allowed)
             .map(|(name, value)| super::qpack::EncodeField::from_header(name, value)),
     )
 }

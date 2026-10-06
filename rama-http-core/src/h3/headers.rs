@@ -18,7 +18,11 @@ use rama_http_types::proto::{
     h3::{Code, PseudoHeader, PseudoHeaderOrder, PseudoHeaderSensitivity},
 };
 use rama_http_types::{
-    HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version, header,
+    HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
+    header::{
+        self,
+        trailer::{ForbiddenTrailers, is_never_a_trailer, is_sent_in_trailers},
+    },
 };
 use rama_net::{Protocol, address::AuthorityRef, uri::Uri};
 
@@ -96,7 +100,7 @@ fn validate_name(name: &HeaderName, value: &[u8], trailers: bool) -> Result<(), 
     {
         return Err(malformed("connection-specific field"));
     }
-    if trailers && [header::CONTENT_LENGTH, header::HOST].contains(name) {
+    if trailers && is_never_a_trailer(name) {
         return Err(malformed("message framing field in trailers"));
     }
     Ok(())
@@ -139,14 +143,14 @@ fn outgoing_fields(
     })
 }
 
-/// The fields of an outgoing trailer section that go on the wire: those a receiver treats as
-/// malformed in trailers, such as connection-specific or framing fields, are dropped instead
-/// of failing the stream, as for headers (RFC 9114 §4.2).
-pub(crate) fn outgoing_trailer_fields(
-    headers: &HeaderMap,
-) -> impl Iterator<Item = (&HeaderName, &HeaderValue)> {
-    headers.ordered_iter().filter(|(name, value)| {
-        let sent = validate_name(name, value.as_bytes(), true).is_ok();
+/// The fields of an outgoing trailer section that go on the wire, as over HTTP/1.1 and
+/// HTTP/2: the others are dropped instead of failing the stream.
+pub(crate) fn outgoing_trailer_fields<'a>(
+    headers: &'a HeaderMap,
+    allowed: Option<&ForbiddenTrailers>,
+) -> impl Iterator<Item = (&'a HeaderName, &'a HeaderValue)> {
+    headers.ordered_iter().filter(move |(name, _)| {
+        let sent = is_sent_in_trailers(name, allowed);
         if !sent {
             debug!(header.name = %name, "dropped field not allowed in HTTP/3 trailers");
         }
@@ -172,8 +176,11 @@ fn validate_outgoing(headers: &HeaderMap, kind: Outgoing) -> Result<(), Error> {
     Ok(())
 }
 
-pub(crate) fn validate_outgoing_trailers(headers: &HeaderMap) -> Result<(), Error> {
-    validate_values(outgoing_trailer_fields(headers))
+pub(crate) fn validate_outgoing_trailers(
+    headers: &HeaderMap,
+    allowed: Option<&ForbiddenTrailers>,
+) -> Result<(), Error> {
+    validate_values(outgoing_trailer_fields(headers, allowed))
 }
 
 pub(crate) fn content_length(headers: &HeaderMap) -> Result<Option<u64>, Error> {
@@ -642,12 +649,12 @@ mod tests {
             let mut headers = HeaderMap::new();
             headers.insert("x-test", HeaderValue::from_static(value));
             assert!(validate_outgoing(&headers, Outgoing::Response).is_err());
-            assert!(validate_outgoing_trailers(&headers).is_err());
+            assert!(validate_outgoing_trailers(&headers, None).is_err());
         }
         for value in ["", "internal \t whitespace", "\"quoted\""] {
             let parsed = parse(fields(&[("x-test", value)]), false).unwrap();
             validate_outgoing(&parsed.headers, Outgoing::Response).unwrap();
-            validate_outgoing_trailers(&parsed.headers).unwrap();
+            validate_outgoing_trailers(&parsed.headers, None).unwrap();
         }
         for value in ["nul\0byte", "new\nline", "carriage\rreturn"] {
             assert!(parse(fields(&[("x-test", value)]), false).is_err());
@@ -856,9 +863,18 @@ mod tests {
             input
         );
 
+        // A relay forwards `set-cookie` trailers as received.
         let trailers = trailers(regular.clone()).unwrap();
         assert_eq!(
-            decode(crate::h3::stream::encode_trailers(&shared(), 0, &trailers).unwrap()),
+            decode(
+                crate::h3::stream::encode_trailers(
+                    &shared(),
+                    0,
+                    &trailers,
+                    Some(&ForbiddenTrailers::AllowAll)
+                )
+                .unwrap()
+            ),
             regular
         );
     }
@@ -963,13 +979,15 @@ mod tests {
         }
     }
 
-    /// Outgoing trailers drop what a receiver treats as malformed in them, instead of failing
-    /// the stream.
+    /// Outgoing trailers send what the trailer policy allows, as over HTTP/1.1 and HTTP/2, and
+    /// drop the rest instead of failing the stream.
     #[test]
-    fn outgoing_trailers_drop_fields_malformed_in_trailers() {
+    fn outgoing_trailers_follow_the_trailer_policy() {
         let mut trailers = HeaderMap::new();
         for (name, value) in [
             ("grpc-status", "0"),
+            ("set-cookie", "a=b"),
+            ("content-type", "text/plain"),
             ("connection", "close"),
             ("keep-alive", "timeout=5"),
             ("te", "trailers"),
@@ -983,9 +1001,23 @@ mod tests {
                 HeaderValue::from_static(value),
             );
         }
-        let sent = decode(crate::h3::stream::encode_trailers(&shared(), 0, &trailers).unwrap());
-        assert_eq!(names(&sent), ["grpc-status", "x-checksum"]);
-        assert_eq!(trailers.len(), 8, "input untouched");
+        let sent = |allowed: Option<&ForbiddenTrailers>| {
+            names(&decode(
+                crate::h3::stream::encode_trailers(&shared(), 0, &trailers, allowed).unwrap(),
+            ))
+        };
+        assert_eq!(sent(None), ["grpc-status", "x-checksum"]);
+        assert_eq!(
+            sent(Some(&ForbiddenTrailers::AllowAll)),
+            ["grpc-status", "set-cookie", "content-type", "x-checksum"]
+        );
+        assert_eq!(
+            sent(Some(&ForbiddenTrailers::AllowSome(
+                [header::SET_COOKIE].into()
+            ))),
+            ["grpc-status", "set-cookie", "x-checksum"]
+        );
+        assert_eq!(trailers.len(), 10, "input untouched");
     }
 
     /// What arrives with connection-specific fields stays malformed (RFC 9114 §4.2).

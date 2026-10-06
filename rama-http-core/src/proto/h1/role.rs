@@ -11,7 +11,7 @@ use rama_http::proto::h1::ext::{
 use rama_http::proto::{HeaderByteLength, RequestHeaders};
 
 use rama_http_types::header::Entry;
-use rama_http_types::header::{self, HeaderMap, HeaderValue};
+use rama_http_types::header::{self, HeaderMap, HeaderValue, trailer::ForbiddenTrailers};
 use rama_http_types::{Method, StatusCode, Version};
 use rama_utils::collections::smallvec::{SmallVec, smallvec, smallvec_inline};
 
@@ -473,9 +473,11 @@ impl Http1Transaction for Server {
             extend(dst, b"\r\n");
         }
 
+        let allowed_trailers = msg.head.extensions.get_arc::<ForbiddenTrailers>();
         let _extensions = std::mem::take(msg.head.extensions);
         let encoder =
-            Self::encode_h1_headers(msg, close_delimited, dst, is_last, orig_len, wrote_len)?;
+            Self::encode_h1_headers(msg, close_delimited, dst, is_last, orig_len, wrote_len)?
+                .with_allowed_trailers(allowed_trailers);
         ret.map(|()| encoder)
     }
 
@@ -651,7 +653,6 @@ impl Server {
                 .insert(header::CONTENT_LENGTH, HeaderValue::from(len));
         }
         let mut encoder = Encoder::length(0);
-        let mut allowed_trailer_fields = headers::trailer_header_names(&msg.head.headers);
         let mut wrote_date = false;
         let mut is_name_written = false;
         let mut must_write_chunked = false;
@@ -899,15 +900,9 @@ impl Server {
             extend(dst, b"\r\n");
         }
 
-        if encoder.is_chunked() {
-            allowed_trailer_fields
-                .retain(|name| !connection_header_names.iter().any(|value| value == name));
-            if !allowed_trailer_fields.is_empty() {
-                encoder = encoder.into_chunked_with_trailing_fields(allowed_trailer_fields);
-            }
-        }
-
-        Ok(encoder.set_last(is_last))
+        Ok(encoder
+            .with_nominated_fields(connection_header_names)
+            .set_last(is_last))
     }
 
     /// Helper for zero-copy parsing of request path URI.
@@ -1354,20 +1349,10 @@ impl Client {
             }
         };
 
+        let allowed_trailers = head.extensions.get_arc::<ForbiddenTrailers>();
         let encoder = encoder.map(|enc| {
-            if enc.is_chunked() {
-                let allowed_trailer_fields: Vec<HeaderName> =
-                    headers::trailer_header_names(headers)
-                        .into_iter()
-                        .filter(|name| !connection_header_names.iter().any(|value| value == name))
-                        .collect();
-
-                if !allowed_trailer_fields.is_empty() {
-                    return enc.into_chunked_with_trailing_fields(allowed_trailer_fields);
-                }
-            }
-
-            enc
+            enc.with_nominated_fields(connection_header_names)
+                .with_allowed_trailers(allowed_trailers)
         });
 
         // This is because we need a second mutable borrow to remove
@@ -3133,6 +3118,11 @@ mod tests {
                     } else {
                         Encoder::chunked()
                     }
+                    .with_nominated_fields(if close {
+                        [HeaderName::from_static("close")].into_iter().collect()
+                    } else {
+                        Default::default()
+                    })
                     .set_last(close);
                     assert_eq!(
                         encoder, expected,
