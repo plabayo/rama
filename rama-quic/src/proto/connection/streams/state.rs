@@ -1358,7 +1358,49 @@ mod tests {
         );
     }
 
-    /// A throttle's budget caps what a write admits without blocking it, and leaves the
+    #[test]
+    fn a_stop_is_reported_while_the_connection_has_no_credit() {
+        let mut state = make(Side::Client);
+        state.set_params(&TransportParameters {
+            initial_max_data: 100u32.into(),
+            initial_max_stream_data_uni: 200u32.into(),
+            initial_max_streams_uni: 2u32.into(),
+            ..TransportParameters::default()
+        });
+        let conn_state = ConnState::Established;
+        let mut pending = Retransmits::default();
+        let mut open = || {
+            (Streams {
+                state: &mut state,
+                conn_state: &conn_state,
+            })
+            .open(Dir::Uni)
+            .unwrap()
+        };
+        let (first, second) = (open(), open());
+        let mut write = |state: &mut StreamsState, id, data: &[u8]| {
+            SendStream {
+                id,
+                state,
+                pending: &mut pending,
+                conn_state: &conn_state,
+            }
+            .write(data)
+        };
+        assert_eq!(write(&mut state, first, &[0; 100]), Ok(100));
+        assert_eq!(
+            write(&mut state, second, &[0; 10]),
+            Err(WriteError::Blocked)
+        );
+        state.received_stop_sending(second, VarInt::from(9u32));
+        assert_eq!(
+            write(&mut state, second, &[0; 10]),
+            Err(WriteError::Stopped(VarInt::from(9u32))),
+            "the stop is not hidden behind the exhausted connection credit"
+        );
+    }
+
+    /// What gates admitted caps what a write admits without blocking it, and leaves the
     /// flow-control bookkeeping as for any partial write.
     #[test]
     fn a_budget_caps_what_a_write_admits() {

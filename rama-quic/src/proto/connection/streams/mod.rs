@@ -407,6 +407,13 @@ impl<'a> SendStream<'a> {
             .get_mut(&self.id)
             .map(get_or_insert_send(max_send_data))
             .ok_or(WriteError::ClosedStream)?;
+        // A stream that can no longer send says so even while the connection has no credit.
+        if !stream.is_writable() {
+            return Err(WriteError::ClosedStream);
+        }
+        if let Some(code) = stream.stop_reason {
+            return Err(WriteError::Stopped(code));
+        }
 
         if stream.connection_reserve != requested_reserve {
             self.state.blocked_scan = None;
