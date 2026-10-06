@@ -102,66 +102,78 @@ fn validate_name(name: &HeaderName, value: &[u8], trailers: bool) -> Result<(), 
     Ok(())
 }
 
-pub(crate) fn validate_regular(headers: &HeaderMap, trailers: bool) -> Result<(), Error> {
-    for (name, value) in headers {
-        validate_name(name, value.as_bytes(), trailers)?;
-        // Applications can construct HeaderValue through its unchecked API.
-        // Recheck wire constraints at the outgoing boundary as well.
-        if !header::is_valid_h2_h3_field_value(value.as_bytes()) {
-            return Err(malformed("invalid field value"));
-        }
-    }
-    content_length(headers)?;
-    Ok(())
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Outgoing {
     Request,
     Response,
 }
 
+/// `TE` as HTTP/2 and HTTP/3 peers compare it, exactly.
+static TE_TRAILERS: HeaderValue = HeaderValue::from_static("trailers");
+
 /// The fields of an outgoing message that go on the wire.
 ///
 /// HTTP/3, like HTTP/2, carries no connection-specific fields: they are dropped with the
-/// fields a `Connection` field nominates, as is `TE` other than a request's `trailers`
-/// (RFC 9114 §4.2). Received messages carrying them stay malformed.
+/// fields a `Connection` field nominates. A request whose `TE` names `trailers` sends exactly
+/// that, once, where its first `TE` line stood; any other `TE` is dropped (RFC 9114 §4.2).
+/// Received messages carrying them stay malformed.
 fn outgoing_fields(
     headers: &HeaderMap,
     kind: Outgoing,
 ) -> impl Iterator<Item = (&HeaderName, &HeaderValue)> {
-    let nominated: Vec<&[u8]> = headers
-        .get_all(header::CONNECTION)
-        .iter()
-        .flat_map(|value| value.as_bytes().split(|byte| *byte == b','))
-        .map(<[u8]>::trim_ascii)
-        .filter(|name| !name.is_empty())
-        .collect();
-    headers.ordered_iter().filter(move |(name, value)| {
-        let sent = if *name == header::TE {
-            kind == Outgoing::Request && value.as_bytes().eq_ignore_ascii_case(b"trailers")
-        } else {
-            !header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS.contains(name)
-                && !nominated
-                    .iter()
-                    .any(|nominated| nominated.eq_ignore_ascii_case(name.as_str().as_bytes()))
-        };
+    let nominated: Vec<HeaderName> = header::hop_by_hop::connection_header_names(headers).collect();
+    let mut te_trailers = kind == Outgoing::Request
+        && header::hop_by_hop::te_names_trailers(headers.get_all(header::TE));
+    headers.ordered_iter().filter_map(move |(name, value)| {
+        if *name == header::TE {
+            if core::mem::take(&mut te_trailers) {
+                return Some((name, &TE_TRAILERS));
+            }
+        } else if !header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS.contains(&name)
+            && !nominated.contains(name)
+        {
+            return Some((name, value));
+        }
+        debug!(header.name = %name, "dropped connection-specific field from HTTP/3 message");
+        None
+    })
+}
+
+/// The fields of an outgoing trailer section that go on the wire: those a receiver treats as
+/// malformed in trailers, such as connection-specific or framing fields, are dropped instead
+/// of failing the stream, as for headers (RFC 9114 §4.2).
+pub(crate) fn outgoing_trailer_fields(
+    headers: &HeaderMap,
+) -> impl Iterator<Item = (&HeaderName, &HeaderValue)> {
+    headers.ordered_iter().filter(|(name, value)| {
+        let sent = validate_name(name, value.as_bytes(), true).is_ok();
         if !sent {
-            debug!(header.name = %name, "dropped connection-specific field from HTTP/3 message");
+            debug!(header.name = %name, "dropped field not allowed in HTTP/3 trailers");
         }
         sent
     })
 }
 
-fn validate_outgoing(headers: &HeaderMap, kind: Outgoing) -> Result<(), Error> {
-    for (_, value) in outgoing_fields(headers, kind) {
-        // Applications can construct HeaderValue through its unchecked API.
+/// Applications can construct HeaderValue through its unchecked API: recheck what is sent.
+fn validate_values<'a>(
+    fields: impl Iterator<Item = (&'a HeaderName, &'a HeaderValue)>,
+) -> Result<(), Error> {
+    for (_, value) in fields {
         if !header::is_valid_h2_h3_field_value(value.as_bytes()) {
             return Err(malformed("invalid field value"));
         }
     }
+    Ok(())
+}
+
+fn validate_outgoing(headers: &HeaderMap, kind: Outgoing) -> Result<(), Error> {
+    validate_values(outgoing_fields(headers, kind))?;
     content_length(headers)?;
     Ok(())
+}
+
+pub(crate) fn validate_outgoing_trailers(headers: &HeaderMap) -> Result<(), Error> {
+    validate_values(outgoing_trailer_fields(headers))
 }
 
 pub(crate) fn content_length(headers: &HeaderMap) -> Result<Option<u64>, Error> {
@@ -629,11 +641,13 @@ mod tests {
             assert!(parse(fields(&[("x-test", value)]), false).is_err());
             let mut headers = HeaderMap::new();
             headers.insert("x-test", HeaderValue::from_static(value));
-            assert!(validate_regular(&headers, false).is_err());
+            assert!(validate_outgoing(&headers, Outgoing::Response).is_err());
+            assert!(validate_outgoing_trailers(&headers).is_err());
         }
         for value in ["", "internal \t whitespace", "\"quoted\""] {
             let parsed = parse(fields(&[("x-test", value)]), false).unwrap();
-            validate_regular(&parsed.headers, false).unwrap();
+            validate_outgoing(&parsed.headers, Outgoing::Response).unwrap();
+            validate_outgoing_trailers(&parsed.headers).unwrap();
         }
         for value in ["nul\0byte", "new\nline", "carriage\rreturn"] {
             assert!(parse(fields(&[("x-test", value)]), false).is_err());
@@ -663,12 +677,14 @@ mod tests {
                 ("te", value),
             ]))
             .unwrap();
-            validate_regular(request.headers(), false).unwrap();
-            validate_regular(request.headers(), true).unwrap_err();
+            let te = request.headers().get(header::TE).unwrap().as_bytes();
+            validate_name(&header::TE, te, false).unwrap();
+            validate_name(&header::TE, te, true).unwrap_err();
             request
                 .headers_mut()
                 .insert(header::TE, HeaderValue::from_static("gzip"));
-            validate_regular(request.headers(), false).unwrap_err();
+            let te = request.headers().get(header::TE).unwrap().as_bytes();
+            validate_name(&header::TE, te, false).unwrap_err();
         }
     }
 
@@ -895,6 +911,81 @@ mod tests {
             assert_eq!(sent.iter().any(|name| name == "te"), kept, "{te}");
             assert!(!sent.iter().any(|name| name == "connection"));
         }
+    }
+
+    /// As over HTTP/2, a request sends `TE` as the exact `trailers` when any of its lines
+    /// names it, where its first line stood; a `TE` that `Connection` nominates keeps it.
+    #[test]
+    fn outgoing_te_keeps_only_an_exact_trailers() {
+        for (lines, kept) in [
+            (&["trailers"][..], true),
+            (&["Trailers"], true),
+            (&["trailers, gzip"], true),
+            (&["gzip, Trailers"], true),
+            (&["trailers", "gzip"], true),
+            (&["gzip", "trailers"], true),
+            (&["gzip"], false),
+            (&["trailers;q=0"], false),
+        ] {
+            let mut request = Request::builder().uri("https://example.com/");
+            for line in lines {
+                request = request.header(header::TE, *line);
+            }
+            let request = request
+                .header("x-after", "1")
+                .header(header::CONNECTION, "TE, x-hop")
+                .header("x-hop", "1")
+                .body(())
+                .unwrap();
+            let sent: Vec<_> = decode(encode_request(&shared(), 0, &request).unwrap())
+                .into_iter()
+                .filter(|field| !field.name.starts_with(b":"))
+                .map(|field| (field.name.to_vec(), field.value.to_vec()))
+                .collect();
+            let expected: Vec<(Vec<u8>, Vec<u8>)> = if kept {
+                vec![
+                    (b"te".to_vec(), b"trailers".to_vec()),
+                    (b"x-after".to_vec(), b"1".to_vec()),
+                ]
+            } else {
+                vec![(b"x-after".to_vec(), b"1".to_vec())]
+            };
+            assert_eq!(sent, expected, "{lines:?}");
+
+            let mut response = Response::new(());
+            for line in lines {
+                response
+                    .headers_mut()
+                    .append(header::TE, HeaderValue::from_static(line));
+            }
+            let sent = names(&decode(encode_response(&shared(), 0, &response).unwrap()));
+            assert_eq!(sent, [":status"], "{lines:?}");
+        }
+    }
+
+    /// Outgoing trailers drop what a receiver treats as malformed in them, instead of failing
+    /// the stream.
+    #[test]
+    fn outgoing_trailers_drop_fields_malformed_in_trailers() {
+        let mut trailers = HeaderMap::new();
+        for (name, value) in [
+            ("grpc-status", "0"),
+            ("connection", "close"),
+            ("keep-alive", "timeout=5"),
+            ("te", "trailers"),
+            ("transfer-encoding", "chunked"),
+            ("content-length", "3"),
+            ("host", "example.com"),
+            ("x-checksum", "abc"),
+        ] {
+            trailers.append(
+                HeaderName::from_static(name),
+                HeaderValue::from_static(value),
+            );
+        }
+        let sent = decode(crate::h3::stream::encode_trailers(&shared(), 0, &trailers).unwrap());
+        assert_eq!(names(&sent), ["grpc-status", "x-checksum"]);
+        assert_eq!(trailers.len(), 8, "input untouched");
     }
 
     /// What arrives with connection-specific fields stays malformed (RFC 9114 §4.2).

@@ -314,11 +314,10 @@ pub(crate) fn encode_trailers(
     id: u64,
     headers: &HeaderMap,
 ) -> Result<Bytes, Error> {
-    super::headers::validate_regular(headers, true)?;
+    super::headers::validate_outgoing_trailers(headers)?;
     shared.encode(
         id,
-        headers
-            .ordered_iter()
+        super::headers::outgoing_trailer_fields(headers)
             .map(|(name, value)| super::qpack::EncodeField::from_header(name, value)),
     )
 }
