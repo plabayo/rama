@@ -39,7 +39,8 @@ pub async fn run(cfg: CliCommandTcp) -> Result<(), BoxError> {
 
     let addr = conn.peer_addr().context("get connected peer address")?;
 
-    tracing::info!("connected to: {addr}");
+    // The probe's result, as `probe tls` prints its own: no log level hides it.
+    println!("connected to: {addr}");
 
     Ok(())
 }
