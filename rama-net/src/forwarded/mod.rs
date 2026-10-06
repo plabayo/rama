@@ -41,7 +41,7 @@ use crate::address::{SocketAddress, ip::ipnet::IpNet};
 /// A chain lists the client-most hop first and the hop nearest to this service last
 /// (RFC 7239 §4). Only what a trusted proxy wrote can be relied on (RFC 7239 §8.1), and a
 /// proxy appending to a header the client sent keeps the client's own claim in front, so the
-/// default counts from the right, as nginx, Envoy, HAProxy, ASP.NET Core and Rails do.
+/// default counts from the right, as established proxies and frameworks do.
 ///
 /// Elements whose `for` address is a [trusted proxy](Self::with_trusted_proxies) are skipped,
 /// then [`hops`](Self::with_hops) more are, counting from the [`side`](Self::with_side).

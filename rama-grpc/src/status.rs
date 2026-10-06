@@ -830,7 +830,7 @@ pub(crate) fn infer_grpc_status(
         // them as errors — see rama-http-core's `Incoming::poll_frame` for h2 bodies. By the time
         // tonic observes the body termination, the h2 reset reason has been discarded and
         // is no longer accessible. Tonic therefore has no way to distinguish a legitimate
-        // graceful close from a proxy/load-balancer reset (e.g. an Envoy timeout that
+        // graceful close from a proxy/load-balancer reset (e.g. a proxy timeout that
         // issues RST_STREAM(NO_ERROR)) via the h2 error path.
         //
         // The only signal available at this point is the absence of a grpc-status

@@ -163,7 +163,7 @@ impl_decorate_async_read!(BrotliEncoder: |input, quality| {
     // which is the max for brotli. This causes extremely slow compression times, so we
     // manually set a default of 4 here.
     //
-    // This is the same default used by NGINX for on-the-fly brotli compression.
+    // A common default of established servers for on-the-fly brotli compression.
     let level = match quality {
         CompressionLevel::Default => async_compression::Level::Precise(4),
         other => other.into_async_compression(),

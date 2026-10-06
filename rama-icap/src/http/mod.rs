@@ -59,12 +59,12 @@ pub const DEFAULT_MAX_REPLAY_FRAMES: usize = 1024;
 /// `:protocol` of an HTTP/2 or HTTP/3 Extended CONNECT, which is encapsulated as the `GET`
 /// upgrade it stands for, and its 2xx acceptance as a `101` (RFC 8441 §5).
 ///
-/// RFC 3507 §4.4.2 omits hop-by-hop fields from encapsulated heads; Squid keeps `Upgrade`, so a
-/// service tells an upgrade from a plain `GET`. `Connection` is never encapsulated. Without
+/// RFC 3507 §4.4.2 omits hop-by-hop fields from encapsulated heads; established ICAP clients
+/// keep `Upgrade`, so a service tells an upgrade from a plain `GET`. `Connection` is never encapsulated. Without
 /// `Upgrade` an acceptance stays the 2xx it was, as a `101` must name its protocol.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum UpgradeEncapsulation {
-    /// Keep the `Upgrade` field, as Squid does.
+    /// Keep the `Upgrade` field, as established ICAP clients do.
     #[default]
     Keep,
     /// Omit it with the other hop-by-hop fields.

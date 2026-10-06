@@ -1994,7 +1994,7 @@ async fn preserves_upgrade_request_fields_around_reqmod_sanitization() {
                     HttpService::new(service_fn(move |request: IncomingRequest| async move {
                         let request = request.encapsulated().unwrap().request().unwrap();
                         assert!(!request.headers().contains_key(http_header::CONNECTION));
-                        // Squid keeps `Upgrade`, so a service tells an upgrade from a plain GET.
+                        // ICAP clients keep `Upgrade`, so a service tells an upgrade from a plain GET.
                         assert_eq!(
                             request.headers().get(http_header::UPGRADE).is_some(),
                             encapsulation == UpgradeEncapsulation::Keep,

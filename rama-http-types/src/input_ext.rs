@@ -15,7 +15,7 @@
 //! HTTP/3), then `Host`, then TLS SNI. The URI authority wins over `Host` (RFC 9112 §3.2.2,
 //! RFC 9113 §8.3.1); a `Host` may differ from SNI on a reused connection (RFC 9113 §9.1.1,
 //! RFC 9114 §3.3), so SNI only names a request that names no authority at all, such as
-//! HTTP/1.0 without `Host` (RFC 9112 §3.3). nginx, Envoy and Go route the same way; a
+//! HTTP/1.0 without `Host` (RFC 9112 §3.3). Established proxies route the same way; a
 //! policy that requires SNI and `Host` to agree answers 421 (RFC 9110 §15.5.20).
 //!
 //! Only explicit ports are reported; [`AuthorityInputExt::authority_with_default_port`] and
