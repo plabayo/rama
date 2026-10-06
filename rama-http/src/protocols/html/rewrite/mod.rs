@@ -433,9 +433,9 @@ fn eval_selector(
 
     // Which slots can be matched at this element (bit 0 always).
     let mut ready = 1u64;
-    for i in 1..k {
+    for (i, part) in complex.parts.iter().enumerate().skip(1) {
         let bit = 1u64 << i;
-        match complex.parts[i].combinator {
+        match part.combinator {
             Some(Combinator::Child) if parent.completed & bit != 0 => ready |= bit,
             Some(Combinator::Descendant) if parent.desc_ready & bit != 0 => ready |= bit,
             _ => {}
@@ -444,9 +444,8 @@ fn eval_selector(
 
     // Which prefixes complete at this element (bit 0 = empty prefix).
     let mut completed = 1u64;
-    for i in 0..k {
-        if ready & (1u64 << i) != 0
-            && compound_matches(&complex.parts[i].compound, tag, nth_child, nth_of_type)
+    for (i, part) in complex.parts.iter().enumerate() {
+        if ready & (1u64 << i) != 0 && compound_matches(&part.compound, tag, nth_child, nth_of_type)
         {
             completed |= 1u64 << (i + 1);
         }
@@ -455,8 +454,8 @@ fn eval_selector(
 
     // What flows down to descendants (descendant combinators only).
     let mut desc_ready = 1u64;
-    for i in 1..k {
-        if complex.parts[i].combinator == Some(Combinator::Descendant) {
+    for (i, part) in complex.parts.iter().enumerate().skip(1) {
+        if part.combinator == Some(Combinator::Descendant) {
             let bit = 1u64 << i;
             if (completed | parent.desc_ready) & bit != 0 {
                 desc_ready |= bit;

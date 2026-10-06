@@ -235,19 +235,19 @@ where
 }
 
 impl BypassRuleDialect {
-    fn supports_standalone_wildcard(_dialect: Self) -> bool {
-        #[cfg(any(
-            test,
-            target_os = "linux",
-            target_os = "freebsd",
-            target_os = "netbsd",
-            target_os = "openbsd",
-            target_os = "dragonfly"
-        ))]
-        if _dialect == Self::Kde {
-            return false;
+    fn supports_standalone_wildcard(dialect: Self) -> bool {
+        match dialect {
+            #[cfg(any(
+                test,
+                target_os = "linux",
+                target_os = "freebsd",
+                target_os = "netbsd",
+                target_os = "openbsd",
+                target_os = "dragonfly"
+            ))]
+            Self::Kde => false,
+            _ => true,
         }
-        true
     }
 }
 
