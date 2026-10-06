@@ -42,6 +42,8 @@ pub(crate) struct HelloAssembly {
     stream: Vec<u8>,
     /// Data beyond a gap, by offset.
     ahead: BTreeMap<usize, Bytes>,
+    /// Bytes held in `ahead`.
+    ahead_bytes: usize,
 }
 
 impl HelloAssembly {
@@ -56,12 +58,14 @@ impl HelloAssembly {
         let mut data = data;
         data.truncate(LIMIT - offset);
         if offset > self.stream.len() {
-            let longer = self
-                .ahead
-                .get(&offset)
-                .is_none_or(|held| held.len() < data.len());
-            if longer && (self.ahead.len() < AHEAD_LIMIT || self.ahead.contains_key(&offset)) {
-                self.ahead.insert(offset, data);
+            let held = self.ahead.get(&offset).map_or(0, Bytes::len);
+            let room = held < data.len()
+                && self.ahead_bytes - held + data.len() <= LIMIT
+                && (self.ahead.len() < AHEAD_LIMIT || held > 0);
+            if room {
+                // A copy, so a fragment never keeps the whole packet it came in alive.
+                self.ahead.insert(offset, Bytes::copy_from_slice(&data));
+                self.ahead_bytes = self.ahead_bytes - held + data.len();
             }
             return;
         }
@@ -71,6 +75,7 @@ impl HelloAssembly {
                 break;
             }
             let (offset, data) = entry.remove_entry();
+            self.ahead_bytes -= data.len();
             self.append(offset, &data);
         }
     }
@@ -267,6 +272,27 @@ mod tests {
             assembly.take_in(offset * 10, Bytes::from_static(&[0; 5]));
         }
         assert_eq!(assembly.ahead.len(), AHEAD_LIMIT);
+    }
+
+    #[test]
+    fn data_ahead_of_a_gap_holds_at_most_the_limit_in_copies() {
+        let mut assembly = HelloAssembly::default();
+        let packet = Bytes::from(vec![0x5a; 4 * LIMIT]);
+        for offset in 1..=(AHEAD_LIMIT as u64) {
+            assembly.take_in(offset * 100, packet.clone());
+        }
+        assert!(assembly.ahead_bytes <= LIMIT, "{}", assembly.ahead_bytes);
+        assert_eq!(
+            assembly.ahead.values().map(Bytes::len).sum::<usize>(),
+            assembly.ahead_bytes
+        );
+        let source = packet.as_ptr_range();
+        for held in assembly.ahead.values() {
+            assert!(
+                !source.contains(&held.as_ptr()),
+                "a held fragment pins its packet"
+            );
+        }
     }
 
     #[test]
