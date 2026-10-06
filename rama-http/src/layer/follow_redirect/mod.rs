@@ -326,10 +326,14 @@ where
                     return Ok(res);
                 };
 
-                let location = res
-                    .headers()
-                    .get(&LOCATION)
-                    .and_then(|loc| resolve_uri(std::str::from_utf8(loc.as_bytes()).ok()?, &uri));
+                // One target: several lines are a redirect failure (Fetch §2.2.2), not followed.
+                let mut locations = res.headers().get_all(&LOCATION).iter();
+                let location = match (locations.next(), locations.next()) {
+                    (Some(location), None) => std::str::from_utf8(location.as_bytes())
+                        .ok()
+                        .and_then(|location| resolve_uri(location, &uri)),
+                    _ => None,
+                };
                 let Some(location) = location else {
                     return Ok(res);
                 };
@@ -516,6 +520,30 @@ mod tests {
             res.extensions().get_ref::<RequestUri>().unwrap().0.as_str(),
             "http://example.com/32"
         );
+    }
+
+    #[tokio::test]
+    async fn several_location_lines_are_not_followed() {
+        for (locations, followed) in [(&["/0"][..], true), (&["/0", "/1"], false)] {
+            let svc = FollowRedirectLayer::with_policy(Action::Follow).into_layer(service_fn(
+                move |req: Request<Body>| async move {
+                    let mut res = Response::builder();
+                    if req.uri().path_or_root() == "/redirect" {
+                        res = res.status(StatusCode::FOUND);
+                        for location in locations {
+                            res = res.header(LOCATION, *location);
+                        }
+                    }
+                    Ok::<_, Infallible>(res.body(Body::empty()).unwrap())
+                },
+            ));
+            let req = Request::builder()
+                .uri("http://example.com/redirect")
+                .body(Body::empty())
+                .unwrap();
+            let res = svc.serve(req).await.unwrap();
+            assert_eq!(res.status() == StatusCode::OK, followed, "{locations:?}");
+        }
     }
 
     /// A server with an endpoint `/{n}` which redirects to `/{n-1}` unless `n` equals zero,

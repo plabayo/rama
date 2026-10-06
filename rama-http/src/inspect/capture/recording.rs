@@ -254,7 +254,7 @@ impl CaptureStore {
             self.0.observer.response(parts, &entry.metadata);
             entry.status.store(parts.status.as_u16(), Ordering::Relaxed);
             _ = entry.response_started_at.set(jiff::Timestamp::now());
-            if let Some(socket) = parts.extensions.get_ref::<SocketInfo>()
+            if let Some(socket) = SocketInfo::egress(&parts.extensions)
                 && !entry.metadata.upstream.contains::<SocketInfo>()
             {
                 entry.metadata.upstream.insert(socket.clone());

@@ -1,6 +1,11 @@
 use rama_core::error::{BoxError, ErrorContext as _};
-use rama_http_types::{HeaderValue, header::ToStrError};
+use rama_http_types::{
+    HeaderName, HeaderValue,
+    header::{self, ToStrError},
+};
 use rama_net::uri::Uri;
+
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util::single_value};
 
 /// `Location` header, defined in
 /// [RFC7231](https://datatracker.ietf.org/doc/html/rfc7231#section-7.1.2)
@@ -25,9 +30,26 @@ use rama_net::uri::Uri;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Location(HeaderValue);
 
-derive_header! {
-    Location(_),
-    name: LOCATION
+impl TypedHeader for Location {
+    fn name() -> &'static HeaderName {
+        &header::LOCATION
+    }
+}
+
+impl HeaderDecode for Location {
+    fn decode<'i, I>(values: &mut I) -> Result<Self, Error>
+    where
+        I: Iterator<Item = &'i HeaderValue>,
+    {
+        // One target: a client fails on several lines (Fetch §2.2.2, "location URL").
+        single_value(values).map(Self)
+    }
+}
+
+impl HeaderEncode for Location {
+    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+        values.extend(std::iter::once(self.0.clone()));
+    }
 }
 
 impl Location {

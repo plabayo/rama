@@ -528,6 +528,72 @@ mod tests {
     }
 
     #[test]
+    fn middleware_repeated_singleton_lines_never_allow() {
+        let middleware: Csrf<()> = Csrf::default();
+        let cross_origin = Err(ProtectionError::new(
+            ProtectionErrorKind::CrossOriginRequestFromOldBrowser,
+        ));
+
+        for (name, sec_fetch_site, origin, host, result) in [
+            (
+                "second sec-fetch-site behind same-origin",
+                &["same-origin", "cross-site"][..],
+                &["https://attacker.example"][..],
+                &["example.com"][..],
+                cross_origin.clone(),
+            ),
+            (
+                "second sec-fetch-site with matching origin",
+                &["cross-site", "same-origin"],
+                &["https://example.com"],
+                &["example.com"],
+                Ok(()),
+            ),
+            (
+                "second origin behind an empty one",
+                &[],
+                &["", "https://attacker.example"],
+                &["example.com"],
+                cross_origin.clone(),
+            ),
+            (
+                "second origin behind a matching one",
+                &[],
+                &["https://example.com", "https://attacker.example"],
+                &["example.com"],
+                cross_origin.clone(),
+            ),
+            (
+                "second host behind a matching one",
+                &[],
+                &["https://example.com"],
+                &["example.com", "attacker.example"],
+                cross_origin,
+            ),
+            (
+                "empty origin lines only",
+                &[],
+                &["", ""],
+                &["example.com"],
+                Ok(()),
+            ),
+        ] {
+            let mut req = Request::builder().method("POST");
+            for value in sec_fetch_site {
+                req = req.header("sec-fetch-site", *value);
+            }
+            for value in origin {
+                req = req.header(header::ORIGIN, *value);
+            }
+            for value in host {
+                req = req.header(header::HOST, *value);
+            }
+            let req = req.body(Body::empty()).unwrap();
+            assert_eq!(middleware.verify(&req), result, "{name}");
+        }
+    }
+
+    #[test]
     fn middleware_origin_host_match_is_structural() {
         let middleware: Csrf<()> = Csrf::default();
 

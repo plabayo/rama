@@ -9,7 +9,10 @@ use rama_core::error::BoxError;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http::StreamingBody;
 use rama_http_types::HeaderMap;
-use rama_http_types::header::{CONNECTION, TE, hop_by_hop::CONNECTION_SPECIFIC_HEADERS};
+use rama_http_types::header::{
+    CONNECTION, TE,
+    hop_by_hop::{CONNECTION_SPECIFIC_HEADERS, retain_te_trailers},
+};
 use std::task::ready;
 
 pub(crate) mod admission;
@@ -43,12 +46,8 @@ fn strip_connection_headers(headers: &mut HeaderMap, kind: MessageKind) {
     }
 
     if matches!(kind, MessageKind::Request) {
-        if headers
-            .get(TE)
-            .is_some_and(|te_header| te_header != "trailers")
-        {
+        if retain_te_trailers(headers) {
             debug!("TE headers not set to \"trailers\" are illegal in HTTP/2 requests");
-            headers.remove(TE);
         }
     } else if headers.remove(TE).is_some() {
         debug!("TE headers illegal in HTTP/2 responses");
@@ -68,6 +67,8 @@ fn strip_connection_headers(headers: &mut HeaderMap, kind: MessageKind) {
         // protocol.
         for name in header.as_bytes().split(|b| b == &b',') {
             match std::str::from_utf8(name.trim_ascii()) {
+                // A `TE` sender nominates it (RFC 9110 §10.1.4); its `trailers` is kept above.
+                Ok(name_str) if name_str.eq_ignore_ascii_case("te") => {}
                 Ok(name_str) => {
                     if headers.remove(name_str).is_some() {
                         debug!(
@@ -349,6 +350,53 @@ impl<B: Buf> Buf for SendBuf<B> {
 mod tests {
     use super::*;
     use rama_http_types::HeaderValue;
+
+    #[test]
+    fn request_te_keeps_only_trailers_from_every_line() {
+        for (lines, kept) in [
+            (&["trailers"][..], Some("trailers")),
+            (&["Trailers"], Some("trailers")),
+            (&["trailers, gzip"], Some("trailers")),
+            (&["gzip, Trailers"], Some("trailers")),
+            (&["trailers", "gzip"], Some("trailers")),
+            (&["gzip", "trailers"], Some("trailers")),
+            (&["gzip"], None),
+            (&["gzip", "deflate"], None),
+        ] {
+            let mut headers = HeaderMap::new();
+            for line in lines {
+                headers.append(TE, HeaderValue::from_static(line));
+            }
+            headers.append("x-after", HeaderValue::from_static("1"));
+            strip_connection_headers(&mut headers, MessageKind::Request);
+            let te: Vec<_> = headers.get_all(TE).iter().collect();
+            assert_eq!(te, kept.into_iter().collect::<Vec<_>>(), "{lines:?}");
+            // A rewritten TE keeps its place in the field order.
+            let names: Vec<_> = headers.keys().map(|name| name.as_str()).collect();
+            let expected: &[&str] = if kept.is_some() {
+                &["te", "x-after"]
+            } else {
+                &["x-after"]
+            };
+            assert_eq!(names, expected, "{lines:?}");
+
+            strip_connection_headers(&mut headers, MessageKind::Response);
+            assert!(!headers.contains_key(TE), "{lines:?}");
+        }
+    }
+
+    /// A `TE` sender also nominates it (RFC 9110 §10.1.4), which keeps its `trailers`.
+    #[test]
+    fn request_te_nominated_by_connection_keeps_trailers() {
+        let mut headers = HeaderMap::new();
+        headers.append(TE, HeaderValue::from_static("trailers"));
+        headers.append(CONNECTION, HeaderValue::from_static("TE, x-hop"));
+        headers.append("x-hop", HeaderValue::from_static("1"));
+        strip_connection_headers(&mut headers, MessageKind::Request);
+        assert_eq!(headers.get(TE).unwrap(), "trailers");
+        assert!(!headers.contains_key("x-hop"));
+        assert!(!headers.contains_key(CONNECTION));
+    }
 
     #[test]
     fn filters_h2_trailers_with_the_shared_field_policy() {

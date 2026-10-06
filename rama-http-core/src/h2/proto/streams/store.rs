@@ -407,6 +407,11 @@ impl Ptr<'_> {
         stream.id
     }
 
+    /// Whether [`Self::unlink`] ran; a closed stream still mid-transition is linked.
+    pub(super) fn is_unlinked(&self) -> bool {
+        !self.store.ids.contains_key(&self.key.stream_id)
+    }
+
     /// Remove the StreamId -> stream state association.
     ///
     /// This will effectively remove the stream as far as the H2 protocol is

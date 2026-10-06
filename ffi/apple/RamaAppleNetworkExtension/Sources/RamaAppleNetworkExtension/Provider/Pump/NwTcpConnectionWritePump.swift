@@ -176,10 +176,15 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
         terminalResourceRelease = release
     }
 
-    private func cancelConnectionAndReleaseLocked() {
+    /// `force` resets the connection: its end is abnormal.
+    private func cancelConnectionAndReleaseLocked(force: Bool = false) {
         if !connectionReleaseIssued {
             connectionReleaseIssued = true
-            connection.cancelAndDetach()
+            if force {
+                connection.forceCancelAndDetach()
+            } else {
+                connection.cancelAndDetach()
+            }
         }
         let release = terminalResourceRelease
         terminalResourceRelease = nil
@@ -204,9 +209,9 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
 
 extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
     internal func pumpCore(_ core: TcpWritePumpCore, didTerminateWith error: Error) {
-        // Release the connection and report failure before unblocking drain waiters.
+        // Reset and release the connection, and report failure before unblocking drain waiters.
         finWaitingForReady = false
-        cancelConnectionAndReleaseLocked()
+        cancelConnectionAndReleaseLocked(force: true)
         let drainCallback = onDrainedCallback
         onDrainedCallback = nil
         // Drive the owner's teardown. In promoted mode the forwarder
@@ -296,7 +301,7 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
                 let finish: @Sendable () -> Void = { [weak self] in
                     onFinComplete(error)
                     if let error {
-                        self?.cancelConnectionAndReleaseLocked()
+                        self?.cancelConnectionAndReleaseLocked(force: true)
                         self?.onTerminal(error)
                     }
                     cb?()

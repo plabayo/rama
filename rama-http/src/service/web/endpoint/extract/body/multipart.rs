@@ -22,7 +22,10 @@ use ahash::HashMap;
 use rama_core::bytes::Bytes;
 use rama_core::extensions::Extension;
 use rama_core::futures::{Stream, TryStream};
-use rama_http_types::{HeaderMap, StatusCode, header};
+use rama_http_types::{
+    HeaderMap, StatusCode,
+    header::{CONTENT_TYPE, content_type::parse_mime_type},
+};
 use rama_utils::macros::generate_set_and_with;
 use std::borrow::Cow;
 use std::marker::PhantomData;
@@ -388,21 +391,21 @@ impl FromRequestBody for Multipart {
         body: crate::Body,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send + 'static {
         let prepared: Result<_, MultipartRejection> = (|| {
-            let content_type = parts
-                .headers
-                .get(header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
+            // The whole value as one type, as every request gate reads it.
+            let content_type = parse_mime_type(parts.headers.get_all(CONTENT_TYPE))
                 .ok_or(InvalidMultipartContentType)?;
 
             // RFC 7578 §4.1 requires the media type to be `multipart/form-data`.
             // `multer::parse_boundary` only checks for a `boundary=` parameter
             // and would otherwise accept `multipart/mixed`, `application/foo`,
             // etc. Reject anything else with 415.
-            if !is_multipart_form_data(content_type) {
+            if content_type.type_() != crate::mime::MULTIPART
+                || content_type.subtype() != crate::mime::FORM_DATA
+            {
                 return Err(InvalidMultipartContentType.into());
             }
-            let boundary =
-                multer::parse_boundary(content_type).map_err(|_e| InvalidMultipartBoundary)?;
+            let boundary = multer::parse_boundary(content_type.as_ref())
+                .map_err(|_e| InvalidMultipartBoundary)?;
 
             // Look up the optional `MultipartConfig` extension via `get_arc` to
             // avoid cloning the inner field-limits map on every request. When no
@@ -420,15 +423,6 @@ impl FromRequestBody for Multipart {
             ))
         }
     }
-}
-
-fn is_multipart_form_data(content_type: &str) -> bool {
-    content_type
-        .parse::<crate::mime::Mime>()
-        .ok()
-        .is_some_and(|m| {
-            m.type_() == crate::mime::MULTIPART && m.subtype() == crate::mime::FORM_DATA
-        })
 }
 
 #[cfg(test)]
@@ -474,6 +468,42 @@ mod test {
 
     fn ct() -> String {
         format!("multipart/form-data; boundary={BOUNDARY}")
+    }
+
+    /// The type and boundary come from the whole value as one type, as the CORS safelist reads
+    /// it: what a browser sends cross-site as `text/plain` is never multipart.
+    #[tokio::test]
+    async fn test_multipart_content_type_is_the_whole_value() {
+        let service =
+            WebService::default().with_post("/", async |mut mp: Multipart| -> StatusCode {
+                match mp.next_field().await {
+                    Ok(Some(field)) if field.name() == Some("name") => StatusCode::OK,
+                    _ => StatusCode::BAD_REQUEST,
+                }
+            });
+        for (lines, status) in [
+            (vec![ct()], StatusCode::OK),
+            (
+                vec![format!("text/plain;,{}", ct())],
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            ),
+            // The first type's boundary runs on into the next line: not the one framing the body.
+            (
+                vec!["multipart/form-data; boundary=wrong".to_owned(), ct()],
+                StatusCode::BAD_REQUEST,
+            ),
+            (vec![ct(), "text/plain".to_owned()], StatusCode::BAD_REQUEST),
+        ] {
+            let mut req = crate::Request::builder().method(crate::Method::POST);
+            for line in &lines {
+                req = req.header(crate::header::CONTENT_TYPE, line);
+            }
+            let req = req
+                .body(body_with(&[("name", None, None, b"glen")]).into())
+                .unwrap();
+            let resp = service.serve(req).await.unwrap();
+            assert_eq!(resp.status(), status, "{lines:?}");
+        }
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 use rama_http_types::{HeaderName, HeaderValue};
 
-use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util::single_value};
 
 /// `Access-Control-Allow-Credentials` header, as defined on
 /// [mdn](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Access-Control-Allow-Credentials).
@@ -50,10 +50,12 @@ impl TypedHeader for AccessControlAllowCredentials {
 
 impl HeaderDecode for AccessControlAllowCredentials {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
-        values
-            .next()
-            .and_then(|value| if value == "true" { Some(Self) } else { None })
-            .ok_or_else(Error::invalid)
+        // Fetch §3.2.3: lines combine to `true, true`, which is not `true`.
+        if single_value(values)? == "true" {
+            Ok(Self)
+        } else {
+            Err(Error::invalid())
+        }
     }
 }
 

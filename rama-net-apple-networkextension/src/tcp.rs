@@ -20,6 +20,10 @@ pin_project! {
     /// tokio [`AsyncRead`] + [`AsyncWrite`] + Rama [`Extensions`]. The read
     /// side drains the client→service channel; the write side hands
     /// service→client bytes straight to the Swift response sink.
+    ///
+    /// It publishes an [`AbortIo`](rama_core::io::AbortIo) in its own extensions: once
+    /// called, the flow ends abnormally (`ECONNRESET`, unless an earlier failure was recorded
+    /// first), so it closes with that error instead of in order.
     pub struct TcpFlow {
         #[pin]
         inner: FfiBridgeStream,
@@ -31,9 +35,11 @@ pin_project! {
 impl TcpFlow {
     #[must_use]
     pub(crate) fn new(inner: FfiBridgeStream, executor: Option<Executor>) -> Self {
+        let extensions = Extensions::new();
+        extensions.insert(inner.abort_io());
         Self {
             inner,
-            extensions: Extensions::new(),
+            extensions,
             executor,
         }
     }

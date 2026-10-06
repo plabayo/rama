@@ -689,6 +689,56 @@ async fn request_with_connection_headers() {
     join(srv, client).await;
 }
 
+/// RFC 9113 §8.2.2: every `TE` line must be `trailers`, not just the first one.
+#[tokio::test]
+async fn request_te_must_be_trailers_on_every_line() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+        // The three refused requests used streams 1, 3 and 5.
+        srv.recv_frame(
+            frames::headers(7)
+                .request("GET", "https://http2.akamai.com/")
+                .field("te", "Trailers")
+                .eos(),
+        )
+        .await;
+        srv.send_frame(frames::headers(7).response(200).eos()).await;
+    };
+
+    let client = async move {
+        let (mut client, mut conn) = client::handshake(io).await.expect("handshake");
+        for lines in [&["trailers", "gzip"][..], &["gzip", "trailers"], &["boom"]] {
+            let mut req = Request::builder().uri("https://http2.akamai.com/");
+            for line in lines {
+                req = req.header("te", *line);
+            }
+            let err = client
+                .send_request(req.body(()).unwrap(), true)
+                .map(drop)
+                .expect_err("TE other than trailers");
+            assert_eq!(
+                err.to_string(),
+                "user error: malformed headers",
+                "{lines:?}"
+            );
+        }
+        // The token is case-insensitive, as on HTTP/3.
+        let req = Request::builder()
+            .uri("https://http2.akamai.com/")
+            .header("te", "Trailers")
+            .body(())
+            .unwrap();
+        let (response, _) = client.send_request(req, true).unwrap();
+        conn.drive(response).await.unwrap();
+    };
+
+    join(srv, client).await;
+}
+
 #[tokio::test]
 #[ignore]
 async fn connection_close_notifies_response_future() {

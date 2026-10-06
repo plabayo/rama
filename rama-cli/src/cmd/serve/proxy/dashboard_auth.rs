@@ -1,10 +1,11 @@
 use rama::{
     Service,
     http::{
-        Method, Request, Response, StatusCode, header,
-        headers::CacheControl,
+        HeaderName, HeaderValue, Method, Request, Response, StatusCode, header,
+        headers::{Authorization, CacheControl, HeaderMapExt as _},
         service::web::response::{Headers, IntoResponse as _, Redirect},
     },
+    net::user::Bearer,
     utils::bytes::ct::ct_eq_bytes,
 };
 use std::sync::Arc;
@@ -48,9 +49,7 @@ where
         if !same_origin_when_present(&request) {
             return Ok(StatusCode::FORBIDDEN.into_response());
         }
-        if !request_capability(&request)
-            .is_some_and(|token| ct_eq_bytes(token, self.token.as_bytes()))
-        {
+        if !has_capability(&request, self.token.as_bytes()) {
             return Ok((
                 StatusCode::UNAUTHORIZED,
                 "Rama Proxy Inspector authorization required. Open the inspector URL printed by rama.",
@@ -77,44 +76,55 @@ fn has_enrollment_token(request: &Request, expected: &[u8]) -> bool {
     })
 }
 
-fn request_capability(request: &Request) -> Option<&[u8]> {
+fn has_capability(request: &Request, expected: &[u8]) -> bool {
+    // One credentials line (RFC 9110 §11.6.2); a cookie may be split over lines (RFC 9113 §8.2.3).
+    if let Some(Authorization(bearer)) = request.headers().typed_get::<Authorization<Bearer>>() {
+        return ct_eq_bytes(bearer.token().as_bytes(), expected);
+    }
     request
         .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.as_bytes().strip_prefix(b"Bearer "))
-        .or_else(|| {
-            request
-                .headers()
-                .get(header::COOKIE)?
-                .as_bytes()
-                .split(|byte| *byte == b';')
-                .find_map(|cookie| {
-                    let cookie = cookie.trim_ascii();
-                    let separator = cookie.iter().position(|byte| *byte == b'=')?;
-                    let (name, value) = cookie.split_at(separator);
-                    let value = value.get(1..)?;
-                    (name == AUTH_COOKIE.as_bytes()).then_some(value)
-                })
+        .get_all(header::COOKIE)
+        .iter()
+        .flat_map(|line| line.as_bytes().split(|byte| *byte == b';'))
+        .filter_map(|cookie| {
+            let cookie = cookie.trim_ascii();
+            let separator = cookie.iter().position(|byte| *byte == b'=')?;
+            let (name, value) = cookie.split_at(separator);
+            (name == AUTH_COOKIE.as_bytes()).then(|| value.get(1..))?
         })
+        .any(|value| ct_eq_bytes(value, expected))
+}
+
+/// The one line of a singleton field: `Ok(None)` when absent, `Err(())` when repeated.
+fn single_line(request: &Request, name: HeaderName) -> Result<Option<&HeaderValue>, ()> {
+    let mut lines = request.headers().get_all(name).iter();
+    match (lines.next(), lines.next()) {
+        (line, None) => Ok(line),
+        (_, Some(_)) => Err(()),
+    }
 }
 
 fn same_origin_when_present(request: &Request) -> bool {
-    let Some(origin) = request
-        .headers()
-        .get(header::ORIGIN)
-        .and_then(|value| value.to_str().ok())
-    else {
+    let Ok(origin) = single_line(request, header::ORIGIN) else {
+        return false;
+    };
+    let Some(origin) = origin else {
         return true;
     };
-    let Ok(origin) = origin.parse::<rama::net::uri::Uri>() else {
+    // Present but unreadable is not same-origin.
+    let Some(origin) = origin
+        .to_str()
+        .ok()
+        .and_then(|origin| origin.parse::<rama::net::uri::Uri>().ok())
+    else {
         return false;
     };
     let Some(origin_authority) = origin.authority() else {
         return false;
     };
-    request
-        .headers()
-        .get(header::HOST)
+    single_line(request, header::HOST)
+        .ok()
+        .flatten()
         .and_then(|value| value.to_str().ok())
         .is_some_and(|host| host.eq_ignore_ascii_case(&origin_authority.to_string()))
 }
@@ -220,6 +230,71 @@ mod tests {
         ] {
             let response = service().serve(request).await.unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+    }
+    #[tokio::test]
+    async fn every_field_line_is_read_and_singletons_are_one_line() {
+        const TOKEN: &str = "rama-inspector=0123456789abcdef";
+        for (name, headers, status) in [
+            (
+                "cookie on a later line",
+                &[(header::COOKIE, "a=b"), (header::COOKIE, TOKEN)][..],
+                StatusCode::OK,
+            ),
+            (
+                "lowercase bearer scheme",
+                &[(header::AUTHORIZATION, "bearer 0123456789abcdef")],
+                StatusCode::OK,
+            ),
+            (
+                "second authorization line",
+                &[
+                    (header::AUTHORIZATION, "Bearer 0123456789abcdef"),
+                    (header::AUTHORIZATION, "Bearer 0123456789abcdef"),
+                ],
+                StatusCode::UNAUTHORIZED,
+            ),
+            (
+                "second origin line",
+                &[
+                    (header::HOST, "127.0.0.1:8080"),
+                    (header::ORIGIN, "http://127.0.0.1:8080"),
+                    (header::ORIGIN, "http://evil.test:8080"),
+                    (header::COOKIE, TOKEN),
+                ],
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                "unreadable origin",
+                &[
+                    (header::HOST, "127.0.0.1:8080"),
+                    (header::ORIGIN, "http://\u{e9}vil.test:8080"),
+                    (header::COOKIE, TOKEN),
+                ],
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                "same origin",
+                &[
+                    (header::HOST, "127.0.0.1:8080"),
+                    (header::ORIGIN, "http://127.0.0.1:8080"),
+                    (header::COOKIE, TOKEN),
+                ],
+                StatusCode::OK,
+            ),
+        ] {
+            let mut request = Request::builder()
+                .method(Method::POST)
+                .uri("/api/captures/clear");
+            for (header, value) in headers {
+                request =
+                    request.header(header, HeaderValue::from_bytes(value.as_bytes()).unwrap());
+            }
+            let response = service()
+                .serve(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status, "{name}");
         }
     }
 }

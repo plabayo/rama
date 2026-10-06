@@ -33,7 +33,10 @@ use rama_core::bytes::BytesMut;
 use rama_core::telemetry::tracing;
 use rama_utils::str::{any_submatch_ignore_ascii_case, starts_with_ignore_ascii_case};
 
-use crate::{HeaderMap, HeaderName, HeaderValue, Response, StatusCode, Version, header};
+use crate::{
+    HeaderMap, HeaderName, HeaderValue, Response, StatusCode, Version,
+    header::{self, hop_by_hop::retain_te_trailers},
+};
 
 pub mod request;
 pub mod response;
@@ -181,10 +184,11 @@ pub fn coalesce_cookie_headers(headers: &mut HeaderMap) {
 /// `:authority` pseudo-header) and `Sec-WebSocket-Key` (unused in the HTTP/2
 /// WebSocket handshake per RFC 8441 §5.1).
 pub fn remove_illegal_h2_request_headers(headers: &mut HeaderMap) {
-    for header in connection_header_names(headers) {
-        while headers.remove(&header).is_some() {
+    // A `TE` sender nominates it (RFC 9110 §10.1.4); its `trailers` is kept below.
+    for name in connection_header_names(headers).filter(|name| *name != header::TE) {
+        while headers.remove(&name).is_some() {
             tracing::trace!(
-                %header,
+                header = %name,
                 "removed connection-specific request header listed in Connection header for name"
             );
         }
@@ -207,17 +211,9 @@ pub fn remove_illegal_h2_request_headers(headers: &mut HeaderMap) {
     }
 
     // `TE` is the one connection-specific header permitted in HTTP/2 and HTTP/3, but
-    // only with the exact value `trailers` (RFC 9113 §8.2.2). Strip any other use.
-    let te_is_legal = headers
-        .get_all(header::TE)
-        .iter()
-        .all(|v| v.as_bytes().trim_ascii().eq_ignore_ascii_case(b"trailers"));
-    if !te_is_legal {
-        while headers.remove(header::TE).is_some() {
-            tracing::trace!(
-                "removed illegal TE header (only `TE: trailers` is valid) from h2 request"
-            );
-        }
+    // only as `trailers` (RFC 9113 §8.2.2).
+    if retain_te_trailers(headers) {
+        tracing::trace!("removed illegal TE header (only `TE: trailers` is valid) from h2 request");
     }
 }
 
@@ -248,6 +244,7 @@ pub fn remove_illegal_h2_response_headers(headers: &mut HeaderMap) {
         &header::KEEP_ALIVE,
         &header::TRANSFER_ENCODING,
         &header::UPGRADE,
+        &header::TE,
     ] {
         while headers.remove(header).is_some() {
             tracing::trace!(

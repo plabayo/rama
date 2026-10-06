@@ -762,6 +762,19 @@ impl Pseudo {
             && self.status.is_none()
     }
 
+    /// The value of the pseudo-header `name`, if present.
+    #[must_use]
+    pub fn value(&self, name: PseudoHeader) -> Option<&str> {
+        match name {
+            PseudoHeader::Method => self.method.as_ref().map(Method::as_str),
+            PseudoHeader::Scheme => self.scheme.as_deref(),
+            PseudoHeader::Authority => self.authority.as_deref(),
+            PseudoHeader::Path => self.path.as_deref(),
+            PseudoHeader::Protocol => self.protocol.as_ref().map(Protocol::as_str),
+            PseudoHeader::Status => self.status.as_ref().map(StatusCode::as_str),
+        }
+    }
+
     #[must_use]
     pub fn response(status: StatusCode) -> Self {
         Self {
@@ -1084,7 +1097,9 @@ impl HeaderBlock {
                     if header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS.contains(&&name) {
                         tracing::trace!("load_hpack; connection level header");
                         malformed = true;
-                    } else if name == header::TE && value != "trailers" {
+                    } else if name == header::TE
+                        && !header::hop_by_hop::is_te_trailers(value.as_bytes())
+                    {
                         tracing::trace!(
                             "load_hpack; TE header not set to trailers; val={:?}",
                             value

@@ -257,7 +257,7 @@ async fn worker_compiles_script_once_and_calls_many_times() {
         .unwrap();
 
     let probe = worker
-        .run(|runtime| Ok(runtime.has_global_fn("resolve")))
+        .run(|runtime| runtime.has_global_fn("resolve"))
         .await
         .unwrap();
     assert!(probe);

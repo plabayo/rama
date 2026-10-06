@@ -1167,6 +1167,15 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
         return NSError(domain: NSPOSIXErrorDomain, code: Int(code))
     }
 
+    /// Whether the Rust service aborted the egress stream, so it is reset at
+    /// once. Query on the flow queue, at the egress close callback.
+    func egressAborted() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let s = sessionPtr else { return false }
+        return rama_transparent_proxy_tcp_session_egress_aborted(s)
+    }
+
     /// Wake the Rust bridge after our `TcpClientWritePump` drains capacity
     /// following a `.paused` return from `onServerBytes`. Idempotent —
     /// redundant calls collapse to a single permit on the Rust side.

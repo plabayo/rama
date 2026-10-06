@@ -1127,8 +1127,12 @@ impl Http1Transaction for Client {
 
         *msg.req_method = Some(msg.head.subject.0.clone());
 
-        // RFC 9112 §3.2.3: a CONNECT target is `host:port`.
-        if msg.head.subject.0 == Method::CONNECT && msg.head.subject.1.port_u16().is_none() {
+        if msg.head.subject.0 == Method::CONNECT
+            && !rama_http_types::proto::h1::head::is_http1_connect_target(
+                &msg.head.subject.1,
+                msg.head.extensions,
+            )
+        {
             return Err(crate::Error::new_user_target());
         }
         if !repair_outgoing_h1_host(&msg.head.subject.1, &mut msg.head.headers) {
@@ -2860,6 +2864,44 @@ mod tests {
             .unwrap();
             assert!(encoder.is_eof(), "{length}");
             assert_eq!(String::from_utf8(vec).unwrap(), expected, "{length}");
+        }
+    }
+
+    /// An HTTP/1 CONNECT names `host:port` and is never an Extended CONNECT, whose HTTP/1.1
+    /// form is an `Upgrade` request: neither falls back to some other target on the wire.
+    #[test]
+    fn client_connect_refuses_targets_http1_cannot_name() {
+        for (uri, protocol, accepted) in [
+            ("https://example.test:443", false, true),
+            ("https://example.test", false, false),
+            ("https://example.test:443/chat", true, false),
+        ] {
+            let mut head = MessageHead {
+                subject: RequestLine(Method::CONNECT, uri.parse().unwrap()),
+                ..Default::default()
+            };
+            if protocol {
+                head.extensions
+                    .insert(rama_http_types::proto::ext::Protocol::WEBSOCKET);
+            }
+            let mut vec = Vec::new();
+            let encoded = Client::encode(
+                Encode {
+                    head: EncodeHead {
+                        version: head.version,
+                        subject: head.subject,
+                        headers: head.headers,
+                        extensions: &mut head.extensions,
+                    },
+                    body: None,
+                    keep_alive: true,
+                    req_method: &mut None,
+                    title_case_headers: false,
+                    date_header: true,
+                },
+                &mut vec,
+            );
+            assert_eq!(encoded.is_ok(), accepted, "{uri} {protocol}");
         }
     }
 

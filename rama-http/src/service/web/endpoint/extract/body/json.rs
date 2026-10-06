@@ -6,7 +6,11 @@ use crate::service::web::extract::{
 };
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use rama_core::bytes::Bytes;
-use rama_http_types::{HeaderMap, header};
+use rama_http_types::{
+    HeaderMap,
+    header::{self, content_type::parse_essence},
+};
+use rama_utils::str::ends_with_ignore_ascii_case;
 
 pub use crate::service::web::endpoint::response::Json;
 
@@ -132,14 +136,16 @@ where
 }
 
 fn json_content_type(headers: &HeaderMap) -> bool {
-    headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|content_type| content_type.to_str().ok())
-        .and_then(|content_type| content_type.parse::<crate::mime::Mime>().ok())
-        .is_some_and(|mime| {
-            mime.type_() == "application"
-                && (mime.subtype() == "json" || mime.suffix().is_some_and(|name| name == "json"))
+    parse_essence(headers.get_all(header::CONTENT_TYPE))
+        .and_then(|essence| {
+            let (kind, subtype) = essence.split_once('/')?;
+            Some(
+                kind.eq_ignore_ascii_case("application")
+                    && (subtype.eq_ignore_ascii_case("json")
+                        || ends_with_ignore_ascii_case(subtype, "+json")),
+            )
         })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -174,6 +180,38 @@ mod test {
             .unwrap();
         let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// The whole value is judged as one type, as the CORS safelist does: what a browser may
+    /// send cross-site without preflight is never JSON.
+    #[tokio::test]
+    async fn test_json_content_type_is_the_whole_value() {
+        let service = WebService::default()
+            .with_post("/", async |Json(_): Json<serde_json::Value>| StatusCode::OK);
+        for (lines, status) in [
+            (&["application/json; charset=utf-8"][..], StatusCode::OK),
+            (&["application/problem+json"], StatusCode::OK),
+            (
+                &["text/plain;,application/json"],
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            ),
+            (
+                &["text/plain", "application/json"],
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            ),
+            (
+                &["application/json", "application/json"],
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            ),
+        ] {
+            let mut req = rama_http_types::Request::builder().method(rama_http_types::Method::POST);
+            for line in lines {
+                req = req.header(rama_http_types::header::CONTENT_TYPE, *line);
+            }
+            let req = req.body(r#"{"name": "glen"}"#.into()).unwrap();
+            let resp = service.serve(req).await.unwrap();
+            assert_eq!(resp.status(), status, "{lines:?}");
+        }
     }
 
     #[tokio::test]

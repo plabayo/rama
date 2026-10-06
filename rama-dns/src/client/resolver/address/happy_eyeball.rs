@@ -10,8 +10,9 @@ use pin_project_lite::pin_project;
 use rama_core::{
     error::{ErrorExt, extra::OpaqueError},
     extensions::Extensions,
-    futures::{DelayStream, Stream, stream},
+    futures::{DelayStream, Stream, future::Either, stream},
     stream::{StreamExt as _, adapters::Merge},
+    telemetry::tracing,
 };
 use rama_net::{
     address::{Host, ip::IntoCanonicalIpAddr as _},
@@ -82,20 +83,28 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
     /// consulting the configured resolver, custom or global: such names
     /// always denote loopback, and mapping them elsewhere violates the RFC.
     /// A [`DnsAddresssResolverOverwrite`] extension on the request is the
-    /// explicit per-request escape hatch and keeps full precedence.
+    /// explicit per-request escape hatch and keeps full precedence: what it
+    /// answers for such a name is used alone, and only when it answers no address
+    /// is the name loopback. The configured resolver is never asked.
     ///
     /// [RFC 4291, Section 2.5.5.2]: https://datatracker.ietf.org/doc/html/rfc4291#section-2.5.5.2
     /// [RFC 6761, Section 6.3]: https://datatracker.ietf.org/doc/html/rfc6761#section-6.3
     pub fn lookup_ip(self) -> impl Stream<Item = Result<IpAddr, OpaqueError>> + Send + 'a {
-        HappyEyeballIpStream::from(self.lookup_ip_source())
+        let (source, fallback) = self.lookup_ip_source();
+        HappyEyeballIpStream::new(source, fallback)
     }
 
+    /// The candidate source, and the loopback answer for a loopback name whose overwrite
+    /// answers nothing.
     fn lookup_ip_source(
         self,
-    ) -> HappyEyeballIpSource<
-        impl Stream<Item = Result<IpAddr, OpaqueError>> + Send + 'a,
-        impl Stream<Item = Result<IpAddr, OpaqueError>> + Send + 'a,
-    > {
+    ) -> (
+        HappyEyeballIpSource<
+            impl Stream<Item = Result<IpAddr, OpaqueError>> + Send + 'a,
+            impl Stream<Item = Result<IpAddr, OpaqueError>> + Send + 'a,
+        >,
+        LoopbackCandidates,
+    ) {
         let ip_mode = self
             .extensions
             .as_ref()
@@ -112,19 +121,25 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
         // both via pct-decode + IDN. Non-promotable hosts (sub-delim
         // reg-name, IPvFuture) error — DNS can't resolve them.
         if let Ok(ip) = self.host.try_as_ip() {
-            return HappyEyeballIpSource::Once {
-                stream: rama_core::stream::once(
-                    ip_mode.validate_ip(ip).map_err(ErrorExt::into_opaque_error),
-                ),
-            };
+            return (
+                HappyEyeballIpSource::Once {
+                    stream: rama_core::stream::once(
+                        ip_mode.validate_ip(ip).map_err(ErrorExt::into_opaque_error),
+                    ),
+                },
+                LoopbackCandidates::new(),
+            );
         }
         let Ok(domain) = self.host.try_into_domain() else {
-            return HappyEyeballIpSource::Once {
-                stream: rama_core::stream::once(Err(BoxError::from_static_str(
-                    "host is not resolvable as a domain",
-                )
-                .into_opaque_error())),
-            };
+            return (
+                HappyEyeballIpSource::Once {
+                    stream: rama_core::stream::once(Err(BoxError::from_static_str(
+                        "host is not resolvable as a domain",
+                    )
+                    .into_opaque_error())),
+                },
+                LoopbackCandidates::new(),
+            );
         };
 
         let maybe_dns_overwrite = self
@@ -135,9 +150,10 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
         // RFC 6761, Section 6.3: `localhost` (and any `*.localhost` name)
         // always denotes the loopback address — answer locally instead of
         // consulting any resolver. An explicit DNS overwrite extension
-        // still takes precedence and keeps the regular path.
-        if maybe_dns_overwrite.is_none() && domain.is_loopback() {
-            let candidates: SmallVec<[_; 2]> = match dns_mode {
+        // still takes precedence, falling back to loopback when it has no answer.
+        let loopback = domain.is_loopback();
+        let loopback_candidates: LoopbackCandidates = if loopback {
+            match dns_mode {
                 DnsResolveIpMode::Dual => smallvec::smallvec![
                     Ok(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)),
                     Ok(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
@@ -152,10 +168,18 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
                 DnsResolveIpMode::SingleIpV6 => {
                     smallvec::smallvec![Ok(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST))]
                 }
-            };
-            return HappyEyeballIpSource::Static {
-                stream: stream::iter(candidates),
-            };
+            }
+        } else {
+            LoopbackCandidates::new()
+        };
+        if loopback && maybe_dns_overwrite.is_none() {
+            tracing::trace!(%domain, ?dns_mode, "happy eyeballs: loopback name answered locally");
+            return (
+                HappyEyeballIpSource::Static {
+                    stream: stream::iter(loopback_candidates),
+                },
+                LoopbackCandidates::new(),
+            );
         }
 
         let make_ipv4_stream = || {
@@ -164,11 +188,15 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
                     .as_ref()
                     .map(|resolver| resolver.lookup_ipv4(domain.clone())),
             ))
-            .chain(
-                self.resolver
-                    .lookup_ipv4(domain.clone())
-                    .map(|result| result.map_err(ErrorExt::into_opaque_error)),
-            )
+            .chain(if loopback {
+                Either::Left(stream::empty())
+            } else {
+                Either::Right(
+                    self.resolver
+                        .lookup_ipv4(domain.clone())
+                        .map(|result| result.map_err(ErrorExt::into_opaque_error)),
+                )
+            })
             .map(|result| result.map(IpAddr::V4))
         };
 
@@ -178,16 +206,20 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
                     .as_ref()
                     .map(|resolver| resolver.lookup_ipv6(domain.clone())),
             ))
-            .chain(
-                self.resolver
-                    .lookup_ipv6(domain.clone())
-                    .map(|result| result.map_err(ErrorExt::into_opaque_error)),
-            )
+            .chain(if loopback {
+                Either::Left(stream::empty())
+            } else {
+                Either::Right(
+                    self.resolver
+                        .lookup_ipv6(domain.clone())
+                        .map(|result| result.map_err(ErrorExt::into_opaque_error)),
+                )
+            })
             // AAAA records can carry v4-mapped addresses too — same fold-down
             .map(|result| result.map(|ip| IpAddr::V6(ip).into_canonical_ip_addr()))
         };
 
-        match dns_mode {
+        let source = match dns_mode {
             DnsResolveIpMode::Dual => {
                 let ipv6_stream = make_ipv6_stream();
                 let ipv4_stream = make_ipv4_stream();
@@ -212,9 +244,12 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
             DnsResolveIpMode::SingleIpV6 => HappyEyeballIpSource::SingleIpV6 {
                 stream: make_ipv6_stream(),
             },
-        }
+        };
+        (source, loopback_candidates)
     }
 }
+
+type LoopbackCandidates = SmallVec<[Result<IpAddr, OpaqueError>; 2]>;
 
 pin_project! {
     // Overwrites chain ahead of the resolver; never race the same address twice.
@@ -222,14 +257,19 @@ pin_project! {
         #[pin]
         source: HappyEyeballIpSource<V4, V6>,
         seen: SmallVec<[IpAddr; 4]>,
+        source_done: bool,
+        // Yielded when the source ends without an address.
+        fallback: smallvec::IntoIter<[Result<IpAddr, OpaqueError>; 2]>,
     }
 }
 
-impl<V4, V6> From<HappyEyeballIpSource<V4, V6>> for HappyEyeballIpStream<V4, V6> {
-    fn from(source: HappyEyeballIpSource<V4, V6>) -> Self {
+impl<V4, V6> HappyEyeballIpStream<V4, V6> {
+    fn new(source: HappyEyeballIpSource<V4, V6>, fallback: LoopbackCandidates) -> Self {
         Self {
             source,
             seen: SmallVec::new(),
+            source_done: false,
+            fallback: fallback.into_iter(),
         }
     }
 }
@@ -241,21 +281,31 @@ impl<V4: Stream<Item = Result<IpAddr, OpaqueError>>, V6: Stream<Item = Result<Ip
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
-        loop {
+        while !*this.source_done {
             match std::task::ready!(this.source.as_mut().poll_next(cx)) {
                 Some(Ok(ip)) if this.seen.contains(&ip) => {}
                 Some(Ok(ip)) => {
                     this.seen.push(ip);
                     return Poll::Ready(Some(Ok(ip)));
                 }
-                other => return Poll::Ready(other),
+                Some(Err(err)) => return Poll::Ready(Some(Err(err))),
+                None => *this.source_done = true,
             }
+        }
+        if this.seen.is_empty() {
+            Poll::Ready(this.fallback.next())
+        } else {
+            Poll::Ready(None)
         }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         let (lower, upper) = self.source.size_hint();
-        (lower.min(usize::from(self.seen.is_empty())), upper)
+        let fallback = self.fallback.len();
+        (
+            lower.min(usize::from(self.seen.is_empty())),
+            upper.and_then(|upper| upper.checked_add(fallback)),
+        )
     }
 }
 
@@ -321,8 +371,9 @@ impl<V4: Stream<Item = Result<IpAddr, OpaqueError>>, V6: Stream<Item = Result<Ip
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::EmptyDnsResolver;
-    use rama_net::address::Host;
+    use crate::client::{DenyAllDnsResolver, EmptyDnsResolver};
+    use rama_net::address::Domain;
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     #[tokio::test]
     async fn ip_host_returns_directly_without_dns_lookup() {
@@ -330,15 +381,12 @@ mod tests {
         // address directly without consulting the DNS resolver. Use the
         // empty resolver to prove it: if the code fell through to the
         // domain path, the stream would be empty.
-        let host: Host = "127.0.0.1".parse::<std::net::IpAddr>().unwrap().into();
+        let host: Host = "127.0.0.1".parse::<IpAddr>().unwrap().into();
         let mut stream = std::pin::pin!(EmptyDnsResolver.happy_eyeballs_resolver(host).lookup_ip());
         let first = rama_core::futures::StreamExt::next(&mut stream)
             .await
             .expect("should emit the IP directly");
-        assert_eq!(
-            first.unwrap(),
-            "127.0.0.1".parse::<std::net::IpAddr>().unwrap()
-        );
+        assert_eq!(first.unwrap(), "127.0.0.1".parse::<IpAddr>().unwrap());
     }
 
     #[tokio::test]
@@ -356,10 +404,7 @@ mod tests {
             .next()
             .await
             .expect("pct-encoded IP must short-circuit to direct emit");
-        assert_eq!(
-            first.unwrap(),
-            "127.0.0.1".parse::<std::net::IpAddr>().unwrap()
-        );
+        assert_eq!(first.unwrap(), "127.0.0.1".parse::<IpAddr>().unwrap());
     }
 
     #[tokio::test]
@@ -367,41 +412,26 @@ mod tests {
         // `::ffff:127.0.0.1` identifies IPv4 wire traffic (dual-stack
         // socket form, e.g. WFP redirect targets on Windows) — the
         // resolver must emit the embedded IPv4 address.
-        let host: Host = "::ffff:127.0.0.1"
-            .parse::<std::net::IpAddr>()
-            .unwrap()
-            .into();
+        let host: Host = "::ffff:127.0.0.1".parse::<IpAddr>().unwrap().into();
         let mut stream = std::pin::pin!(EmptyDnsResolver.happy_eyeballs_resolver(host).lookup_ip());
         let first = stream.next().await.expect("should emit the canonical IP");
-        assert_eq!(
-            first.unwrap(),
-            "127.0.0.1".parse::<std::net::IpAddr>().unwrap()
-        );
+        assert_eq!(first.unwrap(), "127.0.0.1".parse::<IpAddr>().unwrap());
     }
 
     #[tokio::test]
     async fn real_ipv6_literal_host_passes_through_unchanged() {
-        let host: Host = "2001:db8::1".parse::<std::net::IpAddr>().unwrap().into();
+        let host: Host = "2001:db8::1".parse::<IpAddr>().unwrap().into();
         let mut stream = std::pin::pin!(EmptyDnsResolver.happy_eyeballs_resolver(host).lookup_ip());
         let first = stream.next().await.expect("should emit the IP directly");
-        assert_eq!(
-            first.unwrap(),
-            "2001:db8::1".parse::<std::net::IpAddr>().unwrap()
-        );
+        assert_eq!(first.unwrap(), "2001:db8::1".parse::<IpAddr>().unwrap());
     }
 
     #[tokio::test]
     async fn v4_mapped_ip_literal_host_counts_as_ipv4_for_connect_ip_mode() {
-        use rama_core::extensions::Extensions;
-        use rama_net::mode::ConnectIpMode;
-
         // allowed under IPv4-only connect mode (it IS IPv4 traffic)...
         let ext = Extensions::new();
         ext.insert(ConnectIpMode::Ipv4);
-        let host: Host = "::ffff:127.0.0.1"
-            .parse::<std::net::IpAddr>()
-            .unwrap()
-            .into();
+        let host: Host = "::ffff:127.0.0.1".parse::<IpAddr>().unwrap().into();
         let mut stream = std::pin::pin!(
             EmptyDnsResolver
                 .happy_eyeballs_resolver(host)
@@ -409,18 +439,12 @@ mod tests {
                 .lookup_ip()
         );
         let first = stream.next().await.expect("should emit the canonical IP");
-        assert_eq!(
-            first.unwrap(),
-            "127.0.0.1".parse::<std::net::IpAddr>().unwrap()
-        );
+        assert_eq!(first.unwrap(), "127.0.0.1".parse::<IpAddr>().unwrap());
 
         // ...and rejected under IPv6-only connect mode.
         let ext = Extensions::new();
         ext.insert(ConnectIpMode::Ipv6);
-        let host: Host = "::ffff:127.0.0.1"
-            .parse::<std::net::IpAddr>()
-            .unwrap()
-            .into();
+        let host: Host = "::ffff:127.0.0.1".parse::<IpAddr>().unwrap().into();
         let mut stream = std::pin::pin!(
             EmptyDnsResolver
                 .happy_eyeballs_resolver(host)
@@ -435,14 +459,11 @@ mod tests {
     async fn v4_mapped_aaaa_record_canonicalizes_to_ipv4() {
         // an `Ipv6Addr` acts as a stub resolver yielding itself as the
         // sole AAAA record for any domain.
-        let mapped: std::net::Ipv6Addr = "::ffff:192.0.2.1".parse().unwrap();
-        let host = Host::Name(rama_net::address::Domain::from_static("example.com"));
+        let mapped: Ipv6Addr = "::ffff:192.0.2.1".parse().unwrap();
+        let host = Host::Name(Domain::from_static("example.com"));
         let mut stream = std::pin::pin!(mapped.happy_eyeballs_resolver(host).lookup_ip());
         let first = stream.next().await.expect("should emit the canonical IP");
-        assert_eq!(
-            first.unwrap(),
-            "192.0.2.1".parse::<std::net::IpAddr>().unwrap()
-        );
+        assert_eq!(first.unwrap(), "192.0.2.1".parse::<IpAddr>().unwrap());
     }
 
     #[tokio::test]
@@ -451,7 +472,7 @@ mod tests {
         // empty resolver proves no resolver is consulted: falling through
         // to the domain path would produce an empty stream.
         for name in ["localhost", "api.localhost", "a.b.localhost"] {
-            let host = Host::Name(rama_net::address::Domain::from_static(name));
+            let host = Host::Name(Domain::from_static(name));
             let stream = EmptyDnsResolver.happy_eyeballs_resolver(host).lookup_ip();
             let ips: Vec<_> = rama_core::futures::StreamExt::collect::<Vec<_>>(stream)
                 .await
@@ -460,8 +481,8 @@ mod tests {
                 .collect();
             assert_eq!(
                 vec![
-                    std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
-                    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                    IpAddr::V6(Ipv6Addr::LOCALHOST),
+                    IpAddr::V4(Ipv4Addr::LOCALHOST),
                 ],
                 ips,
                 "name: {name}"
@@ -471,29 +492,26 @@ mod tests {
 
     #[tokio::test]
     async fn localhost_respects_dns_resolve_ip_mode() {
-        use rama_core::extensions::Extensions;
-        use rama_net::mode::DnsResolveIpMode;
-
         for (mode, expected) in [
             (
                 DnsResolveIpMode::SingleIpV4,
-                vec![std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)],
+                vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
             ),
             (
                 DnsResolveIpMode::SingleIpV6,
-                vec![std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)],
+                vec![IpAddr::V6(Ipv6Addr::LOCALHOST)],
             ),
             (
                 DnsResolveIpMode::DualPreferIpV4,
                 vec![
-                    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-                    std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+                    IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    IpAddr::V6(Ipv6Addr::LOCALHOST),
                 ],
             ),
         ] {
             let ext = Extensions::new();
             ext.insert(mode);
-            let host = Host::Name(rama_net::address::Domain::from_static("localhost"));
+            let host = Host::Name(Domain::from_static("localhost"));
             let stream = EmptyDnsResolver
                 .happy_eyeballs_resolver(host)
                 .with_extensions(&ext)
@@ -512,8 +530,8 @@ mod tests {
         // RFC 6761, Section 6.3 takes precedence over any configured
         // resolver: a custom resolver mapping `svc.localhost` elsewhere
         // is (deliberately) never consulted for localhost names.
-        let custom: std::net::Ipv4Addr = "192.0.2.1".parse().unwrap();
-        let host = Host::Name(rama_net::address::Domain::from_static("svc.localhost"));
+        let custom: Ipv4Addr = "192.0.2.1".parse().unwrap();
+        let host = Host::Name(Domain::from_static("svc.localhost"));
         let stream = custom.happy_eyeballs_resolver(host).lookup_ip();
         let ips: Vec<_> = rama_core::futures::StreamExt::collect::<Vec<_>>(stream)
             .await
@@ -522,8 +540,8 @@ mod tests {
             .collect();
         assert_eq!(
             vec![
-                std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
-                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                IpAddr::V6(Ipv6Addr::LOCALHOST),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
             ],
             ips,
         );
@@ -531,15 +549,12 @@ mod tests {
 
     #[tokio::test]
     async fn dns_overwrite_extension_wins_over_localhost_fast_path() {
-        use crate::client::resolver::address::DnsAddresssResolverOverwrite;
-        use rama_core::extensions::Extensions;
-
         // the per-request overwrite is the explicit escape hatch: it keeps
         // full precedence, and the localhost fast path steps aside
-        let overwrite: std::net::Ipv4Addr = "192.0.2.7".parse().unwrap();
+        let overwrite: Ipv4Addr = "192.0.2.7".parse().unwrap();
         let ext = Extensions::new();
         ext.insert(DnsAddresssResolverOverwrite::new(overwrite));
-        let host = Host::Name(rama_net::address::Domain::from_static("svc.localhost"));
+        let host = Host::Name(Domain::from_static("svc.localhost"));
         let stream = EmptyDnsResolver
             .happy_eyeballs_resolver(host)
             .with_extensions(&ext)
@@ -549,21 +564,72 @@ mod tests {
             .into_iter()
             .map(Result::unwrap)
             .collect();
-        assert_eq!(vec!["192.0.2.7".parse::<std::net::IpAddr>().unwrap()], ips);
+        assert_eq!(vec!["192.0.2.7".parse::<IpAddr>().unwrap()], ips);
+    }
+
+    #[tokio::test]
+    async fn localhost_with_an_overwrite_stays_loopback_without_any_resolver() {
+        // The configured resolver would map it elsewhere: it must not be asked.
+        let resolver: Ipv4Addr = "192.0.2.1".parse().unwrap();
+        for (mode, expected) in [
+            (
+                DnsResolveIpMode::Dual,
+                vec![
+                    IpAddr::V6(Ipv6Addr::LOCALHOST),
+                    IpAddr::V4(Ipv4Addr::LOCALHOST),
+                ],
+            ),
+            (
+                DnsResolveIpMode::DualPreferIpV4,
+                vec![
+                    IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    IpAddr::V6(Ipv6Addr::LOCALHOST),
+                ],
+            ),
+            (
+                DnsResolveIpMode::SingleIpV4,
+                vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            ),
+            (
+                DnsResolveIpMode::SingleIpV6,
+                vec![IpAddr::V6(Ipv6Addr::LOCALHOST)],
+            ),
+        ] {
+            for (name, deny) in [
+                ("localhost", false),
+                ("svc.localhost", false),
+                ("localhost", true),
+            ] {
+                let ext = Extensions::new();
+                if deny {
+                    ext.insert(DnsAddresssResolverOverwrite::new(DenyAllDnsResolver));
+                } else {
+                    ext.insert(DnsAddresssResolverOverwrite::new(EmptyDnsResolver));
+                }
+                ext.insert(mode);
+                let host = Host::Name(Domain::from_static(name));
+                let stream = resolver
+                    .happy_eyeballs_resolver(host)
+                    .with_extensions(&ext)
+                    .lookup_ip();
+                let results = rama_core::futures::StreamExt::collect::<Vec<_>>(stream).await;
+                // Its errors pass through, as they do ahead of a resolver.
+                assert_eq!(deny, results.iter().any(Result::is_err), "{results:?}");
+                let ips: Vec<_> = results.into_iter().filter_map(Result::ok).collect();
+                assert_eq!(expected, ips, "{name} {mode:?} deny: {deny}");
+            }
+        }
     }
 
     #[tokio::test]
     async fn overwrite_and_resolver_answers_are_deduplicated() {
-        use crate::client::resolver::address::DnsAddresssResolverOverwrite;
-        use rama_core::extensions::Extensions;
-
         // the overwrite chains ahead of the resolver; a shared (canonical)
         // answer must be dialed once, even across address families
-        let overwrite: std::net::Ipv4Addr = "192.0.2.7".parse().unwrap();
+        let overwrite: Ipv4Addr = "192.0.2.7".parse().unwrap();
         let ext = Extensions::new();
         ext.insert(DnsAddresssResolverOverwrite::new(overwrite));
-        let mapped: std::net::Ipv6Addr = "::ffff:192.0.2.7".parse().unwrap();
-        let host = Host::Name(rama_net::address::Domain::from_static("example.com"));
+        let mapped: Ipv6Addr = "::ffff:192.0.2.7".parse().unwrap();
+        let host = Host::Name(Domain::from_static("example.com"));
         let stream = mapped
             .happy_eyeballs_resolver(host)
             .with_extensions(&ext)
@@ -573,16 +639,14 @@ mod tests {
             .into_iter()
             .map(Result::unwrap)
             .collect();
-        assert_eq!(vec!["192.0.2.7".parse::<std::net::IpAddr>().unwrap()], ips);
+        assert_eq!(vec!["192.0.2.7".parse::<IpAddr>().unwrap()], ips);
     }
 
     #[tokio::test]
     async fn localhost_like_registrable_domains_still_resolve_via_dns() {
         // `localhost.example.com` is NOT an RFC 6761 localhost name:
         // it must go through the regular resolver path (empty here).
-        let host = Host::Name(rama_net::address::Domain::from_static(
-            "localhost.example.com",
-        ));
+        let host = Host::Name(Domain::from_static("localhost.example.com"));
         let stream = EmptyDnsResolver.happy_eyeballs_resolver(host).lookup_ip();
         let ips: Vec<_> = rama_core::futures::StreamExt::collect::<Vec<_>>(stream).await;
         assert!(ips.is_empty());

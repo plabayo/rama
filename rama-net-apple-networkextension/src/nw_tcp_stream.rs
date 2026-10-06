@@ -17,6 +17,10 @@ pin_project! {
     /// The read side drains the upstream→service channel (bytes the Swift
     /// `NWConnection` delivered); the write side hands service→upstream bytes
     /// straight to the Swift egress-write sink.
+    ///
+    /// It publishes an [`AbortIo`](rama_core::io::AbortIo) in its own extensions: once
+    /// called, the egress is reset rather than closed in order, and the flow ends abnormally
+    /// (`ECONNRESET`, unless an earlier failure was recorded first).
     pub struct NwTcpStream {
         #[pin]
         inner: FfiBridgeStream,
@@ -27,10 +31,9 @@ pin_project! {
 impl NwTcpStream {
     #[must_use]
     pub(crate) fn new(inner: FfiBridgeStream) -> Self {
-        Self {
-            inner,
-            extensions: Extensions::new(),
-        }
+        let extensions = Extensions::new();
+        extensions.insert(inner.abort_io());
+        Self { inner, extensions }
     }
 }
 

@@ -12,10 +12,14 @@ use rama_core::{
     io::Io,
 };
 use rama_http_types::{
-    Body, HeaderMap, Request as HttpRequest, Response as HttpResponse,
+    Body, HeaderMap, HeaderValue, Method as HttpMethod, Request as HttpRequest,
+    Response as HttpResponse, StatusCode as HttpStatusCode,
     body::{Frame, StreamingBody, util::BodyStream},
     header::{self, HeaderName},
-    proto::h1::head::{self, HeadError, HeadParser},
+    proto::{
+        ext::Protocol,
+        h1::head::{self, HeadError, HeadParser},
+    },
 };
 use rama_net::{address::Authority, uri::Uri};
 
@@ -50,6 +54,55 @@ pub const DEFAULT_MAX_REPLAY_BYTES: usize = rama_utils::octets::mib(8);
 
 /// Default maximum frames retained for ICAP replay.
 pub const DEFAULT_MAX_REPLAY_FRAMES: usize = 1024;
+
+/// How encapsulated HTTP heads carry a protocol upgrade: an HTTP/1.1 `Upgrade`, or the
+/// `:protocol` of an HTTP/2 or HTTP/3 Extended CONNECT, which is encapsulated as the `GET`
+/// upgrade it stands for, and its 2xx acceptance as a `101` (RFC 8441 §5).
+///
+/// RFC 3507 §4.4.2 omits hop-by-hop fields from encapsulated heads; Squid keeps `Upgrade`, so a
+/// service tells an upgrade from a plain `GET`. `Connection` is never encapsulated. Without
+/// `Upgrade` an acceptance stays the 2xx it was, as a `101` must name its protocol.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum UpgradeEncapsulation {
+    /// Keep the `Upgrade` field, as Squid does.
+    #[default]
+    Keep,
+    /// Omit it with the other hop-by-hop fields.
+    Omit,
+}
+
+impl UpgradeEncapsulation {
+    /// The `Upgrade` values to encapsulate for `request` and its `response`, read before their
+    /// hop-by-hop fields are removed.
+    fn tokens<R, S>(
+        self,
+        request: Option<&HttpRequest<R>>,
+        response: Option<&HttpResponse<S>>,
+    ) -> UpgradeTokens {
+        if self == Self::Omit {
+            return UpgradeTokens::default();
+        }
+        let request_token = request.and_then(upgrade_token);
+        let response_token = match (request, response) {
+            (Some(request), Some(response)) if switches_protocols(request, response) => {
+                request_token.clone()
+            }
+            (_, Some(response)) => upgrade_lines(response.headers()),
+            (_, None) => None,
+        };
+        UpgradeTokens {
+            request: request_token,
+            response: response_token,
+        }
+    }
+}
+
+/// The `Upgrade` values an encapsulation carries, see [`UpgradeEncapsulation`].
+#[derive(Debug, Clone, Default)]
+pub(crate) struct UpgradeTokens {
+    request: Option<HeaderValue>,
+    response: Option<HeaderValue>,
+}
 
 /// Bounds for original HTTP frames retained for 204/206 replay.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -146,7 +199,8 @@ impl Encapsulated {
 
     /// Encode an encapsulated HTTP request head.
     ///
-    /// Connection-specific fields are omitted as required by ICAP. If the
+    /// Connection-specific fields are omitted as required by ICAP, except an
+    /// `Upgrade`, see [`UpgradeEncapsulation`]. If the
     /// head contains HTTP proxy credentials, a complete ICAP message must
     /// carry them as ICAP headers instead.
     pub fn from_request<T>(
@@ -159,13 +213,17 @@ impl Encapsulated {
         ) {
             return Err(Error::invalid_body_kind());
         }
-        let (request, _promoted, _trailer_forbidden) = prepare_request_head(request);
+        let upgrade =
+            UpgradeEncapsulation::default().tokens(Some(request), None::<&HttpResponse<()>>);
+        let (request, _promoted, _trailer_forbidden) =
+            prepare_request_head(request, upgrade.request);
         Self::from_prepared_request(&request, body_kind)
     }
 
     /// Encode an encapsulated HTTP response head.
     ///
-    /// Connection-specific fields are omitted as required by ICAP. If the
+    /// Connection-specific fields are omitted as required by ICAP, except an
+    /// `Upgrade`, see [`UpgradeEncapsulation`]. If the
     /// head contains an HTTP proxy challenge, a complete ICAP message must
     /// carry it as an ICAP header instead.
     pub fn from_response<T>(
@@ -178,13 +236,17 @@ impl Encapsulated {
         ) {
             return Err(Error::invalid_body_kind());
         }
-        let (response, _promoted, _trailer_forbidden) = prepare_response_head(response);
+        let upgrade =
+            UpgradeEncapsulation::default().tokens(None::<&HttpRequest<()>>, Some(response));
+        let (response, _promoted, _trailer_forbidden) =
+            prepare_response_head(response, upgrade.response, false);
         Self::from_prepared_response(&response, body_kind)
     }
 
     /// Encode original request and response heads around a response body.
     ///
-    /// Connection-specific fields are omitted as required by ICAP. If the
+    /// Connection-specific fields are omitted as required by ICAP, except an
+    /// `Upgrade`, see [`UpgradeEncapsulation`]. If the
     /// request contains HTTP proxy credentials or the response contains a
     /// proxy challenge, a complete ICAP message must carry them as ICAP
     /// headers instead. This helper returns only the encapsulated message and
@@ -200,10 +262,12 @@ impl Encapsulated {
         ) {
             return Err(Error::invalid_body_kind());
         }
+        let upgrade = UpgradeEncapsulation::default().tokens(Some(request), Some(response));
+        let switching = switches_protocols(request, response) && upgrade.response.is_some();
         let (request, _request_promoted, _request_trailer_forbidden) =
-            prepare_request_head(request);
+            prepare_request_head(request, upgrade.request);
         let (response, _response_promoted, _response_trailer_forbidden) =
-            prepare_response_head(response);
+            prepare_response_head(response, upgrade.response, switching);
         Self::from_prepared_request_response(&request, &response, body_kind)
     }
 
@@ -292,7 +356,7 @@ impl Encapsulated {
         }
     }
 
-    fn inherit_original_context(self, original: &OriginalHead) -> Self {
+    fn inherit_original_context(self, original: &OriginalHead) -> Result<Self, Error> {
         let empty = Extensions::new();
         let request_version = original.request().map(HttpRequest::version);
         let response_version = original
@@ -309,26 +373,41 @@ impl Encapsulated {
             .or_else(|| original.request().map(ExtensionsRef::extensions))
             .unwrap_or(&empty);
 
-        Self {
-            request: self.request.map(|mut request| {
+        let request = match self.request {
+            Some(mut request) => {
                 if let Some(version) = request_version {
                     *request.version_mut() = version;
                 }
                 if let Some(original) = original.request() {
+                    restore_extended_connect(&mut request, original)?;
                     restore_target_form(&mut request, original);
                 }
                 let extensions = request.extensions().with_base(request_base);
-                request.with_extensions(extensions)
-            }),
-            response: self.response.map(|mut response| {
-                if let Some(version) = response_version {
-                    *response.version_mut() = version;
+                Some(request.with_extensions(extensions))
+            }
+            None => None,
+        };
+        Ok(Self {
+            request,
+            response: match self.response {
+                Some(mut response) => {
+                    if let Some(version) = response_version {
+                        *response.version_mut() = version;
+                    }
+                    if let OriginalHead::Connect {
+                        response: original,
+                        switched,
+                    } = original
+                    {
+                        restore_connect_response(&mut response, original, *switched)?;
+                    }
+                    let extensions = response.extensions().with_base(response_base);
+                    Some(response.with_extensions(extensions))
                 }
-                let extensions = response.extensions().with_base(response_base);
-                response.with_extensions(extensions)
-            }),
+                None => None,
+            },
             body_kind: self.body_kind,
-        }
+        })
     }
 }
 
@@ -596,20 +675,36 @@ where
 enum OriginalHead {
     Request(HttpRequest<()>),
     Response(HttpResponse<()>),
+    /// The response to a CONNECT, classic or Extended: an acceptance opens a tunnel.
+    Connect {
+        response: HttpResponse<()>,
+        /// An Extended CONNECT acceptance, encapsulated as the `101` it stands for.
+        switched: bool,
+    },
 }
 
 impl OriginalHead {
     fn request(&self) -> Option<&HttpRequest<()>> {
         match self {
             Self::Request(request) => Some(request),
-            Self::Response(_) => None,
+            Self::Response(_) | Self::Connect { .. } => None,
         }
     }
 
     fn response(&self) -> Option<&HttpResponse<()>> {
         match self {
             Self::Request(_) => None,
-            Self::Response(response) => Some(response),
+            Self::Response(response) | Self::Connect { response, .. } => Some(response),
+        }
+    }
+
+    /// Whether the message opens a tunnel, which carries no body of its own: a CONNECT or its
+    /// acceptance (RFC 9110 §9.3.6).
+    fn is_tunnel(&self) -> bool {
+        match self {
+            Self::Request(request) => request.method() == HttpMethod::CONNECT,
+            Self::Response(_) => false,
+            Self::Connect { response, .. } => response.status().is_success(),
         }
     }
 }
@@ -642,7 +737,9 @@ impl ClientRequest {
         if line.method().kind() != MethodKind::Reqmod {
             return Err(Error::invalid_method());
         }
-        Self::reqmod_with_line(line.into(), headers, request, preview)
+        let upgrade =
+            UpgradeEncapsulation::default().tokens(Some(&request), None::<&HttpResponse<()>>);
+        Self::reqmod_with_line(line.into(), headers, request, preview, upgrade)
     }
 
     pub(crate) fn reqmod_for_uri<B>(
@@ -650,6 +747,7 @@ impl ClientRequest {
         headers: &[Header<'_>],
         request: HttpRequest<B>,
         preview: Option<Preview>,
+        upgrade: UpgradeTokens,
     ) -> Result<Self, Error>
     where
         B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
@@ -659,6 +757,7 @@ impl ClientRequest {
             headers,
             request,
             preview,
+            upgrade,
         )
     }
 
@@ -667,6 +766,7 @@ impl ClientRequest {
         headers: &[Header<'_>],
         request: HttpRequest<B>,
         preview: Option<Preview>,
+        upgrade: UpgradeTokens,
     ) -> Result<Self, Error>
     where
         B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
@@ -679,7 +779,8 @@ impl ClientRequest {
             EncapsulatedKind::RequestBody
         };
         let original = HttpRequest::from_parts(parts, ());
-        let (prepared, promoted, trailer_forbidden) = prepare_request_head(&original);
+        let (prepared, promoted, trailer_forbidden) =
+            prepare_request_head(&original, upgrade.request);
         let encapsulated = Encapsulated::from_prepared_request(&prepared, body_kind)?;
         let headers = with_promoted_headers(headers, &promoted)?;
         let mut icap = build_client_request(line, &headers, encapsulated, preview)?;
@@ -711,7 +812,8 @@ impl ClientRequest {
         if line.method().kind() != MethodKind::Respmod {
             return Err(Error::invalid_method());
         }
-        Self::respmod_with_line(line.into(), headers, request, response, preview)
+        let upgrade = UpgradeEncapsulation::default().tokens(Some(request), Some(&response));
+        Self::respmod_with_line(line.into(), headers, request, response, preview, upgrade)
     }
 
     pub(crate) fn respmod_for_uri<R, B>(
@@ -720,6 +822,7 @@ impl ClientRequest {
         request: &HttpRequest<R>,
         response: HttpResponse<B>,
         preview: Option<Preview>,
+        upgrade: UpgradeTokens,
     ) -> Result<Self, Error>
     where
         B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
@@ -730,6 +833,7 @@ impl ClientRequest {
             request,
             response,
             preview,
+            upgrade,
         )
     }
 
@@ -739,6 +843,7 @@ impl ClientRequest {
         request: &HttpRequest<R>,
         response: HttpResponse<B>,
         preview: Option<Preview>,
+        upgrade: UpgradeTokens,
     ) -> Result<Self, Error>
     where
         B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
@@ -751,10 +856,12 @@ impl ClientRequest {
             EncapsulatedKind::ResponseBody
         };
         let original = HttpResponse::from_parts(parts, ());
+        // A `101` carries `Upgrade` (RFC 9110 §15.2.2): without it the 2xx stays as sent.
+        let switching = switches_protocols(request, &original) && upgrade.response.is_some();
         let (prepared_request, request_promoted, _request_trailer_forbidden) =
-            prepare_request_head(request);
+            prepare_request_head(request, upgrade.request);
         let (prepared_response, response_promoted, trailer_forbidden) =
-            prepare_response_head(&original);
+            prepare_response_head(&original, upgrade.response, switching);
         let encapsulated = Encapsulated::from_prepared_request_response(
             &prepared_request,
             &prepared_response,
@@ -771,7 +878,14 @@ impl ClientRequest {
         }
         Ok(Self {
             icap,
-            original: OriginalHead::Response(original),
+            original: if request.method() == HttpMethod::CONNECT {
+                OriginalHead::Connect {
+                    response: original,
+                    switched: switching,
+                }
+            } else {
+                OriginalHead::Response(original)
+            },
             body: Body::new(body),
             trailer_forbidden,
             replay_limits: ReplayLimits::new(),
@@ -1416,7 +1530,9 @@ where
         let encapsulated = match inner
             .response()
             .encapsulated()
-            .map(|parts| Encapsulated::parse_with(parts, &parser))
+            .map(|parts| {
+                Encapsulated::parse_with(parts, &parser)?.inherit_original_context(&original_head)
+            })
             .transpose()
         {
             Ok(encapsulated) => encapsulated,
@@ -1424,8 +1540,7 @@ where
                 inner.connection_and_state().0.mark_broken();
                 return Err(error);
             }
-        }
-        .map(|parts| parts.inherit_original_context(&original_head));
+        };
         if inner.response().method() == MethodKind::Reqmod
             && let Some(status) = encapsulated
                 .as_ref()
@@ -1675,6 +1790,26 @@ fn resolve_result_head(
     } else {
         None
     };
+
+    // A tunnel carries no body, which would go ahead of it; a refusal of one may.
+    let still_tunnel = match &selected {
+        Some(
+            ResultHead::EncapsulatedRequest | ResultHead::Request(_) | ResultHead::Response(_),
+        ) => original.is_tunnel(),
+        Some(ResultHead::EncapsulatedResponse) => {
+            // A 2xx still accepts the tunnel, see `restore_connect_response`.
+            matches!(original, OriginalHead::Connect { .. })
+                && encapsulated
+                    .and_then(Encapsulated::response)
+                    .is_some_and(|response| response.status().is_success())
+        }
+        Some(ResultHead::OriginalRequest | ResultHead::OriginalResponse) | None => false,
+    };
+    if still_tunnel
+        && encapsulated.is_some_and(|parts| parts.body_kind() != EncapsulatedKind::NullBody)
+    {
+        return Err(Error::invalid_sequence("adapted tunnel has a body"));
+    }
 
     selected
         .map(|head| head.with_proxy_context(encapsulated, original, returned))
@@ -2260,23 +2395,134 @@ where
     }
 }
 
+/// The `:protocol` of an Extended CONNECT request (RFC 8441 §4, RFC 9220 §3).
+fn extended_connect_protocol<T>(request: &HttpRequest<T>) -> Option<&Protocol> {
+    if request.method() == HttpMethod::CONNECT {
+        request.extensions().get_ref()
+    } else {
+        None
+    }
+}
+
+/// The upgrade `request` asks for, as an `Upgrade` field value: an Extended CONNECT's
+/// `:protocol`, else its own `Upgrade` lines.
+fn upgrade_token<T>(request: &HttpRequest<T>) -> Option<HeaderValue> {
+    match extended_connect_protocol(request) {
+        Some(protocol) => HeaderValue::from_str(protocol.as_str()).ok(),
+        None => upgrade_lines(request.headers()),
+    }
+}
+
+/// Every `Upgrade` line, as the one value they combine to.
+fn upgrade_lines(headers: &HeaderMap) -> Option<HeaderValue> {
+    let mut lines = headers.get_all(header::UPGRADE).iter();
+    let first = lines.next()?;
+    let mut combined = first.as_bytes().to_vec();
+    for line in lines {
+        combined.extend_from_slice(b", ");
+        combined.extend_from_slice(line.as_bytes());
+    }
+    HeaderValue::from_bytes(&combined).ok()
+}
+
+/// Whether `response` accepts the Extended CONNECT `request`: its HTTP/1.1 form is a
+/// `101 Switching Protocols` (RFC 8441 §5).
+fn switches_protocols<R, S>(request: &HttpRequest<R>, response: &HttpResponse<S>) -> bool {
+    extended_connect_protocol(request).is_some() && response.status().is_success()
+}
+
+/// The encapsulated form of `request`'s head: without hop-by-hop fields but `upgrade`, and an
+/// Extended CONNECT as the `GET` upgrade it stands for (RFC 8441 §5), as ICAP services expect.
 fn prepare_request_head<T>(
     request: &HttpRequest<T>,
+    upgrade: Option<HeaderValue>,
 ) -> (HttpRequest<()>, Vec<ForwardedIcapHeader>, Vec<HeaderName>) {
     let mut request = HttpRequest::from_parts(request.clone_parts(), ());
     let version = request.version();
     let (promoted, trailer_forbidden) =
         SanitizedHttpHead::take(request.headers_mut(), version).into_forwarded_and_nominated();
+    if extended_connect_protocol(&request).is_some() {
+        *request.method_mut() = HttpMethod::GET;
+    }
+    if let Some(upgrade) = upgrade {
+        request.headers_mut().insert(header::UPGRADE, upgrade);
+    }
     (request, promoted, trailer_forbidden)
 }
 
+/// The response to a CONNECT comes back as it was encapsulated: a `101` as its original status
+/// again, without upgrade fields; a 2xx only where the origin accepted, as it opens the tunnel.
+fn restore_connect_response(
+    adapted: &mut HttpResponse<()>,
+    original: &HttpResponse<()>,
+    switched: bool,
+) -> Result<(), Error> {
+    if switched && adapted.status() == HttpStatusCode::SWITCHING_PROTOCOLS {
+        *adapted.status_mut() = original.status();
+        let headers = adapted.headers_mut();
+        headers.remove(header::UPGRADE);
+        headers.remove(header::CONNECTION);
+        return Ok(());
+    }
+    if adapted.status().is_informational() {
+        return Err(Error::invalid_sequence(
+            "adapted CONNECT response is informational",
+        ));
+    }
+    if adapted.status().is_success() {
+        if switched {
+            // the `101` named the protocol a 2xx no longer does
+            return Err(Error::invalid_sequence(
+                "adapted Extended CONNECT acceptance is no longer a 101",
+            ));
+        }
+        if !original.status().is_success() {
+            return Err(Error::invalid_sequence(
+                "adapted CONNECT refusal opens a tunnel",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// An adapted Extended CONNECT comes back as the `GET` it was encapsulated as: it is a CONNECT
+/// again, without upgrade fields, as its original decides the protocol.
+fn restore_extended_connect(
+    adapted: &mut HttpRequest<()>,
+    original: &HttpRequest<()>,
+) -> Result<(), Error> {
+    if extended_connect_protocol(original).is_none() {
+        return Ok(());
+    }
+    if adapted.method() != HttpMethod::GET {
+        return Err(Error::invalid_sequence(
+            "adapted Extended CONNECT changed its method",
+        ));
+    }
+    *adapted.method_mut() = HttpMethod::CONNECT;
+    let headers = adapted.headers_mut();
+    headers.remove(header::UPGRADE);
+    headers.remove(header::CONNECTION);
+    Ok(())
+}
+
+/// The encapsulated form of `response`'s head: without hop-by-hop fields but `upgrade`, and the
+/// acceptance of an Extended CONNECT (`switching`) as the `101` it stands for (RFC 8441 §5).
 fn prepare_response_head<T>(
     response: &HttpResponse<T>,
+    upgrade: Option<HeaderValue>,
+    switching: bool,
 ) -> (HttpResponse<()>, Vec<ForwardedIcapHeader>, Vec<HeaderName>) {
     let mut response = HttpResponse::from_parts(response.clone_parts(), ());
     let version = response.version();
     let (promoted, trailer_forbidden) =
         SanitizedHttpHead::take(response.headers_mut(), version).into_forwarded_and_nominated();
+    if switching {
+        *response.status_mut() = HttpStatusCode::SWITCHING_PROTOCOLS;
+    }
+    if let Some(upgrade) = upgrade {
+        response.headers_mut().insert(header::UPGRADE, upgrade);
+    }
     (response, promoted, trailer_forbidden)
 }
 
@@ -2373,7 +2619,10 @@ impl OutgoingResponse {
         } else {
             EncapsulatedKind::RequestBody
         };
-        let (prepared, promoted, trailer_forbidden) = prepare_request_head(&request);
+        let upgrade =
+            UpgradeEncapsulation::default().tokens(Some(&request), None::<&HttpResponse<()>>);
+        let (prepared, promoted, trailer_forbidden) =
+            prepare_request_head(&request, upgrade.request);
         let encapsulated = Encapsulated::from_prepared_request(&prepared, body_kind)?;
         let headers = with_promoted_headers(headers, &promoted)?;
         let response = IcapResponse::new(MethodKind::Reqmod, line, &headers, Some(encapsulated))?;
@@ -2410,7 +2659,10 @@ impl OutgoingResponse {
         } else {
             EncapsulatedKind::ResponseBody
         };
-        let (prepared, promoted, trailer_forbidden) = prepare_response_head(&response);
+        let upgrade =
+            UpgradeEncapsulation::default().tokens(None::<&HttpRequest<()>>, Some(&response));
+        let (prepared, promoted, trailer_forbidden) =
+            prepare_response_head(&response, upgrade.response, false);
         let encapsulated = Encapsulated::from_prepared_response(&prepared, body_kind)?;
         let headers = with_promoted_headers(headers, &promoted)?;
         let response = IcapResponse::new(method, line, &headers, Some(encapsulated))?;
@@ -3438,7 +3690,8 @@ mod tests {
                 response: None,
                 body_kind: EncapsulatedKind::NullBody,
             }
-            .inherit_original_context(&OriginalHead::Request(original(original_uri)));
+            .inherit_original_context(&OriginalHead::Request(original(original_uri)))
+            .unwrap();
             assert_eq!(
                 parsed.request().unwrap().uri().to_string(),
                 expected,
@@ -3459,7 +3712,8 @@ mod tests {
             response: Some(HttpResponse::new(())),
             body_kind: EncapsulatedKind::NullBody,
         }
-        .inherit_original_context(&OriginalHead::Request(original));
+        .inherit_original_context(&OriginalHead::Request(original))
+        .unwrap();
 
         assert_eq!(
             parsed.request().unwrap().version(),

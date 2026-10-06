@@ -148,7 +148,7 @@ impl<S, H> JsonRequestRewrite<S, H> {
             inner,
             selectors: selectors.into_iter().collect(),
             handler,
-            policy: BodyRewritePolicy::unencoded_content_type(is_json_content_type),
+            policy: BodyRewritePolicy::unencoded_request_content_type(is_json_content_type),
             max_buffered_bytes: DEFAULT_MAX_BUFFERED_BYTES,
         }
     }
@@ -262,7 +262,7 @@ impl<H> JsonRequestRewriteLayer<H> {
         Self {
             selectors: selectors.into_iter().collect(),
             handler,
-            policy: BodyRewritePolicy::unencoded_content_type(is_json_content_type),
+            policy: BodyRewritePolicy::unencoded_request_content_type(is_json_content_type),
             max_buffered_bytes: DEFAULT_MAX_BUFFERED_BYTES,
         }
     }

@@ -3,6 +3,7 @@ use std::{fmt, str::FromStr, sync::OnceLock};
 use rama_core::telemetry::tracing;
 use rama_http_types::{
     HeaderName, HeaderValue,
+    header::content_type::extract_mime_type,
     mime::{self, Mime},
 };
 
@@ -446,9 +447,8 @@ impl TypedHeader for ContentType {
 
 impl HeaderDecode for ContentType {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
-        values
-            .next()
-            .and_then(|v| v.to_str().ok()?.parse().ok())
+        // As browsers read it, over every line (Fetch §3.5).
+        extract_mime_type(values)
             .map(Self::new)
             .ok_or_else(Error::invalid)
     }
@@ -503,9 +503,39 @@ impl FromStr for ContentType {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContentType, HeaderValue};
+    use super::{ContentType, HeaderValue, mime};
     use crate::HeaderDecode;
     use crate::common::{test_decode, test_encode};
+
+    #[test]
+    fn several_lines_decode_as_fetch_extracts_them() {
+        // The last type wins, inheriting the charset of an earlier one of the same essence.
+        for (lines, essence, charset, x) in [
+            (
+                &["text/html;charset=gbk", "text/html;x=y"][..],
+                "text/html",
+                Some("gbk"),
+                Some("y"),
+            ),
+            (
+                &["text/plain;x=1", "application/json"],
+                "application/json",
+                None,
+                None,
+            ),
+        ] {
+            let content_type = test_decode::<ContentType>(lines).unwrap();
+            let mime = content_type.mime();
+            assert_eq!(mime.essence_str(), essence, "{lines:?}");
+            assert_eq!(
+                mime.get_param(mime::CHARSET).map(|c| c.as_str()),
+                charset,
+                "{lines:?}"
+            );
+            assert_eq!(mime.get_param("x").map(|x| x.as_str()), x, "{lines:?}");
+        }
+        assert!(test_decode::<ContentType>(&["cannot-parse"]).is_none());
+    }
 
     #[test]
     fn jose_json_is_valid() {
