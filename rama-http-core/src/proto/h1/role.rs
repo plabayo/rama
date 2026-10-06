@@ -477,7 +477,7 @@ impl Http1Transaction for Server {
         let _extensions = std::mem::take(msg.head.extensions);
         let encoder =
             Self::encode_h1_headers(msg, close_delimited, dst, is_last, orig_len, wrote_len)?
-                .with_allowed_trailers(allowed_trailers);
+                .maybe_with_allowed_trailers(allowed_trailers);
         ret.map(|()| encoder)
     }
 
@@ -1352,7 +1352,7 @@ impl Client {
         let allowed_trailers = head.extensions.get_arc::<ForbiddenTrailers>();
         let encoder = encoder.map(|enc| {
             enc.with_nominated_fields(connection_header_names)
-                .with_allowed_trailers(allowed_trailers)
+                .maybe_with_allowed_trailers(allowed_trailers)
         });
 
         // This is because we need a second mutable borrow to remove

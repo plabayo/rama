@@ -101,20 +101,24 @@ impl Encoder {
         Self::new(Kind::CloseDelimited)
     }
 
-    /// Keep the fields `Connection` nominates out of a chunked message's trailers.
-    pub(crate) fn with_nominated_fields(mut self, nominated: ConnectionHeaderNames) -> Self {
-        if let Kind::Chunked(trailers) = &mut self.kind {
-            trailers.nominated = nominated;
+    rama_utils::macros::generate_set_and_with! {
+        /// Keep the fields `Connection` nominates out of a chunked message's trailers.
+        pub(crate) fn nominated_fields(mut self, nominated: ConnectionHeaderNames) -> Self {
+            if let Kind::Chunked(trailers) = &mut self.kind {
+                trailers.nominated = nominated;
+            }
+            self
         }
-        self
     }
 
-    /// Send the trailer fields `allowed` opts in, as well as those allowed in trailers.
-    pub(crate) fn with_allowed_trailers(mut self, allowed: Option<Arc<ForbiddenTrailers>>) -> Self {
-        if let Kind::Chunked(trailers) = &mut self.kind {
-            trailers.allowed = allowed;
+    rama_utils::macros::generate_set_and_with! {
+        /// Send the trailer fields `allowed` opts in, as well as those allowed in trailers.
+        pub(crate) fn allowed_trailers(mut self, allowed: Option<Arc<ForbiddenTrailers>>) -> Self {
+            if let Kind::Chunked(trailers) = &mut self.kind {
+                trailers.allowed = allowed;
+            }
+            self
         }
-        self
     }
 
     pub(crate) fn is_eof(&self) -> bool {
@@ -585,17 +589,16 @@ mod tests {
         let trailers = fields.iter().map(|name| (name.as_str(), "header data"));
         assert_eq!(encode(&Encoder::chunked(), trailers.clone()), None);
 
-        let all =
-            Encoder::chunked().with_allowed_trailers(Some(Arc::new(ForbiddenTrailers::AllowAll)));
+        let all = Encoder::chunked().with_allowed_trailers(Arc::new(ForbiddenTrailers::AllowAll));
         let sent = String::from_utf8(encode(&all, trailers.clone()).unwrap()).unwrap();
         for name in &fields {
             let framing = [CONTENT_LENGTH, HOST, TRANSFER_ENCODING, TE].contains(name);
             assert_eq!(!sent.contains(&format!("{name}:")), framing, "{name}");
         }
 
-        let only = Encoder::chunked().with_allowed_trailers(Some(Arc::new(
+        let only = Encoder::chunked().with_allowed_trailers(Arc::new(
             ForbiddenTrailers::AllowSome([SET_COOKIE, HOST].into()),
-        )));
+        ));
         assert_eq!(
             encode(&only, trailers).as_deref(),
             Some(&b"0\r\nset-cookie: header data\r\n\r\n"[..])
