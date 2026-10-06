@@ -31,13 +31,19 @@ process binds QUIC on UDP `0.0.0.0:443` (`--h3-bind`) and advertises it with
 `Alt-Svc: h3=":443"` on its TLS responses. Fly.io constrains this:
 
 - UDP needs a dedicated IPv4 address; every app above has one.
-- Fly.io does not rewrite UDP ports, so the internal port is the public one. The
-  image grants `/app/rama` `cap_net_bind_service` to bind it as uid 1000.
+- Fly.io does not rewrite UDP ports, so the internal port is the public one.
+  `deployments/Dockerfile.h3` adds `cap_net_bind_service` to `/app/rama` in the
+  published image, so it binds 443 as uid 1000. Fly.io builds it at deploy time,
+  from the image digest that CI's run published or `geoip_sync.sh` resolved.
 - Replies must leave from the address the client's packets were sent to; Fly.io
   documents a `fly-global-services` bind for that. Rama's QUIC endpoint already
   replies from each packet's destination address, so it binds the wildcard.
-- There is no public UDP over IPv6: `ipv6` serves h1 and h2 only.
+- There is no public UDP over IPv6: `ipv6` serves h1 and h2 only, and IPv6
+  clients of the other apps fall back from h3 to TCP.
 - No PROXY protocol for UDP: QUIC sees the client address Fly.io maps through.
+- A client asking for a certificate the issuer has not cached first gets a Retry.
+  Its token is sealed with a key of the running process, so each app keeps one
+  Machine per process group.
 
 `fp` stays on h1 and h2 (`--http-version h1,h2`) until its UA profiles collect
 HTTP/3: advertising it would move browsers to h3 for follow-up requests, whose

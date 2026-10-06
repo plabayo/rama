@@ -226,12 +226,27 @@ provision_app() {
   fi
 }
 
-# deploy app $1 using its checked-in fly.toml (rama-ipv4 -> deployments/ipv4)
+# digest of the published rama image, so a builder's cached `edge` is never deployed
+rama_image_digest() {
+  local token digest
+  token="$(curl -fsS "https://auth.docker.io/token?service=registry.docker.io&scope=repository:glendc/rama:pull" \
+    | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+  digest="$(curl -fsSI -H "Authorization: Bearer $token" \
+    -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" \
+    "https://registry-1.docker.io/v2/glendc/rama/manifests/edge" \
+    | tr -d '\r' | sed -n 's/^docker-content-digest: //Ip')"
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+  printf '%s\n' "$digest"
+}
+
+# deploy app $1 using its checked-in fly.toml (rama-ipv4 -> deployments/ipv4); its
+# directory is the build context of the apps that build `Dockerfile.h3`
 deploy_app() {
-  local app="$1" cfg="$DEPLOY_DIR/${1#rama-}/fly.toml"
-  [ -f "$cfg" ] || { warn "[$app] no fly.toml at $cfg"; return 1; }
+  local app="$1" dir="$DEPLOY_DIR/${1#rama-}"
+  [ -f "$dir/fly.toml" ] || { warn "[$app] no fly.toml in $dir"; return 1; }
   log "[$app] deploying"
-  retry fly deploy -c "$cfg" -a "$app" --ha=false --yes \
+  retry fly deploy "$dir" -c "$dir/fly.toml" -a "$app" --ha=false --yes \
+    --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST" \
     || { warn "[$app] deploy failed after $RETRY_MAX attempts"; return 1; }
 }
 
@@ -303,7 +318,8 @@ cmd_rollout() {
     parallel_map "$DEPLOY_CONCURRENCY" scale_app $FLY_APPS;       check_phase scale
     log "provisioning volumes: $FLY_APPS"
     parallel_map 8 provision_app $FLY_APPS;                       check_phase provision
-    log "deploying mounts (cap $DEPLOY_CONCURRENCY): $FLY_APPS"
+    RAMA_DIGEST="$(rama_image_digest)" || die "cannot resolve the glendc/rama:edge digest"
+    log "deploying mounts (cap $DEPLOY_CONCURRENCY, glendc/rama@$RAMA_DIGEST): $FLY_APPS"
     parallel_map "$DEPLOY_CONCURRENCY" deploy_app $FLY_APPS;      check_phase deploy
     log "pushing databases to all machines (cap $PUSH_CONCURRENCY)"
     parallel_map "$PUSH_CONCURRENCY" push_one $(all_machine_jobs); check_phase push

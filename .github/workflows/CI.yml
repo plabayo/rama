@@ -1544,9 +1544,11 @@ jobs:
       - run: |
           cd rama-fp/infra/deployments/ipv4
           flyctl scale count app_secure=1 app_insecure=1 --yes
-          flyctl deploy --verbose --remote-only --ha=false
+          flyctl deploy --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          # The image this run published, not whatever `edge` a builder has cached.
+          RAMA_DIGEST: ${{ needs.deploy-rama-cli-docker.outputs.rama-digest }}
 
   deploy-rama-ip-ipv6-fly:
     permissions:
@@ -1578,9 +1580,11 @@ jobs:
       - run: |
           cd rama-fp/infra/deployments/echo
           flyctl scale count app_secure=1 app_insecure=1 --yes
-          flyctl deploy --verbose --remote-only --ha=false
+          flyctl deploy --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          # The image this run published, not whatever `edge` a builder has cached.
+          RAMA_DIGEST: ${{ needs.deploy-rama-cli-docker.outputs.rama-digest }}
 
   deploy-rama-http-test-fly:
     permissions:
@@ -1595,6 +1599,8 @@ jobs:
       - run: |
           cd rama-fp/infra/deployments/http-test
           flyctl scale count app_secure=1 app_insecure=1 --yes
-          flyctl deploy --verbose --remote-only --ha=false
+          flyctl deploy --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          # The image this run published, not whatever `edge` a builder has cached.
+          RAMA_DIGEST: ${{ needs.deploy-rama-cli-docker.outputs.rama-digest }}

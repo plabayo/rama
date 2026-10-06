@@ -12,7 +12,7 @@ app_secure = "serve echo --bind 0.0.0.0:8443 -c 2048 -t 300 --rate 100 --throttl
 app_insecure = "serve echo --bind 0.0.0.0:8080 -c 2048 -t 300 --rate 100 --throttle 1048576 -f haproxy --ws --mode http"
 
 [build]
-image = 'glendc/rama:edge'
+dockerfile = '../Dockerfile.h3'
 
 [env]
   RUST_LOG = 'info'

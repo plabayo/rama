@@ -12,7 +12,7 @@ app_secure = "serve ip --bind 0.0.0.0:8443 -c 2048 --rate 100 --throttle 1048576
 app_insecure = "serve ip --bind 0.0.0.0:8080 -c 2048 --rate 100 --throttle 1048576 -f haproxy"
 
 [build]
-image = 'glendc/rama:edge'
+dockerfile = '../Dockerfile.h3'
 
 [env]
 RUST_LOG = 'info'
