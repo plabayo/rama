@@ -30,7 +30,7 @@ default = []
 # [dial9]: https://github.com/dial9-rs/dial9
 dial9 = ["dep:dial9", "dep:dial9-trace-format", "rama-core/dial9"]
 
-[dependencies]
+[target.'cfg(target_vendor = "apple")'.dependencies]
 atomic-waker = { workspace = true }
 dial9 = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }

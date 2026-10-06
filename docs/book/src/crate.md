@@ -135,7 +135,8 @@ toolchain; the `just` recipes select it automatically.
 
 ### Tier 2 Platforms
 
-Tier 2 platforms run `cargo check` and also `cargo build` tests.
+Tier 2 platforms run `cargo check` for the `rama` crate across a range of
+feature combinations, and also `cargo build` its tests (`just check-tier2 <target>`).
 These platforms do however not run tests, let alone integration tests.
 
 Some users of rama do run actual Rama production code on these platforms.

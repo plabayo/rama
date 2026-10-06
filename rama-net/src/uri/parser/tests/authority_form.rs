@@ -470,10 +470,9 @@ mod path_match {
         ] {
             for path in cases {
                 for pat in patterns {
-                    let u = uri(&format!("http://h{path}"));
+                    let mut u = uri(&format!("http://h{path}"));
                     let has = u.has_path_prefix_with_opts(pat, opts);
-                    let mut s = u.clone();
-                    let stripped = s.path_mut().strip_prefix_with_opts(pat, opts);
+                    let stripped = u.path_mut().strip_prefix_with_opts(pat, opts);
                     assert_eq!(
                         has, stripped,
                         "disagree for path={path:?} pat={pat:?} opts={opts:?}"

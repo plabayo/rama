@@ -565,7 +565,7 @@ mod tests {
                 let mut response = response(version);
                 response
                     .headers_mut()
-                    .insert(name.clone(), HeaderValue::from_static("5"));
+                    .insert(name, HeaderValue::from_static("5"));
                 validate_capsule_response(version, &TOKEN, &response, ViolationPolicy::Ignore)
                     .unwrap();
             }

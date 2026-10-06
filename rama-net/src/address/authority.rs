@@ -1074,7 +1074,7 @@ mod tests {
             assert_eq(
                 s,
                 s.as_bytes().to_vec().try_into().expect(&msg),
-                expected_user_info.clone(),
+                expected_user_info,
                 expected_host,
                 expected_port,
             );
