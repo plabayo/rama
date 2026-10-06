@@ -24,7 +24,11 @@ use rama_core::{
     layer::{ArcLayer, MapOutputLayer},
     rt::Executor,
 };
-use rama_http::{HeaderValue, Response, header, layer::map_response_body::MapResponseBodyLayer};
+use rama_http::{
+    HeaderValue, Response,
+    header::{self, trailer::ForbiddenTrailers},
+    layer::map_response_body::MapResponseBodyLayer,
+};
 use rama_http_backend::proxy::mitm::HttpMitmRelay;
 use rama_net::test_utils::client::MockSocket;
 use tokio::{
@@ -106,7 +110,19 @@ impl Relay {
         Self::with_configuration(true, |resp| resp)
     }
 
+    fn with_forbidden_trailers(forbidden_trailers: ForbiddenTrailers) -> Self {
+        Self::with_relay(false, |resp| resp, Some(forbidden_trailers))
+    }
+
     fn with_configuration(default_middleware: bool, transform: fn(Response) -> Response) -> Self {
+        Self::with_relay(default_middleware, transform, None)
+    }
+
+    fn with_relay(
+        default_middleware: bool,
+        transform: fn(Response) -> Response,
+        forbidden_trailers: Option<ForbiddenTrailers>,
+    ) -> Self {
         let (client, ingress) = tokio::io::duplex(4096);
         let (egress, upstream) = tokio::io::duplex(4096);
         let (fail_upstream, fail) = oneshot::channel();
@@ -119,7 +135,10 @@ impl Relay {
                     failed: false,
                 }),
             );
-            let relay = HttpMitmRelay::new(Executor::new());
+            let mut relay = HttpMitmRelay::new(Executor::new());
+            if let Some(forbidden_trailers) = forbidden_trailers {
+                relay.set_forbidden_trailers(forbidden_trailers);
+            }
             if default_middleware {
                 relay.serve(io).await
             } else {
@@ -285,6 +304,72 @@ async fn assert_eof(io: &mut BufReader<DuplexStream>) {
         0,
         "unexpected trailing bytes"
     );
+}
+
+/// The trailer section of a chunked body on the wire, lowercased, without its final empty line.
+async fn read_chunked_trailers(io: &mut BufReader<DuplexStream>) -> String {
+    timeout(WATCHDOG, async {
+        loop {
+            let mut line = String::new();
+            io.read_line(&mut line).await.unwrap();
+            let size = line.trim_end().split(';').next().unwrap();
+            let size = usize::from_str_radix(size, 16).unwrap();
+            if size == 0 {
+                break;
+            }
+            read_bytes(io, size + 2).await;
+        }
+        let mut trailers = String::new();
+        loop {
+            let mut line = String::new();
+            io.read_line(&mut line).await.unwrap();
+            if line == "\r\n" {
+                return trailers.to_ascii_lowercase();
+            }
+            trailers.push_str(&line);
+        }
+    })
+    .await
+    .expect("trailers stalled")
+}
+
+/// A relay forwards trailers as received by default, never fields that frame the message.
+#[tokio::test(start_paused = true)]
+async fn relayed_trailers_keep_forbidden_fields_but_never_framing() {
+    for (forbidden_trailers, set_cookie) in
+        [(None, true), (Some(ForbiddenTrailers::DenyAll), false)]
+    {
+        let mut relay = match forbidden_trailers {
+            Some(forbidden_trailers) => Relay::with_forbidden_trailers(forbidden_trailers),
+            None => Relay::new(),
+        };
+        // An HTTP/1.1 server sends trailers only to a client that asks for them.
+        write(
+            relay.client.get_mut(),
+            b"GET / HTTP/1.1\r\nHost: example.test\r\nTE: trailers\r\nConnection: TE\r\n\r\n",
+        )
+        .await;
+        let forwarded = read_head(&mut relay.upstream).await;
+        assert!(forwarded.starts_with("GET / HTTP/1.1\r\n"), "{forwarded}");
+        let head = relay
+            .response_head("1.1", "Transfer-Encoding: chunked\r\n")
+            .await;
+        assert_framing(&head, "1.1", true, None);
+        write(
+            relay.upstream.get_mut(),
+            b"4\r\nbody\r\n0\r\nSet-Cookie: a=b\r\nContent-Length: 9\r\nX-Checksum: abc\r\n\r\n",
+        )
+        .await;
+        let trailers = read_chunked_trailers(&mut relay.client).await;
+        assert_eq!(
+            trailers.contains("set-cookie: a=b\r\n"),
+            set_cookie,
+            "{trailers:?}"
+        );
+        assert!(trailers.contains("x-checksum: abc\r\n"), "{trailers:?}");
+        assert!(!trailers.contains("content-length"), "{trailers:?}");
+        relay.finish(false).await;
+    }
 }
 
 #[tokio::test(start_paused = true)]

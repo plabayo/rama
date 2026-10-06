@@ -20,7 +20,7 @@ use rama_core::{
 use rama_http::{
     Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
     conn::{H2ServerContextParams, TargetHttpVersion},
-    header,
+    header::{self, trailer::ForbiddenTrailers},
     io::upgrade::OnUpgrade,
     layer::remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
     service::web::response::IntoResponse,
@@ -171,6 +171,7 @@ pub struct HttpMitmRelay<M = DefaultMiddleware> {
     middleware: M,
     exec: Executor,
     eager_peer_settings_timeout: Duration,
+    forbidden_trailers: ForbiddenTrailers,
 }
 
 impl HttpMitmRelay {
@@ -194,6 +195,7 @@ impl HttpMitmRelay {
             ),
             exec,
             eager_peer_settings_timeout: DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT,
+            forbidden_trailers: ForbiddenTrailers::AllowAll,
         }
     }
 
@@ -209,6 +211,7 @@ impl HttpMitmRelay {
             middleware,
             exec: self.exec,
             eager_peer_settings_timeout: self.eager_peer_settings_timeout,
+            forbidden_trailers: self.forbidden_trailers,
         }
     }
 }
@@ -246,6 +249,16 @@ impl<M> HttpMitmRelay<M> {
         /// the egress IO carries `TargetHttpVersion(HTTP_2)`.
         pub fn eager_peer_settings_timeout(mut self, timeout: Duration) -> Self {
             self.eager_peer_settings_timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Which trailer fields the relay forwards although their definitions do not allow
+        /// them in trailers. Defaults to [`ForbiddenTrailers::AllowAll`]: a relay forwards
+        /// trailers as received, except fields that frame or route the message.
+        pub fn forbidden_trailers(mut self, forbidden_trailers: ForbiddenTrailers) -> Self {
+            self.forbidden_trailers = forbidden_trailers;
             self
         }
     }
@@ -348,11 +361,14 @@ where
             )))
         };
 
+        let forbidden_trailers = self.forbidden_trailers.clone();
         let result = self
             .http_server
             .serve_with_graceful_shutdown(
                 GracefulIo::new(token.clone().cancelled_owned(), ingress_stream),
                 service_fn(move |req: Request| {
+                    // Inherited by the forwarded request and the upstream's response.
+                    req.extensions().insert(forbidden_trailers.clone());
                     let relay_state = relay_state.clone();
                     let close_ingress = token.clone();
                     let guard = request_guard.clone();

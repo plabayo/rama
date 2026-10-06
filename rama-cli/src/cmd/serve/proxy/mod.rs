@@ -41,6 +41,7 @@ use rama::{
     http::{
         BodyLimitLayer, Method, Request, Response, StatusCode,
         client::EasyHttpWebClient,
+        header::trailer::ForbiddenTrailers,
         inspect::{control, mitm_policy},
         layer::{
             compression::{MirrorDecompressed, stream::StreamCompressionLayer},
@@ -1920,6 +1921,8 @@ where
                 return dashboard.serve(request).await;
             }
             if proxy_enabled {
+                // A proxy forwards trailers as received, except fields that frame the message.
+                request.extensions().insert(ForbiddenTrailers::AllowAll);
                 proxy.serve(request).await
             } else {
                 Ok(StatusCode::NOT_FOUND.into_response())
