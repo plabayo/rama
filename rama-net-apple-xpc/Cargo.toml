@@ -25,17 +25,15 @@ ignored = ["bindgen"]
 [features]
 default = []
 
-[dependencies]
+[target.'cfg(target_vendor = "apple")'.dependencies]
 ahash = { workspace = true }
+block2 = { workspace = true }
 parking_lot = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync"] }
-
-[target.'cfg(target_vendor = "apple")'.dependencies]
-block2 = { workspace = true }
 
 [build-dependencies]
 bindgen = { workspace = true }

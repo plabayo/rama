@@ -367,7 +367,6 @@ allow_attributes = "warn"
 
 # Style / readability — pattern-match exhaustiveness, idiomatic borrowing,
 # `Self` usage, format-string hygiene, etc.
-empty_enums = "warn"
 enum_glob_use = "warn"
 equatable_if_let = "warn"
 filter_map_next = "warn"

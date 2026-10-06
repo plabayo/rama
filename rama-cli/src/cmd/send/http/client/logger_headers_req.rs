@@ -5,7 +5,7 @@ use rama::{
         Request, Version,
         proto::{
             ext,
-            h2::{PseudoHeader, PseudoHeaderOrder},
+            h2::{PseudoHeader, PseudoHeaderOrder, frame::Pseudo},
         },
     },
 };
@@ -49,38 +49,16 @@ where
                             PseudoHeader::Protocol,
                         ])
                     });
+                // Pseudo-header values as `Pseudo::request` derives them, not the raw URI parts.
+                let pseudo = Pseudo::request(
+                    req.method().clone(),
+                    req.uri(),
+                    req.extensions().get_ref::<ext::Protocol>().cloned(),
+                );
                 for header in pseudo_headers.iter() {
-                    eprintln!(
-                        "* [{:?}] [{}: {}]",
-                        req.version(),
-                        header,
-                        match header {
-                            PseudoHeader::Method => {
-                                req.method().to_string()
-                            }
-                            PseudoHeader::Scheme => {
-                                req.uri()
-                                    .scheme()
-                                    .map(|p| p.as_str().to_owned())
-                                    .unwrap_or_else(|| "?".to_owned())
-                            }
-                            PseudoHeader::Authority => {
-                                req.uri()
-                                    .authority()
-                                    .map(|a| a.to_string())
-                                    .unwrap_or_else(|| "?".to_owned())
-                            }
-                            PseudoHeader::Path => req.uri().path_or_root().into_owned(),
-                            PseudoHeader::Status => "<???>".to_owned(),
-                            PseudoHeader::Protocol => {
-                                if let Some(proto) = req.extensions().get_ref::<ext::Protocol>() {
-                                    proto.as_str().to_owned()
-                                } else {
-                                    continue;
-                                }
-                            }
-                        }
-                    );
+                    if let Some(value) = pseudo.value(header) {
+                        eprintln!("* [{:?}] [{header}: {value}]", req.version());
+                    }
                 }
             }
 

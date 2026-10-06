@@ -79,3 +79,6 @@ pub use client_hints::{
     AcceptCh, ClientHint, CriticalCh, Downlink, Ect, Rtt, SaveData,
     all_client_hint_header_name_strings, all_client_hint_header_names, all_client_hints,
 };
+
+#[cfg(test)]
+mod tests;

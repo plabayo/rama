@@ -149,13 +149,20 @@ mod test {
         let service =
             WebService::default().with_post("/", async |Csv(_): Csv<Vec<Input>>| StatusCode::OK);
 
-        let req = rama_http_types::Request::builder()
-            .method(rama_http_types::Method::POST)
-            .header(rama_http_types::header::CONTENT_TYPE, "text/plain")
-            .body(r#"{"name": "glen", "age": 42}"#.into())
-            .unwrap();
-        let resp = service.serve(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        // The second is `text/plain` to the CORS safelist.
+        for content_type in ["text/plain", "text/plain;,text/csv"] {
+            let req = rama_http_types::Request::builder()
+                .method(rama_http_types::Method::POST)
+                .header(rama_http_types::header::CONTENT_TYPE, content_type)
+                .body(r#"{"name": "glen", "age": 42}"#.into())
+                .unwrap();
+            let resp = service.serve(req).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "{content_type}"
+            );
+        }
     }
 
     #[tokio::test]

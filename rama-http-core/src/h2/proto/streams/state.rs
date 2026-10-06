@@ -414,6 +414,25 @@ impl State {
         )
     }
 
+    /// Returns true when the stream is in a state to send headers
+    pub(super) fn is_send_headers(&self) -> bool {
+        matches!(
+            self.inner,
+            Inner::Idle
+                | Inner::Open {
+                    local: Peer::AwaitingHeaders,
+                    ..
+                }
+                | Inner::HalfClosedRemote(Peer::AwaitingHeaders)
+                | Inner::ReservedLocal
+        )
+    }
+
+    /// Returns true when the stream may carry a PUSH_PROMISE (RFC 9113 §8.4)
+    pub(super) fn is_push_open(&self) -> bool {
+        matches!(self.inner, Inner::Open { .. } | Inner::HalfClosedRemote(..))
+    }
+
     pub(super) fn is_recv_streaming(&self) -> bool {
         matches!(
             self.inner,

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use parking_lot::{Condvar, Mutex};
 use rama_core::error::{ErrorExt as _, extra::OpaqueError};
 use rama_core::{Layer, Service, service::service_fn};
-use rama_js::JsRuntime;
+use rama_js::{JsRuntime, JsRuntimeBuilder};
 use rama_net::uri::Uri;
 use rama_pac::{
     PacDirective, PacResolver, PacScript, PacScriptCacheLayer, PacUrlSanitize, StaticPacScript,
@@ -363,20 +363,34 @@ async fn a_runaway_script_is_bounded_and_the_worker_recovers() {
     assert_eq!(directives.as_slice(), [PacDirective::Direct]);
 }
 
-/// A spinning script poisons its worker on the execution time limit; the
-/// loop-iteration limit is off so nothing else cuts the call short first.
-fn spinning_resolver_builder(loads: &Arc<AtomicUsize>, limit: Duration) -> rama_pac::PacResolver {
+/// A script whose entry point never returns.
+const SPINNING_SCRIPT: &str = "countLoad(); function FindProxyForURL(u, h) { while (true) {} }";
+
+fn counting_runtime(loads: &Arc<AtomicUsize>) -> JsRuntimeBuilder {
     let counter = loads.clone();
-    let runtime = JsRuntime::builder()
-        .maybe_with_loop_iteration_limit(None)
-        .with_fn("countLoad", move || {
-            counter.fetch_add(1, Ordering::SeqCst);
-        });
+    JsRuntime::builder().with_fn("countLoad", move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    })
+}
+
+/// Each call spins until `limit`, a wall-clock bound, stops it: the loop iteration limit is
+/// off, so nothing else cuts it short first.
+fn spinning_resolver_builder(loads: &Arc<AtomicUsize>, limit: Duration) -> rama_pac::PacResolver {
     #[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
     PacResolver::builder()
-        .with_runtime(runtime)
+        .with_runtime(counting_runtime(loads).maybe_with_loop_iteration_limit(None))
         .with_execution_time_limit(limit)
-        .build_static("countLoad(); function FindProxyForURL(u, h) { while (true) {} }")
+        .build_static(SPINNING_SCRIPT)
+        .expect("build resolver")
+}
+
+/// Each call spins until the loop iteration limit stops it: unlike a wall-clock bound, no
+/// CPU starvation can make it stop the script's load instead.
+fn fuel_spinning_resolver(loads: &Arc<AtomicUsize>) -> rama_pac::PacResolver {
+    #[expect(clippy::expect_used, reason = "test helper outside a #[test] fn")]
+    PacResolver::builder()
+        .with_runtime(counting_runtime(loads))
+        .build_static(SPINNING_SCRIPT)
         .expect("build resolver")
 }
 
@@ -435,7 +449,7 @@ async fn concurrent_lookups_share_one_respawned_worker() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_script_that_keeps_killing_its_worker_is_never_rejected() {
     let loads = Arc::new(AtomicUsize::new(0));
-    let resolver = spinning_resolver_builder(&loads, Duration::from_millis(100));
+    let resolver = fuel_spinning_resolver(&loads);
 
     let lookups = PacResolver::MAX_WORKER_SPAWNS_PER_WINDOW + 4;
     for _ in 0..lookups {
@@ -449,18 +463,20 @@ async fn a_script_that_keeps_killing_its_worker_is_never_rejected() {
         assert!(!err.contains("rejected"), "{err}");
     }
 
-    // this runaway is bytecode, so the execution limit stops it and the
+    // this runaway is bytecode, so the loop iteration limit stops it and the
     // worker exits: nothing accumulates, and rebuilding per lookup is the
     // right answer — the leak cap covers the workers that cannot be stopped
     // (see `a_script_wedging_every_load_stops_costing_workers`)
     let loads = loads.load(Ordering::SeqCst);
     assert!(loads > 0, "the script was never given a worker at all");
+    let err = resolver
+        .find_proxy(&uri("http://example.com/"))
+        .await
+        .expect_err("a script that never returns cannot resolve");
+    let err = format!("{err} {err:?}");
     assert!(
-        resolver
-            .find_proxy(&uri("http://example.com/"))
-            .await
-            .is_err(),
-        "the resolver must still be answering, not cooling down",
+        !err.contains("cooling down"),
+        "the resolver must still be answering, not cooling down: {err}",
     );
 }
 

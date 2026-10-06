@@ -55,7 +55,6 @@ rama-quic-proto = { workspace = true }
 rama-utils = { workspace = true, features = ["std"] }
 slab = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
-tokio-test = { workspace = true }
 want = { workspace = true }
 
 [dev-dependencies]
@@ -66,6 +65,7 @@ rama-tls = { workspace = true }
 rama-udp = { workspace = true, features = ["test-utils"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net"] }
 tokio-rustls = { workspace = true }
+tokio-test = { workspace = true }
 tracing-test = { workspace = true }
 webpki-roots = { workspace = true }
 

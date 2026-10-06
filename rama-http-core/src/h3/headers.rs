@@ -92,7 +92,7 @@ fn validate_value(value: &HeaderValue) -> Result<(), Error> {
 
 fn validate_name(name: &HeaderName, value: &[u8], trailers: bool) -> Result<(), Error> {
     if header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS.contains(&name)
-        || (*name == header::TE && (trailers || !value.eq_ignore_ascii_case(b"trailers")))
+        || (*name == header::TE && (trailers || !header::hop_by_hop::is_te_trailers(value)))
     {
         return Err(malformed("connection-specific field"));
     }

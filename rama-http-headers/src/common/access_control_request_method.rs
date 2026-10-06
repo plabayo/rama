@@ -1,7 +1,7 @@
 use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue, Method};
 
-use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util::single_value};
 
 /// `Access-Control-Request-Method` header, as defined on
 /// [mdn](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Access-Control-Request-Method).
@@ -36,11 +36,11 @@ impl TypedHeader for AccessControlRequestMethod {
 
 impl HeaderDecode for AccessControlRequestMethod {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
-        values
-            .next()
-            .and_then(|value| Method::from_bytes(value.as_bytes()).ok())
+        // One method (Fetch §3.2.3): a second line is refused.
+        let value = single_value(values)?;
+        Method::from_bytes(value.as_bytes())
             .map(AccessControlRequestMethod)
-            .ok_or_else(Error::invalid)
+            .map_err(|_err| Error::invalid())
     }
 }
 

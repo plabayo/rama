@@ -22,6 +22,17 @@
 //! Each resolution trait also carries **default methods** built on its one
 //! required accessor (e.g. [`AuthorityInputExt::host_as_domain`]), so callers
 //! get ergonomic projections without re-writing the same closure chains.
+//!
+//! # Which one to use
+//!
+//! An HTTP request has two views of its target resource (RFC 9110 §7.1). The plain
+//! accessors, [`authority`](AuthorityInputExt::authority) and
+//! [`protocol`](ProtocolInputExt::protocol), say what the end client asked for and may come
+//! from `Forwarded` context: use them for routing, policy and logs. The `target_*` ones,
+//! [`target_authority`](AuthorityInputExt::target_authority) and
+//! [`target_protocol`](ProtocolInputExt::target_protocol), say what this hop dials, names in
+//! TLS SNI and keys its connection pool by, and never read forwarded context. `http_version`
+//! and `target_http_version` split the same way.
 
 use crate::Protocol;
 

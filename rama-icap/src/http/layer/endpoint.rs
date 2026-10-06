@@ -21,7 +21,7 @@ use crate::{
     codec::{
         Header, InvalidHeader, ParseError as IcapParseError, RequestLineSource, validate_icap_uri,
     },
-    http::{ReplayLimits, headers::ForwardedIcapHeader},
+    http::{ReplayLimits, UpgradeEncapsulation, headers::ForwardedIcapHeader},
     message::{BuildError, EncapsulatedParts, Request},
     proto::{Method, Preview, header},
 };
@@ -135,6 +135,7 @@ pub struct ServiceEndpoint {
     allow_206: bool,
     allow_icap_trailers: bool,
     replay_limits: ReplayLimits,
+    upgrade_encapsulation: UpgradeEncapsulation,
     headers: HeaderMap,
     extensions: Extensions,
     options_partition: OptionsCachePartition,
@@ -153,6 +154,7 @@ impl fmt::Debug for ServiceEndpoint {
             .field("allow_206", &self.allow_206)
             .field("allow_icap_trailers", &self.allow_icap_trailers)
             .field("replay_limits", &self.replay_limits)
+            .field("upgrade_encapsulation", &self.upgrade_encapsulation)
             .field("header_count", &self.headers.len())
             .finish_non_exhaustive()
     }
@@ -188,6 +190,7 @@ impl ServiceEndpoint {
             allow_206: false,
             allow_icap_trailers: false,
             replay_limits: ReplayLimits::new(),
+            upgrade_encapsulation: UpgradeEncapsulation::default(),
             headers: HeaderMap::new(),
             extensions: Extensions::new(),
             options_partition: OptionsCachePartition::new(),
@@ -283,6 +286,20 @@ impl ServiceEndpoint {
         self.reset_options_request();
         self.extensions = self.extensions.fork();
         self.extensions.insert_arc(value)
+    }
+
+    generate_set_and_with! {
+        /// Set how encapsulated heads carry a protocol upgrade.
+        pub const fn upgrade_encapsulation(mut self, encapsulation: UpgradeEncapsulation) -> Self {
+            self.upgrade_encapsulation = encapsulation;
+            self
+        }
+    }
+
+    /// Return how encapsulated heads carry a protocol upgrade.
+    #[must_use]
+    pub const fn upgrade_encapsulation(&self) -> UpgradeEncapsulation {
+        self.upgrade_encapsulation
     }
 
     generate_set_and_with! {

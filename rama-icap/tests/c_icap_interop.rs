@@ -21,13 +21,15 @@ use tokio::net::TcpStream;
 use {
     rama_core::{Layer as _, Service as _, service::service_fn},
     rama_http_types::{
-        Body, Request as HttpRequest, Response as HttpResponse,
+        Body, Method as HttpMethod, Request as HttpRequest, Response as HttpResponse, Version,
         body::{Frame, util::BodyExt as _},
+        proto::ext::Protocol as UpgradeProtocol,
     },
     rama_icap::{
         client::options::{MethodSupport, OptionsCacheLayer, OptionsService, TransferDisposition},
         http::{
             ClientRequest as HttpClientRequest, Encapsulated as HttpEncapsulated,
+            UpgradeEncapsulation,
             layer::{AdaptationLayer, ReqmodResult, RespmodResult, ServiceEndpoint},
         },
         io::BodyEnd,
@@ -1071,6 +1073,66 @@ async fn http_layer_detours_through_c_icap() {
         response.into_body().collect().await.unwrap().to_bytes(),
         "layer response",
     );
+}
+
+#[cfg(feature = "http")]
+#[tokio::test]
+#[ignore = "requires the pinned c-icap Docker oracle"]
+async fn http_layer_detours_extended_connect_through_c_icap() {
+    let Some(echo_addr) = oracle_addr("RAMA_ICAP_ORACLE_ECHO_ADDR") else {
+        return;
+    };
+    for encapsulation in [UpgradeEncapsulation::Keep, UpgradeEncapsulation::Omit] {
+        let connector = service_fn(async |input: ConnectRequest| {
+            let stream = TcpStream::connect(input.authority.to_string())
+                .await
+                .map_err(|error| {
+                    ConnectionError::transport(error, ConnectionErrorKind::Unavailable)
+                })?;
+            Ok::<_, ConnectionError>(EstablishedClientConnection {
+                input,
+                conn: c_icap_connection(stream),
+            })
+        });
+        let endpoint = ServiceEndpoint::new(format!("icap://{echo_addr}/echo"))
+            .unwrap()
+            .with_upgrade_encapsulation(encapsulation);
+        let inner = service_fn(async |request: HttpRequest<Body>| {
+            // c-icap echoes the GET upgrade; rama restores the HTTP/2 Extended CONNECT.
+            assert!(request.extensions().contains::<ReqmodResult>());
+            assert_eq!(request.method(), HttpMethod::CONNECT);
+            assert_eq!(request.version(), Version::HTTP_2);
+            assert_eq!(
+                request.extensions().get_ref::<UpgradeProtocol>(),
+                Some(&UpgradeProtocol::WEBSOCKET)
+            );
+            assert_eq!(request.uri().to_string(), "https://example.test/chat?x=1");
+            assert!(!request.headers().contains_key("upgrade"));
+            Ok::<_, std::convert::Infallible>(
+                HttpResponse::builder()
+                    .version(Version::HTTP_2)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        });
+        let service = AdaptationLayer::new(connector)
+            .with_request_service(endpoint.clone())
+            .with_response_service(endpoint)
+            .layer(inner);
+        let request = HttpRequest::builder()
+            .method(HttpMethod::CONNECT)
+            .version(Version::HTTP_2)
+            .uri("https://example.test/chat?x=1")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions().insert(UpgradeProtocol::WEBSOCKET);
+        let response = service.serve(request).await.unwrap();
+
+        // c-icap echoes the `101`; rama restores the HTTP/2 acceptance.
+        assert_eq!(response.status(), 200, "{encapsulation:?}");
+        assert!(response.extensions().contains::<RespmodResult>());
+        assert!(!response.headers().contains_key("upgrade"));
+    }
 }
 
 #[cfg(feature = "http")]

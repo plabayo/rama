@@ -363,7 +363,37 @@ pub fn ensure_h2_or_h3_uri_authority<Body>(request: &mut Request<Body>) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_http_types::header::{CONNECTION, COOKIE, HOST, TRANSFER_ENCODING, UPGRADE};
+    use rama_http_types::header::{CONNECTION, COOKIE, HOST, TE, TRANSFER_ENCODING, UPGRADE};
+
+    /// HTTP/2 and HTTP/3 peers compare `TE: trailers` exactly.
+    #[test]
+    fn test_h1_to_h2_or_h3_keeps_te_as_the_exact_trailers() {
+        for version in [Version::HTTP_2, Version::HTTP_3] {
+            for (te, expected) in [
+                ("trailers, gzip", Some("trailers")),
+                ("Trailers", Some("trailers")),
+                ("gzip", None),
+            ] {
+                // A `TE` sender also nominates it (RFC 9110 §10.1.4).
+                for nominated in [false, true] {
+                    let mut req = Request::builder()
+                        .version(Version::HTTP_11)
+                        .uri("https://example.com")
+                        .header(TE, te);
+                    if nominated {
+                        req = req.header(CONNECTION, "TE");
+                    }
+                    let mut req = req.body(()).unwrap();
+                    adapt_request_version(&mut req, version).unwrap();
+                    assert_eq!(
+                        req.headers().get(TE).map(|value| value.to_str().unwrap()),
+                        expected,
+                        "{version:?} {te} nominated: {nominated}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_h1_to_h2_strips_connection_specific_headers() {

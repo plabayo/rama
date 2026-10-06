@@ -41,6 +41,10 @@ protocol NwConnectionLike: AnyObject, Sendable {
     func start(queue: DispatchQueue)
     func cancel()
 
+    /// Mirrors `NWConnection.forceCancel`: tears the connection down without a
+    /// graceful close, so a TCP peer sees a reset instead of a FIN.
+    func forceCancel()
+
     /// Mirrors `NWConnection.send`. The protocol uses explicit arguments
     /// (no defaults) because Swift protocols cannot declare default
     /// parameter values; every call site supplies all four arguments
@@ -91,6 +95,14 @@ extension NwConnectionLike {
         self.stateUpdateHandler = nil
         self.viabilityUpdateHandler = nil
         self.cancel()
+    }
+
+    /// `cancelAndDetach` for a flow that ends abnormally: the peer sees a reset,
+    /// as the Rust bridge reflects a failure of the other side.
+    func forceCancelAndDetach() {
+        self.stateUpdateHandler = nil
+        self.viabilityUpdateHandler = nil
+        self.forceCancel()
     }
 }
 

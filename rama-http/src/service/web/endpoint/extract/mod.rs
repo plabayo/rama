@@ -5,7 +5,12 @@
 //! trailing [`FromRequestBody`] extractor.
 
 use super::IntoResponse;
-use crate::{HeaderMap, header, mime, request::Parts};
+use crate::{
+    HeaderMap,
+    header::{self, content_type::parse_essence},
+    mime,
+    request::Parts,
+};
 
 pub mod host;
 #[doc(inline)]
@@ -169,15 +174,10 @@ where
 }
 
 fn has_any_content_type(headers: &HeaderMap, expected_content_types: &[&mime::Mime]) -> bool {
-    let Some(content_type) = headers.get(header::CONTENT_TYPE) else {
+    let Some(essence) = parse_essence(headers.get_all(header::CONTENT_TYPE)) else {
         return false;
     };
-
-    let Ok(content_type) = content_type.to_str() else {
-        return false;
-    };
-
     expected_content_types
         .iter()
-        .any(|ct| content_type.starts_with(ct.as_ref()))
+        .any(|ct| ct.essence_str().eq_ignore_ascii_case(&essence))
 }

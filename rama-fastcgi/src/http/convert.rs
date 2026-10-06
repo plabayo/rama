@@ -14,7 +14,8 @@ use rama_core::extensions::ExtensionsRef;
 use rama_core::futures::TryStreamExt;
 use rama_core::telemetry::tracing;
 use rama_http_types::{
-    Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version, header,
+    Body, HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
+    header,
 };
 use rama_net::stream::SocketInfo;
 use rama_net::{AuthorityInputExt as _, Protocol, ProtocolInputExt as _};
@@ -32,6 +33,7 @@ use crate::server::{FastCgiRequest, FastCgiResponse};
 
 static KEEP_ALIVE: HeaderName = HeaderName::from_static("keep-alive");
 static PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
+static PROXY: HeaderName = HeaderName::from_static("proxy");
 
 /// HTTP request headers we don't forward as `HTTP_*` CGI variables —
 /// either hop-by-hop (RFC 7230 §6.1) or because they have a dedicated CGI
@@ -136,6 +138,25 @@ fn http_star_name(name: &HeaderName) -> String {
         });
     }
     out
+}
+
+/// Every line of `name` as one value: RFC 3875 §4.1.18 rewrites repeated fields so, joining
+/// cookie pieces as `; ` (RFC 9113 §8.2.3) and others as `, ` (RFC 9110 §5.3).
+fn combined_field_value(headers: &HeaderMap, name: &HeaderName) -> Bytes {
+    let mut lines = headers.get_all(name).iter();
+    let Some(first) = lines.next() else {
+        return Bytes::new();
+    };
+    let Some(second) = lines.next() else {
+        return Bytes::copy_from_slice(first.as_bytes());
+    };
+    let separator: &[u8] = if name == header::COOKIE { b"; " } else { b", " };
+    let mut combined = BytesMut::from(first.as_bytes());
+    for line in std::iter::once(second).chain(lines) {
+        combined.extend_from_slice(separator);
+        combined.extend_from_slice(line.as_bytes());
+    }
+    combined.freeze()
 }
 
 fn io_error(e: BoxError) -> std::io::Error {
@@ -246,18 +267,29 @@ pub(super) async fn http_request_to_fastcgi(
         content_length_header.unwrap_or_else(|| "0".to_owned())
     );
 
-    if let Some(ct) = parts.headers.get(header::CONTENT_TYPE) {
-        params.push((cgi::CONTENT_TYPE, Bytes::copy_from_slice(ct.as_bytes())));
+    // As sent, so the application judges the type as any server would, not as a lenient reading.
+    if parts.headers.contains_key(header::CONTENT_TYPE) {
+        params.push((
+            cgi::CONTENT_TYPE,
+            combined_field_value(&parts.headers, &header::CONTENT_TYPE),
+        ));
     }
 
-    // ── HTTP_* header mapping (RFC 3875 §4.1.18) ─────────────────────────
-    for (name, value) in &parts.headers {
-        if HOP_BY_HOP_OR_DEDICATED.contains(&name) {
+    // ── HTTP_* header mapping (RFC 3875 §4.1.18): one variable per field ──
+    for name in parts.headers.keys() {
+        // As Apache: other names could shadow a variable; `HTTP_PROXY` sets a proxy (httpoxy).
+        if HOP_BY_HOP_OR_DEDICATED.contains(&name)
+            || name == PROXY
+            || !name
+                .as_str()
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
             continue;
         }
         params.push((
             Bytes::from(http_star_name(name)),
-            Bytes::copy_from_slice(value.as_bytes()),
+            combined_field_value(&parts.headers, name),
         ));
     }
 
@@ -716,6 +748,101 @@ mod tests {
         );
         // Host should NOT be forwarded as HTTP_HOST.
         assert!(find(b"HTTP_HOST").is_none());
+    }
+
+    /// `Content-Type` passes as sent, its lines combined: never a type the application did not
+    /// receive, such as `application/json` out of what the CORS safelist judged `text/plain`.
+    #[tokio::test]
+    async fn test_content_type_var_is_the_value_as_sent() {
+        for (lines, expected) in [
+            (
+                &["Application/JSON; charset=UTF-8"][..],
+                Some("Application/JSON; charset=UTF-8"),
+            ),
+            (
+                &["text/plain;,application/json"],
+                Some("text/plain;,application/json"),
+            ),
+            (
+                &["text/plain", "application/json"],
+                Some("text/plain, application/json"),
+            ),
+            (&[], None),
+        ] {
+            let mut req = Request::builder().method("POST").uri("http://example.com/");
+            for line in lines {
+                req = req.header("content-type", *line);
+            }
+            let fcgi = http_request_to_fastcgi(req.body(Body::from("{}")).unwrap())
+                .await
+                .unwrap();
+            let content_type = fcgi
+                .params
+                .iter()
+                .find(|(name, _)| name.as_ref() == b"CONTENT_TYPE")
+                .map(|(_, value)| value.clone());
+            assert_eq!(
+                content_type.as_deref(),
+                expected.map(str::as_bytes),
+                "{lines:?}"
+            );
+        }
+    }
+
+    /// RFC 3875 §4.1.18: one variable per field, its lines combined.
+    #[tokio::test]
+    async fn repeated_fields_become_one_variable() {
+        let req = Request::builder()
+            .method("GET")
+            .uri("http://example.com/")
+            .header("x-real-ip", "203.0.113.5")
+            .header("x-real-ip", "198.51.100.7")
+            .header("cookie", "a=1")
+            .header("cookie", "b=2")
+            .body(Body::empty())
+            .unwrap();
+        let fcgi = http_request_to_fastcgi(req).await.unwrap();
+        let values = |name: &[u8]| -> Vec<Bytes> {
+            fcgi.params
+                .iter()
+                .filter(|(n, _)| n.as_ref() == name)
+                .map(|(_, v)| v.clone())
+                .collect()
+        };
+        assert_eq!(
+            values(b"HTTP_X_REAL_IP"),
+            [Bytes::from_static(b"203.0.113.5, 198.51.100.7")]
+        );
+        assert_eq!(values(b"HTTP_COOKIE"), [Bytes::from_static(b"a=1; b=2")]);
+    }
+
+    /// No field may shadow another's variable or set a CGI application's proxy (httpoxy).
+    #[tokio::test]
+    async fn fields_that_would_collide_are_not_passed() {
+        let req = Request::builder()
+            .method("GET")
+            .uri("http://example.com/")
+            .header("x-real-ip", "203.0.113.5")
+            .header("x_real_ip", "198.51.100.7")
+            .header("x-real.ip", "198.51.100.8")
+            .header("proxy", "http://attacker.test")
+            .body(Body::empty())
+            .unwrap();
+        let fcgi = http_request_to_fastcgi(req).await.unwrap();
+        let values = |name: &[u8]| -> Vec<Bytes> {
+            fcgi.params
+                .iter()
+                .filter(|(n, _)| n.as_ref() == name)
+                .map(|(_, v)| v.clone())
+                .collect()
+        };
+        assert_eq!(
+            values(b"HTTP_X_REAL_IP"),
+            [Bytes::from_static(b"203.0.113.5")]
+        );
+        // PHP reads `HTTP_X_REAL.IP` as `HTTP_X_REAL_IP`.
+        assert!(values(b"HTTP_X_REAL.IP").is_empty());
+        assert!(values(b"HTTP_PROXY").is_empty());
     }
 
     #[tokio::test]

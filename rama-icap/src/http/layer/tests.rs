@@ -20,9 +20,10 @@ use rama_core::{
 use rama_http::io::upgrade;
 use rama_http_backend::{client::proxy::layer::HttpProxyConnectorLayer, server::HttpServer};
 use rama_http_types::{
-    Body, HeaderMap, Request, Response, Version,
+    Body, HeaderMap, Method as HttpMethod, Request, Response, Version,
     body::{Frame, util::BodyExt as _},
     header::{self as http_header, HeaderValue, TRAILER},
+    proto::ext::Protocol as UpgradeProtocol,
 };
 use rama_net::{
     AuthorityInputExt, ConnectorTargetInputExt as _, Protocol, ProtocolInputExt,
@@ -33,6 +34,7 @@ use rama_net::{
         pool::{BasicConnIdentifier, ConnID, LruDropPool, PooledConnector},
     },
     test_utils::client::{MockConnectorService, MockSocket},
+    uri::Uri,
 };
 use rama_tls::{
     SecureTransport,
@@ -46,7 +48,9 @@ use super::*;
 use crate::{
     client::options::{OptionsCacheLayer, OptionsService, OptionsValidation, ServiceCapabilities},
     codec::{HeadParserConfig, Header, HeaderFolding, HeaderSlot, ResponseLine},
-    http::{HttpService, IncomingRequest, IncomingRequestParts, OutgoingResponse},
+    http::{
+        HttpService, IncomingRequest, IncomingRequestParts, OutgoingResponse, UpgradeEncapsulation,
+    },
     io::ConnectionOptions,
     message::{EncapsulatedParts, Response as IcapResponse},
     proto::{EncapsulatedKind, Method, MethodKind, Preview, ServiceTag, StatusCode, header},
@@ -1983,55 +1987,66 @@ async fn preserves_reqmod_proxy_authorization_and_canonical_host() {
 
 #[tokio::test]
 async fn preserves_upgrade_request_fields_around_reqmod_sanitization() {
-    let connector = mock_icap_client(
-        || {
-            Server::new(
-                HttpService::new(service_fn(async |request: IncomingRequest| {
-                    let request = request.encapsulated().unwrap().request().unwrap();
-                    assert!(!request.headers().contains_key(http_header::CONNECTION));
-                    assert!(!request.headers().contains_key(http_header::UPGRADE));
-                    assert!(!request.headers().contains_key("x-hop"));
-                    let response = IcapResponse::new(
-                        MethodKind::Reqmod,
-                        ResponseLine::new(
-                            StatusCode::NO_MODIFICATION_NEEDED,
-                            b"No Modification Needed",
+    for encapsulation in [UpgradeEncapsulation::Keep, UpgradeEncapsulation::Omit] {
+        let connector = mock_icap_client(
+            move || {
+                Server::new(
+                    HttpService::new(service_fn(move |request: IncomingRequest| async move {
+                        let request = request.encapsulated().unwrap().request().unwrap();
+                        assert!(!request.headers().contains_key(http_header::CONNECTION));
+                        // Squid keeps `Upgrade`, so a service tells an upgrade from a plain GET.
+                        assert_eq!(
+                            request.headers().get(http_header::UPGRADE).is_some(),
+                            encapsulation == UpgradeEncapsulation::Keep,
+                            "{encapsulation:?}"
+                        );
+                        assert!(!request.headers().contains_key("x-hop"));
+                        let response = IcapResponse::new(
+                            MethodKind::Reqmod,
+                            ResponseLine::new(
+                                StatusCode::NO_MODIFICATION_NEEDED,
+                                b"No Modification Needed",
+                            )
+                            .unwrap(),
+                            &adaptation_response_fields(),
+                            None,
                         )
-                        .unwrap(),
-                        &adaptation_response_fields(),
-                        None,
-                    )
-                    .unwrap();
-                    Ok::<_, Infallible>(OutgoingResponse::without_body(response))
-                })),
-                TEST_SERVICE_TAG,
+                        .unwrap();
+                        Ok::<_, Infallible>(OutgoingResponse::without_body(response))
+                    })),
+                    TEST_SERVICE_TAG,
+                )
+                .unwrap()
+            },
+            512,
+        );
+        let inner = service_fn(async |request: Request<Body>| {
+            assert_eq!(request.headers()[http_header::CONNECTION], "Upgrade");
+            assert_eq!(request.headers()[http_header::UPGRADE], "websocket");
+            assert!(!request.headers().contains_key("x-hop"));
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        });
+        let service = AdaptationLayer::new(connector)
+            .with_request_service(
+                endpoint("reqmod")
+                    .with_allow_204(true)
+                    .with_upgrade_encapsulation(encapsulation),
             )
-            .unwrap()
-        },
-        512,
-    );
-    let inner = service_fn(async |request: Request<Body>| {
-        assert_eq!(request.headers()[http_header::CONNECTION], "Upgrade");
-        assert_eq!(request.headers()[http_header::UPGRADE], "websocket");
-        assert!(!request.headers().contains_key("x-hop"));
-        Ok::<_, Infallible>(Response::new(Body::empty()))
-    });
-    let service = AdaptationLayer::new(connector)
-        .with_request_service(endpoint("reqmod").with_allow_204(true))
-        .layer(inner);
+            .layer(inner);
 
-    service
-        .serve(
-            Request::builder()
-                .uri("http://origin.example/socket")
-                .header(http_header::CONNECTION, "Upgrade, x-hop")
-                .header(http_header::UPGRADE, "websocket")
-                .header("x-hop", "secret")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+        service
+            .serve(
+                Request::builder()
+                    .uri("http://origin.example/socket")
+                    .header(http_header::CONNECTION, "Upgrade, x-hop")
+                    .header(http_header::UPGRADE, "websocket")
+                    .header("x-hop", "secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
 }
 
 #[tokio::test]
@@ -2150,53 +2165,63 @@ async fn preserves_respmod_proxy_authenticate_after_204() {
 
 #[tokio::test]
 async fn preserves_upgrade_response_fields_around_respmod_sanitization() {
-    let connector = mock_icap_client(
-        || {
-            Server::new(
-                HttpService::new(service_fn(async |request: IncomingRequest| {
-                    let response = request.encapsulated().unwrap().response().unwrap();
-                    assert!(!response.headers().contains_key(http_header::CONNECTION));
-                    assert!(!response.headers().contains_key(http_header::UPGRADE));
-                    assert!(!response.headers().contains_key("x-hop"));
-                    let response = IcapResponse::new(
-                        MethodKind::Respmod,
-                        ResponseLine::new(
-                            StatusCode::NO_MODIFICATION_NEEDED,
-                            b"No Modification Needed",
+    for encapsulation in [UpgradeEncapsulation::Keep, UpgradeEncapsulation::Omit] {
+        let connector = mock_icap_client(
+            move || {
+                Server::new(
+                    HttpService::new(service_fn(move |request: IncomingRequest| async move {
+                        let response = request.encapsulated().unwrap().response().unwrap();
+                        assert!(!response.headers().contains_key(http_header::CONNECTION));
+                        assert_eq!(
+                            response.headers().get(http_header::UPGRADE).is_some(),
+                            encapsulation == UpgradeEncapsulation::Keep,
+                            "{encapsulation:?}"
+                        );
+                        assert!(!response.headers().contains_key("x-hop"));
+                        let response = IcapResponse::new(
+                            MethodKind::Respmod,
+                            ResponseLine::new(
+                                StatusCode::NO_MODIFICATION_NEEDED,
+                                b"No Modification Needed",
+                            )
+                            .unwrap(),
+                            &adaptation_response_fields(),
+                            None,
                         )
-                        .unwrap(),
-                        &adaptation_response_fields(),
-                        None,
-                    )
-                    .unwrap();
-                    Ok::<_, Infallible>(OutgoingResponse::without_body(response))
-                })),
-                TEST_SERVICE_TAG,
+                        .unwrap();
+                        Ok::<_, Infallible>(OutgoingResponse::without_body(response))
+                    })),
+                    TEST_SERVICE_TAG,
+                )
+                .unwrap()
+            },
+            512,
+        );
+        let inner = service_fn(async |_request: Request<Body>| {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(101)
+                    .header(http_header::CONNECTION, "Upgrade, x-hop")
+                    .header(http_header::UPGRADE, "websocket")
+                    .header("x-hop", "secret")
+                    .body(Body::empty())
+                    .unwrap(),
             )
-            .unwrap()
-        },
-        512,
-    );
-    let inner = service_fn(async |_request: Request<Body>| {
-        Ok::<_, Infallible>(
-            Response::builder()
-                .status(101)
-                .header(http_header::CONNECTION, "Upgrade, x-hop")
-                .header(http_header::UPGRADE, "websocket")
-                .header("x-hop", "secret")
-                .body(Body::empty())
-                .unwrap(),
-        )
-    });
-    let service = AdaptationLayer::new(connector)
-        .with_response_service(endpoint("respmod").with_allow_204(true))
-        .layer(inner);
+        });
+        let service = AdaptationLayer::new(connector)
+            .with_response_service(
+                endpoint("respmod")
+                    .with_allow_204(true)
+                    .with_upgrade_encapsulation(encapsulation),
+            )
+            .layer(inner);
 
-    let response = service.serve(Request::new(Body::empty())).await.unwrap();
-    assert_eq!(response.status(), 101);
-    assert_eq!(response.headers()[http_header::CONNECTION], "Upgrade");
-    assert_eq!(response.headers()[http_header::UPGRADE], "websocket");
-    assert!(!response.headers().contains_key("x-hop"));
+        let response = service.serve(Request::new(Body::empty())).await.unwrap();
+        assert_eq!(response.status(), 101);
+        assert_eq!(response.headers()[http_header::CONNECTION], "Upgrade");
+        assert_eq!(response.headers()[http_header::UPGRADE], "websocket");
+        assert!(!response.headers().contains_key("x-hop"));
+    }
 }
 
 #[tokio::test]
@@ -2784,7 +2809,7 @@ fn transfer_defaults_to_complete_and_uses_decoded_target_extension() {
     assert!(policy.adapt);
     assert_eq!(policy.preview, None);
 
-    let uri = rama_net::uri::Uri::parse_strict("http://origin.test/a%2EHTML?download=1").unwrap();
+    let uri = Uri::parse_strict("http://origin.test/a%2EHTML?download=1").unwrap();
     assert_eq!(request_target_extension(&uri).as_deref(), Some("HTML"));
 }
 
@@ -2858,4 +2883,511 @@ fn caller_can_choose_shared_connector_ownership() {
     let service = layer.layer(());
     assert_clone(&layer);
     assert_clone(&service);
+}
+
+fn extended_connect(uri: &'static str) -> Request<Body> {
+    let request = Request::builder()
+        .method(HttpMethod::CONNECT)
+        .version(Version::HTTP_2)
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap();
+    request.extensions().insert(UpgradeProtocol::WEBSOCKET);
+    request
+}
+
+fn classic_connect(authority: &'static str) -> Request<Body> {
+    Request::connect(Uri::parse_authority_form(authority).unwrap())
+        .body(Body::empty())
+        .unwrap()
+}
+
+/// An adapting service that checks the encapsulated GET upgrade, then rewrites it as `adapt` says.
+macro_rules! extended_connect_reqmod {
+    ($encapsulation:expr, $host:expr, $adapt:expr) => {{
+        let (encapsulation, host, adapt): (
+            UpgradeEncapsulation,
+            &'static str,
+            fn(&mut Request<()>) -> Body,
+        ) = ($encapsulation, $host, $adapt);
+        mock_icap_client(
+            move || {
+                Server::new(
+                    HttpService::new(service_fn(move |request: IncomingRequest| async move {
+                        let (parts, _body) = request.into_parts();
+                        let mut adapted = parts.encapsulated.unwrap().request.unwrap();
+                        assert_eq!(adapted.method(), HttpMethod::GET);
+                        assert_eq!(adapted.version(), Version::HTTP_11);
+                        assert_eq!(adapted.uri().request_target(), "/chat?x=1");
+                        assert_eq!(adapted.headers()[http_header::HOST], host);
+                        assert!(!adapted.headers().contains_key(http_header::CONNECTION));
+                        assert_eq!(
+                            adapted
+                                .headers()
+                                .get(http_header::UPGRADE)
+                                .map(|value| value.to_str().unwrap()),
+                            (encapsulation == UpgradeEncapsulation::Keep).then_some("websocket"),
+                        );
+                        let body = adapt(&mut adapted);
+                        let line = ResponseLine::new(StatusCode::OK, b"OK").unwrap();
+                        OutgoingResponse::from_http_request(
+                            line,
+                            &adaptation_response_fields(),
+                            Request::from_parts(adapted.clone_parts(), body),
+                        )
+                        .map_err(BoxError::from)
+                    })),
+                    TEST_SERVICE_TAG,
+                )
+                .unwrap()
+            },
+            512,
+        )
+    }};
+}
+
+#[tokio::test]
+async fn reqmod_adapts_extended_connect_as_the_upgrade_it_stands_for() {
+    for encapsulation in [UpgradeEncapsulation::Keep, UpgradeEncapsulation::Omit] {
+        for (uri, host, rewritten) in [
+            (
+                "https://origin.test/chat?x=1",
+                "origin.test",
+                "https://origin.test/rewritten?y=2",
+            ),
+            (
+                "https://origin.test:8443/chat?x=1",
+                "origin.test:8443",
+                "https://origin.test:8443/rewritten?y=2",
+            ),
+        ] {
+            let connector = extended_connect_reqmod!(encapsulation, host, |adapted| {
+                adapted
+                    .headers_mut()
+                    .insert("x-reqmod", HeaderValue::from_static("yes"));
+                let mut uri = adapted.uri().clone();
+                uri.set_path("/rewritten");
+                uri.set_query_from_bytes("y=2");
+                *adapted.uri_mut() = uri;
+                Body::empty()
+            });
+            let inner = service_fn(move |request: Request<Body>| async move {
+                // The original's version, scheme and `:protocol`, the adapted target and fields.
+                assert_eq!(request.method(), HttpMethod::CONNECT);
+                assert_eq!(request.version(), Version::HTTP_2);
+                assert_eq!(
+                    request.extensions().get_ref::<UpgradeProtocol>(),
+                    Some(&UpgradeProtocol::WEBSOCKET)
+                );
+                assert_eq!(request.uri().to_string(), rewritten);
+                assert_eq!(request.headers()["x-reqmod"], "yes");
+                assert!(!request.headers().contains_key(http_header::UPGRADE));
+                assert!(!request.headers().contains_key(http_header::CONNECTION));
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            });
+            let service = AdaptationLayer::new(connector)
+                .with_request_service(endpoint("reqmod").with_upgrade_encapsulation(encapsulation))
+                .layer(inner);
+            service.serve(extended_connect(uri)).await.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn reqmod_refuses_an_extended_connect_it_cannot_express() {
+    for adapt in [
+        (|adapted: &mut Request<()>| {
+            *adapted.method_mut() = HttpMethod::POST;
+            Body::empty()
+        }) as fn(&mut Request<()>) -> Body,
+        |_adapted: &mut Request<()>| Body::from("smuggled"),
+    ] {
+        let connector = extended_connect_reqmod!(UpgradeEncapsulation::Keep, "origin.test", adapt);
+        let inner = service_fn(async |_request: Request<Body>| {
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        });
+        let service = AdaptationLayer::new(connector)
+            .with_request_service(endpoint("reqmod"))
+            .layer(inner);
+        service
+            .serve(extended_connect("https://origin.test/chat?x=1"))
+            .await
+            .unwrap_err();
+    }
+}
+
+#[tokio::test]
+async fn respmod_sees_an_extended_connect_acceptance_as_switching_protocols() {
+    for encapsulation in [UpgradeEncapsulation::Keep, UpgradeEncapsulation::Omit] {
+        let connector = mock_icap_client(
+            move || {
+                Server::new(
+                    HttpService::new(service_fn(move |request: IncomingRequest| async move {
+                        let (parts, _body) = request.into_parts();
+                        let encapsulated = parts.encapsulated.unwrap();
+                        let request = encapsulated.request.unwrap();
+                        assert_eq!(request.method(), HttpMethod::GET);
+                        let response = encapsulated.response.unwrap();
+                        // A `101` needs its `Upgrade`: without one the 2xx stays as sent.
+                        let switched = encapsulation == UpgradeEncapsulation::Keep;
+                        assert_eq!(response.status(), if switched { 101 } else { 200 });
+                        for headers in [request.headers(), response.headers()] {
+                            assert_eq!(
+                                headers.get(http_header::UPGRADE).is_some(),
+                                encapsulation == UpgradeEncapsulation::Keep,
+                            );
+                        }
+                        let mut response = response;
+                        response
+                            .headers_mut()
+                            .insert("x-respmod", HeaderValue::from_static("yes"));
+                        OutgoingResponse::from_http_response(
+                            MethodKind::Respmod,
+                            ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+                            &adaptation_response_fields(),
+                            Response::from_parts(response.clone_parts(), Body::empty()),
+                        )
+                        .map_err(BoxError::from)
+                    })),
+                    TEST_SERVICE_TAG,
+                )
+                .unwrap()
+            },
+            512,
+        );
+        let inner = service_fn(async |_request: Request<Body>| {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .version(Version::HTTP_2)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        });
+        let service = AdaptationLayer::new(connector)
+            .with_response_service(endpoint("respmod").with_upgrade_encapsulation(encapsulation))
+            .layer(inner);
+
+        let response = service
+            .serve(extended_connect("https://origin.test/chat?x=1"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{encapsulation:?}");
+        assert_eq!(response.headers()["x-respmod"], "yes");
+        assert!(!response.headers().contains_key(http_header::UPGRADE));
+        assert!(!response.headers().contains_key(http_header::CONNECTION));
+    }
+}
+
+/// A RESPMOD service answering for a CONNECT response, encapsulated with `status`, as `adapt`
+/// says.
+macro_rules! connect_respmod {
+    ($status:expr, $adapt:expr) => {{
+        let status: u16 = $status;
+        let adapt: fn(&mut Response<()>) -> Body = $adapt;
+        mock_icap_client(
+            move || {
+                Server::new(
+                    HttpService::new(service_fn(move |request: IncomingRequest| async move {
+                        let (parts, _body) = request.into_parts();
+                        let mut response = parts.encapsulated.unwrap().response.unwrap();
+                        assert_eq!(response.status(), status);
+                        let body = adapt(&mut response);
+                        OutgoingResponse::from_http_response(
+                            MethodKind::Respmod,
+                            ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+                            &adaptation_response_fields(),
+                            Response::from_parts(response.clone_parts(), body),
+                        )
+                        .map_err(BoxError::from)
+                    })),
+                    TEST_SERVICE_TAG,
+                )
+                .unwrap()
+            },
+            512,
+        )
+    }};
+}
+
+/// `adapt` with the acceptance's status set to `status`, its upgrade field dropped.
+fn with_status(response: &mut Response<()>, status: u16) {
+    *response.status_mut() = rama_http_types::StatusCode::from_u16(status).unwrap();
+    response.headers_mut().remove(http_header::UPGRADE);
+}
+
+/// A service refusing the tunnel, with any final status but its acceptance, sends that page;
+/// an acceptance never carries a body ahead of the tunnel, whatever the encapsulation.
+#[tokio::test]
+async fn respmod_refusing_an_extended_connect_never_opens_the_tunnel() {
+    // The acceptance as encapsulated, with a body sent ahead of the tunnel.
+    let smuggled: fn(&mut Response<()>) -> Body = |_| Body::from("smuggled");
+    for (encapsulation, adapt, expected) in [
+        (
+            UpgradeEncapsulation::Keep,
+            (|response: &mut Response<()>| {
+                with_status(response, 403);
+                Body::from("blocked")
+            }) as fn(&mut Response<()>) -> Body,
+            Some(403),
+        ),
+        (
+            UpgradeEncapsulation::Omit,
+            |response| {
+                with_status(response, 403);
+                Body::from("blocked")
+            },
+            Some(403),
+        ),
+        // A 2xx that replaced the `101` lost its protocol.
+        (
+            UpgradeEncapsulation::Keep,
+            |response| {
+                with_status(response, 200);
+                Body::empty()
+            },
+            None,
+        ),
+        (
+            UpgradeEncapsulation::Omit,
+            |response| {
+                with_status(response, 200);
+                Body::empty()
+            },
+            Some(200),
+        ),
+        (UpgradeEncapsulation::Keep, smuggled, None),
+        (UpgradeEncapsulation::Omit, smuggled, None),
+        (
+            UpgradeEncapsulation::Keep,
+            |response| {
+                with_status(response, 103);
+                Body::empty()
+            },
+            None,
+        ),
+        (
+            UpgradeEncapsulation::Omit,
+            |response| {
+                with_status(response, 100);
+                Body::empty()
+            },
+            None,
+        ),
+    ] {
+        let switched = encapsulation == UpgradeEncapsulation::Keep;
+        let connector = connect_respmod!(if switched { 101 } else { 200 }, adapt);
+        let inner = service_fn(async |_request: Request<Body>| {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .version(Version::HTTP_2)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        });
+        let service = AdaptationLayer::new(connector)
+            .with_response_service(endpoint("respmod").with_upgrade_encapsulation(encapsulation))
+            .layer(inner);
+        let response = service
+            .serve(extended_connect("https://origin.test/chat?x=1"))
+            .await;
+        assert_eq!(
+            response.ok().map(|response| response.status().as_u16()),
+            expected,
+            "{encapsulation:?} {expected:?}"
+        );
+    }
+}
+
+/// A body adapted without a head is sent with the original acceptance: ahead of its tunnel.
+#[tokio::test]
+async fn respmod_never_attaches_a_headless_body_to_a_tunnel() {
+    let connector = mock_icap_client(
+        move || {
+            Server::new(
+                service_fn(move |_request: RawIncomingRequest| async move {
+                    let parts =
+                        EncapsulatedParts::new(None, None, EncapsulatedKind::ResponseBody).unwrap();
+                    let response = IcapResponse::new(
+                        MethodKind::Respmod,
+                        ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+                        &adaptation_response_fields(),
+                        Some(parts),
+                    )
+                    .unwrap();
+                    Ok::<_, Infallible>(OutgoingResponse::new(
+                        response,
+                        OutgoingBody::from_frames(stream::iter([Ok::<_, BoxError>(
+                            BodyFrame::Data(Bytes::from_static(b"smuggled")),
+                        )])),
+                    ))
+                }),
+                TEST_SERVICE_TAG,
+            )
+            .unwrap()
+        },
+        512,
+    );
+    let inner = service_fn(async |_request: Request<Body>| {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .version(Version::HTTP_2)
+                .body(Body::empty())
+                .unwrap(),
+        )
+    });
+    let service = AdaptationLayer::new(connector)
+        .with_response_service(endpoint("respmod"))
+        .layer(inner);
+    service
+        .serve(extended_connect("https://origin.test/chat?x=1"))
+        .await
+        .unwrap_err();
+}
+
+/// A body without a head, or a block page for the request, is judged the same as with one.
+#[tokio::test]
+async fn reqmod_never_attaches_a_body_to_a_connect() {
+    for (connect, body_only, expected) in [
+        (
+            (|| extended_connect("https://origin.test/chat?x=1")) as fn() -> Request<Body>,
+            true,
+            None,
+        ),
+        (
+            || extended_connect("https://origin.test/chat?x=1"),
+            false,
+            Some(403),
+        ),
+        (|| classic_connect("origin.test:443"), true, None),
+        (|| classic_connect("origin.test:443"), false, Some(403)),
+    ] {
+        let connector = mock_icap_client(
+            move || {
+                Server::new(
+                    service_fn(move |_request: RawIncomingRequest| async move {
+                        let parts = if body_only {
+                            EncapsulatedParts::new(None, None, EncapsulatedKind::RequestBody)
+                        } else {
+                            EncapsulatedParts::new(
+                                None,
+                                Some(Bytes::from_static(
+                                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 7\r\n\r\n",
+                                )),
+                                EncapsulatedKind::ResponseBody,
+                            )
+                        }
+                        .unwrap();
+                        let response = IcapResponse::new(
+                            MethodKind::Reqmod,
+                            ResponseLine::new(StatusCode::OK, b"OK").unwrap(),
+                            &adaptation_response_fields(),
+                            Some(parts),
+                        )
+                        .unwrap();
+                        Ok::<_, Infallible>(OutgoingResponse::new(
+                            response,
+                            OutgoingBody::from_frames(stream::iter([Ok::<_, BoxError>(
+                                BodyFrame::Data(Bytes::from_static(b"blocked")),
+                            )])),
+                        ))
+                    }),
+                    TEST_SERVICE_TAG,
+                )
+                .unwrap()
+            },
+            512,
+        );
+        let inner = service_fn(async |_request: Request<Body>| {
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        });
+        let service = AdaptationLayer::new(connector)
+            .with_request_service(endpoint("reqmod"))
+            .layer(inner);
+        let request = connect();
+        let target = request.uri().to_string();
+        let response = service.serve(request).await;
+        assert_eq!(
+            response.ok().map(|response| response.status().as_u16()),
+            expected,
+            "{target} body only: {body_only}"
+        );
+    }
+}
+
+/// A CONNECT the origin refused never becomes a tunnel: an adapted refusal page passes, an
+/// adapted acceptance does not, with or without a body.
+#[tokio::test]
+async fn respmod_never_opens_a_tunnel_the_origin_refused() {
+    for connect in [
+        (|| extended_connect("https://origin.test/chat?x=1")) as fn() -> Request<Body>,
+        || classic_connect("origin.test:443"),
+    ] {
+        for (adapt, expected) in [
+            (
+                (|response: &mut Response<()>| {
+                    with_status(response, 200);
+                    Body::from("injected")
+                }) as fn(&mut Response<()>) -> Body,
+                None,
+            ),
+            (
+                |response| {
+                    with_status(response, 200);
+                    Body::empty()
+                },
+                None,
+            ),
+            (|_response| Body::from("blocked"), Some(403)),
+        ] {
+            let request = connect();
+            let version = request.version();
+            let connector = connect_respmod!(403, adapt);
+            let inner = service_fn(move |_request: Request<Body>| async move {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(403)
+                        .version(version)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            });
+            let service = AdaptationLayer::new(connector)
+                .with_response_service(endpoint("respmod"))
+                .layer(inner);
+            let target = request.uri().to_string();
+            let response = service.serve(request).await;
+            assert_eq!(
+                response.ok().map(|response| response.status().as_u16()),
+                expected,
+                "{target} {expected:?}"
+            );
+        }
+    }
+}
+
+/// The acceptance of a classic CONNECT opens its tunnel too: no adapted body goes ahead of it.
+#[tokio::test]
+async fn respmod_never_attaches_a_body_to_a_classic_connect_acceptance() {
+    for (adapt, expected) in [
+        (
+            (|_response: &mut Response<()>| Body::from("smuggled"))
+                as fn(&mut Response<()>) -> Body,
+            None,
+        ),
+        (|_response| Body::empty(), Some(200)),
+    ] {
+        let connector = connect_respmod!(200, adapt);
+        let inner = service_fn(async |_request: Request<Body>| {
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        });
+        let service = AdaptationLayer::new(connector)
+            .with_response_service(endpoint("respmod"))
+            .layer(inner);
+        let response = service.serve(classic_connect("origin.test:443")).await;
+        assert_eq!(
+            response.ok().map(|response| response.status().as_u16()),
+            expected,
+            "{expected:?}"
+        );
+    }
 }
