@@ -32,7 +32,7 @@ use crate::driver::{
     send_stream::SendStream,
     sockets::SocketId,
     timer::{Deadline, DeadlineTimer},
-    udp::{FailureLog, Sender},
+    udp::{FailureLog, SendError, Sender},
 };
 use crate::proto::{
     ConnectionError, ConnectionHandle, ConnectionStats, EndpointEvent, Event,
@@ -2782,7 +2782,7 @@ impl State {
                         } else {
                             self.send_failures += 1;
                         }
-                        self.failure_log.record(now, "QUIC transmit", &error);
+                        self.log_send_failure(now, "QUIC transmit", &held, &error);
                         work.advanced = true;
                         Ok(Placed::Done)
                     }
@@ -2790,6 +2790,28 @@ impl State {
                     SendFailure::Descriptor | SendFailure::Socket => Err(error.error),
                 }
             }
+        }
+    }
+
+    /// Log a datagram the network stack refused, quietly for an MTU discovery probe: refusing
+    /// one as too large is how the search learns the local interface is smaller.
+    fn log_send_failure(
+        &mut self,
+        now: crate::driver::Instant,
+        what: &'static str,
+        held: &Held,
+        error: &SendError,
+    ) {
+        if error.class == SendFailure::TooLarge
+            && is_mtu_probe(&held.transmit, self.inner.current_mtu())
+        {
+            debug!(
+                error = %error.error,
+                size = held.transmit.size,
+                "{what}: MTU probe above the local MTU dropped"
+            );
+        } else {
+            self.failure_log.record(now, what, error);
         }
     }
 
@@ -2870,7 +2892,7 @@ impl State {
                 } else {
                     self.send_failures += 1;
                 }
-                self.failure_log.record(now, "QUIC transmit aside", &error);
+                self.log_send_failure(now, "QUIC transmit aside", &held, &error);
                 work.advanced = true;
                 // An invalid descriptor or an unusable socket ends that handle's usefulness: the
                 // path it served is given up, while the path this connection sends on is not
@@ -3627,6 +3649,12 @@ pub(crate) const RETAINED_DESCRIPTORS: usize = 4;
 /// that numbers around 10 are a good compromise.
 pub(crate) const MAX_TRANSMIT_SEGMENTS: usize = 10;
 
+/// Whether `transmit` is an MTU discovery probe: one datagram larger than the path MTU
+/// confirmed so far.
+fn is_mtu_probe(transmit: &crate::proto::Transmit, confirmed_mtu: u16) -> bool {
+    transmit.segment_size.is_none() && transmit.size > usize::from(confirmed_mtu)
+}
+
 #[cfg(test)]
 #[cfg(any(
     feature = "boring",
@@ -3636,6 +3664,23 @@ mod tests {
     use super::*;
     use crate::driver::Instant;
     use crate::proto::ReceiveQueueLimits;
+
+    /// A single datagram above the confirmed MTU is a probe; a batch never is.
+    #[test]
+    fn only_a_single_datagram_above_the_confirmed_mtu_is_an_mtu_probe() {
+        let transmit = |size, segment_size| crate::proto::Transmit {
+            destination: SocketAddr::from(([127, 0, 0, 1], 443)),
+            ecn: None,
+            size,
+            segment_size,
+            local: None,
+            cid_used: None,
+        };
+        assert!(is_mtu_probe(&transmit(1452, None), 1200));
+        assert!(!is_mtu_probe(&transmit(1200, None), 1200));
+        assert!(!is_mtu_probe(&transmit(1000, None), 1200));
+        assert!(!is_mtu_probe(&transmit(2400, Some(1200)), 1200));
+    }
     use rama_net::address::SocketAddress;
     use rama_udp::{
         DatagramCapabilities, DatagramError, DatagramMetadata, DatagramSender, DatagramSocket,
