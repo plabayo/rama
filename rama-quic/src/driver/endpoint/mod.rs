@@ -1011,12 +1011,17 @@ impl EndpointRef {
         self.state.lock().sockets.live()?.local_addr(id)
     }
 
+    /// Whether the endpoint accepts no more work, which ends every pending attempt.
+    pub(crate) fn is_closing(&self) -> bool {
+        self.state.lock().is_closing()
+    }
+
     pub(crate) fn client_hello_progress(
         &self,
         incoming: &crate::proto::Incoming,
     ) -> Result<(ClientHelloPeek, u64), ConnectionError> {
         let mut state = self.state.lock();
-        if state.driver_lost || state.shutdown || state.recv_state.connections.close.is_some() {
+        if state.is_closing() {
             return Err(ConnectionError::LocallyClosed);
         }
         let generation = incoming.progress().generation();
@@ -1299,6 +1304,11 @@ pub(crate) struct Shared {
 }
 
 impl State {
+    /// Whether this endpoint accepts no more work: closed, shut down or without its driver.
+    fn is_closing(&self) -> bool {
+        self.driver_lost || self.shutdown || self.recv_state.connections.close.is_some()
+    }
+
     fn close(&mut self, error_code: VarInt, reason: &Bytes, shared: &Shared, abandon: bool) {
         let first = self.recv_state.connections.close.is_none();
         if first {

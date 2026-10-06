@@ -165,7 +165,7 @@ impl Incoming {
     /// A ClientHello can span several Initial packets; this waits for the rest until the
     /// attempt expires or the endpoint closes. One larger than 16 KiB is refused. Use it to
     /// choose a configuration for [`Self::accept_with`].
-    pub async fn client_hello(&self) -> Result<ClientHello, ConnectionError> {
+    pub async fn client_hello(&mut self) -> Result<ClientHello, ConnectionError> {
         self.client_hello_message()
             .await
             .map(ClientHelloMessage::into_client_hello)
@@ -203,6 +203,26 @@ impl Incoming {
         }
     }
 
+    /// Completes once this attempt expires or its endpoint closes.
+    async fn retirement(&self) -> ConnectionError {
+        let state = self.state();
+        let deadline = tokio::time::Instant::from_std(state.inner.deadline());
+        let progress = state.inner.progress();
+        let retired = std::future::poll_fn(|cx| {
+            progress.register(cx.waker());
+            if state.endpoint.is_closing() {
+                Poll::Ready(ConnectionError::LocallyClosed)
+            } else if state.inner.is_expired() {
+                Poll::Ready(ConnectionError::TimedOut)
+            } else {
+                Poll::Pending
+            }
+        });
+        tokio::time::timeout_at(deadline, retired)
+            .await
+            .unwrap_or(ConnectionError::TimedOut)
+    }
+
     /// Resolve this attempt's TLS configuration from its ClientHello, then accept it.
     ///
     /// Any failure drops the attempt, which refuses it.
@@ -214,16 +234,19 @@ impl Incoming {
             return self.accept_with(admitted)?.await;
         };
         let client_hello = self.client_hello_message().await?;
-        let resolved = resolver
-            .clone()
-            .resolve(client_hello)
-            .await
-            .map_err(|error| {
-                tracing::warn!(%error, "QUIC: resolve server TLS configuration from ClientHello");
-                ConnectionError::TransportError(TransportError::CONNECTION_REFUSED(
-                    "server configuration unresolved",
-                ))
-            })?;
+        // A resolution never outlives its attempt: a stalled issuer must not hold it, nor the
+        // endpoint's shutdown, past the attempt's deadline or the endpoint's close.
+        let resolved = tokio::select! {
+            biased;
+            error = self.retirement() => return Err(error),
+            resolved = resolver.clone().resolve(client_hello) => resolved,
+        }
+        .map_err(|error| {
+            tracing::warn!(%error, "QUIC: resolve server TLS configuration from ClientHello");
+            ConnectionError::TransportError(TransportError::CONNECTION_REFUSED(
+                "server configuration unresolved",
+            ))
+        })?;
         let mut config = ServerConfig::clone(&admitted);
         config.crypto = ServerCrypto::Fixed(resolved);
         self.accept_with(Arc::new(config))?.await

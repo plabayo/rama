@@ -204,6 +204,7 @@ mod boring {
         BoringServerConfigExt as _, CacheKind, ServerCertIssuerData, ServerCertIssuerKind,
     };
     use std::future::IntoFuture as _;
+    use tokio::sync::Notify;
 
     /// Issues a leaf for whatever name is asked, and records each request.
     #[derive(Clone)]
@@ -453,7 +454,7 @@ mod boring {
                     .await
             }
         });
-        let incoming = server.accept().await.unwrap();
+        let mut incoming = server.accept().await.unwrap();
         let started = tokio::time::Instant::now();
         let error = timeout(DEADLINE, incoming.client_hello())
             .await
@@ -483,7 +484,7 @@ mod boring {
                     .await
             }
         });
-        let incoming = server.accept().await.unwrap();
+        let mut incoming = server.accept().await.unwrap();
         let waiting = tokio::spawn(async move { incoming.client_hello().await });
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(!waiting.is_finished());
@@ -536,7 +537,7 @@ mod boring {
             let client = client.clone();
             async move { connect(&client, config, addr, "early.test").await }
         });
-        let incoming = server.accept().await.unwrap();
+        let mut incoming = server.accept().await.unwrap();
         let hello = timeout(DEADLINE, incoming.client_hello())
             .await
             .unwrap()
@@ -587,6 +588,92 @@ mod boring {
             "{error:?}"
         );
         assert!(issuer.seen().is_empty());
+    }
+
+    /// Never issues, after telling it was asked.
+    #[derive(Clone, Default)]
+    struct Stalled(Arc<Notify>);
+
+    impl DynamicCertIssuer for Stalled {
+        async fn issue_cert(
+            &self,
+            _: CertificateIssuanceContext,
+        ) -> Result<ServerAuthData, BoxError> {
+            self.0.notify_one();
+            std::future::pending().await
+        }
+    }
+
+    fn stalled_tls(issuer: &Stalled) -> TlsServerConfig {
+        TlsServerConfig::new()
+            .with_alpn(alpn())
+            .with_cert_issuer(ServerCertIssuerData::new(issuer.clone()))
+    }
+
+    #[tokio::test]
+    async fn a_stalled_issuance_ends_with_its_attempt() {
+        let ca =
+            Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
+        let issuer = Stalled::default();
+        let mut endpoint_config =
+            EndpointConfig::new(rama_crypto::hmac::HmacSha2::try_rand_256().unwrap());
+        endpoint_config
+            .handshake_timeout(Duration::from_millis(300))
+            .unwrap();
+        let server = Endpoint::build(Executor::new())
+            .with_config(endpoint_config)
+            .with_server_config(
+                ServerConfig::try_from_rama_tls_with_provider(
+                    &stalled_tls(&issuer),
+                    TlsOptions::default(),
+                    &BoringTlsProvider,
+                )
+                .unwrap(),
+            )
+            .bind_address(localhost())
+            .await
+            .unwrap();
+        let addr = server.local_addr().unwrap();
+
+        let client = client().await;
+        let config = client_config(&ca, alpn(), &BoringTlsProvider);
+        tokio::spawn({
+            let client = client.clone();
+            async move { client.connect_with(config, addr, "a.test").unwrap().await }
+        });
+        let incoming = server.accept().await.unwrap();
+        let started = tokio::time::Instant::now();
+        let error = timeout(DEADLINE, incoming.into_future())
+            .await
+            .expect("the attempt's deadline ends the issuance")
+            .unwrap_err();
+        assert!(matches!(error, ConnectionError::TimedOut), "{error:?}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn closing_the_endpoint_ends_a_stalled_issuance() {
+        let ca =
+            Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
+        let issuer = Stalled::default();
+        let server = server(&stalled_tls(&issuer), &BoringTlsProvider).await;
+        let addr = server.local_addr().unwrap();
+        let served = serve(&server);
+
+        let client = client().await;
+        let config = client_config(&ca, alpn(), &BoringTlsProvider);
+        tokio::spawn({
+            let client = client.clone();
+            async move { client.connect_with(config, addr, "a.test").unwrap().await }
+        });
+        timeout(DEADLINE, issuer.0.notified())
+            .await
+            .expect("the attempt asks for a certificate");
+        server.close(VarInt::from(0u32), b"done");
+        timeout(Duration::from_secs(2), served)
+            .await
+            .expect("serving drains without waiting on the issuer")
+            .unwrap();
     }
 }
 
