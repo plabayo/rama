@@ -25,6 +25,10 @@ extension RamaTcpSessionHandle: NwEgressBytesSink {}
 private enum EgressReadTerminal {
     case eof
     case failure(Error)
+
+    var isFailure: Bool {
+        if case .failure = self { true } else { false }
+    }
 }
 
 final class NwTcpConnectionReadPump: @unchecked Sendable {
@@ -112,6 +116,36 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
 
     /// Whether the EOF-grace backstop is armed; read on `queue`. Test seam.
     var isEofBackstopArmed: Bool { eofWork != nil }
+
+    /// The connection failed (its `.failed` state): end as a failed receive would; whether taken.
+    func failConnection(_ error: Error) -> Bool {
+        dispatchPrecondition(condition: .onQueue(queue))
+        switch phase {
+        case .closed:
+            switch observedTerminal {
+            case .failure:
+                return true
+            case .eof:
+                // The upload half died with the connection: release once the client drained.
+                onReadError(error)
+                scheduleEgressReleaseLocked(error)
+                return true
+            case nil:
+                return false
+            }
+        case .open, .paused, .reading:
+            // A receive still in flight completes into the closed pump and is dropped.
+            guard pendingPayload != nil else {
+                finishTerminalLocked(.failure(error))
+                return true
+            }
+            if pendingTerminal?.isFailure != true {
+                pendingTerminal = .failure(error)
+            }
+            scheduleEgressReleaseLocked(error)
+            return true
+        }
+    }
 
     /// Resume scheduling receives after the Rust side has freed egress
     /// capacity. No-op unless the pump is currently paused.

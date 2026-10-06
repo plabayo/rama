@@ -274,6 +274,8 @@ final class TcpFlowContext: @unchecked Sendable {
     private(set) var isDone = false
     /// Rust aborted the egress, which `resetEgress` already cancelled.
     private(set) var egressReset = false
+    /// Network.framework failed the egress, whose read now ends through Rust.
+    var egressFailed = false
     /// Each `NEAppProxyTCPFlow` half has one terminal close operation. Keep
     /// those edges separate from whole-flow teardown so a later aggregate
     /// terminal cannot repeat a close or replace its original error.
@@ -536,14 +538,13 @@ final class TcpFlowContext: @unchecked Sendable {
     /// `.waiting` past tolerance. Full teardown. `error` may be `nil`; we
     /// synthesize a descriptive one so the kernel flow's close carries signal.
     func applyPostReadyFailure(_ error: Error?) {
-        let nsErr =
-            error
-            ?? NSError(
-                domain: "rama.tproxy.tcp", code: -1,
-                userInfo: [
-                    NSLocalizedDescriptionKey: "egress NWConnection terminated post-ready"
-                ])
-        applyFullTeardown(error: nsErr, driveForwarder: true)
+        applyFullTeardown(error: error ?? Self.postReadyFailureError(), driveForwarder: true)
+    }
+
+    static func postReadyFailureError() -> Error {
+        NSError(
+            domain: "rama.tproxy.tcp", code: -1,
+            userInfo: [NSLocalizedDescriptionKey: "egress NWConnection terminated post-ready"])
     }
 
     /// `flow.open` itself errored after the egress reached `.ready`. Pumps

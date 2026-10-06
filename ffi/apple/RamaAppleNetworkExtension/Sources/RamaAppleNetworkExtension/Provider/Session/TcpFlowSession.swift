@@ -537,8 +537,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         terminalDrainBackstop?.cancel()
         terminalDrainBackstop = nil
         ctx.drainClosePending = false
-        // A Rust abort after the clean client half-close still ends the flow abnormally.
-        ctx.applyFullyDrainedClose(error: sessionHandle?.terminalError())
+        // A failure or abort after the clean client half-close still ends the flow abnormally.
+        ctx.applyFullyDrainedClose(error: ctx.egressReadError ?? sessionHandle?.terminalError())
     }
 
     /// Rust publishes abnormal bridge termination before its close callback.
@@ -719,12 +719,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         guard !closeForRustTerminalError() else { return }
         guard beginTerminalDrain(.egressWriter) else { return }
         if sessionHandle?.egressAborted() == true {
-            // No egress timer may tear the flow down while the client half drains.
-            timeoutWork?.cancel()
-            timeoutWork = nil
-            waitingWork?.cancel()
-            waitingWork = nil
-            ctx.postReadyWaitingArmed = false
+            cancelEgressTimers()
             ctx.resetEgress()
             finishTerminalDrain(.egressWriter)
             return
@@ -736,6 +731,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     }
 
     func handleEgressFailed(_ error: NWError?) {
+        // A failure queued before a Rust abort's reset detached the handlers changes nothing.
+        guard !ctx.egressReset else { return }
         if !egressReady {
             timeoutWork?.cancel()
             timeoutWork = nil
@@ -760,7 +757,16 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             core?.logDebug(
                 "egress NWConnection failed after flow opened: \(String(describing: error))"
             )
-            applyPostReadyTeardown(error: error)
+            // A live egress read ends as a failed receive: Rust then drains the tail it accepted.
+            let failure = error ?? TcpFlowContext.postReadyFailureError()
+            if ctx.mode == .viaRust, ctx.clientReadPump != nil,
+                ctx.egressReadPump?.failConnection(failure) == true
+            {
+                ctx.egressFailed = true
+                cancelEgressTimers()
+            } else {
+                applyPostReadyTeardown(error: error)
+            }
         }
     }
 
@@ -829,6 +835,15 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         } else {
             ctx.applyPreReadyFailure()
         }
+    }
+
+    /// No egress timer may tear the flow down once its egress is reset or failed.
+    private func cancelEgressTimers() {
+        timeoutWork?.cancel()
+        timeoutWork = nil
+        waitingWork?.cancel()
+        waitingWork = nil
+        ctx.postReadyWaitingArmed = false
     }
 
     private func applyPostReadyTeardown(error: NWError?) {
