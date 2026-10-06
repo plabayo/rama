@@ -397,18 +397,36 @@ impl crypto::ServerConfigResolver for QuicServerCertIssuer {
     fn resolve(
         self: Arc<Self>,
         client_hello: crypto::ClientHelloMessage,
-    ) -> crypto::ServerConfigResolution {
+    ) -> crypto::ServerConfigLookup {
         Box::pin(async move {
-            let certificate = self
+            if let Some(certificate) = self
                 .data
-                .issue_certificate(client_hello.client_hello())
-                .await?;
-            let resolved: Arc<dyn crypto::ServerConfig> = Arc::new(QuicServerConfig {
-                issued: Some(certificate),
-                contexts: self.contexts.clone(),
-                early_data: self.early_data,
-            });
-            Ok(resolved)
+                .reusable_certificate(client_hello.client_hello())
+                .await
+            {
+                return Ok(crypto::ServerConfigResolution::Ready(
+                    self.config_with(certificate),
+                ));
+            }
+            Ok(crypto::ServerConfigResolution::Pending(Box::pin(
+                async move {
+                    let certificate = self
+                        .data
+                        .issue_certificate(client_hello.client_hello())
+                        .await?;
+                    Ok(self.config_with(certificate))
+                },
+            )))
+        })
+    }
+}
+
+impl QuicServerCertIssuer {
+    fn config_with(&self, certificate: IssuedCertificate) -> Arc<dyn crypto::ServerConfig> {
+        Arc::new(QuicServerConfig {
+            issued: Some(certificate),
+            contexts: self.contexts.clone(),
+            early_data: self.early_data,
         })
     }
 }

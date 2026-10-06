@@ -87,8 +87,8 @@ pub mod tls {
         pub use crate::proto::crypto::{
             AeadKey, ClientConfig, ClientHelloMessage, DirectionalKeys, ExportKeyingMaterialError,
             HandshakeEvent, HandshakeTokenKey, InitialKeysError, InitialServerConfig, KeyPair,
-            Keys, ServerConfig, ServerConfigResolution, ServerConfigResolver, Session,
-            UnsupportedVersion,
+            Keys, PendingServerConfig, ServerConfig, ServerConfigLookup, ServerConfigResolution,
+            ServerConfigResolver, Session, UnsupportedVersion,
         };
     }
 
@@ -104,10 +104,10 @@ mod driver;
 pub use driver::{
     Accept, AcceptBi, AcceptUni, BiStreamReservation, Connecting, Connection,
     DEFAULT_SHUTDOWN_BUDGET, DEFAULT_SOCKET_BUFFER_SIZE, DriverStats, Endpoint, EndpointBuilder,
-    EndpointStats, Incoming, IncomingFuture, OpenBi, OpenUni, PacketQueueStats, ReadDatagram,
-    ReadError, ReadExactError, ReadToEndError, RecvStream, ResetError, RetryError, SendDatagram,
-    SendDatagramError, SendStream, ShutdownOutcome, StoppedError, StreamAbortHandle, WriteError,
-    ZeroRttAccepted,
+    EndpointStats, Incoming, IncomingFuture, IncomingOutcome, OpenBi, OpenUni, PacketQueueStats,
+    ReadDatagram, ReadError, ReadExactError, ReadToEndError, RecvStream, ResetError, RetryError,
+    SendDatagram, SendDatagramError, SendStream, ShutdownOutcome, StoppedError, StreamAbortHandle,
+    WriteError, ZeroRttAccepted,
 };
 
 #[cfg(fuzzing)]

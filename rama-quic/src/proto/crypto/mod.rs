@@ -236,14 +236,41 @@ pub trait ServerConfig: InitialServerConfig {
 /// connection is accepted nothing is acknowledged, so the resolution time adds to the
 /// client's first round-trip sample.
 pub trait ServerConfigResolver: InitialServerConfig {
-    /// Resolve the configuration a connection's session starts from, given its ClientHello.
+    /// Look up the configuration a connection's session starts from, given its ClientHello.
     ///
+    /// The lookup must stay cheap and hand back real work, such as issuing a certificate, as
+    /// [`ServerConfigResolution::Pending`]:
+    /// [`Incoming::accept_or_retry`](crate::Incoming::accept_or_retry), which
+    /// [`Endpoint::serve`](crate::Endpoint::serve) uses, drops that work unpolled to first
+    /// validate an unproven client address with a Retry (RFC 9000 §8.1.2).
     /// A failure refuses the connection.
-    fn resolve(self: Arc<Self>, client_hello: ClientHelloMessage) -> ServerConfigResolution;
+    fn resolve(self: Arc<Self>, client_hello: ClientHelloMessage) -> ServerConfigLookup;
 }
 
-/// The configuration a [`ServerConfigResolver`] resolves.
-pub type ServerConfigResolution =
+/// The lookup a [`ServerConfigResolver`] runs for a ClientHello.
+pub type ServerConfigLookup =
+    Pin<Box<dyn Future<Output = Result<ServerConfigResolution, BoxError>> + Send>>;
+
+/// What a [`ServerConfigResolver`] looked up for a ClientHello.
+pub enum ServerConfigResolution {
+    /// At hand, such as a configuration with a cached certificate it holds.
+    Ready(Arc<dyn ServerConfig>),
+    /// Still to resolve with real work, such as issuing a certificate, which starts once
+    /// polled: the endpoint may drop it unpolled to validate the client's address first.
+    Pending(PendingServerConfig),
+}
+
+impl fmt::Debug for ServerConfigResolution {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Ready(_) => f.write_str("ServerConfigResolution::Ready"),
+            Self::Pending(_) => f.write_str("ServerConfigResolution::Pending"),
+        }
+    }
+}
+
+/// The work that resolves a server configuration; see [`ServerConfigResolution::Pending`].
+pub type PendingServerConfig =
     Pin<Box<dyn Future<Output = Result<Arc<dyn ServerConfig>, BoxError>> + Send>>;
 
 /// A client's ClientHello as its first flight carried it.

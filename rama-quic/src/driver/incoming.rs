@@ -10,9 +10,9 @@ use std::{
 use crate::driver::sockets::Lease;
 use crate::proto::{
     ClientHelloPeek, ConnectionError, RetryRefused, ServerConfig, ServerCrypto,
-    crypto::ClientHelloMessage,
+    crypto::{self, ClientHelloMessage, ServerConfigResolution, ServerConfigResolver},
 };
-use rama_core::telemetry::tracing;
+use rama_core::{error::BoxError, telemetry::tracing};
 use rama_quic_proto::{ConnectionId, TransportError};
 use rama_tls::client::ClientHello;
 
@@ -54,7 +54,8 @@ impl Incoming {
     ///
     /// A server configuration whose TLS provider resolves its configuration per ClientHello,
     /// such as one issuing certificates on demand, cannot start here: `await` this attempt
-    /// instead, or resolve one with [`Self::client_hello`] and use [`Self::accept_with`].
+    /// or use [`Self::accept_or_retry`] instead, or resolve one with [`Self::client_hello`]
+    /// and use [`Self::accept_with`].
     pub fn accept(self) -> Result<Connecting, ConnectionError> {
         let state = self.into_state();
         state.endpoint.accept(state.inner, state.lease, None)
@@ -223,9 +224,47 @@ impl Incoming {
             .unwrap_or(ConnectionError::TimedOut)
     }
 
-    /// Resolve this attempt's TLS configuration from its ClientHello, then accept it.
+    /// Accept this attempt as awaiting it does, but answer with a Retry instead when resolving
+    /// its TLS configuration takes real work, such as issuing a certificate, for a client
+    /// whose address is not validated yet (RFC 9000 §8.1.2). A provider that cannot tell,
+    /// such as a rustls dynamic configuration, always takes real work.
     ///
-    /// Any failure drops the attempt, which refuses it.
+    /// When no Retry can be sent, the attempt is dropped without a response, so an unproven
+    /// address never costs that work.
+    pub async fn accept_or_retry(self) -> Result<IncomingOutcome, ConnectionError> {
+        let Some(admitted) = self.state().inner.resolving().cloned() else {
+            return self.accept()?.await.map(IncomingOutcome::Accepted);
+        };
+        let ServerCrypto::Resolver(resolver) = &admitted.crypto else {
+            return self
+                .accept_with(admitted)?
+                .await
+                .map(IncomingOutcome::Accepted);
+        };
+        let resolved = match self.look_up(resolver).await? {
+            ServerConfigResolution::Ready(config) => config,
+            ServerConfigResolution::Pending(work) => {
+                if !self.remote_address_validated() {
+                    // The work is dropped unpolled: none of it runs for an unproven address.
+                    return match self.retry() {
+                        Ok(()) => Ok(IncomingOutcome::Retried),
+                        Err(error) => {
+                            tracing::warn!(%error, "QUIC: unvalidated attempt dropped");
+                            error.into_incoming().ignore();
+                            Err(ConnectionError::TransportError(
+                                TransportError::CONNECTION_REFUSED("client address unvalidated"),
+                            ))
+                        }
+                    };
+                }
+                self.until_retired(work).await?
+            }
+        };
+        self.accept_resolved(&admitted, resolved)
+            .await
+            .map(IncomingOutcome::Accepted)
+    }
+
     async fn resolve_and_accept(
         self,
         admitted: Arc<ServerConfig>,
@@ -233,21 +272,49 @@ impl Incoming {
         let ServerCrypto::Resolver(resolver) = &admitted.crypto else {
             return self.accept_with(admitted)?.await;
         };
+        let resolved = match self.look_up(resolver).await? {
+            ServerConfigResolution::Ready(config) => config,
+            ServerConfigResolution::Pending(work) => self.until_retired(work).await?,
+        };
+        self.accept_resolved(&admitted, resolved).await
+    }
+
+    /// Look up this attempt's TLS configuration from its whole ClientHello.
+    async fn look_up(
+        &self,
+        resolver: &Arc<dyn ServerConfigResolver>,
+    ) -> Result<ServerConfigResolution, ConnectionError> {
         let client_hello = self.client_hello_message().await?;
-        // A resolution never outlives its attempt: a stalled issuer must not hold it, nor the
-        // endpoint's shutdown, past the attempt's deadline or the endpoint's close.
-        let resolved = tokio::select! {
+        self.until_retired(resolver.clone().resolve(client_hello))
+            .await
+    }
+
+    /// Run `resolving` until it settles, or this attempt expires or its endpoint closes: a
+    /// stalled issuer must not hold the attempt, nor the endpoint's shutdown.
+    ///
+    /// A failure drops the attempt, which refuses it.
+    async fn until_retired<T>(
+        &self,
+        resolving: impl Future<Output = Result<T, BoxError>>,
+    ) -> Result<T, ConnectionError> {
+        tokio::select! {
             biased;
-            error = self.retirement() => return Err(error),
-            resolved = resolver.clone().resolve(client_hello) => resolved,
+            error = self.retirement() => Err(error),
+            resolved = resolving => resolved.map_err(|error| {
+                tracing::warn!(%error, "QUIC: resolve server TLS configuration from ClientHello");
+                ConnectionError::TransportError(TransportError::CONNECTION_REFUSED(
+                    "server configuration unresolved",
+                ))
+            }),
         }
-        .map_err(|error| {
-            tracing::warn!(%error, "QUIC: resolve server TLS configuration from ClientHello");
-            ConnectionError::TransportError(TransportError::CONNECTION_REFUSED(
-                "server configuration unresolved",
-            ))
-        })?;
-        let mut config = ServerConfig::clone(&admitted);
+    }
+
+    async fn accept_resolved(
+        self,
+        admitted: &ServerConfig,
+        resolved: Arc<dyn crypto::ServerConfig>,
+    ) -> Result<Connection, ConnectionError> {
+        let mut config = admitted.clone();
         config.crypto = ServerCrypto::Fixed(resolved);
         self.accept_with(Arc::new(config))?.await
     }
@@ -269,6 +336,15 @@ struct State {
     /// The attempt's hold on the endpoint socket the Initial arrived on; every response and the
     /// accepted connection use that socket, and the hold is released exactly once.
     lease: Lease,
+}
+
+/// What [`Incoming::accept_or_retry`] made of an attempt.
+#[derive(Debug)]
+pub enum IncomingOutcome {
+    /// The connection, established.
+    Accepted(Connection),
+    /// A Retry was sent: the client comes back as a new attempt, with its address validated.
+    Retried,
 }
 
 /// Error for a Retry that was not sent; the [`Incoming`] is handed back for another decision

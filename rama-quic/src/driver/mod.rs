@@ -70,7 +70,7 @@ pub use crate::driver::endpoint::{
     Accept, DEFAULT_SHUTDOWN_BUDGET, DEFAULT_SOCKET_BUFFER_SIZE, Endpoint, EndpointBuilder,
     EndpointStats,
 };
-pub use crate::driver::incoming::{Incoming, IncomingFuture, RetryError};
+pub use crate::driver::incoming::{Incoming, IncomingFuture, IncomingOutcome, RetryError};
 pub use crate::driver::lifecycle::ShutdownOutcome;
 pub use crate::driver::queue::PacketQueueStats;
 pub use crate::driver::recv_stream::{

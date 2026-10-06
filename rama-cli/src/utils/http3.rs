@@ -114,7 +114,8 @@ impl HttpListeners {
 
 /// Bind QUIC on `addr` for HTTP/3, presenting the identity of `tls` and offering only `h3`.
 ///
-/// Certificates issued per ClientHello are supported, sharing the issuer cache with `tls`.
+/// Certificates issued per ClientHello are supported, sharing the issuer cache with `tls`;
+/// a client asking for one the cache lacks first proves its address with a Retry.
 /// The endpoint stays outside graceful shutdown, so HTTP/3 can drain its connections first;
 /// serve it with [`serve_http3`].
 pub async fn bind_http3(addr: SocketAddress, tls: &TlsServerConfig) -> Result<Endpoint, BoxError> {

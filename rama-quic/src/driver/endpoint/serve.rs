@@ -10,13 +10,15 @@ use rama_core::{
 use rama_net::{address::SocketAddress, stream::SocketInfo};
 
 use super::Endpoint;
-use crate::driver::connection::Connection;
+use crate::driver::{connection::Connection, incoming::IncomingOutcome};
 
 impl Endpoint {
     /// Serve incoming connections with `service`, each in its own task spawned on `exec`.
     ///
-    /// The handshake runs in that task, so a slow peer never delays the next accept.
-    /// Each established [`Connection`] carries its [`SocketInfo`] in its extensions.
+    /// The handshake runs in that task, so a slow peer never delays the next accept; see
+    /// [`Incoming::accept_or_retry`](crate::Incoming::accept_or_retry) for when it starts
+    /// with a Retry. Each established [`Connection`] carries its [`SocketInfo`] in its
+    /// extensions.
     ///
     /// Once the guard of a graceful `exec` is cancelled, new connection attempts are refused
     /// while served connections keep running, so their protocol can drain (HTTP/3 sends
@@ -65,8 +67,12 @@ impl Endpoint {
                     );
                     served.push(exec.spawn_task(
                         async move {
-                            let connection = match incoming.await {
-                                Ok(connection) => connection,
+                            let connection = match incoming.accept_or_retry().await {
+                                Ok(IncomingOutcome::Accepted(connection)) => connection,
+                                Ok(IncomingOutcome::Retried) => {
+                                    tracing::trace!("QUIC: Retry sent");
+                                    return;
+                                }
                                 Err(error) => {
                                     tracing::debug!(%error, "QUIC handshake failed");
                                     return;

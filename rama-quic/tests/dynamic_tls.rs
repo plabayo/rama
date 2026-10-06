@@ -12,7 +12,10 @@
 use std::{
     convert::Infallible,
     net::{Ipv4Addr, SocketAddr},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -139,21 +142,59 @@ fn refused(error: &ConnectionError) -> bool {
 /// Relay UDP between a client and `server`, holding the client's second datagram back for
 /// `delay`, so a ClientHello spanning two Initial packets arrives in two steps.
 async fn delaying_relay(server: SocketAddr, delay: Duration) -> SocketAddr {
-    relay(server, Some(delay)).await
+    relay(server, Relaying::DelaySecond(delay)).await.addr
 }
 
 /// Relay UDP between a client and `server` passing only the client's first datagram, so a
 /// ClientHello spanning several Initial packets never completes.
 #[cfg(feature = "boring")]
 async fn truncating_relay(server: SocketAddr) -> SocketAddr {
-    relay(server, None).await
+    relay(server, Relaying::FirstOnly).await.addr
 }
 
-async fn relay(server: SocketAddr, delay: Option<Duration>) -> SocketAddr {
+/// What a relay does with a client's datagrams after its first, or with the server's Retry.
+#[derive(Clone, Copy)]
+enum Relaying {
+    All,
+    DelaySecond(Duration),
+    #[cfg(feature = "boring")]
+    FirstOnly,
+    #[cfg(feature = "boring")]
+    NoRetries,
+}
+
+/// A UDP relay between clients and a server, counting the Retry packets the server sends.
+struct Relay {
+    addr: SocketAddr,
+    retries: Arc<AtomicUsize>,
+}
+
+impl Relay {
+    fn retries(&self) -> usize {
+        self.retries.load(Ordering::Relaxed)
+    }
+}
+
+/// Whether `packet` is a QUIC v1 or v2 Retry (RFC 9000 §17.2.5, RFC 9369 §3.2).
+fn is_retry(packet: &[u8]) -> bool {
+    let (Some(&first), Some(version)) = (packet.first(), packet.get(1..5)) else {
+        return false;
+    };
+    let kind = (first & 0x30) >> 4;
+    first & 0x80 != 0
+        && match u32::from_be_bytes(version.try_into().unwrap()) {
+            0x0000_0001 => kind == 0b11,
+            0x6b33_43cf => kind == 0b00,
+            _ => false,
+        }
+}
+
+async fn relay(server: SocketAddr, relaying: Relaying) -> Relay {
     let front = Arc::new(UdpSocket::bind(localhost()).await.unwrap());
     let back = Arc::new(UdpSocket::bind(localhost()).await.unwrap());
     back.connect(server).await.unwrap();
     let addr = front.local_addr().unwrap();
+    let retries = Arc::new(AtomicUsize::new(0));
     let (peer_tx, mut peer_rx) = tokio::sync::watch::channel(None::<SocketAddr>);
     tokio::spawn({
         let (front, back) = (front.clone(), back.clone());
@@ -166,30 +207,88 @@ async fn relay(server: SocketAddr, delay: Option<Duration>) -> SocketAddr {
                 seen += 1;
                 let datagram = buf[..len].to_vec();
                 let back = back.clone();
-                match delay {
-                    Some(delay) if seen == 2 => {
+                match relaying {
+                    Relaying::DelaySecond(delay) if seen == 2 => {
                         tokio::spawn(async move {
                             tokio::time::sleep(delay).await;
                             _ = back.send(&datagram).await;
                         });
                     }
-                    None if seen > 1 => {}
+                    #[cfg(feature = "boring")]
+                    Relaying::FirstOnly if seen > 1 => {}
                     _ => _ = back.send(&datagram).await,
                 }
             }
         }
     });
-    tokio::spawn(async move {
-        let mut buf = vec![0; 65_536];
-        loop {
-            let len = back.recv(&mut buf).await.unwrap();
-            let Some(peer) = *peer_rx.borrow_and_update() else {
-                continue;
-            };
-            _ = front.send_to(&buf[..len], peer).await;
+    tokio::spawn({
+        let retries = retries.clone();
+        async move {
+            let mut buf = vec![0; 65_536];
+            loop {
+                let len = back.recv(&mut buf).await.unwrap();
+                let Some(peer) = *peer_rx.borrow_and_update() else {
+                    continue;
+                };
+                if is_retry(&buf[..len]) {
+                    retries.fetch_add(1, Ordering::Relaxed);
+                    #[cfg(feature = "boring")]
+                    if matches!(relaying, Relaying::NoRetries) {
+                        continue;
+                    }
+                }
+                _ = front.send_to(&buf[..len], peer).await;
+            }
         }
     });
-    addr
+    Relay { addr, retries }
+}
+
+/// Serve every connection by echoing its first bidirectional stream.
+fn serve_echo(server: &Endpoint) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(server.clone().serve(
+        Executor::new(),
+        service_fn(async |connection: Connection| {
+            if let Ok((mut send, mut recv)) = connection.accept_bi().await
+                && let Ok(got) = recv.read_to_end(64).await
+            {
+                _ = send.write_all(&got).await;
+                _ = send.finish();
+            }
+            _ = connection.closed().await;
+            Ok::<_, Infallible>(())
+        }),
+    ))
+}
+
+/// Wait until `done` holds.
+#[cfg(feature = "boring")]
+async fn until(done: impl Fn() -> bool) {
+    timeout(DEADLINE, async {
+        while !done() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the condition holds in time");
+}
+
+/// Connect and exchange a message, which also delivers what the server sends after the
+/// handshake, such as session tickets and address validation tokens.
+async fn exchange(
+    client: &Endpoint,
+    config: ClientConfig,
+    addr: SocketAddr,
+    name: &str,
+) -> Connection {
+    let connection = connect(client, config, addr, name)
+        .await
+        .expect("the client connects");
+    let (mut send, mut recv) = connection.open_bi().await.unwrap();
+    send.write_all(b"ping").await.unwrap();
+    send.finish().unwrap();
+    assert_eq!(recv.read_to_end(64).await.unwrap(), b"ping");
+    connection
 }
 
 #[cfg(feature = "boring")]
@@ -291,37 +390,135 @@ mod boring {
         let issuer = RecordingIssuer::new(&ca);
         let server = server(&tls(&issuer), &BoringTlsProvider).await;
         let addr = server.local_addr().unwrap();
-        let served = tokio::spawn(server.clone().serve(
-            Executor::new(),
-            service_fn(async |connection: Connection| {
-                if let Ok((mut send, mut recv)) = connection.accept_bi().await
-                    && let Ok(got) = recv.read_to_end(64).await
-                {
-                    _ = send.write_all(&got).await;
-                    _ = send.finish();
-                }
-                _ = connection.closed().await;
-                Ok::<_, Infallible>(())
-            }),
-        ));
+        let served = serve_echo(&server);
 
         let client = client().await;
         let config = client_config(&ca, alpn(), &BoringTlsProvider);
         let mut resumed = Vec::new();
         for _ in 0..2 {
-            let connection = connect(&client, config.clone(), addr, "a.test")
-                .await
-                .unwrap();
-            // An exchange after the handshake delivers the session ticket first.
-            let (mut send, mut recv) = connection.open_bi().await.unwrap();
-            send.write_all(b"ping").await.unwrap();
-            send.finish().unwrap();
-            assert_eq!(recv.read_to_end(64).await.unwrap(), b"ping");
+            let connection = exchange(&client, config.clone(), addr, "a.test").await;
             resumed.push(connection.handshake_data().unwrap().resumed);
             connection.close(VarInt::from(0u32), b"done");
         }
         assert_eq!(resumed, [Some(false), Some(true)]);
 
+        server.close(VarInt::from(0u32), b"done");
+        timeout(DEADLINE, served).await.unwrap().unwrap();
+    }
+
+    /// A certificate still to issue waits until the client proved its address with a Retry;
+    /// one the issuer cached does not.
+    #[tokio::test]
+    async fn serving_validates_an_address_before_issuing_for_it() {
+        let ca =
+            Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
+        let issuer = RecordingIssuer::new(&ca);
+        let server = server(&tls(&issuer), &BoringTlsProvider).await;
+        let relay = relay(server.local_addr().unwrap(), Relaying::All).await;
+        let served = serve_echo(&server);
+
+        let config = client_config(&ca, alpn(), &BoringTlsProvider);
+        exchange(&client().await, config.clone(), relay.addr, "a.test")
+            .await
+            .close(VarInt::from(0u32), b"done");
+        assert_eq!(relay.retries(), 1, "a certificate still to issue");
+        // Another client, without a token from the first: the certificate is cached by now.
+        let config = client_config(&ca, alpn(), &BoringTlsProvider);
+        exchange(&client().await, config, relay.addr, "a.test")
+            .await
+            .close(VarInt::from(0u32), b"done");
+        assert_eq!(relay.retries(), 1, "a cached certificate");
+        assert_eq!(issuer.seen(), [dns("a.test")]);
+
+        server.close(VarInt::from(0u32), b"done");
+        timeout(DEADLINE, served).await.unwrap().unwrap();
+    }
+
+    /// An address validation token from an earlier connection spares the Retry.
+    #[tokio::test]
+    async fn a_token_validated_address_is_issued_for_without_a_retry() {
+        let ca =
+            Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
+        let issuer = RecordingIssuer::new(&ca);
+        let tls = tls(&issuer).with_cert_issuer(
+            ServerCertIssuerData::new(issuer.clone()).with_cache_kind(CacheKind::Disabled),
+        );
+        let server = server(&tls, &BoringTlsProvider).await;
+        let relay = relay(server.local_addr().unwrap(), Relaying::All).await;
+        let served = serve_echo(&server);
+
+        let client = client().await;
+        let config = client_config(&ca, alpn(), &BoringTlsProvider);
+        for _ in 0..2 {
+            exchange(&client, config.clone(), relay.addr, "a.test")
+                .await
+                .close(VarInt::from(0u32), b"done");
+        }
+        assert_eq!(relay.retries(), 1);
+        assert_eq!(issuer.seen(), [dns("a.test"), dns("a.test")]);
+
+        server.close(VarInt::from(0u32), b"done");
+        timeout(DEADLINE, served).await.unwrap().unwrap();
+    }
+
+    /// A client that never follows its Retry, as a spoofed source cannot, costs no issuance.
+    #[tokio::test]
+    async fn an_unproven_address_costs_no_issuance() {
+        let ca =
+            Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
+        let issuer = RecordingIssuer::new(&ca);
+        let server = server(&tls(&issuer), &BoringTlsProvider).await;
+        let relay = relay(server.local_addr().unwrap(), Relaying::NoRetries).await;
+        let served = serve(&server);
+
+        let client = client().await;
+        let config = client_config(&ca, alpn(), &BoringTlsProvider);
+        let connecting = tokio::spawn({
+            let (client, addr) = (client.clone(), relay.addr);
+            async move { client.connect_with(config, addr, "a.test").unwrap().await }
+        });
+        until(|| relay.retries() > 0).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(issuer.seen().is_empty(), "{:?}", issuer.seen());
+
+        connecting.abort();
+        server.close(VarInt::from(0u32), b"done");
+        timeout(DEADLINE, served).await.unwrap().unwrap();
+    }
+
+    /// An attempt that needs a Retry no one can send gets neither issuance nor a response.
+    #[tokio::test]
+    async fn an_attempt_without_a_possible_retry_is_dropped_unissued() {
+        let ca =
+            Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
+        let issuer = RecordingIssuer::new(&ca);
+        let config = ServerConfig::try_from_rama_tls_with_provider(
+            &tls(&issuer),
+            TlsOptions::default(),
+            &BoringTlsProvider,
+        )
+        .unwrap()
+        // A token lifetime past any representable instant cannot be sealed into a Retry.
+        .with_retry_token_lifetime(Duration::MAX);
+        let server = Endpoint::build(Executor::new())
+            .with_server_config(config)
+            .bind_address(localhost())
+            .await
+            .unwrap();
+        let addr = server.local_addr().unwrap();
+        let served = serve(&server);
+
+        let client = client().await;
+        let config = client_config(&ca, alpn(), &BoringTlsProvider);
+        let connecting = tokio::spawn({
+            let client = client.clone();
+            async move { client.connect_with(config, addr, "a.test").unwrap().await }
+        });
+        until(|| server.stats().ignored_handshakes > 0).await;
+        assert!(issuer.seen().is_empty(), "{:?}", issuer.seen());
+        assert_eq!(server.stats().refused_handshakes, 0);
+
+        connecting.abort();
         server.close(VarInt::from(0u32), b"done");
         timeout(DEADLINE, served).await.unwrap().unwrap();
     }
@@ -755,6 +952,39 @@ mod rustls {
             *seen.lock(),
             [Some("a.test".to_owned()), Some("b.test".to_owned())]
         );
+
+        server.close(VarInt::from(0u32), b"done");
+        timeout(DEADLINE, served).await.unwrap().unwrap();
+    }
+
+    /// The provider is opaque, so every attempt without a validated address gets a Retry.
+    #[tokio::test]
+    async fn serving_validates_every_address_before_resolving() {
+        let ca =
+            Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let provider = RustlsTlsProvider::new(crypto());
+        let tls = TlsServerConfig::new().with_dynamic_config(Arc::new(PerName {
+            ca: ca.clone(),
+            seen: seen.clone(),
+            fail: false,
+        }));
+        let server = server(&tls, &provider).await;
+        let relay = relay(server.local_addr().unwrap(), Relaying::All).await;
+        let served = serve_echo(&server);
+
+        // Two clients without tokens, so neither address is validated: each gets a Retry.
+        for client in [client().await, client().await] {
+            exchange(
+                &client,
+                client_config(&ca, alpn(), &provider),
+                relay.addr,
+                "a.test",
+            )
+            .await
+            .close(VarInt::from(0u32), b"done");
+        }
+        assert_eq!(relay.retries(), 2);
 
         server.close(VarInt::from(0u32), b"done");
         timeout(DEADLINE, served).await.unwrap().unwrap();
