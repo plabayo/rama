@@ -19,6 +19,11 @@ use rama::{
     tls::server::TlsServerConfig,
 };
 
+#[cfg(target_os = "windows")]
+use rama::{
+    net::socket::opts::SocketOptions, quic::DEFAULT_SOCKET_BUFFER_SIZE, udp::UdpSocketConfig,
+};
+
 use clap::Args;
 use parking_lot::Mutex;
 use std::{sync::Arc, time::Duration};
@@ -119,7 +124,7 @@ impl HttpListeners {
 /// Certificates issued per ClientHello are supported, sharing the issuer cache with `tls`;
 /// a client asking for one the cache lacks first proves its address with a Retry.
 /// The endpoint stays outside graceful shutdown, so HTTP/3 can drain its connections first;
-/// serve it with [`serve_http3`].
+/// serve it with [`Http3Endpoints::serve`].
 pub async fn bind_http3(addr: SocketAddress, tls: &TlsServerConfig) -> Result<Endpoint, BoxError> {
     let tls = tls
         .clone()
@@ -135,11 +140,27 @@ pub async fn bind_http3(addr: SocketAddress, tls: &TlsServerConfig) -> Result<En
     )
     .context("QUIC TLS server config")?;
     config.set_transport_config(Arc::new(transport));
-    Endpoint::build(Executor::new())
-        .with_server_config(config)
-        .bind_address(addr)
-        .await
-        .context("bind QUIC endpoint for HTTP/3")
+    let builder = Endpoint::build(Executor::new()).with_server_config(config);
+    #[cfg(target_os = "windows")]
+    let endpoint = builder
+        .bind_address_with_socket_config(addr, exclusive_socket_config())
+        .await;
+    #[cfg(not(target_os = "windows"))]
+    let endpoint = builder.bind_address(addr).await;
+    endpoint.context("bind QUIC endpoint for HTTP/3")
+}
+
+/// Rama's QUIC socket defaults, with the port bound exclusively: Windows would otherwise let
+/// another socket take its traffic by binding it on a more specific address, while `Alt-Svc`
+/// still advertises it.
+#[cfg(target_os = "windows")]
+fn exclusive_socket_config() -> UdpSocketConfig {
+    let config = UdpSocketConfig::default().with_min_buffer_size(DEFAULT_SOCKET_BUFFER_SIZE);
+    let options = SocketOptions {
+        exclusive_address_use: Some(true),
+        ..config.socket_options().clone()
+    };
+    config.with_socket_options(options)
 }
 
 /// The HTTP/3 endpoints a serve command serves, so they can be closed when graceful shutdown
