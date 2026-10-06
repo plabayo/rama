@@ -193,7 +193,7 @@ async fn typed_client_streams_preview_data_and_trailers() {
 }
 
 #[tokio::test]
-async fn typed_client_rejects_a_standard_head_only_http_trailer() {
+async fn typed_client_rejects_an_http_trailer_that_frames_the_message() {
     let (client_io, server_io) = tokio::io::duplex(256);
     let server = async move {
         let mut connection = ServerConnection::new(ServiceInput::new(server_io));
@@ -207,10 +207,8 @@ async fn typed_client_rejects_a_standard_head_only_http_trailer() {
         writer.write_data(b"adapted").await.unwrap();
         writer
             .finish_with_trailers(
-                &TrailerBlock::from_bytes(Bytes::from_static(
-                    b"WWW-Authenticate: Basic realm=test\r\n\r\n",
-                ))
-                .unwrap(),
+                &TrailerBlock::from_bytes(Bytes::from_static(b"Content-Length: 9\r\n\r\n"))
+                    .unwrap(),
             )
             .await
             .unwrap();
@@ -246,7 +244,7 @@ async fn typed_client_rejects_a_standard_head_only_http_trailer() {
         assert_eq!(
             error.kind(),
             ErrorKind::InvalidFrame(
-                "HTTP trailer contains a field that belongs in the message head"
+                "HTTP trailer contains a field that frames or routes the message"
             )
         );
     };
@@ -721,8 +719,8 @@ async fn typed_client_validates_late_trailers_during_preview_replay() {
                     trailers.insert("x-hop", "late".parse().unwrap());
                 } else {
                     trailers.insert(
-                        rama_http_types::header::WWW_AUTHENTICATE,
-                        "Basic realm=test".parse().unwrap(),
+                        rama_http_types::header::CONTENT_LENGTH,
+                        "9".parse().unwrap(),
                     );
                 }
                 let body = Body::from_frame_stream(stream::iter([
@@ -760,7 +758,7 @@ async fn typed_client_validates_late_trailers_during_preview_replay() {
                     ErrorKind::InvalidFrame(if nominated_by_connection {
                         "HTTP trailer contains a Connection-nominated field"
                     } else {
-                        "HTTP trailer contains a field that belongs in the message head"
+                        "HTTP trailer contains a field that frames or routes the message"
                     }),
                 );
                 drop(response);

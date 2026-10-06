@@ -2995,13 +2995,19 @@ mod tests {
         assert_eq!(fields["etag"], "\"generated-after-body\"");
     }
 
+    /// Trailers carry anything but what frames or routes the message; the HTTP side applies
+    /// the message's trailer policy when it sends them.
     #[tokio::test]
-    async fn outgoing_http_body_rejects_late_head_and_connection_fields() {
-        for (name, value) in [
-            ("authorization", "secret"),
-            ("www-authenticate", "Basic realm=test"),
-            ("retry-after", "120"),
-            ("vary", "Accept-Encoding"),
+    async fn outgoing_http_body_rejects_framing_and_connection_fields() {
+        for (name, value, accepted) in [
+            ("authorization", "secret", true),
+            ("www-authenticate", "Basic realm=test", true),
+            ("retry-after", "120", true),
+            ("vary", "Accept-Encoding", true),
+            ("content-length", "9", false),
+            ("host", "example.test", false),
+            ("te", "trailers", false),
+            ("transfer-encoding", "chunked", false),
         ] {
             let mut trailers = HeaderMap::new();
             trailers.insert(
@@ -3012,7 +3018,7 @@ mod tests {
                 Frame::trailers(trailers),
             )]));
             let mut body = OutgoingBody::from_http(body);
-            body.next().await.unwrap().unwrap_err();
+            assert_eq!(body.next().await.unwrap().is_ok(), accepted, "{name}");
         }
 
         let mut trailers = HeaderMap::new();
