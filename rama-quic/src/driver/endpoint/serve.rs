@@ -1,7 +1,4 @@
-use std::{
-    net::{IpAddr, SocketAddr},
-    pin::pin,
-};
+use std::pin::pin;
 
 use rama_core::{
     Service,
@@ -39,7 +36,6 @@ impl Endpoint {
                 None => std::future::pending().await,
             }
         });
-        let bound = self.local_addr().ok();
         let mut served = FuturesUnordered::new();
 
         loop {
@@ -55,7 +51,7 @@ impl Endpoint {
                     };
                     let service = service.clone();
                     let peer_addr = incoming.remote_address();
-                    let local_addr = known_local_address(bound, incoming.local_ip());
+                    let local_addr = incoming.local_address().map(SocketAddress::from);
                     let trace_local_addr =
                         local_addr.unwrap_or_else(|| SocketAddress::default_ipv4(0));
                     let span = tracing::trace_root_span!(
@@ -105,17 +101,4 @@ fn log_join(served: Result<(), tokio::task::JoinError>) {
     {
         tracing::error!(%error, "QUIC connection service panicked");
     }
-}
-
-// A wildcard bind is not a connection's local address. Packet metadata may
-// identify the actual interface; otherwise the address stays unknown.
-fn known_local_address(
-    bound: Option<SocketAddr>,
-    observed: Option<IpAddr>,
-) -> Option<SocketAddress> {
-    let bound = bound?;
-    let ip = observed
-        .filter(|ip| !ip.is_unspecified())
-        .or_else(|| (!bound.ip().is_unspecified()).then_some(bound.ip()))?;
-    Some(SocketAddr::new(ip, bound.port()).into())
 }

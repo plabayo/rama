@@ -107,6 +107,55 @@ async fn served_connections_carry_their_socket_info() {
 }
 
 #[tokio::test]
+async fn connections_after_a_rebind_carry_the_new_socket_address() {
+    let identities = Identities::new();
+    let server = server(&identities).await;
+    let first = server.local_addr().unwrap();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let release = Arc::new(Notify::new());
+    let service = service_fn({
+        let release = release.clone();
+        move |connection: Connection| {
+            let info = connection.extensions().get_ref::<SocketInfo>().cloned();
+            tx.send(info).unwrap();
+            echo(connection, release.clone())
+        }
+    });
+    let served = tokio::spawn(server.clone().serve(Executor::new(), service));
+    let client = client().await;
+
+    // Serving is under way on the first socket before the endpoint moves.
+    let mut rebound = None;
+    for payload in [b"first".as_slice(), b"rebound"] {
+        let addr = rebound.unwrap_or(first);
+        let connection = connect(&client, &identities, addr).await;
+        release.notify_one();
+        timeout(DEADLINE, exchange(&connection, payload))
+            .await
+            .expect("the exchange completes");
+        let info = rx
+            .recv()
+            .await
+            .unwrap()
+            .expect("the connection carries its socket info");
+        assert_eq!(info.local_addr(), Some(SocketAddress::from(addr)));
+        connection.close(VarInt::from(0u32), b"done");
+
+        if rebound.is_none() {
+            server
+                .rebind_std_socket(std::net::UdpSocket::bind(localhost()).unwrap())
+                .unwrap();
+            let moved = server.local_addr().unwrap();
+            assert_ne!(moved.port(), first.port());
+            rebound = Some(moved);
+        }
+    }
+
+    server.close(VarInt::from(0u32), b"done");
+    timeout(DEADLINE, served).await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn a_failed_handshake_does_not_stop_serving() {
     let identities = Identities::new();
     let server = server(&identities).await;

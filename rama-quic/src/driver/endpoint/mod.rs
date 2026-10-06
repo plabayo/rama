@@ -1006,6 +1006,11 @@ impl EndpointInner {
 impl EndpointRef {
     /// How much of a pending attempt's ClientHello has arrived, and the attempt's progress
     /// generation that was current when looking.
+    /// The address of socket `id`, while the endpoint still holds it.
+    pub(crate) fn socket_addr(&self, id: SocketId) -> Option<SocketAddr> {
+        self.state.lock().sockets.live()?.local_addr(id)
+    }
+
     pub(crate) fn client_hello_progress(
         &self,
         incoming: &crate::proto::Incoming,

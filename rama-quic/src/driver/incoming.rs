@@ -111,6 +111,21 @@ impl Incoming {
         self.state().inner.local_ip()
     }
 
+    /// The local address the peer's first flight arrived on: the port of the socket that
+    /// received it, with the IP the packet was sent to when that socket is a wildcard.
+    ///
+    /// `None` when neither tells a specific IP.
+    pub fn local_address(&self) -> Option<SocketAddr> {
+        let state = self.state();
+        let bound = state.endpoint.socket_addr(state.lease.id())?;
+        let ip = state
+            .inner
+            .local_ip()
+            .filter(|ip| !ip.is_unspecified())
+            .or_else(|| (!bound.ip().is_unspecified()).then_some(bound.ip()))?;
+        Some(SocketAddr::new(ip, bound.port()))
+    }
+
     /// The peer's UDP address
     pub fn remote_address(&self) -> SocketAddr {
         self.state().inner.remote_address()
