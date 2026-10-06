@@ -956,6 +956,8 @@ pub(super) fn reserve_loopback_port() -> u16 {
 impl Drop for RamaService {
     fn drop(&mut self) {
         self.process.kill().expect("kill server process");
+        // Reaped, so no server outlives its test.
+        self.process.wait().expect("reap server process");
     }
 }
 
