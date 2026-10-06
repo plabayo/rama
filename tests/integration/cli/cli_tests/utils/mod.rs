@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::{
-    io::{BufRead, BufReader, Write as _},
+    io::{self, BufRead, BufReader, Write as _},
     net::{SocketAddr, TcpStream, UdpSocket},
     path::PathBuf,
     process::Child,
@@ -99,21 +99,13 @@ impl RamaService {
         let mut process = builder.spawn().unwrap();
 
         let stderr = process.stderr.take().unwrap();
-        let mut stderr = BufReader::new(stderr).lines();
-
-        for line in &mut stderr {
-            let line = line.unwrap();
-            if line.contains("ip service ready") {
-                break;
-            }
-        }
-
         thread::spawn(move || {
-            for line in stderr {
+            for line in BufReader::new(stderr).lines() {
                 let line = line.unwrap();
                 eprintln!("rama ip >> {line}");
             }
         });
+        wait_for_tcp_listener(&mut process, port, "ip");
 
         Self { process }
     }
@@ -289,21 +281,13 @@ impl RamaService {
         let mut process = builder.spawn().unwrap();
 
         let stderr = process.stderr.take().unwrap();
-        let mut stderr = BufReader::new(stderr).lines();
-
-        for line in &mut stderr {
-            let line = line.unwrap();
-            if line.contains("FP Service (auto) listening") {
-                break;
-            }
-        }
-
         thread::spawn(move || {
-            for line in stderr {
+            for line in BufReader::new(stderr).lines() {
                 let line = line.unwrap();
                 println!("rama fp >> {line}");
             }
         });
+        wait_for_tcp_listener(&mut process, port, "fp");
 
         Self { process }
     }
@@ -332,21 +316,13 @@ impl RamaService {
         let mut process = builder.spawn().unwrap();
 
         let stderr = process.stderr.take().unwrap();
-        let mut stderr = BufReader::new(stderr).lines();
-
-        for line in &mut stderr {
-            let line = line.unwrap();
-            if line.contains("proxy ready") {
-                break;
-            }
-        }
-
         thread::spawn(move || {
-            for line in stderr {
+            for line in BufReader::new(stderr).lines() {
                 let line = line.unwrap();
                 println!("rama proxy >> {line}");
             }
         });
+        wait_for_tcp_listener(&mut process, port, "proxy");
 
         Self { process }
     }
@@ -473,21 +449,17 @@ impl RamaService {
         let mut process = builder.spawn().unwrap();
 
         let stderr = process.stderr.take().unwrap();
-        let mut stderr = BufReader::new(stderr).lines();
-
-        for line in &mut stderr {
-            let line = line.unwrap();
-            if line.contains("discard service ready") {
-                break;
-            }
-        }
-
         thread::spawn(move || {
-            for line in stderr {
+            for line in BufReader::new(stderr).lines() {
                 let line = line.unwrap();
                 println!("rama discard >> {line}");
             }
         });
+        if mode.eq_ignore_ascii_case("udp") {
+            wait_for_udp_listener(&mut process, port, "discard");
+        } else {
+            wait_for_tcp_listener(&mut process, port, "discard");
+        }
 
         Self { process }
     }
@@ -824,21 +796,13 @@ impl RamaService {
         let mut process = builder.spawn().unwrap();
 
         let stderr = process.stderr.take().unwrap();
-        let mut stderr = BufReader::new(stderr).lines();
-
-        for line in &mut stderr {
-            let line = line.unwrap();
-            if line.contains("Stunnel exit node is running") {
-                break;
-            }
-        }
-
         thread::spawn(move || {
-            for line in stderr {
+            for line in BufReader::new(stderr).lines() {
                 let line = line.unwrap();
                 eprintln!("rama stunnel-server >> {line}");
             }
         });
+        wait_for_tcp_address(&mut process, bind, "stunnel exit");
 
         Self { process }
     }
@@ -871,32 +835,69 @@ impl RamaService {
         let mut process = builder.spawn().unwrap();
 
         let stderr = process.stderr.take().unwrap();
-        let mut stderr = BufReader::new(stderr).lines();
-
-        for line in &mut stderr {
-            let line = line.unwrap();
-            if line.contains("Stunnel entry node is running") {
-                break;
-            }
-        }
-
         thread::spawn(move || {
-            for line in stderr {
+            for line in BufReader::new(stderr).lines() {
                 let line = line.unwrap();
                 eprintln!("rama stunnel-client >> {line}");
             }
         });
+        wait_for_tcp_address(&mut process, bind, "stunnel entry");
 
         Self { process }
     }
 }
 
 fn wait_for_tcp_listener(process: &mut Child, port: u16, name: &str) {
+    wait_for_tcp_address(process, &format!("127.0.0.1:{port}"), name);
+}
+
+/// Readiness from the socket, not from a log line that the inherited `RUST_LOG` may hide.
+fn wait_for_tcp_address(process: &mut Child, addr: &str, name: &str) {
     let deadline = Instant::now() + Duration::from_secs(10);
-    let addr = format!("127.0.0.1:{port}");
 
     loop {
-        if TcpStream::connect(&addr).is_ok() {
+        if TcpStream::connect(addr).is_ok() {
+            return;
+        }
+
+        if let Some(status) = process.try_wait().expect("check service status") {
+            panic!("{name} service exited before listening on {addr}: {status}");
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "{name} service did not listen on {addr} before timeout"
+        );
+
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Wait until a UDP service that never answers has bound `port`: until then, loopback answers
+/// a datagram with port unreachable. Each probe uses a fresh socket, as a socket may not
+/// report a second unreachable, and two quiet probes in a row count as bound.
+fn wait_for_udp_listener(process: &mut Child, port: u16, name: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let addr = format!("127.0.0.1:{port}");
+    let quiet = || {
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("bind UDP readiness probe");
+        socket.connect(&addr).expect("connect UDP readiness probe");
+        socket
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .expect("set UDP readiness probe timeout");
+        socket.send(b"rama-ready").is_ok()
+            && socket.recv(&mut [0; 1]).is_err_and(|error| {
+                matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                )
+            })
+    };
+    let mut quiet_in_a_row = 0;
+
+    loop {
+        quiet_in_a_row = if quiet() { quiet_in_a_row + 1 } else { 0 };
+        if quiet_in_a_row == 2 {
             return;
         }
 
