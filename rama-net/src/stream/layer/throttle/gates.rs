@@ -31,7 +31,7 @@ impl StreamGates for ThrottleGates {
     type Gate = ThrottleBudget;
 
     fn open(&self, stream: GatedStream) -> Option<ThrottleBudget> {
-        let limiter = match stream.direction() {
+        let limiter = match stream.direction {
             GateDirection::Read => self.read.as_ref(),
             GateDirection::Write => self.write.as_ref(),
         }?;
@@ -52,7 +52,12 @@ mod tests {
     use crate::gate::{Initiator, StreamGate as _};
 
     fn stream(id: u64, direction: GateDirection) -> GatedStream {
-        GatedStream::new(id, direction, true, Initiator::Peer)
+        GatedStream {
+            id,
+            direction,
+            bidirectional: true,
+            initiator: Initiator::Peer,
+        }
     }
 
     #[tokio::test(start_paused = true)]

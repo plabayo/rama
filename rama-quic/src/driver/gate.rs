@@ -56,7 +56,12 @@ impl ConnectionGates {
         } else {
             Initiator::Peer
         };
-        let stream = GatedStream::new(id.into(), direction, id.dir() == Dir::Bi, initiator);
+        let stream = GatedStream {
+            id: id.into(),
+            direction,
+            bidirectional: id.dir() == Dir::Bi,
+            initiator,
+        };
         let stack: SmallVec<[Box<dyn StreamGate>; 1]> = self
             .0
             .iter()

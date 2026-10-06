@@ -38,55 +38,17 @@ pub trait StreamGates: Send + Sync + 'static {
 /// The stream direction a gate is opened for.
 #[derive(Debug, Clone, Copy)]
 pub struct GatedStream {
-    id: u64,
-    direction: GateDirection,
-    bidirectional: bool,
-    initiator: Initiator,
-}
-
-impl GatedStream {
-    /// Describe the `direction` of stream `id`.
-    #[must_use]
-    pub const fn new(
-        id: u64,
-        direction: GateDirection,
-        bidirectional: bool,
-        initiator: Initiator,
-    ) -> Self {
-        Self {
-            id,
-            direction,
-            bidirectional,
-            initiator,
-        }
-    }
-
     /// The transport's stream identifier.
     ///
     /// Unique among the live streams of a connection, except that a stream the peer
     /// rejected as early data gives its identifier to the stream opened in its place.
-    #[must_use]
-    pub const fn id(&self) -> u64 {
-        self.id
-    }
-
+    pub id: u64,
     /// Which side of the stream the gate paces.
-    #[must_use]
-    pub const fn direction(&self) -> GateDirection {
-        self.direction
-    }
-
+    pub direction: GateDirection,
     /// Whether the stream carries data both ways.
-    #[must_use]
-    pub const fn is_bidirectional(&self) -> bool {
-        self.bidirectional
-    }
-
+    pub bidirectional: bool,
     /// Who opened the stream.
-    #[must_use]
-    pub const fn initiator(&self) -> Initiator {
-        self.initiator
-    }
+    pub initiator: Initiator,
 }
 
 /// Which side of a stream a gate paces.

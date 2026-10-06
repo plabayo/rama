@@ -106,7 +106,7 @@ impl StreamGates for Counters {
     type Gate = Counting;
 
     fn open(&self, stream: GatedStream) -> Option<Counting> {
-        let moved = match stream.direction() {
+        let moved = match stream.direction {
             GateDirection::Read => self.read.clone(),
             GateDirection::Write => self.written.clone(),
         };
@@ -145,7 +145,7 @@ impl StreamGates for Valve {
     type Gate = Self;
 
     fn open(&self, stream: GatedStream) -> Option<Self> {
-        stream.is_bidirectional().then(|| self.clone())
+        stream.bidirectional.then(|| self.clone())
     }
 }
 
@@ -186,10 +186,10 @@ async fn gates_are_told_which_stream_direction_they_pace() {
         .iter()
         .map(|stream| {
             (
-                stream.id(),
-                stream.direction(),
-                stream.is_bidirectional(),
-                stream.initiator(),
+                stream.id,
+                stream.direction,
+                stream.bidirectional,
+                stream.initiator,
             )
         })
         .collect();
