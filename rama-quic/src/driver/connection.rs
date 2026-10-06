@@ -2026,13 +2026,13 @@ struct NewStream {
 
 impl NewStream {
     fn send(&self) -> SendStream {
-        let gates = self.gates(GateDirection::Write);
-        SendStream::new(self.conn.clone(), self.id, self.is_0rtt, gates)
+        SendStream::new(self.conn.clone(), self.id, self.is_0rtt)
+            .maybe_with_gates(self.gates(GateDirection::Write))
     }
 
     fn recv(self) -> RecvStream {
         let gates = self.gates(GateDirection::Read);
-        RecvStream::new(self.conn, self.id, self.is_0rtt, gates)
+        RecvStream::new(self.conn, self.id, self.is_0rtt).maybe_with_gates(gates)
     }
 
     fn gates(&self, direction: GateDirection) -> Option<GateStack> {

@@ -125,19 +125,22 @@ impl StreamAbortHandle {
 }
 
 impl SendStream {
-    pub(crate) fn new(
-        conn: ConnectionRef,
-        stream: StreamId,
-        is_0rtt: bool,
-        gates: Option<GateStack>,
-    ) -> Self {
+    pub(crate) fn new(conn: ConnectionRef, stream: StreamId, is_0rtt: bool) -> Self {
         Self {
             conn,
             stream,
             is_0rtt,
             local_reset: 0,
             events: OnceLock::new(),
-            gates,
+            gates: None,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Pace writing with `gates`.
+        pub(crate) fn gates(mut self, gates: Option<GateStack>) -> Self {
+            self.gates = gates;
+            self
         }
     }
 

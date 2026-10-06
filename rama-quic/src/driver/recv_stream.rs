@@ -61,19 +61,22 @@ pub struct RecvStream {
 }
 
 impl RecvStream {
-    pub(crate) fn new(
-        conn: ConnectionRef,
-        stream: StreamId,
-        is_0rtt: bool,
-        gates: Option<GateStack>,
-    ) -> Self {
+    pub(crate) fn new(conn: ConnectionRef, stream: StreamId, is_0rtt: bool) -> Self {
         Self {
             conn,
             stream,
             is_0rtt,
             all_data_read: false,
             reset: None,
-            gates,
+            gates: None,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Pace reading with `gates`.
+        pub(crate) fn gates(mut self, gates: Option<GateStack>) -> Self {
+            self.gates = gates;
+            self
         }
     }
 
