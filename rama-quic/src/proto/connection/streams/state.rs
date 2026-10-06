@@ -4,8 +4,16 @@ use std::{
     mem,
 };
 
-use rama_core::bytes::BufMut;
-use rama_core::telemetry::tracing::{debug, trace};
+use rama_core::{
+    bytes::BufMut,
+    telemetry::tracing::{debug, trace},
+};
+use rama_quic_proto::{
+    Dir, MAX_STREAM_COUNT, Side, StreamId, TransportError, VarInt,
+    coding::BufMutExt,
+    frame::{self, FrameStruct, StreamMetaVec},
+    transport_parameters::TransportParameters,
+};
 use rustc_hash::FxHashMap;
 
 use super::{
@@ -13,12 +21,6 @@ use super::{
     StreamHalf, ThinRetransmits,
 };
 use crate::proto::connection::stats::FrameStats;
-use rama_quic_proto::{
-    Dir, MAX_STREAM_COUNT, Side, StreamId, TransportError, VarInt,
-    coding::BufMutExt,
-    frame::{self, FrameStruct, StreamMetaVec},
-    transport_parameters::TransportParameters,
-};
 
 /// Wrapper around `Recv` that facilitates reusing `Recv` instances
 #[derive(Debug)]
@@ -1180,15 +1182,17 @@ pub(super) fn get_or_insert_recv(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::proto::{
-        ReadableError, RecvStream, SendStream, WriteError, connection::State as ConnState,
-        connection::Streams,
-    };
+    use std::assert_matches;
+
     use rama_core::bytes::Bytes;
     use rama_quic_proto::TransportErrorCode;
     use rama_utils::octets;
-    use std::assert_matches;
+
+    use super::*;
+    use crate::proto::{
+        ReadableError, RecvStream, SendStream, WriteError,
+        connection::{State as ConnState, Streams},
+    };
 
     fn make(side: Side) -> StreamsState {
         StreamsState::new(

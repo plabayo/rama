@@ -1,3 +1,5 @@
+use std::{collections::VecDeque, sync::Arc};
+
 use parking_lot::Mutex;
 use rama_core::error::{ArcError, BoxError};
 use rama_crypto::{
@@ -12,19 +14,18 @@ use rama_crypto::{
     pki_types::CertificateDer,
 };
 use rama_net::{address::Domain, tls::ApplicationProtocol};
-use std::{collections::VecDeque, sync::Arc};
-use zeroize::Zeroizing;
-
-use super::packet::{self, Secret, Suite};
-use crate::proto::crypto::{
-    self, DirectionalKeys, HandshakeEvent, KeyPair, Keys, UnsupportedVersion,
-};
 use rama_quic_proto::{
     ConnectionId, Side, TransportError, TransportErrorCode, Version,
     crypto::{HeaderKey, PacketKey},
     packet::SpaceId,
     transport_parameters::TransportParameters,
     version::Wire,
+};
+use zeroize::Zeroizing;
+
+use super::packet::{self, Secret, Suite};
+use crate::proto::crypto::{
+    self, DirectionalKeys, HandshakeEvent, KeyPair, Keys, UnsupportedVersion,
 };
 
 enum Event {

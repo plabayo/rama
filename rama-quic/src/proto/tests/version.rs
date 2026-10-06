@@ -1,9 +1,13 @@
 //! QUIC version 2 (RFC 9369): the wire constants against the RFC's own vectors, through the
 //! provider traits so every TLS backend is held to them, and a v2 handshake end to end.
 
-use rama_core::bytes::BytesMut;
-use rama_quic_proto::{ConnectionId, Dir, Side, VarInt, Version, version::LongKind};
 use std::assert_matches;
+
+use rama_core::bytes::BytesMut;
+use rama_quic_proto::{
+    ConnectionId, Dir, Side, VarInt, Version,
+    version::{ClientVersionPolicy, LongKind, ServerVersionPolicy, VersionPreference},
+};
 
 use super::*;
 
@@ -249,8 +253,6 @@ fn a_v1_only_server_negotiates_a_v2_client_down() {
 }
 
 // ---- RFC 9368 compatible version negotiation -------------------------------------------------
-
-use rama_quic_proto::version::{ClientVersionPolicy, ServerVersionPolicy, VersionPreference};
 
 fn server_preferring(versions: Vec<Version>) -> ServerConfig {
     let mut config = server_config();

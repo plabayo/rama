@@ -1,8 +1,8 @@
 #![cfg(feature = "http")]
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-use std::assert_matches;
 use std::{
+    assert_matches,
     convert::Infallible,
     sync::{
         Arc,

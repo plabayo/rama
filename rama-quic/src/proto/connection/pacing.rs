@@ -1,8 +1,8 @@
 //! Pacing of packet transmissions.
 
-use crate::proto::{Duration, Instant, TIMER_GRANULARITY};
-
 use rama_core::telemetry::tracing::warn;
+
+use crate::proto::{Duration, Instant, TIMER_GRANULARITY};
 
 /// A simple token-bucket pacer
 ///

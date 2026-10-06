@@ -1,3 +1,8 @@
+use std::{
+    collections::VecDeque,
+    sync::{Arc, LazyLock},
+};
+
 use parking_lot::Mutex;
 use rama_core::error::{ArcError, BoxError};
 use rama_crypto::dep::boring::{
@@ -6,6 +11,9 @@ use rama_crypto::dep::boring::{
     ssl::{Ssl, SslAcceptorBuilder, SslContext, SslSession, SslSessionCacheMode, SslVersion},
 };
 use rama_net::address::Host;
+use rama_quic_proto::{
+    ConnectionId, Side, TransportError, Version, transport_parameters::TransportParameters,
+};
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions,
     alpn::{AlpnError, AlpnPolicy},
@@ -15,10 +23,6 @@ use rama_tls::{
 use rama_tls_boring::{
     client::{BoringTlsConnectorConfig, TlsConnectorContext, TlsConnectorContextBuilder},
     server::{BoringTlsAcceptorConfig, IssuedCertificate, TlsAcceptorData},
-};
-use std::{
-    collections::VecDeque,
-    sync::{Arc, LazyLock},
 };
 
 use super::{
@@ -31,9 +35,6 @@ use crate::proto::{
         self,
         config::{TlsConfigError, TlsOptions},
     },
-};
-use rama_quic_proto::{
-    ConnectionId, Side, TransportError, Version, transport_parameters::TransportParameters,
 };
 
 struct Ticket {
@@ -467,8 +468,9 @@ impl QuicServerConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rama_net::tls::ApplicationProtocol;
+
+    use super::*;
 
     #[test]
     fn repeated_client_configs_reuse_the_process_ticket_slot() {

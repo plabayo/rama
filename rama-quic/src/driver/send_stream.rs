@@ -9,17 +9,19 @@ use std::{
     task::{Context, Poll, ready},
 };
 
-use crate::proto::{
-    ClosedStream, ConnectionError, FinishError, SendStream as ProtoSendStream,
-    WriteError as ProtoWriteError, Written,
-};
 use rama_core::bytes::Bytes;
 use rama_quic_proto::{StreamId, VarInt};
 use tokio::sync::Notify;
 
-use crate::driver::{
-    connection::{ConnectionRef, SendDatagramError, State},
-    gate::GateStack,
+use crate::{
+    driver::{
+        connection::{ConnectionRef, SendDatagramError, State},
+        gate::GateStack,
+    },
+    proto::{
+        ClosedStream, ConnectionError, FinishError, SendStream as ProtoSendStream,
+        WriteError as ProtoWriteError, Written,
+    },
 };
 
 /// A stream that can only be used to send data

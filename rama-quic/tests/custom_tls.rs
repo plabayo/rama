@@ -1,11 +1,18 @@
 //! Compile and exercise the provider interface as an external consumer, including without
 //! any built-in TLS or packet-crypto feature.
 
+use std::{
+    assert_matches,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
+
 use rama_core::error::BoxError;
 use rama_crypto::pki_types::CertificateDer;
-use rama_quic::NegotiatedTlsParameters;
 use rama_quic::{
-    ClientConfig, ConnectError, Endpoint, ServerConfig,
+    ClientConfig, ConnectError, Endpoint, NegotiatedTlsParameters, ServerConfig,
     tls::provider::{
         AeadKey, ClientConfig as ClientProvider, ExportKeyingMaterialError, HandshakeEvent,
         HandshakeTokenKey, InitialKeysError, InitialServerConfig, KeyPair, Keys,
@@ -17,11 +24,6 @@ use rama_quic_proto::{
     crypto::{CryptoError, HeaderKey, PacketKey},
     packet::SpaceId as EncryptionLevel,
     transport_parameters::TransportParameters,
-};
-use std::assert_matches;
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
 };
 
 struct Provider(Arc<AtomicUsize>);

@@ -1,3 +1,5 @@
+#[cfg(feature = "udp")]
+use ::rama::{net::address::SocketAddress, udp::bind_udp_with_address};
 use rama::{
     extensions::Extensions,
     http::{
@@ -10,10 +12,6 @@ use rama::{
     telemetry::tracing,
     utils::str::non_empty_str,
 };
-
-#[cfg(feature = "udp")]
-use ::rama::{net::address::SocketAddress, udp::bind_udp_with_address};
-
 #[cfg(feature = "boring")]
 use rama::{
     net::client::{ConnectorService, EstablishedClientConnection},
@@ -23,9 +21,9 @@ use rama::{
 };
 #[cfg(feature = "boring")]
 use rama_net::client::ConnectRequest;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::utils;
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 #[ignore]
 #[tokio::test]
@@ -572,16 +570,18 @@ async fn test_https_with_remote_tls_cert_issuer() {
         proxy::haproxy::server::HaProxyLayer,
         rt::Executor,
         tcp::server::TcpListener,
-        tls::boring::{
-            core::{
-                pkey::{PKey, Private},
-                x509::X509,
+        tls::{
+            boring::{
+                core::{
+                    pkey::{PKey, Private},
+                    x509::X509,
+                },
+                server::TlsAcceptorLayer,
             },
-            server::TlsAcceptorLayer,
-        },
-        tls::server::{
-            CertificateIdentity, CertificateSubject, LeafCertConfig, LeafCertRequest,
-            SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
+            server::{
+                CertificateIdentity, CertificateSubject, LeafCertConfig, LeafCertRequest,
+                SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
+            },
         },
     };
 

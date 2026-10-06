@@ -11,7 +11,6 @@ use std::{
 };
 
 use base64::Engine;
-
 use rama::telemetry::tracing::{
     level_filters::LevelFilter,
     subscriber::{self, EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},

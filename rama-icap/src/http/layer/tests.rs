@@ -43,6 +43,11 @@ use rama_tls::{
 };
 use rama_tls_boring::client::TlsConnector as BoringTlsConnector;
 use rama_tls_rustls::{client::TlsConnector, server::TlsAcceptorLayer};
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    sync::Notify,
+    time::timeout,
+};
 
 use super::*;
 use crate::{
@@ -57,11 +62,6 @@ use crate::{
     server::{
         BodyFrame, IncomingRequest as RawIncomingRequest, OptionsResponse, OutgoingBody, Server,
     },
-};
-use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
-    sync::Notify,
-    time::timeout,
 };
 
 const TEST_SERVICE_TAG: ServiceTag = ServiceTag::from_static("rama-test");

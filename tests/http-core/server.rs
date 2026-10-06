@@ -1,42 +1,49 @@
 #![allow(unused)]
 // TODO ^ remove
 
-use std::convert::Infallible;
-use std::io::{self, Read, Write};
-use std::net::TcpListener as StdTcpListener;
-use std::net::{Shutdown, SocketAddr, TcpStream};
-use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
-use std::task::{Context, Poll};
-use std::thread;
-use std::time::Duration;
+use std::{
+    convert::Infallible,
+    io::{self, Read, Write},
+    net::{Shutdown, SocketAddr, TcpListener as StdTcpListener, TcpStream},
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    task::{Context, Poll},
+    thread,
+    time::Duration,
+};
 
 use futures_channel::oneshot;
 use parking_lot::Mutex;
-use rama::ServiceInput;
-use rama::error::BoxError;
-use rama::extensions::Extensions;
-use rama::extensions::ExtensionsRef;
-use rama::futures::future::{self, Either, FutureExt};
-use rama::http::body::util::{BodyExt, Empty, Full, StreamBody, combinators::BoxBody};
-use rama::http::core::h2::client::SendRequest;
-use rama::http::core::h2::{self, RecvStream, SendStream};
-use rama::http::core::service::RamaHttpService;
-use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
-use rama::net::Protocol;
-use rama::rt::Executor;
+use rama::{
+    ServiceInput,
+    error::BoxError,
+    extensions::{Extensions, ExtensionsRef},
+    futures::future::{self, Either, FutureExt},
+    http::{
+        Method, Request, Response, StatusCode, Version,
+        body::util::{BodyExt, Empty, Full, StreamBody, combinators::BoxBody},
+        core::{
+            body::{Body, Incoming as IncomingBody},
+            h2::{self, RecvStream, SendStream, client::SendRequest},
+            server::conn::{http1, http2},
+            service::RamaHttpService,
+        },
+        header::{HeaderMap, HeaderName, HeaderValue},
+    },
+    net::{Protocol, uri::Uri},
+    rt::Executor,
+    service::{Service, service_fn},
+};
 use rama_core::bytes::Bytes;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
-use tokio::net::{TcpListener as TkTcpListener, TcpListener, TcpStream as TkTcpStream};
-
-use rama::http::core::body::{Body, Incoming as IncomingBody};
-use rama::http::core::server::conn::{http1, http2};
-use rama::http::{Method, Request, Response, StatusCode, Version};
-use rama::net::uri::Uri;
-use rama::service::{Service, service_fn};
-use tokio::pin;
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf},
+    net::{TcpListener as TkTcpListener, TcpListener, TcpStream as TkTcpStream},
+    pin,
+};
 
 use super::support;
 
@@ -2012,8 +2019,7 @@ async fn h2_connect() {
 
 #[tokio::test]
 async fn h2_connect_multiplex() {
-    use rama::futures::StreamExt;
-    use rama::futures::stream::FuturesUnordered;
+    use rama::futures::{StreamExt, stream::FuturesUnordered};
 
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
@@ -3182,8 +3188,7 @@ async fn http2_server_context_params_absent_keeps_builder_defaults() {
 /// test pins that invariant.
 #[tokio::test]
 async fn http2_peer_settings_handle_does_not_extend_conn_lifetime() {
-    use rama::http::conn::H2ServerContextParams;
-    use rama::http::core::client::conn::http2 as h2_client;
+    use rama::http::{conn::H2ServerContextParams, core::client::conn::http2 as h2_client};
 
     let (listener, addr) = setup_tcp_listener();
 
@@ -3743,8 +3748,7 @@ impl ReplyBuilder<'_> {
     where
         S: rama::futures::Stream<Item = Result<Bytes, BoxError>> + Send + Sync + 'static,
     {
-        use rama::futures::TryStreamExt;
-        use rama::http::core::body::Frame;
+        use rama::{futures::TryStreamExt, http::core::body::Frame};
         let body = BodyExt::boxed(StreamBody::new(stream.map_ok(Frame::data)));
         self.tx.lock().send(Reply::Body(body)).unwrap();
     }
@@ -3753,8 +3757,7 @@ impl ReplyBuilder<'_> {
     where
         S: rama::futures::Stream<Item = Result<Bytes, BoxError>> + Send + Sync + 'static,
     {
-        use rama::futures::TryStreamExt;
-        use rama::http::core::body::Frame;
+        use rama::{futures::TryStreamExt, http::core::body::Frame};
         use support::trailers::StreamBodyWithTrailers;
         let mut stream_body = StreamBodyWithTrailers::new(stream.map_ok(Frame::data));
         stream_body.set_trailers(trailers);

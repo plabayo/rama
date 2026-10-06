@@ -1,3 +1,4 @@
+use itertools::Itertools as _;
 use rama::{
     error::{BoxError, ErrorContext},
     extensions::{Extensions, ExtensionsRef},
@@ -22,18 +23,15 @@ use rama::{
     tls::SecureTransport,
     ua::profile::{Http2Settings, JsProfileWebApis, UserAgentSourceInfo},
 };
-
-use itertools::Itertools as _;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::{
     State, StorageAuthorized,
-    data::TlsDisplayInfoExtensionData,
     data::{
-        DataSource, FetchMode, Initiator, RequestInfo, ResourceType, TlsDisplayInfo, UserAgentInfo,
-        get_akamai_h2_info, get_and_store_http_info, get_ja4h_info, get_request_info,
-        get_tls_display_info_and_store, get_user_agent_info,
+        DataSource, FetchMode, Initiator, RequestInfo, ResourceType, TlsDisplayInfo,
+        TlsDisplayInfoExtensionData, UserAgentInfo, get_akamai_h2_info, get_and_store_http_info,
+        get_ja4h_info, get_request_info, get_tls_display_info_and_store, get_user_agent_info,
     },
 };
 
@@ -1058,11 +1056,12 @@ struct Table {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rama::{
         Service,
         http::{Request, service::web::Router},
     };
+
+    use super::*;
 
     #[tokio::test]
     async fn fetch_endpoint_extracts_parts_and_body_without_json_content_type() {

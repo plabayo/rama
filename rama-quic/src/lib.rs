@@ -51,13 +51,13 @@ pub use proto::{
     AckFrequencyConfig, BloomTokenLog, Chunk, ClientConfig, ClosedStream, ConfigError,
     CongestionControl, ConnectError, ConnectionError, ConnectionIdGenerator,
     ConnectionIdGeneratorFactory, ConnectionStats, EndpointConfig, ExportKeyingMaterialError,
-    FrameStats, HashedConnectionIdGenerator, IdleTimeout, MIN_INITIAL_CONGESTION_WINDOW,
-    MtuDiscoveryConfig, NegotiatedTlsParameters, NoneTokenLog, NoneTokenStore, PathStats,
-    PreferredAddressPolicy, RandomConnectionIdGenerator, ReceiveQueueLimits, RetryRefused,
-    ServerConfig, StdSystemTime, StoredToken, TimeSource, TokenLog, TokenMemoryCache,
-    TokenReuseError, TokenStore, TransportConfig, UdpStats, ValidationTokenConfig, Written,
+    FrameStats, HashedConnectionIdGenerator, IdleTimeout, KEY_MATERIAL_SIZE,
+    MIN_INITIAL_CONGESTION_WINDOW, MtuDiscoveryConfig, NegotiatedTlsParameters, NoneTokenLog,
+    NoneTokenStore, PathStats, PreferredAddressPolicy, RandomConnectionIdGenerator,
+    ReceiveQueueLimits, RetryRefused, ServerConfig, StatelessResetKey, StdSystemTime, StoredToken,
+    TimeSource, TokenLog, TokenMemoryCache, TokenReuseError, TokenStore, TransportConfig, UdpStats,
+    ValidationTokenConfig, Written,
 };
-pub use proto::{KEY_MATERIAL_SIZE, StatelessResetKey};
 
 /// TLS for QUIC: how a connection's identity and application protocol are configured.
 ///

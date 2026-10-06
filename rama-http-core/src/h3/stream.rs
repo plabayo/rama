@@ -1,12 +1,10 @@
 //! Request-stream framing and message sequencing.
 
-use super::{
-    Error,
-    client::ConnectionLifetime,
-    connection::Shared,
-    frame::{FrameDecoder, FrameEvent},
-    quic::RecvStream,
+use std::{
+    sync::Arc,
+    task::{Context, Poll, ready},
 };
+
 use rama_core::bytes::Bytes;
 use rama_http_types::{
     HeaderMap,
@@ -15,9 +13,13 @@ use rama_http_types::{
 };
 use rama_net::uri::Uri;
 use rama_quic::StreamAbortHandle;
-use std::{
-    sync::Arc,
-    task::{Context, Poll, ready},
+
+use super::{
+    Error,
+    client::ConnectionLifetime,
+    connection::Shared,
+    frame::{FrameDecoder, FrameEvent},
+    quic::RecvStream,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -1,11 +1,12 @@
-use super::qlog::Capture;
-use super::*;
-use crate::proto::shared::{ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent};
+use std::assert_matches;
+
 use rama_quic_proto::{
     ConnectionId, Dir, TransportError, TransportErrorCode, VarInt,
     packet::{FixedLengthConnectionIdParser, PartialDecode},
 };
-use std::assert_matches;
+
+use super::{qlog::Capture, *};
+use crate::proto::shared::{ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent};
 
 fn traced_client(pair: &Pair, capture: &Capture) -> ClientConfig {
     let mut config = client_config_with_deterministic_pns();

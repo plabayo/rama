@@ -1,13 +1,7 @@
 //! Bounded, opt-in server push. Pushes are delivered to an application, never cached implicitly.
 
-use super::{
-    Error, body,
-    connection::Shared,
-    control::Role,
-    headers,
-    qpack::FieldPair,
-    stream::{Phase, Reader},
-};
+use std::{collections::BTreeMap, sync::Arc};
+
 use rama_core::{
     bytes::Bytes,
     extensions::{Extensions, ExtensionsRef as _},
@@ -16,8 +10,16 @@ use rama_http_types::{
     Method, Request, Response,
     proto::h3::{Code, FrameType},
 };
-use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+use super::{
+    Error, body,
+    connection::Shared,
+    control::Role,
+    headers,
+    qpack::FieldPair,
+    stream::{Phase, Reader},
+};
 
 #[derive(Default)]
 pub(crate) struct Entry {
@@ -476,13 +478,15 @@ impl Drop for Lease {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
+
+    use rama_core::futures::FutureExt as _;
+
     use super::*;
     use crate::h3::{
         connection::Config,
         qpack::{Encoder, EncoderConfig},
     };
-    use rama_core::futures::FutureExt as _;
-    use std::assert_matches;
 
     fn shared() -> Arc<Shared> {
         let shared = Shared::new(

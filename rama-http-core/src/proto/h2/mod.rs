@@ -1,21 +1,27 @@
-use std::io::{Cursor, IoSlice};
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context, Poll};
+use std::{
+    io::{Cursor, IoSlice},
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll, ready},
+};
+
+use pin_project_lite::pin_project;
+use rama_core::{
+    bytes::Buf,
+    error::BoxError,
+    telemetry::tracing::{debug, trace},
+};
+use rama_http::StreamingBody;
+use rama_http_types::{
+    HeaderMap,
+    header::{
+        CONNECTION, TE,
+        hop_by_hop::{CONNECTION_SPECIFIC_HEADERS, retain_te_trailers},
+        trailer::{ForbiddenTrailers, is_sent_in_trailers},
+    },
+};
 
 use crate::h2::SendStream;
-use pin_project_lite::pin_project;
-use rama_core::bytes::Buf;
-use rama_core::error::BoxError;
-use rama_core::telemetry::tracing::{debug, trace};
-use rama_http::StreamingBody;
-use rama_http_types::HeaderMap;
-use rama_http_types::header::{
-    CONNECTION, TE,
-    hop_by_hop::{CONNECTION_SPECIFIC_HEADERS, retain_te_trailers},
-    trailer::{ForbiddenTrailers, is_sent_in_trailers},
-};
-use std::task::ready;
 
 pub(crate) mod admission;
 pub(crate) mod ping;
@@ -363,8 +369,9 @@ impl<B: Buf> Buf for SendBuf<B> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rama_http_types::HeaderValue;
+
+    use super::*;
 
     #[test]
     fn request_te_keeps_only_trailers_from_every_line() {

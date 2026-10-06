@@ -1,10 +1,5 @@
 use std::{borrow::Cow, error::Error, fmt, sync::Arc};
 
-use base64::Engine as _;
-use rama_core::{error::BoxError, extensions::Extension, telemetry::tracing};
-use rama_http::headers::{ContentType, HeaderMapExt as _};
-use rama_utils::str::arcstr::ArcStr;
-
 use ::{
     rama_core::{
         bytes::Bytes,
@@ -17,6 +12,10 @@ use ::{
     },
     rama_net::uri::util::percent_encoding::{AsciiSet, CONTROLS, percent_decode, percent_encode},
 };
+use base64::Engine as _;
+use rama_core::{error::BoxError, extensions::Extension, telemetry::tracing};
+use rama_http::headers::{ContentType, HeaderMapExt as _};
+use rama_utils::str::arcstr::ArcStr;
 
 use crate::metadata::MetadataMap;
 

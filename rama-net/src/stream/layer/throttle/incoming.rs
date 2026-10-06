@@ -1,7 +1,7 @@
-use super::{ThrottleConfig, ThrottleMode, Throttleable};
-
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
+
+use super::{ThrottleConfig, ThrottleMode, Throttleable};
 
 /// A [`Service`] that throttles its input connection: an IO [`Stream`] is
 /// wrapped in a [`ThrottledIo`], other connections throttle their own

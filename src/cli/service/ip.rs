@@ -7,19 +7,23 @@
     reason = "feature-gated `mut self` consumed by some cfg branches but not others — `#[allow(unused_mut)]` would warn unfulfilled in the cfg arm where it IS used"
 )]
 
+use std::{convert::Infallible, marker::PhantomData, net::IpAddr, sync::Arc, time::Duration};
+
+use tokio::io::AsyncWriteExt;
+
 use crate::{
     Layer, Service,
     cli::ForwardKind,
     combinators::{Either, Either3, Either7},
     error::{BoxError, BoxErrorExt, ErrorExt as _},
     extensions::ExtensionsRef,
-    http::BodyLimitLayer,
     http::{
-        Request, Response, StatusCode, Version,
-        headers::AltSvc,
-        headers::exotic::XClacksOverhead,
-        headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
-        headers::{Accept, HeaderMapExt},
+        BodyLimitLayer, Request, Response, StatusCode, Version,
+        headers::{
+            Accept, AltSvc, HeaderMapExt,
+            exotic::XClacksOverhead,
+            forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
+        },
         layer::{
             forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
             set_header::SetResponseHeaderLayer, trace::TraceLayer,
@@ -29,13 +33,14 @@ use crate::{
         service::web::response::{Css, IntoResponse, Json, Redirect, Script},
     },
     io::Io,
-    layer::limit::policy::UnlimitedPolicy,
     layer::{
         ConsumeErrLayer, LimitLayer, TimeoutLayer,
-        limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy},
+        limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy, UnlimitedPolicy},
     },
-    net::address::ip::geo::{GeoLocation, IpGeoDb, IpGeoInfo},
-    net::stream::layer::{ThrottleLayer, ThrottleMode},
+    net::{
+        address::ip::geo::{GeoLocation, IpGeoDb, IpGeoInfo},
+        stream::layer::{ThrottleLayer, ThrottleMode},
+    },
     proxy::haproxy::server::HaProxyLayer,
     quic,
     rt::Executor,
@@ -43,9 +48,6 @@ use crate::{
     telemetry::tracing,
     utils::{octets::mib, rate::Rate},
 };
-
-use std::{convert::Infallible, marker::PhantomData, net::IpAddr, sync::Arc, time::Duration};
-use tokio::io::AsyncWriteExt;
 
 core::cfg_select! {
     feature = "boring" => {
@@ -689,9 +691,10 @@ fn render_html_page(
 
 #[cfg(test)]
 mod render_html_page_tests {
+    use std::net::Ipv4Addr;
+
     use super::*;
     use crate::http::protocols::html::IntoHtml as _;
-    use std::net::Ipv4Addr;
 
     /// The IP value flows through `html!`'s escape pipeline, so even if a
     /// future `IpAddr::Display` impl produced HTML-special chars they would
@@ -750,8 +753,10 @@ mod render_html_page_tests {
     /// per-source) and embeds the attribution as an HTML comment.
     #[test]
     fn render_html_page_renders_geo_panel() {
-        use crate::geo::Country;
-        use crate::net::address::ip::geo::{GeoLocation, IpGeoInfo, IpGeoSourceResult};
+        use crate::{
+            geo::Country,
+            net::address::ip::geo::{GeoLocation, IpGeoInfo, IpGeoSourceResult},
+        };
         let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
         let loc = GeoLocation {
             country: Some(Country::Belgium),

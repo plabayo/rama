@@ -1,9 +1,17 @@
 //! Options and types in function of creating [`Socket`]s.
 
+#[cfg(target_os = "windows")]
+use std::os::windows::io::AsRawSocket as _;
 use std::{
     io,
     net::{Ipv4Addr, SocketAddr},
     time::Duration,
+};
+
+use serde::{Deserialize, Serialize};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Networking::WinSock::{
+    SO_EXCLUSIVEADDRUSE, SOCKET, SOCKET_ERROR, SOL_SOCKET, setsockopt,
 };
 
 use super::core::{
@@ -11,15 +19,6 @@ use super::core::{
     TcpKeepalive as SocketTcpKeepAlive, Type as SocketType,
 };
 use crate::address::SocketAddress;
-
-use serde::{Deserialize, Serialize};
-
-#[cfg(target_os = "windows")]
-use std::os::windows::io::AsRawSocket as _;
-#[cfg(target_os = "windows")]
-use windows_sys::Win32::Networking::WinSock::{
-    SO_EXCLUSIVEADDRUSE, SOCKET, SOCKET_ERROR, SOL_SOCKET, setsockopt,
-};
 
 /// Specification of the communication domain for a [`Socket`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, Eq, PartialEq)]
@@ -1411,9 +1410,10 @@ fn set_exclusive_address_use(socket: &Socket, exclusive: bool) -> io::Result<()>
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use core::cell::Cell;
     use std::net::{Ipv4Addr, Ipv6Addr};
+
+    use super::*;
 
     /// Windows lets a wildcard bind share a port another socket holds on a more specific
     /// address, unless the binding socket asks for the port exclusively.

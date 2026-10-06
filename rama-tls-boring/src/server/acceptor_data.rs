@@ -1,18 +1,14 @@
-use super::cert_issuer::{
-    CaMaterial, DynamicIssuer, IssuedCert, ServerCertIssuerData, ServerCertIssuerKind,
-};
-use super::config::BoringTlsAuth;
-use crate::core::{
-    pkey::{PKey, Private},
-    x509::X509,
-};
+use std::sync::Arc;
+
 use moka::future::Cache;
 use parking_lot::Mutex;
 use rama_boring::ssl::{ClientHello, NameType, SslAcceptorBuilder, SslRef};
 use rama_boring_tokio::{AsyncSelectCertError, BoxSelectCertFinish};
-use rama_core::conversion::{RamaTryFrom, RamaTryInto};
-use rama_core::error::{ArcError, BoxError, BoxErrorExt as _, ErrorContext, ErrorExt as _};
-use rama_core::telemetry::tracing;
+use rama_core::{
+    conversion::{RamaTryFrom, RamaTryInto},
+    error::{ArcError, BoxError, BoxErrorExt as _, ErrorContext, ErrorExt as _},
+    telemetry::tracing,
+};
 use rama_crypto::dep::x509_parser::nom::AsBytes;
 use rama_net::{address::Domain, tls::ApplicationProtocol};
 use rama_tls::{
@@ -23,7 +19,17 @@ use rama_tls::{
         ClientVerifyMode, LeafCertConfig, LeafCertRequest, ServerAuthData,
     },
 };
-use std::sync::Arc;
+
+use super::{
+    cert_issuer::{
+        CaMaterial, DynamicIssuer, IssuedCert, ServerCertIssuerData, ServerCertIssuerKind,
+    },
+    config::BoringTlsAuth,
+};
+use crate::core::{
+    pkey::{PKey, Private},
+    x509::X509,
+};
 
 pub(super) async fn prepare_server_cert_issuer(
     issuer_data: ServerCertIssuerData,
@@ -745,20 +751,22 @@ fn add_issued_cert_to_ssl_ref(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::server::{
-        BoringServerConfigExt as _, CacheKind, ServerCertIssuerData, ServerCertIssuerKind,
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
     };
+
     use rama_crypto::cert::CertificateValidity;
     use rama_tls::{
         client::ClientHelloExtension,
         server::{DynamicCertIssuer, SelfSignedCaConfig, TlsServerConfig},
     };
-    use std::{
-        sync::atomic::{AtomicUsize, Ordering},
-        time::Duration,
-    };
     use tokio::sync::Barrier;
+
+    use super::*;
+    use crate::server::{
+        BoringServerConfigExt as _, CacheKind, ServerCertIssuerData, ServerCertIssuerKind,
+    };
 
     #[test]
     fn generated_ca_is_shared_across_config_conversions() {

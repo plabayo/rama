@@ -1,9 +1,10 @@
+use std::str::FromStr;
+
 use rama::{
     error::{BoxError, BoxErrorExt, ErrorExt as _},
     http,
     utils::str::smol_str::StrExt,
 };
-use std::str::FromStr;
 
 /// The HTTP versions served over TCP.
 #[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]

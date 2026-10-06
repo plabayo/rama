@@ -1,5 +1,8 @@
 //! rama ip service
 
+use std::{convert::Infallible, sync::Arc, time::Duration};
+
+use clap::Args;
 use rama::{
     Service,
     cli::{ForwardKind, service::ip::IpServiceBuilder},
@@ -13,9 +16,6 @@ use rama::{
     tcp::{TcpStream, server::TcpListener},
     telemetry::tracing,
 };
-
-use clap::Args;
-use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use crate::utils::{
     http::{HttpVersions, TcpHttpVersion},

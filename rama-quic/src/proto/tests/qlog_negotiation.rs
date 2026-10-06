@@ -1,7 +1,8 @@
-use super::qlog::Capture;
-use super::*;
-use rama_quic_proto::VarInt;
 use std::assert_matches;
+
+use rama_quic_proto::VarInt;
+
+use super::{qlog::Capture, *};
 
 fn trace_config(capture: &Capture, now: Instant) -> Arc<TransportConfig> {
     let mut transport = TransportConfig::default();

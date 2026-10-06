@@ -3,12 +3,11 @@ use std::{
     io,
 };
 
-use rama_core::bytes::Bytes;
-use rama_core::telemetry::tracing::trace;
+use rama_core::{bytes::Bytes, telemetry::tracing::trace};
+use rama_quic_proto::{Dir, StreamId, VarInt, frame};
 
 use super::spaces::{Retransmits, ThinRetransmits};
 use crate::proto::connection::streams::state::{get_or_insert_recv, get_or_insert_send};
-use rama_quic_proto::{Dir, StreamId, VarInt, frame};
 
 mod recv;
 use recv::Recv;
@@ -16,9 +15,8 @@ pub(crate) use recv::{Chunks, ReadError, ReadableError};
 
 mod send;
 pub use send::Written;
-pub(crate) use send::{ByteSlice, BytesArray};
+pub(crate) use send::{ByteSlice, BytesArray, FinishError, WriteError};
 use send::{BytesSource, Send, SendState};
-pub(crate) use send::{FinishError, WriteError};
 
 mod state;
 pub(crate) use state::StreamReceiveWindows;

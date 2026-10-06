@@ -1,14 +1,14 @@
 //! Connection and endpoint lifecycle tests.
 
-use super::{Captured, TestSocket, WakeCount, pin_active_socket, release_lease};
-use crate::driver::connection::{
-    MAX_TRANSMIT_DATAGRAMS, MAX_TRANSMIT_SEGMENTS, RETAINED_DESCRIPTORS,
+use std::{
+    assert_matches,
+    collections::VecDeque,
+    net::{IpAddr, Ipv4Addr},
+    num::NonZeroUsize,
+    sync::atomic::AtomicBool,
+    task::Wake,
 };
-use crate::driver::endpoint::*;
-use crate::driver::lifecycle::ShutdownOutcome;
-use crate::driver::queue::{MIN_RETAINED, QUIET_DRAINS_BEFORE_SHRINK};
-use crate::driver::sockets::MAX_RETAINED_SOCKETS;
-use crate::proto::{CongestionControl, RetryRefused, TransportConfig};
+
 use rama_crypto::hmac::HmacSha2;
 use rama_quic_proto::Version;
 use rama_tls::{
@@ -16,13 +16,17 @@ use rama_tls::{
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
 use rama_udp::{DatagramCapabilities, DatagramError, DatagramSender, DatagramSocket};
-use std::assert_matches;
-use std::collections::VecDeque;
-use std::{
-    net::{IpAddr, Ipv4Addr},
-    num::NonZeroUsize,
-    sync::atomic::AtomicBool,
-    task::Wake,
+
+use super::{Captured, TestSocket, WakeCount, pin_active_socket, release_lease};
+use crate::{
+    driver::{
+        connection::{MAX_TRANSMIT_DATAGRAMS, MAX_TRANSMIT_SEGMENTS, RETAINED_DESCRIPTORS},
+        endpoint::*,
+        lifecycle::ShutdownOutcome,
+        queue::{MIN_RETAINED, QUIET_DRAINS_BEFORE_SHRINK},
+        sockets::MAX_RETAINED_SOCKETS,
+    },
+    proto::{CongestionControl, RetryRefused, TransportConfig},
 };
 
 pub(super) fn configs() -> (ClientConfig, ServerConfig) {

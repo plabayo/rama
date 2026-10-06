@@ -2,6 +2,9 @@
 //! when using in HTTP(S) mode or else when using in udp/tcp/tls mode
 //! it simply echos the bytes back.
 
+use std::{fmt, sync::Arc, time::Duration};
+
+use clap::{Args, ValueEnum};
 use rama::{
     Layer as _,
     cli::{ForwardKind, service::echo::EchoServiceBuilder},
@@ -14,22 +17,20 @@ use rama::{
     },
     net::{
         address::SocketAddress,
-        stream::layer::{ThrottleLayer, ThrottleMode},
-        stream::service::EchoService,
+        stream::{
+            layer::{ThrottleLayer, ThrottleMode},
+            service::EchoService,
+        },
         tls::ApplicationProtocol,
     },
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{self, Instrument},
-    tls::boring::server::TlsAcceptorLayer,
-    tls::server::TlsServerConfig,
+    tls::{boring::server::TlsAcceptorLayer, server::TlsServerConfig},
     ua::profile::UserAgentDatabase,
     udp::bind_udp_with_address,
 };
-
-use clap::{Args, ValueEnum};
-use std::{fmt, sync::Arc, time::Duration};
 use tokio::sync::mpsc::Sender;
 
 use crate::utils::{

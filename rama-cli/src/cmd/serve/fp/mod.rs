@@ -1,12 +1,15 @@
 //! Echo service that echos the http request and tls client config
 
+use std::{convert::Infallible, fmt, sync::Arc, time::Duration};
+
+use clap::Args;
+use itertools::Itertools;
 use rama::{
     Service,
     cli::ForwardKind,
     combinators::{Either, Either7},
     error::{BoxError, ErrorContext},
-    extensions::Extension,
-    extensions::ExtensionsRef,
+    extensions::{Extension, ExtensionsRef},
     graceful::ShutdownGuard,
     http::{
         BodyLimitLayer, HeaderName, HeaderValue, Request,
@@ -53,10 +56,6 @@ use rama::{
         str::non_empty_str,
     },
 };
-
-use clap::Args;
-use itertools::Itertools;
-use std::{convert::Infallible, fmt, sync::Arc, time::Duration};
 
 mod data;
 mod endpoints;

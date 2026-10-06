@@ -1,11 +1,8 @@
-use rama_core::error::BoxErrorExt as _;
-use std::convert::TryFrom;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{convert::TryFrom, sync::Arc, time::Duration};
 
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext as _, ErrorExt as _},
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     extensions::ExtensionsRef,
     graceful::ShutdownGuard,
     io::{BridgeIo, GracefulIo, Io},
@@ -36,10 +33,11 @@ use rama_http_types::proto::{
         frame::{Reason, Settings},
     },
 };
-use rama_net::client::EstablishedClientConnection;
-use rama_net::conn::{ConnectionHealth, ConnectionHealthWatcher};
-use rama_net::uri::Uri;
-
+use rama_net::{
+    client::EstablishedClientConnection,
+    conn::{ConnectionHealth, ConnectionHealthWatcher},
+    uri::Uri,
+};
 use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 

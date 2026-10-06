@@ -9,7 +9,8 @@ mod fairness;
 mod loss;
 mod robustness;
 
-use super::{client, connection::Config, server};
+use std::{assert_matches, num::NonZeroUsize, sync::Arc, time::Duration};
+
 use rama_core::{
     bytes::Bytes,
     extensions::{Extension, ExtensionsRef as _},
@@ -27,8 +28,8 @@ use rama_tls::{
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
 use rama_udp::test_utils::{MemoryDatagramControl, MemoryDatagramSocket};
-use std::assert_matches;
-use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+
+use super::{client, connection::Config, server};
 
 const LIMIT: Duration = Duration::from_secs(20);
 
@@ -819,8 +820,7 @@ async fn opt_in_push_delivers_common_body_and_enforces_quota() {
 
 #[tokio::test]
 async fn connect_upstream_failure_resets_with_connect_error() {
-    use rama_core::extensions::ExtensionsRef as _;
-    use rama_core::io::AbortIo;
+    use rama_core::{extensions::ExtensionsRef as _, io::AbortIo};
     use rama_http::io::upgrade::handle_upgrade;
     use tokio::io::AsyncReadExt as _;
     tokio::time::timeout(LIMIT, async {

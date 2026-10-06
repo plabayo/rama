@@ -1,11 +1,11 @@
+use std::time::Duration;
+
+use clap::{Args, Subcommand};
 use rama::{
     error::BoxError,
     graceful,
     telemetry::tracing::{self, subscriber::filter::LevelFilter},
 };
-
-use clap::{Args, Subcommand};
-use std::time::Duration;
 
 use crate::utils::http3::Http3Endpoints;
 

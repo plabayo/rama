@@ -5,6 +5,13 @@
 //! [`Request`]: crate::http::Request
 //! [`tls`]: crate::tls
 
+use std::{convert::Infallible, sync::Arc, time::Duration};
+
+use rama_core::error::ErrorExt as _;
+use rama_http::layer::upgrade::UpgradeLayer;
+use serde::Serialize;
+use serde_json::json;
+
 use crate::{
     Layer, Service,
     cli::ForwardKind,
@@ -19,8 +26,10 @@ use crate::{
         fingerprint::{AkamaiH2, Ja4H},
         header::USER_AGENT,
         headers::{AltSvc, exotic::XClacksOverhead},
-        layer::set_header::SetResponseHeaderLayer,
-        layer::{required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer},
+        layer::{
+            required_header::AddRequiredResponseHeadersLayer, set_header::SetResponseHeaderLayer,
+            trace::TraceLayer,
+        },
         proto::h2::PseudoHeaderOrder,
         server::HttpServer,
         service::web::{extract::Json, response::IntoResponse},
@@ -29,16 +38,19 @@ use crate::{
             server::{WebSocketAcceptor, WebSocketEchoService},
         },
     },
-    layer::limit::policy::UnlimitedPolicy,
     layer::{
         ConsumeErrLayer, LimitLayer, TimeoutLayer,
-        limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy},
+        limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy, UnlimitedPolicy},
     },
-    net::address::ip::geo::IpGeoDb,
-    net::forwarded::ForwardedClientExt as _,
-    net::stream::SocketInfo,
-    net::stream::layer::{ThrottleLayer, ThrottleMode},
-    net::{AuthorityInputExt, Protocol, ProtocolInputExt},
+    net::{
+        AuthorityInputExt, Protocol, ProtocolInputExt,
+        address::ip::geo::IpGeoDb,
+        forwarded::ForwardedClientExt as _,
+        stream::{
+            SocketInfo,
+            layer::{ThrottleLayer, ThrottleMode},
+        },
+    },
     proxy::haproxy::server::HaProxyLayer,
     quic,
     rt::Executor,
@@ -47,12 +59,6 @@ use crate::{
     ua::{UserAgent, layer::classifier::UserAgentClassifierLayer, profile::UserAgentDatabase},
     utils::{octets::mib, rate::Rate},
 };
-
-use rama_core::error::ErrorExt as _;
-use rama_http::layer::upgrade::UpgradeLayer;
-use serde::Serialize;
-use serde_json::json;
-use std::{convert::Infallible, sync::Arc, time::Duration};
 
 core::cfg_select! {
     feature = "boring" => {

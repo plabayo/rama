@@ -326,11 +326,13 @@ mod tests {
 
     #[test]
     fn progress_wakes_the_registered_waker() {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
+        use std::{
+            sync::{
+                Arc,
+                atomic::{AtomicUsize, Ordering},
+            },
+            task::Wake,
         };
-        use std::task::Wake;
 
         struct Count(AtomicUsize);
         impl Wake for Count {

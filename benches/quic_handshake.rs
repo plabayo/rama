@@ -11,9 +11,15 @@
 //! ```
 #![expect(clippy::unwrap_used, reason = "benchmark failures must fail the run")]
 
+use std::{
+    convert::Infallible,
+    net::{Ipv4Addr, SocketAddr},
+    time::Duration,
+};
+
 use divan::AllocProfiler;
-use rama::crypto::cert::CertificateAuthorityData;
 use rama::{
+    crypto::cert::CertificateAuthorityData,
     error::BoxError,
     net::tls::ApplicationProtocol,
     quic::{
@@ -33,11 +39,6 @@ use rama::{
         },
     },
     utils::collections::smallvec::SmallVec,
-};
-use std::{
-    convert::Infallible,
-    net::{Ipv4Addr, SocketAddr},
-    time::Duration,
 };
 use tokio::{
     runtime::{Builder, Runtime},

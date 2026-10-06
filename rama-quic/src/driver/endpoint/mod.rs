@@ -1,4 +1,3 @@
-use rama_utils::octets;
 use std::{
     fmt,
     future::Future,
@@ -14,53 +13,51 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use crate::driver::{
-    Duration, QueuedPacket,
-    connection::{ConnectionDriver, ConnectionInner, Control, EndpointLink},
-    lifecycle::{Lifecycle, ShutdownOutcome},
-    queue::{
-        BoundedDeque, BoundedSender, INCOMING_OVERHEAD, PACKET_OVERHEAD, PacketBudget,
-        PacketPermit, PacketQueueStats, Refusal, bounded_queue,
-    },
-    sockets::{Lease, RebindRefused, SocketId, SocketRegistry, Sockets},
-    timer::{Deadline, DeadlineTimer},
-};
-use crate::driver::{
-    Instant, now,
-    udp::{Sender, Socket, proto_ecn},
-};
-#[cfg(all(test, any(feature = "boring", feature = "aws-lc", feature = "ring")))]
-use crate::proto::{self as proto};
-use crate::proto::{
-    ClientConfig, ClientHelloPeek, ConnectError, ConnectionError, ConnectionHandle, DatagramEvent,
-    EndpointEvent, ReceiveQueueLimits, ServerConfig,
-};
 use parking_lot::Mutex;
 use pin_project_lite::pin_project;
-use rama_core::bytes::{Bytes, BytesMut};
-use rama_core::rt::Executor;
-use rama_core::telemetry::tracing::{Instrument, Span};
+use rama_core::{
+    bytes::{Bytes, BytesMut},
+    rt::Executor,
+    telemetry::tracing::{Instrument, Span},
+};
 use rama_net::address::{SocketAddress, ip::IntoCanonicalIpAddr as _};
+use rama_quic_proto::VarInt;
 use rama_udp::{
     DatagramError, DatagramMetadata, UdpPacketSocket, UdpSocketConfig, UdpSocketFactory,
 };
+use rama_utils::octets;
 use rustc_hash::FxHashMap;
 use tokio::sync::{Notify, futures::Notified};
+
+#[cfg(all(test, any(feature = "boring", feature = "aws-lc", feature = "ring")))]
+use crate::proto::{self as proto};
+use crate::{
+    driver::{
+        Duration, EndpointConfig, IO_LOOP_BOUND, Instant, QueuedPacket, RECV_TIME_BOUND,
+        connection::{Connecting, ConnectionDriver, ConnectionInner, Control, EndpointLink},
+        incoming::Incoming,
+        lifecycle::{Lifecycle, ShutdownOutcome},
+        now,
+        queue::{
+            BoundedDeque, BoundedSender, INCOMING_OVERHEAD, PACKET_OVERHEAD, PacketBudget,
+            PacketPermit, PacketQueueStats, Refusal, bounded_queue,
+        },
+        sockets::{Lease, RebindRefused, SocketId, SocketRegistry, Sockets},
+        timer::{Deadline, DeadlineTimer},
+        udp::{Sender, Socket, proto_ecn},
+        work_limiter::{WorkCycle, WorkLimiter},
+    },
+    proto::{
+        ClientConfig, ClientHelloPeek, ConnectError, ConnectionError, ConnectionHandle,
+        DatagramEvent, EndpointEvent, ReceiveQueueLimits, ServerConfig,
+    },
+};
 
 mod builder;
 mod serve;
 pub use builder::{DEFAULT_SHUTDOWN_BUDGET, EndpointBuilder};
 
 const BATCH_SIZE: usize = 32;
-
-use rama_quic_proto::VarInt;
-
-use crate::driver::{
-    EndpointConfig, IO_LOOP_BOUND, RECV_TIME_BOUND,
-    connection::Connecting,
-    incoming::Incoming,
-    work_limiter::{WorkCycle, WorkLimiter},
-};
 
 /// A QUIC endpoint.
 ///

@@ -293,17 +293,18 @@ async fn exchange(
 
 #[cfg(feature = "boring")]
 mod boring {
-    use super::*;
+    use std::future::IntoFuture as _;
+
     use parking_lot::Mutex;
     use rama_crypto::cert::LeafCertConfig;
-    use rama_quic::EndpointConfig;
-    use rama_quic::tls::BoringTlsProvider;
+    use rama_quic::{EndpointConfig, tls::BoringTlsProvider};
     use rama_tls::server::{CertificateIssuanceContext, DynamicCertIssuer};
     use rama_tls_boring::server::{
         BoringServerConfigExt as _, CacheKind, ServerCertIssuerData, ServerCertIssuerKind,
     };
-    use std::future::IntoFuture as _;
     use tokio::sync::Notify;
+
+    use super::*;
 
     /// Issues a leaf for whatever name is asked, and records each request.
     #[derive(Clone)]
@@ -876,13 +877,14 @@ mod boring {
 
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 mod rustls {
-    use super::*;
     use parking_lot::Mutex;
     use rama_quic::tls::RustlsTlsProvider;
     use rama_tls_rustls::{
         dep::rustls,
         server::{DynamicConfigProvider, RustlsServerConfigExt as _},
     };
+
+    use super::*;
 
     fn crypto() -> Arc<rustls::crypto::CryptoProvider> {
         #[cfg(feature = "aws-lc")]

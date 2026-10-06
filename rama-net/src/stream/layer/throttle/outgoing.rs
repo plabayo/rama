@@ -1,8 +1,8 @@
-use super::{ThrottleConfig, ThrottleMode, Throttleable};
-use crate::client::{ConnectionError, ConnectorService, EstablishedClientConnection};
-
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
+
+use super::{ThrottleConfig, ThrottleMode, Throttleable};
+use crate::client::{ConnectionError, ConnectorService, EstablishedClientConnection};
 
 /// A [`Service`] that throttles the connection its inner connector
 /// establishes: an IO [`Stream`] is wrapped in a [`ThrottledIo`], other

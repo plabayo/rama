@@ -2,7 +2,6 @@ use std::{future::ready, io, str, sync::Arc};
 
 use ahash::HashMap;
 use parking_lot::Mutex;
-
 use rama_core::{
     bytes::BytesMut,
     error::{BoxError, BoxErrorExt as _},
@@ -12,10 +11,11 @@ use rama_crypto::dep::aws_lc_rs::aead;
 #[cfg(feature = "ring")]
 use rama_crypto::dep::ring::aead;
 use rama_net::{address::Domain, tls::ApplicationProtocol};
-use rama_tls_rustls::dep::rustls::{
-    self, HandshakeKind,
-    pki_types::ServerName,
-    quic::{Connection, HeaderProtectionKey, KeyChange, PacketKey, Secrets, Suite, Version},
+use rama_quic_proto::{
+    ConnectionId, Side, TransportError, TransportErrorCode,
+    crypto::{CryptoError, HeaderKey},
+    packet::SpaceId,
+    transport_parameters::TransportParameters,
 };
 #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use rama_tls_rustls::dep::rustls::{
@@ -23,7 +23,14 @@ use rama_tls_rustls::dep::rustls::{
     client::danger::ServerCertVerifier,
     pki_types::{CertificateDer, PrivateKeyDer},
 };
-use rama_tls_rustls::server::RustlsDynamicConfig;
+use rama_tls_rustls::{
+    dep::rustls::{
+        self, HandshakeKind,
+        pki_types::ServerName,
+        quic::{Connection, HeaderProtectionKey, KeyChange, PacketKey, Secrets, Suite, Version},
+    },
+    server::RustlsDynamicConfig,
+};
 
 use crate::proto::{
     ConnectError,
@@ -31,12 +38,6 @@ use crate::proto::{
         self, DirectionalKeys, ExportKeyingMaterialError, HandshakeEvent, KeyPair, Keys,
         UnsupportedVersion,
     },
-};
-use rama_quic_proto::{
-    ConnectionId, Side, TransportError, TransportErrorCode,
-    crypto::{CryptoError, HeaderKey},
-    packet::SpaceId,
-    transport_parameters::TransportParameters,
 };
 
 /// Convert a server name into the backend's own type, returning the name in the error when the
@@ -58,11 +59,12 @@ fn received_server_name(name: &str) -> Result<Domain, TransportError> {
 }
 
 mod config;
-pub(crate) use super::config::NoInitialCipherSuite;
 use config::AlpnPolicy;
 #[cfg(test)]
 pub(crate) use config::TlsOptions;
 pub(crate) use config::server_config_from_rama;
+
+pub(crate) use super::config::NoInitialCipherSuite;
 
 /// A rustls TLS session
 pub(crate) struct TlsSession {
@@ -1070,14 +1072,17 @@ fn session_error(error: rustls::Error) -> TransportError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rama_tls_rustls::dep::rustls::pki_types::DnsName;
     use std::assert_matches;
+
+    use rama_tls_rustls::dep::rustls::pki_types::DnsName;
+
+    use super::*;
 
     #[test]
     fn handshake_error_without_alert_preserves_its_source() {
-        use crate::proto::crypto::ClientConfig as _;
         use std::error::Error as _;
+
+        use crate::proto::crypto::ClientConfig as _;
 
         let native = rustls::ClientConfig::builder_with_provider(configured_provider())
             .with_protocol_versions(&[&rustls::version::TLS13])

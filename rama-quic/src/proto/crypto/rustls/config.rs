@@ -1,11 +1,13 @@
-use super::{QuicClientConfig, QuicDynamicServerConfig, QuicServerConfig, rustls};
-use crate::proto::ServerCrypto;
-pub(crate) use crate::proto::crypto::config::{AlpnPolicy, TlsConfigError, TlsOptions};
+use std::sync::Arc;
+
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions, client::TlsClientConfig, server::TlsServerConfig,
 };
 use rama_tls_rustls::{client::RustlsTlsConnectorConfig, server::RustlsTlsAcceptorConfig};
-use std::sync::Arc;
+
+use super::{QuicClientConfig, QuicDynamicServerConfig, QuicServerConfig, rustls};
+use crate::proto::ServerCrypto;
+pub(crate) use crate::proto::crypto::config::{AlpnPolicy, TlsConfigError, TlsOptions};
 
 /// Carry a backend error as the cause, without that conversion being part of this crate's API.
 fn invalid_configuration(error: rustls::Error) -> TlsConfigError {
@@ -128,13 +130,15 @@ fn validate_alpn(protocols: &[Vec<u8>], policy: AlpnPolicy) -> Result<(), TlsCon
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::proto::crypto::rustls::configured_provider;
+    use std::assert_matches;
+
     use rama_core::error::BoxError;
     use rama_quic_proto::{Side, transport_parameters::TransportParameters};
     use rama_tls::server::{GeneratedServerAuthConfig, ServerAuthData};
     use rama_tls_rustls::{client::RustlsClientConfigExt, server::RustlsServerConfigExt};
-    use std::assert_matches;
+
+    use super::*;
+    use crate::proto::crypto::rustls::configured_provider;
 
     fn configs() -> (TlsClientConfig, TlsServerConfig) {
         let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
@@ -408,8 +412,9 @@ mod tests {
 
     #[test]
     fn validation_does_not_consume_application_session_tickets() {
-        use crate::proto::crypto::ClientConfig as _;
         use std::sync::atomic::Ordering;
+
+        use crate::proto::crypto::ClientConfig as _;
         let (client, _) = configs();
         let store = Arc::new(SessionStore::default());
         let captured = store.clone();
@@ -546,11 +551,12 @@ mod tests {
 
     #[tokio::test]
     async fn authenticated_common_tls_over_quic_streams() {
+        use rama_quic_proto::VarInt;
+
         use crate::{
             driver::Endpoint,
             proto::{ClientConfig, ServerConfig},
         };
-        use rama_quic_proto::VarInt;
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             for policy in [AlpnPolicy::Require, AlpnPolicy::OutOfBandAgreement] {
                 let (client_tls, server_tls) = configs();

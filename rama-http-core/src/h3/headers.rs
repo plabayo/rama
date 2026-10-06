@@ -1,5 +1,23 @@
 //! Validate decoded HTTP fields before normalization can hide malformed input.
 
+use rama_core::{
+    bytes::{Bytes, BytesMut},
+    extensions::{Extensions, ExtensionsRef},
+    telemetry::tracing::debug,
+};
+use rama_http_types::{
+    HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
+    header::{
+        self,
+        trailer::{ForbiddenTrailers, is_never_a_trailer, is_sent_in_trailers},
+    },
+    proto::{
+        ext,
+        h3::{Code, PseudoHeader, PseudoHeaderOrder, PseudoHeaderSensitivity},
+    },
+};
+use rama_net::{Protocol, address::AuthorityRef, uri::Uri};
+
 use super::{
     Error,
     qpack::{EncodeField, FieldPair},
@@ -8,23 +26,6 @@ use crate::proto::target::{
     AsteriskHostError, OutgoingHost, asterisk_host, host_is_wire_authority, normalize_received,
     outgoing_host, received_authority, several_hosts,
 };
-use rama_core::{
-    bytes::{Bytes, BytesMut},
-    extensions::{Extensions, ExtensionsRef},
-    telemetry::tracing::debug,
-};
-use rama_http_types::proto::{
-    ext,
-    h3::{Code, PseudoHeader, PseudoHeaderOrder, PseudoHeaderSensitivity},
-};
-use rama_http_types::{
-    HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
-    header::{
-        self,
-        trailer::{ForbiddenTrailers, is_never_a_trailer, is_sent_in_trailers},
-    },
-};
-use rama_net::{Protocol, address::AuthorityRef, uri::Uri};
 
 #[derive(Default)]
 struct Fields {
@@ -607,8 +608,6 @@ pub(crate) fn encode_response<B>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{h3::qpack::ErrorScope, proto::h1::test_util as h1};
     use rama_core::{Service as _, bytes::BufMut, service::service_fn};
     use rama_http::layer::required_header::AddRequiredRequestHeaders;
     use rama_http_types::proto::h2::{
@@ -616,6 +615,9 @@ mod tests {
         hpack,
     };
     use rama_net::AuthorityInputExt as _;
+
+    use super::*;
+    use crate::{h3::qpack::ErrorScope, proto::h1::test_util as h1};
 
     fn fields(values: &[(&'static str, &'static str)]) -> Vec<FieldPair> {
         values

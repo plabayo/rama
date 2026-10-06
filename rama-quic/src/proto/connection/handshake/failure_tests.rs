@@ -1,13 +1,15 @@
+use std::assert_matches;
+
+use rama_quic_proto::{
+    ConnectionId, Side, TransportErrorCode, Version,
+    crypto::{HeaderKey, PacketKey},
+};
+
 use super::*;
 use crate::proto::{
     crypto::{ExportKeyingMaterialError, Session},
     tests::Pair,
 };
-use rama_quic_proto::{
-    ConnectionId, Side, TransportErrorCode, Version,
-    crypto::{HeaderKey, PacketKey},
-};
-use std::assert_matches;
 
 struct FailedKeyUpdate {
     missing: bool,

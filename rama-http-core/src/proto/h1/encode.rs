@@ -1,21 +1,22 @@
-use std::fmt;
-use std::io::IoSlice;
-use std::sync::Arc;
+use std::{fmt, io::IoSlice, sync::Arc};
 
-use rama_core::bytes::{
-    buf::{Chain, Take},
-    {Buf, Bytes},
+use rama_core::{
+    bytes::{
+        Buf, Bytes,
+        buf::{Chain, Take},
+    },
+    telemetry::tracing::{debug, trace},
 };
-use rama_core::telemetry::tracing::{debug, trace};
 use rama_http_types::{
     HeaderMap, HeaderName,
     header::trailer::{ForbiddenTrailers, is_sent_in_trailers},
 };
 
+use super::{
+    io::WriteBuf,
+    role::{write_headers, write_headers_title_case},
+};
 use crate::headers::ConnectionHeaderNames;
-
-use super::io::WriteBuf;
-use super::role::{write_headers, write_headers_title_case};
 
 type StaticBuf = &'static [u8];
 
@@ -432,18 +433,17 @@ impl std::error::Error for NotEof {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use rama_core::bytes::BufMut;
     use rama_http_types::{
         HeaderMap, HeaderName, HeaderValue,
         header::{
             AUTHORIZATION, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE,
             CONTENT_TYPE, HOST, MAX_FORWARDS, SET_COOKIE, TE, TRAILER, TRANSFER_ENCODING,
+            trailer::ForbiddenTrailers,
         },
     };
-
-    use std::sync::Arc;
-
-    use rama_http_types::header::trailer::ForbiddenTrailers;
 
     use super::Encoder;
     use crate::proto::h1::io::Cursor;

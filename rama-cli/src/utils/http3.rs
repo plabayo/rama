@@ -1,5 +1,9 @@
 //! Serving HTTP/3 next to the TCP listener of a serve command.
 
+use std::{sync::Arc, time::Duration};
+
+use clap::Args;
+use parking_lot::Mutex;
 use rama::{
     Service,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
@@ -18,15 +22,10 @@ use rama::{
     telemetry::tracing,
     tls::server::TlsServerConfig,
 };
-
 #[cfg(target_os = "windows")]
 use rama::{
     net::socket::opts::SocketOptions, quic::DEFAULT_SOCKET_BUFFER_SIZE, udp::UdpSocketConfig,
 };
-
-use clap::Args;
-use parking_lot::Mutex;
-use std::{sync::Arc, time::Duration};
 
 use super::http::HttpVersions;
 
@@ -204,7 +203,8 @@ pub fn alt_svc(port: u16) -> Result<AltSvc, BoxError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::convert::Infallible;
+
     use rama::{
         quic::{ClientConfig, ConnectionError},
         service::service_fn,
@@ -213,7 +213,8 @@ mod tests {
             server::{GeneratedServerAuthConfig, ServerAuthData},
         },
     };
-    use std::convert::Infallible;
+
+    use super::*;
 
     fn tls() -> TlsServerConfig {
         TlsServerConfig::new().with_server_auth(

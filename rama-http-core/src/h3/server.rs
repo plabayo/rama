@@ -1,14 +1,7 @@
 //! HTTP/3 server stream admission and response sending.
 
-use super::{
-    Error, body,
-    connection::{Config, Driver, Shared},
-    control::Role,
-    datagram::{Association, DatagramDrops, Semantics},
-    headers,
-    quic::Writer,
-    stream::{Phase, Reader},
-};
+use std::sync::Arc;
+
 use rama_core::{bytes::BytesMut, error::BoxError, extensions::ExtensionsRef};
 use rama_http::{
     headers::{HeaderMapExt as _, Priority},
@@ -25,8 +18,17 @@ use rama_http_types::{
 };
 use rama_net::uri::Uri;
 use rama_quic_proto::{VarInt, coding::Codec as _};
-use std::sync::Arc;
 use tokio::sync::Semaphore;
+
+use super::{
+    Error, body,
+    connection::{Config, Driver, Shared},
+    control::Role,
+    datagram::{Association, DatagramDrops, Semantics},
+    headers,
+    quic::Writer,
+    stream::{Phase, Reader},
+};
 
 /// Accepts request streams; the accompanying driver must run concurrently.
 pub struct Connection {

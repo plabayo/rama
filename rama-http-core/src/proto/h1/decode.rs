@@ -1,19 +1,19 @@
-use std::error::Error as StdError;
-use std::fmt;
-use std::io;
-use std::task::{Context, Poll};
+use std::{
+    error::Error as StdError,
+    fmt, io,
+    task::{Context, Poll, ready},
+};
 
-use rama_core::bytes::{BufMut, Bytes, BytesMut};
-use rama_core::telemetry::tracing::{debug, trace};
-use rama_http_types::body::Frame;
-use rama_http_types::{HeaderMap, HeaderName, HeaderValue, header::trailer::is_never_a_trailer};
-use std::task::ready;
-
-use super::DecodedLength;
-use super::io::MemRead;
-use super::role::DEFAULT_MAX_HEADERS;
+use rama_core::{
+    bytes::{BufMut, Bytes, BytesMut},
+    telemetry::tracing::{debug, trace},
+};
+use rama_http_types::{
+    HeaderMap, HeaderName, HeaderValue, body::Frame, header::trailer::is_never_a_trailer,
+};
 
 use self::Kind::{Chunked, Eof, Length};
+use super::{DecodedLength, io::MemRead, role::DEFAULT_MAX_HEADERS};
 
 /// Maximum amount of bytes allowed in chunked extensions.
 ///
@@ -700,10 +700,11 @@ impl StdError for IncompleteBody {}
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::pin::Pin;
-    use std::time::Duration;
+    use std::{pin::Pin, time::Duration};
+
     use tokio::io::{AsyncRead, ReadBuf};
+
+    use super::*;
 
     impl MemRead for &[u8] {
         fn read_mem(&mut self, _: &mut Context<'_>, len: usize) -> Poll<io::Result<Bytes>> {

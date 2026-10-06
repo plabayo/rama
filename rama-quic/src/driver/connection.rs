@@ -13,32 +13,37 @@ use std::{
 
 use parking_lot::Mutex;
 use pin_project_lite::pin_project;
-use rama_core::bytes::Bytes;
-use rama_core::extensions::{Extensions, ExtensionsRef};
-use rama_core::telemetry::tracing::{Instrument, Span, debug, debug_span};
+use rama_core::{
+    bytes::Bytes,
+    extensions::{Extensions, ExtensionsRef},
+    telemetry::tracing::{Instrument, Span, debug, debug_span},
+};
 use rama_net::gate::{GateDirection, StreamGates};
+use rama_quic_proto::{ConnectionId, Dir, Side, StreamId, VarInt};
 use rama_udp::SendFailure;
 use rama_utils::reactive::{Changed, Reactive};
 use rustc_hash::FxHashMap;
 use tokio::sync::{Notify, futures::Notified, oneshot};
 
-use crate::driver::{
-    Duration, IO_LOOP_BOUND, QueuedPacket,
-    endpoint::{EndpointInner, LocalSocket},
-    gate::{ConnectionGates, GateStack},
-    now,
-    queue::{BoundedReceiver, PacketBudget, PacketQueueStats},
-    recv_stream::RecvStream,
-    send_stream::SendStream,
-    sockets::SocketId,
-    timer::{Deadline, DeadlineTimer},
-    udp::{FailureLog, SendError, Sender},
+use crate::{
+    driver::{
+        Duration, IO_LOOP_BOUND, QueuedPacket,
+        endpoint::{EndpointInner, LocalSocket},
+        gate::{ConnectionGates, GateStack},
+        now,
+        queue::{BoundedReceiver, PacketBudget, PacketQueueStats},
+        recv_stream::RecvStream,
+        send_stream::SendStream,
+        sockets::SocketId,
+        timer::{Deadline, DeadlineTimer},
+        udp::{FailureLog, SendError, Sender},
+    },
+    proto::{
+        ConnectionError, ConnectionHandle, ConnectionStats, EndpointEvent, Event,
+        NegotiatedTlsParameters, SendDatagramError as ProtoSendDatagramError, SendPermit,
+        StreamEvent,
+    },
 };
-use crate::proto::{
-    ConnectionError, ConnectionHandle, ConnectionStats, EndpointEvent, Event,
-    NegotiatedTlsParameters, SendDatagramError as ProtoSendDatagramError, SendPermit, StreamEvent,
-};
-use rama_quic_proto::{ConnectionId, Dir, Side, StreamId, VarInt};
 
 /// Tests: the bytes a connection keeps allocated for sending, split by where they are.
 #[cfg(all(
@@ -3662,8 +3667,7 @@ fn is_mtu_probe(transmit: &crate::proto::Transmit, confirmed_mtu: u16) -> bool {
 ))]
 mod tests {
     use super::*;
-    use crate::driver::Instant;
-    use crate::proto::ReceiveQueueLimits;
+    use crate::{driver::Instant, proto::ReceiveQueueLimits};
 
     /// A single datagram above the confirmed MTU is a probe; a batch never is.
     #[test]
@@ -3681,13 +3685,13 @@ mod tests {
         assert!(!is_mtu_probe(&transmit(1000, None), 1200));
         assert!(!is_mtu_probe(&transmit(2400, Some(1200)), 1200));
     }
+    use std::{assert_matches, error::Error as _, io::IoSliceMut};
+
     use rama_net::address::SocketAddress;
     use rama_udp::{
         DatagramCapabilities, DatagramError, DatagramMetadata, DatagramSender, DatagramSocket,
     };
     use rama_utils::octets;
-    use std::assert_matches;
-    use std::{error::Error as _, io::IoSliceMut};
 
     #[derive(Debug, Clone, Copy)]
     enum Failure {

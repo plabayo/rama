@@ -12,6 +12,26 @@ mod pool_admission;
 mod redirects;
 mod websocket_pool;
 
+use std::{
+    collections::VecDeque,
+    convert::Infallible,
+    fmt::Debug,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
+
+use parking_lot::Mutex;
+#[cfg(feature = "rustls")]
+use rama::quic::tls::default_tls_provider;
+#[cfg(not(feature = "boring"))]
+use rama::tls::rustls::{
+    client::{RustlsClientConfigExt as _, TlsConnectorLayer},
+    server::TlsAcceptorLayer,
+};
 use rama::{
     Layer, Service,
     bytes::Bytes,
@@ -68,28 +88,6 @@ use rama::{
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
 };
-use tokio::sync::Notify;
-
-use std::{
-    collections::VecDeque,
-    convert::Infallible,
-    fmt::Debug,
-    net::SocketAddr,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::Duration,
-};
-
-#[cfg(feature = "rustls")]
-use rama::quic::tls::default_tls_provider;
-
-#[cfg(not(feature = "boring"))]
-use rama::tls::rustls::{
-    client::{RustlsClientConfigExt as _, TlsConnectorLayer},
-    server::TlsAcceptorLayer,
-};
 #[cfg(feature = "boring")]
 use rama::{
     quic::tls::BoringTlsProvider,
@@ -99,11 +97,9 @@ use rama::{
         server::TlsAcceptorLayer,
     },
 };
-
-use parking_lot::Mutex;
 use tokio::{
     net::{TcpListener as TokioTcpListener, UdpSocket},
-    sync::oneshot,
+    sync::{Notify, oneshot},
     task::{JoinHandle, spawn},
     time::timeout,
 };

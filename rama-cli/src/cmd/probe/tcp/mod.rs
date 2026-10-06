@@ -1,5 +1,6 @@
 #![allow(clippy::print_stdout)]
 
+use clap::Args;
 use rama::{
     dns::client::DnsConnector,
     error::{BoxError, ErrorContext},
@@ -11,8 +12,6 @@ use rama::{
     tcp::{TcpStream, client::service::TcpConnector},
     telemetry::tracing,
 };
-
-use clap::Args;
 
 #[derive(Args, Debug, Clone)]
 /// rama tcp probe command

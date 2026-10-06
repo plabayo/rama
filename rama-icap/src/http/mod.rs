@@ -23,6 +23,10 @@ use rama_http_types::{
 };
 use rama_net::{address::Authority, uri::Uri};
 
+use self::headers::{
+    ForwardedIcapHeader, SanitizedHttpHead, connection_nominated_headers, response_proxy_headers,
+    validate_http_trailers,
+};
 use crate::{
     client::{
         ClientConnection as RawClientConnection, ClientResponse as RawClientResponse,
@@ -37,11 +41,6 @@ use crate::{
     },
     proto::{EncapsulatedKind, Method, MethodKind, Preview, StatusCode},
     server::{IncomingRequest as RawIncomingRequest, OutgoingBody, OutgoingResponse},
-};
-
-use self::headers::{
-    ForwardedIcapHeader, SanitizedHttpHead, connection_nominated_headers, response_proxy_headers,
-    validate_http_trailers,
 };
 
 mod headers;
@@ -2850,8 +2849,8 @@ pub enum ErrorKind {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches;
     use std::{
+        assert_matches,
         convert::Infallible,
         sync::{
             Arc,

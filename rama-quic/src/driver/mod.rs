@@ -50,6 +50,23 @@ mod timer;
 mod udp;
 mod work_limiter;
 
+pub(crate) use std::time::{Duration, Instant};
+
+pub use crate::driver::{
+    connection::{
+        AcceptBi, AcceptUni, BiStreamReservation, Connecting, Connection, DriverStats, OpenBi,
+        OpenUni, ReadDatagram, SendDatagram, SendDatagramError, ZeroRttAccepted,
+    },
+    endpoint::{
+        Accept, DEFAULT_SHUTDOWN_BUDGET, DEFAULT_SOCKET_BUFFER_SIZE, Endpoint, EndpointBuilder,
+        EndpointStats,
+    },
+    incoming::{Incoming, IncomingFuture, IncomingOutcome, RetryError},
+    lifecycle::ShutdownOutcome,
+    queue::PacketQueueStats,
+    recv_stream::{ReadError, ReadExactError, ReadToEndError, RecvStream, ResetError},
+    send_stream::{SendStream, StoppedError, StreamAbortHandle, WriteError},
+};
 pub(crate) use crate::proto::EndpointConfig;
 /// Names the driver's own tests reach for through this module.
 #[cfg(all(
@@ -60,23 +77,6 @@ pub(crate) use crate::proto::EndpointConfig;
     )
 ))]
 pub(crate) use crate::proto::{ClientConfig, ConnectionError, ServerConfig, TransportConfig};
-pub(crate) use std::time::{Duration, Instant};
-
-pub use crate::driver::connection::{
-    AcceptBi, AcceptUni, BiStreamReservation, Connecting, Connection, DriverStats, OpenBi, OpenUni,
-    ReadDatagram, SendDatagram, SendDatagramError, ZeroRttAccepted,
-};
-pub use crate::driver::endpoint::{
-    Accept, DEFAULT_SHUTDOWN_BUDGET, DEFAULT_SOCKET_BUFFER_SIZE, Endpoint, EndpointBuilder,
-    EndpointStats,
-};
-pub use crate::driver::incoming::{Incoming, IncomingFuture, IncomingOutcome, RetryError};
-pub use crate::driver::lifecycle::ShutdownOutcome;
-pub use crate::driver::queue::PacketQueueStats;
-pub use crate::driver::recv_stream::{
-    ReadError, ReadExactError, ReadToEndError, RecvStream, ResetError,
-};
-pub use crate::driver::send_stream::{SendStream, StoppedError, StreamAbortHandle, WriteError};
 
 #[cfg(test)]
 mod tests;

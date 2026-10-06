@@ -1,35 +1,36 @@
-use rama_core::bytes::{Bytes, BytesMut};
-use rama_core::telemetry::tracing::info;
-use rama_crypto::hmac::HmacSha2;
-use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
-use rama_utils::octets;
-use rand::Rng;
-use rustc_hash::FxHashMap;
-use std::assert_matches;
 use std::{
+    assert_matches,
     convert::TryInto,
     mem,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::Arc,
 };
 
-use super::*;
-use crate::proto::token::reset_token;
-use crate::proto::{
-    Duration, Instant,
-    cid_generator::{ConnectionIdGenerator, RandomConnectionIdGenerator},
-    connection::PreferredAddressState,
+use rama_core::{
+    bytes::{Bytes, BytesMut},
+    telemetry::tracing::info,
+};
+use rama_crypto::{
+    hmac::HmacSha2,
+    pki_types::{CertificateDer, PrivateKeyDer},
 };
 use rama_quic_proto::{
     ConnectionId, Dir, RESET_TOKEN_SIZE, ResetToken, ResetToken as TestResetToken, TransportError,
     TransportErrorCode, VarInt, frame,
-    frame::ApplicationClose,
-    frame::ConnectionClose,
-    frame::Datagram,
-    frame::Frame,
-    frame::FrameStruct,
+    frame::{ApplicationClose, ConnectionClose, Datagram, Frame, FrameStruct},
     packet::{Header, InitialHeader, PacketNumber},
     transport_parameters::TransportParameters,
+};
+use rama_utils::octets;
+use rand::Rng;
+use rustc_hash::FxHashMap;
+
+use super::*;
+use crate::proto::{
+    Duration, Instant,
+    cid_generator::{ConnectionIdGenerator, RandomConnectionIdGenerator},
+    connection::PreferredAddressState,
+    token::reset_token,
 };
 pub(crate) mod util;
 pub(crate) use util::Pair;
@@ -2937,8 +2938,7 @@ fn cid_retirement() {
         other => panic!("assertion failed: `{other:?}` does not match `1`"),
     }
 
-    use crate::proto::LOC_CID_COUNT;
-    use crate::proto::cid_queue::CidQueue;
+    use crate::proto::{LOC_CID_COUNT, cid_queue::CidQueue};
     let mut active_cid_num = CidQueue::LEN as u64;
     active_cid_num = active_cid_num.min(LOC_CID_COUNT);
 

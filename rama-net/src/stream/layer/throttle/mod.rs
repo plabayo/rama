@@ -15,8 +15,10 @@
 //! [`Io`]: rama_core::io::Io
 
 use rama_core::io::Io;
-use rama_utils::octets::kib_u64;
-use rama_utils::rate::{Rate, RateLimiter};
+use rama_utils::{
+    octets::kib_u64,
+    rate::{Rate, RateLimiter},
+};
 
 mod budget;
 #[doc(inline)]

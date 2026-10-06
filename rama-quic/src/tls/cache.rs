@@ -1,11 +1,13 @@
 //! Bounded reuse of native QUIC TLS configurations and their session state.
 
-use super::{QuicClientConfigProvider, TlsConfigError, TlsOptions};
-use crate::ClientConfig;
+use std::{collections::VecDeque, fmt, sync::Arc};
+
 use parking_lot::Mutex;
 use rama_core::extensions::Extensions;
 use rama_tls::client::{TlsClientConfig, TlsPoolId};
-use std::{collections::VecDeque, fmt, sync::Arc};
+
+use super::{QuicClientConfigProvider, TlsConfigError, TlsOptions};
+use crate::ClientConfig;
 
 // Keep uncommon policies bounded without letting them evict default session state.
 const MAX_CACHED_OVERRIDES: usize = 64;
@@ -141,11 +143,14 @@ impl Configs {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{
-        ConnectError, TransportConfig,
-        tls::provider::{ClientConfig as CryptoClientConfig, Session},
+    use std::{
+        sync::{
+            Barrier, Weak,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        },
+        thread,
     };
+
     use rama_core::extensions::Extension;
     use rama_net::{address::Host, tls::TlsAlpn};
     use rama_quic_proto::{Version, transport_parameters::TransportParameters};
@@ -154,12 +159,11 @@ mod tests {
         client::{TlsClientConfigProvider, TlsServerName},
         keylog::NoopKeyLogSink,
     };
-    use std::{
-        sync::{
-            Barrier, Weak,
-            atomic::{AtomicBool, AtomicUsize, Ordering},
-        },
-        thread,
+
+    use super::*;
+    use crate::{
+        ConnectError, TransportConfig,
+        tls::provider::{ClientConfig as CryptoClientConfig, Session},
     };
 
     struct TestCrypto;

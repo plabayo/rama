@@ -8,18 +8,20 @@
     reason = "a test's fixtures fail the test by panicking"
 )]
 
-use rama_core::rt::Executor;
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use std::assert_matches;
 
-use super::browsers::{chrome_153, firefox_156};
-use super::capture;
-use super::*;
-use crate::{ClientConfig, Endpoint};
+use rama_core::rt::Executor;
 use rama_quic_proto::{
     capture::{FirstFlight, ObservedFrame, PacketKind, observe},
     version::Version,
 };
+
+use super::{
+    browsers::{chrome_153, firefox_156},
+    capture, *,
+};
+use crate::{ClientConfig, Endpoint};
 
 macro_rules! include_fixture {
     ($name:literal) => {

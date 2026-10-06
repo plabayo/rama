@@ -1,8 +1,8 @@
-use rama_core::error::BoxError;
-use rama_utils::macros::generate_set_and_with;
 use std::fmt;
 
+use rama_core::error::BoxError;
 pub use rama_tls::alpn::AlpnPolicy;
+use rama_utils::macros::generate_set_and_with;
 
 /// QUIC requirements applied to the common Rama TLS configuration.
 #[derive(Clone, Copy, Debug, Default)]

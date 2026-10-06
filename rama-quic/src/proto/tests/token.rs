@@ -1,12 +1,12 @@
 //! Tests specifically for tokens
 
-use parking_lot::Mutex;
 use std::assert_matches;
 
-use super::*;
-
+use parking_lot::Mutex;
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
 use wasm_bindgen_test::wasm_bindgen_test as test;
+
+use super::*;
 
 #[test]
 fn stateless_retry() {
@@ -348,10 +348,11 @@ impl TimeSource for FakeTimeSource {
     }
 }
 
-use crate::proto::crypto::{AeadKey, HandshakeTokenKey};
 use rama_quic_proto::{
     ConnectionId, Dir, TransportError, TransportErrorCode, VarInt, crypto::CryptoError,
 };
+
+use crate::proto::crypto::{AeadKey, HandshakeTokenKey};
 
 /// Where a failing token-key provider gives up.
 #[derive(Debug, Clone, Copy)]

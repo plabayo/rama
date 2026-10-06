@@ -3,7 +3,8 @@
     reason = "feature-gated dead_code: variants used by some build configs but not others"
 )]
 
-use super::{State, StorageAuthorized};
+use std::str::FromStr;
+
 use rama::{
     error::{BoxError, ErrorContext},
     extensions::Extensions,
@@ -21,19 +22,19 @@ use rama::{
         stream::SocketInfo,
     },
     telemetry::tracing,
-    tls::fingerprint::{Ja3, Ja4, PeetPrint},
     tls::{
         ExtensionId, SecureTransport,
         client::{ClientHello, ClientHelloExtension, ECHClientHello},
+        fingerprint::{Ja3, Ja4, PeetPrint},
     },
     ua::{
         UserAgent,
         profile::{Http1Settings, Http2Settings},
     },
 };
-
 use serde::Serialize;
-use std::str::FromStr;
+
+use super::{State, StorageAuthorized};
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[allow(

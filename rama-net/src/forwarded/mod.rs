@@ -2,17 +2,18 @@
 //!
 //! RFC: <https://datatracker.ietf.org/doc/html/rfc7239>
 
-use core::fmt;
-use core::net::IpAddr;
+use core::{fmt, net::IpAddr};
 
-use crate::std::boxed::Box;
-use crate::std::string::String;
-use crate::std::sync::Arc;
-use crate::std::vec::Vec;
-
-use rama_core::error::BoxError;
-use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
+use rama_core::{
+    error::BoxError,
+    extensions::{Extension, Extensions, ExtensionsRef},
+};
 use rama_utils::macros::generate_set_and_with;
+
+use crate::{
+    address::{SocketAddress, ip::ipnet::IpNet},
+    std::{boxed::Box, string::String, sync::Arc, vec::Vec},
+};
 
 mod obfuscated;
 #[doc(inline)]
@@ -33,8 +34,6 @@ pub use proto::ForwardedProtocol;
 mod version;
 #[doc(inline)]
 pub use version::ForwardedVersion;
-
-use crate::address::{SocketAddress, ip::ipnet::IpNet};
 
 /// Selects which element of a [`Forwarded`] chain describes the client.
 ///

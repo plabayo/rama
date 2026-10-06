@@ -1,8 +1,4 @@
-use super::utils;
 use rama::{extensions::Extensions, tcp::client::default_tcp_connect, telemetry::tracing};
-use rama_net::address::HostWithPort;
-use tokio::io::AsyncReadExt as _;
-
 #[cfg(feature = "boring")]
 use rama::{
     net::client::{ConnectorService, EstablishedClientConnection},
@@ -10,9 +6,12 @@ use rama::{
     tls::boring::client::TlsConnector,
     tls::client::{ServerVerifyMode, TlsClientConfig},
 };
-
+use rama_net::address::HostWithPort;
 #[cfg(feature = "boring")]
 use rama_net::client::ConnectRequest;
+use tokio::io::AsyncReadExt as _;
+
+use super::utils;
 
 #[tokio::test]
 #[ignore]

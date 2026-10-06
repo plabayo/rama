@@ -7,18 +7,20 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::driver::sockets::Lease;
-use crate::proto::{
-    ClientHelloPeek, ConnectionError, RetryRefused, ServerConfig, ServerCrypto,
-    crypto::{self, ClientHelloMessage, ServerConfigResolution, ServerConfigResolver},
-};
 use rama_core::{error::BoxError, telemetry::tracing};
 use rama_quic_proto::{ConnectionId, TransportError};
 use rama_tls::client::ClientHello;
 
-use crate::driver::{
-    connection::{Connecting, Connection},
-    endpoint::EndpointRef,
+use crate::{
+    driver::{
+        connection::{Connecting, Connection},
+        endpoint::EndpointRef,
+        sockets::Lease,
+    },
+    proto::{
+        ClientHelloPeek, ConnectionError, RetryRefused, ServerConfig, ServerCrypto,
+        crypto::{self, ClientHelloMessage, ServerConfigResolution, ServerConfigResolver},
+    },
 };
 
 /// An incoming connection for which the server has not yet begun its part of the handshake

@@ -1,6 +1,8 @@
-use super::*;
-use rama_quic_proto::{ConnectionId, Side, TransportError, TransportErrorCode, packet::SpaceId};
 use std::assert_matches;
+
+use rama_quic_proto::{ConnectionId, Side, TransportError, TransportErrorCode, packet::SpaceId};
+
+use super::*;
 
 struct FailingClient(bool);
 impl crypto::ClientConfig for FailingClient {

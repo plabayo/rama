@@ -219,14 +219,16 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::{assert_matches, time::Duration};
+
     use rama_core::extensions::Extension;
     use rama_utils::rate::{Acquire, Rate, RateLimiter};
-    use std::{assert_matches, time::Duration};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         time::Instant,
     };
+
+    use super::*;
 
     fn throttled_writer<S>(stream: S, units_per_sec: u64, quantum: u64) -> ThrottledIo<S> {
         ThrottledIo::new(stream)

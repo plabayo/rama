@@ -2,6 +2,8 @@
 //! X25519, certificate authentication, no resumption or 0-RTT.
 mod native;
 mod packet;
+use std::{collections::VecDeque, sync::Arc};
+
 pub use native::{GnuTlsError, version};
 use parking_lot::Mutex;
 use rama::{
@@ -19,7 +21,6 @@ use rama::{
     },
     tls::{ProtocolVersion, client::NegotiatedTlsParameters},
 };
-use std::{collections::VecDeque, sync::Arc};
 
 pub struct Client {
     pub ca: String,

@@ -1,13 +1,5 @@
-use crate::tls::{BoringTlsProvider, QuicClientConfigProvider, QuicServerConfigProvider};
-#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-use crate::{proto::crypto::rustls::configured_provider, tls::RustlsTlsProvider};
-use std::assert_matches;
-trait TestTlsProvider: QuicClientConfigProvider + QuicServerConfigProvider {}
-impl<T: QuicClientConfigProvider + QuicServerConfigProvider> TestTlsProvider for T {}
-use super::*;
-use crate::proto::crypto::{
-    self, ClientConfig as _, HandshakeEvent, ServerConfig as _, Session, config::TlsOptions,
-};
+use std::{assert_matches, sync::Arc};
+
 use rama_core::bytes::BytesMut;
 use rama_quic_proto::{ConnectionId, Side, Version, transport_parameters::TransportParameters};
 use rama_tls::{
@@ -17,7 +9,19 @@ use rama_tls::{
         SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
     },
 };
-use std::sync::Arc;
+
+use super::*;
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+use crate::{proto::crypto::rustls::configured_provider, tls::RustlsTlsProvider};
+use crate::{
+    proto::crypto::{
+        self, ClientConfig as _, HandshakeEvent, ServerConfig as _, Session, config::TlsOptions,
+    },
+    tls::{BoringTlsProvider, QuicClientConfigProvider, QuicServerConfigProvider},
+};
+
+trait TestTlsProvider: QuicClientConfigProvider + QuicServerConfigProvider {}
+impl<T: QuicClientConfigProvider + QuicServerConfigProvider> TestTlsProvider for T {}
 
 fn configs() -> (TlsClientConfig, TlsServerConfig) {
     configs_for([rama_net::address::Domain::from_static("localhost")])
@@ -437,8 +441,9 @@ fn a_client_reports_its_handshake_data_before_the_handshake_finishes() {
 /// TLS 1.3 itself, and is therefore accepted.
 #[test]
 fn boring_requires_tls13() {
-    use crate::proto::crypto::config::TlsConfigError;
     use rama_tls::{ProtocolVersion, TlsSupportedVersions};
+
+    use crate::proto::crypto::config::TlsConfigError;
 
     let (client, server) = configs();
     let options = TlsOptions::default();
@@ -749,10 +754,12 @@ fn both_directions_interoperate_with_rustls() {
 
 #[tokio::test]
 async fn udp_endpoints_exchange_streams_datagrams_and_early_data() {
-    use crate::{ClientConfig, Endpoint, ServerConfig};
+    use std::{net::UdpSocket, time::Duration};
+
     use rama_core::{bytes::Bytes, rt::Executor};
     use rama_quic_proto::VarInt;
-    use std::{net::UdpSocket, time::Duration};
+
+    use crate::{ClientConfig, Endpoint, ServerConfig};
 
     let pairs = [
         (

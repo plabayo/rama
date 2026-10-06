@@ -5,14 +5,16 @@ use std::{
     task::{Context, Poll, ready},
 };
 
-use crate::proto::{
-    Chunk, Chunks, ClosedStream, ConnectionError, ReadError as ProtoReadError, ReadableError,
-};
 use rama_core::bytes::Bytes;
 use rama_quic_proto::{StreamId, VarInt};
 use tokio::io::ReadBuf;
 
-use crate::driver::{connection::ConnectionRef, gate::GateStack};
+use crate::{
+    driver::{connection::ConnectionRef, gate::GateStack},
+    proto::{
+        Chunk, Chunks, ClosedStream, ConnectionError, ReadError as ProtoReadError, ReadableError,
+    },
+};
 
 /// A stream that can only be used to receive data
 ///

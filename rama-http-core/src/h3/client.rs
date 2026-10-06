@@ -1,15 +1,11 @@
 //! Rama-native HTTP/3 request sender.
 
-use super::{
-    Error, body,
-    connection::{Config, Driver, Shared},
-    control::Role,
-    datagram::{Association, DatagramDrops, Semantics},
-    headers,
-    quic::Writer,
-    stream::{Phase, Reader},
+use std::{
+    marker::PhantomData,
+    pin::{Pin, pin},
+    sync::{Arc, Weak},
 };
-use crate::headers::{content_length_parse_all, drop_undeliverable_content_length};
+
 use parking_lot::Mutex;
 use rama_core::{
     error::BoxError,
@@ -39,12 +35,18 @@ use rama_quic::{
 };
 use rama_quic_proto::{Dir, Side};
 use rama_utils::reactive::Reactive;
-use std::{
-    marker::PhantomData,
-    pin::{Pin, pin},
-    sync::{Arc, Weak},
-};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+use super::{
+    Error, body,
+    connection::{Config, Driver, Shared},
+    control::Role,
+    datagram::{Association, DatagramDrops, Semantics},
+    headers,
+    quic::Writer,
+    stream::{Phase, Reader},
+};
+use crate::headers::{content_length_parse_all, drop_undeliverable_content_length};
 
 /// Cloneable sender for a multiplexed HTTP/3 connection.
 pub struct SendRequest<B> {

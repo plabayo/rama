@@ -166,8 +166,9 @@ async fn run(cmds: CliCommands) -> Result<(), BoxError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use clap::CommandFactory as _;
+
+    use super::*;
 
     #[test]
     fn cli_arguments_are_well_formed() {

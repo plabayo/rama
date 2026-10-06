@@ -8,16 +8,29 @@ use std::{
 };
 
 use ahash::HashMap;
-use rama_core::bytes::{BufMut, Bytes, BytesMut};
-use rama_core::telemetry::tracing::{debug, error, trace, warn};
+use rama_core::{
+    bytes::{BufMut, Bytes, BytesMut},
+    telemetry::tracing::{debug, error, trace, warn},
+};
+use rama_quic_proto::{
+    ConnectionId, EcnCodepoint, MAX_CID_SIZE, RESET_TOKEN_SIZE, ResetToken, Side, TransportError,
+    Version,
+    coding::BufMutExt,
+    frame,
+    packet::{
+        FixedLengthConnectionIdParser, Header, InitialHeader, InitialPacket, PacketDecodeError,
+        PacketNumber, PartialDecode, ProtectedInitialHeader,
+    },
+    transport_parameters::{PreferredAddress, TransportParameters},
+    version::WireVersion,
+};
+use rama_tls::{ExtensionId, client::ClientHelloExtension};
 use rand::{
     Rng, RngExt, SeedableRng,
     rngs::{StdRng, SysRng},
 };
 use rustc_hash::FxHashMap;
 use slab::Slab;
-
-use rama_tls::{ExtensionId, client::ClientHelloExtension};
 
 use crate::proto::{
     Duration, INITIAL_MTU, Instant, MIN_INITIAL_SIZE, Transmit, TransportConfig,
@@ -33,18 +46,6 @@ use crate::proto::{
     },
     token::{IncomingToken, Token, TokenPayload, reset_token},
     transport_parameters::{self},
-};
-use rama_quic_proto::{
-    ConnectionId, EcnCodepoint, MAX_CID_SIZE, RESET_TOKEN_SIZE, ResetToken, Side, TransportError,
-    Version,
-    coding::BufMutExt,
-    frame,
-    packet::{
-        FixedLengthConnectionIdParser, Header, InitialHeader, InitialPacket, PacketDecodeError,
-        PacketNumber, PartialDecode, ProtectedInitialHeader,
-    },
-    transport_parameters::{PreferredAddress, TransportParameters},
-    version::WireVersion,
 };
 
 /// The main entry point to the library

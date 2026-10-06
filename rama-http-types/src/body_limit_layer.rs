@@ -1,7 +1,9 @@
-use crate::BodyLimit;
+use std::fmt;
+
 use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
+
+use crate::BodyLimit;
 
 /// Limit the size of the request and/or response bodies.
 ///
@@ -149,9 +151,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rama_core::{extensions::Extensions, service::service_fn};
     use std::convert::Infallible;
+
+    use rama_core::{extensions::Extensions, service::service_fn};
+
+    use super::*;
 
     // A connection that is not a byte stream, as a QUIC connection is not.
     struct Connection(Extensions);

@@ -1,5 +1,6 @@
 use std::{io::Write as _, time::Instant};
 
+use flate2::{Compression, write::GzEncoder};
 use rama::{
     Layer as _, Service,
     error::extra::OpaqueError,
@@ -16,12 +17,13 @@ use rama::{
     rt::Executor,
     service::BoxService,
     tls::client::{ServerVerifyMode, TlsClientConfig},
-    utils::octets::{kib, mib},
-    utils::str::any_submatch_ignore_ascii_case,
+    utils::{
+        octets::{kib, mib},
+        str::any_submatch_ignore_ascii_case,
+    },
 };
 
 use super::utils;
-use flate2::{Compression, write::GzEncoder};
 
 #[ignore]
 #[tokio::test]

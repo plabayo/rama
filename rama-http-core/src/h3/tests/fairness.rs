@@ -1,5 +1,23 @@
 //! Exercise cooperative limits through stream/body entry points, not only the budget helper.
 
+use std::{
+    assert_matches,
+    future::Future,
+    pin::{Pin, pin},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    task::{Context, Poll, Wake, Waker},
+};
+
+use rama_core::bytes::Bytes;
+use rama_http_types::{
+    Body,
+    body::{Frame, StreamingBody},
+    proto::h3::Code,
+};
+
 use crate::h3::{
     Error, body,
     connection::{Config, Shared},
@@ -8,22 +26,6 @@ use crate::h3::{
     frame::FrameEvent,
     quic::{RecvStream, SendStream, Writer},
     stream::{Phase, Reader},
-};
-use rama_core::bytes::Bytes;
-use rama_http_types::{
-    Body,
-    body::{Frame, StreamingBody},
-    proto::h3::Code,
-};
-use std::assert_matches;
-use std::{
-    future::Future,
-    pin::{Pin, pin},
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    task::{Context, Poll, Wake, Waker},
 };
 
 #[derive(Default)]

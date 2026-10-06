@@ -8,9 +8,6 @@
         reason = "without a TLS backend and a crypto provider nothing can drive a handshake, so the code that serves one has no caller"
     )
 )]
-use rama_core::error::BoxError;
-use rama_crypto::hmac::HmacSha2;
-use rama_utils::octets;
 use std::{
     fmt,
     net::{SocketAddrV4, SocketAddrV6},
@@ -18,28 +15,29 @@ use std::{
     sync::Arc,
 };
 
-use crate::proto::BloomTokenLog;
-use crate::proto::{
-    DEFAULT_SUPPORTED_VERSIONS, Duration, RandomConnectionIdGenerator, SystemTime, TokenLog,
-    TokenMemoryCache, TokenStore,
-    cid_generator::{
-        ConnectionIdGenerator, ConnectionIdGeneratorFactory, HashedConnectionIdGenerator,
-    },
-    crypto::{self, HandshakeTokenKey},
-};
+use rama_core::error::BoxError;
+use rama_crypto::hmac::HmacSha2;
 use rama_quic_proto::{
     ConnectionId, VarInt, VarIntBoundsExceeded, Version,
     version::{ClientVersionPolicy, ServerVersionPolicy, VersionPolicyError},
 };
-
+use rama_utils::octets;
 #[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
 use rand::Rng as _;
-
 #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use {
     crate::proto::crypto::rustls::{QuicServerConfig, configured_provider},
     rama_crypto::pki_types::{CertificateDer, PrivateKeyDer},
     rama_tls_rustls::dep::rustls::{self, client::WebPkiServerVerifier},
+};
+
+use crate::proto::{
+    BloomTokenLog, DEFAULT_SUPPORTED_VERSIONS, Duration, RandomConnectionIdGenerator, SystemTime,
+    TokenLog, TokenMemoryCache, TokenStore,
+    cid_generator::{
+        ConnectionIdGenerator, ConnectionIdGeneratorFactory, HashedConnectionIdGenerator,
+    },
+    crypto::{self, HandshakeTokenKey},
 };
 
 mod keys;
@@ -1062,9 +1060,10 @@ impl TimeSource for StdSystemTime {
     ))
 ))]
 mod backendless_tests {
+    use std::assert_matches;
+
     use super::*;
     use crate::proto::crypto::config::{TlsConfigError, TlsOptions};
-    use std::assert_matches;
 
     /// Without a built-in provider, convenience constructors report unavailability;
     /// callers can still inject their own provider through the explicit constructors.

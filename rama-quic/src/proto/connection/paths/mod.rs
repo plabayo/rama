@@ -1,18 +1,17 @@
 use std::{cmp, net::SocketAddr};
 
 use rama_core::telemetry::tracing::trace;
+use rama_quic_proto::{ConnectionId, packet::SpaceId};
 
 use super::{
     mtud::MtuDiscovery,
     pacing::Pacer,
+    qlog::event::RecoveryMetricsUpdated,
     spaces::{PacketSpace, SentPacket},
 };
 use crate::proto::{
     Duration, Instant, MIN_INITIAL_SIZE, TIMER_GRANULARITY, TransportConfig, congestion,
 };
-use rama_quic_proto::{ConnectionId, packet::SpaceId};
-
-use super::qlog::event::RecoveryMetricsUpdated;
 
 /// Description of a particular network path
 pub(super) struct PathData {

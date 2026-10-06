@@ -770,10 +770,11 @@ async fn middleware_can_explicitly_rechunk_close_delimited_response() {
 
 #[tokio::test(start_paused = true)]
 async fn explicit_close_delimited_encoding_closes_for_known_and_empty_bodies() {
+    use std::convert::Infallible;
+
     use rama_core::{extensions::ExtensionsRef, service::service_fn};
     use rama_http::{Body, Request, proto::h1::ext::CloseDelimitedResponse};
     use rama_http_backend::server::HttpServer;
-    use std::convert::Infallible;
 
     for payload in ["", "known length"] {
         let body_bytes = rama_core::bytes::Bytes::copy_from_slice(payload.as_bytes());

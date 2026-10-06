@@ -1,5 +1,8 @@
 //! Http Test service for various purposes
 
+use std::{convert::Infallible, sync::Arc, time::Duration};
+
+use clap::Args;
 use rama::{
     Service,
     combinators::Either,
@@ -31,9 +34,6 @@ use rama::{
     tls::{boring::server::TlsAcceptorLayer, server::TlsServerConfig},
     utils::{backoff::ExponentialBackoff, octets::mib},
 };
-
-use clap::Args;
-use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use crate::utils::{
     http::{HttpVersions, TcpHttpVersion},
