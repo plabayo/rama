@@ -37,7 +37,7 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use crate::utils::{
     http::{HttpVersions, TcpHttpVersion},
-    http3::{Http3Args, HttpListeners, serve_http3},
+    http3::{Http3Args, Http3Endpoints, HttpListeners},
     rate::opt_per_sec,
     tls::try_new_server_config,
 };
@@ -91,7 +91,11 @@ pub struct CliCommandHttpTest {
 }
 
 /// run the rama http test service
-pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(), BoxError> {
+pub async fn run(
+    graceful: ShutdownGuard,
+    http3_endpoints: Http3Endpoints,
+    cfg: CliCommandHttpTest,
+) -> Result<(), BoxError> {
     let exec = Executor::graceful(graceful);
     let tcp_version = cfg.http_version.tcp();
     let maybe_tls_server_config = cfg
@@ -193,11 +197,19 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
 
     let http_service = Arc::new(middlewares.into_layer(router));
 
-    serve_http(exec, &cfg, listeners, maybe_tls_server_config, http_service)
+    serve_http(
+        exec,
+        &http3_endpoints,
+        &cfg,
+        listeners,
+        maybe_tls_server_config,
+        http_service,
+    )
 }
 
 fn serve_http<Response>(
     exec: Executor,
+    http3_endpoints: &Http3Endpoints,
     cfg: &CliCommandHttpTest,
     listeners: HttpListeners,
     maybe_tls_server_config: Option<TlsServerConfig>,
@@ -236,7 +248,7 @@ where
             body_limit.clone(),
         )
             .into_layer(HttpServer::new_http3(exec.clone()).service(http_service.clone()));
-        serve_http3(&exec, "HTTP Test", endpoint, Arc::new(http3_service));
+        http3_endpoints.serve(&exec, "HTTP Test", endpoint, Arc::new(http3_service));
     }
 
     let Some((tcp_listener, tcp_version)) = listeners.tcp.zip(cfg.http_version.tcp()) else {

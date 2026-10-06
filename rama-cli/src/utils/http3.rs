@@ -3,6 +3,7 @@
 use rama::{
     Service,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
+    futures::future::join_all,
     http::{
         core::h3::connection::Config,
         headers::{AltSvc, AlternativeService},
@@ -19,7 +20,8 @@ use rama::{
 };
 
 use clap::Args;
-use std::sync::Arc;
+use parking_lot::Mutex;
+use std::{sync::Arc, time::Duration};
 
 use super::http::HttpVersions;
 
@@ -140,20 +142,35 @@ pub async fn bind_http3(addr: SocketAddress, tls: &TlsServerConfig) -> Result<En
         .context("bind QUIC endpoint for HTTP/3")
 }
 
-/// Serve the HTTP/3 connections of `endpoint` with `service` on the graceful `exec`.
-pub fn serve_http3<S>(exec: &Executor, name: &str, endpoint: Endpoint, service: S)
-where
-    S: Service<Connection> + Clone,
-{
-    match endpoint.local_addr() {
-        Ok(addr) => tracing::info!(
-            network.local.address = %addr.ip(),
-            network.local.port = %addr.port(),
-            "{name} HTTP/3 service ready: bind interface = {addr}",
-        ),
-        Err(error) => tracing::warn!(%error, "{name} HTTP/3 service ready: unknown address"),
+/// The HTTP/3 endpoints a serve command serves, so they can be closed when graceful shutdown
+/// runs out of time: unlike a TCP peer, a QUIC peer gets no reset from an exited process and
+/// would wait out its idle timeout.
+#[derive(Debug, Clone, Default)]
+pub struct Http3Endpoints(Arc<Mutex<Vec<Endpoint>>>);
+
+impl Http3Endpoints {
+    /// Serve the HTTP/3 connections of `endpoint` with `service` on the graceful `exec`.
+    pub fn serve<S>(&self, exec: &Executor, name: &str, endpoint: Endpoint, service: S)
+    where
+        S: Service<Connection> + Clone,
+    {
+        match endpoint.local_addr() {
+            Ok(addr) => tracing::info!(
+                network.local.address = %addr.ip(),
+                network.local.port = %addr.port(),
+                "{name} HTTP/3 service ready: bind interface = {addr}",
+            ),
+            Err(error) => tracing::warn!(%error, "{name} HTTP/3 service ready: unknown address"),
+        }
+        self.0.lock().push(endpoint.clone());
+        exec.spawn_task(endpoint.serve(exec.clone(), service));
     }
-    exec.spawn_task(endpoint.serve(exec.clone(), service));
+
+    /// Close every endpoint served, waiting at most `within` for their peers to be told.
+    pub async fn shutdown(&self, within: Duration) {
+        let endpoints = std::mem::take(&mut *self.0.lock());
+        _ = tokio::time::timeout(within, join_all(endpoints.iter().map(Endpoint::shutdown))).await;
+    }
 }
 
 /// The `Alt-Svc` value advertising HTTP/3 on `port` of the origin host (RFC 9114 §3.1.1).
@@ -167,7 +184,15 @@ pub fn alt_svc(port: u16) -> Result<AltSvc, BoxError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama::tls::server::{GeneratedServerAuthConfig, ServerAuthData};
+    use rama::{
+        quic::{ClientConfig, ConnectionError},
+        service::service_fn,
+        tls::{
+            client::{ServerVerifyMode, TlsClientConfig},
+            server::{GeneratedServerAuthConfig, ServerAuthData},
+        },
+    };
+    use std::convert::Infallible;
 
     fn tls() -> TlsServerConfig {
         TlsServerConfig::new().with_server_auth(
@@ -297,5 +322,46 @@ mod tests {
             listeners.alt_svc().unwrap(),
             Some(alt_svc(quic.port()).unwrap())
         );
+    }
+    /// Shutting the served endpoints down tells their peers at once, instead of leaving them to
+    /// their idle timeout.
+    #[tokio::test]
+    async fn shutting_served_endpoints_down_closes_their_connections() {
+        let endpoint = bind_http3(localhost(), &tls()).await.unwrap();
+        let addr = endpoint.local_addr().unwrap();
+        let served = Http3Endpoints::default();
+        served.serve(
+            &Executor::new(),
+            "test",
+            endpoint,
+            service_fn(async |connection: Connection| {
+                _ = connection.closed().await;
+                Ok::<_, Infallible>(())
+            }),
+        );
+
+        let client = Endpoint::build(Executor::new())
+            .bind_address(localhost())
+            .await
+            .unwrap();
+        let config = ClientConfig::try_from_rama_tls_with_provider(
+            &TlsClientConfig::new()
+                .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
+                .with_server_verify(ServerVerifyMode::Disable),
+            TlsOptions::default(),
+            &BoringTlsProvider,
+        )
+        .unwrap();
+        let connection = client
+            .connect_with(config, addr, "localhost")
+            .unwrap()
+            .await
+            .unwrap();
+
+        served.shutdown(Duration::from_secs(1)).await;
+        let error = tokio::time::timeout(Duration::from_secs(1), connection.closed())
+            .await
+            .expect("the peer is told at once");
+        assert!(!matches!(error, ConnectionError::TimedOut), "{error:?}");
     }
 }

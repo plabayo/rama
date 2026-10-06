@@ -19,7 +19,7 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use crate::utils::{
     http::{HttpVersions, TcpHttpVersion},
-    http3::{Http3Args, HttpListeners, serve_http3},
+    http3::{Http3Args, Http3Endpoints, HttpListeners},
     rate::opt_per_sec,
     tls::try_new_server_config,
 };
@@ -89,7 +89,11 @@ pub struct CliCommandIp {
 }
 
 /// run the rama ip service
-pub async fn run(graceful: ShutdownGuard, cfg: CliCommandIp) -> Result<(), BoxError> {
+pub async fn run(
+    graceful: ShutdownGuard,
+    http3_endpoints: Http3Endpoints,
+    cfg: CliCommandIp,
+) -> Result<(), BoxError> {
     let exec = Executor::graceful(graceful);
 
     // opt-in IP geolocation, configured via the RAMA_IP_GEO_DB env var
@@ -141,7 +145,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandIp) -> Result<(), BoxEr
         .context("build ip HTTP service")?;
 
     if let Some(endpoint) = listeners.http3 {
-        serve_http3(&exec, "ip", endpoint, Arc::new(http3_service));
+        http3_endpoints.serve(&exec, "ip", endpoint, Arc::new(http3_service));
     }
     if let Some(tcp_listener) = listeners.tcp {
         serve_tcp(&exec, cfg.bind, tcp_listener, tcp_service)?;

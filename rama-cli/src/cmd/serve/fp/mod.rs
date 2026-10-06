@@ -68,7 +68,7 @@ use state::State;
 
 use crate::utils::{
     http::{HttpVersions, TcpHttpVersion},
-    http3::{Http3Args, HttpListeners, serve_http3},
+    http3::{Http3Args, Http3Endpoints, HttpListeners},
     rate::opt_per_sec,
     tls::try_new_server_config,
 };
@@ -142,7 +142,11 @@ pub struct CliCommandFingerprint {
 }
 
 /// run the rama FP service
-pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<(), BoxError> {
+pub async fn run(
+    graceful: ShutdownGuard,
+    http3_endpoints: Http3Endpoints,
+    cfg: CliCommandFingerprint,
+) -> Result<(), BoxError> {
     let (tcp_forwarded_layer, http_forwarded_layer) = match &cfg.forward {
         None => (None, None),
         Some(ForwardKind::Forwarded) => {
@@ -339,6 +343,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
 
     serve_http(
         exec,
+        &http3_endpoints,
         &cfg,
         listeners,
         maybe_tls_server_config,
@@ -349,6 +354,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
 
 fn serve_http<Response>(
     exec: Executor,
+    http3_endpoints: &Http3Endpoints,
     cfg: &CliCommandFingerprint,
     listeners: HttpListeners,
     maybe_tls_server_config: Option<TlsServerConfig>,
@@ -389,7 +395,7 @@ where
             body_limit.clone(),
         )
             .into_layer(http3.service(http_service.clone()));
-        serve_http3(&exec, "FP", endpoint, Arc::new(http3_service));
+        http3_endpoints.serve(&exec, "FP", endpoint, Arc::new(http3_service));
     }
 
     let Some((tcp_listener, tcp_version)) = listeners.tcp.zip(cfg.http_version.tcp()) else {

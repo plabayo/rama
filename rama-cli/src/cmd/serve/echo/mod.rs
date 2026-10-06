@@ -34,7 +34,7 @@ use tokio::sync::mpsc::Sender;
 
 use crate::utils::{
     http::{HttpVersions, TcpHttpVersion},
-    http3::{Http3Args, HttpListeners, serve_http3},
+    http3::{Http3Args, Http3Endpoints, HttpListeners},
     rate::opt_per_sec,
     tls::try_new_server_config,
 };
@@ -149,6 +149,7 @@ impl fmt::Display for Mode {
 pub async fn run(
     graceful: ShutdownGuard,
     etx: Sender<BoxError>,
+    http3_endpoints: Http3Endpoints,
     cfg: CliCommandEcho,
 ) -> Result<(), BoxError> {
     let maybe_tls_server_config = matches!(cfg.mode, Mode::Tls | Mode::Https)
@@ -178,7 +179,13 @@ pub async fn run(
                 .await?
         }
         Mode::Http | Mode::Https => {
-            bind_echo_http_service(graceful, cfg.clone(), maybe_tls_server_config).await?
+            bind_echo_http_service(
+                graceful,
+                &http3_endpoints,
+                cfg.clone(),
+                maybe_tls_server_config,
+            )
+            .await?
         }
     }
 
@@ -187,6 +194,7 @@ pub async fn run(
 
 async fn bind_echo_http_service(
     graceful: ShutdownGuard,
+    http3_endpoints: &Http3Endpoints,
     cfg: CliCommandEcho,
     maybe_tls_config: Option<TlsServerConfig>,
 ) -> Result<(), BoxError> {
@@ -224,7 +232,7 @@ async fn bind_echo_http_service(
         .context("build http(s) echo service")?;
 
     if let Some(endpoint) = listeners.http3 {
-        serve_http3(&exec, "echo", endpoint, Arc::new(http3_service));
+        http3_endpoints.serve(&exec, "echo", endpoint, Arc::new(http3_service));
     }
 
     let Some(tcp_listener) = listeners.tcp else {
