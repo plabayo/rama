@@ -14,6 +14,13 @@ use crate::address::SocketAddress;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(target_os = "windows")]
+use std::os::windows::io::AsRawSocket as _;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Networking::WinSock::{
+    SO_EXCLUSIVEADDRUSE, SOCKET, SOCKET_ERROR, SOL_SOCKET, setsockopt,
+};
+
 /// Specification of the communication domain for a [`Socket`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, Eq, PartialEq)]
 pub enum Domain {
@@ -495,6 +502,15 @@ pub struct SocketOptions {
     /// For IPv4 [`Socket`]s this means that a [`Socket`] may bind even when there’s a [`Socket`] already
     /// listening on this port.
     pub reuse_address: Option<bool>,
+
+    #[cfg(target_os = "windows")]
+    #[cfg_attr(docsrs, doc(cfg(target_os = "windows")))]
+    /// Set value for the `SO_EXCLUSIVEADDRUSE` option on this [`Socket`].
+    ///
+    /// Without it, Windows lets another socket bind the same port on a more specific address
+    /// and take this one's traffic. A TCP listener using it cannot be bound again while its
+    /// connections linger in `TIME_WAIT`.
+    pub exclusive_address_use: Option<bool>,
 
     /// Set value for the `SO_SNDBUF` option on this [`Socket`].
     ///
@@ -1115,6 +1131,10 @@ impl SocketOptions {
         if let Some(reuse) = self.reuse_address {
             socket.set_reuse_address(reuse)?;
         }
+        #[cfg(target_os = "windows")]
+        if let Some(exclusive) = self.exclusive_address_use {
+            set_exclusive_address_use(&socket, exclusive)?;
+        }
         if let Some(n) = self.send_buffer_size {
             socket.set_send_buffer_size(n)?;
         }
@@ -1369,11 +1389,49 @@ fn set_only_v6(socket: &Socket, only_v6: bool) -> io::Result<()> {
     socket.set_only_v6(only_v6)
 }
 
+#[cfg(target_os = "windows")]
+fn set_exclusive_address_use(socket: &Socket, exclusive: bool) -> io::Result<()> {
+    let value = i32::from(exclusive);
+    // SAFETY: a live socket, and a pointer to an `i32` of the length passed.
+    let result = unsafe {
+        setsockopt(
+            socket.as_raw_socket() as SOCKET,
+            SOL_SOCKET,
+            SO_EXCLUSIVEADDRUSE,
+            (&raw const value).cast(),
+            size_of::<i32>() as i32,
+        )
+    };
+    if result == SOCKET_ERROR {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use core::cell::Cell;
     use std::net::{Ipv4Addr, Ipv6Addr};
+
+    /// Windows lets a wildcard bind share a port another socket holds on a more specific
+    /// address, unless the binding socket asks for the port exclusively.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn an_exclusive_wildcard_bind_refuses_a_port_held_on_a_specific_address() {
+        let held = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = held.local_addr().unwrap().port();
+        let wildcard = |exclusive_address_use| SocketOptions {
+            address: Some(SocketAddress::new(Ipv4Addr::UNSPECIFIED.into(), port)),
+            exclusive_address_use,
+            ..SocketOptions::default_udp()
+        };
+        wildcard(Some(true))
+            .try_build_socket(Domain::IPv4)
+            .unwrap_err();
+        wildcard(None).try_build_socket(Domain::IPv4).unwrap();
+    }
 
     std::thread_local! {
         // Socket construction is synchronous; refusal must not affect concurrent tests.
