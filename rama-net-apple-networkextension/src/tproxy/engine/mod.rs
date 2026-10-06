@@ -2749,8 +2749,10 @@ impl TcpPerFlowSignals {
             | BridgeCloseReason::MaxLifetime => libc::ETIMEDOUT,
             BridgeCloseReason::ReadErrorLeft
             | BridgeCloseReason::ReadErrorRight
+            // Swift still drains the client tail it holds; the relay may drop what Rust buffers.
+            | BridgeCloseReason::WriteErrorRight
             | BridgeCloseReason::Aborted => libc::ECONNRESET,
-            BridgeCloseReason::WriteErrorLeft | BridgeCloseReason::WriteErrorRight => libc::EPIPE,
+            BridgeCloseReason::WriteErrorLeft => libc::EPIPE,
             BridgeCloseReason::Shutdown => libc::ECANCELED,
             // Service panics and future abnormal reasons fail closed.
             _ => libc::EIO,

@@ -4019,7 +4019,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         // back to the in-Rust path.
         guard let session = ctx.session,
             let connection = ctx.connection,
-            !ctx.egressReset,
+            !ctx.egressReset, !ctx.egressFailed,
             let clientWritePump = ctx.clientWritePump,
             let egressWritePump = ctx.egressWritePump,
             ctx.clientReadPump != nil

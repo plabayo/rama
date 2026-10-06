@@ -274,7 +274,7 @@ final class TcpFlowContext: @unchecked Sendable {
     private(set) var isDone = false
     /// Rust aborted the egress, which `resetEgress` already cancelled.
     private(set) var egressReset = false
-    /// Network.framework failed the egress, whose read now ends through Rust.
+    /// The egress failed under Rust, whose read now ends through it.
     var egressFailed = false
     /// Each `NEAppProxyTCPFlow` half has one terminal close operation. Keep
     /// those edges separate from whole-flow teardown so a later aggregate

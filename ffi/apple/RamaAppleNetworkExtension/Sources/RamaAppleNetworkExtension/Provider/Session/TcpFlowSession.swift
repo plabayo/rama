@@ -547,9 +547,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     private func closeForRustTerminalError() -> Bool {
         guard !ctx.isDone else { return true }
         guard let error = sessionHandle?.terminalError() else { return false }
-        // Rust read errors can follow an accepted response tail. Preserve that
-        // tail and report its error from the client-writer drain completion.
-        // A write timeout/error can leave bytes unaccepted in Rust and must
+        // Rust read and egress write errors can follow an accepted response tail.
+        // Preserve that tail and report its error from the client-writer drain completion.
+        // Any other abnormal end can leave bytes unaccepted in Rust and must
         // instead abort, even if Swift's own queue has already become empty.
         let posix = error as NSError
         if posix.domain == NSPOSIXErrorDomain && posix.code == Int(ECONNRESET) {
@@ -757,14 +757,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             core?.logDebug(
                 "egress NWConnection failed after flow opened: \(String(describing: error))"
             )
-            // A live egress read ends as a failed receive: Rust then drains the tail it accepted.
-            let failure = error ?? TcpFlowContext.postReadyFailureError()
-            if ctx.mode == .viaRust, ctx.clientReadPump != nil,
-                ctx.egressReadPump?.failConnection(failure) == true
-            {
-                ctx.egressFailed = true
-                cancelEgressTimers()
-            } else {
+            if !failEgressThroughRust(error ?? TcpFlowContext.postReadyFailureError()) {
                 applyPostReadyTeardown(error: error)
             }
         }
@@ -837,6 +830,17 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         }
     }
 
+    /// A failed egress under Rust, with the kernel flow open, ends its live read as a failed
+    /// receive does: Rust may then drain the response tail it accepted. Whether that path took it.
+    private func failEgressThroughRust(_ error: Error) -> Bool {
+        guard !ctx.isDone, ctx.mode == .viaRust, ctx.clientReadPump != nil,
+            ctx.egressReadPump?.failConnection(error) == true
+        else { return false }
+        ctx.egressFailed = true
+        cancelEgressTimers()
+        return true
+    }
+
     /// No egress timer may tear the flow down once its egress is reset or failed.
     private func cancelEgressTimers() {
         timeoutWork?.cancel()
@@ -878,7 +882,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 if self.ctx.mode != .viaRust {
                     self.ctx.applyWriterTerminal(error)
                     self.ctx.directForwarder?.cancel()
-                } else {
+                } else if !self.failEgressThroughRust(error) {
                     self.terminalDrainBackstop?.cancel()
                     self.terminalDrainBackstop = nil
                     self.ctx.drainClosePending = false

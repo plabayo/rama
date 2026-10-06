@@ -224,8 +224,10 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         let sink = RecordingEgressSink(statuses: [.paused, .accepted])
         let queue = makeQueue()
         let mock = MockNwConnection()
+        let recorded = TestValue<NWError?>(nil)
         let pump = NwTcpConnectionReadPump(
-            connection: mock, session: sink, queue: queue, eofGraceDeadline: .seconds(2))
+            connection: mock, session: sink, queue: queue, eofGraceDeadline: .seconds(2),
+            onReadError: { recorded.set($0 as? NWError) })
         let data = Data([0x01, 0x02, 0x03])
         pump.start()
         waitForQueueDrain(queue)
@@ -234,6 +236,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         XCTAssertFalse(queue.sync { pump.isEofBackstopArmed })
         XCTAssertTrue(queue.sync { pump.failConnection(error) })
         XCTAssertTrue(queue.sync { pump.isEofBackstopArmed })
+        XCTAssertNotNil(recorded.get(), "the flow already knows how it will end")
         XCTAssertEqual(sink.errorCount, 0, "the failure stays behind the paused payload")
         pump.resume()
         waitForQueueDrain(queue)

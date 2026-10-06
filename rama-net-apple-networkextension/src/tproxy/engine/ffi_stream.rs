@@ -564,6 +564,7 @@ mod tests {
             (PausedTimeout, libc::ETIMEDOUT),
             (ReadErrorRight, libc::ECONNRESET),
             (WriteErrorLeft, libc::EPIPE),
+            (WriteErrorRight, libc::ECONNRESET),
             (Shutdown, libc::ECANCELED),
             (ServicePanic, libc::EIO),
             (Aborted, libc::ECONNRESET),
@@ -574,7 +575,13 @@ mod tests {
             assert_eq!(signals.terminal_error_code(), 0);
             signals.record_terminal_error(reason);
             signals.record_terminal_error(PeerEofLeft);
-            signals.record_terminal_error(WriteErrorRight);
+            // A later reason of another code must not replace the first.
+            let later = if expected == libc::EPIPE {
+                PausedTimeout
+            } else {
+                WriteErrorLeft
+            };
+            signals.record_terminal_error(later);
             assert_eq!(signals.terminal_error_code(), expected);
         }
     }

@@ -142,7 +142,11 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
             if pendingTerminal?.isFailure != true {
                 pendingTerminal = .failure(error)
             }
-            scheduleEgressReleaseLocked(error)
+            // The failure the read will end with, an earlier receive's if it had one.
+            if case .failure(let queued) = pendingTerminal {
+                onReadError(queued)
+                scheduleEgressReleaseLocked(queued)
+            }
             return true
         }
     }
