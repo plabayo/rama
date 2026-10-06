@@ -90,6 +90,14 @@ async fn get_or_issue_cached(
         .map_err(|err: Arc<ArcError>| -> BoxError { ArcError::clone(&err).into() })
 }
 
+/// The cached certificate for `identity`, unless it expired, which issuance replaces.
+async fn valid_cached(
+    cert_cache: &Cache<CertificateIdentity, IssuedCert>,
+    identity: &CertificateIdentity,
+) -> Option<IssuedCert> {
+    cert_cache.get(identity).await.filter(IssuedCert::is_valid)
+}
+
 #[derive(Debug, Clone)]
 /// Internal data used as configuration/input for the [`super::TlsAcceptorService`].
 pub struct TlsAcceptorData {
@@ -114,14 +122,25 @@ impl TlsAcceptorData {
         client_hello: &RamaClientHello,
     ) -> Result<IssuedCertificate, BoxError> {
         let source = self.config.cert_source.clone();
-        let identity = match client_hello.ext_server_name() {
-            Some(name) => Some(CertificateIdentity::from(name.clone())),
-            None => source.fallback_identity().cloned(),
-        };
+        let identity = source.identity_for(client_hello);
         let cert = source
             .issue_for(identity.clone(), Some(client_hello.clone()))
             .await?;
         Ok(IssuedCertificate { identity, cert })
+    }
+
+    /// The certificate [`Self::issue_certificate`] hands out for `client_hello` without
+    /// issuing one: the fixed identity, or a valid one the issuer's cache holds.
+    ///
+    /// The result holds the certificate itself, so a later eviction cannot change it.
+    pub async fn reusable_certificate(
+        &self,
+        client_hello: &RamaClientHello,
+    ) -> Option<IssuedCertificate> {
+        let source = &self.config.cert_source;
+        let identity = source.identity_for(client_hello);
+        let cert = source.reusable_for(identity.as_ref()).await?;
+        Some(IssuedCertificate { identity, cert })
     }
 
     /// A server context builder with every setting of this configuration but its identity,
@@ -302,6 +321,35 @@ impl TlsCertSource {
             | TlsCertSourceKind::DynamicIssuer {
                 fallback_identity, ..
             } => fallback_identity.as_ref(),
+        }
+    }
+
+    /// The identity a handshake asks a certificate for: its server name, else the fallback.
+    fn identity_for(&self, client_hello: &RamaClientHello) -> Option<CertificateIdentity> {
+        match client_hello.ext_server_name() {
+            Some(name) => Some(CertificateIdentity::from(name.clone())),
+            None => self.fallback_identity().cloned(),
+        }
+    }
+
+    /// The certificate [`Self::issue_for`] returns for `identity` without issuing one.
+    async fn reusable_for(&self, identity: Option<&CertificateIdentity>) -> Option<IssuedCert> {
+        match &self.kind {
+            TlsCertSourceKind::InMemory(cert) => Some(cert.clone()),
+            TlsCertSourceKind::InMemoryIssuer { cert_cache, .. } => {
+                valid_cached(cert_cache.as_ref()?, identity?).await
+            }
+            TlsCertSourceKind::DynamicIssuer {
+                issuer, cert_cache, ..
+            } => {
+                let identity = identity?;
+                let normalized = issuer.normalize_identity(identity);
+                valid_cached(
+                    cert_cache.as_ref()?,
+                    normalized.as_ref().unwrap_or(identity),
+                )
+                .await
+            }
         }
     }
 
@@ -698,7 +746,14 @@ fn add_issued_cert_to_ssl_ref(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server::{BoringServerConfigExt as _, ServerCertIssuerData};
+    use crate::server::{
+        BoringServerConfigExt as _, CacheKind, ServerCertIssuerData, ServerCertIssuerKind,
+    };
+    use rama_crypto::cert::CertificateValidity;
+    use rama_tls::{
+        client::ClientHelloExtension,
+        server::{DynamicCertIssuer, SelfSignedCaConfig, TlsServerConfig},
+    };
     use std::{
         sync::atomic::{AtomicUsize, Ordering},
         time::Duration,
@@ -767,5 +822,140 @@ mod tests {
             worker.await.expect("join cache worker");
         }
         assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    fn hello(name: &'static str) -> RamaClientHello {
+        RamaClientHello::new(
+            ProtocolVersion::TLSv1_3,
+            Vec::new(),
+            Vec::new(),
+            vec![ClientHelloExtension::ServerName(Some(Domain::from_static(
+                name,
+            )))],
+        )
+    }
+
+    fn acceptor_data(issuer: ServerCertIssuerData) -> TlsAcceptorData {
+        let config = TlsServerConfig::new().with_cert_issuer(issuer);
+        TlsAcceptorData::try_from(&config).expect("acceptor config")
+    }
+
+    #[tokio::test]
+    async fn only_certificates_issued_before_are_reusable() {
+        let cached = acceptor_data(ServerCertIssuerData::default());
+        assert!(
+            cached
+                .reusable_certificate(&hello("a.example"))
+                .await
+                .is_none()
+        );
+        cached
+            .issue_certificate(&hello("a.example"))
+            .await
+            .expect("issue a.example");
+        let reused = cached
+            .reusable_certificate(&hello("a.example"))
+            .await
+            .expect("a.example is cached");
+        assert_eq!(
+            reused.identity(),
+            Some(&CertificateIdentity::Dns(Domain::from_static("a.example")))
+        );
+        assert!(
+            cached
+                .reusable_certificate(&hello("b.example"))
+                .await
+                .is_none()
+        );
+
+        let uncached =
+            acceptor_data(ServerCertIssuerData::default().with_cache_kind(CacheKind::Disabled));
+        uncached
+            .issue_certificate(&hello("a.example"))
+            .await
+            .expect("issue a.example");
+        assert!(
+            uncached
+                .reusable_certificate(&hello("a.example"))
+                .await
+                .is_none()
+        );
+
+        let fixed = TlsAcceptorData::try_from(
+            &TlsServerConfig::new().with_server_auth(
+                ServerAuthData::new_self_signed_leaf(LeafCertRequest::default())
+                    .expect("self-signed leaf"),
+            ),
+        )
+        .expect("acceptor config");
+        assert!(
+            fixed
+                .reusable_certificate(&hello("a.example"))
+                .await
+                .is_some()
+        );
+    }
+
+    /// A cached certificate that expired is issued again, so it is not reusable.
+    #[tokio::test]
+    async fn an_expired_cached_certificate_is_not_reusable() {
+        let expiring = acceptor_data(ServerCertIssuerData::new(
+            ServerCertIssuerKind::GeneratedCa {
+                ca: SelfSignedCaConfig::default(),
+                leaf: LeafCertConfig {
+                    validity: CertificateValidity::new(
+                        Duration::from_secs(1),
+                        Duration::from_secs(1),
+                    ),
+                    ..LeafCertConfig::default()
+                },
+            },
+        ));
+        expiring
+            .issue_certificate(&hello("a.example"))
+            .await
+            .expect("issue a.example");
+        assert!(
+            expiring
+                .reusable_certificate(&hello("a.example"))
+                .await
+                .is_none()
+        );
+    }
+
+    /// Issues one certificate for every name, cached under one identity.
+    struct OneIdentity(Arc<CertificateAuthorityData>);
+
+    impl DynamicCertIssuer for OneIdentity {
+        async fn issue_cert(
+            &self,
+            _: CertificateIssuanceContext,
+        ) -> Result<ServerAuthData, BoxError> {
+            ServerAuthData::new_issued_by(&self.0, LeafCertRequest::default())
+        }
+
+        fn normalize_identity(&self, _: &CertificateIdentity) -> Option<CertificateIdentity> {
+            Some(CertificateIdentity::Dns(Domain::from_static("one.example")))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dynamic_issuer_counts_names_by_their_normalized_identity() {
+        let ca =
+            CertificateAuthorityData::generate(SelfSignedCaConfig::default()).expect("generate CA");
+        let data = acceptor_data(ServerCertIssuerData::new(OneIdentity(Arc::new(ca))));
+        assert!(
+            data.reusable_certificate(&hello("a.example"))
+                .await
+                .is_none()
+        );
+        data.issue_certificate(&hello("a.example"))
+            .await
+            .expect("issue a.example");
+        assert!(
+            data.reusable_certificate(&hello("b.example"))
+                .await
+                .is_some()
+        );
     }
 }
