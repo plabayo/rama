@@ -1,7 +1,8 @@
-use super::qlog::Capture;
-use super::*;
-use rama_quic_proto::VarInt;
 use std::assert_matches;
+
+use rama_quic_proto::VarInt;
+
+use super::{qlog::Capture, *};
 
 fn trace_config(capture: &Capture, now: Instant) -> Arc<TransportConfig> {
     let mut transport = TransportConfig::default();
@@ -13,7 +14,9 @@ fn trace_config(capture: &Capture, now: Instant) -> Arc<TransportConfig> {
 fn qlog_negotiation_records_actual_parameters_alpn_and_key_generations() {
     let _guard = subscribe();
     let mut server = server_config();
-    server.crypto = Arc::new(server_crypto_with_alpn(vec![vec![0xff, 0x00, b'h']]));
+    server.crypto = ServerCrypto::Fixed(Arc::new(server_crypto_with_alpn(vec![vec![
+        0xff, 0x00, b'h',
+    ]])));
     let mut pair = Pair::new(
         Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         server,

@@ -1,14 +1,14 @@
 //! Connection and endpoint lifecycle tests.
 
-use super::{Captured, TestSocket, WakeCount, pin_active_socket, release_lease};
-use crate::driver::connection::{
-    MAX_TRANSMIT_DATAGRAMS, MAX_TRANSMIT_SEGMENTS, RETAINED_DESCRIPTORS,
+use std::{
+    assert_matches,
+    collections::VecDeque,
+    net::{IpAddr, Ipv4Addr},
+    num::NonZeroUsize,
+    sync::atomic::AtomicBool,
+    task::Wake,
 };
-use crate::driver::endpoint::*;
-use crate::driver::lifecycle::ShutdownOutcome;
-use crate::driver::queue::{MIN_RETAINED, QUIET_DRAINS_BEFORE_SHRINK};
-use crate::driver::sockets::MAX_RETAINED_SOCKETS;
-use crate::proto::{CongestionControl, RetryRefused, TransportConfig};
+
 use rama_crypto::hmac::HmacSha2;
 use rama_quic_proto::Version;
 use rama_tls::{
@@ -16,13 +16,17 @@ use rama_tls::{
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
 use rama_udp::{DatagramCapabilities, DatagramError, DatagramSender, DatagramSocket};
-use std::assert_matches;
-use std::collections::VecDeque;
-use std::{
-    net::{IpAddr, Ipv4Addr},
-    num::NonZeroUsize,
-    sync::atomic::AtomicBool,
-    task::Wake,
+
+use super::{Captured, TestSocket, WakeCount, pin_active_socket, release_lease};
+use crate::{
+    driver::{
+        connection::{MAX_TRANSMIT_DATAGRAMS, MAX_TRANSMIT_SEGMENTS, RETAINED_DESCRIPTORS},
+        endpoint::*,
+        lifecycle::ShutdownOutcome,
+        queue::{MIN_RETAINED, QUIET_DRAINS_BEFORE_SHRINK},
+        sockets::MAX_RETAINED_SOCKETS,
+    },
+    proto::{CongestionControl, RetryRefused, TransportConfig},
 };
 
 pub(super) fn configs() -> (ClientConfig, ServerConfig) {
@@ -1306,13 +1310,13 @@ async fn an_attempt_that_cannot_widen_its_permit_is_ignored_and_counted() {
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
-    wait_until(|| server.stats().dropped_packets > dropped_baseline).await;
-    assert_eq!(server.stats().dropped_packets, dropped_baseline + 1);
-    assert_eq!(
-        budget.stats().dropped_datagrams,
-        budget_baseline + 1,
-        "the refused widening is the budget's drop"
-    );
+    // The first flight may span several Initial datagrams, all leaving at once: each refused
+    // widening is counted once, as the budget's drop.
+    wait_until(|| {
+        let dropped = server.stats().dropped_packets - dropped_baseline;
+        dropped > 0 && budget.stats().dropped_datagrams - budget_baseline == dropped
+    })
+    .await;
     assert_eq!(
         budget.stats().queued_datagrams,
         1,
@@ -2118,15 +2122,23 @@ async fn incoming_storage_refusal_after_budget_acceptance_is_counted_once() {
     server.inner.state.lock().recv_state.incoming.set_limit(0);
     let budget = server.inner.state.lock().packet_budget.clone();
     let drop_baseline = server.stats().dropped_packets;
+    let received_baseline = server.stats().received_datagrams;
     let budget_drop_baseline = budget.stats().dropped_datagrams;
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
     wait_until(|| server.stats().dropped_packets > drop_baseline).await;
-    assert_eq!(
-        server.stats().dropped_packets,
-        drop_baseline + 1,
-        "exactly one receive drop for the refused attempt"
+    // The first flight can span several Initial datagrams, sent together (a boring
+    // ClientHello does); let all of them land before counting.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let stats = server.stats();
+    let dropped = stats.dropped_packets - drop_baseline;
+    let received = stats.received_datagrams - received_baseline;
+    // Each refused attempt is one drop: datagrams received in one pass join the same attempt,
+    // while one received after its refusal is an attempt, and a refusal, of its own.
+    assert!(
+        (1..=received).contains(&dropped),
+        "{dropped} receive drops for {received} datagrams"
     );
     assert_eq!(
         budget.stats().dropped_datagrams,
@@ -2165,7 +2177,7 @@ async fn incoming_storage_refusal_after_budget_acceptance_is_counted_once() {
     .unwrap();
     client_conn.unwrap();
     server_conn.unwrap();
-    assert_eq!(server.stats().dropped_packets, drop_baseline + 1);
+    assert_eq!(server.stats().dropped_packets, drop_baseline + dropped);
     tokio::join!(client.shutdown(), server.shutdown());
 }
 
@@ -6877,7 +6889,7 @@ async fn handshake_confirmed_fails_when_the_connection_ends_unconfirmed() {
 #[tokio::test]
 async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
     struct FailingServer(Arc<dyn crate::proto::crypto::ServerConfig>);
-    impl crate::proto::crypto::ServerConfig for FailingServer {
+    impl crate::proto::crypto::InitialServerConfig for FailingServer {
         fn initial_keys(
             &self,
             version: Version,
@@ -6893,8 +6905,24 @@ async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
         ) -> Result<[u8; 16], rama_quic_proto::crypto::CryptoError> {
             self.0.retry_tag(version, cid, packet)
         }
+    }
+    impl crate::proto::crypto::ServerConfig for FailingServer {
         fn start_session(
             self: Arc<Self>,
+            _: Version,
+            _: &rama_quic_proto::transport_parameters::TransportParameters,
+        ) -> Result<Box<dyn crate::proto::crypto::Session>, rama_quic_proto::TransportError>
+        {
+            Err(rama_quic_proto::TransportError::INTERNAL_ERROR(
+                "injected accept failure",
+            ))
+        }
+        fn supports_compatible_negotiation(&self) -> bool {
+            false
+        }
+        fn start_negotiated_session(
+            self: Arc<Self>,
+            _: Version,
             _: Version,
             _: &rama_quic_proto::transport_parameters::TransportParameters,
         ) -> Result<Box<dyn crate::proto::crypto::Session>, rama_quic_proto::TransportError>
@@ -6916,7 +6944,9 @@ async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
     }
 
     let (client_config, mut server_config) = configs();
-    server_config.crypto = Arc::new(FailingServer(server_config.crypto));
+    server_config.crypto = crate::proto::ServerCrypto::Fixed(Arc::new(FailingServer(
+        server_config.crypto.into_fixed(),
+    )));
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let client = endpoint(None, Executor::new(), Duration::from_secs(1));
     let connecting = client

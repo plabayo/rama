@@ -8,9 +8,6 @@
         reason = "without a TLS backend and a crypto provider nothing can drive a handshake, so the code that serves one has no caller"
     )
 )]
-use rama_core::error::BoxError;
-use rama_crypto::hmac::HmacSha2;
-use rama_utils::octets;
 use std::{
     fmt,
     net::{SocketAddrV4, SocketAddrV6},
@@ -18,25 +15,29 @@ use std::{
     sync::Arc,
 };
 
-use crate::proto::BloomTokenLog;
-use crate::proto::{
-    DEFAULT_SUPPORTED_VERSIONS, Duration, RandomConnectionIdGenerator, SystemTime, TokenLog,
-    TokenMemoryCache, TokenStore,
-    cid_generator::{
-        ConnectionIdGenerator, ConnectionIdGeneratorFactory, HashedConnectionIdGenerator,
-    },
-    crypto::{self, HandshakeTokenKey},
-};
+use rama_core::error::BoxError;
+use rama_crypto::hmac::HmacSha2;
 use rama_quic_proto::{
     ConnectionId, VarInt, VarIntBoundsExceeded, Version,
     version::{ClientVersionPolicy, ServerVersionPolicy, VersionPolicyError},
 };
-
+use rama_utils::octets;
+#[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
+use rand::Rng as _;
 #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use {
     crate::proto::crypto::rustls::{QuicServerConfig, configured_provider},
     rama_crypto::pki_types::{CertificateDer, PrivateKeyDer},
     rama_tls_rustls::dep::rustls::{self, client::WebPkiServerVerifier},
+};
+
+use crate::proto::{
+    BloomTokenLog, DEFAULT_SUPPORTED_VERSIONS, Duration, RandomConnectionIdGenerator, SystemTime,
+    TokenLog, TokenMemoryCache, TokenStore,
+    cid_generator::{
+        ConnectionIdGenerator, ConnectionIdGeneratorFactory, HashedConnectionIdGenerator,
+    },
+    crypto::{self, HandshakeTokenKey},
 };
 
 mod keys;
@@ -326,7 +327,7 @@ pub struct ServerConfig {
     /// TLS configuration used for incoming connections
     ///
     /// Must be set to use TLS 1.3 only.
-    pub(crate) crypto: Arc<dyn crypto::ServerConfig>,
+    pub(crate) crypto: ServerCrypto,
 
     /// Configuration for sending and handling validation tokens
     pub(crate) validation_token: ValidationTokenConfig,
@@ -356,12 +357,53 @@ pub struct ServerConfig {
     pub(crate) versions: ServerVersionPolicy,
 }
 
+/// The TLS a server's connections start from.
+#[derive(Clone)]
+pub(crate) enum ServerCrypto {
+    /// Every connection starts from this configuration.
+    Fixed(Arc<dyn crypto::ServerConfig>),
+    /// Each connection starts from the configuration resolved from its ClientHello.
+    Resolver(Arc<dyn crypto::ServerConfigResolver>),
+}
+
+impl ServerCrypto {
+    /// Tests: the fixed configuration wrapped, to wrap it in turn.
+    #[cfg(test)]
+    pub(crate) fn into_fixed(self) -> Arc<dyn crypto::ServerConfig> {
+        match self {
+            Self::Fixed(config) => config,
+            Self::Resolver(_) => panic!("a resolving configuration"),
+        }
+    }
+
+    /// What serves a connection before its session starts.
+    pub(crate) fn initial(&self) -> &dyn crypto::InitialServerConfig {
+        match self {
+            Self::Fixed(config) => &**config,
+            Self::Resolver(resolver) => &**resolver,
+        }
+    }
+}
+
 impl ServerConfig {
     /// Create a server with a custom TLS implementation and address-token key.
     pub fn new(
         crypto: Arc<dyn crypto::ServerConfig>,
         token_key: Arc<dyn HandshakeTokenKey>,
     ) -> Self {
+        Self::from_crypto(ServerCrypto::Fixed(crypto), token_key)
+    }
+
+    /// Create a server whose connections each start from the TLS configuration `resolver`
+    /// resolves from their ClientHello, with a custom address-token key.
+    pub fn new_resolving(
+        resolver: Arc<dyn crypto::ServerConfigResolver>,
+        token_key: Arc<dyn HandshakeTokenKey>,
+    ) -> Self {
+        Self::from_crypto(ServerCrypto::Resolver(resolver), token_key)
+    }
+
+    pub(crate) fn from_crypto(crypto: ServerCrypto, token_key: Arc<dyn HandshakeTokenKey>) -> Self {
         Self {
             transport: Arc::new(TransportConfig::default()),
             crypto,
@@ -583,12 +625,21 @@ impl ServerConfig {
     ///
     /// Uses a randomized handshake token key.
     pub fn with_crypto(crypto: Arc<dyn crypto::ServerConfig>) -> Self {
-        use rand::Rng;
+        Self::with_random_token_key(ServerCrypto::Fixed(crypto))
+    }
 
-        let rng = &mut rand::rng();
+    /// Create a server config whose connections each start from the configuration the given
+    /// [`crypto::ServerConfigResolver`] resolves from their ClientHello
+    ///
+    /// Uses a randomized handshake token key.
+    pub fn with_resolver(resolver: Arc<dyn crypto::ServerConfigResolver>) -> Self {
+        Self::with_random_token_key(ServerCrypto::Resolver(resolver))
+    }
+
+    pub(crate) fn with_random_token_key(crypto: ServerCrypto) -> Self {
         let mut master_key = [0u8; 64];
-        rng.fill_bytes(&mut master_key);
-        Self::new(
+        rand::rng().fill_bytes(&mut master_key);
+        Self::from_crypto(
             crypto,
             AddressTokenKey::from_material(&master_key).into_key(),
         )
@@ -1009,9 +1060,10 @@ impl TimeSource for StdSystemTime {
     ))
 ))]
 mod backendless_tests {
+    use std::assert_matches;
+
     use super::*;
     use crate::proto::crypto::config::{TlsConfigError, TlsOptions};
-    use std::assert_matches;
 
     /// Without a built-in provider, convenience constructors report unavailability;
     /// callers can still inject their own provider through the explicit constructors.

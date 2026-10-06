@@ -1,24 +1,35 @@
-use std::{io, str, sync::Arc};
+use std::{future::ready, io, str, sync::Arc};
 
 use ahash::HashMap;
 use parking_lot::Mutex;
-
-use rama_core::bytes::BytesMut;
+use rama_core::{
+    bytes::BytesMut,
+    error::{BoxError, BoxErrorExt as _},
+};
 #[cfg(all(feature = "aws-lc", not(feature = "ring")))]
 use rama_crypto::dep::aws_lc_rs::aead;
 #[cfg(feature = "ring")]
 use rama_crypto::dep::ring::aead;
 use rama_net::{address::Domain, tls::ApplicationProtocol};
-use rama_tls_rustls::dep::rustls::{
-    self, HandshakeKind,
-    pki_types::ServerName,
-    quic::{Connection, HeaderProtectionKey, KeyChange, PacketKey, Secrets, Suite, Version},
+use rama_quic_proto::{
+    ConnectionId, Side, TransportError, TransportErrorCode,
+    crypto::{CryptoError, HeaderKey},
+    packet::SpaceId,
+    transport_parameters::TransportParameters,
 };
 #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use rama_tls_rustls::dep::rustls::{
     CipherSuite,
     client::danger::ServerCertVerifier,
     pki_types::{CertificateDer, PrivateKeyDer},
+};
+use rama_tls_rustls::{
+    dep::rustls::{
+        self, HandshakeKind,
+        pki_types::ServerName,
+        quic::{Connection, HeaderProtectionKey, KeyChange, PacketKey, Secrets, Suite, Version},
+    },
+    server::RustlsDynamicConfig,
 };
 
 use crate::proto::{
@@ -27,12 +38,6 @@ use crate::proto::{
         self, DirectionalKeys, ExportKeyingMaterialError, HandshakeEvent, KeyPair, Keys,
         UnsupportedVersion,
     },
-};
-use rama_quic_proto::{
-    ConnectionId, Side, TransportError, TransportErrorCode,
-    crypto::{CryptoError, HeaderKey},
-    packet::SpaceId,
-    transport_parameters::TransportParameters,
 };
 
 /// Convert a server name into the backend's own type, returning the name in the error when the
@@ -54,10 +59,12 @@ fn received_server_name(name: &str) -> Result<Domain, TransportError> {
 }
 
 mod config;
-pub(crate) use super::config::NoInitialCipherSuite;
 use config::AlpnPolicy;
 #[cfg(test)]
 pub(crate) use config::TlsOptions;
+pub(crate) use config::server_config_from_rama;
+
+pub(crate) use super::config::NoInitialCipherSuite;
 
 /// A rustls TLS session
 pub(crate) struct TlsSession {
@@ -128,6 +135,14 @@ impl crypto::Session for TlsSession {
         let version = interpret_version(version)
             .map_err(|_error| TransportError::INTERNAL_ERROR("unsupported QUIC version"))?;
         Ok(initial_keys(version, *dst_cid, side, &self.suite))
+    }
+
+    fn switch_version(
+        &mut self,
+        _version: rama_quic_proto::Version,
+    ) -> Result<(), crypto::UnsupportedVersion> {
+        // rustls hands out finished packet keys, which cannot be re-labelled.
+        Err(crypto::UnsupportedVersion)
     }
 
     #[cfg(test)]
@@ -509,6 +524,15 @@ impl crypto::ClientConfig for QuicClientConfig {
             suite: self.initial,
         }))
     }
+
+    fn supports_version_switch(&self) -> bool {
+        false
+    }
+
+    fn resumable_version(&self, _server_name: &str) -> Option<rama_quic_proto::Version> {
+        // rustls keeps its tickets to itself; a resuming client starts in its default version.
+        None
+    }
 }
 
 impl TryFrom<rustls::ClientConfig> for QuicClientConfig {
@@ -756,6 +780,25 @@ impl QuicServerConfig {
     }
 }
 
+impl crypto::InitialServerConfig for QuicServerConfig {
+    fn initial_keys(
+        &self,
+        version: rama_quic_proto::Version,
+        dst_cid: &ConnectionId,
+    ) -> Result<Keys, crypto::InitialKeysError> {
+        server_initial_keys(version, dst_cid, &self.initial)
+    }
+
+    fn retry_tag(
+        &self,
+        version: rama_quic_proto::Version,
+        orig_dst_cid: &ConnectionId,
+        packet: &[u8],
+    ) -> Result<[u8; 16], CryptoError> {
+        retry_tag(version, orig_dst_cid, packet)
+    }
+}
+
 impl crypto::ServerConfig for QuicServerConfig {
     fn start_session(
         self: Arc<Self>,
@@ -777,14 +820,45 @@ impl crypto::ServerConfig for QuicServerConfig {
     ) -> Result<Box<dyn crypto::Session>, TransportError> {
         self.start_with(self.config_for(negotiated, false), negotiated, params)
     }
+}
 
+/// A server configuration whose rustls configuration a [`RustlsDynamicConfig`] resolves per
+/// ClientHello, before each connection's session starts.
+pub(crate) struct QuicDynamicServerConfig {
+    dynamic: RustlsDynamicConfig,
+    initial: Suite,
+    options: config::TlsOptions,
+    /// Configurations already checked for QUIC, by the native configuration they wrap:
+    /// a provider handing out the same one for many connections pays for that once.
+    resolved: Mutex<Vec<(Arc<rustls::ServerConfig>, Arc<QuicServerConfig>)>>,
+}
+
+/// Native configurations whose QUIC configuration stays resolved.
+const RESOLVED_CAPACITY: usize = 16;
+
+impl QuicDynamicServerConfig {
+    pub(crate) fn new(
+        dynamic: RustlsDynamicConfig,
+        provider: &Arc<rustls::crypto::CryptoProvider>,
+        options: config::TlsOptions,
+    ) -> Result<Self, NoInitialCipherSuite> {
+        Ok(Self {
+            dynamic,
+            initial: initial_suite_from_provider(provider)
+                .ok_or(NoInitialCipherSuite { specific: false })?,
+            options,
+            resolved: Mutex::new(Vec::with_capacity(RESOLVED_CAPACITY)),
+        })
+    }
+}
+
+impl crypto::InitialServerConfig for QuicDynamicServerConfig {
     fn initial_keys(
         &self,
         version: rama_quic_proto::Version,
         dst_cid: &ConnectionId,
     ) -> Result<Keys, crypto::InitialKeysError> {
-        let version = interpret_version(version)?;
-        Ok(initial_keys(version, *dst_cid, Side::Server, &self.initial))
+        server_initial_keys(version, dst_cid, &self.initial)
     }
 
     fn retry_tag(
@@ -793,27 +867,102 @@ impl crypto::ServerConfig for QuicServerConfig {
         orig_dst_cid: &ConnectionId,
         packet: &[u8],
     ) -> Result<[u8; 16], CryptoError> {
-        let wire = interpret_version(version)
-            .map(retry_wire)
-            .map_err(|_error| CryptoError::new())?;
-
-        let mut pseudo_packet = Vec::with_capacity(packet.len() + orig_dst_cid.len() + 1);
-        pseudo_packet.push(orig_dst_cid.len() as u8);
-        pseudo_packet.extend_from_slice(orig_dst_cid);
-        pseudo_packet.extend_from_slice(packet);
-
-        let nonce = aead::Nonce::assume_unique_for_key(wire.retry_nonce);
-        let key = aead::LessSafeKey::new(
-            aead::UnboundKey::new(&aead::AES_128_GCM, &wire.retry_key)
-                .map_err(|_error| CryptoError::new())?,
-        );
-        let tag = key
-            .seal_in_place_separate_tag(nonce, aead::Aad::from(pseudo_packet), &mut [])
-            .map_err(|_error| CryptoError::new())?;
-        let mut result = [0; 16];
-        result.copy_from_slice(tag.as_ref());
-        Ok(result)
+        retry_tag(version, orig_dst_cid, packet)
     }
+}
+
+impl crypto::ServerConfigResolver for QuicDynamicServerConfig {
+    fn resolve(
+        self: Arc<Self>,
+        client_hello: crypto::ClientHelloMessage,
+    ) -> crypto::ServerConfigLookup {
+        // The provider is opaque: any configuration it hands out may cost it real work.
+        let work = Box::pin(self.native_config(client_hello));
+        Box::pin(ready(Ok(crypto::ServerConfigResolution::Pending(work))))
+    }
+}
+
+impl QuicDynamicServerConfig {
+    async fn native_config(
+        self: Arc<Self>,
+        client_hello: crypto::ClientHelloMessage,
+    ) -> Result<Arc<dyn crypto::ServerConfig>, BoxError> {
+        // rustls hands its own ClientHello view only to an acceptor reading TLS records,
+        // so the bare handshake message is framed as handshake records first.
+        let mut framed = Vec::with_capacity(client_hello.message().len() + 5);
+        for fragment in client_hello.message().chunks(MAX_RECORD_PAYLOAD) {
+            framed.extend_from_slice(&[0x16, 0x03, 0x01]);
+            framed.extend_from_slice(&(fragment.len() as u16).to_be_bytes());
+            framed.extend_from_slice(fragment);
+        }
+        let mut acceptor = rustls::server::Acceptor::default();
+        // Each read takes at most a few KiB; feed every record.
+        let mut records = framed.as_slice();
+        while !records.is_empty() {
+            acceptor.read_tls(&mut records)?;
+        }
+        let accepted = acceptor
+            .accept()
+            .map_err(|(error, _alert)| error)?
+            .ok_or_else(|| BoxError::from_static_str("incomplete ClientHello"))?;
+        let native = self.dynamic.get_config(accepted.client_hello()).await?;
+        if let Some((_, config)) = self
+            .resolved
+            .lock()
+            .iter()
+            .find(|(held, _)| Arc::ptr_eq(held, &native))
+        {
+            return Ok(config.clone() as Arc<dyn crypto::ServerConfig>);
+        }
+        let mut quic = rustls::ServerConfig::clone(&native);
+        quic.max_early_data_size = if self.options.early_data { u32::MAX } else { 0 };
+        let config = Arc::new(QuicServerConfig::from_native(quic, self.options)?);
+        let mut resolved = self.resolved.lock();
+        if resolved.len() == RESOLVED_CAPACITY {
+            resolved.remove(0);
+        }
+        resolved.push((native, config.clone()));
+        Ok(config as Arc<dyn crypto::ServerConfig>)
+    }
+}
+
+/// The most plaintext one TLS record carries (RFC 8446 §5.1).
+const MAX_RECORD_PAYLOAD: usize = 1 << 14;
+
+fn server_initial_keys(
+    version: rama_quic_proto::Version,
+    dst_cid: &ConnectionId,
+    initial: &Suite,
+) -> Result<Keys, crypto::InitialKeysError> {
+    let version = interpret_version(version)?;
+    Ok(initial_keys(version, *dst_cid, Side::Server, initial))
+}
+
+fn retry_tag(
+    version: rama_quic_proto::Version,
+    orig_dst_cid: &ConnectionId,
+    packet: &[u8],
+) -> Result<[u8; 16], CryptoError> {
+    let wire = interpret_version(version)
+        .map(retry_wire)
+        .map_err(|_error| CryptoError::new())?;
+
+    let mut pseudo_packet = Vec::with_capacity(packet.len() + orig_dst_cid.len() + 1);
+    pseudo_packet.push(orig_dst_cid.len() as u8);
+    pseudo_packet.extend_from_slice(orig_dst_cid);
+    pseudo_packet.extend_from_slice(packet);
+
+    let nonce = aead::Nonce::assume_unique_for_key(wire.retry_nonce);
+    let key = aead::LessSafeKey::new(
+        aead::UnboundKey::new(&aead::AES_128_GCM, &wire.retry_key)
+            .map_err(|_error| CryptoError::new())?,
+    );
+    let tag = key
+        .seal_in_place_separate_tag(nonce, aead::Aad::from(pseudo_packet), &mut [])
+        .map_err(|_error| CryptoError::new())?;
+    let mut result = [0; 16];
+    result.copy_from_slice(tag.as_ref());
+    Ok(result)
 }
 
 pub(crate) fn initial_suite_from_provider(
@@ -923,14 +1072,17 @@ fn session_error(error: rustls::Error) -> TransportError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rama_tls_rustls::dep::rustls::pki_types::DnsName;
     use std::assert_matches;
+
+    use rama_tls_rustls::dep::rustls::pki_types::DnsName;
+
+    use super::*;
 
     #[test]
     fn handshake_error_without_alert_preserves_its_source() {
-        use crate::proto::crypto::ClientConfig as _;
         use std::error::Error as _;
+
+        use crate::proto::crypto::ClientConfig as _;
 
         let native = rustls::ClientConfig::builder_with_provider(configured_provider())
             .with_protocol_versions(&[&rustls::version::TLS13])

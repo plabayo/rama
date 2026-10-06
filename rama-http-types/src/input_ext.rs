@@ -15,30 +15,30 @@
 //! HTTP/3), then `Host`, then TLS SNI. The URI authority wins over `Host` (RFC 9112 §3.2.2,
 //! RFC 9113 §8.3.1); a `Host` may differ from SNI on a reused connection (RFC 9113 §9.1.1,
 //! RFC 9114 §3.3), so SNI only names a request that names no authority at all, such as
-//! HTTP/1.0 without `Host` (RFC 9112 §3.3). nginx, Envoy and Go route the same way; a
+//! HTTP/1.0 without `Host` (RFC 9112 §3.3). Established proxies route the same way; a
 //! policy that requires SNI and `Host` to agree answers 421 (RFC 9110 §15.5.20).
 //!
 //! Only explicit ports are reported; [`AuthorityInputExt::authority_with_default_port`] and
 //! the connector target add the protocol's default.
 
-use crate::request::Parts;
-use crate::{HttpRequestParts, Request};
-use crate::{Uri, Version};
 #[cfg(not(feature = "tls"))]
 use rama_core::extensions::Extension;
-use rama_core::extensions::{Extensions, ExtensionsRef};
-use rama_core::telemetry::tracing;
-use rama_net::address::{Domain, Host, HostWithOptPort};
-use rama_net::forwarded::ForwardedClientExt as _;
-use rama_net::transport::TransportProtocol;
-use rama_net::{
-    AuthorityInputExt, HttpVersionInputExt, PathInputExt, ProtocolInputExt,
-    TargetHttpVersionInputExt, TransportProtocolInputExt, UriInputExt,
+use rama_core::{
+    extensions::{Extensions, ExtensionsRef},
+    telemetry::tracing,
 };
-use rama_net::{Protocol, http::TargetHttpVersion};
-
+use rama_net::{
+    AuthorityInputExt, HttpVersionInputExt, PathInputExt, Protocol, ProtocolInputExt,
+    TargetHttpVersionInputExt, TransportProtocolInputExt, UriInputExt,
+    address::{Domain, Host, HostWithOptPort},
+    forwarded::ForwardedClientExt as _,
+    http::TargetHttpVersion,
+    transport::TransportProtocol,
+};
 #[cfg(feature = "tls")]
 use rama_tls::SecureTransport;
+
+use crate::{HttpRequestParts, Request, Uri, Version, request::Parts};
 
 #[cfg(feature = "tls")]
 fn try_get_sni_from_secure_transport(t: &SecureTransport) -> Option<Domain> {
@@ -288,14 +288,15 @@ impl PathInputExt for Parts {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{Request, header::FORWARDED};
     use rama_core::extensions::ExtensionsRef;
     use rama_net::{
         ConnectorTargetInputExt,
         client::ConnectorTarget,
         forwarded::{Forwarded, ForwardedElement, ForwardedVersion, NodeId},
     };
+
+    use super::*;
+    use crate::{Request, header::FORWARDED};
 
     #[cfg(feature = "tls")]
     fn sni(name: &'static str) -> SecureTransport {

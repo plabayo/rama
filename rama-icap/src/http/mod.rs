@@ -23,6 +23,10 @@ use rama_http_types::{
 };
 use rama_net::{address::Authority, uri::Uri};
 
+use self::headers::{
+    ForwardedIcapHeader, SanitizedHttpHead, connection_nominated_headers, response_proxy_headers,
+    validate_http_trailers,
+};
 use crate::{
     client::{
         ClientConnection as RawClientConnection, ClientResponse as RawClientResponse,
@@ -37,11 +41,6 @@ use crate::{
     },
     proto::{EncapsulatedKind, Method, MethodKind, Preview, StatusCode},
     server::{IncomingRequest as RawIncomingRequest, OutgoingBody, OutgoingResponse},
-};
-
-use self::headers::{
-    ForwardedIcapHeader, SanitizedHttpHead, connection_nominated_headers, response_proxy_headers,
-    validate_http_trailers,
 };
 
 mod headers;
@@ -59,12 +58,12 @@ pub const DEFAULT_MAX_REPLAY_FRAMES: usize = 1024;
 /// `:protocol` of an HTTP/2 or HTTP/3 Extended CONNECT, which is encapsulated as the `GET`
 /// upgrade it stands for, and its 2xx acceptance as a `101` (RFC 8441 §5).
 ///
-/// RFC 3507 §4.4.2 omits hop-by-hop fields from encapsulated heads; Squid keeps `Upgrade`, so a
-/// service tells an upgrade from a plain `GET`. `Connection` is never encapsulated. Without
+/// RFC 3507 §4.4.2 omits hop-by-hop fields from encapsulated heads; established ICAP clients
+/// keep `Upgrade`, so a service tells an upgrade from a plain `GET`. `Connection` is never encapsulated. Without
 /// `Upgrade` an acceptance stays the 2xx it was, as a `101` must name its protocol.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum UpgradeEncapsulation {
-    /// Keep the `Upgrade` field, as Squid does.
+    /// Keep the `Upgrade` field, as established ICAP clients do.
     #[default]
     Keep,
     /// Omit it with the other hop-by-hop fields.
@@ -2850,8 +2849,8 @@ pub enum ErrorKind {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches;
     use std::{
+        assert_matches,
         convert::Infallible,
         sync::{
             Arc,
@@ -2995,13 +2994,19 @@ mod tests {
         assert_eq!(fields["etag"], "\"generated-after-body\"");
     }
 
+    /// Trailers carry anything but what frames or routes the message; the HTTP side applies
+    /// the message's trailer policy when it sends them.
     #[tokio::test]
-    async fn outgoing_http_body_rejects_late_head_and_connection_fields() {
-        for (name, value) in [
-            ("authorization", "secret"),
-            ("www-authenticate", "Basic realm=test"),
-            ("retry-after", "120"),
-            ("vary", "Accept-Encoding"),
+    async fn outgoing_http_body_rejects_framing_and_connection_fields() {
+        for (name, value, accepted) in [
+            ("authorization", "secret", true),
+            ("www-authenticate", "Basic realm=test", true),
+            ("retry-after", "120", true),
+            ("vary", "Accept-Encoding", true),
+            ("content-length", "9", false),
+            ("host", "example.test", false),
+            ("te", "trailers", false),
+            ("transfer-encoding", "chunked", false),
         ] {
             let mut trailers = HeaderMap::new();
             trailers.insert(
@@ -3012,7 +3017,7 @@ mod tests {
                 Frame::trailers(trailers),
             )]));
             let mut body = OutgoingBody::from_http(body);
-            body.next().await.unwrap().unwrap_err();
+            assert_eq!(body.next().await.unwrap().is_ok(), accepted, "{name}");
         }
 
         let mut trailers = HeaderMap::new();

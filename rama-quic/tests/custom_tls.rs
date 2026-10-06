@@ -1,13 +1,22 @@
 //! Compile and exercise the provider interface as an external consumer, including without
 //! any built-in TLS or packet-crypto feature.
 
+use std::{
+    assert_matches,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
+
 use rama_core::error::BoxError;
+use rama_crypto::pki_types::CertificateDer;
 use rama_quic::{
-    ClientConfig, ConnectError, Endpoint, ServerConfig,
+    ClientConfig, ConnectError, Endpoint, NegotiatedTlsParameters, ServerConfig,
     tls::provider::{
         AeadKey, ClientConfig as ClientProvider, ExportKeyingMaterialError, HandshakeEvent,
-        HandshakeTokenKey, InitialKeysError, KeyPair, Keys, ServerConfig as ServerProvider,
-        Session,
+        HandshakeTokenKey, InitialKeysError, InitialServerConfig, KeyPair, Keys,
+        ServerConfig as ServerProvider, Session, UnsupportedVersion,
     },
 };
 use rama_quic_proto::{
@@ -15,11 +24,6 @@ use rama_quic_proto::{
     crypto::{CryptoError, HeaderKey, PacketKey},
     packet::SpaceId as EncryptionLevel,
     transport_parameters::TransportParameters,
-};
-use std::assert_matches;
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
 };
 
 struct Provider(Arc<AtomicUsize>);
@@ -43,9 +47,15 @@ impl ClientProvider for Provider {
         TransportParameters::read(Side::Server, &mut extension.as_slice()).unwrap();
         Ok(Box::new(TestSession))
     }
+    fn supports_version_switch(&self) -> bool {
+        false
+    }
+    fn resumable_version(&self, _: &str) -> Option<Version> {
+        None
+    }
 }
 
-impl ServerProvider for Provider {
+impl InitialServerConfig for Provider {
     fn initial_keys(&self, _: Version, _: &ConnectionId) -> Result<Keys, InitialKeysError> {
         Err(InitialKeysError::Crypto(BoxError::from(
             std::io::Error::other("custom Initial failure"),
@@ -54,8 +64,22 @@ impl ServerProvider for Provider {
     fn retry_tag(&self, _: Version, _: &ConnectionId, _: &[u8]) -> Result<[u8; 16], CryptoError> {
         Err(CryptoError::new())
     }
+}
+
+impl ServerProvider for Provider {
     fn start_session(
         self: Arc<Self>,
+        _: Version,
+        _: &TransportParameters,
+    ) -> Result<Box<dyn Session>, TransportError> {
+        Ok(Box::new(TestSession))
+    }
+    fn supports_compatible_negotiation(&self) -> bool {
+        false
+    }
+    fn start_negotiated_session(
+        self: Arc<Self>,
+        _: Version,
         _: Version,
         _: &TransportParameters,
     ) -> Result<Box<dyn Session>, TransportError> {
@@ -69,6 +93,18 @@ impl Session for TestSession {
             TransportError::new(TransportErrorCode::INTERNAL_ERROR, "custom Initial failure")
                 .with_cause(std::io::Error::other("custom provider cause")),
         )
+    }
+    fn switch_version(&mut self, _: Version) -> Result<(), UnsupportedVersion> {
+        Err(UnsupportedVersion)
+    }
+    fn handshake_summary(&self) -> Option<NegotiatedTlsParameters> {
+        None
+    }
+    fn negotiated_alpn(&self) -> Option<&[u8]> {
+        None
+    }
+    fn peer_certificates(&self) -> Option<Vec<CertificateDer<'static>>> {
+        None
     }
     fn early_crypto(&self) -> Option<(Box<dyn HeaderKey>, Box<dyn PacketKey>)> {
         None

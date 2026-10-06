@@ -1,9 +1,7 @@
 use rama_core::{bytes::BytesMut, telemetry::tracing::debug};
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue, Method,
-    header::{
-        CONNECTION, CONTENT_LENGTH, OccupiedEntry, TE, TRAILER, TRANSFER_ENCODING, ValueIter,
-    },
+    header::{CONNECTION, CONTENT_LENGTH, OccupiedEntry, TE, TRANSFER_ENCODING, ValueIter},
 };
 use rama_utils::{bytes::trim_ows, collections::smallvec::SmallVec};
 
@@ -26,10 +24,6 @@ pub(super) fn connection_any_close(headers: &HeaderMap) -> bool {
 
 pub(super) fn connection_header_names(headers: &HeaderMap) -> ConnectionHeaderNames {
     comma_header_names(headers.get_all(CONNECTION).iter()).collect()
-}
-
-pub(super) fn trailer_header_names(headers: &HeaderMap) -> Vec<HeaderName> {
-    comma_header_names(headers.get_all(TRAILER).iter()).collect()
 }
 
 fn comma_header_names(values: ValueIter<'_, HeaderValue>) -> impl Iterator<Item = HeaderName> + '_ {

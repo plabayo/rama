@@ -1,18 +1,20 @@
-use super::{ThrottleMode, ThrottledIo};
-use crate::client::{ConnectionError, ConnectorService, EstablishedClientConnection};
-
-use rama_core::{Layer, Service, io::Io};
+use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 
-/// A [`Service`] that wraps a [`Service`]'s output IO [`Stream`] with
-/// a byte-rate throttle. See [`ThrottledIo`].
+use super::{ThrottleConfig, ThrottleMode, Throttleable};
+use crate::client::{ConnectionError, ConnectorService, EstablishedClientConnection};
+
+/// A [`Service`] that throttles the connection its inner connector
+/// establishes: an IO [`Stream`] is wrapped in a [`ThrottledIo`], other
+/// connections throttle their own streams (see [`Throttleable`]).
 ///
 /// [`Service`]: rama_core::Service
 /// [`Stream`]: rama_core::io::Io
+/// [`ThrottledIo`]: super::ThrottledIo
 #[derive(Debug, Clone)]
 pub struct OutgoingThrottleService<S> {
     inner: S,
-    config: super::ThrottleConfig,
+    config: ThrottleConfig,
 }
 
 impl<S> OutgoingThrottleService<S> {
@@ -21,21 +23,22 @@ impl<S> OutgoingThrottleService<S> {
 
 impl<S, Input> Service<Input> for OutgoingThrottleService<S>
 where
-    S: ConnectorService<Input, Connection: Io + Unpin>,
+    S: ConnectorService<Input, Connection: Throttleable<Throttled: Send + 'static>>,
     Input: Send + 'static,
 {
-    type Output = EstablishedClientConnection<ThrottledIo<S::Connection>, Input>;
+    type Output = EstablishedClientConnection<<S::Connection as Throttleable>::Throttled, Input>;
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
-        let conn = self.config.wrap(conn);
+        let conn = conn.throttle(&self.config);
         Ok(EstablishedClientConnection { input, conn })
     }
 }
 
-/// A [`Layer`] that wraps a [`Service`]'s output IO [`Stream`] with
-/// a byte-rate throttle. See [`ThrottledIo`].
+/// A [`Layer`] that throttles the connection a [`Service`] (connector)
+/// establishes: an IO [`Stream`] is wrapped in a [`ThrottledIo`], other
+/// connections throttle their own streams (see [`Throttleable`]).
 ///
 /// Directions are relative to the established connection: `read`
 /// throttles ingress from the upstream, `write` paces egress toward it.
@@ -43,9 +46,10 @@ where
 /// [`Layer`]: rama_core::Layer
 /// [`Service`]: rama_core::Service
 /// [`Stream`]: rama_core::io::Io
+/// [`ThrottledIo`]: super::ThrottledIo
 #[derive(Debug, Clone, Default)]
 pub struct OutgoingThrottleLayer {
-    config: super::ThrottleConfig,
+    config: ThrottleConfig,
 }
 
 impl OutgoingThrottleLayer {
@@ -57,50 +61,28 @@ impl OutgoingThrottleLayer {
     /// directions from the same aggregate budget.
     #[must_use]
     pub fn symmetric(mode: ThrottleMode) -> Self {
-        Self {
-            config: super::ThrottleConfig {
-                read: Some(mode.clone()),
-                write: Some(mode),
-                quantum: None,
-            },
-        }
+        Self::new(Some(mode.clone()), Some(mode))
     }
 
     /// Create a new [`OutgoingThrottleLayer`] throttling only the read
     /// (ingress from upstream) direction.
     #[must_use]
     pub fn read_only(mode: ThrottleMode) -> Self {
-        Self {
-            config: super::ThrottleConfig {
-                read: Some(mode),
-                write: None,
-                quantum: None,
-            },
-        }
+        Self::new(Some(mode), None)
     }
 
     /// Create a new [`OutgoingThrottleLayer`] throttling only the write
     /// (egress to upstream) direction.
     #[must_use]
     pub fn write_only(mode: ThrottleMode) -> Self {
-        Self {
-            config: super::ThrottleConfig {
-                read: None,
-                write: Some(mode),
-                quantum: None,
-            },
-        }
+        Self::new(None, Some(mode))
     }
 
     /// Create a new [`OutgoingThrottleLayer`] with per-direction modes.
     #[must_use]
     pub fn new(read: Option<ThrottleMode>, write: Option<ThrottleMode>) -> Self {
         Self {
-            config: super::ThrottleConfig {
-                read,
-                write,
-                quantum: None,
-            },
+            config: ThrottleConfig::new(read, write),
         }
     }
 
@@ -109,7 +91,7 @@ impl OutgoingThrottleLayer {
         /// IO operation (clamped to the burst capacity; defaults to a
         /// tenth of a period worth of bytes, at most 16 KiB).
         pub fn quantum(mut self, quantum: Option<u64>) -> Self {
-            self.config.quantum = quantum;
+            self.config.maybe_set_quantum(quantum);
             self
         }
     }

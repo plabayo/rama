@@ -1,10 +1,13 @@
-use super::{QuicClientConfig, QuicServerConfig, rustls};
-pub(crate) use crate::proto::crypto::config::{AlpnPolicy, TlsConfigError, TlsOptions};
+use std::sync::Arc;
+
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions, client::TlsClientConfig, server::TlsServerConfig,
 };
 use rama_tls_rustls::{client::RustlsTlsConnectorConfig, server::RustlsTlsAcceptorConfig};
-use std::sync::Arc;
+
+use super::{QuicClientConfig, QuicDynamicServerConfig, QuicServerConfig, rustls};
+use crate::proto::ServerCrypto;
+pub(crate) use crate::proto::crypto::config::{AlpnPolicy, TlsConfigError, TlsOptions};
 
 /// Carry a backend error as the cause, without that conversion being part of this crate's API.
 fn invalid_configuration(error: rustls::Error) -> TlsConfigError {
@@ -49,6 +52,26 @@ impl QuicClientConfig {
     }
 }
 
+/// The server TLS configuration for QUIC: fixed, or resolved per ClientHello when the
+/// common configuration carries a rustls dynamic configuration.
+pub(crate) fn server_config_from_rama(
+    config: &TlsServerConfig,
+    provider: Arc<rustls::crypto::CryptoProvider>,
+    options: TlsOptions,
+) -> Result<ServerCrypto, TlsConfigError> {
+    let pieces = RustlsTlsAcceptorConfig::from_extensions(config.as_extensions());
+    Ok(match pieces.dynamic {
+        Some(dynamic) => ServerCrypto::Resolver(Arc::new(QuicDynamicServerConfig::new(
+            dynamic.clone(),
+            &provider,
+            options,
+        )?)),
+        None => ServerCrypto::Fixed(Arc::new(QuicServerConfig::from_rama(
+            config, provider, options,
+        )?)),
+    })
+}
+
 impl QuicServerConfig {
     pub(crate) fn from_rama(
         config: &TlsServerConfig,
@@ -68,6 +91,14 @@ impl QuicServerConfig {
         if let Some(modify) = modify {
             native = (modify.0)(native)?;
         }
+        Self::from_native(native, options)
+    }
+
+    /// Check a native configuration against QUIC's requirements, then take it.
+    pub(super) fn from_native(
+        native: rustls::ServerConfig,
+        options: TlsOptions,
+    ) -> Result<Self, TlsConfigError> {
         validate_alpn(&native.alpn_protocols, options.alpn)?;
         if native.max_early_data_size != 0 && !options.early_data {
             return Err(TlsConfigError::EarlyDataNotEnabled);
@@ -99,13 +130,15 @@ fn validate_alpn(protocols: &[Vec<u8>], policy: AlpnPolicy) -> Result<(), TlsCon
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::proto::crypto::rustls::configured_provider;
+    use std::assert_matches;
+
     use rama_core::error::BoxError;
     use rama_quic_proto::{Side, transport_parameters::TransportParameters};
     use rama_tls::server::{GeneratedServerAuthConfig, ServerAuthData};
     use rama_tls_rustls::{client::RustlsClientConfigExt, server::RustlsServerConfigExt};
-    use std::assert_matches;
+
+    use super::*;
+    use crate::proto::crypto::rustls::configured_provider;
 
     fn configs() -> (TlsClientConfig, TlsServerConfig) {
         let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
@@ -269,17 +302,20 @@ mod tests {
             &self,
             _: rustls::server::ClientHello<'_>,
         ) -> Result<Arc<rustls::ServerConfig>, BoxError> {
-            panic!("unsupported dynamic config must never be invoked");
+            panic!("resolution happens only for an accepted ClientHello");
         }
     }
 
     #[test]
-    fn dynamic_config_is_rejected_explicitly() {
+    fn dynamic_config_resolves_per_client_hello() {
         let config = TlsServerConfig::new().with_dynamic_config(Arc::new(Dynamic));
         assert!(matches!(
             QuicServerConfig::from_rama(&config, configured_provider(), TlsOptions::default()),
             Err(TlsConfigError::UnsupportedDynamicConfig)
         ));
+        let resolving =
+            server_config_from_rama(&config, configured_provider(), TlsOptions::default()).unwrap();
+        assert!(matches!(resolving, ServerCrypto::Resolver(_)));
     }
 
     #[test]
@@ -376,8 +412,9 @@ mod tests {
 
     #[test]
     fn validation_does_not_consume_application_session_tickets() {
-        use crate::proto::crypto::ClientConfig as _;
         use std::sync::atomic::Ordering;
+
+        use crate::proto::crypto::ClientConfig as _;
         let (client, _) = configs();
         let store = Arc::new(SessionStore::default());
         let captured = store.clone();
@@ -514,11 +551,12 @@ mod tests {
 
     #[tokio::test]
     async fn authenticated_common_tls_over_quic_streams() {
+        use rama_quic_proto::VarInt;
+
         use crate::{
             driver::Endpoint,
             proto::{ClientConfig, ServerConfig},
         };
-        use rama_quic_proto::VarInt;
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             for policy in [AlpnPolicy::Require, AlpnPolicy::OutOfBandAgreement] {
                 let (client_tls, server_tls) = configs();

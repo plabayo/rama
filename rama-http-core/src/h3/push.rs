@@ -1,5 +1,17 @@
 //! Bounded, opt-in server push. Pushes are delivered to an application, never cached implicitly.
 
+use std::{collections::BTreeMap, sync::Arc};
+
+use rama_core::{
+    bytes::Bytes,
+    extensions::{Extensions, ExtensionsRef as _},
+};
+use rama_http_types::{
+    Method, Request, Response,
+    proto::h3::{Code, FrameType},
+};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
 use super::{
     Error, body,
     connection::Shared,
@@ -8,13 +20,6 @@ use super::{
     qpack::FieldPair,
     stream::{Phase, Reader},
 };
-use rama_core::{bytes::Bytes, extensions::ExtensionsRef as _};
-use rama_http_types::{
-    Method, Request, Response,
-    proto::h3::{Code, FrameType},
-};
-use std::{collections::BTreeMap, sync::Arc};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 #[derive(Default)]
 pub(crate) struct Entry {
@@ -411,7 +416,11 @@ impl Push {
     /// Receive final response headers and the ordinary streaming body.
     pub async fn response(mut self) -> Result<Response<crate::body::Incoming>, Error> {
         loop {
-            let response = headers::response_for_method(self.reader.headers().await?, false)?;
+            let response = headers::response_for_method(
+                self.reader.headers().await?,
+                false,
+                Extensions::new(),
+            )?;
             response.extensions().insert(self.priority_handle());
             if response.status().is_informational() {
                 tokio::task::yield_now().await;
@@ -469,13 +478,15 @@ impl Drop for Lease {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
+
+    use rama_core::futures::FutureExt as _;
+
     use super::*;
     use crate::h3::{
         connection::Config,
         qpack::{Encoder, EncoderConfig},
     };
-    use rama_core::futures::FutureExt as _;
-    use std::assert_matches;
 
     fn shared() -> Arc<Shared> {
         let shared = Shared::new(

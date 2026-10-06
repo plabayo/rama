@@ -44,15 +44,14 @@ pub mod typed_header;
 pub use typed_header::TypedHeader;
 
 pub mod body;
-#[doc(inline)]
-pub use body::{Body, Bytes, Csv, Form, Json, OctetStream, Text};
-
 #[cfg(feature = "multipart")]
 #[doc(inline)]
 pub use body::multipart;
 #[cfg(feature = "multipart")]
 #[doc(inline)]
 pub use body::multipart::Multipart;
+#[doc(inline)]
+pub use body::{Body, Bytes, Csv, Form, Json, OctetStream, Text};
 
 pub mod datastar;
 
@@ -179,5 +178,5 @@ fn has_any_content_type(headers: &HeaderMap, expected_content_types: &[&mime::Mi
     };
     expected_content_types
         .iter()
-        .any(|ct| ct.essence_str().eq_ignore_ascii_case(&essence))
+        .any(|ct| ct.essence_str().eq_ignore_ascii_case(essence))
 }

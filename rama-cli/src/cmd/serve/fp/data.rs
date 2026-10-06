@@ -3,7 +3,8 @@
     reason = "feature-gated dead_code: variants used by some build configs but not others"
 )]
 
-use super::{State, StorageAuthorized};
+use std::str::FromStr;
+
 use rama::{
     error::{BoxError, ErrorContext},
     extensions::Extensions,
@@ -21,19 +22,19 @@ use rama::{
         stream::SocketInfo,
     },
     telemetry::tracing,
-    tls::fingerprint::{Ja3, Ja4, PeetPrint},
     tls::{
-        SecureTransport,
+        ExtensionId, SecureTransport,
         client::{ClientHello, ClientHelloExtension, ECHClientHello},
+        fingerprint::{Ja3, Ja4, PeetPrint},
     },
     ua::{
         UserAgent,
         profile::{Http1Settings, Http2Settings},
     },
 };
-
 use serde::Serialize;
-use std::str::FromStr;
+
+use super::{State, StorageAuthorized};
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[allow(
@@ -384,6 +385,7 @@ pub(super) async fn get_and_store_http_info(
                     }
                 }
             }
+            // HTTP/3 profiles are not collected yet: such requests are shown, never stored.
             _ => (),
         }
     }
@@ -466,7 +468,13 @@ pub(super) async fn get_tls_display_info_and_store(
         None => return Ok(None),
     };
 
-    if let Some(storage) = state.storage.as_ref() {
+    // A QUIC ClientHello carries transport parameters and differs from the TCP one: it must
+    // never replace the TLS profile, which is only collected over TCP.
+    let from_quic = hello
+        .extensions()
+        .iter()
+        .any(|ext| ext.id() == ExtensionId::QUIC_TRANSPORT_PARAMETERS);
+    if !from_quic && let Some(storage) = state.storage.as_ref() {
         let auth = extensions.contains::<StorageAuthorized>();
         storage
             .store_tls_client_hello(ua, auth, hello.clone())

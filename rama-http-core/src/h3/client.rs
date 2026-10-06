@@ -1,15 +1,11 @@
 //! Rama-native HTTP/3 request sender.
 
-use super::{
-    Error, body,
-    connection::{Config, Driver, Shared},
-    control::Role,
-    datagram::{Association, DatagramDrops, Semantics},
-    headers,
-    quic::Writer,
-    stream::{Phase, Reader},
+use std::{
+    marker::PhantomData,
+    pin::{Pin, pin},
+    sync::{Arc, Weak},
 };
-use crate::headers::{content_length_parse_all, drop_undeliverable_content_length};
+
 use parking_lot::Mutex;
 use rama_core::{
     error::BoxError,
@@ -20,6 +16,7 @@ use rama_http::io::upgrade as http_upgrade;
 use rama_http_types::{
     Method, Request, Response, StatusCode,
     body::StreamingBody,
+    header::trailer::ForbiddenTrailers,
     proto::{
         ext::{HttpDatagrams, Protocol},
         h1::ext::informational::OnInformational,
@@ -38,12 +35,18 @@ use rama_quic::{
 };
 use rama_quic_proto::{Dir, Side};
 use rama_utils::reactive::Reactive;
-use std::{
-    marker::PhantomData,
-    pin::{Pin, pin},
-    sync::{Arc, Weak},
-};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+use super::{
+    Error, body,
+    connection::{Config, Driver, Shared},
+    control::Role,
+    datagram::{Association, DatagramDrops, Semantics},
+    headers,
+    quic::Writer,
+    stream::{Phase, Reader},
+};
+use crate::headers::{content_length_parse_all, drop_undeliverable_content_length};
 
 /// Cloneable sender for a multiplexed HTTP/3 connection.
 pub struct SendRequest<B> {
@@ -441,6 +444,8 @@ where
             ));
         }
         reader.origin = Some(request.uri().clone());
+        // Responses fork their request's extensions, as on HTTP/1.1 and h2.
+        let request_extensions = request.extensions().clone();
         let method = request.method().clone();
         let extended = method == Method::CONNECT && request.extensions().contains::<Protocol>();
         // Registered before HEADERS leave, so early replies wait for the session. Only a
@@ -493,8 +498,12 @@ where
                         Err(error) => return Err(self.response_error(id, error).await),
                     },
                 };
-                let response = headers::response_for_method(fields, method == Method::CONNECT)
-                    .map_err(|error| reader.reject(error.remote()))?;
+                let response = headers::response_for_method(
+                    fields,
+                    method == Method::CONNECT,
+                    request_extensions.fork(),
+                )
+                .map_err(|error| reader.reject(error.remote()))?;
                 response
                     .extensions()
                     .insert(super::PriorityHandle::new(&self.shared, id, false));
@@ -538,11 +547,20 @@ where
         let upload_permit = permit.clone();
         let upload_lifetime = self.lifetime.clone();
         let remaining = headers::content_length(request.headers())?;
+        let allowed_trailers = request.extensions().get_arc::<ForbiddenTrailers>();
         let (_, request_body) = request.into_parts();
         let task = self.executor.spawn_task(async move {
             let _permit = upload_permit;
             let _lifetime = upload_lifetime;
-            let result = body::send(writer, request_body, shared.clone(), id, remaining).await;
+            let result = body::send(
+                writer,
+                request_body,
+                shared.clone(),
+                id,
+                remaining,
+                allowed_trailers,
+            )
+            .await;
             if let Err(error) = result
                 && error.scope() == super::qpack::ErrorScope::Connection
                 && !error.is_clean_close()
@@ -586,8 +604,12 @@ where
                     }
                 }
             };
-            let response = headers::response_for_method(fields, method == Method::CONNECT)
-                .map_err(|error| reader.reject(error.remote()))?;
+            let response = headers::response_for_method(
+                fields,
+                method == Method::CONNECT,
+                request_extensions.fork(),
+            )
+            .map_err(|error| reader.reject(error.remote()))?;
             response
                 .extensions()
                 .insert(super::PriorityHandle::new(&self.shared, id, false));

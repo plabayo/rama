@@ -5,6 +5,13 @@
 //! [`Request`]: crate::http::Request
 //! [`tls`]: crate::tls
 
+use std::{convert::Infallible, sync::Arc, time::Duration};
+
+use rama_core::error::ErrorExt as _;
+use rama_http::layer::upgrade::UpgradeLayer;
+use serde::Serialize;
+use serde_json::json;
+
 use crate::{
     Layer, Service,
     cli::ForwardKind,
@@ -18,9 +25,11 @@ use crate::{
         core::h2::frame::EarlyFrameCapture,
         fingerprint::{AkamaiH2, Ja4H},
         header::USER_AGENT,
-        headers::exotic::XClacksOverhead,
-        layer::set_header::SetResponseHeaderLayer,
-        layer::{required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer},
+        headers::{AltSvc, exotic::XClacksOverhead},
+        layer::{
+            required_header::AddRequiredResponseHeadersLayer, set_header::SetResponseHeaderLayer,
+            trace::TraceLayer,
+        },
         proto::h2::PseudoHeaderOrder,
         server::HttpServer,
         service::web::{extract::Json, response::IntoResponse},
@@ -29,29 +38,27 @@ use crate::{
             server::{WebSocketAcceptor, WebSocketEchoService},
         },
     },
-    layer::limit::policy::UnlimitedPolicy,
     layer::{
         ConsumeErrLayer, LimitLayer, TimeoutLayer,
-        limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy},
+        limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy, UnlimitedPolicy},
     },
-    net::address::ip::geo::IpGeoDb,
-    net::forwarded::ForwardedClientExt as _,
-    net::stream::SocketInfo,
-    net::stream::layer::{ThrottleLayer, ThrottleMode},
-    net::{AuthorityInputExt, Protocol, ProtocolInputExt},
+    net::{
+        AuthorityInputExt, Protocol, ProtocolInputExt,
+        address::ip::geo::IpGeoDb,
+        forwarded::ForwardedClientExt as _,
+        stream::{
+            SocketInfo,
+            layer::{ThrottleLayer, ThrottleMode},
+        },
+    },
     proxy::haproxy::server::HaProxyLayer,
+    quic,
     rt::Executor,
     tcp::TcpStream,
     telemetry::tracing,
     ua::{UserAgent, layer::classifier::UserAgentClassifierLayer, profile::UserAgentDatabase},
     utils::{octets::mib, rate::Rate},
 };
-
-use rama_core::error::ErrorExt as _;
-use rama_http::layer::upgrade::UpgradeLayer;
-use serde::Serialize;
-use serde_json::json;
-use std::{convert::Infallible, sync::Arc, time::Duration};
 
 core::cfg_select! {
     feature = "boring" => {
@@ -92,6 +99,8 @@ pub struct EchoServiceBuilder<H> {
 
     ws_support: bool,
 
+    alt_svc: Option<AltSvc>,
+
     http_service_builder: H,
 
     uadb: Option<std::sync::Arc<UserAgentDatabase>>,
@@ -115,6 +124,8 @@ impl Default for EchoServiceBuilder<()> {
             http_version: None,
 
             ws_support: false,
+
+            alt_svc: None,
 
             http_service_builder: (),
 
@@ -209,9 +220,17 @@ impl<H> EchoServiceBuilder<H> {
     }
 
     crate::utils::macros::generate_set_and_with! {
-        /// set the http version to use for the http server (auto by default)
+        /// set the http version to use for the http server over TCP (auto by default)
         pub fn http_version(mut self, version: Option<Version>) -> Self {
             self.http_version = version;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// advertise alternative services, such as HTTP/3, on every response
+        pub fn alt_svc(mut self, alt_svc: Option<AltSvc>) -> Self {
+            self.alt_svc = alt_svc;
             self
         }
     }
@@ -232,6 +251,8 @@ impl<H> EchoServiceBuilder<H> {
             http_version: self.http_version,
 
             ws_support: self.ws_support,
+
+            alt_svc: self.alt_svc,
 
             http_service_builder: (self.http_service_builder, layer),
 
@@ -278,12 +299,30 @@ impl<H> EchoServiceBuilder<H>
 where
     H: Layer<EchoService, Service: Service<Request, Output = Response, Error = BoxError>>,
 {
-    #[expect(unused_mut)]
     /// build a tcp service ready to echo http traffic back
     pub fn build(
-        mut self,
+        self,
         exec: Executor,
     ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
+        self.build_with_http3(exec).map(|(tcp, _)| tcp)
+    }
+
+    /// build a tcp service and an HTTP/3 service, for accepted QUIC connections, ready to
+    /// echo http traffic back
+    ///
+    /// Both serve one http service: they share its rate limit, the connection limit,
+    /// the connection timeout and the per-connection throttle. TLS for QUIC is
+    /// configured on its endpoint.
+    pub fn build_with_http3(
+        self,
+        exec: Executor,
+    ) -> Result<
+        (
+            impl Service<TcpStream, Output = (), Error = Infallible>,
+            impl Service<quic::Connection, Output = (), Error = Infallible>,
+        ),
+        BoxError,
+    > {
         let tcp_forwarded_layer = match &self.forward {
             Some(ForwardKind::HaProxy) => Some(HaProxyLayer::default()),
             _ => None,
@@ -291,20 +330,26 @@ where
 
         let http_service = Arc::new(self.build_http(exec.clone()));
 
+        let connection_limit = LimitLayer::new(if self.concurrent_limit > 0 {
+            Either::A(ConcurrentPolicy::max(self.concurrent_limit))
+        } else {
+            Either::B(UnlimitedPolicy::new())
+        });
+        let connection_timeout = if !self.timeout.is_zero() {
+            TimeoutLayer::new(self.timeout)
+        } else {
+            TimeoutLayer::never()
+        };
+
+        // One layer for both: QUIC paces all streams of a connection against one budget.
+        let throttle = self
+            .throttle
+            .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate)));
         let tcp_service_builder = (
             ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
-            LimitLayer::new(if self.concurrent_limit > 0 {
-                Either::A(ConcurrentPolicy::max(self.concurrent_limit))
-            } else {
-                Either::B(UnlimitedPolicy::new())
-            }),
-            if !self.timeout.is_zero() {
-                TimeoutLayer::new(self.timeout)
-            } else {
-                TimeoutLayer::never()
-            },
-            self.throttle
-                .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
+            connection_limit.clone(),
+            connection_timeout.clone(),
+            throttle.clone(),
             tcp_forwarded_layer,
             BodyLimitLayer::request_only(self.body_limit),
             #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -314,29 +359,44 @@ where
 
         let http_transport_service = match self.http_version {
             Some(Version::HTTP_2) => Either3::A({
-                let mut http = HttpServer::new_h2(exec);
+                let mut http = HttpServer::new_h2(exec.clone());
                 if self.ws_support {
                     http.h2_mut().set_enable_connect_protocol();
                 }
-                http.service(http_service)
+                http.service(http_service.clone())
             }),
             Some(Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09) => {
-                Either3::B(HttpServer::new_http1(exec).service(http_service))
+                Either3::B(HttpServer::new_http1(exec.clone()).service(http_service.clone()))
             }
             Some(version) => {
                 return Err(BoxError::from_static_str("unsupported http version")
                     .context_debug_field("version", version));
             }
             None => Either3::C({
-                let mut http = HttpServer::auto(exec);
+                let mut http = HttpServer::auto(exec.clone());
                 if self.ws_support {
                     http.h2_mut().set_enable_connect_protocol();
                 }
-                http.service(http_service)
+                http.service(http_service.clone())
             }),
         };
 
-        Ok(tcp_service_builder.into_layer(http_transport_service))
+        let mut http3 = HttpServer::new_http3(exec);
+        // RFC 9220: WebSockets over HTTP/3 use Extended CONNECT.
+        http3.http3_mut().extended_connect = self.ws_support;
+        let http3_service = (
+            ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
+            connection_limit,
+            connection_timeout,
+            throttle,
+            BodyLimitLayer::request_only(self.body_limit),
+        )
+            .into_layer(http3.service(http_service));
+
+        Ok((
+            tcp_service_builder.into_layer(http_transport_service),
+            http3_service,
+        ))
     }
 
     /// build an http service ready to echo http traffic back
@@ -355,6 +415,9 @@ where
         (
             TraceLayer::new_for_http(),
             SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
+            self.alt_svc
+                .clone()
+                .map(SetResponseHeaderLayer::if_not_present_typed),
             AddRequiredResponseHeadersLayer::default(),
             self.rate_limit.map(|rate| {
                 LimitLayer::new(RatePolicy::abort(rate)).with_error_into_response_fn(

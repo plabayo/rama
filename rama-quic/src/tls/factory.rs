@@ -1,13 +1,9 @@
-use crate::{
-    ClientConfig, ServerConfig,
-    tls::{TlsConfigError, TlsOptions},
-};
+use std::{fmt, sync::Arc};
+
 use rama_tls::{
     client::{TlsClientConfig, TlsClientConfigProvider},
     server::TlsServerConfig,
 };
-use std::{fmt, sync::Arc};
-
 #[cfg(feature = "boring")]
 use {
     crate::proto::crypto::boring as boring_crypto,
@@ -23,6 +19,11 @@ use {
     all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
 ))]
 use {rama_core::extensions::Extensions, rama_tls::client::TlsPoolId};
+
+use crate::{
+    ClientConfig, ServerConfig,
+    tls::{TlsConfigError, TlsOptions},
+};
 
 /// Build QUIC TLS configurations from Rama settings using a fixed provider.
 ///
@@ -124,9 +125,9 @@ impl QuicServerConfigProvider for RustlsTlsProvider {
         config: &TlsServerConfig,
         options: TlsOptions,
     ) -> Result<ServerConfig, TlsConfigError> {
-        Ok(ServerConfig::with_crypto(Arc::new(
-            rustls_crypto::QuicServerConfig::from_rama(config, self.crypto.clone(), options)?,
-        )))
+        Ok(ServerConfig::with_random_token_key(
+            rustls_crypto::server_config_from_rama(config, self.crypto.clone(), options)?,
+        ))
     }
 }
 
@@ -166,9 +167,9 @@ impl QuicServerConfigProvider for BoringTlsProvider {
         config: &TlsServerConfig,
         options: TlsOptions,
     ) -> Result<ServerConfig, TlsConfigError> {
-        Ok(ServerConfig::with_crypto(Arc::new(
-            boring_crypto::QuicServerConfig::from_rama(config, options)?,
-        )))
+        Ok(ServerConfig::with_random_token_key(
+            boring_crypto::server_config_from_rama(config, options)?,
+        ))
     }
 }
 
@@ -224,14 +225,18 @@ pub fn default_server_tls_provider() -> Result<Arc<dyn QuicServerConfigProvider>
     any(feature = "aws-lc", feature = "ring")
 ))]
 mod tests {
-    use super::*;
-    use crate::tls::ClientConfigCache;
+    use std::{
+        assert_matches,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
     use rama_core::error::{BoxError, BoxErrorExt as _};
     use rama_net::tls::ApplicationProtocol;
     use rama_tls_boring::client::BoringGrease;
     use rama_tls_rustls::client::ModifyRustlsClientConfig;
-    use std::assert_matches;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::tls::ClientConfigCache;
 
     #[test]
     fn native_settings_affect_only_the_selected_provider() {

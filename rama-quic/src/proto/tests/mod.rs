@@ -1,35 +1,36 @@
-use rama_core::bytes::{Bytes, BytesMut};
-use rama_core::telemetry::tracing::info;
-use rama_crypto::hmac::HmacSha2;
-use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
-use rama_utils::octets;
-use rand::Rng;
-use rustc_hash::FxHashMap;
-use std::assert_matches;
 use std::{
+    assert_matches,
     convert::TryInto,
     mem,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::Arc,
 };
 
-use super::*;
-use crate::proto::token::reset_token;
-use crate::proto::{
-    Duration, Instant,
-    cid_generator::{ConnectionIdGenerator, RandomConnectionIdGenerator},
-    connection::PreferredAddressState,
+use rama_core::{
+    bytes::{Bytes, BytesMut},
+    telemetry::tracing::info,
+};
+use rama_crypto::{
+    hmac::HmacSha2,
+    pki_types::{CertificateDer, PrivateKeyDer},
 };
 use rama_quic_proto::{
     ConnectionId, Dir, RESET_TOKEN_SIZE, ResetToken, ResetToken as TestResetToken, TransportError,
     TransportErrorCode, VarInt, frame,
-    frame::ApplicationClose,
-    frame::ConnectionClose,
-    frame::Datagram,
-    frame::Frame,
-    frame::FrameStruct,
+    frame::{ApplicationClose, ConnectionClose, Datagram, Frame, FrameStruct},
     packet::{Header, InitialHeader, PacketNumber},
     transport_parameters::TransportParameters,
+};
+use rama_utils::octets;
+use rand::Rng;
+use rustc_hash::FxHashMap;
+
+use super::*;
+use crate::proto::{
+    Duration, Instant,
+    cid_generator::{ConnectionIdGenerator, RandomConnectionIdGenerator},
+    connection::PreferredAddressState,
+    token::reset_token,
 };
 pub(crate) mod util;
 pub(crate) use util::Pair;
@@ -2895,8 +2896,8 @@ fn cid_rotation() {
 
     while pair.time < end {
         stop += CID_TIMEOUT;
-        // Run a while until PushNewCID timer fires
-        while pair.time < stop {
+        // Run a while until PushNewCID timer fires, including one due as the window ends
+        while pair.time <= stop {
             if !pair.step()
                 && let Some(time) = min_opt(pair.client.next_wakeup(), pair.server.next_wakeup())
             {
@@ -2937,8 +2938,7 @@ fn cid_retirement() {
         other => panic!("assertion failed: `{other:?}` does not match `1`"),
     }
 
-    use crate::proto::LOC_CID_COUNT;
-    use crate::proto::cid_queue::CidQueue;
+    use crate::proto::{LOC_CID_COUNT, cid_queue::CidQueue};
     let mut active_cid_num = CidQueue::LEN as u64;
     active_cid_num = active_cid_num.min(LOC_CID_COUNT);
 
@@ -5271,6 +5271,7 @@ fn application_close_in_initial_is_rejected() {
     // connection ID, which travels in the clear, so anyone who observes the handshake can do this.
     let keys = server_config()
         .crypto
+        .initial()
         .initial_keys(version, &orig_dst_cid)
         .unwrap();
     let number = PacketNumber::U8(0);
@@ -5420,11 +5421,17 @@ fn classic_fixture_negotiates_x25519_in_one_initial() {
         "classic ClientHello fits one datagram"
     );
     // The classic server flight (ServerHello, certificate, Finished) coalesces into one padded
-    // datagram; compare with `post_quantum_handshake_and_transfer`
+    // datagram; compare with `post_quantum_handshake_and_transfer`. Within the initial window
+    // the server's first 1-RTT packets leave with it.
     pair.drive_server();
-    let server_flight: usize = pair.client.inbound.iter().map(|x| x.packet.len()).sum();
-    assert_eq!(pair.client.inbound.len(), 1);
-    assert_eq!(server_flight, usize::from(INITIAL_MTU));
+    let handshake: Vec<usize> = pair
+        .client
+        .inbound
+        .iter()
+        .filter(|x| x.packet[0] & rama_quic_proto::packet::LONG_HEADER_FORM != 0)
+        .map(|x| x.packet.len())
+        .collect();
+    assert_eq!(handshake, [usize::from(INITIAL_MTU)]);
     pair.drive();
     let server_ch = pair.server.assert_accept();
     assert_eq!(
@@ -9216,4 +9223,70 @@ fn blocked_early_open_does_not_generate_extra_initial_packets() {
             .is_none(),
         "the blocked stream must not create another Initial packet"
     );
+}
+
+/// A ClientHello spanning several Initial packets leaves in one burst: the first flight is
+/// within the initial congestion window, so it neither waits for a pacing interval nor for
+/// the server's acknowledgement of its first packet (RFC 9002 §7.7).
+#[test]
+fn a_client_hello_spanning_initials_leaves_in_one_burst() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let protocols = (0..24u8).map(|n| vec![b'a' + n; 96]).collect();
+    pair.begin_connect(ClientConfig::new(Arc::new(client_crypto_with_alpn(
+        protocols,
+    ))));
+    pair.drive_client();
+    let initials = pair
+        .client_sent
+        .iter()
+        .filter(|sent| {
+            sent.packets.iter().any(|packet| {
+                packet.long_kind() == Some(rama_quic_proto::version::LongKind::Initial)
+            })
+        })
+        .count();
+    assert!(
+        initials >= 2,
+        "the whole ClientHello leaves at once: {initials}"
+    );
+}
+
+/// A datagram buffered for one pending attempt advances only that attempt's progress, so only
+/// its waiter wakes, and each ClientHello assembles from its own packets.
+#[test]
+fn buffered_datagrams_advance_only_their_own_attempt() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    pair.server.handle_incoming = Box::new(|_| IncomingConnectionBehavior::Wait);
+    pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    let other = pair.server.waiting_incoming.pop().unwrap();
+    let other_before = other.progress().generation();
+
+    let protocols = (0..24u8).map(|n| vec![b'a' + n; 96]).collect();
+    pair.begin_connect(ClientConfig::new(Arc::new(client_crypto_with_alpn(
+        protocols,
+    ))));
+    pair.drive_client();
+    pair.drive_server();
+    let large = pair.server.waiting_incoming.pop().unwrap();
+    assert!(
+        large.progress().generation() > 0,
+        "the rest of the large ClientHello was buffered for its attempt"
+    );
+    assert_eq!(
+        other.progress().generation(),
+        other_before,
+        "nothing arrived for the other attempt"
+    );
+    for incoming in [&large, &other] {
+        assert!(matches!(
+            pair.server.client_hello(incoming),
+            ClientHelloPeek::Complete(_)
+        ));
+    }
+    pair.server.ignore(large);
+    pair.server.ignore(other);
 }

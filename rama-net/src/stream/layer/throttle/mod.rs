@@ -8,12 +8,25 @@
 //!
 //! Apply it in a transport stack with [`ThrottleLayer`] (incoming
 //! connections) or [`OutgoingThrottleLayer`] (client connectors),
-//! or wrap an IO by hand with [`ThrottledIo`].
+//! or wrap an IO by hand with [`ThrottledIo`]. Both layers also take
+//! multiplexed connections, such as QUIC ones, whose streams spend from
+//! one budget per connection through [`ThrottleGates`] (see [`Throttleable`]).
 //!
 //! [`Io`]: rama_core::io::Io
 
-use rama_utils::octets::kib_u64;
-use rama_utils::rate::{Rate, RateLimiter};
+use rama_core::io::Io;
+use rama_utils::{
+    octets::kib_u64,
+    rate::{Rate, RateLimiter},
+};
+
+mod budget;
+#[doc(inline)]
+pub use budget::ThrottleBudget;
+
+mod gates;
+#[doc(inline)]
+pub use gates::ThrottleGates;
 
 mod io;
 #[doc(inline)]
@@ -71,6 +84,15 @@ impl ThrottleMode {
     pub const fn shared(limiter: RateLimiter) -> Self {
         Self::Shared(limiter)
     }
+
+    /// The limiter one connection spends from across all the streams it carries:
+    /// a fresh one for [`ThrottleMode::PerConn`], the shared one otherwise.
+    fn connection_limiter(&self) -> RateLimiter {
+        match self {
+            Self::PerConn { rate, burst } => RateLimiter::new(*rate, *burst),
+            Self::Shared(limiter) => limiter.clone(),
+        }
+    }
 }
 
 /// Default grant quantum for a rate: a tenth of a period worth of
@@ -80,20 +102,74 @@ fn default_quantum(rate: Rate) -> u64 {
     (rate.units() / 10).clamp(1, kib_u64(16))
 }
 
-/// Per-direction throttle configuration shared by the
-/// incoming and outgoing layers.
+/// How [`ThrottleLayer`] and [`OutgoingThrottleLayer`] throttle a
+/// connection: a [`ThrottleMode`] per direction and the grant quantum.
 #[derive(Debug, Clone, Default)]
-struct ThrottleConfig {
+pub struct ThrottleConfig {
     read: Option<ThrottleMode>,
     write: Option<ThrottleMode>,
     quantum: Option<u64>,
 }
 
 impl ThrottleConfig {
-    fn wrap<S>(&self, stream: S) -> ThrottledIo<S> {
-        ThrottledIo::new(stream)
-            .maybe_with_read_mode(self.read.clone())
-            .maybe_with_write_mode(self.write.clone())
-            .maybe_with_quantum(self.quantum)
+    /// Create a [`ThrottleConfig`] with per-direction modes.
+    #[must_use]
+    pub fn new(read: Option<ThrottleMode>, write: Option<ThrottleMode>) -> Self {
+        Self {
+            read,
+            write,
+            quantum: None,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Override the grant quantum in bytes: the budget reserved per
+        /// IO operation (clamped to the burst capacity; defaults to a
+        /// tenth of a period worth of bytes, at most 16 KiB).
+        pub fn quantum(mut self, quantum: Option<u64>) -> Self {
+            self.quantum = quantum;
+            self
+        }
+    }
+
+    /// How the read (ingress) direction is throttled, if at all.
+    #[must_use]
+    pub fn read(&self) -> Option<&ThrottleMode> {
+        self.read.as_ref()
+    }
+
+    /// How the write (egress) direction is throttled, if at all.
+    #[must_use]
+    pub fn write(&self) -> Option<&ThrottleMode> {
+        self.write.as_ref()
+    }
+
+    /// The grant quantum override, if any.
+    #[must_use]
+    pub fn quantum(&self) -> Option<u64> {
+        self.quantum
+    }
+}
+
+/// An input that [`ThrottleLayer`] and [`OutgoingThrottleLayer`] throttle.
+///
+/// Byte streams are wrapped in a [`ThrottledIo`]. Multiplexed transports,
+/// such as QUIC connections, gate the streams they carry with [`ThrottleGates`].
+pub trait Throttleable: Sized {
+    /// The throttled input.
+    type Throttled;
+
+    /// Throttle `self` as configured.
+    fn throttle(self, config: &ThrottleConfig) -> Self::Throttled;
+}
+
+impl<IO: Io> Throttleable for IO {
+    type Throttled = ThrottledIo<IO>;
+
+    fn throttle(self, config: &ThrottleConfig) -> Self::Throttled {
+        ThrottledIo::new(self)
+            .maybe_with_read_mode(config.read.clone())
+            .maybe_with_write_mode(config.write.clone())
+            .maybe_with_quantum(config.quantum)
     }
 }

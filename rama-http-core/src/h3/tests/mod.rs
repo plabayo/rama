@@ -9,7 +9,8 @@ mod fairness;
 mod loss;
 mod robustness;
 
-use super::{client, connection::Config, server};
+use std::{assert_matches, num::NonZeroUsize, sync::Arc, time::Duration};
+
 use rama_core::{
     bytes::Bytes,
     extensions::{Extension, ExtensionsRef as _},
@@ -27,8 +28,8 @@ use rama_tls::{
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
 use rama_udp::test_utils::{MemoryDatagramControl, MemoryDatagramSocket};
-use std::assert_matches;
-use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+
+use super::{client, connection::Config, server};
 
 const LIMIT: Duration = Duration::from_secs(20);
 
@@ -293,6 +294,7 @@ async fn streaming_round_trip_reuses_connection_and_dynamic_qpack() {
 async fn header_order_survives_transport_and_message_forwarding() {
     use rama_http_types::{
         HeaderMap, HeaderValue,
+        header::trailer::ForbiddenTrailers,
         proto::h3::{PseudoHeader, PseudoHeaderOrder},
     };
 
@@ -356,6 +358,8 @@ async fn header_order_survives_transport_and_message_forwarding() {
             ]));
             let mut reply = Response::new(body);
             *reply.headers_mut() = parts.headers;
+            // A relay forwards `cookie` trailers as received.
+            reply.extensions().insert(ForbiddenTrailers::AllowAll);
             response.send_response(reply).await.unwrap();
         });
         let body = Body::from_frame_stream(rama_core::futures::stream::iter([
@@ -368,6 +372,7 @@ async fn header_order_survives_transport_and_message_forwarding() {
             .unwrap();
         *request.headers_mut() = headers();
         request.extensions().insert(order);
+        request.extensions().insert(ForbiddenTrailers::AllowAll);
         let response = client.send_request(request).await.unwrap();
         assert_headers(response.headers());
         let body = response.into_body().collect().await.unwrap();
@@ -815,8 +820,7 @@ async fn opt_in_push_delivers_common_body_and_enforces_quota() {
 
 #[tokio::test]
 async fn connect_upstream_failure_resets_with_connect_error() {
-    use rama_core::extensions::ExtensionsRef as _;
-    use rama_core::io::AbortIo;
+    use rama_core::{extensions::ExtensionsRef as _, io::AbortIo};
     use rama_http::io::upgrade::handle_upgrade;
     use tokio::io::AsyncReadExt as _;
     tokio::time::timeout(LIMIT, async {

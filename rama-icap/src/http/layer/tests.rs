@@ -43,6 +43,11 @@ use rama_tls::{
 };
 use rama_tls_boring::client::TlsConnector as BoringTlsConnector;
 use rama_tls_rustls::{client::TlsConnector, server::TlsAcceptorLayer};
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    sync::Notify,
+    time::timeout,
+};
 
 use super::*;
 use crate::{
@@ -57,11 +62,6 @@ use crate::{
     server::{
         BodyFrame, IncomingRequest as RawIncomingRequest, OptionsResponse, OutgoingBody, Server,
     },
-};
-use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
-    sync::Notify,
-    time::timeout,
 };
 
 const TEST_SERVICE_TAG: ServiceTag = ServiceTag::from_static("rama-test");
@@ -1994,7 +1994,7 @@ async fn preserves_upgrade_request_fields_around_reqmod_sanitization() {
                     HttpService::new(service_fn(move |request: IncomingRequest| async move {
                         let request = request.encapsulated().unwrap().request().unwrap();
                         assert!(!request.headers().contains_key(http_header::CONNECTION));
-                        // Squid keeps `Upgrade`, so a service tells an upgrade from a plain GET.
+                        // ICAP clients keep `Upgrade`, so a service tells an upgrade from a plain GET.
                         assert_eq!(
                             request.headers().get(http_header::UPGRADE).is_some(),
                             encapsulation == UpgradeEncapsulation::Keep,

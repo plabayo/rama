@@ -1,32 +1,42 @@
-use std::convert::Infallible;
-use std::pin::Pin;
-use std::task::{Context, Poll, ready};
-use std::time::Duration;
+use std::{
+    convert::Infallible,
+    pin::Pin,
+    task::{Context, Poll, ready},
+    time::Duration,
+};
 
-use crate::h2::server::{Connection, Handshake, SendResponse};
-use crate::h2::{Reason, RecvStream};
 use pin_project_lite::pin_project;
-use rama_core::Service;
-use rama_core::bytes::Bytes;
-use rama_core::error::BoxError;
-use rama_core::extensions::ExtensionsRef;
-use rama_core::rt::Executor;
-use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
-use rama_http::StreamingBody;
-use rama_http::io::upgrade::{self, Pending, Upgraded};
-use rama_http::opentelemetry::version_as_protocol_version;
+use rama_core::{
+    Service,
+    bytes::Bytes,
+    error::BoxError,
+    extensions::ExtensionsRef,
+    rt::Executor,
+    telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn},
+};
+use rama_http::{
+    StreamingBody,
+    io::upgrade::{self, Pending, Upgraded},
+    opentelemetry::version_as_protocol_version,
+};
 use rama_http_types::{
-    Method, Request, Response, header,
+    Method, Request, Response,
+    header::{self, trailer::ForbiddenTrailers},
     proto::{ext::Protocol, h2::ext::ResetStream},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{PipeToSendStream, SendBuf, ping};
-use crate::body::Incoming as IncomingBody;
-use crate::common::date;
-use crate::headers;
-use crate::proto::Dispatched;
-use crate::proto::h2::ping::Recorder;
+use crate::{
+    body::Incoming as IncomingBody,
+    common::date,
+    h2::{
+        Reason, RecvStream,
+        server::{Connection, Handshake, SendResponse},
+    },
+    headers,
+    proto::{Dispatched, h2::ping::Recorder},
+};
 
 // Our defaults are chosen for the "majority" case, which usually are not
 // resource constrained, and so the spec default of 64kb can be too limiting
@@ -541,9 +551,10 @@ where
                             headers::set_content_length_if_missing(res.headers_mut(), len);
                         }
 
+                        let allowed_trailers = res.extensions().get_arc::<ForbiddenTrailers>();
                         let body_tx = reply!(me, res, false);
                         H2StreamState::Body {
-                            pipe: PipeToSendStream::new(body, body_tx),
+                            pipe: PipeToSendStream::new(body, body_tx, allowed_trailers),
                         }
                     } else {
                         reply!(me, res, true);

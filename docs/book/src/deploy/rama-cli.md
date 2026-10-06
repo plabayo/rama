@@ -122,7 +122,11 @@ when you develop or test clients and proxies:
 - `discard`: the RFC 863 discard service.
 
 All of them have flags to limit rate or throughput, which is handy to mimic
-slow or restricted servers. Most can run with TLS as well.
+slow or restricted servers. Most can run with TLS as well. With TLS, the HTTP
+services also serve HTTP/3 on the UDP side of their address and advertise it
+with `Alt-Svc`; `--http-version` selects the versions (for example `h1,h2` or
+`h3`) and `--h3-bind` another UDP address. On Windows a `[::]` bind serves
+IPv6 only, over TCP and UDP alike; bind `0.0.0.0` to serve IPv4 clients.
 
 ## TLS tunnels
 
@@ -137,6 +141,10 @@ where `rama serve stunnel exit` puts TLS in front of a plaintext c-icap server.
 
 Rama also exposes public services that are useful while developing and testing
 network clients, proxies, and user-agent emulation.
+
+The echo service, <https://ipv4.ramaproxy.org> and <https://http-test.ramaproxy.org>
+speak HTTP/3 next to HTTP/1.1 and h2: browsers find it through `Alt-Svc`, and
+`rama --http3 https://echo.ramaproxy.org` uses it directly.
 
 ### Echo service
 

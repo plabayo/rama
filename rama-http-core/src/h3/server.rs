@@ -1,5 +1,25 @@
 //! HTTP/3 server stream admission and response sending.
 
+use std::sync::Arc;
+
+use rama_core::{bytes::BytesMut, error::BoxError, extensions::ExtensionsRef};
+use rama_http::{
+    headers::{HeaderMapExt as _, Priority},
+    io::upgrade::{self, Pending},
+};
+use rama_http_types::{
+    Method, Request, Response, StatusCode,
+    body::StreamingBody,
+    header::trailer::ForbiddenTrailers,
+    proto::{
+        ext::{HttpDatagrams, Protocol},
+        h3::{Code, FrameType, StreamType},
+    },
+};
+use rama_net::uri::Uri;
+use rama_quic_proto::{VarInt, coding::Codec as _};
+use tokio::sync::Semaphore;
+
 use super::{
     Error, body,
     connection::{Config, Driver, Shared},
@@ -9,23 +29,6 @@ use super::{
     quic::Writer,
     stream::{Phase, Reader},
 };
-use rama_core::{bytes::BytesMut, error::BoxError, extensions::ExtensionsRef};
-use rama_http::{
-    headers::{HeaderMapExt as _, Priority},
-    io::upgrade::{self, Pending},
-};
-use rama_http_types::{
-    Method, Request, Response, StatusCode,
-    body::StreamingBody,
-    proto::{
-        ext::{HttpDatagrams, Protocol},
-        h3::{Code, FrameType, StreamType},
-    },
-};
-use rama_net::uri::Uri;
-use rama_quic_proto::{VarInt, coding::Codec as _};
-use std::sync::Arc;
-use tokio::sync::Semaphore;
 
 /// Accepts request streams; the accompanying driver must run concurrently.
 pub struct Connection {
@@ -446,9 +449,17 @@ impl SendResponse {
             return Ok(());
         }
         let remaining = headers::content_length(response.headers())?;
+        let allowed_trailers = response.extensions().get_arc::<ForbiddenTrailers>();
         let (_, response_body) = response.into_parts();
         let shared = self.shared.clone();
-        let result = body::send(self.writer, response_body, self.shared, self.id, remaining);
+        let result = body::send(
+            self.writer,
+            response_body,
+            self.shared,
+            self.id,
+            remaining,
+            allowed_trailers,
+        );
         if let Some(mut push) = self.outgoing_push {
             tokio::select! {
                 error = shared.push_cancelled(push.id()) => Err(error),

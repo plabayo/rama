@@ -28,6 +28,11 @@ mod bloom_token_log;
 pub use bloom_token_log::BloomTokenLog;
 
 mod connection;
+#[cfg(feature = "test-utils")]
+pub(crate) use connection::benchmarks;
+#[cfg(test)]
+pub(crate) use connection::qlog::ConnectionQlog;
+
 /// Names the crate's own tests reach for through this module.
 #[cfg(test)]
 pub(crate) use crate::proto::connection::RecvStream;
@@ -60,21 +65,17 @@ pub(crate) use crate::proto::connection::{Datagrams, StreamResourceUsage, Stream
     )
 ))]
 pub(crate) use crate::proto::endpoint::AcceptError;
-#[cfg(feature = "test-utils")]
-pub(crate) use connection::benchmarks;
-
-#[cfg(test)]
-pub(crate) use connection::qlog::ConnectionQlog;
 
 mod config;
 #[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
 pub use config::AddressTokenKey;
+pub(crate) use config::ServerCrypto;
 pub use config::{
     AckFrequencyConfig, ClientConfig, ConfigError, CongestionControl, EndpointConfig, IdleTimeout,
-    MIN_INITIAL_CONGESTION_WINDOW, MtuDiscoveryConfig, PreferredAddressPolicy, ReceiveQueueLimits,
-    ServerConfig, StdSystemTime, TimeSource, TransportConfig, ValidationTokenConfig,
+    KEY_MATERIAL_SIZE, MIN_INITIAL_CONGESTION_WINDOW, MtuDiscoveryConfig, PreferredAddressPolicy,
+    ReceiveQueueLimits, ServerConfig, StatelessResetKey, StdSystemTime, TimeSource,
+    TransportConfig, ValidationTokenConfig,
 };
-pub use config::{KEY_MATERIAL_SIZE, StatelessResetKey};
 
 pub(crate) mod crypto;
 
@@ -92,13 +93,14 @@ pub(crate) enum SendPermit {
 }
 
 mod endpoint;
-pub use crate::proto::endpoint::ConnectError;
-pub use crate::proto::endpoint::RetryRefused;
+pub use crate::proto::endpoint::{ConnectError, RetryRefused};
+mod first_flight;
+pub(crate) use first_flight::ClientHelloPeek;
+
+pub use crate::proto::crypto::{ExportKeyingMaterialError, NegotiatedTlsParameters};
 pub(crate) use crate::proto::endpoint::{
     ConnectionHandle, DatagramEvent, Endpoint, Incoming, RetryError,
 };
-
-pub use crate::proto::crypto::{ExportKeyingMaterialError, NegotiatedTlsParameters};
 
 mod shared;
 pub(crate) use crate::proto::shared::{ConnectionEvent, EndpointEvent};
@@ -125,19 +127,20 @@ pub(crate) use token::reset_token;
 pub use token::{NoneTokenLog, NoneTokenStore, StoredToken, TokenLog, TokenReuseError, TokenStore};
 
 mod token_memory_cache;
-pub use token_memory_cache::TokenMemoryCache;
-
 pub(crate) use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+pub use token_memory_cache::TokenMemoryCache;
 
 #[cfg(fuzzing)]
 pub(crate) mod fuzzing {
-    pub use crate::proto::connection::{Retransmits, State as ConnectionState, StreamsState};
-    pub use crate::proto::connection::{SendStream, Streams};
     pub use rama_core::bytes::{BufMut, Bytes, BytesMut};
-
     use rama_quic_proto::{
         TransportError,
         frame::{Frame, Iter},
+    };
+
+    pub use crate::proto::connection::{
+        Retransmits, SendStream, State as ConnectionState, Streams, StreamsState,
     };
 
     /// Decode `payload` as the frames of one received packet, up to its end or the first

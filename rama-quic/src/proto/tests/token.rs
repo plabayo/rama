@@ -1,12 +1,12 @@
 //! Tests specifically for tokens
 
-use parking_lot::Mutex;
 use std::assert_matches;
 
-use super::*;
-
+use parking_lot::Mutex;
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
 use wasm_bindgen_test::wasm_bindgen_test as test;
+
+use super::*;
 
 #[test]
 fn stateless_retry() {
@@ -348,10 +348,11 @@ impl TimeSource for FakeTimeSource {
     }
 }
 
-use crate::proto::crypto::{AeadKey, HandshakeTokenKey};
 use rama_quic_proto::{
     ConnectionId, Dir, TransportError, TransportErrorCode, VarInt, crypto::CryptoError,
 };
+
+use crate::proto::crypto::{AeadKey, HandshakeTokenKey};
 
 /// Where a failing token-key provider gives up.
 #[derive(Debug, Clone, Copy)]
@@ -400,7 +401,7 @@ fn retry_with_a_failing_token_key_hands_the_attempt_back_intact() {
 }
 
 struct FailingRetryIntegrity(Arc<dyn crypto::ServerConfig>);
-impl crypto::ServerConfig for FailingRetryIntegrity {
+impl crypto::InitialServerConfig for FailingRetryIntegrity {
     fn initial_keys(
         &self,
         version: Version,
@@ -416,6 +417,8 @@ impl crypto::ServerConfig for FailingRetryIntegrity {
     ) -> Result<[u8; 16], rama_quic_proto::crypto::CryptoError> {
         Err(rama_quic_proto::crypto::CryptoError::new())
     }
+}
+impl crypto::ServerConfig for FailingRetryIntegrity {
     fn start_session(
         self: Arc<Self>,
         version: Version,
@@ -423,13 +426,27 @@ impl crypto::ServerConfig for FailingRetryIntegrity {
     ) -> Result<Box<dyn crypto::Session>, TransportError> {
         self.0.clone().start_session(version, params)
     }
+    fn supports_compatible_negotiation(&self) -> bool {
+        self.0.supports_compatible_negotiation()
+    }
+    fn start_negotiated_session(
+        self: Arc<Self>,
+        original: Version,
+        negotiated: Version,
+        params: &TransportParameters,
+    ) -> Result<Box<dyn crypto::Session>, TransportError> {
+        self.0
+            .clone()
+            .start_negotiated_session(original, negotiated, params)
+    }
 }
 
 #[test]
 fn failed_retry_integrity_preserves_the_attempt_and_callers_buffer() {
     let mut pair = Pair::default();
     let mut config = server_config();
-    config.crypto = Arc::new(FailingRetryIntegrity(config.crypto));
+    config.crypto =
+        ServerCrypto::Fixed(Arc::new(FailingRetryIntegrity(config.crypto.into_fixed())));
     pair.server.set_server_config(Some(Arc::new(config)));
     pair.server.handle_incoming = Box::new(|_| IncomingConnectionBehavior::Wait);
     let client = pair.begin_connect(client_config());

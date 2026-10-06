@@ -1,19 +1,27 @@
-use std::io::{Cursor, IoSlice};
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::{
+    io::{Cursor, IoSlice},
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll, ready},
+};
+
+use pin_project_lite::pin_project;
+use rama_core::{
+    bytes::Buf,
+    error::BoxError,
+    telemetry::tracing::{debug, trace},
+};
+use rama_http::StreamingBody;
+use rama_http_types::{
+    HeaderMap,
+    header::{
+        CONNECTION, TE,
+        hop_by_hop::{CONNECTION_SPECIFIC_HEADERS, retain_te_trailers},
+        trailer::{ForbiddenTrailers, is_sent_in_trailers},
+    },
+};
 
 use crate::h2::SendStream;
-use pin_project_lite::pin_project;
-use rama_core::bytes::Buf;
-use rama_core::error::BoxError;
-use rama_core::telemetry::tracing::{debug, trace};
-use rama_http::StreamingBody;
-use rama_http_types::HeaderMap;
-use rama_http_types::header::{
-    CONNECTION, TE,
-    hop_by_hop::{CONNECTION_SPECIFIC_HEADERS, retain_te_trailers},
-};
-use std::task::ready;
 
 pub(crate) mod admission;
 pub(crate) mod ping;
@@ -98,6 +106,8 @@ pin_project! {
         // it survives across `Poll::Pending` returns from `poll_capacity`; if
         // we left the chunk in a local, it would be dropped on every repoll.
         buffered_data: Option<Peeked<S::Data>>,
+        // The message's trailer fields sent although not allowed in trailers.
+        allowed_trailers: Option<Arc<ForbiddenTrailers>>,
         #[pin]
         stream: S,
     }
@@ -112,11 +122,16 @@ impl<S> PipeToSendStream<S>
 where
     S: StreamingBody,
 {
-    fn new(stream: S, tx: SendStream<SendBuf<S::Data>>) -> Self {
+    fn new(
+        stream: S,
+        tx: SendStream<SendBuf<S::Data>>,
+        allowed_trailers: Option<Arc<ForbiddenTrailers>>,
+    ) -> Self {
         Self {
             body_tx: tx,
             data_done: false,
             buffered_data: None,
+            allowed_trailers,
             stream,
         }
     }
@@ -237,7 +252,10 @@ where
                             Ok(trailers) => {
                                 // no more DATA, so give any capacity back
                                 me.body_tx.reserve_capacity(0);
-                                let trailers = filter_allowed_trailers(trailers);
+                                let trailers = filter_allowed_trailers(
+                                    trailers,
+                                    me.allowed_trailers.as_deref(),
+                                );
                                 me.body_tx
                                     .send_trailers(trailers)
                                     .map_err(crate::Error::new_body_write)?;
@@ -261,17 +279,20 @@ where
     }
 }
 
-fn filter_allowed_trailers(trailers: HeaderMap) -> HeaderMap {
-    if trailers.keys().all(|name| name.is_allowed_in_trailers()) {
+fn filter_allowed_trailers(trailers: HeaderMap, allowed: Option<&ForbiddenTrailers>) -> HeaderMap {
+    if trailers
+        .keys()
+        .all(|name| is_sent_in_trailers(name, allowed))
+    {
         return trailers;
     }
 
     let mut filtered = HeaderMap::with_capacity(trailers.len());
     for (name, value) in trailers.into_ordered_iter() {
-        if name.is_allowed_in_trailers() {
+        if is_sent_in_trailers(&name, allowed) {
             filtered.append(name, value);
         } else {
-            debug!("dropping disallowed HTTP/2 trailer field: {name:?}");
+            debug!("dropping HTTP/2 trailer field not sent in trailers: {name:?}");
         }
     }
     filtered
@@ -348,8 +369,9 @@ impl<B: Buf> Buf for SendBuf<B> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rama_http_types::HeaderValue;
+
+    use super::*;
 
     #[test]
     fn request_te_keeps_only_trailers_from_every_line() {
@@ -405,11 +427,53 @@ mod tests {
         trailers.insert("etag", HeaderValue::from_static("\"v1\""));
         trailers.insert("grpc-status", HeaderValue::from_static("0"));
 
-        let filtered = filter_allowed_trailers(trailers);
+        let filtered = filter_allowed_trailers(trailers, None);
 
         assert!(!filtered.contains_key("content-type"));
         assert_eq!(filtered["etag"], "\"v1\"");
         assert_eq!(filtered["grpc-status"], "0");
+    }
+
+    /// A message can opt forbidden fields back in, never those that frame or route it.
+    #[test]
+    fn h2_trailers_send_what_the_message_allows() {
+        let trailers = || {
+            let mut trailers = HeaderMap::new();
+            for (name, value) in [
+                ("set-cookie", "a=b"),
+                ("content-type", "text/plain"),
+                ("content-length", "3"),
+                ("host", "example.com"),
+                ("grpc-status", "0"),
+            ] {
+                trailers.append(name, HeaderValue::from_static(value));
+            }
+            trailers
+        };
+        let names = |trailers: HeaderMap| -> Vec<String> {
+            trailers.keys().map(ToString::to_string).collect()
+        };
+
+        assert_eq!(
+            names(filter_allowed_trailers(trailers(), None)),
+            ["grpc-status"]
+        );
+        assert_eq!(
+            names(filter_allowed_trailers(
+                trailers(),
+                Some(&ForbiddenTrailers::AllowAll)
+            )),
+            ["set-cookie", "content-type", "grpc-status"]
+        );
+        assert_eq!(
+            names(filter_allowed_trailers(
+                trailers(),
+                Some(&ForbiddenTrailers::AllowSome(
+                    [rama_http_types::header::SET_COOKIE].into()
+                ))
+            )),
+            ["set-cookie", "grpc-status"]
+        );
     }
 
     #[test]
@@ -418,7 +482,7 @@ mod tests {
         trailers.insert("grpc-status", HeaderValue::from_static("0"));
         let capacity = trailers.capacity();
 
-        let filtered = filter_allowed_trailers(trailers);
+        let filtered = filter_allowed_trailers(trailers, None);
 
         assert_eq!(filtered.capacity(), capacity);
         assert_eq!(filtered["grpc-status"], "0");

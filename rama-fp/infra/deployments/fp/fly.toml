@@ -3,7 +3,8 @@ primary_region = 'fra'
 
 [processes]
 # Public-demo guardrails: rate is process-wide; throttle is per connection/direction.
-app_secure = "serve fp --bind 0.0.0.0:8443 -c 2048 -t 16 --rate 100 --throttle 1048576 -f haproxy --http-version auto -s"
+# No HTTP/3 yet: advertising it moves browsers to h3, whose profiles are not collected.
+app_secure = "serve fp --bind 0.0.0.0:8443 -c 2048 -t 16 --rate 100 --throttle 1048576 -f haproxy --http-version h1,h2 -s"
 app_insecure = "serve fp --bind 0.0.0.0:8080 -c 2048 -t 16 --rate 100 --throttle 1048576 -f haproxy --http-version auto"
 
 [build]

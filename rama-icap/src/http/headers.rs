@@ -8,6 +8,7 @@ use rama_http_types::{
         self as http_header, HeaderName, HeaderValue,
         hop_by_hop::{HopByHopHeaderContext, connection_header_names},
         proxy_auth::{remove_proxy_auth_request_headers, remove_proxy_auth_response_headers},
+        trailer::is_never_a_trailer,
     },
 };
 
@@ -102,13 +103,15 @@ pub(super) fn connection_nominated_headers(headers: &HeaderMap) -> Vec<HeaderNam
     connection_header_names(headers).collect()
 }
 
+/// Reject what no trailer section carries; which other fields are sent over HTTP is the
+/// message's trailer policy, applied when it is.
 pub(super) fn validate_http_trailers(
     trailers: &HeaderMap,
     head_nominated: &[HeaderName],
 ) -> Result<(), &'static str> {
     for name in trailers.keys() {
-        if !name.is_allowed_in_trailers() {
-            return Err("HTTP trailer contains a field that belongs in the message head");
+        if is_never_a_trailer(name) {
+            return Err("HTTP trailer contains a field that frames or routes the message");
         }
         if head_nominated.iter().any(|value| value == name) {
             return Err("HTTP trailer contains a Connection-nominated field");

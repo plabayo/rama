@@ -18,8 +18,103 @@ use crate::{HeaderValue, header::is_token, mime::Mime};
 /// A parameter is left out unless it re-encodes to the octets it came from: printable ASCII
 /// without a quote or backslash, and not empty.
 pub fn extract_mime_type<'i>(lines: impl IntoIterator<Item = &'i HeaderValue>) -> Option<Mime> {
-    let value = combined(lines)?;
-    let (winner, inherited_charset) = extract(&value)?;
+    match FieldLines::new(lines)? {
+        FieldLines::Split(lines) => extract_mime(lines.into_iter().flat_map(split_outside_quotes)),
+        FieldLines::Joined(value) => extract_mime(split_outside_quotes(&value)),
+    }
+}
+
+/// The `type/subtype` of the extracted type, as sent: all a decision on the media type needs.
+///
+/// Borrowed from the lines, unless a quoted string one line leaves open runs into the next.
+pub fn extract_essence<'i>(
+    lines: impl IntoIterator<Item = &'i HeaderValue>,
+) -> Option<Cow<'i, str>> {
+    match FieldLines::new(lines)? {
+        FieldLines::Split(lines) => last_valid(lines.into_iter().flat_map(split_outside_quotes))
+            .map(|winner| Cow::Borrowed(winner.essence)),
+        FieldLines::Joined(value) => last_valid(split_outside_quotes(&value))
+            .map(|winner| Cow::Owned(winner.essence.to_owned())),
+    }
+}
+
+/// The `type/subtype` of the whole value as one media type, as sent: what the CORS safelist
+/// judges, so a request is gated on the type its sender was allowed to send.
+pub fn parse_essence<'i>(lines: impl IntoIterator<Item = &'i HeaderValue>) -> Option<&'i str> {
+    let mut lines = lines.into_iter();
+    let first = Candidate::parse(lines.next()?.as_bytes())?;
+    // The combined value's subtype runs to its first `;`: without one on the first line, it
+    // takes in the `,` that joins the next.
+    (lines.next().is_none() || !first.parameters.is_empty()).then_some(first.essence)
+}
+
+/// The whole value as one media type with the parameters the `mime` crate can hold, see
+/// [`parse_essence`].
+pub fn parse_mime_type<'i>(lines: impl IntoIterator<Item = &'i HeaderValue>) -> Option<Mime> {
+    let mut lines = lines.into_iter();
+    let first = lines.next()?.as_bytes();
+    let value = match lines.next() {
+        None => Cow::Borrowed(first),
+        Some(second) => {
+            let lines: SmallVec<[&[u8]; 4]> = [first, second.as_bytes()]
+                .into_iter()
+                .chain(lines.map(HeaderValue::as_bytes))
+                .collect();
+            Cow::Owned(join(&lines))
+        }
+    };
+    let parsed = Candidate::parse(&value)?;
+    to_mime(parsed.essence, &parsed.parameters())
+}
+
+/// The field lines, as the parts of the value they combine to (Fetch's "get") are read.
+enum FieldLines<'i> {
+    /// Each line split on its own: the same parts, as no line leaves a quoted string open.
+    Split(SmallVec<[&'i [u8]; 4]>),
+    /// The combined value, for a quoted string that runs from one line into the next.
+    Joined(Vec<u8>),
+}
+
+impl<'i> FieldLines<'i> {
+    fn new(lines: impl IntoIterator<Item = &'i HeaderValue>) -> Option<Self> {
+        let lines: SmallVec<[&'i [u8]; 4]> = lines.into_iter().map(HeaderValue::as_bytes).collect();
+        let (_, earlier) = lines.split_last()?;
+        Some(if earlier.iter().any(|line| ends_quoted(line)) {
+            Self::Joined(join(&lines))
+        } else {
+            Self::Split(lines)
+        })
+    }
+}
+
+/// The lines joined as Fetch combines them.
+fn join(lines: &[&[u8]]) -> Vec<u8> {
+    let mut value = Vec::with_capacity(lines.iter().map(|line| line.len() + 2).sum());
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            value.extend_from_slice(b", ");
+        }
+        value.extend_from_slice(line);
+    }
+    value
+}
+
+/// Whether `line` ends inside a quoted string.
+fn ends_quoted(line: &[u8]) -> bool {
+    let (mut quoted, mut escaped) = (false, false);
+    for byte in line {
+        match (quoted, escaped, byte) {
+            (true, true, _) => escaped = false,
+            (true, false, b'\\') => escaped = true,
+            (_, _, b'"') => quoted = !quoted,
+            _ => {}
+        }
+    }
+    quoted
+}
+
+fn extract_mime<'a>(parts: impl Iterator<Item = &'a [u8]>) -> Option<Mime> {
+    let (winner, inherited_charset) = extract(parts)?;
     let mut parameters = winner.parameters();
     if let Some(charset) = inherited_charset {
         parameters.push(("charset", charset));
@@ -27,72 +122,21 @@ pub fn extract_mime_type<'i>(lines: impl IntoIterator<Item = &'i HeaderValue>) -
     to_mime(winner.essence, &parameters)
 }
 
-/// The `type/subtype` of the extracted type, as sent: all a decision on the media type needs,
-/// without allocating for one line.
-pub fn extract_essence<'i>(
-    lines: impl IntoIterator<Item = &'i HeaderValue>,
-) -> Option<Cow<'i, str>> {
-    match combined(lines)? {
-        Cow::Borrowed(value) => last_valid(value).map(|winner| Cow::Borrowed(winner.essence)),
-        Cow::Owned(value) => last_valid(&value).map(|winner| Cow::Owned(winner.essence.to_owned())),
-    }
-}
-
-/// The `type/subtype` of the whole value as one media type, as sent: what the CORS safelist
-/// judges, so a request is gated on the type its sender was allowed to send.
-pub fn parse_essence<'i>(lines: impl IntoIterator<Item = &'i HeaderValue>) -> Option<Cow<'i, str>> {
-    match combined(lines)? {
-        Cow::Borrowed(value) => Candidate::parse(value).map(|parsed| Cow::Borrowed(parsed.essence)),
-        Cow::Owned(value) => {
-            Candidate::parse(&value).map(|parsed| Cow::Owned(parsed.essence.to_owned()))
-        }
-    }
-}
-
-/// The whole value as one media type with the parameters the `mime` crate can hold, see
-/// [`parse_essence`].
-pub fn parse_mime_type<'i>(lines: impl IntoIterator<Item = &'i HeaderValue>) -> Option<Mime> {
-    let value = combined(lines)?;
-    let parsed = Candidate::parse(&value)?;
-    to_mime(parsed.essence, &parsed.parameters())
-}
-
-/// The lines as the one value they combine to (Fetch's "get"), isomorphic decoded.
-fn combined<'i>(lines: impl IntoIterator<Item = &'i HeaderValue>) -> Option<Cow<'i, str>> {
-    let mut lines = lines.into_iter();
-    let first = isomorphic_decode(lines.next()?.as_bytes());
-    let Some(second) = lines.next() else {
-        return Some(first);
-    };
-    let mut combined = first.into_owned();
-    for line in std::iter::once(second).chain(lines) {
-        combined.push_str(", ");
-        combined.push_str(&isomorphic_decode(line.as_bytes()));
-    }
-    Some(Cow::Owned(combined))
-}
-
-/// Each byte as the code point of the same value, as Fetch decodes field values.
-fn isomorphic_decode(bytes: &[u8]) -> Cow<'_, str> {
-    match std::str::from_utf8(bytes) {
-        Ok(ascii) if bytes.is_ascii() => Cow::Borrowed(ascii),
-        _ => Cow::Owned(bytes.iter().copied().map(char::from).collect()),
-    }
-}
-
-fn last_valid(value: &str) -> Option<Candidate<'_>> {
-    split_outside_quotes(value)
+fn last_valid<'a>(parts: impl Iterator<Item = &'a [u8]>) -> Option<Candidate<'a>> {
+    parts
         .filter_map(Candidate::parse)
         .filter(|candidate| candidate.essence != "*/*")
         .last()
 }
 
 /// The last valid type and the charset it inherits from an earlier one of the same essence.
-fn extract(value: &str) -> Option<(Candidate<'_>, Option<Cow<'_, str>>)> {
-    let mut winner: Option<Candidate<'_>> = None;
-    let mut essence_from: Option<Candidate<'_>> = None;
+fn extract<'a>(
+    parts: impl Iterator<Item = &'a [u8]>,
+) -> Option<(Candidate<'a>, Option<Cow<'a, [u8]>>)> {
+    let mut winner: Option<Candidate<'a>> = None;
+    let mut essence_from: Option<Candidate<'a>> = None;
     let mut inherits = false;
-    for candidate in split_outside_quotes(value).filter_map(Candidate::parse) {
+    for candidate in parts.filter_map(Candidate::parse) {
         if candidate.essence == "*/*" {
             continue;
         }
@@ -119,25 +163,32 @@ struct Candidate<'a> {
     /// `type/subtype` as sent.
     essence: &'a str,
     /// What follows the subtype, from its first `;`.
-    parameters: &'a str,
+    parameters: &'a [u8],
 }
 
 impl<'a> Candidate<'a> {
-    fn parse(value: &'a str) -> Option<Self> {
-        let value = value.trim_matches(HTTP_WHITESPACE);
-        let (kind, rest) = value.split_once('/')?;
-        let (subtype, parameters) = rest.split_at(rest.find(';').unwrap_or(rest.len()));
-        let subtype = subtype.trim_end_matches(HTTP_WHITESPACE);
-        if !is_token(kind.as_bytes()) || !is_token(subtype.as_bytes()) {
+    fn parse(value: &'a [u8]) -> Option<Self> {
+        let value = trim_http_whitespace(value);
+        let slash = value.iter().position(|byte| *byte == b'/')?;
+        let (kind, rest) = (&value[..slash], &value[slash + 1..]);
+        let semicolon = rest
+            .iter()
+            .position(|byte| *byte == b';')
+            .unwrap_or(rest.len());
+        let (subtype, parameters) = rest.split_at(semicolon);
+        let subtype = trim_end_http_whitespace(subtype);
+        if !is_token(kind) || !is_token(subtype) {
             return None;
         }
+        // Tokens are ASCII.
+        let essence = std::str::from_utf8(&value[..kind.len() + 1 + subtype.len()]).ok()?;
         Some(Self {
-            essence: &value[..kind.len() + 1 + subtype.len()],
+            essence,
             parameters,
         })
     }
 
-    fn charset(self) -> Option<Cow<'a, str>> {
+    fn charset(self) -> Option<Cow<'a, [u8]>> {
         self.parameters()
             .into_iter()
             .find_map(|(name, value)| name.eq_ignore_ascii_case("charset").then_some(value))
@@ -145,56 +196,56 @@ impl<'a> Candidate<'a> {
 
     /// The parameters MIME Sniffing keeps: a token name, a value of quoted-string token code
     /// points, the first of a repeated name.
-    fn parameters(self) -> SmallVec<[(&'a str, Cow<'a, str>); 4]> {
+    fn parameters(self) -> SmallVec<[(&'a str, Cow<'a, [u8]>); 4]> {
         let input = self.parameters;
-        let bytes = input.as_bytes();
-        let mut parameters: SmallVec<[(&'a str, Cow<'a, str>); 4]> = SmallVec::new();
+        let mut parameters: SmallVec<[(&'a str, Cow<'a, [u8]>); 4]> = SmallVec::new();
         let mut position = 0;
-        while position < bytes.len() {
+        while position < input.len() {
             // At a `;`.
             position += 1;
-            while bytes
+            while input
                 .get(position)
-                .is_some_and(|b| HTTP_WHITESPACE_BYTES.contains(b))
+                .is_some_and(|byte| HTTP_WHITESPACE.contains(byte))
             {
                 position += 1;
             }
             let name_start = position;
-            while bytes
+            while input
                 .get(position)
-                .is_some_and(|b| *b != b';' && *b != b'=')
+                .is_some_and(|byte| *byte != b';' && *byte != b'=')
             {
                 position += 1;
             }
             let name = &input[name_start..position];
-            match bytes.get(position) {
+            match input.get(position) {
                 Some(b';') => continue,
                 Some(_) => position += 1,
                 None => break,
             }
-            if position >= bytes.len() {
+            if position >= input.len() {
                 break;
             }
-            let value = if bytes[position] == b'"' {
+            let value = if input[position] == b'"' {
                 let (value, end) = collect_quoted_string(input, position);
                 position = end;
-                while bytes.get(position).is_some_and(|b| *b != b';') {
+                while input.get(position).is_some_and(|byte| *byte != b';') {
                     position += 1;
                 }
                 value
             } else {
                 let value_start = position;
-                while bytes.get(position).is_some_and(|b| *b != b';') {
+                while input.get(position).is_some_and(|byte| *byte != b';') {
                     position += 1;
                 }
-                let value = input[value_start..position].trim_end_matches(HTTP_WHITESPACE);
+                let value = trim_end_http_whitespace(&input[value_start..position]);
                 if value.is_empty() {
                     continue;
                 }
                 Cow::Borrowed(value)
             };
-            if is_token(name.as_bytes())
-                && value.chars().all(is_quoted_string_token_code_point)
+            if is_token(name)
+                && value.iter().copied().all(is_quoted_string_token_code_point)
+                && let Ok(name) = std::str::from_utf8(name)
                 && !parameters
                     .iter()
                     .any(|(known, _)| known.eq_ignore_ascii_case(name))
@@ -207,42 +258,57 @@ impl<'a> Candidate<'a> {
 }
 
 /// HTTP whitespace as MIME Sniffing and Fetch use it.
-const HTTP_WHITESPACE: [char; 4] = [' ', '\t', '\n', '\r'];
-const HTTP_WHITESPACE_BYTES: [u8; 4] = [b' ', b'\t', b'\n', b'\r'];
+const HTTP_WHITESPACE: [u8; 4] = [b' ', b'\t', b'\n', b'\r'];
 
-fn is_quoted_string_token_code_point(c: char) -> bool {
-    matches!(c, '\t' | ' '..='~' | '\u{80}'..='\u{ff}')
+fn trim_http_whitespace(value: &[u8]) -> &[u8] {
+    let start = value
+        .iter()
+        .position(|byte| !HTTP_WHITESPACE.contains(byte))
+        .unwrap_or(value.len());
+    trim_end_http_whitespace(&value[start..])
+}
+
+fn trim_end_http_whitespace(value: &[u8]) -> &[u8] {
+    let end = value
+        .iter()
+        .rposition(|byte| !HTTP_WHITESPACE.contains(byte))
+        .map_or(0, |last| last + 1);
+    &value[..end]
+}
+
+/// A field value byte is the code point of the same value (Fetch's isomorphic decoding).
+fn is_quoted_string_token_code_point(byte: u8) -> bool {
+    matches!(byte, b'\t' | b' '..=b'~' | 0x80..=0xff)
 }
 
 /// Fetch's "collect an HTTP quoted string" with the extract-value flag set, from the `"` at
 /// `position`: its value and the position after it.
-fn collect_quoted_string(input: &str, mut position: usize) -> (Cow<'_, str>, usize) {
+fn collect_quoted_string(input: &[u8], mut position: usize) -> (Cow<'_, [u8]>, usize) {
     position += 1;
-    let mut value: Cow<'_, str> = Cow::Borrowed("");
+    let mut value: Cow<'_, [u8]> = Cow::Borrowed(&[]);
     loop {
         let start = position;
         while input
-            .as_bytes()
             .get(position)
-            .is_some_and(|b| *b != b'"' && *b != b'\\')
+            .is_some_and(|byte| *byte != b'"' && *byte != b'\\')
         {
             position += 1;
         }
         append(&mut value, &input[start..position]);
-        let Some(&quote_or_backslash) = input.as_bytes().get(position) else {
+        let Some(&quote_or_backslash) = input.get(position) else {
             break;
         };
         position += 1;
         if quote_or_backslash == b'"' {
             break;
         }
-        match input[position..].chars().next() {
-            Some(escaped) => {
+        match input.get(position) {
+            Some(&escaped) => {
                 value.to_mut().push(escaped);
-                position += escaped.len_utf8();
+                position += 1;
             }
             None => {
-                value.to_mut().push('\\');
+                value.to_mut().push(b'\\');
                 break;
             }
         }
@@ -250,32 +316,42 @@ fn collect_quoted_string(input: &str, mut position: usize) -> (Cow<'_, str>, usi
     (value, position)
 }
 
-fn append<'a>(value: &mut Cow<'a, str>, part: &'a str) {
+fn append<'a>(value: &mut Cow<'a, [u8]>, part: &'a [u8]) {
     if value.is_empty() {
         *value = Cow::Borrowed(part);
     } else if !part.is_empty() {
-        value.to_mut().push_str(part);
+        value.to_mut().extend_from_slice(part);
     }
 }
 
 /// `essence` with the `parameters` the `mime` crate can hold, quoted where they need it.
-fn to_mime(essence: &str, parameters: &[(&str, Cow<'_, str>)]) -> Option<Mime> {
+fn to_mime(essence: &str, parameters: &[(&str, Cow<'_, [u8]>)]) -> Option<Mime> {
     if parameters.is_empty() {
         return essence.parse().ok();
     }
-    let mut serialized = String::with_capacity(essence.len() + 16 * parameters.len());
+    let mut serialized = String::with_capacity(
+        essence.len()
+            + parameters
+                .iter()
+                .map(|(name, value)| name.len() + value.len() + 5)
+                .sum::<usize>(),
+    );
     serialized.push_str(essence);
     for (name, value) in parameters {
-        let quoted = !is_token(value.as_bytes());
+        let quoted = !is_token(value);
         // `mime` holds a quoted value raw: UTF-8 or a backslash would not re-encode as sent.
         if quoted
             && (value.is_empty()
                 || !value
-                    .bytes()
-                    .all(|b| (b' '..=b'~').contains(&b) && b != b'"' && b != b'\\'))
+                    .iter()
+                    .all(|byte| (b' '..=b'~').contains(byte) && *byte != b'"' && *byte != b'\\'))
         {
             continue;
         }
+        // A token or printable ASCII by now.
+        let Ok(value) = std::str::from_utf8(value) else {
+            continue;
+        };
         serialized.push_str("; ");
         serialized.push_str(name);
         serialized.push('=');
@@ -292,14 +368,13 @@ fn to_mime(essence: &str, parameters: &[(&str, Cow<'_, str>)]) -> Option<Mime> {
 
 /// Fetch's "split" of a field value: on commas outside quoted strings, trimming HTTP tab or
 /// space around each part.
-fn split_outside_quotes(value: &str) -> impl Iterator<Item = &str> {
+fn split_outside_quotes(value: &[u8]) -> impl Iterator<Item = &[u8]> {
     let mut rest = Some(value);
     std::iter::from_fn(move || {
         let input = rest?;
-        let bytes = input.as_bytes();
         let (mut quoted, mut escaped) = (false, false);
-        let mut end = bytes.len();
-        for (index, byte) in bytes.iter().enumerate() {
+        let mut end = input.len();
+        for (index, byte) in input.iter().enumerate() {
             match (quoted, escaped, byte) {
                 (true, true, _) => escaped = false,
                 (true, false, b'\\') => escaped = true,
@@ -311,9 +386,22 @@ fn split_outside_quotes(value: &str) -> impl Iterator<Item = &str> {
                 _ => {}
             }
         }
-        rest = input.get(end + 1..).filter(|_| end < bytes.len());
-        Some(input[..end].trim_matches([' ', '\t']))
+        rest = input.get(end + 1..).filter(|_| end < input.len());
+        Some(trim_tab_or_space(&input[..end]))
     })
+}
+
+fn trim_tab_or_space(value: &[u8]) -> &[u8] {
+    let is_tab_or_space = |byte: &u8| *byte == b' ' || *byte == b'\t';
+    let start = value
+        .iter()
+        .position(|byte| !is_tab_or_space(byte))
+        .unwrap_or(value.len());
+    let end = value
+        .iter()
+        .rposition(|byte| !is_tab_or_space(byte))
+        .map_or(start, |last| last + 1);
+    &value[start..end]
 }
 
 #[cfg(test)]
@@ -470,12 +558,36 @@ mod tests {
     }
 
     #[test]
-    fn one_line_essence_borrows() {
-        let values = values(&["Text/HTML; charset=utf-8"]);
+    fn essences_borrow_from_the_lines() {
+        let one = values(&["Text/HTML; charset=utf-8"]);
         assert!(matches!(
-            extract_essence(&values),
+            extract_essence(&one),
             Some(Cow::Borrowed("Text/HTML"))
         ));
+        let several = values(&["text/plain", "text/html;x=1"]);
+        assert!(matches!(
+            extract_essence(&several),
+            Some(Cow::Borrowed("text/html"))
+        ));
+        assert_eq!(parse_essence(&one), Some("Text/HTML"));
+    }
+
+    /// A quoted string a line leaves open runs into the next, as in the combined value.
+    #[test]
+    fn a_quoted_string_spans_lines() {
+        let lines = values(&[r#"text/html;x="a"#, r#"b", text/plain"#]);
+        assert_eq!(extract_essence(&lines).as_deref(), Some("text/plain"));
+        assert_eq!(
+            extract_mime_type(&lines).unwrap().essence_str(),
+            "text/plain"
+        );
+        let lines = values(&[r#"text/html;x="a"#, r#"b""#]);
+        let mime = extract_mime_type(&lines).unwrap();
+        assert_eq!(mime.essence_str(), "text/html");
+        assert_eq!(
+            mime.get_param("x").map(|value| value.as_str()),
+            Some("a, b")
+        );
     }
 
     #[test]

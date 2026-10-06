@@ -1,11 +1,8 @@
-use rama_core::error::BoxErrorExt as _;
-use std::convert::TryFrom;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{convert::TryFrom, sync::Arc, time::Duration};
 
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext as _, ErrorExt as _},
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     extensions::ExtensionsRef,
     graceful::ShutdownGuard,
     io::{BridgeIo, GracefulIo, Io},
@@ -20,7 +17,7 @@ use rama_core::{
 use rama_http::{
     Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
     conn::{H2ServerContextParams, TargetHttpVersion},
-    header,
+    header::{self, trailer::ForbiddenTrailers},
     io::upgrade::OnUpgrade,
     layer::remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
     service::web::response::IntoResponse,
@@ -36,10 +33,11 @@ use rama_http_types::proto::{
         frame::{Reason, Settings},
     },
 };
-use rama_net::client::EstablishedClientConnection;
-use rama_net::conn::{ConnectionHealth, ConnectionHealthWatcher};
-use rama_net::uri::Uri;
-
+use rama_net::{
+    client::EstablishedClientConnection,
+    conn::{ConnectionHealth, ConnectionHealthWatcher},
+    uri::Uri,
+};
 use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -171,6 +169,7 @@ pub struct HttpMitmRelay<M = DefaultMiddleware> {
     middleware: M,
     exec: Executor,
     eager_peer_settings_timeout: Duration,
+    forbidden_trailers: ForbiddenTrailers,
 }
 
 impl HttpMitmRelay {
@@ -194,6 +193,7 @@ impl HttpMitmRelay {
             ),
             exec,
             eager_peer_settings_timeout: DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT,
+            forbidden_trailers: ForbiddenTrailers::AllowAll,
         }
     }
 
@@ -209,6 +209,7 @@ impl HttpMitmRelay {
             middleware,
             exec: self.exec,
             eager_peer_settings_timeout: self.eager_peer_settings_timeout,
+            forbidden_trailers: self.forbidden_trailers,
         }
     }
 }
@@ -246,6 +247,16 @@ impl<M> HttpMitmRelay<M> {
         /// the egress IO carries `TargetHttpVersion(HTTP_2)`.
         pub fn eager_peer_settings_timeout(mut self, timeout: Duration) -> Self {
             self.eager_peer_settings_timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Which trailer fields the relay forwards although their definitions do not allow
+        /// them in trailers. Defaults to [`ForbiddenTrailers::AllowAll`]: a relay forwards
+        /// trailers as received, except fields that frame or route the message.
+        pub fn forbidden_trailers(mut self, forbidden_trailers: ForbiddenTrailers) -> Self {
+            self.forbidden_trailers = forbidden_trailers;
             self
         }
     }
@@ -348,11 +359,14 @@ where
             )))
         };
 
+        let forbidden_trailers = self.forbidden_trailers.clone();
         let result = self
             .http_server
             .serve_with_graceful_shutdown(
                 GracefulIo::new(token.clone().cancelled_owned(), ingress_stream),
                 service_fn(move |req: Request| {
+                    // Inherited by the forwarded request and the upstream's response.
+                    req.extensions().insert(forbidden_trailers.clone());
                     let relay_state = relay_state.clone();
                     let close_ingress = token.clone();
                     let guard = request_guard.clone();

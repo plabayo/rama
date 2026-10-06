@@ -1,5 +1,23 @@
 //! Exercise cooperative limits through stream/body entry points, not only the budget helper.
 
+use std::{
+    assert_matches,
+    future::Future,
+    pin::{Pin, pin},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    task::{Context, Poll, Wake, Waker},
+};
+
+use rama_core::bytes::Bytes;
+use rama_http_types::{
+    Body,
+    body::{Frame, StreamingBody},
+    proto::h3::Code,
+};
+
 use crate::h3::{
     Error, body,
     connection::{Config, Shared},
@@ -8,22 +26,6 @@ use crate::h3::{
     frame::FrameEvent,
     quic::{RecvStream, SendStream, Writer},
     stream::{Phase, Reader},
-};
-use rama_core::bytes::Bytes;
-use rama_http_types::{
-    Body,
-    body::{Frame, StreamingBody},
-    proto::h3::Code,
-};
-use std::assert_matches;
-use std::{
-    future::Future,
-    pin::{Pin, pin},
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    task::{Context, Poll, Wake, Waker},
 };
 
 #[derive(Default)]
@@ -181,6 +183,7 @@ fn immediately_ready_empty_body_frames_yield_before_reaching_payload() {
         shared,
         0,
         Some(7),
+        None,
     ));
     let wakes = Arc::new(WakeCount::default());
     let waker = Waker::from(wakes.clone());
@@ -217,6 +220,7 @@ fn finished_upload_waits_for_fin_acknowledgement() {
         shared,
         0,
         Some(0),
+        None,
     ));
     let mut cx = Context::from_waker(Waker::noop());
     assert!(send.as_mut().poll(&mut cx).is_pending());
@@ -242,6 +246,7 @@ fn cancelling_upload_after_queued_fin_resets_unacknowledged_stream() {
             shared,
             0,
             Some(0),
+            None,
         ));
         let mut cx = Context::from_waker(Waker::noop());
         assert!(send.as_mut().poll(&mut cx).is_pending());

@@ -1,6 +1,8 @@
-use super::*;
-use rama_quic_proto::{ConnectionId, Side, TransportError, TransportErrorCode, packet::SpaceId};
 use std::assert_matches;
+
+use rama_quic_proto::{ConnectionId, Side, TransportError, TransportErrorCode, packet::SpaceId};
+
+use super::*;
 
 struct FailingClient(bool);
 impl crypto::ClientConfig for FailingClient {
@@ -16,10 +18,16 @@ impl crypto::ClientConfig for FailingClient {
             Err(ConnectError::Crypto(failure()))
         }
     }
+    fn supports_version_switch(&self) -> bool {
+        false
+    }
+    fn resumable_version(&self, _: &str) -> Option<Version> {
+        None
+    }
 }
 
 struct FailingServer(Arc<dyn crypto::ServerConfig>, bool);
-impl crypto::ServerConfig for FailingServer {
+impl crypto::InitialServerConfig for FailingServer {
     fn initial_keys(
         &self,
         version: Version,
@@ -35,6 +43,8 @@ impl crypto::ServerConfig for FailingServer {
     ) -> Result<[u8; 16], rama_quic_proto::crypto::CryptoError> {
         self.0.retry_tag(version, cid, packet)
     }
+}
+impl crypto::ServerConfig for FailingServer {
     fn start_session(
         self: Arc<Self>,
         _: Version,
@@ -45,6 +55,17 @@ impl crypto::ServerConfig for FailingServer {
         } else {
             Err(failure())
         }
+    }
+    fn supports_compatible_negotiation(&self) -> bool {
+        false
+    }
+    fn start_negotiated_session(
+        self: Arc<Self>,
+        _: Version,
+        _: Version,
+        _: &TransportParameters,
+    ) -> Result<Box<dyn crypto::Session>, TransportError> {
+        Err(failure())
     }
 }
 
@@ -57,6 +78,21 @@ impl crypto::Session for FailingInitialKeys {
         _: Side,
     ) -> Result<crypto::Keys, TransportError> {
         Err(failure())
+    }
+    fn switch_version(&mut self, _: Version) -> Result<(), crypto::UnsupportedVersion> {
+        Err(crypto::UnsupportedVersion)
+    }
+    fn handshake_summary(&self) -> Option<crypto::NegotiatedTlsParameters> {
+        None
+    }
+    fn negotiated_alpn(&self) -> Option<&[u8]> {
+        None
+    }
+    fn peer_certificates(&self) -> Option<Vec<rama_crypto::pki_types::CertificateDer<'static>>> {
+        None
+    }
+    fn negotiated_key_exchange_group(&self) -> Option<u16> {
+        None
     }
     fn early_crypto(
         &self,
@@ -149,7 +185,10 @@ fn failed_server_session_releases_reserved_and_preferred_cids() {
     use std::error::Error as _;
     for initial_keys in [false, true] {
         let mut config = server_config();
-        config.crypto = Arc::new(FailingServer(config.crypto, initial_keys));
+        config.crypto = ServerCrypto::Fixed(Arc::new(FailingServer(
+            config.crypto.into_fixed(),
+            initial_keys,
+        )));
         config.preferred_address_v4 = Some("127.0.0.1:444".parse().unwrap());
         let mut pair = Pair::new(
             Arc::new(EndpointConfig::try_with_rand_key().unwrap()),

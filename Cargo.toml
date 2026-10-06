@@ -731,6 +731,11 @@ required-features = ["quic"]
 harness = false
 
 [[bench]]
+name = "quic_handshake"
+required-features = ["quic", "boring", "crypto"]
+harness = false
+
+[[bench]]
 name = "quic_qlog"
 required-features = ["quic"]
 harness = false

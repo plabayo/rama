@@ -10,7 +10,6 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-use tokio::io::AsyncWrite;
 
 use common::*;
 use parking_lot::Mutex;
@@ -22,6 +21,7 @@ use rama::{
     utils::octets,
 };
 use serde_json::Value;
+use tokio::io::AsyncWrite;
 
 /// A writer a test can read back. qlog takes ownership of the writer, so what it wrote is read
 /// through the shared buffer rather than the handle.
@@ -378,9 +378,18 @@ async fn both_ends_group_a_retried_connection_the_same_way() {
                 .await
                 .expect("an attempt arrives");
             first.retry().expect("a first Retry is allowed");
-            let conn = step("the validated attempt", server.accept())
-                .await
-                .expect("it comes back")
+            // An Initial of the first flight can still arrive after the Retry, as an attempt
+            // of its own without a token: only the one that carries the token is accepted.
+            let validated = loop {
+                let attempt = step("the validated attempt", server.accept())
+                    .await
+                    .expect("it comes back");
+                if attempt.remote_address_validated() {
+                    break attempt;
+                }
+                attempt.ignore();
+            };
+            let conn = validated
                 .accept()
                 .expect("it is accepted")
                 .await

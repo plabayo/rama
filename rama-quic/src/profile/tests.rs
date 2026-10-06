@@ -8,18 +8,20 @@
     reason = "a test's fixtures fail the test by panicking"
 )]
 
-use rama_core::rt::Executor;
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use std::assert_matches;
 
-use super::browsers::{chrome_153, firefox_156};
-use super::capture;
-use super::*;
-use crate::{ClientConfig, Endpoint};
+use rama_core::rt::Executor;
 use rama_quic_proto::{
     capture::{FirstFlight, ObservedFrame, PacketKind, observe},
     version::Version,
 };
+
+use super::{
+    browsers::{chrome_153, firefox_156},
+    capture, *,
+};
+use crate::{ClientConfig, Endpoint};
 
 macro_rules! include_fixture {
     ($name:literal) => {
@@ -46,7 +48,7 @@ fn include_fixture(name: &str) -> &'static str {
 fn provider() -> std::sync::Arc<dyn crate::proto::crypto::ServerConfig> {
     let identity = crate::test_helpers::identity();
     let server = crate::test_helpers::server(&identity);
-    server.crypto.clone()
+    server.crypto.into_fixed()
 }
 
 /// The parameter identifiers a capture carried, in order.

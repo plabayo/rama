@@ -1,5 +1,23 @@
 //! Validate decoded HTTP fields before normalization can hide malformed input.
 
+use rama_core::{
+    bytes::{Bytes, BytesMut},
+    extensions::{Extensions, ExtensionsRef},
+    telemetry::tracing::debug,
+};
+use rama_http_types::{
+    HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
+    header::{
+        self,
+        trailer::{ForbiddenTrailers, is_never_a_trailer, is_sent_in_trailers},
+    },
+    proto::{
+        ext,
+        h3::{Code, PseudoHeader, PseudoHeaderOrder, PseudoHeaderSensitivity},
+    },
+};
+use rama_net::{Protocol, address::AuthorityRef, uri::Uri};
+
 use super::{
     Error,
     qpack::{EncodeField, FieldPair},
@@ -8,18 +26,6 @@ use crate::proto::target::{
     AsteriskHostError, OutgoingHost, asterisk_host, host_is_wire_authority, normalize_received,
     outgoing_host, received_authority, several_hosts,
 };
-use rama_core::{
-    bytes::{Bytes, BytesMut},
-    extensions::ExtensionsRef,
-};
-use rama_http_types::proto::{
-    ext,
-    h3::{Code, PseudoHeader, PseudoHeaderOrder, PseudoHeaderSensitivity},
-};
-use rama_http_types::{
-    HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version, header,
-};
-use rama_net::{Protocol, address::AuthorityRef, uri::Uri};
 
 #[derive(Default)]
 struct Fields {
@@ -95,23 +101,87 @@ fn validate_name(name: &HeaderName, value: &[u8], trailers: bool) -> Result<(), 
     {
         return Err(malformed("connection-specific field"));
     }
-    if trailers && [header::CONTENT_LENGTH, header::HOST].contains(name) {
+    if trailers && is_never_a_trailer(name) {
         return Err(malformed("message framing field in trailers"));
     }
     Ok(())
 }
 
-pub(crate) fn validate_regular(headers: &HeaderMap, trailers: bool) -> Result<(), Error> {
-    for (name, value) in headers {
-        validate_name(name, value.as_bytes(), trailers)?;
-        // Applications can construct HeaderValue through its unchecked API.
-        // Recheck wire constraints at the outgoing boundary as well.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Outgoing {
+    Request,
+    Response,
+}
+
+/// `TE` as HTTP/2 and HTTP/3 peers compare it, exactly.
+static TE_TRAILERS: HeaderValue = HeaderValue::from_static("trailers");
+
+/// The fields of an outgoing message that go on the wire.
+///
+/// HTTP/3, like HTTP/2, carries no connection-specific fields: they are dropped with the
+/// fields a `Connection` field nominates. A request whose `TE` names `trailers` sends exactly
+/// that, once, where its first `TE` line stood; any other `TE` is dropped (RFC 9114 §4.2).
+/// Received messages carrying them stay malformed.
+fn outgoing_fields(
+    headers: &HeaderMap,
+    kind: Outgoing,
+) -> impl Iterator<Item = (&HeaderName, &HeaderValue)> {
+    let nominated: Vec<HeaderName> = header::hop_by_hop::connection_header_names(headers).collect();
+    let mut te_trailers = kind == Outgoing::Request
+        && header::hop_by_hop::te_names_trailers(headers.get_all(header::TE));
+    headers.ordered_iter().filter_map(move |(name, value)| {
+        if *name == header::TE {
+            if core::mem::take(&mut te_trailers) {
+                return Some((name, &TE_TRAILERS));
+            }
+        } else if !header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS.contains(&name)
+            && !nominated.contains(name)
+        {
+            return Some((name, value));
+        }
+        debug!(header.name = %name, "dropped connection-specific field from HTTP/3 message");
+        None
+    })
+}
+
+/// The fields of an outgoing trailer section that go on the wire, as over HTTP/1.1 and
+/// HTTP/2: the others are dropped instead of failing the stream.
+pub(crate) fn outgoing_trailer_fields<'a>(
+    headers: &'a HeaderMap,
+    allowed: Option<&ForbiddenTrailers>,
+) -> impl Iterator<Item = (&'a HeaderName, &'a HeaderValue)> {
+    headers.ordered_iter().filter(move |(name, _)| {
+        let sent = is_sent_in_trailers(name, allowed);
+        if !sent {
+            debug!(header.name = %name, "dropped field not allowed in HTTP/3 trailers");
+        }
+        sent
+    })
+}
+
+/// Applications can construct HeaderValue through its unchecked API: recheck what is sent.
+fn validate_values<'a>(
+    fields: impl Iterator<Item = (&'a HeaderName, &'a HeaderValue)>,
+) -> Result<(), Error> {
+    for (_, value) in fields {
         if !header::is_valid_h2_h3_field_value(value.as_bytes()) {
             return Err(malformed("invalid field value"));
         }
     }
+    Ok(())
+}
+
+fn validate_outgoing(headers: &HeaderMap, kind: Outgoing) -> Result<(), Error> {
+    validate_values(outgoing_fields(headers, kind))?;
     content_length(headers)?;
     Ok(())
+}
+
+pub(crate) fn validate_outgoing_trailers(
+    headers: &HeaderMap,
+    allowed: Option<&ForbiddenTrailers>,
+) -> Result<(), Error> {
+    validate_values(outgoing_trailer_fields(headers, allowed))
 }
 
 pub(crate) fn content_length(headers: &HeaderMap) -> Result<Option<u64>, Error> {
@@ -290,12 +360,15 @@ pub(crate) fn request_head(
 
 #[cfg(test)]
 pub(crate) fn response(fields: Vec<FieldPair>) -> Result<Response<()>, Error> {
-    response_for_method(fields, false)
+    response_for_method(fields, false, Extensions::new())
 }
 
+/// A response decoded from `fields`, on top of `extensions`: a client passes a fork of the
+/// request's, as responses fork their request on every HTTP version.
 pub(crate) fn response_for_method(
     fields: Vec<FieldPair>,
     connect: bool,
+    extensions: Extensions,
 ) -> Result<Response<()>, Error> {
     let fields = parse(fields, false)?;
     if fields.headers.contains_key(header::TE) {
@@ -331,10 +404,12 @@ pub(crate) fn response_for_method(
     {
         return Err(malformed("content-length forbidden on this response"));
     }
-    let mut response = Response::new(());
-    *response.status_mut() = status;
-    *response.version_mut() = Version::HTTP_3;
-    *response.headers_mut() = fields.headers;
+    let (mut parts, ()) = Response::new(()).into_parts();
+    parts.status = status;
+    parts.version = Version::HTTP_3;
+    parts.headers = fields.headers;
+    parts.extensions = extensions;
+    let response = Response::from_parts(parts, ());
     response.extensions().insert(fields.order);
     if fields.sensitivity != PseudoHeaderSensitivity::default() {
         response.extensions().insert(fields.sensitivity);
@@ -351,7 +426,7 @@ pub(crate) fn encode_request<B>(
     id: u64,
     request: &Request<B>,
 ) -> Result<Bytes, Error> {
-    validate_regular(request.headers(), false)?;
+    validate_outgoing(request.headers(), Outgoing::Request)?;
     let protocol = request.extensions().get_ref::<ext::Protocol>();
     if protocol.is_some() && request.method() != Method::CONNECT {
         return Err(malformed(":protocol requires CONNECT"));
@@ -495,9 +570,7 @@ pub(crate) fn encode_request<B>(
     shared.encode(
         id,
         pseudo.chain(
-            request
-                .headers()
-                .ordered_iter()
+            outgoing_fields(request.headers(), Outgoing::Request)
                 .filter(|(name, _)| !drop_host || *name != header::HOST)
                 .map(|(name, value)| EncodeField::from_header(name, value)),
         ),
@@ -509,10 +582,7 @@ pub(crate) fn encode_response<B>(
     id: u64,
     response: &Response<B>,
 ) -> Result<Bytes, Error> {
-    validate_regular(response.headers(), false)?;
-    if response.headers().contains_key(header::TE) {
-        return Err(malformed("TE forbidden in response"));
-    }
+    validate_outgoing(response.headers(), Outgoing::Response)?;
     if response.status() == StatusCode::SWITCHING_PROTOCOLS
         || ((response.status().is_informational() || response.status() == StatusCode::NO_CONTENT)
             && response.headers().contains_key(header::CONTENT_LENGTH))
@@ -530,9 +600,7 @@ pub(crate) fn encode_response<B>(
                 .is_some_and(|sensitivity| sensitivity.is_sensitive(PseudoHeader::Status)),
         })
         .chain(
-            response
-                .headers()
-                .ordered_iter()
+            outgoing_fields(response.headers(), Outgoing::Response)
                 .map(|(name, value)| EncodeField::from_header(name, value)),
         ),
     )
@@ -540,8 +608,6 @@ pub(crate) fn encode_response<B>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{h3::qpack::ErrorScope, proto::h1::test_util as h1};
     use rama_core::{Service as _, bytes::BufMut, service::service_fn};
     use rama_http::layer::required_header::AddRequiredRequestHeaders;
     use rama_http_types::proto::h2::{
@@ -549,6 +615,9 @@ mod tests {
         hpack,
     };
     use rama_net::AuthorityInputExt as _;
+
+    use super::*;
+    use crate::{h3::qpack::ErrorScope, proto::h1::test_util as h1};
 
     fn fields(values: &[(&'static str, &'static str)]) -> Vec<FieldPair> {
         values
@@ -581,11 +650,13 @@ mod tests {
             assert!(parse(fields(&[("x-test", value)]), false).is_err());
             let mut headers = HeaderMap::new();
             headers.insert("x-test", HeaderValue::from_static(value));
-            assert!(validate_regular(&headers, false).is_err());
+            assert!(validate_outgoing(&headers, Outgoing::Response).is_err());
+            assert!(validate_outgoing_trailers(&headers, None).is_err());
         }
         for value in ["", "internal \t whitespace", "\"quoted\""] {
             let parsed = parse(fields(&[("x-test", value)]), false).unwrap();
-            validate_regular(&parsed.headers, false).unwrap();
+            validate_outgoing(&parsed.headers, Outgoing::Response).unwrap();
+            validate_outgoing_trailers(&parsed.headers, None).unwrap();
         }
         for value in ["nul\0byte", "new\nline", "carriage\rreturn"] {
             assert!(parse(fields(&[("x-test", value)]), false).is_err());
@@ -615,12 +686,14 @@ mod tests {
                 ("te", value),
             ]))
             .unwrap();
-            validate_regular(request.headers(), false).unwrap();
-            validate_regular(request.headers(), true).unwrap_err();
+            let te = request.headers().get(header::TE).unwrap().as_bytes();
+            validate_name(&header::TE, te, false).unwrap();
+            validate_name(&header::TE, te, true).unwrap_err();
             request
                 .headers_mut()
                 .insert(header::TE, HeaderValue::from_static("gzip"));
-            validate_regular(request.headers(), false).unwrap_err();
+            let te = request.headers().get(header::TE).unwrap().as_bytes();
+            validate_name(&header::TE, te, false).unwrap_err();
         }
     }
 
@@ -792,11 +865,169 @@ mod tests {
             input
         );
 
+        // A relay forwards `set-cookie` trailers as received.
         let trailers = trailers(regular.clone()).unwrap();
         assert_eq!(
-            decode(crate::h3::stream::encode_trailers(&shared(), 0, &trailers).unwrap()),
+            decode(
+                crate::h3::stream::encode_trailers(
+                    &shared(),
+                    0,
+                    &trailers,
+                    Some(&ForbiddenTrailers::AllowAll)
+                )
+                .unwrap()
+            ),
             regular
         );
+    }
+
+    fn names(fields: &[FieldPair]) -> Vec<String> {
+        fields
+            .iter()
+            .map(|field| String::from_utf8_lossy(&field.name).into_owned())
+            .collect()
+    }
+
+    /// Like HTTP/2, an outgoing message drops connection-specific fields, those `Connection`
+    /// nominates and TE other than a request's `trailers`, instead of failing the stream: an
+    /// HTTP/1-shaped message, such as a server-sent events response, can be served over HTTP/3.
+    #[test]
+    fn outgoing_messages_drop_connection_specific_fields() {
+        let mut response = Response::new(());
+        let headers = response.headers_mut();
+        for (name, value) in [
+            ("content-type", "text/event-stream"),
+            ("connection", "keep-alive, X-Hop"),
+            ("keep-alive", "timeout=5"),
+            ("proxy-connection", "keep-alive"),
+            ("transfer-encoding", "chunked"),
+            ("upgrade", "websocket"),
+            ("x-hop", "nominated"),
+            ("te", "trailers"),
+            ("cache-control", "no-cache"),
+        ] {
+            headers.append(
+                HeaderName::from_static(name),
+                HeaderValue::from_static(value),
+            );
+        }
+        let sent = decode(encode_response(&shared(), 0, &response).unwrap());
+        assert_eq!(names(&sent), [":status", "content-type", "cache-control"]);
+        assert!(
+            response.headers().contains_key(header::CONNECTION),
+            "input untouched"
+        );
+
+        for (te, kept) in [("trailers", true), ("Trailers", true), ("gzip", false)] {
+            let request = Request::builder()
+                .uri("https://example.com/")
+                .header(header::TE, te)
+                .header(header::CONNECTION, "close")
+                .body(())
+                .unwrap();
+            let sent = names(&decode(encode_request(&shared(), 0, &request).unwrap()));
+            assert_eq!(sent.iter().any(|name| name == "te"), kept, "{te}");
+            assert!(!sent.iter().any(|name| name == "connection"));
+        }
+    }
+
+    /// As over HTTP/2, a request sends `TE` as the exact `trailers` when any of its lines
+    /// names it, where its first line stood; a `TE` that `Connection` nominates keeps it.
+    #[test]
+    fn outgoing_te_keeps_only_an_exact_trailers() {
+        for (lines, kept) in [
+            (&["trailers"][..], true),
+            (&["Trailers"], true),
+            (&["trailers, gzip"], true),
+            (&["gzip, Trailers"], true),
+            (&["trailers", "gzip"], true),
+            (&["gzip", "trailers"], true),
+            (&["gzip"], false),
+            (&["trailers;q=0"], false),
+        ] {
+            let mut request = Request::builder().uri("https://example.com/");
+            for line in lines {
+                request = request.header(header::TE, *line);
+            }
+            let request = request
+                .header("x-after", "1")
+                .header(header::CONNECTION, "TE, x-hop")
+                .header("x-hop", "1")
+                .body(())
+                .unwrap();
+            let sent: Vec<_> = decode(encode_request(&shared(), 0, &request).unwrap())
+                .into_iter()
+                .filter(|field| !field.name.starts_with(b":"))
+                .map(|field| (field.name.to_vec(), field.value.to_vec()))
+                .collect();
+            let expected: Vec<(Vec<u8>, Vec<u8>)> = if kept {
+                vec![
+                    (b"te".to_vec(), b"trailers".to_vec()),
+                    (b"x-after".to_vec(), b"1".to_vec()),
+                ]
+            } else {
+                vec![(b"x-after".to_vec(), b"1".to_vec())]
+            };
+            assert_eq!(sent, expected, "{lines:?}");
+
+            let mut response = Response::new(());
+            for line in lines {
+                response
+                    .headers_mut()
+                    .append(header::TE, HeaderValue::from_static(line));
+            }
+            let sent = names(&decode(encode_response(&shared(), 0, &response).unwrap()));
+            assert_eq!(sent, [":status"], "{lines:?}");
+        }
+    }
+
+    /// Outgoing trailers send what the trailer policy allows, as over HTTP/1.1 and HTTP/2, and
+    /// drop the rest instead of failing the stream.
+    #[test]
+    fn outgoing_trailers_follow_the_trailer_policy() {
+        let mut trailers = HeaderMap::new();
+        for (name, value) in [
+            ("grpc-status", "0"),
+            ("set-cookie", "a=b"),
+            ("content-type", "text/plain"),
+            ("connection", "close"),
+            ("keep-alive", "timeout=5"),
+            ("te", "trailers"),
+            ("transfer-encoding", "chunked"),
+            ("content-length", "3"),
+            ("host", "example.com"),
+            ("x-checksum", "abc"),
+        ] {
+            trailers.append(
+                HeaderName::from_static(name),
+                HeaderValue::from_static(value),
+            );
+        }
+        let sent = |allowed: Option<&ForbiddenTrailers>| {
+            names(&decode(
+                crate::h3::stream::encode_trailers(&shared(), 0, &trailers, allowed).unwrap(),
+            ))
+        };
+        assert_eq!(sent(None), ["grpc-status", "x-checksum"]);
+        assert_eq!(
+            sent(Some(&ForbiddenTrailers::AllowAll)),
+            ["grpc-status", "set-cookie", "content-type", "x-checksum"]
+        );
+        assert_eq!(
+            sent(Some(&ForbiddenTrailers::AllowSome(
+                [header::SET_COOKIE].into()
+            ))),
+            ["grpc-status", "set-cookie", "x-checksum"]
+        );
+        assert_eq!(trailers.len(), 10, "input untouched");
+    }
+
+    /// What arrives with connection-specific fields stays malformed (RFC 9114 §4.2).
+    #[test]
+    fn received_connection_specific_fields_stay_malformed() {
+        let error =
+            response(fields(&[(":status", "200"), ("connection", "keep-alive")])).unwrap_err();
+        assert_eq!(error.code(), Code::H3_MESSAGE_ERROR);
     }
 
     #[test]
@@ -959,6 +1190,7 @@ mod tests {
         let response = response_for_method(
             fields(&[(":status", "200"), ("content-length", "invalid")]),
             true,
+            Extensions::new(),
         )
         .unwrap();
         assert_eq!(response.headers()[header::CONTENT_LENGTH], "invalid");
@@ -972,6 +1204,7 @@ mod tests {
                 let response = response_for_method(
                     fields(&[(":status", status), ("content-length", length)]),
                     true,
+                    Extensions::new(),
                 )
                 .unwrap_or_else(|error| panic!("CONNECT {status} CL={length}: {error:?}"));
                 assert_eq!(response.headers()[header::CONTENT_LENGTH], length);
@@ -983,12 +1216,16 @@ mod tests {
             response_for_method(
                 fields(&[(":status", status), ("content-length", length)]),
                 connect,
+                Extensions::new(),
             )
             .unwrap_err();
         }
-        let refused =
-            response_for_method(fields(&[(":status", "403"), ("content-length", "5")]), true)
-                .unwrap();
+        let refused = response_for_method(
+            fields(&[(":status", "403"), ("content-length", "5")]),
+            true,
+            Extensions::new(),
+        )
+        .unwrap();
         assert_eq!(refused.headers()[header::CONTENT_LENGTH], "5");
     }
 

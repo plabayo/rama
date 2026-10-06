@@ -77,16 +77,19 @@ pub mod content_type;
 pub mod hop_by_hop;
 pub mod proxy_auth;
 pub mod proxy_connect;
+pub mod trailer;
 
-pub use self::map::{
-    AsHeaderName, Drain, Entry, GetAll, HeaderMap, IntoHeaderName, IntoIter, IntoOrderedIter, Iter,
-    IterMut, Keys, MaxSizeReached, OccupiedEntry, OrderedIter, VacantEntry, ValueDrain, ValueIter,
-    ValueIterMut, Values, ValuesMut,
+pub use self::{
+    map::{
+        AsHeaderName, Drain, Entry, GetAll, HeaderMap, IntoHeaderName, IntoIter, IntoOrderedIter,
+        Iter, IterMut, Keys, MaxSizeReached, OccupiedEntry, OrderedIter, VacantEntry, ValueDrain,
+        ValueIter, ValueIterMut, Values, ValuesMut,
+    },
+    name::{
+        HeaderName, InvalidHeaderName, LowercaseHeaderName, OriginalHeaderName, StandardHeader,
+    },
+    value::{HeaderValue, InvalidHeaderValue, ToStrError, is_valid_h2_h3_field_value},
 };
-pub use self::name::{
-    HeaderName, InvalidHeaderName, LowercaseHeaderName, OriginalHeaderName, StandardHeader,
-};
-pub use self::value::{HeaderValue, InvalidHeaderValue, ToStrError, is_valid_h2_h3_field_value};
 
 // Use header name constants
 #[rustfmt::skip]

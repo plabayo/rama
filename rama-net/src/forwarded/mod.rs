@@ -2,17 +2,18 @@
 //!
 //! RFC: <https://datatracker.ietf.org/doc/html/rfc7239>
 
-use core::fmt;
-use core::net::IpAddr;
+use core::{fmt, net::IpAddr};
 
-use crate::std::boxed::Box;
-use crate::std::string::String;
-use crate::std::sync::Arc;
-use crate::std::vec::Vec;
-
-use rama_core::error::BoxError;
-use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
+use rama_core::{
+    error::BoxError,
+    extensions::{Extension, Extensions, ExtensionsRef},
+};
 use rama_utils::macros::generate_set_and_with;
+
+use crate::{
+    address::{SocketAddress, ip::ipnet::IpNet},
+    std::{boxed::Box, string::String, sync::Arc, vec::Vec},
+};
 
 mod obfuscated;
 #[doc(inline)]
@@ -34,14 +35,12 @@ mod version;
 #[doc(inline)]
 pub use version::ForwardedVersion;
 
-use crate::address::{SocketAddress, ip::ipnet::IpNet};
-
 /// Selects which element of a [`Forwarded`] chain describes the client.
 ///
 /// A chain lists the client-most hop first and the hop nearest to this service last
 /// (RFC 7239 §4). Only what a trusted proxy wrote can be relied on (RFC 7239 §8.1), and a
 /// proxy appending to a header the client sent keeps the client's own claim in front, so the
-/// default counts from the right, as nginx, Envoy, HAProxy, ASP.NET Core and Rails do.
+/// default counts from the right, as established proxies and frameworks do.
 ///
 /// Elements whose `for` address is a [trusted proxy](Self::with_trusted_proxies) are skipped,
 /// then [`hops`](Self::with_hops) more are, counting from the [`side`](Self::with_side).

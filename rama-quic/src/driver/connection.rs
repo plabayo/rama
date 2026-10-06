@@ -13,30 +13,37 @@ use std::{
 
 use parking_lot::Mutex;
 use pin_project_lite::pin_project;
-use rama_core::bytes::Bytes;
-use rama_core::extensions::{Extensions, ExtensionsRef};
-use rama_core::telemetry::tracing::{Instrument, Span, debug, debug_span};
+use rama_core::{
+    bytes::Bytes,
+    extensions::{Extensions, ExtensionsRef},
+    telemetry::tracing::{Instrument, Span, debug, debug_span},
+};
+use rama_net::gate::{GateDirection, StreamGates};
+use rama_quic_proto::{ConnectionId, Dir, Side, StreamId, VarInt};
 use rama_udp::SendFailure;
 use rama_utils::reactive::{Changed, Reactive};
 use rustc_hash::FxHashMap;
 use tokio::sync::{Notify, futures::Notified, oneshot};
 
-use crate::driver::{
-    Duration, IO_LOOP_BOUND, QueuedPacket,
-    endpoint::{EndpointInner, LocalSocket},
-    now,
-    queue::{BoundedReceiver, PacketBudget, PacketQueueStats},
-    recv_stream::RecvStream,
-    send_stream::SendStream,
-    sockets::SocketId,
-    timer::{Deadline, DeadlineTimer},
-    udp::{FailureLog, Sender},
+use crate::{
+    driver::{
+        Duration, IO_LOOP_BOUND, QueuedPacket,
+        endpoint::{EndpointInner, LocalSocket},
+        gate::{ConnectionGates, GateStack},
+        now,
+        queue::{BoundedReceiver, PacketBudget, PacketQueueStats},
+        recv_stream::RecvStream,
+        send_stream::SendStream,
+        sockets::SocketId,
+        timer::{Deadline, DeadlineTimer},
+        udp::{FailureLog, SendError, Sender},
+    },
+    proto::{
+        ConnectionError, ConnectionHandle, ConnectionStats, EndpointEvent, Event,
+        NegotiatedTlsParameters, SendDatagramError as ProtoSendDatagramError, SendPermit,
+        StreamEvent,
+    },
 };
-use crate::proto::{
-    ConnectionError, ConnectionHandle, ConnectionStats, EndpointEvent, Event,
-    NegotiatedTlsParameters, SendDatagramError as ProtoSendDatagramError, SendPermit, StreamEvent,
-};
-use rama_quic_proto::{ConnectionId, Dir, Side, StreamId, VarInt};
 
 /// Tests: the bytes a connection keeps allocated for sending, split by where they are.
 #[cfg(all(
@@ -1787,6 +1794,19 @@ impl Connection {
         // May need to send MAX_STREAMS to make progress
         conn.wake();
     }
+
+    /// Pace the streams opened or accepted from now on through `gates`, on top of any gates
+    /// added before: a stream's bytes move only as all of them admit.
+    ///
+    /// A gate is consulted only when its stream has data to read or may still send, and
+    /// never under this connection's lock. A stream's end, reset or stop reaches a task
+    /// waiting on a gate at once, as does a lost connection once the data a gate held back
+    /// was read. Datagrams and writes that never wait
+    /// ([`SendStream::try_write_generated`]) pass ungated.
+    pub fn add_stream_gates(&self, gates: impl StreamGates) {
+        let mut state = self.0.state.lock();
+        state.gates = Some(ConnectionGates::add(state.gates.as_ref(), gates));
+    }
 }
 
 pin_project! {
@@ -1802,8 +1822,8 @@ impl Future for OpenUni<'_> {
     type Output = Result<SendStream, ConnectionError>;
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        let (conn, id, is_0rtt) = ready!(poll_open(ctx, this.conn, this.notify, Dir::Uni))?;
-        Poll::Ready(Ok(SendStream::new(conn, id, is_0rtt)))
+        let stream = ready!(poll_open(ctx, this.conn, this.notify, Dir::Uni))?;
+        Poll::Ready(Ok(stream.send()))
     }
 }
 
@@ -1826,6 +1846,7 @@ impl BiStreamReservation {
         let connection = self.connection.take().expect("unconsumed reservation");
         let mut state = connection.state.lock();
         state.reserved_streams[Dir::Bi as usize] -= 1;
+        let (gates, side) = (state.gates.clone(), state.inner.side());
         let result = if let Some(error) = &state.error {
             Err(error.clone())
         } else {
@@ -1842,11 +1863,14 @@ impl BiStreamReservation {
         let changed = state.refresh_stream_budget();
         drop(state);
         connection.shared.notify_stream_budget(changed);
-        let id = result?;
-        Ok((
-            SendStream::new(connection.clone(), id, false),
-            RecvStream::new(connection, id, false),
-        ))
+        let stream = NewStream {
+            conn: connection,
+            id: result?,
+            is_0rtt: false,
+            gates,
+            side,
+        };
+        Ok((stream.send(), stream.recv()))
     }
 }
 
@@ -1876,12 +1900,8 @@ impl Future for OpenBi<'_> {
     type Output = Result<(SendStream, RecvStream), ConnectionError>;
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        let (conn, id, is_0rtt) = ready!(poll_open(ctx, this.conn, this.notify, Dir::Bi))?;
-
-        Poll::Ready(Ok((
-            SendStream::new(conn.clone(), id, is_0rtt),
-            RecvStream::new(conn, id, is_0rtt),
-        )))
+        let stream = ready!(poll_open(ctx, this.conn, this.notify, Dir::Bi))?;
+        Poll::Ready(Ok((stream.send(), stream.recv())))
     }
 }
 
@@ -1890,7 +1910,7 @@ fn poll_open<'a>(
     conn: &'a ConnectionRef,
     mut notify: Pin<&mut Notified<'a>>,
     dir: Dir,
-) -> Poll<Result<(ConnectionRef, StreamId, bool), ConnectionError>> {
+) -> Poll<Result<NewStream, ConnectionError>> {
     let mut state = conn.state.lock();
     if let Some(ref e) = state.error {
         return Poll::Ready(Err(e.clone()));
@@ -1901,8 +1921,15 @@ fn poll_open<'a>(
     {
         let is_0rtt = state.inner.side().is_client() && state.inner.is_handshaking();
         _ = state.refresh_stream_budget();
+        let (gates, side) = (state.gates.clone(), state.inner.side());
         drop(state); // Release the lock so clone can take it
-        return Poll::Ready(Ok((conn.clone(), id, is_0rtt)));
+        return Poll::Ready(Ok(NewStream {
+            conn: conn.clone(),
+            id,
+            is_0rtt,
+            gates,
+            side,
+        }));
     }
     // Advertise actual peer-credit exhaustion, not a locally reserved slot.
     if available == 0 {
@@ -1935,8 +1962,8 @@ impl Future for AcceptUni<'_> {
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        let (conn, id, is_0rtt) = ready!(poll_accept(ctx, this.conn, this.notify, Dir::Uni))?;
-        Poll::Ready(Ok(RecvStream::new(conn, id, is_0rtt)))
+        let stream = ready!(poll_accept(ctx, this.conn, this.notify, Dir::Uni))?;
+        Poll::Ready(Ok(stream.recv()))
     }
 }
 
@@ -1954,11 +1981,8 @@ impl Future for AcceptBi<'_> {
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        let (conn, id, is_0rtt) = ready!(poll_accept(ctx, this.conn, this.notify, Dir::Bi))?;
-        Poll::Ready(Ok((
-            SendStream::new(conn.clone(), id, is_0rtt),
-            RecvStream::new(conn, id, is_0rtt),
-        )))
+        let stream = ready!(poll_accept(ctx, this.conn, this.notify, Dir::Bi))?;
+        Poll::Ready(Ok((stream.send(), stream.recv())))
     }
 }
 
@@ -1967,15 +1991,22 @@ fn poll_accept<'a>(
     conn: &'a ConnectionRef,
     mut notify: Pin<&mut Notified<'a>>,
     dir: Dir,
-) -> Poll<Result<(ConnectionRef, StreamId, bool), ConnectionError>> {
+) -> Poll<Result<NewStream, ConnectionError>> {
     let mut state = conn.state.lock();
     // Check for incoming streams before checking `state.error` so that already-received streams,
     // which are necessarily finite, can be drained from a closed connection.
     if let Some(id) = state.inner.streams().accept(dir) {
         let is_0rtt = state.inner.is_handshaking();
         state.wake(); // To send additional stream ID credit
+        let (gates, side) = (state.gates.clone(), state.inner.side());
         drop(state); // Release the lock so clone can take it
-        return Poll::Ready(Ok((conn.clone(), id, is_0rtt)));
+        return Poll::Ready(Ok(NewStream {
+            conn: conn.clone(),
+            id,
+            is_0rtt,
+            gates,
+            side,
+        }));
     } else if let Some(ref e) = state.error {
         return Poll::Ready(Err(e.clone()));
     }
@@ -1986,6 +2017,31 @@ fn poll_accept<'a>(
             // Spurious wakeup, get a new future
             Poll::Ready(()) => notify.set(conn.shared.stream_incoming[dir as usize].notified()),
         }
+    }
+}
+
+/// A stream just opened or accepted, before its handles exist.
+struct NewStream {
+    conn: ConnectionRef,
+    id: StreamId,
+    is_0rtt: bool,
+    gates: Option<ConnectionGates>,
+    side: Side,
+}
+
+impl NewStream {
+    fn send(&self) -> SendStream {
+        SendStream::new(self.conn.clone(), self.id, self.is_0rtt)
+            .maybe_with_gates(self.gates(GateDirection::Write))
+    }
+
+    fn recv(self) -> RecvStream {
+        let gates = self.gates(GateDirection::Read);
+        RecvStream::new(self.conn, self.id, self.is_0rtt).maybe_with_gates(gates)
+    }
+
+    fn gates(&self, direction: GateDirection) -> Option<GateStack> {
+        self.gates.as_ref()?.open(self.id, self.side, direction)
     }
 }
 
@@ -2112,6 +2168,7 @@ impl ConnectionRef {
                 pending_endpoint_events: Vec::new(),
                 blocked_writers: FxHashMap::default(),
                 blocked_readers: FxHashMap::default(),
+                gates: None,
                 stopped: FxHashMap::default(),
                 error: None,
                 socket: Some(socket),
@@ -2444,6 +2501,8 @@ pub(crate) struct State {
     pending_endpoint_events: Vec<EndpointEvent>,
     pub(crate) blocked_writers: FxHashMap<StreamId, Waker>,
     pub(crate) blocked_readers: FxHashMap<StreamId, Waker>,
+    /// What the streams opened or accepted from now on move their bytes through.
+    gates: Option<ConnectionGates>,
     pub(crate) stopped: FxHashMap<StreamId, super::send_stream::StoppedNotify>,
     /// Always set to Some before the connection becomes drained
     pub(crate) error: Option<ConnectionError>,
@@ -2728,7 +2787,7 @@ impl State {
                         } else {
                             self.send_failures += 1;
                         }
-                        self.failure_log.record(now, "QUIC transmit", &error);
+                        self.log_send_failure(now, "QUIC transmit", &held, &error);
                         work.advanced = true;
                         Ok(Placed::Done)
                     }
@@ -2736,6 +2795,28 @@ impl State {
                     SendFailure::Descriptor | SendFailure::Socket => Err(error.error),
                 }
             }
+        }
+    }
+
+    /// Log a datagram the network stack refused, quietly for an MTU discovery probe: refusing
+    /// one as too large is how the search learns the local interface is smaller.
+    fn log_send_failure(
+        &mut self,
+        now: crate::driver::Instant,
+        what: &'static str,
+        held: &Held,
+        error: &SendError,
+    ) {
+        if error.class == SendFailure::TooLarge
+            && is_mtu_probe(&held.transmit, self.inner.current_mtu())
+        {
+            debug!(
+                error = %error.error,
+                size = held.transmit.size,
+                "{what}: MTU probe above the local MTU dropped"
+            );
+        } else {
+            self.failure_log.record(now, what, error);
         }
     }
 
@@ -2816,7 +2897,7 @@ impl State {
                 } else {
                     self.send_failures += 1;
                 }
-                self.failure_log.record(now, "QUIC transmit aside", &error);
+                self.log_send_failure(now, "QUIC transmit aside", &held, &error);
                 work.advanced = true;
                 // An invalid descriptor or an unusable socket ends that handle's usefulness: the
                 // path it served is given up, while the path this connection sends on is not
@@ -3573,6 +3654,12 @@ pub(crate) const RETAINED_DESCRIPTORS: usize = 4;
 /// that numbers around 10 are a good compromise.
 pub(crate) const MAX_TRANSMIT_SEGMENTS: usize = 10;
 
+/// Whether `transmit` is an MTU discovery probe: one datagram larger than the path MTU
+/// confirmed so far.
+fn is_mtu_probe(transmit: &crate::proto::Transmit, confirmed_mtu: u16) -> bool {
+    transmit.segment_size.is_none() && transmit.size > usize::from(confirmed_mtu)
+}
+
 #[cfg(test)]
 #[cfg(any(
     feature = "boring",
@@ -3580,15 +3667,31 @@ pub(crate) const MAX_TRANSMIT_SEGMENTS: usize = 10;
 ))]
 mod tests {
     use super::*;
-    use crate::driver::Instant;
-    use crate::proto::ReceiveQueueLimits;
+    use crate::{driver::Instant, proto::ReceiveQueueLimits};
+
+    /// A single datagram above the confirmed MTU is a probe; a batch never is.
+    #[test]
+    fn only_a_single_datagram_above_the_confirmed_mtu_is_an_mtu_probe() {
+        let transmit = |size, segment_size| crate::proto::Transmit {
+            destination: SocketAddr::from(([127, 0, 0, 1], 443)),
+            ecn: None,
+            size,
+            segment_size,
+            local: None,
+            cid_used: None,
+        };
+        assert!(is_mtu_probe(&transmit(1452, None), 1200));
+        assert!(!is_mtu_probe(&transmit(1200, None), 1200));
+        assert!(!is_mtu_probe(&transmit(1000, None), 1200));
+        assert!(!is_mtu_probe(&transmit(2400, Some(1200)), 1200));
+    }
+    use std::{assert_matches, error::Error as _, io::IoSliceMut};
+
     use rama_net::address::SocketAddress;
     use rama_udp::{
         DatagramCapabilities, DatagramError, DatagramMetadata, DatagramSender, DatagramSocket,
     };
     use rama_utils::octets;
-    use std::assert_matches;
-    use std::{error::Error as _, io::IoSliceMut};
 
     #[derive(Debug, Clone, Copy)]
     enum Failure {

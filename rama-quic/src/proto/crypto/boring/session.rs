@@ -1,3 +1,5 @@
+use std::{collections::VecDeque, sync::Arc};
+
 use parking_lot::Mutex;
 use rama_core::error::{ArcError, BoxError};
 use rama_crypto::{
@@ -12,19 +14,18 @@ use rama_crypto::{
     pki_types::CertificateDer,
 };
 use rama_net::{address::Domain, tls::ApplicationProtocol};
-use std::{collections::VecDeque, sync::Arc};
-use zeroize::Zeroizing;
-
-use super::packet::{self, Secret, Suite};
-use crate::proto::crypto::{
-    self, DirectionalKeys, HandshakeEvent, KeyPair, Keys, UnsupportedVersion,
-};
 use rama_quic_proto::{
     ConnectionId, Side, TransportError, TransportErrorCode, Version,
     crypto::{HeaderKey, PacketKey},
     packet::SpaceId,
     transport_parameters::TransportParameters,
     version::Wire,
+};
+use zeroize::Zeroizing;
+
+use super::packet::{self, Secret, Suite};
+use crate::proto::crypto::{
+    self, DirectionalKeys, HandshakeEvent, KeyPair, Keys, UnsupportedVersion,
 };
 
 enum Event {
@@ -353,9 +354,6 @@ impl crypto::Session for TlsSession {
         let wire = packet::wire(version)
             .ok_or_else(|| TransportError::INTERNAL_ERROR("unsupported QUIC version"))?;
         packet::initial_keys(wire, cid, side).map_err(crypto_error)
-    }
-    fn supports_version_switch(&self) -> bool {
-        true
     }
     fn switch_version(&mut self, version: Version) -> Result<(), UnsupportedVersion> {
         // Keys are derived from secrets as they are drained, so re-labelling is free until

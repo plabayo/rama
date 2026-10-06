@@ -33,6 +33,7 @@ pub mod client_ip;
 pub mod conn;
 pub mod extensions;
 pub mod forwarded;
+pub mod gate;
 pub mod input_ext;
 pub mod ip;
 pub mod mode;

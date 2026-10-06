@@ -1,13 +1,15 @@
+use std::assert_matches;
+
+use rama_quic_proto::{
+    ConnectionId, Side, TransportErrorCode, Version,
+    crypto::{HeaderKey, PacketKey},
+};
+
 use super::*;
 use crate::proto::{
     crypto::{ExportKeyingMaterialError, Session},
     tests::Pair,
 };
-use rama_quic_proto::{
-    ConnectionId, Side, TransportErrorCode, Version,
-    crypto::{HeaderKey, PacketKey},
-};
-use std::assert_matches;
 
 struct FailedKeyUpdate {
     missing: bool,
@@ -18,6 +20,21 @@ impl Session for FailedKeyUpdate {
         Err(TransportError::INTERNAL_ERROR(
             "injected Initial key derivation failure",
         ))
+    }
+    fn switch_version(&mut self, _: Version) -> Result<(), crypto::UnsupportedVersion> {
+        Err(crypto::UnsupportedVersion)
+    }
+    fn handshake_summary(&self) -> Option<crypto::NegotiatedTlsParameters> {
+        None
+    }
+    fn negotiated_alpn(&self) -> Option<&[u8]> {
+        None
+    }
+    fn peer_certificates(&self) -> Option<Vec<rama_crypto::pki_types::CertificateDer<'static>>> {
+        None
+    }
+    fn negotiated_key_exchange_group(&self) -> Option<u16> {
+        None
     }
     fn early_crypto(&self) -> Option<(Box<dyn HeaderKey>, Box<dyn PacketKey>)> {
         None

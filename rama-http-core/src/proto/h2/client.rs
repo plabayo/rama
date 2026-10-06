@@ -2,20 +2,25 @@ use std::{
     convert::Infallible,
     marker::PhantomData,
     pin::Pin,
-    task::{Context, Poll},
+    sync::Arc,
+    task::{Context, Poll, ready},
     time::Duration,
 };
 
-use futures_channel::mpsc::{Receiver, Sender};
-use futures_channel::{mpsc, oneshot};
+use futures_channel::{
+    mpsc,
+    mpsc::{Receiver, Sender},
+    oneshot,
+};
 use pin_project_lite::pin_project;
-use rama_core::rt::Executor;
-use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
-use rama_core::{bytes::Bytes, combinators::Either};
-use rama_core::{error::BoxError, futures::future::FusedFuture};
 use rama_core::{
+    bytes::Bytes,
+    combinators::Either,
+    error::BoxError,
     extensions::ExtensionsRef,
-    futures::{Stream, stream::FusedStream},
+    futures::{Stream, future::FusedFuture, stream::FusedStream},
+    rt::Executor,
+    telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn},
 };
 use rama_http::{
     StreamingBody,
@@ -23,24 +28,29 @@ use rama_http::{
 };
 use rama_http_types::{
     Method, Request, Response, Version,
+    header::trailer::ForbiddenTrailers,
     opentelemetry::version_as_protocol_version,
     proto::{ext::Protocol, h2::frame::SettingOrder},
 };
 use rama_net::{client::pool::ConnectionAdmission, conn::MaxConcurrency};
-use std::sync::Arc;
-use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::admission::AdmissionOwner;
-use super::ping::{Ponger, Recorder};
-use super::{PipeToSendStream, SendBuf, ping};
-use crate::body::Incoming as IncomingBody;
-use crate::client::dispatch::{Callback, SendWhen, TrySendError};
-use crate::h2::SendStream;
-use crate::h2::client::ResponseFuture;
-use crate::h2::client::{Builder, Connection, SendRequest};
-use crate::headers;
-use crate::proto::Dispatched;
+use super::{
+    PipeToSendStream, SendBuf,
+    admission::AdmissionOwner,
+    ping,
+    ping::{Ponger, Recorder},
+};
+use crate::{
+    body::Incoming as IncomingBody,
+    client::dispatch::{Callback, SendWhen, TrySendError},
+    h2::{
+        SendStream,
+        client::{Builder, Connection, ResponseFuture, SendRequest},
+    },
+    headers,
+    proto::Dispatched,
+};
 
 type ClientRx<B> = crate::client::dispatch::Receiver<Request<B>, Response<IncomingBody>>;
 
@@ -513,6 +523,7 @@ where
     fut: ResponseFuture,
     body_tx: SendStream<SendBuf<B::Data>>,
     body: B,
+    allowed_trailers: Option<Arc<ForbiddenTrailers>>,
     cb: Callback<Request<B>, Response<IncomingBody>>,
 }
 
@@ -664,7 +675,7 @@ where
 
         let send_stream = if !f.is_connect {
             if !f.eos {
-                let mut pipe = PipeToSendStream::new(f.body, f.body_tx);
+                let mut pipe = PipeToSendStream::new(f.body, f.body_tx, f.allowed_trailers);
 
                 // eagerly see if the body pipe is ready and
                 // can thus skip allocating in the executor
@@ -897,6 +908,7 @@ where
                         headers::set_content_length_if_missing(req.headers_mut(), len);
                     }
 
+                    let allowed_trailers = req.extensions().get_arc::<ForbiddenTrailers>();
                     let is_connect = req.method() == Method::CONNECT;
                     let extended = is_connect && req.extensions().contains::<Protocol>();
 
@@ -937,6 +949,7 @@ where
                         fut,
                         body_tx,
                         body,
+                        allowed_trailers,
                         cb,
                     };
 

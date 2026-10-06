@@ -1,22 +1,25 @@
 //! Request-stream framing and message sequencing.
 
+use std::{
+    sync::Arc,
+    task::{Context, Poll, ready},
+};
+
+use rama_core::bytes::Bytes;
+use rama_http_types::{
+    HeaderMap,
+    header::trailer::ForbiddenTrailers,
+    proto::h3::{Code, FrameType, VarInt},
+};
+use rama_net::uri::Uri;
+use rama_quic::StreamAbortHandle;
+
 use super::{
     Error,
     client::ConnectionLifetime,
     connection::Shared,
     frame::{FrameDecoder, FrameEvent},
     quic::RecvStream,
-};
-use rama_core::bytes::Bytes;
-use rama_http_types::{
-    HeaderMap,
-    proto::h3::{Code, FrameType, VarInt},
-};
-use rama_net::uri::Uri;
-use rama_quic::StreamAbortHandle;
-use std::{
-    sync::Arc,
-    task::{Context, Poll, ready},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -313,12 +316,12 @@ pub(crate) fn encode_trailers(
     shared: &Shared,
     id: u64,
     headers: &HeaderMap,
+    allowed: Option<&ForbiddenTrailers>,
 ) -> Result<Bytes, Error> {
-    super::headers::validate_regular(headers, true)?;
+    super::headers::validate_outgoing_trailers(headers, allowed)?;
     shared.encode(
         id,
-        headers
-            .ordered_iter()
+        super::headers::outgoing_trailer_fields(headers, allowed)
             .map(|(name, value)| super::qpack::EncodeField::from_header(name, value)),
     )
 }
