@@ -54,6 +54,12 @@ impl HttpVersions {
         self.tcp
     }
 
+    /// Whether `h3` was asked for by name, rather than implied by `auto`.
+    #[must_use]
+    pub fn http3_explicit(self) -> bool {
+        matches!(self.h3, Http3::On)
+    }
+
     /// Whether HTTP/3 is served, given whether TLS is enabled.
     ///
     /// Asking for `h3` explicitly without TLS is an error: HTTP/3 always runs over TLS.

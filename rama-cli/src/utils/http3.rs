@@ -30,6 +30,8 @@ pub struct Http3Args {
     ///
     /// Defaults to the address of the TCP listener, or `--bind` without one.
     /// HTTP/3 is served when TLS is enabled and `--http-version` includes it.
+    /// When only `auto` implies HTTP/3, failing to bind it leaves h1 and h2
+    /// serving alone; this flag or `h3` in `--http-version` makes it an error.
     pub h3_bind: Option<SocketAddress>,
 }
 
@@ -71,7 +73,24 @@ impl HttpListeners {
                     (None, Some(tcp)) => tcp.local_addr().context("TCP listener address")?.into(),
                     (None, None) => bind,
                 };
-                Some(bind_http3(addr, tls).await?)
+                match bind_http3(addr, tls).await {
+                    Ok(endpoint) => Some(endpoint),
+                    // HTTP/3 that `auto` only implied must not take h1 and h2 down with it.
+                    Err(error)
+                        if tcp.is_some()
+                            && !versions.http3_explicit()
+                            && http3.h3_bind.is_none() =>
+                    {
+                        tracing::error!(
+                            %error,
+                            network.local.address = %addr.ip_addr,
+                            network.local.port = addr.port,
+                            "HTTP/3 unavailable: serving HTTP/1.1 and h2 only",
+                        );
+                        None
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             None => None,
         };
@@ -214,6 +233,50 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("--h3-bind"), "{error}");
+    }
+
+    /// A UDP socket holding the port of a TCP listener bound next.
+    fn occupied_udp_port() -> (std::net::UdpSocket, SocketAddress) {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let addr = socket.local_addr().unwrap().into();
+        (socket, addr)
+    }
+
+    #[tokio::test]
+    async fn implied_http3_that_cannot_bind_leaves_h1_and_h2_serving() {
+        let (_held, addr) = occupied_udp_port();
+        let listeners = HttpListeners::bind(
+            Executor::new(),
+            addr,
+            HttpVersions::AUTO,
+            Some(&tls()),
+            &Http3Args { h3_bind: None },
+        )
+        .await
+        .unwrap();
+        assert!(listeners.tcp.is_some());
+        assert!(listeners.http3.is_none());
+        assert_eq!(listeners.alt_svc().unwrap(), None, "nothing to advertise");
+    }
+
+    #[tokio::test]
+    async fn explicit_http3_that_cannot_bind_is_an_error() {
+        let (_held, addr) = occupied_udp_port();
+        let explicit: [(HttpVersions, Option<SocketAddress>); 2] = [
+            ("h1,h2,h3".parse().unwrap(), None),
+            (HttpVersions::AUTO, Some(addr)),
+        ];
+        for (versions, h3_bind) in explicit {
+            let result = HttpListeners::bind(
+                Executor::new(),
+                addr,
+                versions,
+                Some(&tls()),
+                &Http3Args { h3_bind },
+            )
+            .await;
+            assert!(result.is_err(), "{versions:?} with --h3-bind {h3_bind:?}");
+        }
     }
 
     #[tokio::test]
