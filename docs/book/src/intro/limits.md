@@ -89,6 +89,8 @@ Only stream data waits for budget; datagrams are not throttled. A QUIC
 connection paces its streams through the
 [stream gates](https://ramaproxy.org/docs/rama/net/gate/index.html) added to
 it, so the same hook serves other policies, such as byte accounting.
+HTTP/1.1 and HTTP/2 run over one byte stream instead: its throttle paces all
+the requests of a connection together, as HTTP/2 streams share that budget.
 
 See [/examples/src/tcp_listener_layers.rs](https://github.com/plabayo/rama/tree/main/examples/src/tcp_listener_layers.rs).
 
