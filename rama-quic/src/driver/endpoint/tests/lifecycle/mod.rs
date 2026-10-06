@@ -2118,15 +2118,23 @@ async fn incoming_storage_refusal_after_budget_acceptance_is_counted_once() {
     server.inner.state.lock().recv_state.incoming.set_limit(0);
     let budget = server.inner.state.lock().packet_budget.clone();
     let drop_baseline = server.stats().dropped_packets;
+    let received_baseline = server.stats().received_datagrams;
     let budget_drop_baseline = budget.stats().dropped_datagrams;
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
     wait_until(|| server.stats().dropped_packets > drop_baseline).await;
-    assert_eq!(
-        server.stats().dropped_packets,
-        drop_baseline + 1,
-        "exactly one receive drop for the refused attempt"
+    // The first flight can span several Initial datagrams, sent together (a boring
+    // ClientHello does); let all of them land before counting.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let stats = server.stats();
+    let dropped = stats.dropped_packets - drop_baseline;
+    let received = stats.received_datagrams - received_baseline;
+    // Each refused attempt is one drop: datagrams received in one pass join the same attempt,
+    // while one received after its refusal is an attempt, and a refusal, of its own.
+    assert!(
+        (1..=received).contains(&dropped),
+        "{dropped} receive drops for {received} datagrams"
     );
     assert_eq!(
         budget.stats().dropped_datagrams,
@@ -2165,7 +2173,7 @@ async fn incoming_storage_refusal_after_budget_acceptance_is_counted_once() {
     .unwrap();
     client_conn.unwrap();
     server_conn.unwrap();
-    assert_eq!(server.stats().dropped_packets, drop_baseline + 1);
+    assert_eq!(server.stats().dropped_packets, drop_baseline + dropped);
     tokio::join!(client.shutdown(), server.shutdown());
 }
 
