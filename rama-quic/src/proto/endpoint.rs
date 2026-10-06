@@ -4,10 +4,7 @@ use std::{
     fmt,
     net::{IpAddr, SocketAddr},
     ops::{Index, IndexMut, Range},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
 };
 
 use ahash::HashMap;
@@ -702,12 +699,10 @@ impl Endpoint {
         };
 
         let deadline = event.now.checked_add(self.config.handshake_timeout)?;
-        let live = Arc::new(AtomicBool::new(true));
-        let progress = Arc::new(IncomingProgress::default());
+        let progress = Arc::new(IncomingProgress::new());
         let incoming_idx = self.incoming_buffers.insert(IncomingBuffer {
             deadline,
             dst_cid: header.dst_cid,
-            live: live.clone(),
             datagrams: Vec::new(),
             total_bytes: 0,
             progress: progress.clone(),
@@ -732,7 +727,6 @@ impl Endpoint {
             crypto,
             token,
             incoming_idx,
-            live,
             deadline,
             progress,
             resolving,
@@ -1228,7 +1222,7 @@ impl Endpoint {
 
     fn take_incoming_buffer(&mut self, incoming: &Incoming) -> Option<IncomingBuffer> {
         // An expired Incoming may outlive this slot and must never remove its replacement.
-        if !incoming.live.swap(false, Ordering::AcqRel) {
+        if !incoming.progress.retire() {
             return None;
         }
         let buffer = self.incoming_buffers.remove(incoming.incoming_idx);
@@ -1298,7 +1292,7 @@ impl Endpoint {
 
     fn discard_incoming_buffer(&mut self, index: usize) {
         let buffer = self.incoming_buffers.remove(index);
-        buffer.live.store(false, Ordering::Release);
+        buffer.progress.retire();
         buffer.progress.advance();
         self.all_incoming_buffers_total_bytes -= buffer.total_bytes;
         self.index.remove_initial(buffer.dst_cid);
@@ -1668,7 +1662,6 @@ impl fmt::Debug for Endpoint {
 struct IncomingBuffer {
     deadline: Instant,
     dst_cid: ConnectionId,
-    live: Arc<AtomicBool>,
     datagrams: Vec<DatagramConnectionEvent>,
     total_bytes: u64,
     progress: Arc<IncomingProgress>,
@@ -2086,7 +2079,6 @@ pub(crate) struct Incoming {
     crypto: Keys,
     token: IncomingToken,
     incoming_idx: usize,
-    live: Arc<AtomicBool>,
     deadline: Instant,
     progress: Arc<IncomingProgress>,
     /// The server configuration at admission, when its TLS resolves per ClientHello.
@@ -2114,7 +2106,7 @@ impl Incoming {
 
     /// Whether this admission has expired or already been consumed by the endpoint.
     pub(crate) fn is_expired(&self) -> bool {
-        !self.live.load(Ordering::Acquire)
+        !self.progress.is_live()
     }
 
     /// The local IP address which was used when the peer established the connection

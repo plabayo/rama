@@ -3,7 +3,7 @@
 
 use std::{
     collections::BTreeMap,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     task::Waker,
 };
 
@@ -113,15 +113,35 @@ impl HelloAssembly {
     }
 }
 
-/// Wakes the application waiting on a pending attempt: more of its first flight arrived,
-/// or it will not progress any further.
-#[derive(Debug, Default)]
+/// What a pending attempt shares with the application holding it: whether it is still
+/// pending, and a wake-up when more of its first flight arrived or it will not progress any
+/// further.
+#[derive(Debug)]
 pub(crate) struct IncomingProgress {
+    live: AtomicBool,
     generation: AtomicU64,
     waker: Mutex<Option<Waker>>,
 }
 
 impl IncomingProgress {
+    pub(crate) fn new() -> Self {
+        Self {
+            live: AtomicBool::new(true),
+            generation: AtomicU64::new(0),
+            waker: Mutex::new(None),
+        }
+    }
+
+    /// Whether the attempt is still pending: neither expired nor taken by the endpoint.
+    pub(crate) fn is_live(&self) -> bool {
+        self.live.load(Ordering::Acquire)
+    }
+
+    /// End the attempt; whether it was still pending.
+    pub(crate) fn retire(&self) -> bool {
+        self.live.swap(false, Ordering::AcqRel)
+    }
+
     /// Changes whenever the attempt progresses.
     pub(crate) fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
@@ -320,7 +340,7 @@ mod tests {
         }
         let count = Arc::new(Count(AtomicUsize::new(0)));
         let waker = Waker::from(count.clone());
-        let progress = IncomingProgress::default();
+        let progress = IncomingProgress::new();
         let before = progress.generation();
         progress.advance();
         assert_eq!(count.0.load(Ordering::SeqCst), 0, "nothing registered yet");
