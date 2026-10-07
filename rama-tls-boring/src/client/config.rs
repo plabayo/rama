@@ -37,8 +37,10 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub server_trust: Option<&'a TlsServerTrust>,
     pub cipher_suites: Option<&'a BoringCipherSuites>,
     pub supported_groups: Option<&'a BoringSupportedGroups>,
+    pub key_shares: Option<&'a BoringKeyShares>,
     pub signature_schemes: Option<&'a BoringSignatureSchemes>,
     pub grease: Option<&'a BoringGrease>,
+    pub grease_signature_schemes: Option<&'a BoringGreaseSignatureSchemes>,
     pub alps: Option<&'a BoringAlps>,
     pub extension_order: Option<&'a BoringExtensionOrder>,
     pub permute_extensions: Option<&'a BoringPermuteExtensions>,
@@ -79,8 +81,10 @@ impl BoringTlsConnectorConfig<'_> {
             server_trust,
             cipher_suites,
             supported_groups,
+            key_shares,
             signature_schemes,
             grease,
+            grease_signature_schemes,
             alps,
             extension_order,
             permute_extensions,
@@ -108,8 +112,10 @@ impl BoringTlsConnectorConfig<'_> {
             .maybe_with_server_trust(*server_trust)
             .maybe_with_cipher_suites(cipher_suites.map(|value| value.0.as_slice()))
             .maybe_with_supported_groups(supported_groups.map(|value| value.0.as_slice()))
+            .maybe_with_key_shares(key_shares.map(|value| value.0.as_slice()))
             .maybe_with_signature_schemes(signature_schemes.map(|value| value.0.as_slice()))
             .maybe_with_grease(grease.map(|value| value.0))
+            .maybe_with_grease_signature_schemes(grease_signature_schemes.map(|value| value.0))
             .maybe_with_extension_order(extension_order.map(|value| value.0.as_slice()))
             .maybe_with_permute_extensions(permute_extensions.map(|value| value.0))
             .maybe_with_cert_compression(cert_compression.map(|value| value.0.as_slice()))
@@ -152,8 +158,10 @@ impl BoringTlsConnectorConfig<'_> {
             server_trust: _,
             cipher_suites: _,
             supported_groups: _,
+            key_shares: _,
             signature_schemes: _,
             grease: _,
+            grease_signature_schemes: _,
             alps: _,
             extension_order: _,
             permute_extensions: _,
@@ -193,12 +201,25 @@ pub trait BoringClientConfigExt: Sized {
         fn supported_groups(self, groups: Vec<SupportedGroup>) -> Self;
     }
     generate_set_and_with! {
+        /// Send key shares for exactly these groups, in order.
+        ///
+        /// Groups missing from the offered groups, or out of their order, are skipped.
+        /// Without this, BoringSSL sends at most two, at most one post-quantum.
+        fn key_shares(self, groups: Vec<SupportedGroup>) -> Self;
+    }
+    generate_set_and_with! {
         /// Set the signature schemes to advertise, in order.
         fn signature_schemes(self, schemes: Vec<SignatureScheme>) -> Self;
     }
     generate_set_and_with! {
         /// Enable/disable GREASE injection.
         fn grease(self, enabled: bool) -> Self;
+    }
+    generate_set_and_with! {
+        /// Lead the signature schemes with a GREASE value (default: disabled).
+        ///
+        /// Independent of [`grease`](BoringClientConfigExt::set_grease).
+        fn grease_signature_schemes(self, enabled: bool) -> Self;
     }
     generate_set_and_with! {
         /// Set Application-Layer Protocol Settings (ALPS).
@@ -297,6 +318,12 @@ impl BoringClientConfigExt for TlsClientConfig {
         }
     }
     generate_set_and_with! {
+        fn key_shares(mut self, groups: Vec<SupportedGroup>) -> Self {
+            self.insert(BoringKeyShares(groups));
+            self
+        }
+    }
+    generate_set_and_with! {
         fn signature_schemes(mut self, schemes: Vec<SignatureScheme>) -> Self {
             self.insert(BoringSignatureSchemes(schemes));
             self
@@ -305,6 +332,12 @@ impl BoringClientConfigExt for TlsClientConfig {
     generate_set_and_with! {
         fn grease(mut self, enabled: bool) -> Self {
             self.insert(BoringGrease(enabled));
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn grease_signature_schemes(mut self, enabled: bool) -> Self {
+            self.insert(BoringGreaseSignatureSchemes(enabled));
             self
         }
     }
@@ -407,6 +440,11 @@ pub struct BoringCipherSuites(pub Vec<CipherSuite>);
 #[extension(tags(tls))]
 pub struct BoringSupportedGroups(pub Vec<SupportedGroup>);
 
+/// Groups to send key shares for, in order.
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+pub struct BoringKeyShares(pub Vec<SupportedGroup>);
+
 /// Signature schemes to advertise, in order.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
@@ -416,6 +454,11 @@ pub struct BoringSignatureSchemes(pub Vec<SignatureScheme>);
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 pub struct BoringGrease(pub bool);
+
+/// Whether a GREASE value leads the offered signature schemes.
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+pub struct BoringGreaseSignatureSchemes(pub bool);
 
 /// Application-Layer Protocol Settings (ALPS).
 #[derive(Debug, Clone, Extension)]
@@ -581,6 +624,7 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         // Every shaping piece is set explicitly, absent extensions included,
         // so a layered base config cannot add anything the hello did not offer.
         let mut grease = false;
+        let mut grease_signature_schemes = false;
         let mut alps = BoringAlps {
             protocols: Vec::new(),
             new_codepoint: false,
@@ -622,7 +666,8 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
                     config.set_supported_versions(versions.clone());
                 }
                 ClientHelloExtension::SignatureAlgorithms(schemes) => {
-                    grease |= schemes.iter().any(|s| s.is_grease());
+                    grease_signature_schemes = schemes.iter().any(|s| s.is_grease());
+                    grease |= grease_signature_schemes;
                     config.set_signature_schemes(schemes.clone());
                 }
                 ClientHelloExtension::CertificateCompression(algorithms) => {
@@ -667,6 +712,11 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
 
         config.insert(alps);
         config.set_grease(grease);
+        config.set_grease_signature_schemes(grease_signature_schemes);
+        // Only a TLS 1.3 offer sends key shares, and it always carries the extension.
+        if let Some(groups) = hello.ext_key_share_groups() {
+            config.set_key_shares(groups.into_iter().filter(|g| !g.is_grease()).collect());
+        }
         config.set_cert_compression(cert_compression);
         config.set_delegated_credentials(delegated_credentials);
         config.set_record_size_limit(record_size_limit);
@@ -902,6 +952,12 @@ mod pool_tests {
             ("grease", |ext, value| {
                 ext.insert(BoringGrease(value != 0));
             }),
+            ("grease_signature_schemes", |ext, value| {
+                ext.insert(BoringGreaseSignatureSchemes(value != 0));
+            }),
+            ("key_shares", |ext, value| {
+                ext.insert(BoringKeyShares(vec![u16::from(value).into()]));
+            }),
             ("alps_protocols", |ext, value| {
                 ext.insert(BoringAlps {
                     protocols: vec![if value == 0 {
@@ -1018,7 +1074,8 @@ mod pool_tests {
         let anchors = BoringRequestedTrustAnchors::try_from_ids([[7]]).unwrap();
 
         // Distinct combinations catch swapped boolean setters as well as omitted fields.
-        for (grease, ech, ocsp, timestamps, new_codepoint, permute, tickets) in iproduct!(
+        for (grease, ech, ocsp, timestamps, new_codepoint, permute, tickets, grease_schemes) in iproduct!(
+            [false, true],
             [false, true],
             [false, true],
             [false, true],
@@ -1031,6 +1088,8 @@ mod pool_tests {
             input.insert(alpn.clone());
             input.insert(BoringCipherSuites(ciphers.to_vec()));
             input.insert(BoringSupportedGroups(groups.to_vec()));
+            input.insert(BoringKeyShares(groups.to_vec()));
+            input.insert(BoringGreaseSignatureSchemes(grease_schemes));
             input.insert(BoringSignatureSchemes(signatures.to_vec()));
             input.insert(BoringGrease(grease));
             input.insert(BoringAlps {
@@ -1054,8 +1113,10 @@ mod pool_tests {
                 .with_alpn(&alpn)
                 .with_cipher_suites(&ciphers)
                 .with_supported_groups(&groups)
+                .with_key_shares(&groups)
                 .with_signature_schemes(&signatures)
                 .with_grease(grease)
+                .with_grease_signature_schemes(grease_schemes)
                 .with_alps(&protocols, new_codepoint)
                 .with_extension_order(&extensions)
                 .with_permute_extensions(permute)

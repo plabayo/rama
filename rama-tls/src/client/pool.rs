@@ -385,8 +385,10 @@ struct Overrides<'a> {
 struct ClientHelloSettings<'a> {
     cipher_suites: Option<&'a [CipherSuite]>,
     supported_groups: Option<&'a [SupportedGroup]>,
+    key_shares: Option<&'a [SupportedGroup]>,
     signature_schemes: Option<&'a [SignatureScheme]>,
     grease: Option<bool>,
+    grease_signature_schemes: Option<bool>,
     alps: Option<AlpsSettings<'a>>,
     extension_order: Option<&'a [ExtensionId]>,
     permute_extensions: Option<bool>,
@@ -518,6 +520,14 @@ impl<'a> TlsPoolIdBuilder<'a> {
     }
 
     generate_set_and_with! {
+        /// Ordered groups to send key shares for.
+        pub fn key_shares(mut self, value: Option<&'a [SupportedGroup]>) -> Self {
+            self.client_hello.key_shares = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Ordered signature scheme offer.
         pub fn signature_schemes(mut self, value: Option<&'a [SignatureScheme]>) -> Self {
             self.client_hello.signature_schemes = value;
@@ -529,6 +539,14 @@ impl<'a> TlsPoolIdBuilder<'a> {
         /// Whether GREASE values are offered.
         pub fn grease(mut self, value: Option<bool>) -> Self {
             self.client_hello.grease = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Whether a GREASE value leads the signature scheme offer.
+        pub fn grease_signature_schemes(mut self, value: Option<bool>) -> Self {
+            self.client_hello.grease_signature_schemes = value;
             self
         }
     }

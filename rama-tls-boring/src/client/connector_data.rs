@@ -85,6 +85,7 @@ struct ConnectorOptions {
     record_size_limit: Option<u16>,
     delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
     encrypted_client_hello: bool,
+    key_shares: Option<Vec<SslCurve>>,
     remembers_sessions: bool,
     session_store: Option<SessionStore>,
 }
@@ -152,6 +153,10 @@ impl TlsConnectorContext {
         }
         if self.options.encrypted_client_hello {
             cfg.set_enable_ech_grease(true);
+        }
+        if let Some(curves) = &self.options.key_shares {
+            cfg.set_client_key_shares(curves)
+                .context("set client key shares")?;
         }
         Ok(TlsConnectorData {
             config: cfg,
@@ -337,6 +342,14 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
         let verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>> = value
             .signature_schemes
             .map(|p| native_unique(p.0.iter().filter_map(|s| (*s).rama_try_into().ok())));
+        // BoringSSL only accepts key shares for an ordered subset of the offered groups.
+        let key_shares: Option<Vec<SslCurve>> = value.key_shares.map(|p| {
+            let shares = p.0.iter().filter_map(|g| (*g).rama_try_into().ok());
+            match &curves {
+                Some(curves) => ordered_subset(shares, curves),
+                None => native_unique(shares),
+            }
+        });
         let delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>> =
             value.delegated_credentials.map(|p| {
                 p.0.iter()
@@ -502,6 +515,7 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
         }
 
         cfg_builder.set_grease_enabled(grease_enabled);
+        cfg_builder.set_grease_sigalgs_enabled(value.grease_signature_schemes.is_some_and(|p| p.0));
 
         if ocsp_stapling_enabled {
             cfg_builder.enable_ocsp_stapling();
@@ -574,11 +588,27 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
                 record_size_limit,
                 delegated_credential_schemes,
                 encrypted_client_hello,
+                key_shares,
                 remembers_sessions: false,
                 session_store: None,
             },
         })
     }
+}
+
+fn ordered_subset<T: PartialEq>(values: impl Iterator<Item = T>, superset: &[T]) -> Vec<T> {
+    let mut next = 0;
+    values
+        .filter(
+            |value| match superset[next..].iter().position(|item| item == value) {
+                Some(offset) => {
+                    next += offset + 1;
+                    true
+                }
+                None => false,
+            },
+        )
+        .collect()
 }
 
 enum ResolvedServerTrustStore {

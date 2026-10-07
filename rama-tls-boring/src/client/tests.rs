@@ -156,29 +156,28 @@ fn mirrored_hello_does_not_inherit_base_shaping() {
     }
 }
 
-/// Known differences: BoringSSL limits, or BoringSSL features rama-boring does
-/// not expose yet. Lifting one makes this test fail, so its rule can shrink.
+/// Native BoringSSL limits which no client configuration can lift today. Each
+/// rule documents one, so lifting it makes this test fail and then shrink.
 struct NativeLimits;
 
 impl NativeLimits {
-    /// BoringSSL rejects duplicate and unknown schemes; rama-boring does not
-    /// expose GREASE in `signature_algorithms` yet.
+    /// BoringSSL rejects duplicate and unknown signature schemes.
     fn signature_schemes(captured: &[SignatureScheme]) -> Vec<String> {
         let mut seen = Vec::new();
         captured
             .iter()
-            .filter(|scheme| !scheme.is_grease())
             .filter(|scheme| {
-                SslSignatureAlgorithm::from(u16::from(**scheme))
-                    .name()
-                    .is_some()
+                scheme.is_grease()
+                    || SslSignatureAlgorithm::from(u16::from(**scheme))
+                        .name()
+                        .is_some()
             })
             .filter(|scheme| {
                 let first = !seen.contains(*scheme);
                 seen.push(**scheme);
                 first
             })
-            .map(|scheme| format!("{scheme:?}"))
+            .map(|scheme| grease_or(scheme.is_grease(), scheme))
             .collect()
     }
 
@@ -198,12 +197,6 @@ impl NativeLimits {
             })
             .map(|group| grease_or(group.is_grease(), group))
             .collect()
-    }
-
-    /// rama-boring does not expose explicit key shares yet, so the default of
-    /// at most two applies and a captured offer only matches as a prefix.
-    fn key_share_groups_match(captured: &[u16], emitted: &[u16]) -> bool {
-        !emitted.is_empty() && captured.starts_with(emitted)
     }
 }
 
@@ -250,11 +243,10 @@ fn embedded_profiles_are_mirrored_on_the_wire() {
                         data: emitted,
                     },
                 ) if *id == ExtensionId::KEY_SHARE && *emitted_id == ExtensionId::KEY_SHARE => {
-                    let (captured, emitted) =
-                        (key_share_groups(captured), key_share_groups(emitted));
-                    assert!(
-                        NativeLimits::key_share_groups_match(&captured, &emitted),
-                        "{ua}: key shares {captured:x?} vs {emitted:x?}"
+                    assert_eq!(
+                        key_share_groups(captured),
+                        key_share_groups(emitted),
+                        "{ua}: key shares"
                     );
                 }
                 _ => assert_eq!(
