@@ -106,7 +106,7 @@ The outbound connector ([`TlsConnector`](src/client/connector.rs) / `TlsConnecto
 
 ### Server
 
-The inbound acceptor ([`TlsAcceptorLayer`](src/server/layer.rs) / [`TlsAcceptorService`](src/server/service.rs)) is configured from a [`TlsServerConfig`](../rama-tls/src/server/config.rs); per connection it resolves a [`TlsAcceptorData`](src/server/acceptor_data.rs) (the base config merged with the stream's extensions) and builds a fresh `SslAcceptor`.
+The inbound acceptor ([`TlsAcceptorLayer`](src/server/layer.rs) / [`TlsAcceptorService`](src/server/service.rs)) is configured from a [`TlsServerConfig`](../rama-tls/src/server/config.rs); per connection it resolves a [`TlsAcceptorData`](src/server/acceptor_data.rs) (the base config merged with the stream's extensions) and builds a fresh `SslAcceptor`, unless session resumption shares one.
 
 | Feature | Support | Source |
 | --- | --- | --- |
@@ -126,11 +126,12 @@ The inbound acceptor ([`TlsAcceptorLayer`](src/server/layer.rs) / [`TlsAcceptorS
 | **Key logging** | `set_keylog_callback` from the `TlsServerConfig` keylog intent (`Environment`/`Disabled`/`File`/`Custom`); default `Environment`. | [service.rs#L163-L170](src/server/service.rs#L163-L170) |
 | **ClientHello capture** | `store_client_hello` parses the incoming ClientHello in the cert-selection callback into `SecureTransport` on the stream extensions. Default off. | [service.rs#L92-L104](src/server/service.rs#L92-L104) |
 | **Per-connection override** | The layer's base `TlsServerConfig` is merged with any TLS config pieces present in the inbound stream's extensions (per-connection pieces win), so a connection can override auth / ALPN / versions / keylog for that handshake — e.g. ACME-renewed certs. | [service.rs#L59-L64](src/server/service.rs#L59-L64) |
+| **Session resumption** | Opt-in via `with_session_resumption(true)`: connections without per-connection overrides share one native context per acceptor, so clients resume through its session tickets, which no other acceptor can decrypt. Tickets only: the server keeps no session cache. Per-connection state (stored ClientHello, target identity) travels with each connection, so dynamic certificate issuance is unaffected. Clones of a service share its context; each acceptor a layer makes has its own. | [service.rs](src/server/service.rs), [acceptor_data.rs](src/server/acceptor_data.rs) |
 | **Negotiated params** | After accept: `protocol_version`, selected ALPN, optional peer chain, negotiated cipher suite, key exchange group and client signature scheme; `SecureTransport` + `StreamTransformed`. Missing session is a hard error. | [service.rs#L195-L259](src/server/service.rs#L195-L259) |
 
 **Utilities (exported, not wired into the acceptor service):** an OCSP "good" staple builder (`build_mitm_leaf_ocsp_response`, [RFC 6066](https://datatracker.ietf.org/doc/html/rfc6066)), an OCSP request answerer (`answer_ocsp_request`, [RFC 6960](https://datatracker.ietf.org/doc/html/rfc6960)) and a CA CRL builder (`build_mitm_ca_crl`, [RFC 5280](https://datatracker.ietf.org/doc/html/rfc5280)) live in [server::utils](src/server/utils/) and are consumed by the MITM proxy below — the acceptor itself only staples the `ServerAuthData::ocsp` response it was given. The generic ASN.1 assembly is in `rama_crypto::ocsp` / `rama_crypto::crl`. Self-signed CA/leaf generation and the cert-mirroring re-signer (`self_signed_server_auth_mirror_cert[_with_extensions]`) live in [`rama_crypto::cert::boring`](../rama-crypto/src/cert/boring.rs).
 
-**Not configured (`rama-boring` / Mozilla-v5 defaults):** session tickets and resumption are not set by rama on the server.
+**Not configured (`rama-boring` / Mozilla-v5 defaults):** ticket keys are generated and rotated by BoringSSL per context; shared ticket keys across processes are not configurable.
 
 ### Proxy (MITM / mirroring)
 

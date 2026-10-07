@@ -78,7 +78,9 @@ async fn main() {
             ),
         );
 
-        let tls_server = TlsAcceptorLayer::new(tls_server_config).into_layer(server);
+        let tls_server = TlsAcceptorLayer::new(tls_server_config)
+            .with_session_resumption(true)
+            .into_layer(server);
 
         info!("open web echo chat @ https://127.0.0.1:62035");
         info!("or connect directly to wss://127.0.0.1:62035/echo (via 'rama')");

@@ -1,14 +1,15 @@
 use super::TlsAcceptorData;
-use super::acceptor_data::prepare_server_cert_issuer;
+use super::acceptor_data::{ConnectionState, bind_connection, prepare_server_cert_issuer};
 use super::config::{BoringTlsAcceptorConfig, BoringTlsAuth};
 use crate::{TlsStream, types::SecureTransport};
 use parking_lot::Mutex;
+use rama_boring::ssl::{Ssl, SslContext, SslSessionCacheMode};
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Service,
     conversion::{RamaInto as _, RamaTryInto},
     error::{BoxError, ErrorContext, ErrorExt},
-    extensions::ExtensionsRef,
+    extensions::{Extensions, ExtensionsRef},
     io::Io,
 };
 use rama_net::{client::ConnectorTarget, extensions::StreamTransformed, tls::ApplicationProtocol};
@@ -16,8 +17,8 @@ use rama_tls::{
     client::NegotiatedTlsParameters,
     server::{CertificateIdentity, TlsServerConfig},
 };
-use rama_utils::macros::define_inner_service_accessors;
-use std::sync::Arc;
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
+use std::sync::{Arc, OnceLock};
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
 /// stream to the given service.
@@ -25,7 +26,15 @@ use std::sync::Arc;
 pub struct TlsAcceptorService<S> {
     config: TlsServerConfig,
     store_client_hello: bool,
+    sessions: Option<Arc<OnceLock<Acceptor>>>,
     inner: S,
+}
+
+/// A native server context with the connection settings it was built for.
+#[derive(Debug, Clone)]
+struct Acceptor {
+    context: SslContext,
+    store_client_certificate_chain: bool,
 }
 
 impl<S> TlsAcceptorService<S> {
@@ -34,11 +43,60 @@ impl<S> TlsAcceptorService<S> {
         Self {
             config,
             store_client_hello,
+            sessions: None,
             inner,
         }
     }
 
+    generate_set_and_with!(
+        /// Let clients resume sessions of earlier connections to this acceptor. Off by default.
+        ///
+        /// Connections share one native context, whose session tickets no other acceptor
+        /// can decrypt; clones of this service share it. Connections that override the
+        /// TLS configuration never resume. The server keeps no session state itself.
+        pub fn session_resumption(mut self, enabled: bool) -> Self {
+            self.sessions = enabled.then(Arc::default);
+            self
+        }
+    );
+
     define_inner_service_accessors!();
+
+    fn acceptor(&self, extensions: &Extensions) -> Result<Acceptor, BoxError> {
+        let tls_config =
+            TlsAcceptorData::try_from(BoringTlsAcceptorConfig::from_extensions(extensions))
+                .context("boring acceptor: build acceptor data from config")?
+                .config;
+        let mut builder = tls_config.acceptor_builder()?;
+        if self.sessions.is_some() {
+            builder.set_session_cache_mode(SslSessionCacheMode::OFF);
+        }
+        let builder = tls_config
+            .cert_source
+            .install(builder, self.store_client_hello)?;
+        Ok(Acceptor {
+            context: builder.build().into_context(),
+            store_client_certificate_chain: tls_config.store_client_certificate_chain,
+        })
+    }
+
+    /// The acceptor's shared context, unless the connection overrides its configuration.
+    fn connection_acceptor(
+        &self,
+        connection: &Extensions,
+        merged: &Extensions,
+    ) -> Result<Acceptor, BoxError> {
+        match &self.sessions {
+            Some(shared) if BoringTlsAcceptorConfig::from_extensions(connection).is_empty() => {
+                if let Some(acceptor) = shared.get() {
+                    return Ok(acceptor.clone());
+                }
+                let acceptor = self.acceptor(merged)?;
+                Ok(shared.get_or_init(|| acceptor).clone())
+            }
+            _ => self.acceptor(merged),
+        }
+    }
 }
 
 // TODO provide stand-alone handshake based on pre-built acceptor...
@@ -65,12 +123,7 @@ where
                 .context("boring acceptor: prepare certificate issuer")?;
         }
 
-        let tls_config =
-            TlsAcceptorData::try_from(BoringTlsAcceptorConfig::from_extensions(&merged))
-                .context("boring acceptor: build acceptor data from config")?
-                .config;
-
-        let acceptor_builder = tls_config.acceptor_builder()?;
+        let acceptor = self.connection_acceptor(stream.extensions(), &merged)?;
 
         let target_identity = stream
             .extensions()
@@ -85,26 +138,21 @@ where
                     .and_then(|target| CertificateIdentity::try_from(&target.0.host).ok())
             });
 
-        // We use arc mutex instead of oneshot channel since it is possible that certificate callbacks
-        // are called multiples times (fn closures type). But in testing it seems fnOnce should also
-        // work (at least for how we use it). When we integrate boringssl bindings we should reconsider
-        // this and see if we can expose this in a better way.
-        let mut maybe_client_hello = self
-            .store_client_hello
-            .then_some(Arc::new(Mutex::new(None)));
+        // Certificate callbacks may run more than once per handshake, so they share
+        // this slot rather than consuming a channel.
+        let maybe_client_hello = self.store_client_hello.then(|| Arc::new(Mutex::new(None)));
 
-        let acceptor_builder = tls_config
-            .cert_source
-            .issue_certs(
-                acceptor_builder,
-                target_identity.clone(),
-                maybe_client_hello.as_ref(),
-            )
-            .await?;
+        let mut ssl = Ssl::new(&acceptor.context).context("boring acceptor: create session")?;
+        bind_connection(
+            &mut ssl,
+            ConnectionState {
+                client_hello: maybe_client_hello.clone(),
+                target_identity: target_identity.clone(),
+            },
+        )?;
 
-        let acceptor = acceptor_builder.build();
-
-        let stream = rama_boring_tokio::accept(&acceptor, stream)
+        let stream = rama_boring_tokio::SslStreamBuilder::new(ssl, stream)
+            .accept()
             .await
             .map_err(|err| {
                 let maybe_ssl_code = err.code();
@@ -140,7 +188,7 @@ where
                     .selected_alpn_protocol()
                     .map(ApplicationProtocol::from);
 
-                let client_certificate_chain = if let Some(certificate) = tls_config
+                let client_certificate_chain = if let Some(certificate) = acceptor
                     .store_client_certificate_chain
                     .then(|| stream.ssl().peer_certificate())
                     .flatten()
@@ -182,7 +230,6 @@ where
         };
 
         let secure_transport = maybe_client_hello
-            .take()
             .and_then(|maybe_client_hello| maybe_client_hello.lock().take())
             .map(SecureTransport::with_client_hello)
             .unwrap_or_default();

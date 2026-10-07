@@ -1,10 +1,14 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use moka::future::Cache;
 use parking_lot::Mutex;
-use rama_boring::ssl::{
-    AlpnError, ClientHello, NameType, SslAcceptorBuilder, SslCurve, SslOptions, SslRef,
-    SslSignatureAlgorithm,
+use rama_boring::{
+    error::ErrorStack,
+    ex_data::Index,
+    ssl::{
+        AlpnError, ClientHello, NameType, Ssl, SslAcceptorBuilder, SslCurve, SslOptions, SslRef,
+        SslSignatureAlgorithm,
+    },
 };
 use rama_boring_tokio::{AsyncSelectCertError, BoxSelectCertFinish};
 use rama_core::{
@@ -458,48 +462,42 @@ impl TlsCertSource {
         }
     }
 
-    pub(super) async fn issue_certs(
+    /// Present this source's certificates on every connection of the context `builder`
+    /// builds, reading each connection's [`ConnectionState`].
+    pub(super) fn install(
         self,
         mut builder: SslAcceptorBuilder,
-        target_identity: Option<CertificateIdentity>,
-        maybe_client_hello: Option<&Arc<Mutex<Option<RamaClientHello>>>>,
+        store_client_hello: bool,
     ) -> Result<SslAcceptorBuilder, BoxError> {
+        let state_index = connection_state_index()?;
         if let TlsCertSourceKind::InMemory(issued_cert) = &self.kind {
             install_identity(&mut builder, issued_cert, self.signing_prefs.as_deref())?;
 
-            if let Some(maybe_client_hello) = maybe_client_hello {
-                let cb_maybe_client_hello = maybe_client_hello.clone();
+            if store_client_hello {
                 builder.set_select_certificate_callback(move |boring_client_hello| {
-                    let maybe_client_hello =
-                        match RamaClientHello::rama_try_from(boring_client_hello) {
-                            Ok(ch) => Some(ch),
-                            Err(err) => {
-                                tracing::warn!("failed to extract boringssl client hello: {err:?}");
-                                None
-                            }
-                        };
-                    *cb_maybe_client_hello.lock() = maybe_client_hello;
+                    if let Some(sink) = boring_client_hello
+                        .ssl()
+                        .ex_data(state_index)
+                        .and_then(|state| state.client_hello.as_ref())
+                    {
+                        *sink.lock() = rama_client_hello(&boring_client_hello);
+                    }
                     Ok(())
                 });
             }
             return Ok(builder);
         }
 
-        let cb_maybe_client_hello = maybe_client_hello.cloned();
-        let fallback_identity = target_identity.or_else(|| self.fallback_identity().cloned());
         builder.set_async_select_certificate_callback(move |client_hello| {
-            let rama_client_hello = match RamaClientHello::rama_try_from(&*client_hello) {
-                Ok(ch) => Some(ch),
-                Err(err) => {
-                    tracing::warn!("failed to extract boringssl client hello: {err:?}");
-                    None
-                }
-            };
-            if let Some(cb_maybe_client_hello) = &cb_maybe_client_hello {
-                *cb_maybe_client_hello.lock() = rama_client_hello.clone();
-            }
-
+            let rama_client_hello = rama_client_hello(client_hello);
             let ssl_ref = client_hello.ssl_mut();
+            let state = ssl_ref.ex_data(state_index);
+            if let Some(sink) = state.and_then(|state| state.client_hello.as_ref()) {
+                *sink.lock() = rama_client_hello.clone();
+            }
+            let fallback_identity = state
+                .and_then(|state| state.target_identity.clone())
+                .or_else(|| self.fallback_identity().cloned());
             let identity = to_opt_identity(ssl_ref, fallback_identity.as_ref()).map_err(|err| {
                 tracing::error!("boring: failed getting host: {err:?}");
                 AsyncSelectCertError {}
@@ -543,6 +541,39 @@ impl TlsCertSource {
 
         Ok(builder)
     }
+}
+
+fn rama_client_hello(client_hello: &ClientHello<'_>) -> Option<RamaClientHello> {
+    RamaClientHello::rama_try_from(client_hello)
+        .inspect_err(|err| tracing::warn!("failed to extract boringssl client hello: {err:?}"))
+        .ok()
+}
+
+/// What the callbacks of a shared server context need to know about one connection.
+#[derive(Debug)]
+pub(super) struct ConnectionState {
+    /// Where to keep the connection's ClientHello, when it is stored.
+    pub(super) client_hello: Option<Arc<Mutex<Option<RamaClientHello>>>>,
+    /// The identity to issue a certificate for when the ClientHello names none.
+    pub(super) target_identity: Option<CertificateIdentity>,
+}
+
+// The slot lives for the process lifetime; each value belongs to one connection.
+static CONNECTION_STATE: LazyLock<Result<Index<Ssl, ConnectionState>, ErrorStack>> =
+    LazyLock::new(Ssl::new_ex_index);
+
+fn connection_state_index() -> Result<Index<Ssl, ConnectionState>, BoxError> {
+    CONNECTION_STATE.as_ref().copied().map_err(|error| {
+        error
+            .clone()
+            .context("register connection state ex-data slot")
+    })
+}
+
+/// Hand `state` to the callbacks of the context `ssl` was created from.
+pub(super) fn bind_connection(ssl: &mut SslRef, state: ConnectionState) -> Result<(), BoxError> {
+    ssl.set_ex_data(connection_state_index()?, state);
+    Ok(())
 }
 
 impl TryFrom<&rama_tls::server::TlsServerConfig> for TlsAcceptorData {
