@@ -180,9 +180,10 @@ impl IoForwardService {
     }
 
     generate_set_and_with! {
-        /// Lingering close: after the bridge shut down a side whose peer has
-        /// not ended its stream yet, keep reading from that side and discard
-        /// the bytes before dropping it, within the given bounds.
+        /// Lingering close: after the bridge closed the left side, by
+        /// convention the ingress, in order while its peer had not ended its
+        /// stream yet, keep reading from it and discard the bytes before
+        /// dropping it, within the given bounds.
         ///
         /// Closing a socket that still has unread input sends a reset instead
         /// of a clean close, and on Windows a reset makes the peer discard
@@ -191,9 +192,21 @@ impl IoForwardService {
         /// the socket was closed. Lingering keeps the socket open until the
         /// peer is done, as nginx does with `lingering_close`.
         ///
-        /// A side reset to reflect a failure of the other side does not
-        /// linger. Skipped when the bridge closes because of a shutdown, and
-        /// cut short when a shutdown starts while lingering.
+        /// Only a left side that the bridge wrote to lingers: without
+        /// forwarded data there is nothing to protect, and lingering on the
+        /// upstream would keep downloading what nobody reads. A side that is
+        /// reset does not linger either. Sides that publish an
+        /// [`AbortIo`] (rama's TCP streams, TLS on them, HTTP/2 and HTTP/3
+        /// tunnels) are reset when the other side fails, so lingering covers
+        /// the closes in order: timeouts, one side ending its stream, and
+        /// sides that cannot be reset.
+        ///
+        /// The bounds also stretch how long a reply still gets delivered
+        /// after the other peer turned out gone: while it moves, up to the
+        /// total timeout.
+        ///
+        /// Skipped when the bridge closes because of a shutdown, and cut
+        /// short when a shutdown starts while lingering.
         ///
         /// `None` (the default) disables it.
         pub fn lingering_close(mut self, linger: Option<LingeringClose>) -> Self {
@@ -432,17 +445,23 @@ where
 
     // Whether each reader reached its end (EOF or an error), which decides
     // the sides that still linger.
-    let left_r_ended = Arc::new(ReaderEnd::default());
-    let right_r_ended = Arc::new(ReaderEnd::default());
+    let l_to_r_end = Arc::new(DirectionEnd::default());
+    let r_to_l_end = Arc::new(DirectionEnd::default());
 
     // How long the other direction may keep delivering what a gone peer sent
-    // before it went away. That peer sends nothing more, so this is short.
-    let drain_window = lingering_close.map_or(shutdown_grace, |linger| {
+    // before it went away: a short window, extended while that makes
+    // progress, up to the lingering total.
+    let linger = lingering_close.filter(LingeringClose::is_enabled);
+    let drain_idle = linger.map_or(shutdown_grace, |linger| {
         linger
             .idle_timeout()
             .min(linger.timeout())
             .max(shutdown_grace)
     });
+    let drain_window = DrainWindow {
+        idle: drain_idle,
+        total: linger.map_or(drain_idle, |linger| linger.timeout().max(drain_idle)),
+    };
 
     let (mut reason, mut fatal_error) = {
         let l_to_r = std::pin::pin!(copy_one_way(
@@ -453,7 +472,7 @@ where
             buf_size,
             shutdown_grace,
             right_w_shut.clone(),
-            left_r_ended.clone(),
+            l_to_r_end.clone(),
             (aborts.clone(), Side::Right),
             Some(client_first_byte_seen.clone()),
             Some(client_spoke.clone()),
@@ -467,7 +486,7 @@ where
             buf_size,
             shutdown_grace,
             left_w_shut.clone(),
-            right_r_ended.clone(),
+            r_to_l_end.clone(),
             (aborts.clone(), Side::Left),
             Some(first_byte_seen.clone()),
             None,
@@ -485,15 +504,18 @@ where
             &first_byte_seen,
             &upstream_eof_seen,
             &client_spoke,
-            ReadEnded {
-                left: &left_r_ended,
-                right: &right_r_ended,
+            Ends {
+                l_to_r: &l_to_r_end,
+                r_to_l: &r_to_l_end,
+                l_to_r_bytes: &bytes_l_to_r,
+                r_to_l_bytes: &bytes_r_to_l,
             },
             drain_window,
         )
         .await
         // l_to_r and r_to_l drop here, releasing borrows on the halves.
     };
+    aborts.trigger_deferred();
 
     // Close both write halves concurrently rather than sequentially — TLS
     // close_notify can take the full grace window per side, and serializing
@@ -526,26 +548,18 @@ where
     // Lingering is not part of the bridge's life.
     let age = opened_at.elapsed();
 
-    if let Some(linger) = lingering_close
+    // Only the left side, by convention the ingress, lingers: lingering on
+    // the upstream would keep downloading what nobody reads. And only once
+    // the bridge wrote to it, as there is nothing to protect otherwise.
+    if let Some(linger) = linger
         && reason != BridgeCloseReason::Shutdown
+        && !l_to_r_end.read_ended()
+        && !aborts.aborted(Side::Left)
+        && bytes_r_to_l.load(Ordering::Relaxed) > 0
     {
-        let linger_left = !left_r_ended.ended() && !aborts.aborted(Side::Left);
-        // A silent origin has nothing in flight to wait for.
-        let linger_right = !right_r_ended.ended()
-            && !aborts.aborted(Side::Right)
-            && reason != BridgeCloseReason::FirstByteTimeout;
-        tokio::join!(
-            async {
-                if linger_left {
-                    linger_drain(&mut left_r, linger, guard.as_ref(), "left").await;
-                }
-            },
-            async {
-                if linger_right {
-                    linger_drain(&mut right_r, linger, guard.as_ref(), "right").await;
-                }
-            },
-        );
+        // The upstream closes now, not once the client is done.
+        drop((right_r, right_w));
+        linger_drain(&mut left_r, linger, guard.as_ref()).await;
     }
 
     IoForwardOutcome {
@@ -569,20 +583,83 @@ enum FirstByteWindow {
 /// How the select loop ended: the reason and the fatal error, if any.
 type LoopEnd = (BridgeCloseReason, Option<std::io::Error>);
 
+/// How long a [`Draining`] direction may keep going: `idle` without
+/// progress, `total` at most.
+#[derive(Debug, Clone, Copy)]
+struct DrainWindow {
+    idle: Duration,
+    total: Duration,
+}
+
 /// A direction whose write found its peer gone. What that peer sent before
 /// may still be on its way through the other direction, so the bridge keeps
-/// that one running for a while. A reset is reflected only after that, as
-/// the other side is reset when it drops.
-struct Draining {
+/// that one running for a while. A reset is reflected only after that.
+struct Draining<'a> {
     reason: BridgeCloseReason,
     error: std::io::Error,
     deadline: std::pin::Pin<Box<tokio::time::Sleep>>,
+    give_up: tokio::time::Instant,
+    /// The bytes the draining direction wrote, and how many when last seen.
+    written: &'a AtomicU64,
+    seen: u64,
 }
 
-impl Draining {
+impl<'a> Draining<'a> {
+    fn new(
+        reason: BridgeCloseReason,
+        error: std::io::Error,
+        window: DrainWindow,
+        written: &'a AtomicU64,
+    ) -> Self {
+        let now = tokio::time::Instant::now();
+        let give_up = after(now, window.total);
+        Self {
+            reason,
+            error,
+            deadline: Box::pin(tokio::time::sleep_until(
+                after(now, window.idle).min(give_up),
+            )),
+            give_up,
+            written,
+            seen: written.load(Ordering::Relaxed),
+        }
+    }
+
+    /// The deadline passed: keep draining for another `idle` if bytes went
+    /// out since, and the total allows.
+    fn extend(&mut self, idle: Duration) -> bool {
+        let now = tokio::time::Instant::now();
+        let written = self.written.load(Ordering::Relaxed);
+        if written == self.seen || now >= self.give_up {
+            return false;
+        }
+        self.seen = written;
+        self.deadline
+            .as_mut()
+            .reset(after(now, idle).min(self.give_up));
+        true
+    }
+
     fn finish(self) -> LoopEnd {
         (self.reason, Some(self.error))
     }
+
+    /// End with what the other direction ran into, if that is the reset
+    /// that gets reflected while the drain's own error is not.
+    fn finish_with(self, reason: BridgeCloseReason, error: std::io::Error) -> LoopEnd {
+        if AbortIo::reflects(&error) && !AbortIo::reflects(&self.error) {
+            (reason, Some(error))
+        } else {
+            self.finish()
+        }
+    }
+}
+
+/// `instant + duration`, or a far-off instant if that does not fit.
+fn after(instant: tokio::time::Instant, duration: Duration) -> tokio::time::Instant {
+    instant
+        .checked_add(duration)
+        .unwrap_or_else(|| instant + Duration::from_secs(86_400 * 365 * 30))
 }
 
 /// A write or half-close error saying the peer is gone, rather than that we
@@ -598,34 +675,40 @@ fn is_peer_gone(err: &std::io::Error) -> bool {
     )
 }
 
-/// How far the reader of one direction got.
+/// How one direction of the bridge ended.
 #[derive(Default)]
-struct ReaderEnd {
-    /// It reached its end: EOF or an error.
-    ended: AtomicBool,
-    /// That end was an error.
-    failed: AtomicBool,
+struct DirectionEnd {
+    /// Its reader reached its end: EOF or an error.
+    read_ended: AtomicBool,
+    /// Its error came from its writer (a write, flush or the half-close)
+    /// rather than from its reader.
+    write_failed: AtomicBool,
 }
 
-impl ReaderEnd {
-    fn mark(&self, failed: bool) {
-        self.failed.store(failed, Ordering::Release);
-        self.ended.store(true, Ordering::Release);
+impl DirectionEnd {
+    fn mark_read_ended(&self) {
+        self.read_ended.store(true, Ordering::Release);
     }
 
-    fn ended(&self) -> bool {
-        self.ended.load(Ordering::Acquire)
+    fn mark_write_failed(&self) {
+        self.write_failed.store(true, Ordering::Release);
     }
 
-    fn failed(&self) -> bool {
-        self.failed.load(Ordering::Acquire)
+    fn read_ended(&self) -> bool {
+        self.read_ended.load(Ordering::Acquire)
+    }
+
+    fn write_failed(&self) -> bool {
+        self.write_failed.load(Ordering::Acquire)
     }
 }
 
-/// Per direction: how far its reader got.
-struct ReadEnded<'a> {
-    left: &'a ReaderEnd,
-    right: &'a ReaderEnd,
+/// How each direction ended, and how many bytes it wrote.
+struct Ends<'a> {
+    l_to_r: &'a DirectionEnd,
+    r_to_l: &'a DirectionEnd,
+    l_to_r_bytes: &'a AtomicU64,
+    r_to_l_bytes: &'a AtomicU64,
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -640,8 +723,8 @@ async fn run_select_loop<F1, F2>(
     first_byte_seen: &AtomicBool,
     upstream_eof_seen: &AtomicBool,
     client_spoke: &Notify,
-    read_ended: ReadEnded<'_>,
-    drain_window: Duration,
+    ends: Ends<'_>,
+    drain_window: DrainWindow,
 ) -> LoopEnd
 where
     F1: Future<Output = Result<(), std::io::Error>>,
@@ -710,6 +793,12 @@ where
                     None => std::future::pending().await,
                 }
             } => {
+                if draining
+                    .as_mut()
+                    .is_some_and(|d| d.extend(drain_window.idle))
+                {
+                    continue;
+                }
                 if let Some(d) = draining.take() {
                     return d.finish();
                 }
@@ -764,24 +853,20 @@ where
                     }
                 }
                 Err(e) => {
-                    let reason = classify_copy_error(&e, CopyDirection::LeftToRight);
+                    let write_failed = ends.l_to_r.write_failed();
+                    let reason = classify_copy_error(CopyDirection::LeftToRight, write_failed);
                     // A write or the half-close found the right peer gone,
                     // but what it sent before may still be on its way to the
                     // left.
-                    if draining.is_none()
-                        && !r_to_l_done
-                        && !read_ended.left.failed()
-                        && is_peer_gone(&e)
-                    {
+                    if draining.is_none() && !r_to_l_done && write_failed && is_peer_gone(&e) {
                         l_to_r_done = true;
-                        draining = Some(Draining {
-                            reason,
-                            error: e,
-                            deadline: Box::pin(tokio::time::sleep(drain_window)),
-                        });
+                        draining = Some(Draining::new(reason, e, drain_window, ends.r_to_l_bytes));
                         continue;
                     }
-                    return draining.map_or((reason, Some(e)), Draining::finish);
+                    return match draining {
+                        Some(d) => d.finish_with(reason, e),
+                        None => (reason, Some(e)),
+                    };
                 }
             },
             res = r_to_l.as_mut(), if !r_to_l_done => match res {
@@ -792,21 +877,17 @@ where
                     }
                 }
                 Err(e) => {
-                    let reason = classify_copy_error(&e, CopyDirection::RightToLeft);
-                    if draining.is_none()
-                        && !l_to_r_done
-                        && !read_ended.right.failed()
-                        && is_peer_gone(&e)
-                    {
+                    let write_failed = ends.r_to_l.write_failed();
+                    let reason = classify_copy_error(CopyDirection::RightToLeft, write_failed);
+                    if draining.is_none() && !l_to_r_done && write_failed && is_peer_gone(&e) {
                         r_to_l_done = true;
-                        draining = Some(Draining {
-                            reason,
-                            error: e,
-                            deadline: Box::pin(tokio::time::sleep(drain_window)),
-                        });
+                        draining = Some(Draining::new(reason, e, drain_window, ends.l_to_r_bytes));
                         continue;
                     }
-                    return draining.map_or((reason, Some(e)), Draining::finish);
+                    return match draining {
+                        Some(d) => d.finish_with(reason, e),
+                        None => (reason, Some(e)),
+                    };
                 }
             },
         }
@@ -822,7 +903,7 @@ async fn copy_one_way<R, W>(
     buf_size: usize,
     shutdown_grace: Duration,
     write_side_shut: Arc<AtomicBool>,
-    read_end: Arc<ReaderEnd>,
+    end: Arc<DirectionEnd>,
     (aborts, writer_side): (Arc<Aborts>, Side),
     first_byte_seen: Option<Arc<AtomicBool>>,
     first_byte_notify: Option<Arc<Notify>>,
@@ -841,14 +922,14 @@ where
         tokio::task::consume_budget().await;
         match reader.read(&mut buf).await {
             Ok(0) => {
-                read_end.mark(false);
+                end.mark_read_ended();
                 if let Some(seen) = &eof_seen {
                     seen.store(true, Ordering::Relaxed);
                 }
                 break;
             }
             Ok(n) => {
-                // Record the first byte for this direction before write_all, so
+                // Record the first byte for this direction before writing, so
                 // backpressure on the far side never counts against the window.
                 // `swap` detects the first transition so we notify exactly once
                 if let Some(seen) = &first_byte_seen
@@ -857,40 +938,48 @@ where
                 {
                     notify.notify_one();
                 }
+                if let Err(err) = write_counted(writer, &buf[..n], &bytes).await {
+                    end.mark_write_failed();
+                    copy_err = Some(err);
+                    break;
+                }
                 // TLS or HTTP/3 writers may hold data until flushed, as tokio's copy knows.
-                if let Err(err) = writer.write_all(&buf[..n]).await {
-                    copy_err = Some(err);
-                    break;
-                }
                 if let Err(err) = writer.flush().await {
+                    end.mark_write_failed();
                     copy_err = Some(err);
                     break;
                 }
-                bytes.fetch_add(n as u64, Ordering::Relaxed);
                 progress.fetch_add(1, Ordering::Relaxed);
             }
             Err(err) => {
-                read_end.mark(true);
+                end.mark_read_ended();
                 copy_err = Some(err);
                 break;
             }
         }
     }
 
-    // A failure resets both sides (RFC 9113 §8.5, RFC 9114 §4.4); else one bounded orderly
-    // shutdown, so a TLS writer waiting on close_notify cannot wedge this future.
+    // A failure resets both sides (RFC 9113 §8.5, RFC 9114 §4.4). One our
+    // reader found does so at once; one our writer found only once the other
+    // direction delivered what the gone peer sent before (see `Draining`).
     if copy_err.as_ref().is_some_and(AbortIo::reflects) {
-        aborts.trigger();
+        aborts.reflect(!end.write_failed());
     }
-    if !aborts.aborted(writer_side)
-        && let Ok(Err(err)) = tokio::time::timeout(shutdown_grace, writer.shutdown()).await
-        && !copy_err.as_ref().is_some_and(AbortIo::reflects)
-        && AbortIo::reflects(&err)
-    {
-        // The half-close itself found the peer reset, also after an orderly-looking end: fail
-        // as a write would, ending the relay.
-        aborts.trigger();
-        copy_err = Some(err);
+    // Else one bounded orderly shutdown, so a TLS writer waiting on
+    // close_notify cannot wedge this future. Marked first: this future may be
+    // dropped mid-shutdown, and a TLS writer must not be shut down twice.
+    if !aborts.aborted(writer_side) {
+        write_side_shut.store(true, Ordering::Release);
+        if let Ok(Err(err)) = tokio::time::timeout(shutdown_grace, writer.shutdown()).await
+            && !copy_err.as_ref().is_some_and(AbortIo::reflects)
+            && AbortIo::reflects(&err)
+        {
+            // The half-close itself found the peer reset, also after an
+            // orderly-looking end: fail as a write would, ending the relay.
+            end.mark_write_failed();
+            aborts.reflect(false);
+            copy_err = Some(err);
+        }
     }
     write_side_shut.store(true, Ordering::Release);
 
@@ -898,6 +987,26 @@ where
         Some(err) => Err(err),
         None => Ok(()),
     }
+}
+
+/// Write all of `buf`, counting the bytes as they go out, so that a drain
+/// can tell a peer that reads slowly but steadily from a stuck one.
+async fn write_counted<W>(writer: &mut W, mut buf: &[u8], bytes: &AtomicU64) -> std::io::Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    while !buf.is_empty() {
+        match writer.write(buf).await {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(n) => {
+                buf = &buf[n..];
+                bytes.fetch_add(n as u64, Ordering::Relaxed);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
 }
 
 /// Close `writer` in order within `grace`, if `pending`: the error it returns, if any. An
@@ -920,6 +1029,8 @@ struct Aborts {
     left: Option<Arc<AbortIo>>,
     right: Option<Arc<AbortIo>>,
     triggered: AtomicBool,
+    /// A failure is to be reflected once the relay loop ends.
+    deferred: AtomicBool,
 }
 
 impl Aborts {
@@ -928,6 +1039,7 @@ impl Aborts {
             left: left.extensions().self_get_arc(),
             right: right.extensions().self_get_arc(),
             triggered: AtomicBool::new(false),
+            deferred: AtomicBool::new(false),
         }
     }
 
@@ -941,13 +1053,32 @@ impl Aborts {
         }
     }
 
-    /// Whether this side was reset, so it must not be closed in order as well.
+    /// Reflect a failure: at once, or once the relay loop ends, see
+    /// [`Self::trigger_deferred`].
+    fn reflect(&self, now: bool) {
+        if now {
+            self.trigger();
+        } else {
+            self.deferred.store(true, Ordering::Release);
+        }
+    }
+
+    /// Reset both sides if a failure was deferred.
+    fn trigger_deferred(&self) {
+        if self.deferred.load(Ordering::Acquire) {
+            self.trigger();
+        }
+    }
+
+    /// Whether this side is reset, now or once the relay loop ends, so it
+    /// must not be closed in order as well.
     fn aborted(&self, side: Side) -> bool {
         let abort = match side {
             Side::Left => &self.left,
             Side::Right => &self.right,
         };
-        abort.is_some() && self.triggered.load(Ordering::Acquire)
+        abort.is_some()
+            && (self.triggered.load(Ordering::Acquire) || self.deferred.load(Ordering::Acquire))
     }
 }
 
@@ -959,12 +1090,8 @@ enum Side {
 
 /// Read and discard until the peer ends its stream or a bound of `linger` is
 /// hit, so that the side is not closed with unread input.
-async fn linger_drain<R>(
-    reader: &mut R,
-    linger: LingeringClose,
-    guard: Option<&ShutdownGuard>,
-    side: &'static str,
-) where
+async fn linger_drain<R>(reader: &mut R, linger: LingeringClose, guard: Option<&ShutdownGuard>)
+where
     R: tokio::io::AsyncRead + Unpin,
 {
     use tokio::time::Instant;
@@ -973,8 +1100,8 @@ async fn linger_drain<R>(
         return;
     }
     let started = Instant::now();
-    let give_up = started + linger.timeout();
-    let deadline = |last_data: Instant| (last_data + linger.idle_timeout()).min(give_up);
+    let give_up = after(started, linger.timeout());
+    let deadline = |last_data: Instant| after(last_data, linger.idle_timeout()).min(give_up);
     let mut last_data = started;
     let mut discarded: u64 = 0;
     let mut buf = vec![0u8; LINGER_BUF_SIZE];
@@ -1022,7 +1149,6 @@ async fn linger_drain<R>(
     };
     tracing::trace!(
         target: "rama_net::proxy::forward",
-        side,
         discarded,
         end,
         linger_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -1030,25 +1156,14 @@ async fn linger_drain<R>(
     );
 }
 
-fn classify_copy_error(err: &std::io::Error, direction: CopyDirection) -> BridgeCloseReason {
-    use std::io::ErrorKind;
-
-    // Rough split: connection / EOF errors on the read side; other kinds on the
-    // write side. We can't always tell which side surfaced an error from the
-    // io::Error alone, so this is best-effort.
-    let read_side = matches!(
-        err.kind(),
-        ErrorKind::UnexpectedEof
-            | ErrorKind::ConnectionReset
-            | ErrorKind::ConnectionAborted
-            | ErrorKind::NotConnected
-            | ErrorKind::BrokenPipe
-    );
-    match (direction, read_side) {
-        (CopyDirection::LeftToRight, true) => BridgeCloseReason::ReadErrorLeft,
-        (CopyDirection::LeftToRight, false) => BridgeCloseReason::WriteErrorRight,
-        (CopyDirection::RightToLeft, true) => BridgeCloseReason::ReadErrorRight,
-        (CopyDirection::RightToLeft, false) => BridgeCloseReason::WriteErrorLeft,
+/// The side an error of `direction` came from: its writer (a write, flush or
+/// the half-close) if `write_failed`, else its reader.
+fn classify_copy_error(direction: CopyDirection, write_failed: bool) -> BridgeCloseReason {
+    match (direction, write_failed) {
+        (CopyDirection::LeftToRight, false) => BridgeCloseReason::ReadErrorLeft,
+        (CopyDirection::LeftToRight, true) => BridgeCloseReason::WriteErrorRight,
+        (CopyDirection::RightToLeft, false) => BridgeCloseReason::ReadErrorRight,
+        (CopyDirection::RightToLeft, true) => BridgeCloseReason::WriteErrorLeft,
     }
 }
 
@@ -1639,7 +1754,7 @@ mod tests {
         let bytes = Arc::new(AtomicU64::new(0));
         let progress = Arc::new(AtomicU64::new(0));
         let write_side_shut = Arc::new(AtomicBool::new(false));
-        let read_end = Arc::new(ReaderEnd::default());
+        let end = Arc::new(DirectionEnd::default());
         let res = copy_one_way(
             &mut reader,
             &mut writer,
@@ -1648,12 +1763,13 @@ mod tests {
             64,
             Duration::from_millis(50),
             write_side_shut.clone(),
-            read_end.clone(),
+            end.clone(),
             (
                 Arc::new(Aborts {
                     left: None,
                     right: None,
                     triggered: AtomicBool::new(false),
+                    deferred: AtomicBool::new(false),
                 }),
                 Side::Right,
             ),
@@ -1673,7 +1789,7 @@ mod tests {
             "write_side_shut flag must be set so run_bridge skips a duplicate shutdown",
         );
         assert!(
-            !read_end.ended(),
+            !end.read_ended(),
             "a write error leaves the read side open, so that side still lingers",
         );
     }
@@ -2114,7 +2230,9 @@ mod tests {
     const REQUEST: &[u8] = b"PING\r\n";
     const REPLY_LEN: usize = 6554;
 
-    /// A client ↔ bridge ↔ origin chain over loopback sockets.
+    /// A client ↔ bridge ↔ origin chain over loopback sockets. The bridge's
+    /// legs publish no [`AbortIo`], so it closes them in order, where it
+    /// would reset rama's TCP streams.
     struct Chain {
         client: tokio::net::TcpStream,
         origin: tokio::net::TcpStream,
@@ -2293,10 +2411,12 @@ mod tests {
             );
         let Chain {
             client,
-            origin,
+            mut origin,
             bridge,
         } = chain(svc).await;
         let started = Instant::now();
+        // Something to protect: lingering is for a client the bridge wrote to.
+        origin.write_all(b"hi").await.unwrap();
         let outcome = tokio::time::timeout(Duration::from_secs(5), bridge)
             .await
             .expect("lingering was not bounded by its idle timeout")
@@ -2322,16 +2442,20 @@ mod tests {
     async fn lingering_close_is_bounded_by_its_total_timeout() {
         let svc = IoForwardService::default().with_lingering_close(
             LingeringClose::new()
-                .with_idle_timeout(Duration::from_millis(200))
-                .with_timeout(Duration::from_millis(300)),
+                .with_idle_timeout(Duration::from_millis(300))
+                .with_timeout(Duration::from_millis(600)),
         );
         let Chain {
             mut client,
-            origin,
+            mut origin,
             bridge,
         } = chain(svc).await;
+        // Nagle would hold each byte back until the last one is acknowledged,
+        // which a delayed ACK can stretch past the idle timeout.
+        client.set_nodelay(true).unwrap();
         let started = Instant::now();
-        // The origin ends cleanly, so only the client side lingers.
+        // The origin replies and ends cleanly, so the client side lingers.
+        origin.write_all(b"hi").await.unwrap();
         drop(origin);
         let trickle = tokio::spawn(async move {
             let until = Instant::now() + Duration::from_secs(5);
@@ -2344,9 +2468,9 @@ mod tests {
             .expect("lingering was not bounded by its total timeout")
             .unwrap();
         let elapsed = started.elapsed();
-        assert!(elapsed < Duration::from_secs(2), "lingered {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(3), "lingered {elapsed:?}");
         assert!(
-            elapsed.saturating_sub(outcome.age()) >= Duration::from_millis(290),
+            elapsed.saturating_sub(outcome.age()) >= Duration::from_millis(590),
             "lingered only {:?}",
             elapsed.saturating_sub(outcome.age()),
         );
@@ -2375,7 +2499,7 @@ mod tests {
     async fn linger_drain_ends_an_always_ready_reader_at_its_timeout() {
         let linger = LingeringClose::new().with_timeout(Duration::from_millis(100));
         let started = Instant::now();
-        linger_drain(&mut AlwaysReady, linger, None, "left").await;
+        linger_drain(&mut AlwaysReady, linger, None).await;
         let elapsed = started.elapsed();
         assert!(
             elapsed >= Duration::from_millis(100),
@@ -2393,7 +2517,7 @@ mod tests {
             _ = trigger.send(());
         });
         let started = Instant::now();
-        linger_drain(&mut AlwaysReady, patient_linger(), Some(&guard), "left").await;
+        linger_drain(&mut AlwaysReady, patient_linger(), Some(&guard)).await;
         let elapsed = started.elapsed();
         assert!(
             elapsed < Duration::from_secs(2),
@@ -2420,7 +2544,7 @@ mod tests {
         for max in [1, 1000, 4096, 10_000] {
             let mut reader = Counting(0);
             let linger = patient_linger().with_max_bytes(max);
-            linger_drain(&mut reader, linger, None, "left").await;
+            linger_drain(&mut reader, linger, None).await;
             assert_eq!(reader.0, max, "read past its limit");
         }
     }
@@ -2433,13 +2557,14 @@ mod tests {
             LingeringClose::new().with_max_bytes(0),
         ] {
             let mut reader = ScriptedIo::erroring(std::io::ErrorKind::Other);
-            linger_drain(&mut reader, linger, None, "left").await;
+            linger_drain(&mut reader, linger, None).await;
             assert!(!reader.errored, "{linger:?} still read");
         }
     }
 
-    /// After a first-byte timeout the silent origin has nothing in flight, so
-    /// only the client side lingers.
+    /// After a first-byte timeout nothing was forwarded to the client, so
+    /// there is nothing to protect: no side lingers, even while the client
+    /// keeps its end open.
     #[tokio::test(flavor = "multi_thread")]
     async fn lingering_close_skips_a_silent_origin() {
         let svc = IoForwardService::default()
@@ -2453,11 +2578,11 @@ mod tests {
         client.write_all(REQUEST).await.unwrap();
         let (_, end) = read_until_end(&mut client).await;
         end.unwrap();
-        drop(client);
-        let outcome = tokio::time::timeout(Duration::from_secs(5), bridge)
+        let outcome = tokio::time::timeout(Duration::from_secs(2), bridge)
             .await
-            .expect("the silent origin side lingered")
+            .expect("a side lingered after a first-byte timeout")
             .unwrap();
+        drop(client);
         assert_eq!(outcome.reason(), BridgeCloseReason::FirstByteTimeout);
         drop(origin);
     }
@@ -2549,70 +2674,193 @@ mod tests {
         }
     }
 
-    /// Returns what the client read, and how often the client side was
-    /// reset.
-    async fn reset_while_uploading(found_by: ResetFoundBy, client_reads: bool) -> (Vec<u8>, u64) {
+    /// A client leg that, like an HTTP/2 or HTTP/3 stream, is reset as soon
+    /// as its [`AbortIo`] is called: writes to it fail from then on.
+    struct ResetAtOnce {
+        io: tokio::io::DuplexStream,
+        reset: Arc<AtomicBool>,
+    }
+
+    impl tokio::io::AsyncRead for ResetAtOnce {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.io).poll_read(cx, buf)
+        }
+    }
+
+    impl tokio::io::AsyncWrite for ResetAtOnce {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            if self.reset.load(Ordering::SeqCst) {
+                return std::task::Poll::Ready(Err(std::io::ErrorKind::ConnectionReset.into()));
+            }
+            std::pin::Pin::new(&mut self.io).poll_write(cx, buf)
+        }
+
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.io).poll_flush(cx)
+        }
+
+        fn poll_shutdown(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.io).poll_shutdown(cx)
+        }
+    }
+
+    /// How the client reads the reply.
+    #[derive(Debug, Clone, Copy)]
+    enum Reading {
+        AtOnce,
+        Never,
+        /// 64 bytes at a time, with this pause in between.
+        Slowly(Duration),
+    }
+
+    /// Returns what the client read, how often the client side was reset,
+    /// and how long the bridge took, by tokio's clock.
+    async fn reset_while_uploading(
+        found_by: ResetFoundBy,
+        svc: IoForwardService,
+        reading: Reading,
+    ) -> (Vec<u8>, u64, Duration) {
         let (mut client, ingress) = duplex(64);
-        let ingress = ServiceInput::new(ingress);
+        let reset = Arc::new(AtomicBool::new(false));
+        let ingress = ServiceInput::new(ResetAtOnce {
+            io: ingress,
+            reset: reset.clone(),
+        });
         let aborts = Arc::new(AtomicU64::new(0));
         let counter = aborts.clone();
         ingress.extensions().insert(AbortIo::new(move || {
+            reset.store(true, Ordering::SeqCst);
             counter.fetch_add(1, Ordering::SeqCst);
         }));
         let origin = ServiceInput::new(ResettingOrigin::new(found_by));
-        let svc = IoForwardService::default().with_shutdown_grace(Duration::from_millis(500));
+        let started = tokio::time::Instant::now();
         let bridge = tokio::spawn(async move {
             _ = svc.serve(BridgeIo(ingress, origin)).await;
+            started.elapsed()
         });
         client.write_all(b"upload").await.unwrap();
         if found_by == ResetFoundBy::HalfClose {
             client.shutdown().await.unwrap();
         }
-        let received = if client_reads {
-            read_until_end(&mut client).await.0
-        } else {
-            Vec::new()
-        };
-        tokio::time::timeout(Duration::from_secs(5), bridge)
+        let mut received = Vec::new();
+        match reading {
+            Reading::AtOnce => received = read_until_end(&mut client).await.0,
+            Reading::Never => {}
+            Reading::Slowly(pause) => {
+                let mut buf = [0; 64];
+                while let Ok(n @ 1..) = client.read(&mut buf).await {
+                    received.extend_from_slice(&buf[..n]);
+                    tokio::time::sleep(pause).await;
+                }
+            }
+        }
+        let took = tokio::time::timeout(Duration::from_secs(30), bridge)
             .await
             .expect("bridge did not unwind")
             .unwrap();
-        (received, aborts.load(Ordering::SeqCst))
+        (received, aborts.load(Ordering::SeqCst), took)
     }
 
+    const FOUND_BY: [ResetFoundBy; 2] = [ResetFoundBy::Write, ResetFoundBy::HalfClose];
+
     /// The reset is reflected to the client, but only once the reply the
-    /// origin sent before it got there, also when the half-close found it.
+    /// origin sent before it got there, also when the half-close found it,
+    /// and with a client leg that is reset at once.
     #[tokio::test]
     async fn a_reset_found_while_uploading_still_delivers_the_reply() {
-        for found_by in [ResetFoundBy::Write, ResetFoundBy::HalfClose] {
-            let (received, aborts) = reset_while_uploading(found_by, true).await;
+        for found_by in FOUND_BY {
+            let svc = IoForwardService::default();
+            let (received, aborts, _) = reset_while_uploading(found_by, svc, Reading::AtOnce).await;
             assert_eq!(received.len(), REPLY_LEN, "{found_by:?}");
             assert_eq!(received, reply(REPLY_LEN), "{found_by:?}");
             assert_eq!(aborts, 1, "{found_by:?}");
         }
     }
 
-    /// A client that never reads is reset once the drain window ends.
-    #[tokio::test]
+    /// A client that never reads is reset once the drain window ends: the
+    /// shutdown grace without lingering.
+    #[tokio::test(start_paused = true)]
     async fn a_reset_found_while_uploading_ends_after_the_drain_window() {
-        for found_by in [ResetFoundBy::Write, ResetFoundBy::HalfClose] {
-            let (_, aborts) = reset_while_uploading(found_by, false).await;
+        let grace = Duration::from_millis(500);
+        for found_by in FOUND_BY {
+            let svc = IoForwardService::default().with_shutdown_grace(grace);
+            let (_, aborts, took) = reset_while_uploading(found_by, svc, Reading::Never).await;
             assert_eq!(aborts, 1, "{found_by:?}");
+            assert!(took >= grace, "{found_by:?}: drained only {took:?}");
+            assert!(took < grace * 2, "{found_by:?}: drained {took:?}");
         }
     }
 
-    /// A side reset to reflect a failure of the other side does not linger;
-    /// one that cannot be reset is closed in order, and lingers.
+    /// The drain window is extended while the reply still moves to a slow
+    /// client, up to the lingering total; it is not without lingering.
+    #[tokio::test(start_paused = true)]
+    async fn the_drain_window_is_extended_while_the_reply_moves() {
+        let pause = Duration::from_millis(30);
+        // The reply takes about 3 s to read at this pace.
+        let linger = LingeringClose::new().with_idle_timeout(Duration::from_millis(100));
+        for (linger, total, complete) in [
+            (
+                Some(linger.with_timeout(Duration::from_secs(10))),
+                None,
+                true,
+            ),
+            (
+                Some(linger.with_timeout(Duration::from_secs(1))),
+                Some(Duration::from_secs(1)),
+                false,
+            ),
+            (None, None, false),
+        ] {
+            let svc = IoForwardService::default().maybe_with_lingering_close(linger);
+            let (received, aborts, took) =
+                reset_while_uploading(ResetFoundBy::Write, svc, Reading::Slowly(pause)).await;
+            assert_eq!(received.len() == REPLY_LEN, complete, "{linger:?}");
+            assert_eq!(received, reply(REPLY_LEN)[..received.len()], "{linger:?}");
+            assert_eq!(aborts, 1, "{linger:?}");
+            if let Some(total) = total {
+                assert!(took >= total && took < total * 2, "{linger:?}: {took:?}");
+            }
+        }
+    }
+
+    /// A timeout too large to add to an instant means no limit, not a panic.
     #[tokio::test]
-    async fn only_a_side_closed_in_order_lingers() {
+    async fn linger_drain_takes_unbounded_timeouts() {
+        let linger = LingeringClose::new()
+            .with_idle_timeout(Duration::MAX)
+            .with_timeout(Duration::MAX);
+        let mut reader = ScriptedIo::erroring(std::io::ErrorKind::ConnectionReset);
+        linger_drain(&mut reader, linger, None).await;
+        assert!(reader.errored);
+    }
+
+    /// Only the client side lingers, and only when it was closed in order: a
+    /// client reset to reflect a failure of the origin does not.
+    #[tokio::test]
+    async fn only_a_client_closed_in_order_lingers() {
         let idle = Duration::from_millis(200);
+        let svc = IoForwardService::default()
+            .with_lingering_close(LingeringClose::new().with_idle_timeout(idle));
         for abortable in [true, false] {
-            let (left, _) = side(ReadEnd::Fail(std::io::ErrorKind::ConnectionReset), true);
-            let (right, right_counts) = side(ReadEnd::Pend, abortable);
-            let svc = IoForwardService::default()
-                .with_lingering_close(LingeringClose::new().with_idle_timeout(idle));
+            let (client, client_counts) = side(ReadEnd::Pend, abortable);
+            // Replies, then resets.
+            let origin = ServiceInput::new(ResettingOrigin::new(ResetFoundBy::Write));
             let started = Instant::now();
-            _ = tokio::time::timeout(Duration::from_secs(5), svc.serve(BridgeIo(left, right)))
+            _ = tokio::time::timeout(Duration::from_secs(5), svc.serve(BridgeIo(client, origin)))
                 .await
                 .expect("lingering was not bounded");
             assert_eq!(
@@ -2621,11 +2869,25 @@ mod tests {
                 "abortable={abortable}"
             );
             assert_eq!(
-                right_counts.get(),
+                client_counts.get(),
                 (u64::from(!abortable), u64::from(abortable)),
                 "abortable={abortable}"
             );
         }
+    }
+
+    /// The upstream side never lingers: that would keep downloading what
+    /// nobody reads.
+    #[tokio::test]
+    async fn the_upstream_never_lingers() {
+        let svc = IoForwardService::default().with_lingering_close(patient_linger());
+        let (client, _) = side(ReadEnd::Fail(std::io::ErrorKind::UnexpectedEof), false);
+        let (origin, origin_counts) = side(ReadEnd::Pend, false);
+        tokio::time::timeout(Duration::from_secs(2), svc.serve(BridgeIo(client, origin)))
+            .await
+            .expect("the upstream lingered")
+            .unwrap();
+        assert_eq!(origin_counts.get(), (1, 0));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2635,13 +2897,15 @@ mod tests {
             .with_lingering_close(patient_linger().with_max_bytes(rama_utils::octets::kib_u64(64)));
         let Chain {
             mut client,
-            origin,
+            mut origin,
             bridge,
         } = chain(svc).await;
-        // The origin ends cleanly, so only the client side lingers.
+        // The origin replies and ends cleanly, so the client side lingers.
+        origin.write_all(b"hi").await.unwrap();
         drop(origin);
         // Wait for the idle close, then flood the lingering side.
         tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!bridge.is_finished(), "the bridge should be lingering");
         let flood = tokio::spawn(async move {
             let chunk = vec![0; kib(16)];
             while client.write_all(&chunk).await.is_ok() {}
@@ -2661,9 +2925,10 @@ mod tests {
             .with_lingering_close(patient_linger());
         let Chain {
             client,
-            origin,
+            mut origin,
             bridge,
         } = chain(svc).await;
+        origin.write_all(b"hi").await.unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(!bridge.is_finished(), "the bridge should be lingering");
         let started = Instant::now();

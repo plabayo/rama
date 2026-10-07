@@ -165,7 +165,7 @@ impl MaxConcurrency {
 /// discarded, whichever comes first. A peer that is still sending is waited
 /// for, so the total timeout is what bounds a slow one. Used by
 /// [`IoForwardService`](crate::proxy::IoForwardService) and rama's HTTP/1
-/// server.
+/// server, which say when a connection lingers.
 ///
 /// The total of 30 seconds is nginx's `lingering_time`. The idle timeout of
 /// 2 seconds is shorter than nginx's `lingering_timeout` of 5, as the peer
