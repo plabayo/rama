@@ -48,7 +48,7 @@ async fn test_http3_fp() {
     let lines =
         utils::RamaService::http(vec!["--http2", "https://127.0.0.1:63146/report"]).unwrap();
     assert!(
-        lines.contains(r#"alt-svc: h3=":63146""#),
+        lines.contains(r#"alt-svc: h3=":63146"; ma=86400"#),
         "lines: {lines:?}"
     );
     assert!(!lines.contains("not collected yet"), "lines: {lines:?}");

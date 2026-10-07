@@ -387,7 +387,7 @@ async fn test_http3_echo() {
     // TCP responses advertise HTTP/3 on the same port.
     let lines = utils::RamaService::http(vec!["--http2", "https://127.0.0.1:63144"]).unwrap();
     assert!(
-        lines.contains(r#"alt-svc: h3=":63144""#),
+        lines.contains(r#"alt-svc: h3=":63144"; ma=86400"#),
         "lines: {lines:?}"
     );
 

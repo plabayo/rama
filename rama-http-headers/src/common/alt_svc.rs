@@ -578,9 +578,8 @@ fn encode_service(output: &mut Vec<u8>, service: &AlternativeService) {
     } else {
         _ = write!(output, ":{}\"", service.port);
     }
-    if service.max_age.as_u64() != DEFAULT_MAX_AGE_SECONDS {
-        _ = write!(output, "; ma={}", service.max_age);
-    }
+    // Always explicit, so no client has to apply the 24 hour default itself.
+    _ = write!(output, "; ma={}", service.max_age);
     if service.persist {
         output.extend_from_slice(b"; persist=1");
     }
@@ -845,11 +844,11 @@ mod tests {
         for (host, expected) in [
             (
                 Host::Address("192.0.2.1".parse().unwrap()),
-                r#"h3="192.0.2.1:443""#,
+                r#"h3="192.0.2.1:443"; ma=86400"#,
             ),
             (
                 Host::Address("2001:db8::1".parse().unwrap()),
-                r#"h3="[2001:db8::1]:443""#,
+                r#"h3="[2001:db8::1]:443"; ma=86400"#,
             ),
         ] {
             let service = AlternativeService::new(ApplicationProtocol::HTTP_3, 443)
@@ -867,11 +866,11 @@ mod tests {
         for (host, expected) in [
             (
                 Host::try_from("exa%6Dple.com").unwrap(),
-                r#"h3="exa%6Dple.com:443""#,
+                r#"h3="exa%6Dple.com:443"; ma=86400"#,
             ),
             (
                 Host::try_from("[v1.fe80::a]").unwrap(),
-                r#"h3="[v1.fe80::a]:443""#,
+                r#"h3="[v1.fe80::a]:443"; ma=86400"#,
             ),
         ] {
             assert_matches!(host.view(), HostRef::Uninterpreted(_));
@@ -943,7 +942,7 @@ mod tests {
         assert_eq!(
             encode(&value),
             HeaderValue::from_static(
-                r#"h3=":443"; ma=3600; persist=1, w%3Dx%3Ay#z="alt.example:8443""#
+                r#"h3=":443"; ma=3600; persist=1, w%3Dx%3Ay#z="alt.example:8443"; ma=86400"#
             )
         );
         assert_eq!(decode(&[encode(&value).to_str().unwrap()]), Some(value));
@@ -952,7 +951,7 @@ mod tests {
     #[test]
     fn encodes_binary_protocol_identifier() {
         let service = AlternativeService::new(ApplicationProtocol::from(&[0, 0xff]), 443).unwrap();
-        assert_eq!(encode(&AltSvc::new(service)), "%00%FF=\":443\"");
+        assert_eq!(encode(&AltSvc::new(service)), "%00%FF=\":443\"; ma=86400");
     }
 
     #[test]

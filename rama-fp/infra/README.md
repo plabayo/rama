@@ -28,7 +28,7 @@ in `pending_destroy` are soft deleted and no longer accrue volume charges.
 
 `echo`, `ipv4` and `http-test` serve HTTP/3 next to h1 and h2: the `app_secure`
 process binds QUIC on UDP `0.0.0.0:443` (`--h3-bind`) and advertises it with
-`Alt-Svc: h3=":443"` on its TLS responses. Fly.io constrains this:
+`Alt-Svc: h3=":443"; ma=86400` on its TLS responses. Fly.io constrains this:
 
 - UDP needs a dedicated IPv4 address; every app above has one.
 - Fly.io does not rewrite UDP ports, so the internal port is the public one.
