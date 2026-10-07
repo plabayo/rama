@@ -257,7 +257,7 @@ impl Pool {
         let max = completion_threads().max_threads();
         let reserved = self
             .threads
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |threads| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |threads| {
                 (threads < max).then_some(threads + 1)
             })
             .is_ok();
@@ -271,7 +271,7 @@ impl Pool {
     fn retire(&self, keep: usize, reason: ThreadStopReason) -> bool {
         let retired = self
             .threads
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |threads| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |threads| {
                 (threads > keep).then(|| threads - 1)
             });
         let Ok(before) = retired else {
@@ -773,7 +773,7 @@ impl Flow {
     fn injected_failure(&self) -> Option<i32> {
         use std::sync::atomic::Ordering;
         self.fail_posts
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
             .ok()
             .map(|_| WSAENOBUFS)
     }
