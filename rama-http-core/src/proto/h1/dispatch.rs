@@ -65,6 +65,13 @@ enum Linger {
 /// that a client that always has data ready does not starve other tasks.
 const LINGER_READS_PER_POLL: usize = 16;
 
+/// `instant + duration`, or a far-off instant if that does not fit.
+fn after(instant: tokio::time::Instant, duration: std::time::Duration) -> tokio::time::Instant {
+    instant
+        .checked_add(duration)
+        .unwrap_or_else(|| instant + std::time::Duration::from_secs(86_400 * 365 * 30))
+}
+
 pub(crate) trait Dispatch {
     type PollItem;
     type PollBody;
@@ -177,12 +184,13 @@ where
                     if let Some(mut body) = self.body_tx.take() {
                         body.send_error(crate::Error::new_body("connection error"));
                     }
-                    // Only a bad request head leaves a response (the automatic
-                    // 400, 414 or 431) worth protecting while the client may
-                    // still be sending; the conn remembers that rejection.
-                    // After a service, body or IO error the connection is
-                    // broken and the error should surface now.
-                    if !e.is_parse() {
+                    // Only a rejected request leaves a response worth
+                    // protecting while the client may still be sending: the
+                    // automatic 400, 414 or 431, or one already going out,
+                    // which the conn marks by abandoning the input. After a
+                    // service, body or IO error, or a parse error answered
+                    // with nothing, the error should surface now.
+                    if !e.is_parse() || !self.conn.is_read_abandoned() {
                         self.linger = Linger::Done;
                     }
                     // Try to hand the error to the user (client callback). The
@@ -272,8 +280,8 @@ where
                     self.linger = match bounds {
                         Some(bounds) => {
                             let started = Instant::now();
-                            let give_up = started + bounds.timeout();
-                            let due = (started + bounds.idle_timeout()).min(give_up);
+                            let give_up = after(started, bounds.timeout());
+                            let due = after(started, bounds.idle_timeout()).min(give_up);
                             Linger::Draining {
                                 bounds,
                                 timer: Box::pin(tokio::time::sleep_until(due)),
@@ -313,7 +321,8 @@ where
                                     if timer.as_mut().poll(cx).is_pending() {
                                         return Poll::Pending;
                                     }
-                                    let due = (*last_data + bounds.idle_timeout()).min(*give_up);
+                                    let due =
+                                        after(*last_data, bounds.idle_timeout()).min(*give_up);
                                     if due <= Instant::now() {
                                         break 'drain if due == *give_up {
                                             "timeout"

@@ -21,6 +21,10 @@ pub(crate) const INIT_BUFFER_SIZE: usize = 8192;
 /// The minimum value that can be set to max buffer size.
 pub(crate) const MINIMUM_MAX_BUFFER_SIZE: usize = INIT_BUFFER_SIZE;
 
+/// The buffer size for input that is only dropped, as nginx uses while
+/// lingering.
+const DISCARD_BUF_SIZE: usize = 4096;
+
 /// The default maximum read buffer size. If the buffer gets this big and
 /// a message is still not complete, a `TooLarge` error is triggered.
 // Note: if this changes, update server::conn::Http::max_buf_size docs.
@@ -134,6 +138,15 @@ where
         let len = self.read_buf.len();
         self.read_buf.clear();
         len
+    }
+
+    /// Read in small reads into a small buffer: from here on input is only
+    /// dropped, and may keep coming for a while.
+    pub(crate) fn read_to_discard(&mut self) {
+        self.read_buf_strategy = ReadStrategy::Exact(DISCARD_BUF_SIZE);
+        if self.read_buf.is_empty() && self.read_buf.capacity() > DISCARD_BUF_SIZE {
+            self.read_buf = BytesMut::new();
+        }
     }
 
     /// Whether the peer ended its stream or reading from it failed.

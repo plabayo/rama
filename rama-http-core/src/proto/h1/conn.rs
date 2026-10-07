@@ -149,10 +149,17 @@ where
         self.state.read_abandoned || !self.io.read_buf().is_empty()
     }
 
+    /// Whether a request was left unread: an abandoned body, or the rest of
+    /// a rejected request that is being answered.
+    pub(crate) fn is_read_abandoned(&self) -> bool {
+        self.state.read_abandoned
+    }
+
     /// Read and drop input. Returns how many bytes were dropped, or 0 once
     /// the peer ended its stream.
     pub(crate) fn poll_discard_read(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<usize>> {
         let buffered = self.io.discard_read_buf();
+        self.io.read_to_discard();
         if buffered > 0 {
             return Poll::Ready(Ok(buffered));
         }
@@ -422,6 +429,8 @@ where
                     }
                     Err(e) => {
                         debug!("incoming body decode error: {}", e);
+                        // The client may still be sending the rest of it.
+                        self.state.read_abandoned = true;
                         (Reading::Closed, Poll::Ready(Some(Err(e))))
                     }
                 }
@@ -841,20 +850,21 @@ where
     // - Client: there is nothing we can do
     // - Server: if Response hasn't been written yet, we can send a 4xx response
     fn on_parse_error(&mut self, err: crate::Error) -> crate::Result<()> {
-        // The client may still be sending the rest of what was rejected,
-        // even when the whole head was already read.
-        if err.is_parse() {
-            self.state.read_abandoned = true;
-        }
         if matches!(self.state.writing, Writing::Init) {
             if self.has_h2_prefix() {
                 return Err(crate::Error::new_version_h2());
             }
             if let Some(msg) = T::on_error(&err) {
+                // The client may still be sending the rest of what was
+                // rejected, even when the whole head was already read.
+                self.state.read_abandoned = true;
                 self.write_head(msg, None);
                 self.state.error = Some(err);
                 return Ok(());
             }
+        } else if err.is_parse() {
+            // A response is going out while the client still sends.
+            self.state.read_abandoned = true;
         }
 
         // fallback is pass the error back up
