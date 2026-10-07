@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    num::NonZeroUsize,
     sync::{Arc, LazyLock},
 };
 
@@ -8,7 +8,7 @@ use rama_core::error::{ArcError, BoxError};
 use rama_crypto::dep::boring::{
     error::ErrorStack,
     ex_data::Index,
-    ssl::{Ssl, SslAcceptorBuilder, SslContext, SslSession, SslSessionCacheMode, SslVersion},
+    ssl::{Ssl, SslAcceptorBuilder, SslContext, SslVersion},
 };
 use rama_net::address::Host;
 use rama_quic_proto::{
@@ -21,7 +21,10 @@ use rama_tls::{
     server::TlsServerConfig,
 };
 use rama_tls_boring::{
-    client::{BoringTlsConnectorConfig, TlsConnectorContext, TlsConnectorContextBuilder},
+    client::{
+        BoringTlsConnectorConfig, TlsClientSession, TlsClientSessionCache, TlsConnectorContext,
+        TlsConnectorContextBuilder,
+    },
     server::{BoringTlsAcceptorConfig, IssuedCertificate, TlsAcceptorData},
 };
 
@@ -38,12 +41,16 @@ use crate::proto::{
 };
 
 struct Ticket {
-    host: Host,
-    /// The negotiated version of the connection that issued it (RFC 9369 §5).
-    version: Version,
-    session: SslSession,
+    session: TlsClientSession,
     params: TransportParameters,
 }
+
+/// Tickets by server and the negotiated version of the connection that issued them,
+/// which is the only version they resume (RFC 9369 §5).
+type Tickets = TlsClientSessionCache<(Host, Version), Ticket>;
+
+const MAX_TICKET_HOSTS: NonZeroUsize = NonZeroUsize::new(64).unwrap();
+const TICKETS_PER_HOST: NonZeroUsize = NonZeroUsize::new(2).unwrap();
 
 struct TicketState {
     host: Host,
@@ -59,7 +66,7 @@ static TICKET_INDEX: LazyLock<Result<Index<Ssl, TicketState>, ErrorStack>> =
 
 pub(crate) struct QuicClientConfig {
     context: TlsConnectorContext,
-    tickets: Arc<Mutex<VecDeque<Ticket>>>,
+    tickets: Arc<Tickets>,
     ticket_index: Index<Ssl, TicketState>,
     early_data: bool,
 }
@@ -113,32 +120,21 @@ impl QuicClientConfig {
             .config
             .set_max_proto_version(Some(SslVersion::TLS1_3))
             .map_err(|error| TlsConfigError::InvalidConfiguration(error.into()))?;
-        let tickets: Arc<Mutex<VecDeque<Ticket>>> = Arc::default();
+        let tickets = Arc::new(Tickets::new(MAX_TICKET_HOSTS, TICKETS_PER_HOST));
         let callback_tickets = tickets.clone();
         let ticket_index = *TICKET_INDEX
             .as_ref()
             .map_err(|error| TlsConfigError::InvalidConfiguration(error.clone().into()))?;
-        builder
-            .config
-            .set_session_cache_mode(SslSessionCacheMode::CLIENT);
-        builder
-            .config
-            .set_new_session_callback(move |ssl, session| {
-                if let Some(state) = ssl.ex_data(ticket_index)
-                    && let Some(params) = state.params.lock().clone()
-                {
-                    let mut tickets = callback_tickets.lock();
-                    if tickets.len() == 64 {
-                        tickets.pop_front();
-                    }
-                    tickets.push_back(Ticket {
-                        host: state.host.clone(),
-                        version: *state.version.lock(),
-                        session,
-                        params,
-                    });
-                }
-            });
+        builder.set_new_session_callback(move |ssl, session| {
+            if let Some(state) = ssl.ex_data(ticket_index)
+                && let Some(params) = state.params.lock().clone()
+            {
+                callback_tickets.insert(
+                    (state.host.clone(), *state.version.lock()),
+                    Ticket { session, params },
+                );
+            }
+        });
         Ok(Self {
             context: builder.build(),
             tickets,
@@ -176,18 +172,11 @@ impl crypto::ClientConfig for QuicClientConfig {
                 params: peer_params.clone(),
             },
         );
-        // Only a ticket from a connection in this version may resume it (RFC 9369 §5).
-        let ticket = {
-            let mut tickets = self.tickets.lock();
-            tickets
-                .iter()
-                .rposition(|ticket| ticket.host == host && ticket.version == version)
-                .and_then(|index| tickets.remove(index))
-        };
-        let remembered = if let Some(ticket) = ticket {
-            // This cache belongs to the immutable context that created both the ticket and SSL.
-            unsafe { ssl.set_session(&ticket.session) }
-                .map_err(|error| ConnectError::Crypto(crypto_error(error.into())))?;
+        let remembered = if let Some(ticket) = self.tickets.pop(&(host, version)) {
+            ticket
+                .session
+                .resume_on(&mut ssl)
+                .map_err(|error| ConnectError::Crypto(crypto_error(error)))?;
             Some(ticket.params)
         } else {
             None
@@ -211,22 +200,23 @@ impl crypto::ClientConfig for QuicClientConfig {
     }
     fn resumable_version(&self, server_name: &str) -> Option<Version> {
         let host = Host::try_from(server_name).ok()?;
-        let tickets = self.tickets.lock();
-        tickets
-            .iter()
-            .rev()
-            .find(|ticket| ticket.host == host)
-            .map(|ticket| ticket.version)
+        let keys = [Version::V1, Version::V2].map(|version| (host.clone(), version));
+        self.tickets.most_recent(&keys).map(|(_, version)| *version)
     }
 }
 
 impl QuicClientConfig {
-    /// Tests: relabel every cached ticket as belonging to `version`, to offer a ticket from one
-    /// version to a server session in another.
+    /// Tests: relabel the tickets for `server_name` from one version to another, to offer a
+    /// ticket from one version to a server session in another.
     #[cfg(test)]
-    pub(super) fn relabel_tickets(&self, version: Version) {
-        for ticket in self.tickets.lock().iter_mut() {
-            ticket.version = version;
+    pub(super) fn relabel_tickets(&self, server_name: &str, from: Version, to: Version) {
+        let host = Host::try_from(server_name).unwrap();
+        let mut tickets = Vec::new();
+        while let Some(ticket) = self.tickets.pop(&(host.clone(), from)) {
+            tickets.push(ticket);
+        }
+        for ticket in tickets.into_iter().rev() {
+            self.tickets.insert((host.clone(), to), ticket);
         }
     }
 }
