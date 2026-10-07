@@ -188,7 +188,7 @@ where
                 .context("tls mitm relay: build direct egress connector data")
                 .map_err(TlsMitmRelayError::config)?
         };
-        if data.config.session().is_some() {
+        if data.config.session().is_some() || data.resumes_sessions() {
             return Err(TlsMitmRelayError::config(BoxError::from_static_str(
                 "tls mitm client auth: preselected egress sessions can bypass authentication",
             )));

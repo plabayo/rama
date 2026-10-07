@@ -30,6 +30,12 @@ mod trust_anchors;
 #[doc(inline)]
 pub use trust_anchors::BoringRequestedTrustAnchors;
 
+mod session;
+#[doc(inline)]
+pub use session::{
+    TlsClientSession, TlsClientSessionCache, TlsClientSessionKey, TlsClientSessionStore,
+};
+
 mod connector_data;
 #[doc(inline)]
 pub use connector_data::{

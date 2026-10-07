@@ -24,12 +24,14 @@ use rama_tls::client::{
 };
 use rama_tls::{TlsTunnelMode, resolve_tls_tunnel};
 use rama_utils::macros::generate_set_and_with;
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 #[cfg(feature = "http")]
 use super::set_alpn_with_coupled_alps;
 use super::{
-    AutoTlsStream, BoringTlsClientConfigProvider, BoringTlsConnectorConfig, TlsConnectorData,
+    AutoTlsStream, BoringTlsClientConfigProvider, BoringTlsConnectorConfig, TlsClientSessionStore,
+    TlsConnectorData,
+    session::{ConnectorSessions, SessionStore},
     set_alpn_list_with_coupled_alps,
 };
 
@@ -47,6 +49,7 @@ use rama_tls::client::{http_alpn_override, negotiated_http_version};
 #[derive(Debug, Clone)]
 pub struct TlsConnectorLayer<K = ConnectorKindAuto> {
     base: Option<TlsClientConfig>,
+    session_store: Option<SessionStore>,
     kind: K,
 }
 
@@ -66,6 +69,16 @@ impl<K> TlsConnectorLayer<K> {
             self
         }
     );
+
+    generate_set_and_with!(
+        /// Resume TLS sessions in each connector this layer makes; see
+        /// [`TlsConnector::with_session_store`]. Connectors keep their own sessions,
+        /// also when they share a store.
+        pub fn session_store(mut self, store: Option<Arc<dyn TlsClientSessionStore>>) -> Self {
+            self.session_store = store.map(SessionStore);
+            self
+        }
+    );
 }
 
 impl TlsConnectorLayer<ConnectorKindAuto> {
@@ -77,6 +90,7 @@ impl TlsConnectorLayer<ConnectorKindAuto> {
     pub fn auto() -> Self {
         Self {
             base: None,
+            session_store: None,
             kind: ConnectorKindAuto,
         }
     }
@@ -89,6 +103,7 @@ impl TlsConnectorLayer<ConnectorKindSecure> {
     pub fn secure() -> Self {
         Self {
             base: None,
+            session_store: None,
             kind: ConnectorKindSecure,
         }
     }
@@ -101,6 +116,7 @@ impl TlsConnectorLayer<ConnectorKindTunnel> {
     pub fn tunnel(host: Option<Host>) -> Self {
         Self {
             base: None,
+            session_store: None,
             kind: ConnectorKindTunnel { host },
         }
     }
@@ -113,6 +129,7 @@ impl<K: Clone, S> Layer<S> for TlsConnectorLayer<K> {
         TlsConnector {
             inner,
             base_config: self.base.clone(),
+            sessions: connector_sessions(self.session_store.clone()),
             kind: self.kind.clone(),
         }
     }
@@ -121,6 +138,7 @@ impl<K: Clone, S> Layer<S> for TlsConnectorLayer<K> {
         TlsConnector {
             inner,
             base_config: self.base,
+            sessions: connector_sessions(self.session_store),
             kind: self.kind,
         }
     }
@@ -143,7 +161,12 @@ impl Default for TlsConnectorLayer<ConnectorKindAuto> {
 pub struct TlsConnector<S, K = ConnectorKindAuto> {
     inner: S,
     base_config: Option<TlsClientConfig>,
+    sessions: Option<Arc<ConnectorSessions>>,
     kind: K,
+}
+
+fn connector_sessions(store: Option<SessionStore>) -> Option<Arc<ConnectorSessions>> {
+    store.map(|SessionStore(store)| Arc::new(ConnectorSessions::new(store)))
 }
 
 impl<S, K> TlsConnector<S, K> {
@@ -152,6 +175,7 @@ impl<S, K> TlsConnector<S, K> {
         Self {
             inner,
             base_config: None,
+            sessions: None,
             kind,
         }
     }
@@ -164,6 +188,20 @@ impl<S, K> TlsConnector<S, K> {
         /// proxy-scoped [`TlsTunnel`] fields.
         pub fn base_config(mut self, base: Option<TlsClientConfig>) -> Self {
             self.base_config = base;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Resume TLS sessions with servers this connector connected to before,
+        /// keeping them in `store`. Off by default.
+        ///
+        /// A session only resumes with the server identity it was established with,
+        /// under the exact same effective TLS configuration, and never in another
+        /// connector, also when they share a store. Clones of this connector share
+        /// its sessions.
+        pub fn session_store(mut self, store: Option<Arc<dyn TlsClientSessionStore>>) -> Self {
+            self.sessions = connector_sessions(store.map(SessionStore));
             self
         }
     );
@@ -431,6 +469,16 @@ fn set_target_http_version(
 }
 
 impl<S, K> TlsConnector<S, K> {
+    fn build_connector_data(
+        &self,
+        config: BoringTlsConnectorConfig<'_>,
+    ) -> Result<TlsConnectorData, BoxError> {
+        match &self.sessions {
+            Some(sessions) => sessions.connector_data(config),
+            None => TlsConnectorData::try_from(config),
+        }
+    }
+
     fn tunnel_connector_data(
         &self,
         tunnel: Option<&TlsTunnel>,
@@ -440,7 +488,7 @@ impl<S, K> TlsConnector<S, K> {
         let effective = self.tunnel_config_extensions(tunnel, application_protocol);
 
         let config = BoringTlsConnectorConfig::from_extensions(&effective);
-        let mut data = TlsConnectorData::try_from(config)?;
+        let mut data = self.build_connector_data(config)?;
         if data.server_name.is_none() {
             data.server_name = maybe_server_host.cloned();
         }
@@ -552,7 +600,7 @@ impl<S, K> TlsConnector<S, K> {
         resolve_http_alpn(&extensions, application_protocol)?;
 
         let config = BoringTlsConnectorConfig::from_extensions(&extensions);
-        let mut data = TlsConnectorData::try_from(config)?;
+        let mut data = self.build_connector_data(config)?;
 
         // A configured server identity overrides the transport host.
         if data.server_name.is_none() {

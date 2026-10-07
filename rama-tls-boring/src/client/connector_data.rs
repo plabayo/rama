@@ -1,5 +1,6 @@
 use crate::certificate_compression::add_certificate_compressors;
 use crate::client::config::BoringTlsConnectorConfig;
+use crate::client::session::{self, SessionStore, TlsClientSession, TlsClientSessionStore};
 use crate::type_conversion::native_unique;
 use ahash::{HashSet, HashSetExt as _};
 use moka::sync::Cache;
@@ -10,8 +11,8 @@ use rama_boring::{
     pkey::{PKey, Private},
     rsa::Rsa,
     ssl::{
-        ConnectConfiguration, SslCredential, SslCurve, SslOptions, SslSignatureAlgorithm,
-        SslVerifyMode, SslVersion,
+        ConnectConfiguration, SslCredential, SslCurve, SslOptions, SslRef, SslSessionCacheMode,
+        SslSignatureAlgorithm, SslVerifyMode, SslVersion,
     },
     x509::{
         X509,
@@ -34,6 +35,7 @@ use rama_tls::client::TlsClientConfig;
 use rama_tls::client::TlsServerCertPins;
 use rama_tls::client::{ServerTrustRoots, ServerVerifyMode};
 use rama_tls::client::{TlsServerTrust, TlsServerTrustAnchors};
+use rama_utils::macros::generate_set_and_with;
 use std::{
     fmt,
     sync::{Arc, LazyLock},
@@ -48,6 +50,8 @@ pub struct TlsConnectorData {
     pub server_name: Option<Host>,
     pub server_verify_mode: ServerVerifyMode,
     pub server_cert_pins: Option<TlsServerCertPins>,
+    remembers_sessions: bool,
+    session_store: Option<SessionStore>,
 }
 
 /// Shared client configuration, including native context callbacks and session state.
@@ -81,9 +85,41 @@ struct ConnectorOptions {
     record_size_limit: Option<u16>,
     delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
     encrypted_client_hello: bool,
+    remembers_sessions: bool,
+    session_store: Option<SessionStore>,
 }
 
 impl TlsConnectorContextBuilder {
+    generate_set_and_with!(
+        /// Pass each session this context establishes to `remember`, which only
+        /// connections from this context, to the same server identity, can resume.
+        pub fn new_session_callback(
+            mut self,
+            remember: impl Fn(&mut SslRef, TlsClientSession) + Send + Sync + 'static,
+        ) -> Self {
+            self.options.remembers_sessions = true;
+            self.config
+                .set_session_cache_mode(SslSessionCacheMode::CLIENT);
+            self.config.set_new_session_callback(move |ssl, session| {
+                if let Some(session) = TlsClientSession::established(ssl, session) {
+                    remember(ssl, session);
+                }
+            });
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Keep the sessions this context establishes in `store`, and offer them on
+        /// its later connections to the same server identity.
+        pub fn session_store(mut self, store: Arc<dyn TlsClientSessionStore>) -> Self {
+            let sink = store.clone();
+            self.set_new_session_callback(move |_, session| sink.put(session));
+            self.options.session_store = Some(SessionStore(store));
+            self
+        }
+    );
+
     pub fn build(self) -> TlsConnectorContext {
         TlsConnectorContext {
             connector: self.config.build(),
@@ -123,6 +159,8 @@ impl TlsConnectorContext {
             server_name: self.options.server_name.clone(),
             server_verify_mode: self.options.server_verify_mode,
             server_cert_pins: self.options.server_cert_pins.clone(),
+            remembers_sessions: self.options.remembers_sessions,
+            session_store: self.options.session_store.clone(),
         })
     }
 }
@@ -147,9 +185,31 @@ impl TlsConnectorData {
             .as_ref()
             .map(super::connector::server_identity_for)
             .transpose()?;
-        self.config
+        let mut ssl = self
+            .config
             .into_ssl(identity.as_deref())
-            .context("prepare boring client TLS session")
+            .context("prepare boring client TLS session")?;
+        if self.remembers_sessions
+            && let Some(server) = &self.server_name
+            && let Some(key) = session::bind_session_key(&mut ssl, server)?
+            && let Some(SessionStore(store)) = &self.session_store
+            && let Some(session) = store.take(&key)
+        {
+            // TLS 1.2 sessions remain available to concurrent and later connections.
+            if !session.is_single_use() {
+                store.put(session.clone());
+            }
+            if let Err(error) = session.resume_on(&mut ssl) {
+                debug!(%error, "boring connector: stored session not offered");
+            }
+        }
+        Ok(ssl)
+    }
+
+    /// Whether [`Self::into_ssl`] offers a stored session for resumption.
+    #[must_use]
+    pub fn resumes_sessions(&self) -> bool {
+        self.session_store.is_some()
     }
 }
 
@@ -163,6 +223,7 @@ impl std::fmt::Debug for TlsConnectorData {
             .field("server_name", &self.server_name)
             .field("server_verify_mode", &self.server_verify_mode)
             .field("has_server_cert_pins", &self.server_cert_pins.is_some())
+            .field("resumes_sessions", &self.resumes_sessions())
             .finish()
     }
 }
@@ -500,6 +561,8 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             "boring connector: return SSL connector config for server"
         );
 
+        session::identify_context(&mut cfg_builder)?;
+
         Ok(Self {
             config: cfg_builder,
             options: ConnectorOptions {
@@ -511,6 +574,8 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
                 record_size_limit,
                 delegated_credential_schemes,
                 encrypted_client_hello,
+                remembers_sessions: false,
+                session_store: None,
             },
         })
     }
