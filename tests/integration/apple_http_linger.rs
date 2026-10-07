@@ -4,9 +4,11 @@
 use std::{
     convert::Infallible,
     io,
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, mpsc},
     time::Duration,
 };
+
+use parking_lot::Mutex;
 
 use rama::{
     Service,
@@ -86,7 +88,7 @@ fn http_linger_preserves_apple_response_tails_and_reports_truncation() {
             TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
                 .with_remote_endpoint(HostWithPort::example_domain_with_port(80)),
             move |bytes| {
-                let mut accepted = sink.lock().unwrap();
+                let mut accepted = sink.lock();
                 if blocked && !accepted.is_empty() {
                     return TcpDeliverStatus::Paused;
                 }
@@ -111,7 +113,7 @@ fn http_linger_preserves_apple_response_tails_and_reports_truncation() {
             .recv_timeout(Duration::from_secs(5))
             .expect("HTTP close must not wait for the FFI paused-drain backstop");
         let terminal = session.terminal_error_code();
-        let response = accepted.lock().unwrap();
+        let response = accepted.lock();
         assert!(response.starts_with(b"HTTP/1.1 413"));
         if blocked {
             assert!(response.len() < BODY_LEN);
