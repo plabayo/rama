@@ -343,10 +343,14 @@ impl Builder {
         /// the client may still be sending: while writing its response and after
         /// shutting down its side, the server reads and discards input within
         /// these bounds before closing the socket. The allowance is shared by both
-        /// phases; if the total timeout or byte limit runs out while the client
-        /// still sends and the response is blocked, the connection ends with a
+        /// phases; if the total timeout or byte limit is reached before an idle
+        /// end and the response is blocked, the connection ends with a
         /// write error. A client that went idle stops the lingering, not the
         /// response.
+        ///
+        /// If `idle_timeout >= timeout`, the total limit wins even for an idle
+        /// client and can abort a blocked response. Keep the idle timeout shorter
+        /// to let idle clients continue reading; the defaults are 2 s and 30 s.
         ///
         /// Closing with unread input makes the connection reset instead of
         /// ending cleanly, and a Windows client then drops the response it

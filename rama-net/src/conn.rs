@@ -197,6 +197,8 @@ impl LingeringClose {
 
     rama_utils::macros::generate_set_and_with! {
         /// Stop lingering once nothing arrived for this long.
+        /// If this is at least the total timeout, the total limit wins instead.
+        /// HTTP/1 servers can then abort a blocked response even for an idle client.
         pub fn idle_timeout(mut self, timeout: std::time::Duration) -> Self {
             self.idle_timeout = timeout;
             self
