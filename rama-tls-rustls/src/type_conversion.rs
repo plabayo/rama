@@ -43,8 +43,9 @@ impl RamaFrom<&rustls::CommonState, RamaTlsRustlsCrateMarker> for NegotiatedTlsA
             key_exchange_group: state
                 .negotiated_key_exchange_group()
                 .map(|group| SupportedGroup::from(u16::from(group.name()))),
-            // rustls does not report the peer's handshake signature scheme.
+            // rustls reports neither the peer's signature scheme nor certificate compression.
             peer_signature_scheme: None,
+            certificate_compression: None,
         }
     }
 }

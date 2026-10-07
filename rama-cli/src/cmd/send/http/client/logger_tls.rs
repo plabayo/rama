@@ -39,6 +39,9 @@ where
             if let Some(scheme) = algorithms.peer_signature_scheme {
                 eprintln!("* Server signature: {scheme}");
             }
+            if let Some(algorithm) = algorithms.certificate_compression {
+                eprintln!("* Certificate compression: {algorithm}");
+            }
             if let Some(ref alpn) = server_tls_data.application_layer_protocol {
                 eprintln!("* ALPN: server selected {alpn}");
             }

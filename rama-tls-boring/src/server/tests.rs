@@ -201,10 +201,14 @@ mod compression {
     #[tokio::test]
     async fn configured_cert_compression_compresses_for_a_client_that_offers_it() {
         let auth = server_auth(CertificateKeyKind::EcP256);
-        for (configured, compressed) in [
-            (None, 0),
-            (Some(vec![Algorithm::Zlib]), 0),
-            (Some(vec![Algorithm::Zlib, Algorithm::Brotli]), 1),
+        for (configured, compressed, recorded) in [
+            (None, 0, None),
+            (Some(vec![Algorithm::Zlib]), 0, None),
+            (
+                Some(vec![Algorithm::Zlib, Algorithm::Brotli]),
+                1,
+                Some(Algorithm::Brotli),
+            ),
         ] {
             let mut server = TlsServerConfig::new().with_server_auth(auth.clone());
             if let Some(algorithms) = configured.clone() {
@@ -215,11 +219,17 @@ mod compression {
             client
                 .add_certificate_compression_algorithm(CountingBrotli(decompressed.clone()))
                 .unwrap();
-            handshake(server, client).await;
+            let (client, params) = handshake(server, client).await;
             assert_eq!(
                 decompressed.load(Ordering::SeqCst),
                 compressed,
                 "{configured:?}"
+            );
+            // Both ends record the algorithm the server compressed with.
+            assert_eq!(params.algorithms.certificate_compression, recorded);
+            assert_eq!(
+                NegotiatedTlsAlgorithms::rama_from(client.ssl()).certificate_compression,
+                recorded
             );
         }
     }

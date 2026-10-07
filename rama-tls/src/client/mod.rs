@@ -37,7 +37,9 @@ pub use pool::{
 };
 use rama_crypto::pki_types::CertificateDer;
 
-use super::{CipherSuite, ProtocolVersion, SignatureScheme, SupportedGroup};
+use super::{
+    CertificateCompressionAlgorithm, CipherSuite, ProtocolVersion, SignatureScheme, SupportedGroup,
+};
 use rama_core::extensions::{Extension, Extensions};
 use rama_net::address::{Domain, Host};
 use rama_net::tls::ApplicationProtocol;
@@ -86,6 +88,8 @@ pub struct NegotiatedTlsAlgorithms {
     ///
     /// A server only sees one for an authenticating client.
     pub peer_signature_scheme: Option<SignatureScheme>,
+    /// The algorithm the server compressed its certificate with.
+    pub certificate_compression: Option<CertificateCompressionAlgorithm>,
 }
 
 /// Server identity authenticated by the effective TLS verification policy.

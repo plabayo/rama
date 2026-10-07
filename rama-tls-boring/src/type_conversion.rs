@@ -26,6 +26,12 @@ impl RamaFrom<&rama_boring::ssl::SslRef, RamaTlsBoringCrateMarker> for Negotiate
                 .then(|| ssl.peer_signature_algorithm())
                 .flatten()
                 .and_then(|scheme| scheme.rama_try_into().ok()),
+            certificate_compression: if ssl.is_server() {
+                ssl.certificate_compression_algorithm()
+            } else {
+                ssl.peer_certificate_compression_algorithm()
+            }
+            .and_then(|algorithm| algorithm.rama_try_into().ok()),
         }
     }
 }
@@ -119,6 +125,13 @@ try_from_mapping! {
     let ML_DSA_87 = ML_DSA_87;
     // Not exposed in boring, but exists in openssl/ssl.h
     // let RSA_PKCS1_SHA256_LEGACY = RSA_PKCS1_SHA256_LEGACY;
+}
+
+try_from_mapping! {
+    type CertificateCompressionAlgorithm = CertificateCompressionAlgorithm;
+    let Zlib = ZLIB;
+    let Brotli = BROTLI;
+    let Zstd = ZSTD;
 }
 
 try_from_mapping! {

@@ -121,6 +121,7 @@ fn request_details_keep_tls_on_connection_and_render_lazy_http_data() {
                 cipher_suite: Some(rama::tls::CipherSuite::TLS13_AES_256_GCM_SHA384),
                 key_exchange_group: Some(rama::tls::SupportedGroup::X25519MLKEM768),
                 peer_signature_scheme: Some(rama::tls::SignatureScheme::RSA_PSS_SHA384),
+                certificate_compression: Some(rama::tls::CertificateCompressionAlgorithm::Brotli),
             },
         }),
         ja3: None,
@@ -183,6 +184,7 @@ fn request_details_keep_tls_on_connection_and_render_lazy_http_data() {
         "TLS13_AES_256_GCM_SHA384 (0x1302)",
         "X25519MLKEM768 (0x11ec)",
         "RSA_PSS_SHA384 (0x0805)",
+        "Certificate compression",
     ] {
         assert!(connection_tls.contains(expected), "missing {expected}");
     }

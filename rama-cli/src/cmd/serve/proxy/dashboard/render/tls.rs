@@ -185,6 +185,10 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_negotiated_tls_card(
                 .peer_signature_scheme
                 .map(|scheme| tls_fact("Peer signature", scheme)),
             parameters
+                .algorithms
+                .certificate_compression
+                .map(|algorithm| tls_fact("Certificate compression", algorithm)),
+            parameters
                 .peer_certificate_count
                 .map(|count| tls_fact("Peer certificates", count)),
         )
