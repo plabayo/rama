@@ -157,14 +157,18 @@ where
 
     /// Read and drop input. Returns how many bytes were dropped, or 0 once
     /// the peer ended its stream.
-    pub(crate) fn poll_discard_read(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<usize>> {
-        let buffered = self.io.discard_read_buf();
+    pub(crate) fn poll_discard_read(
+        &mut self,
+        cx: &mut Context<'_>,
+        max: usize,
+    ) -> Poll<io::Result<usize>> {
+        let buffered = self.io.discard_read_buf(max);
         self.io.read_to_discard();
         if buffered > 0 {
             return Poll::Ready(Ok(buffered));
         }
-        let read = ready!(self.io.poll_read_from_io(cx))?;
-        Poll::Ready(Ok(self.io.discard_read_buf().max(read)))
+        let read = ready!(self.io.poll_read_from_io_limited(cx, max))?;
+        Poll::Ready(Ok(self.io.discard_read_buf(max).max(read)))
     }
 
     pub(crate) fn disable_date_header(&mut self) {
@@ -173,6 +177,10 @@ where
 
     pub(crate) fn into_inner(self) -> (I, Bytes) {
         self.io.into_inner()
+    }
+
+    pub(crate) fn has_pending_upgrade(&self) -> bool {
+        self.state.upgrade.is_some()
     }
 
     pub(crate) fn pending_upgrade(&mut self) -> Option<upgrade::Pending> {
@@ -629,7 +637,13 @@ where
     }
 
     pub(crate) fn write_head(&mut self, head: MessageHead<T::Outgoing>, body: Option<BodyLength>) {
+        let accepts_upgrade = T::accepts_upgrade(&head.subject, self.state.method.as_ref());
         if let Some(encoder) = self.encode_head(head, body) {
+            if T::is_server() && !accepts_upgrade {
+                // A request only proposes an upgrade. Reject its promise when
+                // the response stays HTTP, including on a reusable connection.
+                self.state.upgrade = None;
+            }
             self.state.writing = if !encoder.is_eof() {
                 Writing::Body(encoder)
             } else if encoder.is_last() {

@@ -340,9 +340,11 @@ impl Builder {
 
     rama_utils::macros::generate_set_and_with! {
         /// Set the lingering close of a connection the server closes while
-        /// the client may still be sending: after shutting down its side, the
-        /// server keeps reading and discarding what the client sends, within
-        /// these bounds, before closing the socket.
+        /// the client may still be sending: while writing its response and after
+        /// shutting down its side, the server reads and discards input within
+        /// these bounds before closing the socket. The allowance is shared by both
+        /// phases; if it expires while the response is blocked, the connection
+        /// ends with a write error.
         ///
         /// Closing with unread input makes the connection reset instead of
         /// ending cleanly, and a Windows client then drops the response it
@@ -650,6 +652,168 @@ mod lingering_tests {
         }
     }
 
+    // Both ordinary Upgrade and CONNECT requests must be rejected as HTTP,
+    // even when the caller enabled the upgrade driver.
+    #[tokio::test]
+    async fn rejected_upgrades_linger_and_do_not_fulfill_on_upgrade() {
+        for request in [
+            b"POST / HTTP/1.1\r\nhost: localhost\r\nconnection: upgrade\r\nupgrade: example\r\ncontent-length: 10000\r\n\r\n".as_slice(),
+            b"CONNECT localhost:443 HTTP/1.1\r\nhost: localhost\r\ncontent-length: 10000\r\n\r\n".as_slice(),
+        ] {
+            let (mut client, server_io) = tokio::io::duplex(256);
+            let (upgrade_tx, mut upgrade_rx) = tokio::sync::mpsc::unbounded_channel();
+            let service = service_fn(move |req: Request| {
+                let upgrade = req.extensions().get_ref::<rama_http::io::upgrade::OnUpgrade>().unwrap().clone();
+                upgrade_tx.send(upgrade).unwrap();
+                answer(req)
+            });
+            let server = tokio::spawn(async move {
+                Builder::new().with_lingering_close(patient_linger())
+                    .serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service))
+                    .with_upgrades().await
+            });
+            client.write_all(request).await.unwrap();
+            let mut head = [0; 12];
+            client.read_exact(&mut head).await.unwrap();
+            assert!(is_413(&head));
+            let upgrade = upgrade_rx.recv().await.unwrap();
+            assert!(tokio::time::timeout(Duration::from_secs(1), upgrade).await.unwrap().is_err(),
+                "a rejected request fulfilled OnUpgrade");
+            assert!(!server.is_finished(), "a rejected upgrade skipped lingering");
+            client.write_all(b"remaining upload").await.unwrap();
+            client.shutdown().await.unwrap();
+            let (_, end) = read_until_end(&mut client).await;
+            end.unwrap();
+            tokio::time::timeout(Duration::from_secs(1), server).await.unwrap().unwrap().unwrap();
+        }
+    }
+
+    // Neither direction can buffer the full message. The client deliberately
+    // finishes uploading before reading, reproducing the two full buffers.
+    #[tokio::test]
+    async fn lingering_drains_upload_while_large_response_is_blocked() {
+        let (mut client, server_io) = tokio::io::duplex(256);
+        let server = tokio::spawn(async move {
+            let service = service_fn(|_req: Request| async {
+                let mut response = Response::new(Body::from(vec![b'r'; 64 * 1024]));
+                *response.status_mut() = StatusCode::PAYLOAD_TOO_LARGE;
+                Ok::<_, Infallible>(response)
+            });
+            Builder::new()
+                .serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service))
+                .await
+        });
+        let exchange = async {
+            client.write_all(UPLOAD_HEAD).await.unwrap();
+            client.write_all(&vec![b'x'; 64 * 1024]).await.unwrap();
+            client.shutdown().await.unwrap();
+            let (bytes, end) = read_until_end(&mut client).await;
+            end.unwrap();
+            assert!(is_413(&bytes));
+            assert!(bytes.ends_with(&vec![b'r'; 64 * 1024]));
+            server.await.unwrap().unwrap();
+        };
+        tokio::time::timeout(Duration::from_secs(2), exchange)
+            .await
+            .expect("response flushing and the upload deadlocked");
+    }
+    #[tokio::test]
+    async fn accepted_upgrades_preserve_buffered_protocol_bytes() {
+        for (method, status) in [
+            ("GET", StatusCode::SWITCHING_PROTOCOLS),
+            ("CONNECT", StatusCode::OK),
+            ("CONNECT", StatusCode::NO_CONTENT),
+        ] {
+            let (mut client, server_io) = tokio::io::duplex(256);
+            let (upgrade_tx, mut upgrade_rx) = tokio::sync::mpsc::unbounded_channel();
+            let service = service_fn(move |req: Request| {
+                upgrade_tx
+                    .send(
+                        req.extensions()
+                            .get_ref::<rama_http::io::upgrade::OnUpgrade>()
+                            .unwrap()
+                            .clone(),
+                    )
+                    .unwrap();
+                async move {
+                    let mut response = Response::new(Body::empty());
+                    *response.status_mut() = status;
+                    Ok::<_, Infallible>(response)
+                }
+            });
+            let server = tokio::spawn(async move {
+                Builder::new()
+                    .serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service))
+                    .with_upgrades()
+                    .await
+            });
+            let target = if method == "CONNECT" {
+                "localhost:443"
+            } else {
+                "/"
+            };
+            client.write_all(format!("{method} {target} HTTP/1.1\r\nhost: localhost\r\nconnection: upgrade\r\nupgrade: example\r\n\r\ntail").as_bytes()).await.unwrap();
+            let exchange = async {
+                let mut upgraded = upgrade_rx.recv().await.unwrap().await.unwrap();
+                let mut tail = [0; 4];
+                upgraded.read_exact(&mut tail).await.unwrap();
+                assert_eq!(&tail, b"tail");
+                server.await.unwrap().unwrap();
+            };
+            tokio::time::timeout(Duration::from_secs(2), exchange)
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn blocked_response_ends_when_lingering_allowance_expires() {
+        for (linger, flood) in [
+            (
+                patient_linger().with_idle_timeout(Duration::from_millis(100)),
+                false,
+            ),
+            (
+                patient_linger().with_timeout(Duration::from_millis(100)),
+                true,
+            ),
+            (patient_linger().with_max_bytes(1), true),
+        ] {
+            let (mut client, server_io) = tokio::io::duplex(256);
+            let server = tokio::spawn(async move {
+                let service = service_fn(|_req: Request| async {
+                    let mut response = Response::new(Body::from(vec![b'r'; 64 * 1024]));
+                    *response.status_mut() = StatusCode::PAYLOAD_TOO_LARGE;
+                    Ok::<_, Infallible>(response)
+                });
+                Builder::new()
+                    .with_lingering_close(linger)
+                    .serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service))
+                    .await
+            });
+            client.write_all(UPLOAD_HEAD).await.unwrap();
+            let upload = tokio::spawn(async move {
+                if flood {
+                    while client.write_all(&[b'x'; 4096]).await.is_ok() {}
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            });
+            let result = tokio::time::timeout(Duration::from_secs(2), server).await;
+            upload.abort();
+            let err = result
+                .expect("stuck response outlived its drain allowance")
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(
+                std::error::Error::source(&err)
+                    .and_then(|source| source.downcast_ref::<io::Error>())
+                    .map(io::Error::kind),
+                Some(io::ErrorKind::TimedOut),
+                "{err:?}"
+            );
+        }
+    }
     /// Upload at a modest pace and only read the response once `ready`, as a
     /// client busy writing its request does.
     async fn upload_then_read(

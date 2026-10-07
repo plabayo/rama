@@ -508,6 +508,11 @@ impl Http1Transaction for Server {
         true
     }
 
+    fn accepts_upgrade(status: &StatusCode, method: Option<&Method>) -> bool {
+        *status == StatusCode::SWITCHING_PROTOCOLS
+            || (method == Some(&Method::CONNECT) && status.is_success())
+    }
+
     fn update_date() {
         date::update();
     }

@@ -42,7 +42,7 @@ pub(crate) struct Dispatcher<D, Bs: StreamingBody, I, T> {
     linger: Linger,
 }
 
-/// Lingering close of a server connection: after shutting down, keep
+/// Lingering close of a server connection: while responding and after shutting down, keep
 /// reading and dropping what the client still sends, so that closing with
 /// unread input does not reset the client, which on Windows would make it
 /// drop the response it has not read yet.
@@ -59,6 +59,9 @@ enum Linger {
         discarded: u64,
     },
     Done,
+    // The peer did not finish within the allowance. A response still blocked
+    // on this upload must not retain the connection indefinitely.
+    Exhausted,
 }
 
 /// How many reads a lingering connection does per poll before it yields, so
@@ -238,7 +241,25 @@ where
 
         // Once shut down, only lingering is left to do.
         if !self.shut_down {
-            ready!(self.poll_loop(cx))?;
+            let dispatched = self.poll_loop(cx)?;
+            // Once HTTP abandons input, drain concurrently with the response.
+            // Otherwise an uploading client that reads only after sending can
+            // fill both directions and prevent even the FIN from being sent.
+            // Never consume bytes belonging to an accepted/manual upgrade.
+            if should_shutdown
+                && T::is_server()
+                && self.conn.is_read_closed()
+                && !self.conn.can_write_head()
+                && !self.conn.has_pending_upgrade()
+            {
+                _ = self.poll_linger(cx);
+                if matches!(self.linger, Linger::Exhausted)
+                    && (self.conn.has_buffered_write() || self.body_rx.is_some())
+                {
+                    return self.linger_write_timeout();
+                }
+            }
+            ready!(dispatched);
         }
 
         if self.shut_down || self.is_done() {
@@ -247,7 +268,11 @@ where
                     self.conn.take_error()?;
                     return Poll::Ready(Ok(Dispatched::Upgrade(pending)));
                 } else if should_shutdown {
-                    let shutdown = ready!(self.conn.poll_shutdown(cx));
+                    let shutdown = self.conn.poll_shutdown(cx);
+                    if shutdown.is_pending() && matches!(self.linger, Linger::Exhausted) {
+                        return self.linger_write_timeout();
+                    }
+                    let shutdown = ready!(shutdown);
                     self.shut_down = true;
                     shutdown.map_err(crate::Error::new_shutdown)?;
                 }
@@ -262,14 +287,24 @@ where
         }
     }
 
-    /// Drive the lingering close of a server connection that was shut down
-    /// while the client may still be sending.
+    fn linger_write_timeout(&mut self) -> Poll<crate::Result<Dispatched>> {
+        // A best-effort shutdown would flush the same blocked response again.
+        // The configured allowance is exhausted, so let the owner drop IO.
+        self.shut_down = true;
+        Poll::Ready(Err(crate::Error::new_body_write(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "response blocked after the lingering upload allowance expired",
+        ))))
+    }
+
+    /// Drain abandoned input concurrently with a response and after shutdown,
+    /// sharing one allowance across both phases.
     fn poll_linger(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         use tokio::time::Instant;
 
         loop {
             match &mut self.linger {
-                Linger::Done => return Poll::Ready(()),
+                Linger::Done | Linger::Exhausted => return Poll::Ready(()),
                 Linger::NotStarted => {
                     let bounds = self.conn.lingering_close().filter(|bounds| {
                         T::is_server()
@@ -304,10 +339,14 @@ where
                 } => {
                     let end = 'drain: {
                         for _ in 0..LINGER_READS_PER_POLL {
-                            if bounds.max_bytes().is_some_and(|max| *discarded >= max) {
+                            let room = bounds.max_bytes().map_or(usize::MAX, |max| {
+                                usize::try_from(max.saturating_sub(*discarded))
+                                    .unwrap_or(usize::MAX)
+                            });
+                            if room == 0 {
                                 break 'drain "max_bytes";
                             }
-                            match self.conn.poll_discard_read(cx) {
+                            match self.conn.poll_discard_read(cx, room) {
                                 Poll::Ready(Ok(0)) => break 'drain "eof",
                                 Poll::Ready(Err(_)) => break 'drain "error",
                                 Poll::Ready(Ok(n)) => {
@@ -344,7 +383,11 @@ where
                             u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
                         "http1 server lingered before closing the connection",
                     );
-                    self.linger = Linger::Done;
+                    self.linger = if matches!(end, "idle" | "timeout" | "max_bytes") {
+                        Linger::Exhausted
+                    } else {
+                        Linger::Done
+                    };
                 }
             }
         }
@@ -1065,6 +1108,94 @@ mod tests {
         assert!(dispatcher.poll().is_pending());
     }
 
+    #[cfg(not(miri))]
+    #[tokio::test]
+    async fn lingering_obeys_exact_byte_allowance() {
+        use crate::proto::h1::ServerTransaction;
+        use rama_core::service::service_fn;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        struct Input {
+            head: Option<Vec<u8>>,
+            drained: Arc<AtomicUsize>,
+        }
+        impl AsyncRead for Input {
+            fn poll_read(
+                mut self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+                buf: &mut tokio::io::ReadBuf<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                if let Some(head) = self.head.take() {
+                    buf.put_slice(&head);
+                } else {
+                    let n = buf.remaining();
+                    buf.initialize_unfilled().fill(b'x');
+                    buf.advance(n);
+                    self.drained.fetch_add(n, Ordering::Relaxed);
+                }
+                Poll::Ready(Ok(()))
+            }
+        }
+        impl AsyncWrite for Input {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+                buf: &[u8],
+            ) -> Poll<std::io::Result<usize>> {
+                Poll::Ready(Ok(buf.len()))
+            }
+            fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+            fn poll_shutdown(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+        for buffered in [false, true] {
+            let drained = Arc::new(AtomicUsize::new(0));
+            let mut head = b"POST / HTTP/1.1\r\nhost: a\r\ncontent-length: 10000\r\n\r\n".to_vec();
+            if buffered {
+                head.extend_from_slice(&[b'x'; 64]);
+            }
+            let io = ServiceInput::new(Input {
+                head: Some(head),
+                drained: drained.clone(),
+            });
+            let mut conn = Conn::<_, Bytes, ServerTransaction>::new(io);
+            std::future::poll_fn(|cx| conn.poll_read_head(cx))
+                .await
+                .unwrap()
+                .unwrap();
+            conn.close_read();
+            conn.set_lingering_close(Some(LingeringClose::new().with_max_bytes(1)));
+            let service = service_fn(|_req: Request<IncomingBody>| async {
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            });
+            let mut dispatcher = Dispatcher::new(Server::new(service), conn);
+            std::future::poll_fn(|cx| dispatcher.poll_linger(cx)).await;
+            let (_, unread, _) = dispatcher.into_inner();
+            if buffered {
+                assert_eq!(
+                    unread.len(),
+                    63,
+                    "discarded buffered input past the allowance"
+                );
+                assert_eq!(drained.load(Ordering::Relaxed), 0);
+            } else {
+                assert_eq!(
+                    drained.load(Ordering::Relaxed),
+                    1,
+                    "read past the allowance"
+                );
+            }
+        }
+    }
     // Regression for #1014: when a server connection ends via a dispatch error,
     // the dispatcher must still drive `poll_shutdown` on the transport (so e.g.
     // a TLS stream emits close_notify) instead of dropping it mid-flight.

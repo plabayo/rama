@@ -49,6 +49,11 @@ pub(crate) trait Http1Transaction {
         Self::is_server()
     }
 
+    /// Whether this outgoing message accepts an HTTP upgrade.
+    fn accepts_upgrade(_subject: &Self::Outgoing, _method: Option<&Method>) -> bool {
+        false
+    }
+
     fn update_date() {}
 }
 

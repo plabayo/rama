@@ -134,9 +134,13 @@ where
     }
 
     /// Drop what was read but not parsed yet, returning how many bytes.
-    pub(crate) fn discard_read_buf(&mut self) -> usize {
-        let len = self.read_buf.len();
-        self.read_buf.clear();
+    pub(crate) fn discard_read_buf(&mut self, max: usize) -> usize {
+        let len = self.read_buf.len().min(max);
+        if len == self.read_buf.len() {
+            self.read_buf.clear();
+        } else {
+            self.read_buf.advance(len);
+        }
         len
     }
 
@@ -252,6 +256,14 @@ where
     }
 
     pub(crate) fn poll_read_from_io(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<usize>> {
+        self.poll_read_from_io_limited(cx, usize::MAX)
+    }
+
+    pub(crate) fn poll_read_from_io_limited(
+        &mut self,
+        cx: &mut Context<'_>,
+        max: usize,
+    ) -> Poll<io::Result<usize>> {
         self.read_blocked = false;
         // Get the next amount to allocate, but make sure we don't go over
         // the max read buf size configured.
@@ -268,7 +280,8 @@ where
         // SAFETY: ReadBuf and poll_read promise not to set any uninitialized
         // bytes onto `dst`.
         let dst = unsafe { self.read_buf.chunk_mut().as_uninit_slice_mut() };
-        let mut buf = ReadBuf::uninit(dst);
+        let room = dst.len().min(max);
+        let mut buf = ReadBuf::uninit(&mut dst[..room]);
         let had_room = buf.remaining() > 0;
         match Pin::new(&mut self.io).poll_read(cx, &mut buf) {
             Poll::Ready(Ok(_)) => {
