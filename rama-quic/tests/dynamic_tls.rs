@@ -19,6 +19,8 @@ use std::{
     time::Duration,
 };
 
+use ahash::HashSet;
+use parking_lot::Mutex;
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
     rt::Executor,
@@ -27,7 +29,7 @@ use rama_core::{
 use rama_crypto::cert::CertificateAuthorityData;
 use rama_net::{address::Domain, tls::ApplicationProtocol};
 use rama_quic::{
-    ClientConfig, Connection, ConnectionError, Endpoint, ServerConfig,
+    ClientConfig, Connection, ConnectionError, Endpoint, ServerConfig, TransportConfig,
     tls::{QuicClientConfigProvider, QuicServerConfigProvider, TlsOptions},
 };
 use rama_quic_proto::{TransportErrorCode, VarInt};
@@ -157,21 +159,30 @@ async fn truncating_relay(server: SocketAddr) -> SocketAddr {
 enum Relaying {
     All,
     DelaySecond(Duration),
+    HoldFirstRetry(Duration),
     #[cfg(feature = "boring")]
     FirstOnly,
     #[cfg(feature = "boring")]
     NoRetries,
 }
 
-/// A UDP relay between clients and a server, counting the Retry packets the server sends.
+/// A UDP relay between clients and a server, recording the Retry packets the server sends.
 struct Relay {
     addr: SocketAddr,
-    retries: Arc<AtomicUsize>,
+    /// The connection IDs of the client attempts sent a Retry: a client that retransmits its
+    /// Initial before the Retry arrives is sent another for the same attempt.
+    retried: Arc<Mutex<HashSet<Box<[u8]>>>>,
+    retry_packets: Arc<AtomicUsize>,
 }
 
 impl Relay {
+    /// The client attempts the server sent a Retry.
     fn retries(&self) -> usize {
-        self.retries.load(Ordering::Relaxed)
+        self.retried.lock().len()
+    }
+
+    fn retry_packets(&self) -> usize {
+        self.retry_packets.load(Ordering::Relaxed)
     }
 }
 
@@ -189,12 +200,19 @@ fn is_retry(packet: &[u8]) -> bool {
         }
 }
 
+/// The Destination Connection ID of a long header packet (RFC 9000 §17.2).
+fn destination_cid(packet: &[u8]) -> &[u8] {
+    let len = usize::from(packet[5]);
+    &packet[6..6 + len]
+}
+
 async fn relay(server: SocketAddr, relaying: Relaying) -> Relay {
     let front = Arc::new(UdpSocket::bind(localhost()).await.unwrap());
     let back = Arc::new(UdpSocket::bind(localhost()).await.unwrap());
     back.connect(server).await.unwrap();
     let addr = front.local_addr().unwrap();
-    let retries = Arc::new(AtomicUsize::new(0));
+    let retried = Arc::new(Mutex::new(HashSet::default()));
+    let retry_packets = Arc::new(AtomicUsize::new(0));
     let (peer_tx, mut peer_rx) = tokio::sync::watch::channel(None::<SocketAddr>);
     tokio::spawn({
         let (front, back) = (front.clone(), back.clone());
@@ -222,7 +240,7 @@ async fn relay(server: SocketAddr, relaying: Relaying) -> Relay {
         }
     });
     tokio::spawn({
-        let retries = retries.clone();
+        let (retried, retry_packets) = (retried.clone(), retry_packets.clone());
         async move {
             let mut buf = vec![0; 65_536];
             loop {
@@ -230,18 +248,33 @@ async fn relay(server: SocketAddr, relaying: Relaying) -> Relay {
                 let Some(peer) = *peer_rx.borrow_and_update() else {
                     continue;
                 };
-                if is_retry(&buf[..len]) {
-                    retries.fetch_add(1, Ordering::Relaxed);
-                    #[cfg(feature = "boring")]
-                    if matches!(relaying, Relaying::NoRetries) {
-                        continue;
+                let datagram = &buf[..len];
+                if is_retry(datagram) {
+                    retried.lock().insert(destination_cid(datagram).into());
+                    let first = retry_packets.fetch_add(1, Ordering::Relaxed) == 0;
+                    match relaying {
+                        #[cfg(feature = "boring")]
+                        Relaying::NoRetries => continue,
+                        Relaying::HoldFirstRetry(delay) if first => {
+                            let (front, datagram) = (front.clone(), datagram.to_vec());
+                            tokio::spawn(async move {
+                                tokio::time::sleep(delay).await;
+                                _ = front.send_to(&datagram, peer).await;
+                            });
+                            continue;
+                        }
+                        _ => {}
                     }
                 }
-                _ = front.send_to(&buf[..len], peer).await;
+                _ = front.send_to(datagram, peer).await;
             }
         }
     });
-    Relay { addr, retries }
+    Relay {
+        addr,
+        retried,
+        retry_packets,
+    }
 }
 
 /// Serve every connection by echoing its first bidirectional stream.
@@ -273,6 +306,30 @@ async fn until(done: impl Fn() -> bool) {
     .expect("the condition holds in time");
 }
 
+/// Exchange a message through a relay holding the server's first Retry back until the client
+/// retransmitted its Initial, which the server sends a Retry of its own.
+async fn exchange_retransmitting_before_the_retry(
+    server: &Endpoint,
+    config: ClientConfig,
+) -> Relay {
+    let relay = relay(
+        server.local_addr().unwrap(),
+        Relaying::HoldFirstRetry(Duration::from_millis(500)),
+    )
+    .await;
+    // A short initial RTT has the client probe long before the held Retry arrives.
+    let transport = TransportConfig::default().with_initial_rtt(Duration::from_millis(10));
+    let config = config.with_transport_config(Arc::new(transport));
+    exchange(&client().await, config, relay.addr, "a.test")
+        .await
+        .close(VarInt::from(0u32), b"done");
+    assert!(
+        relay.retry_packets() > 1,
+        "the Initial was retransmitted first"
+    );
+    relay
+}
+
 /// Connect and exchange a message, which also delivers what the server sends after the
 /// handshake, such as session tickets and address validation tokens.
 async fn exchange(
@@ -295,7 +352,6 @@ async fn exchange(
 mod boring {
     use std::future::IntoFuture as _;
 
-    use parking_lot::Mutex;
     use rama_crypto::cert::LeafCertConfig;
     use rama_quic::{EndpointConfig, tls::BoringTlsProvider};
     use rama_tls::server::{CertificateIssuanceContext, DynamicCertIssuer};
@@ -429,6 +485,25 @@ mod boring {
             .await
             .close(VarInt::from(0u32), b"done");
         assert_eq!(relay.retries(), 1, "a cached certificate");
+        assert_eq!(issuer.seen(), [dns("a.test")]);
+
+        server.close(VarInt::from(0u32), b"done");
+        timeout(DEADLINE, served).await.unwrap().unwrap();
+    }
+
+    /// An Initial retransmitted before its Retry arrives is the same attempt: one Retry is
+    /// followed, and the certificate is issued once.
+    #[tokio::test]
+    async fn a_retransmitted_initial_is_validated_and_issued_for_once() {
+        let ca =
+            Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
+        let issuer = RecordingIssuer::new(&ca);
+        let server = server(&tls(&issuer), &BoringTlsProvider).await;
+        let served = serve_echo(&server);
+
+        let config = client_config(&ca, alpn(), &BoringTlsProvider);
+        let relay = exchange_retransmitting_before_the_retry(&server, config).await;
+        assert_eq!(relay.retries(), 1);
         assert_eq!(issuer.seen(), [dns("a.test")]);
 
         server.close(VarInt::from(0u32), b"done");
@@ -877,7 +952,6 @@ mod boring {
 
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 mod rustls {
-    use parking_lot::Mutex;
     use rama_quic::tls::RustlsTlsProvider;
     use rama_tls_rustls::{
         dep::rustls,
@@ -987,6 +1061,31 @@ mod rustls {
             .close(VarInt::from(0u32), b"done");
         }
         assert_eq!(relay.retries(), 2);
+
+        server.close(VarInt::from(0u32), b"done");
+        timeout(DEADLINE, served).await.unwrap().unwrap();
+    }
+
+    /// An Initial retransmitted before its Retry arrives is the same attempt: one Retry is
+    /// followed, and the configuration is resolved once.
+    #[tokio::test]
+    async fn a_retransmitted_initial_is_validated_and_resolved_once() {
+        let ca =
+            Arc::new(CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let provider = RustlsTlsProvider::new(crypto());
+        let tls = TlsServerConfig::new().with_dynamic_config(Arc::new(PerName {
+            ca: ca.clone(),
+            seen: seen.clone(),
+            fail: false,
+        }));
+        let server = server(&tls, &provider).await;
+        let served = serve_echo(&server);
+
+        let config = client_config(&ca, alpn(), &provider);
+        let relay = exchange_retransmitting_before_the_retry(&server, config).await;
+        assert_eq!(relay.retries(), 1);
+        assert_eq!(*seen.lock(), [Some("a.test".to_owned())]);
 
         server.close(VarInt::from(0u32), b"done");
         timeout(DEADLINE, served).await.unwrap().unwrap();
