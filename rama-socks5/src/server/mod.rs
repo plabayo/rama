@@ -30,7 +30,7 @@ use rama_net::{
     user::{self, authority::Authorizer},
 };
 use rama_tcp::{TcpStream, server::TcpListener};
-use std::{fmt, sync::Arc};
+use std::{fmt, sync::Arc, time::Duration};
 
 mod peek;
 #[doc(inline)]
@@ -74,6 +74,8 @@ pub struct Socks5Acceptor<C = DefaultConnector, B = (), U = (), A = ()> {
     // This can be useful in case you also wish to support guest users.
     auth_opt: bool,
 
+    handshake_timeout: Option<Duration>,
+
     exec: Executor,
 }
 
@@ -96,6 +98,7 @@ impl Socks5Acceptor<(), (), (), ()> {
             udp_associator: (),
             auth: AuthKind::NoAuth(()),
             auth_opt: false,
+            handshake_timeout: None,
             exec,
         }
     }
@@ -109,6 +112,7 @@ impl<C, B, U> Socks5Acceptor<C, B, U> {
             udp_associator: self.udp_associator,
             auth: AuthKind::WithAuth(authorizer),
             auth_opt: self.auth_opt,
+            handshake_timeout: self.handshake_timeout,
             exec: self.exec,
         }
     }
@@ -121,6 +125,18 @@ impl<C, B, U> Socks5Acceptor<C, B, U> {
         /// can be useful in case you wish to support so called Guest users.
         pub fn auth_optional(mut self, optional: bool) -> Self {
             self.auth_opt = optional;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Define how long the socks5 handshake may take, from the first byte of the
+        /// client greeting up to and including the client request.
+        ///
+        /// Without it a peer can open a connection, send a single byte and keep the
+        /// task alive indefinitely, prior to any authentication.
+        pub fn handshake_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.handshake_timeout = timeout;
             self
         }
     }
@@ -139,6 +155,7 @@ impl<B, U, A> Socks5Acceptor<(), B, U, A> {
             udp_associator: self.udp_associator,
             auth: self.auth,
             auth_opt: self.auth_opt,
+            handshake_timeout: self.handshake_timeout,
             exec: self.exec,
         }
     }
@@ -167,6 +184,7 @@ impl<C, U, A> Socks5Acceptor<C, (), U, A> {
             udp_associator: self.udp_associator,
             auth: self.auth,
             auth_opt: self.auth_opt,
+            handshake_timeout: self.handshake_timeout,
             exec: self.exec,
         }
     }
@@ -195,6 +213,7 @@ impl<C, B, A> Socks5Acceptor<C, B, (), A> {
             udp_associator,
             auth: self.auth,
             auth_opt: self.auth_opt,
+            handshake_timeout: self.handshake_timeout,
             exec: self.exec,
         }
     }
@@ -348,33 +367,46 @@ impl<C, B, U, A> Socks5Acceptor<C, B, U, A> {
         B: Socks5Binder<S>,
         S: Io + Unpin + ExtensionsRef,
     {
-        let client_header = client::Header::read_from(&mut stream)
-            .await
-            .map_err(|err| Error::protocol(err).with_context("read client header"))?;
+        // One budget for the whole handshake rather than one per read, so a peer
+        // cannot keep the task alive by trickling a byte per step.
+        let handshake = async {
+            let client_header = client::Header::read_from(&mut stream)
+                .await
+                .map_err(|err| Error::protocol(err).with_context("read client header"))?;
 
-        let (negotiated_method, maybe_ext) = self
-            .handle_method(&client_header.methods, &mut stream)
-            .await?;
+            let (negotiated_method, maybe_ext) = self
+                .handle_method(&client_header.methods, &mut stream)
+                .await?;
 
-        if let Some(ext) = maybe_ext {
-            stream.extensions().extend(&ext);
-        }
+            if let Some(ext) = maybe_ext {
+                stream.extensions().extend(&ext);
+            }
 
-        tracing::trace!(
-            "socks5 server: headers exchanged negotiated method = {negotiated_method:?} (for client methods: {:?}",
-            client_header.methods,
-        );
+            tracing::trace!(
+                "socks5 server: headers exchanged negotiated method = {negotiated_method:?} (for client methods: {:?}",
+                client_header.methods,
+            );
 
-        let client_request = client::Request::read_from(&mut stream)
-            .await
-            .map_err(|err| Error::protocol(err).with_context("read client request"))?;
-        tracing::trace!(
-            "socks5 server w/ destination {} and negotiated method {:?} (for client methods: {:?}): client request received cmd {:?}",
-            client_request.destination,
-            negotiated_method,
-            client_header.methods,
-            client_request.command,
-        );
+            let client_request = client::Request::read_from(&mut stream)
+                .await
+                .map_err(|err| Error::protocol(err).with_context("read client request"))?;
+            tracing::trace!(
+                "socks5 server w/ destination {} and negotiated method {:?} (for client methods: {:?}): client request received cmd {:?}",
+                client_request.destination,
+                negotiated_method,
+                client_header.methods,
+                client_request.command,
+            );
+
+            Ok::<_, Error>((client_request, client_header, negotiated_method))
+        };
+
+        let (client_request, client_header, negotiated_method) = match self.handshake_timeout {
+            Some(timeout) => tokio::time::timeout(timeout, handshake)
+                .await
+                .map_err(|err| Error::aborted("socks5 handshake timeout").with_source(err))?,
+            None => handshake.await,
+        }?;
 
         stream.extensions().insert(StreamTransformed {
             by: "rama-socks5::Socks5Acceptor",
