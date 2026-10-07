@@ -11,6 +11,7 @@
 //!   plain text stream to the first.
 
 mod acceptor_data;
+pub(crate) use acceptor_data::select_alpn_by_server_preference;
 #[doc(inline)]
 pub use acceptor_data::{IssuedCertificate, TlsAcceptorData};
 

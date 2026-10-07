@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use moka::future::Cache;
 use parking_lot::Mutex;
-use rama_boring::ssl::{ClientHello, NameType, SslAcceptorBuilder, SslRef};
+use rama_boring::ssl::{AlpnError, ClientHello, NameType, SslAcceptorBuilder, SslRef};
 use rama_boring_tokio::{AsyncSelectCertError, BoxSelectCertFinish};
 use rama_core::{
     conversion::{RamaTryFrom, RamaTryInto},
@@ -215,7 +215,7 @@ pub(super) struct TlsConfig {
 impl TlsConfig {
     pub(super) fn acceptor_builder(&self) -> Result<SslAcceptorBuilder, BoxError> {
         use rama_boring::{
-            ssl::{AlpnError, SslAcceptor, SslMethod, SslVerifyMode},
+            ssl::{SslAcceptor, SslMethod, SslVerifyMode},
             x509::{store::X509StoreBuilder, verify::X509VerifyFlags},
         };
         use rama_tls::keylog::{KeyLogSink, open_intent_sink};
@@ -249,23 +249,7 @@ impl TlsConfig {
         }
         if let Some(protocols) = self.alpn_protocols.clone() {
             builder.set_alpn_select_callback(move |_, offered| {
-                let mut reader = std::io::Cursor::new(offered);
-                loop {
-                    let start = reader.position() as usize;
-                    match ApplicationProtocol::decode_wire_format(&mut reader) {
-                        Ok(protocol) if protocols.contains(&protocol) => {
-                            return Ok(&offered[start + 1..reader.position() as usize]);
-                        }
-                        Ok(_) => (),
-                        Err(error) => {
-                            return Err(if error.kind() == std::io::ErrorKind::UnexpectedEof {
-                                AlpnError::NOACK
-                            } else {
-                                AlpnError::ALERT_FATAL
-                            });
-                        }
-                    }
-                }
+                select_alpn_by_server_preference(&protocols, offered)
             });
         }
         if let Some(sink) = open_intent_sink(&self.keylog_intent)? {
@@ -623,6 +607,30 @@ impl TryFrom<super::config::BoringTlsAcceptorConfig<'_>> for TlsConfig {
     }
 }
 
+/// Select the first configured protocol the client offers: configured order is preference order.
+pub(crate) fn select_alpn_by_server_preference<'a>(
+    protocols: &[ApplicationProtocol],
+    offered: &'a [u8],
+) -> Result<&'a [u8], AlpnError> {
+    let mut reader = std::io::Cursor::new(offered);
+    let mut candidates = Vec::new();
+    while (reader.position() as usize) < offered.len() {
+        let start = reader.position() as usize;
+        let protocol = ApplicationProtocol::decode_wire_format(&mut reader)
+            .map_err(|_malformed| AlpnError::ALERT_FATAL)?;
+        candidates.push((protocol, &offered[start + 1..reader.position() as usize]));
+    }
+    protocols
+        .iter()
+        .find_map(|preferred| {
+            candidates
+                .iter()
+                .find(|(protocol, _)| protocol == preferred)
+                .map(|(_, wire)| *wire)
+        })
+        .ok_or(AlpnError::NOACK)
+}
+
 fn to_opt_identity(
     ssl_ref: &SslRef,
     fallback: Option<&CertificateIdentity>,
@@ -907,6 +915,34 @@ mod tests {
                 .await
                 .is_none()
         );
+    }
+
+    #[test]
+    fn alpn_selection_follows_server_preference_order() {
+        let server = [ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11];
+        let wire = |protocols: &[ApplicationProtocol]| {
+            ApplicationProtocol::encode_alpns(protocols).expect("encode ALPN offer")
+        };
+        for (offered, selected) in [
+            (
+                vec![ApplicationProtocol::HTTP_11, ApplicationProtocol::HTTP_2],
+                Some("h2"),
+            ),
+            (
+                vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11],
+                Some("h2"),
+            ),
+            (vec![ApplicationProtocol::HTTP_11], Some("http/1.1")),
+            (vec![ApplicationProtocol::HTTP_3], None),
+        ] {
+            let offer = wire(&offered);
+            let result = select_alpn_by_server_preference(&server, &offer);
+            assert_eq!(
+                result.ok(),
+                selected.map(str::as_bytes),
+                "offered: {offered:?}"
+            );
+        }
     }
 
     /// Issues one certificate for every name, cached under one identity.
