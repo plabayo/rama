@@ -59,8 +59,9 @@ enum Linger {
         discarded: u64,
     },
     Done,
-    // The peer did not finish within the allowance. A response still blocked
-    // on this upload must not retain the connection indefinitely.
+    // The peer was still sending when the allowance ran out. A response still
+    // blocked on this upload must not retain the connection indefinitely. A
+    // peer that went idle is done instead: it is not what blocks a response.
     Exhausted,
 }
 
@@ -383,7 +384,7 @@ where
                             u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
                         "http1 server lingered before closing the connection",
                     );
-                    self.linger = if matches!(end, "idle" | "timeout" | "max_bytes") {
+                    self.linger = if matches!(end, "timeout" | "max_bytes") {
                         Linger::Exhausted
                     } else {
                         Linger::Done

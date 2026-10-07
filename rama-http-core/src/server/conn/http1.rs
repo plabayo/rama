@@ -343,8 +343,10 @@ impl Builder {
         /// the client may still be sending: while writing its response and after
         /// shutting down its side, the server reads and discards input within
         /// these bounds before closing the socket. The allowance is shared by both
-        /// phases; if it expires while the response is blocked, the connection
-        /// ends with a write error.
+        /// phases; if the total timeout or byte limit runs out while the client
+        /// still sends and the response is blocked, the connection ends with a
+        /// write error. A client that went idle stops the lingering, not the
+        /// response.
         ///
         /// Closing with unread input makes the connection reset instead of
         /// ending cleanly, and a Windows client then drops the response it
@@ -768,16 +770,11 @@ mod lingering_tests {
 
     #[tokio::test]
     async fn blocked_response_ends_when_lingering_allowance_expires() {
-        for (linger, flood) in [
-            (
-                patient_linger().with_idle_timeout(Duration::from_millis(100)),
-                false,
-            ),
-            (
-                patient_linger().with_timeout(Duration::from_millis(100)),
-                true,
-            ),
-            (patient_linger().with_max_bytes(1), true),
+        // A client that went idle is not what blocks the response, see
+        // `lingering_idle_end_does_not_cut_a_slow_reader_off`.
+        for linger in [
+            patient_linger().with_timeout(Duration::from_millis(100)),
+            patient_linger().with_max_bytes(1),
         ] {
             let (mut client, server_io) = tokio::io::duplex(256);
             let server = tokio::spawn(async move {
@@ -792,13 +789,8 @@ mod lingering_tests {
                     .await
             });
             client.write_all(UPLOAD_HEAD).await.unwrap();
-            let upload = tokio::spawn(async move {
-                if flood {
-                    while client.write_all(&[b'x'; 4096]).await.is_ok() {}
-                } else {
-                    std::future::pending::<()>().await;
-                }
-            });
+            let upload =
+                tokio::spawn(async move { while client.write_all(&[b'x'; 4096]).await.is_ok() {} });
             let result = tokio::time::timeout(Duration::from_secs(2), server).await;
             upload.abort();
             let err = result
@@ -843,6 +835,42 @@ mod lingering_tests {
             assert!(
                 bytes.ends_with(b"tail"),
                 "a writable response was truncated: {bytes:?}"
+            );
+            server.await.unwrap().unwrap();
+        };
+        tokio::time::timeout(Duration::from_secs(2), exchange)
+            .await
+            .unwrap();
+    }
+    // The client sent its whole body, which the service left unread, and is
+    // now only slow to read a large response: it is not uploading, so the
+    // idle end of the drain must not cut the response off.
+    #[tokio::test]
+    async fn lingering_idle_end_does_not_cut_a_slow_reader_off() {
+        let (mut client, server_io) = tokio::io::duplex(1024);
+        let server = tokio::spawn(async move {
+            let service = service_fn(|_req: Request| async {
+                Ok::<_, Infallible>(Response::new(Body::from(vec![b'r'; 64 * 1024])))
+            });
+            Builder::new()
+                .with_lingering_close(patient_linger().with_idle_timeout(Duration::from_millis(50)))
+                .serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service))
+                .await
+        });
+        client
+            .write_all(b"POST / HTTP/1.1\r\nhost: localhost\r\ncontent-length: 65536\r\n\r\n")
+            .await
+            .unwrap();
+        // Only drained by the lingering, as the service never reads it.
+        client.write_all(&vec![b'x'; 64 * 1024]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let exchange = async {
+            let (bytes, end) = read_until_end(&mut client).await;
+            end.unwrap();
+            assert!(
+                bytes.ends_with(&vec![b'r'; 64 * 1024]),
+                "a slow reader lost its response: {} bytes",
+                bytes.len()
             );
             server.await.unwrap().unwrap();
         };
