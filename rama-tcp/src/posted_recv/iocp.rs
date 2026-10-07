@@ -64,6 +64,22 @@ pub(super) fn live_flows() -> usize {
     LIVE_FLOWS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Completions sent back to the port because a reader held the flow.
+#[cfg(test)]
+static REQUEUED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Completions whose thread waited for a reader that held the flow.
+#[cfg(test)]
+static WAITED_FOR_READER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How often completions were requeued, and waited for a reader.
+#[cfg(test)]
+pub(super) fn contention() -> (usize, usize) {
+    (
+        REQUEUED.load(std::sync::atomic::Ordering::Relaxed),
+        WAITED_FOR_READER.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
 #[derive(Clone, Copy)]
 struct Port(HANDLE);
 
@@ -78,6 +94,9 @@ const BATCH: usize = 64;
 /// At most one thread is added per this interval, so a burst does not start
 /// them all at once.
 const GROW_INTERVAL: Duration = Duration::from_millis(10);
+/// How often a completion goes back to the port because a reader holds its
+/// flow, before the completion thread waits for that reader instead.
+const MAX_REQUEUES: u8 = 8;
 
 /// The process-wide completion port and the threads completing on it.
 ///
@@ -137,13 +156,22 @@ pub(super) fn running_threads() -> usize {
 }
 
 pub(super) fn completion_threads_changed() {
-    if let Some(pool) = POOL.get()
-        && let Err(err) = pool.ensure_minimum(ThreadStartReason::Minimum)
-    {
+    let Some(pool) = POOL.get() else {
+        return;
+    };
+    if let Err(err) = pool.ensure_minimum(ThreadStartReason::Minimum) {
         tracing::debug!(
             error = %err,
             "posted recv: starting completion threads for the new minimum failed",
         );
+    }
+    // Waiting threads would only see a lower maximum or idle timeout when
+    // their current wait ends: wake each one up to have it look again.
+    for _ in 0..pool.threads.load(Ordering::Acquire) {
+        // SAFETY: a packet without an OVERLAPPED, which the threads skip.
+        if unsafe { PostQueuedCompletionStatus(pool.port.0, 0, 0, ptr::null()) } == 0 {
+            break;
+        }
     }
 }
 
@@ -280,6 +308,14 @@ impl Pool {
                 "posted recv: raising the completion thread priority failed",
             );
         }
+        // A panic outside the guard around each completion, say in logging,
+        // must not end the thread while it still counts as running: carry on.
+        while catch_unwind(AssertUnwindSafe(|| self.complete_until_retired())).is_err() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn complete_until_retired(&'static self) {
         // SAFETY: OVERLAPPED_ENTRY is plain data.
         let mut entries: [OVERLAPPED_ENTRY; BATCH] = unsafe { mem::zeroed() };
         let mut failures: u32 = 0;
@@ -368,6 +404,8 @@ struct Slot {
     overlapped: OVERLAPPED,
     buf: Box<[u8]>,
     seq: u64,
+    /// How often its current completion went back to the port.
+    requeues: u8,
     flow: Arc<Flow>,
 }
 
@@ -382,13 +420,14 @@ impl Slot {
             overlapped: unsafe { mem::zeroed() },
             buf: vec![0; size].into_boxed_slice(),
             seq: 0,
+            requeues: 0,
             flow,
         })
     }
 
     /// Called on the completion thread for each completed receive. Returns
     /// false if the completion was queued again to be handled later.
-    fn complete(slot: Box<Self>, bytes: u32, port: Port) -> bool {
+    fn complete(mut slot: Box<Self>, bytes: u32, port: Port) -> bool {
         #[cfg(test)]
         slot.flow.lag();
         // Keeps the flow alive until the lock is released; dropping it last
@@ -398,8 +437,19 @@ impl Slot {
             Self::complete_locked(slot, &flow, state);
             return true;
         }
+        if slot.requeues >= MAX_REQUEUES {
+            // The reader keeps the lock longer than a few rounds through the
+            // port: wait for it rather than spin.
+            #[cfg(test)]
+            WAITED_FOR_READER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Self::complete_locked(slot, &flow, flow.state.lock());
+            return true;
+        }
         // A reader holds the lock. Come back to this one later rather than
         // hold up the completions of every other flow behind it.
+        slot.requeues += 1;
+        #[cfg(test)]
+        REQUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let raw = Box::into_raw(slot);
         // SAFETY: the packet hands the slot back to this thread, as the
         // kernel's completion did.
@@ -662,6 +712,7 @@ impl Flow {
         let seq = state.next_post;
         state.next_post += 1;
         slot.seq = seq;
+        slot.requeues = 0;
         // SAFETY: OVERLAPPED is plain data and zero is its initial state.
         slot.overlapped = unsafe { mem::zeroed() };
         let err = if let Some(err) = self.injected_failure() {
@@ -947,6 +998,32 @@ impl Reader {
             std::sync::atomic::Ordering::Relaxed,
         );
     }
+
+    /// A handle to hold the flow with, see [`FlowHandle::hold`].
+    #[cfg(test)]
+    pub(super) fn flow(&self) -> FlowHandle {
+        FlowHandle(self.flow.clone())
+    }
+}
+
+/// Lets a test hold a flow.
+#[cfg(test)]
+pub(super) struct FlowHandle(Arc<Flow>);
+
+#[cfg(test)]
+impl FlowHandle {
+    /// Hold the flow, as a reader in the middle of a read does.
+    pub(super) fn hold(&self) -> HeldFlow<'_> {
+        HeldFlow {
+            _state: self.0.state.lock(),
+        }
+    }
+}
+
+/// A flow held by a test, see [`FlowHandle::hold`].
+#[cfg(test)]
+pub(super) struct HeldFlow<'a> {
+    _state: MutexGuard<'a, State>,
 }
 
 /// Tells whether a flow, and with it its socket, is gone.

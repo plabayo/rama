@@ -142,6 +142,18 @@ async fn threads_follow_the_configured_bounds() {
     set_completion_threads(CompletionThreads::single().with_idle_timeout(idle));
     wait_for_threads(1).await;
 
+    // Threads waiting out the default idle timeout of 30 s see a lowered
+    // maximum right away all the same.
+    set_completion_threads(
+        CompletionThreads::new()
+            .with_min_threads(3)
+            .with_max_threads(4),
+    );
+    wait_for_threads(3).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    set_completion_threads(CompletionThreads::single());
+    wait_for_threads(1).await;
+
     // The remaining thread still completes receives.
     let mut stream = connect(origin.addr, &PostedRecvConfig::default()).await;
     assert!(exchange(&mut stream, Duration::ZERO).await.is_complete(len));
@@ -150,8 +162,9 @@ async fn threads_follow_the_configured_bounds() {
 #[cfg(target_os = "windows")]
 const SIZES_SMALL: usize = 6554;
 
-/// Under a bulk load the threads grow past one, never past the maximum,
-/// and go back to the minimum once the load is gone.
+/// Under a load that keeps completions queued the threads grow past one,
+/// never past the maximum, and go back to the minimum once the load is gone.
+/// Each completion is slowed down, so that they queue up on any machine.
 #[cfg(target_os = "windows")]
 #[tokio::test(flavor = "multi_thread")]
 async fn threads_scale_with_the_load() {
@@ -164,7 +177,7 @@ async fn threads_scale_with_the_load() {
             .with_max_threads(max)
             .with_idle_timeout(Duration::from_millis(200)),
     );
-    let len = mib(8);
+    let len = mib(1);
     let origin = spawn_origin(len, Close::Fin).await;
     let addr = origin.addr;
 
@@ -182,7 +195,13 @@ async fn threads_scale_with_the_load() {
     };
     let seen = tally(64, 64, len, move || async move {
         let mut stream = connect(addr, &PostedRecvConfig::default()).await;
-        exchange(&mut stream, Duration::ZERO).await
+        stream
+            .reader()
+            .unwrap()
+            .delay_completions(Duration::from_millis(1));
+        let received = exchange(&mut stream, Duration::ZERO).await;
+        stream.reader().unwrap().delay_completions(Duration::ZERO);
+        received
     })
     .await;
     sampling.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -320,6 +339,8 @@ fn threads_record_dial9_events() {
                 .with_idle_timeout(idle),
         );
         wait_for_threads(1).await;
+        // A thread records its stop right after it gave up its place.
+        tokio::time::sleep(Duration::from_millis(100)).await;
     });
     drop(rt);
     ::dial9::core::clear_tl_handle();

@@ -24,16 +24,18 @@
 //! Bytes are kept whatever follows them if a receive is posted when they
 //! arrive. Each receive completes with whatever arrived, up to
 //! [`slot_size`](PostedRecvConfig::slot_size), and is posted again once a
-//! completion thread handled it, which takes microseconds. So a reply is
-//! kept for sure if it arrives in at most
-//! [`slots`](PostedRecvConfig::slots) parts, and at most `slots × slot_size`
-//! in total: 2 parts and 32 KiB by default. Bytes beyond that, even a small
-//! third part, can arrive while no receive is posted and wait in the kernel,
-//! already acknowledged; a peer that resets right after they are
-//! acknowledged can beat the completion thread, and those bytes are lost.
-//! Size the slots for the replies that must survive a reset: more of them
-//! for replies sent in many writes, larger ones for large replies. How busy
-//! the tokio runtime is does not matter.
+//! completion thread handled it, which takes microseconds. A part of a reply
+//! that arrives on its own fills `⌈len / slot_size⌉` receives, the last one
+//! maybe only partly, so a reply is kept for sure while its parts fill no
+//! more receives than there are [`slots`](PostedRecvConfig::slots): by
+//! default for instance one part of up to 32 KiB, or two of up to 16 KiB.
+//! Bytes beyond that, even a small third part, can arrive while no receive
+//! is posted and wait in the kernel, already acknowledged; a peer that
+//! resets right after they are acknowledged can beat the completion thread,
+//! and those bytes are lost. Size the slots for the replies that must
+//! survive a reset, with some room for how the network splits them: more
+//! slots for replies sent in many writes, larger ones for large replies. How
+//! busy the tokio runtime is does not matter.
 //!
 //! No receive is posted while more than
 //! [`max_buffered`](PostedRecvConfig::max_buffered) bytes wait for the
@@ -140,9 +142,10 @@ impl PostedRecvConfig {
     generate_set_and_with! {
         /// Number of receives kept posted on the socket (at least 1).
         ///
-        /// This sets in how many parts a reply is surely kept before a
-        /// reset, and together with [`slot_size`](Self::slot_size) how large
-        /// it can be, see the [module docs](crate::posted_recv#limits).
+        /// Together with [`slot_size`](Self::slot_size) this sets which
+        /// replies are surely kept before a reset: as many receives as the
+        /// parts they arrive in fill, see the
+        /// [module docs](crate::posted_recv#limits).
         pub fn slots(mut self, slots: usize) -> Self {
             self.slots = slots.max(1);
             self
@@ -210,7 +213,9 @@ mod sealed {
 ///
 /// Sealed, and only implemented for [`TcpStream`] and [`TokioTcpStream`]:
 /// the posted receives read the socket directly, so wrapping a stream that
-/// transforms its bytes (TLS, a peek buffer, ...) would bypass it.
+/// transforms its bytes (TLS, a peek buffer, ...) would bypass it. Their
+/// sockets suit overlapped receives; no other overlapped I/O may be issued
+/// on a wrapped socket.
 pub trait RawTcpStream:
     sealed::Sealed + AsyncRead + AsyncWrite + Socket + Unpin + Send + 'static
 {
@@ -269,8 +274,8 @@ impl RawTcpStream for TcpStream {}
 /// life, so a [`PostedRecv`] cannot be unwrapped again.
 ///
 /// The [`AbortIo`](rama_core::io::AbortIo) that a [`TcpStream`] publishes
-/// still works through the wrapper: once called, the deferred close goes out
-/// as a reset.
+/// still works through the wrapper: called before the wrapper is dropped, it
+/// makes the deferred close go out as a reset.
 pub struct PostedRecv<S: RawTcpStream> {
     #[cfg(target_os = "windows")]
     inner: std::mem::ManuallyDrop<S>,

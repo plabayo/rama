@@ -103,13 +103,15 @@ struct Op {
 }
 
 impl Op {
-    fn new(id: usize, len: usize) -> Box<Self> {
-        Box::new(Self {
+    /// Leaked: a test that fails with a receive still pending must not free
+    /// what the kernel will write to.
+    fn new(id: usize, len: usize) -> &'static mut Self {
+        Box::leak(Box::new(Self {
             // SAFETY: OVERLAPPED is plain data and all zeroes is its initial state.
             ov: unsafe { mem::zeroed() },
             buf: vec![0; len],
             id,
-        })
+        }))
     }
 }
 
@@ -226,15 +228,15 @@ fn posted_read_keeps_data_that_arrives_before_reset() {
         let (client, origin) = pair(reply_then_reset(len));
         port.attach(raw(&client));
 
-        let mut first = Op::new(1, 16 * 1024);
-        let mut second = Op::new(2, 16 * 1024);
-        let rc = post(raw(&client), &mut first);
+        let first = Op::new(1, 16 * 1024);
+        let second = Op::new(2, 16 * 1024);
+        let rc = post(raw(&client), first);
         eprintln!("ws1/q1 N={len}: overlapped WSARecv on FIONBIO socket -> {rc}");
         assert_eq!(
             rc, WSA_IO_PENDING,
             "Q1: expected WSA_IO_PENDING, not WSAEWOULDBLOCK"
         );
-        assert_eq!(post(raw(&client), &mut second), WSA_IO_PENDING);
+        assert_eq!(post(raw(&client), second), WSA_IO_PENDING);
 
         send_request(&client);
         origin.join().unwrap();
@@ -261,8 +263,8 @@ fn posted_read_keeps_data_that_arrives_before_reset() {
             "Q4: reset maps to WSAECONNRESET / ERROR_NETNAME_DELETED"
         );
 
-        let mut third = Op::new(3, 16 * 1024);
-        let rc = post(raw(&client), &mut third);
+        let third = Op::new(3, 16 * 1024);
+        let rc = post(raw(&client), third);
         eprintln!("ws1/q4 reset N={len}: read posted after the reset -> {rc}");
         assert_eq!(rc, WSAECONNRESET);
     }
@@ -321,8 +323,8 @@ fn completion_status_for_cancel_and_eof() {
     });
     port.attach(raw(&client));
 
-    let mut cancelled = Op::new(0, 1024);
-    assert_eq!(post(raw(&client), &mut cancelled), WSA_IO_PENDING);
+    let cancelled = Op::new(0, 1024);
+    assert_eq!(post(raw(&client), cancelled), WSA_IO_PENDING);
     // SAFETY: the socket is live and the op is still owned by the kernel.
     let ok = unsafe { CancelIoEx(raw(&client) as HANDLE, &cancelled.ov) };
     assert_ne!(ok, 0);
@@ -334,10 +336,10 @@ fn completion_status_for_cancel_and_eof() {
     );
     assert_eq!(done[0].status, STATUS_CANCELLED);
 
-    let mut data = Op::new(1, 1024);
-    let mut eof = Op::new(2, 1024);
-    assert_eq!(post(raw(&client), &mut data), WSA_IO_PENDING);
-    assert_eq!(post(raw(&client), &mut eof), WSA_IO_PENDING);
+    let data = Op::new(1, 1024);
+    let eof = Op::new(2, 1024);
+    assert_eq!(post(raw(&client), data), WSA_IO_PENDING);
+    assert_eq!(post(raw(&client), eof), WSA_IO_PENDING);
     send_request(&client);
     origin.join().unwrap();
     thread::sleep(WAIT);
@@ -362,8 +364,8 @@ fn completion_status_for_send_after_peer_close() {
         peer.write_all(&reply(100)).unwrap();
     });
     port.attach(raw(&client));
-    let mut kept = Op::new(0, 1024);
-    assert_eq!(post(raw(&client), &mut kept), WSA_IO_PENDING);
+    let kept = Op::new(0, 1024);
+    assert_eq!(post(raw(&client), kept), WSA_IO_PENDING);
     send_request(&client);
     origin.join().unwrap();
     thread::sleep(Duration::from_millis(30));
@@ -372,8 +374,8 @@ fn completion_status_for_send_after_peer_close() {
         .map_err(|err| err.raw_os_error());
     thread::sleep(Duration::from_millis(30));
 
-    let mut op = Op::new(1, 1024);
-    let rc = post(raw(&client), &mut op);
+    let op = Op::new(1, 1024);
+    let rc = post(raw(&client), op);
     let done = port.drain(WAIT);
     let summary: Vec<_> = done
         .iter()
@@ -395,8 +397,8 @@ fn completion_status_for_local_close() {
         _ = peer.read(&mut buf);
     });
     port.attach(raw(&client));
-    let mut op = Op::new(0, 1024);
-    assert_eq!(post(raw(&client), &mut op), WSA_IO_PENDING);
+    let op = Op::new(0, 1024);
+    assert_eq!(post(raw(&client), op), WSA_IO_PENDING);
     let socket = raw(&client);
     drop(client);
     let done = port.drain(WAIT);
@@ -430,9 +432,9 @@ fn close_with_posted_read() {
             }
         });
         port.attach(raw(&client));
-        let mut op = Op::new(0, 1024);
+        let op = Op::new(0, 1024);
         if post_read {
-            assert_eq!(post(raw(&client), &mut op), WSA_IO_PENDING);
+            assert_eq!(post(raw(&client), op), WSA_IO_PENDING);
         }
         if post_read && cancel_first {
             // SAFETY: the socket is live.
@@ -469,7 +471,7 @@ fn read_posted_from_exited_thread_survives() {
     let (client, origin) = pair(reply_then_reset(234));
     port.attach(raw(&client));
     let socket = raw(&client);
-    let mut op = Op::new(0, 16 * 1024);
+    let op = Op::new(0, 16 * 1024);
     let op_addr = &raw mut *op as usize;
     let rc = thread::spawn(move || {
         // SAFETY: the op is kept alive by the test until it completes.
@@ -506,8 +508,8 @@ fn immediate_success_still_queues_a_completion() {
     port.attach(raw(&client));
     send_request(&client);
     thread::sleep(Duration::from_millis(30));
-    let mut op = Op::new(0, 16 * 1024);
-    let rc = post(raw(&client), &mut op);
+    let op = Op::new(0, 16 * 1024);
+    let rc = post(raw(&client), op);
     let done = port.drain(WAIT);
     eprintln!(
         "ws1/extra data already queued: post rc={rc} completions={}",

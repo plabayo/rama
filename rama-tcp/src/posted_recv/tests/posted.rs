@@ -111,14 +111,13 @@ async fn assert_no_outstanding_receives() {
 #[tokio::test(flavor = "multi_thread")]
 async fn keeps_reply_sent_right_before_reset() {
     // Replies up to what the posted receives hold, with the default slots
-    // and with more of them.
-    let default_slots = SIZES
-        .into_iter()
-        .chain([kib(16), kib(32)])
-        .map(|len| (len, 2));
-    for (len, slots) in default_slots.chain([(kib(64), 4)]) {
+    // and with more of them. A reply larger than a slot gets one slot of room:
+    // split into parts on the way, say 65495 + 41 bytes for 64 KiB on IPv4
+    // loopback, it can fill one more receive than its length needs.
+    let default_slots = SIZES.into_iter().chain([kib(16)]).map(|len| (len, 2));
+    for (len, slots) in default_slots.chain([(kib(32), 3), (kib(64), 5)]) {
         let config = PostedRecvConfig::new().with_slots(slots);
-        assert!(len <= config.slots() * config.slot_size());
+        assert!(len <= (config.slots() - 1) * config.slot_size() || len <= config.slot_size());
         let origin = spawn_origin(len, Close::Reset).await;
         let addr = origin.addr;
         let tally = tally(RUNS, 100, len, move || {
@@ -591,22 +590,32 @@ async fn forward_reflects_origin_reset_after_the_reply() {
 }
 
 /// The [`AbortIo`] of the inner stream works through the wrapper: once
-/// called, dropping it resets the peer, also while receives are posted.
-/// Calling it after the drop does nothing.
+/// called, dropping it resets the peer, whether receives are still posted or
+/// the peer already ended its stream, so that nothing is in flight. Calling
+/// it after the drop is harmless.
 #[tokio::test]
 async fn an_aborted_posted_recv_resets_its_peer() {
     let listener = super::harness::listen();
     let addr = listener.local_addr().unwrap();
-    for abort in [true, false] {
-        let (client, accepted) = tokio::join!(connect(addr), listener.accept());
-        let peer = tokio::spawn(peer_saw(accepted.unwrap().0));
+    for (abort, peer_ended) in [(true, false), (false, false), (true, true), (false, true)] {
+        let case = format!("abort={abort} peer_ended={peer_ended}");
+        let (mut client, accepted) = tokio::join!(connect(addr), listener.accept());
+        let mut accepted = accepted.unwrap().0;
+        if peer_ended {
+            accepted.write_all(b"bye").await.unwrap();
+            accepted.shutdown().await.unwrap();
+            let received = read_until_end(&mut client).await;
+            assert_eq!(received.bytes, b"bye", "{case}");
+            received.end.unwrap();
+        }
+        let peer = tokio::spawn(peer_saw(accepted));
         let handle = client.extensions().self_get_arc::<AbortIo>().unwrap();
         if abort {
             handle.abort();
         }
         drop(client);
         let expected = if abort { PeerSaw::Reset } else { PeerSaw::Fin };
-        assert_eq!(peer.await.unwrap(), expected, "abort={abort}");
+        assert_eq!(peer.await.unwrap(), expected, "{case}");
         handle.abort();
     }
 }
@@ -785,6 +794,33 @@ async fn out_of_buffers_falls_back_to_plain_reads() {
         );
         received.end.unwrap();
     }
+}
+
+/// A completion that finds its flow held by a reader goes back to the port,
+/// and once that took a few rounds its thread waits for the reader instead
+/// of spinning. Nothing is lost or reordered either way.
+#[cfg(target_os = "windows")]
+#[tokio::test(flavor = "multi_thread")]
+async fn completions_for_a_held_flow_are_requeued_then_wait() {
+    use crate::posted_recv::iocp::contention;
+
+    let len = kib(256);
+    let origin = spawn_origin(len, Close::Fin).await;
+    let mut stream = connect(origin.addr).await;
+    let (requeued, waited) = contention();
+    let flow = stream.reader().unwrap().flow();
+    {
+        let _held = flow.hold();
+        stream.write_all(REQUEST).await.unwrap();
+        // The reply arrives while the flow is held.
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let received = read_until_end(&mut stream).await;
+    assert!(received.is_complete(len), "{}", received.bytes.len());
+    received.end.unwrap();
+    let (requeued_after, waited_after) = contention();
+    assert!(requeued_after > requeued, "no completion was requeued");
+    assert!(waited_after > waited, "no completion waited for the reader");
 }
 
 /// A posted receive completes with whatever arrived, however little. A reply
