@@ -770,6 +770,13 @@ mod lingering_tests {
 
     #[tokio::test]
     async fn blocked_response_ends_when_lingering_allowance_expires() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        use rama_core::io::AbortIo;
+
         // A client that went idle is not what blocks the response, see
         // `lingering_idle_end_does_not_cut_a_slow_reader_off`.
         for linger in [
@@ -777,6 +784,12 @@ mod lingering_tests {
             patient_linger().with_max_bytes(1),
         ] {
             let (mut client, server_io) = tokio::io::duplex(256);
+            let aborted = Arc::new(AtomicBool::new(false));
+            let abort = aborted.clone();
+            let server_io = ServiceInput::new(server_io);
+            server_io.extensions().insert(AbortIo::new(move || {
+                abort.store(true, Ordering::SeqCst);
+            }));
             let server = tokio::spawn(async move {
                 let service = service_fn(|_req: Request| async {
                     let mut response = Response::new(Body::from(vec![b'r'; 64 * 1024]));
@@ -785,7 +798,7 @@ mod lingering_tests {
                 });
                 Builder::new()
                     .with_lingering_close(linger)
-                    .serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service))
+                    .serve_connection(server_io, RamaHttpService::new(service))
                     .await
             });
             client.write_all(UPLOAD_HEAD).await.unwrap();
@@ -803,6 +816,10 @@ mod lingering_tests {
                     .map(io::Error::kind),
                 Some(io::ErrorKind::TimedOut),
                 "{err:?}"
+            );
+            assert!(
+                aborted.load(Ordering::SeqCst),
+                "a truncated response must abort the transport before it is dropped"
             );
         }
     }

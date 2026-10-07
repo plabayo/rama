@@ -910,6 +910,16 @@ where
         }
     }
 
+    pub(crate) fn abort(&self) {
+        if let Some(abort) = self
+            .io
+            .extensions()
+            .self_get_ref::<rama_core::io::AbortIo>()
+        {
+            abort.abort();
+        }
+    }
+
     /// If the read side can be cheaply drained, do so. Otherwise, close.
     pub(super) fn poll_drain_or_close_read(&mut self, cx: &mut Context<'_>) {
         if let Reading::Continue(decoder) = &mut self.state.reading {

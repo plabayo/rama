@@ -290,7 +290,10 @@ where
 
     fn linger_write_timeout(&mut self) -> Poll<crate::Result<Dispatched>> {
         // A best-effort shutdown would flush the same blocked response again.
-        // The configured allowance is exhausted, so let the owner drop IO.
+        // The response is incomplete. Publish an abnormal end before dropping
+        // IO: Apple FFI streams otherwise fire their orderly close callback,
+        // and TCP streams without unread input would send a clean FIN.
+        self.conn.abort();
         self.shut_down = true;
         Poll::Ready(Err(crate::Error::new_body_write(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
