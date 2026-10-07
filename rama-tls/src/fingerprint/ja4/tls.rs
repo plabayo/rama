@@ -647,6 +647,7 @@ mod tests {
                     peer_certificate_chain: None,
                     server_name: None,
                     resumed: None,
+                    algorithms: Default::default(),
                 });
             }
 

@@ -1101,6 +1101,13 @@ mod tests {
                     egress.application_layer_protocol,
                     Some(ApplicationProtocol::HTTP_2),
                 );
+                for algorithms in [ingress.algorithms, egress.algorithms] {
+                    assert!(algorithms.cipher_suite.is_some(), "{algorithms:?}");
+                    assert!(algorithms.key_exchange_group.is_some(), "{algorithms:?}");
+                }
+                // Only the upstream server signs; the intercepted client does not authenticate.
+                assert!(egress.algorithms.peer_signature_scheme.is_some());
+                assert!(ingress.algorithms.peer_signature_scheme.is_none());
                 Ok::<(), BoxError>(())
             },
         );

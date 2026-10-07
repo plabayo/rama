@@ -1,6 +1,6 @@
 use rama_boring::ssl::{ConnectConfiguration, SslAlert, SslVerifyError, SslVerifyMode};
 use rama_boring_tokio::{HandshakeError, SslStream};
-use rama_core::conversion::RamaTryInto;
+use rama_core::conversion::{RamaInto as _, RamaTryInto};
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_core::extensions::{Extensions, ExtensionsRef};
@@ -845,6 +845,7 @@ where
                 peer_certificate_chain: server_certificate_chain,
                 server_name: None,
                 resumed: Some(stream.ssl().session_reused()),
+                algorithms: stream.ssl().rama_into(),
             }
         }
         None => {
@@ -1582,6 +1583,10 @@ mod tests {
             .get_ref::<NegotiatedTlsParameters>()
             .expect("proxy TLS parameters");
         assert_eq!(negotiated.resumed, Some(false));
+        let algorithms = negotiated.algorithms;
+        assert!(algorithms.cipher_suite.is_some(), "{algorithms:?}");
+        assert!(algorithms.key_exchange_group.is_some(), "{algorithms:?}");
+        assert!(algorithms.peer_signature_scheme.is_some(), "{algorithms:?}");
         assert_eq!(negotiated.server_name, None);
         assert_eq!(
             negotiated.application_layer_protocol,

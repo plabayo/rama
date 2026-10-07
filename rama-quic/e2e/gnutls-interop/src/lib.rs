@@ -296,6 +296,7 @@ impl provider::Session for Session {
             peer_certificate_chain: None,
             server_name: None,
             resumed: self.complete.then_some(false),
+            algorithms: Default::default(),
         })
     }
 

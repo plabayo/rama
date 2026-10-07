@@ -893,6 +893,7 @@ mod http3_dispatch_tests {
                             peer_certificate_chain: None,
                             server_name: None,
                             resumed: None,
+                            algorithms: Default::default(),
                         });
                     }
                     if let Some(complete) = complete {

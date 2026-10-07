@@ -1,10 +1,34 @@
 use crate::RamaTlsBoringCrateMarker;
 use itertools::Itertools;
-use rama_core::conversion::RamaTryFrom;
+use rama_boring::ssl::SslVersion;
+use rama_core::conversion::{RamaFrom, RamaTryFrom, RamaTryInto as _};
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing::trace;
 use rama_crypto::pki_types::CertificateDer;
-use rama_tls::client::{ClientHello, parse_client_hello};
+use rama_tls::CipherSuite;
+use rama_tls::client::{ClientHello, NegotiatedTlsAlgorithms, parse_client_hello};
+
+impl RamaFrom<&rama_boring::ssl::SslRef, RamaTlsBoringCrateMarker> for NegotiatedTlsAlgorithms {
+    fn rama_from(ssl: &rama_boring::ssl::SslRef) -> Self {
+        // BoringSSL reads group and peer signature from the session, which a
+        // resumption carries over from the original handshake.
+        let resumed = ssl.session_reused();
+        let key_exchanged = !resumed || ssl.version() == Some(SslVersion::TLS1_3);
+        Self {
+            cipher_suite: ssl
+                .current_cipher()
+                .map(|cipher| CipherSuite::from(cipher.protocol_id())),
+            key_exchange_group: key_exchanged
+                .then(|| ssl.curve())
+                .flatten()
+                .and_then(|curve| curve.rama_try_into().ok()),
+            peer_signature_scheme: (!resumed)
+                .then(|| ssl.peer_signature_algorithm())
+                .flatten()
+                .and_then(|scheme| scheme.rama_try_into().ok()),
+        }
+    }
+}
 
 impl<'ssl> RamaTryFrom<rama_boring::ssl::ClientHello<'ssl>, RamaTlsBoringCrateMarker>
     for ClientHello
@@ -670,6 +694,80 @@ fn openssl_cipher_str_from_cipher_suite(suite: rama_tls::CipherSuite) -> Option<
         uite: {other}"
             );
             None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::TlsAcceptorData;
+    use parking_lot::Mutex;
+    use rama_boring::ssl::{
+        SslConnector, SslMethod, SslSession, SslSessionCacheMode, SslVerifyMode,
+    };
+    use rama_core::conversion::RamaInto as _;
+    use rama_tls::server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    #[tokio::test]
+    async fn resumed_handshakes_report_only_freshly_negotiated_algorithms() {
+        let server_auth =
+            ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
+        for version in [SslVersion::TLS1_2, SslVersion::TLS1_3] {
+            let config = TlsServerConfig::new().with_server_auth(server_auth.clone());
+            let mut acceptor = TlsAcceptorData::try_from(&config)
+                .unwrap()
+                .into_static_acceptor_builder()
+                .unwrap();
+            acceptor.set_max_proto_version(Some(version)).unwrap();
+            let acceptor = acceptor.build();
+
+            let session = Arc::new(Mutex::new(None::<SslSession>));
+            let mut connector = SslConnector::builder(SslMethod::tls_client()).unwrap();
+            connector.set_verify(SslVerifyMode::NONE);
+            connector.set_max_proto_version(Some(version)).unwrap();
+            connector.set_session_cache_mode(SslSessionCacheMode::CLIENT);
+            let slot = session.clone();
+            connector.set_new_session_callback(move |_, new| *slot.lock() = Some(new));
+            let connector = connector.build();
+
+            for resume in [false, true] {
+                let mut config = connector.configure().unwrap();
+                if resume {
+                    let cached = session
+                        .lock()
+                        .clone()
+                        .expect("session of the first handshake");
+                    // The session was issued for this connector's own context.
+                    unsafe { config.set_session(&cached) }.unwrap();
+                }
+                let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+                let (client, server) = tokio::join!(
+                    rama_boring_tokio::connect(config, Some("localhost"), client_io),
+                    rama_boring_tokio::accept(&acceptor, server_io),
+                );
+                let (mut client, mut server) = (client.unwrap(), server.unwrap());
+                // TLS 1.3 tickets arrive after the handshake.
+                server.write_all(b"x").await.unwrap();
+                client.read_exact(&mut [0]).await.unwrap();
+
+                assert_eq!(client.ssl().session_reused(), resume, "{version:?}");
+                let algorithms: NegotiatedTlsAlgorithms = client.ssl().rama_into();
+                let label = format!("{version:?} resumed={resume}: {algorithms:?}");
+                assert!(algorithms.cipher_suite.is_some(), "{label}");
+                assert_eq!(
+                    algorithms.key_exchange_group.is_some(),
+                    !resume || version == SslVersion::TLS1_3,
+                    "{label}"
+                );
+                assert_eq!(
+                    algorithms.peer_signature_scheme.is_some(),
+                    !resume,
+                    "{label}"
+                );
+            }
         }
     }
 }

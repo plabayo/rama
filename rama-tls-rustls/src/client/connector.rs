@@ -2,7 +2,7 @@ use super::{AutoTlsStream, RustlsTlsStream, TlsConnectorData, TlsStream};
 use crate::client::config::{RustlsTlsClientConfigProvider, RustlsTlsConnectorConfig};
 use crate::dep::tokio_rustls::TlsConnector as RustlsConnector;
 use crate::types::TlsTunnel;
-use rama_core::conversion::{RamaInto, RamaTryFrom};
+use rama_core::conversion::{RamaFrom, RamaInto, RamaTryFrom};
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::io::Io;
@@ -18,7 +18,9 @@ use rama_net::{
     AuthorityInputExt, Protocol, ProtocolInputExt,
     tls::{ApplicationProtocol, TlsAlpn, default_tls_alpn},
 };
-use rama_tls::client::{NegotiatedTlsParameters, TlsClientConfig, TlsConnectionReuse};
+use rama_tls::client::{
+    NegotiatedTlsAlgorithms, NegotiatedTlsParameters, TlsClientConfig, TlsConnectionReuse,
+};
 use rama_tls::{TlsTunnelMode, resolve_tls_tunnel};
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
@@ -597,6 +599,7 @@ impl<S, K> TlsConnector<S, K> {
             resumed: conn_data_ref
                 .handshake_kind()
                 .map(|kind| kind == crate::dep::rustls::HandshakeKind::Resumed),
+            algorithms: NegotiatedTlsAlgorithms::rama_from(&***conn_data_ref),
         };
 
         #[cfg(feature = "dial9")]

@@ -16,7 +16,7 @@ use rama_boring::{
 };
 use rama_core::{
     Service,
-    conversion::RamaTryInto as _,
+    conversion::{RamaInto as _, RamaTryInto as _},
     error::{ArcError, BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     extensions::{self, Extensions, ExtensionsRef as _},
     io::{BridgeIo, Io},
@@ -71,6 +71,7 @@ impl Snapshot {
                     },
                     server_name: None,
                     resumed: Some(ssl.session_reused()),
+                    algorithms: ssl.rama_into(),
                 })
             })
             .transpose()?;
@@ -380,6 +381,7 @@ where
                 .transpose()
                 .map_err(TlsMitmRelayError::config)?,
             resumed: Some(ssl.session_reused()),
+            algorithms: ssl.rama_into(),
         };
         if let Some(params) = snapshot.params {
             #[cfg(feature = "http")]

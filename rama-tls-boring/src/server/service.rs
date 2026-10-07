@@ -6,7 +6,7 @@ use parking_lot::Mutex;
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Service,
-    conversion::RamaTryInto,
+    conversion::{RamaInto as _, RamaTryInto},
     error::{BoxError, ErrorContext, ErrorExt},
     extensions::ExtensionsRef,
     io::Io,
@@ -171,6 +171,7 @@ where
                         .map(rama_net::address::Domain::try_from)
                         .transpose()?,
                     resumed: Some(stream.ssl().session_reused()),
+                    algorithms: stream.ssl().rama_into(),
                 }
             }
             None => {
@@ -319,6 +320,11 @@ mod tests {
                     Some(rama_net::address::Domain::from_static("localhost"))
                 );
                 assert_eq!(metadata.resumed, Some(false));
+                let algorithms = metadata.algorithms;
+                assert!(algorithms.cipher_suite.is_some(), "{algorithms:?}");
+                assert!(algorithms.key_exchange_group.is_some(), "{algorithms:?}");
+                // An authenticated client signs its CertificateVerify.
+                assert!(algorithms.peer_signature_scheme.is_some(), "{algorithms:?}");
             }
         }
     }

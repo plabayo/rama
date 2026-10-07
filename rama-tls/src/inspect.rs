@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ProtocolVersion, SecureTransport,
-    client::{ClientHello, NegotiatedTlsParameters},
+    client::{ClientHello, NegotiatedTlsAlgorithms, NegotiatedTlsParameters},
     fingerprint::{Ja3, Ja4, PeetPrint},
 };
 
@@ -16,6 +16,8 @@ pub struct CapturedTlsParameters {
     pub protocol_version: ProtocolVersion,
     pub application_layer_protocol: Option<ApplicationProtocol>,
     pub peer_certificate_count: Option<usize>,
+    #[serde(default)]
+    pub algorithms: NegotiatedTlsAlgorithms,
 }
 
 impl From<&NegotiatedTlsParameters> for CapturedTlsParameters {
@@ -24,6 +26,7 @@ impl From<&NegotiatedTlsParameters> for CapturedTlsParameters {
             protocol_version: parameters.protocol_version,
             application_layer_protocol: parameters.application_layer_protocol.clone(),
             peer_certificate_count: parameters.peer_certificate_chain.as_ref().map(Vec::len),
+            algorithms: parameters.algorithms,
         }
     }
 }
