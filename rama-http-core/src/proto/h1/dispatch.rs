@@ -37,7 +37,7 @@ pub(crate) struct Dispatcher<D, Bs: StreamingBody, I, T> {
     // there is no client callback) and must be surfaced once the best-effort
     // shutdown has been driven.
     pending_err: Option<crate::Error>,
-    // The transport was shut down; never twice, a TLS writer may not cope.
+    // Shutdown completed or was abandoned after a write timeout; never retry it.
     shut_down: bool,
     linger: Linger,
 }
@@ -253,9 +253,9 @@ where
                 && !self.conn.has_pending_upgrade()
             {
                 _ = self.poll_linger(cx);
-                if matches!(self.linger, Linger::Exhausted)
-                    && (self.conn.has_buffered_write() || self.body_rx.is_some())
-                {
+                // The body producer may be slow even though IO is writable.
+                // Only a flush blocked on IO exhausts the response's allowance.
+                if matches!(self.linger, Linger::Exhausted) && self.poll_flush(cx)?.is_pending() {
                     return self.linger_write_timeout();
                 }
             }

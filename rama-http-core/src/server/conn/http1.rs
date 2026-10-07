@@ -814,6 +814,69 @@ mod lingering_tests {
             );
         }
     }
+    #[tokio::test]
+    async fn lingering_expiry_does_not_truncate_a_slow_response_producer() {
+        let (mut client, server_io) = tokio::io::duplex(256);
+        let server = tokio::spawn(async move {
+            let service = service_fn(|_req: Request| async {
+                let body = Body::from_stream(rama_core::futures::stream::once(async {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    Ok::<_, Infallible>(Bytes::from_static(b"tail"))
+                }));
+                let mut response = Response::new(body);
+                *response.status_mut() = StatusCode::PAYLOAD_TOO_LARGE;
+                response.headers_mut().insert(
+                    rama_http::header::CONTENT_LENGTH,
+                    rama_http::HeaderValue::from_static("4"),
+                );
+                Ok::<_, Infallible>(response)
+            });
+            Builder::new()
+                .with_lingering_close(patient_linger().with_idle_timeout(Duration::from_millis(50)))
+                .serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service))
+                .await
+        });
+        client.write_all(UPLOAD_HEAD).await.unwrap();
+        let exchange = async {
+            let (bytes, end) = read_until_end(&mut client).await;
+            end.unwrap();
+            assert!(
+                bytes.ends_with(b"tail"),
+                "a writable response was truncated: {bytes:?}"
+            );
+            server.await.unwrap().unwrap();
+        };
+        tokio::time::timeout(Duration::from_secs(2), exchange)
+            .await
+            .unwrap();
+    }
+    #[tokio::test]
+    async fn lingering_byte_limit_flushes_a_pipelined_response() {
+        let (mut client, server_io) = tokio::io::duplex(2048);
+        let server = tokio::spawn(async move {
+            Builder::new()
+                .with_pipeline_flush(true)
+                .with_lingering_close(patient_linger().with_max_bytes(1))
+                .serve_connection(
+                    ServiceInput::new(server_io),
+                    RamaHttpService::new(service_fn(answer)),
+                )
+                .await
+        });
+        client.write_all(b"GET / HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\nunused pipelined input").await.unwrap();
+        let exchange = async {
+            let (bytes, end) = read_until_end(&mut client).await;
+            end.unwrap();
+            assert!(
+                is_413(&bytes) && bytes.ends_with(b"answer"),
+                "lost a writable pipelined response: {bytes:?}"
+            );
+            server.await.unwrap().unwrap();
+        };
+        tokio::time::timeout(Duration::from_secs(2), exchange)
+            .await
+            .unwrap();
+    }
     /// Upload at a modest pace and only read the response once `ready`, as a
     /// client busy writing its request does.
     async fn upload_then_read(

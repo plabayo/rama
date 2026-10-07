@@ -147,6 +147,9 @@ where
     /// Read in small reads into a small buffer: from here on input is only
     /// dropped, and may keep coming for a while.
     pub(crate) fn read_to_discard(&mut self) {
+        // Abandoned input cannot become another pipelined HTTP request.
+        // Even if the byte limit leaves some buffered, flush the final response.
+        self.flush_pipeline = false;
         self.read_buf_strategy = ReadStrategy::Exact(DISCARD_BUF_SIZE);
         if self.read_buf.is_empty() && self.read_buf.capacity() > DISCARD_BUF_SIZE {
             self.read_buf = BytesMut::new();
