@@ -222,11 +222,18 @@ mod tests {
             extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage},
         },
     };
+    use crate::{
+        client::BoringClientConfigExt as _,
+        server::{BoringServerConfigExt as _, ServerCertIssuerData},
+    };
     use rama_core::{ServiceInput, service::service_fn};
     use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
     use rama_tls::{
-        client::{ClientAuth, ClientAuthData, TlsClientConfig},
-        server::{ClientVerifyMode, GeneratedServerAuthConfig, SelfSignedCaConfig, ServerAuthData},
+        client::{ClientAuth, ClientAuthData, ServerVerifyMode, TlsClientConfig},
+        server::{
+            CertificateIssuanceContext, ClientVerifyMode, DynamicCertIssuer,
+            GeneratedServerAuthConfig, SelfSignedCaConfig, ServerAuthData,
+        },
     };
 
     fn client_identity() -> (CertificateDer<'static>, ClientAuthData) {
@@ -325,6 +332,60 @@ mod tests {
                 assert!(algorithms.key_exchange_group.is_some(), "{algorithms:?}");
                 // An authenticated client signs its CertificateVerify.
                 assert!(algorithms.peer_signature_scheme.is_some(), "{algorithms:?}");
+            }
+        }
+    }
+
+    struct StaplingIssuer(ServerAuthData);
+
+    impl DynamicCertIssuer for StaplingIssuer {
+        async fn issue_cert(
+            &self,
+            _: CertificateIssuanceContext,
+        ) -> Result<ServerAuthData, BoxError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn server_auth_ocsp_response_is_stapled_for_every_identity_source() {
+        const OCSP: &[u8] = b"opaque ocsp response";
+        let mut server_auth =
+            ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
+        server_auth.ocsp = Some(OCSP.to_vec());
+        let configs = [
+            TlsServerConfig::new().with_server_auth(server_auth.clone()),
+            TlsServerConfig::new()
+                .with_cert_issuer(ServerCertIssuerData::new(StaplingIssuer(server_auth))),
+        ];
+        for (index, config) in configs.into_iter().enumerate() {
+            for request in [false, true] {
+                let server = TlsAcceptorService::new(
+                    config.clone(),
+                    service_fn(
+                        |_: TlsStream<ServiceInput<tokio::io::DuplexStream>>| async {
+                            Ok::<_, BoxError>(())
+                        },
+                    ),
+                    false,
+                );
+                let client = TlsClientConfig::new()
+                    .with_server_name(rama_net::address::Host::from_static("localhost"))
+                    .with_server_verify(ServerVerifyMode::Disable)
+                    .with_ocsp_stapling(request);
+                let data = crate::client::TlsConnectorData::try_from(&client).unwrap();
+                let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+                let (client, server) = tokio::join!(
+                    crate::client::tls_connect(ServiceInput::new(client_io), Some(data)),
+                    server.serve(ServiceInput::new(server_io)),
+                );
+                server.unwrap();
+                let stapled = client.unwrap().ssl_ref().ocsp_status().map(<[u8]>::to_vec);
+                assert_eq!(
+                    stapled.as_deref(),
+                    request.then_some(OCSP),
+                    "source #{index}, requested: {request}"
+                );
             }
         }
     }

@@ -1,6 +1,6 @@
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
 use time::OffsetDateTime;
 
 /// Whole-second ASN.1 timestamps; pre-epoch values are unsupported.
@@ -13,10 +13,25 @@ pub(super) fn datetime(t: SystemTime) -> Result<OffsetDateTime, BoxError> {
     OffsetDateTime::from_unix_timestamp(secs).context("invalid timestamp")
 }
 
+/// Inverse of [`datetime`], with the same whole-second, post-epoch range.
+pub(super) fn system_time(t: OffsetDateTime) -> Result<SystemTime, BoxError> {
+    let secs = u64::try_from(t.unix_timestamp())
+        .map_err(|_pre_epoch| BoxError::from_static_str("timestamp before unix epoch"))?;
+    SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(secs))
+        .ok_or_else(|| BoxError::from_static_str("timestamp exceeds system time range"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+
+    #[test]
+    fn system_time_inverts_datetime() {
+        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        assert_eq!(system_time(datetime(t).unwrap()).unwrap(), t);
+        system_time(OffsetDateTime::UNIX_EPOCH - time::Duration::SECOND).unwrap_err();
+    }
 
     #[test]
     fn datetime_bounds() {

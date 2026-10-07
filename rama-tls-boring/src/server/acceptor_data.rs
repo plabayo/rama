@@ -191,16 +191,9 @@ impl IssuedCertificate {
 }
 
 fn install_identity(builder: &mut SslAcceptorBuilder, cert: &IssuedCert) -> Result<(), BoxError> {
-    for (index, certificate) in cert.cert_chain.iter().enumerate() {
-        if index == 0 {
-            builder.set_certificate(certificate)?;
-        } else {
-            builder.add_extra_chain_cert(certificate.clone())?;
-        }
-    }
-    builder.set_private_key(&cert.key)?;
-    builder.check_private_key()?;
-    Ok(())
+    builder
+        .add_credential(&cert.credential)
+        .context("boring acceptor: add server credential")
 }
 
 #[derive(Debug, Clone)]
@@ -671,7 +664,7 @@ fn server_auth_data_to_private_key_and_ca_chain(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    IssuedCert::try_new(cert_chain, private_key)
+    IssuedCert::try_new_with_ocsp(&cert_chain, &private_key, data.ocsp.as_deref())
 }
 
 fn certificate_authority_data_to_chain_and_key(
@@ -720,7 +713,7 @@ fn issue_cert_for_ca(
     let mut cert_chain = Vec::with_capacity(ca_chain.len() + 1);
     cert_chain.push(cert);
     cert_chain.extend(ca_chain.iter().cloned());
-    IssuedCert::try_new(cert_chain, key)
+    IssuedCert::try_new(&cert_chain, &key)
 }
 
 fn add_issued_cert_to_ssl_ref(
@@ -729,24 +722,9 @@ fn add_issued_cert_to_ssl_ref(
     builder: &mut SslRef,
 ) -> Result<(), BoxError> {
     tracing::trace!(?identity, "add issued cert to BoringSSL acceptor");
-
-    for (i, ca_cert) in issued_cert.cert_chain.iter().enumerate() {
-        if i == 0 {
-            builder
-                .set_certificate(ca_cert.as_ref())
-                .context("boring add issue cert to ssl ref: set certificate")?;
-        } else {
-            builder
-                .add_chain_cert(ca_cert)
-                .context("boring add issue cert to ssl ref: add chain certificate")?;
-        }
-    }
-
     builder
-        .set_private_key(issued_cert.key.as_ref())
-        .context("boring add issue cert to ssl ref: set private key")?;
-
-    Ok(())
+        .add_credential(&issued_cert.credential)
+        .context("boring add issued cert to ssl ref: add server credential")
 }
 
 #[cfg(test)]
@@ -800,7 +778,7 @@ mod tests {
             &ca_key,
         )
         .expect("issue leaf");
-        let issued = IssuedCert::try_new(vec![cert], key).expect("issued certificate");
+        let issued = IssuedCert::try_new(&[cert], &key).expect("issued certificate");
         let identity = CertificateIdentity::Dns(Domain::from_static("coalesced.example"));
         let cache = Cache::new(16);
         let calls = Arc::new(AtomicUsize::new(0));
