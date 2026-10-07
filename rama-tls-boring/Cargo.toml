@@ -23,7 +23,8 @@ targets = ["x86_64-unknown-linux-gnu"]
 default = []
 http = ["rama-tls/http"]
 compression = ["dep:flate2", "dep:brotli", "dep:zstd"]
-ua = ["dep:rama-ua"]
+# Emulated profiles advertise certificate compression, so they need the compressors.
+ua = ["dep:rama-ua", "compression"]
 # Optional [dial9] runtime telemetry support.
 #
 # [dial9]: https://github.com/dial9-rs/dial9
