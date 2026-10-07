@@ -165,36 +165,15 @@ async fn configured_signature_schemes_sign_the_handshake_for_every_identity_sour
 
 #[cfg(feature = "compression")]
 mod compression {
-    use std::{
-        io::{Result, Write},
-        sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        },
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
     };
 
-    use rama_boring::ssl::{CertificateCompressionAlgorithm, CertificateCompressor};
     use rama_tls::CertificateCompressionAlgorithm as Algorithm;
 
     use super::*;
-    use crate::certificate_compression::codecs::BrotliCertificateCompressor;
-
-    /// A brotli decompressor that counts how often the server compressed.
-    struct CountingBrotli(Arc<AtomicUsize>);
-
-    impl CertificateCompressor for CountingBrotli {
-        const ALGORITHM: CertificateCompressionAlgorithm = CertificateCompressionAlgorithm::BROTLI;
-        const CAN_COMPRESS: bool = false;
-        const CAN_DECOMPRESS: bool = true;
-
-        fn decompress<W>(&self, input: &[u8], output: &mut W) -> Result<()>
-        where
-            W: Write,
-        {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            BrotliCertificateCompressor::default().decompress(input, output)
-        }
-    }
+    use crate::certificate_compression::test_util::CountingBrotli;
 
     #[tokio::test]
     async fn configured_cert_compression_compresses_for_a_client_that_offers_it() {

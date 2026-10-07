@@ -12,6 +12,13 @@ use rama_core::error::ErrorContext as _;
 #[cfg(feature = "compression")]
 pub(crate) mod codecs;
 
+/// Every algorithm a compressor exists for.
+pub(crate) const ALL_ALGORITHMS: [CertificateCompressionAlgorithm; 3] = [
+    CertificateCompressionAlgorithm::Brotli,
+    CertificateCompressionAlgorithm::Zstd,
+    CertificateCompressionAlgorithm::Zlib,
+];
+
 /// Register a compressor for each algorithm, which serves both directions.
 ///
 /// Unknown algorithms are skipped.
@@ -51,4 +58,36 @@ pub(crate) fn add_certificate_compressors(
         debug!(%algorithm, "certificate compression requires the compression feature: ignore");
     }
     Ok(())
+}
+
+#[cfg(all(test, feature = "compression"))]
+pub(crate) mod test_util {
+    use std::{
+        io::{Result, Write},
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+
+    use rama_boring::ssl::{CertificateCompressionAlgorithm, CertificateCompressor};
+
+    use super::codecs::BrotliCertificateCompressor;
+
+    /// A brotli decompressor that counts the certificates a peer compressed.
+    pub(crate) struct CountingBrotli(pub(crate) Arc<AtomicUsize>);
+
+    impl CertificateCompressor for CountingBrotli {
+        const ALGORITHM: CertificateCompressionAlgorithm = CertificateCompressionAlgorithm::BROTLI;
+        const CAN_COMPRESS: bool = false;
+        const CAN_DECOMPRESS: bool = true;
+
+        fn decompress<W>(&self, input: &[u8], output: &mut W) -> Result<()>
+        where
+            W: Write,
+        {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            BrotliCertificateCompressor::default().decompress(input, output)
+        }
+    }
 }

@@ -316,6 +316,13 @@ mod tests {
         },
         server::TlsAcceptorLayer,
     };
+    #[cfg(feature = "compression")]
+    use {
+        crate::certificate_compression::test_util::CountingBrotli,
+        rama_boring::ssl::{SslConnector, SslMethod, SslVerifyMode},
+        rama_tls::CertificateCompressionAlgorithm,
+        std::sync::atomic::{AtomicUsize, Ordering},
+    };
     #[cfg(feature = "http")]
     use {
         crate::client::BoringAlps,
@@ -1148,6 +1155,64 @@ mod tests {
         drop(ingress_tls);
         service_result.expect("relay reports each TLS session independently");
         drop(upstream_handle.await);
+    }
+
+    #[cfg(feature = "compression")]
+    #[tokio::test]
+    async fn ingress_compresses_the_certificate_for_a_client_offering_it() {
+        let (cert_chain, private_key) = generate_server_auth(GeneratedServerAuthConfig::default())
+            .expect("generate private upstream identity");
+        let upstream =
+            TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
+                cert_chain,
+                private_key,
+                ocsp: None,
+            }))
+            .into_layer(EchoService::new());
+        let relay = TlsMitmRelay::try_new_with_self_signed_issuer(&SelfSignedCaConfig::default())
+            .expect("build MITM relay");
+        let service = TlsMitmRelayService::new(
+            relay,
+            service_fn(|_: BridgeIo<_, _>| async { Ok::<(), BoxError>(()) }),
+        );
+
+        let decompressed = Arc::new(AtomicUsize::new(0));
+        let mut client = SslConnector::builder(SslMethod::tls_client()).unwrap();
+        client.set_verify(SslVerifyMode::NONE);
+        client
+            .add_certificate_compression_algorithm(CountingBrotli(decompressed.clone()))
+            .unwrap();
+        let client_hello = ClientHello::new(
+            ProtocolVersion::TLSv1_3,
+            Vec::new(),
+            Vec::new(),
+            vec![ClientHelloExtension::CertificateCompression(vec![
+                CertificateCompressionAlgorithm::Brotli,
+            ])],
+        );
+
+        let (client_io, relay_ingress) = tokio::io::duplex(usize::MAX);
+        let (relay_egress, upstream_io) = tokio::io::duplex(usize::MAX);
+        let upstream_handle =
+            tokio::spawn(async move { upstream.serve(ServiceInput::new(upstream_io)).await });
+        let (service_result, client_result) = tokio::join!(
+            service.serve(InputWithClientHello {
+                input: BridgeIo(
+                    ServiceInput::new(relay_ingress),
+                    ServiceInput::new(relay_egress)
+                ),
+                client_hello,
+            }),
+            rama_boring_tokio::connect(
+                client.build().configure().unwrap(),
+                Some("localhost"),
+                client_io
+            ),
+        );
+        drop(client_result.expect("ingress TLS"));
+        service_result.expect("relay");
+        drop(upstream_handle.await);
+        assert_eq!(decompressed.load(Ordering::SeqCst), 1);
     }
 
     #[cfg(feature = "http")]

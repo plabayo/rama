@@ -20,6 +20,7 @@ use rama_tls::{
 use rama_utils::str::any_submatch_ignore_ascii_case;
 use std::{fmt, num::NonZeroU64, slice, sync::Arc, time::Duration};
 
+use crate::certificate_compression::{ALL_ALGORITHMS, add_certificate_compressors};
 use crate::core::ssl::{
     SslAcceptor, SslMethod, SslOptions, SslRef, SslSessionCacheMode, SslVersion,
 };
@@ -702,6 +703,11 @@ where
         acceptor_builder
             .check_private_key()
             .context("tls mitm relay: check mirrored private key")
+            .map_err(TlsMitmRelayError::config)?;
+
+        // Compress for clients offering an algorithm, as large hosting providers do.
+        add_certificate_compressors(&mut acceptor_builder, &ALL_ALGORITHMS)
+            .context("tls mitm relay: certificate compression")
             .map_err(TlsMitmRelayError::config)?;
 
         // Staple the issuer-signed OCSP `good` response (when one was built
