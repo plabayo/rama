@@ -541,6 +541,7 @@ mod tests {
                     Vec::new(),
                     Vec::new(),
                 ),
+                permute_extensions: false,
                 ws_client_config_overwrites: None,
             }),
             runtime: None,

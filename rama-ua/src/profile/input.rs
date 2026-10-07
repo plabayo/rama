@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fmt, sync::Arc};
 
-use rama_core::error::{BoxError, ErrorContext as _};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _};
 use rama_http::HeaderMap;
 use serde::{Deserialize, Serialize};
 
@@ -183,12 +183,16 @@ impl UserAgentProfileInput {
             user_agent: ua.header_str().to_owned(),
             field,
         };
+        let ua_kind = ua.ua_kind().ok_or_else(|| {
+            BoxError::from_static_str("unrecognized User-Agent in profile")
+                .context_field("user_agent", ua.header_str().to_owned())
+        })?;
+        let ua_version = ua.ua_version();
+        let platform = ua.platform();
         Ok(UserAgentProfile {
-            ua_kind: ua.ua_kind().ok_or_else(|| {
-                format!("unrecognized User-Agent in profile '{}'", ua.header_str())
-            })?,
-            ua_version: ua.ua_version(),
-            platform: ua.platform(),
+            ua_kind,
+            ua_version,
+            platform,
             http: Arc::new(HttpProfile {
                 h1: Http1Profile {
                     settings: self.h1_settings.ok_or_else(|| missing("h1_settings"))?,
@@ -220,6 +224,9 @@ impl UserAgentProfileInput {
                 client_hello: self
                     .tls_client_hello
                     .ok_or_else(|| missing("tls_client_hello"))?,
+                permute_extensions: TlsProfile::user_agent_permutes_extensions(
+                    ua_kind, ua_version, platform,
+                ),
                 ws_client_config_overwrites: self.tls_ws_client_config_overwrites,
             }),
             runtime: match (&self.js_web_apis, &self.source_info) {

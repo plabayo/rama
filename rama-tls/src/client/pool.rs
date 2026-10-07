@@ -389,14 +389,23 @@ struct ClientHelloSettings<'a> {
     grease: Option<bool>,
     alps: Option<AlpsSettings<'a>>,
     extension_order: Option<&'a [ExtensionId]>,
+    permute_extensions: Option<bool>,
+    requested_trust_anchors: Option<TrustAnchorsSettings<'a>>,
     cert_compression: Option<&'a [CertificateCompressionAlgorithm]>,
     delegated_credentials: Option<&'a [SignatureScheme]>,
     record_size_limit: Option<u16>,
     encrypted_client_hello: Option<bool>,
     ocsp_stapling: Option<bool>,
     signed_cert_timestamps: Option<bool>,
+    session_tickets: Option<bool>,
     min_version: Option<ProtocolVersion>,
     max_version: Option<ProtocolVersion>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum TrustAnchorsSettings<'a> {
+    Requested(&'a [u8]),
+    Omitted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -533,6 +542,30 @@ impl<'a> TlsPoolIdBuilder<'a> {
     }
 
     generate_set_and_with! {
+        /// Whether the extension order is permuted per handshake.
+        pub fn permute_extensions(mut self, value: Option<bool>) -> Self {
+            self.client_hello.permute_extensions = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Encoded `trust_anchors` extension body, including its length prefix.
+        pub fn requested_trust_anchors(mut self, value: Option<&'a [u8]>) -> Self {
+            self.client_hello.requested_trust_anchors = value.map(TrustAnchorsSettings::Requested);
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Explicitly omit the `trust_anchors` extension.
+        pub fn omitted_trust_anchors(mut self) -> Self {
+            self.client_hello.requested_trust_anchors = Some(TrustAnchorsSettings::Omitted);
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Ordered certificate compression algorithms.
         pub fn cert_compression(mut self, value: Option<&'a [CertificateCompressionAlgorithm]>) -> Self {
             self.client_hello.cert_compression = value;
@@ -576,6 +609,14 @@ impl<'a> TlsPoolIdBuilder<'a> {
         /// Whether signed certificate timestamps are requested.
         pub fn signed_cert_timestamps(mut self, value: Option<bool>) -> Self {
             self.client_hello.signed_cert_timestamps = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Whether TLS 1.2 session tickets are offered.
+        pub fn session_tickets(mut self, value: Option<bool>) -> Self {
+            self.client_hello.session_tickets = value;
             self
         }
     }

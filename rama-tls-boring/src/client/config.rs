@@ -20,7 +20,7 @@ use std::sync::Arc;
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
 
-use super::{BoringRequestedTrustAnchors, trust_anchors::TRUST_ANCHORS_EXTENSION_ID};
+use super::BoringRequestedTrustAnchors;
 use crate::RamaTlsBoringCrateMarker;
 
 /// Gather all the TLS extensions supported by boringssl
@@ -49,6 +49,7 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub encrypted_client_hello: Option<&'a BoringEncryptedClientHello>,
     pub ocsp_stapling: Option<&'a BoringOcspStapling>,
     pub signed_cert_timestamps: Option<&'a BoringSignedCertTimestamps>,
+    pub session_tickets: Option<&'a BoringSessionTickets>,
     pub verify_cert_store: Option<Arc<BoringServerVerifyCertStore>>,
     pub min_version: Option<&'a BoringMinVersion>,
     pub max_version: Option<&'a BoringMaxVersion>,
@@ -75,12 +76,15 @@ impl BoringTlsConnectorConfig<'_> {
             grease,
             alps,
             extension_order,
+            permute_extensions,
+            requested_trust_anchors,
             cert_compression,
             delegated_credentials,
             record_size_limit,
             encrypted_client_hello,
             ocsp_stapling,
             signed_cert_timestamps,
+            session_tickets,
             verify_cert_store,
             min_version,
             max_version,
@@ -101,12 +105,15 @@ impl BoringTlsConnectorConfig<'_> {
             || grease.is_some()
             || alps.is_some()
             || extension_order.is_some()
+            || permute_extensions.is_some()
+            || requested_trust_anchors.is_some()
             || cert_compression.is_some()
             || delegated_credentials.is_some()
             || record_size_limit.is_some()
             || encrypted_client_hello.is_some()
             || ocsp_stapling.is_some()
             || signed_cert_timestamps.is_some()
+            || session_tickets.is_some()
             || verify_cert_store.is_some()
             || min_version.is_some()
             || max_version.is_some()
@@ -139,12 +146,15 @@ impl BoringTlsConnectorConfig<'_> {
             grease,
             alps,
             extension_order,
+            permute_extensions,
+            requested_trust_anchors,
             cert_compression,
             delegated_credentials,
             record_size_limit,
             encrypted_client_hello,
             ocsp_stapling,
             signed_cert_timestamps,
+            session_tickets,
             verify_cert_store,
             min_version,
             max_version,
@@ -164,16 +174,24 @@ impl BoringTlsConnectorConfig<'_> {
             .maybe_with_signature_schemes(signature_schemes.map(|value| value.0.as_slice()))
             .maybe_with_grease(grease.map(|value| value.0))
             .maybe_with_extension_order(extension_order.map(|value| value.0.as_slice()))
+            .maybe_with_permute_extensions(permute_extensions.map(|value| value.0))
             .maybe_with_cert_compression(cert_compression.map(|value| value.0.as_slice()))
             .maybe_with_delegated_credentials(delegated_credentials.map(|value| value.0.as_slice()))
             .maybe_with_record_size_limit(record_size_limit.map(|value| value.0))
             .maybe_with_encrypted_client_hello(encrypted_client_hello.map(|value| value.0))
             .maybe_with_ocsp_stapling(ocsp_stapling.map(|value| value.0))
             .maybe_with_signed_cert_timestamps(signed_cert_timestamps.map(|value| value.0))
+            .maybe_with_session_tickets(session_tickets.map(|value| value.0))
             .maybe_with_min_version(min_version.map(|value| value.0))
             .maybe_with_max_version(max_version.map(|value| value.0));
         if let Some(store) = verify_cert_store {
             builder.set_component(store.as_ref());
+        }
+        if let Some(anchors) = requested_trust_anchors {
+            match anchors.extension_body() {
+                Some(body) => builder.set_requested_trust_anchors(body),
+                None => builder.set_omitted_trust_anchors(),
+            };
         }
 
         if let Some(alps) = alps {
@@ -201,12 +219,15 @@ impl BoringTlsConnectorConfig<'_> {
             grease: _,
             alps: _,
             extension_order: _,
+            permute_extensions: _,
+            requested_trust_anchors: _,
             cert_compression: _,
             delegated_credentials: _,
             record_size_limit: _,
             encrypted_client_hello: _,
             ocsp_stapling: _,
             signed_cert_timestamps: _,
+            session_tickets: _,
             verify_cert_store: _,
             min_version: _,
             max_version: _,
@@ -251,11 +272,14 @@ pub trait BoringClientConfigExt: Sized {
         fn extension_order(self, order: Vec<ExtensionId>) -> Self;
     }
     generate_set_and_with! {
-        /// Enable native per-handshake extension permutation (default: disabled).
+        /// Permute the extension order for every handshake (default: disabled),
+        /// as Chromium-based browsers do.
         ///
-        /// A nonempty explicit extension order takes precedence. Clear that
-        /// order with an empty vector to permute a mimicked ClientHello. Native
-        /// GREASE and pre-shared-key placement rules remain in force.
+        /// Takes precedence over an explicit [`extension_order`], which still
+        /// applies once permutation is disabled again. Native GREASE, padding
+        /// and pre-shared-key placement rules remain in force.
+        ///
+        /// [`extension_order`]: BoringClientConfigExt::set_extension_order
         fn permute_extensions(self, enabled: bool) -> Self;
     }
     generate_set_and_with! {
@@ -271,7 +295,7 @@ pub trait BoringClientConfigExt: Sized {
         fn delegated_credentials(self, schemes: Vec<SignatureScheme>) -> Self;
     }
     generate_set_and_with! {
-        /// Set the `record_size_limit` value.
+        /// Set the `record_size_limit` value; `0` omits the extension.
         fn record_size_limit(self, limit: u16) -> Self;
     }
     generate_set_and_with! {
@@ -285,6 +309,12 @@ pub trait BoringClientConfigExt: Sized {
     generate_set_and_with! {
         /// Enable/disable signed certificate timestamps request.
         fn signed_cert_timestamps(self, enabled: bool) -> Self;
+    }
+    generate_set_and_with! {
+        /// Offer TLS 1.2 session tickets via the `session_ticket` extension (default: enabled).
+        ///
+        /// TLS 1.3 resumption is unaffected.
+        fn session_tickets(self, enabled: bool) -> Self;
     }
     generate_set_and_with! {
         /// Set a custom server-certificate verification store (custom CA roots).
@@ -401,6 +431,12 @@ impl BoringClientConfigExt for TlsClientConfig {
     generate_set_and_with! {
         fn signed_cert_timestamps(mut self, enabled: bool) -> Self {
             self.insert(BoringSignedCertTimestamps(enabled));
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn session_tickets(mut self, enabled: bool) -> Self {
+            self.insert(BoringSessionTickets(enabled));
             self
         }
     }
@@ -528,7 +564,7 @@ pub(crate) fn set_alpn_with_coupled_alps(
 #[extension(tags(tls))]
 pub struct BoringExtensionOrder(pub Vec<ExtensionId>);
 
-/// Native per-handshake permutation, used when the explicit order is empty or unset.
+/// Per-handshake extension permutation, taking precedence over [`BoringExtensionOrder`].
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 pub struct BoringPermuteExtensions(pub bool);
@@ -543,7 +579,7 @@ pub struct BoringCertCompression(pub Vec<CertificateCompressionAlgorithm>);
 #[extension(tags(tls))]
 pub struct BoringDelegatedCredentials(pub Vec<SignatureScheme>);
 
-/// `record_size_limit` extension value.
+/// `record_size_limit` extension value; `0` omits the extension.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 pub struct BoringRecordSizeLimit(pub u16);
@@ -562,6 +598,11 @@ pub struct BoringOcspStapling(pub bool);
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 pub struct BoringSignedCertTimestamps(pub bool);
+
+/// Whether to offer TLS 1.2 session tickets (`session_ticket`).
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+pub struct BoringSessionTickets(pub bool);
 
 /// Minimum TLS version boring negotiates, overriding the min derived from the
 /// supported-versions list.
@@ -599,23 +640,35 @@ impl std::fmt::Debug for BoringServerVerifyCertStore {
 impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
     fn rama_from(hello: &ClientHello) -> Self {
         let mut config = Self::new();
+
+        // Every shaping piece is set explicitly, absent extensions included,
+        // so a layered base config cannot add anything the hello did not offer.
         let mut grease = false;
+        let mut alps = BoringAlps {
+            protocols: Vec::new(),
+            new_codepoint: false,
+        };
+        let mut cert_compression = Vec::new();
+        let mut delegated_credentials = Vec::new();
+        let mut record_size_limit = 0;
+        let mut encrypted_client_hello = false;
+        let mut ocsp_stapling = false;
+        let mut signed_cert_timestamps = false;
+        let mut session_tickets = false;
+        let mut requested_trust_anchors = BoringRequestedTrustAnchors::omitted();
 
         let cipher_suites = hello.cipher_suites();
         if !cipher_suites.is_empty() {
-            if cipher_suites.iter().any(|c| c.is_grease()) {
-                grease = true;
-            }
+            grease |= cipher_suites.iter().any(|c| c.is_grease());
             config.set_cipher_suites(cipher_suites.to_vec());
         }
 
         let extensions = hello.extensions();
-        let order: Vec<ExtensionId> = extensions.iter().map(|e| e.id()).dedup().collect();
-        if !order.is_empty() {
-            config.set_extension_order(order);
-        }
+        config.set_extension_order(extensions.iter().map(|e| e.id()).dedup().collect());
+        config.set_permute_extensions(false);
 
         for ext in extensions {
+            grease |= ext.id().is_grease();
             match ext {
                 // The server identity is resolved per request from the target
                 // host, rather than copied from the observed ClientHello.
@@ -624,63 +677,67 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
                     config.set_alpn(alpn.clone().into());
                 }
                 ClientHelloExtension::SupportedGroups(groups) => {
-                    if groups.iter().any(|g| g.is_grease()) {
-                        grease = true;
-                    }
+                    grease |= groups.iter().any(|g| g.is_grease());
                     config.set_supported_groups(groups.clone());
                 }
                 ClientHelloExtension::SupportedVersions(versions) => {
-                    if versions.iter().any(|v| v.is_grease()) {
-                        grease = true;
-                    }
+                    grease |= versions.iter().any(|v| v.is_grease());
                     config.set_supported_versions(versions.clone());
                 }
                 ClientHelloExtension::SignatureAlgorithms(schemes) => {
-                    if schemes.iter().any(|s| s.is_grease()) {
-                        grease = true;
-                    }
+                    grease |= schemes.iter().any(|s| s.is_grease());
                     config.set_signature_schemes(schemes.clone());
                 }
                 ClientHelloExtension::CertificateCompression(algorithms) => {
-                    config.set_cert_compression(algorithms.clone());
+                    cert_compression.clone_from(algorithms);
                 }
                 ClientHelloExtension::DelegatedCredentials(schemes) => {
-                    config.set_delegated_credentials(schemes.clone());
+                    delegated_credentials.clone_from(schemes);
                 }
                 ClientHelloExtension::RecordSizeLimit(limit) => {
-                    config.set_record_size_limit(*limit);
+                    record_size_limit = *limit;
                 }
                 ClientHelloExtension::EncryptedClientHello(_) => {
-                    config.set_encrypted_client_hello(true);
+                    encrypted_client_hello = true;
                 }
                 ClientHelloExtension::ApplicationSettings {
                     protocols,
                     new_codepoint,
                 } => {
-                    config.set_alps(protocols.clone(), *new_codepoint);
+                    alps = BoringAlps {
+                        protocols: protocols.clone(),
+                        new_codepoint: *new_codepoint,
+                    };
                 }
-                ClientHelloExtension::Opaque { id, data }
-                    if u16::from(*id) == TRUST_ANCHORS_EXTENSION_ID =>
-                {
-                    config.set_requested_trust_anchors(
-                        BoringRequestedTrustAnchors::from_raw_extension_body(data.clone()),
-                    );
+                ClientHelloExtension::Opaque { id, data } if *id == ExtensionId::TRUST_ANCHORS => {
+                    requested_trust_anchors =
+                        BoringRequestedTrustAnchors::from_raw_extension_body(data.as_slice());
                 }
                 other => match other.id() {
                     ExtensionId::STATUS_REQUEST | ExtensionId::STATUS_REQUEST_V2 => {
-                        config.set_ocsp_stapling(true);
+                        ocsp_stapling = true;
                     }
                     ExtensionId::SIGNED_CERTIFICATE_TIMESTAMP => {
-                        config.set_signed_cert_timestamps(true);
+                        signed_cert_timestamps = true;
+                    }
+                    ExtensionId::SESSION_TICKET => {
+                        session_tickets = true;
                     }
                     _ => {}
                 },
             }
         }
 
-        if grease {
-            config.set_grease(true);
-        }
+        config.insert(alps);
+        config.set_grease(grease);
+        config.set_cert_compression(cert_compression);
+        config.set_delegated_credentials(delegated_credentials);
+        config.set_record_size_limit(record_size_limit);
+        config.set_encrypted_client_hello(encrypted_client_hello);
+        config.set_ocsp_stapling(ocsp_stapling);
+        config.set_signed_cert_timestamps(signed_cert_timestamps);
+        config.set_session_tickets(session_tickets);
+        config.set_requested_trust_anchors(requested_trust_anchors);
 
         // Egress version safety (mitm mirror): cap boring's max negotiated version
         // when the mirrored ClientHello isn't a viable TLS 1.3 offer.
@@ -927,6 +984,22 @@ mod pool_tests {
             ("extension_order", |ext, value| {
                 ext.insert(BoringExtensionOrder(vec![u16::from(value).into()]));
             }),
+            ("permute_extensions", |ext, value| {
+                ext.insert(BoringPermuteExtensions(value != 0));
+            }),
+            ("requested_trust_anchors_presence", |ext, value| {
+                ext.insert(if value == 0 {
+                    BoringRequestedTrustAnchors::omitted()
+                } else {
+                    BoringRequestedTrustAnchors::try_from_ids(std::iter::empty::<&[u8]>()).unwrap()
+                });
+            }),
+            ("requested_trust_anchors", |ext, value| {
+                ext.insert(BoringRequestedTrustAnchors::try_from_ids([[value + 1]]).unwrap());
+            }),
+            ("session_tickets", |ext, value| {
+                ext.insert(BoringSessionTickets(value != 0));
+            }),
             ("cert_compression", |ext, value| {
                 ext.insert(BoringCertCompression(vec![u16::from(value).into()]));
             }),
@@ -1005,8 +1078,12 @@ mod pool_tests {
         let extensions = [ExtensionId::SERVER_NAME];
         let compression = [CertificateCompressionAlgorithm::Zlib];
 
+        let anchors = BoringRequestedTrustAnchors::try_from_ids([[7]]).unwrap();
+
         // Distinct combinations catch swapped boolean setters as well as omitted fields.
-        for (grease, ech, ocsp, timestamps, new_codepoint) in iproduct!(
+        for (grease, ech, ocsp, timestamps, new_codepoint, permute, tickets) in iproduct!(
+            [false, true],
+            [false, true],
             [false, true],
             [false, true],
             [false, true],
@@ -1024,6 +1101,9 @@ mod pool_tests {
                 new_codepoint,
             });
             input.insert(BoringExtensionOrder(extensions.to_vec()));
+            input.insert(BoringPermuteExtensions(permute));
+            input.insert(anchors.clone());
+            input.insert(BoringSessionTickets(tickets));
             input.insert(BoringCertCompression(compression.to_vec()));
             input.insert(BoringDelegatedCredentials(delegated.to_vec()));
             input.insert(BoringRecordSizeLimit(4096));
@@ -1041,6 +1121,9 @@ mod pool_tests {
                 .with_grease(grease)
                 .with_alps(&protocols, new_codepoint)
                 .with_extension_order(&extensions)
+                .with_permute_extensions(permute)
+                .with_requested_trust_anchors(anchors.extension_body().unwrap())
+                .with_session_tickets(tickets)
                 .with_cert_compression(&compression)
                 .with_delegated_credentials(&delegated)
                 .with_record_size_limit(4096)
@@ -1055,6 +1138,28 @@ mod pool_tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn omitted_trust_anchors_never_share_an_identity_with_a_captured_body() {
+        let identity = |anchors: BoringRequestedTrustAnchors| {
+            let extensions = Extensions::new();
+            extensions.insert(anchors);
+            BoringTlsConnectorConfig::from_extensions(&extensions).pool_id()
+        };
+        let omitted = identity(BoringRequestedTrustAnchors::omitted());
+        assert!(omitted.is_some());
+        // A malformed captured body must keep failing the connector, not reuse a connection.
+        assert_ne!(
+            omitted,
+            identity(BoringRequestedTrustAnchors::from_raw_extension_body(vec![]))
+        );
+        assert_ne!(
+            omitted,
+            identity(
+                BoringRequestedTrustAnchors::try_from_ids(std::iter::empty::<&[u8]>()).unwrap()
+            )
+        );
     }
 
     #[test]

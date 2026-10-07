@@ -8,8 +8,8 @@ use rama_boring::{
     pkey::{PKey, Private},
     rsa::Rsa,
     ssl::{
-        ConnectConfiguration, SslCredential, SslCurve, SslSignatureAlgorithm, SslVerifyMode,
-        SslVersion,
+        ConnectConfiguration, SslCredential, SslCurve, SslOptions, SslSignatureAlgorithm,
+        SslVerifyMode, SslVersion,
     },
     x509::{
         X509,
@@ -223,6 +223,7 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             .signed_cert_timestamps
             .map(|p| p.0)
             .unwrap_or_default();
+        let session_tickets_enabled = value.session_tickets.is_none_or(|p| p.0);
         let encrypted_client_hello = value
             .encrypted_client_hello
             .map(|p| p.0)
@@ -273,27 +274,13 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             .map(|p| p.0.iter().map(|e| u16::from(*e)).collect());
         let certificate_compression_algorithms = value.cert_compression.map(|p| p.0.clone());
 
-        let curves = value.supported_groups.map(|p| {
-            // Distinct rama groups can map to the same boring `SslCurve`: drop the
-            // resulting consecutive duplicates (boring rejects a duplicate curve).
-            let mut curves: Vec<SslCurve> =
-                p.0.iter()
-                    .filter_map(|g| (*g).rama_try_into().ok())
-                    .collect();
-            curves.dedup();
-            curves
-        });
-        let verify_algorithm_prefs = value.signature_schemes.map(|p| {
-            // Distinct rama schemes can map to the same boring `SslSignatureAlgorithm`;
-            // drop the resulting consecutive duplicates (boring errors on
-            // DUPLICATE_SIGNATURE_ALGORITHM otherwise).
-            let mut prefs: Vec<SslSignatureAlgorithm> =
-                p.0.iter()
-                    .filter_map(|s| (*s).rama_try_into().ok())
-                    .collect();
-            prefs.dedup();
-            prefs
-        });
+        // BoringSSL rejects any duplicate group or signature scheme, adjacent or not.
+        let curves: Option<Vec<SslCurve>> = value
+            .supported_groups
+            .map(|p| native_unique(p.0.iter().filter_map(|g| (*g).rama_try_into().ok())));
+        let verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>> = value
+            .signature_schemes
+            .map(|p| native_unique(p.0.iter().filter_map(|s| (*s).rama_try_into().ok())));
         let delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>> =
             value.delegated_credentials.map(|p| {
                 p.0.iter()
@@ -399,20 +386,25 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             });
         }
 
-        if let Some(permute) = value.permute_extensions {
-            cfg_builder.set_permute_extensions(permute.0);
-        }
-
-        if let Some(order) = &extension_order {
+        // An explicit order replaces native permutation, so only apply it without.
+        let permute_extensions = value.permute_extensions.is_some_and(|p| p.0);
+        cfg_builder.set_permute_extensions(permute_extensions);
+        if !permute_extensions && let Some(order) = &extension_order {
             trace!(?order, "boring connector: set extension order");
             cfg_builder
                 .set_extension_order(order)
                 .context("build (boring) ssl connector: set extension order")?;
         }
 
-        if let Some(anchors) = value.requested_trust_anchors {
+        if let Some(ids) = value
+            .requested_trust_anchors
+            .map(|anchors| anchors.identifier_list())
+            .transpose()
+            .context("build (boring) ssl connector: validate requested trust anchors")?
+            .flatten()
+        {
             cfg_builder
-                .set_requested_trust_anchors(anchors.identifier_list()?)
+                .set_requested_trust_anchors(ids)
                 .context("build (boring) ssl connector: set requested trust anchors")?;
         }
 
@@ -461,6 +453,10 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
 
         if signed_cert_timestamps_enabled {
             cfg_builder.enable_signed_cert_timestamps();
+        }
+
+        if !session_tickets_enabled {
+            cfg_builder.set_options(SslOptions::NO_TICKET);
         }
 
         if let Some(compression_algorithms) = &certificate_compression_algorithms {
@@ -552,6 +548,16 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             },
         })
     }
+}
+
+fn native_unique<T: PartialEq>(values: impl Iterator<Item = T>) -> Vec<T> {
+    let mut unique = Vec::new();
+    for value in values {
+        if !unique.contains(&value) {
+            unique.push(value);
+        }
+    }
+    unique
 }
 
 enum ResolvedServerTrustStore {

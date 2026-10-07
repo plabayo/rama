@@ -90,6 +90,9 @@ try_from_mapping! {
     let RSA_PSS_SHA384 = RSA_PSS_RSAE_SHA384;
     let RSA_PSS_SHA512 = RSA_PSS_RSAE_SHA512;
     let ED25519 = ED25519;
+    let ML_DSA_44 = ML_DSA_44;
+    let ML_DSA_65 = ML_DSA_65;
+    let ML_DSA_87 = ML_DSA_87;
     // Not exposed in boring, but exists in openssl/ssl.h
     // let RSA_PKCS1_SHA256_LEGACY = RSA_PKCS1_SHA256_LEGACY;
 }

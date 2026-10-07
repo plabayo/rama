@@ -24,8 +24,9 @@ pub use config::{
     BoringAlps, BoringCertCompression, BoringCipherSuites, BoringClientConfigExt,
     BoringDelegatedCredentials, BoringEncryptedClientHello, BoringExtensionOrder, BoringGrease,
     BoringMaxVersion, BoringMinVersion, BoringOcspStapling, BoringPermuteExtensions,
-    BoringRecordSizeLimit, BoringServerVerifyCertStore, BoringSignatureSchemes,
-    BoringSignedCertTimestamps, BoringSupportedGroups, BoringTlsConnectorConfig,
+    BoringRecordSizeLimit, BoringServerVerifyCertStore, BoringSessionTickets,
+    BoringSignatureSchemes, BoringSignedCertTimestamps, BoringSupportedGroups,
+    BoringTlsConnectorConfig,
 };
 
 mod trust_anchors;

@@ -47,6 +47,10 @@ where
             // Create a config for for the provided client_hello
             // TODO we could cache this in the future
             let mut cfg = TlsClientConfig::new_from_client_hello(&profile.client_hello);
+            if profile.permute_extensions {
+                // The captured order is one sample of a per-connection permutation.
+                cfg.set_permute_extensions(true);
+            }
 
             // Apply overwrites to config
             if let Some(overwrites) = &self.config_overwrites {

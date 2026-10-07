@@ -534,6 +534,9 @@ enum_builder! {
         ECDSA_BRAINPOOLP256R1TLS13_SHA256 => 0x081a,
         ECDSA_BRAINPOOLP384R1TLS13_SHA384 => 0x081b,
         ECDSA_BRAINPOOLP512R1TLS13_SHA512 => 0x081c,
+        ML_DSA_44 => 0x0904,
+        ML_DSA_65 => 0x0905,
+        ML_DSA_87 => 0x0906,
         RSA_PKCS1_MD5_SHA1 => 0xff01,
     }
 }
@@ -550,11 +553,12 @@ impl SignatureScheme {
     ///
     /// The main references are RFC 8446 section 4.2.3 and the SignatureScheme registry.
     /// The `SM2SIG_SM3` entry is included because it is also defined for TLS 1.3-style
-    /// use by RFC 8998.
+    /// use by RFC 8998, and the ML-DSA entries are defined for TLS 1.3 only.
     ///
     /// References:
     /// <https://www.rfc-editor.org/rfc/rfc8446#section-4.2.3>
     /// <https://www.rfc-editor.org/rfc/rfc8998>
+    /// <https://datatracker.ietf.org/doc/draft-ietf-tls-mldsa/>
     #[must_use]
     pub const fn is_tls13_capable(self) -> bool {
         matches!(
@@ -574,6 +578,9 @@ impl SignatureScheme {
                 | Self::ECDSA_BRAINPOOLP384R1TLS13_SHA384
                 | Self::ECDSA_BRAINPOOLP512R1TLS13_SHA512
                 | Self::SM2SIG_SM3
+                | Self::ML_DSA_44
+                | Self::ML_DSA_65
+                | Self::ML_DSA_87
         )
     }
 }
@@ -647,6 +654,7 @@ enum_builder! {
         NEXT_PROTOCOL_NEGOTIATION => 13172,
         OLD_APPLICATION_SETTINGS => 17513,
         APPLICATION_SETTINGS => 17613,
+        TRUST_ANCHORS => 51764,
         ECH_OUTER_EXTENSIONS => 64768,
         ENCRYPTED_CLIENT_HELLO => 65037,
         RENEGOTIATION_INFO => 65281,

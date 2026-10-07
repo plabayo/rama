@@ -1,18 +1,16 @@
 use rama_core::{
-    error::{BoxError, BoxErrorExt as _, ErrorContext as _},
+    error::{BoxError, BoxErrorExt as _},
     extensions::Extension,
 };
-
-pub(crate) const TRUST_ANCHORS_EXTENSION_ID: u16 = 51_764;
 
 /// Requested trust anchor identifiers for the `trust_anchors` ClientHello extension.
 ///
 /// This controls what is advertised to the peer, not certificate verification.
-/// An empty identifier list still requests the extension; omit this setting to
-/// leave the extension disabled.
+/// An empty identifier list still requests the extension, while
+/// [`Self::omitted`] leaves it out regardless of any inherited setting.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
-pub struct BoringRequestedTrustAnchors(Vec<u8>);
+pub struct BoringRequestedTrustAnchors(Option<Box<[u8]>>);
 
 impl BoringRequestedTrustAnchors {
     /// Encode identifiers, each between 1 and 255 bytes, in the provided order.
@@ -41,10 +39,11 @@ impl BoringRequestedTrustAnchors {
             body.push(length);
             body.extend_from_slice(id);
         }
-        let length =
-            u16::try_from(body.len() - 2).context("trust anchor identifier list is too large")?;
+        let length = u16::try_from(body.len() - 2).map_err(|_overflow| {
+            BoxError::from_static_str("trust anchor identifier list is too large")
+        })?;
         body[..2].copy_from_slice(&length.to_be_bytes());
-        Ok(Self(body))
+        Ok(Self(Some(body.into_boxed_slice())))
     }
 
     /// Retain a captured extension body, including its outer 16-bit length prefix.
@@ -52,21 +51,39 @@ impl BoringRequestedTrustAnchors {
     /// This is deliberately unchecked so infallible ClientHello conversion does
     /// not discard malformed data. Connector construction validates it and fails
     /// rather than silently omitting the requested extension.
-    pub fn from_raw_extension_body(body: Vec<u8>) -> Self {
-        Self(body)
+    pub fn from_raw_extension_body(body: impl Into<Box<[u8]>>) -> Self {
+        Self(Some(body.into()))
+    }
+
+    /// Leave the extension out, overriding any inherited request.
+    #[must_use]
+    pub const fn omitted() -> Self {
+        Self(None)
+    }
+
+    /// The extension body including its outer length prefix, or `None` when omitted.
+    #[must_use]
+    pub fn extension_body(&self) -> Option<&[u8]> {
+        self.0.as_deref()
     }
 
     /// Validate the body and return the identifier sequence without its outer length.
     ///
     /// BoringSSL accepts this sequence as non-empty, 8-bit length-prefixed IDs.
-    pub fn identifier_list(&self) -> Result<&[u8], BoxError> {
-        if self.0.len() < 2 || self.0.len() > usize::from(u16::MAX) {
+    /// Returns `None` when the extension is omitted.
+    pub fn identifier_list(&self) -> Result<Option<&[u8]>, BoxError> {
+        let Some(body) = self.0.as_deref() else {
+            return Ok(None);
+        };
+        let Some((length, ids)) = body
+            .split_first_chunk::<2>()
+            .filter(|_| body.len() <= usize::from(u16::MAX))
+        else {
             return Err(BoxError::from_static_str(
                 "invalid trust anchor extension body size",
             ));
-        }
-        let ids = &self.0[2..];
-        if usize::from(u16::from_be_bytes([self.0[0], self.0[1]])) != ids.len() {
+        };
+        if usize::from(u16::from_be_bytes(*length)) != ids.len() {
             return Err(BoxError::from_static_str(
                 "trust anchor list length does not match body",
             ));
@@ -81,7 +98,7 @@ impl BoringRequestedTrustAnchors {
             }
             rest = &tail[length..];
         }
-        Ok(ids)
+        Ok(Some(ids))
     }
 }
 
@@ -90,7 +107,7 @@ mod tests {
     use super::*;
     use crate::client::{BoringClientConfigExt, TlsConnectorData};
     use rama_tls::{
-        CompressionAlgorithm, ProtocolVersion,
+        CompressionAlgorithm, ExtensionId, ProtocolVersion,
         client::{ClientHello, ClientHelloExtension, TlsClientConfig},
     };
 
@@ -100,19 +117,32 @@ mod tests {
             BoringRequestedTrustAnchors::try_from_ids([&[42][..], &[17, 34][..]]).unwrap();
         let captured =
             BoringRequestedTrustAnchors::from_raw_extension_body(vec![0, 5, 1, 42, 2, 17, 34]);
-        assert_eq!(logical.identifier_list().unwrap(), &[1, 42, 2, 17, 34]);
-        assert_eq!(captured.identifier_list().unwrap(), &[1, 42, 2, 17, 34]);
+        assert_eq!(
+            logical.identifier_list().unwrap(),
+            Some(&[1, 42, 2, 17, 34][..])
+        );
+        assert_eq!(
+            captured.identifier_list().unwrap(),
+            Some(&[1, 42, 2, 17, 34][..])
+        );
+        assert_eq!(logical.extension_body(), captured.extension_body());
         let config = TlsClientConfig::new().with_requested_trust_anchors(logical);
         TlsConnectorData::try_from(&config).unwrap();
     }
 
     #[test]
-    fn an_empty_identifier_list_is_accepted() {
+    fn an_empty_identifier_list_differs_from_an_omitted_extension() {
         let anchors =
             BoringRequestedTrustAnchors::try_from_ids(std::iter::empty::<&[u8]>()).unwrap();
-        assert!(anchors.identifier_list().unwrap().is_empty());
-        let config = TlsClientConfig::new().with_requested_trust_anchors(anchors);
-        TlsConnectorData::try_from(&config).unwrap();
+        assert_eq!(anchors.identifier_list().unwrap(), Some(&[][..]));
+        assert_eq!(anchors.extension_body(), Some(&[0, 0][..]));
+        let omitted = BoringRequestedTrustAnchors::omitted();
+        assert_eq!(omitted.identifier_list().unwrap(), None);
+        assert_eq!(omitted.extension_body(), None);
+        for anchors in [anchors, omitted] {
+            let config = TlsClientConfig::new().with_requested_trust_anchors(anchors);
+            TlsConnectorData::try_from(&config).unwrap();
+        }
     }
 
     #[test]
@@ -129,10 +159,11 @@ mod tests {
         let mut ids = vec![vec![42]; 32_765];
         ids.push(vec![17, 34]);
         let anchors = BoringRequestedTrustAnchors::try_from_ids(&ids).unwrap();
-        assert_eq!(anchors.identifier_list().unwrap().len(), 65_533);
+        let list = anchors.identifier_list().unwrap().unwrap();
+        assert_eq!(list.len(), 65_533);
 
         let mut too_large = vec![255, 255];
-        too_large.extend_from_slice(anchors.identifier_list().unwrap());
+        too_large.extend_from_slice(list);
         too_large.extend_from_slice(&[1, 42]);
         BoringRequestedTrustAnchors::from_raw_extension_body(too_large)
             .identifier_list()
@@ -157,7 +188,7 @@ mod tests {
                 vec![],
                 vec![CompressionAlgorithm::Null],
                 vec![ClientHelloExtension::Opaque {
-                    id: 51_764.into(),
+                    id: ExtensionId::TRUST_ANCHORS,
                     data: body,
                 }],
             );

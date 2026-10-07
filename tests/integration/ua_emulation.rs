@@ -290,6 +290,11 @@ async fn test_ua_emulation() {
             http: Arc::new(test_case.http_profile),
             tls: Arc::new(TlsProfile {
                 client_hello,
+                permute_extensions: TlsProfile::user_agent_permutes_extensions(
+                    test_case.ua_kind,
+                    test_case.ua_version,
+                    test_case.ua_platform,
+                ),
                 ws_client_config_overwrites: None,
             }),
             runtime: None,
