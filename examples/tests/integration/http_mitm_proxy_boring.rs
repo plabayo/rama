@@ -357,4 +357,6 @@ async fn test_http_mitm_proxy() {
             .unwrap();
         assert_eq!("pong", pong);
     }
+
+    utils::reset_response::through_mitm("http://john:secret@127.0.0.1:62017").await;
 }

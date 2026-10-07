@@ -33,7 +33,7 @@ use rama::{
     extensions::ExtensionsRef,
     http::{
         BodyLimitLayer, HeaderName, HeaderValue,
-        client::EasyHttpWebClient,
+        client::{EasyHttpWebClient, Http3Connector},
         layer::{
             compression::{MirrorDecompressed, stream::StreamCompressionLayer},
             decompression::DecompressionLayer,
@@ -58,9 +58,10 @@ use rama::{
     io::{BridgeIo, Io},
     layer::{ArcLayer, ConsumeErrLayer, HijackLayer, MapOutputLayer, TimeoutLayer},
     net::{http::server::HttpPeekRouter, proxy::IoForwardService, user::credentials::basic},
+    quic::tls::BoringTlsProvider,
     rt::Executor,
     service::service_fn,
-    tcp::server::TcpListener,
+    tcp::{client::service::TcpConnector, posted_recv::PostedRecvLayer, server::TcpListener},
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -68,6 +69,7 @@ use rama::{
     },
     tls::{
         boring::proxy::TlsMitmRelay,
+        client::TlsClientConfig,
         server::{CertificateSubject, PeekTlsClientHelloService, SelfSignedCaConfig},
     },
     utils::{macros::match_ignore_ascii_case_str, octets::mib},
@@ -96,17 +98,35 @@ async fn main() -> Result<(), BoxError> {
             .await
             .expect("bind tcp proxy to 127.0.0.1:62017");
 
+        // Post receives on raw upstream TCP before protocol peeking or TLS interception.
         let connect = EagerHttpProxyConnector::new(
             TimeoutLayer::new(Duration::from_secs(30)).into_layer(
                 rama::dns::client::DnsConnector::new(
-                    rama::tcp::client::service::TcpConnector::new(),
+                    PostedRecvLayer::new().into_layer(TcpConnector::new()),
                 ),
             ),
             mitm_svc,
         );
-        let web_client =
-            EasyHttpWebClient::default_with_executor(Executor::graceful(guard.clone()))
-                .with_isolate_forward_proxy_auth_error(true);
+        // Ordinary HTTP forwarding has its own connector and needs the same TCP protection.
+        // Keep the default client's TLS, proxy, HTTP/3, and pooling behavior.
+        let client_exec = Executor::graceful(guard.clone());
+        let tls_config = TlsClientConfig::default_http();
+        let h3 = Http3Connector::builder(client_exec.clone())
+            .with_tls_config(tls_config.clone())
+            .with_tls_provider(Arc::new(BoringTlsProvider))
+            .build_lazy()
+            .expect("default HTTP/3 configuration is valid");
+        let web_client = EasyHttpWebClient::connector_builder()
+            .with_custom_transport_connector(PostedRecvLayer::new().into_layer(TcpConnector::new()))
+            .with_default_dns_connector()
+            .with_tls_proxy_support_using_boringssl()
+            .with_proxy_support()
+            .with_tls_support_using_boringssl(tls_config)
+            .with_default_http_connector(client_exec)
+            .with_http3_support(h3)
+            .with_default_connection_pool()
+            .build_client()
+            .with_isolate_forward_proxy_auth_error(true);
         let web_client = (
             RemoveRequestHeaderLayer::hop_by_hop(),
             HijackLayer::new(

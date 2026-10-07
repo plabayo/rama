@@ -82,7 +82,7 @@ use rama::{
     net::{proxy::IoForwardService, stream::SocketInfo, user::credentials::basic},
     rt::Executor,
     service::service_fn,
-    tcp::server::TcpListener,
+    tcp::{client::service::TcpConnector, posted_recv::PostedRecvLayer, server::TcpListener},
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -154,10 +154,11 @@ async fn main() {
                         })
                     ),
                     {
+                        // Capture upstream bytes before a reset on Windows; pass through elsewhere.
                         let connect = EagerHttpProxyConnector::new(
                             TimeoutLayer::new(Duration::from_secs(30)).into_layer(
                                 rama::dns::client::DnsConnector::new(
-                                    rama::tcp::client::service::TcpConnector::new(),
+                                    PostedRecvLayer::new().into_layer(TcpConnector::new()),
                                 ),
                             ),
                             IoForwardService::new(exec.clone()),

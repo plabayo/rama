@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+#[cfg(feature = "http-full")]
+pub(super) mod reset_response;
+
 use parking_lot::Mutex;
 use rama::telemetry::tracing::{
     self,
