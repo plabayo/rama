@@ -1,6 +1,6 @@
 use crate::core::{
     pkey::{PKey, Private},
-    ssl::SslCredential,
+    ssl::{SslCredential, SslSignatureAlgorithm},
     x509::X509,
 };
 use moka::future::Cache;
@@ -185,9 +185,43 @@ pub(super) struct CaMaterial {
 
 #[derive(Clone)]
 pub(super) struct IssuedCert {
-    /// Chain, key and stapled OCSP response, built once and shared by every handshake.
-    pub(super) credential: SslCredential,
+    material: Arc<IdentityMaterial>,
+    /// Built once from `material` and shared by every handshake without signing preferences.
+    credential: SslCredential,
     validity: Range<i64>,
+}
+
+struct IdentityMaterial {
+    cert_chain: Vec<X509>,
+    key: PKey<Private>,
+    ocsp_response: Option<Box<[u8]>>,
+}
+
+impl IdentityMaterial {
+    fn credential(
+        &self,
+        signing_prefs: Option<&[SslSignatureAlgorithm]>,
+    ) -> Result<SslCredential, BoxError> {
+        let mut credential = SslCredential::builder().context("create server credential")?;
+        credential
+            .set_certificate_chain(&self.cert_chain)
+            .context("set server credential certificate chain")?;
+        // Fails when the key does not match the leaf configured above.
+        credential
+            .set_private_key(&self.key)
+            .context("set server credential private key")?;
+        if let Some(response) = &self.ocsp_response {
+            credential
+                .set_ocsp_response(response)
+                .context("set server credential OCSP response")?;
+        }
+        if let Some(prefs) = signing_prefs {
+            credential
+                .set_signing_algorithm_prefs(prefs)
+                .context("set server credential signing preferences")?;
+        }
+        Ok(credential.build())
+    }
 }
 
 impl fmt::Debug for IssuedCert {
@@ -220,19 +254,7 @@ impl IssuedCert {
         let validity = certificate.validity();
 
         let mut validity = validity.not_before.timestamp()..validity.not_after.timestamp();
-
-        let mut credential = SslCredential::builder().context("create server credential")?;
-        credential
-            .set_certificate_chain(cert_chain)
-            .context("set server credential certificate chain")?;
-        // Fails when the key does not match the leaf configured above.
-        credential
-            .set_private_key(key)
-            .context("set server credential private key")?;
         if let Some(response) = ocsp_response {
-            credential
-                .set_ocsp_response(response)
-                .context("set server credential OCSP response")?;
             // A cached issuance must not outlive its staple, so it gets reissued instead.
             match ocsp_response_next_update(response) {
                 Ok(Some(next_update)) => {
@@ -249,10 +271,28 @@ impl IssuedCert {
                 }
             }
         }
+
+        let material = IdentityMaterial {
+            cert_chain: cert_chain.to_vec(),
+            key: key.clone(),
+            ocsp_response: ocsp_response.map(Box::from),
+        };
         Ok(Self {
-            credential: credential.build(),
+            credential: material.credential(None)?,
+            material: Arc::new(material),
             validity,
         })
+    }
+
+    /// The credential to install, signing with `signing_prefs` when set.
+    pub(super) fn credential(
+        &self,
+        signing_prefs: Option<&[SslSignatureAlgorithm]>,
+    ) -> Result<SslCredential, BoxError> {
+        match signing_prefs {
+            None => Ok(self.credential.clone()),
+            Some(prefs) => self.material.credential(Some(prefs)),
+        }
     }
 
     pub(super) fn is_valid(&self) -> bool {

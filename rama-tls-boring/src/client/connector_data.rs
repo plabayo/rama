@@ -1,4 +1,6 @@
+use crate::certificate_compression::add_certificate_compressors;
 use crate::client::config::BoringTlsConnectorConfig;
+use crate::type_conversion::native_unique;
 use ahash::{HashSet, HashSetExt as _};
 use moka::sync::Cache;
 use rama_boring::{
@@ -36,13 +38,6 @@ use std::{
     fmt,
     sync::{Arc, LazyLock},
 };
-
-#[cfg(feature = "compression")]
-use super::compress_certificate::{
-    BrotliCertificateCompressor, ZlibCertificateCompressor, ZstdCertificateCompressor,
-};
-#[cfg(feature = "compression")]
-use rama_tls::CertificateCompressionAlgorithm;
 
 use rama_tls::keylog::{KeyLogSink, open_intent_sink};
 
@@ -459,38 +454,9 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             cfg_builder.set_options(SslOptions::NO_TICKET);
         }
 
-        if let Some(compression_algorithms) = &certificate_compression_algorithms {
-            for compressor in compression_algorithms.iter() {
-                #[cfg(feature = "compression")]
-                match compressor {
-                    CertificateCompressionAlgorithm::Zlib => {
-                        cfg_builder.add_certificate_compression_algorithm(ZlibCertificateCompressor::default()).context("build (boring) ssl connector: add certificate compression algorithm: zlib")?;
-                    }
-                    CertificateCompressionAlgorithm::Brotli => {
-                        cfg_builder.add_certificate_compression_algorithm(
-                            BrotliCertificateCompressor::default(),
-                        )
-                        .context("build (boring) ssl connector: add certificate compression algorithm: brotli")?;
-                    }
-                    CertificateCompressionAlgorithm::Zstd => {
-                        cfg_builder.add_certificate_compression_algorithm(
-                            ZstdCertificateCompressor::default(),
-                        )
-                        .context("build (boring) ssl connector: add certificate compression algorithm: zstd")?;
-                    }
-                    CertificateCompressionAlgorithm::Unknown(_) => {
-                        debug!(
-                            "boring connector: certificate compression algorithm: unknown: ignore"
-                        );
-                    }
-                }
-                #[cfg(not(feature = "compression"))]
-                {
-                    debug!(
-                        "boring connector: certificate compression algorithm: {compressor}: not supported (feature compression not enabled)"
-                    );
-                }
-            }
+        if let Some(algorithms) = &certificate_compression_algorithms {
+            add_certificate_compressors(&mut cfg_builder, algorithms)
+                .context("build (boring) ssl connector: certificate compression")?;
         }
 
         match server_verify_mode {
@@ -548,16 +514,6 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             },
         })
     }
-}
-
-fn native_unique<T: PartialEq>(values: impl Iterator<Item = T>) -> Vec<T> {
-    let mut unique = Vec::new();
-    for value in values {
-        if !unique.contains(&value) {
-            unique.push(value);
-        }
-    }
-    unique
 }
 
 enum ResolvedServerTrustStore {

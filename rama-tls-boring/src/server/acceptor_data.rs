@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use moka::future::Cache;
 use parking_lot::Mutex;
-use rama_boring::ssl::{AlpnError, ClientHello, NameType, SslAcceptorBuilder, SslRef};
+use rama_boring::ssl::{
+    AlpnError, ClientHello, NameType, SslAcceptorBuilder, SslCurve, SslOptions, SslRef,
+    SslSignatureAlgorithm,
+};
 use rama_boring_tokio::{AsyncSelectCertError, BoxSelectCertFinish};
 use rama_core::{
     conversion::{RamaTryFrom, RamaTryInto},
@@ -12,7 +15,7 @@ use rama_core::{
 use rama_crypto::dep::x509_parser::nom::AsBytes;
 use rama_net::{address::Domain, tls::ApplicationProtocol};
 use rama_tls::{
-    KeyLogIntent, ProtocolVersion,
+    CertificateCompressionAlgorithm, KeyLogIntent, ProtocolVersion,
     client::ClientHello as RamaClientHello,
     server::{
         CertificateAuthorityData, CertificateIdentity, CertificateIssuanceContext,
@@ -26,10 +29,12 @@ use super::{
     },
     config::BoringTlsAuth,
 };
+use crate::certificate_compression::add_certificate_compressors;
 use crate::core::{
     pkey::{PKey, Private},
     x509::X509,
 };
+use crate::type_conversion::{native_unique, openssl_cipher_list_str_from_cipher_list};
 
 pub(super) async fn prepare_server_cert_issuer(
     issuer_data: ServerCertIssuerData,
@@ -129,10 +134,15 @@ impl TlsAcceptorData {
     ) -> Result<IssuedCertificate, BoxError> {
         let source = self.config.cert_source.clone();
         let identity = source.identity_for(client_hello);
+        let signing_prefs = source.signing_prefs.clone();
         let cert = source
             .issue_for(identity.clone(), Some(client_hello.clone()))
             .await?;
-        Ok(IssuedCertificate { identity, cert })
+        Ok(IssuedCertificate {
+            identity,
+            cert,
+            signing_prefs,
+        })
     }
 
     /// The certificate [`Self::issue_certificate`] hands out for `client_hello` without
@@ -146,7 +156,11 @@ impl TlsAcceptorData {
         let source = &self.config.cert_source;
         let identity = source.identity_for(client_hello);
         let cert = source.reusable_for(identity.as_ref()).await?;
-        Some(IssuedCertificate { identity, cert })
+        Some(IssuedCertificate {
+            identity,
+            cert,
+            signing_prefs: source.signing_prefs.clone(),
+        })
     }
 
     /// A server context builder with every setting of this configuration but its identity,
@@ -160,12 +174,13 @@ impl TlsAcceptorData {
     /// see [`Self::issue_certificate`].
     pub fn into_static_acceptor_builder(self) -> Result<SslAcceptorBuilder, BoxError> {
         let mut builder = self.config.acceptor_builder()?;
-        let TlsCertSourceKind::InMemory(cert) = self.config.cert_source.kind else {
+        let source = self.config.cert_source;
+        let TlsCertSourceKind::InMemory(cert) = &source.kind else {
             return Err(BoxError::from_static_str(
                 "static TLS context requires a fixed server identity",
             ));
         };
-        install_identity(&mut builder, &cert)?;
+        install_identity(&mut builder, cert, source.signing_prefs.as_deref())?;
         Ok(builder)
     }
 }
@@ -175,6 +190,7 @@ impl TlsAcceptorData {
 pub struct IssuedCertificate {
     identity: Option<CertificateIdentity>,
     cert: IssuedCert,
+    signing_prefs: Option<Arc<[SslSignatureAlgorithm]>>,
 }
 
 impl IssuedCertificate {
@@ -186,13 +202,23 @@ impl IssuedCertificate {
 
     /// Present this certificate on `ssl`, before its handshake starts.
     pub fn install(&self, ssl: &mut SslRef) -> Result<(), BoxError> {
-        add_issued_cert_to_ssl_ref(self.identity.as_ref(), &self.cert, ssl)
+        add_issued_cert_to_ssl_ref(
+            self.identity.as_ref(),
+            &self.cert,
+            self.signing_prefs.as_deref(),
+            ssl,
+        )
     }
 }
 
-fn install_identity(builder: &mut SslAcceptorBuilder, cert: &IssuedCert) -> Result<(), BoxError> {
+fn install_identity(
+    builder: &mut SslAcceptorBuilder,
+    cert: &IssuedCert,
+    signing_prefs: Option<&[SslSignatureAlgorithm]>,
+) -> Result<(), BoxError> {
+    let credential = cert.credential(signing_prefs)?;
     builder
-        .add_credential(&cert.credential)
+        .add_credential(&credential)
         .context("boring acceptor: add server credential")
 }
 
@@ -210,6 +236,12 @@ pub(super) struct TlsConfig {
     pub(super) client_cert_chain: Option<Vec<X509>>,
     /// store client certificate chain if true and client provided this
     pub store_client_certificate_chain: bool,
+    /// OpenSSL cipher string for TLS 1.2 and below, in preference order.
+    pub(super) cipher_list: Option<String>,
+    /// Key exchange groups, in preference order.
+    pub(super) curves: Option<Vec<SslCurve>>,
+    /// Algorithms the server can compress its certificate with.
+    pub(super) cert_compression: Option<Vec<CertificateCompressionAlgorithm>>,
 }
 
 impl TlsConfig {
@@ -260,6 +292,24 @@ impl TlsConfig {
                 sink.write_line(&output);
             });
         }
+        if let Some(cipher_list) = &self.cipher_list {
+            builder
+                .set_cipher_list(cipher_list)
+                .context("boring acceptor: set cipher list")?;
+        }
+        if let Some(curves) = &self.curves {
+            builder
+                .set_curves(curves)
+                .context("boring acceptor: set curves")?;
+        }
+        // Configured lists are preference orders, as for ALPN.
+        if self.cipher_list.is_some() || self.curves.is_some() {
+            builder.set_options(SslOptions::CIPHER_SERVER_PREFERENCE);
+        }
+        if let Some(algorithms) = &self.cert_compression {
+            add_certificate_compressors(&mut builder, algorithms)
+                .context("boring acceptor: certificate compression")?;
+        }
         Ok(builder)
     }
 }
@@ -267,6 +317,8 @@ impl TlsConfig {
 #[derive(Debug, Clone)]
 pub(super) struct TlsCertSource {
     kind: TlsCertSourceKind,
+    /// Signing preferences of every installed credential.
+    signing_prefs: Option<Arc<[SslSignatureAlgorithm]>>,
 }
 
 #[derive(Debug, Clone)]
@@ -413,7 +465,7 @@ impl TlsCertSource {
         maybe_client_hello: Option<&Arc<Mutex<Option<RamaClientHello>>>>,
     ) -> Result<SslAcceptorBuilder, BoxError> {
         if let TlsCertSourceKind::InMemory(issued_cert) = &self.kind {
-            install_identity(&mut builder, issued_cert)?;
+            install_identity(&mut builder, issued_cert, self.signing_prefs.as_deref())?;
 
             if let Some(maybe_client_hello) = maybe_client_hello {
                 let cb_maybe_client_hello = maybe_client_hello.clone();
@@ -455,6 +507,7 @@ impl TlsCertSource {
 
             let source = self.clone();
             Ok(Box::pin(async move {
+                let signing_prefs = source.signing_prefs.clone();
                 let issued_cert = source
                     .issue_for(identity.clone(), rama_client_hello)
                     .await
@@ -469,14 +522,18 @@ impl TlsCertSource {
                     let mut client_hello = client_hello;
                     let ssl_ref = client_hello.ssl_mut();
 
-                    add_issued_cert_to_ssl_ref(identity.as_ref(), &issued_cert, ssl_ref).map_err(
-                        |err| {
-                            tracing::error!(
-                                "boring: select certificate callback: add certs to ssl ref: {err:?}"
-                            );
-                            AsyncSelectCertError {}
-                        },
-                    )?;
+                    add_issued_cert_to_ssl_ref(
+                        identity.as_ref(),
+                        &issued_cert,
+                        signing_prefs.as_deref(),
+                        ssl_ref,
+                    )
+                    .map_err(|err| {
+                        tracing::error!(
+                            "boring: select certificate callback: add certs to ssl ref: {err:?}"
+                        );
+                        AsyncSelectCertError {}
+                    })?;
                     Ok(())
                 }) as BoxSelectCertFinish;
 
@@ -591,10 +648,25 @@ impl TryFrom<super::config::BoringTlsAcceptorConfig<'_>> for TlsConfig {
             }
         };
 
+        let cipher_list = value.cipher_suites.and_then(|suites| {
+            let suites: Vec<_> = suites.0.iter().copied().filter(|s| !s.is_tls13()).collect();
+            openssl_cipher_list_str_from_cipher_list(&suites)
+        });
+        let curves = value
+            .supported_groups
+            .map(|groups| native_unique(groups.0.iter().filter_map(|g| (*g).rama_try_into().ok())));
+        let signing_prefs = value.signature_schemes.map(|schemes| {
+            native_unique(schemes.0.iter().filter_map(|s| (*s).rama_try_into().ok())).into()
+        });
+
         Ok(Self {
             cert_source: TlsCertSource {
                 kind: cert_source_kind,
+                signing_prefs,
             },
+            cipher_list,
+            curves,
+            cert_compression: value.cert_compression.map(|c| c.0.clone()),
             alpn_protocols: value.alpn.map(|a| a.0.to_vec()),
             keylog_intent: value.keylog.map(|k| k.0.clone()).unwrap_or_default(),
             protocol_versions: value.versions.map(|v| v.0.clone()),
@@ -727,11 +799,13 @@ fn issue_cert_for_ca(
 fn add_issued_cert_to_ssl_ref(
     identity: Option<&CertificateIdentity>,
     issued_cert: &IssuedCert,
+    signing_prefs: Option<&[SslSignatureAlgorithm]>,
     builder: &mut SslRef,
 ) -> Result<(), BoxError> {
     tracing::trace!(?identity, "add issued cert to BoringSSL acceptor");
+    let credential = issued_cert.credential(signing_prefs)?;
     builder
-        .add_credential(&issued_cert.credential)
+        .add_credential(&credential)
         .context("boring add issued cert to ssl ref: add server credential")
 }
 

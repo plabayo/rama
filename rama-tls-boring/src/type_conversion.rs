@@ -165,6 +165,17 @@ impl RamaTryFrom<&rama_boring::stack::StackRef<rama_boring::x509::X509>, RamaTls
     }
 }
 
+/// Keep the first of duplicate values, which BoringSSL rejects in its lists.
+pub(crate) fn native_unique<T: PartialEq>(values: impl Iterator<Item = T>) -> Vec<T> {
+    let mut unique = Vec::new();
+    for value in values {
+        if !unique.contains(&value) {
+            unique.push(value);
+        }
+    }
+    unique
+}
+
 /// create an openssl cipher list str from the given [`CipherSuite`]
 ///
 /// ref doc: <https://docs.openssl.org/1.1.1/man1/ciphers/#tls-v13-cipher-suites>

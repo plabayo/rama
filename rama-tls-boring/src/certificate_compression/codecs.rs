@@ -6,7 +6,7 @@ use std::io::{self, Result, prelude::*};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
-pub(super) struct ZlibCertificateCompressor;
+pub(crate) struct ZlibCertificateCompressor;
 
 impl CertificateCompressor for ZlibCertificateCompressor {
     const ALGORITHM: CertificateCompressionAlgorithm = CertificateCompressionAlgorithm::ZLIB;
@@ -35,7 +35,7 @@ impl CertificateCompressor for ZlibCertificateCompressor {
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
-pub(super) struct BrotliCertificateCompressor;
+pub(crate) struct BrotliCertificateCompressor;
 
 impl CertificateCompressor for BrotliCertificateCompressor {
     const ALGORITHM: CertificateCompressionAlgorithm = CertificateCompressionAlgorithm::BROTLI;
@@ -80,7 +80,7 @@ impl CertificateCompressor for BrotliCertificateCompressor {
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
-pub(super) struct ZstdCertificateCompressor;
+pub(crate) struct ZstdCertificateCompressor;
 
 impl CertificateCompressor for ZstdCertificateCompressor {
     const ALGORITHM: CertificateCompressionAlgorithm = CertificateCompressionAlgorithm::ZSTD;
