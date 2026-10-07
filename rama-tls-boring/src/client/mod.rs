@@ -24,8 +24,8 @@ pub use config::{
     BoringAlps, BoringCertCompression, BoringCipherSuites, BoringClientConfigExt,
     BoringDelegatedCredentials, BoringEncryptedClientHello, BoringExtensionOrder, BoringGrease,
     BoringMaxVersion, BoringMinVersion, BoringOcspStapling, BoringPermuteExtensions,
-    BoringRecordSizeLimit, BoringServerVerifyCertStore, BoringSessionTickets,
-    BoringSignatureSchemes, BoringSignedCertTimestamps, BoringSupportedGroups,
+    BoringRecordSizeLimit, BoringServerVerifyCertStore, BoringSignatureSchemes,
+    BoringSignedCertTimestamps, BoringSupportedGroups, BoringTls12SessionTickets,
     BoringTlsConnectorConfig,
 };
 

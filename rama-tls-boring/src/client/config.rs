@@ -49,7 +49,7 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub encrypted_client_hello: Option<&'a BoringEncryptedClientHello>,
     pub ocsp_stapling: Option<&'a BoringOcspStapling>,
     pub signed_cert_timestamps: Option<&'a BoringSignedCertTimestamps>,
-    pub session_tickets: Option<&'a BoringSessionTickets>,
+    pub tls12_session_tickets: Option<&'a BoringTls12SessionTickets>,
     pub verify_cert_store: Option<Arc<BoringServerVerifyCertStore>>,
     pub min_version: Option<&'a BoringMinVersion>,
     pub max_version: Option<&'a BoringMaxVersion>,
@@ -84,7 +84,7 @@ impl BoringTlsConnectorConfig<'_> {
             encrypted_client_hello,
             ocsp_stapling,
             signed_cert_timestamps,
-            session_tickets,
+            tls12_session_tickets,
             verify_cert_store,
             min_version,
             max_version,
@@ -113,7 +113,7 @@ impl BoringTlsConnectorConfig<'_> {
             || encrypted_client_hello.is_some()
             || ocsp_stapling.is_some()
             || signed_cert_timestamps.is_some()
-            || session_tickets.is_some()
+            || tls12_session_tickets.is_some()
             || verify_cert_store.is_some()
             || min_version.is_some()
             || max_version.is_some()
@@ -154,7 +154,7 @@ impl BoringTlsConnectorConfig<'_> {
             encrypted_client_hello,
             ocsp_stapling,
             signed_cert_timestamps,
-            session_tickets,
+            tls12_session_tickets,
             verify_cert_store,
             min_version,
             max_version,
@@ -181,7 +181,7 @@ impl BoringTlsConnectorConfig<'_> {
             .maybe_with_encrypted_client_hello(encrypted_client_hello.map(|value| value.0))
             .maybe_with_ocsp_stapling(ocsp_stapling.map(|value| value.0))
             .maybe_with_signed_cert_timestamps(signed_cert_timestamps.map(|value| value.0))
-            .maybe_with_session_tickets(session_tickets.map(|value| value.0))
+            .maybe_with_tls12_session_tickets(tls12_session_tickets.map(|value| value.0))
             .maybe_with_min_version(min_version.map(|value| value.0))
             .maybe_with_max_version(max_version.map(|value| value.0));
         if let Some(store) = verify_cert_store {
@@ -227,7 +227,7 @@ impl BoringTlsConnectorConfig<'_> {
             encrypted_client_hello: _,
             ocsp_stapling: _,
             signed_cert_timestamps: _,
-            session_tickets: _,
+            tls12_session_tickets: _,
             verify_cert_store: _,
             min_version: _,
             max_version: _,
@@ -313,8 +313,8 @@ pub trait BoringClientConfigExt: Sized {
     generate_set_and_with! {
         /// Offer TLS 1.2 session tickets via the `session_ticket` extension (default: enabled).
         ///
-        /// TLS 1.3 resumption is unaffected.
-        fn session_tickets(self, enabled: bool) -> Self;
+        /// TLS 1.3 tickets travel in `pre_shared_key` instead and are unaffected.
+        fn tls12_session_tickets(self, enabled: bool) -> Self;
     }
     generate_set_and_with! {
         /// Set a custom server-certificate verification store (custom CA roots).
@@ -435,8 +435,8 @@ impl BoringClientConfigExt for TlsClientConfig {
         }
     }
     generate_set_and_with! {
-        fn session_tickets(mut self, enabled: bool) -> Self {
-            self.insert(BoringSessionTickets(enabled));
+        fn tls12_session_tickets(mut self, enabled: bool) -> Self {
+            self.insert(BoringTls12SessionTickets(enabled));
             self
         }
     }
@@ -602,7 +602,7 @@ pub struct BoringSignedCertTimestamps(pub bool);
 /// Whether to offer TLS 1.2 session tickets (`session_ticket`).
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
-pub struct BoringSessionTickets(pub bool);
+pub struct BoringTls12SessionTickets(pub bool);
 
 /// Minimum TLS version boring negotiates, overriding the min derived from the
 /// supported-versions list.
@@ -654,7 +654,7 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         let mut encrypted_client_hello = false;
         let mut ocsp_stapling = false;
         let mut signed_cert_timestamps = false;
-        let mut session_tickets = false;
+        let mut tls12_session_tickets = false;
         let mut requested_trust_anchors = BoringRequestedTrustAnchors::omitted();
 
         let cipher_suites = hello.cipher_suites();
@@ -721,7 +721,7 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
                         signed_cert_timestamps = true;
                     }
                     ExtensionId::SESSION_TICKET => {
-                        session_tickets = true;
+                        tls12_session_tickets = true;
                     }
                     _ => {}
                 },
@@ -736,7 +736,7 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         config.set_encrypted_client_hello(encrypted_client_hello);
         config.set_ocsp_stapling(ocsp_stapling);
         config.set_signed_cert_timestamps(signed_cert_timestamps);
-        config.set_session_tickets(session_tickets);
+        config.set_tls12_session_tickets(tls12_session_tickets);
         config.set_requested_trust_anchors(requested_trust_anchors);
 
         // Egress version safety (mitm mirror): cap boring's max negotiated version
@@ -997,8 +997,8 @@ mod pool_tests {
             ("requested_trust_anchors", |ext, value| {
                 ext.insert(BoringRequestedTrustAnchors::try_from_ids([[value + 1]]).unwrap());
             }),
-            ("session_tickets", |ext, value| {
-                ext.insert(BoringSessionTickets(value != 0));
+            ("tls12_session_tickets", |ext, value| {
+                ext.insert(BoringTls12SessionTickets(value != 0));
             }),
             ("cert_compression", |ext, value| {
                 ext.insert(BoringCertCompression(vec![u16::from(value).into()]));
@@ -1103,7 +1103,7 @@ mod pool_tests {
             input.insert(BoringExtensionOrder(extensions.to_vec()));
             input.insert(BoringPermuteExtensions(permute));
             input.insert(anchors.clone());
-            input.insert(BoringSessionTickets(tickets));
+            input.insert(BoringTls12SessionTickets(tickets));
             input.insert(BoringCertCompression(compression.to_vec()));
             input.insert(BoringDelegatedCredentials(delegated.to_vec()));
             input.insert(BoringRecordSizeLimit(4096));
@@ -1123,7 +1123,7 @@ mod pool_tests {
                 .with_extension_order(&extensions)
                 .with_permute_extensions(permute)
                 .with_requested_trust_anchors(anchors.extension_body().unwrap())
-                .with_session_tickets(tickets)
+                .with_tls12_session_tickets(tickets)
                 .with_cert_compression(&compression)
                 .with_delegated_credentials(&delegated)
                 .with_record_size_limit(4096)

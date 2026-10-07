@@ -114,7 +114,7 @@ fn mirrored_hello_does_not_inherit_base_shaping() {
         .with_encrypted_client_hello(true)
         .with_ocsp_stapling(true)
         .with_signed_cert_timestamps(true)
-        .with_session_tickets(true)
+        .with_tls12_session_tickets(true)
         .with_requested_trust_anchors(BoringRequestedTrustAnchors::try_from_ids([[1]]).unwrap());
     let mirror = TlsClientConfig::new_from_client_hello(&minimal);
     let effective = mirror

@@ -397,7 +397,7 @@ struct ClientHelloSettings<'a> {
     encrypted_client_hello: Option<bool>,
     ocsp_stapling: Option<bool>,
     signed_cert_timestamps: Option<bool>,
-    session_tickets: Option<bool>,
+    tls12_session_tickets: Option<bool>,
     min_version: Option<ProtocolVersion>,
     max_version: Option<ProtocolVersion>,
 }
@@ -615,8 +615,8 @@ impl<'a> TlsPoolIdBuilder<'a> {
 
     generate_set_and_with! {
         /// Whether TLS 1.2 session tickets are offered.
-        pub fn session_tickets(mut self, value: Option<bool>) -> Self {
-            self.client_hello.session_tickets = value;
+        pub fn tls12_session_tickets(mut self, value: Option<bool>) -> Self {
+            self.client_hello.tls12_session_tickets = value;
             self
         }
     }

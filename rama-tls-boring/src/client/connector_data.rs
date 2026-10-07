@@ -223,7 +223,7 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             .signed_cert_timestamps
             .map(|p| p.0)
             .unwrap_or_default();
-        let session_tickets_enabled = value.session_tickets.is_none_or(|p| p.0);
+        let session_tickets_enabled = value.tls12_session_tickets.is_none_or(|p| p.0);
         let encrypted_client_hello = value
             .encrypted_client_hello
             .map(|p| p.0)
