@@ -574,6 +574,7 @@ pub(crate) fn proto_ecn(ecn: rama_udp::EcnCodepoint) -> Option<rama_quic_proto::
 mod tests {
     use super::*;
     use parking_lot::Mutex;
+    use std::assert_matches;
     use std::{
         cell::Cell,
         sync::{
@@ -723,10 +724,10 @@ mod tests {
         assert_eq!(probe.lock().accepted.len(), 1);
         probe.lock().waker.take().unwrap().wake();
         assert_eq!(wake.0.load(Ordering::Relaxed), 1);
-        assert!(matches!(
+        assert_matches!(
             sender.poll_transmit(&mut cx, TransmitId(1), &t, b"abcde"),
-            Poll::Ready(Ok(()))
-        ));
+            Poll::Ready(Ok(())),
+        );
         let probe = probe.lock();
         assert_eq!(
             probe
@@ -748,8 +749,9 @@ mod tests {
         caps.send_source_ip = true;
         let (mut sender, probe) = fixture([Action::Fail(io::ErrorKind::InvalidInput)], caps);
         let mut cx = Context::from_waker(Waker::noop());
-        assert!(
-            matches!(sender.poll_transmit(&mut cx, TransmitId(1), &transmit(5, Some(2)), b"abcde"), Poll::Ready(Err(e)) if e.error.kind() == io::ErrorKind::InvalidInput && e.class == SendFailure::Descriptor)
+        assert_matches!(
+            sender.poll_transmit(&mut cx, TransmitId(1), &transmit(5, Some(2)), b"abcde"),
+            Poll::Ready(Err(e)) if e.error.kind() == io::ErrorKind::InvalidInput && e.class == SendFailure::Descriptor,
         );
         assert!(probe.lock().accepted.is_empty());
     }
@@ -761,8 +763,9 @@ mod tests {
             caps.max_send_segments = 4;
             let (mut sender, probe) = fixture([Action::FailAfterCapabilityDrop(kind)], caps);
             let mut cx = Context::from_waker(Waker::noop());
-            assert!(
-                matches!(sender.poll_transmit(&mut cx, TransmitId(1), &transmit(5, Some(2)), b"abcde"), Poll::Ready(Err(error)) if error.error.kind() == kind)
+            assert_matches!(
+                sender.poll_transmit(&mut cx, TransmitId(1), &transmit(5, Some(2)), b"abcde"),
+                Poll::Ready(Err(error)) if error.error.kind() == kind,
             );
             assert!(probe.lock().accepted.is_empty());
         }
@@ -773,19 +776,21 @@ mod tests {
         let (mut sender, probe) = fixture([], DatagramCapabilities::portable());
         let mut cx = Context::from_waker(Waker::noop());
         let mut t = transmit(1, None);
-        assert!(matches!(
+        assert_matches!(
             sender.poll_transmit(&mut cx, TransmitId(1), &t, b"a"),
-            Poll::Ready(Ok(()))
-        ));
+            Poll::Ready(Ok(())),
+        );
         assert_eq!(probe.lock().accepted[0].1, None);
         t.local = Some(([127, 0, 0, 3], 0).into());
-        assert!(
-            matches!(sender.poll_transmit(&mut cx, TransmitId(1), &t, b"a"), Poll::Ready(Err(e)) if e.error.kind() == io::ErrorKind::Unsupported && e.class == SendFailure::Descriptor)
+        assert_matches!(
+            sender.poll_transmit(&mut cx, TransmitId(1), &t, b"a"),
+            Poll::Ready(Err(e)) if e.error.kind() == io::ErrorKind::Unsupported && e.class == SendFailure::Descriptor,
         );
         sender.local_addr = ([0, 0, 0, 0], 1234).into();
         t.local = Some(([127, 0, 0, 1], 0).into());
-        assert!(
-            matches!(sender.poll_transmit(&mut cx, TransmitId(1), &t, b"a"), Poll::Ready(Err(e)) if e.error.kind() == io::ErrorKind::Unsupported)
+        assert_matches!(
+            sender.poll_transmit(&mut cx, TransmitId(1), &t, b"a"),
+            Poll::Ready(Err(e)) if e.error.kind() == io::ErrorKind::Unsupported,
         );
         assert_eq!(probe.lock().accepted.len(), 1);
     }
@@ -796,10 +801,10 @@ mod tests {
         let wake = Arc::new(WakeCount::default());
         let waker = Waker::from(wake.clone());
         let mut cx = Context::from_waker(&waker);
-        assert!(matches!(
+        assert_matches!(
             sender.poll_transmit(&mut cx, TransmitId(1), &transmit(1, Some(1)), b"a"),
-            Poll::Ready(Ok(()))
-        ));
+            Poll::Ready(Ok(())),
+        );
         assert_eq!(probe.lock().accepted[0].3, None);
         let data = [42; SEND_WORK_LIMIT + 1];
         let t = transmit(data.len(), Some(1));
@@ -810,10 +815,10 @@ mod tests {
         );
         assert_eq!(wake.0.load(Ordering::Relaxed), 1);
         assert_eq!(probe.lock().accepted.len(), SEND_WORK_LIMIT + 1);
-        assert!(matches!(
+        assert_matches!(
             sender.poll_transmit(&mut cx, TransmitId(1), &t, &data),
-            Poll::Ready(Ok(()))
-        ));
+            Poll::Ready(Ok(())),
+        );
         assert_eq!(probe.lock().accepted.len(), SEND_WORK_LIMIT + 2);
     }
 
@@ -952,10 +957,10 @@ mod tests {
         // The same sender, a new descriptor shorter than the prefix it had accepted: it goes out
         // whole, which is what a retained offset used to make impossible.
         let second = TransmitId(2);
-        assert!(matches!(
+        assert_matches!(
             sender.poll_transmit(&mut cx, second, &transmit(1, None), b"z"),
-            Poll::Ready(Ok(()))
-        ));
+            Poll::Ready(Ok(())),
+        );
         let probe = probe.lock();
         assert_eq!(
             probe.accepted.len(),
@@ -1006,10 +1011,10 @@ mod tests {
         );
 
         // The same descriptor continues from there and completes.
-        assert!(matches!(
+        assert_matches!(
             sender.poll_transmit(&mut cx, id, &descriptor, &payload),
-            Poll::Ready(Ok(()))
-        ));
+            Poll::Ready(Ok(())),
+        );
         let probe = probe.lock();
         assert_eq!(probe.accepted.len(), segments, "every segment, once");
         let sent: Vec<u8> = probe.accepted.iter().flat_map(|d| d.0.clone()).collect();
@@ -1042,10 +1047,10 @@ mod tests {
             "a rejected descriptor must not leave a partial offset"
         );
         let second = transmit(3, None);
-        assert!(matches!(
+        assert_matches!(
             sender.poll_transmit(&mut cx, TransmitId(2), &second, b"xyz"),
-            Poll::Ready(Ok(()))
-        ));
+            Poll::Ready(Ok(())),
+        );
         let probe = probe.lock();
         assert_eq!(
             probe
@@ -1195,42 +1200,42 @@ mod tests {
         let mut cx = Context::from_waker(Waker::noop());
         // Zero is an invalid descriptor.
         let (mut sender, probe) = fixture([], caps);
-        assert!(matches!(
+        assert_matches!(
             sender.poll_transmit(&mut cx, TransmitId(1), &transmit(4, Some(0)), b"abcd"),
-            Poll::Ready(Err(e)) if e.class == SendFailure::Descriptor
-        ));
+            Poll::Ready(Err(e)) if e.class == SendFailure::Descriptor,
+        );
         assert!(probe.lock().accepted.is_empty());
         // A segment size equal to or above the payload is a single plain datagram.
         for size in [4usize, 5] {
             let (mut sender, probe) = fixture([], caps);
-            assert!(matches!(
+            assert_matches!(
                 sender.poll_transmit(&mut cx, TransmitId(1), &transmit(4, Some(size)), b"abcd"),
-                Poll::Ready(Ok(()))
-            ));
+                Poll::Ready(Ok(())),
+            );
             let probe = probe.lock();
             assert_eq!(probe.accepted.len(), 1);
             assert_eq!(probe.accepted[0].3, None, "segment size {size}");
         }
         // Exactly the capability's segment count goes out as one segmented descriptor.
         let (mut sender, probe) = fixture([], caps);
-        assert!(matches!(
+        assert_matches!(
             sender.poll_transmit(&mut cx, TransmitId(1), &transmit(8, Some(2)), b"abcdefgh"),
-            Poll::Ready(Ok(()))
-        ));
+            Poll::Ready(Ok(())),
+        );
         assert_eq!(probe.lock().accepted.len(), 1);
         assert_eq!(probe.lock().accepted[0].3, Some(2));
         // One more segment than the capability allows: one segment is peeled off as a plain
         // datagram, then the remaining four fit one segmented descriptor.
         let (mut sender, probe) = fixture([], caps);
-        assert!(matches!(
+        assert_matches!(
             sender.poll_transmit(
                 &mut cx,
                 TransmitId(1),
                 &transmit(10, Some(2)),
                 b"abcdefghij"
             ),
-            Poll::Ready(Ok(()))
-        ));
+            Poll::Ready(Ok(())),
+        );
         let probe = probe.lock();
         assert_eq!(
             probe
@@ -1247,15 +1252,15 @@ mod tests {
         let (mut sender, probe) = fixture([], DatagramCapabilities::portable());
         let mut cx = Context::from_waker(Waker::noop());
         for payload in [b"a".as_slice(), b"bb", b"ccc"] {
-            assert!(matches!(
+            assert_matches!(
                 sender.poll_transmit(
                     &mut cx,
                     TransmitId(1),
                     &transmit(payload.len(), None),
                     payload
                 ),
-                Poll::Ready(Ok(()))
-            ));
+                Poll::Ready(Ok(())),
+            );
         }
         assert_eq!(probe.lock().accepted.len(), 3);
         assert_eq!(sender.max_transmit_segments(), 1);

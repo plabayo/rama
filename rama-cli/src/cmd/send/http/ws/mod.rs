@@ -1,6 +1,6 @@
 //! rama websocket client
 
-use std::time::Duration;
+use std::{io::IsTerminal as _, time::Duration};
 
 use rama::{
     Service,
@@ -14,6 +14,7 @@ use rama::{
 use tokio::sync::oneshot;
 
 mod client;
+mod pipe;
 mod tui;
 
 pub(super) async fn run<C>(
@@ -33,10 +34,15 @@ where
         .extensions
         .get_ref::<WebSocketCapture>()
         .cloned();
-    if let Some(capture) = capture {
-        run_app(tui::App::new(title, with_har_capture(socket, capture))).await
-    } else {
-        run_app(tui::App::new(title, socket)).await
+    // Without a terminal on both ends, exchange line-delimited messages instead.
+    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    match (capture, interactive) {
+        (Some(capture), true) => {
+            run_app(tui::App::new(title, with_har_capture(socket, capture))).await
+        }
+        (None, true) => run_app(tui::App::new(title, socket)).await,
+        (Some(capture), false) => pipe::run(with_har_capture(socket, capture)).await,
+        (None, false) => pipe::run(socket).await,
     }
 }
 

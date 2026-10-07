@@ -156,6 +156,7 @@ mod private {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::convert::Infallible;
 
     use rama_http::{
@@ -250,15 +251,12 @@ mod tests {
         let wrong_method = service
             .serve(request(Method::GET, "/example.v1.TestService/Call"))
             .await;
-        assert!(matches!(
-            wrong_method,
-            Err(RouterError::MethodNotAllowed(_))
-        ));
+        assert_matches!(wrong_method, Err(RouterError::MethodNotAllowed(_)));
 
         let unknown_service = service
             .serve(request(Method::POST, "/example.v1.OtherService/Call"))
             .await;
-        assert!(matches!(unknown_service, Err(RouterError::NotFound)));
+        assert_matches!(unknown_service, Err(RouterError::NotFound));
     }
 
     #[tokio::test]
@@ -343,7 +341,7 @@ mod tests {
                     .unwrap(),
             )
             .await;
-        assert!(matches!(http_1, Err(RouterError::MethodNotAllowed(_))));
+        assert_matches!(http_1, Err(RouterError::MethodNotAllowed(_)));
 
         for content_type in [
             None,

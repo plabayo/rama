@@ -10,6 +10,7 @@ use crate::{
     },
 };
 use rama_quic_proto::ConnectionId;
+use std::assert_matches;
 use std::{
     borrow::Cow,
     io::{self, Write},
@@ -55,7 +56,7 @@ impl QlogSink for Inspect {
         else {
             panic!("unexpected observation")
         };
-        assert!(matches!(chosen_alpn.byte_value.0, Cow::Borrowed(_)));
+        assert_matches!(chosen_alpn.byte_value.0, Cow::Borrowed(_));
         assert_eq!(chosen_alpn.byte_value.0.as_ptr() as usize, self.address);
         assert_eq!(event.fields.heap_size(), 0);
         self.calls.fetch_add(1, Ordering::Relaxed);

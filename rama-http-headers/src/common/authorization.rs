@@ -87,8 +87,10 @@ impl<C: Credentials> TypedHeader for Authorization<C> {
 
 impl<C: Credentials> HeaderDecode for Authorization<C> {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
-        values
-            .next()
+        // Credentials are one value (RFC 9110 §11.6.2, §11.7.2): a second line, which an upstream
+        // could read instead, makes the field invalid.
+        let val = crate::util::single_value(values)?;
+        Some(&val)
             .and_then(|val| {
                 // Scheme-less credential types (e.g. `RawToken`) declare an
                 // empty `SCHEME` and treat the whole header value as the
@@ -97,15 +99,8 @@ impl<C: Credentials> HeaderDecode for Authorization<C> {
                 if C::SCHEME.is_empty() {
                     return C::decode(val).map(Authorization);
                 }
-                let slice = val.as_bytes();
-                if slice.len() > C::SCHEME.len()
-                    && slice[C::SCHEME.len()] == b' '
-                    && slice[..C::SCHEME.len()].eq_ignore_ascii_case(C::SCHEME.as_bytes())
-                {
-                    C::decode(val).map(Authorization)
-                } else {
-                    None
-                }
+                strip_scheme(val.as_bytes(), C::SCHEME)?;
+                C::decode(val).map(Authorization)
             })
             .ok_or_else(Error::invalid)
     }
@@ -113,20 +108,43 @@ impl<C: Credentials> HeaderDecode for Authorization<C> {
 
 impl<C: Credentials> HeaderEncode for Authorization<C> {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        values.extend(self.0.encode().map(|mut value| {
-            value.set_sensitive(true);
-            debug_assert!(
-                // Scheme-less credentials (empty `SCHEME`) encode as a bare
-                // token with no prefix; `starts_with` on an empty slice
-                // is trivially true, so the assertion below covers them.
-                value.as_bytes().starts_with(C::SCHEME.as_bytes()),
-                "Credentials::encode should include its scheme: scheme = {:?}, encoded = {:?}",
-                C::SCHEME,
-                value,
-            );
-            value
-        }));
+        values.extend(encode_credentials(&self.0));
     }
+}
+
+/// Encode credentials as a sensitive header value.
+pub(super) fn encode_credentials<C: Credentials>(credentials: &C) -> Option<HeaderValue> {
+    let mut value = credentials.encode()?;
+    value.set_sensitive(true);
+    let has_scheme = value
+        .as_bytes()
+        .get(..C::SCHEME.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(C::SCHEME.as_bytes()));
+    if !has_scheme {
+        tracing::debug!(
+            "Credentials::encode should include its scheme: scheme = {:?}",
+            C::SCHEME
+        );
+    }
+    Some(value)
+}
+
+/// Strip a case-insensitive `<scheme> SP` prefix, returning what follows.
+fn strip_scheme<'a>(value: &'a [u8], scheme: &str) -> Option<&'a [u8]> {
+    let (prefix, rest) = value.split_at_checked(scheme.len())?;
+    let rest = rest.strip_prefix(b" ")?;
+    prefix
+        .eq_ignore_ascii_case(scheme.as_bytes())
+        .then_some(rest)
+}
+
+/// Strip the scheme and any extra SP, returning non-empty credentials.
+fn strip_scheme_and_spaces<'a>(value: &'a [u8], scheme: &str) -> Option<&'a [u8]> {
+    let mut rest = strip_scheme(value, scheme)?;
+    while let Some(tail) = rest.strip_prefix(b" ") {
+        rest = tail;
+    }
+    (!rest.is_empty()).then_some(rest)
 }
 
 /// Credentials to be used in the `Authorization` header.
@@ -152,28 +170,10 @@ impl Credentials for Basic {
     const SCHEME: &'static str = "Basic";
 
     fn decode(value: &HeaderValue) -> Option<Self> {
-        let value = value.as_ref();
-
-        if value.len() <= Self::SCHEME.len() + 1 {
-            tracing::trace!(
-                "Basic credentials failed to decode: invalid scheme length in basic str"
-            );
-            return None;
-        }
-        if !value[..Self::SCHEME.len()].eq_ignore_ascii_case(Self::SCHEME.as_bytes()) {
-            tracing::trace!("Basic credentials failed to decode: invalid scheme in basic str");
-            return None;
-        }
-
-        let bytes = &value[Self::SCHEME.len() + 1..];
-        let Some(non_space_pos) = bytes.iter().position(|b| *b != b' ') else {
-            tracing::trace!(
-                "Basic credentials failed to decode: missing space separator in basic str"
-            );
+        let Some(bytes) = strip_scheme_and_spaces(value.as_bytes(), Self::SCHEME) else {
+            tracing::trace!("Basic credentials failed to decode: invalid scheme or missing token");
             return None;
         };
-
-        let bytes = &bytes[non_space_pos..];
 
         let bytes = ENGINE
             .decode(bytes)
@@ -211,25 +211,10 @@ impl Credentials for Bearer {
     const SCHEME: &'static str = "Bearer";
 
     fn decode(value: &HeaderValue) -> Option<Self> {
-        let value = value.as_ref();
-
-        if value.len() <= Self::SCHEME.len() + 1 {
-            tracing::trace!("Bearer credentials failed to decode: invalid bearer scheme length");
-            return None;
-        }
-        if !value[..Self::SCHEME.len()].eq_ignore_ascii_case(Self::SCHEME.as_bytes()) {
-            tracing::trace!("Bearer credentials failed to decode: invalid bearer scheme");
-            return None;
-        }
-
-        let bytes = &value[Self::SCHEME.len() + 1..];
-
-        let Some(non_space_pos) = bytes.iter().position(|b| *b != b' ') else {
-            tracing::trace!("Bearer credentials failed to decode: no token found");
+        let Some(bytes) = strip_scheme_and_spaces(value.as_bytes(), Self::SCHEME) else {
+            tracing::trace!("Bearer credentials failed to decode: invalid scheme or missing token");
             return None;
         };
-
-        let bytes = &bytes[non_space_pos..];
 
         let s = std::str::from_utf8(bytes)
             .inspect_err(|err| {
@@ -367,9 +352,120 @@ mod tests {
     use rama_net::user::credentials::bearer;
     use rama_utils::str::non_empty_str;
 
-    use super::{Authorization, Basic, Bearer};
-    use crate::HeaderMapExt;
+    use super::{Authorization, Basic, Bearer, Credentials, HeaderValue};
     use crate::common::{test_decode, test_encode};
+    use crate::{HeaderDecode, HeaderMapExt};
+
+    /// Credentials are one value: a second line, equal or not, makes either header invalid.
+    #[test]
+    fn credentials_appear_once() {
+        let basic = "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==";
+        assert!(test_decode::<Authorization<Basic>>(&[basic]).is_some());
+        for lines in [&[basic, basic][..], &[basic, "Basic b3RoZXI6dXNlcg=="]] {
+            assert!(
+                test_decode::<Authorization<Basic>>(lines).is_none(),
+                "{lines:?}"
+            );
+            assert!(
+                test_decode::<crate::ProxyAuthorization<Basic>>(lines).is_none(),
+                "{lines:?}"
+            );
+        }
+    }
+
+    fn decode_bytes<C: Credentials>(value: &str) -> Option<Authorization<C>> {
+        let value = HeaderValue::from_bytes(value.as_bytes()).unwrap();
+        Authorization::decode(&mut std::iter::once(&value)).ok()
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Passthrough(HeaderValue);
+
+    impl Credentials for Passthrough {
+        const SCHEME: &'static str = "Digest";
+
+        fn decode(value: &HeaderValue) -> Option<Self> {
+            Some(Self(value.clone()))
+        }
+
+        fn encode(&self) -> Option<HeaderValue> {
+            Some(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn encode_of_case_folded_scheme_does_not_panic() {
+        let auth: Authorization<Passthrough> = test_decode(&["digest username=\"a\""]).unwrap();
+        let headers = test_encode(auth);
+        assert_eq!(headers["authorization"], "digest username=\"a\"");
+        assert!(headers["authorization"].is_sensitive());
+    }
+
+    #[test]
+    fn decode_rejects_short_and_boundary_values() {
+        for value in [
+            "",
+            "B",
+            "Basi",
+            "Basic",
+            "Basic ",
+            "Basic   ",
+            "Basicé",
+            "Basé QWxh",
+            "é",
+            "Basic\tQWxhZGRpbjpvcGVuIHNlc2FtZQ==",
+            "BasicXQWxhZGRpbjpvcGVuIHNlc2FtZQ==",
+            "Basic é",
+            "Basic ====",
+            "Basic Og==",
+            "Basic OnB3",
+            "Basic /zph",
+        ] {
+            assert!(decode_bytes::<Basic>(value).is_none(), "{value:?}");
+        }
+        for value in [
+            "",
+            "B",
+            "Bearer",
+            "Bearer ",
+            "Bearer   ",
+            "Beareré",
+            "Bearé tok",
+            "Bearer é",
+            "Bearer a b",
+            "BearerXtoken",
+        ] {
+            assert!(decode_bytes::<Bearer>(value).is_none(), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn credentials_decode_requires_scheme_separator() {
+        for value in [
+            "BasicXQWxhZGRpbjpvcGVuIHNlc2FtZQ==",
+            "Basic\tQWxhZGRpbjpvcGVuIHNlc2FtZQ==",
+            "Basi\u{e9}QWxh",
+            "Basic",
+        ] {
+            let value = HeaderValue::from_bytes(value.as_bytes()).unwrap();
+            assert!(Basic::decode(&value).is_none(), "{value:?}");
+        }
+        for value in ["BearerXtoken", "Bearer\ttoken", "Beare\u{e9}tok", "Bearer"] {
+            let value = HeaderValue::from_bytes(value.as_bytes()).unwrap();
+            assert!(Bearer::decode(&value).is_none(), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn basic_decode_splits_on_first_colon_only() {
+        let auth: Authorization<Basic> = test_decode(&["Basic YWxhZGRpbg=="]).unwrap();
+        assert_eq!(auth.0.username(), "aladdin");
+        assert_eq!(auth.0.password(), None);
+
+        let auth: Authorization<Basic> = test_decode(&["Basic YTpiOmM="]).unwrap();
+        assert_eq!(auth.0.username(), "a");
+        assert_eq!(auth.0.password(), Some("b:c"));
+    }
 
     #[test]
     fn basic_encode() {

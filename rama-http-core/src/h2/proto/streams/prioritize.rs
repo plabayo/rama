@@ -402,6 +402,10 @@ impl Prioritize {
             // capacity, and so we shouldn't "transition" on it, but just evict
             // it and continue the loop.
             if !(stream.state.is_send_streaming() || stream.buffered_send_data > 0) {
+                // This queue may have held a released stream; one mid-transition removes itself.
+                if stream.is_released() && stream.is_unlinked() {
+                    stream.remove();
+                }
                 continue;
             }
 

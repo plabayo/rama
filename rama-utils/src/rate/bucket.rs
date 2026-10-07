@@ -149,6 +149,7 @@ impl TokenBucket {
 mod tests {
     use super::*;
     use core::time::Duration;
+    use std::assert_matches;
 
     const SEC: u64 = 1_000_000_000;
 
@@ -173,10 +174,10 @@ mod tests {
         };
         assert_eq!(at, 3 * SEC / 10);
         // one nano earlier: still denied
-        assert!(matches!(
+        assert_matches!(
             bucket.try_acquire(at - 1, 3),
-            Acquire::RetryAt(again) if again == at
-        ));
+            Acquire::RetryAt(again) if again == at,
+        );
         // at the advertised instant: granted
         assert_eq!(bucket.try_acquire(at, 3), Acquire::Granted);
     }
@@ -252,7 +253,7 @@ mod tests {
         assert_eq!(bucket.try_acquire(SEC, 10), Acquire::Granted);
         // clock goes backwards: no refill, no panic
         assert_eq!(bucket.available(0), 0);
-        assert!(matches!(bucket.try_acquire(0, 1), Acquire::RetryAt(_)));
+        assert_matches!(bucket.try_acquire(0, 1), Acquire::RetryAt(_));
     }
 
     #[test]

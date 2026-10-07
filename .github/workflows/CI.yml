@@ -1007,10 +1007,16 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           targets: ${{ matrix.target }}
+          components: clippy
       - uses: ./.github/actions/rust-cache
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-${{ matrix.target }}
           env-vars: RUST_TOOLCHAIN
+      # the getaddrinfo resolver backend only compiles for musl
+      - name: Clippy rama-dns
+        run: cargo clippy -p rama-dns --all-targets --target ${{ matrix.target }} -- -D warnings
+      - name: Test rama-dns
+        run: cargo test -p rama-dns --lib --target ${{ matrix.target }}
       - name: Install Zig
         if: contains(matrix.target, 'unknown-linux-musl')
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
@@ -1144,7 +1150,9 @@ jobs:
         with:
           env-vars: RUST_TOOLCHAIN
           key: ${{ matrix.os }}-${{ matrix.rust }}-${{ matrix.target }}
-      - run: rustup target add ${{ matrix.target }}
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
       - name: Configure Android toolchain env
         if: endsWith(matrix.thing, '-android')
         shell: bash
@@ -1182,13 +1190,7 @@ jobs:
           } >> "$GITHUB_ENV"
       - name: check
         env: ${{ matrix.custom_env }}
-        run: |
-          cargo check --workspace --target ${{ matrix.target }} --all-features
-      - name: Build tests
-        env: ${{ matrix.custom_env }}
-        # We `build` because we want the linker to verify we are cross-compiling correctly for check-only targets.
-        run: |
-          cargo build --target ${{ matrix.target }} --tests --all-features
+        run: just check-tier2 ${{ matrix.target }}
 
   # The rest of CI builds rama on stable tokio. This job covers dial9's full-fidelity path
   test-dial9-tokio-unstable:
@@ -1542,9 +1544,11 @@ jobs:
       - run: |
           cd rama-fp/infra/deployments/ipv4
           flyctl scale count app_secure=1 app_insecure=1 --yes
-          flyctl deploy --verbose --remote-only --ha=false
+          flyctl deploy --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          # The image this run published, not whatever `edge` a builder has cached.
+          RAMA_DIGEST: ${{ needs.deploy-rama-cli-docker.outputs.rama-digest }}
 
   deploy-rama-ip-ipv6-fly:
     permissions:
@@ -1576,9 +1580,11 @@ jobs:
       - run: |
           cd rama-fp/infra/deployments/echo
           flyctl scale count app_secure=1 app_insecure=1 --yes
-          flyctl deploy --verbose --remote-only --ha=false
+          flyctl deploy --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          # The image this run published, not whatever `edge` a builder has cached.
+          RAMA_DIGEST: ${{ needs.deploy-rama-cli-docker.outputs.rama-digest }}
 
   deploy-rama-http-test-fly:
     permissions:
@@ -1593,6 +1599,8 @@ jobs:
       - run: |
           cd rama-fp/infra/deployments/http-test
           flyctl scale count app_secure=1 app_insecure=1 --yes
-          flyctl deploy --verbose --remote-only --ha=false
+          flyctl deploy --verbose --remote-only --ha=false --build-arg "RAMA_IMAGE=glendc/rama@$RAMA_DIGEST"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          # The image this run published, not whatever `edge` a builder has cached.
+          RAMA_DIGEST: ${{ needs.deploy-rama-cli-docker.outputs.rama-digest }}

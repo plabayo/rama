@@ -426,7 +426,7 @@ where
     type Error = S::Error;
 
     async fn serve(&self, input: IO) -> Result<Self::Output, Self::Error> {
-        let socket = input.extensions().get_ref::<SocketInfo>().cloned();
+        let socket = SocketInfo::ingress(input.extensions()).cloned();
         let connection = self.store.new_control_connection();
         let id = self
             .store

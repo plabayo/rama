@@ -1,10 +1,12 @@
-use super::qlog::Capture;
-use super::*;
-use crate::proto::shared::{ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent};
+use std::assert_matches;
+
 use rama_quic_proto::{
     ConnectionId, Dir, TransportError, TransportErrorCode, VarInt,
     packet::{FixedLengthConnectionIdParser, PartialDecode},
 };
+
+use super::{qlog::Capture, *};
+use crate::proto::shared::{ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent};
 
 fn traced_client(pair: &Pair, capture: &Capture) -> ClientConfig {
     let mut config = client_config_with_deterministic_pns();
@@ -211,7 +213,11 @@ fn invalid_first_accepted_initial_logs_drop_without_plaintext_length() {
     server.transport = Arc::new(transport);
     let version = DEFAULT_SUPPORTED_VERSIONS[0];
     let destination = ConnectionId::new(&[1; 8]);
-    let keys = server.crypto.initial_keys(version, &destination).unwrap();
+    let keys = server
+        .crypto
+        .initial()
+        .initial_keys(version, &destination)
+        .unwrap();
     let mut pair = Pair::new(
         Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         server,
@@ -243,13 +249,13 @@ fn invalid_first_accepted_initial_logs_drop_without_plaintext_length() {
         BytesMut::from(packet.as_slice()),
     ));
     pair.drive_server();
-    assert!(matches!(
+    assert_matches!(
         pair.server.assert_accept_error(),
         ConnectionError::TransportError(TransportError {
             code: TransportErrorCode::PROTOCOL_VIOLATION,
             ..
-        })
-    ));
+        }),
+    );
     let drops = capture.events("quic:packet_dropped");
     assert_eq!(drops.len(), 1);
     assert_eq!(drops[0]["data"]["trigger"], "invalid");

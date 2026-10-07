@@ -330,6 +330,7 @@ impl<'a> IntoIterator for &'a PacDirectives {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     use rama_net::address::{Domain, Host};
     use rama_utils::octets::{kib, mib};
@@ -487,7 +488,7 @@ mod tests {
 
         let routes: Vec<&ProxyRoute> = routes.iter().collect();
         assert_eq!(routes.len(), 3);
-        assert!(matches!(routes[0], ProxyRoute::Proxy(_)));
+        assert_matches!(routes[0], ProxyRoute::Proxy(_));
         assert_eq!(
             routes[1].proxy_address().and_then(|a| a.protocol.clone()),
             Some(Protocol::SOCKS5H),

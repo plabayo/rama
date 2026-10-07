@@ -1,14 +1,14 @@
 //! Connection and endpoint lifecycle tests.
 
-use super::{Captured, TestSocket, WakeCount, pin_active_socket, release_lease};
-use crate::driver::connection::{
-    MAX_TRANSMIT_DATAGRAMS, MAX_TRANSMIT_SEGMENTS, RETAINED_DESCRIPTORS,
+use std::{
+    assert_matches,
+    collections::VecDeque,
+    net::{IpAddr, Ipv4Addr},
+    num::NonZeroUsize,
+    sync::atomic::AtomicBool,
+    task::Wake,
 };
-use crate::driver::endpoint::*;
-use crate::driver::lifecycle::ShutdownOutcome;
-use crate::driver::queue::{MIN_RETAINED, QUIET_DRAINS_BEFORE_SHRINK};
-use crate::driver::sockets::MAX_RETAINED_SOCKETS;
-use crate::proto::{CongestionControl, RetryRefused, TransportConfig};
+
 use rama_crypto::hmac::HmacSha2;
 use rama_quic_proto::Version;
 use rama_tls::{
@@ -16,12 +16,17 @@ use rama_tls::{
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
 use rama_udp::{DatagramCapabilities, DatagramError, DatagramSender, DatagramSocket};
-use std::collections::VecDeque;
-use std::{
-    net::{IpAddr, Ipv4Addr},
-    num::NonZeroUsize,
-    sync::atomic::AtomicBool,
-    task::Wake,
+
+use super::{Captured, TestSocket, WakeCount, pin_active_socket, release_lease};
+use crate::{
+    driver::{
+        connection::{MAX_TRANSMIT_DATAGRAMS, MAX_TRANSMIT_SEGMENTS, RETAINED_DESCRIPTORS},
+        endpoint::*,
+        lifecycle::ShutdownOutcome,
+        queue::{MIN_RETAINED, QUIET_DRAINS_BEFORE_SHRINK},
+        sockets::MAX_RETAINED_SOCKETS,
+    },
+    proto::{CongestionControl, RetryRefused, TransportConfig},
 };
 
 pub(super) fn configs() -> (ClientConfig, ServerConfig) {
@@ -754,7 +759,7 @@ async fn handshake_deadline_runs_without_polling_connecting() {
         .unwrap();
     assert_eq!(endpoint.open_connections(), 1);
     wait_until(|| endpoint.open_connections() == 0).await;
-    assert!(matches!(connecting.await, Err(ConnectionError::TimedOut)));
+    assert_matches!(connecting.await, Err(ConnectionError::TimedOut));
     assert_eq!(endpoint.shutdown().await, ShutdownOutcome::Drained);
 }
 
@@ -794,7 +799,7 @@ async fn held_incoming_expires_and_late_accept_fails() {
     wait_until(|| server.inner.state.lock().stats.expired_incoming > 0).await;
     assert!(incoming.is_expired());
     assert!(!incoming.may_retry());
-    assert!(matches!(incoming.accept(), Err(ConnectionError::TimedOut)));
+    assert_matches!(incoming.accept(), Err(ConnectionError::TimedOut));
     assert_eq!(server.inner.state.lock().inner.pending_incoming(), 0);
     drop(connecting);
     tokio::join!(client.shutdown(), server.shutdown());
@@ -816,10 +821,7 @@ async fn shutdown_retires_held_incoming_before_reporting_completion() {
     assert_eq!(server.shutdown().await, ShutdownOutcome::Drained);
     assert_eq!(server.inner.state.lock().inner.pending_incoming(), 0);
     assert!(incoming.is_expired());
-    assert!(matches!(
-        incoming.accept(),
-        Err(ConnectionError::LocallyClosed)
-    ));
+    assert_matches!(incoming.accept(), Err(ConnectionError::LocallyClosed));
     let _rebound = std::net::UdpSocket::bind(address).unwrap();
     drop(connecting);
     client.shutdown().await;
@@ -936,10 +938,7 @@ async fn forced_shutdown_joins_an_unpolled_connection_attempt() {
         .await
         .unwrap();
     assert_eq!(outcome, ShutdownOutcome::Drained);
-    assert!(matches!(
-        connecting.await,
-        Err(ConnectionError::LocallyClosed)
-    ));
+    assert_matches!(connecting.await, Err(ConnectionError::LocallyClosed));
     assert_eq!(endpoint.open_connections(), 0);
     let _rebound = std::net::UdpSocket::bind(addr).unwrap();
 }
@@ -1036,14 +1035,11 @@ async fn closed_endpoint_refuses_new_connects_and_accepts() {
     // Close without stopping the drivers: the close flag alone must refuse admission.
     server.close(VarInt::from_u32(1), b"closing");
     client.close(VarInt::from_u32(1), b"closing");
-    assert!(matches!(
-        incoming.accept(),
-        Err(ConnectionError::LocallyClosed)
-    ));
-    assert!(matches!(
+    assert_matches!(incoming.accept(), Err(ConnectionError::LocallyClosed));
+    assert_matches!(
         client.connect_with(client_config, server.local_addr().unwrap(), "localhost"),
-        Err(ConnectError::EndpointStopping)
-    ));
+        Err(ConnectError::EndpointStopping),
+    );
     assert!(server.accept().await.is_none());
     drop(connecting);
     tokio::join!(client.shutdown(), server.shutdown());
@@ -1073,12 +1069,12 @@ async fn close_reaches_a_connection_whose_packet_queue_is_saturated() {
     assert_eq!(held.len(), connection.datagrams());
 
     endpoint.close(VarInt::from_u32(7), b"bye");
-    assert!(matches!(
+    assert_matches!(
         tokio::time::timeout(Duration::from_secs(1), connecting)
             .await
             .expect("close is applied directly, not queued behind packets"),
-        Err(ConnectionError::LocallyClosed)
-    ));
+        Err(ConnectionError::LocallyClosed),
+    );
     drop(held);
     assert_eq!(budget.stats().queued_datagrams, 0);
     assert_ne!(endpoint.shutdown().await, ShutdownOutcome::DriverFailed);
@@ -1314,13 +1310,13 @@ async fn an_attempt_that_cannot_widen_its_permit_is_ignored_and_counted() {
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
-    wait_until(|| server.stats().dropped_packets > dropped_baseline).await;
-    assert_eq!(server.stats().dropped_packets, dropped_baseline + 1);
-    assert_eq!(
-        budget.stats().dropped_datagrams,
-        budget_baseline + 1,
-        "the refused widening is the budget's drop"
-    );
+    // The first flight may span several Initial datagrams, all leaving at once: each refused
+    // widening is counted once, as the budget's drop.
+    wait_until(|| {
+        let dropped = server.stats().dropped_packets - dropped_baseline;
+        dropped > 0 && budget.stats().dropped_datagrams - budget_baseline == dropped
+    })
+    .await;
     assert_eq!(
         budget.stats().queued_datagrams,
         1,
@@ -1378,22 +1374,21 @@ async fn each_admission_guard_alone_refuses_new_connections() {
                 _ => state.shutdown = true,
             }
         }
-        assert!(
-            matches!(incoming.accept(), Err(ConnectionError::LocallyClosed)),
-            "{flag} alone refuses accept"
+        assert_matches!(
+            incoming.accept(),
+            Err(ConnectionError::LocallyClosed),
+            "{flag} alone refuses accept",
         );
         // `shutdown` is only ever set together with `close`, so connect checks the latter.
         if flag == "driver_lost" {
-            assert!(
-                matches!(
-                    client.connect_with(
-                        client_config.clone(),
-                        server.local_addr().unwrap(),
-                        "localhost"
-                    ),
-                    Err(ConnectError::EndpointStopping)
+            assert_matches!(
+                client.connect_with(
+                    client_config.clone(),
+                    server.local_addr().unwrap(),
+                    "localhost"
                 ),
-                "{flag} alone refuses connect"
+                Err(ConnectError::EndpointStopping),
+                "{flag} alone refuses connect",
             );
         }
         drop(connecting);
@@ -1630,10 +1625,11 @@ async fn attempts_received_before_rebinding_are_answered_on_their_own_socket() {
         .await
         .unwrap()
         .unwrap_err();
-    assert!(
-        matches!(error, ConnectionError::ConnectionClosed(ref close)
-            if close.error_code == rama_quic_proto::TransportErrorCode::CONNECTION_REFUSED),
-        "{error:?}"
+    assert_matches!(
+        error,
+        ConnectionError::ConnectionClosed(ref close)
+            if close.error_code == rama_quic_proto::TransportErrorCode::CONNECTION_REFUSED,
+        "{error:?}",
     );
 
     // Retry error keeps the attempt (and its socket) with the caller; accepting it works.
@@ -1662,10 +1658,10 @@ async fn attempts_received_before_rebinding_are_answered_on_their_own_socket() {
     })
     .await;
     assert!(expired.is_ok(), "the unaccepted attempt did not expire");
-    assert!(matches!(
+    assert_matches!(
         i_expire.accept(),
-        Err(ConnectionError::TimedOut | ConnectionError::LocallyClosed)
-    ));
+        Err(ConnectionError::TimedOut | ConnectionError::LocallyClosed),
+    );
     assert!(server.stats().expired_incoming >= 1);
 
     // Every connection still sends from A; A stays retained while they live.
@@ -1691,10 +1687,7 @@ async fn attempts_received_before_rebinding_are_answered_on_their_own_socket() {
     server.shutdown().await;
     let _a = std::net::UdpSocket::bind(addr_a).expect("A's port is free after shutdown");
     let _c = std::net::UdpSocket::bind(addr_c).expect("C's port is free after shutdown");
-    assert!(matches!(
-        i_retained.accept(),
-        Err(ConnectionError::LocallyClosed)
-    ));
+    assert_matches!(i_retained.accept(), Err(ConnectionError::LocallyClosed));
     let stats = server.stats();
     assert_eq!(
         stats.receive_queue.queued_datagrams, 0,
@@ -1760,10 +1753,11 @@ async fn dropped_and_ignored_attempts_release_their_socket() {
         .await
         .expect("a dropped attempt is refused promptly")
         .unwrap_err();
-    assert!(
-        matches!(error, ConnectionError::ConnectionClosed(ref close)
-            if close.error_code == rama_quic_proto::TransportErrorCode::CONNECTION_REFUSED),
-        "{error:?}"
+    assert_matches!(
+        error,
+        ConnectionError::ConnectionClosed(ref close)
+            if close.error_code == rama_quic_proto::TransportErrorCode::CONNECTION_REFUSED,
+        "{error:?}",
     );
     assert_eq!(server.stats().refused_handshakes, refused_before + 1);
     i_ignore.ignore();
@@ -1977,12 +1971,12 @@ async fn handshake_deadline_holds_while_the_receive_queue_is_saturated() {
         let server = server.clone();
         async move { server.accept().await.unwrap().await }
     });
-    assert!(matches!(
+    assert_matches!(
         tokio::time::timeout(Duration::from_secs(2), connecting)
             .await
             .unwrap(),
-        Err(ConnectionError::TimedOut)
-    ));
+        Err(ConnectionError::TimedOut),
+    );
     assert!(
         client.stats().dropped_packets > endpoint_baseline,
         "the server's replies were refused"
@@ -2103,10 +2097,7 @@ fn shutdown_reports_failure_and_releases_admissions_when_the_deadline_index_is_l
             assert_eq!(state.inner.incoming_buffer_bytes(), 0);
         }
         assert!(incoming.is_expired());
-        assert!(matches!(
-            incoming.accept(),
-            Err(ConnectionError::LocallyClosed)
-        ));
+        assert_matches!(incoming.accept(), Err(ConnectionError::LocallyClosed));
         let _rebound = std::net::UdpSocket::bind(address).unwrap();
         drop(connecting);
         client.shutdown().await;
@@ -2131,15 +2122,23 @@ async fn incoming_storage_refusal_after_budget_acceptance_is_counted_once() {
     server.inner.state.lock().recv_state.incoming.set_limit(0);
     let budget = server.inner.state.lock().packet_budget.clone();
     let drop_baseline = server.stats().dropped_packets;
+    let received_baseline = server.stats().received_datagrams;
     let budget_drop_baseline = budget.stats().dropped_datagrams;
     let connecting = client
         .connect_with(client_config, server.local_addr().unwrap(), "localhost")
         .unwrap();
     wait_until(|| server.stats().dropped_packets > drop_baseline).await;
-    assert_eq!(
-        server.stats().dropped_packets,
-        drop_baseline + 1,
-        "exactly one receive drop for the refused attempt"
+    // The first flight can span several Initial datagrams, sent together (a boring
+    // ClientHello does); let all of them land before counting.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let stats = server.stats();
+    let dropped = stats.dropped_packets - drop_baseline;
+    let received = stats.received_datagrams - received_baseline;
+    // Each refused attempt is one drop: datagrams received in one pass join the same attempt,
+    // while one received after its refusal is an attempt, and a refusal, of its own.
+    assert!(
+        (1..=received).contains(&dropped),
+        "{dropped} receive drops for {received} datagrams"
     );
     assert_eq!(
         budget.stats().dropped_datagrams,
@@ -2178,7 +2177,7 @@ async fn incoming_storage_refusal_after_budget_acceptance_is_counted_once() {
     .unwrap();
     client_conn.unwrap();
     server_conn.unwrap();
-    assert_eq!(server.stats().dropped_packets, drop_baseline + 1);
+    assert_eq!(server.stats().dropped_packets, drop_baseline + dropped);
     tokio::join!(client.shutdown(), server.shutdown());
 }
 
@@ -3247,10 +3246,7 @@ fn inline_dropped_connection_driver_fails_the_attempt_and_retires_it() {
             .await
             .unwrap()
             .unwrap_err();
-        assert!(
-            matches!(error, ConnectionError::TransportError(_)),
-            "{error:?}"
-        );
+        assert_matches!(error, ConnectionError::TransportError(_), "{error:?}");
         assert_eq!(endpoint.open_connections(), 0);
         assert!(
             endpoint
@@ -3290,10 +3286,7 @@ fn inline_dropped_accepted_driver_fails_the_attempt_and_retires_it() {
             .await
             .unwrap()
             .unwrap_err();
-        assert!(
-            matches!(error, ConnectionError::TransportError(_)),
-            "{error:?}"
-        );
+        assert_matches!(error, ConnectionError::TransportError(_), "{error:?}");
         assert_eq!(server.open_connections(), 0);
         assert!(server.inner.state.lock().recv_state.connections.is_empty());
         assert_eq!(server.stats().accepted_handshakes, 1);
@@ -3424,10 +3417,10 @@ fn forced_shutdown_waits_for_a_registered_driver_that_is_still_being_submitted()
             .await
             .unwrap()
             .unwrap_err();
-        assert!(matches!(
+        assert_matches!(
             error,
-            ConnectionError::LocallyClosed | ConnectionError::TransportError(_)
-        ));
+            ConnectionError::LocallyClosed | ConnectionError::TransportError(_),
+        );
         assert_eq!(endpoint.open_connections(), 0);
         assert!(
             endpoint
@@ -3699,14 +3692,14 @@ async fn send_handles_are_destroyed_outside_every_lock_on_each_release_path() {
     exchange(&c, &s, b"from C").await;
 
     // A connect that fails after taking a handle destroys it on the way out.
-    assert!(matches!(
+    assert_matches!(
         client.connect_with(
             client_config,
             server.local_addr().unwrap(),
             "not a valid server name"
         ),
-        Err(ConnectError::InvalidServerName(_))
-    ));
+        Err(ConnectError::InvalidServerName(_)),
+    );
     assert_eq!(probe.drops.load(Ordering::SeqCst), 5);
 
     // Close: once every handle and stream is gone, the driver hands its C handle back.
@@ -4114,7 +4107,7 @@ async fn attempts_queued_on_a_socket_that_fails_are_released_and_a_held_one_is_r
         2,
         "the held attempt still pins the failed socket"
     );
-    assert!(matches!(held.accept(), Err(ConnectionError::LocallyClosed)));
+    assert_matches!(held.accept(), Err(ConnectionError::LocallyClosed));
     assert_eq!(server.inner.state.lock().inner.pending_incoming(), 0);
     wait_for(
         "A retires with its last lease",
@@ -5118,9 +5111,10 @@ async fn shutdown_completes_while_a_descriptor_is_partly_accepted() {
         "the waiting reader was woken by the shutdown, not left for someone else's poll"
     );
     match accept.as_mut().poll(&mut cx) {
-        Poll::Ready(Err(error)) => assert!(
-            matches!(error, ConnectionError::LocallyClosed),
-            "the reader is given the connection's own cause: {error:?}"
+        Poll::Ready(Err(error)) => assert_matches!(
+            error,
+            ConnectionError::LocallyClosed,
+            "the reader is given the connection's own cause: {error:?}",
         ),
         other => panic!("the waiting reader resolves once the connection is gone: {other:?}"),
     }
@@ -5404,17 +5398,11 @@ fn the_segment_credit_charges_accepted_datagrams_only() {
         log: log.clone(),
         segments: Arc::new(Segments::default()),
     };
-    assert!(matches!(
-        sender.poll_send(&mut cx, &plain(b"a")),
-        Poll::Ready(Err(_))
-    ));
+    assert_matches!(sender.poll_send(&mut cx, &plain(b"a")), Poll::Ready(Err(_)));
     assert_eq!(log.lock().credit, Some(1), "a rejection charges nothing");
     assert!(sender.poll_send(&mut cx, &plain(b"a")).is_pending());
     assert_eq!(log.lock().credit, Some(1), "a Pending charges nothing");
-    assert!(matches!(
-        sender.poll_send(&mut cx, &plain(b"a")),
-        Poll::Ready(Ok(()))
-    ));
+    assert_matches!(sender.poll_send(&mut cx, &plain(b"a")), Poll::Ready(Ok(())));
     assert_eq!(
         log.lock().credit,
         Some(0),
@@ -5451,10 +5439,7 @@ fn the_segment_credit_charges_accepted_datagrams_only() {
     assert_eq!(log.lock().credit, Some(1), "the credit is untouched");
     // With credit for the whole batch it goes, one datagram at a time as an offload would.
     log.lock().credit = Some(2);
-    assert!(matches!(
-        sender.poll_send(&mut cx, &segmented),
-        Poll::Ready(Ok(()))
-    ));
+    assert_matches!(sender.poll_send(&mut cx, &segmented), Poll::Ready(Ok(())));
     let log = log.lock();
     assert_eq!(log.sent.len(), 2);
     assert_eq!(log.sent[0].bytes, [1, 1]);
@@ -6094,10 +6079,7 @@ fn the_segmentation_fixture_takes_a_batch_whole_or_not_at_all() {
         0,
         "nothing left while the socket was not ready"
     );
-    assert!(matches!(
-        sender.poll_send(&mut cx, &descriptor),
-        Poll::Ready(Ok(()))
-    ));
+    assert_matches!(sender.poll_send(&mut cx, &descriptor), Poll::Ready(Ok(())));
     let log = log.lock();
     assert_eq!(log.sent.len(), 2, "the whole batch went on the retry");
     assert_eq!(log.sent[0].bytes, [1, 1, 1]);
@@ -6550,7 +6532,7 @@ async fn a_restarted_endpoint_uses_its_configured_reset_key() {
             let reason = tokio::time::timeout(Duration::from_secs(2), c.closed())
                 .await
                 .expect("the preserved reset key terminates the old connection");
-            assert!(matches!(reason, ConnectionError::Reset), "{reason:?}");
+            assert_matches!(reason, ConnectionError::Reset, "{reason:?}");
         } else {
             wait_for(
                 "client processed the foreign reset",
@@ -6698,10 +6680,11 @@ async fn a_probed_identifier_counts_when_its_datagram_leaves() {
         c.close_reason().is_some()
     })
     .await;
-    assert!(
-        matches!(c.close_reason(), Some(ConnectionError::Reset)),
+    assert_matches!(
+        c.close_reason(),
+        Some(ConnectionError::Reset),
         "a reset for an identifier we have used ends the connection: {:?}",
-        c.close_reason()
+        c.close_reason(),
     );
     drop((c, s));
     tokio::join!(client.shutdown(), server.shutdown());
@@ -6896,7 +6879,7 @@ async fn handshake_confirmed_fails_when_the_connection_ends_unconfirmed() {
         .expect("woken by the close")
         .unwrap()
         .unwrap_err();
-    assert!(matches!(error, ConnectionError::LocallyClosed), "{error:?}");
+    assert_matches!(error, ConnectionError::LocallyClosed, "{error:?}");
     drop((c, s));
     tokio::join!(client.shutdown(), server.shutdown());
 }
@@ -6906,7 +6889,7 @@ async fn handshake_confirmed_fails_when_the_connection_ends_unconfirmed() {
 #[tokio::test]
 async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
     struct FailingServer(Arc<dyn crate::proto::crypto::ServerConfig>);
-    impl crate::proto::crypto::ServerConfig for FailingServer {
+    impl crate::proto::crypto::InitialServerConfig for FailingServer {
         fn initial_keys(
             &self,
             version: Version,
@@ -6922,8 +6905,24 @@ async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
         ) -> Result<[u8; 16], rama_quic_proto::crypto::CryptoError> {
             self.0.retry_tag(version, cid, packet)
         }
+    }
+    impl crate::proto::crypto::ServerConfig for FailingServer {
         fn start_session(
             self: Arc<Self>,
+            _: Version,
+            _: &rama_quic_proto::transport_parameters::TransportParameters,
+        ) -> Result<Box<dyn crate::proto::crypto::Session>, rama_quic_proto::TransportError>
+        {
+            Err(rama_quic_proto::TransportError::INTERNAL_ERROR(
+                "injected accept failure",
+            ))
+        }
+        fn supports_compatible_negotiation(&self) -> bool {
+            false
+        }
+        fn start_negotiated_session(
+            self: Arc<Self>,
+            _: Version,
             _: Version,
             _: &rama_quic_proto::transport_parameters::TransportParameters,
         ) -> Result<Box<dyn crate::proto::crypto::Session>, rama_quic_proto::TransportError>
@@ -6945,7 +6944,9 @@ async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
     }
 
     let (client_config, mut server_config) = configs();
-    server_config.crypto = Arc::new(FailingServer(server_config.crypto));
+    server_config.crypto = crate::proto::ServerCrypto::Fixed(Arc::new(FailingServer(
+        server_config.crypto.into_fixed(),
+    )));
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let client = endpoint(None, Executor::new(), Duration::from_secs(1));
     let connecting = client
@@ -6969,10 +6970,7 @@ async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
     }
     // There is no await between installing the observer and checking it, so no receive or
     // timer can be mistaken for the accept operation's wake on this current-thread runtime.
-    assert!(matches!(
-        incoming.accept(),
-        Err(ConnectionError::TransportError(_))
-    ));
+    assert_matches!(incoming.accept(), Err(ConnectionError::TransportError(_)));
     assert_eq!(
         wakes.load(Ordering::Relaxed),
         1,
@@ -6982,8 +6980,11 @@ async fn an_accept_error_wakes_the_parked_endpoint_to_send_its_response() {
         .await
         .expect("the peer receives the rejection")
         .unwrap_err();
-    assert!(matches!(error, ConnectionError::ConnectionClosed(ref close)
-        if close.error_code == rama_quic_proto::TransportErrorCode::INTERNAL_ERROR));
+    assert_matches!(
+        error,
+        ConnectionError::ConnectionClosed(ref close)
+            if close.error_code == rama_quic_proto::TransportErrorCode::INTERNAL_ERROR,
+    );
     tokio::time::timeout(Duration::from_secs(3), async {
         tokio::join!(client.shutdown(), server.shutdown());
     })

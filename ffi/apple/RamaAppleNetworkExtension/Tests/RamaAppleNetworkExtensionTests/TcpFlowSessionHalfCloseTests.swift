@@ -337,6 +337,43 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
             "the already-closed download half must retain its clean EOF")
     }
 
+    /// An upload send failing on a reset keeps the response tail the client writer holds: it
+    /// drains first, then the reset ends the flow.
+    func testEgressWriteFailureStillDrainsTheResponseTail() {
+        let (session, core, flow, conn, queue) = makeArmedSession(egressEofGraceMs: 100)
+        defer { core.detachEngine(reason: 0) }
+        flow.captureWriteCompletions = true
+        session.ctx.clientWritePump?.markOpened()
+        let tail = Data(repeating: 0x5A, count: 4096)
+        XCTAssertEqual(session.ctx.clientWritePump?.enqueue(tail), .accepted)
+        waitFor("the response tail is in flight to the client") {
+            flow.pendingWriteCompletionCount == 1
+        }
+        conn.transition(to: .ready)
+        queue.sync { session.handleEgressReady(connection: conn) }
+        guard let writer = session.ctx.egressWritePump else {
+            return XCTFail("egress writer built")
+        }
+        XCTAssertEqual(writer.enqueue(Data([0x01])), .accepted)
+        waitFor("upload send") { conn.pendingSendCount == 1 }
+        XCTAssertTrue(conn.completePendingSend(error: .posix(.ECONNRESET)))
+        drain(queue)
+        queue.sync {
+            XCTAssertFalse(session.ctx.isDone, "the response tail still drains")
+            XCTAssertTrue(session.ctx.egressFailed)
+        }
+        XCTAssertEqual(flow.closeWriteCallCount, 0)
+
+        XCTAssertTrue(flow.completeNextWrite())
+        waitFor("the reset ends the flow once the tail drained", timeout: 3.0) {
+            queue.sync { session.ctx.isDone }
+        }
+        XCTAssertEqual(flow.writes.reduce(into: Data()) { $0.append($1) }, tail)
+        guard case .posix(.ECONNRESET)? = flow.lastCloseReadError as? NWError else {
+            return XCTFail("the flow ends with the upload's reset")
+        }
+    }
+
     func testEgressFinFailureTearsDownViaRustSessionWithError() {
         let (session, core, flow, conn, queue) = makeArmedSession()
         defer { core.detachEngine(reason: 0) }

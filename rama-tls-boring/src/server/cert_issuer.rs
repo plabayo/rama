@@ -324,6 +324,7 @@ where
 mod tests {
     use super::*;
     use rama_tls::server::{CertificateKeyKind, LeafCertRequest};
+    use std::assert_matches;
     use std::time::Duration;
 
     struct NormalizingIssuer;
@@ -351,11 +352,8 @@ mod tests {
         let original = ServerCertIssuerData::default();
         let clone = original.clone();
         assert!(Arc::ptr_eq(&original.runtime, &clone.runtime));
-        assert!(matches!(
-            original.kind(),
-            ServerCertIssuerKind::GeneratedCa { .. }
-        ));
-        assert!(matches!(original.cache_kind(), CacheKind::MemCache { .. }));
+        assert_matches!(original.kind(), ServerCertIssuerKind::GeneratedCa { .. });
+        assert_matches!(original.cache_kind(), CacheKind::MemCache { .. });
         assert_eq!(
             original.fallback_identity(),
             Some(&CertificateIdentity::Dns(Domain::from_static("localhost")))
@@ -368,7 +366,7 @@ mod tests {
         assert!(Arc::ptr_eq(&original.runtime, &with_fallback.runtime));
 
         let without_cache = original.clone().with_cache_kind(CacheKind::Disabled);
-        assert!(matches!(without_cache.cache_kind(), CacheKind::Disabled));
+        assert_matches!(without_cache.cache_kind(), CacheKind::Disabled);
         assert!(without_cache.cache().is_none());
         assert!(!Arc::ptr_eq(&original.runtime, &without_cache.runtime));
 
@@ -381,7 +379,7 @@ mod tests {
                 },
                 leaf: LeafCertConfig::default(),
             });
-        assert!(matches!(
+        assert_matches!(
             with_new_kind.kind(),
             ServerCertIssuerKind::GeneratedCa {
                 ca: SelfSignedCaConfig {
@@ -389,8 +387,8 @@ mod tests {
                     ..
                 },
                 ..
-            }
-        ));
+            },
+        );
         assert!(!Arc::ptr_eq(&original.runtime, &with_new_kind.runtime));
     }
 

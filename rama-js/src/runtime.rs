@@ -116,8 +116,11 @@ impl JsRuntime {
         self.engine.call(name.as_ref(), &args)
     }
 
-    /// Returns `true` if a global function with the given name exists.
-    pub fn has_global_fn(&mut self, name: impl AsRef<str>) -> bool {
+    /// Whether a global function with the given name exists.
+    ///
+    /// Fails, rather than answering `false`, when the runtime is poisoned or the lookup is
+    /// stopped by a limit: neither says anything about the function.
+    pub fn has_global_fn(&mut self, name: impl AsRef<str>) -> Result<bool, JsError> {
         self.engine.has_global_fn(name.as_ref())
     }
 

@@ -1,22 +1,25 @@
 //! Request-stream framing and message sequencing.
 
+use std::{
+    sync::Arc,
+    task::{Context, Poll, ready},
+};
+
+use rama_core::bytes::Bytes;
+use rama_http_types::{
+    HeaderMap,
+    header::trailer::ForbiddenTrailers,
+    proto::h3::{Code, FrameType, VarInt},
+};
+use rama_net::uri::Uri;
+use rama_quic::StreamAbortHandle;
+
 use super::{
     Error,
     client::ConnectionLifetime,
     connection::Shared,
     frame::{FrameDecoder, FrameEvent},
     quic::RecvStream,
-};
-use rama_core::bytes::Bytes;
-use rama_http_types::{
-    HeaderMap,
-    proto::h3::{Code, FrameType, VarInt},
-};
-use rama_net::uri::Uri;
-use rama_quic::StreamAbortHandle;
-use std::{
-    sync::Arc,
-    task::{Context, Poll, ready},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -39,11 +42,23 @@ pub(crate) struct Reader<R: RecvStream> {
     frames: FrameDecoder,
     pub(crate) push_id: Option<u64>,
     pub(crate) origin: Option<Uri>,
+    /// The request's datagram demux entry while this connection receives datagrams.
+    pub(crate) datagrams: Option<Arc<super::datagram::Registration>>,
+    // A tunnel's peer reset or a lost connection, returned again instead of reading past it.
+    terminal: Option<Error>,
     push_cancelled: Option<std::pin::Pin<Box<dyn Future<Output = Error> + Send + Sync>>>,
     promise: Option<std::pin::Pin<Box<dyn Future<Output = Result<(), Error>> + Send + Sync>>>,
 }
 
 impl<R: RecvStream> Reader<R> {
+    /// The peer ended the stream in order; later datagrams for it are dropped (RFC 9297 §2.1).
+    pub(crate) fn finish(&mut self) {
+        self.phase = Phase::Finished;
+        if let Some(datagrams) = &self.datagrams {
+            datagrams.receive_ended(super::datagram::ReceiveEnd::Finished);
+        }
+    }
+
     pub(crate) fn new(stream: R, shared: Arc<Shared>, id: u64) -> Self {
         let frames = FrameDecoder::with_input_limit(
             shared.config.max_frame_size,
@@ -60,6 +75,8 @@ impl<R: RecvStream> Reader<R> {
             client_lifetime: None,
             frames,
             origin: None,
+            datagrams: None,
+            terminal: None,
             push_id: None,
             promise: None,
             push_cancelled: None,
@@ -104,8 +121,40 @@ impl<R: RecvStream> Reader<R> {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<FrameEvent>, Error>> {
+        if let Some(error) = self.terminal {
+            return Poll::Ready(Err(error));
+        }
         match self.poll_event_inner(cx) {
-            Poll::Ready(Err(error)) => Poll::Ready(Err(self.reject(error))),
+            Poll::Ready(Err(error)) => {
+                let code = error.code().value();
+                if error.is_peer_reset() {
+                    if let Some(datagrams) = &self.datagrams {
+                        // Unknown codes keep their wire value for diagnostics.
+                        let raw = error.raw_code().value();
+                        datagrams.receive_ended(super::datagram::ReceiveEnd::Reset(raw));
+                    }
+                    // Only the peer's direction ended: a tunnel keeps sending (RFC 9000 §3.5).
+                    // The reset is terminal for receiving: never read past it into EOF.
+                    if self.phase == Phase::Tunnel {
+                        self.terminal = Some(error);
+                        return Poll::Ready(Err(error));
+                    }
+                } else if error.is_connection_loss() {
+                    // Nothing to abort on a lost connection: aborting would turn later reads
+                    // into fresh stream errors instead of the loss the demux reports.
+                    self.terminal = Some(error);
+                    if error.scope() == super::qpack::ErrorScope::Connection {
+                        self.shared.fail(error);
+                    }
+                    return Poll::Ready(Err(error));
+                } else if error.scope() == super::qpack::ErrorScope::Stream
+                    && let Some(datagrams) = &self.datagrams
+                {
+                    // Rejected below: this endpoint aborts the stream.
+                    datagrams.receive_ended(super::datagram::ReceiveEnd::Aborted(code));
+                }
+                Poll::Ready(Err(self.reject(error)))
+            }
             result => result,
         }
     }
@@ -123,6 +172,18 @@ impl<R: RecvStream> Reader<R> {
             return Poll::Ready(Ok(None));
         }
         for _ in 0..super::cooperative::OPERATIONS_PER_QUANTUM {
+            // RFC 9297 §2: the driver aborted a request that received datagrams without semantics.
+            if self
+                .datagrams
+                .as_ref()
+                .is_some_and(|datagrams| datagrams.violated())
+            {
+                return Poll::Ready(Err(Error::stream(
+                    Code::H3_DATAGRAM_ERROR,
+                    "datagram for a request without datagram semantics",
+                )
+                .remote()));
+            }
             if let Some(promise) = &mut self.promise {
                 ready!(promise.as_mut().poll(cx))?;
                 self.promise = None;
@@ -215,7 +276,7 @@ impl<R: RecvStream> Reader<R> {
                             )
                             .remote()));
                         }
-                        self.phase = Phase::Finished;
+                        self.finish();
                         return Poll::Ready(Ok(None));
                     }
                 }
@@ -255,12 +316,12 @@ pub(crate) fn encode_trailers(
     shared: &Shared,
     id: u64,
     headers: &HeaderMap,
+    allowed: Option<&ForbiddenTrailers>,
 ) -> Result<Bytes, Error> {
-    super::headers::validate_regular(headers, true)?;
+    super::headers::validate_outgoing_trailers(headers, allowed)?;
     shared.encode(
         id,
-        headers
-            .ordered_iter()
+        super::headers::outgoing_trailer_fields(headers, allowed)
             .map(|(name, value)| super::qpack::EncodeField::from_header(name, value)),
     )
 }

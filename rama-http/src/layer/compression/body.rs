@@ -1,21 +1,5 @@
 #![allow(unused_imports)]
 
-use crate::HeaderMap;
-use crate::layer::util::compression::{
-    AsyncReadBody, BodyIntoStream, CompressionLevel, DecorateAsyncRead, WrapBody,
-    compressed_body_poll_frame, impl_decorate_async_read,
-};
-use rama_core::{
-    bytes::{Buf, Bytes},
-    error::BoxError,
-};
-
-use async_compression::tokio::bufread::{BrotliEncoder, GzipEncoder, ZlibEncoder, ZstdEncoder};
-use pin_project_lite::pin_project;
-use rama_core::futures::ready;
-use rama_core::stream::io::StreamReader;
-use rama_http_types::StreamingBody;
-use rama_http_types::body::Frame;
 use std::{
     io,
     marker::PhantomData,
@@ -23,7 +7,24 @@ use std::{
     task::{Context, Poll},
 };
 
+use async_compression::tokio::bufread::{BrotliEncoder, GzipEncoder, ZlibEncoder, ZstdEncoder};
+use pin_project_lite::pin_project;
+use rama_core::{
+    bytes::{Buf, Bytes},
+    error::BoxError,
+    futures::ready,
+    stream::io::StreamReader,
+};
+use rama_http_types::{StreamingBody, body::Frame};
+
 use super::pin_project_cfg::pin_project_cfg;
+use crate::{
+    HeaderMap,
+    layer::util::compression::{
+        AsyncReadBody, BodyIntoStream, CompressionLevel, DecorateAsyncRead, WrapBody,
+        compressed_body_poll_frame, impl_decorate_async_read,
+    },
+};
 
 pin_project! {
     /// Response body of [`Compression`].
@@ -163,7 +164,7 @@ impl_decorate_async_read!(BrotliEncoder: |input, quality| {
     // which is the max for brotli. This causes extremely slow compression times, so we
     // manually set a default of 4 here.
     //
-    // This is the same default used by NGINX for on-the-fly brotli compression.
+    // A common default of established servers for on-the-fly brotli compression.
     let level = match quality {
         CompressionLevel::Default => async_compression::Level::Precise(4),
         other => other.into_async_compression(),

@@ -1,4 +1,4 @@
-use crate::{Method, Request, Version, proto::h2::ext::Protocol};
+use crate::{Method, Request, Version, proto::ext::Protocol};
 use rama_core::{
     extensions::{Extension, Extensions, ExtensionsRef as _},
     matcher::Matcher,
@@ -37,7 +37,35 @@ impl PlaintextHttpProxyMode {
 
 #[cfg(test)]
 mod tests {
-    use super::PlaintextHttpProxyMode;
+    use super::{PlaintextHttpProxyMode, is_req_http_proxy_connect};
+    use crate::{Method, Request, Version, proto::ext::Protocol as UpgradeProtocol};
+    use rama_core::extensions::ExtensionsRef as _;
+
+    #[test]
+    fn ordinary_connect_is_recognized_on_every_version() {
+        for version in [
+            Version::HTTP_10,
+            Version::HTTP_11,
+            Version::HTTP_2,
+            Version::HTTP_3,
+        ] {
+            let request = Request::builder()
+                .method(Method::CONNECT)
+                .version(version)
+                .uri("example.com:443")
+                .body(())
+                .unwrap();
+            assert!(is_req_http_proxy_connect(&request), "{version:?}");
+            request.extensions().insert(UpgradeProtocol::WEBSOCKET);
+            assert_eq!(
+                is_req_http_proxy_connect(&request),
+                version <= Version::HTTP_11,
+                "{version:?}"
+            );
+            let get = Request::builder().version(version).body(()).unwrap();
+            assert!(!is_req_http_proxy_connect(&get));
+        }
+    }
     use rama_net::Protocol;
 
     #[test]
@@ -61,16 +89,13 @@ mod tests {
     }
 }
 
-/// Returns true if the provided reuqest is a HTTP Proxy Connect request.
+/// Returns true if the provided request is an ordinary (proxy) CONNECT request.
+///
+/// On HTTP/2 and HTTP/3 a CONNECT carrying a [`Protocol`] is Extended CONNECT
+/// (RFC 8441, RFC 9220), which targets an origin resource rather than a tunnel.
 pub fn is_req_http_proxy_connect<Body>(req: &Request<Body>) -> bool {
-    let http_version = req.version();
-    if http_version <= Version::HTTP_11 {
-        req.method() == Method::CONNECT
-    } else if http_version == Version::HTTP_2 {
-        req.method() == Method::CONNECT && !req.extensions().contains::<Protocol>()
-    } else {
-        false
-    }
+    req.method() == Method::CONNECT
+        && (req.version() <= Version::HTTP_11 || !req.extensions().contains::<Protocol>())
 }
 
 #[derive(Debug, Clone, Default)]

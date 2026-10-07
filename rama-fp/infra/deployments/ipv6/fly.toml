@@ -8,7 +8,8 @@ primary_region = 'fra'
 
 [processes]
 # Public-demo guardrails: rate is process-wide; throttle is per connection/direction.
-app_secure = "serve ip --bind '[::]:8443' -c 2048 --rate 100 --throttle 1048576 -f haproxy -s"
+# No HTTP/3: Fly.io offers no public UDP over IPv6.
+app_secure = "serve ip --bind '[::]:8443' -c 2048 --rate 100 --throttle 1048576 -f haproxy -s --http-version h1,h2"
 app_insecure = "serve ip --bind '[::]:8080' -c 2048 --rate 100 --throttle 1048576 -f haproxy"
 
 [build]

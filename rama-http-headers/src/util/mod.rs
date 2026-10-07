@@ -16,7 +16,8 @@ pub(crate) use self::flat_csv::{
 pub(crate) use self::fmt::fmt;
 pub use self::http_date::HttpDate;
 pub(crate) use self::http_syntax::{
-    ListMembers, QuotedString, scan_quoted_string, skip_ows, trim_ows,
+    ListMembers, QuotedString, parse_delta_seconds, parse_digits, parse_port, scan_quoted_string,
+    skip_ows, split_unquoted, unquoted_members,
 };
 pub(crate) use self::iter::IterExt;
 //pub use language_tags::LanguageTag;
@@ -285,6 +286,51 @@ macro_rules! derive_values_or_any_header {
             }
         }
     };
+}
+
+/// Call `f` with every byte string over `alphabet` of at most `max_len` bytes.
+#[cfg(test)]
+pub(crate) fn for_each_small_input(alphabet: &[u8], max_len: usize, mut f: impl FnMut(&[u8])) {
+    fn recurse(alphabet: &[u8], max_len: usize, buf: &mut Vec<u8>, f: &mut impl FnMut(&[u8])) {
+        f(buf);
+        if buf.len() < max_len {
+            for &byte in alphabet {
+                buf.push(byte);
+                recurse(alphabet, max_len, buf, f);
+                buf.pop();
+            }
+        }
+    }
+    recurse(alphabet, max_len, &mut Vec::with_capacity(max_len), &mut f);
+}
+
+/// The one line of a field that may appear only once; a second line, even an equal one, makes
+/// it invalid.
+pub(crate) fn single_value<'i, I>(values: &mut I) -> Result<HeaderValue, Error>
+where
+    I: Iterator<Item = &'i HeaderValue>,
+{
+    match (values.next(), values.next()) {
+        (Some(value), None) => Ok(value.clone()),
+        _ => Err(Error::invalid()),
+    }
+}
+
+/// Every line of a list field, as the one value they combine to (RFC 9110 §5.3).
+pub(crate) fn combined_value<'i, I>(values: &mut I) -> Result<HeaderValue, Error>
+where
+    I: Iterator<Item = &'i HeaderValue>,
+{
+    let first = values.next().ok_or_else(Error::invalid)?;
+    let Some(second) = values.next() else {
+        return Ok(first.clone());
+    };
+    let mut combined = first.as_bytes().to_vec();
+    for value in std::iter::once(second).chain(values) {
+        combined.extend_from_slice(b", ");
+        combined.extend_from_slice(value.as_bytes());
+    }
+    HeaderValue::from_bytes(&combined).map_err(|_error| Error::invalid())
 }
 
 /// A helper trait for use when deriving `Header`.

@@ -226,6 +226,7 @@ errors! {
 mod tests {
     use super::*;
     use crate::frame::ConnectionClose;
+    use std::assert_matches;
 
     /// A literal reason is borrowed all the way to the frame. The frame's bytes are the same
     /// bytes as the literal, which a copy would not be.
@@ -233,7 +234,7 @@ mod tests {
     fn a_literal_reason_is_borrowed_to_the_wire() {
         const REASON: &str = "frame in the wrong space";
         let error = Error::PROTOCOL_VIOLATION(REASON);
-        assert!(matches!(error.reason, Cow::Borrowed(_)));
+        assert_matches!(error.reason, Cow::Borrowed(_));
         let close = ConnectionClose::from(error);
         assert_eq!(&close.reason[..], REASON.as_bytes());
         assert_eq!(
@@ -250,7 +251,7 @@ mod tests {
         let built = format!("stream {} is not open", 7);
         let address = built.as_ptr();
         let error = Error::PROTOCOL_VIOLATION(built);
-        assert!(matches!(error.reason, Cow::Owned(_)));
+        assert_matches!(error.reason, Cow::Owned(_));
         let close = ConnectionClose::from(error);
         assert_eq!(&close.reason[..], b"stream 7 is not open");
         assert_eq!(

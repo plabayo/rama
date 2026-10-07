@@ -174,7 +174,7 @@ async fn serve_connect() {
                     // relative-ref URIs, so build the authority-form URI here.
                     .request(
                         "CONNECT",
-                        rama::net::uri::Uri::parse_authority_form("localhost").unwrap(),
+                        rama::net::uri::Uri::parse_authority_form("localhost:80").unwrap(),
                     )
                     .eos(),
             )
@@ -379,6 +379,82 @@ async fn push_request() {
         // Send response for stream 1
         let rsp = http::Response::builder().status(200).body(()).unwrap();
         stream.send_response(rsp, true).unwrap();
+
+        assert!(srv.next().await.is_none());
+    };
+
+    join(client, srv).await;
+}
+
+/// A PUSH_PROMISE needs an open request stream (RFC 9113 §8.4): a closed or reset one errors
+/// without reaching the peer.
+#[tokio::test]
+async fn push_request_needs_an_open_stream() {
+    h2_support::trace_init!();
+    let (io, mut client) = mock::new();
+
+    let client = async move {
+        client
+            .assert_server_handshake_with_settings(
+                frames::settings().with_max_concurrent_streams(100),
+            )
+            .await;
+        for id in [1, 3] {
+            client
+                .send_frame(
+                    frames::headers(id)
+                        .request("GET", "https://example.com/")
+                        .eos(),
+                )
+                .await;
+        }
+        client.send_frame(frames::reset(3).cancel()).await;
+        client
+            .send_frame(
+                frames::headers(5)
+                    .request("GET", "https://example.com/")
+                    .eos(),
+            )
+            .await;
+        client
+            .recv_frame(frames::headers(1).response(200).eos())
+            .await;
+        // The refused promises spent no stream id.
+        client
+            .recv_frame(frames::push_promise(5, 2).request("GET", "https://example.com/style.css"))
+            .await;
+        client
+            .recv_frame(frames::headers(2).response(200).eos())
+            .await;
+        client
+            .recv_frame(frames::headers(5).response(200).eos())
+            .await;
+    };
+
+    let srv = async move {
+        let mut srv = server::handshake(io).await.expect("handshake");
+        let (_req, mut answered) = srv.next().await.unwrap().unwrap();
+        let (_req, mut reset) = srv.next().await.unwrap().unwrap();
+        // Frames are read in order: the reset of stream 3 came before this request.
+        let (_req, mut last) = srv.next().await.unwrap().unwrap();
+
+        let pushed = || {
+            http::Request::builder()
+                .method("GET")
+                .uri("https://example.com/style.css")
+                .body(())
+                .unwrap()
+        };
+        let ok = || http::Response::builder().status(200).body(()).unwrap();
+
+        answered.send_response(ok(), true).unwrap();
+        answered.push_request(pushed()).unwrap_err();
+        reset.push_request(pushed()).unwrap_err();
+        last.push_request(pushed())
+            .unwrap()
+            .send_response(ok(), true)
+            .unwrap();
+        last.send_response(ok(), true).unwrap();
 
         assert!(srv.next().await.is_none());
     };
@@ -1271,6 +1347,58 @@ async fn too_many_continuation_frames_sends_goaway() {
     join(client, srv).await;
 }
 
+/// Every Content-Length line counts (RFC 9110 §8.6), as on HTTP/1 and HTTP/3: lines that
+/// disagree reset the stream before it reaches the service; equal ones hold the body to them.
+#[tokio::test]
+async fn every_content_length_line_counts() {
+    h2_support::trace_init!();
+    for (lengths, accepted) in [(["5", "100"], false), (["5", "5"], true)] {
+        let (io, mut client) = mock::new();
+        let client = async move {
+            let settings = client.assert_server_handshake().await;
+            assert_default_settings!(settings);
+            client
+                .send_frame(
+                    frames::headers(1)
+                        .request("POST", "https://a.b")
+                        .field("content-length", lengths[0])
+                        .field("content-length", lengths[1]),
+                )
+                .await;
+            client
+                .send_frame(frames::data(1, &b"hello"[..]).eos())
+                .await;
+            if accepted {
+                client
+                    .recv_frame(frames::headers(1).response(200).eos())
+                    .await;
+            } else {
+                client.recv_frame(frames::reset(1).protocol_error()).await;
+            }
+            idle_ms(10).await;
+        };
+        let srv = async move {
+            let mut srv = server::Builder::new()
+                .handshake::<_, Bytes>(io)
+                .await
+                .expect("handshake");
+            if accepted {
+                let (req, mut stream) = srv.next().await.unwrap().unwrap();
+                let mut body = req.into_body();
+                assert_eq!(body.data().await.unwrap().unwrap(), &b"hello"[..]);
+                assert!(body.data().await.is_none());
+                stream
+                    .send_response(rama::http::Response::new(()), true)
+                    .unwrap();
+                assert!(srv.next().await.is_none());
+            } else {
+                assert!(srv.next().await.is_none_or(|result| result.is_err()));
+            }
+        };
+        join(client, srv).await;
+    }
+}
+
 #[tokio::test]
 #[ignore]
 async fn pending_accept_recv_illegal_content_length_data() {
@@ -1707,8 +1835,8 @@ async fn extended_connect_protocol_enabled_during_handshake() {
 
         assert_eq!(
             req.extensions()
-                .get_ref::<rama::http::core::h2::ext::Protocol>(),
-            Some(&rama::http::core::h2::ext::Protocol::from_static(
+                .get_ref::<rama::http::proto::ext::Protocol>(),
+            Some(&rama::http::proto::ext::Protocol::from_static(
                 "the-bread-protocol"
             ))
         );

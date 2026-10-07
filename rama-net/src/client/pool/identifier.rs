@@ -71,12 +71,12 @@ where
 
     fn id(&self, input: &Input) -> Result<Self::ID, BoxError> {
         let authority = input
-            .authority()
+            .target_authority()
             .ok_or_else(|| BoxError::from_static_str("no authority found in connection input"))?;
         let proxy_route = input.extensions().get_ref::<ProxyRoute>();
 
         Ok(BasicConnId {
-            protocol: input.protocol().cloned(),
+            protocol: input.target_protocol().cloned(),
             authority,
             proxy_route_requested: proxy_route.is_some(),
             proxy_address: proxy_route.and_then(ProxyRoute::proxy_address).cloned(),

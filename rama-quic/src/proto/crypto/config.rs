@@ -1,8 +1,8 @@
-use rama_core::error::BoxError;
-use rama_utils::macros::generate_set_and_with;
 use std::fmt;
 
+use rama_core::error::BoxError;
 pub use rama_tls::alpn::AlpnPolicy;
+use rama_utils::macros::generate_set_and_with;
 
 /// QUIC requirements applied to the common Rama TLS configuration.
 #[derive(Clone, Copy, Debug, Default)]
@@ -44,15 +44,27 @@ pub enum TlsConfigError {
 impl fmt::Display for TlsConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BackendUnavailable => f.write_str("no built-in QUIC TLS configuration provider is available"),
-            Self::UnsupportedOutOfBandAgreement => f.write_str("this QUIC TLS backend requires ALPN even with out-of-band protocol agreement"),
+            Self::BackendUnavailable => {
+                f.write_str("no built-in QUIC TLS configuration provider is available")
+            }
+            Self::UnsupportedOutOfBandAgreement => f.write_str(
+                "this QUIC TLS backend requires ALPN even with out-of-band protocol agreement",
+            ),
             Self::Tls13Required => f.write_str("QUIC requires TLS 1.3"),
-            Self::AlpnRequired => f.write_str("QUIC requires ALPN unless another protocol agreement is explicit"),
+            Self::AlpnRequired => {
+                f.write_str("QUIC requires ALPN unless another protocol agreement is explicit")
+            }
             Self::InvalidAlpn => f.write_str("invalid ALPN protocol list"),
-            Self::UnsupportedDynamicConfig => f.write_str("asynchronous per-ClientHello TLS configuration is not supported by this QUIC backend"),
-            Self::EarlyDataNotEnabled => f.write_str("TLS configuration enables early data without QUIC application opt-in"),
+            Self::UnsupportedDynamicConfig => f.write_str(
+                "per-ClientHello TLS configuration needs a resolving QUIC server configuration",
+            ),
+            Self::EarlyDataNotEnabled => {
+                f.write_str("TLS configuration enables early data without QUIC application opt-in")
+            }
             Self::NoInitialCipherSuite(error) => error.fmt(f),
-            Self::InvalidConfiguration(error) => write!(f, "invalid QUIC TLS configuration: {error}"),
+            Self::InvalidConfiguration(error) => {
+                write!(f, "invalid QUIC TLS configuration: {error}")
+            }
         }
     }
 }

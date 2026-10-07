@@ -3,12 +3,11 @@ use std::{
     io,
 };
 
-use rama_core::bytes::Bytes;
-use rama_core::telemetry::tracing::trace;
+use rama_core::{bytes::Bytes, telemetry::tracing::trace};
+use rama_quic_proto::{Dir, StreamId, VarInt, frame};
 
 use super::spaces::{Retransmits, ThinRetransmits};
 use crate::proto::connection::streams::state::{get_or_insert_recv, get_or_insert_send};
-use rama_quic_proto::{Dir, StreamId, VarInt, frame};
 
 mod recv;
 use recv::Recv;
@@ -16,9 +15,8 @@ pub(crate) use recv::{Chunks, ReadError, ReadableError};
 
 mod send;
 pub use send::Written;
-pub(crate) use send::{ByteSlice, BytesArray};
+pub(crate) use send::{ByteSlice, BytesArray, FinishError, WriteError};
 use send::{BytesSource, Send, SendState};
-pub(crate) use send::{FinishError, WriteError};
 
 mod state;
 pub(crate) use state::StreamReceiveWindows;
@@ -306,9 +304,15 @@ impl<'a> SendStream<'a> {
     /// Send data on the given stream
     ///
     /// Returns the number of bytes successfully written.
+    #[cfg(test)]
     pub(crate) fn write(&mut self, data: &[u8]) -> Result<usize, WriteError> {
+        self.write_within(data, u64::MAX)
+    }
+
+    /// [`Self::write`] admitting at most `budget` bytes.
+    pub(crate) fn write_within(&mut self, data: &[u8], budget: u64) -> Result<usize, WriteError> {
         Ok(self
-            .write_source(&mut ByteSlice::from_slice(data), 0)?
+            .write_source(&mut ByteSlice::from_slice(data), 0, budget)?
             .bytes)
     }
 
@@ -319,15 +323,18 @@ impl<'a> SendStream<'a> {
     /// [`Written::chunks`] will not count this chunk as fully written. However
     /// the chunk will be advanced and contain only non-written data after the call.
     pub(crate) fn write_chunks(&mut self, data: &mut [Bytes]) -> Result<Written, WriteError> {
-        self.write_source(&mut BytesArray::from_chunks(data), 0)
+        self.write_chunks_within(data, 0, u64::MAX)
     }
 
-    pub(crate) fn write_chunks_with_reserve(
+    /// [`Self::write_chunks`] leaving `reserve` connection credit to other streams and
+    /// admitting at most `budget` bytes.
+    pub(crate) fn write_chunks_within(
         &mut self,
         data: &mut [Bytes],
         reserve: u64,
+        budget: u64,
     ) -> Result<Written, WriteError> {
-        self.write_source(&mut BytesArray::from_chunks(data), reserve)
+        self.write_source(&mut BytesArray::from_chunks(data), reserve, budget)
     }
 
     /// Build an optional chunk using the exact currently available credit.
@@ -372,10 +379,12 @@ impl<'a> SendStream<'a> {
         Ok(result)
     }
 
+    /// `budget` is what stream gates admitted: at least 1, so it never blocks a write itself.
     fn write_source<B: BytesSource>(
         &mut self,
         source: &mut B,
         reserve: u64,
+        budget: u64,
     ) -> Result<Written, WriteError> {
         if self.conn_state.is_closed() {
             trace!(%self.id, "write blocked; connection draining");
@@ -396,6 +405,13 @@ impl<'a> SendStream<'a> {
             .get_mut(&self.id)
             .map(get_or_insert_send(max_send_data))
             .ok_or(WriteError::ClosedStream)?;
+        // A stream that can no longer send says so even while the connection has no credit.
+        if !stream.is_writable() {
+            return Err(WriteError::ClosedStream);
+        }
+        if let Some(code) = stream.stop_reason {
+            return Err(WriteError::Stopped(code));
+        }
 
         if stream.connection_reserve != requested_reserve {
             self.state.blocked_scan = None;
@@ -414,7 +430,7 @@ impl<'a> SendStream<'a> {
         }
 
         let was_pending = stream.is_pending();
-        let written = stream.write(source, limit)?;
+        let written = stream.write(source, limit.min(budget))?;
         self.state.data_sent += written.bytes as u64;
         self.state.buffered_data += written.bytes as u64;
         trace!(stream = %self.id, "wrote {} bytes", written.bytes);
@@ -422,6 +438,16 @@ impl<'a> SendStream<'a> {
             self.state.pending.push_pending(self.id, stream.priority);
         }
         Ok(written)
+    }
+
+    /// Whether new data may still be sent: not finished (even before the FIN is acknowledged),
+    /// reset, stopped by the peer or closed.
+    pub(crate) fn is_open(&self) -> bool {
+        match self.state.send.get(&self.id) {
+            Some(Some(s)) => matches!(s.state, send::SendState::Ready) && s.stop_reason.is_none(),
+            Some(None) => true,
+            None => false,
+        }
     }
 
     /// Check if this stream was stopped, get the reason if it was

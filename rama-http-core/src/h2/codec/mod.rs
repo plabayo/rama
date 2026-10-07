@@ -234,6 +234,7 @@ mod tests {
     use rama_core::bytes::{Bytes, BytesMut};
     use rama_core::futures::{FutureExt, StreamExt};
     use rama_http_types::proto::h2::frame::{AltSvc, Head, Kind, Ping, Reason, StreamId};
+    use std::assert_matches;
     use tokio::io::AsyncWriteExt;
 
     fn advertisement() -> AltSvc {
@@ -345,10 +346,7 @@ mod tests {
                 peer.write_all(&wire).await.unwrap();
                 let result = codec.next().await.unwrap();
                 if enabled {
-                    assert!(matches!(
-                        result,
-                        Err(Error::GoAway(_, Reason::FRAME_SIZE_ERROR, _))
-                    ));
+                    assert_matches!(result, Err(Error::GoAway(_, Reason::FRAME_SIZE_ERROR, _)));
                 } else {
                     assert_eq!(result.unwrap(), Frame::Ping(ping));
                 }
@@ -368,10 +366,10 @@ mod tests {
                 let mut codec = Codec::<_, Bytes>::new(io);
                 codec.set_recv_alt_svc(enabled);
                 peer.write_all(&wire).await.unwrap();
-                assert!(matches!(
+                assert_matches!(
                     codec.next().await.unwrap(),
-                    Err(Error::GoAway(_, Reason::PROTOCOL_ERROR, _))
-                ));
+                    Err(Error::GoAway(_, Reason::PROTOCOL_ERROR, _)),
+                );
             }
         }
     }
@@ -402,14 +400,11 @@ mod tests {
         frame.encode(&mut wire);
         let (io, mut peer) = tokio::io::duplex(wire.len());
         let mut codec = Codec::<_, Bytes>::new(io);
-        assert!(matches!(
-            codec.buffer(frame.into()),
-            Err(UserError::PayloadTooBig)
-        ));
+        assert_matches!(codec.buffer(frame.into()), Err(UserError::PayloadTooBig));
         peer.write_all(&wire).await.unwrap();
-        assert!(matches!(
+        assert_matches!(
             codec.next().await.unwrap(),
-            Err(Error::GoAway(_, Reason::FRAME_SIZE_ERROR, _))
-        ));
+            Err(Error::GoAway(_, Reason::FRAME_SIZE_ERROR, _)),
+        );
     }
 }

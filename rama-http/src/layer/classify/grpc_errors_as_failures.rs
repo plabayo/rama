@@ -420,6 +420,7 @@ pub(crate) enum ParsedGrpcStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     macro_rules! classify_grpc_metadata_test {
         (
@@ -591,31 +592,31 @@ mod tests {
 
         let classifier = GrpcErrorsAsFailures::new();
         let result = classifier.classify_response(&res);
-        assert!(matches!(result, ClassifiedResponse::Ready(Ok(()))));
+        assert_matches!(result, ClassifiedResponse::Ready(Ok(())));
     }
 
     #[test]
     fn grpc_code_from_i32_known_codes() {
-        assert!(matches!(GrpcCode::from(0), GrpcCode::Ok));
-        assert!(matches!(GrpcCode::from(1), GrpcCode::Cancelled));
-        assert!(matches!(GrpcCode::from(4), GrpcCode::DeadlineExceeded));
-        assert!(matches!(GrpcCode::from(13), GrpcCode::Internal));
-        assert!(matches!(GrpcCode::from(16), GrpcCode::Unauthenticated));
+        assert_matches!(GrpcCode::from(0), GrpcCode::Ok);
+        assert_matches!(GrpcCode::from(1), GrpcCode::Cancelled);
+        assert_matches!(GrpcCode::from(4), GrpcCode::DeadlineExceeded);
+        assert_matches!(GrpcCode::from(13), GrpcCode::Internal);
+        assert_matches!(GrpcCode::from(16), GrpcCode::Unauthenticated);
     }
 
     #[test]
     fn grpc_code_from_i32_unknown_codes() {
-        assert!(matches!(GrpcCode::from(17), GrpcCode::Unknown));
-        assert!(matches!(GrpcCode::from(-1), GrpcCode::Unknown));
-        assert!(matches!(GrpcCode::from(9999), GrpcCode::Unknown));
+        assert_matches!(GrpcCode::from(17), GrpcCode::Unknown);
+        assert_matches!(GrpcCode::from(-1), GrpcCode::Unknown);
+        assert_matches!(GrpcCode::from(9999), GrpcCode::Unknown);
     }
 
     #[test]
     fn grpc_code_from_non_zero_i32() {
         let code = NonZeroI32::new(7).unwrap();
-        assert!(matches!(GrpcCode::from(code), GrpcCode::PermissionDenied));
+        assert_matches!(GrpcCode::from(code), GrpcCode::PermissionDenied);
 
         let code = NonZeroI32::new(99).unwrap();
-        assert!(matches!(GrpcCode::from(code), GrpcCode::Unknown));
+        assert_matches!(GrpcCode::from(code), GrpcCode::Unknown);
     }
 }

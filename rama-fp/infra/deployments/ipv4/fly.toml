@@ -8,11 +8,11 @@ primary_region = 'fra'
 
 [processes]
 # Public-demo guardrails: rate is process-wide; throttle is per connection/direction.
-app_secure = "serve ip --bind 0.0.0.0:8443 -c 2048 --rate 100 --throttle 1048576 -f haproxy -s"
+app_secure = "serve ip --bind 0.0.0.0:8443 -c 2048 --rate 100 --throttle 1048576 -f haproxy -s --h3-bind 0.0.0.0:443"
 app_insecure = "serve ip --bind 0.0.0.0:8080 -c 2048 --rate 100 --throttle 1048576 -f haproxy"
 
 [build]
-image = 'glendc/rama:edge'
+dockerfile = '../Dockerfile.h3'
 
 [env]
 RUST_LOG = 'info'
@@ -52,6 +52,17 @@ processes = ['app_secure']
 
 [[services.ports]]
 handlers = ["proxy_proto"]
+port = 443
+
+# HTTP/3. UDP needs the app's dedicated IPv4 and keeps its port: the app binds 443 itself.
+# Replies leave from each packet's destination address, which is what Fly's
+# `fly-global-services` bind is for.
+[[services]]
+protocol = 'udp'
+internal_port = 443
+processes = ['app_secure']
+
+[[services.ports]]
 port = 443
 
 [[vm]]

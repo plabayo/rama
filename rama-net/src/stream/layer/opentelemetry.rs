@@ -174,7 +174,7 @@ impl<S, F> NetworkMetricsService<S, F> {
         attributes.extend(self.base_attributes.iter().cloned());
 
         // client info
-        if let Some(socket_info) = ext.get_ref::<SocketInfo>() {
+        if let Some(socket_info) = SocketInfo::ingress(ext) {
             let peer_addr = socket_info.peer_addr();
             attributes.push(KeyValue::new(
                 NETWORK_TYPE,

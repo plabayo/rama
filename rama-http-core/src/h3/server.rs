@@ -1,13 +1,7 @@
 //! HTTP/3 server stream admission and response sending.
 
-use super::{
-    Error, body,
-    connection::{Config, Driver, Shared},
-    control::Role,
-    headers,
-    quic::Writer,
-    stream::{Phase, Reader},
-};
+use std::sync::Arc;
+
 use rama_core::{bytes::BytesMut, error::BoxError, extensions::ExtensionsRef};
 use rama_http::{
     headers::{HeaderMapExt as _, Priority},
@@ -16,12 +10,25 @@ use rama_http::{
 use rama_http_types::{
     Method, Request, Response, StatusCode,
     body::StreamingBody,
-    proto::h3::{Code, FrameType, StreamType},
+    header::trailer::ForbiddenTrailers,
+    proto::{
+        ext::{HttpDatagrams, Protocol},
+        h3::{Code, FrameType, StreamType},
+    },
 };
 use rama_net::uri::Uri;
 use rama_quic_proto::{VarInt, coding::Codec as _};
-use std::sync::Arc;
 use tokio::sync::Semaphore;
+
+use super::{
+    Error, body,
+    connection::{Config, Driver, Shared},
+    control::Role,
+    datagram::{Association, DatagramDrops, Semantics},
+    headers,
+    quic::Writer,
+    stream::{Phase, Reader},
+};
 
 /// Accepts request streams; the accompanying driver must run concurrently.
 pub struct Connection {
@@ -60,6 +67,17 @@ pub fn handshake(
 }
 
 impl Connection {
+    #[cfg(test)]
+    pub(crate) fn shared(&self) -> &Arc<Shared> {
+        &self.shared
+    }
+
+    /// Received HTTP/3 datagrams this connection discarded, by reason.
+    #[must_use]
+    pub fn datagram_drops(&self) -> DatagramDrops {
+        self.shared.datagram_drops()
+    }
+
     /// Stop admitting requests and notify the peer while accepted streams finish.
     pub fn shutdown(&mut self) -> Result<(), Error> {
         self.shared.send_goaway(self.next_id)?;
@@ -102,6 +120,10 @@ impl Connection {
         self.shared.schedule.register(id, Priority::default())?;
         let mut reader = Reader::new(recv, self.shared.clone(), id);
         reader.abort = Some(send.abort_handle());
+        // Held until the head (or the response) settles its semantics.
+        reader.datagrams =
+            self.shared
+                .register_datagrams(id, Semantics::Provisional, send.abort_handle());
         reader.cancel_code = Code::H3_REQUEST_REJECTED;
         let mut writer = Writer::new(send);
         writer.cancel_code = Code::H3_REQUEST_REJECTED;
@@ -131,12 +153,27 @@ impl RequestStream {
     pub async fn resolve(
         mut self,
     ) -> Result<(Request<crate::body::Incoming>, SendResponse), Error> {
-        let request = match self.reader.headers().await.and_then(headers::request) {
+        let extended_connect = self.reader.shared.config.extended_connect;
+        let request = match self
+            .reader
+            .headers()
+            .await
+            .and_then(|fields| headers::request_head(fields, extended_connect))
+        {
             Ok(request) => request,
             Err(error) => return Err(self.reader.reject(error)),
         };
         let remaining = headers::content_length(request.headers())?;
         let method = request.method().clone();
+        // Only an Extended CONNECT can be declared to carry datagrams, by its 2xx response.
+        let extended_connect =
+            method == Method::CONNECT && request.extensions().contains::<Protocol>();
+        if !extended_connect && let Some(datagrams) = &self.reader.datagrams {
+            datagrams.decide(false);
+            if datagrams.violated() {
+                return Err(self.reader.reject(no_semantics()));
+            }
+        }
         let priority = request
             .headers()
             .typed_get::<Priority>()
@@ -163,7 +200,7 @@ impl RequestStream {
         if response.method == Method::CONNECT {
             let (pending, upgrade) = upgrade::pending();
             request.extensions().insert(upgrade);
-            response.connect = Some((self.reader, pending));
+            response.connect = Some((self.reader, pending, extended_connect));
             return Ok((request.map(|()| crate::body::Incoming::empty()), response));
         }
         // RFC 9114 section 4.1: discarding an otherwise valid request body
@@ -182,7 +219,7 @@ pub struct SendResponse {
     connection: rama_quic::Connection,
     origin: Uri,
     outgoing_push: Option<super::push::Lease>,
-    connect: Option<(Reader<rama_quic::RecvStream>, Pending)>,
+    connect: Option<(Reader<rama_quic::RecvStream>, Pending, bool)>,
     shared: Arc<Shared>,
     id: u64,
     writer: Writer<rama_quic::SendStream>,
@@ -354,24 +391,47 @@ impl SendResponse {
         }
         self.flush(false).await?;
         if response.status().is_success()
-            && let Some((reader, pending)) = self.connect.take()
+            && let Some((reader, pending, extended_connect)) = self.connect.take()
         {
             response
                 .headers_mut()
                 .remove(rama_http_types::header::CONTENT_LENGTH);
+            // RFC 9297 §2: the server declares datagram semantics on its response.
+            let claimed = extended_connect && response.extensions().contains::<HttpDatagrams>();
+            let datagrams = reader.datagrams.clone().and_then(|registration| {
+                registration.decide(claimed);
+                let send = reader.abort.clone().filter(|_| claimed)?;
+                Some(Association::new(registration, send))
+            });
+            if reader
+                .datagrams
+                .as_ref()
+                .is_some_and(|datagrams| datagrams.violated())
+            {
+                return Err(no_semantics());
+            }
             let bytes = headers::encode_response(&self.shared, self.id, &response)?;
             self.writer.queue(FrameType::HEADERS, bytes)?;
             self.flush(false).await?;
+            let datagrams = datagrams.map(|association| (association, self.connection.clone()));
             pending.fulfill(super::upgrade::new(
                 reader,
                 self.writer,
                 self.priority_lease.permit.clone(),
                 Some(self.priority_lease),
+                datagrams,
+                extended_connect,
             ));
             return Ok(());
         }
-        if let Some((mut reader, _pending)) = self.connect.take() {
+        if let Some((mut reader, _pending, _)) = self.connect.take() {
             reader.cancel_code = Code::H3_NO_ERROR;
+            if let Some(datagrams) = &reader.datagrams {
+                datagrams.refuse();
+                if datagrams.violated() {
+                    return Err(no_semantics());
+                }
+            }
         }
         let bodyless = self.method == Method::HEAD
             || response.status() == StatusCode::NOT_MODIFIED
@@ -389,9 +449,17 @@ impl SendResponse {
             return Ok(());
         }
         let remaining = headers::content_length(response.headers())?;
+        let allowed_trailers = response.extensions().get_arc::<ForbiddenTrailers>();
         let (_, response_body) = response.into_parts();
         let shared = self.shared.clone();
-        let result = body::send(self.writer, response_body, self.shared, self.id, remaining);
+        let result = body::send(
+            self.writer,
+            response_body,
+            self.shared,
+            self.id,
+            remaining,
+            allowed_trailers,
+        );
         if let Some(mut push) = self.outgoing_push {
             tokio::select! {
                 error = shared.push_cancelled(push.id()) => Err(error),
@@ -401,4 +469,13 @@ impl SendResponse {
             result.await
         }
     }
+}
+
+/// The driver aborted a request that received datagrams without semantics (RFC 9297 §2).
+fn no_semantics() -> Error {
+    Error::stream(
+        Code::H3_DATAGRAM_ERROR,
+        "datagram for a request without datagram semantics",
+    )
+    .remote()
 }

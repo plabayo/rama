@@ -15,6 +15,7 @@ use rama_core::{
         Stream, StreamExt as _,
         stream::{BoxStream, FuturesUnordered},
     },
+    telemetry::tracing,
 };
 use rama_macros::Extension;
 
@@ -141,12 +142,25 @@ where
 
         match event {
             Event::Candidate(Some(Ok(addr))) => {
+                tracing::trace!(%addr, "race connect: dial candidate");
                 in_flight.push(async move { (addr, dial(addr).await) });
             }
-            Event::Candidate(Some(Err(err))) => last_err = Some(err),
-            Event::Candidate(None) => candidates_done = true,
-            Event::Dialed(Some((addr, Ok(conn)))) => return Ok((addr, conn)),
-            Event::Dialed(Some((_addr, Err(err)))) => last_err = Some(err),
+            Event::Candidate(Some(Err(err))) => {
+                tracing::debug!(error = %err, "race connect: candidate failed");
+                last_err = Some(err);
+            }
+            Event::Candidate(None) => {
+                tracing::trace!(in_flight = in_flight.len(), "race connect: candidates done");
+                candidates_done = true;
+            }
+            Event::Dialed(Some((addr, Ok(conn)))) => {
+                tracing::trace!(%addr, "race connect: connected");
+                return Ok((addr, conn));
+            }
+            Event::Dialed(Some((addr, Err(err)))) => {
+                tracing::debug!(%addr, error = %err, "race connect: dial failed");
+                last_err = Some(err);
+            }
             Event::Dialed(None) => {}
         }
     }

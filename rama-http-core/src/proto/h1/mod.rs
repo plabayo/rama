@@ -115,3 +115,69 @@ impl Wants {
         (self.0 & other.0) == other.0
     }
 }
+
+#[cfg(test)]
+pub(crate) mod test_util {
+    use super::{
+        ClientTransaction, Encode, EncodeHead, Http1Transaction, ParseContext, ParseResult,
+        ServerTransaction,
+    };
+    use crate::proto::RequestLine;
+    use rama_core::{bytes::BytesMut, extensions::Extensions};
+    use rama_http_types::{HeaderMap, Method, Version};
+    use rama_net::uri::Uri;
+
+    fn parse(raw: &str) -> ParseResult<RequestLine> {
+        ServerTransaction::parse(
+            &mut BytesMut::from(raw),
+            ParseContext {
+                req_method: &mut None,
+                h1_parser_config: Default::default(),
+                h1_max_headers: None,
+                h09_responses: false,
+                on_informational: &mut None,
+                prepared_extensions: &mut Some(Extensions::default()),
+            },
+        )
+    }
+
+    /// The target and headers an HTTP/1 server receives for `raw`.
+    pub(crate) fn receive(raw: &str) -> (Uri, HeaderMap) {
+        let head = parse(raw).unwrap().unwrap().head;
+        (head.subject.1, head.headers)
+    }
+
+    /// Whether an HTTP/1 server refuses `raw` as malformed.
+    pub(crate) fn refuses(raw: &str) -> bool {
+        parse(raw).is_err()
+    }
+
+    /// The request head an HTTP/1 client writes, or `None` when it refuses to.
+    pub(crate) fn send(method: Method, uri: Uri) -> Option<String> {
+        send_with(method, uri, HeaderMap::new())
+    }
+
+    /// [`send`] with the request's own header fields.
+    pub(crate) fn send_with(method: Method, uri: Uri, headers: HeaderMap) -> Option<String> {
+        let mut extensions = Extensions::default();
+        let mut dst = Vec::new();
+        ClientTransaction::encode(
+            Encode {
+                head: EncodeHead {
+                    version: Version::HTTP_11,
+                    subject: RequestLine(method, uri),
+                    headers,
+                    extensions: &mut extensions,
+                },
+                body: None,
+                keep_alive: true,
+                req_method: &mut None,
+                title_case_headers: false,
+                date_header: false,
+            },
+            &mut dst,
+        )
+        .ok()?;
+        String::from_utf8(dst).ok()
+    }
+}

@@ -2,6 +2,7 @@
 
 use super::parse_graceful;
 use crate::uri::PathRef;
+use std::assert_matches;
 
 /// Collect segments as raw `&str` (no percent-decoding) for assertion.
 fn raw_segments(uri_str: &str) -> Vec<String> {
@@ -180,14 +181,14 @@ fn decoded_no_percent_borrows() {
     // (no allocation). Verify by checking the variant.
     let u = parse_graceful("/foo/bar").unwrap();
     let segs: Vec<_> = u.path().unwrap().segments().collect();
-    assert!(matches!(
+    assert_matches!(
         segs[0].as_decoded_str(),
-        crate::std::borrow::Cow::Borrowed(_)
-    ));
-    assert!(matches!(
+        crate::std::borrow::Cow::Borrowed(_),
+    );
+    assert_matches!(
         segs[1].as_decoded_str(),
-        crate::std::borrow::Cow::Borrowed(_)
-    ));
+        crate::std::borrow::Cow::Borrowed(_),
+    );
 }
 
 #[test]
@@ -196,10 +197,7 @@ fn decoded_with_percent_owns() {
     // from the input bytes).
     let u = parse_graceful("/hello%20world").unwrap();
     let seg = u.path().unwrap().segments().next().unwrap();
-    assert!(matches!(
-        seg.as_decoded_str(),
-        crate::std::borrow::Cow::Owned(_)
-    ));
+    assert_matches!(seg.as_decoded_str(), crate::std::borrow::Cow::Owned(_));
 }
 
 #[test]

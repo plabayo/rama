@@ -8,7 +8,7 @@ use rama_core::{
 use rama_http::{
     Method, Request, Version,
     headers::{self, HeaderMapExt},
-    proto::h2::ext::Protocol,
+    proto::ext::Protocol,
     request::HttpRequestParts,
 };
 
@@ -79,7 +79,7 @@ pub fn is_http_req_websocket_handshake(req: &impl HttpRequestParts) -> bool {
                 return false;
             }
         }
-        version @ Version::HTTP_2 => {
+        version @ (Version::HTTP_2 | Version::HTTP_3) => {
             match req.method() {
                 &Method::CONNECT => (),
                 method => {
@@ -160,6 +160,7 @@ mod tests {
                     .version(match $version {
                         "HTTP/1.1" => Version::HTTP_11,
                         "HTTP/2" => Version::HTTP_2,
+                        "HTTP/3" => Version::HTTP_3,
                         _ => unreachable!(),
                     })
                     .method(match $method {
@@ -256,6 +257,40 @@ mod tests {
         assert_websocket_no_match(
             &request! {
                 "GET" "HTTP/2" "/"
+                w/ [
+                    Protocol::from_static("websocket"),
+                ]
+            },
+            &matcher,
+        );
+    }
+
+    #[test]
+    fn test_websocket_match_default_http_3() {
+        let matcher = WebSocketMatcher::default();
+
+        assert_websocket_no_match(
+            &request! {
+                "GET" "HTTP/3" "/"
+                "Connection": "upgrade"
+                "Upgrade": "websocket"
+                "Sec-WebSocket-Version": "13"
+                "Sec-WebSocket-Key": "foobar"
+            },
+            &matcher,
+        );
+        assert_websocket_match(
+            &request! {
+                "CONNECT" "HTTP/3" "/"
+                w/ [
+                    Protocol::from_static("websocket"),
+                ]
+            },
+            &matcher,
+        );
+        assert_websocket_no_match(
+            &request! {
+                "GET" "HTTP/3" "/"
                 w/ [
                     Protocol::from_static("websocket"),
                 ]

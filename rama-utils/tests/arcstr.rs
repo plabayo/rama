@@ -6,6 +6,7 @@
 
 use ahash::{HashMap, HashMapExt as _};
 use rama_utils::str::arcstr::{ArcStr, arcstr};
+use std::assert_matches;
 
 #[test]
 fn test_various_partial_eq() {
@@ -295,19 +296,19 @@ fn test_froms_more() {
     assert_eq!(cow.as_deref(), Some("asdf"));
 
     let cow: Option<Cow<'_, str>> = Some(Cow::from(arc));
-    assert!(matches!(cow, Some(Cow::Owned(_))));
+    assert_matches!(cow, Some(Cow::Owned(_)));
     assert_eq!(cow.as_deref(), Some("asdf"));
 
     let st = { arcstr!("static should borrow") };
     {
         let cow: Option<Cow<'_, str>> = Some(Cow::from(st.clone()));
-        assert!(matches!(cow, Some(Cow::Borrowed(_))));
+        assert_matches!(cow, Some(Cow::Borrowed(_)));
         assert_eq!(cow.as_deref(), Some("static should borrow"));
     }
     // works with any lifetime
     {
         let cow: Option<Cow<'static, str>> = Some(Cow::from(st.clone()));
-        assert!(matches!(cow, Some(Cow::Borrowed(_))));
+        assert_matches!(cow, Some(Cow::Borrowed(_)));
         assert_eq!(cow.as_deref(), Some("static should borrow"));
     }
 

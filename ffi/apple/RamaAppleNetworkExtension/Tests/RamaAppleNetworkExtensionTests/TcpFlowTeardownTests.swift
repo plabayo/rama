@@ -91,6 +91,98 @@ final class TcpFlowTeardownTests: XCTestCase {
             fx.conn.cancelCount, 1, "subsequent teardowns must not re-cancel the connection")
     }
 
+    /// An abnormal end resets the egress (a TCP RST) as the Rust bridge reflects it; an
+    /// orderly one closes it gracefully.
+    func testOnlyAnAbnormalEndResetsTheEgress() {
+        let reset = NSError(domain: NSPOSIXErrorDomain, code: Int(ECONNRESET))
+        let cases: [(String, (TcpFlowContext) -> Void, Int)] = [
+            ("drained with error", { $0.applyDrainedClose(wasOpened: true, error: reset) }, 1),
+            ("writer terminal", { $0.applyWriterTerminal(reset) }, 1),
+            ("read hard error", { $0.applyReadHardError(reset) }, 1),
+            ("drained clean", { $0.applyDrainedClose(wasOpened: true) }, 0),
+            ("drained unopened", { $0.applyDrainedClose(wasOpened: false) }, 0),
+            ("fully drained", { $0.applyFullyDrainedClose() }, 0),
+            ("fully drained with error", { $0.applyFullyDrainedClose(error: reset) }, 1),
+        ]
+        for (name, close, forced) in cases {
+            let fx = Fixture()
+            close(fx.ctx)
+            XCTAssertEqual(fx.conn.cancelCount, 1, name)
+            XCTAssertEqual(fx.conn.forceCancelCount, forced, name)
+            XCTAssertNil(fx.ctx.connection, name)
+        }
+    }
+
+    private final class CountingEgressSink: NwEgressBytesSink, @unchecked Sendable {
+        let errors = TestValue(0)
+        func onEgressBytes(_ data: Data) -> RamaTcpDeliverStatusBridge { .accepted }
+        func onEgressEof() {}
+        func onEgressError() { errors.update { $0 += 1 } }
+    }
+
+    func testResetEgressDropsItsTailAndLeavesTheClientToDrain() {
+        let fx = Fixture()
+        let queue = DispatchQueue(label: "rama.test.reset-egress")
+        let terminals = TestValue(0)
+        let egressWriter = NwTcpConnectionWritePump(
+            connection: fx.conn,
+            queue: queue,
+            onDrained: {},
+            onTerminal: { _ in terminals.update { $0 += 1 } })
+        let sink = CountingEgressSink()
+        let ctx = fx.ctx
+        let egressReader = NwTcpConnectionReadPump(
+            connection: fx.conn,
+            session: sink,
+            queue: queue,
+            eofGraceDeadline: .milliseconds(10),
+            onReadError: { [weak ctx] error in ctx?.egressReadError = error })
+        fx.ctx.egressWritePump = egressWriter
+        fx.ctx.egressReadPump = egressReader
+        fx.conn.transition(to: .ready)
+        egressReader.start()
+        egressWriter.enqueue(Data([0x01]))
+        egressWriter.enqueue(Data([0x02]))
+        queue.sync {}
+        XCTAssertEqual(fx.conn.pendingReceiveCount, 1)
+        XCTAssertEqual(fx.conn.sentChunks.count, 1, "one send in flight, one queued")
+
+        fx.ctx.resetEgress()
+        queue.sync {}
+        XCTAssertEqual(fx.conn.forceCancelCount, 1)
+        XCTAssertTrue(fx.ctx.egressReset)
+        XCTAssertFalse(fx.ctx.isDone, "the client half drains on")
+        XCTAssertEqual(fx.flow.closeReadCallCount + fx.flow.closeWriteCallCount, 0)
+
+        // The cancelled connection fails what is in flight: no terminal error, no Rust edge.
+        fx.conn.completePendingSend(error: .posix(.ECANCELED))
+        _ = fx.conn.completePendingReceive(isComplete: false, error: .posix(.ECANCELED))
+        queue.sync {}
+        XCTAssertEqual(fx.conn.sentChunks.count, 1, "neither the queued tail nor a FIN")
+        XCTAssertEqual(terminals.get(), 0)
+        XCTAssertNil(fx.ctx.egressReadError, "the reset must not mask Rust's error")
+        XCTAssertEqual(sink.errors.get(), 0)
+        XCTAssertEqual(egressWriter.enqueue(Data([0x03])), .closed)
+
+        fx.ctx.applyDrainedClose(
+            wasOpened: true, error: NSError(domain: NSPOSIXErrorDomain, code: Int(ECONNRESET)))
+        XCTAssertEqual(fx.conn.cancelCount, 1, "the reset egress is not cancelled again")
+        XCTAssertEqual(fx.flow.closeReadCallCount, 1)
+        XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
+    }
+
+    func testFullyDrainedCloseCarriesALateAbnormalEndToTheClientRead() {
+        for error in [nil, NSError(domain: NSPOSIXErrorDomain, code: Int(ECONNRESET))] {
+            let fx = Fixture()
+            fx.ctx.applyClientWriteHalfClose()
+            fx.ctx.applyFullyDrainedClose(error: error)
+            XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
+            XCTAssertNil(fx.flow.lastCloseWriteError, "the clean half-close stays clean")
+            XCTAssertEqual(fx.flow.closeReadCallCount, 1)
+            XCTAssertEqual((fx.flow.lastCloseReadError as NSError?)?.code, error?.code)
+        }
+    }
+
     func testWriterTerminalSynchronouslyClosesBothWriterPumps() {
         let fx = Fixture()
         let queue = DispatchQueue(label: "rama.test.writer-terminal")

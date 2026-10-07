@@ -1,10 +1,19 @@
+use std::{
+    collections::VecDeque,
+    sync::{Arc, LazyLock},
+};
+
 use parking_lot::Mutex;
+use rama_core::error::{ArcError, BoxError};
 use rama_crypto::dep::boring::{
     error::ErrorStack,
     ex_data::Index,
-    ssl::{Ssl, SslContext, SslSession, SslSessionCacheMode, SslVersion},
+    ssl::{Ssl, SslAcceptorBuilder, SslContext, SslSession, SslSessionCacheMode, SslVersion},
 };
 use rama_net::address::Host;
+use rama_quic_proto::{
+    ConnectionId, Side, TransportError, Version, transport_parameters::TransportParameters,
+};
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions,
     alpn::{AlpnError, AlpnPolicy},
@@ -13,11 +22,7 @@ use rama_tls::{
 };
 use rama_tls_boring::{
     client::{BoringTlsConnectorConfig, TlsConnectorContext, TlsConnectorContextBuilder},
-    server::{BoringTlsAcceptorConfig, BoringTlsAuth, TlsAcceptorData},
-};
-use std::{
-    collections::VecDeque,
-    sync::{Arc, LazyLock},
+    server::{BoringTlsAcceptorConfig, IssuedCertificate, TlsAcceptorData},
 };
 
 use super::{
@@ -25,14 +30,11 @@ use super::{
     session::{TlsSession, crypto_error},
 };
 use crate::proto::{
-    ConnectError,
+    ConnectError, ServerCrypto,
     crypto::{
         self,
         config::{TlsConfigError, TlsOptions},
     },
-};
-use rama_quic_proto::{
-    ConnectionId, Side, TransportError, Version, transport_parameters::TransportParameters,
 };
 
 struct Ticket {
@@ -230,62 +232,118 @@ impl QuicClientConfig {
 }
 
 pub(crate) struct QuicServerConfig {
+    /// The certificate issued for this connection, installed on its session; without one the
+    /// contexts carry the identity.
+    issued: Option<IssuedCertificate>,
     /// One context per standardized version: BoringSSL resumes a session only under the
     /// session-ID context that issued it, which scopes tickets by version (RFC 9369 §5).
     contexts: [SslContext; 2],
     early_data: bool,
 }
 
-impl QuicServerConfig {
-    fn context(&self, version: Version) -> &SslContext {
-        match version {
-            Version::V2 => &self.contexts[1],
-            _ => &self.contexts[0],
-        }
-    }
+/// Issues a certificate per ClientHello, installed on the session of a connection that shares
+/// the contexts, and with them the session tickets they issue.
+pub(crate) struct QuicServerCertIssuer {
+    data: TlsAcceptorData,
+    contexts: [SslContext; 2],
+    early_data: bool,
+}
+
+/// The server TLS configured by `config`: fixed, or resolved per ClientHello when it issues
+/// certificates.
+pub(crate) fn server_config_from_rama(
+    config: &TlsServerConfig,
+    options: TlsOptions,
+) -> Result<ServerCrypto, TlsConfigError> {
+    let data = acceptor_data(config, options)?;
+    Ok(if data.issues_certificates() {
+        ServerCrypto::Resolver(Arc::new(QuicServerCertIssuer {
+            contexts: contexts(|| data.acceptor_builder_without_identity())?,
+            data,
+            early_data: options.early_data,
+        }))
+    } else {
+        ServerCrypto::Fixed(Arc::new(QuicServerConfig::fixed(&data, options)?))
+    })
+}
+
+fn acceptor_data(
+    config: &TlsServerConfig,
+    options: TlsOptions,
+) -> Result<TlsAcceptorData, TlsConfigError> {
+    let pieces = BoringTlsAcceptorConfig::from_extensions(config.as_extensions());
+    validate_versions(pieces.versions)?;
+    validate_alpn(pieces.alpn, options)?;
+    Ok(TlsAcceptorData::try_from(pieces)?)
 }
 
 impl QuicServerConfig {
+    /// A fixed identity; [`server_config_from_rama`] also takes certificate issuers.
+    #[cfg(test)]
     pub(crate) fn from_rama(
         config: &TlsServerConfig,
         options: TlsOptions,
     ) -> Result<Self, TlsConfigError> {
-        let pieces = BoringTlsAcceptorConfig::from_extensions(config.as_extensions());
-        validate_versions(pieces.versions)?;
-        validate_alpn(pieces.alpn, options)?;
-        if matches!(pieces.auth, Some(BoringTlsAuth::CertIssuer(_))) {
+        let data = acceptor_data(config, options)?;
+        if data.issues_certificates() {
             return Err(TlsConfigError::UnsupportedDynamicConfig);
         }
-        let data = TlsAcceptorData::try_from(pieces)?;
-        let context = |version: Version| -> Result<SslContext, TlsConfigError> {
-            let mut builder = data.clone().into_static_acceptor_builder()?;
-            let invalid = |error: ErrorStack| TlsConfigError::InvalidConfiguration(error.into());
-            builder
-                .set_min_proto_version(Some(SslVersion::TLS1_3))
-                .map_err(invalid)?;
-            builder
-                .set_max_proto_version(Some(SslVersion::TLS1_3))
-                .map_err(invalid)?;
-            builder
-                .set_session_id_context(&version.to_be_bytes())
-                .map_err(invalid)?;
-            Ok(builder.build().into_context())
-        };
+        Self::fixed(&data, options)
+    }
+
+    fn fixed(data: &TlsAcceptorData, options: TlsOptions) -> Result<Self, TlsConfigError> {
         Ok(Self {
-            contexts: [context(Version::V1)?, context(Version::V2)?],
+            issued: None,
+            contexts: contexts(|| data.clone().into_static_acceptor_builder())?,
             early_data: options.early_data,
         })
     }
 }
 
-impl crypto::ServerConfig for QuicServerConfig {
+fn contexts(
+    builder: impl Fn() -> Result<SslAcceptorBuilder, BoxError>,
+) -> Result<[SslContext; 2], TlsConfigError> {
+    let context = |version: Version| -> Result<SslContext, TlsConfigError> {
+        let mut builder = builder()?;
+        let invalid = |error: ErrorStack| TlsConfigError::InvalidConfiguration(error.into());
+        builder
+            .set_min_proto_version(Some(SslVersion::TLS1_3))
+            .map_err(invalid)?;
+        builder
+            .set_max_proto_version(Some(SslVersion::TLS1_3))
+            .map_err(invalid)?;
+        builder
+            .set_session_id_context(&version.to_be_bytes())
+            .map_err(invalid)?;
+        Ok(builder.build().into_context())
+    };
+    Ok([context(Version::V1)?, context(Version::V2)?])
+}
+
+fn server_initial_keys(
+    version: Version,
+    cid: &ConnectionId,
+) -> Result<crypto::Keys, crypto::InitialKeysError> {
+    let wire = packet::wire(version).ok_or(crypto::InitialKeysError::UnsupportedVersion)?;
+    packet::initial_keys(wire, cid, Side::Server).map_err(crypto::InitialKeysError::Crypto)
+}
+
+fn retry_tag(
+    version: Version,
+    cid: &ConnectionId,
+    packet: &[u8],
+) -> Result<[u8; 16], crypto::CryptoError> {
+    let wire = packet::wire(version).ok_or(crypto::CryptoError::new())?;
+    packet::retry_tag(wire, cid, packet).map_err(|_error| crypto::CryptoError::new())
+}
+
+impl crypto::InitialServerConfig for QuicServerConfig {
     fn initial_keys(
         &self,
         version: Version,
         cid: &ConnectionId,
     ) -> Result<crypto::Keys, crypto::InitialKeysError> {
-        let wire = packet::wire(version).ok_or(crypto::InitialKeysError::UnsupportedVersion)?;
-        packet::initial_keys(wire, cid, Side::Server).map_err(crypto::InitialKeysError::Crypto)
+        server_initial_keys(version, cid)
     }
     fn retry_tag(
         &self,
@@ -293,9 +351,11 @@ impl crypto::ServerConfig for QuicServerConfig {
         cid: &ConnectionId,
         packet: &[u8],
     ) -> Result<[u8; 16], crypto::CryptoError> {
-        let wire = packet::wire(version).ok_or(crypto::CryptoError::new())?;
-        packet::retry_tag(wire, cid, packet).map_err(|_error| crypto::CryptoError::new())
+        retry_tag(version, cid, packet)
     }
+}
+
+impl crypto::ServerConfig for QuicServerConfig {
     fn start_session(
         self: Arc<Self>,
         version: Version,
@@ -314,8 +374,61 @@ impl crypto::ServerConfig for QuicServerConfig {
     ) -> Result<Box<dyn crypto::Session>, TransportError> {
         self.start_with(original, negotiated, params)
     }
-    fn supports_version_switch(&self) -> bool {
-        true
+}
+
+impl crypto::InitialServerConfig for QuicServerCertIssuer {
+    fn initial_keys(
+        &self,
+        version: Version,
+        cid: &ConnectionId,
+    ) -> Result<crypto::Keys, crypto::InitialKeysError> {
+        server_initial_keys(version, cid)
+    }
+    fn retry_tag(
+        &self,
+        version: Version,
+        cid: &ConnectionId,
+        packet: &[u8],
+    ) -> Result<[u8; 16], crypto::CryptoError> {
+        retry_tag(version, cid, packet)
+    }
+}
+
+impl crypto::ServerConfigResolver for QuicServerCertIssuer {
+    fn resolve(
+        self: Arc<Self>,
+        client_hello: crypto::ClientHelloMessage,
+    ) -> crypto::ServerConfigLookup {
+        Box::pin(async move {
+            if let Some(certificate) = self
+                .data
+                .reusable_certificate(client_hello.client_hello())
+                .await
+            {
+                return Ok(crypto::ServerConfigResolution::Ready(
+                    self.config_with(certificate),
+                ));
+            }
+            Ok(crypto::ServerConfigResolution::Pending(Box::pin(
+                async move {
+                    let certificate = self
+                        .data
+                        .issue_certificate(client_hello.client_hello())
+                        .await?;
+                    Ok(self.config_with(certificate))
+                },
+            )))
+        })
+    }
+}
+
+impl QuicServerCertIssuer {
+    fn config_with(&self, certificate: IssuedCertificate) -> Arc<dyn crypto::ServerConfig> {
+        Arc::new(QuicServerConfig {
+            issued: Some(certificate),
+            contexts: self.contexts.clone(),
+            early_data: self.early_data,
+        })
     }
 }
 
@@ -329,7 +442,17 @@ impl QuicServerConfig {
         let unsupported = || TransportError::INTERNAL_ERROR("unsupported QUIC version");
         let wire = packet::wire(negotiated).ok_or_else(unsupported)?;
         let early_wire = packet::wire(original).ok_or_else(unsupported)?;
-        let ssl = Ssl::new(self.context(negotiated)).map_err(|error| crypto_error(error.into()))?;
+        let context = match negotiated {
+            Version::V2 => &self.contexts[1],
+            _ => &self.contexts[0],
+        };
+        let mut ssl = Ssl::new(context).map_err(|error| crypto_error(error.into()))?;
+        if let Some(certificate) = &self.issued {
+            certificate.install(&mut ssl).map_err(|error| {
+                TransportError::INTERNAL_ERROR("install the issued certificate")
+                    .with_cause(ArcError::from_box_error(error))
+            })?;
+        }
         Ok(Box::new(TlsSession::new(
             ssl,
             Side::Server,
@@ -345,8 +468,9 @@ impl QuicServerConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rama_net::tls::ApplicationProtocol;
+
+    use super::*;
 
     #[test]
     fn repeated_client_configs_reuse_the_process_ticket_slot() {

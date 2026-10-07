@@ -19,7 +19,10 @@ use std::{
 };
 
 use parking_lot::Mutex;
-use rama_core::bytes::{Buf, Bytes};
+use rama_core::{
+    bytes::{Buf, Bytes},
+    io::AbortIo,
+};
 use rama_net::proxy::BridgeCloseReason;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -153,9 +156,33 @@ impl FfiBridgeStream {
 
     /// Record this direction's and the whole bridge's first terminal reason.
     fn record_reason(&self, reason: BridgeCloseReason) {
-        self.signals.record_terminal_error(reason);
-        self.flow_close_reason.lock().get_or_insert(reason);
-        self.close_reason.lock().get_or_insert(reason);
+        record_close_reason(
+            &self.signals,
+            &self.close_reason,
+            &self.flow_close_reason,
+            reason,
+        );
+    }
+
+    /// The [`AbortIo`] this stream publishes: it records [`BridgeCloseReason::Aborted`]
+    /// (`ECONNRESET`, unless the flow ended abnormally before), and marks an egress as
+    /// aborted, read by the FFI peer at this stream's close callback.
+    pub(crate) fn abort_io(&self) -> AbortIo {
+        let signals = self.signals.clone();
+        let close_reason = self.close_reason.clone();
+        let flow_close_reason = self.flow_close_reason.clone();
+        let egress = matches!(self.direction, BridgeDirection::Egress);
+        AbortIo::new(move || {
+            if egress {
+                signals.record_egress_abort();
+            }
+            record_close_reason(
+                &signals,
+                &close_reason,
+                &flow_close_reason,
+                BridgeCloseReason::Aborted,
+            );
+        })
     }
 
     fn read_eof_reason(&self) -> BridgeCloseReason {
@@ -183,6 +210,17 @@ impl FfiBridgeStream {
         self.read_failed = Some(flag);
         self
     }
+}
+
+fn record_close_reason(
+    signals: &TcpPerFlowSignals,
+    close_reason: &CloseReasonCell,
+    flow_close_reason: &CloseReasonCell,
+    reason: BridgeCloseReason,
+) {
+    signals.record_terminal_error(reason);
+    flow_close_reason.lock().get_or_insert(reason);
+    close_reason.lock().get_or_insert(reason);
 }
 
 impl AsyncRead for FfiBridgeStream {
@@ -352,6 +390,7 @@ impl Drop for FfiBridgeStream {
 mod tests {
     use super::*;
     use crate::tproxy::engine::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT;
+    use std::assert_matches;
     use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize};
     use std::task::{Context, Wake, Waker};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -445,10 +484,10 @@ mod tests {
             assert_eq!(s.read(&mut [0; 1]).await.unwrap(), 0);
             assert_eq!(signals.terminal_error_code(), 0);
             let first_reason = *s.close_reason.lock();
-            assert!(matches!(
+            assert_matches!(
                 first_reason,
-                Some(BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight)
-            ));
+                Some(BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight),
+            );
             let (_w, waker) = count_waker();
             let mut cx = Context::from_waker(&waker);
             {
@@ -476,6 +515,48 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn abort_is_queryable_inside_close_callback_after_clean_end() {
+        for direction in [BridgeDirection::Ingress, BridgeDirection::Egress] {
+            for abort in [false, true] {
+                let (tx, rx) = mpsc::channel::<Bytes>(1);
+                drop(tx);
+                let signals = Arc::new(TcpPerFlowSignals::new());
+                let callback_codes = Arc::new(Mutex::new(Vec::new()));
+                let on_closed: ClosedSink = {
+                    let signals = signals.clone();
+                    let callback_codes = callback_codes.clone();
+                    Arc::new(move || callback_codes.lock().push(signals.terminal_error_code()))
+                };
+                let mut s = stream(
+                    rx,
+                    accept_sink(),
+                    noop(),
+                    on_closed,
+                    direction,
+                    DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT,
+                    signals.clone(),
+                    Arc::new(TcpFlowByteCounters::default()),
+                );
+                // An orderly read end does not mask a later abort.
+                assert_eq!(s.read(&mut [0; 1]).await.unwrap(), 0);
+                if abort {
+                    let abort_io = s.abort_io();
+                    abort_io.abort();
+                    abort_io.abort();
+                }
+                drop(s);
+                let expected = if abort { libc::ECONNRESET } else { 0 };
+                assert_eq!(
+                    *callback_codes.lock(),
+                    vec![expected],
+                    "{direction:?} {abort}"
+                );
+                assert_eq!(signals.terminal_error_code(), expected);
+            }
+        }
+    }
+
     #[test]
     fn terminal_error_keeps_first_abnormal_reason_across_halves() {
         use BridgeCloseReason::*;
@@ -483,8 +564,10 @@ mod tests {
             (PausedTimeout, libc::ETIMEDOUT),
             (ReadErrorRight, libc::ECONNRESET),
             (WriteErrorLeft, libc::EPIPE),
+            (WriteErrorRight, libc::ECONNRESET),
             (Shutdown, libc::ECANCELED),
             (ServicePanic, libc::EIO),
+            (Aborted, libc::ECONNRESET),
         ] {
             let signals = TcpPerFlowSignals::new();
             signals.record_terminal_error(PeerEofLeft);
@@ -492,7 +575,13 @@ mod tests {
             assert_eq!(signals.terminal_error_code(), 0);
             signals.record_terminal_error(reason);
             signals.record_terminal_error(PeerEofLeft);
-            signals.record_terminal_error(WriteErrorRight);
+            // A later reason of another code must not replace the first.
+            let later = if expected == libc::EPIPE {
+                PausedTimeout
+            } else {
+                WriteErrorLeft
+            };
+            signals.record_terminal_error(later);
             assert_eq!(signals.terminal_error_code(), expected);
         }
     }
@@ -679,10 +768,10 @@ mod tests {
         assert!(Pin::new(&mut s).poll_write(&mut cx, b"abcdef").is_pending());
         signals.drain(BridgeDirection::Ingress).wake();
         code.store(TcpDeliverStatus::Accepted as u8, Ordering::SeqCst);
-        assert!(matches!(
+        assert_matches!(
             Pin::new(&mut s).poll_write(&mut cx, b"abcdef"),
-            Poll::Ready(Ok(LIMIT))
-        ));
+            Poll::Ready(Ok(LIMIT)),
+        );
 
         assert_eq!(&*observed.lock(), &[b"abc".to_vec(), b"abc".to_vec()]);
     }
@@ -734,7 +823,7 @@ mod tests {
         // Capacity freed → retry is accepted.
         code.store(TcpDeliverStatus::Accepted as u8, Ordering::SeqCst);
         let p = Pin::new(&mut s).poll_write(&mut cx, b"abc");
-        assert!(matches!(p, Poll::Ready(Ok(3))));
+        assert_matches!(p, Poll::Ready(Ok(3)));
     }
 
     #[tokio::test(start_paused = true)]
@@ -888,10 +977,10 @@ mod tests {
                 assert!(Pin::new(&mut s).poll_write(&mut cx, b"body").is_pending());
                 assert_eq!(closed.load(Ordering::SeqCst), 0);
                 tokio::time::advance(Duration::from_millis(1001)).await;
-                assert!(matches!(
+                assert_matches!(
                     Pin::new(&mut s).poll_write(&mut cx, b"body"),
-                    Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::TimedOut
-                ));
+                    Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::TimedOut,
+                );
                 assert_eq!(*reason.lock(), Some(BridgeCloseReason::PausedTimeout));
                 assert_eq!(signals.terminal_error_code(), libc::ETIMEDOUT);
                 assert_eq!(closed.load(Ordering::SeqCst), 1);
@@ -1215,10 +1304,10 @@ mod tests {
         let mut cx = Context::from_waker(&waker);
         assert!(Pin::new(&mut s).poll_write(&mut cx, b"abc").is_pending());
         tokio::time::advance(Duration::from_millis(60)).await;
-        assert!(matches!(
+        assert_matches!(
             Pin::new(&mut s).poll_write(&mut cx, b"abc"),
-            Poll::Ready(Err(_))
-        ));
+            Poll::Ready(Err(_)),
+        );
         assert_eq!(*cell.lock(), Some(BridgeCloseReason::PausedTimeout));
         assert_eq!(*flow_cell.lock(), Some(BridgeCloseReason::PausedTimeout));
     }

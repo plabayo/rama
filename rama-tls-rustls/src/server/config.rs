@@ -1,11 +1,17 @@
+use std::sync::Arc;
+
+use rama_core::{
+    error::BoxError,
+    extensions::{Extension, FromExtensions},
+};
+use rama_net::tls::TlsAlpn;
+use rama_tls::{
+    TlsKeyLog, TlsSupportedVersions,
+    server::{TlsClientVerify, TlsServerAuth, TlsStoreClientCertChain},
+};
+
 use super::acceptor_data::{DynDynamicConfigProvider, DynamicConfigProvider};
 use crate::dep::rustls::ServerConfig;
-use rama_core::error::BoxError;
-use rama_core::extensions::{Extension, FromExtensions};
-use rama_net::tls::TlsAlpn;
-use rama_tls::server::{TlsClientVerify, TlsServerAuth, TlsStoreClientCertChain};
-use rama_tls::{TlsKeyLog, TlsSupportedVersions};
-use std::sync::Arc;
 
 /// Gather all config pieces support by rustls
 #[derive(FromExtensions)]
@@ -85,9 +91,19 @@ impl RustlsServerConfigExt for rama_tls::server::TlsServerConfig {
 
 /// A [`DynamicConfigProvider`] piece: resolves a full rustls config per
 /// ClientHello
-#[derive(Extension)]
+#[derive(Clone, Extension)]
 #[extension(tags(tls))]
 pub struct RustlsDynamicConfig(pub(crate) Arc<dyn DynDynamicConfigProvider + Send + Sync>);
+
+impl RustlsDynamicConfig {
+    /// Resolve the rustls [`ServerConfig`] for this ClientHello.
+    pub async fn get_config(
+        &self,
+        client_hello: crate::dep::rustls::server::ClientHello<'_>,
+    ) -> Result<Arc<ServerConfig>, BoxError> {
+        self.0.get_config(client_hello).await
+    }
+}
 
 impl std::fmt::Debug for RustlsDynamicConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

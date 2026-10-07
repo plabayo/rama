@@ -1,6 +1,7 @@
 //! `FragmentRef` / `Fragment` — borrowed/owned views of a URI fragment.
 
 use crate::std::borrow::Cow;
+use std::assert_matches;
 
 use super::parse_graceful;
 use crate::test_hash::hash;
@@ -47,16 +48,10 @@ fn decoded_view_percent_decodes_but_not_plus() {
 #[test]
 fn decoded_borrows_when_no_percent_else_owns() {
     let uri: Uri = parse_graceful("/p#plain").unwrap();
-    assert!(matches!(
-        uri.fragment().unwrap().as_decoded_str(),
-        Cow::Borrowed(_),
-    ));
+    assert_matches!(uri.fragment().unwrap().as_decoded_str(), Cow::Borrowed(_));
 
     let uri: Uri = parse_graceful("/p#has%20space").unwrap();
-    assert!(matches!(
-        uri.fragment().unwrap().as_decoded_str(),
-        Cow::Owned(_),
-    ));
+    assert_matches!(uri.fragment().unwrap().as_decoded_str(), Cow::Owned(_));
 }
 
 #[test]

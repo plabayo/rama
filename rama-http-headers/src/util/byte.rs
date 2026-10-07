@@ -4,6 +4,10 @@ const HTTP_TOKEN_BYTES: [bool; 256] =
     set_each(set_ascii_alphanum([false; 256]), b"!#$%&'*+-.^_`|~");
 
 #[inline]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a u8 index into a 256-entry table is always in bounds"
+)]
 pub(crate) const fn is_http_token_byte(byte: u8) -> bool {
     HTTP_TOKEN_BYTES[byte as usize]
 }

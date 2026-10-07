@@ -1,11 +1,9 @@
 use rama_core::{bytes::BytesMut, telemetry::tracing::debug};
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue, Method,
-    header::{
-        CONNECTION, CONTENT_LENGTH, OccupiedEntry, TE, TRAILER, TRANSFER_ENCODING, ValueIter,
-    },
+    header::{CONNECTION, CONTENT_LENGTH, OccupiedEntry, TE, TRANSFER_ENCODING, ValueIter},
 };
-use rama_utils::collections::smallvec::SmallVec;
+use rama_utils::{bytes::trim_ows, collections::smallvec::SmallVec};
 
 pub(super) type ConnectionHeaderNames = SmallVec<[HeaderName; 4]>;
 
@@ -28,25 +26,11 @@ pub(super) fn connection_header_names(headers: &HeaderMap) -> ConnectionHeaderNa
     comma_header_names(headers.get_all(CONNECTION).iter()).collect()
 }
 
-pub(super) fn trailer_header_names(headers: &HeaderMap) -> Vec<HeaderName> {
-    comma_header_names(headers.get_all(TRAILER).iter()).collect()
-}
-
 fn comma_header_names(values: ValueIter<'_, HeaderValue>) -> impl Iterator<Item = HeaderName> + '_ {
     values
         .flat_map(|value| value.as_bytes().split(|byte| *byte == b','))
         .map(trim_ows)
         .filter_map(|name| HeaderName::from_bytes(name).ok())
-}
-
-fn trim_ows(mut value: &[u8]) -> &[u8] {
-    while matches!(value.first(), Some(b' ' | b'\t')) {
-        value = &value[1..];
-    }
-    while matches!(value.last(), Some(b' ' | b'\t')) {
-        value = &value[..value.len() - 1];
-    }
-    value
 }
 
 fn connection_has(value: &HeaderValue, needle: &str) -> bool {
@@ -142,6 +126,14 @@ pub(super) fn method_has_defined_payload_semantics(method: &Method) -> bool {
         *method,
         Method::GET | Method::HEAD | Method::DELETE | Method::CONNECT
     )
+}
+
+/// A body known to be empty cannot deliver a positive (or unreadable) length, which would
+/// stall or fail the peer reading it.
+pub(super) fn drop_undeliverable_content_length(headers: &mut HeaderMap) {
+    if content_length_parse_all(headers).is_none_or(|len| len != 0) {
+        headers.remove(CONTENT_LENGTH);
+    }
 }
 
 pub(super) fn set_content_length_if_missing(headers: &mut HeaderMap, len: u64) {

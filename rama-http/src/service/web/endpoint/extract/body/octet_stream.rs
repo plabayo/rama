@@ -6,7 +6,10 @@ use crate::service::web::extract::{
 };
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use rama_core::bytes::Bytes;
-use rama_http_types::{HeaderMap, header};
+use rama_http_types::{
+    HeaderMap,
+    header::{self, content_type::parse_essence},
+};
 use rama_utils::macros::impl_deref;
 
 /// Wrapper used to extract `application/octet-stream` payloads from request bodies.
@@ -156,18 +159,11 @@ enum ContentTypeMatch {
 }
 
 fn content_type_match(headers: &HeaderMap) -> ContentTypeMatch {
-    let Some(value) = headers.get(header::CONTENT_TYPE) else {
+    if !headers.contains_key(header::CONTENT_TYPE) {
         return ContentTypeMatch::Absent;
-    };
-    let parsed = value
-        .to_str()
-        .ok()
-        .and_then(|s| s.parse::<crate::mime::Mime>().ok());
-    match parsed {
-        Some(mime)
-            if mime.type_() == crate::mime::APPLICATION
-                && mime.subtype() == crate::mime::OCTET_STREAM =>
-        {
+    }
+    match parse_essence(headers.get_all(header::CONTENT_TYPE)) {
+        Some(essence) if essence.eq_ignore_ascii_case("application/octet-stream") => {
             ContentTypeMatch::Match
         }
         _ => ContentTypeMatch::Mismatch,
@@ -205,13 +201,20 @@ mod test {
         let service = WebService::default()
             .with_post("/", async |OctetStream(_): OctetStream| StatusCode::OK);
 
-        let req = rama_http_types::Request::builder()
-            .method(rama_http_types::Method::POST)
-            .header(rama_http_types::header::CONTENT_TYPE, "text/plain")
-            .body(vec![0u8, 1, 2, 3].into())
-            .unwrap();
-        let resp = service.serve(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        // The second is `text/plain` to the CORS safelist.
+        for content_type in ["text/plain", "text/plain;,application/octet-stream"] {
+            let req = rama_http_types::Request::builder()
+                .method(rama_http_types::Method::POST)
+                .header(rama_http_types::header::CONTENT_TYPE, content_type)
+                .body(vec![0u8, 1, 2, 3].into())
+                .unwrap();
+            let resp = service.serve(req).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "{content_type}"
+            );
+        }
     }
 
     #[tokio::test]

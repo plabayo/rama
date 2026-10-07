@@ -1,8 +1,8 @@
 //! Pacing of packet transmissions.
 
-use crate::proto::{Duration, Instant};
-
 use rama_core::telemetry::tracing::warn;
+
+use crate::proto::{Duration, Instant, TIMER_GRANULARITY};
 
 /// A simple token-bucket pacer
 ///
@@ -31,6 +31,23 @@ impl Pacer {
             tokens: capacity,
             prev: now,
         }
+    }
+
+    /// Obtains a [`Pacer`] for a path starting with fresh congestion state, which may send
+    /// its whole initial congestion window as one burst (RFC 9002 §7.7).
+    ///
+    /// Before an RTT sample the derived capacity is about one datagram, so a first flight of
+    /// several datagrams, such as a ClientHello carrying a post-quantum key share, would
+    /// otherwise wait out a pacing interval or the peer's acknowledgement.
+    pub(super) fn starting(
+        smoothed_rtt: Duration,
+        initial_window: u64,
+        mtu: u16,
+        now: Instant,
+    ) -> Self {
+        let mut pacer = Self::new(smoothed_rtt, initial_window, mtu, now);
+        pacer.tokens = pacer.tokens.max(initial_window);
+        pacer
     }
 
     /// Record that a packet has been transmitted.
@@ -110,7 +127,8 @@ impl Pacer {
 
         // divisions come before multiplications to prevent overflow
         // this is the time at which the pacing window becomes empty
-        Some(now + (unscaled_delay / 5) * 4)
+        // A zero pause re-arms a due timer that spins while no time passes; the floor is ours.
+        Some(now + ((unscaled_delay / 5) * 4).max(TIMER_GRANULARITY))
     }
 }
 
@@ -209,6 +227,36 @@ mod tests {
 
         let pacer = Pacer::new(rtt, 1, mtu, now);
         assert_eq!(pacer.capacity, mtu as u64);
+        assert_eq!(pacer.tokens, pacer.capacity);
+    }
+
+    #[test]
+    fn a_fresh_path_sends_its_initial_window_unpaced() {
+        let mtu = 1200;
+        let window = 14_720;
+        let rtt = Duration::from_millis(333);
+        let now = Instant::now();
+
+        let mut pacer = Pacer::starting(rtt, window, mtu, now);
+        assert_eq!(pacer.capacity, u64::from(mtu));
+        let mut sent = 0;
+        while pacer.delay(rtt, u64::from(mtu), mtu, window, now).is_none() {
+            pacer.on_transmit(mtu);
+            sent += 1;
+        }
+        assert_eq!(sent, window / u64::from(mtu));
+
+        // Once spent, the burst is gone: the pacer refills to its derived capacity only.
+        let later = now + rtt;
+        assert!(
+            pacer
+                .delay(rtt, u64::from(mtu), mtu, window, later)
+                .is_none()
+        );
+        assert_eq!(pacer.tokens, pacer.capacity);
+
+        // An inherited, larger window bursts no more than the derived capacity.
+        let pacer = Pacer::new(rtt, window * 8, mtu, now);
         assert_eq!(pacer.tokens, pacer.capacity);
     }
 
@@ -316,5 +364,31 @@ mod tests {
             None
         );
         assert_eq!(pacer.tokens, pacer.capacity);
+    }
+
+    #[test]
+    fn delays_always_lie_ahead_of_now() {
+        // A tiny RTT against a large window: the exact pause rounds down to zero.
+        let now = Instant::now();
+        for (rtt, window) in [
+            (Duration::from_nanos(1), 10_000_000_u64),
+            (Duration::from_nanos(100), 1_000_000),
+            (Duration::from_micros(1), 4_000_000),
+        ] {
+            let mtu = 1200;
+            let mut pacer = Pacer::new(rtt, window, mtu, now);
+            while pacer.delay(rtt, u64::from(mtu), mtu, window, now).is_none() {
+                pacer.on_transmit(mtu);
+            }
+            let until = pacer
+                .delay(rtt, u64::from(mtu), mtu, window, now)
+                .expect("blocked by pacing");
+            // Never a deadline that is already due: the driver would spin without time passing.
+            assert!(
+                until >= now + TIMER_GRANULARITY,
+                "rtt={rtt:?} window={window}: {:?}",
+                until.duration_since(now)
+            );
+        }
     }
 }

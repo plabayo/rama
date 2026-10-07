@@ -457,6 +457,7 @@ fn map_asn(fields: &[&str], ip_version: IpVersion) -> Result<Option<CsvGeoRecord
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
@@ -717,7 +718,7 @@ mod tests {
             Ip2LocationLite::Country,
         )
         .unwrap_err();
-        assert!(matches!(err, CsvError::Parse { record: 2, .. }));
+        assert_matches!(err, CsvError::Parse { record: 2, .. });
 
         // ip_from > ip_to is rejected as a range error
         let err = compile_ip2location_lite(
@@ -726,9 +727,10 @@ mod tests {
             Ip2LocationLite::Country,
         )
         .unwrap_err();
-        assert!(
-            matches!(&err, CsvError::Parse { reason, .. } if reason.contains("greater than")),
-            "unexpected error: {err}"
+        assert_matches!(
+            &err,
+            CsvError::Parse { reason, .. } if reason.contains("greater than"),
+            "unexpected error: {err}",
         );
     }
 

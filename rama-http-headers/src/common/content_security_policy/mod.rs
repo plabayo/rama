@@ -323,6 +323,7 @@ impl HeaderEncode for ContentSecurityPolicy {
 mod tests {
     use super::*;
     use crate::common::{test_decode, test_encode};
+    use std::assert_matches;
 
     use rama_net::Protocol;
     use rama_net::address::Domain;
@@ -374,8 +375,9 @@ mod tests {
             ContentSecurityPolicy::empty().with("experimental-thing", SourceList::self_origin());
         assert_eq!(csp.to_string(), "experimental-thing 'self'");
         let d = csp.directives().next().unwrap();
-        assert!(
-            matches!(d.name, DirectiveName::Unknown(ref s) if s.as_ref() == "experimental-thing")
+        assert_matches!(
+            d.name,
+            DirectiveName::Unknown(ref s) if s.as_ref() == "experimental-thing",
         );
     }
 
@@ -444,6 +446,40 @@ mod tests {
         let d = parsed.directives().next().unwrap();
         assert_eq!(d.name, DirectiveName::UpgradeInsecureRequests);
         assert!(d.sources.as_slice().is_empty());
+    }
+
+    #[test]
+    fn adversarial_values_do_not_panic() {
+        for value in [
+            ";",
+            "img-src '",
+            "img-src ''",
+            "img-src 'nonce-' 'sha256-' 'sha512'",
+            "a ://",
+            "a :///",
+            "a *:*",
+            "a :",
+            "a https:",
+            "a x:99999",
+            "a x:*/",
+            "a [::1]:443",
+            "a *. .* *.* x:y:z",
+        ] {
+            let policy = test_decode::<ContentSecurityPolicy>(&[value]).unwrap();
+            for directive in policy.directives() {
+                for source in directive.sources.iter() {
+                    _ = source.to_string();
+                }
+            }
+            _ = test_encode(policy);
+        }
+        let value = HeaderValue::from_bytes("img-src é.example".as_bytes()).unwrap();
+        ContentSecurityPolicy::decode(&mut std::iter::once(&value)).unwrap_err();
+        for token in ["'é'", "'nonce-é'", "é:", "é://x", "'sha256-€", "€'"] {
+            if let Ok(source) = SourceExpression::from_str(token) {
+                _ = source.to_string();
+            }
+        }
     }
 
     #[test]

@@ -172,6 +172,7 @@ fn spawn_input_reader() -> Result<mpsc::UnboundedReceiver<std::io::Result<Event>
 }
 
 /// What the event loop must do after a key press.
+#[derive(Debug)]
 pub(super) enum Action {
     None,
     Redraw,

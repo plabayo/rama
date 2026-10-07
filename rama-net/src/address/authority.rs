@@ -761,6 +761,15 @@ impl<'a> AuthorityRef<'a> {
         crate::uri::parser::authority::parse_authority_ref_strict(bytes)
     }
 
+    /// Parse a borrowed authority with the graceful grammar of [`Uri::parse`]: as
+    /// [`parse_strict`](Self::parse_strict), but a reg-name may also hold raw UTF-8
+    /// (RFC 3987 `ireg-name`), as received authorities in the wild do.
+    ///
+    /// [`Uri::parse`]: crate::uri::Uri::parse
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, crate::uri::ParseError> {
+        crate::uri::parser::authority::parse_authority_ref_graceful(bytes)
+    }
+
     /// `pub(crate)` constructor — only [`Uri::authority`] and
     /// internal helpers should build one.
     #[must_use]
@@ -895,6 +904,7 @@ impl_serde_str!(display Authority);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[expect(clippy::needless_pass_by_value)]
     fn assert_eq(
@@ -1064,7 +1074,7 @@ mod tests {
             assert_eq(
                 s,
                 s.as_bytes().to_vec().try_into().expect(&msg),
-                expected_user_info.clone(),
+                expected_user_info,
                 expected_host,
                 expected_port,
             );
@@ -1207,7 +1217,7 @@ mod tests {
             .unwrap()
             .into_owned();
         assert_eq!(direct, from_uri);
-        assert!(matches!(direct.address.host, Host::Uninterpreted(_)));
+        assert_matches!(direct.address.host, Host::Uninterpreted(_));
     }
 
     /// Standalone bracketed IPv6 (no trailing port) parses as a typed
@@ -1215,10 +1225,11 @@ mod tests {
     #[test]
     fn authority_try_from_bracketed_ipv6_no_port_is_typed_address() {
         let auth = Authority::try_from("[::1]").unwrap();
-        assert!(
-            matches!(auth.address.host, Host::Address(IpAddr::V6(_))),
+        assert_matches!(
+            auth.address.host,
+            Host::Address(IpAddr::V6(_)),
             "expected typed IPv6 Address, got {:?}",
-            auth.address.host
+            auth.address.host,
         );
         assert_eq!(auth.address.port, OptPort::Unset);
         // Display round-trips with brackets.
@@ -1319,5 +1330,33 @@ mod tests {
             );
         }
         AuthorityRef::parse_strict(&[0xff]).unwrap_err();
+    }
+
+    #[test]
+    fn authority_ref_parse_also_accepts_raw_utf8_reg_names() {
+        let source = "user@bücher.example:8443".as_bytes();
+        AuthorityRef::parse_strict(source).unwrap_err();
+        let authority = AuthorityRef::parse(source).unwrap();
+        assert_eq!(authority.userinfo().unwrap().as_bytes(), b"user");
+        assert_eq!(authority.host().to_str(), "bücher.example");
+        assert_eq!(authority.port(), OptPort::Set(8443));
+        assert_eq!(authority.host().to_str().as_ptr(), source[5..].as_ptr());
+        assert_eq!(
+            AuthorityRef::parse(b"example.com:01344").unwrap(),
+            AuthorityRef::parse_strict(b"example.com:01344").unwrap()
+        );
+        // Only UTF-8 is added: everything else strict refuses stays refused.
+        for input in [
+            &b""[..],
+            b"user@",
+            b"host:65536",
+            b"host/path",
+            b"[::1",
+            b"exa mple.test",
+            b"bad\xffhost",
+            b"tab\thost",
+        ] {
+            AuthorityRef::parse(input).unwrap_err();
+        }
     }
 }

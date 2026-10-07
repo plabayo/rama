@@ -6,16 +6,18 @@
 //! daemon is unavailable (see [`super::systemd_resolved`]). The builder may
 //! explicitly enable or disable this path regardless of the NSS configuration.
 //!
-//! On targets with `res_nsearch` support, `A` / `AAAA` / `CNAME` / `TXT` /
-//! `SVCB` / `HTTPS` lookups are
-//! backed by the native resolver stub. `res_nsearch` (not `res_nquery`) is
-//! used so the resolver walks the `search` list from `/etc/resolv.conf` and
-//! respects `ndots`, matching the behavior of `getaddrinfo` and hickory's
-//! system resolver.
+//! With glibc, `A` / `AAAA` / `CNAME` / `TXT` / `SVCB` / `HTTPS` lookups are
+//! backed by the native resolver stub. Each name is asked with `res_nquery`
+//! while walking the `search` list from `/etc/resolv.conf` and its `ndots`
+//! as `res_nsearch` would, so every name's own answer and timing count, and
+//! a truncated answer is asked again over TCP within the lookup's timeout.
 //!
 //! On other Linux libc environments, address lookups fall back to
 //! `getaddrinfo`, while non-address lookups return stable unsupported errors
 //! when systemd-resolved is unavailable.
+//!
+//! Concurrent cache misses for one name and record kind share a single
+//! lookup, and native (blocking) lookups are bounded in number.
 
 use std::{
     ffi::CString,
@@ -27,7 +29,7 @@ use std::{
 
 use rama_core::{
     error::BoxError,
-    futures::{Stream, StreamExt as _, async_stream::stream_fn},
+    futures::{Stream, StreamExt as _, async_stream::stream_fn, future::Either, stream},
     telemetry::tracing,
 };
 use rama_net::address::Domain;
@@ -35,8 +37,11 @@ use rama_utils::{
     macros::{error::static_str_error, generate_set_and_with},
     str::arcstr::ArcStr,
 };
+use tokio::time::Instant;
 
 use super::{
+    in_flight::{self, InFlight, Outcome},
+    limit::{DnsTimeoutError, Limits, LookupLimit},
     resolver::{
         DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
         DnsTxtResolver,
@@ -74,6 +79,13 @@ const DEFAULT_CACHE_CAPACITY: u64 = 65_536;
 /// accommodating large TXT and SVCB/HTTPS RRsets such as ECH-heavy answers.
 const DEFAULT_RESPONSE_BUFFER_SIZE: usize = u16::MAX as usize;
 const NSSWITCH_CONF_PATH: &str = "/etc/nsswitch.conf";
+/// Whether libc here serves CNAME, TXT, SVCB and HTTPS lookups.
+const NATIVE_RECORD_LOOKUPS: bool = cfg!(any(
+    all(target_os = "linux", target_env = "gnu"),
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+));
 
 #[derive(Debug, Clone)]
 /// Used to build a [`LinuxDnsResolver`] instance.
@@ -83,6 +95,7 @@ pub struct LinuxDnsResolverBuilder {
     negative_cache_ttl: Duration,
     cache_capacity: u64,
     response_buffer_size: usize,
+    native_limits: Limits,
     systemd_resolved: bool,
     systemd_resolved_config: systemd_resolved::Config,
 }
@@ -95,6 +108,8 @@ impl Default for LinuxDnsResolverBuilder {
             negative_cache_ttl: DEFAULT_NEGATIVE_CACHE_TTL,
             cache_capacity: DEFAULT_CACHE_CAPACITY,
             response_buffer_size: DEFAULT_RESPONSE_BUFFER_SIZE,
+            // glibc lookups ask one name at a time, musl's `getaddrinfo` one family a call
+            native_limits: Limits::ONE_QUERY,
             // A running daemon may only be maintained as a secondary DNS
             // view. Use it automatically only when NSS actually selects
             // nss-resolve; callers can still opt in explicitly below.
@@ -111,7 +126,9 @@ impl LinuxDnsResolverBuilder {
         /// If a systemd-resolved transport attempt consumes this budget and
         /// falls back to the native backend, that fallback receives a fresh
         /// budget. During the short pre-breaker window, total lookup latency
-        /// can therefore approach twice this value.
+        /// can therefore approach twice this value. Waiting for a first daemon
+        /// probe (at most the connect timeout) counts against the
+        /// systemd-resolved attempt's budget.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
             self
@@ -143,7 +160,7 @@ impl LinuxDnsResolverBuilder {
     }
 
     generate_set_and_with! {
-        /// Maximum per-query allocation and positive response size for `res_nsearch`.
+        /// Maximum per-query allocation and positive response size for glibc lookups.
         ///
         /// The initial allocation remains modest and grows on demand. Responses
         /// exceeding this bound are errors when libc reports their required size;
@@ -154,6 +171,37 @@ impl LinuxDnsResolverBuilder {
         /// fixed DNS header are rejected before calling libc.
         pub fn response_buffer_size(mut self, response_buffer_size: usize) -> Self {
             self.response_buffer_size = response_buffer_size;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Maximum concurrent native (libc) lookups (default 384, at least 1).
+        /// Each holds a blocking-pool thread until libc returns, which a
+        /// timeout cannot cancel.
+        pub fn native_max_concurrency(mut self, max: Option<usize>) -> Self {
+            self.native_limits.max_concurrency = max;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Maximum native lookups started within one
+        /// [burst window](Self::native_burst_window) and still unanswered
+        /// (default 128, at least 1). A local stub such as systemd-resolved
+        /// drops queries that arrive faster than it reads them; an answer frees
+        /// its place at once, a query waiting on a slow upstream once the
+        /// window has passed.
+        pub fn native_burst_limit(mut self, max: Option<usize>) -> Self {
+            self.native_limits.burst_limit = max;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// The window of [`Self::native_burst_limit`] (default 20ms).
+        pub fn native_burst_window(mut self, window: Duration) -> Self {
+            self.native_limits.burst_window = window;
             self
         }
     }
@@ -235,12 +283,16 @@ impl LinuxDnsResolverBuilder {
             cache_ttl: self.cache_ttl,
             negative_cache_ttl: self.negative_cache_ttl,
             cache_capacity: self.cache_capacity,
-            response_buffer_size: self.response_buffer_size,
+            native: NativeConfig {
+                response_buffer_size: self.response_buffer_size,
+                limit: LookupLimit::new(self.native_limits),
+            },
             cache: Arc::new(cache::LinuxDnsCache::new(
                 self.cache_capacity,
                 self.cache_ttl,
                 self.negative_cache_ttl,
             )),
+            in_flight: InFlight::default(),
             systemd_resolved: self
                 .systemd_resolved
                 .then(|| Arc::new(SystemdResolved::new(self.systemd_resolved_config))),
@@ -295,9 +347,17 @@ pub struct LinuxDnsResolver {
     cache_ttl: Duration,
     negative_cache_ttl: Duration,
     cache_capacity: u64,
-    response_buffer_size: usize,
+    native: NativeConfig,
     cache: Arc<cache::LinuxDnsCache>,
+    in_flight: InFlight<cache::CacheKey>,
     systemd_resolved: Option<Arc<SystemdResolved>>,
+}
+
+/// What every native (libc) lookup of one resolver shares.
+#[derive(Debug, Clone)]
+struct NativeConfig {
+    response_buffer_size: usize,
+    limit: LookupLimit,
 }
 
 impl Default for LinuxDnsResolver {
@@ -334,7 +394,22 @@ impl LinuxDnsResolver {
 
     #[must_use]
     pub const fn response_buffer_size(&self) -> usize {
-        self.response_buffer_size
+        self.native.response_buffer_size
+    }
+
+    #[must_use]
+    pub fn native_max_concurrency(&self) -> Option<usize> {
+        self.native.limit.limits().max_concurrency
+    }
+
+    #[must_use]
+    pub fn native_burst_limit(&self) -> Option<usize> {
+        self.native.limit.limits().burst_limit
+    }
+
+    #[must_use]
+    pub fn native_burst_window(&self) -> Duration {
+        self.native.limit.limits().burst_window
     }
 
     #[must_use]
@@ -346,9 +421,44 @@ impl LinuxDnsResolver {
         /// Set the timeout for each DNS backend attempt.
         ///
         /// See [`LinuxDnsResolverBuilder::timeout`] for fallback latency
-        /// semantics.
+        /// semantics. The cache stays shared with clones; clones made before
+        /// this call no longer share lookups with this resolver.
         pub fn timeout(mut self, timeout: Duration) -> Self {
             self.timeout = timeout;
+            self.in_flight = InFlight::default();
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the maximum concurrent native (libc) lookups.
+        ///
+        /// See [`LinuxDnsResolverBuilder::native_max_concurrency`]. Clones
+        /// made before this call keep their own bounds.
+        pub fn native_max_concurrency(mut self, max: Option<usize>) -> Self {
+            self.native.limit = self.native.limit.with(|limits| limits.max_concurrency = max);
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the maximum unanswered native lookups per burst window.
+        ///
+        /// See [`LinuxDnsResolverBuilder::native_burst_limit`]. Clones made
+        /// before this call keep their own bounds.
+        pub fn native_burst_limit(mut self, max: Option<usize>) -> Self {
+            self.native.limit = self.native.limit.with(|limits| limits.burst_limit = max);
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the native burst window.
+        ///
+        /// See [`LinuxDnsResolverBuilder::native_burst_window`]. Clones made
+        /// before this call keep their own bounds.
+        pub fn native_burst_window(mut self, window: Duration) -> Self {
+            self.native.limit = self.native.limit.with(|limits| limits.burst_window = window);
             self
         }
     }
@@ -366,18 +476,17 @@ impl DnsAddressResolver for LinuxDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
-        let response_buffer_size = self.response_buffer_size;
+        let native = self.native.clone();
         let resolved = self.systemd_resolved.clone();
         lookup_cached_stream(
             domain,
             self.timeout,
             self.cache.clone(),
+            self.in_flight.clone(),
             cache::RecordKind::Ipv4,
             move |cache, domain| cache.get_ipv4(domain),
             move |cache, domain, values, ttl| cache.insert_ipv4(domain, values, ttl),
-            move |domain, timeout| {
-                lookup_ipv4_uncached_stream(resolved, domain, timeout, response_buffer_size)
-            },
+            move |domain, timeout| lookup_ipv4_uncached_stream(resolved, domain, timeout, native),
         )
     }
 
@@ -385,18 +494,17 @@ impl DnsAddressResolver for LinuxDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
-        let response_buffer_size = self.response_buffer_size;
+        let native = self.native.clone();
         let resolved = self.systemd_resolved.clone();
         lookup_cached_stream(
             domain,
             self.timeout,
             self.cache.clone(),
+            self.in_flight.clone(),
             cache::RecordKind::Ipv6,
             move |cache, domain| cache.get_ipv6(domain),
             move |cache, domain, values, ttl| cache.insert_ipv6(domain, values, ttl),
-            move |domain, timeout| {
-                lookup_ipv6_uncached_stream(resolved, domain, timeout, response_buffer_size)
-            },
+            move |domain, timeout| lookup_ipv6_uncached_stream(resolved, domain, timeout, native),
         )
     }
 }
@@ -408,19 +516,24 @@ impl DnsTxtResolver for LinuxDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
-        let response_buffer_size = self.response_buffer_size;
+        // without systemd-resolved nothing here can answer: keep the typed error
+        if !NATIVE_RECORD_LOOKUPS && self.systemd_resolved.is_none() {
+            return Either::Left(stream::once(std::future::ready(Err(
+                LinuxDnsTxtUnsupportedError.into(),
+            ))));
+        }
+        let native = self.native.clone();
         let resolved = self.systemd_resolved.clone();
-        lookup_cached_stream(
+        Either::Right(lookup_cached_stream(
             domain,
             self.timeout,
             self.cache.clone(),
+            self.in_flight.clone(),
             cache::RecordKind::Txt,
             move |cache, domain| cache.get_txt(domain),
             move |cache, domain, values, ttl| cache.insert_txt(domain, values, ttl),
-            move |domain, timeout| {
-                lookup_txt_uncached_stream(resolved, domain, timeout, response_buffer_size)
-            },
-        )
+            move |domain, timeout| lookup_txt_uncached_stream(resolved, domain, timeout, native),
+        ))
     }
 }
 
@@ -431,19 +544,24 @@ impl DnsCnameResolver for LinuxDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
-        let response_buffer_size = self.response_buffer_size;
+        // without systemd-resolved nothing here can answer: keep the typed error
+        if !NATIVE_RECORD_LOOKUPS && self.systemd_resolved.is_none() {
+            return Either::Left(stream::once(std::future::ready(Err(
+                LinuxDnsCnameUnsupportedError.into(),
+            ))));
+        }
+        let native = self.native.clone();
         let resolved = self.systemd_resolved.clone();
-        lookup_cached_stream(
+        Either::Right(lookup_cached_stream(
             domain,
             self.timeout,
             self.cache.clone(),
+            self.in_flight.clone(),
             cache::RecordKind::Cname,
             move |cache, domain| cache.get_cname(domain),
             move |cache, domain, values, ttl| cache.insert_cname(domain, values, ttl),
-            move |domain, timeout| {
-                lookup_cname_uncached_stream(resolved, domain, timeout, response_buffer_size)
-            },
-        )
+            move |domain, timeout| lookup_cname_uncached_stream(resolved, domain, timeout, native),
+        ))
     }
 }
 
@@ -454,38 +572,48 @@ impl DnsServiceBindingResolver for LinuxDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
-        let response_buffer_size = self.response_buffer_size;
+        // without systemd-resolved nothing here can answer: keep the typed error
+        if !NATIVE_RECORD_LOOKUPS && self.systemd_resolved.is_none() {
+            return Either::Left(stream::once(std::future::ready(Err(
+                LinuxDnsServiceBindingUnsupportedError.into(),
+            ))));
+        }
+        let native = self.native.clone();
         let resolved = self.systemd_resolved.clone();
-        lookup_cached_stream(
+        Either::Right(lookup_cached_stream(
             domain,
             self.timeout,
             self.cache.clone(),
+            self.in_flight.clone(),
             cache::RecordKind::Svcb,
             move |cache, domain| cache.get_svcb(domain),
             move |cache, domain, values, ttl| cache.insert_svcb(domain, values, ttl),
-            move |domain, timeout| {
-                lookup_svcb_uncached_stream(resolved, domain, timeout, response_buffer_size)
-            },
-        )
+            move |domain, timeout| lookup_svcb_uncached_stream(resolved, domain, timeout, native),
+        ))
     }
 
     fn lookup_https(
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
-        let response_buffer_size = self.response_buffer_size;
+        // without systemd-resolved nothing here can answer: keep the typed error
+        if !NATIVE_RECORD_LOOKUPS && self.systemd_resolved.is_none() {
+            return Either::Left(stream::once(std::future::ready(Err(
+                LinuxDnsServiceBindingUnsupportedError.into(),
+            ))));
+        }
+        let native = self.native.clone();
         let resolved = self.systemd_resolved.clone();
-        lookup_cached_stream(
+        Either::Right(lookup_cached_stream(
             domain,
             self.timeout,
             self.cache.clone(),
+            self.in_flight.clone(),
             cache::RecordKind::Https,
             move |cache, domain| cache.get_https(domain),
             move |cache, domain, values, ttl| cache.insert_https(domain, values, ttl),
-            move |domain, timeout| {
-                lookup_https_uncached_stream(resolved, domain, timeout, response_buffer_size)
-            },
-        )
+            move |domain, timeout| lookup_https_uncached_stream(resolved, domain, timeout, native),
+        ))
     }
 }
 
@@ -494,13 +622,14 @@ impl DnsResolver for LinuxDnsResolver {}
 /// Events emitted by uncached lookup streams.
 ///
 /// `AuthoritativeNegative` is only emitted by backends that can distinguish
-/// "the zone says there is no such record" (the `res_nsearch` and
+/// "the zone says there is no such record" (the glibc and
 /// systemd-resolved paths) from "this lookup returned nothing for unrelated
 /// reasons" (the legacy `getaddrinfo` path, where `AI_ADDRCONFIG` can
 /// suppress whole families based on local interface state). Only the former
 /// is safe to cache as a negative entry, and only with a SOA-derived TTL —
 /// systemd-resolved negatives carry none (the daemon does its own RFC 2308
 /// negative caching), so they end up uncached here.
+#[derive(Debug)]
 pub(super) enum LookupEvent<T> {
     /// `None` means the backend could not expose a TTL; `Some(0)` is a real
     /// wire TTL and must prevent the record from being retained in the cache.
@@ -513,15 +642,20 @@ pub(super) enum LookupEvent<T> {
 /// Lookup a domain and produce a stream that is cached on succes. If a
 /// cached result is available we use that instead of doing a fresh lookup.
 ///
-/// WARNING: the output of lookup() is fully buffered and not streamed!
-/// This is needed so we can cache results even if the output stream is never
-/// fully consumed (which is the case when we do things like `race_connect`).
-/// This function should only be used where this behaviour is not a problem,
-/// e.g. the result of lookup() is already buffered internally (like linux dns resolvers).
+/// Concurrent misses share one lookup, which completes (and caches) even when
+/// its callers stop waiting, e.g. the losing family of a `race_connect`.
+///
+/// WARNING: the output of lookup() is fully buffered and not streamed, so
+/// every caller of a shared lookup gets all of it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each record kind plugs its own cache accessors into one shared flow"
+)]
 fn lookup_cached_stream<T, S, G, I, F>(
     domain: Domain,
     timeout: Duration,
     cache: Arc<cache::LinuxDnsCache>,
+    in_flight: InFlight<cache::CacheKey>,
     kind: cache::RecordKind,
     get_cached: G,
     insert_cached: I,
@@ -535,6 +669,10 @@ where
     F: FnOnce(Domain, Duration) -> S + Send + 'static,
 {
     stream_fn(async move |mut yielder| {
+        if let Some(err) = in_flight::leading_dot_refusal(&domain) {
+            yielder.yield_item(Err(err)).await;
+            return;
+        }
         match get_cached(&cache, &domain) {
             Some(cache::CacheLookup::Positive(values)) => {
                 tracing::debug!(%domain, "dns::linux: cache hit (positive)");
@@ -550,78 +688,122 @@ where
             None => {}
         }
 
-        // Instead of yielding each item directly, we need to: collect all of them first,
-        // cache them, and yield them one by one. If we yield them one by one
-        // and the consumer stops polling we never reach our cache logic, so
-        // we need to make sure that we have cached everything before this generator
-        // could be suspended. Buffering a `Stream` here is fine since both
-        // `res_nsearch.rs` and `legacy.rs` actually return a single complete response,
-        // which is then just parsed and then send over a channel piece by piece. By draining it fast
-        // here, we also release our `spawn_blocking` worker, which is important since these
-        // are finite and having all of them in use becomes a single bottleneck for the entire stack.
-        let mut values = Vec::new();
-        let mut min_ttl_secs: Option<u32> = None;
-        let mut authoritative_negative: Option<u32> = None;
-        let mut lookup = std::pin::pin!(lookup(domain.clone(), timeout));
-        while let Some(item) = lookup.next().await {
-            match item {
-                Ok(LookupEvent::Record(value, ttl)) => {
-                    if let Some(ttl) = ttl {
-                        min_ttl_secs = Some(min_ttl_secs.map_or(ttl, |prev| prev.min(ttl)));
-                    }
-                    values.push(value);
-                }
-                Ok(LookupEvent::AuthoritativeNegative { soa_ttl }) => {
-                    authoritative_negative = soa_ttl;
-                }
-                Err(err) => {
-                    // Preserve values the backend already accepted, but do not
-                    // cache an incomplete lookup. Backends requiring atomic
-                    // RRsets validate the complete response before emitting.
-                    for value in values {
-                        yielder.yield_item(Ok(value)).await;
-                    }
-                    yielder.yield_item(Err(err)).await;
-                    return;
-                }
-            }
-        }
-
-        if values.is_empty() {
-            // RFC 2308 §5: negative responses MAY be cached, but only if they
-            // carry an SOA from which to derive a bounded TTL. Responses
-            // without an SOA "SHOULD NOT be cached" — there is no
-            // authoritative countdown to prevent looping. A SOA-derived TTL
-            // of zero likewise means "do not cache". We additionally require
-            // the backend to have signalled that the empty result is an
-            // authoritative DNS negative (the legacy `getaddrinfo` path
-            // cannot — see `legacy.rs`).
-            if let Some(soa_ttl_secs) = authoritative_negative {
-                cache.insert_negative(domain, kind, Duration::from_secs(u64::from(soa_ttl_secs)));
-            }
-        } else {
-            let ttl = min_ttl_secs.map(|secs| Duration::from_secs(u64::from(secs)));
-            insert_cached(&cache, domain, values.clone(), ttl);
-
-            for value in values {
-                yielder.yield_item(Ok(value)).await;
-            }
+        // a native fallback after a failed varlink attempt gets a second budget
+        let outcome = in_flight
+            .run(
+                cache::CacheKey::new(domain.clone(), kind),
+                timeout.saturating_mul(2),
+                move || {
+                    lookup_and_cache(
+                        domain,
+                        timeout,
+                        cache,
+                        kind,
+                        get_cached,
+                        insert_cached,
+                        lookup,
+                    )
+                },
+            )
+            .await;
+        let mut items = std::pin::pin!(in_flight::outcome_stream(outcome));
+        while let Some(item) = items.next().await {
+            yielder
+                .yield_item(item.map_err(|err| configured_timeout(err, timeout)))
+                .await;
         }
     })
+}
+
+/// A timeout reports the configured budget, whichever attempt ran out of it.
+fn configured_timeout(err: BoxError, timeout: Duration) -> BoxError {
+    if err.downcast_ref::<DnsTimeoutError>().is_some() {
+        DnsTimeoutError::new(timeout).into()
+    } else {
+        err
+    }
+}
+
+/// The uncached half of [`lookup_cached_stream`], shared by coalesced callers.
+async fn lookup_and_cache<T, S, G, I, F>(
+    domain: Domain,
+    timeout: Duration,
+    cache: Arc<cache::LinuxDnsCache>,
+    kind: cache::RecordKind,
+    get_cached: G,
+    insert_cached: I,
+    lookup: F,
+) -> Outcome<T>
+where
+    T: Clone,
+    S: Stream<Item = Result<LookupEvent<T>, BoxError>>,
+    G: Fn(&cache::LinuxDnsCache, &Domain) -> Option<cache::CacheLookup<T>>,
+    I: Fn(&cache::LinuxDnsCache, Domain, Vec<T>, Option<Duration>),
+    F: FnOnce(Domain, Duration) -> S,
+{
+    // a lookup that just finished may have cached this after our miss
+    match get_cached(&cache, &domain) {
+        Some(cache::CacheLookup::Positive(values)) => return Outcome::new(values.to_vec(), None),
+        Some(cache::CacheLookup::Negative) => return Outcome::new(Vec::new(), None),
+        None => {}
+    }
+
+    // the linux backends yield one complete response, so buffering is free
+    let mut values = Vec::new();
+    let mut min_ttl_secs: Option<u32> = None;
+    let mut authoritative_negative: Option<u32> = None;
+    let mut lookup = std::pin::pin!(lookup(domain.clone(), timeout));
+    while let Some(item) = lookup.next().await {
+        match item {
+            Ok(LookupEvent::Record(value, ttl)) => {
+                if let Some(ttl) = ttl {
+                    min_ttl_secs = Some(min_ttl_secs.map_or(ttl, |prev| prev.min(ttl)));
+                }
+                values.push(value);
+            }
+            Ok(LookupEvent::AuthoritativeNegative { soa_ttl }) => {
+                authoritative_negative = soa_ttl;
+            }
+            Err(err) => {
+                // Preserve values the backend already accepted, but do not
+                // cache an incomplete lookup. Backends requiring atomic
+                // RRsets validate the complete response before emitting.
+                return Outcome::new(values, Some(err));
+            }
+        }
+    }
+
+    if values.is_empty() {
+        // RFC 2308 §5: negative responses MAY be cached, but only if they
+        // carry an SOA from which to derive a bounded TTL. Responses
+        // without an SOA "SHOULD NOT be cached" — there is no
+        // authoritative countdown to prevent looping. A SOA-derived TTL
+        // of zero likewise means "do not cache". We additionally require
+        // the backend to have signalled that the empty result is an
+        // authoritative DNS negative (the legacy `getaddrinfo` path
+        // cannot — see `legacy.rs`).
+        if let Some(soa_ttl_secs) = authoritative_negative {
+            cache.insert_negative(domain, kind, Duration::from_secs(u64::from(soa_ttl_secs)));
+        }
+    } else {
+        let ttl = min_ttl_secs.map(|secs| Duration::from_secs(u64::from(secs)));
+        insert_cached(&cache, domain, values.clone(), ttl);
+    }
+    Outcome::new(values, None)
 }
 
 fn lookup_ipv4_uncached_stream(
     resolved: Option<Arc<SystemdResolved>>,
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv4Addr>, BoxError>> + Send {
     let varlink = resolved.map(|resolved| {
         let domain = domain.clone();
         async move { resolved.lookup_ipv4(&domain, timeout).await }
     });
-    resolved_first_stream(varlink, move || {
-        native_lookup_ipv4_stream(domain, timeout, response_buffer_size)
+    resolved_first_stream(varlink, timeout, move |timeout| {
+        native_lookup_ipv4_stream(domain, timeout, native)
     })
 }
 
@@ -629,14 +811,14 @@ fn lookup_ipv6_uncached_stream(
     resolved: Option<Arc<SystemdResolved>>,
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv6Addr>, BoxError>> + Send {
     let varlink = resolved.map(|resolved| {
         let domain = domain.clone();
         async move { resolved.lookup_ipv6(&domain, timeout).await }
     });
-    resolved_first_stream(varlink, move || {
-        native_lookup_ipv6_stream(domain, timeout, response_buffer_size)
+    resolved_first_stream(varlink, timeout, move |timeout| {
+        native_lookup_ipv6_stream(domain, timeout, native)
     })
 }
 
@@ -644,14 +826,14 @@ fn lookup_txt_uncached_stream(
     resolved: Option<Arc<SystemdResolved>>,
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Txt>, BoxError>> + Send {
     let varlink = resolved.map(|resolved| {
         let domain = domain.clone();
         async move { resolved.lookup_txt(&domain, timeout).await }
     });
-    resolved_first_stream(varlink, move || {
-        native_lookup_txt_stream(domain, timeout, response_buffer_size)
+    resolved_first_stream(varlink, timeout, move |timeout| {
+        native_lookup_txt_stream(domain, timeout, native)
     })
 }
 
@@ -659,14 +841,14 @@ fn lookup_cname_uncached_stream(
     resolved: Option<Arc<SystemdResolved>>,
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Name>, BoxError>> + Send {
     let varlink = resolved.map(|resolved| {
         let domain = domain.clone();
         async move { resolved.lookup_cname(&domain, timeout).await }
     });
-    resolved_first_stream(varlink, move || {
-        native_lookup_cname_stream(domain, timeout, response_buffer_size)
+    resolved_first_stream(varlink, timeout, move |timeout| {
+        native_lookup_cname_stream(domain, timeout, native)
     })
 }
 
@@ -674,14 +856,14 @@ fn lookup_svcb_uncached_stream(
     resolved: Option<Arc<SystemdResolved>>,
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
     let varlink = resolved.map(|resolved| {
         let domain = domain.clone();
         async move { resolved.lookup_svcb(&domain, timeout).await }
     });
-    resolved_first_stream(varlink, move || {
-        native_lookup_svcb_stream(domain, timeout, response_buffer_size)
+    resolved_first_stream(varlink, timeout, move |timeout| {
+        native_lookup_svcb_stream(domain, timeout, native)
     })
 }
 
@@ -689,14 +871,14 @@ fn lookup_https_uncached_stream(
     resolved: Option<Arc<SystemdResolved>>,
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
     let varlink = resolved.map(|resolved| {
         let domain = domain.clone();
         async move { resolved.lookup_https(&domain, timeout).await }
     });
-    resolved_first_stream(varlink, move || {
-        native_lookup_https_stream(domain, timeout, response_buffer_size)
+    resolved_first_stream(varlink, timeout, move |timeout| {
+        native_lookup_https_stream(domain, timeout, native)
     })
 }
 
@@ -705,19 +887,23 @@ fn lookup_https_uncached_stream(
 ///
 /// The native fallback deliberately runs with its own full timeout: during
 /// the short window before the breaker trips on a wedged daemon, a slow
-/// success beats failing queries at the configured deadline.
+/// success beats failing queries at the configured deadline. A lookup that
+/// only queued for a varlink slot gets the rest of its budget instead.
 fn resolved_first_stream<T, F, N, S>(
     varlink: Option<F>,
+    timeout: Duration,
     native: N,
 ) -> impl Stream<Item = Result<LookupEvent<T>, BoxError>> + Send
 where
     T: Send + 'static,
     F: Future<Output = ResolvedLookup<T>> + Send + 'static,
-    N: FnOnce() -> S + Send + 'static,
+    N: FnOnce(Duration) -> S + Send + 'static,
     S: Stream<Item = Result<LookupEvent<T>, BoxError>> + Send,
 {
     stream_fn(async move |mut yielder| {
+        let mut budget = timeout;
         if let Some(varlink) = varlink {
+            let started = Instant::now();
             match varlink.await {
                 ResolvedLookup::Records(records) => {
                     for (value, ttl) in records {
@@ -738,9 +924,10 @@ where
                     return;
                 }
                 ResolvedLookup::Unavailable => {}
+                ResolvedLookup::Busy => budget = timeout.saturating_sub(started.elapsed()),
             }
         }
-        let mut native = std::pin::pin!(native());
+        let mut native = std::pin::pin!(native(budget));
         while let Some(item) = native.next().await {
             yielder.yield_item(item).await;
         }
@@ -756,9 +943,9 @@ where
 fn native_lookup_ipv4_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv4Addr>, BoxError>> + Send {
-    res_nsearch::lookup_ipv4_stream(domain, timeout, response_buffer_size)
+    res_nsearch::lookup_ipv4_stream(domain, timeout, native)
 }
 
 #[cfg(not(any(
@@ -770,9 +957,9 @@ fn native_lookup_ipv4_stream(
 fn native_lookup_ipv4_stream(
     domain: Domain,
     timeout: Duration,
-    _response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv4Addr>, BoxError>> + Send {
-    legacy::lookup_ipv4_stream(domain, timeout)
+    legacy::lookup_ipv4_stream(domain, timeout, native)
 }
 
 #[cfg(any(
@@ -784,9 +971,9 @@ fn native_lookup_ipv4_stream(
 fn native_lookup_ipv6_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv6Addr>, BoxError>> + Send {
-    res_nsearch::lookup_ipv6_stream(domain, timeout, response_buffer_size)
+    res_nsearch::lookup_ipv6_stream(domain, timeout, native)
 }
 
 #[cfg(not(any(
@@ -798,9 +985,9 @@ fn native_lookup_ipv6_stream(
 fn native_lookup_ipv6_stream(
     domain: Domain,
     timeout: Duration,
-    _response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv6Addr>, BoxError>> + Send {
-    legacy::lookup_ipv6_stream(domain, timeout)
+    legacy::lookup_ipv6_stream(domain, timeout, native)
 }
 
 #[cfg(any(
@@ -812,9 +999,9 @@ fn native_lookup_ipv6_stream(
 fn native_lookup_txt_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Txt>, BoxError>> + Send {
-    res_nsearch::lookup_txt_stream(domain, timeout, response_buffer_size)
+    res_nsearch::lookup_txt_stream(domain, timeout, native)
 }
 
 #[cfg(any(
@@ -826,9 +1013,9 @@ fn native_lookup_txt_stream(
 fn native_lookup_cname_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Name>, BoxError>> + Send {
-    res_nsearch::lookup_cname_stream(domain, timeout, response_buffer_size)
+    res_nsearch::lookup_cname_stream(domain, timeout, native)
 }
 
 #[cfg(not(any(
@@ -840,7 +1027,7 @@ fn native_lookup_cname_stream(
 fn native_lookup_cname_stream(
     _domain: Domain,
     _timeout: Duration,
-    _response_buffer_size: usize,
+    _native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Name>, BoxError>> + Send {
     rama_core::futures::stream::once(std::future::ready(Err(BoxError::from(
         LinuxDnsCnameUnsupportedError,
@@ -856,9 +1043,9 @@ fn native_lookup_cname_stream(
 fn native_lookup_svcb_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
-    res_nsearch::lookup_svcb_stream(domain, timeout, response_buffer_size)
+    res_nsearch::lookup_svcb_stream(domain, timeout, native)
 }
 
 #[cfg(not(any(
@@ -870,7 +1057,7 @@ fn native_lookup_svcb_stream(
 fn native_lookup_svcb_stream(
     _domain: Domain,
     _timeout: Duration,
-    _response_buffer_size: usize,
+    _native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
     unsupported_service_binding_stream()
 }
@@ -884,9 +1071,9 @@ fn native_lookup_svcb_stream(
 fn native_lookup_https_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
-    res_nsearch::lookup_https_stream(domain, timeout, response_buffer_size)
+    res_nsearch::lookup_https_stream(domain, timeout, native)
 }
 
 #[cfg(not(any(
@@ -898,7 +1085,7 @@ fn native_lookup_https_stream(
 fn native_lookup_https_stream(
     _domain: Domain,
     _timeout: Duration,
-    _response_buffer_size: usize,
+    _native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
     unsupported_service_binding_stream()
 }
@@ -925,7 +1112,7 @@ fn unsupported_service_binding_stream()
 fn native_lookup_txt_stream(
     _domain: Domain,
     _timeout: Duration,
-    _response_buffer_size: usize,
+    _native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Txt>, BoxError>> + Send {
     rama_core::futures::stream::once(std::future::ready(Err(BoxError::from(
         LinuxDnsTxtUnsupportedError,
@@ -945,10 +1132,6 @@ struct LinuxDnsResolverError(ArcStr);
 impl LinuxDnsResolverError {
     fn message(message: impl Into<ArcStr>) -> Self {
         Self(message.into())
-    }
-
-    fn timeout(timeout: Duration) -> Self {
-        Self::message(format!("linux dns query timed out after {timeout:?}"))
     }
 }
 
@@ -978,25 +1161,38 @@ static_str_error! {
 #[cfg(test)]
 mod tests {
     use super::{
-        LookupEvent, ResolvedLookup, cache, dns_name_from_domain, lookup_cached_stream,
-        resolved_first_stream,
+        DnsAddressResolver as _, InFlight, Limits, LookupEvent, LookupLimit, NativeConfig,
+        ResolvedLookup, cache, dns_name_from_domain, in_flight, lookup_and_cache,
+        lookup_cached_stream, native_lookup_ipv4_stream, resolved_first_stream,
     };
     use rama_core::{
         bytes::Bytes,
-        error::{BoxError, BoxErrorExt as _},
-        futures::{Stream, StreamExt as _, stream},
+        error::{BoxError, BoxErrorExt as _, error_chain},
+        futures::{Stream, StreamExt as _, future::join_all, stream},
     };
     use rama_net::address::Domain;
+    use serde_json::json;
     use std::{
+        assert_matches,
         net::Ipv4Addr,
         sync::{
             Arc,
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+            mpsc,
         },
         time::Duration,
     };
+    use tokio::{
+        io::{AsyncReadExt as _, AsyncWriteExt as _},
+        net::UnixListener,
+        sync::Notify,
+        time::Instant,
+    };
 
-    use crate::wire::{ServiceBinding, Txt};
+    use crate::{
+        client::DnsTimeoutError,
+        wire::{ServiceBinding, Txt},
+    };
 
     fn test_cache() -> Arc<cache::LinuxDnsCache> {
         Arc::new(cache::LinuxDnsCache::new(
@@ -1044,6 +1240,7 @@ mod tests {
             domain,
             Duration::from_secs(5),
             cache,
+            InFlight::default(),
             cache::RecordKind::Ipv4,
             move |cache, domain| cache.get_ipv4(domain),
             move |cache, domain, values, ttl| cache.insert_ipv4(domain, values, ttl),
@@ -1111,6 +1308,7 @@ mod tests {
             domain,
             Duration::from_secs(5),
             cache,
+            InFlight::default(),
             kind.record_kind(),
             move |cache, domain| kind.get(cache, domain),
             move |cache, domain, values, ttl| kind.insert(cache, domain, values, ttl),
@@ -1130,6 +1328,7 @@ mod tests {
             domain,
             Duration::from_secs(5),
             cache,
+            InFlight::default(),
             cache::RecordKind::Txt,
             move |cache, domain| cache.get_txt(domain),
             move |cache, domain, values, ttl| cache.insert_txt(domain, values, ttl),
@@ -1154,7 +1353,7 @@ mod tests {
 
         let mut stream = Box::pin(cached_ipv4_stream(domain.clone(), cache.clone(), backend));
         let first = stream.next().await;
-        assert!(matches!(first, Some(Ok(addr)) if addr == addrs[0]));
+        assert_matches!(first, Some(Ok(addr)) if addr == addrs[0]);
         drop(stream);
 
         assert_eq!(
@@ -1239,6 +1438,34 @@ mod tests {
         assert!(zero_ttl_cache.get_txt(&domain).is_none());
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn timeouts_report_the_configured_budget() {
+        // a native fallback after `Busy` runs out of what varlink left it
+        let fallback = stream::iter([Err(DnsTimeoutError::new(Duration::from_secs(1)).into())]);
+        let items: Vec<_> = cached_ipv4_stream(test_domain(), test_cache(), fallback)
+            .collect()
+            .await;
+        assert_matches!(
+            items.as_slice(),
+            [Err(err)] if err
+                .downcast_ref::<DnsTimeoutError>()
+                .is_some_and(|err| err.timeout() == Duration::from_secs(5)),
+            "{items:?}",
+        );
+
+        // callers that stop waiting on a lookup with two attempts' budget
+        let items: Vec<_> = cached_ipv4_stream(test_domain(), test_cache(), stream::pending())
+            .collect()
+            .await;
+        assert_matches!(
+            items.as_slice(),
+            [Err(err)] if err
+                .downcast_ref::<DnsTimeoutError>()
+                .is_some_and(|err| err.timeout() == Duration::from_secs(5)),
+            "{items:?}",
+        );
+    }
+
     #[tokio::test]
     async fn errors_follow_prior_records_and_are_not_cached() {
         let cache = test_cache();
@@ -1254,8 +1481,8 @@ mod tests {
             .await;
 
         assert_eq!(items.len(), 2);
-        assert!(matches!(items[0], Ok(got) if got == addr));
-        assert!(matches!(items[1], Err(ref err) if err.to_string() == "boom"));
+        assert_matches!(items[0], Ok(got) if got == addr);
+        assert_matches!(items[1], Err(ref err) if err.to_string() == "boom");
         assert!(
             cached_ipv4(&cache, &domain).is_none(),
             "a failed lookup must not be cached",
@@ -1295,6 +1522,7 @@ mod tests {
             Some(std::future::ready(ResolvedLookup::Records(vec![(
                 addr, None,
             )]))),
+            Duration::from_secs(5),
             tracked_native(&native_called),
         );
 
@@ -1308,6 +1536,14 @@ mod tests {
     }
 
     #[test]
+    fn abandoned_lookups_finish_to_fill_the_cache() {
+        let resolver = super::LinuxDnsResolver::builder()
+            .with_systemd_resolved(false)
+            .build();
+        assert_eq!(resolver.in_flight.abandoned(), in_flight::Abandoned::Finish);
+    }
+
+    #[test]
     fn builder_settings_propagate() {
         let resolver = super::LinuxDnsResolver::builder()
             .with_timeout(Duration::from_secs(9))
@@ -1315,14 +1551,571 @@ mod tests {
             .build();
         assert_eq!(resolver.timeout(), Duration::from_secs(9));
         assert_eq!(resolver.response_buffer_size(), usize::from(u16::MAX));
+        assert_eq!(resolver.native_max_concurrency(), Some(384));
+        assert_eq!(resolver.native_burst_limit(), Some(128));
+        assert_eq!(resolver.native_burst_window(), Duration::from_millis(20));
         assert!(!resolver.systemd_resolved_enabled());
 
         let resolver = super::LinuxDnsResolver::builder()
             .with_response_buffer_size(4096)
+            .with_native_max_concurrency(8)
+            .with_native_burst_limit(4)
+            .with_native_burst_window(Duration::from_millis(30))
             .with_systemd_resolved(true)
             .build();
         assert_eq!(resolver.response_buffer_size(), 4096);
+        assert_eq!(resolver.native_max_concurrency(), Some(8));
+        assert_eq!(resolver.native_burst_limit(), Some(4));
+        assert_eq!(resolver.native_burst_window(), Duration::from_millis(30));
         assert!(resolver.systemd_resolved_enabled());
+
+        // one setter keeps the other bounds
+        let resolver = resolver.with_native_max_concurrency(3);
+        assert_eq!(resolver.native_max_concurrency(), Some(3));
+        assert_eq!(resolver.native_burst_limit(), Some(4));
+        let resolver = resolver.with_native_burst_limit(2);
+        assert_eq!(resolver.native_burst_limit(), Some(2));
+        assert_eq!(resolver.native_max_concurrency(), Some(3));
+        let resolver = resolver.without_native_burst_limit();
+        assert_eq!(resolver.native_burst_limit(), None);
+        assert_eq!(resolver.native_max_concurrency(), Some(3));
+    }
+
+    #[cfg(not(any(
+        all(target_os = "linux", target_env = "gnu"),
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+    )))]
+    #[tokio::test]
+    async fn unsupported_record_lookups_keep_their_typed_error() {
+        async fn first_error<T>(items: impl Stream<Item = Result<T, BoxError>>) -> BoxError {
+            match std::pin::pin!(items).next().await {
+                Some(Err(err)) => err,
+                _ => panic!("expected an unsupported error"),
+            }
+        }
+        let resolver = super::LinuxDnsResolver::builder()
+            .with_systemd_resolved(false)
+            .build();
+
+        let txt = first_error(super::DnsTxtResolver::lookup_txt(&resolver, test_domain())).await;
+        assert!(
+            txt.downcast_ref::<super::LinuxDnsTxtUnsupportedError>()
+                .is_some()
+        );
+        let cname = first_error(super::DnsCnameResolver::lookup_cname(
+            &resolver,
+            test_domain(),
+        ))
+        .await;
+        assert!(
+            cname
+                .downcast_ref::<super::LinuxDnsCnameUnsupportedError>()
+                .is_some()
+        );
+        let https = first_error(super::DnsServiceBindingResolver::lookup_https(
+            &resolver,
+            test_domain(),
+        ))
+        .await;
+        assert!(
+            https
+                .downcast_ref::<super::LinuxDnsServiceBindingUnsupportedError>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn only_resolvers_with_the_same_timeout_share_lookups() {
+        let resolver = super::LinuxDnsResolver::builder()
+            .with_systemd_resolved(false)
+            .build();
+        let clone = resolver.clone();
+        assert!(clone.in_flight.shares_with(&resolver.in_flight));
+
+        let hasty = resolver.clone().with_timeout(Duration::from_millis(100));
+        assert!(!hasty.in_flight.shares_with(&resolver.in_flight));
+        assert!(
+            Arc::ptr_eq(&hasty.cache, &resolver.cache),
+            "answers stay shared"
+        );
+    }
+
+    /// A backend that counts its lookups and answers once `gate` opens.
+    fn gated_ipv4_stream(
+        domain: Domain,
+        cache: Arc<cache::LinuxDnsCache>,
+        in_flight: InFlight<cache::CacheKey>,
+        lookups: Arc<AtomicUsize>,
+        gate: Arc<Notify>,
+        answer: Result<(Ipv4Addr, u32), &'static str>,
+    ) -> impl Stream<Item = Result<Ipv4Addr, BoxError>> + Send {
+        lookup_cached_stream(
+            domain,
+            Duration::from_secs(5),
+            cache,
+            in_flight,
+            cache::RecordKind::Ipv4,
+            move |cache, domain| cache.get_ipv4(domain),
+            move |cache, domain, values, ttl| cache.insert_ipv4(domain, values, ttl),
+            move |_domain, _timeout| {
+                lookups.fetch_add(1, Ordering::SeqCst);
+                stream::once(async move {
+                    gate.notified().await;
+                    answer
+                        .map(|(addr, ttl)| LookupEvent::Record(addr, Some(ttl)))
+                        .map_err(BoxError::from_static_str)
+                })
+            },
+        )
+    }
+
+    async fn open_gate_later(gate: &Notify) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        gate.notify_waiters();
+    }
+
+    #[tokio::test]
+    async fn concurrent_misses_share_one_backend_lookup() {
+        let addr = Ipv4Addr::new(192, 0, 2, 7);
+        // a zero TTL is never cached, yet concurrent callers still share
+        for wire_ttl in [60, 0] {
+            let (cache, in_flight) = (test_cache(), InFlight::default());
+            let lookups = Arc::new(AtomicUsize::new(0));
+            let gate = Arc::new(Notify::new());
+
+            let callers = join_all((0..1000).map(|_| {
+                gated_ipv4_stream(
+                    test_domain(),
+                    cache.clone(),
+                    in_flight.clone(),
+                    lookups.clone(),
+                    gate.clone(),
+                    Ok((addr, wire_ttl)),
+                )
+                .collect::<Vec<_>>()
+            }));
+            let (results, ()) = tokio::join!(callers, open_gate_later(&gate));
+
+            assert_eq!(lookups.load(Ordering::SeqCst), 1, "wire ttl {wire_ttl}");
+            for items in results {
+                assert_matches!(items.as_slice(), [Ok(got)] if *got == addr);
+            }
+            assert_eq!(cached_ipv4(&cache, &test_domain()).is_some(), wire_ttl > 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn different_names_and_kinds_do_not_share() {
+        let (cache, in_flight) = (test_cache(), InFlight::default());
+        let lookups = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Notify::new());
+        let other: Domain = "other.example.".try_into().expect("valid domain");
+
+        let ipv4 = join_all(
+            [test_domain(), other.clone(), test_domain(), other].map(|domain| {
+                gated_ipv4_stream(
+                    domain,
+                    cache.clone(),
+                    in_flight.clone(),
+                    lookups.clone(),
+                    gate.clone(),
+                    Ok((Ipv4Addr::new(192, 0, 2, 7), 60)),
+                )
+                .collect::<Vec<_>>()
+            }),
+        );
+        let txt_lookups = lookups.clone();
+        let txt = lookup_cached_stream(
+            test_domain(),
+            Duration::from_secs(5),
+            cache.clone(),
+            in_flight.clone(),
+            cache::RecordKind::Txt,
+            move |cache, domain| cache.get_txt(domain),
+            move |cache, domain, values, ttl| cache.insert_txt(domain, values, ttl),
+            move |_domain, _timeout| {
+                txt_lookups.fetch_add(1, Ordering::SeqCst);
+                stream::empty::<Result<LookupEvent<Txt>, BoxError>>()
+            },
+        )
+        .collect::<Vec<_>>();
+        let ((results, _txt), ()) =
+            tokio::join!(async { tokio::join!(ipv4, txt) }, open_gate_later(&gate));
+
+        assert_eq!(lookups.load(Ordering::SeqCst), 3);
+        assert!(results.iter().all(|items| items.len() == 1));
+    }
+
+    #[tokio::test]
+    async fn shared_failure_reaches_every_caller_and_is_not_sticky() {
+        let (cache, in_flight) = (test_cache(), InFlight::default());
+        let lookups = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Notify::new());
+
+        let callers = join_all((0..50).map(|_| {
+            gated_ipv4_stream(
+                test_domain(),
+                cache.clone(),
+                in_flight.clone(),
+                lookups.clone(),
+                gate.clone(),
+                Err("upstream unreachable"),
+            )
+            .collect::<Vec<_>>()
+        }));
+        let (results, ()) = tokio::join!(callers, open_gate_later(&gate));
+
+        assert_eq!(lookups.load(Ordering::SeqCst), 1);
+        for items in results {
+            assert_matches!(
+                items.as_slice(),
+                [Err(err)] if err.to_string() == "upstream unreachable",
+            );
+        }
+
+        // the next lookup runs again and can succeed
+        let retry = gated_ipv4_stream(
+            test_domain(),
+            cache.clone(),
+            in_flight,
+            lookups.clone(),
+            gate.clone(),
+            Ok((Ipv4Addr::new(192, 0, 2, 8), 60)),
+        )
+        .collect::<Vec<_>>();
+        let (items, ()) = tokio::join!(retry, open_gate_later(&gate));
+        assert_eq!(lookups.load(Ordering::SeqCst), 2);
+        assert_matches!(items.as_slice(), [Ok(_)]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn callers_wait_out_a_native_fallback_after_a_failed_varlink_attempt() {
+        let timeout = Duration::from_secs(1);
+        let addr = Ipv4Addr::new(192, 0, 2, 12);
+
+        // a varlink attempt that used its whole budget, then a native answer
+        let items: Vec<_> = lookup_cached_stream(
+            test_domain(),
+            timeout,
+            test_cache(),
+            InFlight::default(),
+            cache::RecordKind::Ipv4,
+            move |cache, domain| cache.get_ipv4(domain),
+            move |cache, domain, values, ttl| cache.insert_ipv4(domain, values, ttl),
+            move |_domain, timeout| {
+                stream::once(async move {
+                    tokio::time::sleep(timeout.mul_f32(1.8)).await;
+                    Ok(LookupEvent::Record(addr, Some(60)))
+                })
+            },
+        )
+        .collect()
+        .await;
+
+        assert_matches!(
+            items.as_slice(),
+            [Ok(got)] if *got == addr,
+            "{items:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn leading_dot_name_is_refused_before_sharing() {
+        let (cache, in_flight) = (test_cache(), InFlight::default());
+        let lookups = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Notify::new());
+
+        // `Domain` equality ignores the leading dot, which no backend accepts
+        let callers = join_all(["intranet", ".intranet"].map(|name| {
+            gated_ipv4_stream(
+                name.try_into().expect("valid domain"),
+                cache.clone(),
+                in_flight.clone(),
+                lookups.clone(),
+                gate.clone(),
+                Ok((Ipv4Addr::new(192, 0, 2, 10), 60)),
+            )
+            .collect::<Vec<_>>()
+        }));
+        let (results, ()) = tokio::join!(callers, open_gate_later(&gate));
+
+        assert_eq!(lookups.load(Ordering::SeqCst), 1);
+        assert_matches!(results[0].as_slice(), [Ok(_)], "{results:?}");
+        assert_matches!(
+            results[1].as_slice(),
+            [Err(err)] if err.to_string().contains("starts with a dot"),
+            "{results:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn rooted_and_relative_names_do_not_share() {
+        let (cache, in_flight) = (test_cache(), InFlight::default());
+        let lookups = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Notify::new());
+        let relative: Domain = "intranet".try_into().expect("valid domain");
+        let rooted: Domain = "intranet.".try_into().expect("valid domain");
+
+        // `Domain` equality ignores the dot, but only a relative name walks the search list
+        let callers = join_all([relative.clone(), rooted.clone()].map(|domain| {
+            gated_ipv4_stream(
+                domain,
+                cache.clone(),
+                in_flight.clone(),
+                lookups.clone(),
+                gate.clone(),
+                Ok((Ipv4Addr::new(192, 0, 2, 10), 60)),
+            )
+            .collect::<Vec<_>>()
+        }));
+        let (_results, ()) = tokio::join!(callers, open_gate_later(&gate));
+        assert_eq!(lookups.load(Ordering::SeqCst), 2);
+
+        let cache = test_cache();
+        let backend = stream::iter([Ok(LookupEvent::Record(
+            Ipv4Addr::new(192, 0, 2, 11),
+            Some(60),
+        ))]);
+        let _: Vec<_> = cached_ipv4_stream(relative.clone(), cache.clone(), backend)
+            .collect()
+            .await;
+        assert!(cached_ipv4(&cache, &relative).is_some());
+        assert!(
+            cached_ipv4(&cache, &rooted).is_none(),
+            "a rooted lookup must not hit it"
+        );
+    }
+
+    #[tokio::test]
+    async fn abandoned_lookup_still_completes_and_caches() {
+        let (cache, in_flight) = (test_cache(), InFlight::default());
+        let lookups = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Notify::new());
+        let addr = Ipv4Addr::new(192, 0, 2, 9);
+        let new_caller = || {
+            gated_ipv4_stream(
+                test_domain(),
+                cache.clone(),
+                in_flight.clone(),
+                lookups.clone(),
+                gate.clone(),
+                Ok((addr, 60)),
+            )
+        };
+
+        // like the losing address family of a dial race: nobody waits anymore
+        let mut abandoned = Box::pin(new_caller());
+        tokio::time::timeout(Duration::from_millis(20), abandoned.next())
+            .await
+            .expect_err("still waiting on the backend");
+        drop(abandoned);
+
+        let follower = new_caller().collect::<Vec<_>>();
+        let (items, ()) = tokio::join!(follower, open_gate_later(&gate));
+        assert_matches!(items.as_slice(), [Ok(got)] if *got == addr);
+        assert_eq!(
+            lookups.load(Ordering::SeqCst),
+            1,
+            "the follower joined the run"
+        );
+        assert_eq!(
+            cached_ipv4(&cache, &test_domain()).as_deref(),
+            Some(&[addr][..])
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_lookup_rechecks_the_cache_before_querying() {
+        let cache = test_cache();
+        let (hit, negative): (Domain, Domain) = (
+            test_domain(),
+            "missing.example.".try_into().expect("valid domain"),
+        );
+        let addr = Ipv4Addr::new(192, 0, 2, 11);
+        cache.insert_ipv4(hit.clone(), vec![addr], Some(Duration::from_mins(1)));
+        cache.insert_negative(
+            negative.clone(),
+            cache::RecordKind::Ipv4,
+            Duration::from_mins(1),
+        );
+        let lookups = Arc::new(AtomicUsize::new(0));
+
+        // a run that starts after an earlier one cached the answer
+        for (domain, expected) in [(hit, vec![addr]), (negative, Vec::new())] {
+            let lookups = lookups.clone();
+            let outcome = lookup_and_cache(
+                domain,
+                Duration::from_secs(5),
+                cache.clone(),
+                cache::RecordKind::Ipv4,
+                move |cache, domain| cache.get_ipv4(domain),
+                move |cache, domain, values, ttl| cache.insert_ipv4(domain, values, ttl),
+                move |_domain, _timeout| {
+                    lookups.fetch_add(1, Ordering::SeqCst);
+                    stream::empty::<Result<LookupEvent<Ipv4Addr>, BoxError>>()
+                },
+            )
+            .await;
+            let items: Vec<_> = in_flight::outcome_stream(Ok(Arc::new(outcome)))
+                .map(|item| item.expect("cached record"))
+                .collect()
+                .await;
+            assert_eq!(items, expected);
+        }
+        assert_eq!(lookups.load(Ordering::SeqCst), 0, "served from the cache");
+    }
+
+    #[tokio::test]
+    async fn concurrent_authoritative_negative_is_shared_and_cached() {
+        let (cache, in_flight) = (test_cache(), InFlight::default());
+        let lookups = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Notify::new());
+
+        let callers = join_all((0..100).map(|_| {
+            let (lookups, gate) = (lookups.clone(), gate.clone());
+            lookup_cached_stream(
+                test_domain(),
+                Duration::from_secs(5),
+                cache.clone(),
+                in_flight.clone(),
+                cache::RecordKind::Ipv4,
+                move |cache, domain| cache.get_ipv4(domain),
+                move |cache, domain, values, ttl| cache.insert_ipv4(domain, values, ttl),
+                move |_domain, _timeout| {
+                    lookups.fetch_add(1, Ordering::SeqCst);
+                    stream::once(async move {
+                        gate.notified().await;
+                        Ok::<_, BoxError>(LookupEvent::<Ipv4Addr>::AuthoritativeNegative {
+                            soa_ttl: Some(60),
+                        })
+                    })
+                },
+            )
+            .collect::<Vec<_>>()
+        }));
+        let (results, ()) = tokio::join!(callers, open_gate_later(&gate));
+
+        assert_eq!(lookups.load(Ordering::SeqCst), 1);
+        assert!(results.iter().all(Vec::is_empty));
+        assert_matches!(
+            cache.get_ipv4(&test_domain()),
+            Some(cache::CacheLookup::Negative),
+        );
+    }
+
+    /// A varlink stub that answers every ResolveHostname call after `delay`.
+    async fn slow_hostname_daemon(
+        path: &std::path::Path,
+        delay: Duration,
+    ) -> (Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        _ = std::fs::remove_file(path);
+        let listener = UnixListener::bind(path).expect("bind fake resolved socket");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let server = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let counter = counter.clone();
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    while !request.contains(&0) {
+                        if stream.read_buf(&mut request).await.unwrap_or(0) == 0 {
+                            return;
+                        }
+                    }
+                    let request: serde_json::Value =
+                        serde_json::from_slice(&request[..request.len() - 1]).expect("json call");
+                    if request["method"] == "org.varlink.service.GetInfo" {
+                        _ = stream.write_all(b"{\"parameters\":{}}\0").await;
+                        return;
+                    }
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let family = request["parameters"]["family"].as_i64().expect("family");
+                    let address = if family == 2 {
+                        json!([192, 0, 2, 7])
+                    } else {
+                        json!([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7])
+                    };
+                    tokio::time::sleep(delay).await;
+                    let reply = json!({ "parameters": {
+                        "addresses": [{ "family": family, "address": address }],
+                        "name": "example.com",
+                        "flags": 1,
+                    } });
+                    let mut frame = serde_json::to_vec(&reply).expect("serialize reply");
+                    frame.push(0);
+                    _ = stream.write_all(&frame).await;
+                });
+            }
+        });
+        (calls, server)
+    }
+
+    #[tokio::test]
+    async fn resolver_clones_share_one_lookup_per_name_and_kind() {
+        let path = std::env::temp_dir().join(format!(
+            "rama-dns-linux-in-flight-{}.sock",
+            std::process::id()
+        ));
+        let (calls, server) = slow_hostname_daemon(&path, Duration::from_millis(100)).await;
+        let mut builder = super::LinuxDnsResolver::builder().with_systemd_resolved(true);
+        builder.systemd_resolved_config.socket_path = path.clone();
+        let resolver = builder.build();
+
+        let lookups = (0..100).map(|i| {
+            let resolver = resolver.clone();
+            async move {
+                if i % 2 == 0 {
+                    resolver.lookup_ipv4(test_domain()).count().await
+                } else {
+                    resolver.lookup_ipv6(test_domain()).count().await
+                }
+            }
+        });
+        let answers = join_all(lookups).await;
+
+        assert!(answers.iter().all(|records| *records == 1), "{answers:?}");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "one daemon call per record kind"
+        );
+        server.abort();
+        _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_lookup_waiting_for_a_busy_slot_times_out() {
+        let native = NativeConfig {
+            response_buffer_size: 4096,
+            limit: LookupLimit::new(Limits {
+                max_concurrency: Some(1),
+                ..Limits::ONE_QUERY
+            }),
+        };
+        let (release, held) = mpsc::channel::<()>();
+        let busy = native
+            .limit
+            .spawn_blocking(Instant::now() + Duration::from_secs(10), move |_budget| {
+                held.recv_timeout(Duration::from_secs(3)).ok()
+            })
+            .await
+            .expect("the only slot");
+
+        let started = Instant::now();
+        let items: Vec<_> =
+            native_lookup_ipv4_stream(test_domain(), Duration::from_millis(100), native)
+                .collect()
+                .await;
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_matches!(
+            items.as_slice(),
+            [Err(err)] if error_chain(err.as_ref()).any(|cause| cause.is::<DnsTimeoutError>()),
+        );
+
+        drop(release);
+        busy.await.expect("busy lookup ends");
     }
 
     #[test]
@@ -1347,11 +2140,14 @@ mod tests {
 
     fn tracked_native(
         called: &Arc<AtomicBool>,
-    ) -> impl FnOnce() -> stream::Iter<std::vec::IntoIter<Result<LookupEvent<Ipv4Addr>, BoxError>>>
+    ) -> impl FnOnce(
+        Duration,
+    )
+        -> stream::Iter<std::vec::IntoIter<Result<LookupEvent<Ipv4Addr>, BoxError>>>
     + Send
     + 'static {
         let called = called.clone();
-        move || {
+        move |_budget| {
             called.store(true, Ordering::SeqCst);
             stream::iter(vec![Ok(LookupEvent::Record(
                 Ipv4Addr::new(9, 9, 9, 9),
@@ -1368,14 +2164,16 @@ mod tests {
                 Ipv4Addr::new(1, 2, 3, 4),
                 Some(60),
             )]))),
+            Duration::from_secs(5),
             tracked_native(&native_called),
         )
         .collect()
         .await;
 
         assert_eq!(items.len(), 1);
-        assert!(
-            matches!(items[0], Ok(LookupEvent::Record(addr, Some(60))) if addr == Ipv4Addr::new(1, 2, 3, 4)),
+        assert_matches!(
+            items[0],
+            Ok(LookupEvent::Record(addr, Some(60))) if addr == Ipv4Addr::new(1, 2, 3, 4),
         );
         assert!(!native_called.load(Ordering::SeqCst));
     }
@@ -1385,16 +2183,17 @@ mod tests {
         let native_called = Arc::new(AtomicBool::new(false));
         let items: Vec<_> = resolved_first_stream(
             Some(std::future::ready(ResolvedLookup::<Ipv4Addr>::Negative)),
+            Duration::from_secs(5),
             tracked_native(&native_called),
         )
         .collect()
         .await;
 
         assert_eq!(items.len(), 1);
-        assert!(matches!(
+        assert_matches!(
             items[0],
             Ok(LookupEvent::AuthoritativeNegative { soa_ttl: None }),
-        ));
+        );
         assert!(!native_called.load(Ordering::SeqCst));
     }
 
@@ -1405,13 +2204,14 @@ mod tests {
             Some(std::future::ready(ResolvedLookup::<Ipv4Addr>::Failed(
                 BoxError::from_static_str("nope"),
             ))),
+            Duration::from_secs(5),
             tracked_native(&native_called),
         )
         .collect()
         .await;
 
         assert_eq!(items.len(), 1);
-        assert!(matches!(items[0], Err(ref err) if err.to_string() == "nope"));
+        assert_matches!(items[0], Err(ref err) if err.to_string() == "nope");
         assert!(!native_called.load(Ordering::SeqCst));
     }
 
@@ -1420,16 +2220,42 @@ mod tests {
         let native_called = Arc::new(AtomicBool::new(false));
         let items: Vec<_> = resolved_first_stream(
             Some(std::future::ready(ResolvedLookup::<Ipv4Addr>::Unavailable)),
+            Duration::from_secs(5),
             tracked_native(&native_called),
         )
         .collect()
         .await;
 
         assert_eq!(items.len(), 1);
-        assert!(
-            matches!(items[0], Ok(LookupEvent::Record(addr, Some(30))) if addr == Ipv4Addr::new(9, 9, 9, 9)),
+        assert_matches!(
+            items[0],
+            Ok(LookupEvent::Record(addr, Some(30))) if addr == Ipv4Addr::new(9, 9, 9, 9),
         );
         assert!(native_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn native_gets_the_rest_after_queueing_for_varlink() {
+        let budget = Arc::new(AtomicU64::new(0));
+        let seen = budget.clone();
+        let busy = async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            ResolvedLookup::<Ipv4Addr>::Busy
+        };
+        let items: Vec<_> =
+            resolved_first_stream(Some(busy), Duration::from_secs(5), move |budget| {
+                seen.store(
+                    u64::try_from(budget.as_millis()).unwrap_or(u64::MAX),
+                    Ordering::SeqCst,
+                );
+                stream::empty()
+            })
+            .collect()
+            .await;
+
+        assert!(items.is_empty());
+        // the second spent queueing is no longer the native lookup's
+        assert_eq!(budget.load(Ordering::SeqCst), 4000);
     }
 
     #[tokio::test]
@@ -1437,6 +2263,7 @@ mod tests {
         let native_called = Arc::new(AtomicBool::new(false));
         let items: Vec<_> = resolved_first_stream(
             None::<std::future::Ready<ResolvedLookup<Ipv4Addr>>>,
+            Duration::from_secs(5),
             tracked_native(&native_called),
         )
         .collect()

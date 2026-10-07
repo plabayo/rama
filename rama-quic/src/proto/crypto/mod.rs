@@ -7,17 +7,18 @@
 //! Note that usage of any protocol (version) other than TLS 1.3 does not conform to any
 //! published versions of the specification, and will not be supported in QUIC v1.
 
-use std::{str, sync::Arc};
+use std::{fmt, future::Future, pin::Pin, str, sync::Arc};
 
+use rama_core::{bytes::Bytes, error::BoxError};
 use rama_crypto::pki_types::CertificateDer;
-pub use rama_tls::client::NegotiatedTlsParameters;
-
 use rama_quic_proto::{
     ConnectionId, Side, TransportError, Version,
     crypto::{CryptoError, HeaderKey, PacketKey},
     packet::SpaceId,
     transport_parameters::TransportParameters,
 };
+use rama_tls::client::ClientHello;
+pub use rama_tls::client::NegotiatedTlsParameters;
 
 use crate::proto::ConnectError;
 
@@ -47,45 +48,28 @@ pub trait Session: Send + Sync + 'static {
         side: Side,
     ) -> Result<Keys, TransportError>;
 
-    /// Whether [`Self::switch_version`] can succeed on this session.
-    ///
-    /// A provider that derives its own packet keys from TLS secrets can re-label them for a
-    /// compatible version; one that receives finished keys cannot. Defaults to `false`.
-    fn supports_version_switch(&self) -> bool {
-        false
-    }
-
     /// Move the session to a compatible `version` before any Handshake or 1-RTT key is
     /// derived (RFC 9368 §2.3, RFC 9369 §4.1).
     ///
-    /// Called at most once, before the handshake keys are drained. Providers that cannot
-    /// switch return [`UnsupportedVersion`]; the transport then never asks them to.
-    fn switch_version(&mut self, version: Version) -> Result<(), UnsupportedVersion> {
-        let _ = version;
-        Err(UnsupportedVersion)
-    }
+    /// Called at most once, before the handshake keys are drained, and only for sessions of a
+    /// [`ClientConfig`] that [supports switching](ClientConfig::supports_version_switch). A
+    /// provider that derives its own packet keys from TLS secrets can re-label them for a
+    /// compatible version; one that receives finished keys returns [`UnsupportedVersion`].
+    fn switch_version(&mut self, version: Version) -> Result<(), UnsupportedVersion>;
 
     /// What the handshake has settled, when the session has it. `None` until the connection
     /// emits `HandshakeDataReady`.
-    fn handshake_summary(&self) -> Option<NegotiatedTlsParameters> {
-        None
-    }
+    fn handshake_summary(&self) -> Option<NegotiatedTlsParameters>;
 
     /// Borrow negotiated ALPN bytes for diagnostics without allocating a handshake summary.
-    fn negotiated_alpn(&self) -> Option<&[u8]> {
-        None
-    }
+    fn negotiated_alpn(&self) -> Option<&[u8]>;
 
     /// The certificate chain the peer presented, if it presented one.
-    fn peer_certificates(&self) -> Option<Vec<CertificateDer<'static>>> {
-        None
-    }
+    fn peer_certificates(&self) -> Option<Vec<CertificateDer<'static>>>;
 
     /// The negotiated key exchange group as an IANA `NamedGroup` code (test observation point)
     #[cfg(test)]
-    fn negotiated_key_exchange_group(&self) -> Option<u16> {
-        None
-    }
+    fn negotiated_key_exchange_group(&self) -> Option<u16>;
 
     /// Get the 0-RTT keys if available (clients only)
     ///
@@ -180,26 +164,22 @@ pub trait ClientConfig: Send + Sync {
         params: &TransportParameters,
     ) -> Result<Box<dyn Session>, ConnectError>;
 
-    /// Whether sessions from this configuration can switch to a compatible version during
-    /// the handshake. Decides at configuration time whether a version policy that needs a
-    /// switch is usable; defaults to `false`.
-    fn supports_version_switch(&self) -> bool {
-        false
-    }
+    /// Whether every session from this configuration can [switch](Session::switch_version) to
+    /// a compatible version during the handshake. Decides at configuration time whether a
+    /// version policy that needs a switch is usable.
+    fn supports_version_switch(&self) -> bool;
 
     /// The version of the newest session ticket held for `server_name`, if the provider can
     /// tell without consuming it.
     ///
     /// A ticket resumes only a connection in the version that issued it (RFC 9369 §5), so a
-    /// client that wants to resume starts in that version. Defaults to `None`.
-    fn resumable_version(&self, server_name: &str) -> Option<Version> {
-        let _ = server_name;
-        None
-    }
+    /// client that wants to resume starts in that version.
+    fn resumable_version(&self, server_name: &str) -> Option<Version>;
 }
 
-/// Server-side configuration for the crypto protocol
-pub trait ServerConfig: Send + Sync {
+/// What a server needs before any session starts: the keys of a client's Initial packets and
+/// the integrity tags of Retry packets.
+pub trait InitialServerConfig: Send + Sync {
     /// Create the initial set of keys given the client's initial destination ConnectionId
     fn initial_keys(
         &self,
@@ -216,7 +196,10 @@ pub trait ServerConfig: Send + Sync {
         orig_dst_cid: &ConnectionId,
         packet: &[u8],
     ) -> Result<[u8; 16], CryptoError>;
+}
 
+/// Server-side configuration for the crypto protocol: every session starts from it.
+pub trait ServerConfig: InitialServerConfig {
     /// Start a server session with this configuration
     ///
     /// Never called if `initial_keys` rejected `version`.
@@ -226,10 +209,8 @@ pub trait ServerConfig: Send + Sync {
         params: &TransportParameters,
     ) -> Result<Box<dyn Session>, TransportError>;
 
-    /// Whether [`Self::start_negotiated_session`] is implemented.
-    fn supports_compatible_negotiation(&self) -> bool {
-        false
-    }
+    /// Whether [`Self::start_negotiated_session`] can start sessions.
+    fn supports_compatible_negotiation(&self) -> bool;
 
     /// Start a server session for a connection the server moves from the client's `original`
     /// version to the compatible `negotiated` version (RFC 9368 §2.3).
@@ -243,17 +224,101 @@ pub trait ServerConfig: Send + Sync {
         original: Version,
         negotiated: Version,
         params: &TransportParameters,
-    ) -> Result<Box<dyn Session>, TransportError> {
-        let _ = (original, negotiated, params);
-        Err(TransportError::INTERNAL_ERROR(
-            "TLS provider cannot move a connection to another version",
-        ))
+    ) -> Result<Box<dyn Session>, TransportError>;
+}
+
+/// Server-side configuration resolved per connection from its ClientHello, for instance to
+/// issue a certificate for the requested server name.
+///
+/// A connection is accepted only once its whole ClientHello arrived and resolved: awaiting
+/// the `Incoming` does both. A ClientHello larger than 16 KiB is refused, and until the
+/// connection is accepted nothing is acknowledged, so the resolution time adds to the
+/// client's first round-trip sample.
+pub trait ServerConfigResolver: InitialServerConfig {
+    /// Look up the configuration a connection's session starts from, given its ClientHello.
+    ///
+    /// The lookup must stay cheap and hand back real work, such as issuing a certificate, as
+    /// [`ServerConfigResolution::Pending`]:
+    /// [`Incoming::accept_or_retry`](crate::Incoming::accept_or_retry), which
+    /// [`Endpoint::serve`](crate::Endpoint::serve) uses, drops that work unpolled to first
+    /// validate an unproven client address with a Retry (RFC 9000 §8.1.2).
+    /// A failure refuses the connection.
+    fn resolve(self: Arc<Self>, client_hello: ClientHelloMessage) -> ServerConfigLookup;
+}
+
+/// The lookup a [`ServerConfigResolver`] runs for a ClientHello.
+pub type ServerConfigLookup =
+    Pin<Box<dyn Future<Output = Result<ServerConfigResolution, BoxError>> + Send>>;
+
+/// What a [`ServerConfigResolver`] looked up for a ClientHello.
+pub enum ServerConfigResolution {
+    /// At hand, such as a configuration with a cached certificate it holds.
+    Ready(Arc<dyn ServerConfig>),
+    /// Still to resolve with real work, such as issuing a certificate, which starts once
+    /// polled: the endpoint may drop it unpolled to validate the client's address first.
+    Pending(PendingServerConfig),
+}
+
+impl fmt::Debug for ServerConfigResolution {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Ready(_) => f.write_str("ServerConfigResolution::Ready"),
+            Self::Pending(_) => f.write_str("ServerConfigResolution::Pending"),
+        }
+    }
+}
+
+/// The work that resolves a server configuration; see [`ServerConfigResolution::Pending`].
+pub type PendingServerConfig =
+    Pin<Box<dyn Future<Output = Result<Arc<dyn ServerConfig>, BoxError>> + Send>>;
+
+/// A client's ClientHello as its first flight carried it.
+///
+/// QUIC carries the bare TLS handshake message, without a record layer (RFC 9001 §4).
+#[derive(Clone)]
+pub struct ClientHelloMessage {
+    message: Bytes,
+    client_hello: ClientHello,
+}
+
+impl ClientHelloMessage {
+    /// A ClientHello `message`, from its type byte to the end of its body, and what it says.
+    ///
+    /// Useful to exercise [`ServerConfigResolver::resolve`]; the endpoint only hands out
+    /// consistent pairs.
+    #[must_use]
+    pub fn new(message: Bytes, client_hello: ClientHello) -> Self {
+        Self {
+            message,
+            client_hello,
+        }
     }
 
-    /// Whether sessions from this configuration can switch to a compatible version during
-    /// the handshake; see [`ClientConfig::supports_version_switch`].
-    fn supports_version_switch(&self) -> bool {
-        false
+    /// The handshake message, from its type byte to the end of its body.
+    #[must_use]
+    pub fn message(&self) -> &[u8] {
+        &self.message
+    }
+
+    /// What the ClientHello says.
+    #[must_use]
+    pub fn client_hello(&self) -> &ClientHello {
+        &self.client_hello
+    }
+
+    /// Take what the ClientHello says.
+    #[must_use]
+    pub fn into_client_hello(self) -> ClientHello {
+        self.client_hello
+    }
+}
+
+impl fmt::Debug for ClientHelloMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClientHelloMessage")
+            .field("len", &self.message.len())
+            .field("client_hello", &self.client_hello)
+            .finish()
     }
 }
 

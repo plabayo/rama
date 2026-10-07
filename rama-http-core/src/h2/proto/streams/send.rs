@@ -95,8 +95,10 @@ impl Send {
         {
             tracing::debug!("illegal connection-specific headers found");
             return Err(UserError::MalformedHeaders);
-        } else if let Some(te) = fields.get(rama_http_types::header::TE)
-            && te != "trailers"
+        } else if fields
+            .get_all(rama_http_types::header::TE)
+            .iter()
+            .any(|te| !rama_http_types::header::hop_by_hop::is_te_trailers(te.as_bytes()))
         {
             tracing::debug!("illegal connection-specific headers found");
             return Err(UserError::MalformedHeaders);
@@ -199,6 +201,11 @@ impl Send {
             !frame.is_end_stream(),
             "Informational frames must not have end_stream flag set. Validation should happen at the internal send informational header streams."
         );
+
+        // A 1xx precedes the final response (RFC 9110 §15.2), on a stream still open for it.
+        if !stream.state.is_send_headers() {
+            return Err(UserError::UnexpectedFrameType);
+        }
 
         // Queue the frame for sending WITHOUT changing stream state
         // This is the key difference from send_headers - we don't call stream.state.send_open()

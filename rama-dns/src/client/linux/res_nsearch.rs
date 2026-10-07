@@ -6,13 +6,12 @@
 use std::{
     mem,
     net::{Ipv4Addr, Ipv6Addr},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use rama_core::{
     error::BoxError,
     futures::{Stream, async_stream::stream_fn},
-    stream::{StreamExt, wrappers::ReceiverStream},
     telemetry::tracing,
 };
 use rama_net::address::Domain;
@@ -21,8 +20,14 @@ use rama_utils::octets::kib;
 use libc::c_int;
 use tokio::sync::mpsc;
 
-use super::{LinuxDnsResolverError, LookupEvent, dns_name_from_domain};
-use crate::wire::{Name, RecordType, ServiceBinding, Txt, parse_a_rdata, parse_aaaa_rdata};
+use self::walk::{Asked, Walk};
+use super::{LinuxDnsResolverError, LookupEvent, NativeConfig, dns_name_from_domain};
+use crate::{
+    client::limit::{DnsTimeoutError, deadline_after},
+    wire::{Name, RecordType, ServiceBinding, Txt, parse_a_rdata, parse_aaaa_rdata},
+};
+
+mod walk;
 
 const INITIAL_RESPONSE_BUFFER_SIZE: usize = kib(16);
 const DNS_HEADER_SIZE: usize = 12;
@@ -31,12 +36,12 @@ const MAX_DNS_MESSAGE_SIZE: usize = u16::MAX as usize;
 pub(super) fn lookup_ipv4_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv4Addr>, BoxError>> + Send {
     lookup_record_stream(
         domain,
         timeout,
-        response_buffer_size,
+        native,
         ffi::NS_T_A as c_int,
         parse_a_response,
     )
@@ -45,12 +50,12 @@ pub(super) fn lookup_ipv4_stream(
 pub(super) fn lookup_ipv6_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv6Addr>, BoxError>> + Send {
     lookup_record_stream(
         domain,
         timeout,
-        response_buffer_size,
+        native,
         ffi::NS_T_AAAA as c_int,
         parse_aaaa_response,
     )
@@ -59,12 +64,12 @@ pub(super) fn lookup_ipv6_stream(
 pub(super) fn lookup_txt_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Txt>, BoxError>> + Send {
     lookup_record_stream(
         domain,
         timeout,
-        response_buffer_size,
+        native,
         ffi::NS_T_TXT as c_int,
         parse_txt_response,
     )
@@ -73,12 +78,12 @@ pub(super) fn lookup_txt_stream(
 pub(super) fn lookup_cname_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<Name>, BoxError>> + Send {
     lookup_record_stream(
         domain,
         timeout,
-        response_buffer_size,
+        native,
         ffi::NS_T_CNAME as c_int,
         parse_cname_response,
     )
@@ -87,29 +92,29 @@ pub(super) fn lookup_cname_stream(
 pub(super) fn lookup_svcb_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
-    lookup_service_binding_stream(domain, timeout, response_buffer_size, RecordType::SVCB)
+    lookup_service_binding_stream(domain, timeout, native, RecordType::SVCB)
 }
 
 pub(super) fn lookup_https_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
 ) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
-    lookup_service_binding_stream(domain, timeout, response_buffer_size, RecordType::HTTPS)
+    lookup_service_binding_stream(domain, timeout, native, RecordType::HTTPS)
 }
 
 fn lookup_service_binding_stream(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
     record_type: RecordType,
 ) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
     lookup_record_stream(
         domain,
         timeout,
-        response_buffer_size,
+        native,
         i32::from(u16::from(record_type)),
         move |packet, emit| parse_service_binding_response(packet, record_type, emit),
     )
@@ -118,7 +123,7 @@ fn lookup_service_binding_stream(
 fn lookup_record_stream<T, P>(
     domain: Domain,
     timeout: Duration,
-    response_buffer_size: usize,
+    native: NativeConfig,
     rrtype: libc::c_int,
     parser: P,
 ) -> impl Stream<Item = Result<LookupEvent<T>, BoxError>> + Send
@@ -129,13 +134,20 @@ where
     stream_fn(async move |mut yielder| {
         tracing::debug!(?timeout, %domain, rrtype, "dns::linux: res_nsearch");
 
-        let (tx, rx) = mpsc::channel(8);
-        let join = tokio::task::spawn_blocking(move || {
+        let deadline = deadline_after(timeout);
+        let (tx, mut rx) = mpsc::channel(8);
+        let response_buffer_size = native.response_buffer_size;
+        let task = native.limit.spawn_blocking(deadline, move |budget| {
+            if budget.is_zero() {
+                return Err(DnsTimeoutError::new(timeout).into());
+            }
             // `lookup_record_packet` always returns the wire response (or None
             // for transport errors); NXDOMAIN/NODATA come back as a packet
             // whose answer section is empty but whose authority section
             // typically carries a SOA RR — see RFC 2308 §5.
-            let Some(packet) = lookup_record_packet(domain, rrtype, response_buffer_size)? else {
+            let Some(packet) =
+                lookup_record_packet(domain, rrtype, response_buffer_size, budget, timeout)?
+            else {
                 return Ok(());
             };
 
@@ -158,22 +170,28 @@ where
 
             Ok::<_, BoxError>(())
         });
+        let Some(join) = task.await else {
+            tracing::debug!("linux::res_nsearch: no native lookup slot before the deadline");
+            yielder
+                .yield_item(Err(DnsTimeoutError::new(timeout).into()))
+                .await;
+            return;
+        };
 
-        let mut stream = std::pin::pin!(ReceiverStream::new(rx).timeout(timeout));
-
-        while let Some(result) = stream.next().await {
-            match result {
-                Ok(item) => yielder.yield_item(item).await,
+        loop {
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Some(item)) => yielder.yield_item(item).await,
+                Ok(None) => break,
                 Err(err) => {
                     tracing::debug!(
                         %err,
                         "linux::res_nsearch: item failed to resolve on time: return timeout error",
                     );
-                    // `res_nsearch` is a blocking libc call, so timing out here only stops
+                    // the libc lookup is a blocking call, so timing out here only stops
                     // waiting for the worker result; it does not cancel the underlying OS
                     // resolver call once it has started.
                     yielder
-                        .yield_item(Err(LinuxDnsResolverError::timeout(timeout).into()))
+                        .yield_item(Err(DnsTimeoutError::new(timeout).into()))
                         .await;
                     return;
                 }
@@ -182,20 +200,14 @@ where
 
         match join.await {
             Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                yielder
-                    .yield_item(Err(LinuxDnsResolverError::message(format!(
-                        "linux dns res_nsearch task failed: {err}"
-                    ))
-                    .into()))
-                    .await;
-            }
+            // as is, so a timeout stays a `DnsTimeoutError`
+            Ok(Err(err)) => yielder.yield_item(Err(err)).await,
             Err(err) => {
                 tracing::debug!(
                     "linux::res_nsearch: lookup_record_stream error = {err} (report as timeout)"
                 );
                 yielder
-                    .yield_item(Err(LinuxDnsResolverError::timeout(timeout).into()))
+                    .yield_item(Err(DnsTimeoutError::new(timeout).into()))
                     .await;
             }
         }
@@ -219,73 +231,122 @@ fn lookup_record_packet(
     domain: Domain,
     rrtype: libc::c_int,
     response_buffer_size: usize,
+    budget: Duration,
+    timeout: Duration,
 ) -> Result<Option<Vec<u8>>, BoxError> {
     let max_response_size = response_buffer_limit(response_buffer_size)?;
-    let name = dns_name_from_domain(domain.as_str())?;
+    let deadline = Instant::now() + budget;
     let mut state: ffi::ResState = unsafe { mem::zeroed() };
 
     // SAFETY: `state` points to writable resolver context storage.
     if unsafe { ffi::res_ninit(&mut state) } != 0 {
         return Err(LinuxDnsResolverError::message("res_ninit failed").into());
     }
-    let _guard = ResStateGuard(&mut state as *mut _);
+    // every later access goes through the guard, so its drop never aliases
+    let nscount = state.nscount;
+    let mut state = ResStateGuard(&mut state, nscount);
+    #[cfg(test)]
+    stub_tests::use_stub(state.0, domain.as_str());
+    state.1 = state.0.nscount;
+    // TCP is asked here, unlike by libc within the deadline: for a truncated
+    // answer, and for every name with `use-vc`
+    let tries = walk::Tries {
+        retrans: state.0.retrans,
+        retry: state.0.retry,
+        nscount: state.0.nscount,
+        tcp: state.0.options & ffi::RES_USEVC != 0,
+    };
+    state.0.options |= ffi::RES_IGNTC;
 
-    let mut buffer = vec![0_u8; INITIAL_RESPONSE_BUFFER_SIZE.min(max_response_size)];
-
+    let alias = walk::hostalias(domain.as_str());
+    let walk = Walk::new(state.0, domain.as_str(), alias, walk::full_search_list)?;
+    let mut outcomes = walk.outcomes();
     loop {
-        // SAFETY:
-        // - `state` is initialized by `res_ninit`.
-        // - `name` is a valid NUL-terminated DNS name.
-        // - `buffer` is writable response storage.
-        //
-        // `res_nsearch` (vs `res_nquery`) walks the search list from
-        // `/etc/resolv.conf` and applies the `ndots` rule, so short / unqualified
-        // names resolve the same way `getaddrinfo` and hickory's system resolver
-        // would resolve them.
-        let response_len = unsafe {
-            ffi::res_nsearch(
-                &mut state,
-                name.as_ptr(),
-                ffi::NS_C_IN as libc::c_int,
-                rrtype,
-                buffer.as_mut_ptr(),
-                buffer.len() as libc::c_int,
-            )
-        };
-
-        if response_len < 0 {
-            let h_errno = state.res_h_errno;
-            if matches!(h_errno, 0 | ffi::HOST_NOT_FOUND | ffi::NO_DATA) {
-                tracing::debug!(%domain, rrtype, h_errno, "dns::linux: res_nsearch empty result");
-                // glibc copies the wire response into `buffer` before classifying
-                // the rcode and returning -1 (see `__libc_res_nsearch` in
-                // `resolv/res_query.c`). The exact response length isn't surfaced,
-                // but the parser walks via DNS header counts and bounds itself on
-                // `packet.len()`, so handing over the full capacity is safe — any
-                // bytes past the real response are zeros from `vec![0; ...]` that
-                // look like empty labels / records and terminate the walk
-                // harmlessly. This lets us recover the SOA TTL from the authority
-                // section for RFC 2308-correct negative caching.
-                return Ok(Some(buffer));
+        let at = walk.run(&mut outcomes, deadline, |name, budget| {
+            let asked = walk::ask(state.0, tries, name, rrtype, max_response_size, budget);
+            // a short budget asks fewer nameservers, the next name all again
+            state.0.nscount = tries.nscount;
+            asked
+        });
+        if matches!(outcomes[at], Some(Asked::Timeout)) {
+            // a caching stub may hold a late answer by now
+            let timed_out = outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, Some(Asked::Timeout)))
+                .count();
+            if walk::another_try(state.0, deadline, timed_out) {
+                for outcome in &mut outcomes {
+                    if matches!(outcome, Some(Asked::Timeout)) {
+                        *outcome = None;
+                    }
+                }
+                continue;
             }
-            return Err(LinuxDnsResolverError::message(format!(
-                "res_nsearch failed (h_errno={h_errno})",
-            ))
-            .into());
         }
-
-        let response_len = response_len as usize;
-        if grow_response_buffer(&mut buffer, response_len, max_response_size)? {
-            // libc returns the required wire length when the supplied answer
-            // buffer is too small. Retry with exactly that capacity, avoiding
-            // a 64 KiB allocation for the overwhelmingly common small answer.
-            continue;
+        let Some(decided) = outcomes[at].take() else {
+            return Err(
+                LinuxDnsResolverError::message("dns lookup ended without an answer").into(),
+            );
+        };
+        if let Asked::NxDomain(_) | Asked::NoData(_) = decided {
+            tracing::debug!(%domain, rrtype, "dns::linux: res_nquery empty result");
         }
-
-        buffer.truncate(response_len);
-        return Ok(Some(buffer));
+        return decided.into_packet(timeout);
     }
 }
+
+/// libc leaves `errno` alone on success, so a value from an earlier call on
+/// this thread must not pass for this call's.
+fn clear_errno() {
+    // SAFETY: returns this thread's errno slot, valid for its lifetime
+    let errno = unsafe { libc::__errno_location() };
+    // SAFETY: the slot is this thread's own and writable
+    unsafe { *errno = 0 };
+}
+
+/// Shorten libc's retransmits so one name's tries land inside `budget`: by
+/// default one lost datagram would use up the whole budget.
+///
+/// Fewer tries are made only when even a second per send does not fit.
+fn fit_retransmits(state: &mut ffi::ResState, budget: Duration) {
+    let budget = whole_secs(budget).max(1);
+    // libc waits a second per nameserver at least: ask fewer if all do not fit
+    if state.nscount > budget {
+        state.nscount = budget;
+    }
+    let nscount = state.nscount.clamp(1, MAX_NAMESERVERS);
+    let total = |retrans, retry: c_int| retry.max(1).saturating_mul(try_secs(retrans, nscount));
+
+    let mut retrans = state.retrans.max(1);
+    while retrans > 1 && total(retrans, state.retry) > budget {
+        retrans -= 1;
+    }
+    state.retrans = retrans;
+    if total(retrans, state.retry) > budget {
+        state.retry = (budget / try_secs(retrans, nscount)).max(1);
+    }
+}
+
+/// `budget` to the nearest second, the unit libc waits in: the budget arrives a
+/// little short of the timeout, so its last second is kept.
+fn whole_secs(budget: Duration) -> c_int {
+    c_int::try_from(budget.saturating_add(Duration::from_millis(500)).as_secs())
+        .unwrap_or(c_int::MAX)
+}
+
+/// Seconds one try waits on all nameservers, as glibc's `send_dg` computes it.
+fn try_secs(retrans: c_int, nscount: c_int) -> c_int {
+    (0..nscount)
+        .map(|ns| {
+            let secs = retrans.saturating_mul(1 << ns);
+            let secs = if ns > 0 { secs / nscount } else { secs };
+            secs.max(1)
+        })
+        .fold(0, c_int::saturating_add)
+}
+
+/// `MAXNS` in `<resolv.h>`.
+const MAX_NAMESERVERS: c_int = 3;
 
 fn response_buffer_limit(configured: usize) -> Result<usize, BoxError> {
     if configured < DNS_HEADER_SIZE {
@@ -315,10 +376,14 @@ fn grow_response_buffer(
     Ok(true)
 }
 
-struct ResStateGuard(*mut ffi::ResState);
+/// The state and its nameserver count: a lookup may ask fewer nameservers,
+/// but libc frees its copies of only those counted when it closes.
+struct ResStateGuard<'a>(&'a mut ffi::ResState, c_int);
 
-impl Drop for ResStateGuard {
+impl Drop for ResStateGuard<'_> {
     fn drop(&mut self) {
+        self.0.nscount = self.1;
+        // SAFETY: the state was initialized by `res_ninit` and is closed once.
         unsafe {
             ffi::res_nclose(self.0);
         }
@@ -581,8 +646,26 @@ mod ffi {
 
     /// Authoritative Answer Host not found.
     pub(super) const HOST_NOT_FOUND: c_int = 1;
+    /// Non-authoritative failure: SERVFAIL, or no nameserver answered.
+    pub(super) const TRY_AGAIN: c_int = 2;
+    /// Non-recoverable failure, e.g. FORMERR or a name too long to ask.
+    #[cfg(test)]
+    pub(super) const NO_RECOVERY: c_int = 3;
     /// Valid name, no data record of requested type.
     pub(super) const NO_DATA: c_int = 4;
+
+    // Search options from glibc's <resolv.h>.
+
+    /// Search a name without dots in the default domain.
+    pub(super) const RES_DEFNAMES: libc::c_ulong = 0x80;
+    /// Search a dotted relative name in the search list.
+    pub(super) const RES_DNSRCH: libc::c_ulong = 0x200;
+    /// Take a truncated answer as is, rather than asking again over TCP.
+    pub(super) const RES_IGNTC: libc::c_ulong = 0x20;
+    /// Ask over TCP only (`use-vc`).
+    pub(super) const RES_USEVC: libc::c_ulong = 0x08;
+    /// Do not ask a name without dots as is once it was searched.
+    pub(super) const RES_NOTLDQUERY: libc::c_ulong = 0x0100_0000;
 
     // Thread-safe resolver state generated from the target platform's
     // `<resolv.h>` definition via bindgen.
@@ -594,6 +677,7 @@ mod ffi {
     // - https://man.openbsd.org/resolver.3
     // - https://man.netbsd.org/resolver.3
     pub(super) type ResState = bindings::__res_state;
+    pub(super) type SockaddrIn = bindings::sockaddr_in;
 
     // GNU/Linux changed the public resolver symbol mapping in glibc 2.34.
     // Compile a small C shim against the target's `<resolv.h>` so native and
@@ -611,8 +695,8 @@ mod ffi {
         pub(super) fn res_ninit(state: *mut ResState) -> c_int;
         #[link_name = "rama_res_nclose"]
         pub(super) fn res_nclose(state: *mut ResState);
-        #[link_name = "rama_res_nsearch"]
-        pub(super) fn res_nsearch(
+        #[link_name = "rama_res_nquery"]
+        pub(super) fn res_nquery(
             state: *mut ResState,
             dname: *const c_char,
             class: c_int,
@@ -634,7 +718,7 @@ mod ffi {
     unsafe extern "C" {
         pub(super) fn res_ninit(state: *mut ResState) -> c_int;
         pub(super) fn res_nclose(state: *mut ResState);
-        pub(super) fn res_nsearch(
+        pub(super) fn res_nquery(
             state: *mut ResState,
             dname: *const c_char,
             class: c_int,
@@ -646,8 +730,639 @@ mod ffi {
 }
 
 #[cfg(test)]
+mod stub_tests {
+    use std::assert_matches;
+    use std::{
+        ffi::CStr,
+        io::{Read as _, Write as _},
+        net::{Ipv4Addr, TcpListener, TcpStream, UdpSocket},
+        ptr,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        },
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use parking_lot::Mutex;
+    use rama_core::futures::StreamExt as _;
+    use rama_net::address::Domain;
+
+    use super::{
+        DnsTimeoutError, NativeConfig, ffi, lookup_ipv4_stream, lookup_record_packet,
+        parse_txt_response,
+    };
+    use crate::client::limit::{Limits, LookupLimit};
+
+    struct Stub {
+        name: &'static str,
+        port: u16,
+        options: Options,
+    }
+
+    /// How a lookup sees its stub.
+    #[derive(Clone, Copy)]
+    struct Options {
+        search: Option<&'static CStr>,
+        sends: libc::c_int,
+        /// `use-vc`: TCP only.
+        tcp_only: bool,
+        /// A nameserver that never answers comes first.
+        dead_first: Option<u16>,
+    }
+
+    impl Options {
+        fn new(search: Option<&'static CStr>, sends: libc::c_int) -> Self {
+            Self {
+                search,
+                sends,
+                tcp_only: false,
+                dead_first: None,
+            }
+        }
+    }
+
+    static STUBS: Mutex<Vec<Stub>> = Mutex::new(Vec::new());
+
+    /// Called by the lookup itself, right after `res_ninit`.
+    pub(super) fn use_stub(state: &mut ffi::ResState, name: &str) {
+        let stubs = STUBS.lock();
+        let Some(stub) = stubs.iter().find(|stub| stub.name == name) else {
+            return;
+        };
+        let options = stub.options;
+        // a second per send
+        state.retrans = 1;
+        state.retry = options.sends;
+        state.nscount = 0;
+        for port in [options.dead_first, Some(stub.port)].into_iter().flatten() {
+            let ns = usize::try_from(state.nscount).expect("a nameserver index");
+            let nameserver = &mut state.nsaddr_list[ns];
+            nameserver.sin_family = libc::AF_INET as _;
+            nameserver.sin_port = port.to_be();
+            nameserver.sin_addr.s_addr = u32::from(Ipv4Addr::LOCALHOST).to_be();
+            // an IPv6 nameserver from resolv.conf would take precedence
+            // SAFETY: `res_ninit` initialized `_ext`, the variant glibc uses
+            unsafe { state._u._ext.nsaddrs[ns] = ptr::null_mut() };
+            state.nscount += 1;
+        }
+        state.dnsrch = [ptr::null_mut(); 7];
+        if let Some(search) = options.search {
+            state.dnsrch[0] = search.as_ptr().cast_mut();
+        }
+        state.set_ndots(1);
+        // no OPT record after the question, which the stub matches on
+        state.options &= !RES_USE_EDNS0;
+        if options.tcp_only {
+            state.options |= ffi::RES_USEVC;
+        }
+    }
+
+    /// A nameserver that takes queries, over UDP and TCP, and never answers.
+    fn dead_nameserver() -> u16 {
+        static DEAD: Mutex<Vec<(UdpSocket, TcpListener)>> = Mutex::new(Vec::new());
+        loop {
+            let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind dead stub");
+            let port = socket.local_addr().expect("dead stub addr").port();
+            if let Ok(listener) = TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
+                DEAD.lock().push((socket, listener));
+                return port;
+            }
+        }
+    }
+
+    /// `RES_USE_EDNS0` in glibc's <resolv.h>.
+    const RES_USE_EDNS0: libc::c_ulong = 0x0010_0000;
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Reply {
+        Silence,
+        Rcode(u8),
+        /// Ignore the first query, answer the rest with 127.0.0.1.
+        SecondTime,
+        /// NXDOMAIN for names under `corp.test`, silence for the rest.
+        SearchOnly,
+        /// A reply too short to hold a header.
+        Undersized,
+        /// SERVFAIL after 950ms, NXDOMAIN at once for names under `corp.test`.
+        SlowServfail,
+        /// A truncated answer, which TCP then completes or does not.
+        Truncated(Tcp),
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Tcp {
+        /// [`TXT_RECORDS`] TXT records, too many for a datagram.
+        Txt,
+        /// The same, a few bytes at a time.
+        Trickle,
+        /// One byte of the answer, then nothing.
+        Stall,
+        /// Takes the query, never answers.
+        Silence,
+        /// Not listening at all.
+        Closed,
+    }
+
+    const TXT_RECORDS: usize = 8;
+
+    /// What a stub saw and did.
+    #[derive(Default)]
+    struct Seen {
+        queries: AtomicUsize,
+        replies: AtomicUsize,
+        tcp_queries: AtomicUsize,
+    }
+
+    impl Seen {
+        fn tcp_queries(&self) -> usize {
+            self.tcp_queries.load(Ordering::SeqCst)
+        }
+
+        fn queries(&self) -> usize {
+            self.queries.load(Ordering::SeqCst)
+        }
+
+        fn replies(&self) -> usize {
+            self.replies.load(Ordering::SeqCst)
+        }
+    }
+
+    /// Serves `name` from a loopback stub, which libc asks up to `sends`
+    /// times per name.
+    fn serve(
+        name: &'static str,
+        search: Option<&'static CStr>,
+        sends: libc::c_int,
+        reply: Reply,
+    ) -> Arc<Seen> {
+        serve_with(name, reply, Options::new(search, sends))
+    }
+
+    fn serve_with(name: &'static str, reply: Reply, options: Options) -> Arc<Seen> {
+        // TCP on the same port, unless it is to refuse
+        let (socket, listener) = loop {
+            let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind stub");
+            let port = socket.local_addr().expect("stub addr").port();
+            if reply == Reply::Truncated(Tcp::Closed) {
+                break (socket, None);
+            }
+            if let Ok(listener) = TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
+                break (socket, Some(listener));
+            }
+        };
+        let port = socket.local_addr().expect("stub addr").port();
+        STUBS.lock().push(Stub {
+            name,
+            port,
+            options,
+        });
+        let stub = Arc::new(Seen::default());
+        if let (Some(listener), Reply::Truncated(tcp)) = (listener, reply) {
+            let seen = stub.clone();
+            thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    seen.tcp_queries.fetch_add(1, Ordering::SeqCst);
+                    serve_tcp(stream, tcp);
+                }
+            });
+        }
+        let seen = stub.clone();
+        thread::spawn(move || {
+            let mut packet = [0; 512];
+            while let Ok((len, peer)) = socket.recv_from(&mut packet) {
+                let nth = seen.queries.fetch_add(1, Ordering::SeqCst);
+                let query = &packet[..len];
+                let response = match reply {
+                    Reply::SecondTime if nth == 0 => continue,
+                    Reply::SearchOnly | Reply::SlowServfail
+                        if query.ends_with(SEARCH_DOMAIN_A_QUESTION) =>
+                    {
+                        header_only(query, 3)
+                    }
+                    Reply::Silence | Reply::SearchOnly => continue,
+                    Reply::Rcode(rcode) => header_only(query, rcode),
+                    Reply::SecondTime => with_loopback_answer(query),
+                    Reply::Undersized => query[..2].to_vec(),
+                    Reply::SlowServfail => {
+                        thread::sleep(Duration::from_millis(950));
+                        header_only(query, 2)
+                    }
+                    Reply::Truncated(_) => {
+                        let mut response = header_only(query, 0);
+                        response[2] |= 0x02;
+                        response
+                    }
+                };
+                seen.replies.fetch_add(1, Ordering::SeqCst);
+                _ = socket.send_to(&response, peer);
+            }
+        });
+        stub
+    }
+
+    /// The end of an A question for a name under `corp.test`.
+    const SEARCH_DOMAIN_A_QUESTION: &[u8] = b"\x04corp\x04test\x00\x00\x01\x00\x01";
+
+    /// Answers one TCP query as `tcp` says.
+    fn serve_tcp(mut stream: TcpStream, tcp: Tcp) {
+        let mut len = [0; 2];
+        if stream.read_exact(&mut len).is_err() {
+            return;
+        }
+        let mut query = vec![0; usize::from(u16::from_be_bytes(len))];
+        if stream.read_exact(&mut query).is_err() {
+            return;
+        }
+        if tcp == Tcp::Silence {
+            // hold the connection open until the client leaves
+            _ = stream.read(&mut [0; 1]);
+            return;
+        }
+        let mut response = header_only(&query, 0);
+        response[7] = TXT_RECORDS as u8;
+        for _ in 0..TXT_RECORDS {
+            response.extend_from_slice(&[0xc0, 0x0c, 0, 16, 0, 1, 0, 0, 0, 60, 0, 201, 200]);
+            response.extend_from_slice(&[b'x'; 200]);
+        }
+        let len = u16::try_from(response.len()).expect("small answer");
+        let framed = [len.to_be_bytes().as_slice(), &response].concat();
+        match tcp {
+            Tcp::Trickle => {
+                for piece in framed.chunks(500) {
+                    _ = stream.write_all(&piece[..1]);
+                    thread::sleep(Duration::from_millis(20));
+                    _ = stream.write_all(&piece[1..]);
+                    thread::sleep(Duration::from_millis(20));
+                }
+            }
+            Tcp::Stall => {
+                _ = stream.write_all(&framed[..1]);
+                _ = stream.read(&mut [0; 1]);
+            }
+            _ => _ = stream.write_all(&framed),
+        }
+    }
+
+    fn header_only(query: &[u8], rcode: u8) -> Vec<u8> {
+        let mut response = query.to_vec();
+        response[2] = 0x81;
+        response[3] = 0x80 | rcode;
+        response
+    }
+
+    fn with_loopback_answer(query: &[u8]) -> Vec<u8> {
+        let mut response = header_only(query, 0);
+        response[7] = 1;
+        response.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 127, 0, 0, 1]);
+        response
+    }
+
+    fn lookup(
+        name: &'static str,
+        budget: Duration,
+    ) -> Result<Option<Vec<u8>>, rama_core::error::BoxError> {
+        lookup_type(name, ffi::NS_T_A, budget)
+    }
+
+    fn lookup_type(
+        name: &'static str,
+        rrtype: u16,
+        budget: Duration,
+    ) -> Result<Option<Vec<u8>>, rama_core::error::BoxError> {
+        let domain = Domain::from_static(name);
+        lookup_record_packet(domain, libc::c_int::from(rrtype), 4096, budget, budget)
+    }
+
+    #[test]
+    fn a_truncated_answer_is_asked_again_over_tcp() {
+        let stub = serve("big.stub.test", None, 1, Reply::Truncated(Tcp::Txt));
+        let packet = lookup_type("big.stub.test", ffi::NS_T_TXT, Duration::from_secs(2))
+            .expect("the TCP answer")
+            .expect("its response");
+        let mut texts = Vec::new();
+        parse_txt_response(&packet, &mut |text, _| texts.push(text)).expect("TXT records");
+        assert_eq!(texts.len(), TXT_RECORDS);
+        assert_eq!((stub.queries(), stub.tcp_queries()), (1, 1));
+    }
+
+    #[test]
+    fn a_silent_tcp_retry_ends_with_the_budget() {
+        let stub = serve("hush.stub.test", None, 1, Reply::Truncated(Tcp::Silence));
+        let started = Instant::now();
+        // its own thread: libc's TCP retry would block it for good
+        let (done, lookup_ended) = mpsc::channel();
+        thread::spawn(move || {
+            _ = done.send(lookup("hush.stub.test", Duration::from_millis(1400)));
+        });
+        let ended = lookup_ended
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the lookup hangs on a silent TCP retry");
+        let err = ended.expect_err("silence");
+        assert!(err.downcast_ref::<DnsTimeoutError>().is_some(), "{err}");
+        assert!(started.elapsed() < Duration::from_millis(1900));
+        assert_eq!(stub.tcp_queries(), 1);
+    }
+
+    #[test]
+    fn a_tcp_answer_in_pieces_is_read_whole() {
+        _ = serve("drip.stub.test", None, 1, Reply::Truncated(Tcp::Trickle));
+        let packet = lookup_type("drip.stub.test", ffi::NS_T_TXT, Duration::from_secs(2))
+            .expect("the TCP answer")
+            .expect("its response");
+        let mut texts = 0;
+        parse_txt_response(&packet, &mut |_, _| texts += 1).expect("TXT records");
+        assert_eq!(texts, TXT_RECORDS);
+    }
+
+    /// `lookup`, on a thread of its own, unless it hangs.
+    fn lookup_or_hang(name: &'static str, budget: Duration) -> rama_core::error::BoxError {
+        let (done, ended) = mpsc::channel();
+        thread::spawn(move || _ = done.send(lookup(name, budget)));
+        ended
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the lookup hangs")
+            .expect_err("no answer")
+    }
+
+    #[test]
+    fn a_stalled_tcp_answer_ends_with_the_budget() {
+        _ = serve("stall.stub.test", None, 1, Reply::Truncated(Tcp::Stall));
+        let started = Instant::now();
+        let err = lookup_or_hang("stall.stub.test", Duration::from_millis(1400));
+        assert!(err.downcast_ref::<DnsTimeoutError>().is_some(), "{err}");
+        assert!(started.elapsed() < Duration::from_millis(1900));
+    }
+
+    #[test]
+    fn a_tcp_retry_moves_on_to_the_next_nameserver() {
+        let options = Options {
+            dead_first: Some(dead_nameserver()),
+            ..Options::new(None, 1)
+        };
+        let stub = serve_with("next.stub.test", Reply::Truncated(Tcp::Txt), options);
+        let started = Instant::now();
+        let packet = lookup_type("next.stub.test", ffi::NS_T_TXT, Duration::from_secs(3))
+            .expect("the second nameserver's TCP answer")
+            .expect("its response");
+        let mut texts = 0;
+        parse_txt_response(&packet, &mut |_, _| texts += 1).expect("TXT records");
+        assert_eq!(texts, TXT_RECORDS);
+        assert_eq!(stub.tcp_queries(), 1);
+        assert!(started.elapsed() < Duration::from_millis(3500));
+    }
+
+    #[test]
+    fn use_vc_asks_over_tcp_only() {
+        let options = Options {
+            tcp_only: true,
+            ..Options::new(None, 1)
+        };
+        let stub = serve_with("vc.stub.test", Reply::Truncated(Tcp::Txt), options);
+        let packet = lookup_type("vc.stub.test", ffi::NS_T_TXT, Duration::from_secs(2))
+            .expect("the TCP answer")
+            .expect("its response");
+        let mut texts = 0;
+        parse_txt_response(&packet, &mut |_, _| texts += 1).expect("TXT records");
+        assert_eq!(texts, TXT_RECORDS);
+        assert_eq!((stub.queries(), stub.tcp_queries()), (0, 1));
+
+        // and ends with the budget, where libc's own TCP would not
+        _ = serve_with("vc-hush.stub.test", Reply::Truncated(Tcp::Silence), options);
+        let started = Instant::now();
+        let err = lookup_or_hang("vc-hush.stub.test", Duration::from_millis(1400));
+        assert!(err.downcast_ref::<DnsTimeoutError>().is_some(), "{err}");
+        assert!(started.elapsed() < Duration::from_millis(1900));
+    }
+
+    #[test]
+    fn a_refused_tcp_retry_is_an_error() {
+        _ = serve("closed.stub.test", None, 1, Reply::Truncated(Tcp::Closed));
+        let started = Instant::now();
+        let err = lookup("closed.stub.test", Duration::from_secs(2)).expect_err("no TCP");
+        assert!(err.downcast_ref::<DnsTimeoutError>().is_none(), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_slow_servfail_next_to_a_search_answer_is_an_error() {
+        // `slow.stub` gets SERVFAIL after 950ms, `slow.stub.corp.test` NXDOMAIN
+        let stub = serve("slow.stub", Some(c"corp.test"), 1, Reply::SlowServfail);
+        let started = Instant::now();
+        let err = lookup("slow.stub", Duration::from_millis(4990)).expect_err("SERVFAIL");
+        assert!(err.downcast_ref::<DnsTimeoutError>().is_none(), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(stub.queries(), 2);
+    }
+
+    #[test]
+    fn a_servfail_is_an_answer_not_a_timeout() {
+        for (name, rcode) in [("servfail.stub.test", 2), ("refused.stub.test", 5)] {
+            let stub = serve(name, None, 1, Reply::Rcode(rcode));
+            let started = Instant::now();
+            let err = lookup(name, Duration::from_millis(4990)).expect_err("an error answer");
+            assert!(err.downcast_ref::<DnsTimeoutError>().is_none(), "{err}");
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert!(stub.queries() <= 4, "{}", stub.queries());
+        }
+    }
+
+    #[test]
+    fn a_timeout_next_to_a_search_answer_is_still_a_timeout() {
+        // a single label asks `corp.test` first, a dotted name asks it last;
+        // under `corp.test` comes NXDOMAIN, the name as is gets silence
+        for name in ["stalehdr", "stalehdr.stub"] {
+            let stub = serve(name, Some(c"corp.test"), 1, Reply::SearchOnly);
+            let started = Instant::now();
+            let err = lookup(name, Duration::from_millis(2400)).expect_err("silence");
+            assert!(
+                err.downcast_ref::<DnsTimeoutError>().is_some(),
+                "{name}: {err}"
+            );
+            assert!(stub.queries() >= 2, "{name}: {}", stub.queries());
+            assert!(stub.replies() >= 1, "{name}: no NXDOMAIN under `corp.test`");
+            assert!(started.elapsed() < Duration::from_millis(2900), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_reply_rejected_at_once_is_not_asked_again() {
+        let stub = serve("undersized.stub.test", None, 1, Reply::Undersized);
+        let started = Instant::now();
+        let err = lookup("undersized.stub.test", Duration::from_millis(2400))
+            .expect_err("an unusable reply");
+        assert!(err.downcast_ref::<DnsTimeoutError>().is_none(), "{err}");
+        assert!(stub.queries() <= 4, "{}", stub.queries());
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_timed_out_query_is_asked_again_within_the_budget() {
+        let stub = serve("again.stub.test", None, 1, Reply::SecondTime);
+        let started = Instant::now();
+        let packet = lookup("again.stub.test", Duration::from_millis(2400))
+            .expect("answered the second time")
+            .expect("a response");
+        assert_eq!(packet[7], 1, "one answer");
+        assert_eq!(stub.queries(), 2);
+        assert!(started.elapsed() < Duration::from_millis(2400));
+    }
+
+    #[test]
+    fn a_silent_stub_times_out_within_the_budget() {
+        let stub = serve("silent.stub.test", None, 1, Reply::Silence);
+        let started = Instant::now();
+        let err = lookup("silent.stub.test", Duration::from_millis(1400)).expect_err("silence");
+        assert!(err.downcast_ref::<DnsTimeoutError>().is_some(), "{err}");
+        // another 1s walk no longer fits in what is left
+        assert_eq!(stub.queries(), 1);
+        assert!(started.elapsed() < Duration::from_millis(1900));
+    }
+
+    #[test]
+    fn two_names_share_the_budget() {
+        let stub = serve("split.stub.test", Some(c"corp.test"), 2, Reply::Silence);
+        let started = Instant::now();
+        let err = lookup("split.stub.test", Duration::from_millis(2400)).expect_err("silence");
+        assert!(err.downcast_ref::<DnsTimeoutError>().is_some(), "{err}");
+        // as is, then with `corp.test`: one send of a second each, not two
+        assert_eq!(stub.queries(), 2);
+        assert!(started.elapsed() < Duration::from_millis(2900));
+    }
+
+    #[test]
+    fn only_the_root_to_search_asks_once() {
+        let stub = serve("rooted.stub.test", Some(c"."), 1, Reply::Rcode(3));
+        let packet = lookup("rooted.stub.test", Duration::from_secs(2))
+            .expect("a negative answer")
+            .expect("its response");
+        assert_eq!(packet[3] & 0x0f, 3, "NXDOMAIN");
+        // as is and then rooted would be the same query twice
+        assert_eq!(stub.queries(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_native_timeout_reaches_the_caller_as_itself() {
+        _ = serve("caller.stub.test", None, 1, Reply::Silence);
+        let native = NativeConfig {
+            response_buffer_size: 4096,
+            limit: LookupLimit::new(Limits::ONE_QUERY),
+        };
+        let timeout = Duration::from_millis(1400);
+        let items: Vec<_> =
+            lookup_ipv4_stream(Domain::from_static("caller.stub.test"), timeout, native)
+                .collect()
+                .await;
+        assert_matches!(
+            items.as_slice(),
+            [Err(err)] if err
+                .downcast_ref::<DnsTimeoutError>()
+                .is_some_and(|err| err.timeout() == timeout),
+            "{:?}",
+            items
+                .iter()
+                .map(|item| item.as_ref().err().map(ToString::to_string))
+                .collect::<Vec<_>>(),
+        );
+    }
+}
+
+#[cfg(test)]
 mod response_buffer_tests {
-    use super::{DNS_HEADER_SIZE, grow_response_buffer, response_buffer_limit};
+    use std::{mem, time::Duration};
+
+    use super::{
+        DNS_HEADER_SIZE, ResStateGuard, clear_errno, ffi, fit_retransmits, grow_response_buffer,
+        response_buffer_limit, try_secs, whole_secs,
+    };
+
+    #[test]
+    fn a_stale_errno_is_cleared() {
+        // SAFETY: closing an invalid fd only sets errno
+        let closed = unsafe { libc::close(-1) };
+        assert_eq!(closed, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EBADF)
+        );
+        clear_errno();
+        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(0));
+    }
+
+    /// `(retrans, retry)` after fitting, and the seconds one name may then wait.
+    fn fitted(
+        retrans: libc::c_int,
+        retry: libc::c_int,
+        nscount: libc::c_int,
+        budget: Duration,
+    ) -> (libc::c_int, libc::c_int, libc::c_int) {
+        // SAFETY: `__res_state` is plain old data; zeroed is a valid value.
+        let mut state: ffi::ResState = unsafe { mem::zeroed() };
+        state.retrans = retrans;
+        state.retry = retry;
+        state.nscount = nscount;
+        fit_retransmits(&mut state, budget);
+        let waited = state.retry.max(1) * try_secs(state.retrans, state.nscount.clamp(1, 3));
+        (state.retrans, state.retry, waited)
+    }
+
+    #[test]
+    fn retransmits_fit_the_lookup_budget() {
+        let secs = Duration::from_secs;
+        // glibc defaults against one stub: retransmit after 2s, not at 5s
+        assert_eq!(fitted(5, 2, 1, secs(5)), (2, 2, 4));
+        // glibc waits at least a second per send, so drop a try instead
+        assert_eq!(fitted(5, 2, 3, secs(5)), (1, 1, 3));
+        assert_eq!(fitted(5, 2, 1, secs(1)), (1, 1, 1));
+        // three nameservers do not fit two seconds: ask the first two
+        assert_eq!(fitted(5, 2, 3, secs(2)), (1, 1, 2));
+        // a hostile `options timeout:30 attempts:5` with three nameservers
+        assert_eq!(fitted(30, 5, 3, secs(5)), (1, 1, 3));
+        // a shorter configured wait is kept, a fitting one is never lengthened
+        assert_eq!(fitted(1, 2, 1, secs(5)), (1, 2, 2));
+        assert_eq!(fitted(5, 2, 1, secs(30)), (5, 2, 10));
+        assert_eq!(fitted(5, 0, 0, secs(5)), (5, 0, 5));
+        // the budget a 2s or 5s timeout leaves once the call starts
+        assert_eq!(fitted(5, 2, 1, Duration::from_millis(1990)), (1, 2, 2));
+        assert_eq!(fitted(1, 5, 1, Duration::from_millis(4980)), (1, 5, 5));
+    }
+
+    #[test]
+    fn closing_counts_every_nameserver_again() {
+        // SAFETY: `__res_state` is plain old data; zeroed is a valid value.
+        let mut state: ffi::ResState = unsafe { mem::zeroed() };
+        // SAFETY: `state` points to writable resolver context storage.
+        assert_eq!(unsafe { ffi::res_ninit(&mut state) }, 0);
+        let configured = state.nscount;
+        let guard = ResStateGuard(&mut state, configured);
+        // as a short budget leaves it
+        guard.0.nscount = 0;
+        drop(guard);
+        assert_eq!(state.nscount, configured);
+    }
+
+    #[test]
+    fn whole_secs_rounds_to_the_nearest_second() {
+        assert_eq!(whole_secs(Duration::from_millis(499)), 0);
+        assert_eq!(whole_secs(Duration::from_millis(500)), 1);
+        // a 5s timeout fits 4s of retransmits, leaving one more try
+        assert_eq!(
+            whole_secs(Duration::from_millis(4980) - Duration::from_secs(4)),
+            1
+        );
+        assert_eq!(whole_secs(Duration::MAX), libc::c_int::MAX);
+    }
+
+    #[test]
+    fn libc_waits_per_try_as_send_dg_computes_it() {
+        assert_eq!(try_secs(5, 1), 5);
+        // 5, then (5 << 1) / 3, then (5 << 2) / 3
+        assert_eq!(try_secs(5, 3), 5 + 3 + 6);
+        // never under a second per nameserver
+        assert_eq!(try_secs(1, 3), 3);
+    }
 
     #[test]
     fn rejects_capacities_smaller_than_the_fixed_dns_header() {

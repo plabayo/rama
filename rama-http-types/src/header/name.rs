@@ -443,6 +443,11 @@ standard_headers! {
     /// See [RFC 9211](https://www.rfc-editor.org/rfc/rfc9211.html).
     (CacheStatus, CACHE_STATUS, b"cache-status");
 
+    /// Signals that the Capsule Protocol is in use on the request's data stream.
+    ///
+    /// See [RFC 9297 §3.4](https://www.rfc-editor.org/rfc/rfc9297.html#section-3.4).
+    (CapsuleProtocol, CAPSULE_PROTOCOL, b"capsule-protocol");
+
     /// Specifies directives that allow origin servers to control the behavior of CDN caches
     /// interposed between them and clients separately from other caches that might handle the
     /// response.
@@ -2222,6 +2227,7 @@ unsafe fn slice_assume_init<T>(slice: &[MaybeUninit<T>]) -> &[T] {
 mod tests {
     use self::StandardHeader::Vary;
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn test_bounds() {
@@ -2420,29 +2426,29 @@ mod tests {
     fn test_original_and_lowercase_views() {
         let standard = HeaderName::from_static("Content-Length");
         assert_eq!(standard.as_str(), "content-length");
-        assert!(matches!(standard.as_original_str(), Cow::Owned(_)));
-        assert!(matches!(standard.as_lower_str(), Cow::Borrowed(_)));
+        assert_matches!(standard.as_original_str(), Cow::Owned(_));
+        assert_matches!(standard.as_lower_str(), Cow::Borrowed(_));
         assert_eq!(standard.as_original_str(), "Content-Length");
         assert_eq!(standard.as_lower_str(), "content-length");
         assert_eq!(standard.display_original().to_string(), "Content-Length");
         assert_eq!(standard.display_lowercase().to_string(), "content-length");
 
         let lower_standard = HeaderName::from_static("content-length");
-        assert!(matches!(lower_standard.as_original_str(), Cow::Borrowed(_)));
-        assert!(matches!(lower_standard.as_lower_str(), Cow::Borrowed(_)));
+        assert_matches!(lower_standard.as_original_str(), Cow::Borrowed(_));
+        assert_matches!(lower_standard.as_lower_str(), Cow::Borrowed(_));
 
         let custom = HeaderName::from_static("X-CuStOm");
         assert_eq!(custom.as_str(), "X-CuStOm");
-        assert!(matches!(custom.as_original_str(), Cow::Borrowed(_)));
-        assert!(matches!(custom.as_lower_str(), Cow::Owned(_)));
+        assert_matches!(custom.as_original_str(), Cow::Borrowed(_));
+        assert_matches!(custom.as_lower_str(), Cow::Owned(_));
         assert_eq!(custom.as_original_str(), "X-CuStOm");
         assert_eq!(custom.as_lower_str(), "x-custom");
         assert_eq!(custom.display_original().to_string(), "X-CuStOm");
         assert_eq!(custom.display_lowercase().to_string(), "x-custom");
 
         let lower_custom = HeaderName::from_static("x-custom");
-        assert!(matches!(lower_custom.as_original_str(), Cow::Borrowed(_)));
-        assert!(matches!(lower_custom.as_lower_str(), Cow::Borrowed(_)));
+        assert_matches!(lower_custom.as_original_str(), Cow::Borrowed(_));
+        assert_matches!(lower_custom.as_lower_str(), Cow::Borrowed(_));
     }
 
     #[test]

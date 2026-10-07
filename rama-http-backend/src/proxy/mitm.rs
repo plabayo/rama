@@ -1,11 +1,8 @@
-use rama_core::error::BoxErrorExt as _;
-use std::convert::TryFrom;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{convert::TryFrom, sync::Arc, time::Duration};
 
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext as _, ErrorExt as _},
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     extensions::ExtensionsRef,
     graceful::ShutdownGuard,
     io::{BridgeIo, GracefulIo, Io},
@@ -20,7 +17,7 @@ use rama_core::{
 use rama_http::{
     Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
     conn::{H2ServerContextParams, TargetHttpVersion},
-    header,
+    header::{self, trailer::ForbiddenTrailers},
     io::upgrade::OnUpgrade,
     layer::remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
     service::web::response::IntoResponse,
@@ -36,10 +33,11 @@ use rama_http_types::proto::{
         frame::{Reason, Settings},
     },
 };
-use rama_net::client::EstablishedClientConnection;
-use rama_net::conn::{ConnectionHealth, ConnectionHealthWatcher};
-use rama_net::uri::Uri;
-
+use rama_net::{
+    client::EstablishedClientConnection,
+    conn::{ConnectionHealth, ConnectionHealthWatcher},
+    uri::Uri,
+};
 use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -84,8 +82,8 @@ impl DefaultErrorResponse {
             .into_response()
     }
 
-    /// `retry_safe` only for requests that provably never reached the
-    /// egress: h2 then resets the stream with `REFUSED_STREAM`, which
+    /// `retry_safe` only for requests the egress provably never
+    /// processed: h2 then resets the stream with `REFUSED_STREAM`, which
     /// clients may replay (even a POST), so never for anything else.
     #[inline(always)]
     fn response_for_version(version: Version, retry_safe: bool) -> Response {
@@ -155,10 +153,12 @@ pub type DefaultMiddleware = (
 /// When an HTTP/2 egress connection ends (EOF, `GOAWAY`, error), the
 /// ingress connection is shut down gracefully with a `GOAWAY`, so idle
 /// clients reconnect instead of sending into a dead relay. Ingress
-/// requests that raced that close and never reached the egress (over
-/// all attempts middleware made for them) are reset with
-/// `REFUSED_STREAM`, which clients may safely retry. This replaces any
-/// response middleware made for such a request, e.g. the default `502`.
+/// requests the egress provably never processed (over all attempts
+/// middleware made for them) are reset with `REFUSED_STREAM`, which
+/// clients may safely retry: they raced that close (never sent, or not
+/// covered by the egress `GOAWAY`), or the egress refused their stream.
+/// This replaces any response middleware made for such a request, e.g.
+/// the default `502`.
 ///
 /// The relay does not consume proxy-authentication fields: a transparent
 /// intermediary may be forwarding them to the proxy that owns the exchange.
@@ -169,6 +169,7 @@ pub struct HttpMitmRelay<M = DefaultMiddleware> {
     middleware: M,
     exec: Executor,
     eager_peer_settings_timeout: Duration,
+    forbidden_trailers: ForbiddenTrailers,
 }
 
 impl HttpMitmRelay {
@@ -192,6 +193,7 @@ impl HttpMitmRelay {
             ),
             exec,
             eager_peer_settings_timeout: DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT,
+            forbidden_trailers: ForbiddenTrailers::AllowAll,
         }
     }
 
@@ -207,6 +209,7 @@ impl HttpMitmRelay {
             middleware,
             exec: self.exec,
             eager_peer_settings_timeout: self.eager_peer_settings_timeout,
+            forbidden_trailers: self.forbidden_trailers,
         }
     }
 }
@@ -244,6 +247,16 @@ impl<M> HttpMitmRelay<M> {
         /// the egress IO carries `TargetHttpVersion(HTTP_2)`.
         pub fn eager_peer_settings_timeout(mut self, timeout: Duration) -> Self {
             self.eager_peer_settings_timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Which trailer fields the relay forwards although their definitions do not allow
+        /// them in trailers. Defaults to [`ForbiddenTrailers::AllowAll`]: a relay forwards
+        /// trailers as received, except fields that frame or route the message.
+        pub fn forbidden_trailers(mut self, forbidden_trailers: ForbiddenTrailers) -> Self {
+            self.forbidden_trailers = forbidden_trailers;
             self
         }
     }
@@ -346,11 +359,14 @@ where
             )))
         };
 
+        let forbidden_trailers = self.forbidden_trailers.clone();
         let result = self
             .http_server
             .serve_with_graceful_shutdown(
                 GracefulIo::new(token.clone().cancelled_owned(), ingress_stream),
                 service_fn(move |req: Request| {
+                    // Inherited by the forwarded request and the upstream's response.
+                    req.extensions().insert(forbidden_trailers.clone());
                     let relay_state = relay_state.clone();
                     let close_ingress = token.clone();
                     let guard = request_guard.clone();
@@ -851,16 +867,15 @@ where
         .extensions()
         .insert_arc(Arc::new(SendAttempts::default()));
     let result = client.serve(req).await.map_err(Into::into);
-    if attempts.none_sent() {
-        // raced the egress close, also when middleware already turned
-        // that failure into a response: the client can safely retry
+    if attempts.none_processed() {
+        // even when middleware already turned the failure into a response
         tracing::debug!(
             http.request.method = %method,
             url.full = %uri,
             ?version,
-            "MITM relay request never reached egress: refuse it (retry safe)"
+            egress.broken = health.health() == ConnectionHealth::Broken,
+            "MITM relay request never processed by egress: refuse it (retry safe)"
         );
-        health.mark_broken();
         return DefaultErrorResponse::response_for_version(version, true);
     }
     match result {

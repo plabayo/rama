@@ -1,7 +1,8 @@
+use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_utils::macros::enums::enum_builder;
 
-use crate::util::{self, IterExt};
+use crate::util::IterExt;
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 enum_builder! {
@@ -70,7 +71,14 @@ impl HeaderDecode for CrossOriginResourcePolicy {
 
 impl HeaderEncode for CrossOriginResourcePolicy {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        values.extend(::std::iter::once(util::fmt(self)));
+        match HeaderValue::try_from(self.to_string()) {
+            Ok(value) => values.extend(::std::iter::once(value)),
+            Err(err) => {
+                tracing::debug!(
+                    "failed to encode cross-origin-resource-policy value as header: {err}"
+                );
+            }
+        }
     }
 }
 
@@ -141,5 +149,12 @@ mod tests {
     #[test]
     fn parser_rejects_empty_value() {
         assert_eq!(test_decode::<CrossOriginResourcePolicy>(&[""]), None);
+    }
+
+    #[test]
+    fn encode_skips_values_that_are_not_valid_header_values() {
+        let corp: CrossOriginResourcePolicy = "a\nb".parse().unwrap();
+        let map = test_encode(corp);
+        assert!(map.get(CrossOriginResourcePolicy::name()).is_none());
     }
 }

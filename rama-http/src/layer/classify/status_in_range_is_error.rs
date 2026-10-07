@@ -96,33 +96,34 @@ impl fmt::Display for StatusInRangeFailureClass {
 mod tests {
     use super::*;
     use rama_http_types::Response;
+    use std::assert_matches;
 
     #[test]
     fn basic() {
         let classifier = StatusInRangeAsFailures::new(400..=599);
 
-        assert!(matches!(
+        assert_matches!(
             classifier
                 .clone()
                 .classify_response(&response_with_status(200)),
             ClassifiedResponse::Ready(Ok(())),
-        ));
+        );
 
-        assert!(matches!(
+        assert_matches!(
             classifier
                 .clone()
                 .classify_response(&response_with_status(400)),
             ClassifiedResponse::Ready(Err(StatusInRangeFailureClass::StatusCode(
                 StatusCode::BAD_REQUEST
             ))),
-        ));
+        );
 
-        assert!(matches!(
+        assert_matches!(
             classifier.classify_response(&response_with_status(500)),
             ClassifiedResponse::Ready(Err(StatusInRangeFailureClass::StatusCode(
                 StatusCode::INTERNAL_SERVER_ERROR
             ))),
-        ));
+        );
     }
 
     fn response_with_status(status: u16) -> Response<()> {

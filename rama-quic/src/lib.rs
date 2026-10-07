@@ -51,13 +51,13 @@ pub use proto::{
     AckFrequencyConfig, BloomTokenLog, Chunk, ClientConfig, ClosedStream, ConfigError,
     CongestionControl, ConnectError, ConnectionError, ConnectionIdGenerator,
     ConnectionIdGeneratorFactory, ConnectionStats, EndpointConfig, ExportKeyingMaterialError,
-    FrameStats, HashedConnectionIdGenerator, IdleTimeout, MIN_INITIAL_CONGESTION_WINDOW,
-    MtuDiscoveryConfig, NegotiatedTlsParameters, NoneTokenLog, NoneTokenStore, PathStats,
-    PreferredAddressPolicy, RandomConnectionIdGenerator, ReceiveQueueLimits, RetryRefused,
-    ServerConfig, StdSystemTime, StoredToken, TimeSource, TokenLog, TokenMemoryCache,
-    TokenReuseError, TokenStore, TransportConfig, UdpStats, ValidationTokenConfig, Written,
+    FrameStats, HashedConnectionIdGenerator, IdleTimeout, KEY_MATERIAL_SIZE,
+    MIN_INITIAL_CONGESTION_WINDOW, MtuDiscoveryConfig, NegotiatedTlsParameters, NoneTokenLog,
+    NoneTokenStore, PathStats, PreferredAddressPolicy, RandomConnectionIdGenerator,
+    ReceiveQueueLimits, RetryRefused, ServerConfig, StatelessResetKey, StdSystemTime, StoredToken,
+    TimeSource, TokenLog, TokenMemoryCache, TokenReuseError, TokenStore, TransportConfig, UdpStats,
+    ValidationTokenConfig, Written,
 };
-pub use proto::{KEY_MATERIAL_SIZE, StatelessResetKey};
 
 /// TLS for QUIC: how a connection's identity and application protocol are configured.
 ///
@@ -74,8 +74,10 @@ pub mod tls {
     /// Interfaces for supplying a QUIC TLS 1.3 implementation.
     ///
     /// Implement [`provider::ClientConfig`] and [`provider::ServerConfig`] and pass them to
-    /// [`crate::ClientConfig::new`] and [`crate::ServerConfig::new`]. The latter also
-    /// accepts a custom address-token key, so no built-in crypto feature is required.
+    /// [`crate::ClientConfig::new`] and [`crate::ServerConfig::new`]; a
+    /// [`provider::ServerConfigResolver`] that resolves the server configuration per
+    /// ClientHello goes to [`crate::ServerConfig::new_resolving`]. The server constructors also
+    /// take a custom address-token key, so no built-in crypto feature is required.
     /// A provider encodes local [`rama_quic_proto::transport_parameters::TransportParameters`]
     /// into its TLS extension and decodes its peer's extension with that type's `read`.
     ///
@@ -83,9 +85,10 @@ pub mod tls {
     /// and write keys, and report TLS failures through Rama's transport error types.
     pub mod provider {
         pub use crate::proto::crypto::{
-            AeadKey, ClientConfig, DirectionalKeys, ExportKeyingMaterialError, HandshakeEvent,
-            HandshakeTokenKey, InitialKeysError, KeyPair, Keys, ServerConfig, Session,
-            UnsupportedVersion,
+            AeadKey, ClientConfig, ClientHelloMessage, DirectionalKeys, ExportKeyingMaterialError,
+            HandshakeEvent, HandshakeTokenKey, InitialKeysError, InitialServerConfig, KeyPair,
+            Keys, PendingServerConfig, ServerConfig, ServerConfigLookup, ServerConfigResolution,
+            ServerConfigResolver, Session, UnsupportedVersion,
         };
     }
 
@@ -101,10 +104,10 @@ mod driver;
 pub use driver::{
     Accept, AcceptBi, AcceptUni, BiStreamReservation, Connecting, Connection,
     DEFAULT_SHUTDOWN_BUDGET, DEFAULT_SOCKET_BUFFER_SIZE, DriverStats, Endpoint, EndpointBuilder,
-    EndpointStats, Incoming, IncomingFuture, OpenBi, OpenUni, PacketQueueStats, ReadDatagram,
-    ReadError, ReadExactError, ReadToEndError, RecvStream, ResetError, RetryError, SendDatagram,
-    SendDatagramError, SendStream, ShutdownOutcome, StoppedError, StreamAbortHandle, WriteError,
-    ZeroRttAccepted,
+    EndpointStats, Incoming, IncomingFuture, IncomingOutcome, OpenBi, OpenUni, PacketQueueStats,
+    ReadDatagram, ReadError, ReadExactError, ReadToEndError, RecvStream, ResetError, RetryError,
+    SendDatagram, SendDatagramError, SendStream, ShutdownOutcome, StoppedError, StreamAbortHandle,
+    WriteError, ZeroRttAccepted,
 };
 
 #[cfg(fuzzing)]

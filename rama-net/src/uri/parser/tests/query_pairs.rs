@@ -1,6 +1,7 @@
 //! `QueryRef::pairs()` — iteration over URI query `name[=value]` pairs.
 
 use crate::std::borrow::Cow;
+use std::assert_matches;
 
 use super::parse_graceful;
 use crate::uri::Uri;
@@ -186,14 +187,15 @@ fn decoded_invalid_utf8_uses_replacement_char() {
 fn decoded_borrows_when_no_escapes_else_owns() {
     let u: Uri = parse_graceful("/p?foo=bar").unwrap();
     let pair = u.query().unwrap().pairs().next().unwrap();
-    assert!(matches!(pair.name_decoded(), Cow::Borrowed(_)));
-    assert!(matches!(pair.value_decoded(), Some(Cow::Borrowed(_))));
+    assert_matches!(pair.name_decoded(), Cow::Borrowed(_));
+    assert_matches!(pair.value_decoded(), Some(Cow::Borrowed(_)));
 
     for input in ["/p?foo=hello%20world", "/p?foo=a+b"] {
         let u: Uri = parse_graceful(input).unwrap();
         let pair = u.query().unwrap().pairs().next().unwrap();
-        assert!(
-            matches!(pair.value_decoded(), Some(Cow::Owned(_))),
+        assert_matches!(
+            pair.value_decoded(),
+            Some(Cow::Owned(_)),
             "expected Cow::Owned for {input:?}",
         );
     }

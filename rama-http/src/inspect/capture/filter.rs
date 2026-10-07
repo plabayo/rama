@@ -313,6 +313,7 @@ pub(super) fn matches_protocol(protocol: &str, query: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     #[test]
     fn native_queries_keep_unknown_values_and_custom_protocols() {
         let filter: CaptureFilter = serde_json::from_str(
@@ -327,7 +328,7 @@ mod tests {
             filter.protocol,
             FilterValue::Value(ProtocolQuery::Exact(Protocol::from_static("example")))
         );
-        assert!(matches!(&filter.status, FilterValue::Unknown(value) if value.as_ref() == "6xx"));
+        assert_matches!(&filter.status, FilterValue::Unknown(value) if value.as_ref() == "6xx");
         assert_eq!(
             filter.connection_id,
             FilterValue::Value(ConnectionQuery(12))

@@ -1,4 +1,8 @@
-use rama::net::{Protocol, stream::SocketInfo};
+use rama::{
+    futures::stream,
+    http::{HeaderMap, body::Frame, header},
+    net::{Protocol, stream::SocketInfo},
+};
 
 use super::*;
 
@@ -53,6 +57,72 @@ async fn shared_http_and_socks5_listener_forwards_end_to_end() {
         assert_eq!(status, StatusCode::OK, "proxy scheme {scheme}");
         assert_eq!(body, "shared-proxy-ok", "proxy scheme {scheme}");
     }
+
+    shutdown_proxy(shutdown_tx, shutdown).await;
+    origin_task.abort();
+}
+
+/// The proxy forwards trailers as received, also those whose definitions do not allow trailers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_proxy_forwards_trailers_as_received() {
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .unwrap();
+    let origin = listener.local_addr().unwrap();
+    let origin_task = tokio::spawn(
+        listener.serve(HttpServer::auto(Executor::default()).service(service_fn(
+            |_request: Request| async {
+                let mut trailers = HeaderMap::new();
+                trailers.insert(header::SET_COOKIE, HeaderValue::from_static("a=b"));
+                trailers.insert("x-checksum", HeaderValue::from_static("abc"));
+                let body = Body::from_frame_stream(stream::iter([
+                    Ok::<_, Infallible>(Frame::data(Bytes::from_static(b"body"))),
+                    Ok(Frame::trailers(trailers)),
+                ]));
+                let response = Response::new(body);
+                // Like any origin that sends a trailer its definition does not allow.
+                response.extensions().insert(ForbiddenTrailers::AllowAll);
+                Ok::<_, Infallible>(response)
+            },
+        ))),
+    );
+    let proxy_address = reserve_loopback_address();
+    let proxy_arg = proxy_address.to_string();
+    let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str()]);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = rama::graceful::Shutdown::new(async move {
+        _ = shutdown_rx.await;
+    });
+    run(shutdown.guard(), cli.proxy).await.unwrap();
+
+    let request = Request::builder()
+        .uri(format!("http://{origin}/trailers"))
+        .header(header::TE, "trailers")
+        .extension(ProxyRoute::Proxy(
+            format!("http://{proxy_address}").parse().unwrap(),
+        ))
+        .body(Body::empty())
+        .unwrap();
+    let response = tokio::time::timeout(
+        Duration::from_secs(10),
+        EasyHttpWebClient::default().serve(request),
+    )
+    .await
+    .expect("proxy request timed out")
+    .expect("proxy request failed");
+    let body = response.into_body().collect().await.unwrap();
+    let trailers = body.trailers().cloned().unwrap_or_default();
+    assert_eq!(body.to_bytes(), "body");
+    assert_eq!(
+        trailers.get(header::SET_COOKIE).map(HeaderValue::as_bytes),
+        Some(&b"a=b"[..]),
+        "{trailers:?}"
+    );
+    assert_eq!(
+        trailers.get("x-checksum").map(HeaderValue::as_bytes),
+        Some(&b"abc"[..]),
+        "{trailers:?}"
+    );
 
     shutdown_proxy(shutdown_tx, shutdown).await;
     origin_task.abort();

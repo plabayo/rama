@@ -66,6 +66,8 @@ pub(super) enum Kind {
 
     /// A general error from h2.
     Http2,
+    /// The h2 peer refused a request without processing it.
+    Http2Refused,
 }
 
 #[derive(Debug)]
@@ -101,6 +103,9 @@ pub(super) enum User {
     ///
     /// For example, sending both `content-length` and `transfer-encoding`.
     UnexpectedHeader,
+    /// User tried to send a request target its method cannot carry, such as a CONNECT
+    /// without a port.
+    InvalidTarget,
     /// User tried to respond with a 1xx (not 101) response code.
     UnsupportedStatusCode,
 
@@ -191,6 +196,18 @@ impl Error {
         matches!(self.inner.kind, Kind::ChannelClosed)
     }
 
+    /// Returns true if the HTTP/2 peer refused this request without processing it,
+    /// which makes it safe to retry, even when not idempotent (RFC 9113 section 8.7).
+    ///
+    /// The peer either reset its stream with `REFUSED_STREAM`, or went away
+    /// with a `GOAWAY` that does not cover its stream. Only a request's own
+    /// error can be refused, never a connection's.
+    #[must_use]
+    #[inline(always)]
+    pub fn is_refused(&self) -> bool {
+        matches!(self.inner.kind, Kind::Http2Refused)
+    }
+
     /// Returns true if the connection closed before a message could complete.
     ///
     /// This means that the supplied IO connection reported EOF (closed) while
@@ -232,10 +249,7 @@ impl Error {
     #[inline(always)]
     #[must_use]
     pub fn is_shutdown(&self) -> bool {
-        if matches!(self.inner.kind, Kind::Shutdown) {
-            return true;
-        }
-        false
+        matches!(self.inner.kind, Kind::Shutdown)
     }
 
     /// Returns true if the error was caused by a timeout.
@@ -358,6 +372,11 @@ impl Error {
     }
 
     #[inline(always)]
+    pub(super) fn new_user_target() -> Self {
+        Self::new_user(User::InvalidTarget)
+    }
+
+    #[inline(always)]
     pub(super) fn new_header_timeout() -> Self {
         Self::new(Kind::HeaderTimeout)
     }
@@ -395,6 +414,18 @@ impl Error {
         }
     }
 
+    /// Only for the error of one request: its own stream outcome, or it was never opened.
+    pub(super) fn new_h2_request(cause: h2::Error) -> Self {
+        // a remote GOAWAY only reaches a request when it does not cover that request
+        if cause.is_remote()
+            && (cause.is_go_away() || cause.reason() == Some(h2::Reason::REFUSED_STREAM))
+        {
+            Self::new(Kind::Http2Refused).with(cause)
+        } else {
+            Self::new_h2(cause)
+        }
+    }
+
     fn description(&self) -> &str {
         match self.inner.kind {
             Kind::Parse(Parse::Method) => "invalid HTTP method parsed",
@@ -426,11 +457,13 @@ impl Error {
             Kind::BodyWrite => "error writing a body to connection",
             Kind::Shutdown => "error shutting down connection",
             Kind::Http2 => "http2 error",
+            Kind::Http2Refused => "http2 request refused by peer",
             Kind::Io => "connection error",
             Kind::User(User::Body) => "error from user's Body stream",
             Kind::User(User::BodyWriteAborted) => "user body write aborted",
             Kind::User(User::Service) => "error from user's Service",
             Kind::User(User::UnexpectedHeader) => "user sent unexpected header",
+            Kind::User(User::InvalidTarget) => "user sent an invalid request target",
             Kind::User(User::UnsupportedStatusCode) => {
                 "response has 1xx status code, not supported by server"
             }

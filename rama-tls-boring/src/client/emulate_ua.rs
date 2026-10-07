@@ -56,7 +56,7 @@ where
 
             // WebSocket ALPN override (highest priority).
             if input
-                .protocol()
+                .target_protocol()
                 .as_ref()
                 .map(|p| p.is_ws())
                 .unwrap_or_default()

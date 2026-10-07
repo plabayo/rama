@@ -106,6 +106,18 @@ check-crate-linux CRATE:
   cargo check -p {{CRATE}} --target x86_64-unknown-linux-gnu --all-features
   cargo check -p {{CRATE}} --target aarch64-unknown-linux-gnu --all-features
 
+# Tier2 (mobile) coverage of the `rama` crate alone, so desktop tooling such as
+# rama-cli stays out; the narrower combos catch gaps all-features would mask,
+# and the test build makes the target linker verify the cross-compile.
+check-tier2 TARGET:
+    @just _ensure-rust-target {{TARGET}}
+    cargo check --locked -p rama --target {{TARGET}} --no-default-features
+    cargo check --locked -p rama --target {{TARGET}} --no-default-features --features tcp,udp,dns,unix
+    cargo check --locked -p rama --target {{TARGET}} --no-default-features --features rustls,ring,http-full
+    cargo check --locked -p rama --target {{TARGET}} --no-default-features --features boring,http-full
+    cargo check --locked -p rama --target {{TARGET}} --all-features
+    cargo build --locked -p rama --target {{TARGET}} --tests --all-features
+
 # Cross-link the same bounded Linux GNU coverage used by CI. The default
 # target keeps compatibility with glibc 2.17; pass another cargo-zigbuild
 # target explicitly when a different architecture or baseline is needed.
@@ -244,7 +256,7 @@ test *ARGS:
     cargo nextest run --all-features --workspace {{ARGS}}
     bash scripts/test-crypto.sh all {{ARGS}}
 
-# Run crypto and TLS tests with each backend isolated (or choose rustcrypto/ring/aws-lc/boring).
+# Run crypto and TLS tests with each backend isolated (or choose rustcrypto/ring/aws-lc/boring/large-dates).
 test-crypto BACKEND="all" *ARGS:
     @just _ensure-installed cargo-nextest cargo-nextest
     bash scripts/test-crypto.sh {{BACKEND}} {{ARGS}}

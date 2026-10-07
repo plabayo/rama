@@ -48,7 +48,7 @@ impl Service<Request> for CurlWriter {
             PlaintextHttpProxyMode::Forward
         };
         let is_forward_proxy =
-            proxy_mode.should_forward(parts.protocol()) && selected_proxy.is_some();
+            proxy_mode.should_forward(parts.target_protocol()) && selected_proxy.is_some();
         let configured_forward_credential = is_forward_proxy
             && self.forward_proxy_auth
             && selected_proxy.is_some_and(|proxy| proxy.credential.is_some());

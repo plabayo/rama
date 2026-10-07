@@ -160,6 +160,7 @@ pub(super) fn write_authority_to_buf<B: BufMut>(
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::io::Write;
 
     use crate::proto::{test_write_read_eq, test_write_read_sync_eq};
@@ -256,7 +257,7 @@ mod tests {
         // `exa%6Dple.com` rides as Uninterpreted; the writer's
         // `try_as_domain` bridge emits the canonical `example.com`.
         let host = Host::try_from("exa%6Dple.com").unwrap();
-        assert!(matches!(host, Host::Uninterpreted(_)));
+        assert_matches!(host, Host::Uninterpreted(_));
         let auth = HostWithPort::new(host, 443);
         let mut buf = Vec::new();
         write_authority_to_buf(&auth, &mut buf).unwrap();
@@ -270,7 +271,7 @@ mod tests {
         // Sub-delim reg-name doesn't promote to a Domain *or* IpAddr —
         // SOCKS5 has no representation. Encoder errors.
         let host = Host::try_from("tag,with,commas").unwrap();
-        assert!(matches!(host, Host::Uninterpreted(_)));
+        assert_matches!(host, Host::Uninterpreted(_));
         let auth = HostWithPort::new(host, 8080);
         let mut buf = Vec::new();
         let err = write_authority_to_buf(&auth, &mut buf).unwrap_err();

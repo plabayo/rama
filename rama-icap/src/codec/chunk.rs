@@ -606,6 +606,7 @@ fn skip_whitespace(value: &[u8], mut offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn parses_standard_and_preview_terminators() {
@@ -889,10 +890,7 @@ mod tests {
         let ScanStatus::Partial(scanner) = ChunkLineScanner::new().scan(b"abc", 3).unwrap() else {
             panic!("partial line expected");
         };
-        assert!(matches!(
-            scanner.clone().scan(b"", 3),
-            Ok(ScanStatus::Partial(_))
-        ));
+        assert_matches!(scanner.clone().scan(b"", 3), Ok(ScanStatus::Partial(_)));
         assert_eq!(
             scanner.clone().scan(b"", 2),
             Err(ChunkLineError::LineTooLong)

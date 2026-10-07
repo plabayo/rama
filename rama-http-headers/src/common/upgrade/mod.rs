@@ -41,9 +41,26 @@ use rama_http_types::HeaderValue;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Upgrade(HeaderValue);
 
-derive_header! {
-    Upgrade(_),
-    name: UPGRADE
+impl crate::TypedHeader for Upgrade {
+    fn name() -> &'static ::rama_http_types::header::HeaderName {
+        &::rama_http_types::header::UPGRADE
+    }
+}
+
+impl crate::HeaderDecode for Upgrade {
+    // A list field: every line counts, so a second line cannot hide behind the first.
+    fn decode<'i, I>(values: &mut I) -> Result<Self, crate::Error>
+    where
+        I: Iterator<Item = &'i HeaderValue>,
+    {
+        crate::util::combined_value(values).map(Self)
+    }
+}
+
+impl crate::HeaderEncode for Upgrade {
+    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+        values.extend(::std::iter::once(self.0.clone()));
+    }
 }
 
 impl Upgrade {

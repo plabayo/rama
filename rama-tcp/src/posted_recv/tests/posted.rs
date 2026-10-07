@@ -10,11 +10,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rama_core::{Layer as _, Service as _, extensions::ExtensionsRef as _, io::BridgeIo};
+use rama_core::{
+    Layer as _, Service as _, ServiceInput,
+    extensions::ExtensionsRef as _,
+    io::{AbortIo, BridgeIo},
+};
 use rama_net::{
     address::SocketAddress,
     client::{ConnectRequest, EstablishedClientConnection},
-    conn::ConnectionAbort,
     proxy::{IoForwardService, LingeringClose},
     stream::{Socket as _, SocketInfo},
 };
@@ -478,8 +481,9 @@ async fn many_concurrent_bulk_flows() {
 }
 
 /// Client ↔ [`IoForwardService`] ↔ an origin that replies and resets, with
-/// the egress leg wrapped: the client gets every reply, even though the
-/// bridge only starts reading after the reply and the reset arrived.
+/// the egress leg wrapped: the bridge gets every reply, even though it only
+/// starts reading after the reply and the reset arrived. The client leg
+/// cannot be reset, so the client sees what the bridge got.
 #[tokio::test(flavor = "multi_thread")]
 async fn forward_keeps_reply_of_resetting_origin() {
     for len in SIZES {
@@ -497,8 +501,8 @@ async fn forward_keeps_reply_of_resetting_origin() {
 
 /// Both fixes together: the origin resets right after replying while the
 /// client is still sending and only reads later. The posted receives keep the
-/// reply on the egress leg, and lingering keeps the client leg from being
-/// closed with unread input.
+/// reply on the egress leg, and lingering keeps the client leg, which cannot
+/// be reset, from being closed with unread input.
 #[tokio::test(flavor = "multi_thread")]
 async fn forward_with_lingering_keeps_reply_while_client_sends() {
     let len = SIZES[2];
@@ -508,7 +512,7 @@ async fn forward_with_lingering_keeps_reply_while_client_sends() {
         let egress = TcpStream::new(TokioTcpStream::connect(origin_addr).await.unwrap());
         let egress = PostedRecv::new(egress);
         let svc = IoForwardService::default().with_lingering_close(LingeringClose::default());
-        _ = svc.serve(BridgeIo(client, egress)).await;
+        _ = svc.serve(BridgeIo(ServiceInput::new(client), egress)).await;
     })
     .await;
     let proxy_addr = proxy.addr;
@@ -535,25 +539,39 @@ async fn forward_with_lingering_keeps_reply_while_client_sends() {
     assert_eq!(tally.ends, [(None, None)], "{tally}");
 }
 
-/// A reset from the origin reaches the client as a reset when the bridge
-/// passes resets through, while a plain bridge turns it into a clean end
-/// that hides the truncation.
+/// How the proxy holds the client leg.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ingress {
+    Plain,
+    Posted,
+    /// Publishes no [`AbortIo`], so the bridge cannot reset it.
+    Unabortable,
+}
+
+/// The bridge reflects a reset from the origin to the client, after the
+/// reply, with the client leg wrapped or not; a client that reads with
+/// posted receives too keeps that reply. A client leg that cannot be reset
+/// is closed in order instead, which hides the truncation.
 #[tokio::test(flavor = "multi_thread")]
-async fn pass_resets_forwards_origin_reset_to_client() {
+async fn forward_reflects_origin_reset_after_the_reply() {
     let len = SIZES[2];
     let origin = spawn_origin(len, Close::Reset).await;
-    for pass_resets in [true, false] {
+    for ingress in [Ingress::Plain, Ingress::Posted, Ingress::Unabortable] {
         let origin_addr = origin.addr;
         let proxy = spawn_origin_fn(move |client| async move {
-            let client = PostedRecv::new(TcpStream::new(client));
             let egress = TcpStream::new(TokioTcpStream::connect(origin_addr).await.unwrap());
             let egress = PostedRecv::new(egress);
             let svc = IoForwardService::default();
-            if pass_resets {
-                _ = svc.pass_resets().serve(BridgeIo(client, egress)).await;
-            } else {
-                _ = svc.serve(BridgeIo(client, egress)).await;
-            }
+            _ = match ingress {
+                Ingress::Plain => svc.serve(BridgeIo(TcpStream::new(client), egress)).await,
+                Ingress::Posted => {
+                    let client = PostedRecv::new(TcpStream::new(client));
+                    svc.serve(BridgeIo(client, egress)).await
+                }
+                Ingress::Unabortable => {
+                    svc.serve(BridgeIo(ServiceInput::new(client), egress)).await
+                }
+            };
         })
         .await;
         let proxy_addr = proxy.addr;
@@ -562,41 +580,34 @@ async fn pass_resets_forwards_origin_reset_to_client() {
             exchange(&mut client, FORCED_DELAY).await
         })
         .await;
-        assert_eq!(tally.complete, 100, "pass_resets={pass_resets}: {tally}");
-        let expected_end = if pass_resets {
-            (Some(reset_code()), Some(io::ErrorKind::ConnectionReset))
-        } else {
+        assert_eq!(tally.complete, 100, "{ingress:?}: {tally}");
+        let expected_end = if ingress == Ingress::Unabortable {
             (None, None)
+        } else {
+            (Some(reset_code()), Some(io::ErrorKind::ConnectionReset))
         };
-        assert_eq!(
-            tally.ends,
-            [expected_end],
-            "pass_resets={pass_resets}: {tally}"
-        );
+        assert_eq!(tally.ends, [expected_end], "{ingress:?}: {tally}");
     }
 }
 
+/// The [`AbortIo`] of the inner stream works through the wrapper: once
+/// called, dropping it resets the peer, also while receives are posted.
+/// Calling it after the drop does nothing.
 #[tokio::test]
-async fn connection_abort_resets_the_peer_and_is_inert_after_drop() {
+async fn an_aborted_posted_recv_resets_its_peer() {
     let listener = super::harness::listen();
     let addr = listener.local_addr().unwrap();
     for abort in [true, false] {
         let (client, accepted) = tokio::join!(connect(addr), listener.accept());
         let peer = tokio::spawn(peer_saw(accepted.unwrap().0));
-        let handle = client.connection_abort();
-        assert!(
-            client
-                .extensions()
-                .self_get_ref::<ConnectionAbort>()
-                .is_some()
-        );
+        let handle = client.extensions().self_get_arc::<AbortIo>().unwrap();
         if abort {
-            handle.abort().unwrap();
+            handle.abort();
         }
         drop(client);
         let expected = if abort { PeerSaw::Reset } else { PeerSaw::Fin };
-        assert_eq!(peer.await.unwrap(), expected);
-        handle.abort().unwrap();
+        assert_eq!(peer.await.unwrap(), expected, "abort={abort}");
+        handle.abort();
     }
 }
 
@@ -629,13 +640,14 @@ async fn forward_baseline_loses_reply_of_resetting_origin() {
 /// A proxy that bridges each client to `origin` with [`IoForwardService`].
 ///
 /// With `read_late` it forwards the request itself and only starts the
-/// bridge once the reply and the reset had time to arrive.
+/// bridge once the reply and the reset had time to arrive. The client leg
+/// cannot be reset, so the client sees what the bridge got.
 async fn spawn_proxy(
     origin: std::net::SocketAddr,
     posted: bool,
     read_late: bool,
 ) -> super::harness::Origin {
-    async fn bridge<E: rama_core::io::Io + Unpin>(
+    async fn bridge<E: rama_core::io::Io + Unpin + rama_core::extensions::ExtensionsRef>(
         mut client: tokio::net::TcpStream,
         mut egress: E,
         read_late: bool,
@@ -647,7 +659,7 @@ async fn spawn_proxy(
             tokio::time::sleep(FORCED_DELAY).await;
         }
         _ = IoForwardService::default()
-            .serve(BridgeIo(client, egress))
+            .serve(BridgeIo(ServiceInput::new(client), egress))
             .await;
     }
 
@@ -824,62 +836,4 @@ async fn a_reply_in_more_parts_than_slots_is_exposed_while_completions_lag() {
             "slots={slots}"
         );
     }
-}
-
-/// A plain `TcpStream` made abortable resets its peer once aborted, closes
-/// cleanly otherwise, and its capability is inert after the drop.
-#[tokio::test]
-async fn tcp_stream_connection_abort() {
-    let listener = super::harness::listen();
-    let addr = listener.local_addr().unwrap();
-    for abort in [true, false] {
-        let (client, accepted) = tokio::join!(TokioTcpStream::connect(addr), listener.accept());
-        let peer = tokio::spawn(peer_saw(accepted.unwrap().0));
-        let client = TcpStream::new(client.unwrap())
-            .with_connection_abort()
-            .unwrap();
-        let handle = client
-            .extensions()
-            .self_get_ref::<ConnectionAbort>()
-            .cloned()
-            .unwrap();
-        if abort {
-            handle.abort().unwrap();
-        }
-        drop(client);
-        let expected = if abort { PeerSaw::Reset } else { PeerSaw::Fin };
-        assert_eq!(peer.await.unwrap(), expected);
-        handle.abort().unwrap();
-    }
-}
-
-/// With both legs plain but abortable, a reset from the origin reaches the
-/// client as a reset.
-#[tokio::test(flavor = "multi_thread")]
-async fn pass_resets_with_abortable_plain_streams() {
-    let len = SIZES[2];
-    let origin = spawn_origin(len, Close::Reset).await;
-    let origin_addr = origin.addr;
-    let proxy = spawn_origin_fn(move |client| async move {
-        let client = TcpStream::new(client).with_connection_abort().unwrap();
-        let egress = TcpStream::new(TokioTcpStream::connect(origin_addr).await.unwrap());
-        let egress = PostedRecv::new(egress.with_connection_abort().unwrap());
-        _ = IoForwardService::default()
-            .pass_resets()
-            .serve(BridgeIo(client, egress))
-            .await;
-    })
-    .await;
-    let proxy_addr = proxy.addr;
-    let tally = tally(50, 16, len, move || async move {
-        let mut client = connect(proxy_addr).await;
-        exchange(&mut client, FORCED_DELAY).await
-    })
-    .await;
-    assert_eq!(tally.complete, 50, "{tally}");
-    assert_eq!(
-        tally.ends,
-        [(Some(reset_code()), Some(io::ErrorKind::ConnectionReset))],
-        "{tally}"
-    );
 }

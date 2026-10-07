@@ -6,6 +6,7 @@ use crate::tproxy::{TransparentProxyFlowMeta, TransparentProxyFlowProtocol};
 use parking_lot::Mutex;
 use rama_core::service::service_fn;
 use rama_net::address::HostWithPort;
+use std::assert_matches;
 use std::convert::Infallible;
 use std::sync::{
     Arc,
@@ -488,10 +489,10 @@ fn udp_terminal_close_joins_admitted_copy_count_and_publish() {
     // assertion, including when a broken close implementation returned early.
     resume_tx.send(()).expect("release admitted copy");
     let mut session = submitter.join().expect("ordinary submission completed");
-    assert!(matches!(
+    assert_matches!(
         closed_before_publish,
-        Err(std::sync::mpsc::TryRecvError::Empty)
-    ));
+        Err(std::sync::mpsc::TryRecvError::Empty),
+    );
     let (snapshot, totals) = closed_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("joined close");
@@ -853,8 +854,9 @@ fn assert_udp_terminal_drop_precedes_close(
         engine.stop(0);
     }
 
-    assert!(
-        matches!(&first, Observed::Datagram(payload) if payload == FINAL_PAYLOAD),
+    assert_matches!(
+        &first,
+        Observed::Datagram(payload) if payload == FINAL_PAYLOAD,
         "the service destructor must send before close: {first:?}",
     );
     let Observed::Closed {

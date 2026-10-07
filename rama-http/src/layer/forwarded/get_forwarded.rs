@@ -6,9 +6,11 @@ use rama_core::extensions::ExtensionsRef;
 use rama_core::{Layer, Service};
 use rama_http_headers::HeaderMapExt;
 use rama_http_headers::forwarded::Forwarded;
-use rama_net::forwarded::ForwardedElement;
+use rama_net::forwarded::ForwardedSelectionPolicy;
+use rama_utils::macros::generate_set_and_with;
 use std::fmt;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 /// Layer to extract [`Forwarded`] information from the specified `T` headers.
 ///
@@ -37,26 +39,28 @@ use std::marker::PhantomData;
 /// [`CF-Connecting-Ip`]: crate::headers::forwarded::CFConnectingIp
 /// [`True-Client-Ip`]: crate::headers::forwarded::TrueClientIp
 ///
+/// The elements found go before those an earlier (nearer) source recorded, such as a PROXY
+/// protocol header. Which element is the client's is up to the [`ForwardedSelectionPolicy`]
+/// in the extensions, rightmost by default; the layer can install one.
+///
 /// ## Example
 ///
 /// This example shows you can extract the client IP from the `X-Forwarded-For`
 /// header in case your application is behind a proxy which sets this header.
 ///
 /// ```rust
-/// use rama_core::{
-///     service::service_fn,
-///     extensions::ExtensionsRef, Service, Layer,
-/// };
-/// use rama_http::{headers::forwarded::Forwarded, layer::forwarded::GetForwardedHeaderLayer, Request};
+/// use rama_core::{service::service_fn, Service, Layer};
+/// use rama_http::{layer::forwarded::GetForwardedHeaderLayer, Request};
+/// use rama_net::forwarded::ForwardedClientExt as _;
 /// use std::{convert::Infallible, net::IpAddr};
 ///
 /// #[tokio::main]
 /// async fn main() {
 ///     let service = GetForwardedHeaderLayer::x_forwarded_for()
 ///         .into_layer(service_fn(async |req: Request<()>| {
-///             let forwarded = req.extensions().get_ref::<rama_net::forwarded::Forwarded>().unwrap();
-///             assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
-///             assert!(forwarded.client_proto().is_none());
+///             // The client element, by the request's selection policy (rightmost by default).
+///             assert_eq!(req.forwarded_client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
+///             assert!(req.forwarded_client_proto().is_none());
 ///
 ///             // ...
 ///
@@ -72,12 +76,19 @@ use std::marker::PhantomData;
 /// }
 /// ```
 pub struct GetForwardedHeaderLayer<T = rama_http_headers::forwarded::Forwarded> {
+    selection_policy: Option<Arc<ForwardedSelectionPolicy>>,
+    keep_existing_selection_policy: bool,
     _headers: PhantomData<fn() -> T>,
 }
 
 impl<T> fmt::Debug for GetForwardedHeaderLayer<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("GetForwardedHeaderLayer")
+            .field("selection_policy", &self.selection_policy)
+            .field(
+                "keep_existing_selection_policy",
+                &self.keep_existing_selection_policy,
+            )
             .field(
                 "_headers",
                 &format_args!("{}", std::any::type_name::<fn() -> T>()),
@@ -89,6 +100,8 @@ impl<T> fmt::Debug for GetForwardedHeaderLayer<T> {
 impl<T> Clone for GetForwardedHeaderLayer<T> {
     fn clone(&self) -> Self {
         Self {
+            selection_policy: self.selection_policy.clone(),
+            keep_existing_selection_policy: self.keep_existing_selection_policy,
             _headers: PhantomData,
         }
     }
@@ -105,7 +118,28 @@ impl<T> GetForwardedHeaderLayer<T> {
     #[must_use]
     pub const fn new() -> Self {
         Self {
+            selection_policy: None,
+            keep_existing_selection_policy: false,
             _headers: PhantomData,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Install this [`ForwardedSelectionPolicy`], which selects the client element of the
+        /// [`Forwarded`] chain, overwriting one set already unless keeping existing ones.
+        ///
+        /// [`Forwarded`]: rama_net::forwarded::Forwarded
+        pub fn forwarded_selection_policy(mut self, policy: ForwardedSelectionPolicy) -> Self {
+            self.selection_policy = Some(Arc::new(policy));
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Install the [`ForwardedSelectionPolicy`] only where none is set yet.
+        pub fn keep_existing_selection_policy(mut self, keep: bool) -> Self {
+            self.keep_existing_selection_policy = keep;
+            self
         }
     }
 }
@@ -161,6 +195,8 @@ impl<H, S> Layer<S> for GetForwardedHeaderLayer<H> {
     fn layer(&self, inner: S) -> Self::Service {
         Self::Service {
             inner,
+            selection_policy: self.selection_policy.clone(),
+            keep_existing_selection_policy: self.keep_existing_selection_policy,
             _headers: PhantomData,
         }
     }
@@ -171,6 +207,8 @@ impl<H, S> Layer<S> for GetForwardedHeaderLayer<H> {
 /// See [`GetForwardedHeaderLayer`] for more information.
 pub struct GetForwardedHeaderService<S, T = Forwarded> {
     inner: S,
+    selection_policy: Option<Arc<ForwardedSelectionPolicy>>,
+    keep_existing_selection_policy: bool,
     _headers: PhantomData<fn() -> T>,
 }
 
@@ -178,6 +216,11 @@ impl<S: fmt::Debug, T> fmt::Debug for GetForwardedHeaderService<S, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GetForwardedHeaderService")
             .field("inner", &self.inner)
+            .field("selection_policy", &self.selection_policy)
+            .field(
+                "keep_existing_selection_policy",
+                &self.keep_existing_selection_policy,
+            )
             .field("_headers", &format_args!("{}", std::any::type_name::<T>()))
             .finish()
     }
@@ -187,6 +230,8 @@ impl<S: Clone, T> Clone for GetForwardedHeaderService<S, T> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            selection_policy: self.selection_policy.clone(),
+            keep_existing_selection_policy: self.keep_existing_selection_policy,
             _headers: PhantomData,
         }
     }
@@ -197,7 +242,28 @@ impl<S, T> GetForwardedHeaderService<S, T> {
     pub const fn new(inner: S) -> Self {
         Self {
             inner,
+            selection_policy: None,
+            keep_existing_selection_policy: false,
             _headers: PhantomData,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Install this [`ForwardedSelectionPolicy`], which selects the client element of the
+        /// [`Forwarded`] chain, overwriting one set already unless keeping existing ones.
+        ///
+        /// [`Forwarded`]: rama_net::forwarded::Forwarded
+        pub fn forwarded_selection_policy(mut self, policy: ForwardedSelectionPolicy) -> Self {
+            self.selection_policy = Some(Arc::new(policy));
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Install the [`ForwardedSelectionPolicy`] only where none is set yet.
+        pub fn keep_existing_selection_policy(mut self, keep: bool) -> Self {
+            self.keep_existing_selection_policy = keep;
+            self
         }
     }
 }
@@ -255,34 +321,11 @@ where
         &self,
         req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
-        let mut forwarded_elements: Vec<ForwardedElement> = Vec::with_capacity(1);
-
-        if let Some(header) = req.headers().typed_get::<H>() {
-            forwarded_elements.extend(header);
+        if let Some(policy) = &self.selection_policy {
+            policy.install(req.extensions(), self.keep_existing_selection_policy);
         }
-
-        if !forwarded_elements.is_empty() {
-            let forwarded = if let Some(mut forwarded) = req
-                .extensions()
-                .get_ref::<rama_net::forwarded::Forwarded>()
-                .cloned()
-            {
-                forwarded.extend(forwarded_elements);
-                Some(forwarded)
-            } else {
-                let mut it = forwarded_elements.into_iter();
-                if let Some(first) = it.next() {
-                    let mut forwarded = rama_net::forwarded::Forwarded::new(first);
-                    forwarded.extend(it);
-                    Some(forwarded)
-                } else {
-                    None
-                }
-            };
-
-            if let Some(forwarded) = forwarded {
-                req.extensions().insert(forwarded);
-            }
+        if let Some(header) = req.headers().typed_get::<H>() {
+            rama_net::forwarded::Forwarded::record(req.extensions(), header);
         }
 
         self.inner.serve(req)
@@ -295,8 +338,22 @@ mod tests {
     use crate::{Response, StatusCode, service::web::response::IntoResponse};
     use rama_core::{Layer, error::BoxError, extensions::ExtensionsRef, service::service_fn};
     use rama_http_headers::forwarded::{TrueClientIp, XRealIp};
+    use rama_net::forwarded::ForwardedClientExt as _;
     use rama_net::forwarded::{ForwardedProtocol, ForwardedVersion};
     use std::{convert::Infallible, net::IpAddr};
+
+    /// The client element under the default selection policy.
+    fn client_of(
+        forwarded: &rama_net::forwarded::Forwarded,
+    ) -> &rama_net::forwarded::ForwardedElement {
+        forwarded.client(&ForwardedSelectionPolicy::new()).unwrap()
+    }
+
+    fn client_ip_of(forwarded: &rama_net::forwarded::Forwarded) -> Option<IpAddr> {
+        client_of(forwarded)
+            .forwarded_for()
+            .and_then(rama_net::forwarded::NodeId::ip)
+    }
 
     fn assert_is_service<T: Service<Request<()>>>(_: T) {}
 
@@ -339,8 +396,14 @@ mod tests {
                     .extensions()
                     .get_ref::<rama_net::forwarded::Forwarded>()
                     .unwrap();
-                assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
-                assert_eq!(forwarded.client_proto(), Some(ForwardedProtocol::HTTP));
+                assert_eq!(
+                    client_ip_of(forwarded),
+                    Some(IpAddr::from([12, 23, 34, 45]))
+                );
+                assert_eq!(
+                    client_of(forwarded).forwarded_proto(),
+                    Some(ForwardedProtocol::HTTP)
+                );
                 Ok::<_, Infallible>(())
             }));
 
@@ -360,13 +423,16 @@ mod tests {
                     .extensions()
                     .get_ref::<rama_net::forwarded::Forwarded>()
                     .unwrap();
-                assert!(forwarded.client_ip().is_none());
+                assert!(client_ip_of(forwarded).is_none());
                 assert_eq!(
                     forwarded.iter().next().unwrap().forwarded_by(),
                     Some(&(IpAddr::from([12, 23, 34, 45]), 5000).into())
                 );
-                assert!(forwarded.client_proto().is_none());
-                assert_eq!(forwarded.client_version(), Some(ForwardedVersion::HTTP_11));
+                assert!(client_of(forwarded).forwarded_proto().is_none());
+                assert_eq!(
+                    client_of(forwarded).forwarded_version(),
+                    Some(ForwardedVersion::HTTP_11)
+                );
                 Ok::<_, Infallible>(())
             }));
 
@@ -378,25 +444,70 @@ mod tests {
         service.serve(req).await.unwrap();
     }
 
+    /// A proxy appends what it saw, so by default the client is the rightmost element; a
+    /// policy can skip trusted proxies or hops, or take the client's own (leftmost) claim.
     #[tokio::test]
-    async fn test_get_forwarded_header_x_forwarded_for() {
-        let service = GetForwardedHeaderLayer::x_forwarded_for().into_layer(service_fn(
-            async |req: Request<()>| {
-                let forwarded = req
-                    .extensions()
-                    .get_ref::<rama_net::forwarded::Forwarded>()
-                    .unwrap();
-                assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
-                assert!(forwarded.client_proto().is_none());
+    async fn the_selection_policy_picks_the_client_element() {
+        use rama_net::address::ip::ipnet::IpNet;
+        use rama_net::forwarded::ForwardedSide;
+        let trusted: IpNet = "127.0.0.0/8".parse().unwrap();
+        for (policy, expected) in [
+            (None, [127, 0, 0, 1]),
+            (
+                Some(ForwardedSelectionPolicy::new().with_hops(1)),
+                [12, 23, 34, 45],
+            ),
+            (
+                Some(ForwardedSelectionPolicy::new().with_trusted_proxies([trusted])),
+                [12, 23, 34, 45],
+            ),
+            (
+                Some(ForwardedSelectionPolicy::new().with_side(ForwardedSide::Leftmost)),
+                [12, 23, 34, 45],
+            ),
+        ] {
+            let mut layer = GetForwardedHeaderLayer::x_forwarded_for();
+            if let Some(policy) = policy.clone() {
+                layer.set_forwarded_selection_policy(policy);
+            }
+            let service = layer.into_layer(service_fn(move |req: Request<()>| async move {
+                let client = req.forwarded_client().unwrap();
+                assert_eq!(
+                    client
+                        .forwarded_for()
+                        .and_then(rama_net::forwarded::NodeId::ip),
+                    Some(IpAddr::from(expected)),
+                );
+                assert!(client.forwarded_proto().is_none());
                 Ok::<_, Infallible>(())
-            },
-        ));
+            }));
+            let req = Request::builder()
+                .header("X-Forwarded-For", "12.23.34.45, 127.0.0.1")
+                .body(())
+                .unwrap();
+            service.serve(req).await.unwrap();
+        }
+    }
 
-        let req = Request::builder()
-            .header("X-Forwarded-For", "12.23.34.45, 127.0.0.1")
-            .body(())
-            .unwrap();
-
-        service.serve(req).await.unwrap();
+    /// A policy set already is kept when asked, else overwritten; and a chain shorter than
+    /// the hops to skip names no client.
+    #[tokio::test]
+    async fn the_selection_policy_is_installed_as_configured() {
+        for keep_existing in [false, true] {
+            let service = GetForwardedHeaderLayer::x_forwarded_for()
+                .with_forwarded_selection_policy(ForwardedSelectionPolicy::new().with_hops(5))
+                .with_keep_existing_selection_policy(keep_existing)
+                .into_layer(service_fn(move |req: Request<()>| async move {
+                    let client = req.forwarded_client();
+                    assert_eq!(client.is_some(), keep_existing, "{keep_existing}");
+                    Ok::<_, Infallible>(())
+                }));
+            let req = Request::builder()
+                .header("X-Forwarded-For", "12.23.34.45")
+                .body(())
+                .unwrap();
+            req.extensions().insert(ForwardedSelectionPolicy::new());
+            service.serve(req).await.unwrap();
+        }
     }
 }

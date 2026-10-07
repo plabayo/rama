@@ -2,41 +2,55 @@ use std::{
     convert::Infallible,
     marker::PhantomData,
     pin::Pin,
-    task::{Context, Poll},
+    sync::Arc,
+    task::{Context, Poll, ready},
     time::Duration,
 };
 
-use futures_channel::mpsc::{Receiver, Sender};
-use futures_channel::{mpsc, oneshot};
+use futures_channel::{
+    mpsc,
+    mpsc::{Receiver, Sender},
+    oneshot,
+};
 use pin_project_lite::pin_project;
-use rama_core::rt::Executor;
-use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
-use rama_core::{bytes::Bytes, combinators::Either};
-use rama_core::{error::BoxError, futures::future::FusedFuture};
 use rama_core::{
+    bytes::Bytes,
+    combinators::Either,
+    error::BoxError,
     extensions::ExtensionsRef,
-    futures::{Stream, stream::FusedStream},
+    futures::{Stream, future::FusedFuture, stream::FusedStream},
+    rt::Executor,
+    telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn},
 };
 use rama_http::{
     StreamingBody,
     io::upgrade::{self, Upgraded},
 };
 use rama_http_types::{
-    Method, Request, Response, Version, opentelemetry::version_as_protocol_version,
-    proto::h2::frame::SettingOrder,
+    Method, Request, Response, Version,
+    header::trailer::ForbiddenTrailers,
+    opentelemetry::version_as_protocol_version,
+    proto::{ext::Protocol, h2::frame::SettingOrder},
 };
-use std::task::ready;
+use rama_net::{client::pool::ConnectionAdmission, conn::MaxConcurrency};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::ping::{Ponger, Recorder};
-use super::{PipeToSendStream, SendBuf, ping};
-use crate::body::Incoming as IncomingBody;
-use crate::client::dispatch::{Callback, SendWhen, TrySendError};
-use crate::h2::SendStream;
-use crate::h2::client::ResponseFuture;
-use crate::h2::client::{Builder, Connection, SendRequest};
-use crate::headers;
-use crate::proto::Dispatched;
+use super::{
+    PipeToSendStream, SendBuf,
+    admission::AdmissionOwner,
+    ping,
+    ping::{Ponger, Recorder},
+};
+use crate::{
+    body::Incoming as IncomingBody,
+    client::dispatch::{Callback, SendWhen, TrySendError},
+    h2::{
+        SendStream,
+        client::{Builder, Connection, ResponseFuture, SendRequest},
+    },
+    headers,
+    proto::Dispatched,
+};
 
 type ClientRx<B> = crate::client::dispatch::Receiver<Request<B>, Response<IncomingBody>>;
 
@@ -195,10 +209,15 @@ where
     T: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
+    let extensions = io.extensions().clone();
     let (h2_tx, mut conn) = builder
         .handshake::<_, SendBuf<B::Data>>(io)
         .await
         .map_err(crate::Error::new_h2)?;
+    // The connection keeps the peer's live stream limit at this level, following its SETTINGS.
+    let max = extensions
+        .self_get_arc_or_insert(|| Arc::new(MaxConcurrency::new(h2_tx.current_max_send_streams())));
+    let admission = AdmissionOwner::new(h2_tx.local_streams(), max);
 
     // An mpsc channel is used entirely to detect when the
     // 'Client' has been dropped. This is to get around a bug
@@ -250,6 +269,7 @@ where
         h2_tx,
         req_rx,
         fut_ctx: None,
+        admission,
         marker: PhantomData,
     })
 }
@@ -497,10 +517,13 @@ where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     is_connect: bool,
+    // Extended CONNECT (RFC 8441): a `:protocol` tunnel.
+    extended: bool,
     eos: bool,
     fut: ResponseFuture,
     body_tx: SendStream<SendBuf<B::Data>>,
     body: B,
+    allowed_trailers: Option<Arc<ForbiddenTrailers>>,
     cb: Callback<Request<B>, Response<IncomingBody>>,
 }
 
@@ -521,6 +544,7 @@ where
     h2_tx: SendRequest<SendBuf<B::Data>>,
     req_rx: ClientRx<B>,
     fut_ctx: Option<FutCtx<B>>,
+    admission: AdmissionOwner,
     marker: PhantomData<T>,
 }
 
@@ -538,11 +562,12 @@ where
     pub(crate) fn current_max_recv_streams(&self) -> usize {
         self.h2_tx.current_max_recv_streams()
     }
-    pub(crate) fn peer_settings_handle(&self) -> crate::client::conn::http2::H2PeerSettingsHandle
-    where
-        B::Data: Send + Sync,
-    {
+    pub(crate) fn peer_settings_handle(&self) -> crate::client::conn::http2::H2PeerSettingsHandle {
         crate::client::conn::http2::H2PeerSettingsHandle::from_h2_sender(&self.h2_tx)
+    }
+
+    pub(crate) fn connection_admission(&self) -> ConnectionAdmission {
+        self.admission.policy()
     }
 }
 
@@ -650,7 +675,7 @@ where
 
         let send_stream = if !f.is_connect {
             if !f.eos {
-                let mut pipe = PipeToSendStream::new(f.body, f.body_tx);
+                let mut pipe = PipeToSendStream::new(f.body, f.body_tx, f.allowed_trailers);
 
                 // eagerly see if the body pipe is ready and
                 // can thus skip allocating in the executor
@@ -702,6 +727,7 @@ where
                     fut: f.fut,
                     ping: Some(ping),
                     send_stream: Some(send_stream),
+                    extended: f.extended,
                     exec: self.executor.clone(),
                     cancel_tx: Some(cancel_tx),
                     h2_tx: self.h2_tx.clone(),
@@ -730,6 +756,7 @@ pin_project! {
         ping: Option<Recorder>,
         #[pin]
         send_stream: Option<Option<SendStream<SendBuf<<B as StreamingBody>::Data>>>>,
+        extended: bool,
         exec: Executor,
         cancel_tx: Option<oneshot::Sender<()>>,
         // Handle to the underlying h2 connection, kept solely so we can
@@ -796,7 +823,8 @@ where
 
                     let (pending, on_upgrade) = upgrade::pending();
 
-                    let h2_up = super::upgrade::upgraded(send_stream, recv_stream, ping);
+                    let h2_up =
+                        super::upgrade::upgraded(send_stream, recv_stream, ping, *this.extended);
                     let upgraded = Upgraded::new(h2_up, Bytes::new());
                     // Preserve the peer's connection metadata explicitly; sharing
                     // its immutable snapshot cannot retain the handshake message.
@@ -820,7 +848,7 @@ where
                 ping.ensure_not_timed_out().map_err(|e| (e, None))?;
 
                 debug!("client response error: {err:?}");
-                Poll::Ready(Err((crate::Error::new_h2(err), None::<Request<B>>)))
+                Poll::Ready(Err((crate::Error::new_h2_request(err), None::<Request<B>>)))
             }
         }
     }
@@ -838,6 +866,10 @@ where
             match ready!(self.h2_tx.poll_ready(cx)) {
                 Ok(()) => (),
                 Err(err) => {
+                    // an opened stream reports its own outcome, not the connection's
+                    if let Some(f) = self.fut_ctx.take() {
+                        self.poll_pipe(f, cx);
+                    }
                     self.ping.ensure_not_timed_out()?;
                     return if err.reason() == Some(crate::h2::Reason::NO_ERROR) {
                         trace!("connection gracefully shutdown");
@@ -862,17 +894,23 @@ where
                         trace!("request callback is canceled");
                         continue;
                     }
+                    let checkout = self.admission.checkout(req.extensions());
                     let (head, body) = req.into_parts();
                     let mut req = Request::from_parts(head, ());
                     super::strip_connection_headers(req.headers_mut(), super::MessageKind::Request);
+                    let eos = body.is_end_stream();
+                    if eos {
+                        headers::drop_undeliverable_content_length(req.headers_mut());
+                    }
                     if let Some(len) = body.size_hint().exact()
                         && (len != 0 || headers::method_has_defined_payload_semantics(req.method()))
                     {
                         headers::set_content_length_if_missing(req.headers_mut(), len);
                     }
 
+                    let allowed_trailers = req.extensions().get_arc::<ForbiddenTrailers>();
                     let is_connect = req.method() == Method::CONNECT;
-                    let eos = body.is_end_stream();
+                    let extended = is_connect && req.extensions().contains::<Protocol>();
 
                     if is_connect
                         && headers::content_length_parse_all(req.headers())
@@ -887,11 +925,17 @@ where
                     }
 
                     let (fut, body_tx) = match self.h2_tx.send_request(req, !is_connect && eos) {
-                        Ok(ok) => ok,
+                        Ok(ok) => {
+                            // h2 counts the stream from here until it closes.
+                            if let Some(checkout) = checkout {
+                                checkout.dispatched();
+                            }
+                            ok
+                        }
                         Err(err) => {
                             debug!("client send request error: {}", err);
                             cb.send(Err(TrySendError {
-                                error: crate::Error::new_h2(err),
+                                error: crate::Error::new_h2_request(err),
                                 message: None,
                             }));
                             continue;
@@ -900,30 +944,23 @@ where
 
                     let f = FutCtx {
                         is_connect,
+                        extended,
                         eos,
                         fut,
                         body_tx,
                         body,
+                        allowed_trailers,
                         cb,
                     };
 
                     // Check poll_ready() again.
                     // If the call to send_request() resulted in the new stream being pending open
                     // we have to wait for the open to complete before accepting new requests.
-                    match self.h2_tx.poll_ready(cx) {
-                        Poll::Pending => {
-                            // Save Context
-                            self.fut_ctx = Some(f);
-                            return Poll::Pending;
-                        }
-                        Poll::Ready(Ok(())) => (),
-                        Poll::Ready(Err(err)) => {
-                            f.cb.send(Err(TrySendError {
-                                error: crate::Error::new_h2(err),
-                                message: None,
-                            }));
-                            continue;
-                        }
+                    // On a connection error this opened stream still reports its own outcome.
+                    if self.h2_tx.poll_ready(cx).is_pending() {
+                        // Save Context
+                        self.fut_ctx = Some(f);
+                        return Poll::Pending;
                     }
                     self.poll_pipe(f, cx);
                 }

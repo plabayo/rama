@@ -21,6 +21,7 @@
 //! level, but `uri.canonicalize() == other.canonicalize()` does hold.
 
 use crate::uri::Uri;
+use std::assert_matches;
 
 use rama_core::bytes::Bytes;
 
@@ -410,7 +411,7 @@ fn try_from_bytes() {
 fn try_from_propagates_parse_error() {
     // Empty input → ParseError::Empty surfaces through TryFrom.
     let err = Uri::try_from("").unwrap_err();
-    assert!(matches!(err, crate::uri::ParseError::Empty));
+    assert_matches!(err, crate::uri::ParseError::Empty);
 }
 
 #[test]
@@ -421,7 +422,7 @@ fn from_str_direct_via_parse_trait() {
     assert_eq!(u.path().unwrap().as_encoded_str(), "/p");
 
     let r: Result<Uri, _> = "".parse();
-    assert!(matches!(r, Err(crate::uri::ParseError::Empty)));
+    assert_matches!(r, Err(crate::uri::ParseError::Empty));
 }
 
 #[test]

@@ -32,13 +32,27 @@ use crate::{
 #[derive(Debug)]
 pub struct AsyncWebSocket<S = upgrade::Upgraded> {
     inner: WebSocket<AllowStd<S>>,
-    closing: bool,
-    ended: bool,
+    lifecycle: Lifecycle,
     /// Tungstenite is probably ready to receive more data.
     ///
     /// `false` once start_send hits `WouldBlock` errors.
     /// `true` initially and after `flush`ing.
     ready: bool,
+}
+
+/// Where an [`AsyncWebSocket`] is between opening and ending its transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lifecycle {
+    /// Messages flow in both directions.
+    Open,
+    /// A close is queued but not yet flushed.
+    Closing,
+    /// The WebSocket closed; its transport is being shut down.
+    ShuttingDown,
+    /// The transport was shut down: nothing is left to read.
+    Ended,
+    /// A protocol error ended the stream; the transport is left as it is.
+    Failed,
 }
 
 impl<S> AsyncWebSocket<S> {
@@ -74,8 +88,7 @@ impl<S> AsyncWebSocket<S> {
     pub(crate) fn new(ws: WebSocket<AllowStd<S>>) -> Self {
         Self {
             inner: ws,
-            closing: false,
-            ended: false,
+            lifecycle: Lifecycle::Open,
             ready: true,
         }
     }
@@ -119,7 +132,10 @@ impl<S> AsyncWebSocket<S> {
         self.inner.get_config()
     }
 
-    /// Close the underlying web socket
+    /// Start the close handshake by sending a Close frame.
+    ///
+    /// The handshake completes once the peer's Close is read: keep receiving until the
+    /// stream ends. Dropping the socket before that aborts the connection.
     pub async fn close(&mut self, msg: Option<CloseFrame>) -> Result<(), ProtocolError>
     where
         S: Io + Unpin,
@@ -165,11 +181,14 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         trace!("Stream.poll_next");
 
-        // The connection has been closed or a critical error has occurred.
-        // We have already returned the error to the user, the `Stream` is unusable,
-        // so we assume that the stream has been "fused".
-        if self.ended {
-            return Poll::Ready(None);
+        match self.lifecycle {
+            // Fused: the end or the error was already returned.
+            Lifecycle::Ended | Lifecycle::Failed => return Poll::Ready(None),
+            Lifecycle::ShuttingDown => {
+                ready!(self.poll_shutdown_transport(ContextWaker::Read, cx));
+                return Poll::Ready(None);
+            }
+            Lifecycle::Open | Lifecycle::Closing => (),
         }
 
         match ready!(self.with_context(Some((ContextWaker::Read, cx)), |s| {
@@ -178,13 +197,50 @@ where
         })) {
             Ok(v) => Poll::Ready(Some(Ok(v))),
             Err(e) => {
-                self.ended = true;
-                if e.is_connection_error() {
+                // A transport end is clean once the peer's Close arrived; before that it is an
+                // abnormal closure (RFC 6455 §7.1.5) and reported.
+                if e.is_connection_error() && !self.inner.can_read() {
+                    self.begin_shutdown();
+                    ready!(self.poll_shutdown_transport(ContextWaker::Read, cx));
                     Poll::Ready(None)
                 } else {
+                    self.lifecycle = Lifecycle::Failed;
                     Poll::Ready(Some(Err(e)))
                 }
             }
+        }
+    }
+}
+
+impl<S: Io + Unpin> AsyncWebSocket<S> {
+    /// End the transport cleanly once the WebSocket closed: a FIN on TCP and HTTP/3,
+    /// END_STREAM on HTTP/2 (RFC 6455 §7.1.1, RFC 9220 §3). Failures are irrelevant then.
+    ///
+    /// Polled through the waker proxy with the caller's slot, so split read and sink halves
+    /// both get woken.
+    fn poll_shutdown_transport(&mut self, kind: ContextWaker, cx: &mut Context<'_>) -> Poll<()> {
+        if self.lifecycle != Lifecycle::ShuttingDown {
+            return Poll::Ready(());
+        }
+        let result =
+            ready!(self.with_context(Some((kind, cx)), |s| s.get_mut().poll_shutdown(kind)));
+        if let Err(error) = result {
+            trace!("websocket transport shutdown after close: {error}");
+        }
+        self.lifecycle = Lifecycle::Ended;
+        // A split half parked elsewhere is ready now, even without a transport event.
+        let other = match kind {
+            ContextWaker::Read => ContextWaker::Write,
+            ContextWaker::Write => ContextWaker::Read,
+        };
+        self.inner.get_ref().wake(other);
+        Poll::Ready(())
+    }
+
+    /// Start the transport shutdown, unless the socket already ended or failed.
+    fn begin_shutdown(&mut self) {
+        if matches!(self.lifecycle, Lifecycle::Open | Lifecycle::Closing) {
+            self.lifecycle = Lifecycle::ShuttingDown;
         }
     }
 }
@@ -194,7 +250,7 @@ where
     T: Io + Unpin,
 {
     fn is_terminated(&self) -> bool {
-        self.ended
+        matches!(self.lifecycle, Lifecycle::Ended | Lifecycle::Failed)
     }
 }
 
@@ -239,23 +295,38 @@ where
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        (*self)
-            .with_context(Some((ContextWaker::Write, cx)), |s| compat::cvt(s.flush()))
-            .map(|r| {
-                self.ready = true;
-                match r {
-                    Err(err) if err.is_connection_error() => {
-                        // WebSocket connection has just been closed. Flushing completed, not an error.
-                        Ok(())
-                    }
-                    other => other,
-                }
-            })
+        if self.lifecycle == Lifecycle::ShuttingDown {
+            ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
+            return Poll::Ready(Ok(()));
+        }
+        let result = ready!(
+            (*self).with_context(Some((ContextWaker::Write, cx)), |s| compat::cvt(s.flush()))
+        );
+        self.ready = true;
+        match result {
+            // The flush completed the close handshake: end the transport, so the queued close
+            // reaches the peer followed by an orderly end of stream. Only the peer's Close makes
+            // a lost connection an orderly end; our own Close alone does not.
+            Err(err) if err.is_connection_error() && !self.inner.can_read() => {
+                self.begin_shutdown();
+                ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
+                Poll::Ready(Ok(()))
+            }
+            other => Poll::Ready(other),
+        }
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        match self.lifecycle {
+            Lifecycle::ShuttingDown => {
+                ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
+                return Poll::Ready(Ok(()));
+            }
+            Lifecycle::Ended => return Poll::Ready(Ok(())),
+            Lifecycle::Open | Lifecycle::Closing | Lifecycle::Failed => (),
+        }
         self.ready = true;
-        let res = if self.closing {
+        let res = if self.lifecycle == Lifecycle::Closing {
             // After queueing it, we call `flush` to drive the close handshake to completion.
             (*self).with_context(Some((ContextWaker::Write, cx)), |s| s.flush())
         } else {
@@ -263,14 +334,24 @@ where
         };
 
         match res {
+            // The peer's Close arrived and ours is flushed: end the transport as well.
+            Ok(()) if !self.inner.can_read() => {
+                self.begin_shutdown();
+                ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
+                Poll::Ready(Ok(()))
+            }
             Ok(()) => Poll::Ready(Ok(())),
             Err(ProtocolError::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 trace!("WouldBlock");
-                self.closing = true;
+                if self.lifecycle == Lifecycle::Open {
+                    self.lifecycle = Lifecycle::Closing;
+                }
                 Poll::Pending
             }
             Err(err) => {
-                if err.is_connection_error() {
+                if err.is_connection_error() && !self.inner.can_read() {
+                    self.begin_shutdown();
+                    ready!(self.poll_shutdown_transport(ContextWaker::Write, cx));
                     Poll::Ready(Ok(()))
                 } else {
                     debug!("websocket close error: {}", err);
@@ -283,12 +364,211 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::runtime::{AsyncWebSocket, compat::AllowStd};
-    use std::io::{Read, Write};
+    use crate::{
+        protocol::{Message, Role},
+        runtime::{AsyncWebSocket, compat::AllowStd},
+    };
+    use rama_core::{
+        ServiceInput,
+        futures::{SinkExt, StreamExt as _},
+    };
+    use std::assert_matches;
+    use std::{
+        io::{Read, Write},
+        time::Duration,
+    };
 
     fn is_read<T: Read>() {}
     fn is_write<T: Write>() {}
     fn is_unpin<T: Unpin>() {}
+
+    /// A completed close handshake ends the transport cleanly, even while the socket
+    /// itself is kept around: the peer observes an orderly end of stream.
+    #[tokio::test]
+    async fn close_handshake_shuts_down_the_transport() {
+        let (server_io, client_io) = tokio::io::duplex(1024);
+        let mut server =
+            AsyncWebSocket::from_raw_socket(ServiceInput::new(server_io), Role::Server, None).await;
+        let mut client =
+            AsyncWebSocket::from_raw_socket(ServiceInput::new(client_io), Role::Client, None).await;
+        client.send(Message::Close(None)).await.unwrap();
+        assert_matches!(server.next().await, Some(Ok(Message::Close(_))));
+        assert!(server.next().await.is_none());
+        let end = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(message) = client.next().await {
+                assert_matches!(message, Ok(Message::Close(_)), "{message:?}");
+            }
+        })
+        .await;
+        assert!(
+            end.is_ok(),
+            "the client never saw the server end the transport"
+        );
+        drop(server);
+    }
+
+    /// A peer transport replaying `reads`, then failing every read and write with `fail`.
+    struct Scripted {
+        reads: std::collections::VecDeque<Vec<u8>>,
+        fail: std::io::ErrorKind,
+        written: Vec<u8>,
+    }
+
+    impl tokio::io::AsyncRead for Scripted {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(match self.reads.pop_front() {
+                Some(bytes) => {
+                    buf.put_slice(&bytes);
+                    Ok(())
+                }
+                None => Err(self.fail.into()),
+            })
+        }
+    }
+
+    impl tokio::io::AsyncWrite for Scripted {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            // The peer's Close is read first; it resets before taking our reply.
+            if self.reads.is_empty() && !self.written.is_empty() {
+                return std::task::Poll::Ready(Err(self.fail.into()));
+            }
+            self.written.extend_from_slice(buf);
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    // A client's empty Close frame, masked with a zero key.
+    const PEER_CLOSE: [u8; 6] = [0x88, 0x80, 0, 0, 0, 0];
+
+    async fn server_over(reads: Vec<Vec<u8>>) -> AsyncWebSocket<ServiceInput<Scripted>> {
+        let io = Scripted {
+            reads: reads.into(),
+            fail: std::io::ErrorKind::ConnectionReset,
+            written: Vec::new(),
+        };
+        AsyncWebSocket::from_raw_socket(ServiceInput::new(io), Role::Server, None).await
+    }
+
+    /// RFC 6455 §7.1.4: once both Close frames crossed, a transport reset is a clean close.
+    #[tokio::test]
+    async fn a_reset_after_the_closing_handshake_is_a_clean_end() {
+        let mut server = server_over(vec![PEER_CLOSE.to_vec()]).await;
+        server.close(None).await.unwrap();
+        assert_matches!(server.next().await, Some(Ok(Message::Close(_))));
+        assert!(server.next().await.is_none());
+    }
+
+    /// The peer's Close states how the session ended, even when it resets before our reply.
+    #[tokio::test]
+    async fn a_reset_after_the_peers_close_is_a_clean_end() {
+        let mut server = server_over(vec![PEER_CLOSE.to_vec()]).await;
+        assert_matches!(server.next().await, Some(Ok(Message::Close(_))));
+        let after = server.next().await;
+        assert!(
+            after.is_none(),
+            "no more messages after the peer's Close: {after:?}"
+        );
+    }
+
+    /// RFC 6455 §7.1.5: a reset before any Close is abnormal (1006), and reported.
+    #[tokio::test]
+    async fn a_reset_before_any_close_fails_the_stream() {
+        let mut server = server_over(Vec::new()).await;
+        let error = server.next().await.unwrap().unwrap_err();
+        assert_matches!(&error, crate::protocol::ProtocolError::Io(error)
+                if error.kind() == std::io::ErrorKind::ConnectionReset, "{error:?}");
+        assert!(server.next().await.is_none());
+    }
+
+    /// A transport that takes every write, fails each flush after the first `flushes` with a
+    /// reset, and has nothing to read.
+    struct ResetOnFlush {
+        flushes: usize,
+    }
+
+    impl tokio::io::AsyncRead for ResetOnFlush {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl tokio::io::AsyncWrite for ResetOnFlush {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(match self.flushes.checked_sub(1) {
+                Some(left) => {
+                    self.flushes = left;
+                    Ok(())
+                }
+                None => Err(std::io::ErrorKind::ConnectionReset.into()),
+            })
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// RFC 6455 §7.1.5: our own Close does not make a later reset an orderly end; only the
+    /// peer's Close does. Sending Close and closing the sink both report the reset.
+    #[tokio::test]
+    async fn a_reset_after_only_our_close_fails() {
+        for role in [Role::Client, Role::Server] {
+            // Sending Close flushes once on its own; the sink's flush then meets the reset.
+            let mut socket = AsyncWebSocket::from_raw_socket(
+                ServiceInput::new(ResetOnFlush { flushes: 1 }),
+                role,
+                None,
+            )
+            .await;
+            let result = socket.send(Message::Close(None)).await;
+            assert!(result.is_err(), "{role:?} send Close: {result:?}");
+
+            let mut socket = AsyncWebSocket::from_raw_socket(
+                ServiceInput::new(ResetOnFlush { flushes: 0 }),
+                role,
+                None,
+            )
+            .await;
+            let result = SinkExt::close(&mut socket).await;
+            assert!(result.is_err(), "{role:?} close: {result:?}");
+        }
+    }
 
     #[test]
     fn web_socket_stream_has_traits() {

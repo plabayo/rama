@@ -12,12 +12,18 @@ mod prefix;
 #[doc(inline)]
 pub use prefix::PrefixedIo;
 
+mod abort;
+pub use abort::AbortIo;
+
 mod graceful;
 pub use graceful::{CancelIo, GracefulIo};
 
 pub mod peek;
 pub mod rewind;
 pub mod timeout;
+
+#[cfg(test)]
+mod test_util;
 
 mod bridge;
 pub use bridge::BridgeIo;

@@ -108,9 +108,7 @@ fn write_error(error: &WriteError) -> Error {
 
 fn read_error(error: &ReadError) -> Error {
     match error {
-        ReadError::Reset(code) => {
-            Error::stream(Code::new(code.into_inner()), "peer reset stream").remote()
-        }
+        ReadError::Reset(code) => Error::peer_reset(Code::new(code.into_inner())),
         ReadError::ConnectionLost(error) => Error::from_transport(error),
         _ => Error::stream(Code::H3_REQUEST_CANCELLED, "QUIC receive failed"),
     }
@@ -223,10 +221,15 @@ impl<S: SendStream> Writer<S> {
         Ok(())
     }
 
+    /// Nothing queued is waiting for [`Self::poll_flush`].
+    pub(crate) fn is_flushed(&self) -> bool {
+        self.chunks.iter().all(Bytes::is_empty)
+    }
+
     pub(crate) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
         // Bound work even if a fake/transport accepts only one byte per call.
         for _ in 0..super::cooperative::OPERATIONS_PER_QUANTUM {
-            if self.chunks.iter().all(Bytes::is_empty) {
+            if self.is_flushed() {
                 return Poll::Ready(Ok(()));
             }
             ready!(self.stream.poll_chunks(cx, &mut self.chunks))?;
@@ -257,6 +260,7 @@ impl<S: SendStream> Drop for Writer<S> {
 mod tests {
     use super::*;
     use parking_lot::Mutex;
+    use std::assert_matches;
     use std::sync::Arc;
 
     #[derive(Default)]
@@ -376,7 +380,7 @@ mod tests {
         let state = Arc::new(Mutex::new(State::default()));
         let mut writer = Writer::new(Fake(state.clone()));
         let mut cx = Context::from_waker(std::task::Waker::noop());
-        assert!(matches!(writer.poll_finish(&mut cx), Poll::Ready(Ok(()))));
+        assert_matches!(writer.poll_finish(&mut cx), Poll::Ready(Ok(())));
         assert!(state.lock().finished);
         drop(writer);
         assert_eq!(state.lock().reset, Some(Code::H3_REQUEST_CANCELLED));

@@ -316,6 +316,8 @@ impl<'a> Validated<'a> {
 mod tests {
     use super::*;
     use crate::{fmt::hex, hex::HexCase};
+    #[cfg(feature = "std")]
+    use std::assert_matches;
 
     #[test]
     fn fixed_buffers_preserve_tail_and_reject_without_mutation() {
@@ -443,23 +445,20 @@ mod tests {
         assert_eq!(format.decode_write("hex:00aB", &mut output).unwrap(), 2);
         assert_eq!(output, [42, 0, 0xab]);
         let error = format.decode_write("00ab", &mut output).unwrap_err();
-        assert!(matches!(
-            error,
-            DecodeWriteError::Decode(DecodeError::InvalidPrefix)
-        ));
+        assert_matches!(error, DecodeWriteError::Decode(DecodeError::InvalidPrefix));
         assert_eq!(output, [42, 0, 0xab]);
         for input in ["000", "00gg", "0x00"] {
             let error = decode_write(input, &mut output).unwrap_err();
-            assert!(matches!(error, DecodeWriteError::Decode(_)));
+            assert_matches!(error, DecodeWriteError::Decode(_));
             assert_eq!(output, [42, 0, 0xab]);
         }
         let mut invalid = hex(&bytes).to_string();
         invalid.push_str("gg");
         let error = decode_write(&invalid, &mut output).unwrap_err();
-        assert!(matches!(
+        assert_matches!(
             error,
-            DecodeWriteError::Decode(DecodeError::InvalidDigit { .. })
-        ));
+            DecodeWriteError::Decode(DecodeError::InvalidDigit { .. }),
+        );
         assert_eq!(output, [42, 0, 0xab]);
         for capacity in [0, 1, 127, 128, 129, bytes.len() - 1] {
             let mut writer = Writer {

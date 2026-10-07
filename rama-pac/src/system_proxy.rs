@@ -254,6 +254,7 @@ impl Service<SystemProxyPacRequest> for SystemPacResolver {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::{
         convert::Infallible,
         sync::atomic::{AtomicUsize, Ordering},
@@ -295,8 +296,8 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(matches!(routes.as_slice()[0], ProxyRoute::Proxy(_)));
-        assert!(matches!(routes.as_slice()[1], ProxyRoute::Direct));
+        assert_matches!(routes.as_slice()[0], ProxyRoute::Proxy(_));
+        assert_matches!(routes.as_slice()[1], ProxyRoute::Direct);
 
         let resolver = factory.serve(script_uri).await.unwrap();
         let routes = resolver
@@ -310,7 +311,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(matches!(routes.as_slice(), [ProxyRoute::Direct]));
+        assert_matches!(routes.as_slice(), [ProxyRoute::Direct]);
         assert_eq!(fetches.load(Ordering::Relaxed), 1);
     }
 
@@ -345,7 +346,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(matches!(routes.as_slice(), [ProxyRoute::Direct]));
+        assert_matches!(routes.as_slice(), [ProxyRoute::Direct]);
 
         let fallback = ProxyRoutes::from(
             "http://fallback.proxy:8080"
@@ -460,7 +461,7 @@ mod tests {
         .expect("the current PAC URL must not queue behind the obsolete one")
         .unwrap()
         .unwrap();
-        assert!(matches!(routes.as_slice(), [ProxyRoute::Direct]));
+        assert_matches!(routes.as_slice(), [ProxyRoute::Direct]);
 
         release_first.notify_one();
         first_lookup.await.unwrap().unwrap();
@@ -525,7 +526,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert!(matches!(routes.as_slice(), [ProxyRoute::Direct]));
+        assert_matches!(routes.as_slice(), [ProxyRoute::Direct]);
         assert!(factory.resolver.load_full().is_none());
     }
 

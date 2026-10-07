@@ -159,11 +159,15 @@ impl OriginOrNull {
 
         let uri = Uri::try_from(value.as_bytes()).ok()?;
 
-        // An origin is `scheme://authority` with no query/fragment and at most
-        // a bare root path (`/`), e.g. `http://example.com` or
+        // An origin is `scheme://host[:port]` with no userinfo, query/fragment
+        // and at most a bare root path (`/`), e.g. `http://example.com` or
         // `http://example.com/`.
         let scheme = uri.scheme()?.clone();
-        let auth = uri.authority()?.into_owned();
+        let auth = uri.authority()?;
+        if auth.userinfo().is_some() || auth.host().is_empty() {
+            return None;
+        }
+        let auth = auth.into_owned();
 
         let path_ok = uri.path_or_root() == "/";
         if !path_ok || uri.query().is_some() || uri.fragment().is_some() {
@@ -231,6 +235,55 @@ mod tests {
         assert_eq!(origin.port(), Some(8000));
 
         assert!(Origin::try_from_header_value(&HeaderValue::from_static("localhost")).is_none());
+    }
+
+    #[test]
+    fn rejects_userinfo_and_empty_host() {
+        for value in [
+            "http://user:pass@example.com",
+            "http://@example.com",
+            "http://",
+            "http:///",
+            "http://:80",
+        ] {
+            assert_eq!(test_decode::<Origin>(&[value]), None, "{value}");
+            assert!(
+                Origin::try_from_header_value(&HeaderValue::from_static(value)).is_none(),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn adversarial_authorities() {
+        for value in [
+            "http://[::1]",
+            "http://[::1]:8080",
+            "http://example.com:",
+            "http://example.com:65535",
+            "http://[v1.x]",
+            "http://%41.com",
+        ] {
+            if let Some(origin) = test_decode::<Origin>(&[value]) {
+                _ = (
+                    origin.scheme(),
+                    origin.hostname(),
+                    origin.port(),
+                    origin.to_string(),
+                );
+                _ = test_encode(origin);
+            }
+        }
+        for value in [
+            "http://example.com:99999",
+            "http://[",
+            "http://[::1",
+            "http://example.com//",
+            "http://example.com/?",
+            "http://example.com#",
+        ] {
+            assert_eq!(test_decode::<Origin>(&[value]), None, "{value}");
+        }
     }
 
     #[test]

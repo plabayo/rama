@@ -191,6 +191,7 @@ impl core::error::Error for RateLimitReached {}
 mod tests {
     use super::*;
     use crate::std::sync::Arc;
+    use std::assert_matches;
     use std::time::Duration;
     use tokio::time::Instant;
 
@@ -294,13 +295,13 @@ mod tests {
             RatePolicy::abort(rama_utils::rate::Rate::per_sec(1)),
         )]);
 
-        assert!(matches!(
+        assert_matches!(
             policy.check(Extensions::new()).await.output,
-            PolicyOutput::Ready(_)
-        ));
-        assert!(matches!(
+            PolicyOutput::Ready(_),
+        );
+        assert_matches!(
             policy.check(Extensions::new()).await.output,
-            PolicyOutput::Abort(_)
-        ));
+            PolicyOutput::Abort(_),
+        );
     }
 }

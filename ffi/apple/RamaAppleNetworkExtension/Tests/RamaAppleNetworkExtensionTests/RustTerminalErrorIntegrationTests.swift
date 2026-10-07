@@ -24,6 +24,8 @@ final class RustTerminalErrorIntegrationTests: XCTestCase {
         let egressClosed = TestValue(0)
         let requestBytes = TestValue(Data())
         let acceptedResponse = TestValue(Data())
+        /// The egress writer refuses Rust's writes, as a failed send leaves it.
+        let egressRefused = TestValue(false)
         let writer: TcpClientWritePump
 
         init() {
@@ -66,10 +68,12 @@ final class RustTerminalErrorIntegrationTests: XCTestCase {
             writer.markOpened()
             let request = requestBytes
             let egressClosed = egressClosed
+            let egressRefused = egressRefused
             // No promotion callback: the real non-HTTP service falls back to
             // Rust forwarding, so this exercises the additional FFI boundary.
             handle.activate(
                 onWriteToEgress: { data in
+                    if egressRefused.get() { return .closed }
                     request.update { $0.append(data) }
                     return .accepted
                 },
@@ -130,10 +134,10 @@ final class RustTerminalErrorIntegrationTests: XCTestCase {
                 }
             }
             h.drain()
-            // Completing the upload FIN must not discard the held response.
-            while h.connection.completePendingSend(error: nil) { h.drain() }
+            // The relay resets the egress too, with no upload FIN, while the response drains.
+            XCTAssertNil(h.connection.sentChunks.first(where: { $0.content == nil }), "no FIN")
+            XCTAssertEqual(h.connection.forceCancelCount, 1)
             XCTAssertEqual(h.flow.closeWriteCallCount, 0)
-            XCTAssertEqual(h.connection.cancelCount, 0)
             h.session.flowQueue.sync { XCTAssertFalse(h.session.ctx.isDone) }
             while h.flow.completeNextWrite() { h.drain() }
             waitFor("error-carrying close after the final response completion") {
@@ -145,6 +149,7 @@ final class RustTerminalErrorIntegrationTests: XCTestCase {
             XCTAssertEqual((h.flow.lastCloseReadError as NSError?)?.code, Int(ECONNRESET))
             XCTAssertEqual(h.flow.closeReadCallCount, 1)
             XCTAssertEqual(h.connection.cancelCount, 1)
+            XCTAssertEqual(h.connection.forceCancelCount, 1, "an abnormal end resets the egress")
             h.session.flowQueue.sync {
                 h.session.closeClientAfterRustDrain()
                 h.session.closeEgressAfterRustDrain()
@@ -156,10 +161,160 @@ final class RustTerminalErrorIntegrationTests: XCTestCase {
         }
     }
 
+    func testAnEgressResetCancelsItsWaitingTeardownSoTheClientDrains() {
+        let h = Harness()
+        let tail = Data((0..<(48 * 1024 + 17)).map { UInt8($0 % 251) })
+        produceReadErrorAfterClientEOF(h, tail: tail)
+        h.session.flowQueue.sync {
+            // An established egress losing its path arms a teardown timer.
+            h.session.handleEgressWaiting(nil)
+            XCTAssertNotNil(h.session.waitingWork)
+            h.session.closeEgressAfterRustDrain()
+            XCTAssertNil(h.session.waitingWork)
+            XCTAssertFalse(h.session.ctx.postReadyWaitingArmed)
+            // A failure already queued before the reset changes nothing.
+            h.session.handleEgressFailed(.posix(.ECONNRESET))
+            XCTAssertFalse(h.session.ctx.isDone)
+            h.session.closeClientAfterRustDrain()
+        }
+        h.drain()
+        while h.flow.completeNextWrite() { h.drain() }
+        waitFor("error-carrying close after the final response completion") {
+            h.flow.closeWriteCallCount == 1
+        }
+        XCTAssertEqual(h.flow.writes.reduce(into: Data()) { $0.append($1) }, tail)
+        XCTAssertEqual(h.connection.forceCancelCount, 1)
+    }
+
+    /// However Network.framework orders the failed state against the failed receive, or the
+    /// response's end, the tail Rust accepted still drains before the error ends the flow.
+    func testAPostReadyEgressFailureStillDrainsTheAcceptedResponse() {
+        for order in ["state first", "receive fails first", "response ended first"] {
+            let h = Harness()
+            let ended = order == "response ended first"
+            h.session.egressEofGraceMs = 50
+            let egressReader = h.session.flowQueue.sync {
+                h.session.buildEgressReadPump(connection: h.connection, session: h.handle)
+            }
+            egressReader.start()
+            h.session.flowQueue.sync {
+                // The kernel flow is open, as `flow.open`'s completion leaves it.
+                h.session.armReadTerminal(session: h.handle)
+            }
+            let request = Data("SSH-2.0-rama-ffi-test\r\n".utf8)
+            XCTAssertEqual(h.handle.onClientBytes(request), .accepted)
+            waitFor("Rust forwards the request") { h.requestBytes.get() == request }
+            let tail = Data((0..<(48 * 1024 + 17)).map { UInt8($0 % 251) })
+            XCTAssertTrue(h.connection.completePendingReceive(data: tail, isComplete: ended))
+            waitFor("the response reached the Swift writer") {
+                h.acceptedResponse.get() == tail && h.flow.pendingWriteCompletionCount == 1
+            }
+            if order == "receive fails first" {
+                waitFor("the next receive is armed") { h.connection.pendingReceiveCount == 1 }
+                XCTAssertTrue(
+                    h.connection.completePendingReceive(
+                        isComplete: false, error: .posix(.ECONNRESET)))
+                h.drain()
+            }
+            if ended {
+                waitFor("Rust closes the client half on the response's end") {
+                    h.serverClosed.get() == 1
+                }
+                h.session.flowQueue.sync { h.session.closeClientAfterRustDrain() }
+            }
+            // The origin resets: Network.framework fails the established egress.
+            h.connection.transition(to: .failed(.posix(.ECONNRESET)))
+            h.session.flowQueue.sync {
+                h.session.handleEgressFailed(.posix(.ECONNRESET))
+                XCTAssertFalse(h.session.ctx.isDone, "\(order): the accepted response still drains")
+            }
+            if !ended {
+                waitFor("Rust ends the flow on the egress failure") { h.serverClosed.get() == 1 }
+                h.session.flowQueue.sync {
+                    h.session.closeClientAfterRustDrain()
+                    h.session.closeEgressAfterRustDrain()
+                }
+            }
+            h.drain()
+            while h.flow.completeNextWrite() { h.drain() }
+            waitFor("\(order): the flow ends with the error") {
+                h.flow.closeReadCallCount == 1 && h.flow.closeWriteCallCount == 1
+            }
+            XCTAssertEqual(h.flow.writes.reduce(into: Data()) { $0.append($1) }, tail, order)
+            XCTAssertNotNil(h.flow.lastCloseReadError, order)
+            XCTAssertEqual(h.connection.forceCancelCount, 1, order)
+        }
+    }
+
+    /// A reset after the response ended still fails the app's half-closed upload.
+    func testAResetAfterTheResponseEndStillFailsAHalfClosingClient() {
+        let h = Harness()
+        h.session.egressEofGraceMs = 10_000
+        let egressReader = h.session.flowQueue.sync {
+            h.session.buildEgressReadPump(connection: h.connection, session: h.handle)
+        }
+        egressReader.start()
+        h.session.flowQueue.sync { h.session.armReadTerminal(session: h.handle) }
+        let request = Data("SSH-2.0-rama-ffi-test\r\n".utf8)
+        XCTAssertEqual(h.handle.onClientBytes(request), .accepted)
+        waitFor("Rust forwards the request") { h.requestBytes.get() == request }
+        let response = Data("SSH-2.0-origin\r\n".utf8)
+        XCTAssertTrue(h.connection.completePendingReceive(data: response, isComplete: true))
+        waitFor("Rust closes the client half") { h.serverClosed.get() == 1 }
+        h.session.flowQueue.sync { h.session.closeClientAfterRustDrain() }
+        h.drain()
+        while h.flow.completeNextWrite() { h.drain() }
+        waitFor("the client half closes clean") { h.flow.closeWriteCallCount == 1 }
+        XCTAssertNil(h.flow.lastCloseWriteError)
+
+        h.connection.transition(to: .failed(.posix(.ECONNRESET)))
+        h.session.flowQueue.sync {
+            h.session.handleEgressFailed(.posix(.ECONNRESET))
+            XCTAssertFalse(h.session.ctx.isDone)
+        }
+        h.handle.onClientEof()
+        waitFor("Rust closes the egress half") { h.egressClosed.get() == 1 }
+        h.session.flowQueue.sync { h.session.closeEgressAfterRustDrain() }
+        h.drain()
+        waitFor("the flow ends") { h.flow.closeReadCallCount == 1 }
+        XCTAssertNotNil(h.flow.lastCloseReadError, "the reset dropped the upload")
+        XCTAssertEqual(h.flow.writes.reduce(into: Data()) { $0.append($1) }, response)
+    }
+
+    /// Rust's failed write to the egress leaves the response tail Swift holds to drain, then
+    /// ends the flow with a reset.
+    func testARustEgressWriteFailureStillDrainsTheResponseTail() {
+        let h = Harness()
+        let request = Data("SSH-2.0-rama-ffi-test\r\n".utf8)
+        XCTAssertEqual(h.handle.onClientBytes(request), .accepted)
+        waitFor("Rust forwards the request") { h.requestBytes.get() == request }
+        let tail = Data((0..<(48 * 1024 + 17)).map { UInt8($0 % 251) })
+        XCTAssertEqual(h.handle.onEgressBytes(tail), .accepted)
+        waitFor("the response reached the Swift writer") {
+            h.acceptedResponse.get() == tail && h.flow.pendingWriteCompletionCount == 1
+        }
+        h.egressRefused.set(true)
+        XCTAssertEqual(h.handle.onClientBytes(Data("upload".utf8)), .accepted)
+        waitFor("Rust records the egress write failure") {
+            (h.handle.terminalError() as NSError?)?.code == Int(ECONNRESET)
+                && h.serverClosed.get() == 1
+        }
+        h.session.flowQueue.sync { h.session.closeClientAfterRustDrain() }
+        h.drain()
+        h.session.flowQueue.sync { XCTAssertFalse(h.session.ctx.isDone) }
+        while h.flow.completeNextWrite() { h.drain() }
+        waitFor("error-carrying close after the final response completion") {
+            h.flow.closeWriteCallCount == 1
+        }
+        XCTAssertEqual(h.flow.writes.reduce(into: Data()) { $0.append($1) }, tail)
+        XCTAssertEqual((h.flow.lastCloseWriteError as NSError?)?.code, Int(ECONNRESET))
+    }
+
     func testRealHandleRetainsRecordedErrorAcrossCancellation() {
         let h = Harness()
         produceReadErrorAfterClientEOF(h, tail: Data([1, 2, 3, 4]))
         XCTAssertEqual((h.handle.terminalError() as NSError?)?.code, Int(ECONNRESET))
+        XCTAssertTrue(h.handle.egressAborted(), "the relay reflects a reset onto both sides")
         h.handle.cancel()
         XCTAssertEqual((h.handle.terminalError() as NSError?)?.code, Int(ECONNRESET))
         h.handle.cancel()

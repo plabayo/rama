@@ -4,6 +4,7 @@
 //! the semantic-input host setter convenience methods.
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::assert_matches;
 
 use crate::address::{Domain, Host};
 use crate::uri::Uri;
@@ -18,7 +19,7 @@ fn canonicalize_promotes_pct_encoded_ascii_to_domain() {
     let canonical = uri.canonicalize();
     let host = canonical.host().unwrap();
     assert_eq!(host.to_str(), "example.com");
-    assert!(matches!(host.into_owned(), Host::Name(_)));
+    assert_matches!(host.into_owned(), Host::Name(_));
 }
 
 #[cfg(feature = "idna")]
@@ -55,7 +56,7 @@ fn canonicalize_leaves_sub_delim_host_as_uninterpreted() {
     let uri = Uri::parse("http://tag,with,commas/").unwrap();
     let canonical = uri.canonicalize();
     let host = canonical.host().unwrap().into_owned();
-    assert!(matches!(host, Host::Uninterpreted(_)));
+    assert_matches!(host, Host::Uninterpreted(_));
     assert_eq!(canonical.host().unwrap().to_str(), "tag,with,commas");
 }
 
@@ -261,7 +262,7 @@ fn parse_canonical_strict_rejects_strict_violations() {
     // Strict-mode gating runs before canonicalization. Backslash in path
     // is graceful-only.
     let r = Uri::parse_canonical_strict("/path\\foo");
-    assert!(matches!(r, Err(crate::uri::ParseError::StrictViolation)));
+    assert_matches!(r, Err(crate::uri::ParseError::StrictViolation));
     Uri::parse_canonical("/path\\foo").unwrap();
 }
 

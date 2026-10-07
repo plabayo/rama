@@ -1,5 +1,6 @@
 use rama_core::error::BoxErrorExt as _;
 use rama_inspect::storage::{Collection, ListRecords, MemoryStore, ReadRecord, Reader};
+use std::assert_matches;
 
 use super::*;
 
@@ -58,10 +59,10 @@ async fn filtered_limits_keep_exact_full_totals_and_connection_membership() {
     assert_eq!(snapshot.total_connections, 2);
     assert_eq!(snapshot.active_connections, 2);
     assert_eq!(snapshot.connections.len(), 1);
-    assert!(matches!(
+    assert_matches!(
         snapshot.connections[0].id,
-        id if id == first || id == second
-    ));
+        id if id == first || id == second,
+    );
     assert_ne!(snapshot.connections[0].id, unrelated);
 }
 

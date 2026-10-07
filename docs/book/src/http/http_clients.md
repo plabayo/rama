@@ -25,6 +25,9 @@ More client examples:
 - [/examples/src/http3_client_server.rs](https://github.com/plabayo/rama/tree/main/examples/src/http3_client_server.rs):
   an authenticated HTTP/3 client and server using common request, response and body types,
   with pooled requests, streaming uploads, trailers and graceful shutdown;
+- [/examples/src/http_datagram_echo.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_datagram_echo.rs):
+  HTTP Datagrams (RFC 9297) over HTTP/3 Extended CONNECT with a custom upgrade token,
+  native QUIC datagrams when negotiated and DATAGRAM capsules otherwise;
 - [/examples/src/http_blocking_https_client.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_blocking_https_client.rs):
   a blocking HTTPS client that creates and owns its runtime thread;
 - [/examples/src/http_pooled_client.rs](https://github.com/plabayo/rama/tree/main/examples/src/http_pooled_client.rs):

@@ -99,6 +99,7 @@ impl fmt::Display for Directive {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn known_directive_names_round_trip() {
@@ -119,7 +120,7 @@ mod tests {
     #[test]
     fn unknown_directive_name_falls_through_to_unknown() {
         let d: DirectiveName = "experimental-thing".into();
-        assert!(matches!(d, DirectiveName::Unknown(ref s) if s.as_ref() == "experimental-thing"));
+        assert_matches!(d, DirectiveName::Unknown(ref s) if s.as_ref() == "experimental-thing");
         assert_eq!(d.as_str(), "experimental-thing");
         // Strict parser rejects unknowns.
         assert!(DirectiveName::strict_parse("experimental-thing").is_none());

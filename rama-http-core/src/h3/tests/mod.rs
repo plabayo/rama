@@ -2,11 +2,15 @@
 mod cancellation;
 mod close;
 mod credit;
+mod datagram;
+mod demux;
+mod extended_connect;
 mod fairness;
 mod loss;
 mod robustness;
 
-use super::{client, connection::Config, server};
+use std::{assert_matches, num::NonZeroUsize, sync::Arc, time::Duration};
+
 use rama_core::{
     bytes::Bytes,
     extensions::{Extension, ExtensionsRef as _},
@@ -24,7 +28,8 @@ use rama_tls::{
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
 use rama_udp::test_utils::{MemoryDatagramControl, MemoryDatagramSocket};
-use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+
+use super::{client, connection::Config, server};
 
 const LIMIT: Duration = Duration::from_secs(20);
 
@@ -289,6 +294,7 @@ async fn streaming_round_trip_reuses_connection_and_dynamic_qpack() {
 async fn header_order_survives_transport_and_message_forwarding() {
     use rama_http_types::{
         HeaderMap, HeaderValue,
+        header::trailer::ForbiddenTrailers,
         proto::h3::{PseudoHeader, PseudoHeaderOrder},
     };
 
@@ -352,6 +358,8 @@ async fn header_order_survives_transport_and_message_forwarding() {
             ]));
             let mut reply = Response::new(body);
             *reply.headers_mut() = parts.headers;
+            // A relay forwards `cookie` trailers as received.
+            reply.extensions().insert(ForbiddenTrailers::AllowAll);
             response.send_response(reply).await.unwrap();
         });
         let body = Body::from_frame_stream(rama_core::futures::stream::iter([
@@ -364,6 +372,7 @@ async fn header_order_survives_transport_and_message_forwarding() {
             .unwrap();
         *request.headers_mut() = headers();
         request.extensions().insert(order);
+        request.extensions().insert(ForbiddenTrailers::AllowAll);
         let response = client.send_request(request).await.unwrap();
         assert_headers(response.headers());
         let body = response.into_body().collect().await.unwrap();
@@ -577,12 +586,12 @@ async fn connect_upgrade_keeps_half_closed_tunnel_alive() {
                     task::{Context, Poll, Waker},
                 };
                 let mut drained = Box::pin(server.drained());
-                assert!(matches!(
+                assert_matches!(
                     drained
                         .as_mut()
                         .poll(&mut Context::from_waker(Waker::noop())),
-                    Poll::Pending
-                ));
+                    Poll::Pending,
+                );
             }
             let mut bytes = Vec::new();
             tunnel.read_to_end(&mut bytes).await.unwrap();
@@ -811,8 +820,8 @@ async fn opt_in_push_delivers_common_body_and_enforces_quota() {
 
 #[tokio::test]
 async fn connect_upstream_failure_resets_with_connect_error() {
-    use rama_core::extensions::ExtensionsRef as _;
-    use rama_http::io::upgrade::{OnUpstreamError, handle_upgrade};
+    use rama_core::{extensions::ExtensionsRef as _, io::AbortIo};
+    use rama_http::io::upgrade::handle_upgrade;
     use tokio::io::AsyncReadExt as _;
     tokio::time::timeout(LIMIT, async {
         let pair = Pair::new(None, None).await;
@@ -835,9 +844,9 @@ async fn connect_upstream_failure_resets_with_connect_error() {
             acknowledged.await.unwrap();
             tunnel
                 .extensions()
-                .get_ref::<OnUpstreamError>()
+                .self_get_arc::<AbortIo>()
                 .unwrap()
-                .call();
+                .abort();
             drop(tunnel);
         });
         let response = client
@@ -864,6 +873,71 @@ async fn connect_upstream_failure_resets_with_connect_error() {
                 .code(),
             Code::H3_CONNECT_ERROR
         );
+        serve.await.unwrap();
+        drop(tunnel);
+        pair.client.close(0u32, b"done");
+        _ = client_driver.await;
+        _ = server_driver.await;
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// As on TCP and HTTP/2, a write followed by a read needs no flush: the tunnel sends what a
+/// write queued without waiting for the next write.
+#[tokio::test]
+async fn tunnel_writes_are_sent_without_an_explicit_flush() {
+    use rama_http::io::upgrade::handle_upgrade;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::new(None, None).await;
+        let (mut client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let (received_tx, received) = tokio::sync::oneshot::channel();
+        let serve = spawn(async move {
+            let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            let upgrade = handle_upgrade(request);
+            response
+                .send_response(Response::new(Body::empty()))
+                .await
+                .unwrap();
+            let mut tunnel = upgrade.await.unwrap();
+            let mut ping = [0; 4];
+            tunnel.read_exact(&mut ping).await.unwrap();
+            assert_eq!(&ping, b"ping");
+            received_tx.send(()).unwrap();
+            tunnel.write_all(b"pong").await.unwrap();
+            // Wait for the client's end before ending in turn.
+            assert_eq!(tunnel.read(&mut ping).await.unwrap(), 0);
+            tunnel.shutdown().await.unwrap();
+        });
+        let response = client
+            .send_request(
+                Request::builder()
+                    .method("CONNECT")
+                    .uri(
+                        rama_net::uri::Uri::parse_http_request_target("localhost:443", true)
+                            .unwrap(),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut tunnel = handle_upgrade(response).await.unwrap();
+        tunnel.write_all(b"ping").await.unwrap();
+        // Not polled again until the server saw the write: only the write itself can send it.
+        received.await.unwrap();
+        let mut pong = [0; 4];
+        tunnel.read_exact(&mut pong).await.unwrap();
+        assert_eq!(&pong, b"pong");
+        tunnel.shutdown().await.unwrap();
         serve.await.unwrap();
         drop(tunnel);
         pair.client.close(0u32, b"done");

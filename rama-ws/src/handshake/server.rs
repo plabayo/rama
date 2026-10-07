@@ -19,14 +19,14 @@ use rama_core::{
 #[cfg(feature = "compression")]
 use rama_http::headers::sec_websocket_extensions;
 use rama_http::{
-    Method, Request, Response, StatusCode, Version,
+    Method, Request, Response, StatusCode, Version, header,
     headers::{
         self, HeaderMapExt,
         sec_websocket_extensions::{Extension, PerMessageDeflateConfig},
     },
     io::upgrade,
     layer::upgrade::UpgradeResponse,
-    proto::h2::ext::Protocol,
+    proto::ext::Protocol,
     request,
     service::web::response::{self, Headers, IntoResponse},
 };
@@ -158,7 +158,8 @@ pub fn validate_http_client_request<Body>(
                 None => return Err(RequestValidateError::InvalidSecWebSocketKeyHeader),
             };
         }
-        Version::HTTP_2 => {
+        // Extended CONNECT (RFC 8441 §5, RFC 9220 §3).
+        Version::HTTP_2 | Version::HTTP_3 => {
             match request.method() {
                 &Method::CONNECT => (),
                 method => return Err(RequestValidateError::UnexpectedHttpMethod(method.clone())),
@@ -167,7 +168,7 @@ pub fn validate_http_client_request<Body>(
             match request.extensions().get_ref::<Protocol>() {
                 None => return Err(RequestValidateError::UnexpectedPseudoProtocolHeader(None)),
                 Some(protocol) => {
-                    if !protocol.as_str().trim().eq_ignore_ascii_case("websocket") {
+                    if !protocol.is_websocket() {
                         return Err(RequestValidateError::UnexpectedPseudoProtocolHeader(Some(
                             protocol.clone(),
                         )));
@@ -197,7 +198,9 @@ pub fn validate_http_client_request<Body>(
     // Also optionally, a |Sec-WebSocket-Extensions| header field, with a list
     // of values indicating which extensions the client would like to
     // utilise, ordered by preference.
-    let extensions_header = request.headers().typed_get();
+    let extensions_header = headers::SecWebSocketExtensions::decode_offers(
+        request.headers().get_all(header::SEC_WEBSOCKET_EXTENSIONS),
+    );
 
     Ok(ClientRequestData {
         accept_header,
@@ -454,28 +457,33 @@ where
                     (Some(request_extensions), Some(allowed_extensions)) => {
                         request_extensions.0.iter().find_map(|request_ext| {
                             for allowed_ext in allowed_extensions.0.iter() {
+                                // an offer is only answered under its own name (RFC 6455 §9)
                                 if let (
                                     Extension::PerMessageDeflate(request_pmd),
                                     Extension::PerMessageDeflate(allowed_pmd),
                                 ) = (&request_ext, allowed_ext)
+                                    && request_pmd.identifier == allowed_pmd.identifier
                                 {
                                     let mut resp = PerMessageDeflateConfig {
                                         identifier: allowed_pmd.identifier.clone(),
                                         client_no_context_takeover: request_pmd
                                             .client_no_context_takeover
                                             && allowed_pmd.client_no_context_takeover,
+                                        // a requested one must be honoured (RFC 7692 §7.1.1.1)
                                         server_no_context_takeover: allowed_pmd
-                                            .server_no_context_takeover,
+                                            .server_no_context_takeover
+                                            || request_pmd.server_no_context_takeover,
                                         ..Default::default()
                                     };
 
                                     // server_max_window_bits
                                     // server may include this even if client did not offer it
                                     let srv_cap = allowed_pmd.server_max_window_bits.unwrap_or(15);
+                                    // zlib compresses with at least a 9-bit window
                                     let srv_cap = if srv_cap == 0 {
                                         15
                                     } else {
-                                        srv_cap.clamp(8, 15)
+                                        srv_cap.clamp(9, 15)
                                     };
                                     let cli_req_srv = request_pmd
                                         .server_max_window_bits
@@ -487,6 +495,10 @@ where
                                         (None, Some(cap)) => Some(cap),
                                         _ => None,
                                     };
+                                    // an offer demanding an 8-bit server window cannot be honoured
+                                    if chosen_srv_bits == Some(8) {
+                                        continue;
+                                    }
                                     // include only if it actually constrains or was explicitly discussed
                                     resp.server_max_window_bits = match chosen_srv_bits {
                                         Some(bits) if bits < 15 || cli_req_srv.is_some() => {
@@ -510,7 +522,8 @@ where
                                             if cap == 0 {
                                                 offer
                                             } else {
-                                                offer.min(cap.clamp(8, 15))
+                                                // zlib compresses with at least a 9-bit window
+                                                offer.min(cap.clamp(9, 15))
                                             }
                                         });
 
@@ -574,9 +587,9 @@ where
                             extensions,
                         })
                     }
-                    Version::HTTP_2 => {
+                    version @ (Version::HTTP_2 | Version::HTTP_3) => {
                         let mut response = StatusCode::OK.into_response();
-                        *response.version_mut() = Version::HTTP_2;
+                        *response.version_mut() = version;
                         if let Some(protocols) = protocols_header {
                             response.headers_mut().typed_insert(protocols);
                         }
@@ -745,7 +758,10 @@ impl<S> ServerWebSocket<S> {
         })?
     }
 
-    /// Close the WebSocket.
+    /// Start the close handshake by sending a Close frame.
+    ///
+    /// The handshake completes once the peer's Close is read: keep receiving until the
+    /// stream ends. Dropping the socket before that aborts the connection.
     pub async fn close(&mut self, message: Option<CloseFrame>) -> Result<(), ProtocolError>
     where
         S: Sink<Message, Error = ProtocolError> + Send + Unpin,
@@ -1005,6 +1021,8 @@ mod tests {
 
     use super::*;
     use crate::layer::har::{HARWebSocket, HARWebSocketLayer};
+    #[cfg(feature = "compression")]
+    use rama_http::headers::sec_websocket_extensions::PerMessageDeflateIdentifier;
 
     #[derive(Default)]
     struct CaptureState {
@@ -1035,7 +1053,7 @@ mod tests {
             Version::HTTP_10 | Version::HTTP_11 => {
                 assert_eq!(StatusCode::SWITCHING_PROTOCOLS, resp.status())
             }
-            Version::HTTP_2 => assert_eq!(StatusCode::OK, resp.status()),
+            Version::HTTP_2 | Version::HTTP_3 => assert_eq!(StatusCode::OK, resp.status()),
             _ => unreachable!(),
         }
         let accepted_protocol = resp
@@ -1151,6 +1169,7 @@ mod tests {
                     .version(match $version {
                         "HTTP/1.1" => Version::HTTP_11,
                         "HTTP/2" => Version::HTTP_2,
+                        "HTTP/3" => Version::HTTP_3,
                         _ => unreachable!(),
                     })
                     .method(match $method {
@@ -1225,6 +1244,262 @@ mod tests {
         assert_websocket_acceptor_bad_request(
             request! {
                 "CONNECT" "HTTP/2" "/"
+                "Sec-WebSocket-Version": "13"
+                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
+                "Sec-WebSocket-Protocol": "client"
+                w/ [
+                    Protocol::from_static("websocket"),
+                ]
+            },
+            &acceptor,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "compression")]
+    async fn negotiated_extensions(acceptor: &WebSocketAcceptor, offer: &str) -> Option<String> {
+        let request = Request::builder()
+            .uri("/")
+            .version(Version::HTTP_11)
+            .method(Method::GET)
+            .header("Connection", "upgrade")
+            .header("Upgrade", "websocket")
+            .header("Sec-WebSocket-Version", "13")
+            .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .header("Sec-WebSocket-Extensions", offer)
+            .body(Body::empty())
+            .unwrap();
+        let UpgradeResponse { response, .. } = acceptor.serve(request).await.unwrap();
+        response
+            .headers()
+            .get("sec-websocket-extensions")
+            .map(|value| value.to_str().unwrap().to_owned())
+    }
+
+    #[cfg(feature = "compression")]
+    async fn negotiated_extensions_on(
+        acceptor: &WebSocketAcceptor,
+        version: Version,
+        offer: &str,
+    ) -> Option<String> {
+        let request = if version == Version::HTTP_11 {
+            Request::builder()
+                .uri("/")
+                .method(Method::GET)
+                .header("Connection", "upgrade")
+                .header("Upgrade", "websocket")
+                .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        } else {
+            Request::builder()
+                .uri("https://example.test/")
+                .method(Method::CONNECT)
+                .extension(Protocol::from_static("websocket"))
+        }
+        .version(version)
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Extensions", offer)
+        .body(Body::empty())
+        .unwrap();
+        let UpgradeResponse { response, .. } = acceptor.serve(request).await.unwrap();
+        response
+            .headers()
+            .get("sec-websocket-extensions")
+            .map(|value| value.to_str().unwrap().to_owned())
+    }
+
+    /// RFC 7692 §7.1.1.1: a server accepting an offer that asks it to forgo context takeover
+    /// says so in its response (and then compresses that way), on every HTTP version.
+    #[cfg(feature = "compression")]
+    #[tokio::test]
+    async fn a_requested_server_no_context_takeover_is_honoured() {
+        let acceptor = WebSocketAcceptor::new().with_per_message_deflate();
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            for (offer, accepted) in [
+                (
+                    "permessage-deflate; server_no_context_takeover",
+                    "permessage-deflate; server_no_context_takeover",
+                ),
+                ("permessage-deflate", "permessage-deflate"),
+            ] {
+                assert_eq!(
+                    negotiated_extensions_on(&acceptor, version, offer)
+                        .await
+                        .as_deref(),
+                    Some(accepted),
+                    "{version:?} {offer}"
+                );
+            }
+        }
+    }
+
+    /// RFC 6455 §9: an offer is answered under its own name or not at all, on every HTTP
+    /// version; parameters of an offer under another name do not count.
+    #[cfg(feature = "compression")]
+    #[tokio::test]
+    async fn a_pmd_offer_is_only_answered_under_its_own_name() {
+        let standard = WebSocketAcceptor::new().with_per_message_deflate();
+        let webkit = WebSocketAcceptor::new().with_per_message_deflate_with_config(
+            PerMessageDeflateConfig {
+                identifier: PerMessageDeflateIdentifier::XWebKitDeflateFrame,
+                ..Default::default()
+            },
+        );
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            for (acceptor, offer, accepted) in [
+                (&standard, "permessage-deflate", Some("permessage-deflate")),
+                (&standard, "perframe-deflate", None),
+                (&standard, "x-webkit-deflate-frame", None),
+                (
+                    &standard,
+                    "x-webkit-deflate-frame, permessage-deflate",
+                    Some("permessage-deflate"),
+                ),
+                (
+                    &standard,
+                    "perframe-deflate; server_no_context_takeover, permessage-deflate",
+                    Some("permessage-deflate"),
+                ),
+                (
+                    &webkit,
+                    "x-webkit-deflate-frame",
+                    Some("x-webkit-deflate-frame"),
+                ),
+                (&webkit, "permessage-deflate", None),
+                (&webkit, "perframe-deflate", None),
+            ] {
+                assert_eq!(
+                    negotiated_extensions_on(acceptor, version, offer)
+                        .await
+                        .as_deref(),
+                    accepted,
+                    "{version:?} {offer}"
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "compression")]
+    #[tokio::test]
+    async fn per_message_deflate_declines_only_the_invalid_offer() {
+        let acceptor = WebSocketAcceptor::new().with_per_message_deflate();
+        let accepted = negotiated_extensions(
+            &acceptor,
+            "permessage-deflate; server_max_window_bits=010, permessage-deflate",
+        )
+        .await;
+        assert_eq!(accepted.as_deref(), Some("permessage-deflate"));
+    }
+
+    #[cfg(feature = "compression")]
+    #[tokio::test]
+    async fn per_message_deflate_offers_split_outside_quotes_only() {
+        let acceptor = WebSocketAcceptor::new().with_per_message_deflate();
+        let accepted =
+            negotiated_extensions(&acceptor, r#"x-foo; p="a, permessage-deflate, b""#).await;
+        assert_eq!(accepted, None);
+    }
+
+    #[cfg(feature = "compression")]
+    #[tokio::test]
+    async fn per_message_deflate_caps_configured_8_bit_windows_to_9() {
+        let acceptor = WebSocketAcceptor::new().with_per_message_deflate_with_config(
+            PerMessageDeflateConfig {
+                server_max_window_bits: Some(8),
+                client_max_window_bits: Some(8),
+                ..Default::default()
+            },
+        );
+        let accepted =
+            negotiated_extensions(&acceptor, "permessage-deflate; client_max_window_bits").await;
+        assert_eq!(
+            accepted.as_deref(),
+            Some("permessage-deflate; server_max_window_bits=9; client_max_window_bits=9")
+        );
+    }
+
+    #[cfg(feature = "compression")]
+    #[tokio::test]
+    async fn per_message_deflate_declines_an_8_bit_server_window() {
+        let acceptor = WebSocketAcceptor::new().with_per_message_deflate();
+        for (offer, accepted) in [
+            ("permessage-deflate; server_max_window_bits=8", None),
+            (
+                "permessage-deflate; server_max_window_bits=9",
+                Some("permessage-deflate; server_max_window_bits=9"),
+            ),
+        ] {
+            let request = Request::builder()
+                .uri("/")
+                .version(Version::HTTP_11)
+                .method(Method::GET)
+                .header("Connection", "upgrade")
+                .header("Upgrade", "websocket")
+                .header("Sec-WebSocket-Version", "13")
+                .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+                .header("Sec-WebSocket-Extensions", offer)
+                .body(Body::empty())
+                .unwrap();
+            let UpgradeResponse { response, .. } = acceptor.serve(request).await.unwrap();
+            let extensions = response
+                .headers()
+                .get("sec-websocket-extensions")
+                .map(|value| value.to_str().unwrap().to_owned());
+            assert_eq!(extensions.as_deref(), accepted, "{offer}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_websocket_acceptor_default_http_3() {
+        let acceptor = WebSocketAcceptor::default();
+
+        assert_websocket_acceptor_bad_request(
+            request! {
+                "GET" "HTTP/3" "/"
+                "Connection": "upgrade"
+                "Upgrade": "websocket"
+                "Sec-WebSocket-Version": "13"
+                "Sec-WebSocket-Key": "foobar"
+            },
+            &acceptor,
+        )
+        .await;
+        assert_websocket_acceptor_bad_request(
+            request! {
+                "CONNECT" "HTTP/3" "/"
+                w/ [
+                    Protocol::from_static("websocket"),
+                ]
+            },
+            &acceptor,
+        )
+        .await;
+        assert_websocket_acceptor_bad_request(
+            request! {
+                "GET" "HTTP/3" "/"
+                w/ [
+                    Protocol::from_static("websocket"),
+                ]
+            },
+            &acceptor,
+        )
+        .await;
+
+        assert_websocket_acceptor_ok(
+            request! {
+                "CONNECT" "HTTP/3" "/"
+                "Sec-WebSocket-Version": "13"
+                w/ [
+                    Protocol::from_static("websocket"),
+                ]
+            },
+            &acceptor,
+            None,
+        )
+        .await;
+
+        assert_websocket_acceptor_bad_request(
+            request! {
+                "CONNECT" "HTTP/3" "/"
                 "Sec-WebSocket-Version": "13"
                 "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
                 "Sec-WebSocket-Protocol": "client"

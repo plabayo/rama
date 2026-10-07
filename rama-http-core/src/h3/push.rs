@@ -1,5 +1,17 @@
 //! Bounded, opt-in server push. Pushes are delivered to an application, never cached implicitly.
 
+use std::{collections::BTreeMap, sync::Arc};
+
+use rama_core::{
+    bytes::Bytes,
+    extensions::{Extensions, ExtensionsRef as _},
+};
+use rama_http_types::{
+    Method, Request, Response,
+    proto::h3::{Code, FrameType},
+};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
 use super::{
     Error, body,
     connection::Shared,
@@ -8,13 +20,6 @@ use super::{
     qpack::FieldPair,
     stream::{Phase, Reader},
 };
-use rama_core::{bytes::Bytes, extensions::ExtensionsRef as _};
-use rama_http_types::{
-    Method, Request, Response,
-    proto::h3::{Code, FrameType},
-};
-use std::{collections::BTreeMap, sync::Arc};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 #[derive(Default)]
 pub(crate) struct Entry {
@@ -191,7 +196,7 @@ impl Shared {
         let explicit_authority = fields
             .iter()
             .any(|field| field.name.as_ref() == b":authority" && !field.value.is_empty());
-        let request = headers::request(fields.clone())?;
+        let request = headers::request_head(fields.clone(), false)?;
         let valid = explicit_authority
             && matches!(*request.method(), Method::GET | Method::HEAD)
             && headers::content_length(request.headers())?.is_none_or(|length| length == 0)
@@ -411,7 +416,11 @@ impl Push {
     /// Receive final response headers and the ordinary streaming body.
     pub async fn response(mut self) -> Result<Response<crate::body::Incoming>, Error> {
         loop {
-            let response = headers::response_for_method(self.reader.headers().await?, false)?;
+            let response = headers::response_for_method(
+                self.reader.headers().await?,
+                false,
+                Extensions::new(),
+            )?;
             response.extensions().insert(self.priority_handle());
             if response.status().is_informational() {
                 tokio::task::yield_now().await;
@@ -469,12 +478,15 @@ impl Drop for Lease {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
+
+    use rama_core::futures::FutureExt as _;
+
     use super::*;
     use crate::h3::{
         connection::Config,
         qpack::{Encoder, EncoderConfig},
     };
-    use rama_core::futures::FutureExt as _;
 
     fn shared() -> Arc<Shared> {
         let shared = Shared::new(
@@ -633,12 +645,12 @@ mod tests {
             .unwrap();
         assert!(encoder.insert_count() > 0);
         let mut decode = Box::pin(shared.decode_for_stream(3, Some(0), encoded));
-        assert!(matches!(
+        assert_matches!(
             decode
                 .as_mut()
                 .poll(&mut Context::from_waker(Waker::noop())),
-            Poll::Pending
-        ));
+            Poll::Pending,
+        );
         shared.cancel_push(0, false).unwrap();
         assert_eq!(decode.await.unwrap_err().code(), Code::H3_REQUEST_CANCELLED);
     }

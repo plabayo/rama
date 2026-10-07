@@ -563,6 +563,7 @@ mod spki_tests {
 
 #[cfg(all(test, any(feature = "boring", feature = "aws-lc", feature = "ring")))]
 mod tests {
+    use std::assert_matches;
     use x509_parser::prelude::*;
 
     use super::*;
@@ -811,7 +812,12 @@ mod tests {
 
     #[test]
     fn certificate_authority_clamps_out_of_range_skew_to_epoch() {
-        for skew in [Duration::from_hours(20_000 * 365 * 24), Duration::MAX] {
+        for skew in [
+            Duration::from_hours(100 * 365 * 24),
+            Duration::from_hours(3_000 * 365 * 24),
+            Duration::from_hours(20_000 * 365 * 24),
+            Duration::MAX,
+        ] {
             let ca = CertificateAuthorityData::generate(SelfSignedCaConfig {
                 validity: CertificateValidity::new(Duration::from_hours(24), skew),
                 ..Default::default()
@@ -826,13 +832,13 @@ mod tests {
     fn generated_ca_for_sets_only_the_requested_identity() {
         let identity = CertificateIdentity::Ip(std::net::Ipv6Addr::LOCALHOST.into());
         let config = GeneratedServerAuthConfig::generated_ca_for(identity.clone());
-        assert!(matches!(
+        assert_matches!(
             config,
             GeneratedServerAuthConfig::GeneratedCa {
                 leaf: LeafCertRequest { identities, .. },
                 ..
-            } if identities == [identity]
-        ));
+            } if identities == [identity],
+        );
     }
 
     #[test]

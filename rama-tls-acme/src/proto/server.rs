@@ -355,6 +355,7 @@ impl std::error::Error for Problem {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     // https://datatracker.ietf.org/doc/html/rfc8555#section-7.4
@@ -453,7 +454,7 @@ mod tests {
                 detail,
                 String::from("No authorization provided for name example.org")
             ),
-            _ => assert!(matches!(problem, Problem::Unauthorized { .. })),
+            _ => assert_matches!(problem, Problem::Unauthorized { .. }),
         }
     }
 
@@ -476,7 +477,7 @@ mod tests {
                     ))
                 )
             }
-            _ => assert!(matches!(problem, Problem::Other { .. })),
+            _ => assert_matches!(problem, Problem::Other { .. }),
         }
     }
 }

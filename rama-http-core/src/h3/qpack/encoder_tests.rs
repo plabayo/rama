@@ -6,6 +6,7 @@ use rama_http_types::proto::h3::{
     qpack::{DecoderInstruction, FieldLine, HeaderPrefix},
 };
 use rama_utils::octets::kib;
+use std::assert_matches;
 use std::collections::BTreeMap;
 
 fn feedback(inst: DecoderInstruction) -> Bytes {
@@ -49,10 +50,10 @@ fn increments_zero_excess_and_overflow_are_rejected_without_changing_state() {
     let mut enc = Encoder::new(EncoderConfig::default());
     enc.encode(0, [(b"a", b"b")]).unwrap();
     for increment in [0, 2, u64::MAX] {
-        assert!(matches!(
+        assert_matches!(
             enc.on_decoder_instruction(DecoderInstruction::InsertCountIncrement { increment }),
-            Err(QpackError::DecoderStreamError(_))
-        ));
+            Err(QpackError::DecoderStreamError(_)),
+        );
         assert_eq!(enc.known_received_count(), 0);
     }
     enc.on_decoder_instruction(DecoderInstruction::SectionAcknowledgment { stream_id: 0 })
@@ -131,13 +132,13 @@ fn sensitive_fields_survive_forwarding_and_static_or_dynamic_matches() {
     let forwarded = enc.encode(0, fields).unwrap();
     let mut cursor = &forwarded[..];
     HeaderPrefix::decode(&mut cursor, 128, 0).unwrap();
-    assert!(matches!(
+    assert_matches!(
         FieldLine::decode(&mut cursor, 4096).unwrap(),
         FieldLine::LiteralWithLiteralName {
             never_index: true,
             ..
-        }
-    ));
+        },
+    );
     assert_eq!(enc.insert_count(), 0);
     enc.encode(4, [(b"x", b"y")]).unwrap();
     let insert_count = enc.insert_count();
@@ -161,7 +162,7 @@ fn sensitive_fields_survive_forwarding_and_static_or_dynamic_matches() {
     let mut cursor = &wire[..];
     HeaderPrefix::decode(&mut cursor, 128, insert_count).unwrap();
     for _ in 0..2 {
-        assert!(matches!(
+        assert_matches!(
             FieldLine::decode(&mut cursor, 4096).unwrap(),
             FieldLine::LiteralWithNameRef {
                 never_index: true,
@@ -169,8 +170,8 @@ fn sensitive_fields_survive_forwarding_and_static_or_dynamic_matches() {
             } | FieldLine::LiteralWithPostBaseNameRef {
                 never_index: true,
                 ..
-            }
-        ));
+            },
+        );
     }
     assert_eq!(enc.insert_count(), insert_count);
 }
@@ -276,7 +277,7 @@ fn native_header_sensitivity_is_preserved() {
     value.set_sensitive(true);
     let mut enc = Encoder::new(EncoderConfig::default());
     let field = EncodeField::from_header(&name, &value);
-    assert!(matches!(field.name, std::borrow::Cow::Borrowed(_)));
+    assert_matches!(field.name, std::borrow::Cow::Borrowed(_));
     assert_eq!(field.value.as_ptr(), value.as_bytes().as_ptr());
     let bytes = enc.encode(0, [field]).unwrap();
     assert_eq!(enc.insert_count(), 0);

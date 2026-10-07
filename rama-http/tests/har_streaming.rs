@@ -13,7 +13,7 @@ use rama_http::layer::har::recorder::{
 use rama_http::layer::har::spec::{
     Browser, Creator, LogFile, WebSocketMessage, WebSocketMessageType,
 };
-use rama_http::proto::h2::ext::Protocol;
+use rama_http::proto::ext::Protocol;
 use rama_http::{Body, Request, Response};
 use std::convert::Infallible;
 use std::sync::Arc;

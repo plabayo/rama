@@ -5,6 +5,7 @@
 //! lifecycle. Nothing here calls into the example's code.
 
 use super::utils;
+use std::assert_matches;
 
 use std::{
     fs,
@@ -215,7 +216,7 @@ impl Relay {
         // released for something else to take.
         let mut process = utils::ExampleRunner::capturing(
             "quic_terminating_relay",
-            None,
+            Some(utils::QUIC_BACKEND),
             [
                 "--listen".to_owned(),
                 localhost().to_string(),
@@ -366,12 +367,10 @@ async fn a_client_reset_reaches_the_origin() {
         .await
         .expect("the origin was told promptly")
         .expect_err("a reset stream does not complete");
-    assert!(
-        matches!(
-            ended,
-            ReadToEndError::Read(ReadError::Reset(code)) if code == VarInt::from(RELAY_CANCELLED)
-        ),
-        "the origin's end was reset with the relay's own code: {ended:?}"
+    assert_matches!(
+        ended,
+        ReadToEndError::Read(ReadError::Reset(code)) if code == VarInt::from(RELAY_CANCELLED),
+        "the origin's end was reset with the relay's own code: {ended:?}",
     );
     connection.close(0u32, b"done");
 }
@@ -448,9 +447,10 @@ async fn a_blocked_upstream_write_is_cancelled() {
         .expect("the blocked direction was given up promptly")
         .expect("the writing task did not panic")
         .expect_err("a cancelled write does not complete");
-    assert!(
-        matches!(cancelled, WriteError::Stopped(code) if code == VarInt::from(RELAY_CANCELLED)),
-        "the relay stopped the client's send with its own code: {cancelled:?}"
+    assert_matches!(
+        cancelled,
+        WriteError::Stopped(code) if code == VarInt::from(RELAY_CANCELLED),
+        "the relay stopped the client's send with its own code: {cancelled:?}",
     );
 
     // Only now is the origin's end looked at, and the permit is reusable.
@@ -502,9 +502,10 @@ async fn a_blocked_downstream_write_is_cancelled() {
         .expect("the blocked direction was given up promptly")
         .expect("the writing task did not panic")
         .expect_err("a cancelled write does not complete");
-    assert!(
-        matches!(cancelled, WriteError::Stopped(code) if code == VarInt::from(RELAY_CANCELLED)),
-        "the relay stopped the origin's send with its own code: {cancelled:?}"
+    assert_matches!(
+        cancelled,
+        WriteError::Stopped(code) if code == VarInt::from(RELAY_CANCELLED),
+        "the relay stopped the origin's send with its own code: {cancelled:?}",
     );
     drop(held_recv);
     connection.close(0u32, b"done");
@@ -609,9 +610,10 @@ async fn a_client_that_leaves_releases_a_stream_waiting_on_upstream_credit() {
     let ended = tokio::time::timeout(PROMPTLY, upstream.closed())
         .await
         .expect("the relay released the upstream promptly");
-    assert!(
-        matches!(&ended, ConnectionError::ApplicationClosed(close) if close.error_code() == VarInt::from(0u32)),
-        "the relay closed the upstream itself: {ended:?}"
+    assert_matches!(
+        &ended,
+        ConnectionError::ApplicationClosed(close) if close.error_code() == VarInt::from(0u32),
+        "the relay closed the upstream itself: {ended:?}",
     );
 
     // And it is still serving: another client gets its own upstream connection.
@@ -712,12 +714,10 @@ async fn a_stream_permit_is_released_after_a_cancelled_stream() {
         .await
         .expect("the origin was told")
         .expect_err("a reset stream does not complete");
-    assert!(
-        matches!(
-            ended,
-            ReadToEndError::Read(ReadError::Reset(code)) if code == VarInt::from(RELAY_CANCELLED)
-        ),
-        "the origin's end was reset with the relay's own code: {ended:?}"
+    assert_matches!(
+        ended,
+        ReadToEndError::Read(ReadError::Reset(code)) if code == VarInt::from(RELAY_CANCELLED),
+        "the origin's end was reset with the relay's own code: {ended:?}",
     );
 
     carries_another_stream(&connection, &upstream).await;
@@ -817,8 +817,9 @@ async fn cancelled_while_waiting_for_credit(reset: bool) {
             .await
             .expect("a queued request reset is noticed promptly")
             .unwrap_err();
-        assert!(
-            matches!(error, ReadToEndError::Read(ReadError::Reset(code)) if code == VarInt::from(RELAY_CANCELLED))
+        assert_matches!(
+            error,
+            ReadToEndError::Read(ReadError::Reset(code)) if code == VarInt::from(RELAY_CANCELLED),
         );
     } else {
         recv.stop(CLIENT_STOPPED).unwrap();
@@ -869,8 +870,9 @@ async fn a_stop_after_forwarding_fin_cancels_the_idle_response() {
         .await
         .expect("the unacknowledged FIN still observes a stop")
         .unwrap_err();
-    assert!(
-        matches!(error, ReadToEndError::Read(ReadError::Reset(code)) if code == VarInt::from(RELAY_CANCELLED))
+    assert_matches!(
+        error,
+        ReadToEndError::Read(ReadError::Reset(code)) if code == VarInt::from(RELAY_CANCELLED),
     );
     gate.paused.store(false, Ordering::Release);
     carries_another_stream(&connection, &upstream).await;

@@ -521,6 +521,7 @@ fn capabilities(state: &sys::UdpSocketState) -> DatagramCapabilities {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::{
         future::Future,
         io::IoSliceMut,
@@ -535,6 +536,8 @@ mod tests {
     use rama_net::socket::SocketOptions;
     #[cfg(target_vendor = "apple")]
     use rama_net::socket::core::SockRef;
+    #[cfg(target_vendor = "apple")]
+    use std::os::fd::AsRawFd as _;
 
     async fn bind_pair(ipv6: bool) -> (UdpPacketSocket, UdpPacketSocket) {
         let address: SocketAddr = if ipv6 {
@@ -803,12 +806,12 @@ mod tests {
         let mut buffer = [0; 8];
         {
             let mut future = std::pin::pin!(receiver.recv(&mut buffer));
-            assert!(matches!(
+            assert_matches!(
                 future
                     .as_mut()
                     .poll(&mut Context::from_waker(std::task::Waker::noop())),
-                Poll::Pending
-            ));
+                Poll::Pending,
+            );
         }
 
         let mut sender = sender_socket.create_sender();
@@ -1059,6 +1062,9 @@ mod tests {
                 .unwrap()
         );
         let port = socket.local_addr().unwrap().port;
+        let ipv4 = socket.ipv4.as_ref().unwrap().io.clone();
+        assert_eq!(queued_datagrams(&socket.primary.io), 0);
+        assert_eq!(queued_datagrams(&ipv4), 0);
         for address in [
             SocketAddress::local_ipv4(port),
             SocketAddress::local_ipv6(port),
@@ -1074,8 +1080,13 @@ mod tests {
             }
         }
         tokio::time::timeout(Duration::from_secs(2), async {
+            // Loopback delivery is asynchronous: an emptied queue would clear its readiness
+            // mid-loop, so both must hold every datagram and be known readable first.
+            while queued_datagrams(&socket.primary.io) < 4 || queued_datagrams(&ipv4) < 4 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
             socket.primary.io.readable().await.unwrap();
-            socket.ipv4.as_ref().unwrap().io.readable().await.unwrap();
+            ipv4.readable().await.unwrap();
             let mut buffer = [0; 8];
             for _ in 0..4 {
                 let first = socket.recv(&mut buffer).await.unwrap();
@@ -1085,6 +1096,26 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    /// Datagrams waiting in a socket's receive buffer (Darwin's `SO_NUMRCVPKT`, not in libc).
+    #[cfg(target_vendor = "apple")]
+    fn queued_datagrams(socket: &UdpSocket) -> libc::c_int {
+        const SO_NUMRCVPKT: libc::c_int = 0x1112;
+        let mut count: libc::c_int = 0;
+        let mut len = size_of::<libc::c_int>() as libc::socklen_t;
+        // SAFETY: a valid descriptor and an int-sized output, as the option requires.
+        let result = unsafe {
+            libc::getsockopt(
+                socket.as_raw_fd(),
+                libc::SOL_SOCKET,
+                SO_NUMRCVPKT,
+                (&raw mut count).cast(),
+                &raw mut len,
+            )
+        };
+        assert_eq!(result, 0, "{}", std::io::Error::last_os_error());
+        count
     }
 
     #[cfg(target_vendor = "apple")]
@@ -1115,7 +1146,7 @@ mod tests {
         let datagram = SendDatagram::new(destination, &payload)
             .with_segment_size(NonZeroUsize::new(128).unwrap());
         if let Err(error) = sender.send(datagram).await {
-            assert!(matches!(error, DatagramError::Io(_)));
+            assert_matches!(error, DatagramError::Io(_));
             assert_eq!(sender.capabilities().max_send_segments, 1);
             return;
         }

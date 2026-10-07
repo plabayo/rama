@@ -1204,6 +1204,7 @@ mod tests {
     use super::*;
     use crate::proto::RequestLine;
     use rama_core::extensions::Extensions;
+    use std::assert_matches;
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
     struct TestIo<I> {
@@ -1427,7 +1428,7 @@ mod tests {
         let io = tokio_test::io::Builder::new().build();
         let mut conn = Conn::<_, Bytes, ServerTransaction>::new(TestIo::new(io));
         conn.state.idle::<ServerTransaction>();
-        assert!(matches!(poll_head(&mut conn), Poll::Ready(None)));
+        assert_matches!(poll_head(&mut conn), Poll::Ready(None));
     }
 
     #[test]
@@ -1460,7 +1461,7 @@ mod tests {
         let io = tokio_test::io::Builder::new().build();
         let mut server = Conn::<_, Bytes, ServerTransaction>::new(TestIo::new(io));
         server.state.busy();
-        assert!(matches!(poll_head(&mut server), Poll::Ready(None)));
+        assert_matches!(poll_head(&mut server), Poll::Ready(None));
     }
 
     #[test]

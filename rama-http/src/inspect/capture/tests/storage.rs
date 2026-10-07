@@ -1,4 +1,8 @@
-use rama_core::futures::FutureExt as _;
+use rama_core::{
+    extensions::{Egress, Ingress},
+    futures::FutureExt as _,
+};
+use std::assert_matches;
 
 use super::*;
 
@@ -397,10 +401,7 @@ async fn cancelled_append_is_not_published_in_capture_indexes() {
             .expect("reading committed metadata waited for the blocked writer")
             .unwrap();
     assert_eq!(details.records.len(), 1);
-    assert!(matches!(
-        details.records[0],
-        StoredRecord::RequestHead { .. }
-    ));
+    assert_matches!(details.records[0], StoredRecord::RequestHead { .. });
 
     // A second append must wait for that writer, then make progress when the
     // cancelled operation releases it. Its reservation must survive the wait.
@@ -623,4 +624,51 @@ fn native_header_serde_preserves_order_duplicates_and_binary_values() {
         headers.ordered_iter().collect::<Vec<_>>(),
         decoded.ordered_iter().collect::<Vec<_>>()
     );
+}
+
+#[tokio::test]
+async fn the_upstream_socket_comes_from_the_egress_view_only() {
+    let client = "203.0.113.5:1000";
+    let upstream = "198.51.100.7:443";
+    for with_egress in [true, false] {
+        let store = test_store();
+        let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(
+            rama_core::service::service_fn(move |request: Request| async move {
+                let response = Response::new(Body::empty());
+                if with_egress {
+                    let connection = Extensions::new();
+                    connection.insert(SocketInfo::new(None, upstream.parse().unwrap()));
+                    response.extensions().insert(Egress(connection));
+                }
+                // Inserted last, as the client's connection is when a response inherits it.
+                let ingress = Extensions::new();
+                ingress.insert(SocketInfo::new(None, client.parse().unwrap()));
+                response.extensions().insert(Ingress(ingress));
+                response
+                    .extensions()
+                    .insert(SocketInfo::new(None, client.parse().unwrap()));
+                drop(request);
+                Ok::<_, Infallible>(response)
+            }),
+        );
+        service
+            .serve(Request::new(Body::empty()))
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+
+        let details = store.details(1).await.unwrap();
+        assert_eq!(
+            details
+                .metadata
+                .upstream
+                .get_ref::<SocketInfo>()
+                .map(|socket| socket.peer_addr().to_string()),
+            with_egress.then(|| upstream.to_owned()),
+            "with egress: {with_egress}"
+        );
+    }
 }

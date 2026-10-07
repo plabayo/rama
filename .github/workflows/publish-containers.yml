@@ -17,6 +17,10 @@ name: Build and publish container images
         required: true
       DOCKERHUB_TOKEN:
         required: true
+    outputs:
+      rama-digest:
+        description: Manifest digest of the published rama image
+        value: ${{ jobs.publish.outputs.rama-digest }}
 permissions: {}
 jobs:
   build:
@@ -64,6 +68,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions: {}
+    outputs:
+      rama-digest: ${{ steps.publish.outputs.rama-digest }}
     steps:
     - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
       with:
@@ -78,6 +84,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install --yes --no-install-recommends skopeo
     - name: Publish images without executing them
+      id: publish
       env:
         DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -92,6 +99,9 @@ jobs:
         printf '%s' "$DOCKERHUB_TOKEN" | skopeo login --authfile "$authfile" --username "$DOCKERHUB_USERNAME" --password-stdin docker.io
         for image in rama rama-quic-interop; do
           for tag in "$IMAGE_TAG" "$FLOATING_TAG"; do
-            skopeo copy --all --authfile "$authfile" "oci-archive:images/$image.tar" "docker://docker.io/glendc/$image:$tag"
+            skopeo copy --all --authfile "$authfile" --digestfile "$RUNNER_TEMP/$image.digest" "oci-archive:images/$image.tar" "docker://docker.io/glendc/$image:$tag"
           done
         done
+        digest="$(cat "$RUNNER_TEMP/rama.digest")"
+        [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+        echo "rama-digest=$digest" >> "$GITHUB_OUTPUT"

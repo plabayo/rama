@@ -99,6 +99,7 @@ final class NwTcpConnectionWritePumpTerminalTests: XCTestCase {
             mock.cancelCount, 1,
             "terminal write error must force-cancel the connection so it can't leak"
         )
+        XCTAssertEqual(mock.forceCancelCount, 1, "a failed write resets the connection")
         // No FIN was ever sent — the drain terminated on error before
         // the FIN send (a FIN is a send with nil content).
         XCTAssertNil(

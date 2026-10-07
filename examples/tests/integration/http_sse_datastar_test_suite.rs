@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use super::utils;
 
+use rama::http::headers::DatastarRequest;
 use rama::http::sse::datastar::{ElementPatchMode, Namespace};
 use rama::{futures::StreamExt, http::sse::datastar::DatastarEvent};
 use serde_json::json;
@@ -77,6 +78,36 @@ async fn test_http_sse_datastar_test_suite() {
         Some("<circle id=\"dot\" />"),
         patch_elements.elements.as_deref()
     );
+
+    assert!(stream.next().await.is_none());
+
+    // query test (datastar `@query()` sends signals as a JSON body)
+
+    let mut stream = runner
+        .query("http://127.0.0.1:62050/test")
+        .typed_header(DatastarRequest::new())
+        .json(&json!({
+          "events": [
+            {
+              "type": "patchSignals",
+              "signals": { "count": 42 },
+              "eventId": "event3",
+              "onlyIfMissing": true
+            }
+          ]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .into_body()
+        .into_event_stream();
+
+    let event: DatastarEvent = stream.next().await.unwrap().unwrap();
+    assert_eq!(Some("event3"), event.id());
+    assert_eq!(Some("datastar-patch-signals"), event.event());
+    let patch_signals = event.into_data().unwrap().into_patch_signals().unwrap();
+    assert!(patch_signals.only_if_missing);
+    assert_eq!(r#"{"count":42}"#, patch_signals.signals);
 
     assert!(stream.next().await.is_none());
 }

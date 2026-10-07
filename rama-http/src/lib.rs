@@ -32,6 +32,8 @@ pub use ::rama_http_types::{
 
 pub mod body;
 
+pub mod datagram;
+
 pub mod convert;
 
 pub mod matcher;

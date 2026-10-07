@@ -925,6 +925,18 @@ macro_rules! __transparent_proxy_ffi_emit {
             unsafe { (*session).terminal_error_code() }
         }
 
+        /// Whether the service aborted the egress stream, so its connection is reset at once.
+        /// Safe to query after a close callback while the session remains alive.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_egress_aborted(
+            session: *const RamaTransparentProxyTcpSession,
+        ) -> bool {
+            if session.is_null() {
+                return false;
+            }
+            unsafe { (*session).egress_aborted() }
+        }
+
         /// Swift → Rust: signal that the `TcpClientWritePump` has drained
         /// capacity after `on_server_bytes` returned `Paused`.
         ///

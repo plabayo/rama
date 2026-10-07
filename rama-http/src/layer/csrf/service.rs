@@ -11,7 +11,7 @@ use super::{
     ResponseForProtectionError,
 };
 use crate::headers::{HeaderMapExt as _, Host, Origin, SecFetchSite};
-use crate::{Request, Response, header};
+use crate::{HeaderValue, Request, Response, header};
 
 /// Middleware that enforces cross-origin request forgery (CSRF) protection.
 ///
@@ -91,11 +91,12 @@ impl<S, T> Csrf<S, T> {
             Some(SecFetchSite::Unknown(_)) | None => {}
         }
 
-        // No usable cross-origin signal at all → same-origin or non-browser request.
+        // No non-empty Origin line → same-origin or non-browser request.
         if req
             .headers()
-            .get(header::ORIGIN)
-            .is_none_or(|value| value.is_empty())
+            .get_all(header::ORIGIN)
+            .iter()
+            .all(HeaderValue::is_empty)
         {
             return Ok(());
         }

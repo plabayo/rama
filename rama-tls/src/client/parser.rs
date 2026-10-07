@@ -653,6 +653,7 @@ mod tests {
         SupportedGroup,
     };
     use rama_net::address::Domain;
+    use std::assert_matches;
 
     #[test]
     fn test_parse_tls_extension_sni_hostname() {
@@ -756,17 +757,17 @@ mod tests {
         let non_ch = [
             0x16, 0x03, 0x03, 0x00, 0x06, 0x02, 0x00, 0x00, 0x02, 0xaa, 0xbb,
         ];
-        assert!(matches!(
+        assert_matches!(
             parse_client_hello_handshake_prefix(&non_ch),
-            ClientHelloHandshakePrefix::Invalid
-        ));
+            ClientHelloHandshakePrefix::Invalid,
+        );
 
         // alert record (content type 0x15), never a handshake.
         let non_handshake = [0x15, 0x03, 0x03, 0x00, 0x02, 0x01, 0x00];
-        assert!(matches!(
+        assert_matches!(
             parse_client_hello_handshake_prefix(&non_handshake),
-            ClientHelloHandshakePrefix::Invalid
-        ));
+            ClientHelloHandshakePrefix::Invalid,
+        );
     }
 
     /// A hello with no extensions section at all (legacy TLS 1.0/1.1

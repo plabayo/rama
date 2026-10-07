@@ -12,7 +12,7 @@ use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_core::{Service, bytes::Bytes};
-use rama_http_types::proto::h2::ext::Protocol;
+use rama_http_types::proto::ext::Protocol;
 use tokio::time::Instant;
 
 #[derive(Clone)]
@@ -230,7 +230,7 @@ fn extend_response(response: &Response, extensions: Option<rama_core::extensions
 #[cfg(test)]
 mod tests {
     use super::{is_successful_web_socket_response, is_web_socket_request};
-    use crate::{Request, Response, StatusCode, Version, proto::h2::ext::Protocol};
+    use crate::{Request, Response, StatusCode, Version, proto::ext::Protocol};
     use rama_core::extensions::ExtensionsRef;
 
     fn response_parts(status: StatusCode, version: Version) -> rama_http_types::response::Parts {

@@ -205,6 +205,15 @@ impl<B: Buf> SendStream<B> {
         Self { inner }
     }
 
+    /// Reset this stream from another owner.
+    pub(crate) fn reset_handle(&self) -> impl Fn(Reason) + Send + Sync + 'static
+    where
+        B: Send + 'static,
+    {
+        let stream = self.inner.clone();
+        move |reason| stream.send_reset(reason)
+    }
+
     /// Requests capacity to send data.
     ///
     /// This function is used to express intent to send data. This requests

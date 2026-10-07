@@ -806,6 +806,7 @@ mod tests {
         TlsMitmRelayErrorKind, classify_handshake_reasons, reason_is_cert_trust_signal,
     };
     use rama_boring::ssl::ErrorCode;
+    use std::assert_matches;
 
     // The plaintext TLS Alert helpers (`encode_plain_alert`,
     // `write_plain_alert`) and their wire-format pins live in
@@ -1080,12 +1081,12 @@ mod tests {
             "ssl",
             Some(ErrorCode::SSL),
         );
-        assert!(matches!(
+        assert_matches!(
             err.kind(),
             TlsMitmRelayErrorKind::Handshake {
                 classification: HandshakeRelayClassification::Unclassified,
                 ..
-            }
-        ));
+            },
+        );
     }
 }

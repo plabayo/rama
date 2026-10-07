@@ -4,10 +4,10 @@ use rama_utils::octets::kib;
 pub use rama_http_core::h2;
 
 pub use rama_http_core::h2::client;
-pub use rama_http_core::h2::ext::Protocol;
 pub use rama_http_core::h2::frame::StreamId;
 pub use rama_http_core::h2::server;
 pub use rama_http_core::h2::*;
+pub use rama_http_types::proto::ext::Protocol;
 
 pub use rama_core::futures;
 

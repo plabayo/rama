@@ -100,6 +100,7 @@ async fn body_conversion_preserves_the_encoded_document() {
 #[cfg(feature = "html")]
 mod html {
     use rama_core::bytes::ByteStr;
+    use std::assert_matches;
 
     use crate::protocols::html::IntoHtml;
 
@@ -164,10 +165,10 @@ mod html {
             ),
         );
 
-        assert!(matches!(
+        assert_matches!(
             documents.next().unwrap(),
             Err(ExtractJsonLdError::InvalidJson { .. }),
-        ));
+        );
         assert!(documents.next().is_none());
     }
 
@@ -221,10 +222,10 @@ mod html {
         let html = r#"<script type="application/ld+json">{"@type":"Thing"}"#;
         let mut documents = extract_from_html(html);
 
-        assert!(matches!(
+        assert_matches!(
             documents.next().unwrap(),
             Err(ExtractJsonLdError::UnterminatedScript { .. }),
-        ));
+        );
         assert!(documents.next().is_none());
     }
 
@@ -236,10 +237,10 @@ mod html {
             r#""}</script>"#,
         );
 
-        assert!(matches!(
+        assert_matches!(
             extract_from_html(html).next().unwrap(),
             Err(ExtractJsonLdError::InvalidJson { .. }),
-        ));
+        );
     }
 
     #[test]

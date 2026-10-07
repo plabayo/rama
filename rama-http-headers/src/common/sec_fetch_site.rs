@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use rama_http_types::{HeaderName, HeaderValue};
 
-use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util::single_value};
 
 rama_utils::macros::enums::enum_builder! {
     /// The `Sec-Fetch-Site` [fetch metadata request header][mdn].
@@ -45,9 +45,11 @@ impl HeaderDecode for SecFetchSite {
     where
         I: Iterator<Item = &'i HeaderValue>,
     {
-        values
-            .next()
-            .and_then(|value| value.to_str().ok())
+        // A Structured Field Item: several lines combine to no valid one (RFC 9651 §4.2).
+        let value = single_value(values)?;
+        value
+            .to_str()
+            .ok()
             .and_then(|s| (!s.is_empty()).then(|| Self::from(s)))
             .ok_or_else(Error::invalid)
     }

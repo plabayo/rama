@@ -250,6 +250,32 @@ where
         self.set_matcher(matcher, service)
     }
 
+    /// add a QUERY route to the web service, using the given service.
+    ///
+    /// QUERY ([RFC 10008](https://www.rfc-editor.org/rfc/rfc10008)) is a safe,
+    /// idempotent method whose request content defines the query.
+    #[must_use]
+    #[inline]
+    pub fn with_query<I, T>(self, path: &str, service: I) -> Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
+    {
+        let matcher = HttpMatcher::method_query().and_path(path);
+        self.with_matcher(matcher, service)
+    }
+
+    /// add a QUERY route to the web service, using the given service.
+    #[inline]
+    pub fn set_query<I, T>(&mut self, path: &str, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
+    {
+        let matcher = HttpMatcher::method_query().and_path(path);
+        self.set_matcher(matcher, service)
+    }
+
     /// Nest a web service under the given path.
     ///
     /// The nested service will receive a request with the path prefix removed.
@@ -694,6 +720,22 @@ mod test {
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
         let res = get_response(&svc, "https://www.test.io").await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_web_service_query() {
+        let svc = WebService::new().with_query("/search", "results");
+
+        let req = Request::query("https://www.test.io/search")
+            .body(Body::from("q"))
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "results");
+
+        let res = get_response(&svc, "https://www.test.io/search").await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 

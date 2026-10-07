@@ -21,46 +21,6 @@ pub fn is_connection_error(e: &io::Error) -> bool {
     )
 }
 
-/// Lets whoever holds it abort a connection: have it close with a reset
-/// instead of a clean end.
-///
-/// A transport that can do this safely inserts it into its own extensions,
-/// for instance rama-tcp's `PostedRecv`, or its `TcpStream` once
-/// `with_connection_abort` was called. A bridge that sees one side reset
-/// can then reset the other side too, instead of turning the reset into a
-/// clean close that hides a truncated stream.
-///
-/// Aborting discards whatever is still queued to be sent. Once the transport
-/// is closed, [`abort`](Self::abort) does nothing.
-///
-/// Look it up with `self_get_ref`: the walking lookups can also find the
-/// capability of a related connection, such as the ingress of an egress.
-#[derive(Clone, Extension)]
-#[extension(tags(net))]
-pub struct ConnectionAbort(std::sync::Arc<dyn Fn() -> io::Result<()> + Send + Sync>);
-
-impl ConnectionAbort {
-    /// Create a capability that aborts the connection by calling `abort`.
-    pub fn new(abort: impl Fn() -> io::Result<()> + Send + Sync + 'static) -> Self {
-        Self(std::sync::Arc::new(abort))
-    }
-
-    /// Abort the connection: the transport resets it when it is closed.
-    ///
-    /// # Errors
-    ///
-    /// Returns the error of the transport, if any.
-    pub fn abort(&self) -> io::Result<()> {
-        (self.0)()
-    }
-}
-
-impl std::fmt::Debug for ConnectionAbort {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ConnectionAbort").finish_non_exhaustive()
-    }
-}
-
 #[derive(Debug, Default, Extension)]
 #[extension(tags(net))]
 /// Watcher that can update and read the [`ConnectionHealth`]

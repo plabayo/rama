@@ -37,12 +37,12 @@
 //! ```
 
 use rama_core::telemetry::tracing;
-use rama_utils::{
-    byte_set::{set_ascii_alphanum, set_each},
-    collections::smallvec::{IntoIter as SmallVecIntoIter, SmallVec},
-};
+use rama_utils::collections::smallvec::{IntoIter as SmallVecIntoIter, SmallVec};
 
-use crate::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode, Version, header};
+use crate::{
+    HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode, Version,
+    header::{self, is_token as is_http_token},
+};
 
 /// Connection-specific fields prohibited in both HTTP/2 and HTTP/3.
 ///
@@ -57,14 +57,43 @@ pub const CONNECTION_SPECIFIC_HEADERS: [&HeaderName; 5] = [
     &header::UPGRADE,
 ];
 
+/// Whether a `TE` field line holds the one value HTTP/2 and HTTP/3 allow, the
+/// case-insensitive token `trailers` (RFC 9113 §8.2.2, RFC 9114 §4.2).
+#[must_use]
+pub fn is_te_trailers(value: &[u8]) -> bool {
+    value.eq_ignore_ascii_case(b"trailers")
+}
+
+/// Whether any token of the `TE` `lines` is `trailers` (RFC 9110 §10.1.4).
+#[must_use]
+pub fn te_names_trailers<'a>(lines: impl IntoIterator<Item = &'a HeaderValue>) -> bool {
+    lines.into_iter().any(|line| {
+        comma_separated_tokens(line).any(|token| token.eq_ignore_ascii_case(b"trailers"))
+    })
+}
+
+/// Leave a request's `TE` as the exact `trailers` HTTP/2 and HTTP/3 allow when it names it,
+/// as peers compare that value exactly, else remove it. Whether `TE` was removed.
+pub fn retain_te_trailers(headers: &mut HeaderMap) -> bool {
+    let mut lines = headers.get_all(header::TE).iter();
+    let exact = matches!((lines.next(), lines.next()), (Some(line), None) if line == "trailers");
+    if exact || !headers.contains_key(header::TE) {
+        return false;
+    }
+    if te_names_trailers(headers.get_all(header::TE)) {
+        headers.insert(header::TE, HeaderValue::from_static("trailers"));
+        false
+    } else {
+        headers.remove(header::TE);
+        true
+    }
+}
+
 fn known_hop_by_hop_headers() -> impl Iterator<Item = &'static HeaderName> {
     CONNECTION_SPECIFIC_HEADERS
         .into_iter()
         .chain([&header::TE, &header::TRAILER])
 }
-
-const HTTP_TOKEN_BYTES: [bool; 256] =
-    set_each(set_ascii_alphanum([false; 256]), b"!#$%&'*+-.^_`|~");
 
 fn next_comma_separated_token(mut value: &[u8]) -> Option<(&[u8], &[u8])> {
     loop {
@@ -203,10 +232,6 @@ enum UpgradeProtocol {
     Http(UpgradeProtocolVersion),
     Tls(UpgradeProtocolVersion),
     Other { wire: Box<[u8]>, name_length: usize },
-}
-
-fn is_http_token(value: &[u8]) -> bool {
-    !value.is_empty() && value.iter().all(|byte| HTTP_TOKEN_BYTES[*byte as usize])
 }
 
 fn supports_trailer_fields(version: Version) -> bool {
@@ -356,8 +381,7 @@ impl HopByHopHeaderContext {
             } else if name == header::TRAILER && supports_trailer_fields(version) {
                 trailer_fields.push((name.clone(), value.clone()));
             } else if name == header::TE && supports_trailer_fields(version) {
-                te_trailers |= comma_separated_tokens(value)
-                    .any(|token| token.eq_ignore_ascii_case(b"trailers"));
+                te_trailers |= te_names_trailers([value]);
             } else if preserve_upgrade && name == header::UPGRADE {
                 saw_upgrade = true;
                 upgrade_fields.push((name.clone(), value.clone()));
@@ -585,6 +609,42 @@ pub fn sanitize_hop_by_hop_response_headers<B>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
+
+    #[test]
+    fn te_is_retained_as_the_exact_trailers_or_removed() {
+        for (lines, expected) in [
+            (&["trailers"][..], Some("trailers")),
+            (&["Trailers"], Some("trailers")),
+            (&["trailers, gzip"], Some("trailers")),
+            (&["gzip", "trailers"], Some("trailers")),
+            (&["gzip"], None),
+            (&["trailers;q=0"], None),
+            (&[], None),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::ACCEPT, HeaderValue::from_static("*/*"));
+            for line in lines {
+                headers.append(header::TE, HeaderValue::from_static(line));
+            }
+            headers.append(header::ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
+            let removed = retain_te_trailers(&mut headers);
+            assert_eq!(
+                removed,
+                !lines.is_empty() && expected.is_none(),
+                "{lines:?}"
+            );
+            assert_eq!(
+                values(&headers, &header::TE),
+                expected.map(str::as_bytes).into_iter().collect::<Vec<_>>(),
+                "{lines:?}"
+            );
+            // The field keeps its position.
+            if expected.is_some() {
+                assert_eq!(headers.keys().nth(1), Some(&header::TE), "{lines:?}");
+            }
+        }
+    }
 
     fn values<'a>(headers: &'a HeaderMap, name: &HeaderName) -> Vec<&'a [u8]> {
         headers
@@ -670,15 +730,15 @@ mod tests {
     #[test]
     fn uncommon_upgrade_protocol_keeps_exact_version() {
         let protocol = UpgradeProtocol::parse(b"IRC/6.9").unwrap();
-        assert!(matches!(
+        assert_matches!(
             protocol,
-            UpgradeProtocol::Other { wire, name_length: 3 } if &*wire == b"IRC/6.9"
-        ));
-        assert!(matches!(
+            UpgradeProtocol::Other { wire, name_length: 3 } if &*wire == b"IRC/6.9",
+        );
+        assert_matches!(
             UpgradeProtocol::parse(b"TLS/6.9"),
             Some(UpgradeProtocol::Tls(UpgradeProtocolVersion::Other(version)))
-                if &*version == b"6.9"
-        ));
+                if &*version == b"6.9",
+        );
     }
 
     #[test]

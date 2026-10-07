@@ -917,6 +917,15 @@ int32_t rama_transparent_proxy_tcp_session_terminal_error_code(
     const RamaTransparentProxyTcpSession* session
 );
 
+/// Whether the Rust service aborted the egress stream: reset the egress
+/// connection instead of draining it and sending a FIN. Unlike the terminal
+/// error code, no earlier abnormal end masks it. Published before the egress
+/// close callback and retained until session release. Query only while the
+/// session is alive; serialize with other session operations and release.
+bool rama_transparent_proxy_tcp_session_egress_aborted(
+    const RamaTransparentProxyTcpSession* session
+);
+
 /// Swift → Rust: signal that the response writer pump (`TcpClientWritePump`)
 /// has drained capacity after `on_server_bytes` returned `RAMA_TCP_DELIVER_PAUSED`.
 ///

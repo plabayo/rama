@@ -1,13 +1,11 @@
 //! Rama-native HTTP/3 request sender.
 
-use super::{
-    Error, body,
-    connection::{Config, Driver, Shared},
-    control::Role,
-    headers,
-    quic::Writer,
-    stream::{Phase, Reader},
+use std::{
+    marker::PhantomData,
+    pin::{Pin, pin},
+    sync::{Arc, Weak},
 };
+
 use parking_lot::Mutex;
 use rama_core::{
     error::BoxError,
@@ -18,9 +16,10 @@ use rama_http::io::upgrade as http_upgrade;
 use rama_http_types::{
     Method, Request, Response, StatusCode,
     body::StreamingBody,
+    header::trailer::ForbiddenTrailers,
     proto::{
+        ext::{HttpDatagrams, Protocol},
         h1::ext::informational::OnInformational,
-        h2::ext::Protocol,
         h3::{Code, FrameType},
     },
 };
@@ -36,12 +35,18 @@ use rama_quic::{
 };
 use rama_quic_proto::{Dir, Side};
 use rama_utils::reactive::Reactive;
-use std::{
-    marker::PhantomData,
-    pin::{Pin, pin},
-    sync::{Arc, Weak},
-};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+use super::{
+    Error, body,
+    connection::{Config, Driver, Shared},
+    control::Role,
+    datagram::{Association, DatagramDrops, Semantics},
+    headers,
+    quic::Writer,
+    stream::{Phase, Reader},
+};
+use crate::headers::{content_length_parse_all, drop_undeliverable_content_length};
 
 /// Cloneable sender for a multiplexed HTTP/3 connection.
 pub struct SendRequest<B> {
@@ -58,6 +63,7 @@ pub(crate) struct ConnectionLifetime {
     connection: QuicConnection,
     shared: Arc<Shared>,
     admission: Arc<Semaphore>,
+    max_requests: usize,
     admission_changed: Reactive<usize>,
 }
 
@@ -104,7 +110,8 @@ pub fn handshake<B>(
         ));
     }
     config.settings()?;
-    let admission = Arc::new(Semaphore::new(config.max_requests));
+    let max_requests = config.max_requests;
+    let admission = Arc::new(Semaphore::new(max_requests));
     let shared = Shared::from_connection(config, Role::Client, &connection)?;
     let driver = Driver::new(connection.clone(), shared.clone(), Role::Client);
     Ok((
@@ -113,6 +120,7 @@ pub fn handshake<B>(
                 connection: connection.clone(),
                 shared: shared.clone(),
                 admission,
+                max_requests,
                 admission_changed: Reactive::new(0),
             }),
             connection,
@@ -134,6 +142,17 @@ impl<B> SendRequest<B> {
         ConnectionAdmission::new(RequestAdmission {
             lifetime: Arc::downgrade(&self.lifetime),
         })
+    }
+
+    /// Received HTTP/3 datagrams this connection discarded, by reason.
+    #[must_use]
+    pub fn datagram_drops(&self) -> DatagramDrops {
+        self.shared.datagram_drops()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shared(&self) -> &Arc<Shared> {
+        &self.shared
     }
 
     #[cfg(test)]
@@ -310,8 +329,13 @@ impl ConnectionAdmissionPolicy for RequestAdmission {
     }
 
     fn watch(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        let Some(lifetime) = self.lifetime.upgrade() else {
-            return Box::pin(async {});
+        // Once ended or draining nothing changes any more, and its broken marking frees the
+        // waiters; an at once ready future would only spin them.
+        let Some(lifetime) = self.lifetime.upgrade().filter(|lifetime| {
+            lifetime.connection.close_reason().is_none()
+                && lifetime.shared.rejection(None).is_none()
+        }) else {
+            return Box::pin(std::future::pending());
         };
         // Capture subscriptions before the pool tries to acquire, including
         // local-permit releases that do not alter the transport's stream limit.
@@ -326,6 +350,18 @@ impl ConnectionAdmissionPolicy for RequestAdmission {
             }
         })
     }
+
+    // Requests, their bodies and upgraded tunnels hold a permit until they end. A closed,
+    // draining or failed connection admits nothing more, so it is left for the pool to
+    // retire: busy only while `watch` can still report its work ending.
+    fn in_use(&self) -> bool {
+        self.lifetime.upgrade().is_some_and(|lifetime| {
+            lifetime.admission.available_permits() < lifetime.max_requests
+                && lifetime.connection.close_reason().is_none()
+                && lifetime.shared.rejection(None).is_none()
+                && lifetime.shared.error().is_none()
+        })
+    }
 }
 
 impl<B> SendRequest<B>
@@ -336,20 +372,34 @@ where
 {
     /// Send a request on its own bidirectional QUIC stream.
     ///
-    /// Extended CONNECT is not yet supported and is rejected before opening a stream.
+    /// A request carrying a [`Protocol`] is sent as Extended CONNECT (RFC 9220) once the
+    /// server's SETTINGS enable it; otherwise it fails locally before a stream is opened.
+    /// A successful (2xx) response exposes the tunnel through the upgrade API.
     pub async fn send_request(
         &mut self,
-        request: Request<B>,
+        mut request: Request<B>,
     ) -> Result<Response<crate::body::Incoming>, Error> {
-        // RFC 9220 section 3 requires negotiated extended CONNECT support.
-        // Until implemented, never downgrade :protocol to an ordinary tunnel.
-        if request.extensions().contains::<Protocol>() {
-            return Err(Error::stream(
-                Code::H3_MESSAGE_ERROR,
-                "extended CONNECT is not supported",
-            ));
-        }
         self.ready().await?;
+        if request.extensions().contains::<Protocol>() {
+            if request.method() != Method::CONNECT {
+                return Err(Error::stream(
+                    Code::H3_MESSAGE_ERROR,
+                    ":protocol requires CONNECT",
+                ));
+            }
+            // RFC 8441 §3: :protocol requires the server's SETTINGS_ENABLE_CONNECT_PROTOCOL.
+            let settings = tokio::select! {
+                biased;
+                error = self.shared.rejected(None) => return Err(error),
+                settings = self.shared.peer_settings() => settings?,
+            };
+            if !settings.extended_connect {
+                return Err(Error::stream(
+                    Code::H3_MESSAGE_ERROR,
+                    "peer did not enable extended CONNECT",
+                ));
+            }
+        }
         let reserved = request
             .extensions()
             .get_ref::<RequestReservation>()
@@ -394,13 +444,42 @@ where
             ));
         }
         reader.origin = Some(request.uri().clone());
+        // Responses fork their request's extensions, as on HTTP/1.1 and h2.
+        let request_extensions = request.extensions().clone();
         let method = request.method().clone();
+        let extended = method == Method::CONNECT && request.extensions().contains::<Protocol>();
+        // Registered before HEADERS leave, so early replies wait for the session. Only a
+        // declared Extended CONNECT has datagram semantics (RFC 9297 §2).
+        let claimed = extended && request.extensions().contains::<HttpDatagrams>();
+        let semantics = if claimed {
+            Semantics::Claimed
+        } else {
+            Semantics::None
+        };
+        reader.datagrams = reader
+            .abort
+            .clone()
+            .and_then(|abort| self.shared.register_datagrams(id, semantics, abort));
+        let association = reader
+            .datagrams
+            .clone()
+            .zip(reader.abort.clone())
+            .filter(|_| claimed)
+            .map(|(registration, send)| Association::new(registration, send));
         let informational = request.extensions().get_ref::<OnInformational>().cloned();
-        if method == Method::CONNECT && !request.body().is_end_stream() {
+        // Tunnel data goes through the upgrade API, as on HTTP/2: only a body that announces
+        // content is refused; any other, such as an empty one being recorded, is not sent.
+        if method == Method::CONNECT
+            && (content_length_parse_all(request.headers()).is_some_and(|len| len != 0)
+                || request.body().size_hint().lower() > 0)
+        {
             return Err(Error::stream(
                 Code::H3_MESSAGE_ERROR,
                 "CONNECT requires the upgrade API for tunnel data",
             ));
+        }
+        if method == Method::CONNECT || request.body().is_end_stream() {
+            drop_undeliverable_content_length(request.headers_mut());
         }
         let encoded = headers::encode_request(&self.shared, id, &request)?;
         writer.queue(FrameType::HEADERS, encoded)?;
@@ -419,8 +498,12 @@ where
                         Err(error) => return Err(self.response_error(id, error).await),
                     },
                 };
-                let response = headers::response_for_method(fields, method == Method::CONNECT)
-                    .map_err(|error| reader.reject(error.remote()))?;
+                let response = headers::response_for_method(
+                    fields,
+                    method == Method::CONNECT,
+                    request_extensions.fork(),
+                )
+                .map_err(|error| reader.reject(error.remote()))?;
                 response
                     .extensions()
                     .insert(super::PriorityHandle::new(&self.shared, id, false));
@@ -433,9 +516,18 @@ where
                 }
                 if response.status().is_success() {
                     let (pending, upgrade) = http_upgrade::pending();
-                    pending.fulfill(super::upgrade::new(reader, writer, permit, None));
+                    let datagrams =
+                        association.map(|association| (association, self.connection.clone()));
+                    pending.fulfill(super::upgrade::new(
+                        reader, writer, permit, None, datagrams, extended,
+                    ));
                     response.extensions().insert(upgrade);
                     return Ok(response.map(|()| crate::body::Incoming::empty()));
+                }
+                drop(association);
+                // The remaining response body carries no datagrams.
+                if let Some(datagrams) = &reader.datagrams {
+                    datagrams.decide(false);
                 }
                 std::future::poll_fn(|cx| writer.poll_finish(cx)).await?;
                 match writer.acknowledged().await {
@@ -455,11 +547,20 @@ where
         let upload_permit = permit.clone();
         let upload_lifetime = self.lifetime.clone();
         let remaining = headers::content_length(request.headers())?;
+        let allowed_trailers = request.extensions().get_arc::<ForbiddenTrailers>();
         let (_, request_body) = request.into_parts();
         let task = self.executor.spawn_task(async move {
             let _permit = upload_permit;
             let _lifetime = upload_lifetime;
-            let result = body::send(writer, request_body, shared.clone(), id, remaining).await;
+            let result = body::send(
+                writer,
+                request_body,
+                shared.clone(),
+                id,
+                remaining,
+                allowed_trailers,
+            )
+            .await;
             if let Err(error) = result
                 && error.scope() == super::qpack::ErrorScope::Connection
                 && !error.is_clean_close()
@@ -503,8 +604,12 @@ where
                     }
                 }
             };
-            let response = headers::response_for_method(fields, method == Method::CONNECT)
-                .map_err(|error| reader.reject(error.remote()))?;
+            let response = headers::response_for_method(
+                fields,
+                method == Method::CONNECT,
+                request_extensions.fork(),
+            )
+            .map_err(|error| reader.reject(error.remote()))?;
             response
                 .extensions()
                 .insert(super::PriorityHandle::new(&self.shared, id, false));

@@ -49,6 +49,7 @@ use rama_core::error::BoxError;
 use rama_core::extensions::Extension;
 use rama_core::extensions::Extensions;
 use rama_core::extensions::ExtensionsRef;
+use rama_core::io::AbortIo;
 use rama_core::io::Io;
 use rama_core::io::rewind::Rewind;
 use rama_core::telemetry::tracing::trace;
@@ -79,25 +80,32 @@ impl fmt::Debug for OpaqueGuard {
     }
 }
 
-/// Notify a CONNECT transport that its upstream I/O failed.
-/// H3 uses this to reset the tunnel with H3_CONNECT_ERROR (RFC 9114 §4.4).
-/// Custom relays should call it before dropping or gracefully closing the tunnel.
-#[derive(Clone, Extension)]
+/// Abort a tunnel whose data stream is malformed, such as a Capsule Protocol violation
+/// (RFC 9297 §3.3). HTTP/2 resets the stream with `PROTOCOL_ERROR` and HTTP/3 with
+/// `H3_MESSAGE_ERROR`; without this extension a consumer closes the I/O instead.
+///
+/// Custom carriers publish it on their I/O's extensions. The callback must abort at once,
+/// without waiting for a later write or drop, and both directions must fail afterwards.
+/// Share it through [`Extensions::get_arc`].
+#[derive(Extension)]
 #[extension(tags(http))]
-pub struct OnUpstreamError(Arc<dyn Fn() + Send + Sync>);
-impl OnUpstreamError {
-    /// Install transport-specific failure handling.
+pub struct OnMalformedMessage(Box<dyn Fn() + Send + Sync>);
+
+impl OnMalformedMessage {
+    /// Install transport-specific malformed-message handling.
     pub fn new(callback: impl Fn() + Send + Sync + 'static) -> Self {
-        Self(Arc::new(callback))
+        Self(Box::new(callback))
     }
+
     /// Notify the transport. Repeated calls are harmless for built-in transports.
     pub fn call(&self) {
         (self.0)();
     }
 }
-impl fmt::Debug for OnUpstreamError {
+
+impl fmt::Debug for OnMalformedMessage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OnUpstreamError").finish_non_exhaustive()
+        f.debug_struct("OnMalformedMessage").finish_non_exhaustive()
     }
 }
 
@@ -128,6 +136,12 @@ pub struct Parts<T> {
     /// You will want to check for any existing bytes if you plan to continue
     /// communicating on the IO object.
     pub read_buf: Bytes,
+    /// A read error the upgraded stream already hit on `io`.
+    ///
+    /// It follows `read_buf` and comes before any further
+    /// read of `io`, which may not report it again (some
+    /// sockets report a reset only once).
+    pub read_err: Option<std::io::Error>,
     /// Extensions associated with this upgrade
     pub extensions: Extensions,
     /// Opaque resources whose lifetime is bound to the upgraded transport.
@@ -213,6 +227,10 @@ impl Upgraded {
         extensions.insert(StreamTransformed {
             by: "rama-http::Upgraded",
         });
+        // The upgraded stream aborts as the io it wraps; a fork hides the io's own store.
+        if let Some(abort) = io.extensions().self_get_arc::<AbortIo>() {
+            extensions.insert_arc(abort);
+        }
         Self {
             extensions,
             io: Rewind::new_buffered(Box::new(io), read_buf),
@@ -246,7 +264,9 @@ impl Upgraded {
 
     /// Tries to downcast the internal trait object to the type passed.
     ///
-    /// On success, returns the downcasted parts.
+    /// On success, returns the downcasted parts. Use
+    /// [`Parts::read_buf`] first, then [`Parts::read_err`],
+    /// before reading [`Parts::io`] again.
     ///
     /// # Errors
     ///
@@ -257,16 +277,17 @@ impl Upgraded {
             extensions,
             _guards: guards,
         } = self;
-        let (io, buf) = io.into_inner();
+        let (io, read_buf, read_err) = io.into_parts();
         match io.__downcast() {
             Ok(t) => Ok(Parts {
                 io: *t,
-                read_buf: buf,
+                read_buf,
+                read_err,
                 extensions,
                 _guards: guards,
             }),
             Err(io) => Err(Self {
-                io: Rewind::new_buffered(io, buf),
+                io: Rewind::from_parts(io, read_buf, read_err),
                 extensions,
                 _guards: guards,
             }),
@@ -476,6 +497,120 @@ mod tests {
         assert!(!dropped.load(Ordering::Acquire));
         drop(parts);
         assert!(dropped.load(Ordering::Acquire));
+    }
+
+    /// Reads EOF right away and sends on every write it gets.
+    struct WriteRecorder(tokio::sync::mpsc::UnboundedSender<Vec<u8>>);
+
+    impl AsyncRead for WriteRecorder {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl AsyncWrite for WriteRecorder {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            _ = self.0.send(buf.to_vec());
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_sends_upgrade_leftover_with_ready_data() {
+        use rama_core::{Service, io::BridgeIo};
+        use rama_net::proxy::IoForwardService;
+        use tokio::io::AsyncWriteExt;
+
+        // bytes read past the head, then more already in flight
+        let (mut client, proxy) = tokio::io::duplex(64);
+        client.write_all(b"rest").await.unwrap();
+        drop(client);
+        let upgraded = Upgraded::new(ServiceInput::new(proxy), Bytes::from_static(b"head "));
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        IoForwardService::default()
+            .serve(BridgeIo(upgraded, ServiceInput::new(WriteRecorder(tx))))
+            .await
+            .unwrap();
+
+        let mut writes = Vec::new();
+        while let Ok(write) = rx.try_recv() {
+            writes.push(write);
+        }
+        assert_eq!(writes, [b"head rest".to_vec()]);
+    }
+
+    /// An upgraded stream whose replay bytes were read, with
+    /// the inner io's reset deferred past them.
+    async fn upgraded_with_deferred_reset() -> Upgraded {
+        use tokio::io::AsyncReadExt;
+
+        let mock = Builder::new()
+            .read_error(io::ErrorKind::ConnectionReset.into())
+            .build();
+        let mut upgraded = Upgraded::new(ServiceInput::new(mock), Bytes::from_static(b"ab"));
+        let mut buf = [0u8; 16];
+        let n = upgraded.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"ab");
+        upgraded
+    }
+
+    #[tokio::test]
+    async fn failed_downcast_keeps_deferred_read_error() {
+        use tokio::io::AsyncReadExt;
+
+        let mut upgraded = upgraded_with_deferred_reset()
+            .await
+            .downcast::<std::io::Cursor<Vec<u8>>>()
+            .unwrap_err();
+        let mut buf = [0u8; 16];
+        let err = upgraded.read(&mut buf).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::ConnectionReset);
+        assert_eq!(upgraded.read(&mut buf).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_then_successful_downcast_carries_read_error() {
+        let parts = upgraded_with_deferred_reset()
+            .await
+            .downcast::<std::io::Cursor<Vec<u8>>>()
+            .unwrap_err()
+            .downcast::<ServiceInput<Mock>>()
+            .unwrap();
+        assert!(parts.read_buf.is_empty());
+        assert_eq!(
+            parts.read_err.map(|err| err.kind()),
+            Some(io::ErrorKind::ConnectionReset)
+        );
+    }
+
+    #[tokio::test]
+    async fn downcast_carries_deferred_read_error() {
+        let parts = upgraded_with_deferred_reset()
+            .await
+            .downcast::<ServiceInput<Mock>>()
+            .unwrap();
+        assert!(parts.read_buf.is_empty());
+        assert_eq!(
+            parts.read_err.map(|err| err.kind()),
+            Some(io::ErrorKind::ConnectionReset)
+        );
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Extension)]

@@ -49,8 +49,11 @@ or written. Alternative-service discovery is disabled by default in the CLI.
 
 `--http3` requires HTTP/3 directly, without an advertisement or `--alt-svc`.
 Explicit HTTP version flags continue to constrain selection when `--alt-svc`
-is enabled. WebSockets over HTTP/3 require Extended CONNECT support, which is
-not yet implemented.
+is enabled. `rama send --http3 wss://…` opens a WebSocket over HTTP/3 with
+Extended CONNECT (RFC 9220) when the server enables it; WebSockets use HTTP/3
+only with `--http3`, never through alternative-service discovery. Without a
+terminal on stdin and stdout, `rama send ws(s)://…` sends each input line as a
+text message and prints received messages, which suits scripts and pipes.
 
 ## Proxies
 
@@ -119,7 +122,11 @@ when you develop or test clients and proxies:
 - `discard`: the RFC 863 discard service.
 
 All of them have flags to limit rate or throughput, which is handy to mimic
-slow or restricted servers. Most can run with TLS as well.
+slow or restricted servers. Most can run with TLS as well. With TLS, the HTTP
+services also serve HTTP/3 on the UDP side of their address and advertise it
+with `Alt-Svc`; `--http-version` selects the versions (for example `h1,h2` or
+`h3`) and `--h3-bind` another UDP address. On Windows a `[::]` bind serves
+IPv6 only, over TCP and UDP alike; bind `0.0.0.0` to serve IPv4 clients.
 
 ## TLS tunnels
 
@@ -134,6 +141,10 @@ where `rama serve stunnel exit` puts TLS in front of a plaintext c-icap server.
 
 Rama also exposes public services that are useful while developing and testing
 network clients, proxies, and user-agent emulation.
+
+The echo service, <https://ipv4.ramaproxy.org> and <https://http-test.ramaproxy.org>
+speak HTTP/3 next to HTTP/1.1 and h2: browsers find it through `Alt-Svc`, and
+`rama --http3 https://echo.ramaproxy.org` uses it directly.
 
 ### Echo service
 

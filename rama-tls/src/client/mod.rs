@@ -151,6 +151,7 @@ impl<P: TlsClientConfigProvider + ?Sized> TlsClientConfigProvider for Arc<P> {
 #[cfg(test)]
 mod tests {
     use rama_net::address::Domain;
+    use std::assert_matches;
 
     use super::*;
 
@@ -163,14 +164,14 @@ mod tests {
     fn test_merge_client_hello_lists_zero_one() {
         let output = merge_client_hello_lists(&[], [ClientHelloExtension::ServerName(None)]);
         assert_eq!(1, output.len());
-        assert!(matches!(output[0], ClientHelloExtension::ServerName(_)))
+        assert_matches!(output[0], ClientHelloExtension::ServerName(_))
     }
 
     #[test]
     fn test_merge_client_hello_lists_one_zero() {
         let output = merge_client_hello_lists(vec![ClientHelloExtension::ServerName(None)], &[]);
         assert_eq!(1, output.len());
-        assert!(matches!(output[0], ClientHelloExtension::ServerName(_)))
+        assert_matches!(output[0], ClientHelloExtension::ServerName(_))
     }
 
     #[test]
@@ -180,11 +181,8 @@ mod tests {
             &[ClientHelloExtension::SupportedVersions(vec![])],
         );
         assert_eq!(2, output.len());
-        assert!(matches!(output[0], ClientHelloExtension::ServerName(_)));
-        assert!(matches!(
-            output[1],
-            ClientHelloExtension::SupportedVersions(_)
-        ));
+        assert_matches!(output[0], ClientHelloExtension::ServerName(_));
+        assert_matches!(output[1], ClientHelloExtension::SupportedVersions(_));
     }
 
     #[test]
@@ -200,14 +198,11 @@ mod tests {
             ],
         );
         assert_eq!(3, output.len());
-        assert!(matches!(output[0], ClientHelloExtension::ServerName(_)));
-        assert!(matches!(
-            output[1],
-            ClientHelloExtension::SupportedVersions(_)
-        ));
-        assert!(matches!(
+        assert_matches!(output[0], ClientHelloExtension::ServerName(_));
+        assert_matches!(output[1], ClientHelloExtension::SupportedVersions(_));
+        assert_matches!(
             output[2],
-            ClientHelloExtension::ApplicationLayerProtocolNegotiation(_)
-        ));
+            ClientHelloExtension::ApplicationLayerProtocolNegotiation(_),
+        );
     }
 }

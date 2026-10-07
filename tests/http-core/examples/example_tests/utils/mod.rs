@@ -1,4 +1,5 @@
-#![expect(
+// `allow`, not `expect`: clippy releases disagree on whether these fire in test helpers.
+#![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"

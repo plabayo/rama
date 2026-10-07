@@ -1,0 +1,13 @@
+# The published rama image, plus the capability to bind UDP 443 as uid 1000: Fly keeps UDP
+# ports, so HTTP/3 binds 443 itself. Fly builds this at deploy time; it is never published.
+ARG RAMA_IMAGE=glendc/rama:edge
+FROM ${RAMA_IMAGE}
+
+USER root
+RUN apt-get update && \
+    apt-get install --no-install-recommends -y libcap2-bin && \
+    setcap cap_net_bind_service=+ep /app/rama && \
+    apt-get purge -y libcap2-bin && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
+USER 1000

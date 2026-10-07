@@ -277,3 +277,28 @@ async fn layer_default_access_control_allow_origin_when_inner_silent() {
         Some(&HeaderValue::from_static("*")),
     );
 }
+
+/// One `Origin` is reflected; several lines name no origin, so none is allowed or reflected.
+#[tokio::test]
+async fn several_origin_lines_are_never_reflected() {
+    for (origins, reflected) in [
+        (&["https://client.test"][..], Some("https://client.test")),
+        (&["https://client.test", "https://attacker.test"], None),
+    ] {
+        let svc = CorsLayer::very_permissive().into_layer(service_fn(|_: Request| async {
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        }));
+        let mut req = Request::builder();
+        for origin in origins {
+            req = req.header(header::ORIGIN, *origin);
+        }
+        let res = svc.serve(req.body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(
+            res.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .map(|value| value.to_str().unwrap()),
+            reflected,
+            "{origins:?}"
+        );
+    }
+}

@@ -1,5 +1,6 @@
 #![allow(clippy::print_stdout)]
 
+use clap::Args;
 use rama::{
     dns::client::DnsConnector,
     error::{BoxError, ErrorContext},
@@ -11,8 +12,6 @@ use rama::{
     tcp::{TcpStream, client::service::TcpConnector},
     telemetry::tracing,
 };
-
-use clap::Args;
 
 #[derive(Args, Debug, Clone)]
 /// rama tcp probe command
@@ -39,7 +38,8 @@ pub async fn run(cfg: CliCommandTcp) -> Result<(), BoxError> {
 
     let addr = conn.peer_addr().context("get connected peer address")?;
 
-    tracing::info!("connected to: {addr}");
+    // The probe's result, as `probe tls` prints its own: no log level hides it.
+    println!("connected to: {addr}");
 
     Ok(())
 }

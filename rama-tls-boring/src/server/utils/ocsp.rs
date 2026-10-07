@@ -98,7 +98,7 @@ pub fn answer_ocsp_request(
     validity: Duration,
     status_for: impl FnOnce(&[u8]) -> OcspCertStatus,
 ) -> Result<Vec<u8>, BoxError> {
-    let info = parse_ocsp_request(request_der).context("ocsp: parse request")?;
+    let info = parse_ocsp_request(request_der)?;
     let req = info
         .certs
         .first()

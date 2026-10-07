@@ -3,6 +3,7 @@
 //! [`super::non_http_schemes`].
 
 use core::net::{IpAddr, Ipv4Addr};
+use std::assert_matches;
 
 use super::{lazy, parse_graceful, path_str, range_str, userinfo_str};
 use crate::Protocol;
@@ -226,19 +227,13 @@ fn scheme_with_plus_minus_dot() {
 #[test]
 fn invalid_scheme_first_byte_rejected() {
     let r = parse_graceful("1http://example.com/");
-    assert!(matches!(
-        r,
-        Err(ParseError::InvalidComponent(Component::Scheme))
-    ));
+    assert_matches!(r, Err(ParseError::InvalidComponent(Component::Scheme)));
 }
 
 #[test]
 fn invalid_scheme_char_rejected() {
     let r = parse_graceful("ht_tp://example.com/");
-    assert!(matches!(
-        r,
-        Err(ParseError::InvalidComponent(Component::Scheme))
-    ));
+    assert_matches!(r, Err(ParseError::InvalidComponent(Component::Scheme)));
 }
 
 #[test]
@@ -273,19 +268,13 @@ fn empty_port_round_trips_through_authority_into_owned() {
 #[test]
 fn overflow_port_rejected() {
     let r = parse_graceful("http://example.com:99999/");
-    assert!(matches!(
-        r,
-        Err(ParseError::InvalidComponent(Component::Port))
-    ));
+    assert_matches!(r, Err(ParseError::InvalidComponent(Component::Port)));
 }
 
 #[test]
 fn non_numeric_port_rejected() {
     let r = parse_graceful("http://example.com:abc/");
-    assert!(matches!(
-        r,
-        Err(ParseError::InvalidComponent(Component::Port))
-    ));
+    assert_matches!(r, Err(ParseError::InvalidComponent(Component::Port)));
 }
 
 #[test]
@@ -294,7 +283,7 @@ fn ipv6_zone_rejected() {
     // a typed rejection rather than letting it slip past as an opaque
     // Ipv6Addr parse error.
     let r = parse_graceful("https://[fe80::1%25en0]/");
-    assert!(matches!(r, Err(ParseError::IPv6ZoneNotSupported)));
+    assert_matches!(r, Err(ParseError::IPv6ZoneNotSupported));
 }
 
 #[test]
@@ -343,10 +332,10 @@ fn borrowed_absolute_view_uses_strict_parser_grammar() {
     let ip = AbsoluteUriRef::try_from("icap://[::1]:1344/service").unwrap();
     assert_eq!(ip.host(), Some("[::1]"));
     assert_eq!(ip.port(), OptPort::Set(1344));
-    assert!(matches!(
+    assert_matches!(
         ip.authority_ref().unwrap().host(),
-        HostRef::Address(core::net::IpAddr::V6(address)) if address.is_loopback()
-    ));
+        HostRef::Address(core::net::IpAddr::V6(address)) if address.is_loopback(),
+    );
     let empty_parts = AbsoluteUriRef::try_from("icap://@host:/?#").unwrap();
     assert_eq!(empty_parts.userinfo(), Some(""));
     assert_eq!(empty_parts.host(), Some("host"));

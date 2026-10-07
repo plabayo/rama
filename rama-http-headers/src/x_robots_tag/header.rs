@@ -1,9 +1,10 @@
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, x_robots_tag::robots_tag_parse_iter};
 
 use super::RobotsTag;
-use rama_core::telemetry::tracing;
+use rama_core::{bytes::Bytes, telemetry::tracing};
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_utils::{collections::NonEmptyVec, macros::generate_set_and_with};
+use std::fmt::Write as _;
 
 #[derive(Debug, Clone)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
@@ -79,11 +80,23 @@ impl HeaderDecode for XRobotsTag {
 
 impl HeaderEncode for XRobotsTag {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        let s = rama_utils::fmt::display_fn(|f: &mut std::fmt::Formatter<'_>| {
-            crate::util::csv::fmt_comma_delimited(&mut *f, self.0.iter())
-        })
-        .to_string();
-        match HeaderValue::try_from(s) {
+        let mut s = String::new();
+        // `to_string` panics on a Display error, so write fallibly instead
+        if let Err(err) = write!(
+            s,
+            "{}",
+            rama_utils::fmt::display_fn(|f: &mut std::fmt::Formatter<'_>| {
+                // a bot key scopes every directive after it, so unscoped tags go first
+                let unscoped = self.0.iter().filter(|tag| tag.bot_name().is_none());
+                let scoped = self.0.iter().filter(|tag| tag.bot_name().is_some());
+                crate::util::csv::fmt_comma_delimited(&mut *f, unscoped.chain(scoped))
+            })
+        ) {
+            tracing::debug!("failed to format x-robots-tag: {err}");
+            return;
+        }
+        // decoded values may carry obs-text, which `try_from(String)` rejects
+        match HeaderValue::from_maybe_shared(Bytes::from(s)) {
             Ok(v) => values.extend(::std::iter::once(v)),
             Err(err) => {
                 tracing::debug!("failed to encode x-robots-tag as header value: {err}");
@@ -128,6 +141,65 @@ mod tests {
             let s = value.to_str().unwrap();
             assert_eq!(expected, s);
         }
+    }
+
+    #[test]
+    fn test_multi_line_tags_round_trip() {
+        let line = HeaderValue::from_str(&vec!["a"; 2049].join(",")).unwrap();
+        let header = XRobotsTag::decode(&mut [line.clone(), line].iter()).unwrap();
+        let encoded = header.encode_to_value().unwrap();
+        XRobotsTag::decode(&mut [encoded].iter()).unwrap();
+    }
+
+    #[test]
+    fn test_encode_keeps_unscoped_directives_global() {
+        let values = [
+            HeaderValue::from_static("googlebot: noindex"),
+            HeaderValue::from_static("nofollow"),
+        ];
+        let header = XRobotsTag::decode(&mut values.iter()).unwrap();
+        let encoded = header.encode_to_value().unwrap();
+        let again = XRobotsTag::decode(&mut [encoded].iter()).unwrap();
+        let global = again.0.iter().find(|tag| tag.bot_name().is_none()).unwrap();
+        assert!(global.no_follow());
+        let googlebot = again.0.iter().find(|tag| tag.bot_name().is_some()).unwrap();
+        assert!(googlebot.no_index());
+        assert!(!googlebot.no_follow());
+    }
+
+    #[test]
+    fn test_empty_line_keeps_other_lines() {
+        let values = [
+            HeaderValue::from_static("noindex"),
+            HeaderValue::from_static(","),
+        ];
+        let header = XRobotsTag::decode(&mut values.iter()).unwrap();
+        assert!(header.first_tag().no_index());
+    }
+
+    #[test]
+    fn test_obs_text_round_trips() {
+        let value = HeaderValue::from_bytes("max-image-preview: é, noindex".as_bytes()).unwrap();
+        let header = XRobotsTag::decode(&mut [value].iter()).unwrap();
+        let encoded = header.encode_to_value().unwrap();
+        assert_eq!(XRobotsTag::decode(&mut [encoded].iter()).unwrap(), header);
+    }
+
+    #[test]
+    fn test_encode_decoded_out_of_rfc2822_range_date_no_panic() {
+        let value = HeaderValue::from_static("unavailable_after: 1 Jan 0000 00:00:00 +0100");
+        let header = XRobotsTag::decode(&mut [value].iter()).unwrap();
+        assert!(header.first_tag().unavailable_after().is_some());
+        let encoded = header.encode_to_value().unwrap();
+        let reencoded = XRobotsTag::decode(&mut [encoded].iter()).unwrap();
+        assert_eq!(
+            header.first_tag().unavailable_after().unwrap().date_time(),
+            reencoded
+                .first_tag()
+                .unavailable_after()
+                .unwrap()
+                .date_time(),
+        );
     }
 
     macro_rules! test_header {

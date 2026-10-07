@@ -7,12 +7,14 @@ use crate::h3::{
     control::Role,
     qpack::{Encoder, EncoderConfig, ErrorScope},
 };
+use rama_core::extensions::Extensions;
 use rama_core::{
     bytes::{Bytes, BytesMut},
     error::{BoxError, BoxErrorExt as _, error_chain},
     futures::stream,
     rt::{Executor, spawn},
 };
+use rama_http::io::upgrade::handle_upgrade;
 use rama_http_types::{
     Body, Method, Request,
     body::util::BodyExt as _,
@@ -21,7 +23,10 @@ use rama_http_types::{
 use rama_net::uri::Uri;
 use rama_quic_proto::{MAX_STREAM_COUNT, VarInt, coding::Codec};
 use std::{convert::Infallible, future::poll_fn, pin::pin, task::Poll};
-use tokio::sync::oneshot;
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    sync::oneshot,
+};
 
 #[tokio::test(start_paused = true)]
 async fn memory_clean_close_drains_accepted_control_frames_before_terminal_notification() {
@@ -35,7 +40,11 @@ async fn memory_clean_close_drains_accepted_control_frames_before_terminal_notif
             assert!(poll_fn(|cx| Poll::Ready(driver.as_mut().poll(cx).is_pending())).await);
 
             let mut control = pair.server.open_uni().await.unwrap();
-            let mut bytes = BytesMut::from(initial_control(&Config::default()).unwrap().as_ref());
+            let mut bytes = BytesMut::from(
+                initial_control(&Config::default(), Role::Client, false)
+                    .unwrap()
+                    .as_ref(),
+            );
             let first = VarInt::from_u64((MAX_STREAM_COUNT - 1) * 4).unwrap();
             FrameHeader::new(FrameType::GOAWAY, first.size() as u64)
                 .encode(&mut bytes)
@@ -224,7 +233,11 @@ async fn memory_response_close_waits_for_buffered_goaway_before_classifying_reje
             let (_send, mut recv) = pair.server.accept_bi().await.unwrap();
             recv.read_chunk(4096, true).await.unwrap();
             let mut control = pair.server.open_uni().await.unwrap();
-            let mut bytes = BytesMut::from(initial_control(&Config::default()).unwrap().as_ref());
+            let mut bytes = BytesMut::from(
+                initial_control(&Config::default(), Role::Client, false)
+                    .unwrap()
+                    .as_ref(),
+            );
             for _ in 0..128 {
                 FrameHeader::new(FrameType::new(0x21), 0)
                     .encode(&mut bytes)
@@ -423,4 +436,80 @@ async fn memory_received_body_length_and_trailer_errors_are_remote() {
     })
     .await
     .unwrap();
+}
+
+/// A retained CONNECT tunnel whose peer ended its stream, by FIN or by a reset without error,
+/// and whose own end was acknowledged, frees its connection's only request slot.
+#[tokio::test(start_paused = true)]
+async fn memory_tunnels_ended_in_order_free_their_request_slot() {
+    for reset in [false, true] {
+        tokio::time::timeout(LIMIT, async {
+            let pair = Pair::in_memory(None, None).await;
+            let (client, driver) = client::handshake::<Body>(
+                pair.client.clone(),
+                Config {
+                    max_requests: 1,
+                    ..Config::default()
+                },
+                Executor::new(),
+            )
+            .unwrap();
+            let driver = spawn(driver.run());
+            let admission = client.connection_admission();
+            let response = spawn({
+                let mut client = client.clone();
+                async move {
+                    client
+                        .send_request(
+                            Request::builder()
+                                .method(Method::CONNECT)
+                                .uri(Uri::parse_authority_form("localhost:443").unwrap())
+                                .body(Body::empty())
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap()
+                }
+            });
+            let (mut send, mut recv) = pair.server.accept_bi().await.unwrap();
+            let id = u64::from(send.id());
+            let mut encoder = Encoder::new(EncoderConfig {
+                max_table_capacity: 0,
+                ..EncoderConfig::default()
+            });
+            let fields = encoder.encode(id, [(":status", "200")]).unwrap();
+            let mut bytes = BytesMut::new();
+            FrameHeader::new(FrameType::HEADERS, fields.len() as u64)
+                .encode(&mut bytes)
+                .unwrap();
+            bytes.extend_from_slice(&fields);
+            send.write_all(&bytes).await.unwrap();
+            let response = response.await.unwrap();
+            let mut tunnel = handle_upgrade(response).await.unwrap();
+            assert!(admission.in_use(), "reset={reset}");
+            // The 200 was delivered before the stream ends, so a reset cannot discard it.
+            if reset {
+                send.reset(VarInt::from_u32(Code::H3_NO_ERROR.value() as u32))
+                    .unwrap();
+            } else {
+                send.finish().unwrap();
+            }
+            let mut rest = Vec::new();
+            tunnel.read_to_end(&mut rest).await.unwrap();
+            assert!(rest.is_empty(), "reset={reset}");
+            tunnel.shutdown().await.unwrap();
+            recv.read_to_end(4096).await.unwrap();
+            assert!(!admission.in_use(), "reset={reset}");
+            assert!(
+                admission.try_acquire(&Extensions::new()).unwrap().is_some(),
+                "reset={reset}: the next request is admitted"
+            );
+            drop(tunnel);
+            drop(client);
+            pair.close().await;
+            _ = driver.await;
+        })
+        .await
+        .unwrap();
+    }
 }

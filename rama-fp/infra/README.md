@@ -24,6 +24,31 @@ copies and explicitly delete the unused volumes. Do not keep rollback volumes
 indefinitely: unattached volumes still incur storage charges. Volumes already
 in `pending_destroy` are soft deleted and no longer accrue volume charges.
 
+## HTTP/3
+
+`echo`, `ipv4` and `http-test` serve HTTP/3 next to h1 and h2: the `app_secure`
+process binds QUIC on UDP `0.0.0.0:443` (`--h3-bind`) and advertises it with
+`Alt-Svc: h3=":443"; ma=86400` on its TLS responses. Fly.io constrains this:
+
+- UDP needs a dedicated IPv4 address; every app above has one.
+- Fly.io does not rewrite UDP ports, so the internal port is the public one.
+  `deployments/Dockerfile.h3` adds `cap_net_bind_service` to `/app/rama` in the
+  published image, so it binds 443 as uid 1000. Fly.io builds it at deploy time,
+  from the image digest that CI's run published or `geoip_sync.sh` resolved.
+- Replies must leave from the address the client's packets were sent to; Fly.io
+  documents a `fly-global-services` bind for that. Rama's QUIC endpoint already
+  replies from each packet's destination address, so it binds the wildcard.
+- There is no public UDP over IPv6: `ipv6` serves h1 and h2 only, and IPv6
+  clients of the other apps fall back from h3 to TCP.
+- No PROXY protocol for UDP: QUIC sees the client address Fly.io maps through.
+- A client asking for a certificate the issuer has not cached first gets a Retry.
+  Its token is sealed with a key of the running process, so each app keeps one
+  Machine per process group.
+
+`fp` stays on h1 and h2 (`--http-version h1,h2`) until its UA profiles collect
+HTTP/3: advertising it would move browsers to h3 for follow-up requests, whose
+data is shown but not stored. `fp-h1` serves HTTP/1.1 only by design.
+
 ## Deployment host capacity failures
 
 `could not reserve resource for machine: insufficient memory available to fulfill
@@ -61,8 +86,8 @@ Machine:
    one-Machine-per-process-group count before the next CI or GeoIP rollout;
    those workflows enforce that count.
 5. Rerun the failed CI jobs and run `bash scripts/remote-healthcheck.sh` from
-   this directory. Check both HTTP and HTTPS; they run in separate process
-   groups.
+   this directory. Check HTTP, HTTPS and HTTP/3; HTTP runs in its own process
+   group.
 
 ## IP geolocation
 

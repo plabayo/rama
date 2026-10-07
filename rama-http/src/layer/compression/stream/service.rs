@@ -20,10 +20,10 @@ use rama_core::telemetry::tracing;
 use rama_http_headers::HeaderMapExt;
 use rama_http_headers::TransferEncoding;
 use rama_http_headers::specifier::{Quality, QualityValue};
-use rama_http_types::Method;
+use rama_http_types::{Method, header::content_type::extract_essence};
 use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::macros::define_inner_service_accessors;
-use rama_utils::str::submatch_ignore_ascii_case;
+use rama_utils::str::{starts_with_ignore_ascii_case, submatch_ignore_ascii_case};
 
 /// Compress response bodies of the underlying service.
 ///
@@ -268,10 +268,10 @@ fn ensure_vary_accept_encoding(headers: &mut header::HeaderMap) {
 }
 
 fn is_streaming_content_type(headers: &header::HeaderMap) -> bool {
-    headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|ct| ct.starts_with("text/event-stream") || ct.starts_with("application/grpc"))
+    extract_essence(headers.get_all(header::CONTENT_TYPE)).is_some_and(|essence| {
+        essence.eq_ignore_ascii_case("text/event-stream")
+            || starts_with_ignore_ascii_case(&*essence, "application/grpc")
+    })
 }
 
 fn is_chunked_encoding(headers: &header::HeaderMap) -> bool {

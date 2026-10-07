@@ -21,6 +21,12 @@ enum Source {
     Local,
     Remote,
     PeerStop,
+    /// The peer reset its send direction of the stream (RESET_STREAM).
+    PeerReset,
+    /// The connection closed or failed underneath the stream.
+    ConnectionLost,
+    /// This endpoint closed the connection underneath the stream.
+    LocalConnectionLost,
 }
 
 impl Error {
@@ -59,6 +65,29 @@ impl Error {
         matches!(self.source, Source::PeerStop)
     }
 
+    pub(crate) fn peer_reset(code: Code) -> Self {
+        Self {
+            code,
+            scope: ErrorScope::Stream,
+            reason: "peer reset stream",
+            source: Source::PeerReset,
+        }
+    }
+
+    /// The peer reset its send direction; our own send direction is unaffected.
+    pub(crate) const fn is_peer_reset(self) -> bool {
+        matches!(self.source, Source::PeerReset)
+    }
+
+    /// Connection closure or failure, by either endpoint, also after conversion into a
+    /// stream error.
+    pub(crate) const fn is_connection_loss(self) -> bool {
+        matches!(
+            self.source,
+            Source::ConnectionLost | Source::LocalConnectionLost
+        )
+    }
+
     pub(crate) fn is_clean_close(self) -> bool {
         self.scope == ErrorScope::Connection && self.code() == Code::H3_NO_ERROR
     }
@@ -91,14 +120,24 @@ impl Error {
             error,
             QuicConnectionError::LocallyClosed | QuicConnectionError::CidsExhausted
         ) {
-            mapped
+            Self {
+                source: Source::LocalConnectionLost,
+                ..mapped
+            }
         } else {
-            mapped.remote()
+            Self {
+                source: Source::ConnectionLost,
+                ..mapped
+            }
         }
     }
 
+    /// Attribute a locally detected error to received peer data, keeping a more
+    /// specific transport origin.
     pub(crate) const fn remote(mut self) -> Self {
-        self.source = Source::Remote;
+        if matches!(self.source, Source::Local) {
+            self.source = Source::Remote;
+        }
         self
     }
 
@@ -120,7 +159,7 @@ impl Error {
     /// This classification does not grant permission to retry a request.
     #[must_use]
     pub fn is_remote_failure(self) -> bool {
-        !(matches!(self.source, Source::Local)
+        !(matches!(self.source, Source::Local | Source::LocalConnectionLost)
             || self.is_clean_close()
             || (self.scope == ErrorScope::Stream
                 && matches!(self.code(), Code::H3_REQUEST_REJECTED | Code::H3_NO_ERROR)))

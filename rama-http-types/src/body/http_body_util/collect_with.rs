@@ -181,6 +181,7 @@ mod tests {
     use bytes::Bytes;
     use rama_core::error::BoxError;
     use rama_core::futures::{StreamExt, stream};
+    use std::assert_matches;
     use std::time::Duration;
 
     fn body_from_chunks(chunks: &[&'static [u8]]) -> Body {
@@ -218,10 +219,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.is_cap_reached());
-        assert!(matches!(
-            err.kind(),
-            CollectErrorKind::CapReached { limit: 7 }
-        ));
+        assert_matches!(err.kind(), CollectErrorKind::CapReached { limit: 7 });
         assert_eq!(&err.bytes_read()[..], b"hellowo");
         assert_eq!(drain(err.into_full_body().unwrap()).await, b"helloworld");
     }
@@ -268,7 +266,7 @@ mod tests {
             .unwrap_err();
         let (bytes, remainder, kind) = err.into_parts();
         assert_eq!(&bytes[..], b"ab");
-        assert!(matches!(kind, CollectErrorKind::CapReached { limit: 2 }));
+        assert_matches!(kind, CollectErrorKind::CapReached { limit: 2 });
         assert_eq!(drain(remainder.unwrap()).await, b"cdef");
     }
 

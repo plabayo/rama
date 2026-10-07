@@ -130,6 +130,17 @@ fn absolute_form_strips_userinfo_and_fragment() {
 }
 
 #[test]
+fn absolute_form_keeps_userinfo_outside_the_http_family() {
+    for (uri, expected) in [
+        ("ws://user@example.com/chat", "ws://example.com/chat"),
+        ("ftp://user:pw@example.com/f", "ftp://user:pw@example.com/f"),
+    ] {
+        let uri: Uri = parse_graceful(uri).unwrap();
+        assert_eq!(write_absolute(&uri).unwrap(), expected, "{uri}");
+    }
+}
+
+#[test]
 fn absolute_form_no_authority_keeps_scheme_path() {
     // Opaque URI: scheme + path, no authority.
     let uri: Uri = parse_graceful("urn:isbn:0451450523").unwrap();
@@ -322,6 +333,18 @@ fn h2_authority_host_port() {
 fn h2_authority_strips_userinfo() {
     let uri: Uri = parse_graceful("https://user:pw@example.com/").unwrap();
     assert_eq!(write_h2_authority(&uri).unwrap(), "example.com");
+}
+
+#[test]
+fn h2_authority_keeps_userinfo_outside_the_http_family() {
+    for (uri, expected) in [
+        ("wss://user@example.com/", "example.com"),
+        ("custom://user:pw@example.com/", "user:pw@example.com"),
+        ("custom://@example.com/", "@example.com"),
+    ] {
+        let uri: Uri = parse_graceful(uri).unwrap();
+        assert_eq!(write_h2_authority(&uri).unwrap(), expected, "{uri}");
+    }
 }
 
 #[test]

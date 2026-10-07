@@ -15,6 +15,7 @@ use crate::wire::{RecordType, Txt};
 
 pub(super) const DNS_CLASS_IN: u16 = 1;
 
+#[derive(Debug)]
 pub(super) enum RrParse<T> {
     Record { ttl: u32, value: T },
     Other,

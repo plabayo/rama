@@ -4,8 +4,16 @@ use std::{
     mem,
 };
 
-use rama_core::bytes::BufMut;
-use rama_core::telemetry::tracing::{debug, trace};
+use rama_core::{
+    bytes::BufMut,
+    telemetry::tracing::{debug, trace},
+};
+use rama_quic_proto::{
+    Dir, MAX_STREAM_COUNT, Side, StreamId, TransportError, VarInt,
+    coding::BufMutExt,
+    frame::{self, FrameStruct, StreamMetaVec},
+    transport_parameters::TransportParameters,
+};
 use rustc_hash::FxHashMap;
 
 use super::{
@@ -13,12 +21,6 @@ use super::{
     StreamHalf, ThinRetransmits,
 };
 use crate::proto::connection::stats::FrameStats;
-use rama_quic_proto::{
-    Dir, MAX_STREAM_COUNT, Side, StreamId, TransportError, VarInt,
-    coding::BufMutExt,
-    frame::{self, FrameStruct, StreamMetaVec},
-    transport_parameters::TransportParameters,
-};
 
 /// Wrapper around `Recv` that facilitates reusing `Recv` instances
 #[derive(Debug)]
@@ -1180,14 +1182,17 @@ pub(super) fn get_or_insert_recv(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::proto::{
-        ReadableError, RecvStream, SendStream, WriteError, connection::State as ConnState,
-        connection::Streams,
-    };
+    use std::assert_matches;
+
     use rama_core::bytes::Bytes;
     use rama_quic_proto::TransportErrorCode;
     use rama_utils::octets;
+
+    use super::*;
+    use crate::proto::{
+        ReadableError, RecvStream, SendStream, WriteError,
+        connection::{State as ConnState, Streams},
+    };
 
     fn make(side: Side) -> StreamsState {
         StreamsState::new(
@@ -1358,6 +1363,95 @@ mod tests {
     }
 
     #[test]
+    fn a_stop_is_reported_while_the_connection_has_no_credit() {
+        let mut state = make(Side::Client);
+        state.set_params(&TransportParameters {
+            initial_max_data: 100u32.into(),
+            initial_max_stream_data_uni: 200u32.into(),
+            initial_max_streams_uni: 2u32.into(),
+            ..TransportParameters::default()
+        });
+        let conn_state = ConnState::Established;
+        let mut pending = Retransmits::default();
+        let mut open = || {
+            (Streams {
+                state: &mut state,
+                conn_state: &conn_state,
+            })
+            .open(Dir::Uni)
+            .unwrap()
+        };
+        let (first, second) = (open(), open());
+        let mut write = |state: &mut StreamsState, id, data: &[u8]| {
+            SendStream {
+                id,
+                state,
+                pending: &mut pending,
+                conn_state: &conn_state,
+            }
+            .write(data)
+        };
+        assert_eq!(write(&mut state, first, &[0; 100]), Ok(100));
+        assert_eq!(
+            write(&mut state, second, &[0; 10]),
+            Err(WriteError::Blocked)
+        );
+        state.received_stop_sending(second, VarInt::from(9u32));
+        assert_eq!(
+            write(&mut state, second, &[0; 10]),
+            Err(WriteError::Stopped(VarInt::from(9u32))),
+            "the stop is not hidden behind the exhausted connection credit"
+        );
+    }
+
+    /// What gates admitted caps what a write admits without blocking it, and leaves the
+    /// flow-control bookkeeping as for any partial write.
+    #[test]
+    fn a_budget_caps_what_a_write_admits() {
+        let mut state = make(Side::Client);
+        state.set_params(&TransportParameters {
+            initial_max_data: 100u32.into(),
+            initial_max_stream_data_uni: 200u32.into(),
+            initial_max_streams_uni: 2u32.into(),
+            ..TransportParameters::default()
+        });
+        let conn_state = ConnState::Established;
+        let mut pending = Retransmits::default();
+        let id = (Streams {
+            state: &mut state,
+            conn_state: &conn_state,
+        })
+        .open(Dir::Uni)
+        .unwrap();
+        let mut chunks = [Bytes::from(vec![0; 40]), Bytes::from(vec![1; 40])];
+        let mut write = |chunks: &mut [Bytes], budget| {
+            SendStream {
+                id,
+                state: &mut state,
+                pending: &mut pending,
+                conn_state: &conn_state,
+            }
+            .write_chunks_within(chunks, 0, budget)
+        };
+        let written = write(&mut chunks, 50).unwrap();
+        assert_eq!((written.bytes, written.chunks), (50, 1));
+        assert_eq!(chunks[1].len(), 30, "the partial chunk keeps its suffix");
+        let written = write(&mut chunks[1..], u64::MAX).unwrap();
+        assert_eq!((written.bytes, written.chunks), (30, 1));
+        assert_eq!(
+            SendStream {
+                id,
+                state: &mut state,
+                pending: &mut pending,
+                conn_state: &conn_state,
+            }
+            .write_within(&[0; 50], 1),
+            Ok(1)
+        );
+        assert_eq!(state.data_sent, 81);
+    }
+
+    #[test]
     fn reserve_wakes_only_above_credit_threshold() {
         let mut state = make(Side::Client);
         state.set_params(&TransportParameters {
@@ -1382,7 +1476,7 @@ mod tests {
                 pending,
                 conn_state: &conn_state,
             }
-            .write_chunks_with_reserve(chunks, 20)
+            .write_chunks_within(chunks, 20, u64::MAX)
         };
         assert_eq!(
             write(&mut state, &mut pending, &mut chunks).unwrap().bytes,
@@ -1395,7 +1489,7 @@ mod tests {
         assert!(state.poll().is_none());
         assert!(state.poll().is_none());
         state.received_max_data(101u32.into());
-        assert!(matches!(state.poll(), Some(StreamEvent::Writable { id: actual }) if actual == id));
+        assert_matches!(state.poll(), Some(StreamEvent::Writable { id: actual }) if actual == id);
         assert_eq!(
             write(&mut state, &mut pending, &mut chunks).unwrap().bytes,
             1
@@ -1407,7 +1501,7 @@ mod tests {
         // A reduced local send window lowers the reserve threshold after ACKs.
         state.set_send_window(16);
         state.buffered_data = 0;
-        assert!(matches!(state.poll(), Some(StreamEvent::Writable { id: actual }) if actual == id));
+        assert_matches!(state.poll(), Some(StreamEvent::Writable { id: actual }) if actual == id);
         // A critical stream can still consume the reserved credit.
         let critical = (Streams {
             state: &mut state,
@@ -1500,8 +1594,9 @@ mod tests {
             ..TransportParameters::default()
         });
         for dir in Dir::iter() {
-            assert!(
-                matches!(state.poll(), Some(StreamEvent::Available { dir: actual }) if actual == dir)
+            assert_matches!(
+                state.poll(),
+                Some(StreamEvent::Available { dir: actual }) if actual == dir,
             );
             assert!(
                 (Streams {

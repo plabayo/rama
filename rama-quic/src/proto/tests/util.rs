@@ -10,20 +10,23 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
+use ahash::{HashMap, HashSet};
+use parking_lot::Mutex;
+use rama_core::{
+    bytes::BytesMut,
+    telemetry::tracing::{info_span, trace},
+};
+use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
+use rama_quic_proto::{StreamId, Version, packet};
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+use rama_tls_rustls::dep::rustls::{self, KeyLogFile, client::WebPkiServerVerifier};
+
 #[cfg(not(all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))))]
 use super::crypto::boring::{QuicClientConfig, QuicServerConfig};
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use super::crypto::rustls::{QuicClientConfig, QuicServerConfig, configured_provider};
 use super::*;
 use crate::proto::{Duration, Instant};
-use ahash::{HashMap, HashSet};
-use parking_lot::Mutex;
-use rama_core::bytes::BytesMut;
-use rama_core::telemetry::tracing::{info_span, trace};
-use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
-use rama_quic_proto::{StreamId, Version, packet};
-#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-use rama_tls_rustls::dep::rustls::{self, KeyLogFile, client::WebPkiServerVerifier};
 
 pub(super) const DEFAULT_MTU: usize = 1452;
 
@@ -878,8 +881,9 @@ impl TestEndpoint {
         min_opt(next_timeout, next_inbound)
     }
 
+    /// Idle: no datagram waits to be received and every connection is idle.
     pub(super) fn is_idle(&self) -> bool {
-        self.connections.values().all(|x| x.is_idle())
+        self.inbound.is_empty() && self.connections.values().all(|x| x.is_idle())
     }
 
     pub(super) fn delay_outbound(&mut self) {

@@ -942,6 +942,7 @@ pub(crate) enum InsertError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::collections::BTreeSet;
 
     fn cid(sequence: u64, retire_prior_to: u64) -> NewConnectionId {
@@ -2065,10 +2066,7 @@ mod tests {
         );
         // Everything below the new active identifier is refused from now on, which is the floor's
         // work, and that refusal is what retires a late arrival.
-        assert!(matches!(
-            q.insert(cid(far / 2, 0)),
-            Err(InsertError::Retired)
-        ));
+        assert_matches!(q.insert(cid(far / 2, 0)), Err(InsertError::Retired));
     }
 
     /// Giving up a reservation at the highest sequence the peer has issued must not make a

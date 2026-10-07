@@ -13,6 +13,7 @@ use interop_common::{
     trust::{rama_client_accepts, rama_client_refuses, trust_cases},
 };
 use rama::utils::octets;
+use std::assert_matches;
 
 const PEER: &str = "quiche";
 const UNI_READ: usize = octets::kib(64);
@@ -88,13 +89,11 @@ async fn trust_cases_rama_server() {
                 connection.is_established()
             })
             .await;
-        assert!(
-            matches!(
-                stopped,
-                None | Some(Stopped::Closed) | Some(Stopped::Rejected(quiche::Error::TlsFail))
-            ),
+        assert_matches!(
+            stopped,
+            None | Some(Stopped::Closed) | Some(Stopped::Rejected(quiche::Error::TlsFail)),
             "{}: the untrusted attempt ends without a connection: {stopped:?}",
-            run.what
+            run.what,
         );
         let observed = TrustObservation {
             refused: !client.connection().is_established(),

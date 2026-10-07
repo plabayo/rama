@@ -18,11 +18,6 @@ use rama::{
 use super::SendCommand;
 
 pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, BoxError> {
-    if is_ws && cfg.http_3 {
-        return Err(BoxError::from_static_str(
-            "WebSocket over HTTP/3 requires Extended CONNECT, which is not yet supported",
-        ));
-    }
     let mut request = Request::new(Body::empty());
 
     let input = build_data_input(cfg).await?;
@@ -31,6 +26,17 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
     }
 
     *request.uri_mut() = crate::cmd::uri::parse_user_uri(&cfg.uri)?;
+    if is_ws
+        && cfg.http_3
+        && !request
+            .uri()
+            .scheme()
+            .is_some_and(rama::net::Protocol::is_secure)
+    {
+        return Err(BoxError::from_static_str(
+            "WebSocket over HTTP/3 requires a wss:// URI (HTTP/3 always uses TLS)",
+        ));
+    }
 
     if let Some(http_version) = match (
         cfg.http_09,
@@ -61,7 +67,8 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
             .context("parse HTTP request method")?
     } else if input.is_some() {
         Method::POST
-    } else if is_ws && request.version() == Version::HTTP_2 {
+    } else if is_ws && matches!(request.version(), Version::HTTP_2 | Version::HTTP_3) {
+        // Extended CONNECT: RFC 8441 (HTTP/2) and RFC 9220 (HTTP/3).
         Method::CONNECT
     } else {
         Method::GET

@@ -1,34 +1,36 @@
-use rama_core::bytes::{Bytes, BytesMut};
-use rama_core::telemetry::tracing::info;
-use rama_crypto::hmac::HmacSha2;
-use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
-use rama_utils::octets;
-use rand::Rng;
-use rustc_hash::FxHashMap;
 use std::{
+    assert_matches,
     convert::TryInto,
     mem,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::Arc,
 };
 
-use super::*;
-use crate::proto::token::reset_token;
-use crate::proto::{
-    Duration, Instant,
-    cid_generator::{ConnectionIdGenerator, RandomConnectionIdGenerator},
-    connection::PreferredAddressState,
+use rama_core::{
+    bytes::{Bytes, BytesMut},
+    telemetry::tracing::info,
+};
+use rama_crypto::{
+    hmac::HmacSha2,
+    pki_types::{CertificateDer, PrivateKeyDer},
 };
 use rama_quic_proto::{
     ConnectionId, Dir, RESET_TOKEN_SIZE, ResetToken, ResetToken as TestResetToken, TransportError,
     TransportErrorCode, VarInt, frame,
-    frame::ApplicationClose,
-    frame::ConnectionClose,
-    frame::Datagram,
-    frame::Frame,
-    frame::FrameStruct,
+    frame::{ApplicationClose, ConnectionClose, Datagram, Frame, FrameStruct},
     packet::{Header, InitialHeader, PacketNumber},
     transport_parameters::TransportParameters,
+};
+use rama_utils::octets;
+use rand::Rng;
+use rustc_hash::FxHashMap;
+
+use super::*;
+use crate::proto::{
+    Duration, Instant,
+    cid_generator::{ConnectionIdGenerator, RandomConnectionIdGenerator},
+    connection::PreferredAddressState,
+    token::reset_token,
 };
 pub(crate) mod util;
 pub(crate) use util::Pair;
@@ -389,10 +391,10 @@ fn stateless_reset_with_a_foreign_key_is_ignored() {
         .write(b"still alive")
         .unwrap();
     pair.drive();
-    assert!(matches!(
+    assert_matches!(
         pair.server_conn_mut(server_ch).poll(),
-        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Bi }))
-    ));
+        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Bi })),
+    );
 
     // Control: the same packet shape with the genuine token is a reset.
     pair.client.inbound.push_back(Inbound::plain(
@@ -2894,8 +2896,8 @@ fn cid_rotation() {
 
     while pair.time < end {
         stop += CID_TIMEOUT;
-        // Run a while until PushNewCID timer fires
-        while pair.time < stop {
+        // Run a while until PushNewCID timer fires, including one due as the window ends
+        while pair.time <= stop {
             if !pair.step()
                 && let Some(time) = min_opt(pair.client.next_wakeup(), pair.server.next_wakeup())
             {
@@ -2936,8 +2938,7 @@ fn cid_retirement() {
         other => panic!("assertion failed: `{other:?}` does not match `1`"),
     }
 
-    use crate::proto::LOC_CID_COUNT;
-    use crate::proto::cid_queue::CidQueue;
+    use crate::proto::{LOC_CID_COUNT, cid_queue::CidQueue};
     let mut active_cid_num = CidQueue::LEN as u64;
     active_cid_num = active_cid_num.min(LOC_CID_COUNT);
 
@@ -4644,12 +4645,12 @@ fn reject_manually() {
     pair.server.assert_no_accept();
     let client = pair.client.connections.get_mut(&client_ch).unwrap();
     assert!(client.is_closed());
-    assert!(matches!(
+    assert_matches!(
         client.poll(),
         Some(Event::ConnectionLost {
             reason: ConnectionError::ConnectionClosed(close)
-        }) if close.error_code == TransportErrorCode::CONNECTION_REFUSED
-    ));
+        }) if close.error_code == TransportErrorCode::CONNECTION_REFUSED,
+    );
 }
 
 #[test]
@@ -4677,12 +4678,12 @@ fn validate_then_reject_manually() {
     pair.server.assert_no_accept();
     let client = pair.client.connections.get_mut(&client_ch).unwrap();
     assert!(client.is_closed());
-    assert!(matches!(
+    assert_matches!(
         client.poll(),
         Some(Event::ConnectionLost {
             reason: ConnectionError::ConnectionClosed(close)
-        }) if close.error_code == TransportErrorCode::CONNECTION_REFUSED
-    ));
+        }) if close.error_code == TransportErrorCode::CONNECTION_REFUSED,
+    );
     pair.drive();
     match pair.client_conn_mut(client_ch).poll() {
         None => {}
@@ -5270,6 +5271,7 @@ fn application_close_in_initial_is_rejected() {
     // connection ID, which travels in the clear, so anyone who observes the handshake can do this.
     let keys = server_config()
         .crypto
+        .initial()
         .initial_keys(version, &orig_dst_cid)
         .unwrap();
     let number = PacketNumber::U8(0);
@@ -5419,11 +5421,17 @@ fn classic_fixture_negotiates_x25519_in_one_initial() {
         "classic ClientHello fits one datagram"
     );
     // The classic server flight (ServerHello, certificate, Finished) coalesces into one padded
-    // datagram; compare with `post_quantum_handshake_and_transfer`
+    // datagram; compare with `post_quantum_handshake_and_transfer`. Within the initial window
+    // the server's first 1-RTT packets leave with it.
     pair.drive_server();
-    let server_flight: usize = pair.client.inbound.iter().map(|x| x.packet.len()).sum();
-    assert_eq!(pair.client.inbound.len(), 1);
-    assert_eq!(server_flight, usize::from(INITIAL_MTU));
+    let handshake: Vec<usize> = pair
+        .client
+        .inbound
+        .iter()
+        .filter(|x| x.packet[0] & rama_quic_proto::packet::LONG_HEADER_FORM != 0)
+        .map(|x| x.packet.len())
+        .collect();
+    assert_eq!(handshake, [usize::from(INITIAL_MTU)]);
     pair.drive();
     let server_ch = pair.server.assert_accept();
     assert_eq!(
@@ -5495,10 +5503,10 @@ fn waiting_datagram_sends_respect_total_buffer_budget() {
                 .send(Bytes::new(), false)
                 .unwrap();
         }
-        assert!(matches!(
+        assert_matches!(
             pair.client_datagrams(client_ch).send(Bytes::new(), false),
-            Err(SendDatagramError::Blocked(_))
-        ));
+            Err(SendDatagramError::Blocked(_)),
+        );
     }
 }
 
@@ -5523,19 +5531,19 @@ fn tiny_waiting_datagrams_fill_exact_capacity() {
         .unwrap();
     assert_eq!(pair.client_datagrams(client_ch).send_buffer_space(), 1);
     // Two bytes no longer fit, one still does
-    assert!(matches!(
+    assert_matches!(
         pair.client_datagrams(client_ch)
             .send(vec![2u8; 2].into(), false),
-        Err(SendDatagramError::Blocked(_))
-    ));
+        Err(SendDatagramError::Blocked(_)),
+    );
     pair.client_datagrams(client_ch)
         .send(vec![2u8].into(), false)
         .unwrap();
     assert_eq!(pair.client_datagrams(client_ch).send_buffer_space(), 0);
-    assert!(matches!(
+    assert_matches!(
         pair.client_datagrams(client_ch).send(Bytes::new(), false),
-        Err(SendDatagramError::Blocked(_))
-    ));
+        Err(SendDatagramError::Blocked(_)),
+    );
 }
 
 /// A large persistent-congestion threshold still permits recovery of lost packets.
@@ -6955,9 +6963,10 @@ fn a_client_moves_to_the_servers_preferred_address_once_it_answers() {
             Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == UP => {}
             other => panic!("upstream bytes: {other:?}"),
         }
-        assert!(
-            matches!(chunks.next(usize::MAX), Ok(None)),
-            "upstream did not end where the sender finished it"
+        assert_matches!(
+            chunks.next(usize::MAX),
+            Ok(None),
+            "upstream did not end where the sender finished it",
         );
         let _transmit = chunks.finalize();
     }
@@ -6968,9 +6977,10 @@ fn a_client_moves_to_the_servers_preferred_address_once_it_answers() {
             Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == DOWN => {}
             other => panic!("downstream bytes: {other:?}"),
         }
-        assert!(
-            matches!(chunks.next(usize::MAX), Ok(None)),
-            "downstream did not end where the sender finished it"
+        assert_matches!(
+            chunks.next(usize::MAX),
+            Ok(None),
+            "downstream did not end where the sender finished it",
         );
         let _transmit = chunks.finalize();
     }
@@ -7772,7 +7782,7 @@ fn two_connections_on_one_endpoint_keep_their_own_arrivals_and_deadlines() {
             Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == expected => {}
             other => panic!("connection {ch:?} received {other:?}"),
         }
-        assert!(matches!(chunks.next(usize::MAX), Ok(None)));
+        assert_matches!(chunks.next(usize::MAX), Ok(None));
         let _transmit = chunks.finalize();
     }
     assert!(!pair.server_conn_mut(server_a).is_closed());
@@ -7810,7 +7820,7 @@ fn two_connections_on_one_endpoint_keep_their_own_arrivals_and_deadlines() {
         Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == AFTER => {}
         other => panic!("the survivor received {other:?}"),
     }
-    assert!(matches!(chunks.next(usize::MAX), Ok(None)));
+    assert_matches!(chunks.next(usize::MAX), Ok(None));
     let _transmit = chunks.finalize();
 }
 
@@ -8175,7 +8185,7 @@ fn exchange_uni(
         Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == payload => {}
         other => panic!("the server received {other:?}"),
     }
-    assert!(matches!(chunks.next(usize::MAX), Ok(None)), "and its end");
+    assert_matches!(chunks.next(usize::MAX), Ok(None), "and its end");
     let _transmit = chunks.finalize();
 }
 
@@ -8197,7 +8207,7 @@ fn exchange_uni_back(
         Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == payload => {}
         other => panic!("the client received {other:?}"),
     }
-    assert!(matches!(chunks.next(usize::MAX), Ok(None)), "and its end");
+    assert_matches!(chunks.next(usize::MAX), Ok(None), "and its end");
     let _transmit = chunks.finalize();
 }
 
@@ -8232,10 +8242,10 @@ fn a_reset_token_counts_only_once_its_connection_id_is_used() {
     let s = pair.client_streams(client_ch).open(Dir::Uni).unwrap();
     pair.client_send(client_ch, s).write(b"alive").unwrap();
     pair.drive();
-    assert!(matches!(
+    assert_matches!(
         pair.server_conn_mut(server_ch).poll(),
-        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni }))
-    ));
+        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni })),
+    );
 
     // Used: the client moves and starts sending with that very ID.
     pair.client.addr = SocketAddr::new(
@@ -8334,10 +8344,10 @@ fn a_reset_for_the_previous_paths_connection_id_counts_until_that_id_is_retired(
     let s = pair.server_streams(server_ch).open(Dir::Uni).unwrap();
     pair.server_send(server_ch, s).write(b"alive").unwrap();
     pair.drive();
-    assert!(matches!(
+    assert_matches!(
         pair.client_conn_mut(client_ch).poll(),
-        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni }))
-    ));
+        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni })),
+    );
     let current = pair.server_conn_mut(server_ch).active_rem_cid();
     pair.server.inbound.push_back(Inbound::plain(
         pair.time,
@@ -8430,10 +8440,10 @@ fn a_deferred_peer_move_is_dropped_when_the_peer_is_back_on_the_current_path() {
     let s = pair.server_streams(server_ch).open(Dir::Uni).unwrap();
     pair.server_send(server_ch, s).write(b"recovered").unwrap();
     settle_checking_server_destinations(&mut pair, &[current]);
-    assert!(matches!(
+    assert_matches!(
         pair.client_conn_mut(client_ch).poll(),
-        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni }))
-    ));
+        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni })),
+    );
 }
 
 /// The destination connection IDs the server has sent, per address it sent them to.
@@ -8983,10 +8993,10 @@ fn a_failed_peer_migration_returns_to_the_previous_path_with_its_connection_id()
     let s = pair.server_streams(server_ch).open(Dir::Uni).unwrap();
     pair.server_send(server_ch, s).write(b"back").unwrap();
     settle_checking_server_destinations(&mut pair, &[real]);
-    assert!(matches!(
+    assert_matches!(
         pair.client_conn_mut(client_ch).poll(),
-        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni }))
-    ));
+        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni })),
+    );
     assert!(
         pair.server_conn_mut(server_ch).unused_rem_cids().len() > spares_before,
         "the retired identifier was replaced"
@@ -9044,10 +9054,10 @@ fn a_failed_nat_rebinding_returns_to_the_previous_path_keeping_the_connection_id
     let s = pair.server_streams(server_ch).open(Dir::Uni).unwrap();
     pair.server_send(server_ch, s).write(b"back").unwrap();
     settle_checking_server_destinations(&mut pair, &[real]);
-    assert!(matches!(
+    assert_matches!(
         pair.client_conn_mut(client_ch).poll(),
-        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni }))
-    ));
+        Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni })),
+    );
 }
 
 /// Deliberate client migrations (fresh client DCID each time) make the server take a fresh
@@ -9213,4 +9223,70 @@ fn blocked_early_open_does_not_generate_extra_initial_packets() {
             .is_none(),
         "the blocked stream must not create another Initial packet"
     );
+}
+
+/// A ClientHello spanning several Initial packets leaves in one burst: the first flight is
+/// within the initial congestion window, so it neither waits for a pacing interval nor for
+/// the server's acknowledgement of its first packet (RFC 9002 §7.7).
+#[test]
+fn a_client_hello_spanning_initials_leaves_in_one_burst() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let protocols = (0..24u8).map(|n| vec![b'a' + n; 96]).collect();
+    pair.begin_connect(ClientConfig::new(Arc::new(client_crypto_with_alpn(
+        protocols,
+    ))));
+    pair.drive_client();
+    let initials = pair
+        .client_sent
+        .iter()
+        .filter(|sent| {
+            sent.packets.iter().any(|packet| {
+                packet.long_kind() == Some(rama_quic_proto::version::LongKind::Initial)
+            })
+        })
+        .count();
+    assert!(
+        initials >= 2,
+        "the whole ClientHello leaves at once: {initials}"
+    );
+}
+
+/// A datagram buffered for one pending attempt advances only that attempt's progress, so only
+/// its waiter wakes, and each ClientHello assembles from its own packets.
+#[test]
+fn buffered_datagrams_advance_only_their_own_attempt() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    pair.server.handle_incoming = Box::new(|_| IncomingConnectionBehavior::Wait);
+    pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    let other = pair.server.waiting_incoming.pop().unwrap();
+    let other_before = other.progress().generation();
+
+    let protocols = (0..24u8).map(|n| vec![b'a' + n; 96]).collect();
+    pair.begin_connect(ClientConfig::new(Arc::new(client_crypto_with_alpn(
+        protocols,
+    ))));
+    pair.drive_client();
+    pair.drive_server();
+    let large = pair.server.waiting_incoming.pop().unwrap();
+    assert!(
+        large.progress().generation() > 0,
+        "the rest of the large ClientHello was buffered for its attempt"
+    );
+    assert_eq!(
+        other.progress().generation(),
+        other_before,
+        "nothing arrived for the other attempt"
+    );
+    for incoming in [&large, &other] {
+        assert!(matches!(
+            pair.server.client_hello(incoming),
+            ClientHelloPeek::Complete(_)
+        ));
+    }
+    pair.server.ignore(large);
+    pair.server.ignore(other);
 }

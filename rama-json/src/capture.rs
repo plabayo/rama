@@ -756,6 +756,7 @@ pub fn capture_bytes(
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::borrow::Cow;
 
     use super::*;
@@ -833,7 +834,7 @@ mod tests {
                 .on_fn(path("$.s"), |value| {
                     let decoded = value.as_str().unwrap();
                     assert_eq!(decoded, "Ada");
-                    assert!(matches!(decoded, Cow::Borrowed("Ada")));
+                    assert_matches!(decoded, Cow::Borrowed("Ada"));
                     assert_eq!(value.as_bool(), None);
                     assert_eq!(value.as_i64(), None);
                     assert!(!value.is_null());
@@ -842,7 +843,7 @@ mod tests {
                 .on_fn(path("$.esc"), |value| {
                     let decoded = value.as_str().unwrap();
                     assert_eq!(decoded, "A\nB");
-                    assert!(matches!(decoded, Cow::Owned(ref s) if s == "A\nB"));
+                    assert_matches!(decoded, Cow::Owned(ref s) if s == "A\nB");
                     Ok(())
                 })
                 .on_fn(path("$.t"), |value| {
@@ -958,7 +959,7 @@ mod tests {
         assert!(!values[0].is_null());
 
         assert_eq!(values[1].as_str().as_deref(), Some("A\nB"));
-        assert!(matches!(values[1].as_str(), Some(Cow::Owned(ref s)) if s == "A\nB"));
+        assert_matches!(values[1].as_str(), Some(Cow::Owned(ref s)) if s == "A\nB");
 
         assert_eq!(values[2].as_bool(), Some(true));
         assert_eq!(values[2].as_str(), None);

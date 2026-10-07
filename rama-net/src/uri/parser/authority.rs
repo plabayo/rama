@@ -184,13 +184,21 @@ impl ScannedHost {
 }
 
 pub(crate) fn parse_authority_ref_strict(bytes: &[u8]) -> Result<AuthorityRef<'_>, ParseError> {
+    parse_authority_ref(bytes, ParserMode::Strict)
+}
+
+pub(crate) fn parse_authority_ref_graceful(bytes: &[u8]) -> Result<AuthorityRef<'_>, ParseError> {
+    parse_authority_ref(bytes, ParserMode::Graceful)
+}
+
+fn parse_authority_ref(bytes: &[u8], mode: ParserMode) -> Result<AuthorityRef<'_>, ParseError> {
     if bytes.is_empty() {
         return Err(ParseError::Empty);
     }
     if bytes.len() > super::MAX_URI_LEN {
         return Err(ParseError::TooLong { len: bytes.len() });
     }
-    let authority = scan_authority(bytes, 0, bytes.len(), ParserMode::Strict)?;
+    let authority = scan_authority(bytes, 0, bytes.len(), mode)?;
     if authority.host.is_empty() {
         return Err(ParseError::InvalidComponent(Component::Host));
     }

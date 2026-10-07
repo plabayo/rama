@@ -358,11 +358,12 @@ impl fmt::Display for ForwardedElement {
 
         if let Some(ref authority) = self.authority {
             write!(f, "{separator}host=")?;
-            // `host=` syntax requires quoting when there's any colon
-            // (port present in any form, OR an IPv6 address) — see
-            // RFC 7239 §4.
+            // RFC 7239 §4: only a port-less domain or IPv4 host is a valid token
             let quoted = authority.0.port.is_explicit()
-                || matches!(authority.0.host, Host::Address(IpAddr::V6(_)));
+                || !matches!(
+                    authority.0.host,
+                    Host::Name(_) | Host::Address(IpAddr::V4(_))
+                );
             if quoted {
                 write!(f, r##""{authority}""##)?;
             } else {
@@ -584,5 +585,28 @@ mod tests {
                 "forwarded element should reject zone-id input {s:?}",
             );
         }
+    }
+
+    #[test]
+    fn regression_forwarded_host_reg_name_is_quoted_on_display() {
+        for (input, expected) in [
+            (r#"host="a;for=1.2.3.4""#, r#"host="a;for=1.2.3.4""#),
+            (r#"host="a,for=1.2.3.4""#, r#"host="a,for=1.2.3.4""#),
+            (r#"host="[v1.fe80::a]""#, r#"host="[v1.fe80::a]""#),
+            ("host=example.com", "host=example.com"),
+            ("host=192.0.2.1", "host=192.0.2.1"),
+        ] {
+            let el = ForwardedElement::try_from(input).unwrap();
+            let encoded = el.to_string();
+            assert_eq!(encoded, expected, "input: {input}");
+            let reparsed = ForwardedElement::try_from(encoded.as_str()).unwrap();
+            assert_eq!(reparsed, el, "input: {input}");
+            assert!(reparsed.forwarded_for().is_none(), "input: {input}");
+        }
+
+        let el = ForwardedElement::new_forwarded_host(
+            "a;for=1.2.3.4".parse::<ForwardedAuthority>().unwrap(),
+        );
+        assert_eq!(el.to_string(), r#"host="a;for=1.2.3.4""#);
     }
 }

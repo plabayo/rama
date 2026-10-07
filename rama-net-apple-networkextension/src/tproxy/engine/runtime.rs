@@ -236,20 +236,15 @@ impl TransparentProxyAsyncRuntimeFactory for DefaultTransparentProxyAsyncRuntime
 #[cfg(all(test, feature = "dial9"))]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn default_factory_defers_dial9_environment_resolution() {
         let factory = DefaultTransparentProxyAsyncRuntimeFactory::default();
-        assert!(matches!(
-            factory.dial9_recorder,
-            FactoryDial9Recorder::FromEnv
-        ));
+        assert_matches!(factory.dial9_recorder, FactoryDial9Recorder::FromEnv);
 
         let factory = factory.without_dial9_recorder();
-        assert!(matches!(
-            factory.dial9_recorder,
-            FactoryDial9Recorder::Disabled
-        ));
+        assert_matches!(factory.dial9_recorder, FactoryDial9Recorder::Disabled);
     }
 
     #[test]

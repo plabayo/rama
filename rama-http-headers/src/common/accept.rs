@@ -132,7 +132,10 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
-    use crate::{HeaderDecode, specifier::Quality};
+    use crate::{
+        HeaderDecode, HeaderEncode, common::test_decode, specifier::Quality,
+        util::for_each_small_input,
+    };
     use rama_http_types::{
         HeaderValue,
         mime::{TEXT_HTML, TEXT_PLAIN, TEXT_PLAIN_UTF_8},
@@ -194,6 +197,35 @@ mod tests {
             Quality::from(500)
         ),]))
     );
+
+    #[test]
+    fn small_inputs_never_panic() {
+        for_each_small_input(b"a/*;=\", q0.", 5, |input| {
+            let Ok(value) = HeaderValue::from_bytes(input) else {
+                return;
+            };
+            if let Ok(mut accept) = Accept::decode(&mut [&value].into_iter()) {
+                accept.sort_quality_values();
+                _ = accept.encode_to_value();
+            }
+        });
+    }
+
+    #[test]
+    fn test_accept_weight_before_parameters() {
+        let Accept(items) = test_decode(&["text/html;q=0.5;level=1, */*;q=0.1"]).unwrap();
+        let items: Vec<_> = items
+            .iter()
+            .map(|qv| (qv.value.to_string(), qv.quality))
+            .collect();
+        assert_eq!(
+            items,
+            [
+                ("text/html;level=1".to_owned(), Quality::new_clamped(500)),
+                ("*/*".to_owned(), Quality::new_clamped(100)),
+            ]
+        );
+    }
 
     #[test]
     fn test_accept_sort() {

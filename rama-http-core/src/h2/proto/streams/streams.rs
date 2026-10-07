@@ -5,7 +5,9 @@
 
 use super::recv::RecvHeaderBlockError;
 use super::store::{self, Entry, Resolve, Store};
-use super::{Buffer, BufferStatus, Config, Counts, Prioritized, Recv, Send, Stream, StreamId};
+use super::{
+    Buffer, BufferStatus, Config, Counts, LocalStreams, Prioritized, Recv, Send, Stream, StreamId,
+};
 use crate::h2::codec::{Codec, UserError};
 use crate::h2::proto::{Error, Initiator, Open, Peer, WindowSize, peer};
 use crate::h2::{client, proto, server};
@@ -17,9 +19,9 @@ use rama_core::telemetry::tracing;
 use rama_http::proto::RequestHeaders;
 use rama_http::proto::h2::frame::EarlyFrameStreamContext;
 use rama_http_types::conn::HttpOrigin;
+use rama_http_types::proto::ext::Protocol;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::alt_svc::AltSvcObserverExtension;
-use rama_http_types::proto::h2::ext::Protocol;
 use rama_http_types::proto::h2::frame::{self, Frame, Reason, Settings};
 use rama_http_types::{HeaderMap, Request, Response};
 use rama_net::conn::{ConnectionHealthWatcher, MaxConcurrency};
@@ -116,6 +118,9 @@ struct Actions {
 
     /// If the connection errors, a copy is kept for any StreamRefs.
     conn_error: Option<proto::Error>,
+
+    /// The connection was dropped: nothing drains the queues any more.
+    conn_dropped: bool,
 }
 
 /// Contains the buffer of frames to be written to the wire.
@@ -394,6 +399,13 @@ where
 
         me.actions.ensure_no_conn_error()?;
         me.actions.send.ensure_next_stream_id()?;
+        // RFC 8441 §4: `:protocol` only extends CONNECT, as on HTTP/3.
+        if protocol.is_some() && request.method() != Method::CONNECT {
+            return Err(UserError::MalformedHeaders.into());
+        }
+        if protocol.is_some() && !me.actions.send.is_extended_connect_protocol_enabled() {
+            return Err(UserError::ExtendedConnectNotEnabled.into());
+        }
 
         // The `pending` argument is provided by the `Client`, and holds
         // a store `Key` of a `Stream` that may have been not been opened
@@ -426,9 +438,9 @@ where
             .extensions
             .contains::<AltSvcObserverExtension>()
             .then(|| {
-                request.protocol().and_then(|protocol| {
+                request.target_protocol().and_then(|protocol| {
                     let authority = request
-                        .authority()?
+                        .target_authority()?
                         .into_host_with_port(protocol.default_port())?;
                     HttpOrigin::new(protocol.clone(), authority).ok()
                 })
@@ -487,6 +499,7 @@ where
         // Given that the stream has been initialized, it should not be in the
         // closed state.
         debug_assert!(!stream.state.is_closed());
+        me.counts.open_local(&mut stream);
 
         // TODO: ideally, OpaqueStreamRefs::new would do this, but we're holding
         // the lock, so it can't.
@@ -522,6 +535,10 @@ where
     pub(crate) fn current_max_send_streams(&self) -> usize {
         let me = self.inner.lock();
         me.counts.max_send_streams()
+    }
+
+    pub(crate) fn local_streams(&self) -> Arc<LocalStreams> {
+        self.inner.lock().counts.local_streams()
     }
 
     pub(crate) fn current_max_recv_streams(&self) -> usize {
@@ -630,6 +647,7 @@ impl Inner {
                 send: Send::try_new(&config)?,
                 task: None,
                 conn_error: None,
+                conn_dropped: false,
             },
             store: Store::new(),
             refs: 1,
@@ -1106,6 +1124,9 @@ impl Inner {
         let mut send_buffer = send_buffer.inner.lock();
         let send_buffer = &mut *send_buffer;
 
+        // Only `Connection::drop` clears the pending accepts.
+        actions.conn_dropped |= clear_pending_accept;
+
         if actions.conn_error.is_none() {
             actions.conn_error = Some(
                 io::Error::new(
@@ -1419,7 +1440,7 @@ impl<B> StreamRef<B> {
         })
     }
 
-    pub(crate) fn send_reset(&mut self, reason: Reason) {
+    pub(crate) fn send_reset(&self, reason: Reason) {
         let mut me = self.opaque.inner.lock();
         let me = &mut *me;
 
@@ -1484,6 +1505,9 @@ impl<B> StreamRef<B> {
         response: Response<()>,
         end_of_stream: bool,
     ) -> Result<(), UserError> {
+        if response.status().is_informational() {
+            return Err(UserError::InformationalFinalResponse);
+        }
         // We need to only drop extensions after we release our locks or there is risk for deadlocking
         let _extensions_ref = &mut Option::None;
 
@@ -1517,6 +1541,10 @@ impl<B> StreamRef<B> {
         let send_buffer = &mut *send_buffer;
 
         let actions = &mut me.actions;
+        actions.ensure_no_conn_error()?;
+        if !me.store.resolve(self.opaque.key).state.is_push_open() {
+            return Err(UserError::UnexpectedFrameType.into());
+        }
         let promised_id = actions.send.reserve_local()?;
 
         let child_key = {
@@ -1885,6 +1913,11 @@ fn drop_stream_ref(inner: &Mutex<Inner>, key: store::Key) {
             }
         }
     });
+
+    // A dropped connection drains no queue: what a handle queued would hold its stream.
+    if me.actions.conn_dropped {
+        me.actions.clear_queues(true, &mut me.store, &mut me.counts);
+    }
 }
 
 fn maybe_cancel(stream: &mut store::Ptr, actions: &mut Actions, counts: &mut Counts) {

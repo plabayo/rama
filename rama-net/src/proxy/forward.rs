@@ -5,15 +5,15 @@ use crate::std::sync::Arc;
 
 use super::IdleGuard;
 
-use crate::conn::{ConnectionAbort, LingeringClose};
+use crate::conn::LingeringClose;
 
-use rama_core::extensions::ExtensionsRef;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing;
 use rama_core::{
     Service,
-    io::{BridgeIo, Io},
+    extensions::ExtensionsRef,
+    io::{AbortIo, BridgeIo, Io},
 };
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::octets::kib;
@@ -191,8 +191,9 @@ impl IoForwardService {
         /// the socket was closed. Lingering keeps the socket open until the
         /// peer is done, as nginx does with `lingering_close`.
         ///
-        /// Skipped when the bridge closes because of a shutdown, and cut
-        /// short when a shutdown starts while lingering.
+        /// A side reset to reflect a failure of the other side does not
+        /// linger. Skipped when the bridge closes because of a shutdown, and
+        /// cut short when a shutdown starts while lingering.
         ///
         /// `None` (the default) disables it.
         pub fn lingering_close(mut self, linger: Option<LingeringClose>) -> Self {
@@ -201,27 +202,24 @@ impl IoForwardService {
         }
     }
 
-    /// Pass resets through: see [`PassResetsForwardService`].
-    #[must_use]
-    pub fn pass_resets(self) -> PassResetsForwardService {
-        PassResetsForwardService(self)
-    }
-
     /// The shutdown guard wired through the [`Executor`], if any.
     fn shutdown_guard(&self) -> Option<ShutdownGuard> {
         self.executor.guard().cloned()
     }
+}
 
-    async fn forward<S, T>(
+impl<S, T> Service<BridgeIo<S, T>> for IoForwardService
+where
+    S: Io + Unpin + ExtensionsRef,
+    T: Io + Unpin + ExtensionsRef,
+{
+    type Output = IoForwardOutcome;
+    type Error = IoForwardError;
+
+    async fn serve(
         &self,
-        left: S,
-        right: T,
-        aborts: Aborts,
-    ) -> Result<IoForwardOutcome, IoForwardError>
-    where
-        S: Io + Unpin,
-        T: Io + Unpin,
-    {
+        BridgeIo(left, right): BridgeIo<S, T>,
+    ) -> Result<Self::Output, Self::Error> {
         #[cfg(feature = "dial9")]
         super::dial9::record_bridge_opened(
             self.idle_timeout
@@ -240,7 +238,6 @@ impl IoForwardService {
             self.shutdown_grace,
             self.buf_size,
             self.lingering_close,
-            aborts,
         )
         .await;
 
@@ -271,76 +268,6 @@ impl IoForwardService {
             Ok(outcome)
         }
     }
-}
-
-impl<S, T> Service<BridgeIo<S, T>> for IoForwardService
-where
-    S: Io + Unpin,
-    T: Io + Unpin,
-{
-    type Output = IoForwardOutcome;
-    type Error = IoForwardError;
-
-    fn serve(
-        &self,
-        BridgeIo(left, right): BridgeIo<S, T>,
-    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
-        self.forward(left, right, Aborts::default())
-    }
-}
-
-/// An [`IoForwardService`] that passes resets through.
-///
-/// When a read on one side fails with a reset or an abort, the other side is
-/// aborted as well, using the [`ConnectionAbort`] found in its extensions,
-/// instead of being closed with a clean end that would make a truncated
-/// stream look complete. A side without a [`ConnectionAbort`] is closed as
-/// usual. An aborted side does not linger.
-///
-/// A reset that first shows up as a failed write gets there too: the other
-/// direction keeps delivering what the gone peer had sent, for up to the
-/// lingering idle timeout (or the shutdown grace), and then passes the
-/// reset on.
-///
-/// Aborting discards whatever the bridge still had queued for that side, and
-/// a Windows peer that receives the reset drops what it has not read yet,
-/// possibly the tail of what was just forwarded to it. Use this where
-/// signalling the truncation matters more than delivering that tail.
-///
-/// Created with [`IoForwardService::pass_resets`].
-#[derive(Debug, Clone)]
-pub struct PassResetsForwardService(IoForwardService);
-
-impl<S, T> Service<BridgeIo<S, T>> for PassResetsForwardService
-where
-    S: Io + Unpin + ExtensionsRef,
-    T: Io + Unpin + ExtensionsRef,
-{
-    type Output = IoForwardOutcome;
-    type Error = IoForwardError;
-
-    fn serve(
-        &self,
-        BridgeIo(left, right): BridgeIo<S, T>,
-    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
-        // Flat lookups only: the walking ones may find the capability of a
-        // related connection, such as the ingress of an egress.
-        let aborts = Aborts {
-            left: left.extensions().self_get_ref::<ConnectionAbort>().cloned(),
-            right: right
-                .extensions()
-                .self_get_ref::<ConnectionAbort>()
-                .cloned(),
-        };
-        self.0.forward(left, right, aborts)
-    }
-}
-
-/// The capabilities to abort each side, if any.
-#[derive(Debug, Default)]
-struct Aborts {
-    left: Option<ConnectionAbort>,
-    right: Option<ConnectionAbort>,
 }
 
 /// The result of an [`IoForwardService`] bridge, describing why and how the
@@ -474,13 +401,13 @@ async fn run_bridge<S, T>(
     shutdown_grace: Duration,
     buf_size: usize,
     lingering_close: Option<LingeringClose>,
-    aborts: Aborts,
 ) -> IoForwardOutcome
 where
-    S: Io + Unpin,
-    T: Io + Unpin,
+    S: Io + Unpin + ExtensionsRef,
+    T: Io + Unpin + ExtensionsRef,
 {
     let opened_at = Instant::now();
+    let aborts = Arc::new(Aborts::new(&left, &right));
     let bytes_l_to_r = Arc::new(AtomicU64::new(0));
     let bytes_r_to_l = Arc::new(AtomicU64::new(0));
     let progress = Arc::new(AtomicU64::new(0));
@@ -505,13 +432,8 @@ where
 
     // Whether each reader reached its end (EOF or an error), which decides
     // the sides that still linger.
-    let left_r_ended = Arc::new(AtomicBool::new(false));
-    let right_r_ended = Arc::new(AtomicBool::new(false));
-
-    // Whether a side was aborted to pass on a reset of the other side.
-    let left_aborted = Arc::new(AtomicBool::new(false));
-    let right_aborted = Arc::new(AtomicBool::new(false));
-    let (left_abort, right_abort) = (aborts.left.clone(), aborts.right.clone());
+    let left_r_ended = Arc::new(ReaderEnd::default());
+    let right_r_ended = Arc::new(ReaderEnd::default());
 
     // How long the other direction may keep delivering what a gone peer sent
     // before it went away. That peer sends nothing more, so this is short.
@@ -522,7 +444,7 @@ where
             .max(shutdown_grace)
     });
 
-    let (reason, fatal_error, peer_gone) = {
+    let (mut reason, mut fatal_error) = {
         let l_to_r = std::pin::pin!(copy_one_way(
             &mut left_r,
             &mut right_w,
@@ -532,7 +454,7 @@ where
             shutdown_grace,
             right_w_shut.clone(),
             left_r_ended.clone(),
-            aborts.right.map(|abort| (abort, right_aborted.clone())),
+            (aborts.clone(), Side::Right),
             Some(client_first_byte_seen.clone()),
             Some(client_spoke.clone()),
             None,
@@ -546,7 +468,7 @@ where
             shutdown_grace,
             left_w_shut.clone(),
             right_r_ended.clone(),
-            aborts.left.map(|abort| (abort, left_aborted.clone())),
+            (aborts.clone(), Side::Left),
             Some(first_byte_seen.clone()),
             None,
             Some(upstream_eof_seen.clone()),
@@ -573,53 +495,32 @@ where
         // l_to_r and r_to_l drop here, releasing borrows on the halves.
     };
 
-    // A peer that reset us showed up as a write error, and the other
-    // direction did not get to pass the reset on before the drain window
-    // ended: do it here instead of closing that side cleanly.
-    if let Some(direction) = peer_gone
-        && fatal_error.as_ref().is_some_and(|err| {
-            matches!(
-                err.kind(),
-                std::io::ErrorKind::ConnectionReset
-                    | std::io::ErrorKind::ConnectionAborted
-                    | std::io::ErrorKind::BrokenPipe
-            )
-        })
-    {
-        let (abort, aborted, shut) = match direction {
-            CopyDirection::LeftToRight => (&left_abort, &left_aborted, &left_w_shut),
-            CopyDirection::RightToLeft => (&right_abort, &right_aborted, &right_w_shut),
-        };
-        if !shut.load(Ordering::Acquire)
-            && let Some(abort) = abort
-            && abort.abort().is_ok()
-        {
-            aborted.store(true, Ordering::Release);
-            shut.store(true, Ordering::Release);
-        }
-    }
-
     // Close both write halves concurrently rather than sequentially — TLS
     // close_notify can take the full grace window per side, and serializing
     // the two doubles the worst-case bridge unwind time. Skip a side that
     // `copy_one_way` already shut down inline so we don't double-shutdown
     // a TLS writer.
-    let left_pending_shutdown = !left_w_shut.load(Ordering::Acquire);
-    let right_pending_shutdown = !right_w_shut.load(Ordering::Acquire);
-    match (left_pending_shutdown, right_pending_shutdown) {
-        (true, true) => {
-            _ = tokio::join!(
-                tokio::time::timeout(shutdown_grace, left_w.shutdown()),
-                tokio::time::timeout(shutdown_grace, right_w.shutdown()),
-            );
+    // An aborted side resets as it drops here, with nothing left to close.
+    let left_pending_shutdown = !aborts.aborted(Side::Left) && !left_w_shut.load(Ordering::Acquire);
+    let right_pending_shutdown =
+        !aborts.aborted(Side::Right) && !right_w_shut.load(Ordering::Acquire);
+    let (left_err, right_err) = tokio::join!(
+        close_within(left_pending_shutdown, &mut left_w, shutdown_grace),
+        close_within(right_pending_shutdown, &mut right_w, shutdown_grace),
+    );
+    // A reset found by this last close is reflected too, unless an earlier one already was;
+    // an expired grace window is not a reset.
+    for (err, side_reason) in [
+        (left_err, BridgeCloseReason::WriteErrorLeft),
+        (right_err, BridgeCloseReason::WriteErrorRight),
+    ] {
+        if let Some(err) = err.filter(AbortIo::reflects) {
+            aborts.trigger();
+            if !fatal_error.as_ref().is_some_and(AbortIo::reflects) {
+                reason = side_reason;
+                fatal_error = Some(err);
+            }
         }
-        (true, false) => {
-            _ = tokio::time::timeout(shutdown_grace, left_w.shutdown()).await;
-        }
-        (false, true) => {
-            _ = tokio::time::timeout(shutdown_grace, right_w.shutdown()).await;
-        }
-        (false, false) => {}
     }
 
     // Lingering is not part of the bridge's life.
@@ -628,11 +529,10 @@ where
     if let Some(linger) = lingering_close
         && reason != BridgeCloseReason::Shutdown
     {
-        let linger_left =
-            !left_r_ended.load(Ordering::Acquire) && !left_aborted.load(Ordering::Acquire);
+        let linger_left = !left_r_ended.ended() && !aborts.aborted(Side::Left);
         // A silent origin has nothing in flight to wait for.
-        let linger_right = !right_r_ended.load(Ordering::Acquire)
-            && !right_aborted.load(Ordering::Acquire)
+        let linger_right = !right_r_ended.ended()
+            && !aborts.aborted(Side::Right)
             && reason != BridgeCloseReason::FirstByteTimeout;
         tokio::join!(
             async {
@@ -666,32 +566,27 @@ enum FirstByteWindow {
     Armed(std::pin::Pin<Box<tokio::time::Sleep>>),
 }
 
-/// How the select loop ended: the reason, the fatal error if any, and the
-/// direction whose write found its peer gone while the other direction was
-/// still draining, if that is how it ended.
-type LoopEnd = (
-    BridgeCloseReason,
-    Option<std::io::Error>,
-    Option<CopyDirection>,
-);
+/// How the select loop ended: the reason and the fatal error, if any.
+type LoopEnd = (BridgeCloseReason, Option<std::io::Error>);
 
 /// A direction whose write found its peer gone. What that peer sent before
 /// may still be on its way through the other direction, so the bridge keeps
-/// that one running for a while.
+/// that one running for a while. A reset is reflected only after that, as
+/// the other side is reset when it drops.
 struct Draining {
     reason: BridgeCloseReason,
     error: std::io::Error,
-    direction: CopyDirection,
     deadline: std::pin::Pin<Box<tokio::time::Sleep>>,
 }
 
 impl Draining {
     fn finish(self) -> LoopEnd {
-        (self.reason, Some(self.error), Some(self.direction))
+        (self.reason, Some(self.error))
     }
 }
 
-/// A write error saying the peer is gone, rather than that we failed.
+/// A write or half-close error saying the peer is gone, rather than that we
+/// failed.
 fn is_peer_gone(err: &std::io::Error) -> bool {
     use std::io::ErrorKind;
     matches!(
@@ -703,10 +598,34 @@ fn is_peer_gone(err: &std::io::Error) -> bool {
     )
 }
 
-/// Per direction: whether its reader reached its end.
+/// How far the reader of one direction got.
+#[derive(Default)]
+struct ReaderEnd {
+    /// It reached its end: EOF or an error.
+    ended: AtomicBool,
+    /// That end was an error.
+    failed: AtomicBool,
+}
+
+impl ReaderEnd {
+    fn mark(&self, failed: bool) {
+        self.failed.store(failed, Ordering::Release);
+        self.ended.store(true, Ordering::Release);
+    }
+
+    fn ended(&self) -> bool {
+        self.ended.load(Ordering::Acquire)
+    }
+
+    fn failed(&self) -> bool {
+        self.failed.load(Ordering::Acquire)
+    }
+}
+
+/// Per direction: how far its reader got.
 struct ReadEnded<'a> {
-    left: &'a AtomicBool,
-    right: &'a AtomicBool,
+    left: &'a ReaderEnd,
+    right: &'a ReaderEnd,
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -751,11 +670,7 @@ where
     loop {
         if l_to_r_done && r_to_l_done {
             return draining.map_or(
-                (
-                    first_eof.unwrap_or(BridgeCloseReason::PeerEofLeft),
-                    None,
-                    None,
-                ),
+                (first_eof.unwrap_or(BridgeCloseReason::PeerEofLeft), None),
                 Draining::finish,
             );
         }
@@ -787,7 +702,7 @@ where
         tokio::select! {
             biased;
             () = cancelled => {
-                return (BridgeCloseReason::Shutdown, draining.map(|d| d.error), None);
+                return (BridgeCloseReason::Shutdown, draining.map(|d| d.error));
             }
             () = async {
                 match draining.as_mut() {
@@ -813,7 +728,7 @@ where
                     }
                     continue;
                 }
-                return draining.map_or((BridgeCloseReason::IdleTimeout, None, None), Draining::finish);
+                return draining.map_or((BridgeCloseReason::IdleTimeout, None), Draining::finish);
             }
             _ = async {
                 match &mut first_byte {
@@ -828,7 +743,7 @@ where
                     first_byte = FirstByteWindow::Inert;
                     continue;
                 }
-                return draining.map_or((BridgeCloseReason::FirstByteTimeout, None, None), Draining::finish);
+                return draining.map_or((BridgeCloseReason::FirstByteTimeout, None), Draining::finish);
             }
             _ = async {
                 match pending_client_window {
@@ -850,23 +765,23 @@ where
                 }
                 Err(e) => {
                     let reason = classify_copy_error(&e, CopyDirection::LeftToRight);
-                    // The right peer is gone, but what it sent before may
-                    // still be on its way to the left.
+                    // A write or the half-close found the right peer gone,
+                    // but what it sent before may still be on its way to the
+                    // left.
                     if draining.is_none()
                         && !r_to_l_done
-                        && !read_ended.left.load(Ordering::Acquire)
+                        && !read_ended.left.failed()
                         && is_peer_gone(&e)
                     {
                         l_to_r_done = true;
                         draining = Some(Draining {
                             reason,
                             error: e,
-                            direction: CopyDirection::LeftToRight,
                             deadline: Box::pin(tokio::time::sleep(drain_window)),
                         });
                         continue;
                     }
-                    return draining.map_or((reason, Some(e), None), Draining::finish);
+                    return draining.map_or((reason, Some(e)), Draining::finish);
                 }
             },
             res = r_to_l.as_mut(), if !r_to_l_done => match res {
@@ -880,19 +795,18 @@ where
                     let reason = classify_copy_error(&e, CopyDirection::RightToLeft);
                     if draining.is_none()
                         && !l_to_r_done
-                        && !read_ended.right.load(Ordering::Acquire)
+                        && !read_ended.right.failed()
                         && is_peer_gone(&e)
                     {
                         r_to_l_done = true;
                         draining = Some(Draining {
                             reason,
                             error: e,
-                            direction: CopyDirection::RightToLeft,
                             deadline: Box::pin(tokio::time::sleep(drain_window)),
                         });
                         continue;
                     }
-                    return draining.map_or((reason, Some(e), None), Draining::finish);
+                    return draining.map_or((reason, Some(e)), Draining::finish);
                 }
             },
         }
@@ -908,8 +822,8 @@ async fn copy_one_way<R, W>(
     buf_size: usize,
     shutdown_grace: Duration,
     write_side_shut: Arc<AtomicBool>,
-    read_ended: Arc<AtomicBool>,
-    abort_writer: Option<(ConnectionAbort, Arc<AtomicBool>)>,
+    read_end: Arc<ReaderEnd>,
+    (aborts, writer_side): (Arc<Aborts>, Side),
     first_byte_seen: Option<Arc<AtomicBool>>,
     first_byte_notify: Option<Arc<Notify>>,
     eof_seen: Option<Arc<AtomicBool>>,
@@ -920,7 +834,6 @@ where
 {
     let mut buf = vec![0u8; buf_size];
     let mut copy_err: Option<std::io::Error> = None;
-    let mut read_failed = false;
     loop {
         // Only tokio's own IO resources charge the coop budget; an in-memory or
         // TLS-buffered reader can stay ready indefinitely. Charge it here so a
@@ -928,7 +841,7 @@ where
         tokio::task::consume_budget().await;
         match reader.read(&mut buf).await {
             Ok(0) => {
-                read_ended.store(true, Ordering::Release);
+                read_end.mark(false);
                 if let Some(seen) = &eof_seen {
                     seen.store(true, Ordering::Relaxed);
                 }
@@ -944,7 +857,12 @@ where
                 {
                     notify.notify_one();
                 }
+                // TLS or HTTP/3 writers may hold data until flushed, as tokio's copy knows.
                 if let Err(err) = writer.write_all(&buf[..n]).await {
+                    copy_err = Some(err);
+                    break;
+                }
+                if let Err(err) = writer.flush().await {
                     copy_err = Some(err);
                     break;
                 }
@@ -952,40 +870,27 @@ where
                 progress.fetch_add(1, Ordering::Relaxed);
             }
             Err(err) => {
-                read_ended.store(true, Ordering::Release);
-                read_failed = true;
+                read_end.mark(true);
                 copy_err = Some(err);
                 break;
             }
         }
     }
 
-    // A reset read from our peer is passed on as a reset. A shutdown first
-    // would let the writer's peer see a clean end before the reset.
-    let passed_on_reset = match (&copy_err, abort_writer) {
-        (Some(err), Some((abort, aborted)))
-            if read_failed
-                && matches!(
-                    err.kind(),
-                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
-                ) =>
-        {
-            let passed_on = abort.abort().is_ok();
-            aborted.store(passed_on, Ordering::Release);
-            passed_on
-        }
-        _ => false,
-    };
-
-    // Single shutdown path for clean EOF, read errors, and write
-    // errors alike: one bounded shutdown attempt, mark the side shut
-    // so the outer `run_bridge` post-loop shutdown skips us, swallow
-    // any shutdown error (the writer may already be poisoned by a
-    // prior write error — that's expected). Bounded by
-    // `shutdown_grace` so a TLS writer waiting on the peer's
-    // close_notify can't wedge this future indefinitely.
-    if !passed_on_reset {
-        _ = tokio::time::timeout(shutdown_grace, writer.shutdown()).await;
+    // A failure resets both sides (RFC 9113 §8.5, RFC 9114 §4.4); else one bounded orderly
+    // shutdown, so a TLS writer waiting on close_notify cannot wedge this future.
+    if copy_err.as_ref().is_some_and(AbortIo::reflects) {
+        aborts.trigger();
+    }
+    if !aborts.aborted(writer_side)
+        && let Ok(Err(err)) = tokio::time::timeout(shutdown_grace, writer.shutdown()).await
+        && !copy_err.as_ref().is_some_and(AbortIo::reflects)
+        && AbortIo::reflects(&err)
+    {
+        // The half-close itself found the peer reset, also after an orderly-looking end: fail
+        // as a write would, ending the relay.
+        aborts.trigger();
+        copy_err = Some(err);
     }
     write_side_shut.store(true, Ordering::Release);
 
@@ -993,6 +898,63 @@ where
         Some(err) => Err(err),
         None => Ok(()),
     }
+}
+
+/// Close `writer` in order within `grace`, if `pending`: the error it returns, if any. An
+/// expired grace window is no error.
+async fn close_within<W>(pending: bool, writer: &mut W, grace: Duration) -> Option<std::io::Error>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    if !pending {
+        return None;
+    }
+    tokio::time::timeout(grace, writer.shutdown())
+        .await
+        .ok()
+        .and_then(Result::err)
+}
+
+/// The [`AbortIo`] each side publishes in its own extensions, if any.
+struct Aborts {
+    left: Option<Arc<AbortIo>>,
+    right: Option<Arc<AbortIo>>,
+    triggered: AtomicBool,
+}
+
+impl Aborts {
+    fn new(left: &impl ExtensionsRef, right: &impl ExtensionsRef) -> Self {
+        Self {
+            left: left.extensions().self_get_arc(),
+            right: right.extensions().self_get_arc(),
+            triggered: AtomicBool::new(false),
+        }
+    }
+
+    /// Reset both sides; one without an [`AbortIo`] is still closed in order.
+    fn trigger(&self) {
+        if self.triggered.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        for abort in [&self.left, &self.right].into_iter().flatten() {
+            abort.abort();
+        }
+    }
+
+    /// Whether this side was reset, so it must not be closed in order as well.
+    fn aborted(&self, side: Side) -> bool {
+        let abort = match side {
+            Side::Left => &self.left,
+            Side::Right => &self.right,
+        };
+        abort.is_some() && self.triggered.load(Ordering::Acquire)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Side {
+    Left,
+    Right,
 }
 
 /// Read and discard until the peer ends its stream or a bound of `linger` is
@@ -1116,13 +1078,19 @@ fn emit_close_event(outcome: &IoForwardOutcome) {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::time::Duration;
 
     use super::*;
 
-    use rama_core::graceful::Shutdown;
+    use rama_core::{ServiceInput, graceful::Shutdown};
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
+
+    /// A bridge of plain test I/O, given the extensions a bridge requires.
+    fn bridge<S, T>(left: S, right: T) -> BridgeIo<ServiceInput<S>, ServiceInput<T>> {
+        BridgeIo(ServiceInput::new(left), ServiceInput::new(right))
+    }
 
     async fn run_default<S, T>(left: S, right: T) -> IoForwardOutcome
     where
@@ -1130,7 +1098,7 @@ mod tests {
         T: Io + Unpin,
     {
         let svc = IoForwardService::default();
-        svc.serve(BridgeIo(left, right)).await.unwrap()
+        svc.serve(bridge(left, right)).await.unwrap()
     }
 
     #[tokio::test]
@@ -1161,6 +1129,65 @@ mod tests {
         svc_task.await.unwrap();
     }
 
+    /// Reads EOF right away and records every write it gets.
+    #[derive(Clone, Default)]
+    struct WriteRecorder(Arc<parking_lot::Mutex<Vec<Vec<u8>>>>);
+
+    impl tokio::io::AsyncRead for WriteRecorder {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    impl tokio::io::AsyncWrite for WriteRecorder {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            self.0.lock().push(buf.to_vec());
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn forward_sends_peeked_prefix_with_buffered_rest() {
+        use rama_core::bytes::Bytes;
+        use rama_core::io::{PrefixedIo, ReplayReader};
+
+        // A 2 byte peek splits a length-prefixed request;
+        // some servers reset on a first segment that short.
+        let (mut client, proxy) = duplex(64);
+        client.write_all(b"\x00\x05hello").await.unwrap();
+        drop(client);
+
+        let left = PrefixedIo::new(ReplayReader::new(Bytes::from_static(b"\x00\x00")), proxy);
+        let right = WriteRecorder::default();
+        let writes = right.0.clone();
+
+        run_default(left, right).await;
+
+        assert_eq!(*writes.lock(), [b"\x00\x00\x00\x05hello".to_vec()]);
+    }
+
     async fn shutdown_pair() -> (Shutdown, tokio::sync::oneshot::Sender<()>) {
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         let shutdown = Shutdown::new(async move {
@@ -1179,7 +1206,7 @@ mod tests {
         let (_b_user, b_proxy) = duplex(64);
 
         let task = tokio::spawn(async move {
-            svc.serve(BridgeIo(a_proxy, b_proxy)).await.unwrap();
+            svc.serve(bridge(a_proxy, b_proxy)).await.unwrap();
         });
 
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1208,7 +1235,7 @@ mod tests {
         let (mut b_user, b_proxy) = duplex(64);
 
         let task = tokio::spawn(async move {
-            svc.serve(BridgeIo(a_proxy, b_proxy)).await.unwrap();
+            svc.serve(bridge(a_proxy, b_proxy)).await.unwrap();
         });
 
         a_user.write_all(b"hello").await.unwrap();
@@ -1238,13 +1265,11 @@ mod tests {
         let (_b_user, b_proxy) = duplex(64);
 
         let started = Instant::now();
-        let outcome = tokio::time::timeout(
-            Duration::from_secs(2),
-            svc.serve(BridgeIo(a_proxy, b_proxy)),
-        )
-        .await
-        .expect("idle bridge did not unwind within 2s")
-        .unwrap();
+        let outcome =
+            tokio::time::timeout(Duration::from_secs(2), svc.serve(bridge(a_proxy, b_proxy)))
+                .await
+                .expect("idle bridge did not unwind within 2s")
+                .unwrap();
         assert_eq!(outcome.reason(), BridgeCloseReason::IdleTimeout);
         let elapsed = started.elapsed();
         assert!(
@@ -1267,13 +1292,10 @@ mod tests {
         a_user.write_all(b"hello").await.unwrap();
 
         let started = tokio::time::Instant::now();
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            svc.serve(BridgeIo(a_proxy, b_proxy)),
-        )
-        .await
-        .expect("silent-upstream bridge did not unwind")
-        .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), svc.serve(bridge(a_proxy, b_proxy)))
+            .await
+            .expect("silent-upstream bridge did not unwind")
+            .unwrap();
 
         assert_eq!(
             started.elapsed(),
@@ -1293,7 +1315,7 @@ mod tests {
         let (mut b_user, b_proxy) = duplex(64);
 
         let task = tokio::spawn(async move {
-            svc.serve(BridgeIo(a_proxy, b_proxy)).await.unwrap();
+            svc.serve(bridge(a_proxy, b_proxy)).await.unwrap();
         });
 
         let started = tokio::time::Instant::now();
@@ -1367,7 +1389,7 @@ mod tests {
         let (b_user, b_proxy) = duplex(64);
 
         let task = tokio::spawn(async move {
-            svc.serve(BridgeIo(a_proxy, b_proxy)).await.unwrap();
+            svc.serve(bridge(a_proxy, b_proxy)).await.unwrap();
         });
 
         // Upstream accepts, then EOFs immediately without ever writing.
@@ -1405,7 +1427,7 @@ mod tests {
         let (mut b_user, b_proxy) = duplex(64);
 
         let task = tokio::spawn(async move {
-            svc.serve(BridgeIo(a_proxy, b_proxy)).await.unwrap();
+            svc.serve(bridge(a_proxy, b_proxy)).await.unwrap();
         });
 
         let started = tokio::time::Instant::now();
@@ -1433,7 +1455,7 @@ mod tests {
         let (_b_user, b_proxy) = duplex(64);
 
         let task = tokio::spawn(async move {
-            svc.serve(BridgeIo(a_proxy, b_proxy)).await.unwrap();
+            svc.serve(bridge(a_proxy, b_proxy)).await.unwrap();
         });
 
         // Client stays silent well past the window; the upstream is silent too.
@@ -1469,7 +1491,7 @@ mod tests {
         let (mut b_user, b_proxy) = duplex(64);
 
         let task = tokio::spawn(async move {
-            svc.serve(BridgeIo(a_proxy, b_proxy)).await.unwrap();
+            svc.serve(bridge(a_proxy, b_proxy)).await.unwrap();
         });
 
         // Push a byte every 50ms for ~400ms; idle is 150ms so it should never
@@ -1507,11 +1529,9 @@ mod tests {
         drop(b_user);
         let outcome = task.await.unwrap();
 
-        assert!(
-            matches!(
-                outcome.reason(),
-                BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight
-            ),
+        assert_matches!(
+            outcome.reason(),
+            BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight,
             "unexpected reason: {:?}",
             outcome.reason(),
         );
@@ -1531,7 +1551,7 @@ mod tests {
         let (b_user, b_proxy) = duplex(64);
 
         let task = tokio::spawn(async move {
-            svc.serve(BridgeIo(a_proxy, b_proxy)).await.unwrap();
+            svc.serve(bridge(a_proxy, b_proxy)).await.unwrap();
         });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1619,7 +1639,7 @@ mod tests {
         let bytes = Arc::new(AtomicU64::new(0));
         let progress = Arc::new(AtomicU64::new(0));
         let write_side_shut = Arc::new(AtomicBool::new(false));
-        let read_ended = Arc::new(AtomicBool::new(false));
+        let read_end = Arc::new(ReaderEnd::default());
         let res = copy_one_way(
             &mut reader,
             &mut writer,
@@ -1628,8 +1648,15 @@ mod tests {
             64,
             Duration::from_millis(50),
             write_side_shut.clone(),
-            read_ended.clone(),
-            None,
+            read_end.clone(),
+            (
+                Arc::new(Aborts {
+                    left: None,
+                    right: None,
+                    triggered: AtomicBool::new(false),
+                }),
+                Side::Right,
+            ),
             None,
             None,
             None,
@@ -1646,7 +1673,7 @@ mod tests {
             "write_side_shut flag must be set so run_bridge skips a duplicate shutdown",
         );
         assert!(
-            !read_ended.load(Ordering::Acquire),
+            !read_end.ended(),
             "a write error leaves the read side open, so that side still lingers",
         );
     }
@@ -1717,6 +1744,320 @@ mod tests {
         }
     }
 
+    /// How a test side's read ends.
+    #[derive(Clone, Copy)]
+    enum ReadEnd {
+        Eof,
+        Fail(std::io::ErrorKind),
+        Pend,
+    }
+
+    /// One bridge side: its read ends once as `end`, then pends; it counts its shutdowns,
+    /// failing them with `shutdown_error` if set, and when it publishes one, its [`AbortIo`]
+    /// calls.
+    struct TestSide {
+        end: ReadEnd,
+        shutdowns: Arc<AtomicU64>,
+        shutdown_error: Option<std::io::ErrorKind>,
+    }
+
+    impl tokio::io::AsyncRead for TestSide {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            match std::mem::replace(&mut self.end, ReadEnd::Pend) {
+                ReadEnd::Eof => std::task::Poll::Ready(Ok(())),
+                ReadEnd::Fail(kind) => std::task::Poll::Ready(Err(kind.into())),
+                ReadEnd::Pend => std::task::Poll::Pending,
+            }
+        }
+    }
+
+    impl tokio::io::AsyncWrite for TestSide {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            self.shutdowns.fetch_add(1, Ordering::SeqCst);
+            std::task::Poll::Ready(self.shutdown_error.map_or(Ok(()), |kind| Err(kind.into())))
+        }
+    }
+
+    struct Counts {
+        shutdowns: Arc<AtomicU64>,
+        aborts: Arc<AtomicU64>,
+    }
+
+    impl Counts {
+        fn get(&self) -> (u64, u64) {
+            (
+                self.shutdowns.load(Ordering::SeqCst),
+                self.aborts.load(Ordering::SeqCst),
+            )
+        }
+    }
+
+    fn side(end: ReadEnd, abortable: bool) -> (ServiceInput<TestSide>, Counts) {
+        side_failing_shutdown(end, abortable, None)
+    }
+
+    fn side_failing_shutdown(
+        end: ReadEnd,
+        abortable: bool,
+        shutdown_error: Option<std::io::ErrorKind>,
+    ) -> (ServiceInput<TestSide>, Counts) {
+        let counts = Counts {
+            shutdowns: Arc::new(AtomicU64::new(0)),
+            aborts: Arc::new(AtomicU64::new(0)),
+        };
+        let io = ServiceInput::new(TestSide {
+            end,
+            shutdowns: counts.shutdowns.clone(),
+            shutdown_error,
+        });
+        if abortable {
+            let aborts = counts.aborts.clone();
+            io.extensions().insert(AbortIo::new(move || {
+                aborts.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+        (io, counts)
+    }
+
+    /// A writer that holds what it is given until flushed, as TLS or HTTP/3 may.
+    struct HeldUntilFlushed {
+        held: Vec<u8>,
+        flushed: Arc<parking_lot::Mutex<Vec<u8>>>,
+    }
+
+    impl tokio::io::AsyncRead for HeldUntilFlushed {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl tokio::io::AsyncWrite for HeldUntilFlushed {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            self.held.extend_from_slice(buf);
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            let held = std::mem::take(&mut self.held);
+            self.flushed.lock().extend(held);
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Relayed data reaches the peer while the source stays open, also through a writer
+    /// that only sends on flush.
+    #[tokio::test]
+    async fn relayed_data_is_flushed_while_the_source_stays_open() {
+        let (mut source, left) = duplex(64);
+        let flushed = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let right = HeldUntilFlushed {
+            held: Vec::new(),
+            flushed: flushed.clone(),
+        };
+        let bridge = tokio::spawn(async move {
+            _ = IoForwardService::default().serve(bridge(left, right)).await;
+        });
+        source.write_all(b"data").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while flushed.lock().as_slice() != b"data" {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("the relayed data was never flushed");
+        bridge.abort();
+    }
+
+    /// RFC 9113 §8.5, RFC 9114 §4.4: a failed side is reflected as a reset of both sides,
+    /// while an orderly end, a stopped reader or a close without close_notify is not.
+    #[tokio::test]
+    async fn failures_are_reflected_as_resets_and_orderly_ends_are_not() {
+        use std::io::ErrorKind::{
+            BrokenPipe, ConnectionAborted, ConnectionReset, InvalidData, TimedOut, UnexpectedEof,
+        };
+        for kind in [ConnectionReset, ConnectionAborted, InvalidData, TimedOut] {
+            let (left, left_counts) = side(ReadEnd::Fail(kind), true);
+            let (right, right_counts) = side(ReadEnd::Pend, true);
+            _ = IoForwardService::default()
+                .serve(BridgeIo(left, right))
+                .await;
+            // Reset, never also closed in order.
+            assert_eq!(left_counts.get(), (0, 1), "{kind:?}");
+            assert_eq!(right_counts.get(), (0, 1), "{kind:?}");
+        }
+        for kind in [BrokenPipe, UnexpectedEof] {
+            let (left, left_counts) = side(ReadEnd::Fail(kind), true);
+            let (right, right_counts) = side(ReadEnd::Pend, true);
+            _ = IoForwardService::default()
+                .serve(BridgeIo(left, right))
+                .await;
+            assert_eq!(left_counts.get(), (1, 0), "{kind:?}");
+            assert_eq!(right_counts.get(), (1, 0), "{kind:?}");
+        }
+        let (left, left_counts) = side(ReadEnd::Eof, true);
+        let (right, right_counts) = side(ReadEnd::Eof, true);
+        IoForwardService::default()
+            .serve(BridgeIo(left, right))
+            .await
+            .unwrap();
+        assert_eq!(left_counts.get(), (1, 0));
+        assert_eq!(right_counts.get(), (1, 0));
+    }
+
+    /// The half-close after one side ends can itself find the other side reset: that resets both
+    /// sides and ends the relay. A stopped reader found there stays an orderly half-close, with
+    /// the other direction still open.
+    #[tokio::test(start_paused = true)]
+    async fn a_reset_found_by_the_half_close_ends_the_relay() {
+        use std::io::ErrorKind::{BrokenPipe, ConnectionReset};
+        async fn ended(bridge: BridgeIo<ServiceInput<TestSide>, ServiceInput<TestSide>>) -> bool {
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                IoForwardService::default().serve(bridge),
+            )
+            .await
+            .is_ok()
+        }
+        for ending_left in [true, false] {
+            for (shutdown, reflected) in [(ConnectionReset, true), (BrokenPipe, false)] {
+                for abortable in [true, false] {
+                    let case = format!("left={ending_left} {shutdown:?} abortable={abortable}");
+                    let (ending, ending_counts) = side(ReadEnd::Eof, abortable);
+                    let (failing, failing_counts) =
+                        side_failing_shutdown(ReadEnd::Pend, abortable, Some(shutdown));
+                    let ended = if ending_left {
+                        ended(BridgeIo(ending, failing)).await
+                    } else {
+                        ended(BridgeIo(failing, ending)).await
+                    };
+                    assert_eq!(ended, reflected, "{case}");
+                    let aborts = u64::from(reflected && abortable);
+                    // A reset side is not also closed in order; one without abort still is.
+                    let ending_shutdowns = u64::from(reflected && !abortable);
+                    assert_eq!(ending_counts.get(), (ending_shutdowns, aborts), "{case}");
+                    assert_eq!(failing_counts.get(), (1, aborts), "{case}");
+                }
+            }
+        }
+    }
+
+    /// A reset found by any close is reflected, also after an orderly-looking end (a stopped
+    /// reader, a close without close_notify): by the half-close that follows it, and by the
+    /// relay's last close of the other side. It is what the relay reports, naming that side.
+    #[tokio::test]
+    async fn a_reset_found_by_any_close_is_reflected() {
+        use std::io::ErrorKind::{BrokenPipe, ConnectionReset, UnexpectedEof};
+        for ending_left in [true, false] {
+            for benign in [BrokenPipe, UnexpectedEof] {
+                for abortable in [true, false] {
+                    // The half-close after the benign end resets (`inline`), or the last close
+                    // of the side that ended does.
+                    for inline in [true, false] {
+                        let case = format!(
+                            "left={ending_left} {benign:?} abortable={abortable} inline={inline}"
+                        );
+                        let (ending, ending_counts) = side_failing_shutdown(
+                            ReadEnd::Fail(benign),
+                            abortable,
+                            (!inline).then_some(ConnectionReset),
+                        );
+                        let (other, other_counts) = side_failing_shutdown(
+                            ReadEnd::Pend,
+                            abortable,
+                            inline.then_some(ConnectionReset),
+                        );
+                        let outcome = tokio::time::timeout(Duration::from_secs(1), async {
+                            if ending_left {
+                                IoForwardService::default()
+                                    .serve(BridgeIo(ending, other))
+                                    .await
+                            } else {
+                                IoForwardService::default()
+                                    .serve(BridgeIo(other, ending))
+                                    .await
+                            }
+                        })
+                        .await
+                        .expect(&case)
+                        .expect(&case);
+                        let aborts = u64::from(abortable);
+                        // The other side is closed by the half-close; the ending side by the
+                        // last close unless the inline reset already reset it.
+                        let ending_shutdowns = u64::from(!(inline && abortable));
+                        assert_eq!(ending_counts.get(), (ending_shutdowns, aborts), "{case}");
+                        assert_eq!(other_counts.get(), (1, aborts), "{case}");
+                        assert_eq!(
+                            outcome.fatal_error().map(std::io::Error::kind),
+                            Some(ConnectionReset),
+                            "{case}"
+                        );
+                        if !inline {
+                            let expected = if ending_left {
+                                BridgeCloseReason::WriteErrorLeft
+                            } else {
+                                BridgeCloseReason::WriteErrorRight
+                            };
+                            assert_eq!(outcome.reason(), expected, "{case}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A side that cannot be reset is still closed in order when the other one fails.
+    #[tokio::test]
+    async fn a_side_without_abort_is_closed_in_order() {
+        for failing_left in [true, false] {
+            let failure = ReadEnd::Fail(std::io::ErrorKind::ConnectionReset);
+            let (left, left_counts) =
+                side(if failing_left { failure } else { ReadEnd::Pend }, true);
+            let (right, right_counts) =
+                side(if failing_left { ReadEnd::Pend } else { failure }, false);
+            _ = IoForwardService::default()
+                .serve(BridgeIo(left, right))
+                .await;
+            assert_eq!(left_counts.get(), (0, 1), "failing_left={failing_left}");
+            assert_eq!(right_counts.get(), (1, 0), "failing_left={failing_left}");
+        }
+    }
+
     #[tokio::test]
     async fn forward_genuine_error_surfaces_as_err_outcome() {
         // `InvalidData` is not a connection error, so it propagates as `Err`.
@@ -1725,19 +2066,34 @@ mod tests {
 
         let svc = IoForwardService::default();
         let err = svc
-            .serve(BridgeIo(left, right))
+            .serve(bridge(left, right))
             .await
             .expect_err("genuine (non-connection) error must surface as Err");
 
         assert!(err.fatal_error().is_some());
-        assert!(
-            matches!(
-                err.outcome().reason(),
-                BridgeCloseReason::ReadErrorLeft | BridgeCloseReason::WriteErrorRight
-            ),
+        assert_matches!(
+            err.outcome().reason(),
+            BridgeCloseReason::ReadErrorLeft | BridgeCloseReason::WriteErrorRight,
             "unexpected reason: {:?}",
             err.reason(),
         );
+    }
+
+    #[tokio::test]
+    async fn forward_connection_error_stays_ok_but_is_exposed() {
+        // `ConnectionReset` is a benign peer disconnect: swallowed to `Ok`, but
+        // the error and reason are still exposed on the outcome.
+        let left = ScriptedIo::erroring(std::io::ErrorKind::ConnectionReset);
+        let right = ScriptedIo::pending();
+
+        let svc = IoForwardService::default();
+        let outcome = svc
+            .serve(bridge(left, right))
+            .await
+            .expect("connection reset must stay Ok");
+
+        assert_eq!(outcome.reason(), BridgeCloseReason::ReadErrorLeft);
+        assert!(outcome.fatal_error().is_some());
     }
 
     async fn tcp_pair() -> (tokio::net::TcpStream, tokio::net::TcpStream) {
@@ -1769,7 +2125,7 @@ mod tests {
         let (client, ingress) = tcp_pair().await;
         let (egress, origin) = tcp_pair().await;
         let bridge = tokio::spawn(async move {
-            match svc.serve(BridgeIo(ingress, egress)).await {
+            match svc.serve(bridge(ingress, egress)).await {
                 Ok(outcome) => outcome,
                 Err(err) => err.into_outcome(),
             }
@@ -2106,21 +2462,48 @@ mod tests {
         drop(origin);
     }
 
-    /// An origin that replies and resets while the client uploads: the reset
-    /// first shows up as a failed write to the origin, while the reply is
-    /// still on its way to a slow client. Scripted: the origin yields `reply`
-    /// then a reset, and fails every write with a reset.
+    /// Where the bridge finds out that the origin reset.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ResetFoundBy {
+        /// A write of the upload.
+        Write,
+        /// The half-close after the upload, before the reply is readable.
+        HalfClose,
+    }
+
+    /// An origin that replies and resets while the client uploads, with the
+    /// reply still on its way to a slow client when the bridge finds the
+    /// reset. Scripted: the origin yields `reply` then a reset.
     struct ResettingOrigin {
         reply: Vec<u8>,
         sent: usize,
+        found_by: ResetFoundBy,
+        shut: bool,
+        reader: Option<std::task::Waker>,
+    }
+
+    impl ResettingOrigin {
+        fn new(found_by: ResetFoundBy) -> Self {
+            Self {
+                reply: reply(REPLY_LEN),
+                sent: 0,
+                found_by,
+                shut: false,
+                reader: None,
+            }
+        }
     }
 
     impl tokio::io::AsyncRead for ResettingOrigin {
         fn poll_read(
             mut self: std::pin::Pin<&mut Self>,
-            _: &mut std::task::Context<'_>,
+            cx: &mut std::task::Context<'_>,
             buf: &mut tokio::io::ReadBuf<'_>,
         ) -> std::task::Poll<std::io::Result<()>> {
+            if self.found_by == ResetFoundBy::HalfClose && !self.shut {
+                self.reader = Some(cx.waker().clone());
+                return std::task::Poll::Pending;
+            }
             if self.sent == self.reply.len() {
                 return std::task::Poll::Ready(Err(std::io::ErrorKind::ConnectionReset.into()));
             }
@@ -2136,9 +2519,12 @@ mod tests {
         fn poll_write(
             self: std::pin::Pin<&mut Self>,
             _: &mut std::task::Context<'_>,
-            _: &[u8],
+            buf: &[u8],
         ) -> std::task::Poll<std::io::Result<usize>> {
-            std::task::Poll::Ready(Err(std::io::ErrorKind::ConnectionReset.into()))
+            std::task::Poll::Ready(match self.found_by {
+                ResetFoundBy::Write => Err(std::io::ErrorKind::ConnectionReset.into()),
+                ResetFoundBy::HalfClose => Ok(buf.len()),
+            })
         }
 
         fn poll_flush(
@@ -2149,38 +2535,39 @@ mod tests {
         }
 
         fn poll_shutdown(
-            self: std::pin::Pin<&mut Self>,
+            mut self: std::pin::Pin<&mut Self>,
             _: &mut std::task::Context<'_>,
         ) -> std::task::Poll<std::io::Result<()>> {
-            std::task::Poll::Ready(Ok(()))
+            if self.found_by == ResetFoundBy::Write {
+                return std::task::Poll::Ready(Ok(()));
+            }
+            self.shut = true;
+            if let Some(reader) = self.reader.take() {
+                reader.wake();
+            }
+            std::task::Poll::Ready(Err(std::io::ErrorKind::ConnectionReset.into()))
         }
     }
 
     /// Returns what the client read, and how often the client side was
-    /// aborted.
-    async fn reset_seen_as_write_error(pass_resets: bool, client_reads: bool) -> (Vec<u8>, usize) {
+    /// reset.
+    async fn reset_while_uploading(found_by: ResetFoundBy, client_reads: bool) -> (Vec<u8>, u64) {
         let (mut client, ingress) = duplex(64);
-        let ingress = rama_core::ServiceInput::new(ingress);
-        let aborts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ingress = ServiceInput::new(ingress);
+        let aborts = Arc::new(AtomicU64::new(0));
         let counter = aborts.clone();
-        ingress.extensions.insert(ConnectionAbort::new(move || {
-            counter.fetch_add(1, Ordering::Relaxed);
-            Ok(())
+        ingress.extensions().insert(AbortIo::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
         }));
-        let origin = rama_core::ServiceInput::new(ResettingOrigin {
-            reply: reply(REPLY_LEN),
-            sent: 0,
-        });
+        let origin = ServiceInput::new(ResettingOrigin::new(found_by));
         let svc = IoForwardService::default().with_shutdown_grace(Duration::from_millis(500));
         let bridge = tokio::spawn(async move {
-            let bridge = BridgeIo(ingress, origin);
-            if pass_resets {
-                _ = svc.pass_resets().serve(bridge).await;
-            } else {
-                _ = svc.serve(bridge).await;
-            }
+            _ = svc.serve(BridgeIo(ingress, origin)).await;
         });
         client.write_all(b"upload").await.unwrap();
+        if found_by == ResetFoundBy::HalfClose {
+            client.shutdown().await.unwrap();
+        }
         let received = if client_reads {
             read_until_end(&mut client).await.0
         } else {
@@ -2190,27 +2577,55 @@ mod tests {
             .await
             .expect("bridge did not unwind")
             .unwrap();
-        (received, aborts.load(Ordering::Relaxed))
+        (received, aborts.load(Ordering::SeqCst))
     }
 
+    /// The reset is reflected to the client, but only once the reply the
+    /// origin sent before it got there, also when the half-close found it.
     #[tokio::test]
-    async fn reset_seen_as_write_error_still_delivers_the_reply() {
-        for pass_resets in [false, true] {
-            let (received, aborts) = reset_seen_as_write_error(pass_resets, true).await;
-            assert_eq!(received, reply(REPLY_LEN), "pass_resets={pass_resets}");
-            assert_eq!(
-                aborts,
-                usize::from(pass_resets),
-                "pass_resets={pass_resets}"
-            );
+    async fn a_reset_found_while_uploading_still_delivers_the_reply() {
+        for found_by in [ResetFoundBy::Write, ResetFoundBy::HalfClose] {
+            let (received, aborts) = reset_while_uploading(found_by, true).await;
+            assert_eq!(received.len(), REPLY_LEN, "{found_by:?}");
+            assert_eq!(received, reply(REPLY_LEN), "{found_by:?}");
+            assert_eq!(aborts, 1, "{found_by:?}");
         }
     }
 
-    /// A client that never reads is aborted once the drain window ends.
+    /// A client that never reads is reset once the drain window ends.
     #[tokio::test]
-    async fn reset_seen_as_write_error_is_passed_on_after_the_drain_window() {
-        let (_, aborts) = reset_seen_as_write_error(true, false).await;
-        assert_eq!(aborts, 1);
+    async fn a_reset_found_while_uploading_ends_after_the_drain_window() {
+        for found_by in [ResetFoundBy::Write, ResetFoundBy::HalfClose] {
+            let (_, aborts) = reset_while_uploading(found_by, false).await;
+            assert_eq!(aborts, 1, "{found_by:?}");
+        }
+    }
+
+    /// A side reset to reflect a failure of the other side does not linger;
+    /// one that cannot be reset is closed in order, and lingers.
+    #[tokio::test]
+    async fn only_a_side_closed_in_order_lingers() {
+        let idle = Duration::from_millis(200);
+        for abortable in [true, false] {
+            let (left, _) = side(ReadEnd::Fail(std::io::ErrorKind::ConnectionReset), true);
+            let (right, right_counts) = side(ReadEnd::Pend, abortable);
+            let svc = IoForwardService::default()
+                .with_lingering_close(LingeringClose::new().with_idle_timeout(idle));
+            let started = Instant::now();
+            _ = tokio::time::timeout(Duration::from_secs(5), svc.serve(BridgeIo(left, right)))
+                .await
+                .expect("lingering was not bounded");
+            assert_eq!(
+                started.elapsed() >= idle,
+                !abortable,
+                "abortable={abortable}"
+            );
+            assert_eq!(
+                right_counts.get(),
+                (u64::from(!abortable), u64::from(abortable)),
+                "abortable={abortable}"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2259,149 +2674,5 @@ mod tests {
             .unwrap();
         assert!(started.elapsed() < Duration::from_millis(500));
         drop((client, origin, shutdown));
-    }
-
-    /// Never yields data or EOF; accepts writes and counts shutdowns.
-    struct RecordingIo {
-        shutdowns: Arc<std::sync::atomic::AtomicUsize>,
-    }
-
-    impl tokio::io::AsyncRead for RecordingIo {
-        fn poll_read(
-            self: std::pin::Pin<&mut Self>,
-            _: &mut std::task::Context<'_>,
-            _: &mut tokio::io::ReadBuf<'_>,
-        ) -> std::task::Poll<std::io::Result<()>> {
-            std::task::Poll::Pending
-        }
-    }
-
-    impl tokio::io::AsyncWrite for RecordingIo {
-        fn poll_write(
-            self: std::pin::Pin<&mut Self>,
-            _: &mut std::task::Context<'_>,
-            buf: &[u8],
-        ) -> std::task::Poll<std::io::Result<usize>> {
-            std::task::Poll::Ready(Ok(buf.len()))
-        }
-
-        fn poll_flush(
-            self: std::pin::Pin<&mut Self>,
-            _: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<std::io::Result<()>> {
-            std::task::Poll::Ready(Ok(()))
-        }
-
-        fn poll_shutdown(
-            self: std::pin::Pin<&mut Self>,
-            _: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<std::io::Result<()>> {
-            self.shutdowns.fetch_add(1, Ordering::Relaxed);
-            std::task::Poll::Ready(Ok(()))
-        }
-    }
-
-    /// A right side that records shutdowns and aborts.
-    fn recording_right() -> (
-        rama_core::ServiceInput<RecordingIo>,
-        Arc<std::sync::atomic::AtomicUsize>,
-        Arc<std::sync::atomic::AtomicUsize>,
-    ) {
-        let shutdowns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let aborts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let right = rama_core::ServiceInput::new(RecordingIo {
-            shutdowns: shutdowns.clone(),
-        });
-        let counter = aborts.clone();
-        right.extensions.insert(ConnectionAbort::new(move || {
-            counter.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        }));
-        (right, shutdowns, aborts)
-    }
-
-    #[tokio::test]
-    async fn pass_resets_aborts_the_other_side_on_reset() {
-        for kind in [
-            std::io::ErrorKind::ConnectionReset,
-            std::io::ErrorKind::ConnectionAborted,
-        ] {
-            let left = rama_core::ServiceInput::new(ScriptedIo::erroring(kind));
-            let (right, shutdowns, aborts) = recording_right();
-            let outcome = IoForwardService::default()
-                .pass_resets()
-                .serve(BridgeIo(left, right))
-                .await
-                .unwrap();
-            assert_eq!(outcome.reason(), BridgeCloseReason::ReadErrorLeft);
-            assert_eq!(aborts.load(Ordering::Relaxed), 1, "{kind:?}");
-            assert_eq!(
-                shutdowns.load(Ordering::Relaxed),
-                0,
-                "{kind:?}: a shutdown would show a clean end before the reset",
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn without_pass_resets_a_reset_becomes_a_clean_close() {
-        let left =
-            rama_core::ServiceInput::new(ScriptedIo::erroring(std::io::ErrorKind::ConnectionReset));
-        let (right, shutdowns, aborts) = recording_right();
-        IoForwardService::default()
-            .serve(BridgeIo(left, right))
-            .await
-            .unwrap();
-        assert_eq!(aborts.load(Ordering::Relaxed), 0);
-        assert_eq!(shutdowns.load(Ordering::Relaxed), 1);
-    }
-
-    #[tokio::test]
-    async fn pass_resets_leaves_other_errors_alone() {
-        let left =
-            rama_core::ServiceInput::new(ScriptedIo::erroring(std::io::ErrorKind::InvalidData));
-        let (right, shutdowns, aborts) = recording_right();
-        let err = IoForwardService::default()
-            .pass_resets()
-            .serve(BridgeIo(left, right))
-            .await
-            .unwrap_err();
-        assert!(err.fatal_error().is_some());
-        assert_eq!(aborts.load(Ordering::Relaxed), 0);
-        assert_eq!(shutdowns.load(Ordering::Relaxed), 1);
-    }
-
-    /// An aborted side must not linger: its peer is meant to see the reset
-    /// right away, even though it never ends its own stream here.
-    #[tokio::test]
-    async fn pass_resets_does_not_linger_on_the_aborted_side() {
-        let left =
-            rama_core::ServiceInput::new(ScriptedIo::erroring(std::io::ErrorKind::ConnectionReset));
-        let (right, _, aborts) = recording_right();
-        let svc = IoForwardService::default()
-            .with_lingering_close(patient_linger())
-            .pass_resets();
-        tokio::time::timeout(Duration::from_secs(2), svc.serve(BridgeIo(left, right)))
-            .await
-            .expect("the aborted side lingered")
-            .unwrap();
-        assert_eq!(aborts.load(Ordering::Relaxed), 1);
-    }
-
-    #[tokio::test]
-    async fn forward_connection_error_stays_ok_but_is_exposed() {
-        // `ConnectionReset` is a benign peer disconnect: swallowed to `Ok`, but
-        // the error and reason are still exposed on the outcome.
-        let left = ScriptedIo::erroring(std::io::ErrorKind::ConnectionReset);
-        let right = ScriptedIo::pending();
-
-        let svc = IoForwardService::default();
-        let outcome = svc
-            .serve(BridgeIo(left, right))
-            .await
-            .expect("connection reset must stay Ok");
-
-        assert_eq!(outcome.reason(), BridgeCloseReason::ReadErrorLeft);
-        assert!(outcome.fatal_error().is_some());
     }
 }

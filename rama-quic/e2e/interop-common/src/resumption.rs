@@ -11,6 +11,7 @@
 //! carries no side effect the second time.
 
 use crate::backend::VerifyBackend as _;
+use std::assert_matches;
 use std::{net::SocketAddr, sync::Arc};
 
 #[cfg(not(feature = "boring"))]
@@ -376,9 +377,10 @@ pub async fn rama_client_resumes(
                 .wait(what, early.stopped())
                 .await
                 .expect_err("a rejected early stream does not end cleanly");
-            assert!(
-                matches!(refused, StoppedError::ZeroRttRejected),
-                "{what}: the rejection is what ended it, not something else: {refused:?}"
+            assert_matches!(
+                refused,
+                StoppedError::ZeroRttRejected,
+                "{what}: the rejection is what ended it, not something else: {refused:?}",
             );
             // Whichever refusal it was, the payload the application handed over is still
             // owed to the peer and goes again on the keys that survived.

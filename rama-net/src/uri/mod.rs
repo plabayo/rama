@@ -2289,6 +2289,7 @@ mod from_authority_form_tests {
 #[cfg(test)]
 mod from_authority_tests {
     use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::assert_matches;
 
     use super::*;
     use crate::{
@@ -2430,15 +2431,13 @@ mod from_authority_tests {
         );
 
         let err = Uri::try_from_authority(Protocol::HTTP, ":80").unwrap_err();
-        assert!(
-            matches!(
-                err,
-                UriError::ComponentConversion {
-                    component: Component::Authority,
-                    ..
-                }
-            ),
-            "expected ComponentConversion(Authority), got {err:?}"
+        assert_matches!(
+            err,
+            UriError::ComponentConversion {
+                component: Component::Authority,
+                ..
+            },
+            "expected ComponentConversion(Authority), got {err:?}",
         );
     }
 

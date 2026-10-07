@@ -1,17 +1,15 @@
 use std::{
-    fmt, io,
+    io,
     pin::Pin,
     task::{Context, Poll, ready},
-    time::Duration,
 };
 
 use pin_project_lite::pin_project;
 use rama_core::extensions::{Extensions, ExtensionsRef};
-use rama_utils::rate::{Acquire, Rate, RateLimiter, RefundWait, TokenBucket};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::time::{Instant, Sleep, sleep_until};
 
-use super::ThrottleMode;
+use super::{ThrottleBudget, ThrottleMode};
+use crate::gate::StreamGate as _;
 
 pin_project! {
     /// A wrapper around an [`AsyncRead`] and/or [`AsyncWrite`] that
@@ -28,8 +26,8 @@ pin_project! {
     pub struct ThrottledIo<S> {
         #[pin]
         stream: S,
-        read: Option<DirState>,
-        write: Option<DirState>,
+        read: Option<ThrottleBudget>,
+        write: Option<ThrottleBudget>,
         quantum: Option<u64>,
     }
 }
@@ -52,7 +50,7 @@ impl<S> ThrottledIo<S> {
         ///
         /// Setting a mode must happen within a tokio runtime context.
         pub fn read_mode(mut self, mode: Option<ThrottleMode>) -> Self {
-            self.read = mode.map(|mode| DirState::new(mode, self.quantum));
+            self.read = mode.map(|mode| ThrottleBudget::new(mode).maybe_with_quantum(self.quantum));
             self
         }
     }
@@ -63,7 +61,7 @@ impl<S> ThrottledIo<S> {
         ///
         /// Setting a mode must happen within a tokio runtime context.
         pub fn write_mode(mut self, mode: Option<ThrottleMode>) -> Self {
-            self.write = mode.map(|mode| DirState::new(mode, self.quantum));
+            self.write = mode.map(|mode| ThrottleBudget::new(mode).maybe_with_quantum(self.quantum));
             self
         }
     }
@@ -75,8 +73,8 @@ impl<S> ThrottledIo<S> {
         /// Defaults to a tenth of a period worth of bytes, at most 16 KiB.
         pub fn quantum(mut self, quantum: Option<u64>) -> Self {
             self.quantum = quantum;
-            for state in [&mut self.read, &mut self.write].into_iter().flatten() {
-                state.set_quantum(quantum);
+            for budget in [&mut self.read, &mut self.write].into_iter().flatten() {
+                budget.maybe_set_quantum(quantum);
             }
             self
         }
@@ -103,201 +101,6 @@ impl<S: ExtensionsRef> ExtensionsRef for ThrottledIo<S> {
     }
 }
 
-struct DirState {
-    budget: Budget,
-    burst: u64,
-    quantum: u64,
-    /// Budget reserved for the IO poll currently in progress.
-    reserved: u64,
-    sleep: Option<Pin<Box<Sleep>>>,
-    sleeping: bool,
-    refund_wait: Option<RefundWait>,
-}
-
-impl fmt::Debug for DirState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DirState")
-            .field("budget", &self.budget)
-            .field("burst", &self.burst)
-            .field("quantum", &self.quantum)
-            .field("reserved", &self.reserved)
-            .field("sleep", &self.sleep)
-            .field("sleeping", &self.sleeping)
-            .field("waiting_for_refund", &self.refund_wait.is_some())
-            .finish()
-    }
-}
-
-impl DirState {
-    fn new(mode: ThrottleMode, quantum: Option<u64>) -> Self {
-        let (budget, rate, burst) = match mode {
-            ThrottleMode::PerConn { rate, burst } => (
-                Budget::Own {
-                    bucket: TokenBucket::new(rate, burst),
-                    epoch: Instant::now(),
-                },
-                rate,
-                burst,
-            ),
-            ThrottleMode::Shared(limiter) => {
-                let rate = limiter.rate();
-                let burst = limiter.burst();
-                (Budget::Shared(limiter), rate, burst)
-            }
-        };
-        let quantum = quantum
-            .unwrap_or_else(|| super::default_quantum(rate))
-            .clamp(1, burst);
-        Self {
-            budget,
-            burst,
-            quantum,
-            reserved: 0,
-            sleep: None,
-            sleeping: false,
-            refund_wait: None,
-        }
-    }
-
-    fn set_quantum(&mut self, quantum: Option<u64>) {
-        self.quantum = match quantum {
-            Some(quantum) => quantum.clamp(1, self.burst),
-            None => super::default_quantum(self.budget.rate()).clamp(1, self.burst),
-        };
-    }
-
-    /// Reserve budget for the next IO operation of (up to) `want_hint`
-    /// bytes, sleeping until the bucket allows it.
-    ///
-    /// Callers refund on `Pending` so an idle connection holds no capacity.
-    fn poll_reserve(&mut self, cx: &mut Context<'_>, want_hint: u64) -> Poll<u64> {
-        loop {
-            if self.reserved > 0 {
-                return Poll::Ready(self.reserved);
-            }
-            if self
-                .refund_wait
-                .as_mut()
-                .is_some_and(|wait| Pin::new(wait).poll(cx).is_ready())
-            {
-                self.refund_wait = None;
-                self.sleeping = false;
-                continue;
-            }
-            let want = want_hint.min(self.quantum).max(1);
-            let mut acquire = self.budget.try_acquire(want);
-            if matches!(acquire, Acquire::RetryAt(_)) && self.refund_wait.is_none() {
-                self.refund_wait = self.budget.refund_wait();
-                if self
-                    .refund_wait
-                    .as_mut()
-                    .is_some_and(|wait| Pin::new(wait).poll(cx).is_ready())
-                {
-                    self.refund_wait = None;
-                    self.sleeping = false;
-                    continue;
-                }
-                // The listener is registered now. Retry once to close the
-                // window in which a refund could have landed after the first
-                // budget check but before waker registration.
-                acquire = self.budget.try_acquire(want);
-            }
-            match acquire {
-                Acquire::Granted => {
-                    self.refund_wait = None;
-                    self.sleeping = false;
-                    self.reserved = want;
-                    return Poll::Ready(want);
-                }
-                Acquire::RetryAt(at) => {
-                    let deadline = self.budget.deadline(at);
-                    let sleep = self
-                        .sleep
-                        .get_or_insert_with(|| Box::pin(sleep_until(deadline)));
-                    if !self.sleeping {
-                        sleep.as_mut().reset(deadline);
-                        self.sleeping = true;
-                    }
-                    ready!(sleep.as_mut().poll(cx));
-                    self.sleeping = false;
-                }
-                Acquire::Never => {
-                    // defence-in-depth: want is clamped to the quantum,
-                    // which is clamped to the burst capacity
-                    debug_assert!(false, "quantum-clamped reserve reported Acquire::Never");
-                    self.reserved = want;
-                    return Poll::Ready(want);
-                }
-            }
-        }
-    }
-
-    /// Settle the current reservation: `used` bytes were consumed,
-    /// the remainder is refunded.
-    fn settle(&mut self, used: u64) {
-        let unused = self.reserved.saturating_sub(used);
-        if unused > 0 {
-            self.budget.refund(unused);
-        }
-        self.reserved = 0;
-    }
-}
-
-#[derive(Debug)]
-enum Budget {
-    Own { bucket: TokenBucket, epoch: Instant },
-    Shared(RateLimiter),
-}
-
-impl Budget {
-    fn rate(&self) -> Rate {
-        match self {
-            Self::Own { bucket, .. } => bucket.rate(),
-            Self::Shared(limiter) => limiter.rate(),
-        }
-    }
-
-    fn try_acquire(&mut self, n: u64) -> Acquire {
-        match self {
-            Self::Own { bucket, epoch } => {
-                let now =
-                    u64::try_from(Instant::now().saturating_duration_since(*epoch).as_nanos())
-                        .unwrap_or(u64::MAX);
-                bucket.try_acquire(now, n)
-            }
-            Self::Shared(limiter) => limiter.try_acquire(n),
-        }
-    }
-
-    fn refund(&mut self, n: u64) {
-        match self {
-            Self::Own { bucket, .. } => bucket.refund(n),
-            Self::Shared(limiter) => limiter.refund(n),
-        }
-    }
-
-    fn refund_wait(&self) -> Option<RefundWait> {
-        match self {
-            Self::Own { .. } => None,
-            Self::Shared(limiter) => Some(limiter.notified_on_refund()),
-        }
-    }
-
-    fn deadline(&self, retry_at_nanos: u64) -> Instant {
-        match self {
-            Self::Own { epoch, .. } => epoch
-                .checked_add(Duration::from_nanos(retry_at_nanos))
-                // saturated retry-at with an extreme rate config: far enough
-                .unwrap_or_else(|| {
-                    Instant::now()
-                        .checked_add(Duration::from_hours(8_760))
-                        .unwrap_or_else(Instant::now)
-                }),
-            Self::Shared(limiter) => limiter.deadline(retry_at_nanos),
-        }
-    }
-}
-
 #[warn(clippy::missing_trait_methods)]
 impl<S> AsyncRead for ThrottledIo<S>
 where
@@ -316,7 +119,7 @@ where
             return this.stream.poll_read(cx, buf);
         }
 
-        let reserved = ready!(state.poll_reserve(cx, buf.remaining() as u64));
+        let reserved = ready!(state.poll_admit(cx, buf.remaining() as u64));
         let cap = (reserved as usize).min(buf.remaining());
         let mut limited = buf.take(cap);
         match this.stream.poll_read(cx, &mut limited) {
@@ -361,7 +164,7 @@ where
             return this.stream.poll_write(cx, buf);
         }
 
-        let reserved = ready!(state.poll_reserve(cx, buf.len() as u64));
+        let reserved = ready!(state.poll_admit(cx, buf.len() as u64));
 
         let allowed = (reserved as usize).min(buf.len());
         match this.stream.poll_write(cx, &buf[..allowed]) {
@@ -416,10 +219,16 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::{assert_matches, time::Duration};
+
     use rama_core::extensions::Extension;
-    use rama_utils::rate::Rate;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use rama_utils::rate::{Acquire, Rate, RateLimiter};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        time::Instant,
+    };
+
+    use super::*;
 
     fn throttled_writer<S>(stream: S, units_per_sec: u64, quantum: u64) -> ThrottledIo<S> {
         ThrottledIo::new(stream)
@@ -544,7 +353,7 @@ mod tests {
         drop(throttled);
 
         assert_eq!(limiter.try_acquire(50), Acquire::Granted);
-        assert!(matches!(limiter.try_acquire(1), Acquire::RetryAt(_)));
+        assert_matches!(limiter.try_acquire(1), Acquire::RetryAt(_));
     }
 
     #[tokio::test(start_paused = true)]
@@ -619,27 +428,6 @@ mod tests {
         limiter.refund(100);
         waiting.await.unwrap().unwrap();
         assert_eq!(start.elapsed(), Duration::ZERO);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_grant_replaces_a_stale_deadline() {
-        let limiter = RateLimiter::new(Rate::per_sec(100), 100);
-        let mut state = DirState::new(ThrottleMode::shared(limiter), Some(100));
-        let mut cx = Context::from_waker(std::task::Waker::noop());
-
-        assert_eq!(state.poll_reserve(&mut cx, 100), Poll::Ready(100));
-        state.settle(100);
-        assert!(state.poll_reserve(&mut cx, 100).is_pending());
-
-        tokio::time::advance(Duration::from_millis(10)).await;
-        assert_eq!(state.poll_reserve(&mut cx, 1), Poll::Ready(1));
-        state.settle(1);
-        assert!(!state.sleeping);
-
-        let start = Instant::now();
-        let reserved = std::future::poll_fn(|cx| state.poll_reserve(cx, 10)).await;
-        state.settle(reserved);
-        assert_eq!(start.elapsed(), Duration::from_millis(100));
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
@@ -803,7 +591,7 @@ mod tests {
         // a double-spend across the Pending poll would have to wait
         assert_eq!(start.elapsed(), Duration::ZERO);
         // and exactly the written bytes were spent
-        assert!(matches!(limiter.try_acquire(1), Acquire::RetryAt(_)));
+        assert_matches!(limiter.try_acquire(1), Acquire::RetryAt(_));
     }
 
     /// an inner writer that never completes a write

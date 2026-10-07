@@ -17,6 +17,7 @@ use crate::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
     proto::{
         HeaderByteLength,
+        ext::Protocol,
         h1::ext::{ReasonPhrase, RequestTargetForm},
     },
 };
@@ -293,9 +294,11 @@ fn encode_request_target_preserving_form(
                 uri.write_http_origin_form(output)
             }
             RequestTargetForm::Absolute if *method != Method::CONNECT && !uri.is_asterisk() => {
-                uri.write_http_absolute_form(output)
+                write_absolute_form(method, uri, output)
             }
-            RequestTargetForm::Authority if *method == Method::CONNECT => {
+            RequestTargetForm::Authority
+                if *method == Method::CONNECT && is_http1_connect_target(uri, extensions) =>
+            {
                 uri.write_http_authority_form(output)
             }
             RequestTargetForm::Asterisk if *method == Method::OPTIONS && uri.is_asterisk() => {
@@ -309,12 +312,19 @@ fn encode_request_target_preserving_form(
     encode_request_target(method, uri, extensions, output)
 }
 
+/// Whether an HTTP/1 `CONNECT` can name `uri`: as `host:port` (RFC 9112 §3.2.3), and never as
+/// an Extended CONNECT, whose HTTP/1.1 form is an `Upgrade` request instead (RFC 8441 §5).
+#[must_use]
+pub fn is_http1_connect_target(uri: &Uri, extensions: &Extensions) -> bool {
+    uri.port_u16().is_some() && !extensions.contains::<Protocol>()
+}
+
 /// Encode the HTTP/1 request-target selected by Rama connection metadata.
 ///
 /// Direct requests use origin-form, `CONNECT` uses authority-form, `OPTIONS
 /// *` uses asterisk-form, and insecure requests on an established HTTP forward
-/// proxy connection use absolute-form. Userinfo and fragments are never
-/// emitted. Route intent is deliberately ignored: the established connection
+/// proxy connection use absolute-form. Fragments are never emitted, nor is
+/// userinfo for HTTP-family schemes (see [`Uri::write_http_absolute_form`]). Route intent is deliberately ignored: the established connection
 /// route is the only authoritative signal after fallback and pool selection.
 /// When an [`Egress`](rama_core::extensions::Egress) connection snapshot is
 /// present, its route (including absence) takes precedence over request-local
@@ -327,6 +337,9 @@ pub fn encode_request_target(
     output: &mut BytesMut,
 ) -> Result<(), HeadError> {
     let result = if *method == Method::CONNECT {
+        if !is_http1_connect_target(uri, extensions) {
+            return Err(HeadError::new(HeadErrorKind::InvalidTarget));
+        }
         uri.write_http_authority_form(output)
     } else if uri.is_asterisk() && *method == Method::OPTIONS {
         output.extend_from_slice(b"*");
@@ -338,14 +351,36 @@ pub fn encode_request_target(
         let via_http_proxy = established_extensions
             .get_ref::<EstablishedProxyRoute>()
             .is_some_and(EstablishedProxyRoute::is_http_forward);
-        let is_insecure = !crate::protocol_from_uri_or_extensions(extensions, uri).is_secure();
+        let is_insecure =
+            !crate::target_protocol_from_uri_or_extensions(extensions, uri).is_secure();
         if via_http_proxy && is_insecure {
-            uri.write_http_absolute_form(output)
+            write_absolute_form(method, uri, output)
+        } else if is_server_wide(method, uri) {
+            output.extend_from_slice(b"*");
+            Ok(())
         } else {
             uri.write_http_origin_form(output)
         }
     };
     result.map_err(|_error| HeadError::new(HeadErrorKind::InvalidTarget))
+}
+
+/// RFC 9112 §3.2.4: an OPTIONS request without a path is for the server as a whole.
+fn is_server_wide(method: &Method, uri: &Uri) -> bool {
+    *method == Method::OPTIONS && uri.is_path_empty() && uri.query().is_none()
+}
+
+/// A server-wide OPTIONS stays path-less up to the last hop, which sends it as `*`.
+fn write_absolute_form(
+    method: &Method,
+    uri: &Uri,
+    output: &mut BytesMut,
+) -> Result<(), rama_net::uri::WireError> {
+    let result = uri.write_http_absolute_form(output);
+    if result.is_ok() && is_server_wide(method, uri) && output.ends_with(b"/") {
+        output.truncate(output.len() - 1);
+    }
+    result
 }
 
 /// Append HTTP header fields in their insertion order and original casing.
@@ -438,6 +473,57 @@ impl std::error::Error for HeadError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_net::address::ProxyAddress;
+
+    #[test]
+    fn http1_connect_names_host_and_port_and_never_carries_a_protocol() {
+        for (uri, protocol, form, expected) in [
+            (
+                "https://example.test:443",
+                false,
+                None,
+                Some("CONNECT example.test:443 "),
+            ),
+            ("https://example.test", false, None, None),
+            ("https://example.test:443/chat", true, None, None),
+            (
+                "https://example.test:443",
+                false,
+                Some(RequestTargetForm::Authority),
+                Some("CONNECT example.test:443 "),
+            ),
+            (
+                "https://example.test:443",
+                true,
+                Some(RequestTargetForm::Authority),
+                None,
+            ),
+        ] {
+            let request = Request::builder()
+                .method(Method::CONNECT)
+                .uri(uri)
+                .body(())
+                .unwrap();
+            if protocol {
+                request.extensions().insert(Protocol::WEBSOCKET);
+            }
+            if let Some(form) = form {
+                request.extensions().insert(form);
+            }
+            let encoded = encode_request(&request);
+            match expected {
+                Some(line) => assert!(
+                    encoded.as_ref().unwrap().starts_with(line.as_bytes()),
+                    "{uri} {protocol} {form:?}: {encoded:?}"
+                ),
+                None => assert_eq!(
+                    encoded.unwrap_err().kind(),
+                    HeadErrorKind::InvalidTarget,
+                    "{uri} {protocol} {form:?}"
+                ),
+            }
+        }
+    }
 
     #[test]
     fn parses_request_without_copying_header_values() {
@@ -481,12 +567,24 @@ mod tests {
             b"GET http://example.test/path?q=1 HTTP/1.1\r\nHost: example.test\r\n\r\n",
             b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n",
             b"OPTIONS * HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            b"OPTIONS http://example.test:8001 HTTP/1.1\r\nHost: example.test:8001\r\n\r\n",
         ] {
             let request = HeadParser::new()
                 .parse_request(&Bytes::copy_from_slice(wire))
                 .unwrap();
             assert_eq!(encode_request(&request).unwrap().as_ref(), wire);
         }
+        // A kept authority-form still needs a port once the target is rewritten.
+        let mut request = HeadParser::new()
+            .parse_request(&Bytes::from_static(
+                b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n",
+            ))
+            .unwrap();
+        *request.uri_mut() = Uri::parse_authority_form("example.test").unwrap();
+        assert_eq!(
+            encode_request(&request).unwrap_err().kind(),
+            HeadErrorKind::InvalidTarget,
+        );
     }
 
     #[test]
@@ -595,6 +693,12 @@ mod tests {
                 .unwrap()
                 .starts_with(b"CONNECT example.test:443 HTTP/1.1\r\n")
         );
+        // RFC 9112 §3.2.3: there is no default port to send.
+        *connect.uri_mut() = Uri::parse_authority_form("example.test").unwrap();
+        assert_eq!(
+            encode_request(&connect).unwrap_err().kind(),
+            HeadErrorKind::InvalidTarget,
+        );
 
         let mut wrong_asterisk = Request::new(());
         *wrong_asterisk.uri_mut() = Uri::parse("*").unwrap();
@@ -605,8 +709,64 @@ mod tests {
     }
 
     #[test]
+    fn forward_proxy_targets_keep_userinfo_outside_the_http_family() {
+        let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
+        for (uri, target) in [
+            (
+                "http://user@origin.example/p",
+                "GET http://origin.example/p HTTP/1.1\r\n",
+            ),
+            (
+                "ftp://user:pw@origin.example/f",
+                "GET ftp://user:pw@origin.example/f HTTP/1.1\r\n",
+            ),
+        ] {
+            let request = Request::builder().uri(uri).body(()).unwrap();
+            request
+                .extensions()
+                .insert(EstablishedProxyRoute::Forward(proxy.clone()));
+            let encoded = encode_request(&request).unwrap();
+            assert!(encoded.starts_with(target.as_bytes()), "{uri}: {encoded:?}");
+        }
+    }
+
+    #[test]
+    fn forward_proxy_targets_keep_a_server_wide_options_path_less() {
+        let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
+        for (method, uri, target) in [
+            (
+                Method::OPTIONS,
+                "http://origin.example:8001",
+                "OPTIONS http://origin.example:8001 HTTP/1.1\r\n",
+            ),
+            (
+                Method::OPTIONS,
+                "http://origin.example/",
+                "OPTIONS http://origin.example/ HTTP/1.1\r\n",
+            ),
+            (
+                Method::OPTIONS,
+                "http://origin.example?q",
+                "OPTIONS http://origin.example/?q HTTP/1.1\r\n",
+            ),
+            (
+                Method::GET,
+                "http://origin.example",
+                "GET http://origin.example/ HTTP/1.1\r\n",
+            ),
+        ] {
+            let request = Request::builder().method(method).uri(uri).body(()).unwrap();
+            request
+                .extensions()
+                .insert(EstablishedProxyRoute::Forward(proxy.clone()));
+            let encoded = encode_request(&request).unwrap();
+            assert!(encoded.starts_with(target.as_bytes()), "{uri}: {encoded:?}");
+        }
+    }
+
+    #[test]
     fn established_proxy_route_overrides_route_intent() {
-        use rama_net::{address::ProxyAddress, client::ProxyRoute};
+        use rama_net::client::ProxyRoute;
 
         let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
         for (route, target) in [

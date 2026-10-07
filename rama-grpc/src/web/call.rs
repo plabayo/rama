@@ -18,9 +18,9 @@ use rama_http::headers::ContentType;
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue,
     body::{Frame, SizeHint, StreamingBody},
-    header,
+    header::{self, content_type::parse_essence},
 };
-use rama_utils::octets::kib;
+use rama_utils::{bytes::trim_ows, octets::kib};
 
 use crate::Status;
 
@@ -30,7 +30,10 @@ use self::content_types::*;
 const GRPC_HEADER_SIZE: usize = 1 + 4;
 
 pub(crate) mod content_types {
-    use rama_http_types::{HeaderMap, header::CONTENT_TYPE};
+    use rama_http_types::{
+        HeaderMap,
+        header::{CONTENT_TYPE, content_type::parse_essence},
+    };
 
     pub(crate) const GRPC_WEB: &str = "application/grpc-web";
     pub(crate) const GRPC_WEB_PROTO: &str = "application/grpc-web+proto";
@@ -38,14 +41,11 @@ pub(crate) mod content_types {
     pub(crate) const GRPC_WEB_TEXT_PROTO: &str = "application/grpc-web-text+proto";
 
     pub(crate) fn is_grpc_web(headers: &HeaderMap) -> bool {
-        matches!(
-            content_type(headers),
-            Some(GRPC_WEB | GRPC_WEB_PROTO | GRPC_WEB_TEXT | GRPC_WEB_TEXT_PROTO)
-        )
-    }
-
-    fn content_type(headers: &HeaderMap) -> Option<&str> {
-        headers.get(CONTENT_TYPE).and_then(|val| val.to_str().ok())
+        parse_essence(headers.get_all(CONTENT_TYPE)).is_some_and(|essence| {
+            [GRPC_WEB, GRPC_WEB_PROTO, GRPC_WEB_TEXT, GRPC_WEB_TEXT_PROTO]
+                .iter()
+                .any(|known| essence.eq_ignore_ascii_case(known))
+        })
     }
 }
 
@@ -376,7 +376,15 @@ where
 
 impl Encoding {
     pub(crate) fn from_content_type(headers: &HeaderMap) -> Self {
-        Self::from_header(headers.get(header::CONTENT_TYPE))
+        match parse_essence(headers.get_all(header::CONTENT_TYPE)) {
+            Some(essence)
+                if essence.eq_ignore_ascii_case(GRPC_WEB_TEXT_PROTO)
+                    || essence.eq_ignore_ascii_case(GRPC_WEB_TEXT) =>
+            {
+                Self::Base64
+            }
+            _ => Self::None,
+        }
     }
 
     pub(crate) fn from_accept(headers: &HeaderMap) -> Self {
@@ -448,26 +456,20 @@ fn decode_trailers_frame(mut buf: Bytes) -> Result<Option<HeaderMap>, Status> {
     }
 
     for trailer in trailers {
-        let mut s = trailer.split(|b| b == &b':');
-        let key = s
-            .next()
+        // only the first `:` separates name from value; the value may hold more
+        let (key, value) = trailer
+            .iter()
+            .position(|b| *b == b':')
+            .and_then(|colon| trailer.split_at_checked(colon))
+            .and_then(|(key, rest)| Some((key, rest.split_first()?.1)))
             .ok_or_else(|| Status::internal("trailers couldn't parse key"))?;
-        let value = s
-            .next()
-            .ok_or_else(|| Status::internal("trailers couldn't parse value"))?;
-
-        let value = value
-            .split(|b| b == &b'\r')
-            .next()
-            .ok_or_else(|| Status::internal("trailers was not escaped"))?
-            .strip_prefix(b" ")
-            .unwrap_or(value);
+        let value = trim_ows(value);
 
         let header_key = HeaderName::try_from(key)
             .map_err(|e| Status::internal(format!("Unable to parse HeaderName: {e}")))?;
         let header_value = HeaderValue::try_from(value)
             .map_err(|e| Status::internal(format!("Unable to parse HeaderValue: {e}")))?;
-        map.insert(header_key, header_value);
+        map.append(header_key, header_value);
     }
 
     Ok(Some(map))
@@ -559,6 +561,34 @@ mod tests {
         }
     }
 
+    /// The content type is the whole value as one type, parameters aside: a browser cannot
+    /// send a gRPC-web type cross-site without preflight.
+    #[test]
+    fn content_type_is_the_whole_value() {
+        for (lines, grpc_web, encoding) in [
+            (
+                &["application/grpc-web-text; charset=utf-8"][..],
+                true,
+                Encoding::Base64,
+            ),
+            (&["text/plain", GRPC_WEB_PROTO], false, Encoding::None),
+            (&[GRPC_WEB_TEXT, "text/plain"], false, Encoding::None),
+            (
+                &["text/plain;,application/grpc-web-text"],
+                false,
+                Encoding::None,
+            ),
+            (&["application/grpc"], false, Encoding::None),
+        ] {
+            let mut headers = HeaderMap::new();
+            for line in lines {
+                headers.append(header::CONTENT_TYPE, line.parse().unwrap());
+            }
+            assert_eq!(content_types::is_grpc_web(&headers), grpc_web, "{lines:?}");
+            assert_eq!(Encoding::from_content_type(&headers), encoding, "{lines:?}");
+        }
+    }
+
     #[test]
     fn decode_trailers() {
         let mut headers = HeaderMap::new();
@@ -573,6 +603,26 @@ mod tests {
         let map = decode_trailers_frame(trailers).unwrap().unwrap();
 
         assert_eq!(headers, map);
+    }
+
+    #[test]
+    fn decode_trailers_keeps_colons_whitespace_and_repeats() {
+        let body = b"grpc-message: a: b \r\ngrpc-status:0\r\nx-rep: 1\r\nx-rep: 2\r\n";
+        let mut frame = vec![GRPC_WEB_TRAILERS_BIT];
+        frame.extend(u32::try_from(body.len()).unwrap().to_be_bytes());
+        frame.extend(body);
+
+        let map = decode_trailers_frame(Bytes::from(frame)).unwrap().unwrap();
+        assert_eq!(map[Status::GRPC_MESSAGE], "a: b");
+        assert_eq!(map[Status::GRPC_STATUS], "0");
+        let repeated: Vec<_> = map.get_all("x-rep").iter().collect();
+        assert_eq!(repeated, ["1", "2"]);
+
+        let body = b"grpc-message:\ta\x0c\r\n";
+        let mut frame = vec![GRPC_WEB_TRAILERS_BIT];
+        frame.extend(u32::try_from(body.len()).unwrap().to_be_bytes());
+        frame.extend(body);
+        decode_trailers_frame(Bytes::from(frame)).unwrap_err();
     }
 
     #[test]
@@ -683,6 +733,7 @@ mod tests {
 #[cfg(test)]
 mod client_response_tests {
     use super::*;
+    use std::assert_matches;
     use std::collections::VecDeque;
     use std::convert::Infallible;
 
@@ -880,10 +931,7 @@ mod client_response_tests {
         };
         assert_eq!(last.into_trailers().unwrap(), trailers());
         assert!(body.is_end_stream());
-        assert!(matches!(
-            Pin::new(&mut body).poll_frame(&mut cx),
-            Poll::Ready(None)
-        ));
+        assert_matches!(Pin::new(&mut body).poll_frame(&mut cx), Poll::Ready(None));
     }
 
     #[tokio::test]
@@ -957,10 +1005,10 @@ mod client_response_tests {
         let mut body = GrpcWebCall::client_response(Frames(VecDeque::from([Frame::data(
             Bytes::from_static(b"\x80\0\0\0\x07bad\r\n\r\n"),
         )])));
-        assert!(matches!(
+        assert_matches!(
             Pin::new(&mut body).poll_frame(&mut Context::from_waker(std::task::Waker::noop())),
-            Poll::Ready(Some(Err(_)))
-        ));
+            Poll::Ready(Some(Err(_))),
+        );
     }
 
     #[test]

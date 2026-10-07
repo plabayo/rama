@@ -1,4 +1,3 @@
-use rama_utils::octets;
 use std::{
     fmt,
     future::Future,
@@ -14,52 +13,51 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use crate::driver::{
-    Duration, QueuedPacket,
-    connection::{ConnectionDriver, ConnectionInner, Control, EndpointLink},
-    lifecycle::{Lifecycle, ShutdownOutcome},
-    queue::{
-        BoundedDeque, BoundedSender, INCOMING_OVERHEAD, PACKET_OVERHEAD, PacketBudget,
-        PacketPermit, PacketQueueStats, Refusal, bounded_queue,
-    },
-    sockets::{Lease, RebindRefused, SocketId, SocketRegistry, Sockets},
-    timer::{Deadline, DeadlineTimer},
-};
-use crate::driver::{
-    Instant, now,
-    udp::{Sender, Socket, proto_ecn},
-};
-#[cfg(all(test, any(feature = "boring", feature = "aws-lc", feature = "ring")))]
-use crate::proto::{self as proto};
-use crate::proto::{
-    ClientConfig, ConnectError, ConnectionError, ConnectionHandle, DatagramEvent, EndpointEvent,
-    ReceiveQueueLimits, ServerConfig,
-};
 use parking_lot::Mutex;
 use pin_project_lite::pin_project;
-use rama_core::bytes::{Bytes, BytesMut};
-use rama_core::rt::Executor;
-use rama_core::telemetry::tracing::{Instrument, Span};
+use rama_core::{
+    bytes::{Bytes, BytesMut},
+    rt::Executor,
+    telemetry::tracing::{Instrument, Span},
+};
 use rama_net::address::{SocketAddress, ip::IntoCanonicalIpAddr as _};
+use rama_quic_proto::VarInt;
 use rama_udp::{
     DatagramError, DatagramMetadata, UdpPacketSocket, UdpSocketConfig, UdpSocketFactory,
 };
+use rama_utils::octets;
 use rustc_hash::FxHashMap;
 use tokio::sync::{Notify, futures::Notified};
 
+#[cfg(all(test, any(feature = "boring", feature = "aws-lc", feature = "ring")))]
+use crate::proto::{self as proto};
+use crate::{
+    driver::{
+        Duration, EndpointConfig, IO_LOOP_BOUND, Instant, QueuedPacket, RECV_TIME_BOUND,
+        connection::{Connecting, ConnectionDriver, ConnectionInner, Control, EndpointLink},
+        incoming::Incoming,
+        lifecycle::{Lifecycle, ShutdownOutcome},
+        now,
+        queue::{
+            BoundedDeque, BoundedSender, INCOMING_OVERHEAD, PACKET_OVERHEAD, PacketBudget,
+            PacketPermit, PacketQueueStats, Refusal, bounded_queue,
+        },
+        sockets::{Lease, RebindRefused, SocketId, SocketRegistry, Sockets},
+        timer::{Deadline, DeadlineTimer},
+        udp::{Sender, Socket, proto_ecn},
+        work_limiter::{WorkCycle, WorkLimiter},
+    },
+    proto::{
+        ClientConfig, ClientHelloPeek, ConnectError, ConnectionError, ConnectionHandle,
+        DatagramEvent, EndpointEvent, ReceiveQueueLimits, ServerConfig,
+    },
+};
+
 mod builder;
+mod serve;
 pub use builder::{DEFAULT_SHUTDOWN_BUDGET, EndpointBuilder};
 
 const BATCH_SIZE: usize = 32;
-
-use rama_quic_proto::VarInt;
-
-use crate::driver::{
-    EndpointConfig, IO_LOOP_BOUND, RECV_TIME_BOUND,
-    connection::Connecting,
-    incoming::Incoming,
-    work_limiter::{WorkCycle, WorkLimiter},
-};
 
 /// A QUIC endpoint.
 ///
@@ -805,6 +803,7 @@ impl Drop for EndpointDriver {
         }
         self.0.shared.idle.notify_waiters();
         self.0.shared.incoming.notify_waiters();
+        endpoint.inner.wake_pending_incoming();
         // Closing the packet channels tells every connection driver that the endpoint is gone.
         // Connection state is released outside the endpoint lock (lock order).
         let channels = std::mem::take(&mut endpoint.recv_state.connections.channels);
@@ -1002,6 +1001,30 @@ impl EndpointInner {
 }
 
 impl EndpointRef {
+    /// The address of socket `id`, while the endpoint still holds it.
+    pub(crate) fn socket_addr(&self, id: SocketId) -> Option<SocketAddr> {
+        self.state.lock().sockets.live()?.local_addr(id)
+    }
+
+    /// Whether the endpoint accepts no more work, which ends every pending attempt.
+    pub(crate) fn is_closing(&self) -> bool {
+        self.state.lock().is_closing()
+    }
+
+    /// How much of a pending attempt's ClientHello has arrived, and the attempt's progress
+    /// generation that was current when looking.
+    pub(crate) fn client_hello_progress(
+        &self,
+        incoming: &crate::proto::Incoming,
+    ) -> Result<(ClientHelloPeek, u64), ConnectionError> {
+        let mut state = self.state.lock();
+        if state.is_closing() {
+            return Err(ConnectionError::LocallyClosed);
+        }
+        let generation = incoming.progress().generation();
+        Ok((state.inner.client_hello(incoming), generation))
+    }
+
     /// Tests: stop applying route installations, so a datagram that needs one can be observed
     /// waiting instead of leaving.
     #[cfg(all(
@@ -1278,6 +1301,11 @@ pub(crate) struct Shared {
 }
 
 impl State {
+    /// Whether this endpoint accepts no more work: closed, shut down or without its driver.
+    fn is_closing(&self) -> bool {
+        self.driver_lost || self.shutdown || self.recv_state.connections.close.is_some()
+    }
+
     fn close(&mut self, error_code: VarInt, reason: &Bytes, shared: &Shared, abandon: bool) {
         let first = self.recv_state.connections.close.is_none();
         if first {
@@ -1296,6 +1324,7 @@ impl State {
             }
         }
         shared.incoming.notify_waiters();
+        self.inner.wake_pending_incoming();
         if let Some(driver) = self.driver.take() {
             driver.wake();
         }

@@ -1,6 +1,9 @@
 use crate::{Body, Request, StreamingBody};
 use rama_core::{bytes::Bytes, error::BoxError};
-use rama_http_types::proto::h2::{PseudoHeader, PseudoHeaderOrder};
+use rama_http_types::proto::{
+    ext::Protocol,
+    h2::{PseudoHeaderOrder, frame::Pseudo},
+};
 use rama_utils::fmt::try_format_into;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
@@ -59,48 +62,16 @@ where
         w.write_all(line.as_bytes()).await?;
 
         if let Some(pseudo_headers) = parts.extensions.get_ref::<PseudoHeaderOrder>() {
+            // Pseudo-header values as `Pseudo::request` derives them, not the raw URI parts.
+            let pseudo = Pseudo::request(
+                parts.method.clone(),
+                &parts.uri,
+                parts.extensions.get_ref::<Protocol>().cloned(),
+            );
             for header in pseudo_headers.iter() {
-                match header {
-                    PseudoHeader::Method => {
-                        try_format_into(
-                            &mut line,
-                            format_args!("[{}: {}]\r\n", header, parts.method),
-                        )?;
-                        w.write_all(line.as_bytes()).await?;
-                    }
-                    PseudoHeader::Scheme => {
-                        try_format_into(
-                            &mut line,
-                            format_args!(
-                                "[{}: {}]\r\n",
-                                header,
-                                parts.uri.scheme_str().unwrap_or("?")
-                            ),
-                        )?;
-                        w.write_all(line.as_bytes()).await?;
-                    }
-                    PseudoHeader::Authority => {
-                        match parts.uri.authority() {
-                            Some(authority) => {
-                                try_format_into(
-                                    &mut line,
-                                    format_args!("[{header}: {authority}]\r\n"),
-                                )?;
-                            }
-                            None => {
-                                try_format_into(&mut line, format_args!("[{header}: ?]\r\n"))?;
-                            }
-                        }
-                        w.write_all(line.as_bytes()).await?;
-                    }
-                    PseudoHeader::Path => {
-                        try_format_into(
-                            &mut line,
-                            format_args!("[{}: {}]\r\n", header, parts.uri.path_or_root()),
-                        )?;
-                        w.write_all(line.as_bytes()).await?;
-                    }
-                    PseudoHeader::Protocol | PseudoHeader::Status => (), // not expected in request
+                if let Some(value) = pseudo.value(header) {
+                    try_format_into(&mut line, format_args!("[{header}: {value}]\r\n"))?;
+                    w.write_all(line.as_bytes()).await?;
                 }
             }
         }
@@ -122,7 +93,82 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Body;
+    use crate::{Body, Method, Version};
+    use rama_core::extensions::ExtensionsRef as _;
+    use rama_http_types::proto::h2::PseudoHeader;
+
+    #[tokio::test]
+    async fn pseudo_headers_show_what_is_sent() {
+        for (method, uri, protocol, expected) in [
+            (
+                Method::GET,
+                "https://u:p@example.com/a?b=c",
+                None,
+                "[:method: GET]\r\n[:scheme: https]\r\n[:authority: example.com]\r\n[:path: /a?b=c]\r\n",
+            ),
+            (
+                Method::CONNECT,
+                "wss://example.com/chat?x=1",
+                Some(Protocol::WEBSOCKET),
+                "[:method: CONNECT]\r\n[:scheme: https]\r\n[:authority: example.com]\r\n[:path: /chat?x=1]\r\n[:protocol: websocket]\r\n",
+            ),
+            (
+                Method::CONNECT,
+                "ws://example.com",
+                Some(Protocol::WEBSOCKET),
+                "[:method: CONNECT]\r\n[:scheme: http]\r\n[:authority: example.com]\r\n[:path: /]\r\n[:protocol: websocket]\r\n",
+            ),
+            (
+                Method::CONNECT,
+                "https://example.com:443/",
+                None,
+                "[:method: CONNECT]\r\n[:authority: example.com:443]\r\n",
+            ),
+            (
+                Method::OPTIONS,
+                "https://example.com",
+                None,
+                "[:method: OPTIONS]\r\n[:scheme: https]\r\n[:authority: example.com]\r\n[:path: *]\r\n",
+            ),
+            (
+                Method::GET,
+                "foo://example.com",
+                None,
+                "[:method: GET]\r\n[:scheme: foo]\r\n[:authority: example.com]\r\n[:path: ]\r\n",
+            ),
+            (
+                Method::GET,
+                "foo://example.com?q",
+                None,
+                "[:method: GET]\r\n[:scheme: foo]\r\n[:authority: example.com]\r\n[:path: /?q]\r\n",
+            ),
+        ] {
+            let req = Request::builder()
+                .method(method)
+                .uri(uri)
+                .version(Version::HTTP_2)
+                .body(Body::empty())
+                .unwrap();
+            req.extensions().insert(PseudoHeaderOrder::from_iter([
+                PseudoHeader::Method,
+                PseudoHeader::Scheme,
+                PseudoHeader::Authority,
+                PseudoHeader::Path,
+                PseudoHeader::Protocol,
+            ]));
+            if let Some(protocol) = protocol {
+                req.extensions().insert(protocol);
+            }
+
+            let mut buf = Vec::new();
+            write_http_request(&mut buf, req, true, false)
+                .await
+                .unwrap();
+            let written = std::str::from_utf8(&buf).unwrap();
+            let (_, rest) = written.split_once("\r\n").unwrap();
+            assert_eq!(rest, expected, "{uri}");
+        }
+    }
 
     #[tokio::test]
     async fn test_write_http_request_get() {

@@ -4,7 +4,10 @@ use std::{num::NonZeroUsize, time::Duration};
 
 use rama_core::error::BoxError;
 use rama_core::{Layer, extensions::ExtensionsRef};
-use rama_http_types::{Version, conn::FallbackHttpVersion, proxy::PlaintextHttpProxyMode};
+use rama_http_types::{
+    Version, conn::FallbackHttpVersion, proto::ext::extended_connect_pseudo_scheme,
+    proxy::PlaintextHttpProxyMode,
+};
 use rama_net::client::pool::{
     BasicConnId, BasicConnIdentifier, ConnID, MultiplexPool, MuxSelection, PooledConnector,
     ReqToConnID,
@@ -85,7 +88,18 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
 
     fn id(&self, input: &ConnectRequest) -> Result<Self::ID, BoxError> {
         let tls = input.extensions().get_ref::<TlsPoolId>().cloned();
-        let network = BasicConnIdentifier::new().id(input)?;
+        let mut network = BasicConnIdentifier::new().id(input)?;
+        // RFC 8441 §5, RFC 9220 §3: an HTTP/2 or HTTP/3 WebSocket is one Extended CONNECT
+        // stream of its origin's ordinary connection, so it shares that connection's pool.
+        if matches!(
+            input.http_version(),
+            Some(Version::HTTP_2 | Version::HTTP_3)
+        ) {
+            network.protocol = network
+                .protocol
+                .as_ref()
+                .map(|protocol| extended_connect_pseudo_scheme(protocol).clone());
+        }
         Ok(HttpConnId {
             reusable: tls.as_ref().is_none_or(TlsPoolId::is_reusable),
             tls,
@@ -120,7 +134,7 @@ fn http_proxy_mode_requirement(input: &ConnectRequest) -> Option<HttpProxyModeRe
                 .get_ref::<PlaintextHttpProxyMode>()
                 .copied()
                 .unwrap_or_default()
-                .should_forward(input.protocol())
+                .should_forward(input.target_protocol())
         {
             HttpProxyModeRequirement::Forward
         } else {
@@ -144,7 +158,7 @@ pub(crate) fn connection_version_requirement(input: &ConnectRequest) -> Option<V
     }
 
     let plaintext_http = input
-        .protocol()
+        .target_protocol()
         .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
     let secure_forward_proxy = !input
         .extensions()
@@ -154,7 +168,7 @@ pub(crate) fn connection_version_requirement(input: &ConnectRequest) -> Option<V
             .get_ref::<PlaintextHttpProxyMode>()
             .copied()
             .unwrap_or_default()
-            .should_forward(input.protocol())
+            .should_forward(input.target_protocol())
         && input
             .extensions()
             .get_ref::<ProxyRoute>()
@@ -714,6 +728,26 @@ mod tests {
             http_proxy_mode_requirement(&make_input(Protocol::HTTP, None, false)),
             None
         );
+    }
+
+    #[test]
+    fn websockets_share_the_pool_of_their_http_origin_only_when_multiplexed() {
+        let id = |protocol: Protocol, version: Version| {
+            let input = ConnectRequest::new(HostWithPort::example_domain_https())
+                .with_application_protocol(protocol);
+            input.extensions.insert(HttpRequestVersion(version));
+            HttpConnIdentifier::new().id(&input).unwrap()
+        };
+        for (socket, origin) in [
+            (Protocol::WSS, Protocol::HTTPS),
+            (Protocol::WS, Protocol::HTTP),
+        ] {
+            for version in [Version::HTTP_2, Version::HTTP_3] {
+                assert_eq!(id(socket.clone(), version), id(origin.clone(), version));
+            }
+            // An HTTP/1.1 upgrade takes over its connection; it keeps its own pool.
+            assert_ne!(id(socket, Version::HTTP_11), id(origin, Version::HTTP_11));
+        }
     }
 
     #[test]

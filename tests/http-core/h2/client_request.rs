@@ -689,6 +689,56 @@ async fn request_with_connection_headers() {
     join(srv, client).await;
 }
 
+/// RFC 9113 §8.2.2: every `TE` line must be `trailers`, not just the first one.
+#[tokio::test]
+async fn request_te_must_be_trailers_on_every_line() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+        // The three refused requests used streams 1, 3 and 5.
+        srv.recv_frame(
+            frames::headers(7)
+                .request("GET", "https://http2.akamai.com/")
+                .field("te", "Trailers")
+                .eos(),
+        )
+        .await;
+        srv.send_frame(frames::headers(7).response(200).eos()).await;
+    };
+
+    let client = async move {
+        let (mut client, mut conn) = client::handshake(io).await.expect("handshake");
+        for lines in [&["trailers", "gzip"][..], &["gzip", "trailers"], &["boom"]] {
+            let mut req = Request::builder().uri("https://http2.akamai.com/");
+            for line in lines {
+                req = req.header("te", *line);
+            }
+            let err = client
+                .send_request(req.body(()).unwrap(), true)
+                .map(drop)
+                .expect_err("TE other than trailers");
+            assert_eq!(
+                err.to_string(),
+                "user error: malformed headers",
+                "{lines:?}"
+            );
+        }
+        // The token is case-insensitive, as on HTTP/3.
+        let req = Request::builder()
+            .uri("https://http2.akamai.com/")
+            .header("te", "Trailers")
+            .body(())
+            .unwrap();
+        let (response, _) = client.send_request(req, true).unwrap();
+        conn.drive(response).await.unwrap();
+    };
+
+    join(srv, client).await;
+}
+
 #[tokio::test]
 #[ignore]
 async fn connection_close_notifies_response_future() {
@@ -839,6 +889,42 @@ async fn sending_request_on_closed_connection() {
     };
 
     join(srv, h2).await;
+}
+
+/// RFC 9113 §8.3.2: a response without `:status` is malformed, never a `200`.
+#[tokio::test]
+async fn a_response_without_status_is_malformed() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://example.com/")
+                .eos(),
+        )
+        .await;
+        srv.send_frame(frames::headers(1).field("x-no-status", "1"))
+            .await;
+        srv.recv_frame(frames::reset(1).protocol_error()).await;
+        idle_ms(10).await;
+    };
+
+    let client = async move {
+        let (mut client, mut conn) = client::handshake(io).await.expect("handshake");
+        let request = Request::builder()
+            .uri("https://example.com/")
+            .body(())
+            .unwrap();
+        let response = client.send_request(request, true).expect("send_request").0;
+        let err = conn.drive(response).await.expect_err("response");
+        assert_eq!(err.reason(), Some(Reason::PROTOCOL_ERROR));
+        conn.await.expect("connection");
+    };
+
+    join(srv, client).await;
 }
 
 #[tokio::test]
@@ -1856,6 +1942,10 @@ async fn extended_connect_request() {
 
     let h2 = async move {
         let (mut client, mut h2) = client::handshake(io).await.unwrap();
+        // RFC 8441 §4: `:protocol` is sent only once the server enabled it.
+        h2.drive(client.await_peer_initial_settings())
+            .await
+            .expect("server SETTINGS");
 
         let request = Request::connect("http://bread/baguette")
             .extension(Protocol::from_static("the-bread-protocol"))

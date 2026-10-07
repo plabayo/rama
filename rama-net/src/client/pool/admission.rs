@@ -52,8 +52,9 @@ impl fmt::Debug for ConnectionAdmissionLease {
 ///
 /// Unlike a concurrency limit, this reserves actual availability. A protocol can
 /// consume its typed reservation when it starts the request. Implementations
-/// must be nonblocking and must not reenter the pool. The pool calls providers
-/// outside its storage and admission locks.
+/// must be nonblocking and must not reenter the pool. The pool calls
+/// [`Self::try_acquire`] outside its storage and admission locks; [`Self::watch`]
+/// and [`Self::in_use`] may run under them, so they only read state and subscribe.
 pub trait ConnectionAdmissionPolicy: fmt::Debug + Send + Sync + 'static {
     /// Reserve one request's resources, or return `None` when currently exhausted.
     ///
@@ -74,6 +75,15 @@ pub trait ConnectionAdmissionPolicy: fmt::Debug + Send + Sync + 'static {
     /// the future is first polled. Wake for returned reservations, peer credit,
     /// and terminal connection changes. Spurious notifications are permitted.
     fn watch(&self) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+
+    /// Whether the connection still carries work no handout accounts for, such
+    /// as an upgraded tunnel or a request body still being sent.
+    ///
+    /// The pool never treats such a connection as idle, so it is neither evicted
+    /// nor expired; [`Self::watch`] must also wake once this work ends.
+    fn in_use(&self) -> bool {
+        false
+    }
 }
 
 /// Resource admission published on an established connection's extensions.
@@ -97,6 +107,11 @@ impl ConnectionAdmission {
     /// Subscribe before checking availability to avoid missing a returned credit.
     pub fn watch(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         self.0.watch()
+    }
+
+    /// Whether the connection still carries work no handout accounts for.
+    pub fn in_use(&self) -> bool {
+        self.0.in_use()
     }
 
     pub(super) async fn acquire(

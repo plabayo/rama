@@ -8,12 +8,14 @@ use std::time::Duration;
 
 use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
+use rama_core::futures::future::Either;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http::proto::h2::frame::EarlyFrame;
-use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
+use rama_http_types::proto::{ext::Protocol, h2::PseudoHeaderOrder};
 use rama_http_types::{Request, Response, StreamingBody};
+use rama_net::client::pool::ConnectionAdmission;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -24,12 +26,16 @@ use crate::proto;
 /// The sender side of an established connection.
 pub struct SendRequest<B> {
     dispatch: dispatch::UnboundedSender<Request<B>, Response<IncomingBody>>,
+    peer_settings: H2PeerSettingsHandle,
+    admission: ConnectionAdmission,
 }
 
 impl<B> Clone for SendRequest<B> {
     fn clone(&self) -> Self {
         Self {
             dispatch: self.dispatch.clone(),
+            peer_settings: self.peer_settings.clone(),
+            admission: self.admission.clone(),
         }
     }
 }
@@ -124,6 +130,17 @@ impl<B> SendRequest<B> {
         self.dispatch.is_ready()
     }
 
+    /// Publish exact request admission for a multiplexing connection pool.
+    ///
+    /// A checkout reserves one of the peer's concurrent streams until its request reaches the
+    /// connection; the connection then counts the stream itself until it closes, including an
+    /// upgraded tunnel or an upload that outlives its response. The policy holds the connection
+    /// weakly.
+    #[must_use]
+    pub fn connection_admission(&self) -> ConnectionAdmission {
+        self.admission.clone()
+    }
+
     /// Checks if the connection side has been closed.
     #[must_use]
     pub fn is_closed(&self) -> bool {
@@ -161,22 +178,22 @@ where
         &mut self,
         req: Request<B>,
     ) -> impl Future<Output = crate::Result<Response<IncomingBody>>> {
-        let sent = self.dispatch.send(req);
-
-        async move {
-            match sent {
-                Ok(rx) => match rx.await {
-                    Ok(Ok(resp)) => Ok(resp),
-                    Ok(Err(err)) => Err(err),
-                    // this is definite bug if it happens, but it shouldn't happen!
-                    Err(_canceled) => panic!("dispatch dropped without returning error"),
-                },
-                Err(_req) => {
-                    debug!("connection was not ready");
-                    Err(crate::Error::new_canceled().with("connection was not ready"))
+        // RFC 8441 §3: `:protocol` is only permitted once the server sent
+        // SETTINGS_ENABLE_CONNECT_PROTOCOL; wait for its SETTINGS first. This rare
+        // path is boxed so ordinary request futures keep their size.
+        if req.extensions().contains::<Protocol>() {
+            let peer_settings = self.peer_settings.clone();
+            let dispatch = self.dispatch.clone();
+            return Either::Left(Box::pin(async move {
+                if peer_settings.await_settings().await.is_none() {
+                    return Err(
+                        crate::Error::new_canceled().with("connection closed before peer SETTINGS")
+                    );
                 }
-            }
+                response(dispatch.send(req)).await
+            }));
         }
+        Either::Right(response(self.dispatch.send(req)))
     }
 
     /// Sends a `Request` on the associated connection.
@@ -191,24 +208,60 @@ where
         &mut self,
         req: Request<B>,
     ) -> impl Future<Output = Result<Response<IncomingBody>, TrySendError<Request<B>>>> {
-        let sent = self.dispatch.try_send(req);
-        async move {
-            match sent {
-                Ok(rx) => match rx.await {
-                    Ok(Ok(res)) => Ok(res),
-                    Ok(Err(err)) => Err(err),
-                    // this is definite bug if it happens, but it shouldn't happen!
-                    Err(_) => panic!("dispatch dropped without returning error"),
-                },
-                Err(req) => {
-                    debug!("connection was not ready");
-                    let error = crate::Error::new_canceled().with("connection was not ready");
-                    Err(TrySendError {
-                        error,
+        if req.extensions().contains::<Protocol>() {
+            let peer_settings = self.peer_settings.clone();
+            let mut dispatch = self.dispatch.clone();
+            return Either::Left(Box::pin(async move {
+                if peer_settings.await_settings().await.is_none() {
+                    return Err(TrySendError {
+                        error: crate::Error::new_canceled()
+                            .with("connection closed before peer SETTINGS"),
                         message: Some(req),
-                    })
+                    });
                 }
-            }
+                try_response(dispatch.try_send(req)).await
+            }));
+        }
+        Either::Right(try_response(self.dispatch.try_send(req)))
+    }
+}
+
+/// Await the dispatched request's response. A request that was not sent is dropped here,
+/// so the future only holds the response promise.
+fn response<B>(
+    sent: Result<dispatch::Promise<Response<IncomingBody>>, Request<B>>,
+) -> impl Future<Output = crate::Result<Response<IncomingBody>>> {
+    let sent = sent.map_err(|_req| {
+        debug!("connection was not ready");
+        crate::Error::new_canceled().with("connection was not ready")
+    });
+    async move {
+        match sent?.await {
+            Ok(Ok(resp)) => Ok(resp),
+            Ok(Err(err)) => Err(err),
+            // this is definite bug if it happens, but it shouldn't happen!
+            Err(_canceled) => panic!("dispatch dropped without returning error"),
+        }
+    }
+}
+
+async fn try_response<B>(
+    sent: Result<dispatch::RetryPromise<Request<B>, Response<IncomingBody>>, Request<B>>,
+) -> Result<Response<IncomingBody>, TrySendError<Request<B>>> {
+    match sent {
+        Ok(rx) => match rx.await {
+            Ok(Ok(res)) => Ok(res),
+            Ok(Err(err)) => Err(err),
+            // this is definite bug if it happens, but it shouldn't happen!
+            Err(_) => panic!("dispatch dropped without returning error"),
+        },
+        Err(req) => {
+            debug!("connection was not ready");
+            let error = crate::Error::new_canceled().with("connection was not ready");
+            Err(TrySendError {
+                error,
+                message: Some(req),
+            })
         }
     }
 }
@@ -263,10 +316,7 @@ where
     /// initial h2 SETTINGS frame on this connection. The handle stays
     /// usable after the connection is spawned (consumed as a future),
     /// so callers can `spawn(conn)` first and then `await` the handle.
-    pub fn peer_settings_handle(&self) -> H2PeerSettingsHandle
-    where
-        B::Data: Send + Sync,
-    {
+    pub fn peer_settings_handle(&self) -> H2PeerSettingsHandle {
         self.inner.1.peer_settings_handle()
     }
 }
@@ -300,7 +350,7 @@ impl H2PeerSettingsHandle {
     /// the connection's lifetime.
     pub(crate) fn from_h2_sender<B>(sender: &crate::h2::client::SendRequest<B>) -> Self
     where
-        B: rama_core::bytes::Buf + Send + Sync + 'static,
+        B: rama_core::bytes::Buf,
     {
         Self {
             state: sender.peer_settings_state(),
@@ -726,6 +776,8 @@ impl Builder {
             Ok((
                 SendRequest {
                     dispatch: tx.unbound(),
+                    peer_settings: h2.peer_settings_handle(),
+                    admission: h2.connection_admission(),
                 },
                 Connection {
                     inner: (PhantomData, h2),
@@ -737,9 +789,95 @@ impl Builder {
 
 #[cfg(test)]
 mod tests {
-    use rama_core::{extensions::ExtensionsRef, rt::Executor};
-    use rama_http_types::body::util::Empty;
-    use tokio::io::{AsyncRead, AsyncWrite};
+    use super::{Builder, Connection, SendRequest};
+    use crate::{
+        client::dispatch,
+        h2::{Error as H2Error, server as h2_server},
+        proto, server,
+        service::RamaHttpService,
+    };
+    use rama_core::{
+        ServiceInput,
+        bytes::Bytes,
+        extensions::{Extensions, ExtensionsRef},
+        futures::{StreamExt as _, stream},
+        rt::Executor,
+        service::service_fn,
+    };
+    use rama_http_types::{
+        Body, Method, Request, Response, StatusCode,
+        body::util::{BodyExt as _, Empty},
+        header::CONTENT_LENGTH,
+        proto::ext::Protocol,
+    };
+    use std::{
+        convert::Infallible,
+        error::Error,
+        future::poll_fn,
+        marker::PhantomData,
+        pin::pin,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::{Context, Waker},
+        time::Duration,
+    };
+    use tokio::{
+        io::{AsyncRead, AsyncWrite},
+        time::timeout,
+    };
+
+    /// On the last client stream id, readiness fails right after that
+    /// stream opened: the opened request must still get its own outcome.
+    #[tokio::test]
+    async fn opened_stream_outlives_readiness_error_after_open() {
+        let (client_io, origin_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let mut origin = h2_server::handshake(ServiceInput::new(origin_io))
+                .await
+                .unwrap();
+            let (req, mut respond) = origin.accept().await.unwrap().unwrap();
+            assert_eq!(req.method(), Method::POST);
+            let mut body = respond.send_response(Response::new(()), false).unwrap();
+            body.send_data(Bytes::from_static(b"ok"), true).unwrap();
+            _ = poll_fn(|cx| origin.poll_closed(cx)).await;
+        });
+
+        let opts = Builder::new(Executor::default());
+        let builder = proto::h2::client::new_builder(&opts.h2_builder)
+            .try_with_initial_stream_id(u32::MAX >> 1)
+            .unwrap();
+        let (tx, rx) = dispatch::channel();
+        let task = proto::h2::client::handshake_with_builder(
+            builder,
+            ServiceInput::new(client_io),
+            rx,
+            &opts.h2_builder,
+            opts.exec,
+        )
+        .await
+        .unwrap();
+        let mut client = SendRequest {
+            dispatch: tx.unbound(),
+            peer_settings: task.peer_settings_handle(),
+            admission: task.connection_admission(),
+        };
+        tokio::spawn(Connection::<_, Body> {
+            inner: (PhantomData, task),
+        });
+
+        let req = Request::post("https://example.test/")
+            .body(Body::from("a=1"))
+            .unwrap();
+        let resp = timeout(Duration::from_secs(1), client.send_request(req))
+            .await
+            .unwrap()
+            .expect("opened request gets its own response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "ok");
+    }
 
     #[tokio::test]
     #[ignore] // only compilation is checked
@@ -756,6 +894,416 @@ mod tests {
             tokio::task::spawn(async move {
                 conn.await.unwrap();
             });
+        }
+    }
+
+    /// Ordinary requests keep a small future: the Extended CONNECT wait is boxed, and a
+    /// request that was not sent is not kept in it.
+    #[tokio::test]
+    async fn ordinary_request_futures_stay_small() {
+        let (client_io, _server_io) = tokio::io::duplex(1024);
+        let (mut sender, _connection) = crate::client::conn::http2::handshake::<_, Body>(
+            Executor::default(),
+            ServiceInput::new(client_io),
+        )
+        .await
+        .unwrap();
+        let send = size_of_val(&sender.send_request(Request::new(Body::empty())));
+        // Measured 56 bytes; the base's future held the whole request (224).
+        assert!(send <= 64, "{send}");
+    }
+
+    /// A connection to a server allowing one concurrent stream, once its SETTINGS have arrived.
+    async fn one_stream_connection<S>(
+        stream_window: u32,
+        service: S,
+    ) -> (
+        crate::client::conn::http2::SendRequest<Body>,
+        tokio::task::JoinHandle<crate::Result<()>>,
+    )
+    where
+        S: rama_core::Service<Request, Output = Response, Error = Infallible> + Clone,
+    {
+        let (client_io, server_io) = tokio::io::duplex(1 << 20);
+        let (mut sender, connection) = crate::client::conn::http2::handshake::<_, Body>(
+            Executor::default(),
+            ServiceInput::new(client_io),
+        )
+        .await
+        .unwrap();
+        let task = tokio::spawn(connection);
+        let mut builder = server::conn::http2::Builder::new(Executor::default());
+        builder.set_max_concurrent_streams(1);
+        builder.set_initial_stream_window_size(stream_window);
+        tokio::spawn(
+            builder.serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service)),
+        );
+        // One exchange, so the peer's stream limit is known.
+        let warmup = Request::builder()
+            .uri("https://example.com/")
+            .body(Body::empty())
+            .unwrap();
+        let response = sender.send_request(warmup).await.unwrap();
+        drop(response.into_body().collect().await.unwrap());
+        (sender, task)
+    }
+
+    /// An empty body never announces a length it cannot deliver; the peer would reject it.
+    #[tokio::test]
+    async fn an_empty_body_drops_a_positive_content_length() {
+        let service = service_fn(|request: Request| {
+            let answer = request
+                .headers()
+                .get(CONTENT_LENGTH)
+                .map_or_else(Bytes::new, |length| {
+                    Bytes::copy_from_slice(length.as_bytes())
+                });
+            std::future::ready(Ok::<_, Infallible>(Response::new(Body::from(answer))))
+        });
+        let (mut sender, _task) = one_stream_connection(65_535, service).await;
+        // As an empty body without a length: `0` where the method defines a payload.
+        for (method, sent) in [(Method::POST, "0"), (Method::GET, "")] {
+            let request = Request::builder()
+                .method(method)
+                .uri("https://example.com/")
+                .header(CONTENT_LENGTH, "5")
+                .body(Body::empty())
+                .unwrap();
+            let response = sender.send_request(request).await.unwrap();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(body, sent);
+        }
+    }
+
+    fn answer_at_once()
+    -> impl rama_core::Service<Request, Output = Response, Error = Infallible> + Clone {
+        service_fn(|request: Request| {
+            // Answer at once, and keep reading the upload.
+            tokio::spawn(async move {
+                _ = request.into_body().collect().await;
+            });
+            std::future::ready(Ok::<_, Infallible>(Response::new(Body::empty())))
+        })
+    }
+
+    /// An upload that sends one chunk, then ends only when the returned sender is dropped.
+    fn open_upload() -> (tokio::sync::oneshot::Sender<()>, Request<Body>) {
+        let (finish, finished) = tokio::sync::oneshot::channel::<()>();
+        let body = stream::once(async { Ok::<_, Infallible>(Bytes::from_static(b"part")) }).chain(
+            stream::once(async move {
+                _ = finished.await;
+            })
+            .filter_map(|()| async { None }),
+        );
+        let upload = Request::builder()
+            .method(Method::POST)
+            .uri("https://example.com/upload")
+            .body(Body::from_stream(body))
+            .unwrap();
+        (finish, upload)
+    }
+
+    fn admits(sender: &crate::client::conn::http2::SendRequest<Body>) -> bool {
+        sender
+            .connection_admission()
+            .try_acquire(&Extensions::new())
+            .unwrap()
+            .is_some()
+    }
+
+    /// Wait until a stream retires and the connection admits again.
+    async fn admits_again(sender: &crate::client::conn::http2::SendRequest<Body>) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let changed = sender.connection_admission().watch();
+                if admits(sender) {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    /// A stream counts until h2 retires it: an upload still buffered behind flow control keeps
+    /// its slot after its response (RFC 9113 §5.1.2).
+    #[tokio::test]
+    async fn an_upload_buffered_behind_flow_control_keeps_its_slot() {
+        // The server answers at once and never reads the upload.
+        let held = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let service = {
+            let held = held.clone();
+            service_fn(move |request: Request| {
+                if request.method() == Method::POST {
+                    held.lock().push(request.into_body());
+                }
+                std::future::ready(Ok::<_, Infallible>(Response::new(Body::empty())))
+            })
+        };
+        let (sender, _task) = one_stream_connection(1, service).await;
+        assert!(admits(&sender));
+        for (len, buffered) in [(1, false), (65_536, true)] {
+            let upload = Request::builder()
+                .method(Method::POST)
+                .uri("https://example.com/upload")
+                .body(Body::from(vec![0; len]))
+                .unwrap();
+            let response = sender.clone().send_request(upload).await.unwrap();
+            drop(response.into_body().collect().await.unwrap());
+            if buffered {
+                // No reader ever opens the one-byte window: the stream stays open.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                assert!(!admits(&sender), "{len}");
+            } else {
+                admits_again(&sender).await;
+            }
+        }
+        // Releasing the unread upload resets its stream, which frees the slot.
+        held.lock().clear();
+        admits_again(&sender).await;
+    }
+
+    /// Requests sent directly, without a pool checkout, count like any other stream.
+    #[tokio::test]
+    async fn requests_without_a_checkout_are_counted() {
+        let (sender, _task) = one_stream_connection(65_535, answer_at_once()).await;
+        let (finish, upload) = open_upload();
+        let response = sender.clone().send_request(upload).await.unwrap();
+        drop(response.into_body().collect().await.unwrap());
+        // The upload is still open.
+        assert!(!admits(&sender));
+        drop(finish);
+        admits_again(&sender).await;
+    }
+
+    /// A checkout only counts on the connection it was made on.
+    #[tokio::test]
+    async fn a_checkout_sent_on_another_connection_is_not_spent() {
+        let (first, _first_task) = one_stream_connection(65_535, answer_at_once()).await;
+        let (second, _second_task) = one_stream_connection(65_535, answer_at_once()).await;
+        let checkout = first
+            .connection_admission()
+            .try_acquire(&Extensions::new())
+            .unwrap()
+            .unwrap();
+        let mut extensions = Extensions::new();
+        checkout.bind(&mut extensions);
+        let request = Request::builder_with_extensions(extensions)
+            .uri("https://example.com/")
+            .body(Body::empty())
+            .unwrap();
+        let response = second.clone().send_request(request).await.unwrap();
+        drop(response.into_body().collect().await.unwrap());
+        admits_again(&second).await;
+        // Still reserved on the first connection.
+        assert!(!admits(&first));
+        drop(checkout);
+        assert!(admits(&first));
+    }
+
+    /// Once the connection task ends, nothing more is admitted, even while a stream lives on.
+    #[tokio::test]
+    async fn an_ended_connection_task_admits_nothing() {
+        let (sender, task) = one_stream_connection(65_535, answer_at_once()).await;
+        let (_finish, upload) = open_upload();
+        let response = sender.clone().send_request(upload).await.unwrap();
+        drop(response.into_body().collect().await.unwrap());
+        task.abort();
+        _ = task.await;
+        sender
+            .connection_admission()
+            .try_acquire(&Extensions::new())
+            .unwrap_err();
+    }
+
+    /// An unused checkout gives its slot back; a used one hands it to its stream.
+    #[tokio::test]
+    async fn checkouts_hold_a_slot_until_dispatched_or_dropped() {
+        let service = service_fn(|_: Request| {
+            std::future::ready(Ok::<_, Infallible>(Response::new(Body::empty())))
+        });
+        let (sender, _task) = one_stream_connection(65_535, service).await;
+        let admission = sender.connection_admission();
+        let unused = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
+        assert!(!admits(&sender));
+        drop(unused);
+        assert!(admits(&sender));
+
+        let used = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
+        let mut extensions = Extensions::new();
+        used.bind(&mut extensions);
+        let request = Request::builder_with_extensions(extensions)
+            .uri("https://example.com/")
+            .body(Body::empty())
+            .unwrap();
+        let response = sender.clone().send_request(request).await.unwrap();
+        // Dispatched: the checkout is spent even while its handout lives on.
+        drop(response.into_body().collect().await.unwrap());
+        admits_again(&sender).await;
+        drop(used);
+        assert!(admits(&sender));
+    }
+
+    /// Subscribers wake as the connection ends; after that its watch never fires again, so
+    /// pool waiters cannot spin on it.
+    #[tokio::test]
+    async fn an_ended_connection_watch_stays_pending() {
+        let (sender, task) = one_stream_connection(65_535, answer_at_once()).await;
+        let admission = sender.connection_admission();
+        let before = admission.watch();
+        task.abort();
+        _ = task.await;
+        tokio::time::timeout(Duration::from_secs(5), before)
+            .await
+            .expect("subscribers wake as the connection ends");
+        let mut after = pin!(admission.watch());
+        let cx = &mut Context::from_waker(Waker::noop());
+        assert!(after.as_mut().poll(cx).is_pending());
+        tokio::task::yield_now().await;
+        assert!(after.as_mut().poll(cx).is_pending());
+    }
+
+    /// Handing a checkout's request to h2 frees nothing on a saturated connection, so no
+    /// waiter is woken; the stream's retirement does wake them.
+    #[tokio::test]
+    async fn dispatching_on_a_saturated_connection_wakes_nobody() {
+        let (release, upload) = open_upload();
+        let (sender, _task) = one_stream_connection(65_535, answer_at_once()).await;
+        let admission = sender.connection_admission();
+        // An unused checkout returns its slot, which wakes waiters.
+        let unused = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
+        let mut changed = pin!(admission.watch());
+        let cx = &mut Context::from_waker(Waker::noop());
+        assert!(changed.as_mut().poll(cx).is_pending());
+        drop(unused);
+        assert!(changed.as_mut().poll(cx).is_ready());
+
+        let checkout = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
+        let mut extensions = Extensions::new();
+        checkout.bind(&mut extensions);
+        let request = Request::builder_with_extensions(extensions)
+            .method(Method::POST)
+            .uri("https://example.com/upload")
+            .body(upload.into_body())
+            .unwrap();
+        let mut changed = pin!(admission.watch());
+        assert!(changed.as_mut().poll(cx).is_pending());
+        let response = sender.clone().send_request(request).await.unwrap();
+        drop(checkout);
+        assert!(
+            changed.as_mut().poll(cx).is_pending(),
+            "a dispatch woke waiters"
+        );
+        assert!(!admits(&sender));
+
+        drop(release);
+        drop(response.into_body().collect().await.unwrap());
+        tokio::time::timeout(Duration::from_secs(5), changed)
+            .await
+            .expect("the retired stream wakes waiters");
+    }
+
+    /// RFC 8441 §4: a `:protocol` on another method fails locally, as on HTTP/3, even with the
+    /// server's setting, and leaves the connection usable.
+    #[tokio::test]
+    async fn protocol_on_other_methods_fails_locally() {
+        let (client_io, server_io) = tokio::io::duplex(65536);
+        let served = Arc::new(AtomicUsize::new(0));
+        let service = {
+            let served = served.clone();
+            service_fn(move |_request: Request| {
+                served.fetch_add(1, Ordering::Relaxed);
+                std::future::ready(Ok::<_, Infallible>(Response::new(Body::empty())))
+            })
+        };
+        let (mut sender, connection) = crate::client::conn::http2::handshake::<_, Body>(
+            Executor::default(),
+            ServiceInput::new(client_io),
+        )
+        .await
+        .unwrap();
+        tokio::spawn(connection);
+        let mut builder = server::conn::http2::Builder::new(Executor::default());
+        builder.set_enable_connect_protocol();
+        tokio::spawn(
+            builder.serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service)),
+        );
+        let request = Request::builder()
+            .uri("https://example.com/chat")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions().insert(Protocol::WEBSOCKET);
+        let error = sender.send_request(request).await.unwrap_err();
+        let h2 = Error::source(&error)
+            .and_then(|source| source.downcast_ref::<H2Error>())
+            .expect("h2 error");
+        assert_eq!(h2.to_string(), "user error: malformed headers");
+        let request = Request::builder()
+            .uri("https://example.com/")
+            .body(Body::empty())
+            .unwrap();
+        sender.send_request(request).await.unwrap();
+        assert_eq!(served.load(Ordering::Relaxed), 1);
+    }
+
+    /// RFC 8441 §3: `:protocol` is only sent after the server enabled it, even when the
+    /// request is issued before the server's SETTINGS arrive.
+    #[tokio::test]
+    async fn extended_connect_waits_for_and_requires_server_setting() {
+        for enabled in [false, true] {
+            let (client_io, server_io) = tokio::io::duplex(65536);
+            let served = Arc::new(AtomicUsize::new(0));
+            let service = {
+                let served = served.clone();
+                service_fn(move |_request: Request| {
+                    served.fetch_add(1, Ordering::Relaxed);
+                    std::future::ready(Ok::<_, Infallible>(Response::new(Body::empty())))
+                })
+            };
+            let (mut sender, connection) = crate::client::conn::http2::handshake::<_, Body>(
+                Executor::default(),
+                ServiceInput::new(client_io),
+            )
+            .await
+            .unwrap();
+            tokio::spawn(connection);
+            let request = Request::builder()
+                .method(Method::CONNECT)
+                .uri("https://example.com/chat")
+                .body(Body::empty())
+                .unwrap();
+            request.extensions().insert(Protocol::WEBSOCKET);
+            // Issued before the server has written its SETTINGS.
+            let response = tokio::spawn(async move { sender.send_request(request).await });
+            tokio::task::yield_now().await;
+            let mut builder = server::conn::http2::Builder::new(Executor::default());
+            if enabled {
+                builder.set_enable_connect_protocol();
+            }
+            tokio::spawn(
+                builder
+                    .serve_connection(ServiceInput::new(server_io), RamaHttpService::new(service)),
+            );
+            let result = tokio::time::timeout(Duration::from_secs(10), response)
+                .await
+                .unwrap()
+                .unwrap();
+            match result {
+                Ok(_) => assert!(enabled),
+                // Refused locally: a server-side reset would also leave the service unserved.
+                Err(error) => {
+                    assert!(!enabled, "{error:?}");
+                    let h2 = Error::source(&error)
+                        .and_then(|source| source.downcast_ref::<H2Error>())
+                        .expect("h2 error");
+                    assert_eq!(
+                        h2.to_string(),
+                        "user error: peer did not enable extended CONNECT"
+                    );
+                }
+            }
+            assert_eq!(served.load(Ordering::Relaxed), usize::from(enabled));
         }
     }
 }

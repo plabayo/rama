@@ -405,8 +405,8 @@ where
                         let preserve_ua_header =
                             req.extensions().contains::<PreserveHeaderUserAgent>();
 
-                        let authority = req.authority().map(Cow::Owned);
-                        let protocol = req.protocol().map(Cow::Borrowed);
+                        let authority = req.target_authority().map(Cow::Owned);
+                        let protocol = req.target_protocol().map(Cow::Borrowed);
 
                         let output_headers = merge_http_headers(
                             base_http_headers,

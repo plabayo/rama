@@ -79,6 +79,9 @@ pub enum BridgeCloseReason {
     /// dropping its per-flow future. The engine contained the panic and ran
     /// its close path.
     ServicePanic,
+    /// This side was reset to reflect a failure of the other one; see
+    /// [`AbortIo`](crate::io::AbortIo).
+    Aborted,
 }
 
 impl core::fmt::Display for BridgeCloseReason {
@@ -98,6 +101,7 @@ impl core::fmt::Display for BridgeCloseReason {
             Self::FirstByteTimeout => "first_byte_timeout",
             Self::MaxLifetime => "max_lifetime",
             Self::ServicePanic => "service_panic",
+            Self::Aborted => "aborted",
         })
     }
 }
@@ -120,6 +124,7 @@ impl BridgeCloseReason {
             Self::FirstByteTimeout => 12,
             Self::MaxLifetime => 13,
             Self::ServicePanic => 14,
+            Self::Aborted => 15,
         }
     }
 }
@@ -399,6 +404,7 @@ where
 mod tests {
     use super::*;
     use futures::channel::mpsc;
+    use std::assert_matches;
     use std::time::Instant;
 
     #[test]
@@ -413,6 +419,13 @@ mod tests {
         assert_eq!(BridgeCloseReason::ServicePanic.to_string(), "service_panic");
         #[cfg(feature = "dial9")]
         assert_eq!(BridgeCloseReason::ServicePanic.dial9_code(), 14);
+    }
+
+    #[test]
+    fn aborted_has_distinct_telemetry_identity() {
+        assert_eq!(BridgeCloseReason::Aborted.to_string(), "aborted");
+        #[cfg(feature = "dial9")]
+        assert_eq!(BridgeCloseReason::Aborted.dial9_code(), 15);
     }
 
     /// Build a pair of duplex endpoints over `mpsc` channels for testing.
@@ -592,10 +605,10 @@ mod tests {
             .await
             .expect("bridge did not unwind within 2s")
             .unwrap();
-        assert!(matches!(
+        assert_matches!(
             reason,
-            BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight
-        ));
+            BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight,
+        );
     }
 
     #[tokio::test]
@@ -651,11 +664,9 @@ mod tests {
             .await
             .expect("bridge did not unwind on EOF within 2s")
             .unwrap();
-        assert!(
-            matches!(
-                reason,
-                BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight
-            ),
+        assert_matches!(
+            reason,
+            BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight,
             "expected EOF reason, got {reason}",
         );
     }

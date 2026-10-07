@@ -15,6 +15,7 @@
 
 mod runtime;
 
+use std::assert_matches;
 use std::{
     future::Future,
     net::{Ipv4Addr, SocketAddr},
@@ -154,9 +155,10 @@ async fn a_zero_budget_joins_a_live_endpoint_at_once() {
     let outcome = tokio::time::timeout(LIMIT, server.shutdown())
         .await
         .expect("the shutdown joined");
-    assert!(
-        matches!(outcome, ShutdownOutcome::Forced | ShutdownOutcome::Drained),
-        "a zero budget waits for nothing: {outcome:?}"
+    assert_matches!(
+        outcome,
+        ShutdownOutcome::Forced | ShutdownOutcome::Drained,
+        "a zero budget waits for nothing: {outcome:?}",
     );
     drop(connection);
     // The server was forced mid-connection, so its task ends without finishing its work. What
@@ -184,9 +186,10 @@ async fn a_zero_budget_on_an_idle_endpoint_may_drain() {
     let outcome = tokio::time::timeout(LIMIT, server.shutdown())
         .await
         .expect("the shutdown joined");
-    assert!(
-        matches!(outcome, ShutdownOutcome::Drained | ShutdownOutcome::Forced),
-        "either is correct for an endpoint with nothing to finish: {outcome:?}"
+    assert_matches!(
+        outcome,
+        ShutdownOutcome::Drained | ShutdownOutcome::Forced,
+        "either is correct for an endpoint with nothing to finish: {outcome:?}",
     );
 }
 

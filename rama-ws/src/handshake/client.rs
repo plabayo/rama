@@ -27,11 +27,11 @@ use rama_http::headers::{
     HeaderMapExt, HttpRequestBuilderExt as _, SecWebSocketExtensions, SecWebSocketKey,
     SecWebSocketProtocol,
 };
-use rama_http::proto::h2::ext::Protocol;
+use rama_http::proto::ext::Protocol;
 use rama_http::service::client::blocking::Client as BlockingHttpClient;
 use rama_http::service::client::ext::{IntoHeaderName, IntoHeaderValue};
 use rama_http::service::client::{HttpClientExt, IntoUrl, RequestBuilder};
-use rama_http::{Body, Method, Request, Response, StatusCode, Version, header, headers};
+use rama_http::{Body, HeaderMap, Method, Request, Response, StatusCode, Version, header, headers};
 use rama_http::{request, response};
 use rama_net::extensions::StreamTransformed;
 use rama_utils::str::NonEmptyStr;
@@ -99,7 +99,7 @@ pub struct WithService<'a, S, Body, Mode = websocket_builder_mode::Async> {
     service: &'a S,
     builder: RequestBuilder<'a, S, Response<Body>>,
     config: Option<WebSocketConfig>,
-    is_h2: bool,
+    version: Version,
     mode: Mode,
 }
 
@@ -108,7 +108,7 @@ impl<S: fmt::Debug, Body, Mode: fmt::Debug> fmt::Debug for WithService<'_, S, Bo
         f.debug_struct("WithService")
             .field("builder", &self.builder)
             .field("config", &self.config)
-            .field("is_h2", &self.is_h2)
+            .field("version", &self.version)
             .field("mode", &self.mode)
             .finish()
     }
@@ -139,6 +139,11 @@ pub mod websocket_builder_mode {
 pub type BlockingWebSocketRequestBuilder<'a, S, Body> =
     WebSocketRequestBuilder<WithService<'a, S, Body, websocket_builder_mode::Blocking<S>>>;
 
+/// HTTP/2 and HTTP/3 bootstrap WebSockets with Extended CONNECT instead of an upgrade.
+fn is_extended_connect(version: Version) -> bool {
+    matches!(version, Version::HTTP_2 | Version::HTTP_3)
+}
+
 fn new_ws_request_builder_from_uri<T>(uri: T, version: Version) -> request::Builder
 where
     T: TryInto<rama_net::uri::Uri, Error: Into<rama_http::HttpError>>,
@@ -154,7 +159,10 @@ where
             .version(version)
             .typed_header(headers::Upgrade::websocket())
             .typed_header(headers::Connection::upgrade()),
-        Version::HTTP_2 => builder.method(Method::CONNECT).version(Version::HTTP_2),
+        // RFC 8441 (HTTP/2) and RFC 9220 (HTTP/3) Extended CONNECT.
+        version @ (Version::HTTP_2 | Version::HTTP_3) => {
+            builder.method(Method::CONNECT).version(version)
+        }
         _ => unreachable!("bug"),
     }
 }
@@ -174,7 +182,7 @@ where
             .version(version)
             .typed_header(headers::Upgrade::websocket())
             .typed_header(headers::Connection::upgrade()),
-        Version::HTTP_2 => service.connect(uri).version(Version::HTTP_2),
+        version @ (Version::HTTP_2 | Version::HTTP_3) => service.connect(uri).version(version),
         _ => unreachable!("bug"),
     };
 
@@ -211,7 +219,7 @@ where
                     .typed_insert(headers::Connection::upgrade());
             }
         }
-        // - for h2: nothing to do
+        // - for h2 and h3: nothing to do
         // - else: this will error downstream due to invalid version
         _ => (),
     }
@@ -299,6 +307,83 @@ pub struct AcceptedWebSocketData {
     pub extension: Option<Extension>,
 }
 
+/// The configuration a permessage-deflate response accepts for `offer`, if it answers it
+/// (RFC 7692 §§3, 7): under the same extension name; a server constraint the offer makes
+/// must be echoed, `server_max_window_bits` at most the offered value; `client_max_window_bits`
+/// may only answer an offer naming it, whose value is a hint; the server may impose no
+/// context takeover on the client.
+fn accept_pmd(
+    offer: &PerMessageDeflateConfig,
+    response: &PerMessageDeflateConfig,
+) -> Option<PerMessageDeflateConfig> {
+    if offer.identifier != response.identifier {
+        return None;
+    }
+    let client_max_window_bits = match response.client_max_window_bits {
+        None => None,
+        // zlib cannot compress within an 8-bit window
+        Some(bits) if offer.client_max_window_bits.is_some() && (9..=15).contains(&bits) => {
+            Some(bits)
+        }
+        Some(_) => return None,
+    };
+    let offered_server_bits = offer.server_max_window_bits.filter(|bits| *bits != 0);
+    let server_max_window_bits = match (response.server_max_window_bits, offered_server_bits) {
+        (None, None) => None,
+        (Some(bits), limit)
+            if (8..=15).contains(&bits) && limit.is_none_or(|limit| bits <= limit) =>
+        {
+            Some(bits)
+        }
+        // an offered limit unanswered, out of range or exceeded
+        _ => return None,
+    };
+    if offer.server_no_context_takeover && !response.server_no_context_takeover {
+        return None;
+    }
+    Some(PerMessageDeflateConfig {
+        identifier: response.identifier.clone(),
+        server_no_context_takeover: response.server_no_context_takeover,
+        client_no_context_takeover: response.client_no_context_takeover
+            || offer.client_no_context_takeover,
+        server_max_window_bits,
+        client_max_window_bits,
+    })
+}
+
+/// The extension and subprotocol a server response selects: at most one of each
+/// (RFC 6455 §4.2.2, RFC 7692 §5), and a value that does not parse fails.
+fn server_selection(
+    headers: &HeaderMap,
+) -> Result<(Option<Extension>, Option<NonEmptyStr>), ResponseValidateError> {
+    let extension = match headers.typed_try_get::<SecWebSocketExtensions>() {
+        Ok(None) => None,
+        Ok(Some(SecWebSocketExtensions(mut selected))) => {
+            if !selected.tail.is_empty() {
+                return Err(ResponseValidateError::ExtensionMismatch(Some(
+                    selected.tail.swap_remove(0),
+                )));
+            }
+            Some(selected.head)
+        }
+        // RFC 7692 §7.1: an extension response that does not parse fails the connection
+        Err(_) => return Err(ResponseValidateError::ExtensionMismatch(None)),
+    };
+    let protocol = match headers.typed_try_get::<SecWebSocketProtocol>() {
+        Ok(None) => None,
+        Ok(Some(SecWebSocketProtocol(mut selected))) => {
+            if !selected.tail.is_empty() {
+                return Err(ResponseValidateError::ProtocolMismatch(Some(
+                    selected.tail.swap_remove(0),
+                )));
+            }
+            Some(selected.head)
+        }
+        Err(_) => return Err(ResponseValidateError::ProtocolMismatch(None)),
+    };
+    Ok((extension, protocol))
+}
+
 /// Validate the "accept" response from the http server
 /// with whom the client is trying to establish a WebSocket connection.
 pub fn validate_http_server_response<Body>(
@@ -373,7 +458,8 @@ pub fn validate_http_server_response<Body>(
                 }
             }
         }
-        Version::HTTP_2 => {
+        // Extended CONNECT succeeds with any 2xx (RFC 8441 §5, RFC 9220 §3).
+        Version::HTTP_2 | Version::HTTP_3 => {
             let response_status = response.status();
             if !response.status().is_success() {
                 return Err(ResponseValidateError::UnexpectedStatusCode(response_status));
@@ -390,13 +476,8 @@ pub fn validate_http_server_response<Body>(
     // indicated an extension not requested by the client), the client
     // MUST _Fail the WebSocket Connection_. (RFC 6455)
     let mut accepted_extension = None;
-    match (
-        response
-            .headers()
-            .typed_get::<SecWebSocketExtensions>()
-            .map(|ext| ext.0.head),
-        extensions,
-    ) {
+    let (response_extension, response_protocol) = server_selection(response.headers())?;
+    match (response_extension, extensions) {
         (None, Some(allowed_extensions)) => {
             tracing::trace!(
                 ws.extensions = ?allowed_extensions,
@@ -404,57 +485,17 @@ pub fn validate_http_server_response<Body>(
             );
         }
         (Some(Extension::PerMessageDeflate(server_cfg)), Some(client_extensions)) => {
-            accepted_extension = client_extensions
-                .0.iter()
-                .find_map(|client_ext| {
-                    if let Extension::PerMessageDeflate(client_cfg) = client_ext {
-                        return Some(Ok(Extension::PerMessageDeflate(PerMessageDeflateConfig {
-                            client_max_window_bits: match (
-                                server_cfg.client_max_window_bits,
-                                client_cfg.client_max_window_bits,
-                            ) {
-                                (None, None | Some(_)) => None,
-                                (Some(srv), maybe_offered) => {
-                                    if !(8..=15).contains(&srv) || maybe_offered.map(|offered| offered != 0 && srv > offered).unwrap_or_default() {
-                                        tracing::debug!("server offered invalid client_max_window_bits (pmd)... ext mismatch!");
-                                        return Some(Err(
-                                            ResponseValidateError::ExtensionMismatch(Some(
-                                                Extension::PerMessageDeflate(server_cfg.clone()),
-                                            )),
-                                        ));
-                                    }
-                                    Some(srv)
-                                }
-                            },
-                            server_max_window_bits: match (
-                                server_cfg.server_max_window_bits,
-                                client_cfg.server_max_window_bits,
-                            ) {
-                                (None, None | Some(_)) => None,
-                                (Some(their_bits), maybe_our_bits) => {
-                                    if !(8..=15).contains(&their_bits)
-                                        || maybe_our_bits
-                                            .map(|our_bits| our_bits != 0 && their_bits > our_bits)
-                                            .unwrap_or_default()
-                                    {
-                                        tracing::debug!("server offered invalid server_max_window_bits (pmd)... ext mismatch!");
-                                        return Some(Err(
-                                            ResponseValidateError::ExtensionMismatch(Some(
-                                                Extension::PerMessageDeflate(server_cfg.clone()),
-                                            )),
-                                        ));
-                                    }
-                                    Some(their_bits)
-                                }
-                            },
-                            server_no_context_takeover: server_cfg.server_no_context_takeover,
-                            client_no_context_takeover: client_cfg.client_no_context_takeover,
-                            identifier: server_cfg.identifier.clone(),
-                        })));
-                    }
-                    None
-                })
-                .transpose()?;
+            let accepted = client_extensions.0.iter().find_map(|offer| match offer {
+                Extension::PerMessageDeflate(offer) => accept_pmd(offer, &server_cfg),
+                _ => None,
+            });
+            let Some(accepted) = accepted else {
+                tracing::debug!("server's permessage-deflate answers none of our offers");
+                return Err(ResponseValidateError::ExtensionMismatch(Some(
+                    Extension::PerMessageDeflate(server_cfg),
+                )));
+            };
+            accepted_extension = Some(Extension::PerMessageDeflate(accepted));
         }
         (Some(server_ext), _) => {
             tracing::debug!("server offered ext, but client (we) not!");
@@ -469,13 +510,7 @@ pub fn validate_http_server_response<Body>(
     // subprotocol not requested by the client), the client MUST _Fail
     // the WebSocket Connection_. (RFC 6455)
     let mut accepted_protocol = None;
-    match (
-        response
-            .headers()
-            .typed_get::<SecWebSocketProtocol>()
-            .map(|h| h.accept_first_protocol()),
-        protocols,
-    ) {
+    match (response_protocol, protocols) {
         (None, None) => (),
         (None, Some(allowed_protocols)) => {
             // RFC 6455 only mandates failure when the server selects a protocol
@@ -486,16 +521,14 @@ pub fn validate_http_server_response<Body>(
                 "server selected no WS subprotocol despite client proposing some (valid, proceed without)",
             );
         }
-        (Some(header), None) => {
-            return Err(ResponseValidateError::ProtocolMismatch(Some(header.0)));
+        (Some(selected), None) => {
+            return Err(ResponseValidateError::ProtocolMismatch(Some(selected)));
         }
-        (Some(protocol_header), Some(sub_protocols)) => {
-            match sub_protocols.contains(&protocol_header.0) {
+        (Some(selected), Some(sub_protocols)) => {
+            match sub_protocols.contains(&selected) {
                 Some(protocol) => accepted_protocol = Some(protocol),
                 None => {
-                    return Err(ResponseValidateError::ProtocolMismatch(Some(
-                        protocol_header.0,
-                    )));
+                    return Err(ResponseValidateError::ProtocolMismatch(Some(selected)));
                 }
             };
         }
@@ -522,6 +555,14 @@ impl WebSocketRequestBuilder<request::Builder> {
         T: TryInto<rama_net::uri::Uri, Error: Into<rama_http::HttpError>>,
     {
         Self::new_with_version(uri, Version::HTTP_2)
+    }
+
+    /// Create a new `h3` WebSocket [`Request`] builder (RFC 9220).
+    pub fn new_h3<T>(uri: T) -> Self
+    where
+        T: TryInto<rama_net::uri::Uri, Error: Into<rama_http::HttpError>>,
+    {
+        Self::new_with_version(uri, Version::HTTP_3)
     }
 
     fn new_with_version<T>(uri: T, version: Version) -> Self
@@ -583,7 +624,7 @@ impl WebSocketRequestBuilder<request::Builder> {
             .context("request failed to build (invalid custom header?)")?;
 
         let mut key = None;
-        if request.version() != Version::HTTP_2 {
+        if !is_extended_connect(request.version()) {
             let k = self.key.unwrap_or_else(headers::SecWebSocketKey::random);
             request.headers_mut().typed_insert(&k);
             key = Some(k);
@@ -633,6 +674,19 @@ where
         )
     }
 
+    /// Create a new `h3` WebSocket [`Request`] builder (RFC 9220).
+    pub fn new_h3_with_service<T>(service: &'a S, uri: T) -> Self
+    where
+        T: IntoUrl,
+    {
+        Self::new_with_service_and_version_and_mode(
+            service,
+            Version::HTTP_3,
+            uri,
+            websocket_builder_mode::Async,
+        )
+    }
+
     /// Create a new WebSocket [`Request`] builder for the given [`Request`]
     pub fn new_with_service_and_request<RequestBody>(
         service: &'a S,
@@ -663,7 +717,7 @@ where
                 service,
                 builder: new_ws_request_builder_from_uri_with_service(service, uri, version),
                 config: Default::default(),
-                is_h2: version == Version::HTTP_2,
+                version,
                 mode,
             },
             protocols: Default::default(),
@@ -681,7 +735,7 @@ where
         RequestBody: Into<rama_http::Body>,
     {
         let key = request.headers().typed_get();
-        let is_h2 = request.version() == Version::HTTP_2;
+        let version = request.version();
         let protocols = request.headers().typed_get();
         let extensions = request.headers().typed_get();
 
@@ -690,7 +744,7 @@ where
                 service,
                 builder: new_ws_request_builder_from_request(service, request),
                 config: Default::default(),
-                is_h2,
+                version,
                 mode,
             },
             protocols,
@@ -876,16 +930,16 @@ where
         };
 
         let mut key = None;
-        let builder = if !self.inner.is_h2 {
+        let builder = if is_extended_connect(self.inner.version) {
+            extensions.insert(TargetHttpVersion(self.inner.version));
+
+            builder
+        } else {
             extensions.insert(TargetHttpVersion(Version::HTTP_11));
 
             let k = self.key.unwrap_or_else(headers::SecWebSocketKey::random);
             let builder = builder.overwrite_typed_header(&k);
             key = Some(k);
-            builder
-        } else {
-            extensions.insert(TargetHttpVersion(Version::HTTP_2));
-
             builder
         };
 
@@ -977,9 +1031,27 @@ where
     where
         T: IntoUrl,
     {
+        Self::new_blocking_with_service_and_version(client, Version::HTTP_2, uri)
+    }
+
+    fn new_blocking_h3_with_service<T>(client: &'a BlockingHttpClient<S>, uri: T) -> Self
+    where
+        T: IntoUrl,
+    {
+        Self::new_blocking_with_service_and_version(client, Version::HTTP_3, uri)
+    }
+
+    fn new_blocking_with_service_and_version<T>(
+        client: &'a BlockingHttpClient<S>,
+        version: Version,
+        uri: T,
+    ) -> Self
+    where
+        T: IntoUrl,
+    {
         Self::new_with_service_and_version_and_mode(
             client.get_ref(),
-            Version::HTTP_2,
+            version,
             uri,
             websocket_builder_mode::Blocking {
                 runtime: client.runtime().clone(),
@@ -1064,33 +1136,26 @@ impl<B> WebSocketRequestBuilder<B> {
 
 /// Utility which can be used my Mitm proxies to
 /// update the base config of a client websocket config.
+///
+/// Fails for a response a client must refuse: several or unparsable
+/// extensions or subprotocols.
 pub fn apply_response_data_to_base_websocket_config<Body>(
     base_cfg: Option<WebSocketConfig>,
     res: &mut Response<Body>,
-) -> Option<WebSocketConfig> {
-    let accepted_pmd_cfg = res
-        .headers()
-        .typed_get::<SecWebSocketExtensions>()
-        .map(|ext| ext.0.head)
-        .and_then(|ext| {
-            if let Extension::PerMessageDeflate(cfg) = ext {
-                Some(cfg)
-            } else {
-                None
-            }
-        });
+) -> Result<Option<WebSocketConfig>, ResponseValidateError> {
+    let (extension, protocol) = server_selection(res.headers())?;
+    let accepted_pmd_cfg = match extension {
+        Some(Extension::PerMessageDeflate(cfg)) => Some(cfg),
+        _ => None,
+    };
 
-    if let Some(accepted_protocol) = res
-        .headers()
-        .typed_get::<SecWebSocketProtocol>()
-        .map(|h| h.accept_first_protocol())
-    {
-        res.extensions().insert(accepted_protocol);
+    if let Some(protocol) = protocol {
+        res.extensions().insert(AcceptedWebSocketProtocol(protocol));
     }
 
     #[cfg(feature = "compression")]
     {
-        if let Some(pmd_cfg) = accepted_pmd_cfg {
+        Ok(if let Some(pmd_cfg) = accepted_pmd_cfg {
             let mut ws_cfg = base_cfg.unwrap_or_default();
             ws_cfg.per_message_deflate = Some(pmd_cfg.into());
             Some(ws_cfg)
@@ -1099,7 +1164,7 @@ pub fn apply_response_data_to_base_websocket_config<Body>(
             Some(ws_cfg)
         } else {
             base_cfg
-        }
+        })
     }
 
     #[cfg(not(feature = "compression"))]
@@ -1110,7 +1175,7 @@ pub fn apply_response_data_to_base_websocket_config<Body>(
             );
         }
 
-        base_cfg
+        Ok(base_cfg)
     }
 }
 
@@ -1321,7 +1386,10 @@ impl<S> ClientWebSocket<S> {
         })?
     }
 
-    /// Close the WebSocket.
+    /// Start the close handshake by sending a Close frame.
+    ///
+    /// The handshake completes once the peer's Close is read: keep receiving until the
+    /// stream ends. Dropping the socket before that aborts the connection.
     pub async fn close(&mut self, message: Option<CloseFrame>) -> Result<(), ProtocolError>
     where
         S: Sink<Message, Error = ProtocolError> + Send + Unpin,
@@ -1414,6 +1482,12 @@ pub trait HttpClientWebSocketExt<Body>:
         url: impl IntoUrl,
     ) -> WebSocketRequestBuilder<WithService<'_, Self, Body>>;
 
+    /// Create a new [`WebSocketRequestBuilder`] to be used to establish a WebSocket connection over h3.
+    fn websocket_h3(
+        &self,
+        url: impl IntoUrl,
+    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body>>;
+
     /// Create a new [`WebSocketRequestBuilder`] starting from the given request.
     ///
     /// This is useful in cases where you already have a request that you wish to use,
@@ -1437,6 +1511,13 @@ where
         url: impl IntoUrl,
     ) -> WebSocketRequestBuilder<WithService<'_, Self, Body>> {
         WebSocketRequestBuilder::new_h2_with_service(self, url)
+    }
+
+    fn websocket_h3(
+        &self,
+        url: impl IntoUrl,
+    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body>> {
+        WebSocketRequestBuilder::new_h3_with_service(self, url)
     }
 
     fn websocket_with_request<RequestBody: Into<rama_http::Body>>(
@@ -1497,6 +1578,12 @@ pub trait BlockingHttpClientWebSocketExt<Body>:
         url: impl IntoUrl,
     ) -> BlockingWebSocketRequestBuilder<'_, Self::AsyncService, Body>;
 
+    /// Create a WebSocket request builder for HTTP/3 Extended CONNECT.
+    fn websocket_h3(
+        &self,
+        url: impl IntoUrl,
+    ) -> BlockingWebSocketRequestBuilder<'_, Self::AsyncService, Body>;
+
     /// Create a WebSocket request builder from an existing request.
     fn websocket_with_request<RequestBody: Into<rama_http::Body>>(
         &self,
@@ -1523,6 +1610,13 @@ where
         url: impl IntoUrl,
     ) -> BlockingWebSocketRequestBuilder<'_, Self::AsyncService, Body> {
         BlockingWebSocketRequestBuilder::new_blocking_h2_with_service(self, url)
+    }
+
+    fn websocket_h3(
+        &self,
+        url: impl IntoUrl,
+    ) -> BlockingWebSocketRequestBuilder<'_, Self::AsyncService, Body> {
+        BlockingWebSocketRequestBuilder::new_blocking_h3_with_service(self, url)
     }
 
     fn websocket_with_request<RequestBody: Into<rama_http::Body>>(
@@ -1558,10 +1652,38 @@ mod tests {
     use super::*;
     use rama_core::{ServiceInput, bytes::Bytes, service::service_fn};
     use rama_http::HeaderMap;
+    use std::assert_matches;
+    #[cfg(feature = "compression")]
+    use std::io::Cursor;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+
+    #[cfg(feature = "compression")]
+    #[test]
+    fn relay_config_from_upstream_window_bits_does_not_panic() {
+        for raw in [
+            "permessage-deflate; client_max_window_bits",
+            "permessage-deflate; server_max_window_bits",
+            "permessage-deflate; server_max_window_bits=8; client_max_window_bits=8",
+        ] {
+            let mut res = Response::new(());
+            res.headers_mut()
+                .insert(header::SEC_WEBSOCKET_EXTENSIONS, raw.parse().unwrap());
+            // a response that does not parse is refused, not relayed
+            let Ok(cfg) = apply_response_data_to_base_websocket_config(None, &mut res) else {
+                continue;
+            };
+            for role in [Role::Client, Role::Server] {
+                drop(WebSocket::from_raw_socket(
+                    Cursor::new(Vec::<u8>::new()),
+                    role,
+                    cfg,
+                ));
+            }
+        }
+    }
 
     struct ResponseLease(Arc<AtomicUsize>);
 
@@ -1731,6 +1853,148 @@ mod tests {
         assert_eq!(leases_dropped.load(Ordering::Acquire), 3);
     }
 
+    /// RFC 6455 §4.1 and §11.3.3, over HTTP/1.0 and HTTP/1.1: every `Upgrade` line counts and
+    /// `Sec-WebSocket-Accept` appears once, while `Connection` stays a list over its lines.
+    #[test]
+    fn repeated_handshake_fields_are_validated_in_full() {
+        let key = headers::SecWebSocketKey::random();
+        let mut scratch = HeaderMap::new();
+        scratch.typed_insert(headers::SecWebSocketAccept::try_from(key.clone()).unwrap());
+        let accept = scratch[header::SEC_WEBSOCKET_ACCEPT].clone();
+        for version in [Version::HTTP_10, Version::HTTP_11] {
+            for (upgrade, connection, accepts, valid) in [
+                (&["websocket"][..], &["Upgrade"][..], 1, true),
+                (&["websocket"], &["keep-alive", "Upgrade"], 1, true),
+                (&["websocket", "h2c"], &["Upgrade"], 1, false),
+                (&["h2c", "websocket"], &["Upgrade"], 1, false),
+                (&["websocket"], &["Upgrade"], 2, false),
+            ] {
+                let mut response = Response::builder()
+                    .version(version)
+                    .status(StatusCode::SWITCHING_PROTOCOLS)
+                    .body(())
+                    .unwrap();
+                let headers = response.headers_mut();
+                for line in upgrade {
+                    headers.append(header::UPGRADE, header::HeaderValue::from_static(line));
+                }
+                for line in connection {
+                    headers.append(header::CONNECTION, header::HeaderValue::from_static(line));
+                }
+                for _ in 0..accepts {
+                    headers.append(header::SEC_WEBSOCKET_ACCEPT, accept.clone());
+                }
+                let result =
+                    validate_http_server_response(&response, Some(key.clone()), None, None);
+                assert_eq!(
+                    result.is_ok(),
+                    valid,
+                    "{version:?} {upgrade:?} {connection:?} accepts={accepts}: {result:?}"
+                );
+            }
+        }
+    }
+
+    /// RFC 6455 §4.1 and RFC 7692 §5, on every version: the server selects at most one
+    /// subprotocol and one extension, each among those offered, and every line counts.
+    #[test]
+    fn the_server_selects_one_offered_protocol_and_extension() {
+        const PMD: &str = "permessage-deflate";
+        let mut scratch = HeaderMap::new();
+        scratch.insert(
+            header::SEC_WEBSOCKET_PROTOCOL,
+            header::HeaderValue::from_static("chat, superchat"),
+        );
+        let offered_protocols = scratch.typed_get::<SecWebSocketProtocol>().unwrap();
+        let key = headers::SecWebSocketKey::random();
+        scratch.typed_insert(headers::SecWebSocketAccept::try_from(key.clone()).unwrap());
+        let accept = scratch[header::SEC_WEBSOCKET_ACCEPT].clone();
+        // (protocol lines, extension lines, protocols offered, extensions offered, outcome)
+        let cases: &[(
+            &[&str],
+            &[&str],
+            bool,
+            Option<&str>,
+            Result<Option<&str>, &str>,
+        )] = &[
+            (&[], &[], true, Some(PMD), Ok(None)),
+            (&["chat"], &[PMD], true, Some(PMD), Ok(Some("chat"))),
+            (&["superchat"], &[], true, None, Ok(Some("superchat"))),
+            (&["other"], &[], true, None, Err("protocol")),
+            (&["chat", "superchat"], &[], true, None, Err("protocol")),
+            (&["chat, superchat"], &[], true, None, Err("protocol")),
+            (&["chat", "chat"], &[], true, None, Err("protocol")),
+            (&["chat"], &[], false, None, Err("protocol")),
+            (&["bad protocol"], &[], true, None, Err("protocol")),
+            (&[], &[PMD, PMD], false, Some(PMD), Err("extension")),
+            (
+                &[],
+                &["permessage-deflate, x-foo"],
+                false,
+                Some(PMD),
+                Err("extension"),
+            ),
+            (&[], &["x-foo"], false, Some(PMD), Err("extension")),
+            (&[], &[PMD], false, Some("x-foo"), Err("extension")),
+            (&[], &[PMD], false, None, Err("extension")),
+        ];
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            for (protocols, extensions, offer_protocols, offer_extensions, outcome) in cases {
+                let mut response = Response::builder().version(version).body(()).unwrap();
+                if version == Version::HTTP_11 {
+                    *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+                    let headers = response.headers_mut();
+                    headers.insert(
+                        header::UPGRADE,
+                        header::HeaderValue::from_static("websocket"),
+                    );
+                    headers.insert(
+                        header::CONNECTION,
+                        header::HeaderValue::from_static("Upgrade"),
+                    );
+                    headers.insert(header::SEC_WEBSOCKET_ACCEPT, accept.clone());
+                }
+                let headers = response.headers_mut();
+                for line in *protocols {
+                    headers.append(
+                        header::SEC_WEBSOCKET_PROTOCOL,
+                        header::HeaderValue::from_static(line),
+                    );
+                }
+                for line in *extensions {
+                    headers.append(
+                        header::SEC_WEBSOCKET_EXTENSIONS,
+                        header::HeaderValue::from_static(line),
+                    );
+                }
+                let result = validate_http_server_response(
+                    &response,
+                    (version == Version::HTTP_11).then(|| key.clone()),
+                    offer_protocols.then(|| offered_protocols.clone()),
+                    offer_extensions.and_then(offered_pmd),
+                );
+                let context = format!("{version:?} {protocols:?} {extensions:?}: {result:?}");
+                match (outcome, result) {
+                    (Ok(protocol), Ok(accepted)) => {
+                        assert_eq!(
+                            accepted.protocol.as_ref().map(|p| p.0.as_ref()),
+                            *protocol,
+                            "{context}"
+                        );
+                        assert_eq!(
+                            accepted.extension.is_some(),
+                            !extensions.is_empty(),
+                            "{context}"
+                        );
+                    }
+                    (Err("protocol"), Err(ResponseValidateError::ProtocolMismatch(_)))
+                    | (Err("extension"), Err(ResponseValidateError::ExtensionMismatch(_))) => {}
+                    _ => panic!("{context}"),
+                }
+            }
+        }
+    }
+
     #[cfg(feature = "dial9")]
     #[test]
     fn blocking_handshake_runs_inside_dial9_session() {
@@ -1804,21 +2068,38 @@ mod tests {
     }
 
     #[test]
-    fn h2_handshake_accepts_any_successful_connect_status() {
-        let mut response = Response::new(());
-        *response.version_mut() = Version::HTTP_2;
-        *response.status_mut() = StatusCode::CREATED;
+    fn extended_connect_handshakes_accept_any_successful_connect_status() {
+        for version in [Version::HTTP_2, Version::HTTP_3] {
+            let mut response = Response::new(());
+            *response.version_mut() = version;
+            *response.status_mut() = StatusCode::CREATED;
 
-        validate_http_server_response(&response, None, None, None)
-            .expect("successful CONNECT response");
+            validate_http_server_response(&response, None, None, None)
+                .expect("successful CONNECT response");
 
-        *response.status_mut() = StatusCode::BAD_REQUEST;
-        assert!(matches!(
-            validate_http_server_response(&response, None, None, None),
-            Err(ResponseValidateError::UnexpectedStatusCode(
-                StatusCode::BAD_REQUEST
-            ))
-        ));
+            *response.status_mut() = StatusCode::BAD_REQUEST;
+            assert_matches!(
+                validate_http_server_response(&response, None, None, None),
+                Err(ResponseValidateError::UnexpectedStatusCode(
+                    StatusCode::BAD_REQUEST
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn h3_requests_use_extended_connect_without_a_key() {
+        let handshake = WebSocketRequestBuilder::new_h3("wss://example.test/chat")
+            .build_handshake()
+            .unwrap();
+        assert_eq!(handshake.request.method(), Method::CONNECT);
+        assert_eq!(handshake.request.version(), Version::HTTP_3);
+        assert!(handshake.key.is_none());
+        assert!(!handshake.request.headers().contains_key(header::UPGRADE));
+        assert_eq!(
+            handshake.request.extensions().get_ref::<Protocol>(),
+            Some(&Protocol::WEBSOCKET)
+        );
     }
 
     /// Validate an (h2) server handshake response carrying `server_raw` against
@@ -1834,6 +2115,42 @@ mod tests {
         match accepted.extension {
             Some(Extension::PerMessageDeflate(cfg)) => Ok(cfg.client_max_window_bits),
             other => panic!("expected per-message-deflate extension, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eight_bit_client_window_fails_the_handshake() {
+        let result = validate_pmd(
+            "permessage-deflate; client_max_window_bits=8",
+            "permessage-deflate; client_max_window_bits",
+        );
+        assert_matches!(
+            result,
+            Err(ResponseValidateError::ExtensionMismatch(Some(_))),
+            "{result:?}",
+        );
+    }
+
+    #[test]
+    fn invalid_extension_response_fails_the_handshake() {
+        for server_raw in [
+            "permessage-deflate; server_max_window_bits",
+            "permessage-deflate; server_max_window_bits=20",
+            "permessage-deflate; server_max_window_bits=10; server_max_window_bits=10",
+            "",
+        ] {
+            let response = h2_response_with_pmd(server_raw);
+            let result = validate_http_server_response(
+                &response,
+                None,
+                None,
+                offered_pmd("permessage-deflate; client_max_window_bits"),
+            );
+            assert_matches!(
+                result,
+                Err(ResponseValidateError::ExtensionMismatch(None)),
+                "{server_raw:?}: {result:?}",
+            );
         }
     }
 
@@ -1855,14 +2172,171 @@ mod tests {
     }
 
     #[test]
-    fn explicit_client_max_window_bits_rejects_larger_server_choice() {
-        assert!(matches!(
+    fn explicit_client_max_window_bits_is_only_a_hint() {
+        // RFC 7692 §7.1.2.2: the offered value hints what the client will use; it does not cap
+        // the server's answer
+        assert_eq!(
+            Some(15),
             validate_pmd(
                 "permessage-deflate; client_max_window_bits=15",
                 "permessage-deflate; client_max_window_bits=10",
+            )
+            .unwrap(),
+        );
+    }
+
+    /// RFC 7692 §§3, 7, on every HTTP version: a response answers one compatible offer under
+    /// the same name, whichever it is; server constraints of that offer are echoed, client
+    /// window bits only answer an offer naming them, and a server may impose more than asked.
+    #[test]
+    fn a_pmd_response_answers_one_compatible_offer() {
+        const PMD: &str = "permessage-deflate";
+        // (offers, response, accepted (server bits, client bits, server nct, client nct))
+        type Accepted = Option<(Option<u8>, Option<u8>, bool, bool)>;
+        let cases: &[(&str, &str, Accepted)] = &[
+            (PMD, PMD, Some((None, None, false, false))),
+            (PMD, "permessage-deflate; client_max_window_bits=15", None),
+            (
+                "permessage-deflate; client_max_window_bits",
+                "permessage-deflate; client_max_window_bits=15",
+                Some((None, Some(15), false, false)),
             ),
-            Err(ResponseValidateError::ExtensionMismatch(_)),
-        ));
+            (
+                "permessage-deflate; client_max_window_bits=10",
+                "permessage-deflate; client_max_window_bits=15",
+                Some((None, Some(15), false, false)),
+            ),
+            (
+                "permessage-deflate; client_max_window_bits",
+                "permessage-deflate; client_max_window_bits=8",
+                None,
+            ),
+            ("permessage-deflate; server_max_window_bits=10", PMD, None),
+            (
+                "permessage-deflate; server_max_window_bits=10",
+                "permessage-deflate; server_max_window_bits=12",
+                None,
+            ),
+            (
+                "permessage-deflate; server_max_window_bits=10",
+                "permessage-deflate; server_max_window_bits=9",
+                Some((Some(9), None, false, false)),
+            ),
+            (
+                "permessage-deflate; server_max_window_bits=10, permessage-deflate; server_max_window_bits=15",
+                "permessage-deflate; server_max_window_bits=15",
+                Some((Some(15), None, false, false)),
+            ),
+            ("permessage-deflate; server_no_context_takeover", PMD, None),
+            (
+                "permessage-deflate; server_no_context_takeover",
+                "permessage-deflate; server_no_context_takeover",
+                Some((None, None, true, false)),
+            ),
+            (
+                PMD,
+                "permessage-deflate; server_no_context_takeover",
+                Some((None, None, true, false)),
+            ),
+            (
+                PMD,
+                "permessage-deflate; server_max_window_bits=12",
+                Some((Some(12), None, false, false)),
+            ),
+            (
+                PMD,
+                "permessage-deflate; client_no_context_takeover",
+                Some((None, None, false, true)),
+            ),
+            (
+                "permessage-deflate; client_no_context_takeover",
+                PMD,
+                Some((None, None, false, true)),
+            ),
+            (
+                "permessage-deflate",
+                "permessage-deflate",
+                Some((None, None, false, false)),
+            ),
+            ("permessage-deflate", "perframe-deflate", None),
+            ("permessage-deflate", "x-webkit-deflate-frame", None),
+            ("perframe-deflate", "permessage-deflate", None),
+            (
+                "perframe-deflate",
+                "perframe-deflate",
+                Some((None, None, false, false)),
+            ),
+            ("perframe-deflate", "x-webkit-deflate-frame", None),
+            ("x-webkit-deflate-frame", "permessage-deflate", None),
+            ("x-webkit-deflate-frame", "perframe-deflate", None),
+            (
+                "x-webkit-deflate-frame",
+                "x-webkit-deflate-frame",
+                Some((None, None, false, false)),
+            ),
+            // parameters of an offer under another name never answer the selected one
+            (
+                "perframe-deflate; server_max_window_bits=15, permessage-deflate; server_max_window_bits=10",
+                "permessage-deflate; server_max_window_bits=15",
+                None,
+            ),
+            (
+                "x-webkit-deflate-frame; client_max_window_bits, permessage-deflate",
+                "permessage-deflate; client_max_window_bits=15",
+                None,
+            ),
+            (
+                "x-webkit-deflate-frame, permessage-deflate; server_no_context_takeover",
+                "permessage-deflate; server_no_context_takeover",
+                Some((None, None, true, false)),
+            ),
+        ];
+        let key = headers::SecWebSocketKey::random();
+        let mut scratch = HeaderMap::new();
+        scratch.typed_insert(headers::SecWebSocketAccept::try_from(key.clone()).unwrap());
+        let accept = scratch[header::SEC_WEBSOCKET_ACCEPT].clone();
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            for (offers, response_raw, expected) in cases {
+                let mut response = Response::builder().version(version).body(()).unwrap();
+                if version == Version::HTTP_11 {
+                    *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+                    let headers = response.headers_mut();
+                    headers.insert(
+                        header::UPGRADE,
+                        header::HeaderValue::from_static("websocket"),
+                    );
+                    headers.insert(
+                        header::CONNECTION,
+                        header::HeaderValue::from_static("Upgrade"),
+                    );
+                    headers.insert(header::SEC_WEBSOCKET_ACCEPT, accept.clone());
+                }
+                response.headers_mut().insert(
+                    header::SEC_WEBSOCKET_EXTENSIONS,
+                    header::HeaderValue::from_static(response_raw),
+                );
+                let result = validate_http_server_response(
+                    &response,
+                    (version == Version::HTTP_11).then(|| key.clone()),
+                    None,
+                    offered_pmd(offers),
+                );
+                let accepted = match result {
+                    Ok(AcceptedWebSocketData {
+                        extension: Some(Extension::PerMessageDeflate(cfg)),
+                        ..
+                    }) => Some((
+                        cfg.server_max_window_bits,
+                        cfg.client_max_window_bits,
+                        cfg.server_no_context_takeover,
+                        cfg.client_no_context_takeover,
+                    )),
+                    Err(ResponseValidateError::ExtensionMismatch(_)) => None,
+                    other => panic!("{version:?} {offers} / {response_raw}: {other:?}"),
+                };
+                assert_eq!(&accepted, expected, "{version:?} {offers} / {response_raw}");
+            }
+        }
     }
 
     #[test]

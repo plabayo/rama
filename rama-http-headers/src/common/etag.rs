@@ -121,10 +121,50 @@ test_etag {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::{test_decode, test_encode};
 
     #[test]
     fn is_weak() {
         assert!(!ETag::from_static("\"xyzzy\"").is_weak());
         assert!(ETag::from_static("W/\"xyzzy\"").is_weak());
+    }
+
+    #[test]
+    fn rejects_malformed_without_panic() {
+        for value in [
+            "",
+            "x",
+            "W",
+            "W/",
+            "W/\"",
+            "\"",
+            "*",
+            "\"a b\"",
+            "\"a\tb\"",
+            "W/\"a b\"",
+            "\"a\", \"b\"",
+        ] {
+            let decoded = test_decode::<ETag>(&[value]);
+            if let Some(etag) = &decoded {
+                _ = etag.is_weak();
+            }
+            assert!(decoded.is_none(), "value: {value:?}");
+
+            let parsed = value.parse::<ETag>();
+            if let Ok(etag) = &parsed {
+                _ = etag.is_weak();
+            }
+            assert!(parsed.is_err(), "value: {value:?}");
+        }
+    }
+
+    #[test]
+    fn decode_and_parse_valid() {
+        for (value, weak) in [("\"\"", false), ("W/\"\"", true), ("\"a,b\"", false)] {
+            let decoded: ETag = test_decode(&[value]).unwrap();
+            assert_eq!(decoded.is_weak(), weak);
+            assert_eq!(value.parse::<ETag>().unwrap(), decoded);
+            assert_eq!(test_encode(decoded)["etag"], value);
+        }
     }
 }

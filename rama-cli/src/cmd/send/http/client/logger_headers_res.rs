@@ -4,8 +4,9 @@ use rama::{
     http::{
         Request, Response, Version,
         proto::{
+            ext,
             h1::ext::ReasonPhrase,
-            h2::{self, PseudoHeader, PseudoHeaderOrder},
+            h2::{PseudoHeader, PseudoHeaderOrder},
         },
     },
 };
@@ -52,7 +53,7 @@ where
                             }
                             PseudoHeader::Protocol => {
                                 res.extensions()
-                                    .get_ref::<h2::ext::Protocol>()
+                                    .get_ref::<ext::Protocol>()
                                     .map(|p| p.as_str())
                                     .unwrap_or("<???>")
                                     .to_owned()

@@ -115,15 +115,25 @@ impl IncompleteCompressedMessage {
     }
 }
 
-impl DeflateEncoder {
-    pub(super) fn new(compression: Compression, mut window_size: u8, compress_reset: bool) -> Self {
-        // https://github.com/madler/zlib/blob/cacf7f1d4e3d44d871b605da3b647f07d718623f/deflate.c#L303
-        if window_size == 8 {
-            window_size = 9;
-        }
+/// Map negotiated window bits onto the 9..=15 range zlib accepts.
+///
+/// `0` is the valueless `*_max_window_bits` form (no limit), and zlib treats 8 as 9:
+/// <https://github.com/madler/zlib/blob/cacf7f1d4e3d44d871b605da3b647f07d718623f/deflate.c#L303>
+fn zlib_window_bits(window_bits: u8) -> u8 {
+    match window_bits {
+        0 => 15,
+        bits => bits.clamp(9, 15),
+    }
+}
 
+impl DeflateEncoder {
+    pub(super) fn new(compression: Compression, window_bits: u8, compress_reset: bool) -> Self {
         Self {
-            compress: Compress::new_with_window_bits(compression, false, window_size),
+            compress: Compress::new_with_window_bits(
+                compression,
+                false,
+                zlib_window_bits(window_bits),
+            ),
             compress_reset,
         }
     }
@@ -180,14 +190,9 @@ pub(super) struct DeflateDecoder {
 }
 
 impl DeflateDecoder {
-    pub(super) fn new(mut window_size: u8, decompress_reset: bool) -> Self {
-        // https://github.com/madler/zlib/blob/cacf7f1d4e3d44d871b605da3b647f07d718623f/deflate.c#L303
-        if window_size == 8 {
-            window_size = 9;
-        }
-
+    pub(super) fn new(window_bits: u8, decompress_reset: bool) -> Self {
         Self {
-            decompress: Decompress::new_with_window_bits(false, window_size),
+            decompress: Decompress::new_with_window_bits(false, zlib_window_bits(window_bits)),
             decompress_reset,
         }
     }
@@ -352,6 +357,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
+
+    #[test]
+    fn any_window_bits_are_accepted() {
+        for bits in [0, 1, 8, 9, 15, 16, u8::MAX] {
+            let mut encoder = DeflateEncoder::new(Compression::default(), bits, false);
+            let mut decoder = DeflateDecoder::new(bits, false);
+            let compressed = encoder.encode(b"hello hello").unwrap();
+            let decoded = decoder.decode(&compressed, None).unwrap();
+            assert_eq!(decoded, b"hello hello", "window bits: {bits}");
+        }
+    }
 
     #[test]
     fn empty_messages_between_nonempty_messages() {
@@ -381,13 +398,13 @@ mod tests {
         assert!(compressed.len() < payload.len());
 
         let mut decoder = DeflateDecoder::new(15, false);
-        assert!(matches!(
+        assert_matches!(
             decoder.decode(&compressed, Some(128)),
             Err(ProtocolError::MessageTooLong {
                 size: 129,
                 max_size: 128
-            })
-        ));
+            }),
+        );
     }
 
     #[test]
@@ -432,9 +449,9 @@ mod tests {
         );
 
         let mut decoder = DeflateDecoder::new(15, false);
-        assert!(matches!(
+        assert_matches!(
             decoder.decode(&compressed, Some(payload.len() - 1)),
             Err(ProtocolError::MessageTooLong { max_size, .. }) if max_size == payload.len() - 1,
-        ));
+        );
     }
 }

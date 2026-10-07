@@ -178,7 +178,7 @@ proc-macro2 = "1.0"
 prost = "0.14.4"
 prost-build = "0.14.4"
 prost-types = "0.14.4"
-protoc-bin-vendored = "3.2.0"
+protoc-bin-vendored = "3.3.0"
 psl = "2"
 quick-xml = "0.42"
 quickcheck = "1.1"
@@ -232,7 +232,7 @@ rama-utils = { version = "0.5.0", path = "./rama-utils", default-features = fals
 rama-ws = { version = "0.5.0", path = "./rama-ws", default-features = false }
 rand = "0.10"
 rand_pcg = "0.10"
-ratatui = "0.30"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache", "macros", "underline-color"] }
 rawzip = { version = "0.5" }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "x509-parser"] }
 regex = { version = "1.13", default-features = false }
@@ -260,8 +260,7 @@ static_assertions = "1"
 syn = "3.0"
 sync_wrapper = "1.0"
 terminal-prompt = "0.2"
-# TEMPORARY: see https://github.com/time-rs/time/issues/783.
-time = "=0.3.47"
+time = "0.3.55"
 tokio = "1.53"
 tokio-graceful = "0.2"
 tokio-postgres = "0.7"
@@ -281,10 +280,10 @@ trybuild = "1.0"
 tui-logger = { version = "0.18", features = ["tracing-support"] }
 turmoil = "0.7"
 unicode-normalization = "0.1"
-uuid = "1.26"
+uuid = "1.27"
 venndb = "0.6"
 want = "0.3"
-wasmtime = { version = "49.0.1", default-features = false }
+wasmtime = { version = "49.0.2", default-features = false }
 webpki-root-certs = "1.0"
 webpki-roots = "1.0"
 wildcard = "0.3"
@@ -368,7 +367,6 @@ allow_attributes = "warn"
 
 # Style / readability — pattern-match exhaustiveness, idiomatic borrowing,
 # `Self` usage, format-string hygiene, etc.
-empty_enums = "warn"
 enum_glob_use = "warn"
 equatable_if_let = "warn"
 filter_map_next = "warn"
@@ -410,7 +408,6 @@ default = ["std"]
 std = [
     "dep:ahash",
     "dep:rama-json",
-    "dep:time",
     "dep:tokio-util",
     "dep:tracing-subscriber",
     "rama-core/std",
@@ -430,6 +427,7 @@ fuzz-utils = [
     "rama-quic?/fuzz-utils",
     "rama-quic-proto?/fuzz-utils",
     "rama-http-core?/fuzz-utils",
+    "rama-http?/fuzz-utils",
 ]
 # Forward experimental HTTP APIs when the HTTP backend is enabled.
 unstable = ["rama-http-core?/unstable"]
@@ -627,7 +625,6 @@ rama-ws = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-time = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
 tokio-util = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"], optional = true }
@@ -687,8 +684,25 @@ harness = false
 required-features = ["http-full"]
 
 [[bench]]
+name = "http_typed_headers"
+harness = false
+required-features = ["http", "net"]
+
+[[bench]]
 name = "http3"
 path = "benches/http3.rs"
+harness = false
+required-features = ["http-full"]
+
+[[bench]]
+name = "h3_datagram_demux"
+path = "benches/h3_datagram_demux.rs"
+harness = false
+required-features = ["http-full", "fuzz-utils"]
+
+[[bench]]
+name = "http_datagram"
+path = "benches/http_datagram.rs"
 harness = false
 required-features = ["http-full"]
 
@@ -718,6 +732,11 @@ required-features = ["quic"]
 harness = false
 
 [[bench]]
+name = "quic_handshake"
+required-features = ["quic", "boring", "crypto"]
+harness = false
+
+[[bench]]
 name = "quic_qlog"
 required-features = ["quic"]
 harness = false
@@ -735,6 +754,16 @@ harness = false
 [[bench]]
 name = "pool_contention"
 required-features = ["net"]
+harness = false
+
+[[bench]]
+name = "io_forward"
+required-features = ["net"]
+harness = false
+
+[[bench]]
+name = "dns_resolver"
+required-features = ["dns"]
 harness = false
 
 [[bench]]

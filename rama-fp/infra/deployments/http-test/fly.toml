@@ -7,7 +7,7 @@ app = 'rama-http-test'
 primary_region = 'fra'
 
 [build]
-  image = 'glendc/rama:edge'
+  dockerfile = '../Dockerfile.h3'
 
 [env]
   RUST_LOG = 'info'
@@ -15,7 +15,7 @@ primary_region = 'fra'
 [processes]
   # Public-demo guardrails: rate is process-wide; throttle is per connection/direction.
   app_insecure = 'serve http-test --bind 0.0.0.0:8080 -c 2048 -t 300 --rate 100 --throttle 1048576'
-  app_secure = 'serve http-test --bind 0.0.0.0:8443 -c 2048 -t 300 --rate 100 --throttle 1048576 --secure'
+  app_secure = 'serve http-test --bind 0.0.0.0:8443 -c 2048 -t 300 --rate 100 --throttle 1048576 --secure --h3-bind 0.0.0.0:443'
 
 [[services]]
   protocol = 'tcp'
@@ -34,6 +34,17 @@ primary_region = 'fra'
   auto_stop_machines = 'stop'
   auto_start_machines = true
   min_machines_running = 1
+  processes = ['app_secure']
+
+  [[services.ports]]
+    port = 443
+
+# HTTP/3. UDP needs the app's dedicated IPv4 and keeps its port: the app binds 443 itself.
+# Replies leave from each packet's destination address, which is what Fly's
+# `fly-global-services` bind is for.
+[[services]]
+  protocol = 'udp'
+  internal_port = 443
   processes = ['app_secure']
 
   [[services.ports]]

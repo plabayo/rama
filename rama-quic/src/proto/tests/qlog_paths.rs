@@ -1,6 +1,7 @@
 use super::qlog::Capture;
 use super::*;
 use rama_quic_proto::{Dir, TransportErrorCode};
+use std::assert_matches;
 
 #[test]
 fn qlog_paths_follow_actual_migration_and_mtu_changes() {
@@ -430,10 +431,10 @@ fn qlog_paths_mtu_validation_without_fallback_logs_abandonment_on_close() {
         pair.server.drive(pair.time, pair.client.addr);
         pair.server.outbound.clear();
     }
-    assert!(matches!(
+    assert_matches!(
         pair.server_conn_mut(server_ch).ended_because(),
-        Some(ConnectionError::TransportError(error)) if error.code == TransportErrorCode::NO_VIABLE_PATH
-    ));
+        Some(ConnectionError::TransportError(error)) if error.code == TransportErrorCode::NO_VIABLE_PATH,
+    );
     let migrations = capture.events("quic:migration_state_updated");
     assert_eq!(migrations.len(), 2);
     assert_eq!(migrations[0]["data"]["new"], "migration_started");

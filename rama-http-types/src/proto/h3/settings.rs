@@ -21,6 +21,10 @@ impl SettingId {
     pub const MAX_FIELD_SECTION_SIZE: Self = Self(0x06);
     /// `SETTINGS_QPACK_BLOCKED_STREAMS` (RFC 9204 §5).
     pub const QPACK_BLOCKED_STREAMS: Self = Self(0x07);
+    /// `SETTINGS_ENABLE_CONNECT_PROTOCOL` (RFC 9220 §3, RFC 8441 §3): Extended CONNECT.
+    pub const ENABLE_CONNECT_PROTOCOL: Self = Self(0x08);
+    /// `SETTINGS_H3_DATAGRAM` (RFC 9297 §2.1.1): willingness to receive HTTP/3 datagrams.
+    pub const H3_DATAGRAM: Self = Self(0x33);
 
     /// Construct a setting identifier from its raw value.
     #[must_use]
@@ -41,6 +45,12 @@ impl SettingId {
         self.0 >= 0x21 && (self.0 - 0x21).is_multiple_of(0x1f)
     }
 
+    /// Whether this known setting only permits the values 0 and 1 (RFC 8441 §3, RFC 9297 §2.1.1).
+    #[must_use]
+    pub const fn is_boolean(self) -> bool {
+        matches!(self, Self::ENABLE_CONNECT_PROTOCOL | Self::H3_DATAGRAM)
+    }
+
     /// Whether this identifier was reserved because HTTP/2 defined it and HTTP/3 does not reuse it
     /// (`0x00`, `0x02`, `0x03`, `0x04`, `0x05`; RFC 9114 §7.2.4.1, §11.2.2). Its receipt is a
     /// connection error of type `H3_SETTINGS_ERROR`.
@@ -56,6 +66,8 @@ impl SettingId {
             Self::QPACK_MAX_TABLE_CAPACITY => "QPACK_MAX_TABLE_CAPACITY",
             Self::MAX_FIELD_SECTION_SIZE => "MAX_FIELD_SECTION_SIZE",
             Self::QPACK_BLOCKED_STREAMS => "QPACK_BLOCKED_STREAMS",
+            Self::ENABLE_CONNECT_PROTOCOL => "ENABLE_CONNECT_PROTOCOL",
+            Self::H3_DATAGRAM => "H3_DATAGRAM",
             _ => return None,
         })
     }
@@ -157,10 +169,26 @@ impl Settings {
         self.get(SettingId::MAX_FIELD_SECTION_SIZE)
     }
 
-    /// Append a setting, rejecting duplicates and HTTP/2-forbidden identifiers.
+    /// Whether `SETTINGS_ENABLE_CONNECT_PROTOCOL` is 1 (RFC 9220 §3).
+    #[must_use]
+    pub fn enable_connect_protocol(&self) -> bool {
+        self.get(SettingId::ENABLE_CONNECT_PROTOCOL) == Some(1)
+    }
+
+    /// Whether `SETTINGS_H3_DATAGRAM` is 1 (RFC 9297 §2.1.1).
+    #[must_use]
+    pub fn h3_datagram(&self) -> bool {
+        self.get(SettingId::H3_DATAGRAM) == Some(1)
+    }
+
+    /// Append a setting, rejecting duplicates, HTTP/2-forbidden identifiers and non-boolean
+    /// values for boolean settings.
     pub fn insert(&mut self, setting: Setting) -> Result<(), SettingsError> {
         if setting.id.is_h2_forbidden() {
             return Err(SettingsError::Forbidden(setting.id));
+        }
+        if setting.id.is_boolean() && setting.value > 1 {
+            return Err(SettingsError::InvalidValue(setting.id));
         }
         if self.entries.iter().any(|s| s.id == setting.id) {
             return Err(SettingsError::Duplicate(setting.id));
@@ -246,6 +274,8 @@ pub enum SettingsError {
     Duplicate(SettingId),
     /// An HTTP/2-forbidden identifier (`0x00`, `0x02`–`0x05`) was present.
     Forbidden(SettingId),
+    /// A boolean setting carried a value other than 0 or 1.
+    InvalidValue(SettingId),
     /// More entries than the configured budget.
     TooMany,
     /// The payload was truncated or otherwise not a valid identifier/value sequence.
@@ -257,6 +287,7 @@ impl fmt::Display for SettingsError {
         match self {
             Self::Duplicate(id) => write!(f, "duplicate HTTP/3 setting {id:?}"),
             Self::Forbidden(id) => write!(f, "forbidden HTTP/2 setting identifier {id:?}"),
+            Self::InvalidValue(id) => write!(f, "invalid value for HTTP/3 setting {id:?}"),
             Self::TooMany => f.write_str("too many HTTP/3 settings"),
             Self::Malformed => f.write_str("malformed HTTP/3 SETTINGS payload"),
         }
@@ -397,5 +428,30 @@ mod tests {
             VarInt::from_u64(0).unwrap().encode(&mut buf);
         }
         assert_eq!(Settings::decode(&buf), Err(SettingsError::TooMany));
+    }
+
+    #[test]
+    fn boolean_settings_accept_only_zero_and_one() {
+        for id in [SettingId::ENABLE_CONNECT_PROTOCOL, SettingId::H3_DATAGRAM] {
+            for value in [0, 1] {
+                let mut payload = BytesMut::new();
+                VarInt::from_u64(id.value()).unwrap().encode(&mut payload);
+                VarInt::from_u32(value).encode(&mut payload);
+                let settings = Settings::decode(&payload).unwrap();
+                assert_eq!(settings.get(id), Some(u64::from(value)));
+            }
+            let mut payload = BytesMut::new();
+            VarInt::from_u64(id.value()).unwrap().encode(&mut payload);
+            VarInt::from_u32(2).encode(&mut payload);
+            assert_eq!(
+                Settings::decode(&payload),
+                Err(SettingsError::InvalidValue(id))
+            );
+        }
+        let mut settings = Settings::new();
+        assert!(!settings.enable_connect_protocol() && !settings.h3_datagram());
+        settings.set(SettingId::ENABLE_CONNECT_PROTOCOL, 1).unwrap();
+        settings.set(SettingId::H3_DATAGRAM, 0).unwrap();
+        assert!(settings.enable_connect_protocol() && !settings.h3_datagram());
     }
 }

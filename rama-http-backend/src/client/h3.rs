@@ -70,6 +70,7 @@ pub struct Http3Connector {
 
 // Only endpoints owned by this connector may be rebound after their driver exits.
 // Supplied endpoints retain the application's explicit lifecycle and socket policy.
+#[derive(Debug)]
 enum ConnectorEndpoint {
     Supplied(Endpoint),
     Managed(AsyncMutex<Option<Endpoint>>),
@@ -91,6 +92,7 @@ impl Clone for Http3Connector {
 impl std::fmt::Debug for Http3Connector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Http3Connector")
+            .field("endpoint", &self.endpoint)
             .field("config", &self.config)
             .finish_non_exhaustive()
     }
@@ -476,7 +478,7 @@ impl Service<ConnectRequest> for Http3Connector {
                 ConnectionErrorKind::Unavailable,
             ));
         }
-        if input.protocol().is_none_or(|p| !p.is_secure()) {
+        if input.target_protocol().is_none_or(|p| !p.is_secure()) {
             return Err(invalid("HTTP/3 requires a secure origin"));
         }
         validate_version(&input)?;
@@ -641,6 +643,7 @@ mod concrete_transport_tests {
         },
         tls::TlsAlpn,
     };
+    use std::assert_matches;
 
     use rama_core::{extensions::Extensions, graceful::Shutdown};
     use rama_quic::tls::TlsConfigError;
@@ -710,9 +713,7 @@ mod concrete_transport_tests {
             .with_tls_provider(Arc::new(CustomProvider::default()))
             .build_lazy()
             .unwrap();
-        assert!(
-            matches!(connector.endpoint.as_ref(), ConnectorEndpoint::Managed(endpoint) if endpoint.try_lock().unwrap().is_none())
-        );
+        assert_matches!(connector.endpoint.as_ref(), ConnectorEndpoint::Managed(endpoint) if endpoint.try_lock().unwrap().is_none());
     }
 
     #[tokio::test]
@@ -766,9 +767,7 @@ mod concrete_transport_tests {
         cancel.send(()).unwrap();
         guard.cancelled().await;
         _ = connector.endpoint().await.unwrap_err();
-        assert!(
-            matches!(connector.endpoint.as_ref(), ConnectorEndpoint::Managed(endpoint) if endpoint.try_lock().unwrap().is_none())
-        );
+        assert_matches!(connector.endpoint.as_ref(), ConnectorEndpoint::Managed(endpoint) if endpoint.try_lock().unwrap().is_none());
     }
 
     #[tokio::test]

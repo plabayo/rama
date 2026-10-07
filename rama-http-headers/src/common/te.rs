@@ -59,9 +59,13 @@ impl Te {
 
 #[cfg(test)]
 mod tests {
+    use rama_http_types::HeaderValue;
+
     use super::*;
     use crate::common::{test_decode, test_encode};
     use crate::specifier::Quality;
+    use crate::util::for_each_small_input;
+    use crate::{HeaderDecode, HeaderEncode};
 
     #[test]
     fn decode_header_compress() {
@@ -95,9 +99,42 @@ mod tests {
     }
 
     #[test]
+    fn decode_rejects_unnamed_codings() {
+        for values in [
+            &[";;q=1"][..],
+            &[";0;q=1"],
+            &["A", ";;q=1"],
+            &[";q=;;q=1"],
+            &["a;q=2;q=1"],
+            &["a;b;q=1"],
+        ] {
+            assert!(test_decode::<Te>(values).is_none(), "{values:?}");
+        }
+    }
+
+    #[test]
+    fn decode_quoted_pair_in_parameter() {
+        let Te(directives) = test_decode(&[r#"trailers, foo;p="a\",b""#]).unwrap();
+        assert_eq!(directives.len(), 2);
+        assert_eq!(directives[0].value.as_str(), "trailers");
+    }
+
+    #[test]
     fn encode() {
         let te = Te::trailers();
         let headers = test_encode(te);
         assert_eq!(headers["te"], "trailers");
+    }
+
+    #[test]
+    fn small_inputs_never_panic() {
+        for_each_small_input(b"a;q=1., \"", 5, |input| {
+            let Ok(value) = HeaderValue::from_bytes(input) else {
+                return;
+            };
+            if let Ok(te) = Te::decode(&mut [&value].into_iter()) {
+                _ = te.encode_to_value();
+            }
+        });
     }
 }

@@ -1,30 +1,37 @@
 use std::mem::MaybeUninit;
 
-use rama_core::bytes::Bytes;
-use rama_core::bytes::BytesMut;
-use rama_core::extensions::Extensions;
-use rama_core::telemetry::tracing::{debug, error, trace, trace_span, warn};
-use rama_http::HeaderName;
-use rama_http::proto::h1::ext::{
-    CloseDelimitedResponse, OriginalResponseBodyFraming, ReasonPhrase, RequestTargetForm,
+use rama_core::{
+    bytes::{Bytes, BytesMut},
+    extensions::Extensions,
+    telemetry::tracing::{debug, error, trace, trace_span, warn},
 };
-use rama_http::proto::{HeaderByteLength, RequestHeaders};
-
-use rama_http_types::header::Entry;
-use rama_http_types::header::{self, HeaderMap, HeaderValue};
-use rama_http_types::{Method, StatusCode, Version};
+use rama_http::{
+    HeaderName,
+    proto::{
+        HeaderByteLength, RequestHeaders,
+        h1::ext::{
+            CloseDelimitedResponse, OriginalResponseBodyFraming, ReasonPhrase, RequestTargetForm,
+        },
+    },
+};
+use rama_http_types::{
+    Method, StatusCode, Version,
+    header::{self, Entry, HeaderMap, HeaderValue, trailer::ForbiddenTrailers},
+};
 use rama_utils::collections::smallvec::{SmallVec, smallvec, smallvec_inline};
 
-use crate::body::DecodedLength;
-use crate::common::date;
-use crate::error::Parse;
-use crate::headers;
-use crate::proto::h1::{
-    Encode, Encoder, Http1Transaction, ParseContext, ParseResult, ParsedMessage,
-};
-use crate::proto::{BodyLength, MessageHead, RequestLine};
-
 use super::EncodeHead;
+use crate::{
+    body::DecodedLength,
+    common::date,
+    error::{Header as HeaderError, Parse},
+    headers,
+    proto::{
+        BodyLength, MessageHead, RequestLine,
+        h1::{Encode, Encoder, Http1Transaction, ParseContext, ParseResult, ParsedMessage},
+        target::{normalize_received, repair_outgoing_h1_host, several_hosts},
+    },
+};
 
 pub(crate) const DEFAULT_MAX_HEADERS: usize = 100;
 const AVERAGE_HEADER_SIZE: usize = 30; // totally scientific
@@ -117,7 +124,7 @@ impl Http1Transaction for Server {
 
         let mut keep_alive;
         let is_http_11;
-        let subject;
+        let mut subject;
         let version;
         let len;
         let headers_len;
@@ -195,7 +202,12 @@ impl Http1Transaction for Server {
             // authority-form target (`host:port`); every other method carries
             // origin-/absolute-/asterisk-form, all handled by `parse`.
             let uri = if method == Method::CONNECT {
-                rama_net::uri::Uri::parse_authority_form(uri_bytes.clone())?
+                let uri = rama_net::uri::Uri::parse_authority_form(uri_bytes.clone())?;
+                // RFC 9112 §3.2.3: CONNECT has no default port, so there is no target to guess.
+                if uri.port_u16().is_none() {
+                    return Err(Parse::Uri);
+                }
+                uri
             } else {
                 let uri = rama_net::uri::Uri::parse(uri_bytes.clone())?;
                 // A scheme without an authority (opaque `scheme:path`, e.g.
@@ -207,6 +219,10 @@ impl Http1Transaction for Server {
                 uri
             };
             let form = if uri_bytes.as_ref() == b"*" {
+                // RFC 9112 §3.2.4: asterisk-form is only for a server-wide OPTIONS.
+                if method != Method::OPTIONS {
+                    return Err(Parse::Uri);
+                }
                 RequestTargetForm::Asterisk
             } else if method == Method::CONNECT {
                 RequestTargetForm::Authority
@@ -335,6 +351,13 @@ impl Http1Transaction for Server {
             return Err(Parse::transfer_encoding_invalid());
         }
 
+        // RFC 9112 §3.2: a server MUST answer several Host lines with 400.
+        if several_hosts(&headers) {
+            debug!("request with several Host lines, bad request");
+            return Err(Parse::Header(HeaderError::Token));
+        }
+        normalize_received(&mut subject.1, &mut headers, false);
+
         // RFC 9112 §6.1: TE + CL together is a request smuggling vector,
         // so do not reuse the connection for further requests.
         if is_te && is_cl {
@@ -454,9 +477,11 @@ impl Http1Transaction for Server {
             extend(dst, b"\r\n");
         }
 
+        let allowed_trailers = msg.head.extensions.get_arc::<ForbiddenTrailers>();
         let _extensions = std::mem::take(msg.head.extensions);
         let encoder =
-            Self::encode_h1_headers(msg, close_delimited, dst, is_last, orig_len, wrote_len)?;
+            Self::encode_h1_headers(msg, close_delimited, dst, is_last, orig_len, wrote_len)?
+                .maybe_with_allowed_trailers(allowed_trailers);
         ret.map(|()| encoder)
     }
 
@@ -632,7 +657,6 @@ impl Server {
                 .insert(header::CONTENT_LENGTH, HeaderValue::from(len));
         }
         let mut encoder = Encoder::length(0);
-        let mut allowed_trailer_fields = headers::trailer_header_names(&msg.head.headers);
         let mut wrote_date = false;
         let mut is_name_written = false;
         let mut must_write_chunked = false;
@@ -880,15 +904,9 @@ impl Server {
             extend(dst, b"\r\n");
         }
 
-        if encoder.is_chunked() {
-            allowed_trailer_fields
-                .retain(|name| !connection_header_names.iter().any(|value| value == name));
-            if !allowed_trailer_fields.is_empty() {
-                encoder = encoder.into_chunked_with_trailing_fields(allowed_trailer_fields);
-            }
-        }
-
-        Ok(encoder.set_last(is_last))
+        Ok(encoder
+            .with_nominated_fields(connection_header_names)
+            .set_last(is_last))
     }
 
     /// Helper for zero-copy parsing of request path URI.
@@ -1108,6 +1126,18 @@ impl Http1Transaction for Client {
 
         *msg.req_method = Some(msg.head.subject.0.clone());
 
+        if msg.head.subject.0 == Method::CONNECT
+            && !rama_http_types::proto::h1::head::is_http1_connect_target(
+                &msg.head.subject.1,
+                msg.head.extensions,
+            )
+        {
+            return Err(crate::Error::new_user_target());
+        }
+        if !repair_outgoing_h1_host(&msg.head.subject.1, &mut msg.head.headers) {
+            return Err(crate::Error::new_user_header());
+        }
+
         let body = Self::set_length(&mut msg.head, msg.body);
 
         let init_cap = 30 + msg.head.headers.len() * AVERAGE_HEADER_SIZE;
@@ -1235,6 +1265,7 @@ impl Client {
     fn set_length(head: &mut EncodeHead<'_, RequestLine>, body: Option<BodyLength>) -> Encoder {
         let Some(body) = body else {
             head.headers.remove(header::TRANSFER_ENCODING);
+            headers::drop_undeliverable_content_length(&mut head.headers);
             return Encoder::length(0);
         };
 
@@ -1322,20 +1353,10 @@ impl Client {
             }
         };
 
+        let allowed_trailers = head.extensions.get_arc::<ForbiddenTrailers>();
         let encoder = encoder.map(|enc| {
-            if enc.is_chunked() {
-                let allowed_trailer_fields: Vec<HeaderName> =
-                    headers::trailer_header_names(headers)
-                        .into_iter()
-                        .filter(|name| !connection_header_names.iter().any(|value| value == name))
-                        .collect();
-
-                if !allowed_trailer_fields.is_empty() {
-                    return enc.into_chunked_with_trailing_fields(allowed_trailer_fields);
-                }
-            }
-
-            enc
+            enc.with_nominated_fields(connection_header_names)
+                .maybe_with_allowed_trailers(allowed_trailers)
         });
 
         // This is because we need a second mutable borrow to remove
@@ -1574,9 +1595,11 @@ fn encode_request_target(
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
+
     use httparse::ParserConfig;
-    use rama_core::bytes::BytesMut;
-    use rama_core::extensions::Extension;
+    use rama_core::{bytes::BytesMut, extensions::Extension};
+    use rama_http_types::header::HeaderValue;
 
     use super::*;
 
@@ -1585,10 +1608,12 @@ mod tests {
 
     #[test]
     fn encode_request_target_forms() {
-        use rama_net::Protocol;
-        use rama_net::address::{HostWithPort, ProxyAddress};
-        use rama_net::client::{EstablishedProxyRoute, ProxyRoute};
-        use rama_net::uri::Uri;
+        use rama_net::{
+            Protocol,
+            address::{HostWithPort, ProxyAddress},
+            client::{EstablishedProxyRoute, ProxyRoute},
+            uri::Uri,
+        };
 
         fn target(method: &Method, uri: &str, ext: &Extensions) -> String {
             let mut dst = Vec::new();
@@ -1666,10 +1691,12 @@ mod tests {
 
     #[test]
     fn encode_request_target_uses_full_protocol_resolution() {
-        use rama_net::Protocol;
-        use rama_net::address::{HostWithPort, ProxyAddress};
-        use rama_net::client::EstablishedProxyRoute;
-        use rama_net::uri::Uri;
+        use rama_net::{
+            Protocol,
+            address::{HostWithPort, ProxyAddress},
+            client::EstablishedProxyRoute,
+            uri::Uri,
+        };
 
         // A scheme-less request whose protocol is HTTPS *only* via an inserted `Protocol`
         // extension (not the URI scheme) must resolve as secure -> origin-form over an
@@ -1710,10 +1737,12 @@ mod tests {
     #[cfg(feature = "tls")]
     #[test]
     fn encode_request_target_honors_real_secure_transport() {
-        use rama_net::Protocol;
-        use rama_net::address::{HostWithPort, ProxyAddress};
-        use rama_net::client::EstablishedProxyRoute;
-        use rama_net::uri::Uri;
+        use rama_net::{
+            Protocol,
+            address::{HostWithPort, ProxyAddress},
+            client::EstablishedProxyRoute,
+            uri::Uri,
+        };
         use rama_tls::SecureTransport;
 
         let ext = Extensions::new();
@@ -1771,6 +1800,88 @@ mod tests {
             msg.head.extensions.get_ref::<RequestTargetForm>(),
             Some(&RequestTargetForm::Origin),
         );
+    }
+
+    #[test]
+    fn received_targets_name_the_routed_authority() {
+        for (raw, uri, host) in [
+            // RFC 9112 §3.2.2: an absolute-form target replaces a differing Host.
+            (
+                "GET http://user:pw@ramaproxy.org/echo HTTP/1.1\r\nHost: other.example\r\n\r\n",
+                "http://ramaproxy.org/echo",
+                Some("ramaproxy.org"),
+            ),
+            (
+                "GET http://ramaproxy.org/echo HTTP/1.1\r\nHost: RAMAPROXY.org\r\n\r\n",
+                "http://ramaproxy.org/echo",
+                Some("RAMAPROXY.org"),
+            ),
+            (
+                "CONNECT ramaproxy.org:443 HTTP/1.1\r\nHost: other.example\r\n\r\n",
+                "ramaproxy.org:443",
+                Some("ramaproxy.org:443"),
+            ),
+            // Origin-form keeps its Host, less userinfo.
+            (
+                "GET /echo HTTP/1.1\r\nHost: user@ramaproxy.org\r\n\r\n",
+                "/echo",
+                Some("ramaproxy.org"),
+            ),
+            ("GET /echo HTTP/1.1\r\n\r\n", "/echo", None),
+        ] {
+            let (received, headers) = crate::proto::h1::test_util::receive(raw);
+            assert_eq!(received.to_string(), uri, "{raw}");
+            assert_eq!(
+                headers
+                    .get(header::HOST)
+                    .map(|value| value.to_str().unwrap()),
+                host,
+                "{raw}"
+            );
+        }
+    }
+
+    /// A replaced or collapsed Host keeps the first line's spelling and position.
+    #[test]
+    fn normalized_hosts_keep_their_name_and_position() {
+        for (target, host, extra, expected) in [
+            (
+                "http://ramaproxy.org/x",
+                "ramaproxy.org",
+                "",
+                "ramaproxy.org",
+            ),
+            (
+                "http://ramaproxy.org/x",
+                "other.example",
+                "",
+                "ramaproxy.org",
+            ),
+            ("/x", "user@ramaproxy.org", "", "ramaproxy.org"),
+        ] {
+            let raw = format!(
+                "GET {target} HTTP/1.1\r\nX-First: a\r\nhOsT: {host}\r\nX-Middle: b\r\n\
+                 X-Middle: c\r\n{extra}X-Last: d\r\n\r\n"
+            );
+            let (_, headers) = crate::proto::h1::test_util::receive(&raw);
+            let fields: Vec<_> = headers
+                .ordered_iter()
+                .map(|(name, value)| {
+                    format!("{}: {}", name.as_original_str(), value.to_str().unwrap())
+                })
+                .collect();
+            assert_eq!(
+                fields,
+                [
+                    "X-First: a".to_owned(),
+                    format!("hOsT: {expected}"),
+                    "X-Middle: b".to_owned(),
+                    "X-Middle: c".to_owned(),
+                    "X-Last: d".to_owned(),
+                ],
+                "{target} {host} {extra:?}"
+            );
+        }
     }
 
     #[test]
@@ -2718,10 +2829,82 @@ mod tests {
         assert_eq!(unfold("obs\r\n fold\r\n\t line"), "obs fold line",);
     }
 
+    /// An empty request body never carries a positive Content-Length.
+    #[test]
+    fn empty_request_bodies_drop_a_positive_content_length() {
+        for (length, expected) in [
+            ("5", "GET / HTTP/1.1\r\n\r\n"),
+            ("0", "GET / HTTP/1.1\r\ncontent-length: 0\r\n\r\n"),
+        ] {
+            let mut head = MessageHead::default();
+            head.headers
+                .insert("content-length", HeaderValue::from_static(length));
+            let mut vec = Vec::new();
+            let encoder = Client::encode(
+                Encode {
+                    head: EncodeHead {
+                        version: head.version,
+                        subject: head.subject,
+                        headers: head.headers,
+                        extensions: &mut head.extensions,
+                    },
+                    body: None,
+                    keep_alive: true,
+                    req_method: &mut None,
+                    title_case_headers: false,
+                    date_header: true,
+                },
+                &mut vec,
+            )
+            .unwrap();
+            assert!(encoder.is_eof(), "{length}");
+            assert_eq!(String::from_utf8(vec).unwrap(), expected, "{length}");
+        }
+    }
+
+    /// An HTTP/1 CONNECT names `host:port` and is never an Extended CONNECT, whose HTTP/1.1
+    /// form is an `Upgrade` request: neither falls back to some other target on the wire.
+    #[test]
+    fn client_connect_refuses_targets_http1_cannot_name() {
+        for (uri, protocol, accepted) in [
+            ("https://example.test:443", false, true),
+            ("https://example.test", false, false),
+            ("https://example.test:443/chat", true, false),
+        ] {
+            let mut head = MessageHead {
+                subject: RequestLine(Method::CONNECT, uri.parse().unwrap()),
+                ..Default::default()
+            };
+            if protocol {
+                head.extensions
+                    .insert(rama_http_types::proto::ext::Protocol::WEBSOCKET);
+            }
+            let mut vec = Vec::new();
+            let encoded = Client::encode(
+                Encode {
+                    head: EncodeHead {
+                        version: head.version,
+                        subject: head.subject,
+                        headers: head.headers,
+                        extensions: &mut head.extensions,
+                    },
+                    body: None,
+                    keep_alive: true,
+                    req_method: &mut None,
+                    title_case_headers: false,
+                    date_header: true,
+                },
+                &mut vec,
+            );
+            assert_eq!(encoded.is_ok(), accepted, "{uri} {protocol}");
+        }
+    }
+
     #[test]
     fn test_client_request_encode_title_case() {
-        use crate::proto::BodyLength;
         use rama_http_types::header::HeaderValue;
+
+        use crate::proto::BodyLength;
 
         let mut head = MessageHead::default();
         head.headers
@@ -2754,8 +2937,9 @@ mod tests {
 
     #[test]
     fn test_client_request_encode_orig_case() {
-        use crate::proto::BodyLength;
         use rama_http_types::header::HeaderValue;
+
+        use crate::proto::BodyLength;
 
         let mut head = MessageHead::default();
         head.headers
@@ -2789,8 +2973,9 @@ mod tests {
     }
     #[test]
     fn test_client_request_encode_orig_and_title_case() {
-        use crate::proto::BodyLength;
         use rama_http_types::header::HeaderValue;
+
+        use crate::proto::BodyLength;
 
         let mut head = MessageHead::default();
         head.headers
@@ -2825,8 +3010,9 @@ mod tests {
 
     #[test]
     fn connection_nominated_trailers_are_not_encoded() {
-        use crate::proto::BodyLength;
         use rama_http_types::header::{CONNECTION, HeaderValue, TRAILER};
+
+        use crate::proto::BodyLength;
 
         fn headers() -> HeaderMap {
             HeaderMap::from_iter([
@@ -2946,6 +3132,11 @@ mod tests {
                     } else {
                         Encoder::chunked()
                     }
+                    .with_nominated_fields(if close {
+                        [HeaderName::from_static("close")].into_iter().collect()
+                    } else {
+                        Default::default()
+                    })
                     .set_last(close);
                     assert_eq!(
                         encoder, expected,
@@ -3080,10 +3271,10 @@ mod tests {
                             &mut wire,
                         )
                         .unwrap_err();
-                        assert!(matches!(
+                        assert_matches!(
                             error.kind(),
-                            crate::error::Kind::User(crate::error::User::UnexpectedHeader)
-                        ));
+                            crate::error::Kind::User(crate::error::User::UnexpectedHeader),
+                        );
                         assert_eq!(wire, b"previous response");
                     }
                 }
@@ -3115,10 +3306,10 @@ mod tests {
                 }
                 let error =
                     encode_close_delimited_test_response(head, body, Method::GET).unwrap_err();
-                assert!(matches!(
+                assert_matches!(
                     error.kind(),
-                    crate::error::Kind::User(crate::error::User::UnexpectedHeader)
-                ));
+                    crate::error::Kind::User(crate::error::User::UnexpectedHeader),
+                );
             }
         }
     }
@@ -3374,8 +3565,9 @@ mod tests {
 
     #[test]
     fn test_server_response_encode_title_case() {
-        use crate::proto::BodyLength;
         use rama_http_types::header::HeaderValue;
+
+        use crate::proto::BodyLength;
 
         let mut head = MessageHead::default();
         head.headers
@@ -3412,8 +3604,9 @@ mod tests {
 
     #[test]
     fn test_server_response_encode_orig_case() {
-        use crate::proto::BodyLength;
         use rama_http_types::header::HeaderValue;
+
+        use crate::proto::BodyLength;
 
         let mut head = MessageHead::default();
         head.headers
@@ -3447,8 +3640,9 @@ mod tests {
 
     #[test]
     fn test_server_response_encode_orig_and_title_case() {
-        use crate::proto::BodyLength;
         use rama_http_types::header::HeaderValue;
+
+        use crate::proto::BodyLength;
 
         let mut head = MessageHead::default();
         head.headers
@@ -3483,8 +3677,9 @@ mod tests {
 
     #[test]
     fn test_disabled_date_header() {
-        use crate::proto::BodyLength;
         use rama_http_types::header::HeaderValue;
+
+        use crate::proto::BodyLength;
 
         let mut head = MessageHead::default();
         head.headers

@@ -75,6 +75,7 @@ pub(super) fn bind(
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::{
         io::IoSliceMut,
         net::{IpAddr, UdpSocket as StdUdpSocket},
@@ -105,8 +106,9 @@ mod tests {
                 .bind(SocketAddress::default_ipv6(port))
                 .await
                 .unwrap_err();
-            assert!(
-                matches!(error, DatagramError::Io(error) if error.kind() == io::ErrorKind::AddrInUse)
+            assert_matches!(
+                error,
+                DatagramError::Io(error) if error.kind() == io::ErrorKind::AddrInUse,
             );
 
             // Explicit IPv6-only retains the independent port namespace promised by that option.

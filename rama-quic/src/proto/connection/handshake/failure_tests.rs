@@ -1,11 +1,14 @@
+use std::assert_matches;
+
+use rama_quic_proto::{
+    ConnectionId, Side, TransportErrorCode, Version,
+    crypto::{HeaderKey, PacketKey},
+};
+
 use super::*;
 use crate::proto::{
     crypto::{ExportKeyingMaterialError, Session},
     tests::Pair,
-};
-use rama_quic_proto::{
-    ConnectionId, Side, TransportErrorCode, Version,
-    crypto::{HeaderKey, PacketKey},
 };
 
 struct FailedKeyUpdate {
@@ -17,6 +20,21 @@ impl Session for FailedKeyUpdate {
         Err(TransportError::INTERNAL_ERROR(
             "injected Initial key derivation failure",
         ))
+    }
+    fn switch_version(&mut self, _: Version) -> Result<(), crypto::UnsupportedVersion> {
+        Err(crypto::UnsupportedVersion)
+    }
+    fn handshake_summary(&self) -> Option<crypto::NegotiatedTlsParameters> {
+        None
+    }
+    fn negotiated_alpn(&self) -> Option<&[u8]> {
+        None
+    }
+    fn peer_certificates(&self) -> Option<Vec<rama_crypto::pki_types::CertificateDer<'static>>> {
+        None
+    }
+    fn negotiated_key_exchange_group(&self) -> Option<u16> {
+        None
     }
     fn early_crypto(&self) -> Option<(Box<dyn HeaderKey>, Box<dyn PacketKey>)> {
         None
@@ -78,9 +96,10 @@ fn failed_key_derivation_closes_without_rotating_or_counting_an_update() {
         assert_eq!(connection.spaces[SpaceId::Data].sent_with_keys, sent);
         assert_eq!(connection.stats.key_updates, updates);
         assert!(connection.prev_crypto.is_none());
-        assert!(
-            matches!(connection.ended_because(), Some(ConnectionError::TransportError(error))
-            if error.code == TransportErrorCode::INTERNAL_ERROR)
+        assert_matches!(
+            connection.ended_because(),
+            Some(ConnectionError::TransportError(error))
+            if error.code == TransportErrorCode::INTERNAL_ERROR,
         );
     }
 }
@@ -149,8 +168,9 @@ fn failed_packet_encryption_does_not_emit_or_track_plaintext() {
     assert_eq!(connection.stats.key_updates, updates);
     assert_eq!(connection.stats.path.sent_packets, sent);
     assert_eq!(connection.stats.udp_tx.datagrams, datagrams);
-    assert!(
-        matches!(connection.ended_because(), Some(ConnectionError::TransportError(error))
-        if error.code == TransportErrorCode::INTERNAL_ERROR)
+    assert_matches!(
+        connection.ended_because(),
+        Some(ConnectionError::TransportError(error))
+        if error.code == TransportErrorCode::INTERNAL_ERROR,
     );
 }

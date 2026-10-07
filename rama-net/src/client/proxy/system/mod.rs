@@ -501,6 +501,7 @@ impl SystemProxyConfig {
     }
 }
 
+#[derive(Debug)]
 enum SystemProxyDecision {
     None,
     Route(ProxyRoute),
@@ -1253,7 +1254,7 @@ where
             .uri()
             .authority()
             .map(|authority| authority.into_owned().address)
-            .or_else(|| input.authority());
+            .or_else(|| input.target_authority());
         let config = self.layer.config().await?;
         if !config.is_empty() {
             let normalized_uri = if self.layer.pac_enabled {
@@ -1449,7 +1450,7 @@ where
 {
     let uri = input.uri();
     let protocol = request_protocol(input);
-    proxy_request_uri(uri, input.authority(), protocol)
+    proxy_request_uri(uri, input.target_authority(), protocol)
 }
 
 pub(super) fn request_protocol<I>(input: &I) -> Protocol
@@ -1464,7 +1465,7 @@ where
         // opaque and overwhelmingly TLS, so match the HTTP PAC layer and show
         // it as HTTPS regardless of the named port.
         .or_else(|| input.uri().authority().map(|_| Protocol::HTTPS))
-        .or_else(|| input.protocol().cloned())
+        .or_else(|| input.target_protocol().cloned())
         .unwrap_or(Protocol::HTTP)
 }
 
@@ -1536,6 +1537,7 @@ pub(super) fn proxy_address(
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::convert::Infallible;
 
     use parking_lot::Mutex;
@@ -1983,10 +1985,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(matches!(
+        assert_matches!(
             seen.lock()[0].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Proxy(_)]
-        ));
+            [ProxyRoute::Proxy(_)],
+        );
     }
 
     #[tokio::test]
@@ -2423,26 +2425,11 @@ mod tests {
             .unwrap();
 
         let seen = seen.lock();
-        assert!(matches!(
-            seen[0].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Direct]
-        ));
-        assert!(matches!(
-            seen[1].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Proxy(_)]
-        ));
-        assert!(matches!(
-            seen[2].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Direct]
-        ));
-        assert!(matches!(
-            seen[3].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Proxy(_)]
-        ));
-        assert!(matches!(
-            seen[4].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Direct]
-        ));
+        assert_matches!(seen[0].as_ref().unwrap().as_slice(), [ProxyRoute::Direct]);
+        assert_matches!(seen[1].as_ref().unwrap().as_slice(), [ProxyRoute::Proxy(_)]);
+        assert_matches!(seen[2].as_ref().unwrap().as_slice(), [ProxyRoute::Direct]);
+        assert_matches!(seen[3].as_ref().unwrap().as_slice(), [ProxyRoute::Proxy(_)]);
+        assert_matches!(seen[4].as_ref().unwrap().as_slice(), [ProxyRoute::Direct]);
     }
 
     #[tokio::test]
@@ -2467,18 +2454,9 @@ mod tests {
             .unwrap();
 
         let seen = seen.lock();
-        assert!(matches!(
-            seen[0].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Direct]
-        ));
-        assert!(matches!(
-            seen[1].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Proxy(_)]
-        ));
-        assert!(matches!(
-            seen[2].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Proxy(_)]
-        ));
+        assert_matches!(seen[0].as_ref().unwrap().as_slice(), [ProxyRoute::Direct]);
+        assert_matches!(seen[1].as_ref().unwrap().as_slice(), [ProxyRoute::Proxy(_)]);
+        assert_matches!(seen[2].as_ref().unwrap().as_slice(), [ProxyRoute::Proxy(_)]);
     }
 
     #[tokio::test]
@@ -2500,14 +2478,8 @@ mod tests {
             .unwrap();
 
         let seen = seen.lock();
-        assert!(matches!(
-            seen[0].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Proxy(_)]
-        ));
-        assert!(matches!(
-            seen[1].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Direct]
-        ));
+        assert_matches!(seen[0].as_ref().unwrap().as_slice(), [ProxyRoute::Proxy(_)]);
+        assert_matches!(seen[1].as_ref().unwrap().as_slice(), [ProxyRoute::Direct]);
     }
 
     #[tokio::test]
@@ -2531,15 +2503,9 @@ mod tests {
 
         let seen = seen.lock();
         for routes in &seen[..4] {
-            assert!(matches!(
-                routes.as_ref().unwrap().as_slice(),
-                [ProxyRoute::Direct]
-            ));
+            assert_matches!(routes.as_ref().unwrap().as_slice(), [ProxyRoute::Direct]);
         }
-        assert!(matches!(
-            seen[4].as_ref().unwrap().as_slice(),
-            [ProxyRoute::Proxy(_)]
-        ));
+        assert_matches!(seen[4].as_ref().unwrap().as_slice(), [ProxyRoute::Proxy(_)]);
     }
 
     #[tokio::test]
@@ -2588,16 +2554,16 @@ mod tests {
             .with_pac_uri(pac_uri.clone())
             .with_bypass(["bypass.example"]);
 
-        assert!(matches!(
+        assert_matches!(
             config.decision(&uri),
-            SystemProxyDecision::Pac(uri) if uri == pac_uri
-        ));
+            SystemProxyDecision::Pac(uri) if uri == pac_uri,
+        );
 
         config.bypass_before_pac = true;
-        assert!(matches!(
+        assert_matches!(
             config.decision(&uri),
-            SystemProxyDecision::Route(ProxyRoute::Direct)
-        ));
+            SystemProxyDecision::Route(ProxyRoute::Direct),
+        );
     }
 
     #[test]

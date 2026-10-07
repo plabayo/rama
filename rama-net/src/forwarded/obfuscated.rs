@@ -1,8 +1,3 @@
-#![expect(
-    clippy::allow_attributes,
-    reason = "macro-emitted `#[allow(dead_code)]` whose underlying lint fires only for some macro instantiations"
-)]
-
 use core::fmt;
 
 use crate::std::borrow::ToOwned;
@@ -73,13 +68,6 @@ macro_rules! create_obf_type {
             #[doc = concat!("Gets the [`", stringify!($name), "`] as reference.")]
             pub fn as_str(&self) -> &str {
                 self.as_ref()
-            }
-
-            /// easier creation for other locs in this codebase where we are certain that data is pre-validated
-            #[allow(dead_code, reason = "macro-emitted: used only by some instantiations; kept for symmetry across all generated obf types")]
-            pub(super) fn from_inner(inner: SmolStr) -> Self {
-                debug_assert!($val_fn(inner.as_bytes()));
-                Self(inner)
             }
         }
 

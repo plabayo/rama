@@ -7,19 +7,23 @@
     reason = "feature-gated `mut self` consumed by some cfg branches but not others — `#[allow(unused_mut)]` would warn unfulfilled in the cfg arm where it IS used"
 )]
 
+use std::{convert::Infallible, marker::PhantomData, net::IpAddr, sync::Arc, time::Duration};
+
+use tokio::io::AsyncWriteExt;
+
 use crate::{
     Layer, Service,
     cli::ForwardKind,
-    combinators::Either,
-    combinators::Either7,
+    combinators::{Either, Either3, Either7},
     error::{BoxError, BoxErrorExt, ErrorExt as _},
     extensions::ExtensionsRef,
-    http::BodyLimitLayer,
     http::{
-        Request, Response, StatusCode,
-        headers::exotic::XClacksOverhead,
-        headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
-        headers::{Accept, HeaderMapExt},
+        BodyLimitLayer, Request, Response, StatusCode, Version,
+        headers::{
+            Accept, AltSvc, HeaderMapExt,
+            exotic::XClacksOverhead,
+            forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
+        },
         layer::{
             forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
             set_header::SetResponseHeaderLayer, trace::TraceLayer,
@@ -29,24 +33,21 @@ use crate::{
         service::web::response::{Css, IntoResponse, Json, Redirect, Script},
     },
     io::Io,
-    layer::limit::policy::UnlimitedPolicy,
     layer::{
         ConsumeErrLayer, LimitLayer, TimeoutLayer,
-        limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy},
+        limit::policy::{ConcurrentPolicy, RateLimitReached, RatePolicy, UnlimitedPolicy},
     },
-    net::address::ip::geo::{GeoLocation, IpGeoDb, IpGeoInfo},
-    net::forwarded::Forwarded,
-    net::stream::SocketInfo,
-    net::stream::layer::{ThrottleLayer, ThrottleMode},
+    net::{
+        address::ip::geo::{GeoLocation, IpGeoDb, IpGeoInfo},
+        stream::layer::{ThrottleLayer, ThrottleMode},
+    },
     proxy::haproxy::server::HaProxyLayer,
+    quic,
     rt::Executor,
     tcp::TcpStream,
     telemetry::tracing,
     utils::{octets::mib, rate::Rate},
 };
-
-use std::{convert::Infallible, marker::PhantomData, net::IpAddr, sync::Arc, time::Duration};
-use tokio::io::AsyncWriteExt;
 
 core::cfg_select! {
     feature = "boring" => {
@@ -73,6 +74,8 @@ pub struct IpServiceBuilder<M> {
     timeout: Duration,
     forward: Option<ForwardKind>,
     geo_db: Option<Arc<IpGeoDb>>,
+    http_version: Option<Version>,
+    alt_svc: Option<AltSvc>,
     _mode: PhantomData<fn(M)>,
 }
 
@@ -89,6 +92,8 @@ impl IpServiceBuilder<mode::Http> {
             timeout: Duration::ZERO,
             forward: None,
             geo_db: None,
+            http_version: None,
+            alt_svc: None,
             _mode: PhantomData,
         }
     }
@@ -107,6 +112,8 @@ impl IpServiceBuilder<mode::Transport> {
             timeout: Duration::ZERO,
             forward: None,
             geo_db: None,
+            http_version: None,
+            alt_svc: None,
             _mode: PhantomData,
         }
     }
@@ -193,21 +200,195 @@ impl<M> IpServiceBuilder<M> {
 }
 
 impl IpServiceBuilder<mode::Http> {
-    #[allow(unused_mut)]
+    crate::utils::macros::generate_set_and_with! {
+        /// set the http version to serve over TCP (auto by default)
+        #[must_use]
+        pub fn http_version(mut self, version: Option<Version>) -> Self {
+            self.http_version = version;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// advertise alternative services, such as HTTP/3, on every response
+        #[must_use]
+        pub fn alt_svc(mut self, alt_svc: Option<AltSvc>) -> Self {
+            self.alt_svc = alt_svc;
+            self
+        }
+    }
+
     #[inline]
     /// build a tcp service ready to echo the client IP back
     pub fn build(
-        mut self,
+        self,
         executor: Executor,
     ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
-        #[cfg(any(feature = "rustls", feature = "boring"))]
-        {
-            let maybe_tls_acceptor_layer = self.tls_server_config.take().map(TlsAcceptorLayer::new);
-            self.build_http(executor, maybe_tls_acceptor_layer)
-        }
+        self.build_with_http3(executor).map(|(tcp, _)| tcp)
+    }
 
-        #[cfg(not(any(feature = "rustls", feature = "boring")))]
-        self.build_http(executor)
+    /// build a tcp service and an HTTP/3 service, for accepted QUIC connections, ready to
+    /// echo the client IP back
+    ///
+    /// Both serve one http service: they share its rate limit, the connection limit,
+    /// the connection timeout and the per-connection throttle. TLS for QUIC is
+    /// configured on its endpoint.
+    pub fn build_with_http3(
+        self,
+        executor: Executor,
+    ) -> Result<
+        (
+            impl Service<TcpStream, Output = (), Error = Infallible>,
+            impl Service<quic::Connection, Output = (), Error = Infallible>,
+        ),
+        BoxError,
+    > {
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        let maybe_tls_accept_layer = self.tls_server_config.map(TlsAcceptorLayer::new);
+
+        let (tcp_forwarded_layer, http_forwarded_layer) = match &self.forward {
+            None => (None, None),
+            Some(ForwardKind::Forwarded) => {
+                (None, Some(Either7::A(GetForwardedHeaderLayer::forwarded())))
+            }
+            Some(ForwardKind::XForwardedFor) => (
+                None,
+                Some(Either7::B(GetForwardedHeaderLayer::x_forwarded_for())),
+            ),
+            Some(ForwardKind::XClientIp) => (
+                None,
+                Some(Either7::C(GetForwardedHeaderLayer::<XClientIp>::new())),
+            ),
+            Some(ForwardKind::ClientIp) => (
+                None,
+                Some(Either7::D(GetForwardedHeaderLayer::<ClientIp>::new())),
+            ),
+            Some(ForwardKind::XRealIp) => (
+                None,
+                Some(Either7::E(GetForwardedHeaderLayer::<XRealIp>::new())),
+            ),
+            Some(ForwardKind::CFConnectingIp) => (
+                None,
+                Some(Either7::F(GetForwardedHeaderLayer::<CFConnectingIp>::new())),
+            ),
+            Some(ForwardKind::TrueClientIp) => (
+                None,
+                Some(Either7::G(GetForwardedHeaderLayer::<TrueClientIp>::new())),
+            ),
+            Some(ForwardKind::HaProxy) => (Some(HaProxyLayer::default()), None),
+        };
+
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        let hsts_layer = maybe_tls_accept_layer.is_some().then(|| {
+            SetResponseHeaderLayer::if_not_present_typed(
+                StrictTransportSecurity::excluding_subdomains_for_max_seconds(31536000),
+            )
+        });
+
+        let connection_limit = (self.concurrent_limit > 0)
+            .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit)));
+        let connection_timeout = (!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout));
+        // One layer for both: QUIC paces all streams of a connection against one budget.
+        let throttle = self
+            .throttle
+            .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate)));
+        let tcp_service_builder = (
+            ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
+            connection_limit.clone(),
+            connection_timeout.clone(),
+            throttle.clone(),
+            tcp_forwarded_layer,
+            // Limit the body size to 1MB for requests
+            BodyLimitLayer::request_only(mib(1)),
+            #[cfg(any(feature = "rustls", feature = "boring"))]
+            maybe_tls_accept_layer,
+        );
+
+        // Defence-in-depth response headers for the HTML page (txt/json
+        // responses also get them — they're benign there and means
+        // any future widening of HTML emission is already covered).
+        // The page loads `/style/ip.css` and `/script/ip.js` from the
+        // same origin, no inline scripts/styles, no external requests:
+        // the strict-self baseline (banner image whitelisted in the
+        // shared helper) covers it.
+        let (csp_layer, nosniff_layer, referrer_layer, frame_layer) =
+            crate::cli::service::http_security::defence_in_depth_layer(
+                crate::cli::service::http_security::rama_html_csp(),
+            );
+
+        // Attribution header, derived from the loaded databases' notices.
+        let geo_attribution = self.geo_db.as_ref().and_then(|db| {
+            let notices: Vec<_> = db.attributions().collect();
+            (!notices.is_empty()).then(|| crate::cli::service::geo::geo_attribution_layer(notices))
+        });
+
+        // Route the IP echo + its asset sidecars through a Router so we
+        // get clean method-aware matching (anything outside the three
+        // known routes redirects to `/`).
+        let router = crate::http::service::web::Router::new()
+            .with_get(
+                "/",
+                HttpIpService {
+                    geo_db: self.geo_db,
+                },
+            )
+            .with_get("/style/ip.css", Css(IP_STYLE_CSS))
+            .with_get("/script/ip.js", Script(IP_SCRIPT_JS))
+            .with_not_found(async || Redirect::permanent("/"));
+
+        let http_service = (
+            TraceLayer::new_for_http(),
+            SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
+            self.alt_svc
+                .map(SetResponseHeaderLayer::if_not_present_typed),
+            AddRequiredResponseHeadersLayer::default(),
+            self.rate_limit.map(|rate| {
+                LimitLayer::new(RatePolicy::abort(rate)).with_error_into_response_fn(
+                    |err: RateLimitReached| Ok::<_, Infallible>(err.into_response()),
+                )
+            }),
+            geo_attribution,
+            csp_layer,
+            nosniff_layer,
+            referrer_layer,
+            frame_layer,
+            ConsumeErrLayer::default(),
+            #[cfg(any(feature = "rustls", feature = "boring"))]
+            hsts_layer,
+            http_forwarded_layer,
+        )
+            .into_layer(router);
+
+        // Wrap in `Arc` because `Router` is not `Clone` and
+        // `HttpServer::service` requires a cloneable inner service so it
+        // can hand a copy to each connection's task.
+        let http_service = Arc::new(http_service);
+        let http_transport_service = match self.http_version {
+            None => Either3::A(HttpServer::auto(executor.clone()).service(http_service.clone())),
+            Some(Version::HTTP_2) => {
+                Either3::B(HttpServer::new_h2(executor.clone()).service(http_service.clone()))
+            }
+            Some(Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09) => {
+                Either3::C(HttpServer::new_http1(executor.clone()).service(http_service.clone()))
+            }
+            Some(version) => {
+                return Err(BoxError::from_static_str("unsupported http version")
+                    .context_debug_field("version", version));
+            }
+        };
+        let http3_service = (
+            ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
+            connection_limit,
+            connection_timeout,
+            throttle,
+            BodyLimitLayer::request_only(mib(1)),
+        )
+            .into_layer(HttpServer::new_http3(executor).service(http_service));
+
+        Ok((
+            tcp_service_builder.into_layer(http_transport_service),
+            http3_service,
+        ))
     }
 }
 
@@ -227,15 +408,7 @@ impl Service<Request> for HttpIpService {
     type Error = Infallible;
 
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
-        let peer_ip = req
-            .extensions()
-            .get_ref::<Forwarded>()
-            .and_then(|f| f.client_ip())
-            .or_else(|| {
-                req.extensions()
-                    .get_ref::<SocketInfo>()
-                    .map(|s| s.peer_addr().ip_addr)
-            });
+        let peer_ip = crate::net::client_ip::client_ip(&req);
 
         Ok(match peer_ip {
             Some(ip) => match HttpBodyContentFormat::derive_from_req(&req) {
@@ -322,16 +495,7 @@ where
 
     async fn serve(&self, stream: Input) -> Result<Self::Output, Self::Error> {
         tracing::info!("connection received");
-        let peer_ip = stream
-            .extensions()
-            .get_ref::<Forwarded>()
-            .and_then(|f| f.client_ip())
-            .or_else(|| {
-                stream
-                    .extensions()
-                    .get_ref::<SocketInfo>()
-                    .map(|s| s.peer_addr().ip_addr)
-            });
+        let peer_ip = crate::net::client_ip::client_ip(&stream);
         let Some(peer_ip) = peer_ip else {
             tracing::error!("missing peer information");
             return Ok(());
@@ -414,126 +578,6 @@ impl<M> IpServiceBuilder<M> {
         );
 
         Ok(tcp_service_builder.into_layer(TcpIpService))
-    }
-
-    fn build_http<S: Io + Unpin + Sync + ExtensionsRef>(
-        self,
-        executor: Executor,
-        #[cfg(any(feature = "rustls", feature = "boring"))] maybe_tls_accept_layer: Option<
-            TlsAcceptorLayer,
-        >,
-    ) -> Result<impl Service<S, Output = (), Error = Infallible>, BoxError> {
-        let (tcp_forwarded_layer, http_forwarded_layer) = match &self.forward {
-            None => (None, None),
-            Some(ForwardKind::Forwarded) => {
-                (None, Some(Either7::A(GetForwardedHeaderLayer::forwarded())))
-            }
-            Some(ForwardKind::XForwardedFor) => (
-                None,
-                Some(Either7::B(GetForwardedHeaderLayer::x_forwarded_for())),
-            ),
-            Some(ForwardKind::XClientIp) => (
-                None,
-                Some(Either7::C(GetForwardedHeaderLayer::<XClientIp>::new())),
-            ),
-            Some(ForwardKind::ClientIp) => (
-                None,
-                Some(Either7::D(GetForwardedHeaderLayer::<ClientIp>::new())),
-            ),
-            Some(ForwardKind::XRealIp) => (
-                None,
-                Some(Either7::E(GetForwardedHeaderLayer::<XRealIp>::new())),
-            ),
-            Some(ForwardKind::CFConnectingIp) => (
-                None,
-                Some(Either7::F(GetForwardedHeaderLayer::<CFConnectingIp>::new())),
-            ),
-            Some(ForwardKind::TrueClientIp) => (
-                None,
-                Some(Either7::G(GetForwardedHeaderLayer::<TrueClientIp>::new())),
-            ),
-            Some(ForwardKind::HaProxy) => (Some(HaProxyLayer::default()), None),
-        };
-
-        #[cfg(any(feature = "rustls", feature = "boring"))]
-        let hsts_layer = maybe_tls_accept_layer.is_some().then(|| {
-            SetResponseHeaderLayer::if_not_present_typed(
-                StrictTransportSecurity::excluding_subdomains_for_max_seconds(31536000),
-            )
-        });
-
-        let tcp_service_builder = (
-            ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
-            (self.concurrent_limit > 0)
-                .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit))),
-            (!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout)),
-            self.throttle
-                .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
-            tcp_forwarded_layer,
-            // Limit the body size to 1MB for requests
-            BodyLimitLayer::request_only(mib(1)),
-            #[cfg(any(feature = "rustls", feature = "boring"))]
-            maybe_tls_accept_layer,
-        );
-
-        // Defence-in-depth response headers for the HTML page (txt/json
-        // responses also get them — they're benign there and means
-        // any future widening of HTML emission is already covered).
-        // The page loads `/style/ip.css` and `/script/ip.js` from the
-        // same origin, no inline scripts/styles, no external requests:
-        // the strict-self baseline (banner image whitelisted in the
-        // shared helper) covers it.
-        let (csp_layer, nosniff_layer, referrer_layer, frame_layer) =
-            crate::cli::service::http_security::defence_in_depth_layer(
-                crate::cli::service::http_security::rama_html_csp(),
-            );
-
-        // Attribution header, derived from the loaded databases' notices.
-        let geo_attribution = self.geo_db.as_ref().and_then(|db| {
-            let notices: Vec<_> = db.attributions().collect();
-            (!notices.is_empty()).then(|| crate::cli::service::geo::geo_attribution_layer(notices))
-        });
-
-        // Route the IP echo + its asset sidecars through a Router so we
-        // get clean method-aware matching (anything outside the three
-        // known routes redirects to `/`).
-        let router = crate::http::service::web::Router::new()
-            .with_get(
-                "/",
-                HttpIpService {
-                    geo_db: self.geo_db,
-                },
-            )
-            .with_get("/style/ip.css", Css(IP_STYLE_CSS))
-            .with_get("/script/ip.js", Script(IP_SCRIPT_JS))
-            .with_not_found(async || Redirect::permanent("/"));
-
-        let http_service = (
-            TraceLayer::new_for_http(),
-            SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
-            AddRequiredResponseHeadersLayer::default(),
-            self.rate_limit.map(|rate| {
-                LimitLayer::new(RatePolicy::abort(rate)).with_error_into_response_fn(
-                    |err: RateLimitReached| Ok::<_, Infallible>(err.into_response()),
-                )
-            }),
-            geo_attribution,
-            csp_layer,
-            nosniff_layer,
-            referrer_layer,
-            frame_layer,
-            ConsumeErrLayer::default(),
-            #[cfg(any(feature = "rustls", feature = "boring"))]
-            hsts_layer,
-            http_forwarded_layer,
-        )
-            .into_layer(router);
-
-        // Wrap in `Arc` because `Router` is not `Clone` and
-        // `HttpServer::service` requires a cloneable inner service so it
-        // can hand a copy to each connection's task.
-        let http_service = Arc::new(http_service);
-        Ok(tcp_service_builder.into_layer(HttpServer::auto(executor).service(http_service)))
     }
 }
 
@@ -647,9 +691,10 @@ fn render_html_page(
 
 #[cfg(test)]
 mod render_html_page_tests {
+    use std::net::Ipv4Addr;
+
     use super::*;
     use crate::http::protocols::html::IntoHtml as _;
-    use std::net::Ipv4Addr;
 
     /// The IP value flows through `html!`'s escape pipeline, so even if a
     /// future `IpAddr::Display` impl produced HTML-special chars they would
@@ -708,8 +753,10 @@ mod render_html_page_tests {
     /// per-source) and embeds the attribution as an HTML comment.
     #[test]
     fn render_html_page_renders_geo_panel() {
-        use crate::geo::Country;
-        use crate::net::address::ip::geo::{GeoLocation, IpGeoInfo, IpGeoSourceResult};
+        use crate::{
+            geo::Country,
+            net::address::ip::geo::{GeoLocation, IpGeoInfo, IpGeoSourceResult},
+        };
         let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
         let loc = GeoLocation {
             country: Some(Country::Belgium),
