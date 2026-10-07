@@ -232,7 +232,8 @@ pub fn derive_extension(item: TokenStream) -> TokenStream {
 /// struct to carry the matching lifetime (`struct View<'a>`); an all-`Arc`
 /// struct needs no lifetime. Generates `fn from_extensions(ext: &Extensions) ->
 /// Self`, where each field uses the same lookup as `Extensions::get_ref` but the
-/// store is traversed only once.
+/// store is traversed only once. It also generates `fn is_empty(&self) -> bool`,
+/// true when no field is present, which covers every field without a hand list.
 ///
 /// A rank is a completely opaque type and should only be used to compare positions,
 /// it does not tell anything about the absolute position.

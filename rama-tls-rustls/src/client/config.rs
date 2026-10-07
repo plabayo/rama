@@ -31,37 +31,6 @@ pub struct RustlsTlsConnectorConfig<'a> {
 }
 
 impl RustlsTlsConnectorConfig<'_> {
-    /// Whether any supported request-level TLS override is present.
-    /// Inspect request extensions before layering connector defaults.
-    pub fn has_overrides(&self) -> bool {
-        // Name every field so additions require an explicit pooling decision.
-        let Self {
-            alpn,
-            versions,
-            verify,
-            keylog,
-            server_name,
-            store_chain,
-            client_auth,
-            server_cert_pins,
-            server_trust,
-            verifier,
-            modify,
-        } = self;
-
-        alpn.is_some()
-            || versions.is_some()
-            || verify.is_some()
-            || keylog.is_some()
-            || server_name.is_some()
-            || store_chain.is_some()
-            || client_auth.is_some()
-            || server_cert_pins.is_some()
-            || server_trust.is_some()
-            || verifier.is_some()
-            || modify.is_some()
-    }
-
     /// Compact identity of request-level overrides, or `None` for the baseline.
     ///
     /// Explicit defaults remain distinct from absence. Equivalent settings compare
@@ -70,7 +39,7 @@ impl RustlsTlsConnectorConfig<'_> {
     /// Connector defaults are fixed for the lifetime of the pool and must not
     /// be layered onto this request-only view.
     pub fn pool_id(&self) -> Option<TlsPoolId> {
-        if !self.has_overrides() {
+        if self.is_empty() {
             return None;
         }
         let Self {
@@ -324,11 +293,11 @@ mod pool_tests {
         for (name, insert) in cases {
             let first = Extensions::new();
             let empty = RustlsTlsConnectorConfig::from_extensions(&first);
-            assert!(!empty.has_overrides(), "{name}");
+            assert!(empty.is_empty(), "{name}");
             assert_eq!(empty.pool_id(), None, "{name}");
             insert(&first, 0);
             let view = RustlsTlsConnectorConfig::from_extensions(&first);
-            assert!(view.has_overrides(), "{name}");
+            assert!(!view.is_empty(), "{name}");
             let id = view.pool_id().unwrap();
             assert!(id.is_reusable(), "{name}");
             let equal = Extensions::new();
@@ -377,7 +346,7 @@ mod pool_tests {
             let extensions = Extensions::new();
             insert(&extensions);
             let view = RustlsTlsConnectorConfig::from_extensions(&extensions);
-            assert!(view.has_overrides());
+            assert!(!view.is_empty());
             let id = view.pool_id().unwrap();
             assert!(id.is_reusable());
             assert_eq!(Some(id), view.pool_id());

@@ -445,7 +445,7 @@ impl<S, K> TlsConnector<S, K> {
             return Ok(());
         };
         let request = RustlsTlsConnectorConfig::from_extensions(input.extensions());
-        let scope = if request.has_overrides() {
+        let scope = if !request.is_empty() {
             ConnectionPolicyScope::Request
         } else {
             ConnectionPolicyScope::Connector
@@ -455,7 +455,7 @@ impl<S, K> TlsConnector<S, K> {
         }
 
         let merged;
-        let extensions = match (&self.base_config, request.has_overrides()) {
+        let extensions = match (&self.base_config, !request.is_empty()) {
             (Some(base), true) => {
                 merged = input.extensions().fork().with_base(base.as_extensions());
                 &merged
@@ -486,8 +486,7 @@ impl<S, K> TlsConnector<S, K> {
         data: &TlsConnectorData,
         server_host: &Host,
     ) -> Result<ConnectionPolicyScope, ConnectionError> {
-        let scope = if RustlsTlsConnectorConfig::from_extensions(input.extensions()).has_overrides()
-        {
+        let scope = if !RustlsTlsConnectorConfig::from_extensions(input.extensions()).is_empty() {
             ConnectionPolicyScope::Request
         } else {
             ConnectionPolicyScope::Connector
