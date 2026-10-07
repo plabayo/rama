@@ -15,14 +15,15 @@ use rama_net::{
     tls::ApplicationProtocol,
 };
 use rama_tls::{
-    KeyLogIntent, ProtocolVersion, client::TlsServerIdentity, server::SelfSignedCaConfig,
+    CertificateCompressionAlgorithm, KeyLogIntent, ProtocolVersion, client::TlsServerIdentity,
+    server::SelfSignedCaConfig,
 };
 use rama_utils::str::any_submatch_ignore_ascii_case;
 use std::{fmt, num::NonZeroU64, slice, sync::Arc, time::Duration};
 
-use crate::certificate_compression::{ALL_ALGORITHMS, add_certificate_compressors};
+use crate::certificate_compression::add_certificate_compressors;
 use crate::core::ssl::{
-    SslAcceptor, SslMethod, SslOptions, SslRef, SslSessionCacheMode, SslVersion,
+    ExtensionType, SslAcceptor, SslMethod, SslOptions, SslRef, SslSessionCacheMode, SslVersion,
 };
 use crate::server::select_alpn_by_server_preference;
 use rama_tls::keylog::{KeyLogSink, open_intent_sink};
@@ -78,6 +79,7 @@ struct AcceptorKey {
     upstream_signature: Arc<[u8]>,
     protocol_version: Option<ProtocolVersion>,
     alpn: Option<ApplicationProtocol>,
+    certificate_compression: Option<CertificateCompressionAlgorithm>,
     ingress_auth: bool,
 }
 
@@ -661,6 +663,7 @@ where
         source_cert: X509,
         protocol_version: Option<SslVersion>,
         alpn: Option<ApplicationProtocol>,
+        certificate_compression: Option<CertificateCompressionAlgorithm>,
         ingress_auth: bool,
     ) -> Result<SslAcceptor, TlsMitmRelayError> {
         let self::issuer::MitmIssuedCert {
@@ -705,10 +708,19 @@ where
             .context("tls mitm relay: check mirrored private key")
             .map_err(TlsMitmRelayError::config)?;
 
-        // Compress for clients offering an algorithm, as large hosting providers do.
-        add_certificate_compressors(&mut acceptor_builder, &ALL_ALGORITHMS)
+        // Compress exactly as the upstream did, which the client offered to accept.
+        add_certificate_compressors(&mut acceptor_builder, certificate_compression.as_slice())
             .context("tls mitm relay: certificate compression")
             .map_err(TlsMitmRelayError::config)?;
+
+        // A server answers ALPS only on the codepoint it uses, so follow the client.
+        acceptor_builder.set_select_certificate_callback(|mut hello| {
+            let new_codepoint = hello
+                .get_extension(ExtensionType::APPLICATION_SETTINGS)
+                .is_some();
+            hello.ssl_mut().set_alps_use_new_codepoint(new_codepoint);
+            Ok(())
+        });
 
         // Staple the issuer-signed OCSP `good` response (when one was built
         // for this leaf) so revocation-strict clients accept the re-signed

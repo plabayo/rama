@@ -12,13 +12,6 @@ use rama_core::error::ErrorContext as _;
 #[cfg(feature = "compression")]
 pub(crate) mod codecs;
 
-/// Every algorithm a compressor exists for.
-pub(crate) const ALL_ALGORITHMS: [CertificateCompressionAlgorithm; 3] = [
-    CertificateCompressionAlgorithm::Brotli,
-    CertificateCompressionAlgorithm::Zstd,
-    CertificateCompressionAlgorithm::Zlib,
-];
-
 /// Register a compressor for each algorithm, which serves both directions.
 ///
 /// Unknown algorithms are skipped.

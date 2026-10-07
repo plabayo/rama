@@ -29,7 +29,7 @@ use rama_net::{
     address::Domain, client::ConnectorTarget, extensions::StreamTransformed,
     tls::ApplicationProtocol,
 };
-use rama_tls::client::NegotiatedTlsParameters;
+use rama_tls::{CertificateCompressionAlgorithm, client::NegotiatedTlsParameters};
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
@@ -38,6 +38,10 @@ struct Snapshot {
     version: Option<SslVersion>,
     params: Option<NegotiatedTlsParameters>,
     alpn: Option<ApplicationProtocol>,
+    /// How the upstream compressed its certificate, mirrored on ingress.
+    certificate_compression: Option<CertificateCompressionAlgorithm>,
+    /// The upstream's ALPS settings, relayed to the client.
+    application_settings: Option<Box<[u8]>>,
 }
 
 impl Snapshot {
@@ -49,6 +53,10 @@ impl Snapshot {
         })?;
         let version = ssl.version();
         let alpn = ssl.selected_alpn_protocol().map(ApplicationProtocol::from);
+        let certificate_compression = ssl
+            .peer_certificate_compression_algorithm()
+            .and_then(|algorithm| algorithm.rama_try_into().ok());
+        let application_settings = ssl.peer_application_settings().map(Box::from);
         let params = version
             .map(|version| {
                 Ok::<_, TlsMitmRelayError>(NegotiatedTlsParameters {
@@ -80,6 +88,8 @@ impl Snapshot {
             version,
             params,
             alpn,
+            certificate_compression,
+            application_settings,
         })
     }
 }
@@ -132,6 +142,7 @@ where
             snapshot.cert.clone(),
             snapshot.version,
             snapshot.alpn.clone(),
+            snapshot.certificate_compression,
             ingress_auth,
         );
         match &self.acceptors {
@@ -140,6 +151,7 @@ where
                     upstream_signature: Arc::from(snapshot.cert.signature().as_slice()),
                     protocol_version: snapshot.params.as_ref().map(|p| p.protocol_version),
                     alpn: snapshot.alpn.clone(),
+                    certificate_compression: snapshot.certificate_compression,
                     ingress_auth,
                 };
                 cache
@@ -288,6 +300,10 @@ where
         let authenticates_ingress = plan.as_ref().is_some_and(|plan| plan.configure.is_some());
         let acceptor = self.acceptor_for(&snapshot, authenticates_ingress).await?;
         let mut ssl = Ssl::new(acceptor.context()).map_err(TlsMitmRelayError::config)?;
+        if let (Some(protocol), Some(settings)) = (&snapshot.alpn, &snapshot.application_settings) {
+            ssl.add_application_settings_value(protocol.as_bytes(), settings)
+                .map_err(TlsMitmRelayError::config)?;
+        }
         let ingress_handshake = async move {
             let mut plan = plan;
             if let Some(configure) = plan.as_mut().and_then(|plan| plan.configure.take()) {
