@@ -94,7 +94,7 @@ fn request_details_keep_tls_on_connection_and_render_lazy_http_data() {
             headers: test_headers([("content-type".to_owned(), "text/plain".to_owned())]),
         },
     ]);
-    let ja3 = rama::tls::fingerprint::Ja3::compute_from_client_hello(&client_hello, None).unwrap();
+    let ja3 = rama::tls::fingerprint::Ja3::compute_from_client_hello(&client_hello).unwrap();
     details.metadata.upstream.insert(SocketInfo::new(
         None,
         "[2606:4700:10::6814:17aa]:443".parse().unwrap(),

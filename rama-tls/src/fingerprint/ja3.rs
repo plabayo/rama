@@ -1,10 +1,10 @@
 use std::{fmt, io};
 
-use rama_core::{extensions::Extensions, telemetry::tracing};
+use rama_core::extensions::Extensions;
 
 use crate::{
     CipherSuite, ECPointFormat, ExtensionId, ProtocolVersion, SecureTransport, SupportedGroup,
-    client::{ClientHello, NegotiatedTlsParameters},
+    client::ClientHello,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -29,10 +29,7 @@ impl Ja3 {
             .get_ref::<SecureTransport>()
             .and_then(|st| st.client_hello())
             .ok_or(Ja3ComputeError::MissingClientHello)?;
-        let negotiated_tls_version = ext
-            .get_ref::<NegotiatedTlsParameters>()
-            .map(|param| param.protocol_version);
-        Self::compute_from_client_hello(client_hello, negotiated_tls_version)
+        Self::compute_from_client_hello(client_hello)
     }
 
     /// Compute the [`Ja3`] (hash) from a reference to a [`ClientHello`].
@@ -40,16 +37,11 @@ impl Ja3 {
     /// In case your source is [`Extensions`] you can use [`Self::compute`] instead.
     ///
     /// [`ClientHello`]: crate::client::ClientHello
-    pub fn compute_from_client_hello(
-        client_hello: &ClientHello,
-        negotiated_tls_version: Option<ProtocolVersion>,
-    ) -> Result<Self, Ja3ComputeError> {
-        let version = negotiated_tls_version.unwrap_or_else(|| {
-            tracing::trace!(
-                "negotiated tls protocol version missing: fallback to client hello tls"
-            );
-            client_hello.protocol_version()
-        });
+    ///
+    /// The version is the ClientHello's own (legacy) version field, as JA3
+    /// fingerprints the offer rather than the negotiated outcome.
+    pub fn compute_from_client_hello(client_hello: &ClientHello) -> Result<Self, Ja3ComputeError> {
+        let version = client_hello.protocol_version();
 
         let cipher_suites: Vec<_> = client_hello
             .cipher_suites()
@@ -236,7 +228,7 @@ rama_utils::macros::serde_str::impl_serde_str!(serialize display Ja3);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::parse_client_hello;
+    use crate::client::{NegotiatedTlsParameters, parse_client_hello};
 
     #[derive(Debug)]
     struct TestCase {
@@ -340,6 +332,15 @@ mod tests {
             ext.insert(SecureTransport::with_client_hello(
                 parse_client_hello(&test_case.client_hello).expect(test_case.pcap),
             ));
+            // JA3 fingerprints the offer: the negotiated version must not leak in.
+            ext.insert(NegotiatedTlsParameters {
+                protocol_version: ProtocolVersion::TLSv1_3,
+                application_layer_protocol: None,
+                peer_certificate_chain: None,
+                server_name: None,
+                resumed: None,
+                algorithms: Default::default(),
+            });
 
             let ja3 = Ja3::compute(&ext).expect(test_case.pcap);
 

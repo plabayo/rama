@@ -74,9 +74,7 @@ core::cfg_select! {
 use crate::{
     tls::fingerprint::{Ja3, Ja4, PeetPrint},
     tls::{
-        SecureTransport,
-        client::ClientHelloExtension,
-        client::{ECHClientHello, NegotiatedTlsParameters},
+        SecureTransport, client::ClientHelloExtension, client::ECHClientHello,
         server::TlsServerConfig,
     },
 };
@@ -625,12 +623,7 @@ impl Service<Request> for EchoService {
                 {
                     let matched_ja4 = profile
                         .tls
-                        .compute_ja4(
-                            parts
-                                .extensions
-                                .get_ref::<NegotiatedTlsParameters>()
-                                .map(|param| param.protocol_version),
-                        )
+                        .compute_ja4()
                         .inspect_err(|err| {
                             tracing::trace!("ja4 computation of matched profile: {err:?}")
                         })
@@ -666,12 +659,7 @@ impl Service<Request> for EchoService {
                 {
                     let matched_ja3 = profile
                         .tls
-                        .compute_ja3(
-                            parts
-                                .extensions
-                                .get_ref::<NegotiatedTlsParameters>()
-                                .map(|param| param.protocol_version),
-                        )
+                        .compute_ja3()
                         .inspect_err(|err| {
                             tracing::trace!("ja3 computation of matched profile: {err:?}")
                         })

@@ -1,10 +1,8 @@
 use rama_core::extensions::Extension;
 use rama_net::tls::ApplicationProtocol;
-use rama_tls::fingerprint::{PeetComputeError, PeetPrint};
 use rama_tls::{
-    ProtocolVersion,
     client::ClientHello,
-    fingerprint::{Ja3, Ja3ComputeError, Ja4, Ja4ComputeError},
+    fingerprint::{Ja3, Ja3ComputeError, Ja4, Ja4ComputeError, PeetComputeError, PeetPrint},
 };
 use serde::{Deserialize, Serialize};
 
@@ -60,11 +58,8 @@ impl TlsProfile {
     /// of an incoming request.
     ///
     /// As specified by <https://github.com/salesforce/ja3`>.
-    pub fn compute_ja3(
-        &self,
-        negotiated_tls_version: Option<ProtocolVersion>,
-    ) -> Result<Ja3, Ja3ComputeError> {
-        Ja3::compute_from_client_hello(&self.client_hello, negotiated_tls_version)
+    pub fn compute_ja3(&self) -> Result<Ja3, Ja3ComputeError> {
+        Ja3::compute_from_client_hello(&self.client_hello)
     }
 
     /// Compute the [`Ja4`] (hash) on this [`TlsProfile`].
@@ -75,11 +70,8 @@ impl TlsProfile {
     ///
     /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
-    pub fn compute_ja4(
-        &self,
-        negotiated_tls_version: Option<ProtocolVersion>,
-    ) -> Result<Ja4, Ja4ComputeError> {
-        Ja4::compute_from_client_hello(&self.client_hello, negotiated_tls_version)
+    pub fn compute_ja4(&self) -> Result<Ja4, Ja4ComputeError> {
+        Ja4::compute_from_client_hello(&self.client_hello)
     }
 
     /// Compute the [`PeetPrint`] (hash) on this [`TlsProfile`].

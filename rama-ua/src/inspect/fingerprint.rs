@@ -54,8 +54,8 @@ impl FingerprintCache {
                     .tls
                     .get_or_init(|| {
                         Box::new((
-                            profile.tls.compute_ja3(None).ok(),
-                            profile.tls.compute_ja4(None).ok(),
+                            profile.tls.compute_ja3().ok(),
+                            profile.tls.compute_ja4().ok(),
                             profile.tls.compute_peet().ok(),
                         ))
                     })
