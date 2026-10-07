@@ -123,8 +123,8 @@ compression-core = "0.4"
 const_format = "0.2"
 core-foundation = "0.10"
 csv = "1.4"
-dial9 = { version = "0.5.2", default-features = false, features = ["tokio"] }
-dial9-trace-format = "0.5.1"
+dial9 = { version = "0.5.3", default-features = false, features = ["tokio"] }
+dial9-trace-format = "0.5.2"
 divan = "0.1"
 escargot = "0.5"
 fastbloom = { version = "0.17", default-features = false }
@@ -149,7 +149,7 @@ iri-string = "0.7"
 itertools = { version = "0.15", default-features = false }
 itoa = "1"
 jemallocator = { package = "tikv-jemallocator", version = "0.7" }
-jiff = { version = "0.2.37", features = ["serde"] }
+jiff = { version = "0.2.38", features = ["serde"] }
 jni = "0.22"
 libc = "0.2"
 libfuzzer-sys = "0.4"
