@@ -2780,7 +2780,8 @@ mod tests {
     /// The reset is reflected to the client, but only once the reply the
     /// origin sent before it got there, also when the half-close found it,
     /// and with a client leg that is reset at once.
-    #[tokio::test]
+    // Simulated I/O must not race host scheduling against the drain deadline.
+    #[tokio::test(start_paused = true)]
     async fn a_reset_found_while_uploading_still_delivers_the_reply() {
         for found_by in FOUND_BY {
             let svc = IoForwardService::default();
