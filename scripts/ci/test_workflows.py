@@ -274,7 +274,7 @@ class WorkflowPolicyTests(unittest.TestCase):
                          "Run doc tests (cargo test)", "Run example tests (cargo test)",
                          "Run example binary tests"):
                 self.assertEqual(steps[name]["if"], both_ready)
-            for name in ("Run ignored tests", "Run the relay interrupt test"):
+            for name in ("Run ignored tests", "Run Windows integration regressions"):
                 self.assertTrue(steps[name]["if"].startswith(both_ready[:-3] + " && ("))
 
         unstable = yaml.safe_load(self.path.with_name("CI-unstable.yml").read_text())
