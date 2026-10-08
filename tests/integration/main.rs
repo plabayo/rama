@@ -22,3 +22,13 @@ mod tls_close_notify;
 
 #[cfg(all(feature = "dns", feature = "tcp"))]
 mod localhost;
+
+#[cfg(all(feature = "boring", feature = "tcp"))]
+mod posted_recv_tls;
+
+#[cfg(all(
+    target_vendor = "apple",
+    feature = "net-apple-networkextension",
+    feature = "http-full"
+))]
+mod apple_http_linger;

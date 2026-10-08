@@ -191,6 +191,17 @@ impl TcpStream {
             abort,
         }
     }
+
+    /// Take the socket out to close it later, as dropping this stream would
+    /// have: with a reset if it was aborted.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn into_std_to_close(self) -> io::Result<std::net::TcpStream> {
+        if self.abort.load(Ordering::Acquire) {
+            // SO_LINGER 0: the close discards unsent data and sends an RST.
+            _ = self.stream.set_zero_linger();
+        }
+        TokioTcpStream::from(self).into_std()
+    }
 }
 
 impl From<TokioTcpStream> for TcpStream {

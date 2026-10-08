@@ -21,6 +21,10 @@ pub(crate) const INIT_BUFFER_SIZE: usize = 8192;
 /// The minimum value that can be set to max buffer size.
 pub(crate) const MINIMUM_MAX_BUFFER_SIZE: usize = INIT_BUFFER_SIZE;
 
+/// The buffer size for input that is only dropped, as nginx uses while
+/// lingering.
+const DISCARD_BUF_SIZE: usize = 4096;
+
 /// The default maximum read buffer size. If the buffer gets this big and
 /// a message is still not complete, a `TooLarge` error is triggered.
 // Note: if this changes, update server::conn::Http::max_buf_size docs.
@@ -38,6 +42,10 @@ pub(crate) struct Buffered<T, B> {
     io: T,
     partial_len: Option<usize>,
     read_blocked: bool,
+    /// The peer ended its stream: a read with room returned nothing.
+    read_eof: bool,
+    /// A read failed, so the peer is gone or the transport is broken.
+    read_failed: bool,
     read_buf: BytesMut,
     read_buf_strategy: ReadStrategy,
     write_buf: WriteBuf<B>,
@@ -78,6 +86,8 @@ where
             io,
             partial_len: None,
             read_blocked: false,
+            read_eof: false,
+            read_failed: false,
             read_buf: BytesMut::with_capacity(0),
             read_buf_strategy: ReadStrategy::default(),
             write_buf,
@@ -121,6 +131,34 @@ where
 
     pub(crate) fn read_buf(&self) -> &[u8] {
         self.read_buf.as_ref()
+    }
+
+    /// Drop what was read but not parsed yet, returning how many bytes.
+    pub(crate) fn discard_read_buf(&mut self, max: usize) -> usize {
+        let len = self.read_buf.len().min(max);
+        if len == self.read_buf.len() {
+            self.read_buf.clear();
+        } else {
+            self.read_buf.advance(len);
+        }
+        len
+    }
+
+    /// Read in small reads into a small buffer: from here on input is only
+    /// dropped, and may keep coming for a while.
+    pub(crate) fn read_to_discard(&mut self) {
+        // Abandoned input cannot become another pipelined HTTP request.
+        // Even if the byte limit leaves some buffered, flush the final response.
+        self.flush_pipeline = false;
+        self.read_buf_strategy = ReadStrategy::Exact(DISCARD_BUF_SIZE);
+        if self.read_buf.is_empty() && self.read_buf.capacity() > DISCARD_BUF_SIZE {
+            self.read_buf = BytesMut::new();
+        }
+    }
+
+    /// Whether the peer ended its stream or reading from it failed.
+    pub(crate) fn is_read_finished(&self) -> bool {
+        self.read_eof || self.read_failed
     }
 
     /// Return the "allocated" available space, not the potential space
@@ -221,6 +259,14 @@ where
     }
 
     pub(crate) fn poll_read_from_io(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<usize>> {
+        self.poll_read_from_io_limited(cx, usize::MAX)
+    }
+
+    pub(crate) fn poll_read_from_io_limited(
+        &mut self,
+        cx: &mut Context<'_>,
+        max: usize,
+    ) -> Poll<io::Result<usize>> {
         self.read_blocked = false;
         // Get the next amount to allocate, but make sure we don't go over
         // the max read buf size configured.
@@ -237,10 +283,13 @@ where
         // SAFETY: ReadBuf and poll_read promise not to set any uninitialized
         // bytes onto `dst`.
         let dst = unsafe { self.read_buf.chunk_mut().as_uninit_slice_mut() };
-        let mut buf = ReadBuf::uninit(dst);
+        let room = dst.len().min(max);
+        let mut buf = ReadBuf::uninit(&mut dst[..room]);
+        let had_room = buf.remaining() > 0;
         match Pin::new(&mut self.io).poll_read(cx, &mut buf) {
             Poll::Ready(Ok(_)) => {
                 let n = buf.filled().len();
+                self.read_eof |= n == 0 && had_room;
                 trace!("received {n} bytes");
                 // Safety: we just read that many bytes into the
                 // uninitialized part of the buffer, so this is okay.
@@ -255,7 +304,10 @@ where
                 self.read_blocked = true;
                 Poll::Pending
             }
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Ready(Err(e)) => {
+                self.read_failed = true;
+                Poll::Ready(Err(e))
+            }
         }
     }
 

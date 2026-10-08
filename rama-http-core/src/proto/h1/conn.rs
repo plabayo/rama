@@ -15,7 +15,7 @@ use rama_http_types::body::Frame;
 use rama_http_types::header::CONNECTION;
 use rama_http_types::proto::h1::ext::{ConnectionClose, informational::OnInformational};
 use rama_http_types::{HeaderMap, HeaderValue, Method, Version};
-use rama_net::conn::{ConnectionHealthWatcher, MaxConcurrency};
+use rama_net::conn::{ConnectionHealthWatcher, LingeringClose, MaxConcurrency};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::{Instant, Sleep};
 
@@ -55,6 +55,8 @@ where
             io: Buffered::new(io),
             state: State {
                 allow_half_close: false,
+                lingering_close: None,
+                read_abandoned: false,
                 error: None,
                 keep_alive: KA::Busy,
                 method: None,
@@ -126,12 +128,59 @@ where
         self.state.allow_half_close = true;
     }
 
+    pub(crate) fn set_lingering_close(&mut self, linger: Option<LingeringClose>) {
+        self.state.lingering_close = linger;
+    }
+
+    pub(crate) fn lingering_close(&self) -> Option<LingeringClose> {
+        self.state.lingering_close
+    }
+
+    /// Whether the peer ended its stream or reading from it failed, so it
+    /// sends nothing more.
+    pub(crate) fn is_peer_read_finished(&self) -> bool {
+        self.io.is_read_finished()
+    }
+
+    /// Whether input was left unread: an abandoned request body, the rest of
+    /// a rejected request, or bytes already buffered, such as a pipelined
+    /// request.
+    pub(crate) fn left_input_unread(&self) -> bool {
+        self.state.read_abandoned || !self.io.read_buf().is_empty()
+    }
+
+    /// Whether a request was left unread: an abandoned body, or the rest of
+    /// a rejected request that is being answered.
+    pub(crate) fn is_read_abandoned(&self) -> bool {
+        self.state.read_abandoned
+    }
+
+    /// Read and drop input. Returns how many bytes were dropped, or 0 once
+    /// the peer ended its stream.
+    pub(crate) fn poll_discard_read(
+        &mut self,
+        cx: &mut Context<'_>,
+        max: usize,
+    ) -> Poll<io::Result<usize>> {
+        let buffered = self.io.discard_read_buf(max);
+        self.io.read_to_discard();
+        if buffered > 0 {
+            return Poll::Ready(Ok(buffered));
+        }
+        let read = ready!(self.io.poll_read_from_io_limited(cx, max))?;
+        Poll::Ready(Ok(self.io.discard_read_buf(max).max(read)))
+    }
+
     pub(crate) fn disable_date_header(&mut self) {
         self.state.date_header = false;
     }
 
     pub(crate) fn into_inner(self) -> (I, Bytes) {
         self.io.into_inner()
+    }
+
+    pub(crate) fn has_pending_upgrade(&self) -> bool {
+        self.state.upgrade.is_some()
     }
 
     pub(crate) fn pending_upgrade(&mut self) -> Option<upgrade::Pending> {
@@ -388,6 +437,8 @@ where
                     }
                     Err(e) => {
                         debug!("incoming body decode error: {}", e);
+                        // The client may still be sending the rest of it.
+                        self.state.read_abandoned = true;
                         (Reading::Closed, Poll::Ready(Some(Err(e))))
                     }
                 }
@@ -586,7 +637,13 @@ where
     }
 
     pub(crate) fn write_head(&mut self, head: MessageHead<T::Outgoing>, body: Option<BodyLength>) {
+        let accepts_upgrade = T::accepts_upgrade(&head.subject, self.state.method.as_ref());
         if let Some(encoder) = self.encode_head(head, body) {
+            if T::is_server() && !accepts_upgrade {
+                // A request only proposes an upgrade. Reject its promise when
+                // the response stays HTTP, including on a reusable connection.
+                self.state.upgrade = None;
+            }
             self.state.writing = if !encoder.is_eof() {
                 Writing::Body(encoder)
             } else if encoder.is_last() {
@@ -812,10 +869,16 @@ where
                 return Err(crate::Error::new_version_h2());
             }
             if let Some(msg) = T::on_error(&err) {
+                // The client may still be sending the rest of what was
+                // rejected, even when the whole head was already read.
+                self.state.read_abandoned = true;
                 self.write_head(msg, None);
                 self.state.error = Some(err);
                 return Ok(());
             }
+        } else if err.is_parse() {
+            // A response is going out while the client still sends.
+            self.state.read_abandoned = true;
         }
 
         // fallback is pass the error back up
@@ -844,6 +907,16 @@ where
                 debug!("error shutting down IO: {}", e);
                 Poll::Ready(Err(e))
             }
+        }
+    }
+
+    pub(crate) fn abort(&self) {
+        if let Some(abort) = self
+            .io
+            .extensions()
+            .self_get_ref::<rama_core::io::AbortIo>()
+        {
+            abort.abort();
         }
     }
 
@@ -912,6 +985,12 @@ impl<I: Unpin, B, T> Unpin for Conn<I, B, T> {}
 
 struct State {
     allow_half_close: bool,
+    /// How long to keep reading and discarding after shutting down, if at
+    /// all. Only the server lingers.
+    lingering_close: Option<LingeringClose>,
+    /// Input was left unread when reading was closed: a request body, or
+    /// the rest of a rejected request.
+    read_abandoned: bool,
     /// If an error occurs when there wasn't a direct way to return it
     /// back to the user, this is set.
     error: Option<crate::Error>,
@@ -1039,8 +1118,17 @@ impl KA {
 }
 
 impl State {
+    /// Remember that a request body was left unread, so the peer may still
+    /// be sending it.
+    fn abandon_reading(&mut self) {
+        if matches!(self.reading, Reading::Body(..) | Reading::Continue(..)) {
+            self.read_abandoned = true;
+        }
+    }
+
     fn close(&mut self) {
         trace!("State::close()");
+        self.abandon_reading();
         self.reading = Reading::Closed;
         self.writing = Writing::Closed;
         self.keep_alive.disable();
@@ -1048,6 +1136,7 @@ impl State {
 
     fn close_read(&mut self) {
         trace!("State::close_read()");
+        self.abandon_reading();
         self.reading = Reading::Closed;
         self.keep_alive.disable();
     }

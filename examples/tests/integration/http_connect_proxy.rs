@@ -59,4 +59,6 @@ async fn test_http_connect_proxy() {
         .unwrap();
     let expected_value = json!({"lucky_number": 42});
     assert_eq!(expected_value, result);
+
+    utils::reset_response::through_connect("127.0.0.1:62001").await;
 }

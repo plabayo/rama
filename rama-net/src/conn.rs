@@ -147,3 +147,133 @@ impl MaxConcurrency {
         self.0.watch()
     }
 }
+
+/// Bounds of a lingering close: after shutting down its own side, a
+/// connection keeps reading and discarding what its peer still sends before
+/// it is closed.
+///
+/// Closing a socket that still has unread input sends a reset instead of a
+/// clean close, and on Windows a reset makes the peer discard what it has
+/// not read yet, such as the tail of a response that was just sent to it.
+/// The same happens when the peer sends after the socket was closed.
+/// Lingering keeps the socket open until the peer is done, as nginx does
+/// with `lingering_close`.
+///
+/// A connection lingers until its peer ends the stream, nothing arrives for
+/// [`idle_timeout`](Self::idle_timeout), [`timeout`](Self::timeout) passes
+/// in total, or [`max_bytes`](Self::max_bytes) (if set) were read and
+/// discarded, whichever comes first. A peer that is still sending is waited
+/// for, so the total timeout is what bounds a slow one. Used by
+/// [`IoForwardService`](crate::proxy::IoForwardService) and rama's HTTP/1
+/// server, which say when a connection lingers.
+///
+/// The total of 30 seconds is nginx's `lingering_time`. The idle timeout of
+/// 2 seconds is shorter than nginx's `lingering_timeout` of 5, as the peer
+/// only has to finish what it was already sending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LingeringClose {
+    idle_timeout: std::time::Duration,
+    timeout: std::time::Duration,
+    max_bytes: Option<u64>,
+}
+
+impl Default for LingeringClose {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LingeringClose {
+    /// Linger while data keeps arriving within 2 seconds, for at most 30
+    /// seconds in total, without a byte limit.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            idle_timeout: std::time::Duration::from_secs(2),
+            timeout: std::time::Duration::from_secs(30),
+            max_bytes: None,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Stop lingering once nothing arrived for this long.
+        /// If this is at least the total timeout, the total limit wins instead.
+        /// HTTP/1 servers can then abort a blocked response even for an idle client.
+        pub fn idle_timeout(mut self, timeout: std::time::Duration) -> Self {
+            self.idle_timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Stop lingering once this long passed in total.
+        pub fn timeout(mut self, timeout: std::time::Duration) -> Self {
+            self.timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Stop lingering once this many bytes were read and discarded.
+        /// `None` (the default) sets no limit.
+        pub fn max_bytes(mut self, max: Option<u64>) -> Self {
+            self.max_bytes = max;
+            self
+        }
+    }
+
+    /// How long a lingering connection waits for more data.
+    #[must_use]
+    pub const fn idle_timeout(&self) -> std::time::Duration {
+        self.idle_timeout
+    }
+
+    /// How long a connection lingers at most.
+    #[must_use]
+    pub const fn timeout(&self) -> std::time::Duration {
+        self.timeout
+    }
+
+    /// How many bytes a connection reads and discards at most while
+    /// lingering, if limited.
+    #[must_use]
+    pub const fn max_bytes(&self) -> Option<u64> {
+        self.max_bytes
+    }
+
+    /// Whether these bounds let a connection linger at all.
+    #[must_use]
+    pub const fn is_enabled(&self) -> bool {
+        !self.idle_timeout.is_zero()
+            && !self.timeout.is_zero()
+            && !matches!(self.max_bytes, Some(0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn lingering_close_defaults() {
+        let linger = LingeringClose::default();
+        assert_eq!(linger, LingeringClose::new());
+        assert_eq!(linger.idle_timeout(), Duration::from_secs(2));
+        assert_eq!(linger.timeout(), Duration::from_secs(30));
+        assert_eq!(linger.max_bytes(), None);
+        assert!(linger.is_enabled());
+    }
+
+    #[test]
+    fn lingering_close_is_disabled_by_any_zero_bound() {
+        let mut linger = LingeringClose::new();
+        linger.set_max_bytes(1);
+        assert!(linger.is_enabled());
+        assert!(!linger.with_max_bytes(0).is_enabled());
+        assert!(linger.without_max_bytes().is_enabled());
+        assert!(!linger.with_idle_timeout(Duration::ZERO).is_enabled());
+        assert!(!linger.with_timeout(Duration::ZERO).is_enabled());
+    }
+}

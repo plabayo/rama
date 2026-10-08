@@ -90,7 +90,7 @@ class RunnerShutdownTests(unittest.TestCase):
             (root / "capture.sh").write_text(
                 "#!/bin/bash\n"
                 "trap 'sleep 0.05; touch flushed; exit 0' TERM\n"
-                "touch ready\nwhile true; do sleep 0.01; done\n"
+                "touch ready\nsleep 0.25\ntouch delivered\nwhile true; do sleep 0.01; done\n"
             )
             (root / "run.sh").write_text(
                 '#!/bin/bash\nset -e\nbash ./capture.sh &\nPID=$!\n'
@@ -107,6 +107,7 @@ class RunnerShutdownTests(unittest.TestCase):
                 self.assertTrue((root / "ready").exists(), "fake capture did not start")
                 process.send_signal(signal.SIGTERM)
                 process.wait(timeout=5)
+                self.assertTrue((root / "delivered").exists(), "capture stopped before its pending packet batch")
                 self.assertTrue((root / "flushed").exists(), "simulator exited before capture flush")
             finally:
                 try:
