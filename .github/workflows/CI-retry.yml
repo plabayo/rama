@@ -39,7 +39,7 @@ jobs:
             id="${job%%$'\t'*}"
             name="${job#*$'\t'}"
             if ! gh api "repos/${GITHUB_REPOSITORY}/check-runs/${id}/annotations" \
-                --jq '.[].message' | grep -qiE 'lost communication|shutdown signal'; then
+                --jq '.[].message' | grep -qiE 'lost communication|shutdown signal|apt-install: could not fetch packages'; then
               echo "job '${name}' failed on its own (not runner infra); not retrying"
               exit 0
             fi

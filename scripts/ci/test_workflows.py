@@ -15,6 +15,8 @@ import yaml
 
 from check_workflows import ROOT, expression, matrix_rows, validate
 
+AFTER_SETUP = "!cancelled() && steps.setup.outcome == 'success' && "
+
 
 class WorkflowPolicyTests(unittest.TestCase):
     def setUp(self):
@@ -133,8 +135,8 @@ class WorkflowPolicyTests(unittest.TestCase):
                 condition = step.get("if", "")
                 if "matrix.backends" not in condition:
                     continue
-                self.assertIn("!cancelled()", condition)
-                if expression(condition.replace("!cancelled() && ", ""), row):
+                self.assertIn(AFTER_SETUP, condition)
+                if expression(condition.replace(AFTER_SETUP, ""), row):
                     commands.append(step.get("run"))
             for backend, features, crypto in (
                 ("boring", "boring", "boring"),
@@ -175,7 +177,7 @@ class WorkflowPolicyTests(unittest.TestCase):
         step = next(step for step in job["steps"] if step.get("name") == "QUIC backend combinations")
         rows = matrix_rows(job["strategy"]["matrix"])
         self.assertEqual([row for row in rows if expression(
-            step["if"].replace("!cancelled() && ", ""), row)],
+            step["if"].replace(AFTER_SETUP, ""), row)],
             [{"os": "ubuntu-latest", "toolchain": "stable", "backends": "boring"}])
         combinations = re.search(r"for features in (.*); do", step["run"])[1].split()
         actual = {frozenset(features.split(",")) for features in combinations}
@@ -285,6 +287,46 @@ class WorkflowPolicyTests(unittest.TestCase):
                     self.assertNotRegex(step.get("run", ""), r"cargo nextest run[^\n]*--profile ci[^\n]*--profile ci")
                     if step.get("name") in ("Run tests (${{ matrix.profile }})", "Run ignored tests (${{ matrix.profile }})"):
                         self.assertEqual(step["if"], "${{ !cancelled() && steps.build_tests.outcome == 'success' }}")
+
+    def test_checks_never_run_after_a_failed_setup(self):
+        def step(steps, name):
+            return next(s for s in steps if name in (s.get("name"), s.get("uses")))
+
+        def ungated(steps):
+            step(steps, "Custom TLS provider without built-in backends")["if"] = "${{ !cancelled() }}"
+
+        def unguarded_rerun(steps):
+            step(steps, "Rerun Swift FFI battery under lldb on failure")["if"] = "failure()"
+
+        def install_after_gate(steps):
+            install = next(s for s in steps if s.get("with", {}).get("tool") == "just")
+            steps.remove(install)
+            steps.insert(steps.index(step(steps, "Setup complete")) + 1, install)
+
+        def gate_too_early(steps):
+            steps.remove(step(steps, "Setup complete"))
+            steps[0]["id"] = "setup"
+
+        for job, mutation in (
+            ("test-quic-interop-qa", ungated),
+            ("test-ffi-apple-example-transparent-proxy-e2e", unguarded_rerun),
+            ("check-rust", install_after_gate),
+            ("test-quic-interop-qa", gate_too_early),
+        ):
+            workflow = copy.deepcopy(self.workflow)
+            mutation(workflow["jobs"][job]["steps"])
+            with self.subTest(job=job, mutation=mutation.__name__), self.assertRaises(AssertionError):
+                validate(workflow, self.path)
+
+    def test_apt_mirror_outage_reruns_the_job(self):
+        action = (ROOT / ".github/actions/apt-install/action.yml").read_text()
+        message = re.search(r'echo "::error::(apt-install: [^"]+)"', action)[1]
+        publish = (self.path.parent / "publish-containers.yml").read_text()
+        self.assertIn(f'echo "::error::{message}"', publish)
+        retry = yaml.safe_load((self.path.parent / "CI-retry.yml").read_text())
+        command = retry["jobs"]["retry-infra-failures"]["steps"][0]["run"]
+        infra = re.search(r"grep -qiE '([^']+)'", command)[1]
+        self.assertRegex(message, re.compile(infra, re.IGNORECASE))
 
     def test_cross_builds_and_artifact_smoke_move_together(self):
         names = {"test-rust-linux-gnu-cross-macos", "test-rust-linux-gnu-cross-windows",

@@ -80,12 +80,29 @@ jobs:
         name: rama-quic-interop-oci
         path: images
     - name: Install image transport tool
-      # This job checks out no code, so it bounds apt like .github/actions/apt-install does.
-      timeout-minutes: 10
+      # This job checks out no code, so it bounds and retries apt like .github/actions/apt-install does.
+      timeout-minutes: 15
+      shell: bash
       run: |
         apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
-        sudo timeout 300 apt-get "${apt_opts[@]}" update
-        sudo timeout 300 apt-get "${apt_opts[@]}" install --yes --no-install-recommends skopeo
+        apt_get() {
+          local seconds=$1
+          shift
+          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=10 "$seconds" apt-get "${apt_opts[@]}" "$@"
+        }
+        for attempt in 1 2 3 4; do
+          if apt_get 60 update && apt_get 90 install --yes --no-install-recommends --download-only skopeo; then
+            apt_get 120 install --yes --no-install-recommends skopeo
+            exit 0
+          fi
+          echo "::warning::apt-install: attempt $attempt of 4 failed"
+          if [[ -f /etc/apt/apt-mirrors.txt ]]; then
+            sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+          fi
+          sleep 5
+        done
+        echo "::error::apt-install: could not fetch packages after 4 attempts"
+        exit 1
     - name: Publish images without executing them
       id: publish
       env:

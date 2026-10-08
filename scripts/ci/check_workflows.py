@@ -17,6 +17,8 @@ SLOTS = {
     "macos": {f"rama-macos-slot-{i}" for i in range(5)},
     "windows": {f"rama-windows-slot-{i}" for i in range(8)},
 }
+AFTER_FAILURE = re.compile(r"\b(?:cancelled|failure)\(\)")
+OUTCOME_GATE = re.compile(r"\bsteps\.([\w-]+)\.outcome == 'success'")
 
 
 def matrix_rows(matrix):
@@ -113,8 +115,29 @@ def validate_security(workflow, path):
             assert checkout["with"].get("ref") == "${{ needs.resolve-release.outputs.sha }}", (path, name, "Build the resolved release tag")
 
 
+def validate_step_gates(workflow, path):
+    """A step that keeps running after a failure must still need the job's setup to have succeeded."""
+    for name, job in workflow["jobs"].items():
+        steps = job.get("steps", [])
+        # Step ids whose success implies that every step before them succeeded.
+        ready = {}
+        for index, step in enumerate(steps):
+            condition = str(step.get("if", ""))
+            if "always()" in condition:
+                continue  # cleanup and reports tolerate a failed setup
+            gates = [ready[gate] for gate in OUTCOME_GATE.findall(condition) if gate in ready]
+            if AFTER_FAILURE.search(condition):
+                label = (path.name, name, step.get("name") or step.get("uses"))
+                assert gates, (*label, "Runs after a failed setup; gate it on the setup step's outcome")
+                actions = [i for i, s in enumerate(steps[:index]) if "uses" in s and "always()" not in str(s.get("if", ""))]
+                assert max(gates) > max(actions, default=-1), (*label, "Install tools before the setup gate")
+            if "id" in step and (gates or not AFTER_FAILURE.search(condition)):
+                ready[step["id"]] = index
+
+
 def validate(workflow, path):
     validate_security(workflow, path)
+    validate_step_gates(workflow, path)
     jobs = workflow["jobs"]
     for name, job in jobs.items():
         ancestors(jobs, name)

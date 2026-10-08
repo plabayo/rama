@@ -169,7 +169,7 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Install Graphviz
         uses: ./.github/actions/apt-install
-        timeout-minutes: 10
+        timeout-minutes: 15
         with:
           packages: graphviz
       - name: Install mdBook

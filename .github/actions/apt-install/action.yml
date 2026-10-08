@@ -1,5 +1,5 @@
 name: apt install
-description: Install apt packages with bounded network waits, so a stalled mirror fails fast instead of hanging the job.
+description: Install apt packages with time-boxed, retried network waits, so a slow or stalled mirror is retried instead of hanging the job. Gives up within 14 minutes; callers set a longer timeout-minutes.
 
 inputs:
   packages:
@@ -21,13 +21,27 @@ runs:
         fi
         # A stalled mirror connection errors after 30s instead of waiting forever.
         apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
-        for attempt in 1 2 3; do
-          if sudo timeout 300 apt-get "${apt_opts[@]}" update \
-            && sudo env DEBIAN_FRONTEND=noninteractive timeout 300 apt-get "${apt_opts[@]}" \
-              install --yes --no-install-recommends "${package_list[@]}"; then
+        apt_get() {
+          local seconds=$1
+          shift
+          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=10 "$seconds" apt-get "${apt_opts[@]}" "$@"
+        }
+        # A slow mirror never stalls, so each attempt is time-boxed; packages fetched by an
+        # earlier attempt stay in the apt cache and are not downloaded again.
+        for attempt in 1 2 3 4; do
+          if apt_get 60 update \
+            && apt_get 90 install --yes --no-install-recommends --download-only "${package_list[@]}"; then
+            # Every package is cached now, so installing does no network I/O.
+            apt_get 120 install --yes --no-install-recommends "${package_list[@]}"
             exit 0
           fi
-          echo "apt-install: attempt $attempt failed" >&2
-          sleep 10
+          echo "::warning::apt-install: attempt $attempt of 4 failed"
+          # Retry against the runner's fallback archive in case the Azure mirror is the slow one.
+          if [[ -f /etc/apt/apt-mirrors.txt ]]; then
+            sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+          fi
+          sleep 5
         done
+        # CI-retry reruns a job that fails with this message.
+        echo "::error::apt-install: could not fetch packages after 4 attempts"
         exit 1
