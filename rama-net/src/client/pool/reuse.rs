@@ -12,7 +12,11 @@ use rama_core::extensions::{Extension, Extensions};
 ///
 /// Keys compare by value. Their hash only indexes them: distinct keys never
 /// match on a hash collision. Keys built from a type or inline bits do not
-/// allocate; [`Self::and`] allocates its composition once, which clones share.
+/// allocate, and clones never do; [`Self::new`] and [`Self::and`] allocate
+/// once per key they build.
+///
+/// Pools compare keys under their locks: a value's `Eq` must be cheap and
+/// side-effect free, and never call into a pool.
 #[derive(Clone)]
 pub struct ReuseKey {
     hash: u64,
@@ -22,7 +26,8 @@ pub struct ReuseKey {
 #[derive(Clone)]
 enum Repr {
     One(KeyPart),
-    Many(Arc<[KeyPart]>),
+    // Nested, never flattened: a composition keeps its layers apart.
+    Pair(Arc<(ReuseKey, ReuseKey)>),
 }
 
 #[derive(Clone)]
@@ -44,8 +49,7 @@ const fn fold(a: u64, b: u64) -> u64 {
     (full as u64) ^ ((full >> 64) as u64)
 }
 
-/// Odd base of the polynomial combining part hashes, which keeps a
-/// composition's hash independent of how its parts were grouped.
+/// An odd constant mixed into hashes, so that a zero seed half never zeroes them.
 const PART_BASE: u64 = 0x9e37_79b9_7f4a_7c15;
 
 impl ReuseKey {
@@ -82,21 +86,14 @@ impl ReuseKey {
         Self::from_part(hash, KeyPart::Value(value))
     }
 
-    /// Both keys in order, equal only to a composition of equal keys.
+    /// Both keys in order: equal only to a composition of the same keys, in
+    /// the same order and grouping.
     #[must_use]
     pub fn and(self, other: Self) -> Self {
-        let shift = PART_BASE.wrapping_pow(other.parts().len() as u32);
-        let hash = self.hash.wrapping_mul(shift).wrapping_add(other.hash);
-        let mut parts = Vec::with_capacity(self.parts().len() + other.parts().len());
-        for key in [self, other] {
-            match key.repr {
-                Repr::One(part) => parts.push(part),
-                Repr::Many(many) => parts.extend(many.iter().cloned()),
-            }
-        }
+        let [k0, k1] = *BITS_SEED;
         Self {
-            hash,
-            repr: Repr::Many(parts.into()),
+            hash: fold(self.hash ^ k0, other.hash ^ k1 ^ PART_BASE),
+            repr: Repr::Pair(Arc::new((self, other))),
         }
     }
 
@@ -106,18 +103,16 @@ impl ReuseKey {
             repr: Repr::One(part),
         }
     }
-
-    fn parts(&self) -> &[KeyPart] {
-        match &self.repr {
-            Repr::One(part) => core::slice::from_ref(part),
-            Repr::Many(parts) => parts,
-        }
-    }
 }
 
 impl PartialEq for ReuseKey {
     fn eq(&self, other: &Self) -> bool {
-        self.hash == other.hash && self.parts() == other.parts()
+        self.hash == other.hash
+            && match (&self.repr, &other.repr) {
+                (Repr::One(part), Repr::One(other)) => part == other,
+                (Repr::Pair(pair), Repr::Pair(other)) => Arc::ptr_eq(pair, other) || pair == other,
+                _ => false,
+            }
     }
 }
 
@@ -131,7 +126,10 @@ impl Hash for ReuseKey {
 
 impl fmt::Debug for ReuseKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_list().entries(self.parts()).finish()
+        match &self.repr {
+            Repr::One(part) => part.fmt(f),
+            Repr::Pair(pair) => f.debug_tuple("And").field(&pair.0).field(&pair.1).finish(),
+        }
     }
 }
 
@@ -427,6 +425,12 @@ impl ReuseClass {
     pub(super) fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
         self.policy.request_key(input)
     }
+
+    /// The classifier and [`Self::request_key`] of `input`.
+    pub(super) fn derive(self, input: &Extensions) -> (ReuseKey, Option<ReuseKey>) {
+        let key = self.policy.request_key(input);
+        (self.classifier, key)
+    }
 }
 
 #[cfg(test)]
@@ -489,10 +493,10 @@ mod tests {
         assert_ne!(a().and(b()), b().and(a()));
         assert_ne!(a().and(b()), a());
         assert_ne!(a().and(a()), a());
-        assert_eq!(
+        assert_ne!(
             a().and(b()).and(a()),
             a().and(b().and(a())),
-            "composition is associative"
+            "layers of a composition never alias"
         );
     }
 

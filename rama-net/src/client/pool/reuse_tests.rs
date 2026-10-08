@@ -3,6 +3,7 @@ use super::{
     LruDropPool, MultiplexPool, MultiplexedConnection, MuxSelection, Pool, ReuseKey, ReuseStrategy,
 };
 use crate::conn::ConnectionHealthWatcher;
+use parking_lot::Mutex;
 use rama_core::ServiceInput;
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 use std::assert_matches;
@@ -567,6 +568,227 @@ async fn multiplex_rekey_does_not_revive_a_dropped_connection() {
         "a dropped connection stays out of the pool",
     );
     drop(held);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
+struct Name(&'static str);
+
+/// A keyed policy every request matches, in a lane of its own.
+#[derive(Debug)]
+struct Always;
+
+impl ConnectionReusePolicy for Always {
+    fn classifier(&self) -> ReuseKey {
+        ReuseKey::of::<Self>()
+    }
+
+    fn connection_key(&self) -> Option<ReuseKey> {
+        Some(ReuseKey::of::<Self>())
+    }
+
+    fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
+        Some(ReuseKey::of::<Self>())
+    }
+}
+
+/// An older unrestricted connection and a newer keyed one, both serving every
+/// request, each held once.
+async fn two_lanes(
+    selection: MuxSelection,
+) -> (
+    MultiplexPool<ServiceInput<()>, Route>,
+    [MultiplexedConnection<ServiceInput<()>, Route>; 2],
+) {
+    let pool = MultiplexPool::try_new(10, 2)
+        .unwrap()
+        .with_selection(selection);
+    // Both permits first: the older connection could serve the second dial.
+    let mut permits = Vec::new();
+    for _ in 0..2 {
+        let ConnectionResult::CreatePermit(permit) =
+            pool.get_conn(&Route, &Extensions::new()).await.unwrap()
+        else {
+            panic!("the pool is empty");
+        };
+        permits.push(permit);
+    }
+    let older = connection_with(None);
+    older.extensions().insert(Name("older"));
+    let newer = connection_with(Some(ConnectionReuse::new(Always)));
+    newer.extensions().insert(Name("newer"));
+    let mut held = Vec::new();
+    for (conn, permit) in [older, newer].into_iter().zip(permits) {
+        held.push(
+            pool.create(Route, conn, permit, &Extensions::new())
+                .await
+                .unwrap(),
+        );
+    }
+    let [older, newer] = held.try_into().unwrap();
+    (pool, [older, newer])
+}
+
+async fn name_of(pool: &MultiplexPool<ServiceInput<()>, Route>) -> &'static str {
+    let ConnectionResult::Connection(conn) =
+        pool.get_conn(&Route, &Extensions::new()).await.unwrap()
+    else {
+        panic!("both connections have room");
+    };
+    conn.extensions().get_ref::<Name>().unwrap().0
+}
+
+#[tokio::test]
+async fn first_available_selects_across_lanes_in_creation_order() {
+    let (pool, held) = two_lanes(MuxSelection::FirstAvailable).await;
+    drop(held);
+    assert_eq!(name_of(&pool).await, "older");
+}
+
+#[tokio::test]
+async fn least_loaded_selects_across_lanes() {
+    let (pool, [older, newer]) = two_lanes(MuxSelection::LeastLoaded).await;
+    drop(older);
+    assert_eq!(
+        name_of(&pool).await,
+        "older",
+        "an idle connection beats a busy one"
+    );
+    drop(newer);
+}
+
+#[tokio::test]
+async fn round_robin_cycles_across_lanes() {
+    let (pool, held) = two_lanes(MuxSelection::RoundRobin).await;
+    drop(held);
+    let mut names = Vec::new();
+    for _ in 0..4 {
+        names.push(name_of(&pool).await);
+    }
+    assert_eq!(names, ["older", "newer", "older", "newer"]);
+}
+
+/// Equal ids whose reuse can be switched off after a connection is stored.
+#[derive(Debug, Clone)]
+struct SwitchId(Arc<std::sync::atomic::AtomicBool>);
+
+impl PartialEq for SwitchId {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for SwitchId {}
+
+impl std::hash::Hash for SwitchId {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
+    }
+}
+
+impl ConnID for SwitchId {
+    fn is_reusable(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+async fn non_reusable_ids_get_fresh_connections<P: Pool<ServiceInput<()>, SwitchId>>(pool: P) {
+    let id = SwitchId(Arc::new(std::sync::atomic::AtomicBool::new(true)));
+    let ConnectionResult::CreatePermit(permit) =
+        pool.get_conn(&id, &Extensions::new()).await.unwrap()
+    else {
+        panic!("empty pool");
+    };
+    drop(
+        pool.create(
+            id.clone(),
+            ServiceInput::new(()),
+            permit,
+            &Extensions::new(),
+        )
+        .await
+        .unwrap(),
+    );
+    id.0.store(false, Ordering::SeqCst);
+    assert!(matches!(
+        pool.get_conn(&id, &Extensions::new()).await.unwrap(),
+        ConnectionResult::CreatePermit(_),
+    ));
+}
+
+#[tokio::test]
+async fn exclusive_non_reusable_ids_get_fresh_connections() {
+    non_reusable_ids_get_fresh_connections(
+        LruDropPool::try_new(2, 2)
+            .unwrap()
+            .with_drop_connection_if_no_response(false),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn multiplex_non_reusable_ids_get_fresh_connections() {
+    non_reusable_ids_get_fresh_connections(MultiplexPool::try_new(2, 2).unwrap()).await;
+}
+
+#[derive(Debug, Clone, Copy, Extension)]
+struct Arm;
+
+/// Derives key 1; while deriving, takes the only connection of its class out
+/// of the pool, so the id's classes change under the request.
+struct VanishingClass {
+    held: Arc<Mutex<Option<MultiplexedConnection<ServiceInput<()>, Route>>>>,
+}
+
+impl std::fmt::Debug for VanishingClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VanishingClass").finish_non_exhaustive()
+    }
+}
+
+impl ConnectionReusePolicy for VanishingClass {
+    fn classifier(&self) -> ReuseKey {
+        ReuseKey::of::<Self>()
+    }
+
+    fn connection_key(&self) -> Option<ReuseKey> {
+        Some(ReuseKey::from_bits::<PolicyId>(1))
+    }
+
+    fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
+        input.get_ref::<Arm>()?;
+        if let Some(held) = self.held.lock().take() {
+            held.rekey(reuse(1, false));
+        }
+        Some(ReuseKey::from_bits::<PolicyId>(1))
+    }
+}
+
+#[tokio::test]
+async fn keys_derived_from_stale_classes_never_reach_another_class() {
+    let pool = MultiplexPool::try_new(4, 4).unwrap();
+    let held = Arc::new(Mutex::new(None));
+    // The vanishing class first, at class index 0.
+    let first = connection_with(Some(ConnectionReuse::new(VanishingClass {
+        held: held.clone(),
+    })));
+    first.extensions().insert(Name("vanishing"));
+    let established = input(1);
+    established.insert(Arm);
+    let first = establish_with(&pool, &established, first).await;
+    // A `Policy` connection keyed 1 too, at class index 1.
+    let second = connection(1, true);
+    second.extensions().insert(Name("policy"));
+    drop(establish_with(&pool, &input(1), second).await);
+    *held.lock() = Some(first);
+    // Key 1 for the vanishing class, key 2 for `Policy`: nothing serves it.
+    let request = input(2);
+    request.insert(Arm);
+    if let ConnectionResult::Connection(conn) = pool.get_conn(&Route, &request).await.unwrap() {
+        panic!(
+            "served by {:?} although none of the request's lanes has a connection",
+            conn.extensions().get_ref::<Name>()
+        );
+    }
 }
 
 /// Pools hand a request only connections whose lane matches it, and never

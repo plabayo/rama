@@ -263,12 +263,11 @@ impl<C: ExtensionsRef, ID: ConnID> LruDropPool<C, ID> {
     /// Take the most preferred stored connection of `id` whose lane serves
     /// `input`.
     ///
-    /// A connection of a classifier this checkout has not derived a lane for
-    /// yet is taken optimistically and checked outside the storage lock, so a
-    /// hit costs one lock and one key derivation however many policies are
-    /// stored. A connection taken for nothing goes back in its place. Each
-    /// rescan follows a newly derived classifier or a removed broken
-    /// connection, which bounds the loop.
+    /// Request keys are derived outside the storage lock, once per classifier
+    /// the scan meets. Connections stay in storage meanwhile, in their place
+    /// in the LRU order and visible to concurrent checkouts. Each rescan
+    /// follows a newly derived classifier or a removed broken connection,
+    /// which bounds the loop.
     fn take_compatible(
         &self,
         id: &ID,
@@ -284,65 +283,53 @@ impl<C: ExtensionsRef, ID: ConnID> LruDropPool<C, ID> {
             if self.retired.load(Ordering::Acquire) {
                 return None;
             }
-            let mut derive = false;
-            let mut fits = |conn: &PooledConnection<C, ID>| {
+            // The scan stops at the most preferred connection that fits, or
+            // whose classifier has no derived key yet: the class to derive.
+            let decide = |(index, conn): (usize, &PooledConnection<C, ID>)| {
                 if &conn.id != id {
-                    return false;
+                    return None;
                 }
                 let keyed = match &conn.lane {
-                    None => return false,
-                    Some(LaneKey::Unrestricted) => return true,
+                    None => return None,
+                    Some(LaneKey::Unrestricted) => return Some((index, None)),
                     Some(LaneKey::Keyed(keyed)) => keyed,
                 };
-                if let Some((_, wanted)) = wanted
+                match wanted
                     .iter()
                     .find(|(derived, _)| derived == keyed.class.classifier())
                 {
-                    return wanted.as_ref() == Some(&keyed.key);
+                    Some((_, wanted)) => {
+                        (wanted.as_ref() == Some(&keyed.key)).then_some((index, None))
+                    }
+                    None => Some((index, Some(keyed.class.clone()))),
                 }
-                derive = true;
-                true
             };
-            let index = match self.reuse_strategy {
-                ReuseStrategy::FiFo => storage.iter().position(&mut fits),
-                ReuseStrategy::RoundRobin => storage.iter().rposition(&mut fits),
-            }?;
-            let conn = storage.remove(index)?;
+            let found = match self.reuse_strategy {
+                ReuseStrategy::FiFo => storage.iter().enumerate().find_map(decide),
+                ReuseStrategy::RoundRobin => storage.iter().enumerate().rev().find_map(decide),
+            };
+            let class = match found? {
+                (index, None) => {
+                    let conn = storage.remove(index)?;
+                    drop(storage);
+                    if is_broken(&conn) {
+                        park(conn, doomed);
+                        continue;
+                    }
+                    return Some((index, conn));
+                }
+                (_, Some(class)) => class,
+            };
             drop(storage);
-            if conn
-                .extensions()
-                .get_ref::<ConnectionHealthWatcher>()
-                .is_some_and(|watcher| watcher.health() == ConnectionHealth::Broken)
-            {
-                park(conn, doomed);
-                continue;
-            }
-            if !derive {
-                return Some((index, conn));
-            }
-            let Some(LaneKey::Keyed(keyed)) = &conn.lane else {
-                return Some((index, conn));
-            };
-            let derived = keyed.class.request_key(input);
-            let fit = derived.as_ref() == Some(&keyed.key);
-            wanted.push((keyed.class.classifier().clone(), derived));
-            // The policy may have retired the pool while it held the candidate.
-            if self.retired.load(Ordering::Acquire) {
-                park(conn, doomed);
-                return None;
-            }
-            if fit {
-                return Some((index, conn));
-            }
-            let mut storage = self.storage.lock();
-            if self.retired.load(Ordering::Acquire) {
-                park(conn, doomed);
-                return None;
-            }
-            let index = index.min(storage.len());
-            storage.insert(index, conn);
+            wanted.push(class.derive(input));
         }
     }
+}
+
+fn is_broken<C: ExtensionsRef, ID>(conn: &PooledConnection<C, ID>) -> bool {
+    conn.extensions()
+        .get_ref::<ConnectionHealthWatcher>()
+        .is_some_and(|watcher| watcher.health() == ConnectionHealth::Broken)
 }
 
 impl<C, ID> Pool<C, ID> for LruDropPool<C, ID>
@@ -437,6 +424,12 @@ where
                 },
                 None => None,
             };
+            // Last look before the handout: the connection may have closed
+            // while the policy or the resource provider ran.
+            if is_broken(&conn) {
+                park(conn, &mut doomed);
+                continue;
+            }
             break Some((idx, conn, admission));
         };
         let result = if let Some((idx, pooled_conn, admission)) = reused {
@@ -798,14 +791,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::pool::ConnectionReusePolicy;
+    use crate::client::pool::{ConnectionAdmissionPolicy, ConnectionReusePolicy};
     use crate::client::pool::{PooledConnector, ReqToConnID};
     use crate::client::{ConnectorService, EstablishedClientConnection};
     use rama_core::ServiceInput;
     use rama_core::extensions::ExtensionsRef;
     use rama_core::{Service, extensions::Extensions};
+    use rama_utils::reactive::ChangeListener;
     use std::assert_matches;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::{Barrier, Weak, atomic::AtomicBool};
     use std::{
         convert::Infallible,
         sync::atomic::{AtomicI16, Ordering},
@@ -933,6 +927,215 @@ mod tests {
         drop(connection);
         assert!(pool.storage.lock().is_empty());
         assert_eq!(pool.total_slots.available_permits(), 1);
+    }
+
+    /// Keyed by `key`; while armed, a derivation waits twice at `gate`, so
+    /// another thread acts while the checkout derives its key.
+    #[derive(Debug)]
+    struct GatedPolicy {
+        key: u8,
+        armed: Arc<AtomicBool>,
+        gate: Arc<Barrier>,
+    }
+
+    #[derive(Debug, Clone, Copy, Extension)]
+    struct Want(u8);
+
+    impl ConnectionReusePolicy for GatedPolicy {
+        fn classifier(&self) -> ReuseKey {
+            ReuseKey::of::<Self>()
+        }
+
+        fn connection_key(&self) -> Option<ReuseKey> {
+            Some(ReuseKey::from_bits::<Want>(self.key.into()))
+        }
+
+        fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
+            if self.armed.swap(false, Ordering::SeqCst) {
+                self.gate.wait();
+                self.gate.wait();
+            }
+            Some(ReuseKey::from_bits::<Want>(
+                input.get_ref::<Want>()?.0.into(),
+            ))
+        }
+    }
+
+    struct Gate {
+        armed: Arc<AtomicBool>,
+        gate: Arc<Barrier>,
+    }
+
+    impl Gate {
+        fn new() -> Self {
+            Self {
+                armed: Arc::new(AtomicBool::new(false)),
+                gate: Arc::new(Barrier::new(2)),
+            }
+        }
+
+        fn conn(&self, key: u8) -> Conn {
+            let conn = Conn::new();
+            conn.extensions.insert(ConnectionHealthWatcher::default());
+            conn.extensions.insert(ConnectionReuse::new(GatedPolicy {
+                key,
+                armed: self.armed.clone(),
+                gate: self.gate.clone(),
+            }));
+            conn
+        }
+
+        /// Run `during` on another thread while the next derivation waits.
+        fn during(&self, during: impl FnOnce() + Send + 'static) -> std::thread::JoinHandle<()> {
+            self.armed.store(true, Ordering::SeqCst);
+            let gate = self.gate.clone();
+            std::thread::spawn(move || {
+                gate.wait();
+                during();
+                gate.wait();
+            })
+        }
+    }
+
+    fn want(key: u8) -> Extensions {
+        let input = Extensions::new();
+        input.insert(Want(key));
+        input
+    }
+
+    async fn add(pool: &LruDropPool<Conn, usize>, conn: Conn) -> LeasedConnection<Conn, usize> {
+        let ConnectionResult::CreatePermit(permit) =
+            pool.get_conn(&0, &Extensions::new()).await.unwrap()
+        else {
+            panic!("all previous connections are leased");
+        };
+        pool.create(0, conn, permit, &Extensions::new())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn storage_keeps_its_lru_order_while_a_checkout_derives() {
+        let gate = Gate::new();
+        let pool = LruDropPool::try_new(3, 3)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
+        let x = add(&pool, gate.conn(1)).await;
+        let y = add(&pool, gate.conn(3)).await;
+        drop(x);
+        // Y returns while a checkout for key 2 derives its key against X.
+        let returner = gate.during(move || drop(y));
+        assert_matches!(
+            pool.get_conn(&0, &want(2)).await.unwrap(),
+            ConnectionResult::CreatePermit(_),
+        );
+        returner.join().unwrap();
+        let storage = pool.storage.lock();
+        assert_eq!(storage.len(), 2);
+        assert!(
+            storage
+                .iter()
+                .zip(storage.iter().skip(1))
+                .all(|(newer, older)| newer.last_used >= older.last_used),
+            "storage stays most recently used first"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connection_closed_while_its_key_is_derived_is_not_handed_out() {
+        let gate = Gate::new();
+        let pool = LruDropPool::try_new(1, 1)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
+        let conn = gate.conn(1);
+        let health = conn
+            .extensions
+            .get_arc::<ConnectionHealthWatcher>()
+            .unwrap();
+        drop(add(&pool, conn).await);
+        let closer = gate.during(move || health.mark_broken());
+        let result = pool.get_conn(&0, &want(1)).await.unwrap();
+        closer.join().unwrap();
+        assert_matches!(result, ConnectionResult::CreatePermit(_));
+    }
+
+    #[tokio::test]
+    async fn a_connection_closed_during_admission_is_not_handed_out() {
+        #[derive(Debug, Extension)]
+        struct Binding;
+
+        #[derive(Debug)]
+        struct CloseOnAdmission {
+            armed: Arc<AtomicBool>,
+            health: Arc<ConnectionHealthWatcher>,
+        }
+
+        impl ConnectionAdmissionPolicy for CloseOnAdmission {
+            fn try_acquire(
+                &self,
+                _: &Extensions,
+            ) -> Result<Option<ConnectionAdmissionLease>, BoxError> {
+                if self.armed.load(Ordering::SeqCst) {
+                    self.health.mark_broken();
+                }
+                Ok(Some(ConnectionAdmissionLease::new(Arc::new(()), Binding)))
+            }
+
+            fn subscribe(&self, _: Weak<dyn ChangeListener>) {}
+
+            fn in_use(&self) -> bool {
+                false
+            }
+        }
+
+        let pool = LruDropPool::try_new(1, 1)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
+        let conn = Conn::new();
+        let health = Arc::new(ConnectionHealthWatcher::default());
+        let armed = Arc::new(AtomicBool::new(false));
+        conn.extensions.insert_arc(health.clone());
+        conn.extensions
+            .insert(ConnectionAdmission::new(CloseOnAdmission {
+                armed: armed.clone(),
+                health,
+            }));
+        drop(add(&pool, conn).await);
+        armed.store(true, Ordering::SeqCst);
+        assert_matches!(
+            pool.get_conn(&0, &Extensions::new()).await.unwrap(),
+            ConnectionResult::CreatePermit(_),
+        );
+    }
+
+    #[tokio::test]
+    async fn rekey_never_files_a_connection_of_a_non_reusable_id() {
+        #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+        struct Fresh;
+        impl ConnID for Fresh {
+            fn is_reusable(&self) -> bool {
+                false
+            }
+        }
+        let pool = LruDropPool::try_new(1, 1)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
+        let ConnectionResult::CreatePermit(permit) =
+            pool.get_conn(&Fresh, &Extensions::new()).await.unwrap()
+        else {
+            panic!("a non-reusable id always establishes");
+        };
+        let mut conn = pool
+            .create(Fresh, Conn::new(), permit, &Extensions::new())
+            .await
+            .unwrap();
+        conn.rekey(ConnectionReuse::new(GatedPolicy {
+            key: 1,
+            armed: Arc::new(AtomicBool::new(false)),
+            gate: Arc::new(Barrier::new(1)),
+        }));
+        drop(conn);
+        assert!(pool.storage.lock().is_empty());
     }
 
     #[tokio::test]

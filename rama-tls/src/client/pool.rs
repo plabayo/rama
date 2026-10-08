@@ -927,6 +927,103 @@ mod tests {
     }
 
     #[test]
+    fn reuse_keys_keep_custom_components_apart() {
+        let id = |sink: &Arc<dyn KeyLogSink>| {
+            TlsPoolId::builder()
+                .with_keylog(&TlsKeyLog(KeyLogIntent::Custom(sink.clone())))
+                .build()
+        };
+        let sink: Arc<dyn KeyLogSink> = Arc::new(NoopKeyLogSink);
+        let other: Arc<dyn KeyLogSink> = Arc::new(NoopKeyLogSink);
+        assert_eq!(origin_key(id(&sink)), origin_key(id(&sink)));
+        assert_ne!(origin_key(id(&sink)), origin_key(id(&other)));
+    }
+
+    #[test]
+    fn opaque_requests_neither_reuse_nor_are_reused() {
+        #[derive(Debug, Extension)]
+        struct Opaque;
+
+        #[derive(Debug)]
+        struct OpaqueProvider;
+
+        impl TlsClientConfigProvider for OpaqueProvider {
+            fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
+                extensions
+                    .contains::<Opaque>()
+                    .then(TlsPoolId::non_reusable)
+            }
+
+            fn pool_classifier(&self) -> ReuseKey {
+                ReuseKey::of::<Self>()
+            }
+
+            fn authenticates_server(&self, _: &Extensions) -> bool {
+                true
+            }
+        }
+
+        let plain = Extensions::new();
+        let opaque = Extensions::new();
+        opaque.insert(Opaque);
+        let established = ConnectionReuse::new(TlsConnectionReuse::new(OpaqueProvider, &plain));
+        assert!(established.matches(&plain));
+        assert!(!established.matches(&opaque));
+        assert!(
+            !ConnectionReuse::new(TlsConnectionReuse::new(OpaqueProvider, &opaque)).is_reusable()
+        );
+    }
+
+    #[test]
+    fn providers_classify_their_own_requests() {
+        #[derive(Debug)]
+        struct Other;
+
+        impl TlsClientConfigProvider for Other {
+            fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
+                TestProvider.pool_id(extensions)
+            }
+
+            fn pool_classifier(&self) -> ReuseKey {
+                ReuseKey::of::<Self>()
+            }
+
+            fn authenticates_server(&self, _: &Extensions) -> bool {
+                true
+            }
+        }
+
+        let request = Extensions::new();
+        let classifier = |reuse: ConnectionReuse| reuse.classifier().clone();
+        let test = classifier(ConnectionReuse::new(TlsConnectionReuse::new(
+            TestProvider,
+            &request,
+        )));
+        assert_ne!(
+            test,
+            classifier(ConnectionReuse::new(TlsConnectionReuse::new(
+                Other, &request
+            )))
+        );
+        assert_eq!(
+            test,
+            classifier(ConnectionReuse::new(TlsConnectionReuse::new(
+                Arc::new(TestProvider),
+                &request
+            ))),
+            "a shared provider classifies like the provider"
+        );
+        assert_ne!(
+            test,
+            classifier(ConnectionReuse::new(TlsConnectionReuse::tunnel(
+                TestProvider,
+                &request
+            ))),
+            "tunnel and origin keys never share a lane"
+        );
+    }
+
+    #[test]
     fn custom_keylog_identity_retains_and_distinguishes_sinks() {
         let sink: Arc<dyn KeyLogSink> = Arc::new(NoopKeyLogSink);
         let weak = Arc::downgrade(&sink);
