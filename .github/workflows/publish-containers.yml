@@ -80,9 +80,12 @@ jobs:
         name: rama-quic-interop-oci
         path: images
     - name: Install image transport tool
+      # This job checks out no code, so it bounds apt like .github/actions/apt-install does.
+      timeout-minutes: 10
       run: |
-        sudo apt-get update
-        sudo apt-get install --yes --no-install-recommends skopeo
+        apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+        sudo timeout 300 apt-get "${apt_opts[@]}" update
+        sudo timeout 300 apt-get "${apt_opts[@]}" install --yes --no-install-recommends skopeo
     - name: Publish images without executing them
       id: publish
       env:

@@ -281,9 +281,10 @@ jobs:
       # quiche builds BoringSSL with CMake and the runner's C++ toolchain.
       - name: Install the C toolchain quiche builds BoringSSL with
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends cmake clang libclang-dev
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 10
+        with:
+          packages: cmake clang libclang-dev
       - name: Show the C toolchain quiche will use
         if: runner.os != 'Windows'
         run: |

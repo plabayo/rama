@@ -1,0 +1,33 @@
+name: apt install
+description: Install apt packages with bounded network waits, so a stalled mirror fails fast instead of hanging the job.
+
+inputs:
+  packages:
+    description: Packages to install (space-separated)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install apt packages
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        read -ra package_list <<< "$PACKAGES"
+        if [[ ${#package_list[@]} -eq 0 ]]; then
+          echo "apt-install: no packages given" >&2
+          exit 1
+        fi
+        # A stalled mirror connection errors after 30s instead of waiting forever.
+        apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+        for attempt in 1 2 3; do
+          if sudo timeout 300 apt-get "${apt_opts[@]}" update \
+            && sudo env DEBIAN_FRONTEND=noninteractive timeout 300 apt-get "${apt_opts[@]}" \
+              install --yes --no-install-recommends "${package_list[@]}"; then
+            exit 0
+          fi
+          echo "apt-install: attempt $attempt failed" >&2
+          sleep 10
+        done
+        exit 1

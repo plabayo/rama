@@ -168,7 +168,10 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Install Graphviz
-        run: sudo apt-get install -y graphviz
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 10
+        with:
+          packages: graphviz
       - name: Install mdBook
         run: |
           cargo install --version "${MDBOOK_VERSION}" mdbook 2>/dev/null || true
