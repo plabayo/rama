@@ -13,7 +13,7 @@ use rama::{
         client::pool::{
             ConnID, ConnectionAdmission, ConnectionAdmissionLease, ConnectionAdmissionPolicy,
             ConnectionResult, ConnectionReuse, ConnectionReusePolicy, LruDropPool, MultiplexPool,
-            MuxSelection, Pool,
+            MuxSelection, Pool, ReuseKey,
         },
         conn::MaxConcurrency,
     },
@@ -241,10 +241,17 @@ fn multiplex_two_id_waiter_handoff(bencher: divan::Bencher, waiters_per_id: usiz
 struct EstablishedPolicy;
 
 impl ConnectionReusePolicy for EstablishedPolicy {
-    fn matches(&self, input: &Extensions) -> bool {
-        input
-            .get_ref::<MaxConcurrency>()
-            .is_some_and(|limit| limit.get() == 4)
+    fn classifier(&self) -> ReuseKey {
+        ReuseKey::of::<Self>()
+    }
+
+    fn connection_key(&self) -> Option<ReuseKey> {
+        Some(ReuseKey::from_bits::<MaxConcurrency>(4))
+    }
+
+    fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
+        let limit = input.get_ref::<MaxConcurrency>()?;
+        Some(ReuseKey::from_bits::<MaxConcurrency>(limit.get() as u128))
     }
 }
 
@@ -435,8 +442,17 @@ struct Class(usize);
 struct ClassPolicy(Class);
 
 impl ConnectionReusePolicy for ClassPolicy {
-    fn matches(&self, input: &Extensions) -> bool {
-        input.get_ref::<Class>() == Some(&self.0)
+    fn classifier(&self) -> ReuseKey {
+        ReuseKey::of::<Self>()
+    }
+
+    fn connection_key(&self) -> Option<ReuseKey> {
+        Some(ReuseKey::from_bits::<Class>(self.0.0 as u128))
+    }
+
+    fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
+        let class = input.get_ref::<Class>()?;
+        Some(ReuseKey::from_bits::<Class>(class.0 as u128))
     }
 }
 

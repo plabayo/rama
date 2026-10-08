@@ -2,7 +2,7 @@ use crate::dep::rustls::ClientConfig;
 use crate::dep::rustls::client::danger::ServerCertVerifier;
 use rama_core::error::BoxError;
 use rama_core::extensions::{Extension, Extensions, FromExtensions};
-use rama_net::tls::TlsAlpn;
+use rama_net::{client::pool::ReuseKey, tls::TlsAlpn};
 #[cfg(test)]
 use rama_tls::KeyLogIntent;
 use rama_tls::client::{
@@ -207,6 +207,10 @@ pub struct RustlsTlsClientConfigProvider;
 impl TlsClientConfigProvider for RustlsTlsClientConfigProvider {
     fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
         RustlsTlsConnectorConfig::from_extensions(extensions).pool_id()
+    }
+
+    fn pool_classifier(&self) -> ReuseKey {
+        ReuseKey::of::<RustlsTlsConnectorConfig>()
     }
 
     fn authenticates_server(&self, extensions: &Extensions) -> bool {

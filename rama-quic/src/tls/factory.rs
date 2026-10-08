@@ -18,7 +18,10 @@ use {
     feature = "boring",
     all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
 ))]
-use {rama_core::extensions::Extensions, rama_tls::client::TlsPoolId};
+use {
+    rama_core::extensions::Extensions, rama_net::client::pool::ReuseKey,
+    rama_tls::client::TlsPoolId,
+};
 
 use crate::{
     ClientConfig, ServerConfig,
@@ -100,6 +103,10 @@ impl TlsClientConfigProvider for RustlsTlsProvider {
         RustlsTlsConnectorConfig::from_extensions(extensions).pool_id()
     }
 
+    fn pool_classifier(&self) -> ReuseKey {
+        ReuseKey::of::<RustlsTlsConnectorConfig>()
+    }
+
     fn authenticates_server(&self, extensions: &Extensions) -> bool {
         RustlsTlsConnectorConfig::from_extensions(extensions).authenticates_server()
     }
@@ -140,6 +147,10 @@ pub struct BoringTlsProvider;
 impl TlsClientConfigProvider for BoringTlsProvider {
     fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
         BoringTlsConnectorConfig::from_extensions(extensions).pool_id()
+    }
+
+    fn pool_classifier(&self) -> ReuseKey {
+        ReuseKey::of::<BoringTlsConnectorConfig>()
     }
 
     fn authenticates_server(&self, extensions: &Extensions) -> bool {

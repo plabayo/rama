@@ -492,7 +492,10 @@ mod tests {
     use rama_net::{
         AuthorityInputExt, ConnectorTransportProtocolInputExt, Protocol, ProtocolInputExt,
         address::HostWithPort,
-        client::{ConnectRequest, ProxyRoute, pool::ConnectionReusePolicy},
+        client::{
+            ConnectRequest, ProxyRoute,
+            pool::{ConnectionReusePolicy, ReuseKey},
+        },
     };
     use std::{convert::Infallible, sync::Arc, time::Duration};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -503,8 +506,16 @@ mod tests {
     struct FixedProxyPolicy;
 
     impl ConnectionReusePolicy for FixedProxyPolicy {
-        fn matches(&self, _: &Extensions) -> bool {
-            true
+        fn classifier(&self) -> ReuseKey {
+            ReuseKey::of::<Self>()
+        }
+
+        fn connection_key(&self) -> Option<ReuseKey> {
+            Some(ReuseKey::of::<Self>())
+        }
+
+        fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
+            Some(ReuseKey::of::<Self>())
         }
     }
 

@@ -639,7 +639,7 @@ mod concrete_transport_tests {
         address::{HostWithPort, SocketAddress},
         client::{
             ConnectionErrorDomain, ProxyRouteFailureCache, ProxyRouteFailureCacheConnector,
-            ProxyRoutes, ProxyRoutesConnector,
+            ProxyRoutes, ProxyRoutesConnector, pool::ReuseKey,
         },
         tls::TlsAlpn,
     };
@@ -663,6 +663,10 @@ mod concrete_transport_tests {
             TlsPoolId::builder()
                 .maybe_with_verify(extensions.get_ref::<TlsServerVerify>())
                 .build()
+        }
+
+        fn pool_classifier(&self) -> ReuseKey {
+            ReuseKey::of::<Self>()
         }
 
         fn authenticates_server(&self, extensions: &Extensions) -> bool {

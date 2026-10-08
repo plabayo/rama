@@ -65,7 +65,10 @@ use rama::{
     net::{
         Protocol,
         address::{Host, HostWithPort, ProxyAddress, SocketAddress},
-        client::{ConnectRequest, ConnectorTarget, ProxyRoute, ProxyRoutes, pool::ConnectionReuse},
+        client::{
+            ConnectRequest, ConnectorTarget, ProxyRoute, ProxyRoutes,
+            pool::{ConnectionReuse, ReuseKey},
+        },
         conn::MaxConcurrency,
         proxy::IoForwardService,
         tls::ApplicationProtocol,
@@ -2063,6 +2066,10 @@ impl TlsClientConfigProvider for CountingQuicProvider {
         } else {
             self.inner.pool_id(extensions)
         }
+    }
+
+    fn pool_classifier(&self) -> ReuseKey {
+        ReuseKey::from_bits::<Self>(self.opaque.into()).and(self.inner.pool_classifier())
     }
 
     fn authenticates_server(&self, extensions: &Extensions) -> bool {

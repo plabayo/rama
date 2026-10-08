@@ -6,9 +6,10 @@
 
 #[cfg(feature = "opentelemetry")]
 use super::metrics;
+use super::reuse::LaneKey;
 use super::{
     ActiveSlot, ConnID, ConnectionAdmission, ConnectionAdmissionLease, ConnectionResult,
-    ConnectionReuse, Pool, PoolSlot,
+    ConnectionReuse, Pool, PoolSlot, ReuseKey,
 };
 use crate::address::SocketAddress;
 use crate::conn::{ConnectionHealth, ConnectionHealthWatcher};
@@ -19,6 +20,7 @@ use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_core::extensions::{Extension, Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing::trace;
+use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::{guard::DropGuard, macros::generate_set_and_with};
 use std::collections::VecDeque;
 use std::fmt::Debug;
@@ -48,6 +50,19 @@ pub struct LeasedConnection<C: ExtensionsRef, ID> {
     drop_connection_if_no_response: bool,
 }
 
+impl<C: ExtensionsRef, ID: ConnID> LeasedConnection<C, ID> {
+    /// File this connection under new reuse requirements once it returns to
+    /// the pool, such as an identity it authenticated after it was established.
+    ///
+    /// Also publishes `reuse` on the connection. Pools otherwise keep the
+    /// requirements the connection was added with.
+    pub fn rekey(&mut self, reuse: ConnectionReuse) {
+        let pooled = &mut *self.pooled_conn;
+        pooled.lane = LaneKey::of_connection(Some(&reuse)).filter(|_| pooled.id.is_reusable());
+        pooled.conn.extensions().insert(reuse);
+    }
+}
+
 impl<C: ExtensionsRef, ID> LeasedConnection<C, ID> {
     pub fn into_connection(mut self) -> C {
         // We cannot use ::into_inner as we still require a Drop impl as well, so
@@ -74,8 +89,9 @@ struct PooledConnection<C, ID> {
     id: ID,
     pool_slot: PoolSlot,
     last_used: Instant,
-    reusable: bool,
-    reuse_policy: Option<Arc<ConnectionReuse>>,
+    /// Which requests may use the connection, `None` if it is dropped once
+    /// returned. Read from [`ConnectionReuse`] once, when it is added.
+    lane: Option<LaneKey>,
 }
 
 impl<C: ExtensionsRef, ID> ExtensionsRef for PooledConnection<C, ID> {
@@ -122,7 +138,7 @@ impl<C, ID> Clone for ConnReturner<C, ID> {
 
 impl<C, ID> ConnReturner<C, ID> {
     fn return_conn(&self, mut conn: PooledConnection<C, ID>) {
-        if !conn.reusable || self.retired.load(Ordering::Acquire) {
+        if conn.lane.is_none() || self.retired.load(Ordering::Acquire) {
             return;
         }
         if let Some(storage) = self.weak_storage.upgrade() {
@@ -244,11 +260,15 @@ impl<C, ID> LruDropPool<C, ID> {
 }
 
 impl<C: ExtensionsRef, ID: ConnID> LruDropPool<C, ID> {
-    /// Inspect one candidate at a time so the common first hit needs no snapshot
-    /// allocation or scan of the remaining idle connections. The cursor advances
-    /// on rejection. Bound inspection by the initial idle count: concurrent
-    /// changes may skip a candidate, but cannot admit an unchecked policy or
-    /// keep this synchronous search running indefinitely.
+    /// Take the most preferred stored connection of `id` whose lane serves
+    /// `input`.
+    ///
+    /// A connection of a classifier this checkout has not derived a lane for
+    /// yet is taken optimistically and checked outside the storage lock, so a
+    /// hit costs one lock and one key derivation however many policies are
+    /// stored. A connection taken for nothing goes back in its place. Each
+    /// rescan follows a newly derived classifier or a removed broken
+    /// connection, which bounds the loop.
     fn take_compatible(
         &self,
         id: &ID,
@@ -258,77 +278,69 @@ impl<C: ExtensionsRef, ID: ConnID> LruDropPool<C, ID> {
         if !id.is_reusable() {
             return None;
         }
-        let mut cursor = 0;
-        let mut inspections_left = None;
+        let mut wanted: SmallVec<[(ReuseKey, Option<ReuseKey>); 2]> = SmallVec::new();
         loop {
             let mut storage = self.storage.lock();
-            let left = inspections_left.get_or_insert(storage.len());
-            if *left == 0 {
-                return None;
-            }
-            *left -= 1;
             if self.retired.load(Ordering::Acquire) {
                 return None;
             }
+            let mut derive = false;
+            let mut fits = |conn: &PooledConnection<C, ID>| {
+                if &conn.id != id {
+                    return false;
+                }
+                let keyed = match &conn.lane {
+                    None => return false,
+                    Some(LaneKey::Unrestricted) => return true,
+                    Some(LaneKey::Keyed(keyed)) => keyed,
+                };
+                if let Some((_, wanted)) = wanted
+                    .iter()
+                    .find(|(derived, _)| derived == keyed.class.classifier())
+                {
+                    return wanted.as_ref() == Some(&keyed.key);
+                }
+                derive = true;
+                true
+            };
             let index = match self.reuse_strategy {
-                ReuseStrategy::FiFo => storage
-                    .iter()
-                    .enumerate()
-                    .skip(cursor)
-                    .find(|(_, conn)| &conn.id == id)
-                    .map(|(index, _)| index)?,
-                ReuseStrategy::RoundRobin => storage
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .skip(cursor)
-                    .find(|(_, conn)| &conn.id == id)
-                    .map(|(index, _)| index)?,
-            };
-            cursor = match self.reuse_strategy {
-                ReuseStrategy::FiFo => index + 1,
-                ReuseStrategy::RoundRobin => storage.len() - index,
-            };
-            let policy = storage[index].reuse_policy.clone();
-            let (index, conn) = if let Some(policy) = policy {
-                drop(storage);
-                if !policy.matches(input) {
-                    continue;
-                }
-                let mut storage = self.storage.lock();
-                if self.retired.load(Ordering::Acquire) {
-                    return None;
-                }
-                // A concurrent checkout may have removed the candidate while
-                // its policy was evaluated. Recheck the same shared policy.
-                let matches = |conn: &PooledConnection<C, ID>| {
-                    &conn.id == id
-                        && conn
-                            .reuse_policy
-                            .as_ref()
-                            .is_some_and(|stored| Arc::ptr_eq(stored, &policy))
-                };
-                let index = match self.reuse_strategy {
-                    ReuseStrategy::FiFo => storage.iter().position(matches),
-                    ReuseStrategy::RoundRobin => storage.iter().rposition(matches),
-                };
-                let Some(index) = index else {
-                    continue;
-                };
-                (index, storage.remove(index)?)
-            } else {
-                (index, storage.remove(index)?)
-            };
+                ReuseStrategy::FiFo => storage.iter().position(&mut fits),
+                ReuseStrategy::RoundRobin => storage.iter().rposition(&mut fits),
+            }?;
+            let conn = storage.remove(index)?;
+            drop(storage);
             if conn
                 .extensions()
                 .get_ref::<ConnectionHealthWatcher>()
                 .is_some_and(|watcher| watcher.health() == ConnectionHealth::Broken)
             {
                 park(conn, doomed);
-                cursor = 0;
                 continue;
             }
-            return Some((index, conn));
+            if !derive {
+                return Some((index, conn));
+            }
+            let Some(LaneKey::Keyed(keyed)) = &conn.lane else {
+                return Some((index, conn));
+            };
+            let derived = keyed.class.request_key(input);
+            let fit = derived.as_ref() == Some(&keyed.key);
+            wanted.push((keyed.class.classifier().clone(), derived));
+            // The policy may have retired the pool while it held the candidate.
+            if self.retired.load(Ordering::Acquire) {
+                park(conn, doomed);
+                return None;
+            }
+            if fit {
+                return Some((index, conn));
+            }
+            let mut storage = self.storage.lock();
+            if self.retired.load(Ordering::Acquire) {
+                park(conn, doomed);
+                return None;
+            }
+            let index = index.min(storage.len());
+            storage.insert(index, conn);
         }
     }
 }
@@ -512,19 +524,15 @@ where
             metrics.created_connections.add(1, &metric_attrs);
         }
 
-        let reuse_policy = conn.extensions().get_arc::<ConnectionReuse>();
-        let reusable = id.is_reusable()
-            && reuse_policy
-                .as_ref()
-                .is_none_or(|policy| policy.is_reusable());
+        let reuse = conn.extensions().get_ref::<ConnectionReuse>();
+        let lane = LaneKey::of_connection(reuse).filter(|_| id.is_reusable());
 
         Ok(LeasedConnection {
             admission,
             active_slot,
             returner: self.returner.clone(),
             pooled_conn: ManuallyDrop::new(PooledConnection {
-                reusable,
-                reuse_policy,
+                lane,
                 id,
                 conn,
                 pool_slot,
@@ -933,13 +941,21 @@ mod tests {
         struct LockProbe(Weak<Mutex<VecDeque<PooledConnection<Conn, usize>>>>);
 
         impl ConnectionReusePolicy for LockProbe {
-            fn matches(&self, _: &Extensions) -> bool {
+            fn classifier(&self) -> ReuseKey {
+                ReuseKey::of::<Self>()
+            }
+
+            fn connection_key(&self) -> Option<ReuseKey> {
+                Some(ReuseKey::of::<Self>())
+            }
+
+            fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
                 let storage = self.0.upgrade().unwrap();
                 assert!(
                     storage.try_lock().is_some(),
                     "connector policy must not run under the pool lock"
                 );
-                true
+                Some(ReuseKey::of::<Self>())
             }
         }
 
@@ -973,9 +989,17 @@ mod tests {
         struct RetireOnMatch(LruDropPool<Conn, usize>);
 
         impl ConnectionReusePolicy for RetireOnMatch {
-            fn matches(&self, _: &Extensions) -> bool {
+            fn classifier(&self) -> ReuseKey {
+                ReuseKey::of::<Self>()
+            }
+
+            fn connection_key(&self) -> Option<ReuseKey> {
+                Some(ReuseKey::of::<Self>())
+            }
+
+            fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
                 self.0.retire();
-                true
+                Some(ReuseKey::of::<Self>())
             }
         }
 

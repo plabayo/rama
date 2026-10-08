@@ -33,11 +33,11 @@ pub type HttpPooledConnector<S, R = HttpConnIdentifier> = BindBodyToConnector<
 /// HTTP uses forward-proxy or CONNECT-tunnel semantics.
 ///
 /// A pool belongs to a fixed connector policy. TLS connectors publish their
-/// compatibility rules on established connections; pool checkout checks these
-/// rules against request extensions. An explicit [`TlsPoolId`] may additionally
-/// partition custom connection identities. Injecting
-/// the same pool into multiple connectors requires compatible fixed policies
-/// or a custom connection-ID namespace. Retire the pool before changing those
+/// compatibility rules on established connections; pool checkout matches the
+/// key these rules derive from request extensions. An explicit [`TlsPoolId`]
+/// may additionally partition custom connection identities. Injecting the same
+/// pool into multiple connectors requires compatible fixed policies or a
+/// custom connection-ID namespace. Retire the pool before changing those
 /// defaults or the behavior of mutable native hooks.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
@@ -332,7 +332,7 @@ mod tests {
     use rama_http_types::{Body, HeaderValue, Method, Request, Response, StatusCode, Version};
     use rama_net::address::{HostWithPort, ProxyAddress};
     use rama_net::client::pool::{
-        BasicConnIdentifier, ConnID as _, MultiplexPool, PooledConnector, ReqToConnID,
+        BasicConnIdentifier, ConnID as _, MultiplexPool, PooledConnector, ReqToConnID, ReuseKey,
     };
     use rama_net::client::{
         ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService,
@@ -406,6 +406,10 @@ mod tests {
     impl TlsClientConfigProvider for FixedTunnelProvider {
         fn pool_id(&self, _: &Extensions) -> Option<TlsPoolId> {
             None
+        }
+
+        fn pool_classifier(&self) -> ReuseKey {
+            ReuseKey::of::<Self>()
         }
 
         fn authenticates_server(&self, _: &Extensions) -> bool {

@@ -42,6 +42,7 @@ use super::{
 };
 use rama_core::extensions::{Extension, Extensions};
 use rama_net::address::{Domain, Host};
+use rama_net::client::pool::ReuseKey;
 use rama_net::tls::ApplicationProtocol;
 use serde::{Deserialize, Serialize};
 use std::{fmt, sync::Arc};
@@ -140,6 +141,11 @@ pub trait TlsClientConfigProvider: fmt::Debug + Send + Sync {
     /// return a non-reusable ID only for policies whose identity cannot be tracked.
     fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId>;
 
+    /// Identity of [`Self::pool_id`]: providers with equal classifiers must
+    /// derive equal pool ids for every request. A provider without state of
+    /// its own returns `ReuseKey::of::<Self>()`.
+    fn pool_classifier(&self) -> ReuseKey;
+
     /// Whether the effective configuration establishes the server identity.
     fn authenticates_server(&self, extensions: &Extensions) -> bool;
 
@@ -160,6 +166,10 @@ pub trait TlsClientConfigProvider: fmt::Debug + Send + Sync {
 impl<P: TlsClientConfigProvider + ?Sized> TlsClientConfigProvider for Arc<P> {
     fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
         (**self).pool_id(extensions)
+    }
+
+    fn pool_classifier(&self) -> ReuseKey {
+        (**self).pool_classifier()
     }
 
     fn authenticates_server(&self, extensions: &Extensions) -> bool {

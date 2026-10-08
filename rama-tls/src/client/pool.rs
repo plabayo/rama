@@ -12,7 +12,7 @@ use rama_core::extensions::{Extension, Extensions};
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_net::{
     address::Host,
-    client::pool::{ConnectionReuse, ConnectionReusePolicy},
+    client::pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
     tls::{ApplicationProtocol, TlsAlpn},
 };
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
@@ -30,31 +30,33 @@ use crate::{
 /// Reuse rules published by the connector that performed a TLS handshake.
 ///
 /// Capture request overrides before applying connector defaults, and publish only
-/// after a successful handshake. Pools borrow the next request's extensions to
-/// check compatibility; callers need not configure the provider on the pool.
+/// after a successful handshake. Pools derive the next request's key from its
+/// extensions; callers need not configure the provider on the pool.
 /// Connector defaults, including credentials and hooks, remain fixed for the
 /// lifetime of its pool. Custom components supply stable value or instance identities.
 #[derive(Debug)]
 pub struct TlsConnectionReuse<P> {
     provider: P,
     scope: ReuseScope,
-    reusable: bool,
+    key: Option<ReuseKey>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum ReuseScope {
-    Origin(Option<TlsPoolId>),
-    Tunnel(Option<TlsTunnel>),
+    Origin,
+    Tunnel,
 }
+
+/// Keys of requests without TLS overrides, and without tunnel settings.
+struct NoOverrides;
 
 impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
     /// Capture request overrides relative to this connector's fixed defaults.
     pub fn new(provider: P, request: &Extensions) -> Self {
-        let identity = provider.pool_id(request);
         Self {
+            key: origin_key(provider.pool_id(request)),
             provider,
-            reusable: identity.as_ref().is_none_or(TlsPoolId::is_reusable),
-            scope: ReuseScope::Origin(identity),
+            scope: ReuseScope::Origin,
         }
     }
 
@@ -65,15 +67,15 @@ impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
     /// that route and are distinct from the caller's overrides.
     pub fn tunnel(provider: P, request: &Extensions) -> Self {
         Self {
+            key: Some(tunnel_key(request)),
             provider,
-            scope: ReuseScope::Tunnel(request.get_ref::<TlsTunnel>().cloned()),
-            reusable: true,
+            scope: ReuseScope::Tunnel,
         }
     }
 
     /// Publish this handshake's rules while retaining restrictions from inner layers.
     pub fn publish(self, connection: &Extensions) {
-        let tunnel = matches!(self.scope, ReuseScope::Tunnel(_));
+        let tunnel = matches!(self.scope, ReuseScope::Tunnel);
         let policy = ConnectionReuse::new(self);
         let policy = match connection.get_ref::<ConnectionReuse>() {
             Some(inner) => inner.clone().and(policy),
@@ -88,19 +90,46 @@ impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
     }
 }
 
+fn origin_key(identity: Option<TlsPoolId>) -> Option<ReuseKey> {
+    match identity {
+        None => Some(ReuseKey::of::<NoOverrides>()),
+        Some(identity) if !identity.is_reusable() => None,
+        // Common settings compare by digest, as `TlsPoolId` equality does.
+        Some(TlsPoolId {
+            digest: [high, low],
+            components: None,
+            ..
+        }) => Some(ReuseKey::from_bits::<TlsPoolId>(
+            (u128::from(high) << 64) | u128::from(low),
+        )),
+        Some(identity) => Some(ReuseKey::new(identity)),
+    }
+}
+
+fn tunnel_key(request: &Extensions) -> ReuseKey {
+    request
+        .get_arc::<TlsTunnel>()
+        .map_or_else(ReuseKey::of::<NoOverrides>, ReuseKey::from_arc)
+}
+
 impl<P: TlsClientConfigProvider + 'static> ConnectionReusePolicy for TlsConnectionReuse<P> {
-    fn is_reusable(&self) -> bool {
-        self.reusable
+    fn classifier(&self) -> ReuseKey {
+        match self.scope {
+            ReuseScope::Origin => ReuseKey::of::<TlsPoolId>().and(self.provider.pool_classifier()),
+            // Tunnel keys only depend on the request's tunnel settings.
+            ReuseScope::Tunnel => ReuseKey::of::<TlsTunnel>(),
+        }
     }
 
-    fn matches(&self, input: &Extensions) -> bool {
-        self.reusable
-            && match &self.scope {
-                ReuseScope::Origin(identity) => {
-                    self.provider.pool_id(input).as_ref() == identity.as_ref()
-                }
-                ReuseScope::Tunnel(tunnel) => input.get_ref::<TlsTunnel>() == tunnel.as_ref(),
-            }
+    fn connection_key(&self) -> Option<ReuseKey> {
+        self.key.clone()
+    }
+
+    fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
+        match self.scope {
+            ReuseScope::Origin => origin_key(self.provider.pool_id(input)),
+            ReuseScope::Tunnel => Some(tunnel_key(input)),
+        }
     }
 }
 
@@ -852,6 +881,10 @@ mod tests {
                 .build()
         }
 
+        fn pool_classifier(&self) -> ReuseKey {
+            ReuseKey::of::<Self>()
+        }
+
         fn authenticates_server(&self, extensions: &Extensions) -> bool {
             extensions
                 .get_ref::<TlsServerVerify>()
@@ -869,8 +902,9 @@ mod tests {
         let explicit_default = Extensions::new();
         explicit_default.insert(TlsServerVerify(ServerVerifyMode::Auto));
 
-        let default_policy = TlsConnectionReuse::new(TestProvider, &plain);
-        let insecure_policy = TlsConnectionReuse::new(TestProvider, &insecure);
+        let default_policy = ConnectionReuse::new(TlsConnectionReuse::new(TestProvider, &plain));
+        let insecure_policy =
+            ConnectionReuse::new(TlsConnectionReuse::new(TestProvider, &insecure));
         assert!(default_policy.matches(&plain));
         assert!(!default_policy.matches(&insecure));
         assert!(!default_policy.matches(&explicit_default));
@@ -886,7 +920,7 @@ mod tests {
     fn equivalent_request_credentials_allow_reuse() {
         let request = Extensions::new();
         request.insert(TlsClientAuth(ClientAuth::SelfSigned));
-        let policy = TlsConnectionReuse::new(TestProvider, &request);
+        let policy = ConnectionReuse::new(TlsConnectionReuse::new(TestProvider, &request));
         assert!(policy.is_reusable());
         assert!(policy.matches(&request));
         assert!(!policy.matches(&Extensions::new()));
@@ -1264,12 +1298,12 @@ mod tests {
             alpn: Some(TlsAlpn::http_1()),
             ..tunnel
         });
-        let explicit = TlsConnectionReuse::tunnel(TestProvider, &first);
+        let explicit = ConnectionReuse::new(TlsConnectionReuse::tunnel(TestProvider, &first));
         assert!(explicit.is_reusable());
         assert!(explicit.matches(&same));
         assert!(!explicit.matches(&different));
         assert!(!explicit.matches(&plain));
-        let default = TlsConnectionReuse::tunnel(TestProvider, &plain);
+        let default = ConnectionReuse::new(TlsConnectionReuse::tunnel(TestProvider, &plain));
         assert!(default.matches(&plain));
         assert!(!default.matches(&same));
     }

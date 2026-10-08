@@ -1,5 +1,5 @@
 use core::{fmt::Debug, hash::Hash};
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use super::conn::{ConnectorService, EstablishedClientConnection};
 use super::{ConnectionError, ConnectionErrorKind};
@@ -33,99 +33,9 @@ pub mod multiplex;
 #[doc(inline)]
 pub use multiplex::{MultiplexPool, MultiplexedConnection, MuxSelection};
 
-/// Connection-owned requirements for reusing an established transport.
-///
-/// Publish this through [`ConnectionReuse`] after establishment. Matching must be
-/// deterministic, nonblocking and side-effect free for a fixed connector policy.
-/// Pools invoke it outside their storage locks. Retire a pool before changing the
-/// connector's fixed defaults; these requirements describe its established connections.
-pub trait ConnectionReusePolicy: Debug + Send + Sync + 'static {
-    /// Whether this connection may be retained after its establishing request.
-    fn is_reusable(&self) -> bool {
-        true
-    }
-
-    /// Whether the request's extensions are compatible with this connection.
-    fn matches(&self, input: &Extensions) -> bool;
-}
-
-/// Reuse requirements published by a connector on its established connection.
-///
-/// Without this extension, the pool's connection identifier determines reuse.
-/// Connectors whose policy varies by request must publish their requirements.
-/// Layered transports can combine requirements once with [`Self::and`].
-#[derive(Clone, Debug, Extension)]
-pub struct ConnectionReuse {
-    policy: Arc<dyn ConnectionReusePolicy>,
-    complete: bool,
-}
-
-impl ConnectionReuse {
-    /// Publish the complete reuse policy for the requested endpoint.
-    ///
-    /// This describes policy compatibility, not peer authentication. Transport
-    /// layers which cover only an intermediary must use [`Self::restriction`].
-    pub fn new(policy: impl ConnectionReusePolicy) -> Self {
-        Self {
-            policy: Arc::new(policy),
-            complete: true,
-        }
-    }
-
-    /// Publish an additional transport restriction without certifying the
-    /// requested endpoint's complete policy, such as TLS to an intermediary.
-    pub fn restriction(policy: impl ConnectionReusePolicy) -> Self {
-        Self::new(policy).into_restriction()
-    }
-
-    /// Whether a connector has published the requested endpoint's complete policy.
-    pub fn is_complete(&self) -> bool {
-        self.complete
-    }
-
-    /// Preserve the requirements while limiting them to an inner transport.
-    ///
-    /// A tunnel layer must apply this to its combined inner requirements before
-    /// passing the connection to the requested endpoint's connector.
-    #[must_use]
-    pub fn into_restriction(mut self) -> Self {
-        self.complete = false;
-        self
-    }
-
-    /// Whether the established connection may be retained for later requests.
-    pub fn is_reusable(&self) -> bool {
-        self.policy.is_reusable()
-    }
-
-    /// Check the request against the established connection's requirements.
-    pub fn matches(&self, input: &Extensions) -> bool {
-        self.is_reusable() && self.policy.matches(input)
-    }
-
-    /// Require both transport layers to accept reuse of the connection.
-    #[must_use]
-    pub fn and(self, other: Self) -> Self {
-        let complete = self.complete || other.complete;
-        Self {
-            policy: Arc::new(CombinedReuse(self, other)),
-            complete,
-        }
-    }
-}
-
-#[derive(Debug)]
-struct CombinedReuse(ConnectionReuse, ConnectionReuse);
-
-impl ConnectionReusePolicy for CombinedReuse {
-    fn is_reusable(&self) -> bool {
-        self.0.is_reusable() && self.1.is_reusable()
-    }
-
-    fn matches(&self, input: &Extensions) -> bool {
-        self.0.matches(input) && self.1.matches(input)
-    }
-}
+mod reuse;
+#[doc(inline)]
+pub use reuse::{ConnectionReuse, ConnectionReusePolicy, ReuseKey};
 
 /// [`Pool`] implements the storage part of a connection pool. This storage
 /// also decides which connection it returns for a given ID or when the caller asks to
@@ -137,8 +47,8 @@ pub trait Pool<C, ID>: Send + Sync + 'static {
 
     /// Get a compatible connection, or a permit to establish a new connection.
     ///
-    /// Implementations must check [`ConnectionReuse`] against `input` before
-    /// admitting a stored connection, and honor its retention policy in `create`.
+    /// Implementations read a connection's [`ConnectionReuse`] once, in
+    /// `create`, and only hand it to requests whose key matches its key.
     /// Pools which retain connections must honor [`ConnectionAdmission`] before
     /// handout and hold its lease until consumed or dropped. Evaluate providers
     /// and compatibility policies outside storage and admission locks.

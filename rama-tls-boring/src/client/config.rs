@@ -2,7 +2,10 @@ use itertools::Itertools;
 use rama_boring::x509::store::X509Store;
 use rama_core::conversion::RamaFrom;
 use rama_core::extensions::{Extension, Extensions, FromExtensions};
-use rama_net::tls::{ApplicationProtocol, TlsAlpn};
+use rama_net::{
+    client::pool::ReuseKey,
+    tls::{ApplicationProtocol, TlsAlpn},
+};
 #[cfg(test)]
 use rama_tls::KeyLogIntent;
 use rama_tls::client::{
@@ -783,6 +786,10 @@ pub struct BoringTlsClientConfigProvider;
 impl TlsClientConfigProvider for BoringTlsClientConfigProvider {
     fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
         BoringTlsConnectorConfig::from_extensions(extensions).pool_id()
+    }
+
+    fn pool_classifier(&self) -> ReuseKey {
+        ReuseKey::of::<BoringTlsConnectorConfig>()
     }
 
     fn authenticates_server(&self, extensions: &Extensions) -> bool {

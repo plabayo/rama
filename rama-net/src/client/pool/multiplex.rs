@@ -24,9 +24,10 @@
 //! opened many connections leaves the later ones untouched and idle, where the idle timeout
 //! reaps them (see [`MultiplexPool::with_idle_timeout`]).
 
+use super::reuse::{KeyedLane, LaneKey, ReuseClass};
 use super::{
     ConnID, ConnectionAdmission, ConnectionAdmissionLease, ConnectionResult, ConnectionReuse, Pool,
-    PoolSlot,
+    PoolSlot, ReuseKey,
 };
 use crate::conn::{ConnectionHealth, ConnectionHealthWatcher, MaxConcurrency};
 use ahash::{HashMap, HashMapExt as _};
@@ -77,7 +78,10 @@ pub enum MuxSelection {
 struct StoredConnection<C, ID> {
     conn: C,
     id: ID,
-    /// Creation order within the pool. Orders a bucket, and so
+    /// The lane the connection is filed under, `None` while it is not stored.
+    /// Only accessed with the storage lock held.
+    lane: Mutex<Option<LaneKey>>,
+    /// Creation order within the pool. Orders a lane, and so
     /// [`MuxSelection::FirstAvailable`].
     seq: u64,
     /// The pool's `max_concurrent_streams`, needed to judge spare capacity when
@@ -90,7 +94,7 @@ struct StoredConnection<C, ID> {
     notify: Arc<Notify>,
     last_idle: AtomicInstant,
     pool_slot: Mutex<ConnectionSlot>,
-    /// Whether the bucket's `open` set lists this connection. Only written with
+    /// Whether the lane's `open` set lists this connection. Only written with
     /// the storage lock held; released handouts read it without the lock to
     /// skip re-listing a connection that is still listed.
     listed: AtomicBool,
@@ -151,7 +155,7 @@ impl<C, ID> StoredConnection<C, ID> {
         self.active.load(Ordering::Relaxed) < self.effective_capacity(cap)
     }
 
-    /// Re-list a connection that has spare stream capacity in its bucket's
+    /// Re-list a connection that has spare stream capacity in its lane's
     /// `open` set after a handout was released.
     ///
     /// A connection stays listed while it has room, so a busy multiplexed
@@ -159,7 +163,7 @@ impl<C, ID> StoredConnection<C, ID> {
     /// its last slot, and only exclusive connections pay the lock on every
     /// release. A release racing that unlisting can skip the re-listing; the
     /// connection then rejoins on its next release, or on the next exact
-    /// checkout, since `open` is only a hint (see [`IdBucket`]).
+    /// checkout, since `open` is only a hint (see [`Lane`]).
     fn relist(self: &Arc<Self>) {
         if !self.listed.load(Ordering::Relaxed) {
             (self.relist_fn)(self);
@@ -295,6 +299,44 @@ impl<C, ID> Drop for MultiplexedConnection<C, ID> {
     }
 }
 
+impl<C: ExtensionsRef, ID: ConnID> MultiplexedConnection<C, ID> {
+    /// File the shared connection under new reuse requirements, such as an
+    /// identity it authenticated after it was established.
+    ///
+    /// Also publishes `reuse` on the connection. Pools otherwise keep the
+    /// requirements the connection was added with. A connection the pool has
+    /// already dropped stays dropped.
+    pub fn rekey(&self, reuse: ConnectionReuse) {
+        let conn = &self.inner;
+        let lane = LaneKey::of_connection(Some(&reuse)).filter(|_| conn.id.is_reusable());
+        conn.conn.extensions().insert(reuse);
+        let Some(storage) = conn.storage.upgrade() else {
+            return;
+        };
+        let mut storage = storage.lock();
+        if let Some(bucket) = storage.by_id.get_mut(&conn.id) {
+            bucket.remove(conn);
+            if bucket.is_empty() {
+                storage.by_id.remove(&conn.id);
+            }
+        }
+        let Some(lane) = lane else {
+            return;
+        };
+        if conn.pool_slot.lock().retired {
+            return;
+        }
+        storage
+            .by_id
+            .entry(conn.id.clone())
+            .or_insert_with(|| IdBucket::new(now_monotonic_nanos()))
+            .insert(conn, lane);
+        drop(storage);
+        // Requests of the new lane may be waiting for it.
+        conn.notify.notify_waiters();
+    }
+}
+
 impl<C: ExtensionsRef, ID> ExtensionsRef for MultiplexedConnection<C, ID> {
     fn extensions(&self) -> &Extensions {
         self.inner.conn.extensions()
@@ -335,13 +377,47 @@ where
 /// released so their sockets close outside it.
 type Doomed<C, ID> = Vec<Arc<StoredConnection<C, ID>>>;
 
-/// Same-id connections copied out of storage so selection and waiter
-/// registration run without holding the storage lock.
+/// Connections of the request's lanes copied out of storage so selection and
+/// waiter registration run without holding the storage lock.
 type Snapshot<C, ID> = SmallVec<[Arc<StoredConnection<C, ID>>; 4]>;
 
+/// The lanes a request can be served from: the lane of its key in each class
+/// of its id, then the unrestricted lane.
+struct RequestLanes {
+    /// The classes the keys were derived with, `None` if the id had none.
+    classes: Option<Arc<[ReuseClass]>>,
+    /// The key derived with each of `classes`, in order.
+    keys: SmallVec<[Option<ReuseKey>; 1]>,
+}
+
+impl RequestLanes {
+    /// Derive the request's keys from its id's `classes`, outside pool locks.
+    fn derive(classes: Option<Arc<[ReuseClass]>>, input: &Extensions) -> Self {
+        let keys = classes
+            .iter()
+            .flat_map(|classes| classes.iter())
+            .map(|class| class.request_key(input))
+            .collect();
+        Self { classes, keys }
+    }
+
+    /// How many lanes [`IdBucket::request_lane_mut`] can find for the request.
+    fn len(&self) -> usize {
+        self.keys.len() + 1
+    }
+
+    /// Lanes of a request that can only use connections without requirements.
+    fn unrestricted() -> Self {
+        Self {
+            classes: None,
+            keys: SmallVec::new(),
+        }
+    }
+}
+
 /// How many `open` candidates one checkout tries before it falls back to the
-/// exact path. Incompatible or refusing candidates are the exception; the
-/// exact path handles them (and stays O(connections) as it always was).
+/// exact path. Refusing candidates are the exception; the exact path handles
+/// them (and stays O(connections of the lane)).
 const OPEN_CANDIDATES: usize = 4;
 
 /// Upper bound on how long an idle or broken connection can linger unnoticed
@@ -350,7 +426,8 @@ const OPEN_CANDIDATES: usize = 4;
 const MAX_SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 const MIN_SWEEP_INTERVAL: Duration = Duration::from_millis(1);
 
-/// All connections of one id.
+/// The connections of one id filed under one [`LaneKey`]: each of them can
+/// serve every request of the lane, so selection needs no compatibility check.
 ///
 /// `conns` is every connection in creation order. `open` is an index over it:
 /// the connections which have a free stream slot, ordered by creation, so a
@@ -363,31 +440,29 @@ const MIN_SWEEP_INTERVAL: Duration = Duration::from_millis(1);
 /// it can miss a connection with room. A checkout that finds nothing in `open`
 /// therefore takes the exact path, which reads every connection and lists the
 /// ones the hint missed.
-struct IdBucket<C, ID> {
+struct Lane<C, ID> {
     conns: Vec<Arc<StoredConnection<C, ID>>>,
     open: BTreeMap<u64, Arc<StoredConnection<C, ID>>>,
     /// The `seq` last chosen by [`MuxSelection::RoundRobin`].
     rr_after: Option<u64>,
-    /// Nanoseconds (see [`now_monotonic_nanos`]) when the next full sweep is due.
-    next_sweep: u64,
 }
 
-impl<C, ID> IdBucket<C, ID> {
-    fn new(next_sweep: u64) -> Self {
+impl<C, ID> Lane<C, ID> {
+    fn new() -> Self {
         Self {
             conns: Vec::new(),
             open: BTreeMap::new(),
             rr_after: None,
-            next_sweep,
         }
     }
 
-    /// Whether `conn` is still stored in this bucket.
-    fn contains(&self, conn: &StoredConnection<C, ID>) -> bool {
+    /// Where `conn` is stored in this lane.
+    fn position(&self, conn: &StoredConnection<C, ID>) -> Option<usize> {
         let pos = self.conns.partition_point(|stored| stored.seq < conn.seq);
         self.conns
             .get(pos)
             .is_some_and(|stored| stored.seq == conn.seq)
+            .then_some(pos)
     }
 
     /// Store `conn`, keeping creation order even if concurrent creations
@@ -403,7 +478,7 @@ impl<C, ID> IdBucket<C, ID> {
     fn list(&mut self, conn: &Arc<StoredConnection<C, ID>>) {
         if conn.listed.load(Ordering::Relaxed)
             || !conn.has_capacity(conn.stream_cap)
-            || !self.contains(conn)
+            || self.position(conn).is_none()
         {
             return;
         }
@@ -417,10 +492,26 @@ impl<C, ID> IdBucket<C, ID> {
         Some(conn)
     }
 
-    /// Remove the connection at `pos` from the bucket, and from `open`.
+    /// Keep only the connections `keep` accepts.
+    fn retain(&mut self, keep: &mut impl FnMut(&Arc<StoredConnection<C, ID>>) -> bool) {
+        let Self { conns, open, .. } = self;
+        conns.retain(|conn| {
+            if keep(conn) {
+                return true;
+            }
+            if open.remove(&conn.seq).is_some() {
+                conn.listed.store(false, Ordering::Relaxed);
+            }
+            *conn.lane.lock() = None;
+            false
+        });
+    }
+
+    /// Remove the connection at `pos` from the lane, and from `open`.
     fn remove_at(&mut self, pos: usize) -> Arc<StoredConnection<C, ID>> {
         let conn = self.conns.remove(pos);
         self.unlist(conn.seq);
+        *conn.lane.lock() = None;
         conn
     }
 
@@ -501,6 +592,216 @@ impl<C, ID> IdBucket<C, ID> {
         } else {
             Some(conn.clone())
         }
+    }
+}
+
+/// All connections of one id, filed by lane.
+///
+/// A checkout derives its key in each of the bucket's classes, the distinct
+/// reuse classifiers among its connections, so its cost does not grow with
+/// the number of lanes or connections.
+struct IdBucket<C, ID> {
+    /// Connections without requirements: any request of the id may use them.
+    unrestricted: Lane<C, ID>,
+    /// Connections with requirements, per classifier, by key.
+    keyed: Vec<ClassLanes<C, ID>>,
+    /// The classes of `keyed`, in its order. Replaced, never mutated, so a
+    /// checkout copies it out of the lock with one reference count.
+    classes: Arc<[ReuseClass]>,
+    /// Nanoseconds (see [`now_monotonic_nanos`]) when the next full sweep is due.
+    next_sweep: u64,
+}
+
+/// The lanes of one classifier.
+struct ClassLanes<C, ID> {
+    classifier: ReuseKey,
+    lanes: HashMap<ReuseKey, Lane<C, ID>>,
+}
+
+/// The lane a bucket has, when it has exactly one.
+enum OnlyLane {
+    Unrestricted,
+    Keyed(ReuseKey),
+}
+
+impl<C, ID> IdBucket<C, ID> {
+    fn new(next_sweep: u64) -> Self {
+        Self {
+            unrestricted: Lane::new(),
+            keyed: Vec::new(),
+            classes: Arc::new([]),
+            next_sweep,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.unrestricted.conns.is_empty() && self.keyed.is_empty()
+    }
+
+    fn lanes(&self) -> impl Iterator<Item = &Lane<C, ID>> {
+        std::iter::once(&self.unrestricted)
+            .chain(self.keyed.iter().flat_map(|class| class.lanes.values()))
+    }
+
+    fn conns(&self) -> impl Iterator<Item = &Arc<StoredConnection<C, ID>>> {
+        self.lanes().flat_map(|lane| &lane.conns)
+    }
+
+    /// The classes, `None` when the bucket has unrestricted connections only.
+    fn classes(&self) -> Option<Arc<[ReuseClass]>> {
+        (!self.classes.is_empty()).then(|| self.classes.clone())
+    }
+
+    /// The bucket's lane, if it has exactly one.
+    fn only_lane_mut(&mut self) -> Option<(OnlyLane, &mut Lane<C, ID>)> {
+        match self.keyed.as_mut_slice() {
+            [] if !self.unrestricted.conns.is_empty() => {
+                Some((OnlyLane::Unrestricted, &mut self.unrestricted))
+            }
+            [class] if self.unrestricted.conns.is_empty() && class.lanes.len() == 1 => {
+                let (key, lane) = class.lanes.iter_mut().next()?;
+                Some((OnlyLane::Keyed(key.clone()), lane))
+            }
+            _ => None,
+        }
+    }
+
+    fn class_mut(&mut self, classifier: &ReuseKey) -> Option<&mut ClassLanes<C, ID>> {
+        self.keyed
+            .iter_mut()
+            .find(|class| &class.classifier == classifier)
+    }
+
+    fn lane_mut(&mut self, lane: &LaneKey) -> Option<&mut Lane<C, ID>> {
+        match lane {
+            LaneKey::Unrestricted => Some(&mut self.unrestricted),
+            LaneKey::Keyed(keyed) => self
+                .class_mut(keyed.class.classifier())?
+                .lanes
+                .get_mut(&keyed.key),
+        }
+    }
+
+    /// The request's lane `index`: the lane of its key in class `index`, and
+    /// the unrestricted lane after the classes (see [`RequestLanes::len`]).
+    fn request_lane_mut(
+        &mut self,
+        request: &RequestLanes,
+        index: usize,
+    ) -> Option<&mut Lane<C, ID>> {
+        let Some(key) = request.keys.get(index) else {
+            return (index == request.keys.len()).then_some(&mut self.unrestricted);
+        };
+        let key = key.as_ref()?;
+        let classes = request.classes.as_ref()?;
+        // Keys derived from this very snapshot sit at the same index.
+        let class = if Arc::ptr_eq(classes, &self.classes) {
+            self.keyed.get_mut(index)?
+        } else {
+            self.class_mut(classes.get(index)?.classifier())?
+        };
+        class.lanes.get_mut(key)
+    }
+
+    /// Store `conn` in `lane`.
+    fn insert(&mut self, conn: &Arc<StoredConnection<C, ID>>, lane: LaneKey) {
+        *conn.lane.lock() = Some(lane.clone());
+        let LaneKey::Keyed(keyed) = lane else {
+            self.unrestricted.insert(conn);
+            return;
+        };
+        let KeyedLane { class, key } = *keyed;
+        let known = self
+            .keyed
+            .iter()
+            .position(|known| &known.classifier == class.classifier());
+        let index = known.unwrap_or_else(|| {
+            self.keyed.push(ClassLanes {
+                classifier: class.classifier().clone(),
+                lanes: HashMap::new(),
+            });
+            self.classes = self.classes.iter().cloned().chain([class]).collect();
+            self.keyed.len() - 1
+        });
+        self.keyed[index]
+            .lanes
+            .entry(key)
+            .or_insert_with(Lane::new)
+            .insert(conn);
+    }
+
+    /// List `conn` in its lane as having room, if it is stored and has room.
+    fn list(&mut self, conn: &Arc<StoredConnection<C, ID>>) {
+        let lane = conn.lane.lock();
+        if let Some(stored) = lane.as_ref().and_then(|lane| self.lane_mut(lane)) {
+            stored.list(conn);
+        }
+    }
+
+    /// Take `conn` out of the bucket, if it is stored in it.
+    fn remove(&mut self, conn: &StoredConnection<C, ID>) -> Option<Arc<StoredConnection<C, ID>>> {
+        let lane = conn.lane.lock().clone()?;
+        let stored = self.lane_mut(&lane)?;
+        let removed = stored.remove_at(stored.position(conn)?);
+        if let LaneKey::Keyed(keyed) = &lane {
+            self.drop_lane_if_empty(keyed.class.classifier(), &keyed.key);
+        }
+        Some(removed)
+    }
+
+    fn drop_lane_if_empty(&mut self, classifier: &ReuseKey, key: &ReuseKey) {
+        let Some(index) = self
+            .keyed
+            .iter()
+            .position(|class| &class.classifier == classifier)
+        else {
+            return;
+        };
+        let lanes = &mut self.keyed[index].lanes;
+        if lanes.get(key).is_some_and(|lane| lane.conns.is_empty()) {
+            lanes.remove(key);
+        }
+        if lanes.is_empty() {
+            self.remove_class(index);
+        }
+    }
+
+    fn remove_class(&mut self, index: usize) {
+        self.keyed.remove(index);
+        self.classes = self
+            .classes
+            .iter()
+            .enumerate()
+            .filter(|(other, _)| *other != index)
+            .map(|(_, class)| class.clone())
+            .collect();
+    }
+
+    /// Keep only the connections `keep` accepts, dropping emptied lanes.
+    fn retain(&mut self, mut keep: impl FnMut(&Arc<StoredConnection<C, ID>>) -> bool) {
+        self.unrestricted.retain(&mut keep);
+        let mut index = 0;
+        while index < self.keyed.len() {
+            let lanes = &mut self.keyed[index].lanes;
+            lanes.retain(|_, lane| {
+                lane.retain(&mut keep);
+                !lane.conns.is_empty()
+            });
+            if lanes.is_empty() {
+                self.remove_class(index);
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    /// The bucket's only lane, for tests of single-lane buckets.
+    #[cfg(test)]
+    fn only_lane(&self) -> &Lane<C, ID> {
+        let mut lanes = self.lanes().filter(|lane| !lane.conns.is_empty());
+        let lane = lanes.next().expect("a lane");
+        assert!(lanes.next().is_none(), "expected a single lane");
+        lane
     }
 }
 
@@ -684,37 +985,56 @@ where
     /// sockets close once the caller has released the storage lock.
     fn sweep_bucket(&self, bucket: &mut IdBucket<C, ID>, doomed: &mut Doomed<C, ID>) {
         bucket.next_sweep = self.next_sweep_after(now_monotonic_nanos());
-        let IdBucket { conns, open, .. } = bucket;
-        conns.retain(|conn| {
+        bucket.retain(|conn| {
             if self.is_eligible(conn) {
                 return true;
             }
             conn.pool_slot.lock().retired = true;
-            if open.remove(&conn.seq).is_some() {
-                conn.listed.store(false, Ordering::Relaxed);
-            }
             doomed.push(conn.clone());
             false
         });
     }
 
-    /// Sweep the bucket for `id` and copy out what is left. Every exact handout
-    /// path must go through this before selecting.
+    /// The lanes able to serve `input`: its key's lane in each class of the
+    /// id's bucket, and the unrestricted lane.
+    ///
+    /// Derives request keys through the connectors' policies, outside the
+    /// storage lock. A lane can be missing from storage by the time it is
+    /// used, which only means it has no connections.
+    fn request_lanes(&self, id: &ID, input: &Extensions) -> RequestLanes {
+        let classes = self
+            .storage
+            .lock()
+            .by_id
+            .get(id)
+            .and_then(IdBucket::classes);
+        RequestLanes::derive(classes, input)
+    }
+
+    /// Sweep the bucket for `id` and copy out what is left in `lanes`. Every
+    /// exact handout path must go through this before selecting.
     fn snapshot(
         &self,
         storage: &mut Storage<C, ID>,
         id: &ID,
+        lanes: &RequestLanes,
         doomed: &mut Doomed<C, ID>,
     ) -> Snapshot<C, ID> {
         let Some(bucket) = storage.by_id.get_mut(id) else {
             return Snapshot::new();
         };
         self.sweep_bucket(bucket, doomed);
-        if bucket.conns.is_empty() {
+        if bucket.is_empty() {
             storage.by_id.remove(id);
             return Snapshot::new();
         }
-        bucket.conns.iter().cloned().collect()
+        let mut snapshot = Snapshot::new();
+        for index in 0..lanes.len() {
+            if let Some(lane) = bucket.request_lane_mut(lanes, index) {
+                snapshot.extend(lane.conns.iter().cloned());
+            }
+        }
+        snapshot
     }
 
     /// Sweep every bucket. Slow path only: it frees pool slots held by stale
@@ -722,7 +1042,7 @@ where
     fn sweep_all(&self, storage: &mut Storage<C, ID>, doomed: &mut Doomed<C, ID>) {
         storage.by_id.retain(|_, bucket| {
             self.sweep_bucket(bucket, doomed);
-            !bucket.conns.is_empty()
+            !bucket.is_empty()
         });
     }
 
@@ -732,11 +1052,12 @@ where
     fn evict_lru_idle(
         storage: &mut Storage<C, ID>,
     ) -> Option<(Arc<StoredConnection<C, ID>>, Option<PoolSlot>)> {
-        let (id, pos, slot) = {
+        let (conn, slot) = {
             let mut candidate = None;
             let mut oldest = u64::MAX;
-            for (id, bucket) in &storage.by_id {
-                for (pos, conn) in bucket.conns.iter().enumerate() {
+            // Plain loops: this scans every stored connection.
+            for lane in storage.by_id.values().flat_map(IdBucket::lanes) {
+                for conn in &lane.conns {
                     let last_idle = conn.last_idle.as_nanos();
                     if last_idle >= oldest || !conn.is_idle() {
                         continue;
@@ -748,37 +1069,42 @@ where
                     // Keep the best candidate idle until its slot is transferred.
                     // Admission takes this same lock; no retry loop is needed.
                     oldest = last_idle;
-                    candidate = Some((id, pos, slot));
+                    candidate = Some((conn, slot));
                 }
             }
-            let (id, pos, mut slot) = candidate?;
+            let (conn, mut slot) = candidate?;
             slot.retired = true;
-            (id.clone(), pos, slot.permit.take())
+            (conn.clone(), slot.permit.take())
         };
-        let bucket = storage.by_id.get_mut(&id)?;
-        let evicted = bucket.remove_at(pos);
-        if bucket.conns.is_empty() {
-            storage.by_id.remove(&id);
+        let bucket = storage.by_id.get_mut(&conn.id)?;
+        let evicted = bucket.remove(&conn)?;
+        if bucket.is_empty() {
+            storage.by_id.remove(&conn.id);
         }
         Some((evicted, slot))
     }
 
     /// Fast checkout: hand out the connection the selection strategy prefers
-    /// among those its bucket lists as having room, without looking at any other
-    /// connection. Returns `None` when nothing listed can take the request,
-    /// which does not mean no connection can: see [`Self::checkout_exact`].
+    /// among those the request's lanes list as having room, without looking at
+    /// any other connection. Without a handout it returns the request's lanes:
+    /// nothing listed can take the request, which does not mean no connection
+    /// can, see [`Self::snapshot_exact`].
     ///
-    /// The storage lock is held only to pick and claim a candidate, no longer
-    /// than a map lookup and a pop, and never across a compatibility policy, a
-    /// resource provider or the connection's own admission.
-    fn checkout_open(&self, id: &ID, input: &Extensions) -> Option<MultiplexedConnection<C, ID>> {
-        if !id.is_reusable() {
-            return None;
-        }
+    /// A bucket with a single lane, the common case, is claimed from before
+    /// the request's lanes are derived outside the lock, so the storage lock
+    /// is taken once. The lock is held only to pick and claim a candidate,
+    /// no longer than a map lookup and a pop, and never across a compatibility
+    /// policy, a resource provider or the connection's own admission.
+    fn checkout_open(
+        &self,
+        id: &ID,
+        input: &Extensions,
+    ) -> Result<MultiplexedConnection<C, ID>, Box<RequestLanes>> {
         let cap = self.max_concurrent_streams;
         // Candidates claimed but not used, tried in this order of trouble:
-        // `rejected` ones are alive but unfit and go back to `open`, `retired`
-        // ones are gone. Settled under one lock once the checkout is done.
+        // `rejected` ones are alive but refused the stream or serve other
+        // requests, and go back to `open`, `retired` ones are gone. Settled
+        // under one lock once the checkout is done.
         let mut rejected: SmallVec<[Arc<StoredConnection<C, ID>>; 2]> = SmallVec::new();
         let mut retired: SmallVec<[Arc<StoredConnection<C, ID>>; 2]> = SmallVec::new();
         let mut skip: SmallVec<[u64; 4]> = SmallVec::new();
@@ -786,32 +1112,60 @@ where
         let mut handout = None;
 
         let now = now_monotonic_nanos();
+        let (only_lane, mut next, mut classes) = {
+            let mut storage = self.storage.lock();
+            let Some(bucket) = storage.by_id.get_mut(id) else {
+                return Err(Box::new(RequestLanes::unrestricted()));
+            };
+            if now >= bucket.next_sweep {
+                self.sweep_bucket(bucket, &mut doomed);
+            }
+            let classes = bucket.classes();
+            match bucket.only_lane_mut() {
+                Some((only, lane)) => (Some(only), lane.claim(self.selection, cap, &skip), classes),
+                None => (None, None, classes),
+            }
+        };
+        // Derived once needed: a hit in an unrestricted lane needs no lanes.
+        let mut lanes = None;
+        // With a single lane the first look saw every connection listed.
+        let mut exhausted = only_lane.is_some();
+        // A keyed only lane has the only class: its one key decides.
+        if let Some(OnlyLane::Keyed(key)) = &only_lane {
+            let derived = lanes.insert(RequestLanes::derive(classes.take(), input));
+            if derived.keys.first().and_then(Option::as_ref) != Some(key)
+                && let Some(conn) = next.take()
+            {
+                rejected.push(conn);
+            }
+        }
+
         for _ in 0..OPEN_CANDIDATES {
-            let claimed = {
-                let mut storage = self.storage.lock();
-                let Some(bucket) = storage.by_id.get_mut(id) else {
-                    break;
-                };
-                if now >= bucket.next_sweep {
-                    self.sweep_bucket(bucket, &mut doomed);
+            let conn = match next.take() {
+                Some(conn) => conn,
+                None if exhausted => break,
+                None => {
+                    let lanes =
+                        lanes.get_or_insert_with(|| RequestLanes::derive(classes.take(), input));
+                    let mut storage = self.storage.lock();
+                    let Some(bucket) = storage.by_id.get_mut(id) else {
+                        break;
+                    };
+                    let claimed = (0..lanes.len()).find_map(|index| {
+                        bucket
+                            .request_lane_mut(lanes, index)?
+                            .claim(self.selection, cap, &skip)
+                    });
+                    let Some(conn) = claimed else {
+                        break;
+                    };
+                    conn
                 }
-                bucket.claim(self.selection, cap, &skip)
             };
-            let Some(conn) = claimed else {
-                break;
-            };
+            exhausted = false;
             skip.push(conn.seq);
             if !self.is_eligible(&conn) {
                 retired.push(conn);
-                continue;
-            }
-            let compatible = conn
-                .conn
-                .extensions()
-                .get_ref::<ConnectionReuse>()
-                .is_none_or(|policy| policy.matches(input));
-            if !compatible {
-                rejected.push(conn);
                 continue;
             }
             match conn.try_admit(cap, input) {
@@ -832,19 +1186,15 @@ where
                 let mut empty = false;
                 if let Some(bucket) = storage.by_id.get_mut(id) {
                     for conn in &retired {
-                        if let Some(pos) = bucket
-                            .conns
-                            .iter()
-                            .position(|stored| stored.seq == conn.seq)
-                        {
-                            conn.pool_slot.lock().retired = true;
-                            doomed.push(bucket.remove_at(pos));
+                        if let Some(removed) = bucket.remove(conn) {
+                            removed.pool_slot.lock().retired = true;
+                            doomed.push(removed);
                         }
                     }
                     for conn in &rejected {
                         bucket.list(conn);
                     }
-                    empty = bucket.conns.is_empty();
+                    empty = bucket.is_empty();
                 }
                 if empty {
                     storage.by_id.remove(id);
@@ -855,20 +1205,26 @@ where
             drop((retired, rejected, doomed));
         }
         handout
+            .ok_or_else(|| Box::new(lanes.unwrap_or_else(|| RequestLanes::derive(classes, input))))
     }
 
-    /// Exact checkout: sweep the bucket, then select among every compatible
-    /// connection of `id` with room. Where [`Self::checkout_open`] trusts the
-    /// bucket's index, this reads every connection's live capacity, so it
-    /// also finds room the index does not show, and lists it.
+    /// Exact checkout: sweep the bucket, then select among every connection of
+    /// the request's lanes with room. Where [`Self::checkout_open`] trusts the
+    /// lanes' index, this reads every connection's live capacity, so it also
+    /// finds room the index does not show, and lists it.
     ///
-    /// Returns what it read of the bucket, so waiters can subscribe to it.
+    /// Returns what it read of the lanes, so waiters can subscribe to them.
     /// `subscribe` asks for a full snapshot in any case; otherwise one is only
-    /// taken if some connection has room, keeping a fully busy bucket, which is
+    /// taken if some connection has room, keeping fully busy lanes, which are
     /// the reason to create a connection or wait, at a bare scan of counters.
-    /// Then the snapshot is empty and the flag says the bucket holds saturated
+    /// Then the snapshot is empty and the flag says the lanes hold saturated
     /// connections.
-    fn snapshot_exact(&self, id: &ID, subscribe: bool) -> (Snapshot<C, ID>, bool) {
+    fn snapshot_exact(
+        &self,
+        id: &ID,
+        lanes: &RequestLanes,
+        subscribe: bool,
+    ) -> (Snapshot<C, ID>, bool) {
         if !id.is_reusable() {
             return (Snapshot::new(), false);
         }
@@ -877,44 +1233,47 @@ where
         let Some(bucket) = storage.by_id.get_mut(id) else {
             return (Snapshot::new(), false);
         };
-        if !subscribe
-            && !bucket
-                .conns
-                .iter()
-                .any(|conn| conn.has_capacity(self.max_concurrent_streams))
-        {
-            return (Snapshot::new(), !bucket.conns.is_empty());
+        if !subscribe {
+            let mut stored = false;
+            let mut room = false;
+            for index in 0..lanes.len() {
+                if let Some(lane) = bucket.request_lane_mut(lanes, index) {
+                    stored |= !lane.conns.is_empty();
+                    room |= lane
+                        .conns
+                        .iter()
+                        .any(|conn| conn.has_capacity(self.max_concurrent_streams));
+                }
+            }
+            if !room {
+                return (Snapshot::new(), stored);
+            }
         }
-        let snapshot = self.snapshot(&mut storage, id, &mut doomed);
+        let snapshot = self.snapshot(&mut storage, id, lanes, &mut doomed);
         drop(storage);
         drop(doomed);
         (snapshot, false)
     }
 
     /// Turn a fairly acquired total-slot permit into a handout. Reuse a
-    /// same-id connection if capacity became available while waiting;
-    /// otherwise return the permit for creating a connection.
+    /// connection of the request's lanes if capacity became available while
+    /// waiting; otherwise return the permit for creating a connection.
     fn admit_with_permit(
         &self,
         id: &ID,
         permit: OwnedSemaphorePermit,
         input: &Extensions,
     ) -> ConnectionResult<MultiplexedConnection<C, ID>, PoolSlot> {
+        let lanes = self.request_lanes(id, input);
         let mut doomed = Vec::new();
-        let mut same_id = if id.is_reusable() {
-            self.snapshot(&mut self.storage.lock(), id, &mut doomed)
+        let same_lane = if id.is_reusable() {
+            self.snapshot(&mut self.storage.lock(), id, &lanes, &mut doomed)
         } else {
             Snapshot::new()
         };
         drop(doomed);
-        same_id.retain(|conn| {
-            conn.conn
-                .extensions()
-                .get_ref::<ConnectionReuse>()
-                .is_none_or(|policy| policy.matches(input))
-        });
         if let Some(conn) = select_and_admit(
-            &same_id,
+            &same_lane,
             id,
             self.selection,
             &self.rr_cursor,
@@ -969,34 +1328,35 @@ where
                 FuturesUnordered<_>,
             ),
         > {
-            // Common case: an idle or shareable connection is listed in the id's
-            // bucket. Waiters registering below want the exact view instead.
-            if !want_cap_changes && let Some(conn) = self.checkout_open(id, input) {
-                trace!(?id, "multiplex pool: reusing connection");
-                #[cfg(feature = "opentelemetry")]
-                if let Some((metrics, attrs)) = &metrics {
-                    metrics.reused_connections.add(1, attrs);
-                    metrics.streams.add(1, attrs);
-                    metrics
-                        .concurrent_streams
-                        .record(conn.inner.active.load(Ordering::Relaxed) as f64, attrs);
-                    metrics
-                        .active_connection_delay_nanoseconds
-                        .record(start.elapsed().as_nanos() as f64, attrs);
+            // Common case: an idle or shareable connection is listed in one of
+            // the request's lanes. Waiters registering below want the exact view.
+            let lanes = if want_cap_changes {
+                self.request_lanes(id, input)
+            } else {
+                match self.checkout_open(id, input) {
+                    Ok(conn) => {
+                        trace!(?id, "multiplex pool: reusing connection");
+                        #[cfg(feature = "opentelemetry")]
+                        if let Some((metrics, attrs)) = &metrics {
+                            metrics.reused_connections.add(1, attrs);
+                            metrics.streams.add(1, attrs);
+                            metrics
+                                .concurrent_streams
+                                .record(conn.inner.active.load(Ordering::Relaxed) as f64, attrs);
+                            metrics
+                                .active_connection_delay_nanoseconds
+                                .record(start.elapsed().as_nanos() as f64, attrs);
+                        }
+                        return Ok(ConnectionResult::Connection(conn));
+                    }
+                    Err(lanes) => *lanes,
                 }
-                return Ok(ConnectionResult::Connection(conn));
-            }
+            };
 
             // Only this id's bucket is touched under the lock; swept
             // connections close after it is released.
             let mut doomed = Vec::new();
-            let (mut same_id, saturated_bucket) = self.snapshot_exact(id, want_cap_changes);
-            same_id.retain(|conn| {
-                conn.conn
-                    .extensions()
-                    .get_ref::<ConnectionReuse>()
-                    .is_none_or(|policy| policy.matches(input))
-            });
+            let (same_id, saturated_bucket) = self.snapshot_exact(id, &lanes, want_cap_changes);
 
             // Subscribe to same-id notifications BEFORE the capacity
             // check below (subscribe-then-check), so a handout release or
@@ -1096,7 +1456,7 @@ where
                             storage
                                 .by_id
                                 .values()
-                                .flat_map(|bucket| &bucket.conns)
+                                .flat_map(IdBucket::conns)
                                 .filter(|conn| {
                                     conn.active.load(Ordering::Relaxed) == 0
                                         && conn.in_use_unleased()
@@ -1227,11 +1587,9 @@ where
             Some(provider) => Some(provider.acquire(input).await?),
             None => None,
         };
-        let reusable = id.is_reusable()
-            && conn
-                .extensions()
-                .get_ref::<ConnectionReuse>()
-                .is_none_or(ConnectionReuse::is_reusable);
+        // Reuse requirements are read once: the connection keeps its lane.
+        let reuse = conn.extensions().get_ref::<ConnectionReuse>();
+        let lane = LaneKey::of_connection(reuse).filter(|_| id.is_reusable());
         let conn = Arc::new(StoredConnection {
             max_concurrency: conn.extensions().get_arc::<MaxConcurrency>(),
             admission: conn
@@ -1240,6 +1598,7 @@ where
                 .cloned(),
             conn,
             id,
+            lane: Mutex::new(None),
             seq: self.next_seq.fetch_add(1, Ordering::Relaxed),
             stream_cap: self.max_concurrent_streams,
             active: AtomicUsize::new(1),
@@ -1252,18 +1611,17 @@ where
             }),
             listed: AtomicBool::new(false),
             storage: Arc::downgrade(&self.storage),
-            // A connection that is never stored has no bucket to re-list in.
-            relist_fn: if reusable { relist_stored } else { |_| {} },
+            relist_fn: relist_stored,
         });
 
         trace!(id = ?conn.id, "multiplex pool: adding new connection");
-        if reusable {
+        if let Some(lane) = lane {
             self.storage
                 .lock()
                 .by_id
                 .entry(conn.id.clone())
                 .or_insert_with(|| IdBucket::new(self.next_sweep_after(now_monotonic_nanos())))
-                .insert(&conn);
+                .insert(&conn, lane);
         }
 
         // A freshly added connection has spare capacity beyond its establishing
@@ -2134,42 +2492,70 @@ mod tests {
         assert_eq!(pool.total_slots.available_permits(), 1);
     }
 
+    /// Add a connection publishing the requirements `reuse` builds, as a
+    /// connector would, to an empty `pool`.
+    async fn create_with_reuse(
+        pool: &MultiplexPool<Conn, TestId>,
+        reuse: impl FnOnce(&Conn) -> ConnectionReuse,
+    ) -> MultiplexedConnection<Conn, TestId> {
+        let ConnectionResult::CreatePermit(permit) =
+            pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap()
+        else {
+            panic!("expected an empty pool");
+        };
+        let conn = Conn {
+            serial: 0,
+            extensions: Extensions::new(),
+        };
+        conn.extensions.insert(ConnectionHealthWatcher::default());
+        conn.extensions.insert(reuse(&conn));
+        pool.create(TestId(0), conn, permit, &EMPTY_INPUT)
+            .await
+            .unwrap()
+    }
+
     #[tokio::test]
-    async fn permit_wakeup_rechecks_compatibility_outside_storage_lock() {
+    async fn permit_wakeup_rederives_lanes_outside_storage_lock() {
         #[derive(Debug)]
         struct RejectReuse(Weak<Mutex<Storage<Conn, TestId>>>);
 
         impl ConnectionReusePolicy for RejectReuse {
-            fn matches(&self, _: &Extensions) -> bool {
+            fn classifier(&self) -> ReuseKey {
+                ReuseKey::of::<Self>()
+            }
+
+            fn connection_key(&self) -> Option<ReuseKey> {
+                Some(ReuseKey::of::<Self>())
+            }
+
+            fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
                 let storage = self.0.upgrade().unwrap();
                 assert!(
                     storage.try_lock().is_some(),
                     "connector policy must not run under the pool lock"
                 );
-                false
+                None
             }
         }
 
         let pool = MultiplexPool::try_new(4, 2).unwrap();
-        let svc = connector(pool.clone());
-        let held = connect(&svc, 0).await;
-        held.conn
-            .extensions()
-            .insert(ConnectionReuse::new(RejectReuse(Arc::downgrade(
-                &pool.storage,
-            ))));
+        let held = create_with_reuse(&pool, |_| {
+            ConnectionReuse::new(RejectReuse(Arc::downgrade(&pool.storage)))
+        })
+        .await;
         let permit = pool.total_slots.clone().try_acquire_owned().unwrap();
         let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0), &EMPTY_INPUT));
         assert!(waiter.poll().is_pending());
 
         // Only the total-slot semaphore wakes this waiter. Its admission path
-        // must recheck the established policy before selecting spare capacity.
+        // must derive the request's lanes again before selecting spare capacity.
         drop(permit);
         assert!(waiter.is_woken());
         assert_matches!(
             waiter.poll(),
             Poll::Ready(Ok(ConnectionResult::CreatePermit(_))),
         );
+        drop(held);
     }
 
     #[tokio::test]
@@ -2181,12 +2567,20 @@ mod tests {
         }
 
         impl ConnectionReusePolicy for CloseDuringMatch {
-            fn matches(&self, _: &Extensions) -> bool {
+            fn classifier(&self) -> ReuseKey {
+                ReuseKey::of::<Self>()
+            }
+
+            fn connection_key(&self) -> Option<ReuseKey> {
+                Some(ReuseKey::of::<Self>())
+            }
+
+            fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
                 if !self.enabled.load(Ordering::Relaxed) {
-                    return false;
+                    return None;
                 }
                 self.health.mark_broken();
-                true
+                Some(ReuseKey::of::<Self>())
             }
         }
 
@@ -2199,20 +2593,17 @@ mod tests {
                 let pool = MultiplexPool::try_new(4, 2)
                     .unwrap()
                     .with_selection(selection);
-                let svc = connector(pool.clone());
-                let held = connect(&svc, 0).await;
-                let health = held
-                    .conn
-                    .extensions()
-                    .get_arc::<ConnectionHealthWatcher>()
-                    .unwrap();
                 let enabled = Arc::new(AtomicBool::new(!after_wait));
-                held.conn
-                    .extensions()
-                    .insert(ConnectionReuse::new(CloseDuringMatch {
-                        health,
+                let held = create_with_reuse(&pool, |conn| {
+                    ConnectionReuse::new(CloseDuringMatch {
+                        health: conn
+                            .extensions
+                            .get_arc::<ConnectionHealthWatcher>()
+                            .unwrap(),
                         enabled: enabled.clone(),
-                    }));
+                    })
+                })
+                .await;
                 let reserved =
                     after_wait.then(|| pool.total_slots.clone().try_acquire_owned().unwrap());
                 let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0), &EMPTY_INPUT));
@@ -2227,6 +2618,7 @@ mod tests {
                     Poll::Ready(Ok(ConnectionResult::CreatePermit(_))),
                     "a close reported during policy evaluation must not yield a broken connection",
                 );
+                drop(held);
             }
         }
     }
@@ -2240,7 +2632,15 @@ mod tests {
         }
 
         impl ConnectionReusePolicy for RetireDuringMatch {
-            fn matches(&self, _: &Extensions) -> bool {
+            fn classifier(&self) -> ReuseKey {
+                ReuseKey::of::<Self>()
+            }
+
+            fn connection_key(&self) -> Option<ReuseKey> {
+                Some(ReuseKey::of::<Self>())
+            }
+
+            fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
                 if self.evict {
                     let removed = MultiplexPool::evict_lru_idle(&mut self.pool.storage.lock());
                     assert!(removed.is_some());
@@ -2249,7 +2649,10 @@ mod tests {
                     let mut doomed = Vec::new();
                     {
                         let mut storage = self.pool.storage.lock();
-                        storage.by_id[&TestId(0)].conns[0]
+                        storage.by_id[&TestId(0)]
+                            .conns()
+                            .next()
+                            .unwrap()
                             .conn
                             .extensions()
                             .get_ref::<ConnectionHealthWatcher>()
@@ -2259,20 +2662,19 @@ mod tests {
                     }
                     drop(doomed);
                 }
-                true
+                Some(ReuseKey::of::<Self>())
             }
         }
 
         for evict in [false, true] {
             let pool = MultiplexPool::try_new(4, 1).unwrap();
-            let svc = connector(pool.clone());
-            let held = connect(&svc, 0).await;
-            held.conn
-                .extensions()
-                .insert(ConnectionReuse::new(RetireDuringMatch {
+            let held = create_with_reuse(&pool, |_| {
+                ConnectionReuse::new(RetireDuringMatch {
                     pool: pool.clone(),
                     evict,
-                }));
+                })
+            })
+            .await;
             drop(held);
             let result = pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap();
             assert_matches!(
@@ -2293,7 +2695,8 @@ mod tests {
         let second = connect(&svc, 0).await;
         drop((first, second));
         let mut doomed = Vec::new();
-        let mut snapshot = pool.snapshot(&mut pool.storage.lock(), &TestId(0), &mut doomed);
+        let lanes = pool.request_lanes(&TestId(0), &EMPTY_INPUT);
+        let mut snapshot = pool.snapshot(&mut pool.storage.lock(), &TestId(0), &lanes, &mut doomed);
         let (retired, transferred_slot) =
             MultiplexPool::evict_lru_idle(&mut pool.storage.lock()).unwrap();
         let retired_index = snapshot
@@ -2343,7 +2746,12 @@ mod tests {
         let pool = MultiplexPool::try_new(1, 1).unwrap();
         let svc = connector(pool.clone());
         let handout = connect(&svc, 0).await;
-        let stored = Arc::clone(&pool.storage.lock().by_id[&TestId(0)].conns[0]);
+        let stored = Arc::clone(
+            pool.storage.lock().by_id[&TestId(0)]
+                .conns()
+                .next()
+                .unwrap(),
+        );
 
         assert_eq!(stored.active.load(Ordering::Relaxed), 1);
         let previous_idle = stored.last_idle.as_nanos();
@@ -2954,28 +3362,55 @@ mod tests {
         waited.unwrap().unwrap();
     }
 
-    /// Once nothing is in flight the bucket's `open` index lists exactly the
-    /// stored connections that have room, each once.
+    /// Once nothing is in flight each lane's `open` index lists exactly the
+    /// stored connections that have room, each once, and every stored
+    /// connection knows its lane.
     fn assert_open_matches_capacity(pool: &MultiplexPool<Conn, TestId>) {
         let storage = pool.storage.lock();
         for bucket in storage.by_id.values() {
-            for conn in &bucket.conns {
-                let listed = bucket.open.contains_key(&conn.seq);
-                assert_eq!(listed, conn.listed.load(Ordering::Relaxed), "{}", conn.seq);
-                assert_eq!(
-                    listed,
-                    conn.has_capacity(pool.max_concurrent_streams),
-                    "connection {} is listed iff it has room",
-                    conn.seq
+            assert!(!bucket.is_empty());
+            let lanes = std::iter::once((LaneKey::Unrestricted, &bucket.unrestricted)).chain(
+                bucket
+                    .keyed
+                    .iter()
+                    .zip(bucket.classes.iter())
+                    .flat_map(|(lanes, class)| {
+                        lanes.lanes.iter().map(|(key, lane)| {
+                            (
+                                LaneKey::Keyed(Box::new(KeyedLane {
+                                    class: class.clone(),
+                                    key: key.clone(),
+                                })),
+                                lane,
+                            )
+                        })
+                    }),
+            );
+            for (key, lane) in lanes {
+                assert!(key == LaneKey::Unrestricted || !lane.conns.is_empty());
+                for conn in &lane.conns {
+                    assert_eq!(conn.lane.lock().as_ref(), Some(&key));
+                    let listed = lane.open.contains_key(&conn.seq);
+                    assert_eq!(listed, conn.listed.load(Ordering::Relaxed), "{}", conn.seq);
+                    assert_eq!(
+                        listed,
+                        conn.has_capacity(pool.max_concurrent_streams),
+                        "connection {} is listed iff it has room",
+                        conn.seq
+                    );
+                }
+                assert!(lane.conns.windows(2).all(|w| w[0].seq < w[1].seq));
+                assert!(
+                    lane.open
+                        .keys()
+                        .all(|seq| lane.conns.iter().any(|conn| conn.seq == *seq))
                 );
             }
-            assert!(bucket.conns.windows(2).all(|w| w[0].seq < w[1].seq));
-            assert!(
-                bucket
-                    .open
-                    .keys()
-                    .all(|seq| bucket.conns.iter().any(|conn| conn.seq == *seq))
-            );
+            assert_eq!(bucket.classes.len(), bucket.keyed.len());
+            for (class, lanes) in bucket.classes.iter().zip(&bucket.keyed) {
+                assert_eq!(class.classifier(), &lanes.classifier);
+                assert!(!lanes.lanes.is_empty());
+            }
         }
     }
 
@@ -3000,7 +3435,12 @@ mod tests {
             }
             assert_eq!(created(&svc), 4);
             // Nothing has room, so the index is empty.
-            assert!(pool.storage.lock().by_id[&TestId(0)].open.is_empty());
+            assert!(
+                pool.storage.lock().by_id[&TestId(0)]
+                    .only_lane()
+                    .open
+                    .is_empty()
+            );
             drop(held);
             assert_open_matches_capacity(&pool);
 
@@ -3029,14 +3469,20 @@ mod tests {
         let svc = connector(pool.clone());
         let first = connect(&svc, 0).await;
         let second = connect(&svc, 0).await;
-        assert!(pool.storage.lock().by_id[&TestId(0)].open.len() == 1);
+        assert!(pool.storage.lock().by_id[&TestId(0)].only_lane().open.len() == 1);
         let third = connect(&svc, 0).await;
         assert!(
-            pool.storage.lock().by_id[&TestId(0)].open.is_empty(),
+            pool.storage.lock().by_id[&TestId(0)]
+                .only_lane()
+                .open
+                .is_empty(),
             "the last stream slot unlists the connection"
         );
         drop(second);
-        assert_eq!(pool.storage.lock().by_id[&TestId(0)].open.len(), 1);
+        assert_eq!(
+            pool.storage.lock().by_id[&TestId(0)].only_lane().open.len(),
+            1
+        );
         drop((first, third));
         assert_open_matches_capacity(&pool);
         assert_eq!(created(&svc), 1);
@@ -3089,7 +3535,7 @@ mod tests {
         assert_eq!(serial_of(&b.conn).await, 2);
         assert_eq!(created(&svc), 3);
         drop((a, b));
-        let bucket_len = pool.storage.lock().by_id[&TestId(0)].conns.len();
+        let bucket_len = pool.storage.lock().by_id[&TestId(0)].conns().count();
         assert_eq!(bucket_len, 2);
         assert_open_matches_capacity(&pool);
     }
@@ -3113,7 +3559,7 @@ mod tests {
             let handout = connect(&svc, 0).await;
             assert_eq!(serial_of(&handout.conn).await, 0);
         }
-        assert_eq!(pool.storage.lock().by_id[&TestId(0)].conns.len(), 1);
+        assert_eq!(pool.storage.lock().by_id[&TestId(0)].conns().count(), 1);
         assert_eq!(pool.total_slots.available_permits(), 7);
         assert_eq!(created(&svc), 4);
         assert_open_matches_capacity(&pool);
@@ -3150,7 +3596,7 @@ mod tests {
             // idle and dial another, so `created` may exceed the limit; what is
             // stored may not, and every slot must be accounted for.
             let storage = pool.storage.lock();
-            let stored = &storage.by_id[&TestId(0)].conns;
+            let stored: Vec<_> = storage.by_id[&TestId(0)].conns().collect();
             assert!(stored.len() <= 12);
             assert_eq!(
                 pool.total_slots.available_permits(),

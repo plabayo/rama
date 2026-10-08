@@ -1,7 +1,8 @@
 use super::{
-    ConnID, ConnectionResult, ConnectionReuse, ConnectionReusePolicy, LruDropPool, MultiplexPool,
-    MuxSelection, Pool, ReuseStrategy,
+    ConnID, ConnectionResult, ConnectionReuse, ConnectionReusePolicy, LeasedConnection,
+    LruDropPool, MultiplexPool, MultiplexedConnection, MuxSelection, Pool, ReuseKey, ReuseStrategy,
 };
+use crate::conn::ConnectionHealthWatcher;
 use rama_core::ServiceInput;
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 use std::assert_matches;
@@ -28,14 +29,18 @@ struct Policy {
 }
 
 impl ConnectionReusePolicy for Policy {
-    fn is_reusable(&self) -> bool {
-        self.reusable
+    fn classifier(&self) -> ReuseKey {
+        ReuseKey::of::<Self>()
     }
 
-    fn matches(&self, input: &Extensions) -> bool {
-        input
-            .get_ref::<PolicyId>()
-            .is_some_and(|id| id.0 == self.id)
+    fn connection_key(&self) -> Option<ReuseKey> {
+        self.reusable
+            .then(|| ReuseKey::from_bits::<PolicyId>(self.id.into()))
+    }
+
+    fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
+        let id = input.get_ref::<PolicyId>()?;
+        Some(ReuseKey::from_bits::<PolicyId>(id.0.into()))
     }
 }
 
@@ -45,12 +50,36 @@ fn input(id: u8) -> Extensions {
     extensions
 }
 
-fn connection(id: u8, reusable: bool) -> ServiceInput<()> {
+fn reuse(id: u8, reusable: bool) -> ConnectionReuse {
+    ConnectionReuse::new(Policy { id, reusable })
+}
+
+fn connection_with(reuse: Option<ConnectionReuse>) -> ServiceInput<()> {
     let conn = ServiceInput::new(());
-    conn.extensions().insert(PolicyId(id));
-    conn.extensions()
-        .insert(ConnectionReuse::new(Policy { id, reusable }));
+    if let Some(reuse) = reuse {
+        conn.extensions().insert(reuse);
+    }
     conn
+}
+
+fn connection(id: u8, reusable: bool) -> ServiceInput<()> {
+    let conn = connection_with(Some(reuse(id, reusable)));
+    conn.extensions().insert(PolicyId(id));
+    conn
+}
+
+async fn establish_with<P: Pool<ServiceInput<()>, Route>>(
+    pool: &P,
+    request: &Extensions,
+    conn: ServiceInput<()>,
+) -> P::Connection {
+    let ConnectionResult::CreatePermit(permit) = pool.get_conn(&Route, request).await.unwrap()
+    else {
+        panic!("a distinct policy must establish its own connection");
+    };
+    pool.create(Route, conn, permit, &Extensions::new())
+        .await
+        .unwrap()
 }
 
 async fn establish<P: Pool<ServiceInput<()>, Route>>(
@@ -58,13 +87,13 @@ async fn establish<P: Pool<ServiceInput<()>, Route>>(
     id: u8,
     reusable: bool,
 ) -> P::Connection {
-    let ConnectionResult::CreatePermit(permit) = pool.get_conn(&Route, &input(id)).await.unwrap()
-    else {
-        panic!("a distinct policy must establish its own connection");
-    };
-    pool.create(Route, connection(id, reusable), permit, &Extensions::new())
-        .await
+    establish_with(pool, &input(id), connection(id, reusable)).await
+}
+
+fn exclusive_pool(max: usize) -> LruDropPool<ServiceInput<()>, Route> {
+    LruDropPool::try_new(max, max)
         .unwrap()
+        .with_drop_connection_if_no_response(false)
 }
 
 async fn idle_incompatible_is_replaced<P: Pool<ServiceInput<()>, Route>>(pool: P) {
@@ -80,12 +109,7 @@ async fn idle_incompatible_is_replaced<P: Pool<ServiceInput<()>, Route>>(pool: P
 
 #[tokio::test]
 async fn exclusive_replaces_incompatible_idle_connection_at_capacity() {
-    idle_incompatible_is_replaced(
-        LruDropPool::try_new(1, 1)
-            .unwrap()
-            .with_drop_connection_if_no_response(false),
-    )
-    .await;
+    idle_incompatible_is_replaced(exclusive_pool(1)).await;
 }
 
 #[tokio::test]
@@ -120,12 +144,7 @@ async fn incompatible_waiter_and_cancellation<P: Pool<ServiceInput<()>, Route>>(
 
 #[tokio::test]
 async fn exclusive_incompatible_waiter_cancellation_preserves_capacity() {
-    incompatible_waiter_and_cancellation(
-        LruDropPool::try_new(1, 1)
-            .unwrap()
-            .with_drop_connection_if_no_response(false),
-    )
-    .await;
+    incompatible_waiter_and_cancellation(exclusive_pool(1)).await;
 }
 
 #[tokio::test]
@@ -172,12 +191,7 @@ async fn opaque_policy_is_not_retained<P: Pool<ServiceInput<()>, Route>>(pool: P
 
 #[tokio::test]
 async fn exclusive_opaque_policy_is_not_retained() {
-    opaque_policy_is_not_retained(
-        LruDropPool::try_new(1, 1)
-            .unwrap()
-            .with_drop_connection_if_no_response(false),
-    )
-    .await;
+    opaque_policy_is_not_retained(exclusive_pool(1)).await;
 }
 
 #[tokio::test]
@@ -187,35 +201,19 @@ async fn multiplex_opaque_policy_is_not_retained() {
 
 #[test]
 fn composed_policies_require_every_layer_to_allow_reuse() {
-    let compatible = ConnectionReuse::new(Policy {
-        id: 1,
-        reusable: true,
-    })
-    .and(ConnectionReuse::new(Policy {
-        id: 1,
-        reusable: true,
-    }));
+    let compatible = reuse(1, true).and(reuse(1, true));
     assert!(compatible.matches(&input(1)));
     assert!(!compatible.matches(&input(2)));
-    let incompatible = compatible.clone().and(ConnectionReuse::new(Policy {
-        id: 2,
-        reusable: true,
-    }));
+    let incompatible = compatible.clone().and(reuse(2, true));
     assert!(!incompatible.matches(&input(1)));
-    let opaque = compatible.and(ConnectionReuse::new(Policy {
-        id: 1,
-        reusable: false,
-    }));
+    let opaque = compatible.and(reuse(1, false));
     assert!(!opaque.is_reusable());
     assert!(!opaque.matches(&input(1)));
 }
 
 #[test]
 fn intermediary_restrictions_do_not_certify_endpoint_policy() {
-    let inner = ConnectionReuse::new(Policy {
-        id: 1,
-        reusable: true,
-    });
+    let inner = reuse(1, true);
     assert!(inner.is_complete());
     let proxy = ConnectionReuse::restriction(Policy {
         id: 1,
@@ -226,40 +224,51 @@ fn intermediary_restrictions_do_not_certify_endpoint_policy() {
     assert!(!tunnel.is_complete());
     assert!(tunnel.matches(&input(1)));
     assert!(!tunnel.matches(&input(2)));
-    let origin = tunnel.and(ConnectionReuse::new(Policy {
-        id: 1,
-        reusable: true,
-    }));
+    let origin = tunnel.and(reuse(1, true));
     assert!(origin.is_complete());
     assert!(origin.matches(&input(1)));
 }
 
-#[tokio::test]
-async fn exclusive_only_evaluates_the_first_compatible_policy() {
-    #[derive(Debug)]
-    struct CountPolicy(Arc<AtomicUsize>);
+/// Counts how often pools derive a request key.
+#[derive(Debug)]
+struct CountPolicy {
+    calls: Arc<AtomicUsize>,
+    id: u8,
+}
 
-    impl ConnectionReusePolicy for CountPolicy {
-        fn matches(&self, _: &Extensions) -> bool {
-            self.0.fetch_add(1, Ordering::Relaxed);
-            true
-        }
+impl ConnectionReusePolicy for CountPolicy {
+    fn classifier(&self) -> ReuseKey {
+        ReuseKey::of::<Self>()
     }
 
-    let pool = LruDropPool::try_new(128, 128)
-        .unwrap()
-        .with_drop_connection_if_no_response(false);
+    fn connection_key(&self) -> Option<ReuseKey> {
+        Some(ReuseKey::from_bits::<PolicyId>(self.id.into()))
+    }
+
+    fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let id = input.get_ref::<PolicyId>()?;
+        Some(ReuseKey::from_bits::<PolicyId>(id.0.into()))
+    }
+}
+
+/// Checkout cost must not grow with the policies stored: a hit derives the
+/// request's key once, however many connections and lanes the id has.
+async fn one_key_derivation_per_classifier<P: Pool<ServiceInput<()>, Route>>(pool: P) {
     let calls = Arc::new(AtomicUsize::new(0));
-    let input = Extensions::new();
     let mut held = Vec::new();
-    for _ in 0..128 {
-        let ConnectionResult::CreatePermit(permit) = pool.get_conn(&Route, &input).await.unwrap()
+    for n in 0..128_u8 {
+        let request = input(n % 16);
+        let conn = connection_with(Some(ConnectionReuse::new(CountPolicy {
+            calls: calls.clone(),
+            id: n % 16,
+        })));
+        conn.extensions().insert(PolicyId(n % 16));
+        // Earlier connections are still leased, so each request establishes.
+        let ConnectionResult::CreatePermit(permit) = pool.get_conn(&Route, &request).await.unwrap()
         else {
-            panic!("all previous connections remain leased");
+            panic!("all previous connections are leased");
         };
-        let conn = ServiceInput::new(());
-        conn.extensions()
-            .insert(ConnectionReuse::new(CountPolicy(calls.clone())));
         held.push(
             pool.create(Route, conn, permit, &Extensions::new())
                 .await
@@ -267,24 +276,32 @@ async fn exclusive_only_evaluates_the_first_compatible_policy() {
         );
     }
     drop(held);
-    assert_matches!(
-        pool.get_conn(&Route, &input).await.unwrap(),
-        ConnectionResult::Connection(_),
-    );
+    calls.store(0, Ordering::Relaxed);
+    let ConnectionResult::Connection(conn) = pool.get_conn(&Route, &input(9)).await.unwrap() else {
+        panic!("an idle connection of the lane is stored");
+    };
+    assert_eq!(conn.extensions().get_ref::<PolicyId>().unwrap().0, 9);
     assert_eq!(
         calls.load(Ordering::Relaxed),
         1,
-        "first-compatible checkout must not inspect all idle policies"
+        "one request key derivation per classifier"
     );
+}
+
+#[tokio::test]
+async fn exclusive_derives_one_request_key_per_classifier() {
+    one_key_derivation_per_classifier(exclusive_pool(128)).await;
+}
+
+#[tokio::test]
+async fn multiplex_derives_one_request_key_per_classifier() {
+    one_key_derivation_per_classifier(MultiplexPool::try_new(1, 128).unwrap()).await;
 }
 
 #[tokio::test]
 async fn exclusive_skips_incompatible_policies_in_both_reuse_orders() {
     for strategy in [ReuseStrategy::FiFo, ReuseStrategy::RoundRobin] {
-        let pool = LruDropPool::try_new(2, 2)
-            .unwrap()
-            .with_drop_connection_if_no_response(false)
-            .with_reuse_strategy(strategy);
+        let pool = exclusive_pool(2).with_reuse_strategy(strategy);
         let first = establish(&pool, 1, true).await;
         let second = establish(&pool, 2, true).await;
         drop((first, second));
@@ -306,8 +323,17 @@ struct ProxyPolicyId(u8);
 struct ProxyPolicy;
 
 impl ConnectionReusePolicy for ProxyPolicy {
-    fn matches(&self, input: &Extensions) -> bool {
-        input.get_ref::<ProxyPolicyId>().is_some_and(|id| id.0 == 1)
+    fn classifier(&self) -> ReuseKey {
+        ReuseKey::of::<Self>()
+    }
+
+    fn connection_key(&self) -> Option<ReuseKey> {
+        Some(ReuseKey::from_bits::<ProxyPolicyId>(1))
+    }
+
+    fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
+        let id = input.get_ref::<ProxyPolicyId>()?;
+        Some(ReuseKey::from_bits::<ProxyPolicyId>(id.0.into()))
     }
 }
 
@@ -322,14 +348,13 @@ async fn semaphore_handoff_rechecks_origin_and_proxy_policy_against_current_inpu
             let pool = MultiplexPool::try_new(4, 2)
                 .unwrap()
                 .with_selection(selection);
-            let held = establish(&pool, 1, true).await;
-            held.extensions().insert(
-                ConnectionReuse::new(Policy {
-                    id: 1,
-                    reusable: true,
-                })
-                .and(ConnectionReuse::restriction(ProxyPolicy)),
-            );
+            let conn = connection_with(Some(
+                self::reuse(1, true).and(ConnectionReuse::restriction(ProxyPolicy)),
+            ));
+            conn.extensions().insert(PolicyId(1));
+            let established = input(1);
+            established.insert(ProxyPolicyId(1));
+            let held = establish_with(&pool, &established, conn).await;
             let request = input(2);
             request.insert(ProxyPolicyId(1));
             let ConnectionResult::CreatePermit(reserved) =
@@ -367,6 +392,377 @@ async fn semaphore_handoff_rechecks_origin_and_proxy_policy_against_current_inpu
                 panic!("incompatible request must retain a fresh-connection path");
             };
             drop(permit);
+        }
+    }
+}
+
+async fn requirements_are_read_once<P: Pool<ServiceInput<()>, Route>>(pool: P) {
+    let held = establish(&pool, 1, true).await;
+    // Publishing other requirements later changes nothing for the pool.
+    held.extensions().insert(reuse(2, true));
+    drop(held);
+    assert!(matches!(
+        pool.get_conn(&Route, &input(1)).await.unwrap(),
+        ConnectionResult::Connection(_),
+    ));
+}
+
+#[tokio::test]
+async fn exclusive_reads_requirements_once() {
+    requirements_are_read_once(exclusive_pool(2)).await;
+}
+
+#[tokio::test]
+async fn multiplex_reads_requirements_once() {
+    requirements_are_read_once(MultiplexPool::try_new(1, 2).unwrap()).await;
+}
+
+/// A request is served by a connection of any classifier whose key it matches,
+/// and by connections without requirements.
+async fn classifiers_share_an_id<P: Pool<ServiceInput<()>, Route>>(pool: P) {
+    let unrestricted = establish_with(&pool, &input(5), connection_with(None)).await;
+    let proxy = establish_with(
+        &pool,
+        &input(5),
+        connection_with(Some(ConnectionReuse::restriction(ProxyPolicy))),
+    )
+    .await;
+    let origin = establish(&pool, 1, true).await;
+    drop((unrestricted, proxy, origin));
+
+    let classifier = |conn: &P::Connection| {
+        conn.extensions()
+            .get_ref::<ConnectionReuse>()
+            .map(|reuse| reuse.classifier().clone())
+    };
+    let only_origin = input(1);
+    let mut served = Vec::new();
+    let mut handouts = Vec::new();
+    for _ in 0..2 {
+        let ConnectionResult::Connection(conn) = pool.get_conn(&Route, &only_origin).await.unwrap()
+        else {
+            panic!("the origin lane and the unrestricted lane can serve it");
+        };
+        served.push(classifier(&conn));
+        handouts.push(conn);
+    }
+    assert!(
+        served.contains(&None) && served.contains(&Some(ReuseKey::of::<Policy>())),
+        "{served:?}"
+    );
+    assert!(
+        matches!(
+            pool.get_conn(&Route, &only_origin).await.unwrap(),
+            ConnectionResult::CreatePermit(_),
+        ),
+        "the proxy lane must not serve a request without its key",
+    );
+    drop(handouts);
+
+    let only_proxy = Extensions::new();
+    only_proxy.insert(ProxyPolicyId(1));
+    let ConnectionResult::Connection(conn) = pool.get_conn(&Route, &only_proxy).await.unwrap()
+    else {
+        panic!("the proxy lane and the unrestricted lane can serve it");
+    };
+    assert!(classifier(&conn).is_none_or(|classifier| classifier == ReuseKey::of::<ProxyPolicy>()));
+}
+
+#[tokio::test]
+async fn exclusive_classifiers_share_an_id() {
+    classifiers_share_an_id(exclusive_pool(4)).await;
+}
+
+#[tokio::test]
+async fn multiplex_classifiers_share_an_id() {
+    classifiers_share_an_id(MultiplexPool::try_new(1, 4).unwrap()).await;
+}
+
+#[tokio::test]
+async fn exclusive_rekey_files_the_connection_on_return() {
+    let pool = exclusive_pool(2);
+    let mut held: LeasedConnection<_, _> = establish(&pool, 1, true).await;
+    held.rekey(reuse(2, true));
+    assert!(
+        held.extensions()
+            .get_ref::<ConnectionReuse>()
+            .unwrap()
+            .matches(&input(2))
+    );
+    drop(held);
+    assert_matches!(
+        pool.get_conn(&Route, &input(1)).await.unwrap(),
+        ConnectionResult::CreatePermit(_),
+    );
+    assert_matches!(
+        pool.get_conn(&Route, &input(2)).await.unwrap(),
+        ConnectionResult::Connection(_),
+    );
+
+    let mut held = establish(&pool, 3, true).await;
+    held.rekey(reuse(3, false));
+    drop(held);
+    assert_matches!(
+        pool.get_conn(&Route, &input(3)).await.unwrap(),
+        ConnectionResult::CreatePermit(_),
+        "a connection rekeyed as not reusable is dropped on return",
+    );
+}
+
+#[tokio::test]
+async fn multiplex_rekey_moves_the_shared_connection() {
+    let pool = MultiplexPool::try_new(4, 1).unwrap();
+    let held: MultiplexedConnection<_, _> = establish(&pool, 1, true).await;
+    assert_matches!(
+        pool.get_conn(&Route, &input(1)).await.unwrap(),
+        ConnectionResult::Connection(_),
+    );
+    held.rekey(reuse(2, true));
+    let first_lane = input(1);
+    let mut waiter = tokio_test::task::spawn(pool.get_conn(&Route, &first_lane));
+    assert!(
+        waiter.poll().is_pending(),
+        "the old lane no longer has the connection"
+    );
+    assert_matches!(
+        pool.get_conn(&Route, &input(2)).await.unwrap(),
+        ConnectionResult::Connection(_),
+        "streams of the new lane share it at once",
+    );
+
+    held.rekey(reuse(2, false));
+    let second_lane = input(2);
+    let mut second = tokio_test::task::spawn(pool.get_conn(&Route, &second_lane));
+    assert!(second.poll().is_pending(), "unreusable: no lane has it");
+
+    held.rekey(reuse(1, true));
+    assert!(waiter.is_woken(), "rekeying into a lane wakes its waiters");
+    assert_matches!(
+        waiter.poll(),
+        Poll::Ready(Ok(ConnectionResult::Connection(_))),
+    );
+    drop(held);
+}
+
+#[tokio::test]
+async fn multiplex_rekey_does_not_revive_a_dropped_connection() {
+    let pool = MultiplexPool::try_new(4, 2).unwrap();
+    let conn = connection(1, true);
+    conn.extensions().insert(ConnectionHealthWatcher::default());
+    let held = establish_with(&pool, &input(1), conn).await;
+    held.extensions()
+        .get_ref::<ConnectionHealthWatcher>()
+        .unwrap()
+        .mark_broken();
+    // The next checkout of its lane drops it from the pool.
+    let ConnectionResult::CreatePermit(permit) = pool.get_conn(&Route, &input(1)).await.unwrap()
+    else {
+        panic!("a broken connection is not handed out");
+    };
+    drop(permit);
+    held.rekey(reuse(2, true));
+    assert_matches!(
+        pool.get_conn(&Route, &input(2)).await.unwrap(),
+        ConnectionResult::CreatePermit(_),
+        "a dropped connection stays out of the pool",
+    );
+    drop(held);
+}
+
+/// Pools hand a request only connections whose lane matches it, and never
+/// establish a connection while a compatible one with room is stored.
+mod model {
+    use super::*;
+
+    const CLASSES: usize = 3;
+
+    #[derive(Debug, Extension)]
+    struct Serial(usize);
+
+    #[derive(Debug, Extension)]
+    struct Keys([Option<u8>; CLASSES]);
+
+    /// A policy of class 1 or 2 keyed by `key`; class 0 serves any request.
+    #[derive(Debug)]
+    struct Class {
+        class: usize,
+        key: u8,
+        reusable: bool,
+    }
+
+    impl ConnectionReusePolicy for Class {
+        fn classifier(&self) -> ReuseKey {
+            ReuseKey::from_bits::<Self>(self.class as u128)
+        }
+
+        fn connection_key(&self) -> Option<ReuseKey> {
+            self.reusable.then(|| self.key_of(self.key))
+        }
+
+        fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
+            if self.class == 0 {
+                return Some(self.key_of(0));
+            }
+            Some(self.key_of(input.get_ref::<Keys>()?.0[self.class]?))
+        }
+    }
+
+    impl Class {
+        /// Class 0 serves every request, like a connection without requirements.
+        fn key_of(&self, key: u8) -> ReuseKey {
+            ReuseKey::from_bits::<Keys>(if self.class == 0 { 0 } else { key.into() })
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct Requirements {
+        class: usize,
+        key: u8,
+        reusable: bool,
+    }
+
+    impl Requirements {
+        fn decode(byte: u8) -> Self {
+            Self {
+                class: usize::from(byte) % CLASSES,
+                key: (byte / 3) % 3,
+                reusable: !(byte / 9).is_multiple_of(4),
+            }
+        }
+
+        fn reuse(self) -> ConnectionReuse {
+            ConnectionReuse::new(Class {
+                class: self.class,
+                key: self.key,
+                reusable: self.reusable,
+            })
+        }
+
+        /// Reusable class 0 connections are created without requirements.
+        fn published(self) -> Option<ConnectionReuse> {
+            (self.class != 0 || !self.reusable).then(|| self.reuse())
+        }
+
+        fn serves(self, keys: [Option<u8>; CLASSES]) -> bool {
+            self.reusable && (self.class == 0 || keys[self.class] == Some(self.key))
+        }
+    }
+
+    struct ModelConn {
+        requirements: Requirements,
+        active: usize,
+    }
+
+    trait Handout: ExtensionsRef {
+        fn rekey(&mut self, reuse: ConnectionReuse);
+    }
+
+    impl Handout for LeasedConnection<ServiceInput<()>, Route> {
+        fn rekey(&mut self, reuse: ConnectionReuse) {
+            Self::rekey(self, reuse);
+        }
+    }
+
+    impl Handout for MultiplexedConnection<ServiceInput<()>, Route> {
+        fn rekey(&mut self, reuse: ConnectionReuse) {
+            Self::rekey(self, reuse);
+        }
+    }
+
+    fn run<P>(pool: &P, streams: usize, ops: &[(u8, u8, u8, u8)])
+    where
+        P: Pool<ServiceInput<()>, Route, Connection: Handout>,
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mut conns: Vec<ModelConn> = Vec::new();
+        let mut held: Vec<(P::Connection, usize)> = Vec::new();
+        for &(op, a, b, c) in ops {
+            match op % 4 {
+                0 | 1 if conns.len() < 48 => {
+                    let decode = |byte: u8| (byte % 4 != 3).then_some(byte % 4);
+                    let keys = [None, decode(a), decode(b)];
+                    let request = Extensions::new();
+                    request.insert(Keys(keys));
+                    let fits: Vec<usize> = conns
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, conn)| conn.requirements.serves(keys) && conn.active < streams)
+                        .map(|(serial, _)| serial)
+                        .collect();
+                    match runtime.block_on(pool.get_conn(&Route, &request)).unwrap() {
+                        ConnectionResult::Connection(handout) => {
+                            let serial = handout.extensions().get_ref::<Serial>().unwrap().0;
+                            assert!(
+                                fits.contains(&serial),
+                                "connection {serial} does not serve {keys:?}"
+                            );
+                            conns[serial].active += 1;
+                            held.push((handout, serial));
+                        }
+                        ConnectionResult::CreatePermit(permit) => {
+                            assert!(
+                                fits.is_empty(),
+                                "established although {fits:?} can serve {keys:?}"
+                            );
+                            let requirements = Requirements::decode(c);
+                            let conn = connection_with(requirements.published());
+                            conn.extensions().insert(Serial(conns.len()));
+                            let handout = runtime
+                                .block_on(pool.create(Route, conn, permit, &request))
+                                .unwrap();
+                            held.push((handout, conns.len()));
+                            conns.push(ModelConn {
+                                requirements,
+                                active: 1,
+                            });
+                        }
+                    }
+                }
+                2 if !held.is_empty() => {
+                    let (handout, serial) = held.swap_remove(usize::from(a) % held.len());
+                    drop(handout);
+                    conns[serial].active -= 1;
+                }
+                3 if !held.is_empty() => {
+                    let index = usize::from(a) % held.len();
+                    let requirements = Requirements::decode(b);
+                    let (handout, serial) = &mut held[index];
+                    handout.rekey(requirements.reuse());
+                    conns[*serial].requirements = requirements;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[quickcheck_macros::quickcheck]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "quickcheck generates owned inputs"
+    )]
+    fn exclusive_pool_hands_out_exactly_the_compatible_connections(ops: Vec<(u8, u8, u8, u8)>) {
+        run(&exclusive_pool(64), 1, &ops);
+    }
+
+    #[quickcheck_macros::quickcheck]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "quickcheck generates owned inputs"
+    )]
+    fn multiplex_pool_hands_out_exactly_the_compatible_connections(ops: Vec<(u8, u8, u8, u8)>) {
+        for streams in [1, 3] {
+            for selection in [
+                MuxSelection::FirstAvailable,
+                MuxSelection::LeastLoaded,
+                MuxSelection::RoundRobin,
+            ] {
+                let pool = MultiplexPool::try_new(streams, 64)
+                    .unwrap()
+                    .with_selection(selection);
+                run(&pool, streams, &ops);
+            }
         }
     }
 }
