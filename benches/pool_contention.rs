@@ -4,7 +4,7 @@
     reason = "bench: panic-on-error is the standard pattern for harnesses"
 )]
 
-use divan::{AllocProfiler, black_box, counter::ItemsCount};
+use divan::{black_box, counter::ItemsCount};
 use rama::{
     ServiceInput,
     error::BoxError,
@@ -29,8 +29,7 @@ use std::{
 };
 use tokio::sync::Notify;
 
-#[global_allocator]
-static ALLOC: AllocProfiler = AllocProfiler::system();
+mod bench_alloc;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct BenchId(u8);

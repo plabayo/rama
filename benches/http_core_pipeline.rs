@@ -21,8 +21,7 @@ use rama::http::body::util::Full;
 use rama::http::core::server::conn::http1;
 use rama::service::service_fn;
 
-#[global_allocator]
-static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
+mod bench_alloc;
 
 fn main() {
     // Run registered benchmarks.

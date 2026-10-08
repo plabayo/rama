@@ -496,7 +496,7 @@ fuzz-full:
     just fuzz/full
 
 bench *ARGS:
-    cargo bench --features=http-full,rustls,aws-lc,boring,socks5,ua,udp,quic,test-utils,rss {{ARGS}}
+    cargo bench --features=http-full,rustls,aws-lc,boring,socks5,ua,udp,quic,test-utils,rss,fuzz-utils,unix {{ARGS}}
 
 bench-icap *ARGS:
     cargo bench -p rama-icap --features=http --bench icap -- {{ARGS}}

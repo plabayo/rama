@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-DEFAULT_CMD = "cargo bench --bench e2e_http_client_server --features http-full,rustls,aws-lc,boring,socks5"
+DEFAULT_CMD = "cargo bench --bench e2e_http_client_server --features http-full,rustls,aws-lc,boring,socks5,quic,unix"
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 UNITS_TIME = {"ns": 1e-9, "µs": 1e-6, "us": 1e-6, "ms": 1e-3, "s": 1.0}

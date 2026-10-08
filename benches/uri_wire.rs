@@ -6,6 +6,8 @@
 use divan::black_box;
 use rama::{bytes::BytesMut, net::uri::Uri};
 
+mod bench_alloc;
+
 struct BytesMutWriter<'a>(&'a mut BytesMut);
 
 impl core::fmt::Write for BytesMutWriter<'_> {

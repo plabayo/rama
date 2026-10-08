@@ -30,8 +30,7 @@ use rama::{
 };
 use std::{hint::black_box, time::Duration};
 
-#[global_allocator]
-static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
+mod bench_alloc;
 
 fn main() {
     divan::main();

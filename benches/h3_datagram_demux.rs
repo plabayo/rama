@@ -3,8 +3,7 @@
 
 use rama::{bytes::Bytes, http::core::h3::fuzz::DemuxDriver};
 
-#[global_allocator]
-static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
+mod bench_alloc;
 
 fn main() {
     divan::main();

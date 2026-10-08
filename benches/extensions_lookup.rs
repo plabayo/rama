@@ -12,14 +12,13 @@
 //! reports the time of the whole round (the item counter says how many
 //! lookups that is).
 
-use divan::{AllocProfiler, black_box, counter::ItemsCount};
+use divan::{black_box, counter::ItemsCount};
 use rama::{
     extensions::{Egress, Extension, Extensions, Ingress},
     tls::{boring::client::BoringTlsClientConfigProvider, client::TlsClientConfigProvider as _},
 };
 
-#[global_allocator]
-static ALLOC: AllocProfiler = AllocProfiler::system();
+mod bench_alloc;
 
 fn main() {
     divan::main();

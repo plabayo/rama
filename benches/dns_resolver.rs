@@ -23,6 +23,8 @@ use rama::{
 };
 use tokio::runtime::Runtime;
 
+mod bench_alloc;
+
 fn main() {
     divan::main();
 }

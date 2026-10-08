@@ -12,7 +12,7 @@
 //! completion notifications are measured, while task creation and joining are excluded.
 #![expect(clippy::unwrap_used, reason = "benchmark failures must fail the run")]
 
-use divan::{AllocProfiler, black_box, counter::BytesCount};
+use divan::{black_box, counter::BytesCount};
 use rama::{
     futures::future::join_all,
     net::tls::ApplicationProtocol,
@@ -36,8 +36,7 @@ use tokio::{
     time::timeout,
 };
 
-#[global_allocator]
-static ALLOC: AllocProfiler = AllocProfiler::system();
+mod bench_alloc;
 
 const CASES: [&str; 4] = [
     "1conn_1stream",

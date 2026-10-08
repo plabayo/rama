@@ -32,8 +32,7 @@ use rama::{
 };
 use std::{convert::Infallible, sync::Arc};
 
-#[global_allocator]
-static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
+mod bench_alloc;
 fn main() {
     divan::main();
 }
