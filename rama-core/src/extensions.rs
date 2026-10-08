@@ -35,7 +35,7 @@ use core::any::{Any, TypeId};
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::pin::Pin;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::std::{boxed::Box, sync::Arc, vec::Vec};
 
@@ -43,7 +43,7 @@ pub use rama_macros::{Extension, FromExtensions};
 use rama_utils::collections::AppendOnlyVec;
 use rama_utils::macros::impl_deref;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 /// A type map of protocol extensions.
 ///
 /// [`Extension`]s are internally stored in a type erased [`Arc`]. Since values
@@ -65,43 +65,59 @@ use rama_utils::macros::impl_deref;
 /// - HTTP layered on top of TLS
 /// - ...
 pub struct Extensions {
-    extensions: Arc<Store>,
-    parent: Option<Box<Self>>,
+    node: Arc<Node>,
 }
 
-/// The entries of one [`Extensions`] level, shared by all its clones.
+/// One level of an [`Extensions`] chain, shared by all clones of its handle,
+/// so cloning a handle is a reference count and forking one allocation.
+// `repr(C)`: a lookup that skips the level reads the links and the filter
+// only, which share the first cache line with the first entries.
+#[repr(C)]
+struct Node {
+    /// The level whose entries a [`Extensions::with_base`] view shows instead
+    /// of its own (always empty) ones. That level is never a view itself.
+    view_of: Option<Extensions>,
+    parent: Option<Extensions>,
+    entries: Store,
+}
+
+/// Entries an [`Extensions`] level holds without allocating storage of its
+/// own: most levels hold no more, and are then a single allocation.
+const INLINE_ENTRIES: usize = 6;
+
+/// The first storage a level allocates, once its inline entries are used up,
+/// holds `2^SPILL_BIN_OFFSET` entries, every later one double the one before.
+const SPILL_BIN_OFFSET: u32 = 4;
+
+/// The entries of one [`Extensions`] level.
 ///
-/// Next to the entries it keeps `seen`, a tiny bloom filter over the
-/// [`TypeId`]s pushed so far. Type lookups are dominated by misses (optional
-/// extensions that were never inserted) and each miss walks every level of
-/// the chain and every entry in it. A level whose filter has none of the
-/// requested bits cannot hold a match, so it is skipped in O(1) instead of
-/// scanned.
+/// Every entry is pushed with its [`Store::seen_bit`] as tag, which makes the
+/// tags of the entries (see [`AppendOnlyVec::push_tagged`]) a tiny bloom
+/// filter over the [`TypeId`]s pushed so far. Type lookups are dominated by
+/// misses (optional extensions that were never inserted) and each miss walks
+/// every level of the chain and every entry in it. A level whose filter has
+/// none of the requested bits cannot hold a match, so it is skipped in O(1)
+/// instead of scanned.
 #[derive(Default)]
 struct Store {
-    /// One [`type_bit`] per distinct type pushed, plus [`WRAPPER_BIT`] once an
-    /// [`Egress`] or [`Ingress`] wrapper is pushed. It is only ever set, never
-    /// cleared, and is updated before the entry becomes visible. A reader that
-    /// can see an entry therefore also sees its bit.
-    seen: AtomicUsize,
-    entries: AppendOnlyVec<TypeErasedExtension, 11, 3>,
+    entries: AppendOnlyVec<TypeErasedExtension, INLINE_ENTRIES, SPILL_BIN_OFFSET>,
 }
 
-/// Bit of [`Store::seen`] reserved for [`Egress`] and [`Ingress`] wrappers.
+/// Bit of the [`Store`] filter reserved for [`Egress`] and [`Ingress`] wrappers.
 ///
 /// Lookups recurse into these wrappers, so a level holding one can never be
 /// skipped, whatever the requested type. They get their own bit rather than a
 /// [`type_bit`] so this holds without any per-type bookkeeping.
 const WRAPPER_BIT: usize = 1 << (usize::BITS - 1);
 
-/// Number of slots a [`TypeId`] can hash to: every bit of [`Store::seen`]
-/// except [`WRAPPER_BIT`].
+/// Number of slots a [`TypeId`] can hash to: every bit of the [`Store`]
+/// filter except [`WRAPPER_BIT`].
 const TYPE_SLOTS: usize = usize::BITS as usize - 1;
 
 /// The slot of a [`TypeId`], below [`TYPE_SLOTS`].
 ///
-/// `TypeId` hashes to (the low half of) an already well distributed 128-bit
-/// value, so the hash is used as is, without another round of mixing.
+/// `TypeId` hashes as 64 bits of an already well distributed 128-bit value,
+/// so the hash is used as is, without another round of mixing.
 #[inline(always)]
 fn type_slot(id: TypeId) -> usize {
     struct Fold(u64);
@@ -131,7 +147,7 @@ fn type_slot(id: TypeId) -> usize {
     ((hasher.finish() as usize) & (usize::BITS as usize - 1)).min(TYPE_SLOTS - 1)
 }
 
-/// The bit a [`TypeId`] sets in [`Store::seen`], never [`WRAPPER_BIT`].
+/// The bit a [`TypeId`] sets in the [`Store`] filter, never [`WRAPPER_BIT`].
 #[inline(always)]
 fn type_bit(id: TypeId) -> usize {
     1 << type_slot(id)
@@ -181,14 +197,14 @@ impl<const N: usize> Targets<N> {
 /// The [`Targets`] of a `#[derive(FromExtensions)]` type, built on first use.
 ///
 /// The targets of such a type never change, so the derive keeps them in a
-/// `static` instead of rebuilding them on every lookup. Without the `std`
-/// feature there is no cell to keep them in and every lookup builds them.
+/// `static` instead of rebuilding them on every lookup.
 ///
 /// Hidden and not part of the public API surface.
 #[doc(hidden)]
 pub struct TargetPlan<const N: usize> {
-    #[cfg(feature = "std")]
-    targets: std::sync::OnceLock<Targets<N>>,
+    /// Installed once: concurrent first uses race to build it, and the losers
+    /// free theirs. Only needs `alloc`.
+    targets: AtomicPtr<Targets<N>>,
 }
 
 impl<const N: usize> TargetPlan<N> {
@@ -196,21 +212,49 @@ impl<const N: usize> TargetPlan<N> {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            #[cfg(feature = "std")]
-            targets: std::sync::OnceLock::new(),
+            targets: AtomicPtr::new(core::ptr::null_mut()),
         }
     }
 
     /// The targets, built from `ids` on the first call.
-    #[cfg(feature = "std")]
+    #[inline]
     pub fn get(&self, ids: impl FnOnce() -> [TypeId; N]) -> &Targets<N> {
-        self.targets.get_or_init(|| Targets::new(ids()))
+        let targets = self.targets.load(Ordering::Acquire);
+        if targets.is_null() {
+            return self.install(ids());
+        }
+        // Safety: an installed plan is never freed while `self` is borrowed.
+        unsafe { &*targets }
     }
 
-    /// The targets, built from `ids`.
-    #[cfg(not(feature = "std"))]
-    pub fn get(&self, ids: impl FnOnce() -> [TypeId; N]) -> Targets<N> {
-        Targets::new(ids())
+    #[cold]
+    fn install(&self, ids: [TypeId; N]) -> &Targets<N> {
+        let new = Box::into_raw(Box::new(Targets::new(ids)));
+        let targets = match self.targets.compare_exchange(
+            core::ptr::null_mut(),
+            new,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => new,
+            Err(installed) => {
+                // Safety: `new` was just leaked from a box and never shared.
+                drop(unsafe { Box::from_raw(new) });
+                installed
+            }
+        };
+        // Safety: an installed plan is never freed while `self` is borrowed.
+        unsafe { &*targets }
+    }
+}
+
+impl<const N: usize> Drop for TargetPlan<N> {
+    fn drop(&mut self) {
+        let targets = *self.targets.get_mut();
+        if !targets.is_null() {
+            // Safety: installed from a leaked box, and nothing borrows `self` anymore.
+            drop(unsafe { Box::from_raw(targets) });
+        }
     }
 }
 
@@ -220,12 +264,14 @@ impl<const N: usize> Default for TargetPlan<N> {
     }
 }
 
-impl Store {
-    fn new() -> Self {
-        Self::default()
+impl Default for Extensions {
+    fn default() -> Self {
+        Self::new()
     }
+}
 
-    /// The bit of [`Self::seen`] that an entry of type `T` sets.
+impl Store {
+    /// The bit of the filter that an entry of type `T` sets.
     ///
     /// A constant for every `T`, so pushing a typed value needs no hashing.
     #[inline(always)]
@@ -250,28 +296,22 @@ impl Store {
     /// Push an entry whose [`Self::seen_bit`] is already known.
     #[inline(always)]
     fn push_with_bit(&self, extension: TypeErasedExtension, bit: usize) -> usize {
-        // Before the push, so the bit is visible together with the entry
-        // (the push publishes the entry with `Release`). The load skips the
-        // atomic read-modify-write for a type this level already holds.
-        if self.seen.load(Ordering::Relaxed) & bit == 0 {
-            self.seen.fetch_or(bit, Ordering::Relaxed);
-        }
-        self.entries.push(extension)
+        self.entries.push_tagged(extension, bit)
     }
 
     /// Whether this level holds an [`Egress`] or [`Ingress`] wrapper. Read it
-    /// after the entries to scan (see [`Self::push_with_bit`]), then no wrapper among
-    /// them is missed.
+    /// after the entries to scan, then no wrapper among them is missed (see
+    /// [`AppendOnlyVec::push_tagged`]).
     #[inline(always)]
     fn has_wrappers(&self) -> bool {
-        self.seen.load(Ordering::Relaxed) & WRAPPER_BIT != 0
+        self.entries.tags() & WRAPPER_BIT != 0
     }
 
     /// Whether a lookup for `targets` (the OR of their [`type_bit`]s) has to
     /// scan this level: false only if it can hold neither of them nor a wrapper.
     #[inline(always)]
     fn may_contain(&self, targets: usize) -> bool {
-        self.seen.load(Ordering::Relaxed) & (targets | WRAPPER_BIT) != 0
+        self.entries.tags() & (targets | WRAPPER_BIT) != 0
     }
 }
 
@@ -280,7 +320,32 @@ impl Extensions {
     #[inline(always)]
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self::with_parent(None)
+    }
+
+    #[inline(always)]
+    fn with_parent(parent: Option<Self>) -> Self {
+        Self {
+            node: Arc::new(Node {
+                view_of: None,
+                parent,
+                entries: Store::default(),
+            }),
+        }
+    }
+
+    /// The entries of this level.
+    #[inline(always)]
+    fn store(&self) -> &Store {
+        match &self.node.view_of {
+            None => &self.node.entries,
+            Some(owner) => &owner.node.entries,
+        }
+    }
+
+    /// The handle of the level that owns the entries of this one.
+    fn owner(&self) -> &Self {
+        self.node.view_of.as_ref().unwrap_or(self)
     }
 
     /// Create a fresh child [`Extensions`] whose parent is this [`Extensions`] store.
@@ -292,17 +357,14 @@ impl Extensions {
     /// their interior state is visible through both parent and child.
     #[must_use]
     pub fn fork(&self) -> Self {
-        Self {
-            extensions: Arc::new(Store::new()),
-            parent: Some(Box::new(self.clone())),
-        }
+        Self::with_parent(Some(self.clone()))
     }
 
     /// The parent [`Extensions`] this blob was forked from, if any.
     #[inline(always)]
     #[must_use]
     pub fn parent(&self) -> Option<&Self> {
-        self.parent.as_deref()
+        self.node.parent.as_ref()
     }
 
     /// Return a view of this [`Extensions`] chain layered on top of `base`.
@@ -315,13 +377,16 @@ impl Extensions {
     /// defaults, e.g. `request_extensions().with_base(&base_extension_config)`
     #[must_use]
     pub fn with_base(&self, base: &Self) -> Self {
-        let parent = match &self.parent {
+        let parent = match self.parent() {
             Some(parent) => parent.with_base(base),
             None => base.clone(),
         };
         Self {
-            extensions: Arc::clone(&self.extensions),
-            parent: Some(Box::new(parent)),
+            node: Arc::new(Node {
+                view_of: Some(self.owner().clone()),
+                parent: Some(parent),
+                entries: Store::default(),
+            }),
         }
     }
 
@@ -335,14 +400,14 @@ impl Extensions {
     pub fn insert<T: Extension>(&self, val: T) -> &T {
         let extension = TypeErasedExtension::new(val);
         let idx = self
-            .extensions
+            .store()
             .push_with_bit(extension, Store::seen_bit_of::<T>());
 
         #[expect(
             clippy::unwrap_used,
             reason = "`downcast_ref` can only be none if TypeId doesn't match, but we just inserted this type"
         )]
-        self.extensions.entries[idx].downcast_ref::<T>().unwrap()
+        self.store().entries[idx].downcast_ref::<T>().unwrap()
     }
 
     /// Insert a type `Arc<T>` into this [`Extensions]` store.
@@ -354,27 +419,27 @@ impl Extensions {
     pub fn insert_arc<T: Extension>(&self, val: Arc<T>) -> Arc<T> {
         let extension = TypeErasedExtension::new_arc(val);
         let idx = self
-            .extensions
+            .store()
             .push_with_bit(extension, Store::seen_bit_of::<T>());
 
         #[expect(
             clippy::unwrap_used,
             reason = "`cloned_downcast` can only be none if TypeId doesn't match, but we just inserted this type"
         )]
-        self.extensions.entries[idx].cloned_downcast::<T>().unwrap()
+        self.store().entries[idx].cloned_downcast::<T>().unwrap()
     }
 
     /// Insert an already erased extension, retaining its original type identity.
     pub fn insert_erased(&self, extension: TypeErasedExtension) {
-        self.extensions.push(extension);
+        self.store().push(extension);
     }
 
     /// Extend this [`Extensions`] store with the other [`Extensions`].
     ///
     /// The other [`Extensions`]s will be appended behind the current ones
     pub fn extend(&self, other: &Self) {
-        for ext in other.extensions.entries.iter() {
-            self.extensions.push(ext.clone());
+        for ext in other.store().entries.iter() {
+            self.store().push(ext.clone());
         }
     }
 
@@ -396,7 +461,7 @@ impl Extensions {
     #[must_use]
     pub fn self_contains<T: Extension>(&self) -> bool {
         let type_id = TypeId::of::<T>();
-        self.extensions
+        self.store()
             .entries
             .iter()
             .rev()
@@ -433,10 +498,11 @@ impl Extensions {
         let target = TypeId::of::<T>();
         let egress_id = TypeId::of::<Egress<Self>>();
         let ingress_id = TypeId::of::<Ingress<Self>>();
-        if self.extensions.may_contain(type_bit(target)) {
-            let chunks = self.extensions.entries.chunks();
-            // Read after the chunks (see `Store::push_with_bit`).
-            let has_wrappers = self.extensions.has_wrappers();
+        let store = self.store();
+        if store.may_contain(type_bit(target)) {
+            let chunks = store.entries.chunks();
+            // Read after the chunks (see `AppendOnlyVec::push_tagged`).
+            let has_wrappers = store.has_wrappers();
             for chunk in chunks.rev() {
                 for ext in chunk.iter().rev() {
                     if ext.type_id == target {
@@ -468,7 +534,7 @@ impl Extensions {
     #[must_use]
     pub fn self_get_ref<T: Extension>(&self) -> Option<&T> {
         let type_id = TypeId::of::<T>();
-        self.extensions
+        self.store()
             .entries
             .iter()
             .rev()
@@ -487,10 +553,11 @@ impl Extensions {
         let target = TypeId::of::<T>();
         let egress_id = TypeId::of::<Egress<Self>>();
         let ingress_id = TypeId::of::<Ingress<Self>>();
-        if self.extensions.may_contain(type_bit(target)) {
-            let chunks = self.extensions.entries.chunks();
-            // Read after the chunks (see `Store::push_with_bit`).
-            let has_wrappers = self.extensions.has_wrappers();
+        let store = self.store();
+        if store.may_contain(type_bit(target)) {
+            let chunks = store.entries.chunks();
+            // Read after the chunks (see `AppendOnlyVec::push_tagged`).
+            let has_wrappers = store.has_wrappers();
             for chunk in chunks.rev() {
                 for ext in chunk.iter().rev() {
                     if ext.type_id == target {
@@ -522,7 +589,7 @@ impl Extensions {
     #[must_use]
     pub fn self_get_arc<T: Extension>(&self) -> Option<Arc<T>> {
         let type_id = TypeId::of::<T>();
-        self.extensions
+        self.store()
             .entries
             .iter()
             .rev()
@@ -572,21 +639,21 @@ impl Extensions {
         targets: &[TypeId; N],
         out: &mut [Option<(&'a TypeErasedExtension, usize)>; N],
     ) {
-        self.get_many_targets(Targets::new(*targets), out);
+        self.get_many_targets(&Targets::new(*targets), out);
     }
 
-    /// [`Self::get_many_erased`] for prepared `targets`: a [`Targets`] itself,
-    /// or a reference to one that is kept between lookups (see [`TargetPlan`]).
+    /// [`Self::get_many_erased`] for prepared `targets`, such as the ones a
+    /// [`TargetPlan`] keeps between lookups.
     #[doc(hidden)]
     #[inline]
     pub fn get_many_targets<'a, const N: usize>(
         &'a self,
-        targets: impl core::borrow::Borrow<Targets<N>>,
+        targets: &Targets<N>,
         out: &mut [Option<(&'a TypeErasedExtension, usize)>; N],
     ) {
         let mut rank = 0;
         let mut remaining = out.iter().filter(|slot| slot.is_none()).count();
-        self.get_many_erased_ranked(targets.borrow(), out, &mut rank, &mut remaining);
+        self.get_many_erased_ranked(targets, out, &mut rank, &mut remaining);
     }
 
     /// One level of [`Self::get_many_erased`], then its wrappers and its parents
@@ -602,13 +669,14 @@ impl Extensions {
         if *remaining == 0 {
             return;
         }
-        if self.extensions.may_contain(targets.bits) {
+        let store = self.store();
+        if store.may_contain(targets.bits) {
             let egress_id = TypeId::of::<Egress<Self>>();
             let ingress_id = TypeId::of::<Ingress<Self>>();
-            let chunks = self.extensions.entries.chunks();
-            // Read after the chunks (see `Store::push_with_bit`): every entry they
+            let chunks = store.entries.chunks();
+            // Read after the chunks (see `AppendOnlyVec::push_tagged`): every entry they
             // yield has its bit in here.
-            let has_wrappers = self.extensions.has_wrappers();
+            let has_wrappers = store.has_wrappers();
             for chunk in chunks.rev() {
                 for ext in chunk.iter().rev() {
                     let current = *rank;
@@ -652,7 +720,7 @@ impl Extensions {
         } else {
             // Nothing in this level is a target or a wrapper. Still count its
             // entries, so ranks stay the positions in the full traversal.
-            *rank += self.extensions.entries.len();
+            *rank += store.entries.len();
         }
         if let Some(parent) = self.parent() {
             parent.get_many_erased_ranked(targets, out, rank, remaining);
@@ -724,7 +792,7 @@ impl Extensions {
     #[must_use]
     pub fn self_first_ref<T: Extension>(&self) -> Option<&T> {
         let type_id = TypeId::of::<T>();
-        self.extensions
+        self.store()
             .entries
             .iter()
             .find(|item| item.type_id == type_id)
@@ -736,7 +804,7 @@ impl Extensions {
     #[must_use]
     pub fn self_first_arc<T: Extension>(&self) -> Option<Arc<T>> {
         let type_id = TypeId::of::<T>();
-        self.extensions
+        self.store()
             .entries
             .iter()
             .find(|item| item.type_id == type_id)
@@ -751,7 +819,7 @@ impl Extensions {
     pub fn self_iter_ref<T: Extension>(&self) -> impl Iterator<Item = &T> {
         let type_id = TypeId::of::<T>();
 
-        self.extensions
+        self.store()
             .entries
             .iter()
             .rev()
@@ -767,7 +835,7 @@ impl Extensions {
     pub fn self_iter_arc<T: Extension>(&self) -> impl Iterator<Item = Arc<T>> {
         let type_id = TypeId::of::<T>();
 
-        self.extensions
+        self.store()
             .entries
             .iter()
             .rev()
@@ -782,7 +850,7 @@ impl Extensions {
     /// iteration. [`TypeErasedExtension`] exposes methods to convert back to
     /// type `T` when it matches the erased type.
     pub fn self_iter_all(&self) -> impl Iterator<Item = &TypeErasedExtension> {
-        self.extensions.entries.iter()
+        self.store().entries.iter()
     }
 
     /// Iterate over all inserted items of type `T`, walking the parent chain
@@ -815,7 +883,7 @@ impl Extensions {
         let target = TypeId::of::<T>();
         let egress_id = TypeId::of::<Egress<Self>>();
         let ingress_id = TypeId::of::<Ingress<Self>>();
-        let local = self.extensions.entries.iter().rev().flat_map(
+        let local = self.store().entries.iter().rev().flat_map(
             move |ext| -> Box<dyn Iterator<Item = &T> + '_> {
                 if ext.type_id == target {
                     match ext.downcast_ref::<T>() {
@@ -849,7 +917,7 @@ impl Extensions {
         let target = TypeId::of::<T>();
         let egress_id = TypeId::of::<Egress<Self>>();
         let ingress_id = TypeId::of::<Ingress<Self>>();
-        let local = self.extensions.entries.iter().rev().flat_map(
+        let local = self.store().entries.iter().rev().flat_map(
             move |ext| -> Box<dyn Iterator<Item = Arc<T>> + '_> {
                 if ext.type_id == target {
                     match ext.cloned_downcast::<T>() {
@@ -1028,7 +1096,7 @@ impl fmt::Debug for Extensions {
         s.field(
             "entries",
             &self
-                .extensions
+                .store()
                 .entries
                 .iter()
                 .map(|e| &e.value)
