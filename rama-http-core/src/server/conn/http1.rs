@@ -1347,13 +1347,19 @@ mod lingering_tests {
             RamaHttpService::new(service_fn(answer)),
         );
         tokio::pin!(connection);
+        // The connection only answers while polled, so poll it while the answer is read.
+        let mut head = [0; 12];
+        tokio::select! {
+            _ = &mut connection => panic!("the connection ended before its answer was read"),
+            read = client.read_exact(&mut head) => {
+                read.unwrap();
+            }
+        }
+        assert!(is_413(&head));
         tokio::select! {
             _ = &mut connection => panic!("the connection ended instead of lingering"),
             () = tokio::time::sleep(Duration::from_millis(200)) => {}
         }
-        let mut head = [0; 12];
-        client.read_exact(&mut head).await.unwrap();
-        assert!(is_413(&head));
 
         connection.as_mut().graceful_shutdown();
         tokio::time::timeout(Duration::from_secs(1), connection)

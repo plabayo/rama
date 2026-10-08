@@ -29,6 +29,9 @@ pub(super) enum Close {
     Reset,
     /// Read the request, reply, then close gracefully (FIN).
     Fin,
+    /// As [`Close::Fin`], once the reply was acknowledged, so that input that
+    /// arrives first and turns the close into a reset cannot cut it short.
+    FinOnceAcked,
     /// Wait for the request without reading it, reply and close. Closing with
     /// unread input turns the close into a reset (rama#1156).
     UnreadInput,
@@ -64,7 +67,7 @@ pub(super) async fn spawn_origin(len: usize, close: Close) -> Origin {
     .await
 }
 
-async fn serve_one(mut stream: TcpStream, body: &[u8], close: Close) -> io::Result<()> {
+pub(super) async fn serve_one(mut stream: TcpStream, body: &[u8], close: Close) -> io::Result<()> {
     if close == Close::UnreadInput {
         stream.readable().await?;
     } else {

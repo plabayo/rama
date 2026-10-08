@@ -2240,8 +2240,15 @@ mod tests {
     }
 
     async fn chain(svc: IoForwardService) -> Chain {
+        chain_with_reply(svc, b"").await
+    }
+
+    /// A [`chain`] whose origin has sent `reply` before the bridge starts, so
+    /// that it is there before any bridge timeout starts.
+    async fn chain_with_reply(svc: IoForwardService, reply: &[u8]) -> Chain {
         let (client, ingress) = tcp_pair().await;
-        let (egress, origin) = tcp_pair().await;
+        let (egress, mut origin) = tcp_pair().await;
+        origin.write_all(reply).await.unwrap();
         let bridge = tokio::spawn(async move {
             match svc.serve(bridge(ingress, egress)).await {
                 Ok(outcome) => outcome,
@@ -2335,11 +2342,10 @@ mod tests {
             mut client,
             mut origin,
             bridge,
-        } = chain(svc).await;
+        } = chain_with_reply(svc, &reply(REPLY_LEN)).await;
         let origin = tokio::spawn(async move {
             let mut req = vec![0; REQUEST.len()];
             origin.read_exact(&mut req).await.unwrap();
-            origin.write_all(&reply(REPLY_LEN)).await.unwrap();
             origin
         });
         client.write_all(REQUEST).await.unwrap();
@@ -2409,14 +2415,13 @@ mod tests {
             .with_lingering_close(
                 LingeringClose::new().with_idle_timeout(Duration::from_millis(200)),
             );
-        let Chain {
-            client,
-            mut origin,
-            bridge,
-        } = chain(svc).await;
         let started = Instant::now();
         // Something to protect: lingering is for a client the bridge wrote to.
-        origin.write_all(b"hi").await.unwrap();
+        let Chain {
+            client,
+            origin,
+            bridge,
+        } = chain_with_reply(svc, b"hi").await;
         let outcome = tokio::time::timeout(Duration::from_secs(5), bridge)
             .await
             .expect("lingering was not bounded by its idle timeout")
@@ -2425,7 +2430,7 @@ mod tests {
         let elapsed = started.elapsed();
         assert!(
             elapsed >= Duration::from_millis(200),
-            "lingered only {elapsed:?}"
+            "lingered only {elapsed:?} after {outcome}"
         );
         assert!(elapsed < Duration::from_secs(2), "lingered {elapsed:?}");
         assert!(
@@ -2445,18 +2450,20 @@ mod tests {
                 .with_idle_timeout(Duration::from_millis(300))
                 .with_timeout(Duration::from_millis(600)),
         );
+        let started = Instant::now();
         let Chain {
             mut client,
-            mut origin,
+            origin,
             bridge,
-        } = chain(svc).await;
+        } = chain_with_reply(svc, b"hi").await;
         // Nagle would hold each byte back until the last one is acknowledged,
         // which a delayed ACK can stretch past the idle timeout.
         client.set_nodelay(true).unwrap();
-        let started = Instant::now();
         // The origin replies and ends cleanly, so the client side lingers.
-        origin.write_all(b"hi").await.unwrap();
         drop(origin);
+        // A send makes the closed origin reset, which on Windows drops a reply the bridge has not read.
+        let mut reply = [0; 2];
+        client.read_exact(&mut reply).await.unwrap();
         let trickle = tokio::spawn(async move {
             let until = Instant::now() + Duration::from_secs(5);
             while Instant::now() < until && client.write_all(b"x").await.is_ok() {
@@ -2471,7 +2478,7 @@ mod tests {
         assert!(elapsed < Duration::from_secs(3), "lingered {elapsed:?}");
         assert!(
             elapsed.saturating_sub(outcome.age()) >= Duration::from_millis(590),
-            "lingered only {:?}",
+            "lingered only {:?} after {outcome}",
             elapsed.saturating_sub(outcome.age()),
         );
         trickle.abort();
@@ -2898,11 +2905,10 @@ mod tests {
             .with_lingering_close(patient_linger().with_max_bytes(rama_utils::octets::kib_u64(64)));
         let Chain {
             mut client,
-            mut origin,
+            origin,
             bridge,
-        } = chain(svc).await;
+        } = chain_with_reply(svc, b"hi").await;
         // The origin replies and ends cleanly, so the client side lingers.
-        origin.write_all(b"hi").await.unwrap();
         drop(origin);
         // Wait for the idle close, then flood the lingering side.
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2926,10 +2932,9 @@ mod tests {
             .with_lingering_close(patient_linger());
         let Chain {
             client,
-            mut origin,
+            origin,
             bridge,
-        } = chain(svc).await;
-        origin.write_all(b"hi").await.unwrap();
+        } = chain_with_reply(svc, b"hi").await;
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(!bridge.is_finished(), "the bridge should be lingering");
         let started = Instant::now();

@@ -37,6 +37,12 @@ use crate::{
     posted_recv::{PostedRecv, PostedRecvConfig, PostedRecvLayer},
 };
 
+#[cfg(target_os = "windows")]
+use tokio::sync::Semaphore;
+
+#[cfg(target_os = "windows")]
+use super::harness::serve_one;
+
 const RUNS: usize = 1000;
 
 async fn connect(addr: std::net::SocketAddr) -> PostedRecv<TcpStream> {
@@ -186,7 +192,7 @@ async fn keeps_reply_on_close_with_unread_input_and_after_late_send() {
         .await;
         assert_eq!(seen.complete, 200, "unread input, N={len}: {seen}");
 
-        let origin = spawn_origin(len, Close::Fin).await;
+        let origin = spawn_origin(len, Close::FinOnceAcked).await;
         let addr = origin.addr;
         let seen = tally(200, 32, len, move || async move {
             let mut stream = connect(addr).await;
@@ -761,11 +767,31 @@ async fn wrapping_a_socket_attached_elsewhere_fails_open() {
 #[tokio::test(flavor = "multi_thread")]
 async fn control_plain_stream_loses_reply_before_reset() {
     let len = SIZES[2];
-    let origin = spawn_origin(len, Close::Reset).await;
+    let body = reply(len);
+    // One flow at a time, so that a reset signals the flow that waits for it.
+    let reset = Arc::new(Semaphore::new(0));
+    let origin = spawn_origin_fn({
+        let reset = reset.clone();
+        move |stream| {
+            let (body, reset) = (body.clone(), reset.clone());
+            async move {
+                _ = serve_one(stream, &body, Close::Reset).await;
+                reset.add_permits(1);
+            }
+        }
+    })
+    .await;
     let addr = origin.addr;
-    let tally = tally(20, 20, len, move || async move {
-        let mut stream = TokioTcpStream::connect(addr).await.unwrap();
-        exchange(&mut stream, FORCED_DELAY).await
+    let tally = tally(20, 1, len, move || {
+        let reset = reset.clone();
+        async move {
+            let mut stream = TokioTcpStream::connect(addr).await.unwrap();
+            stream.write_all(REQUEST).await.unwrap();
+            // Count the delay from the reset going out, which a slow origin cannot outlast.
+            reset.acquire().await.unwrap().forget();
+            tokio::time::sleep(FORCED_DELAY).await;
+            read_until_end(&mut stream).await
+        }
     })
     .await;
     assert_eq!(tally.empty, 20, "{tally}");
@@ -812,8 +838,15 @@ async fn completions_for_a_held_flow_are_requeued_then_wait() {
     {
         let _held = flow.hold();
         stream.write_all(REQUEST).await.unwrap();
-        // The reply arrives while the flow is held.
-        std::thread::sleep(Duration::from_millis(200));
+        // Held until the reply's completions found it held, however late the reply arrives.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while contention().0 == requeued || contention().1 == waited {
+            assert!(
+                Instant::now() < deadline,
+                "the reply never found the flow held"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
     let received = read_until_end(&mut stream).await;
     assert!(received.is_complete(len), "{}", received.bytes.len());
