@@ -6,6 +6,7 @@
 )]
 
 use crate::std::alloc::handle_alloc_error;
+use crate::std::boxed::Box;
 
 use core::cell::UnsafeCell;
 use core::fmt;
@@ -54,17 +55,25 @@ pub struct AppendOnlyVec<T, const INLINE: usize = 0, const BIN_OFFSET: u32 = 3> 
     inline: [UnsafeCell<MaybeUninit<T>>; INLINE],
 }
 
-/// Number of spill bins: with the default `BIN_OFFSET` room for
-/// `8 * (2^32 - 1)` items, more than any process holds in memory (and on
-/// 32-bit targets more than the address space can index).
-const SPILL_BINS: usize = 32;
+/// Spill bins listed in the directory that is allocated with the first bin:
+/// with the default `BIN_OFFSET` room for `8 * (2^8 - 1)` items.
+const NEAR_BINS: usize = 8;
+
+/// Further spill bins, listed in a second directory allocated on first use:
+/// in total room for `8 * (2^32 - 1)` items with the default `BIN_OFFSET`,
+/// more than any process holds in memory (and on 32-bit targets more than
+/// the address space can index).
+const FAR_BINS: usize = 24;
+
+type FarBins<T> = [AtomicPtr<T>; FAR_BINS];
 
 /// The directory of the spill bins. Allocated together with the first bin,
 /// which follows it in the same allocation (see [`AppendOnlyVec::spill_layout`]),
 /// so its own entry stays null.
 #[repr(C)]
 struct Spill<T> {
-    bins: [AtomicPtr<T>; SPILL_BINS],
+    near: [AtomicPtr<T>; NEAR_BINS],
+    far: AtomicPtr<FarBins<T>>,
 }
 
 impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN_OFFSET> {
@@ -86,6 +95,29 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
             spill: AtomicPtr::new(ptr::null_mut()),
             reserved: AtomicUsize::new(0),
             inline: [const { UnsafeCell::new(MaybeUninit::uninit()) }; INLINE],
+        }
+    }
+
+    /// Write an empty vec to `slot`, without touching its inline item storage.
+    ///
+    /// Same as writing [`Self::new`] there, minus moving the (uninitialized)
+    /// inline storage: for a vec inside a larger allocation that copy is most
+    /// of the cost of creating it.
+    ///
+    /// # Safety
+    ///
+    /// `slot` must be valid for writes and aligned. Whatever it held is
+    /// overwritten without being dropped.
+    pub unsafe fn init_in_place(slot: *mut Self) {
+        const { Self::assert_params() }
+
+        // Safety: the caller guarantees `slot` is valid for writes and aligned;
+        // the inline storage is `MaybeUninit`, so leaving it as is is valid.
+        unsafe {
+            (&raw mut (*slot).count).write(AtomicUsize::new(0));
+            (&raw mut (*slot).tags).write(AtomicUsize::new(0));
+            (&raw mut (*slot).spill).write(AtomicPtr::new(ptr::null_mut()));
+            (&raw mut (*slot).reserved).write(AtomicUsize::new(0));
         }
     }
 
@@ -246,10 +278,50 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
     fn bin_ptr(spill: *mut Spill<T>, bin: usize) -> *mut T {
         if bin == 0 {
             Self::first_bin(spill)
-        } else {
+        } else if bin < NEAR_BINS {
             // Safety: an installed directory lives as long as the vec.
-            unsafe { (*spill).bins[bin].load(Ordering::Acquire) }
+            unsafe { (*spill).near[bin].load(Ordering::Acquire) }
+        } else {
+            // Safety: an installed directory lives as long as the vec, and so
+            // does its far half, installed before any far bin.
+            unsafe {
+                let far = (*spill).far.load(Ordering::Acquire);
+                (*far)[bin - NEAR_BINS].load(Ordering::Acquire)
+            }
         }
+    }
+
+    /// The directory entry of spill bin `bin` (not the first) of the installed
+    /// directory, installing the far half of it if the bin is listed there.
+    fn bin_slot(&self, bin: usize) -> &AtomicPtr<T> {
+        let spill = self.spill.load(Ordering::Acquire);
+        if bin < NEAR_BINS {
+            // Safety: an installed directory lives as long as the vec.
+            return unsafe { &(*spill).near[bin] };
+        }
+        // Safety: see above.
+        let far_slot = unsafe { &(*spill).far };
+        let mut far = far_slot.load(Ordering::Acquire);
+        if far.is_null() {
+            let new = Box::into_raw(Box::new(core::array::from_fn::<_, FAR_BINS, _>(|_| {
+                AtomicPtr::new(ptr::null_mut())
+            })));
+            match far_slot.compare_exchange(
+                ptr::null_mut(),
+                new,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => far = new,
+                Err(found) => {
+                    // Safety: `new` was just leaked from a box and never shared.
+                    drop(unsafe { Box::from_raw(new) });
+                    far = found;
+                }
+            }
+        }
+        // Safety: an installed far directory lives as long as the vec.
+        unsafe { &(*far)[bin - NEAR_BINS] }
     }
 
     /// The spill directory, allocated on first use together with the first
@@ -280,20 +352,8 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
         spill
     }
 
-    /// Allocate an empty directory (all bins null) with room for the first bin.
-    #[cfg(not(all(loom, test)))]
-    fn alloc_spill(layout: Layout) -> *mut Spill<T> {
-        // Safety: the layout holds the directory, so it is not zero sized.
-        let new = unsafe { crate::std::alloc::alloc_zeroed(layout) };
-        if new.is_null() {
-            handle_alloc_error(layout);
-        }
-        // All bits zero is a directory of null bins.
-        new.cast::<Spill<T>>()
-    }
-
-    /// Allocate an empty directory (all bins null) with room for the first bin.
-    #[cfg(all(loom, test))]
+    /// Allocate an empty directory (all bins null) with room for the first
+    /// bin, which is left uninitialized.
     fn alloc_spill(layout: Layout) -> *mut Spill<T> {
         // Safety: the layout holds the directory, so it is not zero sized.
         let new = unsafe { alloc(layout) }.cast::<Spill<T>>();
@@ -303,7 +363,8 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
         // Safety: the allocation starts with room for an aligned directory.
         unsafe {
             new.write(Spill {
-                bins: core::array::from_fn(|_| AtomicPtr::new(ptr::null_mut())),
+                near: core::array::from_fn(|_| AtomicPtr::new(ptr::null_mut())),
+                far: AtomicPtr::new(ptr::null_mut()),
             });
         }
         new
@@ -319,11 +380,10 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
         if bin == 0 {
             return Self::first_bin(spill);
         }
-        if bin >= SPILL_BINS {
+        if bin >= NEAR_BINS + FAR_BINS {
             capacity_overflow();
         }
-        // Safety: an installed directory lives as long as the vec.
-        let slot = unsafe { &(*spill).bins[bin] };
+        let slot = self.bin_slot(bin);
         let ptr = slot.load(Ordering::Acquire);
         if !ptr.is_null() {
             return ptr;
@@ -443,31 +503,24 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
         if spill.is_null() {
             return;
         }
-        if size_of::<T>() != 0 {
-            // Safety: we have exclusive access to the installed directory.
-            let bins = unsafe { &mut (*spill).bins };
-            // Bin 0 lives in the directory's allocation. Later bins can be
-            // installed out of order by concurrent pushes, so look at all.
-            for (bin, slot) in bins.iter_mut().enumerate().skip(1) {
-                #[cfg(not(all(loom, test)))]
-                let bucket = *slot.get_mut();
+        // Safety: we have exclusive access to the installed directory.
+        let (near, far) = unsafe { (&mut (*spill).near, &mut (*spill).far) };
+        // Bin 0 lives in the directory's allocation. Later bins can be
+        // installed out of order by concurrent pushes, so look at all.
+        for (bin, slot) in near.iter_mut().enumerate().skip(1) {
+            Self::dealloc_bin(bin, slot);
+        }
+        #[cfg(not(all(loom, test)))]
+        let far = *far.get_mut();
 
-                #[cfg(all(test, loom))]
-                let bucket = slot.with_mut(|ptr| *ptr);
+        #[cfg(all(test, loom))]
+        let far = far.with_mut(|ptr| *ptr);
 
-                if bucket.is_null() {
-                    continue;
-                }
-                #[allow(
-                    clippy::expect_used,
-                    reason = "this layout was valid when the bin was allocated"
-                )]
-                let layout = Layout::array::<T>(Self::bin_size(bin)).expect("layout of a bin");
-
-                // Safety:
-                // - We allocated this ptr with this exact layout
-                // - nobody else can access the vec anymore
-                unsafe { dealloc(bucket as *mut u8, layout) };
+        if !far.is_null() {
+            // Safety: the far directory was leaked from a box and we have exclusive access.
+            let mut far = unsafe { Box::from_raw(far) };
+            for (bin, slot) in far.iter_mut().enumerate() {
+                Self::dealloc_bin(NEAR_BINS + bin, slot);
             }
         }
         // Safety: allocated with this layout, and nobody else can access the vec anymore.
@@ -475,6 +528,31 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
             ptr::drop_in_place(spill);
             dealloc(spill.cast::<u8>(), Self::spill_layout());
         }
+    }
+}
+
+impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN_OFFSET> {
+    /// Free spill bin `bin`, if `slot` lists one. Its items are dropped already.
+    fn dealloc_bin(bin: usize, slot: &mut AtomicPtr<T>) {
+        #[cfg(not(all(loom, test)))]
+        let bucket = *slot.get_mut();
+
+        #[cfg(all(test, loom))]
+        let bucket = slot.with_mut(|ptr| *ptr);
+
+        if bucket.is_null() || size_of::<T>() == 0 {
+            return;
+        }
+        #[allow(
+            clippy::expect_used,
+            reason = "this layout was valid when the bin was allocated"
+        )]
+        let layout = Layout::array::<T>(Self::bin_size(bin)).expect("layout of a bin");
+
+        // Safety:
+        // - We allocated this ptr with this exact layout
+        // - nobody else can access the vec anymore
+        unsafe { dealloc(bucket as *mut u8, layout) };
     }
 }
 
@@ -870,6 +948,58 @@ mod tests {
     }
 
     #[test]
+    fn spills_into_the_far_directory() {
+        // bins of 1, 2, 4, ...: the near directory holds 255 items
+        let vec: AppendOnlyVec<u16, 2, 0> = AppendOnlyVec::new();
+        for i in 0..1000 {
+            vec.push(i);
+        }
+        let far = unsafe {
+            (*vec.spill.load(Ordering::Relaxed))
+                .far
+                .load(Ordering::Relaxed)
+        };
+        assert!(!far.is_null());
+        assert_eq!(
+            vec.iter().copied().collect::<Vec<_>>(),
+            (0..1000).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            vec.chunks().rev().flat_map(|c| c.iter().rev()).count(),
+            1000
+        );
+    }
+
+    #[test]
+    fn concurrent_pushes_install_the_far_directory_once() {
+        use std::sync::Arc;
+        for _ in 0..if cfg!(miri) { 1 } else { 20 } {
+            let vec: Arc<AppendOnlyVec<usize, 1, 0>> = Arc::new(AppendOnlyVec::new());
+            let writers: Vec<_> = (0..4)
+                .map(|t| {
+                    let vec = vec.clone();
+                    std::thread::spawn(move || {
+                        for i in 0..if cfg!(miri) { 80 } else { 300 } {
+                            vec.push(t * 1000 + i);
+                        }
+                    })
+                })
+                .collect();
+            for writer in writers {
+                writer.join().unwrap();
+            }
+            let per = if cfg!(miri) { 80 } else { 300 };
+            let mut items: Vec<usize> = vec.iter().copied().collect();
+            items.sort_unstable();
+            let mut expected: Vec<usize> = (0..4)
+                .flat_map(|t| (0..per).map(move |i| t * 1000 + i))
+                .collect();
+            expected.sort_unstable();
+            assert_eq!(items, expected);
+        }
+    }
+
+    #[test]
     fn inline_items_allocate_nothing_and_drop() {
         use std::rc::Rc;
         let counter = Rc::new(());
@@ -1058,6 +1188,112 @@ mod tests {
             expected.sort_unstable();
             assert_eq!(items, expected);
         }
+    }
+
+    /// A value that counts how many of its kind are alive, to catch leaked
+    /// and double dropped items.
+    #[derive(Debug)]
+    struct Tracked {
+        value: u16,
+        alive: std::rc::Rc<std::cell::Cell<isize>>,
+    }
+
+    impl Tracked {
+        fn new(value: u16, alive: &std::rc::Rc<std::cell::Cell<isize>>) -> Self {
+            alive.set(alive.get() + 1);
+            Self {
+                value,
+                alive: alive.clone(),
+            }
+        }
+    }
+
+    impl Drop for Tracked {
+        fn drop(&mut self) {
+            self.alive.set(self.alive.get() - 1);
+        }
+    }
+
+    /// Push `values` (with their tags) one by one and compare every view of the
+    /// vec with a plain `Vec` after each push; then consume `consumed` items
+    /// through `into_iter` and drop the rest.
+    fn matches_vec_model<const INLINE: usize, const BIN_OFFSET: u32>(
+        values: &[(u16, u8)],
+        consumed: usize,
+    ) -> bool {
+        let alive = std::rc::Rc::new(std::cell::Cell::new(0));
+        let vec: AppendOnlyVec<Tracked, INLINE, BIN_OFFSET> = AppendOnlyVec::new();
+        let mut model: Vec<u16> = Vec::new();
+        let mut tags = 0usize;
+        for &(value, tag) in values {
+            let tag = usize::from(tag);
+            if vec.push_tagged(Tracked::new(value, &alive), tag) != model.len() {
+                return false;
+            }
+            model.push(value);
+            tags |= tag;
+
+            let values_of =
+                |items: Vec<&Tracked>| items.iter().map(|t| t.value).collect::<Vec<_>>();
+            let reversed: Vec<u16> = model.iter().rev().copied().collect();
+            let chunks: Vec<&[Tracked]> = vec.chunks().collect();
+            let chunk_sizes_ok = chunks.iter().enumerate().all(|(i, chunk)| {
+                let full = match (INLINE, i) {
+                    (0, i) => (1 << BIN_OFFSET) << i,
+                    (_, 0) => INLINE,
+                    (_, i) => (1 << BIN_OFFSET) << (i - 1),
+                };
+                !chunk.is_empty() && (chunk.len() == full || i == chunks.len() - 1)
+            });
+            if vec.len() != model.len()
+                || vec.tags() != tags
+                || vec.get(model.len()).is_some()
+                || (0..model.len()).any(|i| vec.get(i).map(|t| t.value) != Some(model[i]))
+                || values_of(vec.iter().collect()) != model
+                || values_of(vec.iter().rev().collect()) != reversed
+                || values_of(chunks.iter().flat_map(|c| c.iter()).collect()) != model
+                || values_of(vec.chunks().rev().flat_map(|c| c.iter().rev()).collect()) != reversed
+                || vec.chunks().len() != chunks.len()
+                || !chunk_sizes_ok
+            {
+                return false;
+            }
+        }
+        if alive.get() != model.len() as isize {
+            return false;
+        }
+        let consumed = consumed.min(model.len());
+        let mut owned = vec.into_iter();
+        let taken: Vec<Tracked> = owned.by_ref().take(consumed).collect();
+        if taken.iter().map(|t| t.value).collect::<Vec<_>>() != model[..consumed] {
+            return false;
+        }
+        drop(owned);
+        if alive.get() != consumed as isize {
+            return false;
+        }
+        drop(taken);
+        alive.get() == 0
+    }
+
+    #[test]
+    fn behaves_like_a_vec_for_any_push_sequence() {
+        #[expect(
+            clippy::needless_pass_by_value,
+            reason = "quickcheck hands properties owned inputs"
+        )]
+        fn prop(values: Vec<(u16, u8)>, consumed: usize) -> bool {
+            matches_vec_model::<0, 0>(&values, consumed)
+                && matches_vec_model::<0, 3>(&values, consumed)
+                && matches_vec_model::<1, 0>(&values, consumed)
+                && matches_vec_model::<3, 1>(&values, consumed)
+                && matches_vec_model::<6, 4>(&values, consumed)
+                && matches_vec_model::<8, 3>(&values, consumed)
+        }
+        quickcheck::QuickCheck::new()
+            .tests(if cfg!(miri) { 4 } else { 300 })
+            .rng(quickcheck::Gen::new(if cfg!(miri) { 40 } else { 200 }))
+            .quickcheck(prop as fn(Vec<(u16, u8)>, usize) -> bool);
     }
 }
 
