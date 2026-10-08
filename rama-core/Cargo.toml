@@ -81,6 +81,7 @@ tracing-appender = { workspace = true, features = ["parking_lot"], optional = tr
 tracing-opentelemetry = { workspace = true, optional = true }
 
 [dev-dependencies]
+quickcheck = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }

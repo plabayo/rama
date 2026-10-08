@@ -324,14 +324,27 @@ impl Extensions {
     }
 
     #[inline(always)]
+    #[expect(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "one in-place initialization of a fresh allocation"
+    )]
     fn with_parent(parent: Option<Self>) -> Self {
-        Self {
-            node: Arc::new(Node {
-                view_of: None,
-                parent,
-                entries: Store::default(),
-            }),
-        }
+        // Built in place: the inline entries are most of a node and stay
+        // uninitialized, so there is nothing to move into the allocation.
+        let node = Arc::into_raw(Arc::<Node>::new_uninit())
+            .cast::<Node>()
+            .cast_mut();
+        // Safety: the allocation is fresh, aligned for a `Node` and only
+        // reachable through `node`. Every field but the inline entries, which
+        // may stay uninitialized, is written before the pointer goes back to
+        // an `Arc` of the layout it came from (`MaybeUninit<Node>`).
+        let node = unsafe {
+            (&raw mut (*node).view_of).write(None);
+            (&raw mut (*node).parent).write(parent);
+            AppendOnlyVec::init_in_place(&raw mut (*node).entries.entries);
+            Arc::from_raw(node)
+        };
+        Self { node }
     }
 
     /// The entries of this level.
@@ -2225,12 +2238,12 @@ mod tests {
         );
     }
 
-    // The lookups skip levels and entries with the `Store::seen` bloom filter.
+    // The lookups skip levels and entries with the `Store` filter (its tags).
     // These tests pin that it never changes an answer: every lookup is compared
     // with a plain reference walk that has no filter, over pseudo-random chains
     // with more types than the filter has bits, so collisions are exercised.
 
-    /// 72 distinct types: more than the bits in `Store::seen`.
+    /// 72 distinct types: more than the bits of the `Store` filter.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct Filler<const N: usize>(u32);
 
@@ -2506,5 +2519,229 @@ mod tests {
         assert_eq!(request.get_ref::<Filler<10>>(), Some(&Filler::<10>(10)));
         assert!(request.egress().is_some());
         assert!(request.ingress().is_none());
+    }
+
+    // A model of the documented semantics, independent of the storage: every
+    // level is a plain list shared by the handles of that level, lookups go
+    // newest first, recurse into wrappers in insertion order, then the parent.
+
+    #[derive(Clone)]
+    enum ModelEntry {
+        Value(usize, u32),
+        Wrapped(ModelExtensions),
+    }
+
+    #[derive(Clone)]
+    struct ModelExtensions {
+        level: std::rc::Rc<std::cell::RefCell<Vec<ModelEntry>>>,
+        parent: Option<Box<Self>>,
+    }
+
+    impl ModelExtensions {
+        fn new() -> Self {
+            Self {
+                level: Default::default(),
+                parent: None,
+            }
+        }
+
+        fn fork(&self) -> Self {
+            Self {
+                level: Default::default(),
+                parent: Some(Box::new(self.clone())),
+            }
+        }
+
+        fn with_base(&self, base: &Self) -> Self {
+            Self {
+                level: self.level.clone(),
+                parent: Some(Box::new(match &self.parent {
+                    Some(parent) => parent.with_base(base),
+                    None => base.clone(),
+                })),
+            }
+        }
+
+        fn get(&self, kind: usize) -> Option<u32> {
+            for entry in self.level.borrow().iter().rev() {
+                match entry {
+                    ModelEntry::Value(k, value) if *k == kind => return Some(*value),
+                    ModelEntry::Wrapped(wrapped) => {
+                        if let Some(value) = wrapped.get(kind) {
+                            return Some(value);
+                        }
+                    }
+                    ModelEntry::Value(..) => {}
+                }
+            }
+            self.parent.as_ref().and_then(|parent| parent.get(kind))
+        }
+    }
+
+    /// Kinds of values the model inserts: few enough to collide often.
+    const MODEL_KINDS: usize = 10;
+
+    macro_rules! filler_values {
+        ($($n:literal)+) => {
+            [$(|ext: &Extensions| ext.get_ref::<Filler<$n>>().map(|f| f.0)),+]
+        };
+    }
+
+    macro_rules! filler_arcs {
+        ($($n:literal)+) => {
+            [$(|ext: &Extensions| ext.get_arc::<Filler<$n>>().map(|f| f.0)),+]
+        };
+    }
+
+    macro_rules! filler_contains {
+        ($($n:literal)+) => {
+            [$(|ext: &Extensions| ext.contains::<Filler<$n>>()),+]
+        };
+    }
+
+    macro_rules! model_kinds {
+        ($callback:ident) => {
+            $callback!(0 1 2 3 4 5 6 7 8 9)
+        };
+    }
+
+    macro_rules! erased_values {
+        ($($n:literal)+) => {
+            [$(|entry: &TypeErasedExtension| entry.downcast_ref::<Filler<$n>>().map(|f| f.0)),+]
+        };
+    }
+
+    const MODEL_GET: [fn(&Extensions) -> Option<u32>; MODEL_KINDS] = model_kinds!(filler_values);
+    const MODEL_ERASED: [fn(&TypeErasedExtension) -> Option<u32>; MODEL_KINDS] =
+        model_kinds!(erased_values);
+    const MODEL_ARC: [fn(&Extensions) -> Option<u32>; MODEL_KINDS] = model_kinds!(filler_arcs);
+    const MODEL_CONTAINS: [fn(&Extensions) -> bool; MODEL_KINDS] = model_kinds!(filler_contains);
+
+    /// Whether every lookup on `ext` answers what the model does.
+    fn agrees_with_model(ext: &Extensions, model: &ModelExtensions) -> bool {
+        let ids: [TypeId; MODEL_KINDS] = model_kinds!(filler_ids);
+        let mut many = [None; MODEL_KINDS];
+        ext.get_many_erased(&ids, &mut many);
+        (0..MODEL_KINDS).all(|kind| {
+            let expected = model.get(kind);
+            MODEL_GET[kind](ext) == expected
+                && MODEL_ARC[kind](ext) == expected
+                && MODEL_CONTAINS[kind](ext) == expected.is_some()
+                && many[kind].and_then(|(entry, _)| MODEL_ERASED[kind](entry)) == expected
+        })
+    }
+
+    /// Run a random program of `new`, `fork`, `clone`, `with_base`, typed
+    /// inserts and wrapper inserts over two families of handles: connections,
+    /// which never hold wrappers, and requests, which wrap connections (so no
+    /// handle can reach itself). After every step, and for every handle at
+    /// the end, all lookups must agree with the model.
+    fn agrees_with_model_for(program: Vec<(u8, u8, u8, u16)>) -> bool {
+        let mut conns: Vec<(Extensions, ModelExtensions)> =
+            vec![(Extensions::new(), ModelExtensions::new())];
+        let mut reqs: Vec<(Extensions, ModelExtensions)> =
+            vec![(Extensions::new(), ModelExtensions::new())];
+        for (op, a, b, value) in program {
+            let (a, b) = (usize::from(a), usize::from(b));
+            let kind = usize::from(value) % MODEL_KINDS;
+            let value = u32::from(value);
+            let touched = match op % 11 {
+                0 => {
+                    conns.push((Extensions::new(), ModelExtensions::new()));
+                    conns.last()
+                }
+                1 => {
+                    reqs.push((Extensions::new(), ModelExtensions::new()));
+                    reqs.last()
+                }
+                2 => {
+                    let (ext, model) = &conns[a % conns.len()];
+                    let forked = (ext.fork(), model.fork());
+                    conns.push(forked);
+                    conns.last()
+                }
+                3 => {
+                    let (ext, model) = &reqs[a % reqs.len()];
+                    let forked = (ext.fork(), model.fork());
+                    reqs.push(forked);
+                    reqs.last()
+                }
+                4 => {
+                    let cloned = reqs[a % reqs.len()].clone();
+                    reqs.push(cloned);
+                    reqs.last()
+                }
+                5 => {
+                    let (ext, model) = &reqs[a % reqs.len()];
+                    let (base, base_model) = if b % 2 == 0 {
+                        &conns[b % conns.len()]
+                    } else {
+                        &reqs[b % reqs.len()]
+                    };
+                    let view = (ext.with_base(base), model.with_base(base_model));
+                    reqs.push(view);
+                    reqs.last()
+                }
+                6 => {
+                    let (ext, model) = &conns[a % conns.len()];
+                    let (base, base_model) = &conns[b % conns.len()];
+                    let view = (ext.with_base(base), model.with_base(base_model));
+                    conns.push(view);
+                    conns.last()
+                }
+                7 => {
+                    let handle = &conns[a % conns.len()];
+                    FILLERS[kind](&handle.0, value);
+                    handle
+                        .1
+                        .level
+                        .borrow_mut()
+                        .push(ModelEntry::Value(kind, value));
+                    Some(handle)
+                }
+                8 => {
+                    let handle = &reqs[a % reqs.len()];
+                    FILLERS[kind](&handle.0, value);
+                    handle
+                        .1
+                        .level
+                        .borrow_mut()
+                        .push(ModelEntry::Value(kind, value));
+                    Some(handle)
+                }
+                _ => {
+                    let (conn, conn_model) = conns[b % conns.len()].clone();
+                    let handle = &reqs[a % reqs.len()];
+                    if op % 11 == 9 {
+                        handle.0.insert(Egress(conn));
+                    } else {
+                        handle.0.insert(Ingress(conn));
+                    }
+                    handle
+                        .1
+                        .level
+                        .borrow_mut()
+                        .push(ModelEntry::Wrapped(conn_model));
+                    Some(handle)
+                }
+            };
+            if let Some((ext, model)) = touched
+                && !agrees_with_model(ext, model)
+            {
+                return false;
+            }
+        }
+        conns
+            .iter()
+            .chain(&reqs)
+            .all(|(ext, model)| agrees_with_model(ext, model))
+    }
+
+    #[test]
+    fn lookups_agree_with_a_model_for_any_program() {
+        quickcheck::QuickCheck::new()
+            .tests(if cfg!(miri) { 3 } else { 300 })
+            .rng(quickcheck::Gen::new(if cfg!(miri) { 30 } else { 120 }))
+            .quickcheck(agrees_with_model_for as fn(Vec<(u8, u8, u8, u16)>) -> bool);
     }
 }

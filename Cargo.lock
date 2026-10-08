@@ -4086,6 +4086,7 @@ dependencies = [
  "opentelemetry_sdk",
  "parking_lot",
  "pin-project-lite",
+ "quickcheck",
  "rama-error",
  "rama-macros",
  "rama-utils",
