@@ -7,19 +7,27 @@
 use divan::{AllocProfiler, black_box, counter::ItemsCount};
 use rama::{
     ServiceInput,
-    extensions::{Extensions, ExtensionsRef as _},
+    error::BoxError,
+    extensions::{Extension, Extensions, ExtensionsRef as _},
     net::{
         client::pool::{
-            ConnID, ConnectionResult, ConnectionReuse, ConnectionReusePolicy, LruDropPool,
-            MultiplexPool, MuxSelection, Pool,
+            ConnID, ConnectionAdmission, ConnectionAdmissionLease, ConnectionAdmissionPolicy,
+            ConnectionResult, ConnectionReuse, ConnectionReusePolicy, LruDropPool, MultiplexPool,
+            MuxSelection, Pool,
         },
         conn::MaxConcurrency,
     },
 };
 use std::{
+    future::Future,
     num::NonZeroUsize,
-    sync::{Arc, LazyLock},
+    pin::Pin,
+    sync::{
+        Arc, LazyLock,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
+use tokio::sync::Notify;
 
 #[global_allocator]
 static ALLOC: AllocProfiler = AllocProfiler::system();
@@ -417,4 +425,207 @@ fn multiplex_contended_checkout_round_robin(
     (threads, resident): (usize, usize),
 ) {
     bench_multiplex_contended_checkout(bencher, threads, resident, MuxSelection::RoundRobin);
+}
+
+/// The reuse class a request asks for, like a TLS profile under one origin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
+struct Class(usize);
+
+/// Reusable only by requests of the class the connection was established for.
+#[derive(Debug)]
+struct ClassPolicy(Class);
+
+impl ConnectionReusePolicy for ClassPolicy {
+    fn matches(&self, input: &Extensions) -> bool {
+        input.get_ref::<Class>() == Some(&self.0)
+    }
+}
+
+/// Checkout on one id whose `resident` idle exclusive connections are spread
+/// over `classes` incompatible reuse classes, the shape of one origin behind a
+/// MITM proxy that emulates several client TLS profiles. The request asks for
+/// the class of the newest connections.
+#[divan::bench(
+    args = [(64_usize, 1_usize), (64, 8), (1024, 8), (1024, 64)],
+    sample_count = 100
+)]
+fn multiplex_mixed_class_hit(bencher: divan::Bencher, (resident, classes): (usize, usize)) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let pool = MultiplexPool::<ServiceInput<()>, BenchId>::try_new(1, resident).unwrap();
+    runtime.block_on(async {
+        let mut held = Vec::with_capacity(resident);
+        for n in 0..resident {
+            let class = Class(n % classes);
+            let input = Extensions::new();
+            input.insert(class);
+            let ConnectionResult::CreatePermit(permit) =
+                pool.get_conn(&BenchId(0), &input).await.unwrap()
+            else {
+                unreachable!("all previous connections are leased");
+            };
+            let conn = ServiceInput::new(());
+            conn.extensions()
+                .insert(ConnectionReuse::new(ClassPolicy(class)));
+            held.push(pool.create(BenchId(0), conn, permit, &input).await.unwrap());
+        }
+        drop(held);
+    });
+    let input = Extensions::new();
+    input.insert(Class(classes - 1));
+    bencher.bench_local(|| {
+        runtime.block_on(async {
+            let ConnectionResult::Connection(conn) =
+                pool.get_conn(&BenchId(0), &input).await.unwrap()
+            else {
+                unreachable!("an idle connection of the class is resident");
+            };
+            black_box(conn);
+        })
+    });
+}
+
+/// Transport credit like an h2/h3 connection's: `limit` concurrent requests,
+/// returned when a lease drops.
+#[derive(Debug)]
+struct Credit {
+    available: AtomicUsize,
+    returned: Arc<Notify>,
+}
+
+#[derive(Debug, Clone, Extension)]
+struct CreditBinding;
+
+struct CreditLease(Arc<Credit>);
+
+impl Drop for CreditLease {
+    fn drop(&mut self) {
+        self.0.available.fetch_add(1, Ordering::AcqRel);
+        self.0.returned.notify_waiters();
+    }
+}
+
+#[derive(Debug)]
+struct CreditAdmission(Arc<Credit>);
+
+impl ConnectionAdmissionPolicy for CreditAdmission {
+    fn try_acquire(
+        &self,
+        _input: &Extensions,
+    ) -> Result<Option<ConnectionAdmissionLease>, BoxError> {
+        let mut available = self.0.available.load(Ordering::Acquire);
+        loop {
+            if available == 0 {
+                return Ok(None);
+            }
+            match self.0.available.compare_exchange(
+                available,
+                available - 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Ok(Some(ConnectionAdmissionLease::new(
+                        Arc::new(CreditLease(self.0.clone())),
+                        CreditBinding,
+                    )));
+                }
+                Err(now) => available = now,
+            }
+        }
+    }
+
+    fn watch(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        let mut returned = Box::pin(self.0.returned.clone().notified_owned());
+        returned.as_mut().enable();
+        returned
+    }
+}
+
+/// A connection like the connectors publish: exclusive (h1) or multiplexed
+/// with transport credit (h2/h3).
+fn connection(streams: usize) -> ServiceInput<()> {
+    let conn = ServiceInput::new(());
+    conn.extensions().insert(MaxConcurrency::new(streams));
+    if streams > 1 {
+        conn.extensions()
+            .insert(ConnectionAdmission::new(CreditAdmission(Arc::new(
+                Credit {
+                    available: AtomicUsize::new(streams),
+                    returned: Arc::new(Notify::new()),
+                },
+            ))));
+    }
+    conn
+}
+
+/// `clients` tasks on a multi-thread runtime each do `rounds` checkouts over
+/// `ids` ids, holding every handout across `hold` yields, against a pool of
+/// `max_total` connections of `streams` streams each. Saturated whenever the
+/// clients outnumber the streams: the wait path is what is measured.
+fn bench_saturated(
+    bencher: divan::Bencher,
+    clients: usize,
+    ids: usize,
+    max_total: usize,
+    streams: usize,
+    hold: usize,
+) {
+    const ROUNDS: usize = 64;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .build()
+        .unwrap();
+    bencher
+        .counter(ItemsCount::new(clients * ROUNDS))
+        .bench_local(|| {
+            runtime.block_on(async {
+                let pool = Arc::new(
+                    MultiplexPool::<ServiceInput<()>, BenchId>::try_new(usize::MAX, max_total)
+                        .unwrap(),
+                );
+                let mut tasks = Vec::with_capacity(clients);
+                for client in 0..clients {
+                    let pool = pool.clone();
+                    #[expect(clippy::cast_possible_truncation, reason = "bench ids are small")]
+                    let id = BenchId((client % ids) as u8);
+                    tasks.push(tokio::spawn(async move {
+                        for _ in 0..ROUNDS {
+                            let handout = match pool.get_conn(&id, &EMPTY_INPUT).await.unwrap() {
+                                ConnectionResult::Connection(handout) => handout,
+                                ConnectionResult::CreatePermit(permit) => pool
+                                    .create(id.clone(), connection(streams), permit, &EMPTY_INPUT)
+                                    .await
+                                    .unwrap(),
+                            };
+                            for _ in 0..hold {
+                                tokio::task::yield_now().await;
+                            }
+                            black_box(handout);
+                        }
+                    }));
+                }
+                for task in tasks {
+                    task.await.unwrap();
+                }
+            })
+        });
+}
+
+/// Exclusive (h1) connections, more clients than the pool holds: the shape of
+/// a forward proxy at `EasyHttpWebClient`'s default `max_total` of 50.
+#[divan::bench(
+    args = [(256_usize, 1_usize), (256, 4), (256, 16), (1024, 4)],
+    sample_count = 10
+)]
+fn multiplex_saturated_exclusive(bencher: divan::Bencher, (clients, ids): (usize, usize)) {
+    bench_saturated(bencher, clients, ids, 50, 1, 2);
+}
+
+/// Multiplexed connections with transport credit (h2/h3 shaped), saturated:
+/// 4 connections of 16 streams for 256 clients.
+#[divan::bench(args = [1_usize, 4], sample_count = 10)]
+fn multiplex_saturated_credit(bencher: divan::Bencher, ids: usize) {
+    bench_saturated(bencher, 256, ids, 4, 16, 2);
 }

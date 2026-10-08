@@ -176,3 +176,82 @@ fn fork_and_insert(bencher: divan::Bencher) {
         black_box(fork)
     });
 }
+
+/// A chain of `depth` levels, each holding two entries.
+fn chain(depth: usize) -> Extensions {
+    let mut ext = Extensions::new();
+    ext.insert(Marker::<0>);
+    ext.insert(Marker::<1>);
+    for _ in 1..depth {
+        ext = ext.fork();
+        ext.insert(Marker::<2>);
+        ext.insert(Marker::<3>);
+    }
+    ext
+}
+
+/// Cloning a handle, as done when wrapping a connection or forking.
+#[divan::bench(args = [1, 4, 8])]
+fn clone_chain(bencher: divan::Bencher, depth: usize) {
+    let ext = chain(depth);
+    bencher.bench_local(|| black_box(ext.clone()));
+}
+
+/// A fork nothing is inserted into, as left by layers that fork defensively.
+#[divan::bench(args = [1, 4, 8])]
+fn fork_chain_empty(bencher: divan::Bencher, depth: usize) {
+    let ext = chain(depth);
+    bencher.bench_local(|| black_box(ext.fork()));
+}
+
+/// Wrapping a connection's extensions into a request, as every proxied request does.
+#[divan::bench(args = [1, 4])]
+fn insert_egress_wrapper(bencher: divan::Bencher, depth: usize) {
+    let conn = chain(depth);
+    bencher.bench_local(|| {
+        let request = Extensions::new();
+        request.insert(Egress(conn.clone()));
+        black_box(request)
+    });
+}
+
+/// A fresh level filled with `n` entries: the per-level storage cost.
+#[divan::bench(args = [1, 4, 8, 16, 64])]
+fn new_level_with_entries(bencher: divan::Bencher, n: usize) {
+    bencher.bench_local(|| {
+        let ext = Extensions::new();
+        for _ in 0..n {
+            ext.insert(Marker::<0>);
+        }
+        black_box(ext)
+    });
+}
+
+/// Layering a request over a connector's base config, as TLS handshakes do.
+#[divan::bench]
+fn fork_with_base(bencher: divan::Bencher) {
+    let request = chain(3);
+    let base = chain(1);
+    bencher.bench_local(|| black_box(request.fork().with_base(&base)));
+}
+
+/// One level of `n` entries, oldest first `Marker<0>`.
+fn level(n: usize) -> Extensions {
+    let ext = Extensions::new();
+    macro_rules! upto {
+        ($($k:literal)+) => {
+            $( if n > $k { ext.insert(Marker::<$k>); } )+
+        };
+    }
+    upto!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15);
+    ext
+}
+
+/// A hit on the oldest entry of a level of `n` entries: a full scan of the
+/// level. Long-lived connection levels of 6 and 12 entries take most of the
+/// scans of a busy proxy.
+#[divan::bench(args = [2, 4, 6, 8, 12, 16])]
+fn get_ref_full_level_scan(bencher: divan::Bencher, n: usize) {
+    let ext = level(n);
+    bencher.bench_local(|| black_box(ext.get_ref::<Marker<0>>()));
+}
