@@ -2,12 +2,15 @@
     clippy::panic,
     clippy::multiple_unsafe_ops_per_block,
     clippy::allow_attributes,
-    reason = "vendored from upstream `append-only-vec`; matches stdlib panicking conventions and preserves upstream idioms"
+    reason = "derived from the `append-only-vec` crate; matches stdlib panicking conventions"
 )]
 
 use crate::std::alloc::handle_alloc_error;
 
-use core::{mem::ManuallyDrop, ptr};
+use core::cell::UnsafeCell;
+use core::fmt;
+use core::mem::{ManuallyDrop, MaybeUninit};
+use core::ptr;
 
 #[cfg(not(all(loom, test)))]
 use crate::std::alloc::{Layout, alloc, dealloc};
@@ -20,116 +23,92 @@ use loom::{
     sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
 };
 
-#[derive(Debug)]
 /// Append only vec of items `T`.
 ///
-/// This vec will never re-allocate and never remove items. This means
-/// that as long as this vec is around, we can have valid references to
-/// all the data it stores. This also means that we can add items to the
-/// vec without having a mutable reference to it.
+/// This vec never moves and never removes items. As long as this vec is
+/// around, references to all the data it stores stay valid, and items can be
+/// added without a mutable reference to it.
 ///
-/// This vec has a fixed maximum capacity as configured by the const generic
-/// parameters. Calling [`Self::push`] after that capacity is exhausted will panic.
+/// The first `INLINE` items are stored in the vec itself, so a vec that never
+/// outgrows them allocates nothing. Further items go to bins that are
+/// allocated on demand, each double the size of the one before, starting at
+/// `2^BIN_OFFSET` items. The directory of these bins is itself only allocated
+/// once the inline items are used up. There is no capacity limit short of
+/// running out of memory.
 ///
-///
-/// AMOUNT_OF_BINS is total amount of item bins (=arrays). Each bin has double
-/// the capacity then the one before, so even with a low number here,
-/// we should be able to store a huge amount of items.
-///
-/// BIN_OFFSET calculates the offset of the first bin. Effectively this mean our
-/// first bin will have 2^BIN_OFFSET size.
-pub struct AppendOnlyVec<T, const AMOUNT_OF_BINS: usize = 32, const BIN_OFFSET: u32 = 3> {
+/// Every push can carry a tag: [`Self::tags`] is the bitwise or of the tags of
+/// all pushed items, which lets a reader skip a vec that cannot hold what it
+/// looks for (see [`Self::push_tagged`]).
+// `repr(C)`: what readers need first (length, tags) shares a cache line with
+// the first inline items.
+#[repr(C)]
+pub struct AppendOnlyVec<T, const INLINE: usize = 0, const BIN_OFFSET: u32 = 3> {
     /// Amount of items actually stored in this vec (this is updated when value is stored)
     count: AtomicUsize,
+    /// Bitwise or of the tags of all items pushed so far.
+    tags: AtomicUsize,
+    /// The bins of the items beyond `INLINE`, allocated on first use.
+    spill: AtomicPtr<Spill<T>>,
     /// Amount of items reserved in this vec (this is updated immediately on insert)
     reserved: AtomicUsize,
-
-    data: [AtomicPtr<T>; AMOUNT_OF_BINS],
+    inline: [UnsafeCell<MaybeUninit<T>>; INLINE],
 }
 
-impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
-    AppendOnlyVec<T, AMOUNT_OF_BINS, BIN_OFFSET>
-{
+/// Number of spill bins: with the default `BIN_OFFSET` room for
+/// `8 * (2^32 - 1)` items, more than any process holds in memory (and on
+/// 32-bit targets more than the address space can index).
+const SPILL_BINS: usize = 32;
+
+/// The directory of the spill bins. Allocated together with the first bin,
+/// which follows it in the same allocation (see [`AppendOnlyVec::spill_layout`]),
+/// so its own entry stays null.
+#[repr(C)]
+struct Spill<T> {
+    bins: [AtomicPtr<T>; SPILL_BINS],
+}
+
+impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN_OFFSET> {
     const INITIAL_BIN_SIZE: usize = (2_usize).pow(BIN_OFFSET);
 
-    /// Create a new [`AppendOnlyVec`] of `T` items
+    /// Create a new, empty [`AppendOnlyVec`] of `T` items. Allocates nothing.
     ///
     /// ```compile_fail
     /// use rama_utils::collections::AppendOnlyVec;
-    /// // This should fail because this overflow INITIAL_BIN_SIZE
-    /// _ = AppendOnlyVec::<usize, 300, 100>::new();
-    /// ```
-    ///
-    /// ```compile_fail
-    /// use rama_utils::collections::AppendOnlyVec;
-    /// // This should fail because the total size exceeds isize::MAX
-    /// _ = AppendOnlyVec::<u64, 60, 10>::new();
+    /// // This should fail because the first bin is too large for usize
+    /// _ = AppendOnlyVec::<usize, 0, 40>::new();
     /// ```
     pub fn new() -> Self {
-        // This has as a side effect that it will check if capacity fits in usize and is not 0
-        const {
-            if Self::capacity() == 0 {
-                panic!("append only vec does not support 0 capacity")
-            }
-        };
-        // This has as a side effect that it will check if array layout T is not too big
-        const { Self::assert_layout() }
+        const { Self::assert_params() }
 
         Self {
             count: AtomicUsize::new(0),
+            tags: AtomicUsize::new(0),
+            spill: AtomicPtr::new(ptr::null_mut()),
             reserved: AtomicUsize::new(0),
-            data: core::array::from_fn(|_| AtomicPtr::new(core::ptr::null_mut())),
+            inline: [const { UnsafeCell::new(MaybeUninit::uninit()) }; INLINE],
         }
     }
 
     /// Pushes an element and returns its index.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the fixed maximum capacity is exceeded.
-    /// Use [`Self::capacity`] to inspect the configured limit.
     pub fn push(&self, element: T) -> usize {
         let idx = self.reserved.fetch_add(1, Ordering::Relaxed);
-        if idx >= Self::capacity() {
-            panic!("append only vec has exceeded max capacity")
-        }
-
-        let (bin_idx, offset) = Self::indices(idx);
-
-        // Only allocate a bin if offset = 0. This means there will only ever be one thread
-        // that allocates a buffer.
-
-        // Note that create_bin_if_needed supports cooperative allocation, so in case we ever
-        // which to use that, we just need to always call create_bin_if_needed regardless of offset.
-        // Also note that we do already use the cooperative logic in case reserve() is used.
-
-        // The pros and cons of either approach are:
-        // Not cooperative: single allocation, but other threads need to use spin_wait until this allocation is finished
-        // Cooperative: potential of many allocations for the same bin (dropped after, so only short spike), who-ever is fastest wins
-
-        // One first sight cooperative seems nicer, but also note that our idx and length logic is sequential, so even
-        // if we make the allocation cooperative and not blocking, we will mostly be moving the spin_wait to that step.
-        // For our use case we also don't expect many (if any) concurrent/parallel pushes to this vec.
-
-        let bucket_ptr = if offset == 0 {
-            self.create_bin_if_needed(bin_idx)
+        let slot = if idx < INLINE {
+            self.inline[idx].get().cast::<T>()
         } else {
-            let mut failures = 0;
-            let mut ptr = self.data[bin_idx].load(Ordering::Acquire);
-            while ptr.is_null() {
-                spin_wait(&mut failures);
-                ptr = self.data[bin_idx].load(Ordering::Acquire);
-            }
-            ptr
+            let (bin, offset) = Self::spill_indices(idx - INLINE);
+            let bucket = self.create_bin_if_needed(bin);
+            // Safety: the bin holds `bin_size(bin)` items, and `offset` is below that.
+            unsafe { bucket.add(offset) }
         };
 
         // Safety:
-        // - Offset fits in ISize::Max, guaranteed by our layout check
-        // - create_bin_if_needed has allocated a continous buffer that is big enough for this
+        // - the slot is in bounds of the inline items or of an allocated bin
+        // - `reserved` handed this index to this push only
         unsafe {
-            bucket_ptr.add(offset).write(element);
+            slot.write(element);
         }
 
+        // Publish in index order, so `count` always covers a prefix of written items.
         let mut failures = 0;
         while self
             .count
@@ -142,20 +121,25 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
         idx
     }
 
-    // NOTE: right now we don't support reserve since it's actually quite complex to implement,
-    // and there are many different ways of doing if for a datastructure like this which has
-    // shared push() access. This is fine for our use case since this AppendOnlyVec never
-    // re-allocates. If we ever need reserve() in the future it's definetely possible to add it,
-    // but for now I prefer a simple (and hopefully bugfree) datastructure.
+    /// Pushes an element tagged with `tag`, and returns its index.
+    ///
+    /// The tag is added to [`Self::tags`] before the element is published, so
+    /// a reader that sees the element also sees its tag: a reader that finds
+    /// a tag missing from [`Self::tags`] can skip this vec for it, as no item
+    /// with that tag was published before.
+    pub fn push_tagged(&self, element: T, tag: usize) -> usize {
+        // The load skips the read-modify-write for a tag that is already set.
+        if self.tags.load(Ordering::Relaxed) & tag != tag {
+            self.tags.fetch_or(tag, Ordering::Relaxed);
+        }
+        self.push(element)
+    }
 
-    // Eg some questions for reserve:
-    // - Does reserve() allocate slots for the caller only, or is this best effort
-    // - Does it return a size hint of what was reserved, if so what hint
-    // - Does calling it multiple times reserve new blocks, or do we consider not used blocks also.
-    //   In case we need to support calling this multiple times we will need another Atomic to track this.
-    // - Is reserving cooperative with push(), or do we need synchronisation between the two
-
-    // pub fn reserve(&self, amount: usize) -> usize {}
+    /// The bitwise or of the tags of all items pushed so far, see [`Self::push_tagged`].
+    #[inline(always)]
+    pub fn tags(&self) -> usize {
+        self.tags.load(Ordering::Relaxed)
+    }
 
     pub fn get(&self, idx: usize) -> Option<&T> {
         if idx >= self.len() {
@@ -173,15 +157,9 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
         self.count.load(Ordering::Acquire)
     }
 
-    /// Returns the maximum number of elements this configuration can hold.
-    /// Total capacity = initial_bin_size * (2^AMOUNT_OF_BINS - 1)
-    pub const fn capacity() -> usize {
-        Self::INITIAL_BIN_SIZE * ((1 << AMOUNT_OF_BINS) - 1)
-    }
-
     /// Returns an iterator over the elements currently in the vector.
     /// The iterator snapshots the length at creation time.
-    pub fn iter(&self) -> Iter<'_, T, AMOUNT_OF_BINS, BIN_OFFSET> {
+    pub fn iter(&self) -> Iter<'_, T, INLINE, BIN_OFFSET> {
         Iter {
             vec: self,
             start: 0,
@@ -191,98 +169,237 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
 
     /// Returns the elements currently in the vector as contiguous slices, oldest first.
     ///
-    /// Every bin is one slice, so walking the elements with two nested loops does
-    /// the bin arithmetic once per bin instead of once per element like [`Self::iter`].
-    /// Like [`Self::iter`] this snapshots the length at creation time. The iterator is
-    /// double ended: `.rev()` yields the newest slice first.
-    pub fn chunks(&self) -> Chunks<'_, T, AMOUNT_OF_BINS, BIN_OFFSET> {
+    /// The inline items are one slice and every bin is one more, so walking the
+    /// elements with two nested loops does the bin arithmetic once per bin
+    /// instead of once per element like [`Self::iter`]. Like [`Self::iter`] this
+    /// snapshots the length at creation time. The iterator is double ended:
+    /// `.rev()` yields the newest slice first.
+    pub fn chunks(&self) -> Chunks<'_, T, INLINE, BIN_OFFSET> {
         let len = self.len();
+        // Items beyond the inline ones are published, so the directory was
+        // installed before `count` covered them.
+        let spill = if len > INLINE {
+            self.spill.load(Ordering::Acquire)
+        } else {
+            ptr::null_mut()
+        };
         Chunks {
             vec: self,
+            spill,
             len,
             front: 0,
-            // bins that hold at least one of the `len` elements
-            back: if len == 0 {
-                0
-            } else {
-                Self::indices(len - 1).0 + 1
-            },
+            back: Self::chunk_count(len),
         }
     }
 
-    /// Returns a pointer to the bin with bin_idx. If this bin does not exist it will be created.
+    /// The number of chunks (see [`Self::chunks`]) that hold the first `len` items.
+    const fn chunk_count(len: usize) -> usize {
+        if len == 0 {
+            0
+        } else if len <= INLINE {
+            1
+        } else {
+            Self::INLINE_CHUNKS + Self::spill_indices(len - INLINE - 1).0 + 1
+        }
+    }
+
+    /// Whether chunk 0 is the inline items.
+    const INLINE_CHUNKS: usize = if INLINE > 0 { 1 } else { 0 };
+
+    /// Offset of the first spill bin in the allocation of the directory.
+    const FIRST_BIN_OFFSET: usize =
+        size_of::<Spill<T>>().next_multiple_of(core::mem::align_of::<T>());
+
+    /// The layout of the spill directory together with the first bin.
+    fn spill_layout() -> Layout {
+        let Some(size) = size_of::<T>()
+            .checked_mul(Self::INITIAL_BIN_SIZE)
+            .and_then(|bin| bin.checked_add(Self::FIRST_BIN_OFFSET))
+        else {
+            capacity_overflow();
+        };
+        let align = core::mem::align_of::<Spill<T>>().max(core::mem::align_of::<T>());
+        let Ok(layout) = Layout::from_size_align(size, align) else {
+            capacity_overflow();
+        };
+        layout
+    }
+
+    /// The first spill bin, which lives in the allocation of the installed
+    /// directory `spill`.
     ///
-    /// Note: this functions supports cooperative allocations. Meaning it can be called
-    /// in parallel/concurrently. In that case the first one to update `self.data[bin_idx]` will win.
-    /// The slower ones will de-allocate and use that pointer instead.
-    fn create_bin_if_needed(&self, bin_idx: usize) -> *mut T {
-        let mut ptr = self.data[bin_idx].load(Ordering::Acquire);
-        if ptr.is_null() {
-            // Make sure we support zero sized traits
-            let (layout, new_ptr) = if core::mem::size_of::<T>() == 0 {
-                (None, core::ptr::NonNull::<T>::dangling().as_ptr())
-            } else {
-                #[allow(
-                    clippy::expect_used,
-                    reason = "constructor has checked this on creation"
-                )]
-                let layout = Layout::array::<T>(Self::bin_size(bin_idx))
-                    .expect("layout of array T with size");
+    /// Takes the pointer the directory was allocated as, not a reference to
+    /// it: only the former may reach past the directory into the bin.
+    #[inline(always)]
+    fn first_bin(spill: *mut Spill<T>) -> *mut T {
+        if size_of::<T>() == 0 {
+            ptr::NonNull::<T>::dangling().as_ptr()
+        } else {
+            // Safety: the first bin starts at this offset of the directory's allocation.
+            unsafe { spill.cast::<u8>().add(Self::FIRST_BIN_OFFSET).cast::<T>() }
+        }
+    }
 
-                // Safety:
-                // - We check that our type is not a zero sized one
-                // - We checked layout in constructor
-                let ptr = unsafe { alloc(layout) as *mut T };
-                if ptr.is_null() {
-                    handle_alloc_error(layout);
-                }
-                (Some(layout), ptr)
-            };
+    /// Pointer to spill bin `bin` of the installed directory `spill`; the bin
+    /// must be installed.
+    #[inline(always)]
+    fn bin_ptr(spill: *mut Spill<T>, bin: usize) -> *mut T {
+        if bin == 0 {
+            Self::first_bin(spill)
+        } else {
+            // Safety: an installed directory lives as long as the vec.
+            unsafe { (*spill).bins[bin].load(Ordering::Acquire) }
+        }
+    }
 
-            match self.data[bin_idx].compare_exchange(
+    /// The spill directory, allocated on first use together with the first
+    /// bin. Cooperative: concurrent callers race to install it and the losers
+    /// free theirs.
+    fn spill_or_create(&self) -> *mut Spill<T> {
+        let mut spill = self.spill.load(Ordering::Acquire);
+        if spill.is_null() {
+            let layout = Self::spill_layout();
+            let new = Self::alloc_spill(layout);
+            match self.spill.compare_exchange(
                 ptr::null_mut(),
-                new_ptr,
-                Ordering::Release,
+                new,
+                Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => ptr = new_ptr,
-                // If another thread already updated data[bin_idx], use that bin, and de-allocate
-                // the bin we just allocated
+                Ok(_) => spill = new,
                 Err(found) => {
-                    if let Some(layout) = layout {
-                        // Safety:
-                        // - We just allocated this ptr so it exists
-                        // - Layout matches the exact layout of creation
-                        unsafe { dealloc(new_ptr as *mut u8, layout) };
+                    // Safety: `new` was just allocated with this layout and never shared.
+                    unsafe {
+                        ptr::drop_in_place(new);
+                        dealloc(new.cast::<u8>(), layout);
                     }
-                    ptr = found;
+                    spill = found;
                 }
             }
         }
-        ptr
+        spill
     }
 
-    /// Calculate the position in our data structure
+    /// Allocate an empty directory (all bins null) with room for the first bin.
+    #[cfg(not(all(loom, test)))]
+    fn alloc_spill(layout: Layout) -> *mut Spill<T> {
+        // Safety: the layout holds the directory, so it is not zero sized.
+        let new = unsafe { crate::std::alloc::alloc_zeroed(layout) };
+        if new.is_null() {
+            handle_alloc_error(layout);
+        }
+        // All bits zero is a directory of null bins.
+        new.cast::<Spill<T>>()
+    }
+
+    /// Allocate an empty directory (all bins null) with room for the first bin.
+    #[cfg(all(loom, test))]
+    fn alloc_spill(layout: Layout) -> *mut Spill<T> {
+        // Safety: the layout holds the directory, so it is not zero sized.
+        let new = unsafe { alloc(layout) }.cast::<Spill<T>>();
+        if new.is_null() {
+            handle_alloc_error(layout);
+        }
+        // Safety: the allocation starts with room for an aligned directory.
+        unsafe {
+            new.write(Spill {
+                bins: core::array::from_fn(|_| AtomicPtr::new(ptr::null_mut())),
+            });
+        }
+        new
+    }
+
+    /// Returns a pointer to the spill bin `bin`, allocating it if it does not exist.
+    ///
+    /// Note: this function supports cooperative allocations. Meaning it can be called
+    /// in parallel/concurrently. In that case the first one to install the bin wins,
+    /// the slower ones de-allocate theirs and use that one instead.
+    fn create_bin_if_needed(&self, bin: usize) -> *mut T {
+        let spill = self.spill_or_create();
+        if bin == 0 {
+            return Self::first_bin(spill);
+        }
+        if bin >= SPILL_BINS {
+            capacity_overflow();
+        }
+        // Safety: an installed directory lives as long as the vec.
+        let slot = unsafe { &(*spill).bins[bin] };
+        let ptr = slot.load(Ordering::Acquire);
+        if !ptr.is_null() {
+            return ptr;
+        }
+        // Make sure we support zero sized types
+        let (layout, new_ptr) = if size_of::<T>() == 0 {
+            (None, ptr::NonNull::<T>::dangling().as_ptr())
+        } else {
+            let Ok(layout) = Layout::array::<T>(Self::bin_size(bin)) else {
+                capacity_overflow();
+            };
+            // Safety: `T` is not zero sized, so neither is the layout
+            let ptr = unsafe { alloc(layout) as *mut T };
+            if ptr.is_null() {
+                handle_alloc_error(layout);
+            }
+            (Some(layout), ptr)
+        };
+
+        match slot.compare_exchange(
+            ptr::null_mut(),
+            new_ptr,
+            Ordering::Release,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => new_ptr,
+            // Another push installed the bin first: use that one, free ours.
+            Err(found) => {
+                if let Some(layout) = layout {
+                    // Safety:
+                    // - We just allocated this ptr so it exists
+                    // - Layout matches the exact layout of creation
+                    unsafe { dealloc(new_ptr as *mut u8, layout) };
+                }
+                found
+            }
+        }
+    }
+
+    /// The position of the spill item `i` (counted from the first item beyond
+    /// the inline ones).
     ///
     /// Returns (bin_index, offset_in_this_bin)
-    const fn indices(i: usize) -> (usize, usize) {
-        // offset this so we are alligned for ilog2
+    const fn spill_indices(i: usize) -> (usize, usize) {
+        // offset this so we are aligned for ilog2
         let i = i + Self::INITIAL_BIN_SIZE;
 
         // remove the offset so we start counting bins from 0
         let bin = (i.ilog2() - BIN_OFFSET) as usize;
 
-        // substract bin_size to find where in this bin we should be
+        // subtract bin_size to find where in this bin we should be
         let offset = i - Self::bin_size(bin);
         (bin, offset)
     }
 
-    /// Get the size of a bin.
+    /// Get the size of a spill bin.
     ///
     /// We start with INITIAL_BIN_SIZE slots and then we always double the storage
-    /// capacity (alwasy double = bitshift)
+    /// capacity (always double = bitshift)
     const fn bin_size(idx: usize) -> usize {
         Self::INITIAL_BIN_SIZE << idx
+    }
+
+    /// Pointer to the slot of item `idx`.
+    ///
+    /// # Safety
+    /// The slot must exist: `idx` is below a length read from `count` (with
+    /// `Acquire`), or below `reserved` with exclusive access to the vec.
+    unsafe fn slot(&self, idx: usize) -> *mut T {
+        if idx < INLINE {
+            return self.inline[idx].get().cast::<T>();
+        }
+        let (bin, offset) = Self::spill_indices(idx - INLINE);
+        // Safety: the item exists, so the directory and its bin were installed
+        // before `count` (or `reserved`) covered it.
+        unsafe { Self::bin_ptr(self.spill.load(Ordering::Acquire), bin).add(offset) }
     }
 
     /// Get item with idx from this vec
@@ -290,94 +407,80 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
     /// # Safety
     /// This function is safe if idx < self.len()
     pub unsafe fn get_unchecked(&self, idx: usize) -> &T {
-        let (bin_idx, offset) = Self::indices(idx);
-        let bucket = self.data[bin_idx].load(Ordering::Acquire);
-
         // Safety: this is safe if idx < self.len()
-        unsafe { &*bucket.add(offset) }
+        unsafe { &*self.slot(idx) }
     }
 
-    /// This function will make sure at compile time that our parameters are not
-    /// too big. This will make sure that layout<T> doesn't fail at runtime.
-    const fn assert_layout() {
-        if BIN_OFFSET >= usize::BITS {
+    /// Check at compile time that the parameters fit the system's pointer width.
+    const fn assert_params() {
+        if BIN_OFFSET >= usize::BITS / 2 {
             panic!("BIN_OFFSET is too large for the system's pointer width");
         }
-
-        if BIN_OFFSET as usize + AMOUNT_OF_BINS >= usize::BITS as usize {
-            panic!("The combination of BIN_OFFSET and AMOUNT_OF_BINS exceeds usize capacity");
-        }
-
-        let max_elements = Self::bin_size(AMOUNT_OF_BINS - 1);
-
-        let size_of_t = core::mem::size_of::<T>();
-        if size_of_t > 0 && max_elements > (isize::MAX as usize / size_of_t) {
-            panic!("The largest bin exceeds isize::MAX bytes; Layout creation would fail");
-        }
     }
 
-    /// Drop logic for this append only vec. We support skip_items here so this logic can be
-    /// reused for the IntoIterator logic where we some items have already been dropped if
-    /// ownership was taken.
-    fn drop_manual(&mut self, mut skip_items: usize) {
+    /// Drop the items from `skip_items` on, and free all bins. The first
+    /// `skip_items` were moved out already (see [`IntoIterOwned`]).
+    fn drop_manual(&mut self, skip_items: usize) {
         #[cfg(not(all(loom, test)))]
-        let mut remaining = *self.count.get_mut();
+        let len = *self.count.get_mut();
 
         #[cfg(all(test, loom))]
-        let mut remaining = self.count.with_mut(|v| *v);
+        let len = self.count.with_mut(|v| *v);
 
-        let is_zst = core::mem::size_of::<T>() == 0;
+        for idx in skip_items..len {
+            // Safety:
+            // - idx is below the published length and we have exclusive access
+            // - every item is dropped once, the moved out ones are skipped
+            unsafe { ptr::drop_in_place(self.slot(idx)) };
+        }
 
-        for (i, atomic_ptr) in self.data.iter_mut().enumerate() {
-            #[cfg(not(all(loom, test)))]
-            let bucket_ptr = *atomic_ptr.get_mut();
+        #[cfg(not(all(loom, test)))]
+        let spill = *self.spill.get_mut();
 
-            #[cfg(all(test, loom))]
-            let bucket_ptr = atomic_ptr.with_mut(|ptr| *ptr);
+        #[cfg(all(test, loom))]
+        let spill = self.spill.with_mut(|ptr| *ptr);
 
-            // Before `reserve()` was added we also stopped if remaining == 0`. However
-            // with reserve it's possible that we already created bins that have no items
-            // in them, so make sure to also clean those up.
-            if bucket_ptr.is_null() {
-                break;
-            }
+        if spill.is_null() {
+            return;
+        }
+        if size_of::<T>() != 0 {
+            // Safety: we have exclusive access to the installed directory.
+            let bins = unsafe { &mut (*spill).bins };
+            // Bin 0 lives in the directory's allocation. Later bins can be
+            // installed out of order by concurrent pushes, so look at all.
+            for (bin, slot) in bins.iter_mut().enumerate().skip(1) {
+                #[cfg(not(all(loom, test)))]
+                let bucket = *slot.get_mut();
 
-            let bin_cap = Self::bin_size(i);
-            let to_drop = core::cmp::min(remaining, bin_cap);
+                #[cfg(all(test, loom))]
+                let bucket = slot.with_mut(|ptr| *ptr);
 
-            // Drop individual elements in the bucket
-
-            for offset in 0..to_drop {
-                if skip_items > 0 {
-                    skip_items -= 1;
-                } else {
-                    // Safety:
-                    // - self.count is used to calculate this pointers and guarantees we have allocated this ptr
-                    // - pointer is valid and alligned (we allocated a proper layout and use offset)
-                    // - we are the only ones de-allocating this memory
-                    unsafe {
-                        ptr::drop_in_place(bucket_ptr.add(offset));
-                    }
+                if bucket.is_null() {
+                    continue;
                 }
-            }
-
-            // Deallocate the bucket itself is not zst
-            if !is_zst {
                 #[allow(
                     clippy::expect_used,
-                    reason = "constructor has checked this on creation"
+                    reason = "this layout was valid when the bin was allocated"
                 )]
-                let layout = Layout::array::<T>(bin_cap).expect("Layout of array of T with cap");
+                let layout = Layout::array::<T>(Self::bin_size(bin)).expect("layout of a bin");
 
                 // Safety:
-                // - We just allocated this ptr so it exists
-                // - Layout matches the exact layout of creation
-                unsafe { dealloc(bucket_ptr as *mut u8, layout) };
+                // - We allocated this ptr with this exact layout
+                // - nobody else can access the vec anymore
+                unsafe { dealloc(bucket as *mut u8, layout) };
             }
-
-            remaining -= to_drop;
+        }
+        // Safety: allocated with this layout, and nobody else can access the vec anymore.
+        unsafe {
+            ptr::drop_in_place(spill);
+            dealloc(spill.cast::<u8>(), Self::spill_layout());
         }
     }
+}
+
+#[cold]
+fn capacity_overflow() -> ! {
+    panic!("append only vec capacity overflow")
 }
 
 fn spin_wait(failures: &mut usize) {
@@ -404,39 +507,45 @@ fn spin_wait(failures: &mut usize) {
 
 // Safety:
 // - This vec is Send if and only if all items send
-unsafe impl<T: Send, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> Send
-    for AppendOnlyVec<T, AMOUNT_OF_BINS, BIN_OFFSET>
+unsafe impl<T: Send, const INLINE: usize, const BIN_OFFSET: u32> Send
+    for AppendOnlyVec<T, INLINE, BIN_OFFSET>
 {
 }
 
 // Safety:
 // - This vec is Sync if and only if all items Sync
 // - But it also needs Send for the entire collection to be sync
-unsafe impl<T: Send + Sync, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> Sync
-    for AppendOnlyVec<T, AMOUNT_OF_BINS, BIN_OFFSET>
+unsafe impl<T: Send + Sync, const INLINE: usize, const BIN_OFFSET: u32> Sync
+    for AppendOnlyVec<T, INLINE, BIN_OFFSET>
 {
 }
 
-impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> Drop
-    for AppendOnlyVec<T, AMOUNT_OF_BINS, BIN_OFFSET>
-{
+impl<T, const INLINE: usize, const BIN_OFFSET: u32> Drop for AppendOnlyVec<T, INLINE, BIN_OFFSET> {
     fn drop(&mut self) {
         self.drop_manual(0);
     }
 }
 
-impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> Default
-    for AppendOnlyVec<T, AMOUNT_OF_BINS, BIN_OFFSET>
+impl<T, const INLINE: usize, const BIN_OFFSET: u32> Default
+    for AppendOnlyVec<T, INLINE, BIN_OFFSET>
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
+impl<T: fmt::Debug, const INLINE: usize, const BIN_OFFSET: u32> fmt::Debug
+    for AppendOnlyVec<T, INLINE, BIN_OFFSET>
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
 use core::ops::Index;
 
-impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> Index<usize>
-    for AppendOnlyVec<T, AMOUNT_OF_BINS, BIN_OFFSET>
+impl<T, const INLINE: usize, const BIN_OFFSET: u32> Index<usize>
+    for AppendOnlyVec<T, INLINE, BIN_OFFSET>
 {
     type Output = T;
 
@@ -449,88 +558,114 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> Index<usize>
     }
 }
 
-/// A double-ended iterator over the bins of an [`AppendOnlyVec`] as slices,
-/// created by [`AppendOnlyVec::chunks`].
-pub struct Chunks<'a, T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> {
-    vec: &'a AppendOnlyVec<T, AMOUNT_OF_BINS, BIN_OFFSET>,
+/// A double-ended iterator over the inline items and the bins of an
+/// [`AppendOnlyVec`] as slices, created by [`AppendOnlyVec::chunks`].
+pub struct Chunks<'a, T, const INLINE: usize, const BIN_OFFSET: u32> {
+    vec: &'a AppendOnlyVec<T, INLINE, BIN_OFFSET>,
+    /// The spill directory if the first `len` items reach beyond the inline
+    /// ones, else null. Kept as allocated, see [`AppendOnlyVec::first_bin`].
+    spill: *mut Spill<T>,
     /// Length of the vec when the iterator was created.
     len: usize,
-    /// Next bin to yield from the front.
+    /// Next chunk to yield from the front.
     front: usize,
-    /// One past the last bin to yield from the back.
+    /// One past the last chunk to yield from the back.
     back: usize,
 }
 
-impl<'a, T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
-    Chunks<'a, T, AMOUNT_OF_BINS, BIN_OFFSET>
-{
-    /// The initialized part of bin `bin`, which must hold at least one of the first `self.len` elements.
-    fn bin(&self, bin: usize) -> &'a [T] {
-        // Index of the first element of this bin: all earlier bins are full.
-        let first = AppendOnlyVec::<T, AMOUNT_OF_BINS, BIN_OFFSET>::bin_size(bin)
-            - AppendOnlyVec::<T, AMOUNT_OF_BINS, BIN_OFFSET>::INITIAL_BIN_SIZE;
-        let count = core::cmp::min(
-            self.len - first,
-            AppendOnlyVec::<T, AMOUNT_OF_BINS, BIN_OFFSET>::bin_size(bin),
-        );
-        let ptr = self.vec.data[bin].load(Ordering::Acquire);
+impl<'a, T, const INLINE: usize, const BIN_OFFSET: u32> Chunks<'a, T, INLINE, BIN_OFFSET> {
+    /// The initialized part of chunk `chunk`, which must hold at least one of the first `self.len` elements.
+    fn chunk(&self, chunk: usize) -> &'a [T] {
+        type Vec<T, const I: usize, const O: u32> = AppendOnlyVec<T, I, O>;
+        let (ptr, count) = if chunk < Vec::<T, INLINE, BIN_OFFSET>::INLINE_CHUNKS {
+            let count = core::cmp::min(self.len, INLINE);
+            (self.vec.inline.as_ptr().cast::<T>(), count)
+        } else {
+            let bin = chunk - Vec::<T, INLINE, BIN_OFFSET>::INLINE_CHUNKS;
+            // Index of the first spill item of this bin: all earlier bins are full.
+            let first = Vec::<T, INLINE, BIN_OFFSET>::bin_size(bin)
+                - Vec::<T, INLINE, BIN_OFFSET>::INITIAL_BIN_SIZE;
+            let count = core::cmp::min(
+                self.len - INLINE - first,
+                Vec::<T, INLINE, BIN_OFFSET>::bin_size(bin),
+            );
+            // Spill chunks are only counted when the items reach the directory.
+            if self.spill.is_null() {
+                return &[];
+            }
+            // The bin holds published items, so it was installed before `count` covered them.
+            let ptr = Vec::<T, INLINE, BIN_OFFSET>::bin_ptr(self.spill, bin);
+            (ptr.cast_const(), count)
+        };
         // Safety:
         // - `len` was read with `Acquire` from `count`, which is only advanced after the
-        //   element and its bin were written, so the first `count` slots of this bin are
-        //   initialized and the bin is allocated (a zero sized bin is dangling but aligned)
+        //   element (and its bin) was written, so the first `count` slots of this chunk are
+        //   initialized (a zero sized bin is dangling but aligned)
         // - elements are never removed or moved while the vec is borrowed
         unsafe { core::slice::from_raw_parts(ptr, count) }
     }
 }
 
-impl<'a, T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> Iterator
-    for Chunks<'a, T, AMOUNT_OF_BINS, BIN_OFFSET>
+// Safety: yields shared slices of the items only, like `&[T]` iterators.
+unsafe impl<T: Sync, const INLINE: usize, const BIN_OFFSET: u32> Send
+    for Chunks<'_, T, INLINE, BIN_OFFSET>
+{
+}
+
+// Safety: yields shared slices of the items only, like `&[T]` iterators.
+unsafe impl<T: Sync, const INLINE: usize, const BIN_OFFSET: u32> Sync
+    for Chunks<'_, T, INLINE, BIN_OFFSET>
+{
+}
+
+impl<'a, T, const INLINE: usize, const BIN_OFFSET: u32> Iterator
+    for Chunks<'a, T, INLINE, BIN_OFFSET>
 {
     type Item = &'a [T];
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.front < self.back {
-            let bin = self.front;
+            let chunk = self.front;
             self.front += 1;
-            Some(self.bin(bin))
+            Some(self.chunk(chunk))
         } else {
             None
         }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let bins = self.back - self.front;
-        (bins, Some(bins))
+        let chunks = self.back - self.front;
+        (chunks, Some(chunks))
     }
 }
 
-impl<'a, T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> DoubleEndedIterator
-    for Chunks<'a, T, AMOUNT_OF_BINS, BIN_OFFSET>
+impl<'a, T, const INLINE: usize, const BIN_OFFSET: u32> DoubleEndedIterator
+    for Chunks<'a, T, INLINE, BIN_OFFSET>
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.front < self.back {
             self.back -= 1;
-            Some(self.bin(self.back))
+            Some(self.chunk(self.back))
         } else {
             None
         }
     }
 }
 
-impl<'a, T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> ExactSizeIterator
-    for Chunks<'a, T, AMOUNT_OF_BINS, BIN_OFFSET>
+impl<'a, T, const INLINE: usize, const BIN_OFFSET: u32> ExactSizeIterator
+    for Chunks<'a, T, INLINE, BIN_OFFSET>
 {
 }
 
 /// A double-ended iterator for [`AppendOnlyVec`]
-pub struct Iter<'a, T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> {
-    vec: &'a AppendOnlyVec<T, AMOUNT_OF_BINS, BIN_OFFSET>,
+pub struct Iter<'a, T, const INLINE: usize, const BIN_OFFSET: u32> {
+    vec: &'a AppendOnlyVec<T, INLINE, BIN_OFFSET>,
     start: usize,
     end: usize,
 }
 
-impl<'a, T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> Iterator
-    for Iter<'a, T, AMOUNT_OF_BINS, BIN_OFFSET>
+impl<'a, T, const INLINE: usize, const BIN_OFFSET: u32> Iterator
+    for Iter<'a, T, INLINE, BIN_OFFSET>
 {
     type Item = &'a T;
 
@@ -551,8 +686,8 @@ impl<'a, T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> Iterator
     }
 }
 
-impl<'a, T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> DoubleEndedIterator
-    for Iter<'a, T, AMOUNT_OF_BINS, BIN_OFFSET>
+impl<'a, T, const INLINE: usize, const BIN_OFFSET: u32> DoubleEndedIterator
+    for Iter<'a, T, INLINE, BIN_OFFSET>
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.start < self.end {
@@ -566,13 +701,13 @@ impl<'a, T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> DoubleEndedItera
     }
 }
 
-impl<'a, T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> ExactSizeIterator
-    for Iter<'a, T, AMOUNT_OF_BINS, BIN_OFFSET>
+impl<'a, T, const INLINE: usize, const BIN_OFFSET: u32> ExactSizeIterator
+    for Iter<'a, T, INLINE, BIN_OFFSET>
 {
 }
 
-impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> FromIterator<T>
-    for AppendOnlyVec<T, AMOUNT_OF_BINS, BIN_OFFSET>
+impl<T, const INLINE: usize, const BIN_OFFSET: u32> FromIterator<T>
+    for AppendOnlyVec<T, INLINE, BIN_OFFSET>
 {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let this = Self::new();
@@ -583,26 +718,28 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32> FromIterator<T>
     }
 }
 
-impl<'a, T, const BINS: usize, const OFFSET: u32> IntoIterator
-    for &'a AppendOnlyVec<T, BINS, OFFSET>
+impl<'a, T, const INLINE: usize, const BIN_OFFSET: u32> IntoIterator
+    for &'a AppendOnlyVec<T, INLINE, BIN_OFFSET>
 {
     type Item = &'a T;
-    type IntoIter = Iter<'a, T, BINS, OFFSET>;
+    type IntoIter = Iter<'a, T, INLINE, BIN_OFFSET>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
     }
 }
 
-pub struct IntoIterOwned<T, const BINS: usize, const OFFSET: u32> {
+pub struct IntoIterOwned<T, const INLINE: usize, const BIN_OFFSET: u32> {
     // We need to manually handle dropping of items that we didn't iter over
-    vec: ManuallyDrop<AppendOnlyVec<T, BINS, OFFSET>>,
+    vec: ManuallyDrop<AppendOnlyVec<T, INLINE, BIN_OFFSET>>,
     consumed: usize,
 }
 
-impl<T, const BINS: usize, const OFFSET: u32> IntoIterator for AppendOnlyVec<T, BINS, OFFSET> {
+impl<T, const INLINE: usize, const BIN_OFFSET: u32> IntoIterator
+    for AppendOnlyVec<T, INLINE, BIN_OFFSET>
+{
     type Item = T;
-    type IntoIter = IntoIterOwned<T, BINS, OFFSET>;
+    type IntoIter = IntoIterOwned<T, INLINE, BIN_OFFSET>;
 
     fn into_iter(self) -> Self::IntoIter {
         IntoIterOwned {
@@ -612,7 +749,9 @@ impl<T, const BINS: usize, const OFFSET: u32> IntoIterator for AppendOnlyVec<T, 
     }
 }
 
-impl<T, const BINS: usize, const OFFSET: u32> Iterator for IntoIterOwned<T, BINS, OFFSET> {
+impl<T, const INLINE: usize, const BIN_OFFSET: u32> Iterator
+    for IntoIterOwned<T, INLINE, BIN_OFFSET>
+{
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -620,12 +759,9 @@ impl<T, const BINS: usize, const OFFSET: u32> Iterator for IntoIterOwned<T, BINS
             let idx = self.consumed;
             self.consumed += 1;
 
-            let (bin_idx, offset) = AppendOnlyVec::<T, BINS, OFFSET>::indices(idx);
-            let bucket = self.vec.data[bin_idx].load(Ordering::Acquire);
-
             // Safety: This is safe because consume < total, and since we own this
             // structure no one else can change this
-            unsafe { Some(core::ptr::read(bucket.add(offset))) }
+            unsafe { Some(ptr::read(self.vec.slot(idx))) }
         } else {
             None
         }
@@ -637,13 +773,15 @@ impl<T, const BINS: usize, const OFFSET: u32> Iterator for IntoIterOwned<T, BINS
     }
 }
 
-impl<T, const BINS: usize, const OFFSET: u32> Drop for IntoIterOwned<T, BINS, OFFSET> {
+impl<T, const INLINE: usize, const BIN_OFFSET: u32> Drop for IntoIterOwned<T, INLINE, BIN_OFFSET> {
     fn drop(&mut self) {
         self.vec.drop_manual(self.consumed);
     }
 }
 
-impl<T, const BINS: usize, const OFFSET: u32> Extend<T> for AppendOnlyVec<T, BINS, OFFSET> {
+impl<T, const INLINE: usize, const BIN_OFFSET: u32> Extend<T>
+    for AppendOnlyVec<T, INLINE, BIN_OFFSET>
+{
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         for item in iter {
             self.push(item);
@@ -653,7 +791,9 @@ impl<T, const BINS: usize, const OFFSET: u32> Extend<T> for AppendOnlyVec<T, BIN
 
 // Since we only need &self to push items we can also implement this for &AppendOnlyVec
 
-impl<T, const BINS: usize, const OFFSET: u32> Extend<T> for &AppendOnlyVec<T, BINS, OFFSET> {
+impl<T, const INLINE: usize, const BIN_OFFSET: u32> Extend<T>
+    for &AppendOnlyVec<T, INLINE, BIN_OFFSET>
+{
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         for item in iter {
             self.push(item);
@@ -685,29 +825,104 @@ mod tests {
         let vec: AppendOnlyVec<NoSize> = AppendOnlyVec::new();
         vec.push(NoSize);
         vec.push(NoSize);
+        let inline: AppendOnlyVec<NoSize, 2> = AppendOnlyVec::new();
+        for _ in 0..20 {
+            inline.push(NoSize);
+        }
+        assert_eq!(inline.iter().count(), 20);
+    }
+
+    fn assert_pushes_cross_boundaries<const INLINE: usize, const BIN_OFFSET: u32>() {
+        let vec: AppendOnlyVec<usize, INLINE, BIN_OFFSET> = AppendOnlyVec::new();
+        for i in 0..300 {
+            assert_eq!(vec.push(i), i);
+            assert_eq!(vec.len(), i + 1);
+            assert_eq!(vec[i], i);
+            assert_eq!(vec.get(i + 1), None);
+        }
+        let items: Vec<usize> = vec.iter().copied().collect();
+        assert_eq!(items, (0..300).collect::<Vec<_>>());
+        let reversed: Vec<usize> = vec.iter().rev().copied().collect();
+        assert_eq!(reversed, (0..300).rev().collect::<Vec<_>>());
     }
 
     #[test]
-    fn push_crosses_bin_boundaries_with_stable_order() {
-        let vec: AppendOnlyVec<usize, 4, 3> = AppendOnlyVec::new();
+    fn push_crosses_inline_and_bin_boundaries_with_stable_order() {
+        assert_pushes_cross_boundaries::<0, 3>();
+        assert_pushes_cross_boundaries::<1, 0>();
+        assert_pushes_cross_boundaries::<4, 3>();
+        assert_pushes_cross_boundaries::<5, 2>();
+        assert_pushes_cross_boundaries::<16, 1>();
+    }
 
-        for i in 0..26 {
-            assert_eq!(vec.push(i), i);
+    #[test]
+    fn grows_far_beyond_any_fixed_bin_count() {
+        // used to be the fixed capacity of an extensions level
+        let n: u32 = if cfg!(miri) { 3_000 } else { 40_000 };
+        let vec: AppendOnlyVec<u32, 4> = AppendOnlyVec::new();
+        for i in 0..n {
+            vec.push(i);
         }
+        assert_eq!(vec.len(), n as usize);
+        assert_eq!(vec[n as usize - 1], n - 1);
+        let sum = u64::from(n) * u64::from(n - 1) / 2;
+        assert_eq!(vec.iter().map(|v| u64::from(*v)).sum::<u64>(), sum);
+    }
 
-        assert_eq!(vec.len(), 26);
-        assert_eq!(vec[7], 7);
-        assert_eq!(vec[8], 8);
-        assert_eq!(vec[23], 23);
-        assert_eq!(vec[24], 24);
+    #[test]
+    fn inline_items_allocate_nothing_and_drop() {
+        use std::rc::Rc;
+        let counter = Rc::new(());
+        {
+            let vec: AppendOnlyVec<Rc<()>, 4> = AppendOnlyVec::new();
+            for _ in 0..3 {
+                vec.push(counter.clone());
+            }
+            assert!(vec.spill.load(Ordering::Relaxed).is_null());
+            assert_eq!(Rc::strong_count(&counter), 4);
+            vec.push(counter.clone());
+            assert!(vec.spill.load(Ordering::Relaxed).is_null());
+            vec.push(counter.clone());
+            assert!(!vec.spill.load(Ordering::Relaxed).is_null());
+            assert_eq!(Rc::strong_count(&counter), 6);
+        }
+        assert_eq!(Rc::strong_count(&counter), 1);
+    }
 
-        let items: Vec<usize> = vec.iter().copied().collect();
-        assert_eq!(items, (0..26).collect::<Vec<_>>());
+    #[test]
+    fn partially_consumed_into_iter_drops_the_rest() {
+        use std::rc::Rc;
+        let counter = Rc::new(());
+        let vec: AppendOnlyVec<Rc<()>, 2, 1> = AppendOnlyVec::new();
+        for _ in 0..9 {
+            vec.push(counter.clone());
+        }
+        let mut iter = vec.into_iter();
+        let first = iter.next().unwrap();
+        let second = iter.next().unwrap();
+        let third = iter.next().unwrap();
+        assert_eq!(Rc::strong_count(&counter), 10);
+        drop(iter);
+        assert_eq!(Rc::strong_count(&counter), 4);
+        drop((first, second, third));
+        assert_eq!(Rc::strong_count(&counter), 1);
+    }
+
+    #[test]
+    fn tags_are_the_union_of_pushed_tags() {
+        let vec: AppendOnlyVec<usize, 2> = AppendOnlyVec::new();
+        assert_eq!(vec.tags(), 0);
+        vec.push_tagged(1, 0b0001);
+        vec.push(2);
+        vec.push_tagged(3, 0b0100);
+        vec.push_tagged(4, 0b0101);
+        assert_eq!(vec.tags(), 0b0101);
+        assert_eq!(vec.len(), 4);
     }
 
     #[test]
     fn iter_is_a_snapshot_of_length_at_creation() {
-        let vec: AppendOnlyVec<usize, 3, 1> = AppendOnlyVec::new();
+        let vec: AppendOnlyVec<usize, 0, 1> = AppendOnlyVec::new();
         vec.push(1);
 
         let iter = vec.iter();
@@ -718,26 +933,31 @@ mod tests {
         assert_eq!(vec.len(), 2);
     }
 
-    #[test]
-    fn chunks_are_the_bins_in_order_and_match_iter() {
-        let vec: AppendOnlyVec<usize, 5, 2> = AppendOnlyVec::new();
+    fn assert_chunks_match_iter<const INLINE: usize, const BIN_OFFSET: u32>() {
+        let vec: AppendOnlyVec<usize, INLINE, BIN_OFFSET> = AppendOnlyVec::new();
         assert_eq!(vec.chunks().count(), 0);
 
-        // bins hold 4, 8, 16 and 32 elements
-        for len in 1..=60 {
+        for len in 1..=100 {
             vec.push(len - 1);
 
             let chunks: Vec<&[usize]> = vec.chunks().collect();
             let flat: Vec<usize> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
             assert_eq!(flat, (0..len).collect::<Vec<_>>(), "len {len}");
             assert_eq!(flat, vec.iter().copied().collect::<Vec<_>>());
+            assert_eq!(vec.chunks().len(), chunks.len());
 
-            // only the last chunk may be partially filled, and none is empty
+            // the inline items are one chunk, every bin one more; only the
+            // last chunk may be partially filled, and none is empty
             for (i, chunk) in chunks.iter().enumerate() {
                 assert!(!chunk.is_empty());
+                let full = match (INLINE, i) {
+                    (0, i) => (1 << BIN_OFFSET) << i,
+                    (_, 0) => INLINE,
+                    (_, i) => (1 << BIN_OFFSET) << (i - 1),
+                };
                 assert!(
-                    chunk.len() == 4 << i || i == chunks.len() - 1,
-                    "len {len} bin {i}"
+                    chunk.len() == full || i == chunks.len() - 1,
+                    "len {len} chunk {i}"
                 );
             }
 
@@ -751,8 +971,16 @@ mod tests {
     }
 
     #[test]
+    fn chunks_are_the_inline_items_and_bins_in_order_and_match_iter() {
+        assert_chunks_match_iter::<0, 2>();
+        assert_chunks_match_iter::<1, 0>();
+        assert_chunks_match_iter::<4, 3>();
+        assert_chunks_match_iter::<3, 1>();
+    }
+
+    #[test]
     fn chunks_is_a_snapshot_of_length_at_creation() {
-        let vec: AppendOnlyVec<usize, 3, 1> = AppendOnlyVec::new();
+        let vec: AppendOnlyVec<usize, 1, 1> = AppendOnlyVec::new();
         vec.push(1);
 
         let chunks = vec.chunks();
@@ -766,7 +994,7 @@ mod tests {
 
     #[test]
     fn chunks_of_zero_sized_types() {
-        let vec: AppendOnlyVec<NoSize> = AppendOnlyVec::new();
+        let vec: AppendOnlyVec<NoSize, 3> = AppendOnlyVec::new();
         for _ in 0..20 {
             vec.push(NoSize);
         }
@@ -775,28 +1003,61 @@ mod tests {
 
     #[test]
     fn chunks_meet_in_the_middle_from_both_ends() {
-        let vec: AppendOnlyVec<usize, 4, 1> = AppendOnlyVec::new();
-        for i in 0..14 {
+        let vec: AppendOnlyVec<usize, 2, 1> = AppendOnlyVec::new();
+        for i in 0..16 {
             vec.push(i);
         }
         let mut chunks = vec.chunks();
-        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks.len(), 4);
         assert_eq!(chunks.next().unwrap(), &[0, 1]);
-        assert_eq!(chunks.next_back().unwrap(), &[6, 7, 8, 9, 10, 11, 12, 13]);
-        assert_eq!(chunks.next().unwrap(), &[2, 3, 4, 5]);
+        assert_eq!(chunks.next_back().unwrap(), &[8, 9, 10, 11, 12, 13, 14, 15]);
+        assert_eq!(chunks.next().unwrap(), &[2, 3]);
+        assert_eq!(chunks.next_back().unwrap(), &[4, 5, 6, 7]);
         assert!(chunks.next().is_none());
         assert!(chunks.next_back().is_none());
     }
 
     #[test]
-    #[should_panic(expected = "append only vec has exceeded max capacity")]
-    fn push_panics_when_capacity_is_exceeded() {
-        let vec: AppendOnlyVec<u8, 1, 1> = AppendOnlyVec::new();
-        assert_eq!(AppendOnlyVec::<u8, 1, 1>::capacity(), 2);
-
-        vec.push(1);
-        vec.push(2);
-        vec.push(3);
+    fn concurrent_pushes_and_reads_across_the_inline_boundary() {
+        use std::sync::Arc;
+        for _ in 0..if cfg!(miri) { 1 } else { 50 } {
+            let vec: Arc<AppendOnlyVec<usize, 4, 1>> = Arc::new(AppendOnlyVec::new());
+            let writers: Vec<_> = (0..4)
+                .map(|t| {
+                    let vec = vec.clone();
+                    std::thread::spawn(move || {
+                        for i in 0..64 {
+                            vec.push_tagged(t * 1000 + i, 1 << t);
+                        }
+                    })
+                })
+                .collect();
+            let reader = {
+                let vec = vec.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..if cfg!(miri) { 5 } else { 200 } {
+                        let seen: usize = vec.chunks().map(<[usize]>::len).sum();
+                        assert!(seen <= 256);
+                        for (i, item) in vec.iter().enumerate() {
+                            assert_eq!(vec[i], *item);
+                        }
+                    }
+                })
+            };
+            for writer in writers {
+                writer.join().unwrap();
+            }
+            reader.join().unwrap();
+            assert_eq!(vec.len(), 256);
+            assert_eq!(vec.tags(), 0b1111);
+            let mut items: Vec<usize> = vec.iter().copied().collect();
+            items.sort_unstable();
+            let mut expected: Vec<usize> = (0..4)
+                .flat_map(|t| (0..64).map(move |i| t * 1000 + i))
+                .collect();
+            expected.sort_unstable();
+            assert_eq!(items, expected);
+        }
     }
 }
 
@@ -834,7 +1095,7 @@ mod loom_tests {
     #[test]
     fn concurrent_push() {
         create_builder().check(|| {
-            let vec = Arc::new(AppendOnlyVec::<usize, 2, 1>::new());
+            let vec = Arc::new(AppendOnlyVec::<usize, 0, 1>::new());
 
             let vec_cl = vec.clone();
             let t1 = loom::thread::spawn(move || vec_cl.push(1));
@@ -852,9 +1113,31 @@ mod loom_tests {
     }
 
     #[test]
+    fn concurrent_push_across_the_inline_boundary() {
+        create_builder().check(|| {
+            // one inline slot: one of the pushes installs the spill directory
+            let vec = Arc::new(AppendOnlyVec::<usize, 1, 0>::new());
+
+            let vec_cl = vec.clone();
+            let t1 = loom::thread::spawn(move || vec_cl.push(1));
+            let vec_cl = vec.clone();
+            let t2 = loom::thread::spawn(move || vec_cl.push(2));
+
+            if let Some(first) = vec.get(0) {
+                assert!(*first == 1 || *first == 2);
+            }
+
+            t1.join().unwrap();
+            t2.join().unwrap();
+            assert_eq!(vec.len(), 2);
+            assert_eq!(vec.iter().sum::<usize>(), 3);
+        });
+    }
+
+    #[test]
     fn read_while_push() {
         create_builder().check(|| {
-            let vec = Arc::new(AppendOnlyVec::<usize, 2, 1>::new());
+            let vec = Arc::new(AppendOnlyVec::<usize, 0, 1>::new());
             let v1 = vec.clone();
 
             let t1 = loom::thread::spawn(move || {
@@ -874,44 +1157,92 @@ mod loom_tests {
     }
 
     #[test]
-    fn chunks_read_while_push() {
+    fn read_inline_while_push() {
         create_builder().check(|| {
-            // bins hold 2 and 4 elements: the second push opens a new bin
-            let vec = Arc::new(AppendOnlyVec::<usize, 3, 1>::new());
-            vec.push(1);
-            vec.push(2);
+            let vec = Arc::new(AppendOnlyVec::<usize, 2, 1>::new());
             let v1 = vec.clone();
 
             let t1 = loom::thread::spawn(move || {
-                v1.push(3);
+                v1.push(42);
             });
 
-            // Whatever the chunks report as present must be readable, in order.
-            let seen: Vec<usize> = vec.chunks().flat_map(|c| c.iter().copied()).collect();
-            assert!(seen == [1, 2] || seen == [1, 2, 3], "{seen:?}");
+            if vec.len() == 1 {
+                assert_eq!(*vec.get(0).unwrap(), 42);
+            }
 
             t1.join().unwrap();
         });
     }
 
-    // reserve() was removed because it's actually quite tricky to implement, but in case we ever
-    // add it again, this test can be used for it
+    #[test]
+    fn chunks_read_while_push() {
+        create_builder().check(|| {
+            // one inline item then bins of 2 and 4 items: the third push opens a new bin
+            let vec = Arc::new(AppendOnlyVec::<usize, 1, 1>::new());
+            vec.push(1);
+            vec.push(2);
+            vec.push(3);
+            let v1 = vec.clone();
 
-    // #[test]
-    // fn reserve_and_push() {
-    //     create_builder().check(|| {
-    //         let vec = Arc::new(AppendOnlyVec::<usize, 5, 1>::new());
-    //         let v1 = vec.clone();
-    //         let v2 = vec.clone();
+            let t1 = loom::thread::spawn(move || {
+                v1.push(4);
+            });
 
-    //         // Both of these will race to allocate, but it should handle that
-    //         let t1 = loom::thread::spawn(move || v1.reserve(10));
-    //         let t2 = loom::thread::spawn(move || v2.push(100));
+            // Whatever the chunks report as present must be readable, in order.
+            let seen: Vec<usize> = vec.chunks().flat_map(|c| c.iter().copied()).collect();
+            assert!(seen == [1, 2, 3] || seen == [1, 2, 3, 4], "{seen:?}");
 
-    //         t1.join().unwrap();
-    //         t2.join().unwrap();
-    //     });
-    // }
+            t1.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn a_seen_item_has_its_tag() {
+        create_builder().check(|| {
+            let vec = Arc::new(AppendOnlyVec::<usize, 1, 0>::new());
+            vec.push_tagged(1, 0b01);
+            let v1 = vec.clone();
+
+            let t1 = loom::thread::spawn(move || {
+                v1.push_tagged(2, 0b10);
+            });
+
+            // A reader that sees the item must also see its tag.
+            let len = vec.len();
+            let tags = vec.tags();
+            if len == 2 {
+                assert_eq!(tags, 0b11);
+            } else {
+                assert_eq!(tags & 0b01, 0b01);
+            }
+
+            t1.join().unwrap();
+            assert_eq!(vec.tags(), 0b11);
+        });
+    }
+
+    #[test]
+    fn tag_seen_after_a_synchronized_push() {
+        use loom::sync::atomic::AtomicBool;
+        create_builder().check(|| {
+            let vec = Arc::new(AppendOnlyVec::<usize, 1, 0>::new());
+            let done = Arc::new(AtomicBool::new(false));
+            let (v1, d1) = (vec.clone(), done.clone());
+
+            let t1 = loom::thread::spawn(move || {
+                v1.push_tagged(7, 0b100);
+                d1.store(true, Ordering::Release);
+            });
+
+            // A push that happened-before the check must never be skipped.
+            if done.load(Ordering::Acquire) {
+                assert_eq!(vec.tags() & 0b100, 0b100);
+                assert_eq!(vec.len(), 1);
+            }
+
+            t1.join().unwrap();
+        });
+    }
 
     #[derive(Clone, Debug)]
     struct NoSize;
@@ -919,9 +1250,10 @@ mod loom_tests {
     #[test]
     fn zero_sized_types() {
         create_builder().check(|| {
-            let vec = AppendOnlyVec::<NoSize, 5, 1>::new();
+            let vec = AppendOnlyVec::<NoSize, 1, 1>::new();
 
             // Zero sized types should not cause memory leaks, or alloc errors
+            vec.push(NoSize);
             vec.push(NoSize);
             vec.push(NoSize);
         });
@@ -930,7 +1262,7 @@ mod loom_tests {
     #[test]
     fn drop_of_partial_consumed_into_iter() {
         create_builder().check(|| {
-            let vec = AppendOnlyVec::<String, 2, 1>::new();
+            let vec = AppendOnlyVec::<String, 1, 1>::new();
             vec.push("a".to_owned());
             vec.push("b".to_owned());
             vec.push("c".to_owned());
