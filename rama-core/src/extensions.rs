@@ -2440,36 +2440,132 @@ mod tests {
         let wrapped = Extensions::new();
         ext.insert(Egress(wrapped.clone()));
         let done: [AtomicUsize; WRITERS] = core::array::from_fn(|_| AtomicUsize::new(0));
+        // Full passes of the reader. A writer waits for a pass that started
+        // after its insert, so lookups run while inserts are being published,
+        // and the last pass always checks every insert.
+        let passes = AtomicUsize::new(0);
+        // Cleared when the reader stops, also by a failed assertion, so the
+        // writers fail with it instead of waiting forever.
+        let reading = core::sync::atomic::AtomicBool::new(true);
+        struct StopReading<'a>(&'a core::sync::atomic::AtomicBool);
+        impl Drop for StopReading<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
+            }
+        }
 
         std::thread::scope(|scope| {
+            let reader = scope.spawn(|| {
+                let _stop = StopReading(&reading);
+                loop {
+                    let inserted: [usize; WRITERS] =
+                        core::array::from_fn(|w| done[w].load(Ordering::Acquire));
+                    for (writer, inserted) in inserted.iter().enumerate() {
+                        for i in 0..*inserted {
+                            assert!(
+                                FILLER_FINDERS[writer * PER_WRITER + i](&ext),
+                                "writer {writer} insert {i} was done but is not found"
+                            );
+                        }
+                    }
+                    passes.fetch_add(1, Ordering::AcqRel);
+                    if inserted.iter().all(|n| *n == PER_WRITER) {
+                        break;
+                    }
+                }
+            });
             for writer in 0..WRITERS {
-                let (ext, wrapped, done) = (&ext, &wrapped, &done);
+                let (ext, wrapped, done, passes, reading) =
+                    (&ext, &wrapped, &done, &passes, &reading);
                 scope.spawn(move || {
                     for i in 0..PER_WRITER {
                         // half of them go straight in, half through the wrapped store
                         let target = if i % 2 == 0 { ext } else { wrapped };
                         FILLERS[writer * PER_WRITER + i](target, 0);
+                        let seen = passes.load(Ordering::Acquire);
                         done[writer].store(i + 1, Ordering::Release);
-                    }
-                });
-            }
-            for _ in 0..2 {
-                let (ext, done) = (&ext, &done);
-                scope.spawn(move || {
-                    while done.iter().any(|d| d.load(Ordering::Acquire) < PER_WRITER) {
-                        for (writer, d) in done.iter().enumerate() {
-                            let inserted = d.load(Ordering::Acquire);
-                            for i in 0..inserted {
-                                assert!(
-                                    FILLER_FINDERS[writer * PER_WRITER + i](ext),
-                                    "writer {writer} insert {i} was done but is not found"
-                                );
+                        // the reader stops after a pass that saw everything
+                        if i + 1 < PER_WRITER {
+                            // a pass in progress may have read `done` before the store
+                            while passes.load(Ordering::Acquire) < seen + 2 {
+                                assert!(reading.load(Ordering::Acquire), "the reader failed");
+                                std::thread::yield_now();
                             }
                         }
                     }
                 });
             }
+            reader.join().unwrap();
         });
+    }
+
+    /// No view of a view: views are always made of the owning level, also
+    /// when made of a view, of a fork of a view, or with a view as base.
+    #[test]
+    fn views_of_views_share_one_owner() {
+        fn assert_views_own_nothing(ext: &Extensions) {
+            if let Some(owner) = &ext.node.view_of {
+                assert!(owner.node.view_of.is_none(), "view of a view");
+                assert!(ext.node.entries.entries.is_empty(), "view has own entries");
+            }
+            if let Some(parent) = ext.parent() {
+                assert_views_own_nothing(parent);
+            }
+        }
+
+        let ext = Extensions::new();
+        ext.insert(Filler::<0>(0));
+        let base_1 = Extensions::new();
+        base_1.insert(Filler::<1>(1));
+        base_1.insert(Filler::<0>(100));
+        let base_2 = Extensions::new();
+        base_2.insert(Filler::<2>(2));
+        base_2.insert(Filler::<1>(200));
+
+        let view_1 = ext.with_base(&base_1);
+        let view_2 = view_1.with_base(&base_2);
+        assert_views_own_nothing(&view_2);
+        assert_eq!(view_2.get_ref::<Filler<0>>(), Some(&Filler(0)));
+        assert_eq!(view_2.get_ref::<Filler<1>>(), Some(&Filler(1)));
+        assert_eq!(view_2.get_ref::<Filler<2>>(), Some(&Filler(2)));
+
+        // inserting through a view of a view lands in the owner
+        view_2.insert(Filler::<2>(9));
+        assert_eq!(ext.get_ref::<Filler<2>>(), Some(&Filler(9)));
+
+        let rebased_fork = view_2.fork().with_base(&Extensions::new());
+        assert_views_own_nothing(&rebased_fork);
+        assert_eq!(rebased_fork.get_ref::<Filler<1>>(), Some(&Filler(1)));
+
+        let view_as_base = Extensions::new().with_base(&view_2).with_base(&view_1);
+        assert_views_own_nothing(&view_as_base);
+        assert_eq!(view_as_base.get_ref::<Filler<2>>(), Some(&Filler(9)));
+    }
+
+    #[test]
+    fn target_plan_installs_one_plan_across_threads() {
+        for _ in 0..if cfg!(miri) { 3 } else { 200 } {
+            let plan: TargetPlan<2> = TargetPlan::new();
+            let barrier = std::sync::Barrier::new(4);
+            let plans: Vec<usize> = std::thread::scope(|scope| {
+                let threads: Vec<_> = (0..4)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            barrier.wait();
+                            let targets =
+                                plan.get(|| [TypeId::of::<Filler<0>>(), TypeId::of::<Filler<1>>()]);
+                            assert_eq!(targets.ids[1], TypeId::of::<Filler<1>>());
+                            core::ptr::from_ref(targets) as usize
+                        })
+                    })
+                    .collect();
+                threads.into_iter().map(|t| t.join().unwrap()).collect()
+            });
+            assert!(
+                plans.iter().all(|p| *p == plans[0]),
+                "more than one plan installed"
+            );
+        }
     }
 
     #[test]

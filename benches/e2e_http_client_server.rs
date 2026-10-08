@@ -536,9 +536,12 @@ fn bench_http_transport(bencher: divan::Bencher, params: TestParameters) {
                     .await
                     .expect("request timed out")
                     .expect("Request failed");
-                _ = tokio::time::timeout(REQUEST_TIMEOUT, resp.into_body().collect())
+                let body = tokio::time::timeout(REQUEST_TIMEOUT, resp.into_body().collect())
                     .await
-                    .expect("response body collection timed out");
+                    .expect("response body collection timed out")
+                    .expect("response body")
+                    .to_bytes();
+                assert_eq!(body.len(), server_bytes_count);
             });
         });
 }
@@ -1089,12 +1092,15 @@ fn bench_http_proxy_load(bencher: divan::Bencher, params: LoadParameters) {
                                         .expect("request timed out")
                                         .expect("request failed");
                                     assert!(resp.status().is_success(), "{}", resp.status());
-                                    _ = tokio::time::timeout(
+                                    let received = tokio::time::timeout(
                                         REQUEST_TIMEOUT,
                                         resp.into_body().collect(),
                                     )
                                     .await
-                                    .expect("response body collection timed out");
+                                    .expect("response body collection timed out")
+                                    .expect("response body")
+                                    .to_bytes();
+                                    assert_eq!(received.len(), body.len());
                                     rounds_done.fetch_add(1, Ordering::Relaxed);
                                 }
                             }

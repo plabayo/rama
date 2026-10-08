@@ -34,8 +34,12 @@ use loom::{
 /// outgrows them allocates nothing. Further items go to bins that are
 /// allocated on demand, each double the size of the one before, starting at
 /// `2^BIN_OFFSET` items. The directory of these bins is itself only allocated
-/// once the inline items are used up. There is no capacity limit short of
-/// running out of memory.
+/// once the inline items are used up. Capacity is bounded by memory and by
+/// `INLINE + 2^BIN_OFFSET * (2^32 - 1)` items.
+///
+/// Pushes are not lock-free: items are published in index order, so a push
+/// suspended between reserving and publishing its slot delays later pushes
+/// until it resumes. Never push from a signal or interrupt handler.
 ///
 /// Every push can carry a tag: [`Self::tags`] is the bitwise or of the tags of
 /// all pushed items, which lets a reader skip a vec that cannot hold what it
@@ -124,6 +128,9 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
     /// Pushes an element and returns its index.
     pub fn push(&self, element: T) -> usize {
         let idx = self.reserved.fetch_add(1, Ordering::Relaxed);
+        // Later pushes wait for this one to publish: it must not unwind
+        // (e.g. a failed allocation) between reserving and publishing.
+        let mut guard = AbortOnUnwind { armed: true };
         let slot = if idx < INLINE {
             self.inline[idx].get().cast::<T>()
         } else {
@@ -149,6 +156,7 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
         {
             spin_wait(&mut failures);
         }
+        guard.armed = false;
 
         idx
     }
@@ -244,6 +252,10 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
 
     /// The layout of the spill directory together with the first bin.
     fn spill_layout() -> Layout {
+        if size_of::<T>() == 0 {
+            // zero sized items need no room, nor alignment, for their bin
+            return Layout::new::<Spill<T>>();
+        }
         let Some(size) = size_of::<T>()
             .checked_mul(Self::INITIAL_BIN_SIZE)
             .and_then(|bin| bin.checked_add(Self::FIRST_BIN_OFFSET))
@@ -480,6 +492,9 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
 
     /// Drop the items from `skip_items` on, and free all bins. The first
     /// `skip_items` were moved out already (see [`IntoIterOwned`]).
+    ///
+    /// Like a `Vec`, the items keep dropping and the storage is freed even
+    /// if dropping an item unwinds.
     fn drop_manual(&mut self, skip_items: usize) {
         #[cfg(not(all(loom, test)))]
         let len = *self.count.get_mut();
@@ -487,19 +502,83 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
         #[cfg(all(test, loom))]
         let len = self.count.with_mut(|v| *v);
 
-        for idx in skip_items..len {
-            // Safety:
-            // - idx is below the published length and we have exclusive access
-            // - every item is dropped once, the moved out ones are skipped
-            unsafe { ptr::drop_in_place(self.slot(idx)) };
-        }
-
         #[cfg(not(all(loom, test)))]
         let spill = *self.spill.get_mut();
 
         #[cfg(all(test, loom))]
         let spill = self.spill.with_mut(|ptr| *ptr);
 
+        // Declared first, so it frees the storage after the items dropped.
+        let _storage = FreeSpill::<T, INLINE, BIN_OFFSET> { spill };
+        DropItems {
+            vec: self,
+            from: skip_items,
+            len,
+        }
+        .drop_run();
+    }
+
+    /// The `run` contiguous items from `from`, which must be below `len`:
+    /// the rest of `from`'s chunk, at most up to `len`.
+    ///
+    /// # Safety
+    /// Same as [`Self::slot`] for every index of the run.
+    unsafe fn run(&self, from: usize, len: usize) -> (*mut T, usize) {
+        if from < INLINE {
+            // From the whole inline array, not one slot: the run spans several.
+            // Safety: `from` is in bounds of the inline items.
+            let first = unsafe { self.inline.as_ptr().cast::<T>().cast_mut().add(from) };
+            return (first, INLINE.min(len) - from);
+        }
+        let (bin, offset) = Self::spill_indices(from - INLINE);
+        // Safety: guaranteed by the caller; a bin pointer covers its whole bin.
+        let first = unsafe { self.slot(from) };
+        (first, (Self::bin_size(bin) - offset).min(len - from))
+    }
+}
+
+/// Drops the items `from..len` of a vec, one contiguous run at a time. If
+/// dropping one unwinds, the guard made for the rest still drops it.
+struct DropItems<'a, T, const INLINE: usize, const BIN_OFFSET: u32> {
+    vec: &'a AppendOnlyVec<T, INLINE, BIN_OFFSET>,
+    from: usize,
+    len: usize,
+}
+
+impl<T, const INLINE: usize, const BIN_OFFSET: u32> DropItems<'_, T, INLINE, BIN_OFFSET> {
+    fn drop_run(&mut self) {
+        if self.from >= self.len {
+            return;
+        }
+        // Safety: `from` is below the published length and the vec is being
+        // dropped, so nobody else accesses its items.
+        let (first, run) = unsafe { self.vec.run(self.from, self.len) };
+        let _rest = DropItems {
+            vec: self.vec,
+            from: self.from + run,
+            len: self.len,
+        };
+        self.from = self.len;
+        // Safety: these items are initialized and dropped exactly once; a
+        // slice keeps dropping its other items if one unwinds.
+        unsafe { ptr::drop_in_place(ptr::slice_from_raw_parts_mut(first, run)) };
+    }
+}
+
+impl<T, const INLINE: usize, const BIN_OFFSET: u32> Drop for DropItems<'_, T, INLINE, BIN_OFFSET> {
+    fn drop(&mut self) {
+        self.drop_run();
+    }
+}
+
+/// Frees the spill directory (if any) and every bin it lists when dropped.
+struct FreeSpill<T, const INLINE: usize, const BIN_OFFSET: u32> {
+    spill: *mut Spill<T>,
+}
+
+impl<T, const INLINE: usize, const BIN_OFFSET: u32> Drop for FreeSpill<T, INLINE, BIN_OFFSET> {
+    fn drop(&mut self) {
+        let spill = self.spill;
         if spill.is_null() {
             return;
         }
@@ -508,7 +587,7 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
         // Bin 0 lives in the directory's allocation. Later bins can be
         // installed out of order by concurrent pushes, so look at all.
         for (bin, slot) in near.iter_mut().enumerate().skip(1) {
-            Self::dealloc_bin(bin, slot);
+            AppendOnlyVec::<T, INLINE, BIN_OFFSET>::dealloc_bin(bin, slot);
         }
         #[cfg(not(all(loom, test)))]
         let far = *far.get_mut();
@@ -520,13 +599,32 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
             // Safety: the far directory was leaked from a box and we have exclusive access.
             let mut far = unsafe { Box::from_raw(far) };
             for (bin, slot) in far.iter_mut().enumerate() {
-                Self::dealloc_bin(NEAR_BINS + bin, slot);
+                AppendOnlyVec::<T, INLINE, BIN_OFFSET>::dealloc_bin(NEAR_BINS + bin, slot);
             }
         }
         // Safety: allocated with this layout, and nobody else can access the vec anymore.
         unsafe {
             ptr::drop_in_place(spill);
-            dealloc(spill.cast::<u8>(), Self::spill_layout());
+            dealloc(
+                spill.cast::<u8>(),
+                AppendOnlyVec::<T, INLINE, BIN_OFFSET>::spill_layout(),
+            );
+        }
+    }
+}
+
+/// Turns an unwind into an abort while armed: a push that unwound between
+/// reserving and publishing its slot would leave every later push waiting
+/// forever.
+struct AbortOnUnwind {
+    armed: bool,
+}
+
+impl Drop for AbortOnUnwind {
+    fn drop(&mut self) {
+        if self.armed {
+            // only reached while unwinding, where a second panic aborts
+            panic!("append only vec: a push unwound before publishing its item")
         }
     }
 }
@@ -973,7 +1071,7 @@ mod tests {
     #[test]
     fn concurrent_pushes_install_the_far_directory_once() {
         use std::sync::Arc;
-        for _ in 0..if cfg!(miri) { 1 } else { 20 } {
+        for _ in 0..if cfg!(miri) { 3 } else { 20 } {
             let vec: Arc<AppendOnlyVec<usize, 1, 0>> = Arc::new(AppendOnlyVec::new());
             let writers: Vec<_> = (0..4)
                 .map(|t| {
@@ -1035,6 +1133,34 @@ mod tests {
         drop(iter);
         assert_eq!(Rc::strong_count(&counter), 4);
         drop((first, second, third));
+        assert_eq!(Rc::strong_count(&counter), 1);
+    }
+
+    #[test]
+    fn a_panicking_item_drop_still_drops_the_others() {
+        use std::rc::Rc;
+        struct Bomb {
+            _alive: Rc<()>,
+            explodes: bool,
+        }
+        impl Drop for Bomb {
+            fn drop(&mut self) {
+                if self.explodes {
+                    panic!("boom");
+                }
+            }
+        }
+        let counter = Rc::new(());
+        let vec: AppendOnlyVec<Bomb, 2, 1> = AppendOnlyVec::new();
+        for i in 0..9 {
+            vec.push(Bomb {
+                _alive: counter.clone(),
+                explodes: i == 3,
+            });
+        }
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(vec)));
+        assert!(unwound.is_err());
+        // every item dropped (released its clone) despite the panic
         assert_eq!(Rc::strong_count(&counter), 1);
     }
 
@@ -1150,7 +1276,7 @@ mod tests {
     #[test]
     fn concurrent_pushes_and_reads_across_the_inline_boundary() {
         use std::sync::Arc;
-        for _ in 0..if cfg!(miri) { 1 } else { 50 } {
+        for _ in 0..if cfg!(miri) { 3 } else { 50 } {
             let vec: Arc<AppendOnlyVec<usize, 4, 1>> = Arc::new(AppendOnlyVec::new());
             let writers: Vec<_> = (0..4)
                 .map(|t| {
