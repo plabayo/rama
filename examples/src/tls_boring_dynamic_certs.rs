@@ -109,7 +109,7 @@ async fn main() {
 
         let tcp_service = (
             ConsumeErrLayer::default(),
-            TlsAcceptorLayer::new(tls_server_config),
+            TlsAcceptorLayer::new(tls_server_config).with_session_resumption(true),
         )
             .into_layer(http_service);
 

@@ -1,17 +1,22 @@
 use crate::core::{
     pkey::{PKey, Private},
+    ssl::{SslCredential, SslSignatureAlgorithm},
     x509::X509,
 };
 use moka::future::Cache;
 use parking_lot::Mutex;
-use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _};
+use rama_core::{
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
+    telemetry::tracing,
+};
+use rama_crypto::ocsp::ocsp_response_next_update;
 use rama_net::address::Domain;
 use rama_tls::server::{
     CertificateAuthorityData, CertificateIdentity, CertificateIssuanceContext, DynamicCertIssuer,
     LeafCertConfig, SelfSignedCaConfig,
 };
 use rama_utils::time::unix_timestamp_secs;
-use std::{num::NonZeroU64, ops::Range, pin::Pin, sync::Arc};
+use std::{fmt, num::NonZeroU64, ops::Range, pin::Pin, sync::Arc, time::UNIX_EPOCH};
 
 /// Configures on-the-fly server certificate issuance and caching.
 ///
@@ -178,15 +183,65 @@ pub(super) struct CaMaterial {
     pub(super) chain: Vec<X509>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(super) struct IssuedCert {
-    pub(super) cert_chain: Vec<X509>,
-    pub(super) key: PKey<Private>,
+    material: Arc<IdentityMaterial>,
+    /// Built once from `material` and shared by every handshake without signing preferences.
+    credential: SslCredential,
     validity: Range<i64>,
 }
 
+struct IdentityMaterial {
+    cert_chain: Vec<X509>,
+    key: PKey<Private>,
+    ocsp_response: Option<Box<[u8]>>,
+}
+
+impl IdentityMaterial {
+    fn credential(
+        &self,
+        signing_prefs: Option<&[SslSignatureAlgorithm]>,
+    ) -> Result<SslCredential, BoxError> {
+        let mut credential = SslCredential::builder().context("create server credential")?;
+        credential
+            .set_certificate_chain(&self.cert_chain)
+            .context("set server credential certificate chain")?;
+        // Fails when the key does not match the leaf configured above.
+        credential
+            .set_private_key(&self.key)
+            .context("set server credential private key")?;
+        if let Some(response) = &self.ocsp_response {
+            credential
+                .set_ocsp_response(response)
+                .context("set server credential OCSP response")?;
+        }
+        if let Some(prefs) = signing_prefs {
+            credential
+                .set_signing_algorithm_prefs(prefs)
+                .context("set server credential signing preferences")?;
+        }
+        Ok(credential.build())
+    }
+}
+
+impl fmt::Debug for IssuedCert {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IssuedCert")
+            .field("validity", &self.validity)
+            .finish_non_exhaustive()
+    }
+}
+
 impl IssuedCert {
-    pub(super) fn try_new(cert_chain: Vec<X509>, key: PKey<Private>) -> Result<Self, BoxError> {
+    pub(super) fn try_new(cert_chain: &[X509], key: &PKey<Private>) -> Result<Self, BoxError> {
+        Self::try_new_with_ocsp(cert_chain, key, None)
+    }
+
+    pub(super) fn try_new_with_ocsp(
+        cert_chain: &[X509],
+        key: &PKey<Private>,
+        ocsp_response: Option<&[u8]>,
+    ) -> Result<Self, BoxError> {
         let leaf = cert_chain
             .first()
             .context("issued certificate chain cannot be empty")?;
@@ -198,11 +253,46 @@ impl IssuedCert {
             .context("parse issued leaf validity")?;
         let validity = certificate.validity();
 
+        let mut validity = validity.not_before.timestamp()..validity.not_after.timestamp();
+        if let Some(response) = ocsp_response {
+            // A cached issuance must not outlive its staple, so it gets reissued instead.
+            match ocsp_response_next_update(response) {
+                Ok(Some(next_update)) => {
+                    let next_update = next_update
+                        .duration_since(UNIX_EPOCH)
+                        .ok()
+                        .and_then(|since| i64::try_from(since.as_secs()).ok())
+                        .unwrap_or_default();
+                    validity.end = validity.end.min(next_update);
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::debug!(%err, "staple OCSP response without a readable nextUpdate");
+                }
+            }
+        }
+
+        let material = IdentityMaterial {
+            cert_chain: cert_chain.to_vec(),
+            key: key.clone(),
+            ocsp_response: ocsp_response.map(Box::from),
+        };
         Ok(Self {
-            cert_chain,
-            key,
-            validity: validity.not_before.timestamp()..validity.not_after.timestamp(),
+            credential: material.credential(None)?,
+            material: Arc::new(material),
+            validity,
         })
+    }
+
+    /// The credential to install, signing with `signing_prefs` when set.
+    pub(super) fn credential(
+        &self,
+        signing_prefs: Option<&[SslSignatureAlgorithm]>,
+    ) -> Result<SslCredential, BoxError> {
+        match signing_prefs {
+            None => Ok(self.credential.clone()),
+            Some(prefs) => self.material.credential(Some(prefs)),
+        }
     }
 
     pub(super) fn is_valid(&self) -> bool {
@@ -323,9 +413,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_crypto::ocsp::{
+        OcspCertId, OcspCertStatus, OcspSignatureAlgorithm, build_ocsp_response,
+        sha1_hash_algorithm_der,
+    };
     use rama_tls::server::{CertificateKeyKind, LeafCertRequest};
     use std::assert_matches;
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime};
 
     struct NormalizingIssuer;
 
@@ -413,7 +507,7 @@ mod tests {
             &ca_key,
         )
         .expect("issue leaf");
-        let issued = IssuedCert::try_new(vec![cert], key).expect("issued certificate");
+        let issued = IssuedCert::try_new(&[cert], &key).expect("issued certificate");
         let identity = CertificateIdentity::Ip(std::net::Ipv4Addr::LOCALHOST.into());
 
         let immediate = ServerCertIssuerRuntime::new(&CacheKind::MemCache {
@@ -452,12 +546,64 @@ mod tests {
             &ca_key,
         )
         .expect("issue leaf");
-        let issued = IssuedCert::try_new(vec![cert], key).expect("issued certificate");
+        let chain = [cert];
+        let issued = IssuedCert::try_new(&chain, &key).expect("issued certificate");
 
         assert!(issued.is_valid());
         assert!(issued.is_valid_at_unix(issued.validity.start));
         assert!(!issued.is_valid_at_unix(issued.validity.end));
-        IssuedCert::try_new(Vec::new(), issued.key).unwrap_err();
+        IssuedCert::try_new(&[], &key).unwrap_err();
+        // The key must belong to the leaf certificate.
+        IssuedCert::try_new(&chain, &ca_key).unwrap_err();
+    }
+
+    #[test]
+    fn a_stapled_ocsp_response_bounds_the_cached_validity() {
+        let (ca_cert, ca_key) = rama_crypto::cert::boring::generate_certificate_authority_x509(
+            &SelfSignedCaConfig::default(),
+        )
+        .expect("generate CA");
+        let (cert, key) = rama_crypto::cert::boring::issue_leaf_certificate(
+            &LeafCertRequest::default(),
+            &ca_cert,
+            &ca_key,
+        )
+        .expect("issue leaf");
+        let chain = [cert];
+        let produced_at = SystemTime::now();
+        let staple = build_ocsp_response(
+            &OcspCertId {
+                issuer_name_der: &[0x30, 0x00],
+                hash_algorithm_der: &sha1_hash_algorithm_der(),
+                issuer_name_hash: &[0; 20],
+                issuer_key_hash: &[0; 20],
+                serial: &[1],
+            },
+            OcspCertStatus::Good,
+            produced_at,
+            Duration::from_hours(1),
+            None,
+            |_| Ok((OcspSignatureAlgorithm::EcdsaSha256, vec![0])),
+        )
+        .expect("build OCSP response");
+
+        let unstapled = IssuedCert::try_new(&chain, &key).expect("issued certificate");
+        let stapled = IssuedCert::try_new_with_ocsp(&chain, &key, Some(&staple))
+            .expect("stapled certificate");
+        let next_update = i64::try_from(
+            (produced_at + Duration::from_hours(1))
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap();
+        assert_eq!(stapled.validity.end, next_update);
+        assert!(stapled.validity.end < unstapled.validity.end);
+        assert!(stapled.is_valid());
+        // An unreadable staple is still stapled, bounded by the certificate alone.
+        let opaque =
+            IssuedCert::try_new_with_ocsp(&chain, &key, Some(b"opaque")).expect("opaque staple");
+        assert_eq!(opaque.validity, unstapled.validity);
     }
 
     #[test]

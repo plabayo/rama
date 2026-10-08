@@ -39,7 +39,10 @@ use rama_http::{
 use crate::tls::client::TlsClientConfig;
 
 #[cfg(feature = "boring")]
-use {crate::quic::tls::BoringTlsProvider, std::sync::Arc};
+use {
+    crate::{quic::tls::BoringTlsProvider, tls::boring::client::TlsClientSessionCache},
+    std::sync::Arc,
+};
 
 pub mod builder;
 #[doc(inline)]
@@ -128,6 +131,10 @@ impl EasyHttpWebClient<(), (), ()> {
 /// With BoringSSL or Rustls plus `ring`/`aws-lc`, HTTP/3 is available through
 /// alternative-service discovery or an explicit HTTP/3 request. Its shared UDP
 /// endpoint is bound lazily, so constructing the client requires no runtime.
+///
+/// Like a browser it resumes TLS sessions (with BoringSSL, also over TCP), which
+/// lets servers link the connections of one client. It acts for a single user:
+/// proxies relay traffic instead of sharing one client between their users.
 pub type DefaultHttpWebClient<Body = crate::http::Body> = EasyHttpWebClient<
     Body,
     EstablishedClientConnection<
@@ -181,6 +188,7 @@ where
                     .with_tls_proxy_support_using_boringssl()
                     .with_proxy_support()
                     .with_tls_support_using_boringssl(tls_config)
+                    .with_tls_session_store(Arc::new(TlsClientSessionCache::default()))
                     .with_default_http_connector(exec)
                     .with_http3_support(h3)
                     .with_default_connection_pool()
@@ -463,6 +471,21 @@ mod tests {
     use rama_utils::octets::kib;
     use serde::{Deserialize, Serialize};
     use tokio::time::sleep;
+
+    #[cfg(feature = "boring")]
+    use {
+        crate::{
+            net::address::SocketAddress,
+            tcp::{TcpStream, server::TcpListener},
+            tls::{
+                boring::{TlsStream, server::TlsAcceptorLayer},
+                client::{NegotiatedTlsParameters, ServerVerifyMode, TlsServerVerify},
+                server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+            },
+        },
+        rama_core::{extensions::ExtensionsRef as _, layer::MapInputLayer},
+        rama_http::header::CONNECTION,
+    };
 
     use super::*;
 
@@ -1502,6 +1525,63 @@ mod tests {
             .await
             .expect("origin server shutdown")
             .expect("origin completion signal");
+    }
+
+    #[cfg(feature = "boring")]
+    #[tokio::test]
+    async fn default_client_resumes_tls_sessions() {
+        let exec = Executor::default();
+        let resumed = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let record = resumed.clone();
+        let server = TlsAcceptorLayer::new(
+            TlsServerConfig::new()
+                .with_server_auth(
+                    ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap(),
+                )
+                .with_alpn_http_1(),
+        )
+        .with_session_resumption(true)
+        .into_layer(
+            MapInputLayer::new(move |stream: TlsStream<TcpStream>| {
+                let params = stream.extensions().get_ref::<NegotiatedTlsParameters>();
+                record.lock().push(params.and_then(|params| params.resumed));
+                stream
+            })
+            .into_layer(HttpServer::new_http1(exec.clone()).service(service_fn(
+                async |_: Request| {
+                    // A fresh connection per request, so each one handshakes.
+                    Ok::<_, Infallible>(
+                        Response::builder()
+                            .header(CONNECTION, "close")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                },
+            ))),
+        );
+        let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), exec)
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(listener.serve(server));
+
+        let client = DefaultHttpWebClient::<Body>::default();
+        for _ in 0..2 {
+            let request = Request::builder()
+                .uri(format!("https://localhost:{port}/"))
+                .body(Body::empty())
+                .unwrap();
+            request
+                .extensions()
+                .insert(TlsServerVerify(ServerVerifyMode::Disable));
+            let response = tokio::time::timeout(Duration::from_secs(5), client.serve(request))
+                .await
+                .unwrap()
+                .unwrap();
+            response.try_into_string().await.unwrap();
+        }
+        server.abort();
+        assert_eq!(*resumed.lock(), [Some(false), Some(true)]);
     }
 
     #[cfg(feature = "boring")]

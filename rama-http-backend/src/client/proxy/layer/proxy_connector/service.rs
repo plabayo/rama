@@ -1533,6 +1533,7 @@ mod tests {
                         peer_certificate_chain: None,
                         server_name: None,
                         resumed: None,
+                        algorithms: Default::default(),
                     });
                 Ok::<_, Infallible>(established)
             }
@@ -1852,6 +1853,7 @@ mod tests {
                         peer_certificate_chain: None,
                         server_name: None,
                         resumed: None,
+                        algorithms: Default::default(),
                     });
                 Ok::<_, Infallible>(established)
             }
@@ -1894,6 +1896,7 @@ mod tests {
                             peer_certificate_chain: None,
                             server_name: None,
                             resumed: None,
+                            algorithms: Default::default(),
                         });
                     established
                 },
@@ -1951,6 +1954,7 @@ mod tests {
                         peer_certificate_chain: None,
                         server_name: None,
                         resumed: None,
+                        algorithms: Default::default(),
                     });
                 established
             },

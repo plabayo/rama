@@ -7,13 +7,16 @@ use crate::dep::tokio_rustls::LazyConfigAcceptor;
 use crate::types::SecureTransport;
 use rama_core::{
     Service,
-    conversion::RamaInto,
+    conversion::{RamaFrom, RamaInto},
     error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
     io::Io,
 };
 use rama_net::{extensions::StreamTransformed, tls::ApplicationProtocol};
-use rama_tls::{client::NegotiatedTlsParameters, server::TlsServerConfig};
+use rama_tls::{
+    client::{NegotiatedTlsAlgorithms, NegotiatedTlsParameters},
+    server::TlsServerConfig,
+};
 use rama_utils::macros::define_inner_service_accessors;
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
@@ -88,6 +91,7 @@ where
             resumed: conn_data_ref
                 .handshake_kind()
                 .map(|kind| kind == crate::dep::rustls::HandshakeKind::Resumed),
+            algorithms: NegotiatedTlsAlgorithms::rama_from(&***conn_data_ref),
         };
 
         stream.extensions().insert(negotiated_tls_params);

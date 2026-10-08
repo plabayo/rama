@@ -1,12 +1,12 @@
 use rama_core::extensions::Extension;
 use rama_net::tls::ApplicationProtocol;
-use rama_tls::fingerprint::{PeetComputeError, PeetPrint};
 use rama_tls::{
-    ProtocolVersion,
     client::ClientHello,
-    fingerprint::{Ja3, Ja3ComputeError, Ja4, Ja4ComputeError},
+    fingerprint::{Ja3, Ja3ComputeError, Ja4, Ja4ComputeError, PeetComputeError, PeetPrint},
 };
 use serde::{Deserialize, Serialize};
+
+use crate::{PlatformKind, UserAgentKind};
 
 #[derive(Debug, Clone, Extension, Serialize, Deserialize)]
 #[extension(tags(ua, tls))]
@@ -17,6 +17,13 @@ use serde::{Deserialize, Serialize};
 pub struct TlsProfile {
     /// The captured ClientHello (the TLS fingerprint to emulate).
     pub client_hello: ClientHello,
+
+    /// Whether the user-agent permutes its ClientHello extensions per connection,
+    /// in which case the captured order is a single sample rather than a constant.
+    ///
+    /// See [`TlsProfile::user_agent_permutes_extensions`].
+    #[serde(default)]
+    pub permute_extensions: bool,
 
     /// Optional WebSocket-specific client config overwrites.
     pub ws_client_config_overwrites: Option<WsClientConfigOverwrites>,
@@ -29,6 +36,21 @@ pub struct WsClientConfigOverwrites {
 }
 
 impl TlsProfile {
+    /// Whether a user-agent permutes its ClientHello extensions per connection.
+    ///
+    /// Chromium does so since version 110, except on iOS where it uses the
+    /// system TLS stack. An unknown Chromium version is assumed to be recent.
+    #[must_use]
+    pub fn user_agent_permutes_extensions(
+        ua_kind: UserAgentKind,
+        ua_version: Option<usize>,
+        platform: Option<PlatformKind>,
+    ) -> bool {
+        ua_kind == UserAgentKind::Chromium
+            && platform != Some(PlatformKind::IOS)
+            && ua_version.is_none_or(|version| version >= 110)
+    }
+
     /// Compute the [`Ja3`] (hash) based on this [`TlsProfile`].
     ///
     /// This can be useful in case you want to compare profiles
@@ -36,11 +58,8 @@ impl TlsProfile {
     /// of an incoming request.
     ///
     /// As specified by <https://github.com/salesforce/ja3`>.
-    pub fn compute_ja3(
-        &self,
-        negotiated_tls_version: Option<ProtocolVersion>,
-    ) -> Result<Ja3, Ja3ComputeError> {
-        Ja3::compute_from_client_hello(&self.client_hello, negotiated_tls_version)
+    pub fn compute_ja3(&self) -> Result<Ja3, Ja3ComputeError> {
+        Ja3::compute_from_client_hello(&self.client_hello)
     }
 
     /// Compute the [`Ja4`] (hash) on this [`TlsProfile`].
@@ -51,11 +70,8 @@ impl TlsProfile {
     ///
     /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
-    pub fn compute_ja4(
-        &self,
-        negotiated_tls_version: Option<ProtocolVersion>,
-    ) -> Result<Ja4, Ja4ComputeError> {
-        Ja4::compute_from_client_hello(&self.client_hello, negotiated_tls_version)
+    pub fn compute_ja4(&self) -> Result<Ja4, Ja4ComputeError> {
+        Ja4::compute_from_client_hello(&self.client_hello)
     }
 
     /// Compute the [`PeetPrint`] (hash) on this [`TlsProfile`].

@@ -7,6 +7,7 @@ use rama_tls::server::TlsServerConfig;
 pub struct TlsAcceptorLayer {
     config: TlsServerConfig,
     store_client_hello: bool,
+    session_resumption: bool,
 }
 
 impl TlsAcceptorLayer {
@@ -19,6 +20,7 @@ impl TlsAcceptorLayer {
         Self {
             config,
             store_client_hello: false,
+            session_resumption: false,
         }
     }
 
@@ -29,6 +31,16 @@ impl TlsAcceptorLayer {
             self
         }
     }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Let clients resume sessions of earlier connections, see
+        /// [`TlsAcceptorService::with_session_resumption`]. Each acceptor this layer
+        /// makes resumes only its own sessions.
+        pub fn session_resumption(mut self, enabled: bool) -> Self {
+            self.session_resumption = enabled;
+            self
+        }
+    }
 }
 
 impl<S> Layer<S> for TlsAcceptorLayer {
@@ -36,9 +48,11 @@ impl<S> Layer<S> for TlsAcceptorLayer {
 
     fn layer(&self, inner: S) -> Self::Service {
         TlsAcceptorService::new(self.config.clone(), inner, self.store_client_hello)
+            .with_session_resumption(self.session_resumption)
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
         TlsAcceptorService::new(self.config, inner, self.store_client_hello)
+            .with_session_resumption(self.session_resumption)
     }
 }

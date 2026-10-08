@@ -286,7 +286,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_boring::x509::store::X509StoreBuilder;
+    use rama_boring::{
+        ssl::{SslConnector, SslMethod, SslVerifyMode},
+        x509::store::X509StoreBuilder,
+    };
     use rama_core::{Layer, ServiceInput, service::service_fn};
     use rama_crypto::{cert::generate_server_auth, pki_types::CertificateDer};
     use rama_net::{
@@ -315,6 +318,13 @@ mod tests {
             TlsMitmRelayErrorKind,
         },
         server::TlsAcceptorLayer,
+    };
+    #[cfg(feature = "compression")]
+    use {
+        crate::certificate_compression::test_util::CountingBrotli,
+        crate::server::BoringServerConfigExt as _,
+        rama_tls::CertificateCompressionAlgorithm,
+        std::sync::atomic::{AtomicUsize, Ordering},
     };
     #[cfg(feature = "http")]
     use {
@@ -1101,6 +1111,13 @@ mod tests {
                     egress.application_layer_protocol,
                     Some(ApplicationProtocol::HTTP_2),
                 );
+                for algorithms in [ingress.algorithms, egress.algorithms] {
+                    assert!(algorithms.cipher_suite.is_some(), "{algorithms:?}");
+                    assert!(algorithms.key_exchange_group.is_some(), "{algorithms:?}");
+                }
+                // Only the upstream server signs; the intercepted client does not authenticate.
+                assert!(egress.algorithms.peer_signature_scheme.is_some());
+                assert!(ingress.algorithms.peer_signature_scheme.is_none());
                 Ok::<(), BoxError>(())
             },
         );
@@ -1141,6 +1158,151 @@ mod tests {
         drop(ingress_tls);
         service_result.expect("relay reports each TLS session independently");
         drop(upstream_handle.await);
+    }
+
+    /// Relay one flow for `client_hello`, with `client` connecting on ingress.
+    async fn relay_flow<U>(
+        client_hello: ClientHello,
+        client: rama_boring::ssl::ConnectConfiguration,
+        upstream: U,
+    ) -> rama_boring_tokio::SslStream<tokio::io::DuplexStream>
+    where
+        U: FnOnce(tokio::io::DuplexStream) -> tokio::task::JoinHandle<()>,
+    {
+        let relay = TlsMitmRelay::try_new_with_self_signed_issuer(&SelfSignedCaConfig::default())
+            .expect("build MITM relay");
+        let service = TlsMitmRelayService::new(
+            relay,
+            service_fn(|_: BridgeIo<_, _>| async { Ok::<(), BoxError>(()) }),
+        );
+        let (client_io, relay_ingress) = tokio::io::duplex(usize::MAX);
+        let (relay_egress, upstream_io) = tokio::io::duplex(usize::MAX);
+        let upstream_handle = upstream(upstream_io);
+        let (service_result, client_result) = tokio::join!(
+            service.serve(InputWithClientHello {
+                input: BridgeIo(
+                    ServiceInput::new(relay_ingress),
+                    ServiceInput::new(relay_egress)
+                ),
+                client_hello,
+            }),
+            rama_boring_tokio::connect(client, Some("localhost"), client_io),
+        );
+        let client = client_result.expect("ingress TLS");
+        service_result.expect("relay");
+        upstream_handle.await.expect("upstream assertions");
+        client
+    }
+
+    #[cfg(feature = "compression")]
+    #[tokio::test]
+    async fn ingress_compresses_the_certificate_exactly_as_the_upstream_did() {
+        for upstream_compresses in [false, true] {
+            let (cert_chain, private_key) =
+                generate_server_auth(GeneratedServerAuthConfig::default())
+                    .expect("generate private upstream identity");
+            let mut config = TlsServerConfig::new().with_single_cert(ServerAuthData {
+                cert_chain,
+                private_key,
+                ocsp: None,
+            });
+            if upstream_compresses {
+                config.set_cert_compression(vec![CertificateCompressionAlgorithm::Brotli]);
+            }
+            let upstream = TlsAcceptorLayer::new(config).into_layer(EchoService::new());
+
+            let decompressed = Arc::new(AtomicUsize::new(0));
+            let mut client = SslConnector::builder(SslMethod::tls_client()).unwrap();
+            client.set_verify(SslVerifyMode::NONE);
+            client
+                .add_certificate_compression_algorithm(CountingBrotli(decompressed.clone()))
+                .unwrap();
+            let client_hello = ClientHello::new(
+                ProtocolVersion::TLSv1_3,
+                Vec::new(),
+                Vec::new(),
+                vec![ClientHelloExtension::CertificateCompression(vec![
+                    CertificateCompressionAlgorithm::Brotli,
+                ])],
+            );
+            relay_flow(client_hello, client.build().configure().unwrap(), |io| {
+                tokio::spawn(async move {
+                    drop(upstream.serve(ServiceInput::new(io)).await);
+                })
+            })
+            .await;
+            assert_eq!(
+                decompressed.load(Ordering::SeqCst),
+                usize::from(upstream_compresses),
+                "upstream compresses: {upstream_compresses}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ingress_relays_the_upstream_alps_settings() {
+        const UPSTREAM_SETTINGS: &[u8] = b"upstream settings";
+        for new_codepoint in [false, true] {
+            let (cert_chain, private_key) =
+                generate_server_auth(GeneratedServerAuthConfig::default())
+                    .expect("generate private upstream identity");
+            let upstream = crate::server::TlsAcceptorData::try_from(
+                &TlsServerConfig::new()
+                    .with_single_cert(ServerAuthData {
+                        cert_chain,
+                        private_key,
+                        ocsp: None,
+                    })
+                    .with_alpn_http_2(),
+            )
+            .unwrap()
+            .into_static_acceptor_builder()
+            .unwrap()
+            .build();
+
+            let mut client = SslConnector::builder(SslMethod::tls_client()).unwrap();
+            client.set_verify(SslVerifyMode::NONE);
+            client.set_alpn_protos(b"\x02h2").unwrap();
+            let mut client = client.build().configure().unwrap();
+            client.set_alps_use_new_codepoint(new_codepoint);
+            client
+                .add_application_settings_value(b"h2", b"client settings")
+                .unwrap();
+            let client_hello = ClientHello::new(
+                ProtocolVersion::TLSv1_3,
+                Vec::new(),
+                Vec::new(),
+                vec![
+                    ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
+                        ApplicationProtocol::HTTP_2,
+                    ]),
+                    ClientHelloExtension::ApplicationSettings {
+                        protocols: vec![ApplicationProtocol::HTTP_2],
+                        new_codepoint,
+                    },
+                ],
+            );
+            let stream = relay_flow(client_hello, client, |io| {
+                tokio::spawn(async move {
+                    let mut ssl = rama_boring::ssl::Ssl::new(upstream.context()).unwrap();
+                    ssl.set_alps_use_new_codepoint(new_codepoint);
+                    ssl.add_application_settings_value(b"h2", UPSTREAM_SETTINGS)
+                        .unwrap();
+                    let stream = rama_boring_tokio::SslStreamBuilder::new(ssl, io)
+                        .accept()
+                        .await
+                        .expect("upstream TLS");
+                    // The relay finishes egress before the client's settings exist.
+                    assert_eq!(stream.ssl().peer_application_settings(), Some(&[][..]));
+                })
+            })
+            .await;
+            assert_eq!(
+                stream.ssl().peer_application_settings(),
+                Some(UPSTREAM_SETTINGS),
+                "new codepoint: {new_codepoint}"
+            );
+        }
     }
 
     #[cfg(feature = "http")]

@@ -89,7 +89,9 @@ async fn main() {
     shutdown.spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard);
         let tcp_service = (
-            TlsAcceptorLayer::new(tls_server_config).with_store_client_hello(true),
+            TlsAcceptorLayer::new(tls_server_config)
+                .with_store_client_hello(true)
+                .with_session_resumption(true),
             GetInputExtensionRefLayer::new(|st: &SecureTransport| {
                 let client_hello = st.client_hello().unwrap();
                 tracing::debug!("secure connection established: client hello = {client_hello:?}");

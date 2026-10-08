@@ -1829,6 +1829,37 @@ mod tests {
     }
 
     #[test]
+    fn derive_from_extensions_is_empty_covers_every_field() {
+        let empty = Extensions::new();
+        assert!(GatherView::from_extensions(&empty).is_empty());
+        assert!(RankedView::from_extensions(&empty).is_empty());
+        assert!(ConfigView::from_extensions(&empty).is_empty());
+        let unrelated = Extensions::new();
+        unrelated.insert(FeatureToggle(true));
+        assert!(MixedView::from_extensions(&unrelated).is_empty());
+
+        let inserts: [fn(&Extensions); 3] = [
+            |ext| {
+                ext.insert(RequestId(7));
+            },
+            |ext| {
+                ext.insert(ConnSocketInfo("a"));
+            },
+            |ext| {
+                ext.insert(FeatureToggle(true));
+            },
+        ];
+        for insert in inserts {
+            let ext = Extensions::new();
+            insert(&ext);
+            assert!(!GatherView::from_extensions(&ext).is_empty());
+            assert!(!RankedView::from_extensions(&ext).is_empty());
+            // Covers both a direct field and the nested group.
+            assert!(!ConfigView::from_extensions(&ext).is_empty());
+        }
+    }
+
+    #[test]
     fn derive_from_extensions_enum_newest_wins_across_parent() {
         let parent = Extensions::new();
         parent.insert(RequestId(7));

@@ -13,7 +13,7 @@ use rama::tls::boring::client::TlsConnector;
 use rama::tls::boring::server::TlsAcceptorLayer;
 use rama::tls::client::parse_client_hello;
 use rama::tls::client::{ServerVerifyMode, TlsClientConfig};
-use rama::tls::fingerprint::{Ja3, Ja4};
+use rama::tls::fingerprint::Ja4;
 use rama::tls::server::TlsServerConfig;
 use rama::ua::layer::emulate::{
     SelectedUserAgentProfile, UserAgentEmulateHttpConnectModifier,
@@ -48,11 +48,9 @@ struct TestCase {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 struct TestCaseExpected {
     ja4: &'static str,
     ja4h: &'static str,
-    ja3: &'static str,
 }
 
 #[tokio::test]
@@ -241,7 +239,6 @@ async fn test_ua_emulation() {
             expected: TestCaseExpected {
                 ja4: "t13d1717h2_5b57614c22b0_3cbfd9057e0d",
                 ja4h: "ge20nn13enus_dee81a311bfc_000000000000_000000000000",
-                ja3: "6f7889b9fb1a62a9577e685c1fcfa919",
             },
         },
     ];
@@ -267,16 +264,9 @@ async fn test_ua_emulation() {
             println!("server receives {description}: ja4h: {ja4h:?}");
             assert_eq!(ja4h.to_string(), expected.ja4h, "{description}");
 
-            // TODO: enable ja3 + ja4 tests
-            // once we support more tls extensions
-
             let ja4 = Ja4::compute(req.extensions()).expect(description);
             println!("server receives {description}: ja4: {ja4:?}");
-            // assert_eq!(ja4.to_string(), expected.ja4, "{}", description);
-
-            let ja3 = format!("{:x}", Ja3::compute(req.extensions()).expect(description));
-            println!("server receives {description}: ja3: {ja3:?}");
-            // assert_eq!(ja3, expected.ja3, "{}", description);
+            assert_eq!(ja4.to_string(), expected.ja4, "{description}");
 
             Ok(Response::new(Body::empty()))
         }
@@ -290,6 +280,11 @@ async fn test_ua_emulation() {
             http: Arc::new(test_case.http_profile),
             tls: Arc::new(TlsProfile {
                 client_hello,
+                permute_extensions: TlsProfile::user_agent_permutes_extensions(
+                    test_case.ua_kind,
+                    test_case.ua_version,
+                    test_case.ua_platform,
+                ),
                 ws_client_config_overwrites: None,
             }),
             runtime: None,

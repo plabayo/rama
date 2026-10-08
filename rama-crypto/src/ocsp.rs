@@ -341,6 +341,78 @@ pub fn parse_ocsp_request(der: &[u8]) -> Result<OcspRequestInfo, BoxError> {
     .context("ocsp: parse request")
 }
 
+/// The earliest `nextUpdate` of a DER `OCSPResponse` (RFC 6960 §4.2.1).
+///
+/// A response must not be relied upon after this instant, so a staple should
+/// be replaced by then. `None` when the response is not a successful basic
+/// response or carries no `nextUpdate`.
+pub fn ocsp_response_next_update(der: &[u8]) -> Result<Option<SystemTime>, BoxError> {
+    const SUCCESSFUL: i64 = 0;
+    let basic = yasna::parse_der(der, |r| {
+        r.read_sequence(|r| {
+            let status = r.next().read_enum()?;
+            // responseBytes [0] EXPLICIT ResponseBytes
+            let bytes = r.read_optional(|r| {
+                r.read_tagged(Tag::context(0), |r| {
+                    r.read_sequence(|r| Ok((r.next().read_oid()?, r.next().read_bytes()?)))
+                })
+            })?;
+            Ok(bytes.filter(|(oid, _)| status == SUCCESSFUL && *oid == oid_ocsp_basic()))
+        })
+    })
+    .context("ocsp: parse response")?;
+    let Some((_, basic)) = basic else {
+        return Ok(None);
+    };
+
+    let next_update = yasna::parse_der(&basic, |r| {
+        r.read_sequence(|r| {
+            let earliest = r.next().read_sequence(|r| {
+                // version [0] EXPLICIT DEFAULT v1
+                r.read_optional(|r| r.read_tagged(Tag::context(0), |r| r.read_i64()))?;
+                // responderID, producedAt
+                r.next().read_der()?;
+                r.next().read_generalized_time()?;
+                let mut earliest: Option<GeneralizedTime> = None;
+                r.next().read_sequence_of(|r| {
+                    r.read_sequence(|r| {
+                        // certID, certStatus, thisUpdate
+                        r.next().read_der()?;
+                        r.next().read_der()?;
+                        r.next().read_generalized_time()?;
+                        // nextUpdate [0] EXPLICIT GeneralizedTime
+                        if let Some(next) = r.read_optional(|r| {
+                            r.read_tagged(Tag::context(0), |r| r.read_generalized_time())
+                        })? && earliest
+                            .as_ref()
+                            .is_none_or(|current| next.datetime() < current.datetime())
+                        {
+                            earliest = Some(next);
+                        }
+                        // singleExtensions [1] EXPLICIT
+                        r.read_optional(|r| r.read_tagged(Tag::context(1), |r| r.read_der()))?;
+                        Ok(())
+                    })
+                })?;
+                // responseExtensions [1] EXPLICIT
+                r.read_optional(|r| r.read_tagged(Tag::context(1), |r| r.read_der()))?;
+                Ok(earliest)
+            })?;
+            // signatureAlgorithm, signature, certs [0] EXPLICIT
+            r.next().read_der()?;
+            r.next().read_der()?;
+            r.read_optional(|r| r.read_tagged(Tag::context(0), |r| r.read_der()))?;
+            Ok(earliest)
+        })
+    })
+    .context("ocsp: parse basic response")?;
+
+    next_update
+        .map(|next| crate::asn1::system_time(*next.datetime()))
+        .transpose()
+        .context("ocsp: nextUpdate")
+}
+
 fn generalized_time(t: SystemTime) -> Result<GeneralizedTime, BoxError> {
     let odt = crate::asn1::datetime(t).context("ocsp")?;
     GeneralizedTime::from_datetime_opt(odt)
@@ -728,5 +800,36 @@ mod tests {
         .expect("AIA structure");
         assert_eq!(oid, oid_ad_ocsp());
         assert!(contains(&der, uri.as_bytes()), "responder URI present");
+    }
+
+    #[test]
+    fn next_update_is_read_back_from_a_built_response() {
+        let cert = OcspCertId {
+            issuer_name_der: &yasna::construct_der(|w| w.write_sequence(|_| {})),
+            hash_algorithm_der: &sha1_hash_algorithm_der(),
+            issuer_name_hash: &[0xAA; 20],
+            issuer_key_hash: &[0xBB; 20],
+            serial: &[0x12, 0x34, 0x56],
+        };
+        let produced_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let validity = Duration::from_hours(24 * 7);
+        let der = build_ocsp_response(
+            &cert,
+            OcspCertStatus::Good,
+            produced_at,
+            validity,
+            None,
+            |_| Ok((OcspSignatureAlgorithm::EcdsaSha256, vec![0x00])),
+        )
+        .unwrap();
+        assert_eq!(
+            ocsp_response_next_update(&der).unwrap(),
+            Some(produced_at + validity)
+        );
+
+        // A non-successful response (tryLater) carries no responseBytes.
+        let try_later = yasna::construct_der(|w| w.write_sequence(|w| w.next().write_enum(3)));
+        assert_eq!(ocsp_response_next_update(&try_later).unwrap(), None);
+        ocsp_response_next_update(b"not an ocsp response").unwrap_err();
     }
 }

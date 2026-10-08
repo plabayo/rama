@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    client::{TlsConnectorData, tls_connect},
+    client::{TlsClientSessionCache, TlsConnectorContextBuilder, TlsConnectorData, tls_connect},
     proxy::{
         TlsMitmEgressServerAuth, TlsMitmRelay, TlsMitmRelayErrorKind,
         cert_issuer::StaticBoringMitmCertIssuer,
@@ -930,8 +930,35 @@ async fn delayed_egress_private_key_operations_complete_or_fail_without_hanging(
 }
 
 #[tokio::test]
+async fn store_backed_egress_connections_are_rejected() {
+    let config = TlsClientConfig::new().with_server_name(Host::from_static("localhost"));
+    let context = TlsConnectorContextBuilder::try_from(&config)
+        .unwrap()
+        .with_session_store(Arc::new(TlsClientSessionCache::default()))
+        .build();
+    for policy in [
+        None,
+        Some(TlsMitmClientAuthPolicy::fixed(
+            material().mapped.credential(),
+        )),
+    ] {
+        let data = context.configure().unwrap();
+        assert!(data.resumes_sessions());
+        let result = run(
+            &relay().maybe_with_client_auth(policy),
+            SslVersion::TLS1_3,
+            required(),
+            None,
+            None,
+            Some(data),
+        )
+        .await;
+        assert_eq!(result.relay.unwrap_err(), TlsMitmRelayErrorKind::Config);
+    }
+}
+
+#[tokio::test]
 async fn explicit_egress_sessions_are_rejected_and_ingress_issues_no_auth_session() {
-    use crate::client::TlsConnectorContextBuilder;
     use rama_boring::ssl::SslSessionCacheMode;
     for version in VERSIONS {
         let saved = Arc::new(parking_lot::Mutex::new(None));

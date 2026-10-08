@@ -94,7 +94,7 @@ fn request_details_keep_tls_on_connection_and_render_lazy_http_data() {
             headers: test_headers([("content-type".to_owned(), "text/plain".to_owned())]),
         },
     ]);
-    let ja3 = rama::tls::fingerprint::Ja3::compute_from_client_hello(&client_hello, None).unwrap();
+    let ja3 = rama::tls::fingerprint::Ja3::compute_from_client_hello(&client_hello).unwrap();
     details.metadata.upstream.insert(SocketInfo::new(
         None,
         "[2606:4700:10::6814:17aa]:443".parse().unwrap(),
@@ -105,6 +105,7 @@ fn request_details_keep_tls_on_connection_and_render_lazy_http_data() {
             protocol_version: ProtocolVersion::TLSv1_3,
             application_layer_protocol: Some(rama::net::tls::ApplicationProtocol::HTTP_2),
             peer_certificate_count: Some(1),
+            algorithms: Default::default(),
         }),
         ja3: Some(ja3),
         ja4: None,
@@ -116,6 +117,12 @@ fn request_details_keep_tls_on_connection_and_render_lazy_http_data() {
             protocol_version: ProtocolVersion::TLSv1_3,
             application_layer_protocol: Some(rama::net::tls::ApplicationProtocol::HTTP_2),
             peer_certificate_count: Some(2),
+            algorithms: rama::tls::client::NegotiatedTlsAlgorithms {
+                cipher_suite: Some(rama::tls::CipherSuite::TLS13_AES_256_GCM_SHA384),
+                key_exchange_group: Some(rama::tls::SupportedGroup::X25519MLKEM768),
+                peer_signature_scheme: Some(rama::tls::SignatureScheme::RSA_PSS_SHA384),
+                certificate_compression: Some(rama::tls::CertificateCompressionAlgorithm::Brotli),
+            },
         }),
         ja3: None,
         ja4: None,
@@ -174,6 +181,10 @@ fn request_details_keep_tls_on_connection_and_render_lazy_http_data() {
         "SECP256R1 (0x0017)",
         "ECDSA_NISTP256_SHA256 (0x0403)",
         "RSA_PSS_SHA256 (0x0804)",
+        "TLS13_AES_256_GCM_SHA384 (0x1302)",
+        "X25519MLKEM768 (0x11ec)",
+        "RSA_PSS_SHA384 (0x0805)",
+        "Certificate compression",
     ] {
         assert!(connection_tls.contains(expected), "missing {expected}");
     }

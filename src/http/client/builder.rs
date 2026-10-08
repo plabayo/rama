@@ -27,6 +27,8 @@ use rama_http::layer::{
     http_service::HttpServiceConnector,
 };
 use rama_utils::macros::generate_set_and_with;
+#[cfg(feature = "boring")]
+use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(feature = "boring")]
@@ -566,6 +568,26 @@ impl<T, D, const PROXY: bool> EasyHttpConnectorBuilder<T, ProxyStage<PROXY>, D> 
             connector: self.connector,
             stage: Default::default(),
         }
+    }
+}
+
+#[cfg(feature = "boring")]
+impl<T, D, const PROXY: bool>
+    EasyHttpConnectorBuilder<boring_client::TlsConnector<T>, TlsStage<PROXY>, D>
+{
+    #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
+    /// Resume TLS sessions with servers connected to before, keeping them in `store`;
+    /// see [`boring_client::TlsConnector::with_session_store`].
+    ///
+    /// Servers can link the connections that resume each other's sessions, so a
+    /// client acting for several users should keep a store per user.
+    #[must_use]
+    pub fn with_tls_session_store(
+        mut self,
+        store: Arc<dyn boring_client::TlsClientSessionStore>,
+    ) -> Self {
+        self.connector.set_session_store(store);
+        self
     }
 }
 
@@ -1216,6 +1238,7 @@ mod tests {
                         peer_certificate_chain: None,
                         server_name: None,
                         resumed: None,
+                        algorithms: Default::default(),
                     });
                     Ok::<_, Infallible>(EstablishedClientConnection { input, conn })
                 })

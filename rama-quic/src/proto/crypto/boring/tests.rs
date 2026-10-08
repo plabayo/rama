@@ -253,6 +253,34 @@ fn ticket_cache_belongs_to_the_client_configuration() {
     assert!(c.transport_parameters().unwrap().is_none());
 }
 
+/// A connection follows the version of the newest ticket for its server (RFC 9369 §5).
+#[test]
+fn the_newest_ticket_picks_the_version_to_resume() {
+    let (client_tls, server_tls) = configs();
+    let options = TlsOptions::default();
+    let client = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
+    let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
+    assert_eq!(client.resumable_version("localhost"), None);
+    for (version, resumed) in [
+        (Version::V2, false),
+        (Version::V1, false),
+        (Version::V2, true),
+        (Version::V1, true),
+    ] {
+        let mut c = client
+            .clone()
+            .start_session(version, "localhost", &params(Side::Client))
+            .unwrap();
+        let mut s = server
+            .clone()
+            .start_session(version, &params(Side::Server))
+            .unwrap();
+        check_session(&mut *c, &mut *s, resumed);
+        assert_eq!(client.resumable_version("localhost"), Some(version));
+    }
+    assert_eq!(client.resumable_version("other.test"), None);
+}
+
 /// RFC 9369 §5: a ticket resumes only a connection in the version that issued it. The client
 /// cache files tickets by version; when a ticket is forced onto another version anyway, the
 /// server's per-version context refuses to resume with it.
@@ -282,7 +310,7 @@ fn a_ticket_from_another_version_does_not_resume() {
     drop(c);
 
     // Forced onto a v2 connection, the server does not resume with it.
-    client.relabel_tickets(Version::V2);
+    client.relabel_tickets("localhost", Version::V1, Version::V2);
     let mut c = client
         .clone()
         .start_session(Version::V2, "localhost", &params(Side::Client))

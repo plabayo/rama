@@ -1,7 +1,10 @@
 use std::{collections::VecDeque, sync::Arc};
 
 use parking_lot::Mutex;
-use rama_core::error::{ArcError, BoxError};
+use rama_core::{
+    conversion::RamaFrom as _,
+    error::{ArcError, BoxError},
+};
 use rama_crypto::{
     dep::boring::{
         error::ErrorStack,
@@ -21,6 +24,7 @@ use rama_quic_proto::{
     transport_parameters::TransportParameters,
     version::Wire,
 };
+use rama_tls::client::NegotiatedTlsAlgorithms;
 use zeroize::Zeroizing;
 
 use super::packet::{self, Secret, Suite};
@@ -386,6 +390,7 @@ impl crypto::Session for TlsSession {
                     .ssl()
                     .is_init_finished()
                     .then(|| self.inner.ssl().session_reused()),
+                algorithms: NegotiatedTlsAlgorithms::rama_from(self.inner.ssl()),
             })
     }
     fn negotiated_alpn(&self) -> Option<&[u8]> {

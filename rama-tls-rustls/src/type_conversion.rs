@@ -7,8 +7,8 @@ use rama_net::{
     tls::ApplicationProtocol,
 };
 use rama_tls::{
-    CipherSuite, ProtocolVersion, SignatureScheme,
-    client::{ClientHello, ClientHelloExtension, TlsServerIdentity},
+    CipherSuite, ProtocolVersion, SignatureScheme, SupportedGroup,
+    client::{ClientHello, ClientHelloExtension, NegotiatedTlsAlgorithms, TlsServerIdentity},
 };
 use std::net::IpAddr;
 
@@ -33,6 +33,22 @@ macro_rules! enum_from_rustls {
 }
 
 enum_from_rustls!(u16 => ProtocolVersion, CipherSuite, SignatureScheme);
+
+impl RamaFrom<&rustls::CommonState, RamaTlsRustlsCrateMarker> for NegotiatedTlsAlgorithms {
+    fn rama_from(state: &rustls::CommonState) -> Self {
+        Self {
+            cipher_suite: state
+                .negotiated_cipher_suite()
+                .map(|suite| CipherSuite::rama_from(suite.suite())),
+            key_exchange_group: state
+                .negotiated_key_exchange_group()
+                .map(|group| SupportedGroup::from(u16::from(group.name()))),
+            // rustls reports neither the peer's signature scheme nor certificate compression.
+            peer_signature_scheme: None,
+            certificate_compression: None,
+        }
+    }
+}
 
 impl RamaTryFrom<ProtocolVersion, RamaTlsRustlsCrateMarker> for &rustls::SupportedProtocolVersion {
     type Error = ProtocolVersion;

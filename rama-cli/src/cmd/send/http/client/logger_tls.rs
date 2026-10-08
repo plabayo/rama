@@ -29,6 +29,19 @@ where
                 "* TLS Connection using version {:?}",
                 server_tls_data.protocol_version
             );
+            let algorithms = server_tls_data.algorithms;
+            if let Some(cipher_suite) = algorithms.cipher_suite {
+                eprintln!("* Cipher suite: {cipher_suite}");
+            }
+            if let Some(group) = algorithms.key_exchange_group {
+                eprintln!("* Key exchange: {group}");
+            }
+            if let Some(scheme) = algorithms.peer_signature_scheme {
+                eprintln!("* Server signature: {scheme}");
+            }
+            if let Some(algorithm) = algorithms.certificate_compression {
+                eprintln!("* Certificate compression: {algorithm}");
+            }
             if let Some(ref alpn) = server_tls_data.application_layer_protocol {
                 eprintln!("* ALPN: server selected {alpn}");
             }

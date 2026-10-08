@@ -1,8 +1,5 @@
 //! TLS (Boring) client support for Rama.
 
-#[cfg(feature = "compression")]
-mod compress_certificate;
-
 mod tls_stream_auto;
 pub use tls_stream_auto::AutoTlsStream;
 
@@ -23,9 +20,20 @@ pub(crate) use config::{AlpsCoupling, set_alpn_with_coupled_alps};
 pub use config::{
     BoringAlps, BoringCertCompression, BoringCipherSuites, BoringClientConfigExt,
     BoringDelegatedCredentials, BoringEncryptedClientHello, BoringExtensionOrder, BoringGrease,
-    BoringMaxVersion, BoringMinVersion, BoringOcspStapling, BoringRecordSizeLimit,
+    BoringGreaseSignatureSchemes, BoringKeyShares, BoringMaxVersion, BoringMinVersion,
+    BoringOcspStapling, BoringPermuteExtensions, BoringRecordSizeLimit,
     BoringServerVerifyCertStore, BoringSignatureSchemes, BoringSignedCertTimestamps,
-    BoringSupportedGroups, BoringTlsConnectorConfig,
+    BoringSupportedGroups, BoringTls12SessionTickets, BoringTlsConnectorConfig,
+};
+
+mod trust_anchors;
+#[doc(inline)]
+pub use trust_anchors::BoringRequestedTrustAnchors;
+
+mod session;
+#[doc(inline)]
+pub use session::{
+    TlsClientSession, TlsClientSessionCache, TlsClientSessionKey, TlsClientSessionStore,
 };
 
 mod connector_data;
@@ -43,3 +51,6 @@ mod emulate_ua;
 pub use emulate_ua::{EmulateTlsProfileLayer, EmulateTlsProfileService};
 
 pub use config::BoringTlsClientConfigProvider;
+
+#[cfg(test)]
+mod tests;

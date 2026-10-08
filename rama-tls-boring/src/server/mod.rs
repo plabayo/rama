@@ -11,13 +11,16 @@
 //!   plain text stream to the first.
 
 mod acceptor_data;
+pub(crate) use acceptor_data::select_alpn_by_server_preference;
 #[doc(inline)]
 pub use acceptor_data::{IssuedCertificate, TlsAcceptorData};
 
 mod config;
 #[doc(inline)]
 pub use config::{
-    BoringServerCertIssuer, BoringServerConfigExt, BoringTlsAcceptorConfig, BoringTlsAuth,
+    BoringServerCertCompression, BoringServerCertIssuer, BoringServerCipherSuites,
+    BoringServerConfigExt, BoringServerSignatureSchemes, BoringServerSupportedGroups,
+    BoringTlsAcceptorConfig, BoringTlsAuth,
 };
 
 mod cert_issuer;
@@ -33,3 +36,6 @@ pub use service::TlsAcceptorService;
 mod layer;
 #[doc(inline)]
 pub use layer::TlsAcceptorLayer;
+
+#[cfg(test)]
+mod tests;

@@ -1,4 +1,7 @@
+use crate::certificate_compression::add_certificate_compressors;
 use crate::client::config::BoringTlsConnectorConfig;
+use crate::client::session::{self, SessionStore, TlsClientSession, TlsClientSessionStore};
+use crate::type_conversion::native_unique;
 use ahash::{HashSet, HashSetExt as _};
 use moka::sync::Cache;
 use rama_boring::{
@@ -8,8 +11,8 @@ use rama_boring::{
     pkey::{PKey, Private},
     rsa::Rsa,
     ssl::{
-        ConnectConfiguration, SslCredential, SslCurve, SslSignatureAlgorithm, SslVerifyMode,
-        SslVersion,
+        ConnectConfiguration, SslCredential, SslCurve, SslOptions, SslRef, SslSessionCacheMode,
+        SslSignatureAlgorithm, SslVerifyMode, SslVersion,
     },
     x509::{
         X509,
@@ -32,17 +35,11 @@ use rama_tls::client::TlsClientConfig;
 use rama_tls::client::TlsServerCertPins;
 use rama_tls::client::{ServerTrustRoots, ServerVerifyMode};
 use rama_tls::client::{TlsServerTrust, TlsServerTrustAnchors};
+use rama_utils::macros::generate_set_and_with;
 use std::{
     fmt,
     sync::{Arc, LazyLock},
 };
-
-#[cfg(feature = "compression")]
-use super::compress_certificate::{
-    BrotliCertificateCompressor, ZlibCertificateCompressor, ZstdCertificateCompressor,
-};
-#[cfg(feature = "compression")]
-use rama_tls::CertificateCompressionAlgorithm;
 
 use rama_tls::keylog::{KeyLogSink, open_intent_sink};
 
@@ -53,6 +50,8 @@ pub struct TlsConnectorData {
     pub server_name: Option<Host>,
     pub server_verify_mode: ServerVerifyMode,
     pub server_cert_pins: Option<TlsServerCertPins>,
+    remembers_sessions: bool,
+    session_store: Option<SessionStore>,
 }
 
 /// Shared client configuration, including native context callbacks and session state.
@@ -86,9 +85,42 @@ struct ConnectorOptions {
     record_size_limit: Option<u16>,
     delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
     encrypted_client_hello: bool,
+    key_shares: Option<Vec<SslCurve>>,
+    remembers_sessions: bool,
+    session_store: Option<SessionStore>,
 }
 
 impl TlsConnectorContextBuilder {
+    generate_set_and_with!(
+        /// Pass each session this context establishes to `remember`, which only
+        /// connections from this context, to the same server identity, can resume.
+        pub fn new_session_callback(
+            mut self,
+            remember: impl Fn(&mut SslRef, TlsClientSession) + Send + Sync + 'static,
+        ) -> Self {
+            self.options.remembers_sessions = true;
+            self.config
+                .set_session_cache_mode(SslSessionCacheMode::CLIENT);
+            self.config.set_new_session_callback(move |ssl, session| {
+                if let Some(session) = TlsClientSession::established(ssl, session) {
+                    remember(ssl, session);
+                }
+            });
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Keep the sessions this context establishes in `store`, and offer them on
+        /// its later connections to the same server identity.
+        pub fn session_store(mut self, store: Arc<dyn TlsClientSessionStore>) -> Self {
+            let sink = store.clone();
+            self.set_new_session_callback(move |_, session| sink.put(session));
+            self.options.session_store = Some(SessionStore(store));
+            self
+        }
+    );
+
     pub fn build(self) -> TlsConnectorContext {
         TlsConnectorContext {
             connector: self.config.build(),
@@ -122,12 +154,18 @@ impl TlsConnectorContext {
         if self.options.encrypted_client_hello {
             cfg.set_enable_ech_grease(true);
         }
+        if let Some(curves) = &self.options.key_shares {
+            cfg.set_client_key_shares(curves)
+                .context("set client key shares")?;
+        }
         Ok(TlsConnectorData {
             config: cfg,
             store_server_certificate_chain: self.options.store_server_certificate_chain,
             server_name: self.options.server_name.clone(),
             server_verify_mode: self.options.server_verify_mode,
             server_cert_pins: self.options.server_cert_pins.clone(),
+            remembers_sessions: self.options.remembers_sessions,
+            session_store: self.options.session_store.clone(),
         })
     }
 }
@@ -152,9 +190,31 @@ impl TlsConnectorData {
             .as_ref()
             .map(super::connector::server_identity_for)
             .transpose()?;
-        self.config
+        let mut ssl = self
+            .config
             .into_ssl(identity.as_deref())
-            .context("prepare boring client TLS session")
+            .context("prepare boring client TLS session")?;
+        if self.remembers_sessions
+            && let Some(server) = &self.server_name
+            && let Some(key) = session::bind_session_key(&mut ssl, server)?
+            && let Some(SessionStore(store)) = &self.session_store
+            && let Some(session) = store.take(&key)
+        {
+            // TLS 1.2 sessions remain available to concurrent and later connections.
+            if !session.is_single_use() {
+                store.put(session.clone());
+            }
+            if let Err(error) = session.resume_on(&mut ssl) {
+                debug!(%error, "boring connector: stored session not offered");
+            }
+        }
+        Ok(ssl)
+    }
+
+    /// Whether [`Self::into_ssl`] offers a stored session for resumption.
+    #[must_use]
+    pub fn resumes_sessions(&self) -> bool {
+        self.session_store.is_some()
     }
 }
 
@@ -168,6 +228,7 @@ impl std::fmt::Debug for TlsConnectorData {
             .field("server_name", &self.server_name)
             .field("server_verify_mode", &self.server_verify_mode)
             .field("has_server_cert_pins", &self.server_cert_pins.is_some())
+            .field("resumes_sessions", &self.resumes_sessions())
             .finish()
     }
 }
@@ -223,6 +284,7 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             .signed_cert_timestamps
             .map(|p| p.0)
             .unwrap_or_default();
+        let session_tickets_enabled = value.tls12_session_tickets.is_none_or(|p| p.0);
         let encrypted_client_hello = value
             .encrypted_client_hello
             .map(|p| p.0)
@@ -273,26 +335,20 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             .map(|p| p.0.iter().map(|e| u16::from(*e)).collect());
         let certificate_compression_algorithms = value.cert_compression.map(|p| p.0.clone());
 
-        let curves = value.supported_groups.map(|p| {
-            // Distinct rama groups can map to the same boring `SslCurve`: drop the
-            // resulting consecutive duplicates (boring rejects a duplicate curve).
-            let mut curves: Vec<SslCurve> =
-                p.0.iter()
-                    .filter_map(|g| (*g).rama_try_into().ok())
-                    .collect();
-            curves.dedup();
-            curves
-        });
-        let verify_algorithm_prefs = value.signature_schemes.map(|p| {
-            // Distinct rama schemes can map to the same boring `SslSignatureAlgorithm`;
-            // drop the resulting consecutive duplicates (boring errors on
-            // DUPLICATE_SIGNATURE_ALGORITHM otherwise).
-            let mut prefs: Vec<SslSignatureAlgorithm> =
-                p.0.iter()
-                    .filter_map(|s| (*s).rama_try_into().ok())
-                    .collect();
-            prefs.dedup();
-            prefs
+        // BoringSSL rejects any duplicate group or signature scheme, adjacent or not.
+        let curves: Option<Vec<SslCurve>> = value
+            .supported_groups
+            .map(|p| native_unique(p.0.iter().filter_map(|g| (*g).rama_try_into().ok())));
+        let verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>> = value
+            .signature_schemes
+            .map(|p| native_unique(p.0.iter().filter_map(|s| (*s).rama_try_into().ok())));
+        // BoringSSL only accepts key shares for an ordered subset of the offered groups.
+        let key_shares: Option<Vec<SslCurve>> = value.key_shares.map(|p| {
+            let shares = p.0.iter().filter_map(|g| (*g).rama_try_into().ok());
+            match &curves {
+                Some(curves) => ordered_subset(shares, curves),
+                None => native_unique(shares),
+            }
         });
         let delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>> =
             value.delegated_credentials.map(|p| {
@@ -399,11 +455,26 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             });
         }
 
-        if let Some(order) = &extension_order {
+        // An explicit order replaces native permutation, so only apply it without.
+        let permute_extensions = value.permute_extensions.is_some_and(|p| p.0);
+        cfg_builder.set_permute_extensions(permute_extensions);
+        if !permute_extensions && let Some(order) = &extension_order {
             trace!(?order, "boring connector: set extension order");
             cfg_builder
                 .set_extension_order(order)
                 .context("build (boring) ssl connector: set extension order")?;
+        }
+
+        if let Some(ids) = value
+            .requested_trust_anchors
+            .map(|anchors| anchors.identifier_list())
+            .transpose()
+            .context("build (boring) ssl connector: validate requested trust anchors")?
+            .flatten()
+        {
+            cfg_builder
+                .set_requested_trust_anchors(ids)
+                .context("build (boring) ssl connector: set requested trust anchors")?;
         }
 
         if let Some(list) = &cipher_list {
@@ -444,6 +515,7 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
         }
 
         cfg_builder.set_grease_enabled(grease_enabled);
+        cfg_builder.set_grease_sigalgs_enabled(value.grease_signature_schemes.is_some_and(|p| p.0));
 
         if ocsp_stapling_enabled {
             cfg_builder.enable_ocsp_stapling();
@@ -453,38 +525,13 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             cfg_builder.enable_signed_cert_timestamps();
         }
 
-        if let Some(compression_algorithms) = &certificate_compression_algorithms {
-            for compressor in compression_algorithms.iter() {
-                #[cfg(feature = "compression")]
-                match compressor {
-                    CertificateCompressionAlgorithm::Zlib => {
-                        cfg_builder.add_certificate_compression_algorithm(ZlibCertificateCompressor::default()).context("build (boring) ssl connector: add certificate compression algorithm: zlib")?;
-                    }
-                    CertificateCompressionAlgorithm::Brotli => {
-                        cfg_builder.add_certificate_compression_algorithm(
-                            BrotliCertificateCompressor::default(),
-                        )
-                        .context("build (boring) ssl connector: add certificate compression algorithm: brotli")?;
-                    }
-                    CertificateCompressionAlgorithm::Zstd => {
-                        cfg_builder.add_certificate_compression_algorithm(
-                            ZstdCertificateCompressor::default(),
-                        )
-                        .context("build (boring) ssl connector: add certificate compression algorithm: zstd")?;
-                    }
-                    CertificateCompressionAlgorithm::Unknown(_) => {
-                        debug!(
-                            "boring connector: certificate compression algorithm: unknown: ignore"
-                        );
-                    }
-                }
-                #[cfg(not(feature = "compression"))]
-                {
-                    debug!(
-                        "boring connector: certificate compression algorithm: {compressor}: not supported (feature compression not enabled)"
-                    );
-                }
-            }
+        if !session_tickets_enabled {
+            cfg_builder.set_options(SslOptions::NO_TICKET);
+        }
+
+        if let Some(algorithms) = &certificate_compression_algorithms {
+            add_certificate_compressors(&mut cfg_builder, algorithms)
+                .context("build (boring) ssl connector: certificate compression")?;
         }
 
         match server_verify_mode {
@@ -528,6 +575,8 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             "boring connector: return SSL connector config for server"
         );
 
+        session::identify_context(&mut cfg_builder)?;
+
         Ok(Self {
             config: cfg_builder,
             options: ConnectorOptions {
@@ -539,9 +588,27 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
                 record_size_limit,
                 delegated_credential_schemes,
                 encrypted_client_hello,
+                key_shares,
+                remembers_sessions: false,
+                session_store: None,
             },
         })
     }
+}
+
+fn ordered_subset<T: PartialEq>(values: impl Iterator<Item = T>, superset: &[T]) -> Vec<T> {
+    let mut next = 0;
+    values
+        .filter(
+            |value| match superset[next..].iter().position(|item| item == value) {
+                Some(offset) => {
+                    next += offset + 1;
+                    true
+                }
+                None => false,
+            },
+        )
+        .collect()
 }
 
 enum ResolvedServerTrustStore {

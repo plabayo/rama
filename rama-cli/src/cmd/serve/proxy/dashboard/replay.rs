@@ -193,6 +193,8 @@ pub(super) async fn replay_captured(
     if let Some(client_hello) = tls_client_hello {
         request.extensions().insert_arc(Arc::new(TlsProfile {
             client_hello,
+            // Replay the captured connection, including its extension order.
+            permute_extensions: false,
             ws_client_config_overwrites: None,
         }));
     }

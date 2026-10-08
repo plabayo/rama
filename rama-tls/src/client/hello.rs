@@ -164,6 +164,31 @@ impl ClientHello {
         None
     }
 
+    /// Return the groups this client sent key shares for, in order, if it sent
+    /// a well-formed `key_share` extension.
+    #[must_use]
+    pub fn ext_key_share_groups(&self) -> Option<Vec<SupportedGroup>> {
+        let data = self.extensions.iter().find_map(|ext| match ext {
+            ClientHelloExtension::Opaque { id, data } if *id == ExtensionId::KEY_SHARE => {
+                Some(data.as_slice())
+            }
+            _ => None,
+        })?;
+        let (length, mut entries) = data.split_first_chunk::<2>()?;
+        if usize::from(u16::from_be_bytes(*length)) != entries.len() {
+            return None;
+        }
+        let mut groups = Vec::new();
+        while let Some((header, rest)) = entries.split_first_chunk::<4>() {
+            let key_length = usize::from(u16::from_be_bytes([header[2], header[3]]));
+            groups.push(SupportedGroup::from(u16::from_be_bytes([
+                header[0], header[1],
+            ])));
+            entries = rest.get(key_length..)?;
+        }
+        entries.is_empty().then_some(groups)
+    }
+
     /// Return `true` when this [`ClientHello`] carries an
     /// `EncryptedClientHello` extension. Useful for triage: trailing
     /// trailer-content parse warnings often correlate with ECH-using
@@ -359,5 +384,50 @@ pub struct HpkeSymmetricCipherSuite {
 impl Display for HpkeSymmetricCipherSuite {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{},{}", self.kdf_id, self.aead_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hello_with_key_share(data: Vec<u8>) -> ClientHello {
+        ClientHello::new(
+            ProtocolVersion::TLSv1_3,
+            Vec::new(),
+            Vec::new(),
+            vec![ClientHelloExtension::Opaque {
+                id: ExtensionId::KEY_SHARE,
+                data,
+            }],
+        )
+    }
+
+    #[test]
+    fn key_share_groups_are_read_in_order_and_malformed_bodies_are_rejected() {
+        let shares = hello_with_key_share(vec![0, 10, 0x11, 0xec, 0, 1, 0xaa, 0, 0x1d, 0, 1, 0xbb]);
+        assert_eq!(
+            shares.ext_key_share_groups(),
+            Some(vec![SupportedGroup::X25519MLKEM768, SupportedGroup::X25519])
+        );
+        assert_eq!(
+            hello_with_key_share(vec![0, 0]).ext_key_share_groups(),
+            Some(Vec::new())
+        );
+        for malformed in [
+            vec![],
+            vec![0, 1, 0],
+            vec![0, 5, 0, 0x1d, 0, 2, 0xbb],
+            vec![0, 3, 0, 0x1d, 0],
+        ] {
+            assert_eq!(
+                hello_with_key_share(malformed.clone()).ext_key_share_groups(),
+                None,
+                "{malformed:?}"
+            );
+        }
+        let without =
+            ClientHello::new(ProtocolVersion::TLSv1_3, Vec::new(), Vec::new(), Vec::new());
+        assert_eq!(without.ext_key_share_groups(), None);
     }
 }

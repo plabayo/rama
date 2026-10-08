@@ -37,10 +37,13 @@ pub use pool::{
 };
 use rama_crypto::pki_types::CertificateDer;
 
-use super::ProtocolVersion;
+use super::{
+    CertificateCompressionAlgorithm, CipherSuite, ProtocolVersion, SignatureScheme, SupportedGroup,
+};
 use rama_core::extensions::{Extension, Extensions};
 use rama_net::address::{Domain, Host};
 use rama_net::tls::ApplicationProtocol;
+use serde::{Deserialize, Serialize};
 use std::{fmt, sync::Arc};
 
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
@@ -67,6 +70,26 @@ pub struct NegotiatedTlsParameters {
     /// Whether TLS resumed a session. Absent until the backend has decided,
     /// or if it cannot report resumption.
     pub resumed: Option<bool>,
+    /// Algorithms selected by the handshake, as far as the backend reports them.
+    pub algorithms: NegotiatedTlsAlgorithms,
+}
+
+/// Algorithms selected by a TLS handshake.
+///
+/// Each value is absent when the backend cannot report it or the handshake did
+/// not use one, e.g. no key exchange for a TLS 1.2 resumption.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NegotiatedTlsAlgorithms {
+    /// The negotiated cipher suite.
+    pub cipher_suite: Option<CipherSuite>,
+    /// The group of the (EC)DHE or KEM key exchange.
+    pub key_exchange_group: Option<SupportedGroup>,
+    /// The scheme of the peer's handshake signature.
+    ///
+    /// A server only sees one for an authenticating client.
+    pub peer_signature_scheme: Option<SignatureScheme>,
+    /// The algorithm the server compressed its certificate with.
+    pub certificate_compression: Option<CertificateCompressionAlgorithm>,
 }
 
 /// Server identity authenticated by the effective TLS verification policy.

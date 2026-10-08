@@ -4,6 +4,7 @@ use ahash::HashMap;
 use parking_lot::Mutex;
 use rama_core::{
     bytes::BytesMut,
+    conversion::RamaFrom as _,
     error::{BoxError, BoxErrorExt as _},
 };
 #[cfg(all(feature = "aws-lc", not(feature = "ring")))]
@@ -17,6 +18,7 @@ use rama_quic_proto::{
     packet::SpaceId,
     transport_parameters::TransportParameters,
 };
+use rama_tls::client::NegotiatedTlsAlgorithms;
 #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use rama_tls_rustls::dep::rustls::{
     CipherSuite,
@@ -177,6 +179,7 @@ impl crypto::Session for TlsSession {
                 .inner
                 .handshake_kind()
                 .map(|kind| kind == HandshakeKind::Resumed),
+            algorithms: NegotiatedTlsAlgorithms::rama_from(&*self.inner),
         })
     }
 

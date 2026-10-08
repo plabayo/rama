@@ -385,18 +385,29 @@ struct Overrides<'a> {
 struct ClientHelloSettings<'a> {
     cipher_suites: Option<&'a [CipherSuite]>,
     supported_groups: Option<&'a [SupportedGroup]>,
+    key_shares: Option<&'a [SupportedGroup]>,
     signature_schemes: Option<&'a [SignatureScheme]>,
     grease: Option<bool>,
+    grease_signature_schemes: Option<bool>,
     alps: Option<AlpsSettings<'a>>,
     extension_order: Option<&'a [ExtensionId]>,
+    permute_extensions: Option<bool>,
+    requested_trust_anchors: Option<TrustAnchorsSettings<'a>>,
     cert_compression: Option<&'a [CertificateCompressionAlgorithm]>,
     delegated_credentials: Option<&'a [SignatureScheme]>,
     record_size_limit: Option<u16>,
     encrypted_client_hello: Option<bool>,
     ocsp_stapling: Option<bool>,
     signed_cert_timestamps: Option<bool>,
+    tls12_session_tickets: Option<bool>,
     min_version: Option<ProtocolVersion>,
     max_version: Option<ProtocolVersion>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum TrustAnchorsSettings<'a> {
+    Requested(&'a [u8]),
+    Omitted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -509,6 +520,14 @@ impl<'a> TlsPoolIdBuilder<'a> {
     }
 
     generate_set_and_with! {
+        /// Ordered groups to send key shares for.
+        pub fn key_shares(mut self, value: Option<&'a [SupportedGroup]>) -> Self {
+            self.client_hello.key_shares = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Ordered signature scheme offer.
         pub fn signature_schemes(mut self, value: Option<&'a [SignatureScheme]>) -> Self {
             self.client_hello.signature_schemes = value;
@@ -525,9 +544,41 @@ impl<'a> TlsPoolIdBuilder<'a> {
     }
 
     generate_set_and_with! {
+        /// Whether a GREASE value leads the signature scheme offer.
+        pub fn grease_signature_schemes(mut self, value: Option<bool>) -> Self {
+            self.client_hello.grease_signature_schemes = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Ordered extension identifiers.
         pub fn extension_order(mut self, value: Option<&'a [ExtensionId]>) -> Self {
             self.client_hello.extension_order = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Whether the extension order is permuted per handshake.
+        pub fn permute_extensions(mut self, value: Option<bool>) -> Self {
+            self.client_hello.permute_extensions = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Encoded `trust_anchors` extension body, including its length prefix.
+        pub fn requested_trust_anchors(mut self, value: Option<&'a [u8]>) -> Self {
+            self.client_hello.requested_trust_anchors = value.map(TrustAnchorsSettings::Requested);
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Explicitly omit the `trust_anchors` extension.
+        pub fn omitted_trust_anchors(mut self) -> Self {
+            self.client_hello.requested_trust_anchors = Some(TrustAnchorsSettings::Omitted);
             self
         }
     }
@@ -576,6 +627,14 @@ impl<'a> TlsPoolIdBuilder<'a> {
         /// Whether signed certificate timestamps are requested.
         pub fn signed_cert_timestamps(mut self, value: Option<bool>) -> Self {
             self.client_hello.signed_cert_timestamps = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Whether TLS 1.2 session tickets are offered.
+        pub fn tls12_session_tickets(mut self, value: Option<bool>) -> Self {
+            self.client_hello.tls12_session_tickets = value;
             self
         }
     }

@@ -271,6 +271,7 @@ impl Service<ConnectRequest> for FakeConnector {
                 peer_certificate_chain: None,
                 server_name: None,
                 resumed: None,
+                algorithms: Default::default(),
             });
         }
         Ok(EstablishedClientConnection {

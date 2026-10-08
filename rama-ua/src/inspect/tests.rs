@@ -166,6 +166,7 @@ async fn captured_tls_and_native_fingerprints_are_shared_per_connection() {
                         peer_certificate_chain: None,
                         server_name: None,
                         resumed: None,
+                        algorithms: Default::default(),
                     })
                     .body(Body::empty())
                     .unwrap(),

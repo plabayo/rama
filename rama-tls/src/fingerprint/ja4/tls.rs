@@ -1,11 +1,11 @@
 use std::fmt::{self, Write as _};
 
-use rama_core::{extensions::Extensions, telemetry::tracing};
+use rama_core::extensions::Extensions;
 use rama_net::tls::ApplicationProtocol;
 
 use crate::{
     CipherSuite, ExtensionId, ProtocolVersion, SecureTransport, SignatureScheme,
-    client::{ClientHello, NegotiatedTlsParameters},
+    client::ClientHello,
 };
 
 fn write_hex_list<W, T>(writer: &mut W, values: impl IntoIterator<Item = T>) -> fmt::Result
@@ -48,10 +48,7 @@ impl Ja4 {
             .get_ref::<SecureTransport>()
             .and_then(|st| st.client_hello())
             .ok_or(Ja4ComputeError::MissingClientHello)?;
-        let negotiated_tls_version = ext
-            .get_ref::<NegotiatedTlsParameters>()
-            .map(|param| param.protocol_version);
-        Self::compute_from_client_hello(client_hello, negotiated_tls_version)
+        Self::compute_from_client_hello(client_hello)
     }
 
     /// Compute the [`Ja4`] (hash) from a reference to a [`ClientHello`].
@@ -59,16 +56,21 @@ impl Ja4 {
     /// In case your source is [`Extensions`] you can use [`Self::compute`] instead.
     ///
     /// [`ClientHello`]: crate::client::ClientHello
-    pub fn compute_from_client_hello(
-        client_hello: &ClientHello,
-        negotiated_tls_version: Option<ProtocolVersion>,
-    ) -> Result<Self, Ja4ComputeError> {
-        let version: TlsVersion = negotiated_tls_version
-            .unwrap_or_else(|| {
-                tracing::trace!("negotiated tls version missing: fallback to client hello tls");
-                client_hello.protocol_version()
-            })
-            .try_into()?;
+    ///
+    /// The version is the highest non-GREASE `supported_versions` entry, else the
+    /// legacy version field: JA4 fingerprints the offer, not the negotiated outcome.
+    pub fn compute_from_client_hello(client_hello: &ClientHello) -> Result<Self, Ja4ComputeError> {
+        let offered = client_hello.supported_versions().and_then(|versions| {
+            versions
+                .iter()
+                .filter(|version| !version.is_grease())
+                .filter_map(|version| TlsVersion::try_from(*version).ok())
+                .max()
+        });
+        let version = match offered {
+            Some(version) => version,
+            None => client_hello.protocol_version().try_into()?,
+        };
 
         let mut cipher_suites: Vec<_> = client_hello
             .cipher_suites()
@@ -258,7 +260,7 @@ impl fmt::Display for TransportProtocol {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum TlsVersion {
     Tls1_0,
     Tls1_1,
@@ -331,12 +333,11 @@ rama_utils::macros::serde_str::impl_serde_str!(serialize display Ja4);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::parse_client_hello;
+    use crate::client::{NegotiatedTlsParameters, parse_client_hello};
 
     #[derive(Debug)]
     struct TestCase {
         client_hello: Vec<u8>,
-        negotiated_protocol_version: Option<ProtocolVersion>,
         pcap: &'static str,
         expected_ja4_str: &'static str,
         expected_ja4_hash: &'static str,
@@ -386,7 +387,6 @@ mod tests {
                     0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
                     0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
                 ],
-                negotiated_protocol_version: Some(ProtocolVersion::TLSv1_3),
                 pcap: "chrome-grease-single.pcap",
                 expected_ja4_str: "t13d1615h2_000a,002f,0035,009c,009d,1301,1302,1303,c013,c014,c02b,c02c,c02f,c030,cca8,cca9_0005,000a,000b,000d,0012,0015,0017,001b,0023,002b,002d,0033,ff01_0403,0804,0401,0503,0805,0501,0806,0601,0201",
                 expected_ja4_hash: "t13d1615h2_46e7e9700bed_45f260be83e2",
@@ -434,7 +434,6 @@ mod tests {
                     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                     0x00,
                 ],
-                negotiated_protocol_version: Some(ProtocolVersion::TLSv1_3),
                 pcap: "curl_http1.1.pcap",
                 expected_ja4_str: "t13d3113h1_002f,0033,0035,0039,003c,003d,0067,006b,009c,009d,009e,009f,00ff,1301,1302,1303,c009,c00a,c013,c014,c023,c024,c027,c028,c02b,c02c,c02f,c030,cca8,cca9,ccaa_000a,000b,000d,0015,0016,0017,002b,002d,0031,0033,3374_0403,0503,0603,0807,0808,0809,080a,080b,0804,0805,0806,0401,0501,0601,0303,0301,0302,0402,0502,0602",
                 expected_ja4_hash: "t13d3113h1_e8f1e7e78f70_ce5650b735ce",
@@ -477,7 +476,6 @@ mod tests {
                     0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
                     0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
                 ],
-                negotiated_protocol_version: Some(ProtocolVersion::TLSv1_3),
                 pcap: "curl.pcap",
                 expected_ja4_str: "t13d3112h2_002f,0033,0035,0039,003c,003d,0067,006b,009c,009d,009e,009f,00ff,1301,1302,1303,c009,c00a,c013,c014,c023,c024,c027,c028,c02b,c02c,c02f,c030,cca8,cca9,ccaa_000a,000b,000d,0015,0016,0017,002b,002d,0033,3374_0403,0503,0603,0807,0808,0809,080a,080b,0804,0805,0806,0401,0501,0601,0303,0203,0301,0201,0302,0202,0402,0502,0602",
                 expected_ja4_hash: "t13d3112h2_e8f1e7e78f70_f4b9272caa35",
@@ -629,7 +627,6 @@ mod tests {
                     0x5a, 0xc8, 0x14, 0x23, 0xb, 0x4b, 0xf, 0x22, 0x85, 0xe7, 0x1c, 0x3b, 0xbc,
                     0xd3,
                 ],
-                negotiated_protocol_version: Some(ProtocolVersion::TLSv1_3),
                 pcap: "wireshark_macos_firefox_133_ramaproxy.org.pcap",
                 expected_ja4_str: "t13d1716h2_002f,0035,009c,009d,1301,1302,1303,c009,c00a,c013,c014,c02b,c02c,c02f,c030,cca8,cca9_0005,000a,000b,000d,0017,001b,001c,0022,0023,002b,002d,0033,fe0d,ff01_0403,0503,0603,0804,0805,0806,0401,0501,0601,0203,0201",
                 expected_ja4_hash: "t13d1716h2_5b57614c22b0_eeeea6562960",
@@ -640,15 +637,15 @@ mod tests {
             ext.insert(SecureTransport::with_client_hello(
                 parse_client_hello(&test_case.client_hello).expect(test_case.pcap),
             ));
-            if let Some(negotiated_protocol_version) = test_case.negotiated_protocol_version {
-                ext.insert(NegotiatedTlsParameters {
-                    protocol_version: negotiated_protocol_version,
-                    application_layer_protocol: None,
-                    peer_certificate_chain: None,
-                    server_name: None,
-                    resumed: None,
-                });
-            }
+            // JA4 fingerprints the offer: a different negotiated version must not leak in.
+            ext.insert(NegotiatedTlsParameters {
+                protocol_version: ProtocolVersion::TLSv1_2,
+                application_layer_protocol: None,
+                peer_certificate_chain: None,
+                server_name: None,
+                resumed: None,
+                algorithms: Default::default(),
+            });
 
             let ja4 = Ja4::compute(&ext).expect(test_case.pcap);
 
