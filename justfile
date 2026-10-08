@@ -516,6 +516,12 @@ miri-apple-ne-ffi:
     cargo +"${MIRI_TOOLCHAIN:-nightly}" miri test -p rama-net-apple-networkextension ffi::tproxy::tests::ffi_enum_decoders_fail_safe_on_bad_byte --lib
     cargo +"${MIRI_TOOLCHAIN:-nightly}" miri test -p rama-net-apple-networkextension ffi::tproxy::tests::ffi_struct_layout_matches_c_header_on_64_bit_targets --lib
 
+# Miri over the lock-free collections and the `Extensions` store built on them;
+# the randomized chain tests are skipped as too slow under Miri.
+miri-collections:
+    cargo +"${MIRI_TOOLCHAIN:-nightly}" miri test -p rama-utils --all-features --lib collections::append_only_vec
+    cargo +"${MIRI_TOOLCHAIN:-nightly}" miri test -p rama-core --all-features --lib extensions -- --skip random_chains --skip other_threads --skip more_targets_than_slots
+
 detect-unused-deps:
     @cargo install cargo-machete
     cargo machete --skip-target-dir --with-metadata
