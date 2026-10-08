@@ -114,6 +114,12 @@ def main() -> None:
         action="store_true",
         help="build the base with its own bench sources (default: the working tree's, so new cases compare too)",
     )
+    parser.add_argument(
+        "--overlay",
+        action="append",
+        default=[],
+        help="copy this working tree path into the base too (repeatable), e.g. a Cargo.toml the new bench setup needs",
+    )
     parser.add_argument("divan_args", nargs="*", help="extra divan args, e.g. a filter")
     args = parser.parse_args()
 
@@ -131,8 +137,13 @@ def main() -> None:
     archive = subprocess.Popen(["git", "archive", sha], cwd=repo, stdout=subprocess.PIPE)
     subprocess.run(["tar", "-x", "-C", str(export)], stdin=archive.stdout, check=True)
     archive.wait()
-    if not args.base_bench_src:
-        shutil.copytree(repo / "benches", export / "benches", dirs_exist_ok=True)
+    overlays = args.overlay if args.base_bench_src else ["benches", *args.overlay]
+    for overlay in overlays:
+        source = repo / overlay
+        if source.is_dir():
+            shutil.copytree(source, export / overlay, dirs_exist_ok=True)
+        else:
+            shutil.copy2(source, export / overlay)
     sync(export, [p.relative_to(export).as_posix() for p in export.rglob("*") if p.is_file()], src)
     base_bin = bins / "base"
     shutil.copy2(build(src, work / "target", args.bench, args.features), base_bin)
