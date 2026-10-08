@@ -16,7 +16,7 @@ impl MsgHdr for libc::msghdr {
         unsafe { libc::CMSG_FIRSTHDR(self) }
     }
 
-    fn cmsg_nxt_hdr(&self, cmsg: &Self::ControlMessage) -> *mut Self::ControlMessage {
+    unsafe fn cmsg_nxt_hdr(&self, cmsg: *const Self::ControlMessage) -> *mut Self::ControlMessage {
         // SAFETY: `cmsg` was obtained from this header's valid native control
         // buffer by `CMSG_FIRSTHDR` or an earlier `CMSG_NXTHDR` call.
         unsafe { libc::CMSG_NXTHDR(self, cmsg) }
@@ -50,10 +50,10 @@ impl CMsgHdr for libc::cmsghdr {
         unsafe { libc::CMSG_SPACE(length as _) as usize }
     }
 
-    fn cmsg_data(&self) -> *mut c_uchar {
+    unsafe fn cmsg_data(cmsg: *const Self) -> *mut c_uchar {
         // SAFETY: `self` is an entry obtained while walking a valid native
         // control buffer.
-        unsafe { libc::CMSG_DATA(self) }
+        unsafe { libc::CMSG_DATA(cmsg) }
     }
 
     fn set(&mut self, level: c_int, ty: c_int, len: usize) {

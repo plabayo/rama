@@ -264,8 +264,7 @@ impl UdpSocketState {
                 (WinSock::IPPROTO_IP, WinSock::IP_PKTINFO) => {
                     // SAFETY: `cmsg` was yielded from the live native control
                     // buffer walked by `cmsg_iter`.
-                    let pktinfo =
-                        unsafe { cmsg::decode::<WinSock::IN_PKTINFO, WinSock::CMSGHDR>(cmsg) }?;
+                    let pktinfo = unsafe { cmsg.decode::<WinSock::IN_PKTINFO>() }?;
                     // Addr is stored in big endian format
                     // SAFETY: `decode` initialized every byte of `IN_PKTINFO`;
                     // reading this union view yields its IPv4 address bytes.
@@ -276,8 +275,7 @@ impl UdpSocketState {
                 (WinSock::IPPROTO_IPV6, WinSock::IPV6_PKTINFO) => {
                     // SAFETY: `cmsg` was yielded from the live native control
                     // buffer walked by `cmsg_iter`.
-                    let pktinfo =
-                        unsafe { cmsg::decode::<WinSock::IN6_PKTINFO, WinSock::CMSGHDR>(cmsg) }?;
+                    let pktinfo = unsafe { cmsg.decode::<WinSock::IN6_PKTINFO>() }?;
                     // Addr is stored in big endian format
                     // SAFETY: `decode` initialized every byte of `IN6_PKTINFO`;
                     // the byte-array union view covers the complete IPv6 address.
@@ -289,14 +287,14 @@ impl UdpSocketState {
                     // ECN is a C integer https://learn.microsoft.com/en-us/windows/win32/winsock/winsock-ecn
                     // SAFETY: `cmsg` was yielded from the live native control
                     // buffer walked by `cmsg_iter`.
-                    ecn_bits = Some(unsafe { cmsg::decode::<c_int, WinSock::CMSGHDR>(cmsg) }?);
+                    ecn_bits = Some(unsafe { cmsg.decode::<c_int>() }?);
                 }
                 (WinSock::IPPROTO_UDP, UDP_COALESCED_INFO) => {
                     // Has type u32 (aka DWORD) per
                     // https://learn.microsoft.com/en-us/windows/win32/winsock/ipproto-udp-socket-options
                     // SAFETY: `cmsg` was yielded from the live native control
                     // buffer walked by `cmsg_iter`.
-                    stride = unsafe { cmsg::decode::<u32, WinSock::CMSGHDR>(cmsg) }?;
+                    stride = unsafe { cmsg.decode::<u32>() }?;
                 }
                 _ => {}
             }

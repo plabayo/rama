@@ -15,6 +15,12 @@ use rama_quic_proto::{
     packet::InitialHeader,
 };
 
+pub(crate) fn bounded_token(token: &[u8]) -> Option<Bytes> {
+    // A token that cannot fit any UDP payload cannot be reused in an Initial.
+    (token.len() <= usize::from(crate::proto::MAX_UDP_PAYLOAD))
+        .then(|| Bytes::copy_from_slice(token))
+}
+
 /// An address-validation token a client keeps for its next connection to the same server,
 /// with what it needs to know about the connection that issued it.
 #[derive(Debug, Clone, PartialEq, Eq)]

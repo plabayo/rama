@@ -12,7 +12,7 @@ use rama_core::telemetry::tracing::trace;
 use ahash::{HashMap, HashMapExt as _};
 use parking_lot::Mutex;
 
-use crate::proto::token::{StoredToken, TokenStore};
+use crate::proto::token::{StoredToken, TokenStore, bounded_token};
 use rama_quic_proto::Version;
 
 /// `TokenStore` implementation that stores up to `N` tokens per server name for up to a
@@ -81,10 +81,14 @@ impl State {
         }
     }
 
-    fn store(&mut self, server_name: &str, version: Version, token: StoredToken) {
+    fn store(&mut self, server_name: &str, version: Version, mut token: StoredToken) {
         let Some(limits) = self.limits else {
             return;
         };
+        let Some(bytes) = bounded_token(&token.token) else {
+            return;
+        };
+        token.token = bytes;
         if let Some(&slot) = self.lookup.get(&(Arc::from(server_name), version)) {
             // known server: the entry becomes most recent and takes the newest token
             self.lru
@@ -194,6 +198,33 @@ mod tests {
 
     fn stored(token: Bytes) -> StoredToken {
         StoredToken::new(token, crate::proto::UNIX_EPOCH)
+    }
+
+    #[test]
+    fn token_bytes_are_bounded_without_evicting_usable_entries() {
+        let cache = TokenMemoryCache::new(1, 1);
+        let maximum = usize::from(crate::proto::MAX_UDP_PAYLOAD);
+        let accepted = vec![7; maximum];
+        cache.insert("kept", Version::V1, stored(accepted.clone().into()));
+        cache.insert("rejected", Version::V1, stored(vec![8; maximum + 1].into()));
+        assert!(cache.take("rejected", Version::V1).is_none());
+        assert_eq!(cache.take("kept", Version::V1).unwrap().token(), &accepted);
+    }
+
+    #[test]
+    fn retained_tokens_do_not_pin_received_datagrams() {
+        let cache = TokenMemoryCache::new(1, 1);
+        let datagram = Bytes::from(vec![9; 65527]);
+        let slice = datagram.slice(100..108);
+        let pointer = slice.as_ptr();
+        let token = stored(slice).with_peer_greasing_quic_bit(true);
+        cache.insert("host", Version::V2, token);
+        let token = cache.take("host", Version::V2).unwrap();
+        assert_ne!(token.token().as_ptr(), pointer);
+        assert_eq!(token.token().as_ref(), &[9; 8]);
+        assert!(token.peer_greases_quic_bit());
+        assert_eq!(token.received(), crate::proto::UNIX_EPOCH);
+        assert_eq!(datagram.len(), 65527);
     }
 
     fn new_rng() -> impl Rng {

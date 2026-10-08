@@ -15,6 +15,7 @@ use crate::proto::{
         timer::Timer,
     },
     shared::EndpointEventInner,
+    token::bounded_token,
     transport_parameters,
 };
 use rama_quic_proto::{
@@ -332,6 +333,9 @@ impl Connection {
                     if token.is_empty() {
                         return Err(TransportError::FRAME_ENCODING_ERROR("empty token"));
                     }
+                    let Some(token) = bounded_token(&token) else {
+                        continue;
+                    };
                     trace!("got new token");
                     let stored = StoredToken::new(token, time_source.now())
                         .with_peer_greasing_quic_bit(self.peer_params.grease_quic_bit);
@@ -491,12 +495,76 @@ impl Connection {
 ))]
 mod tests {
     use super::*;
-    use crate::proto::tests::Pair;
+    use crate::proto::{TokenStore, tests::Pair};
+    use parking_lot::Mutex;
+    use rama_core::bytes::Bytes;
     use rama_quic_proto::{
         TransportErrorCode, VarInt, Version,
         coding::Codec,
         packet::{Header, LongType, PacketNumber},
     };
+    use std::sync::Arc;
+
+    #[derive(Default)]
+    struct ObservedTokens(Mutex<Vec<StoredToken>>);
+
+    impl TokenStore for ObservedTokens {
+        fn insert(&self, _: &str, _: Version, token: StoredToken) {
+            self.0.lock().push(token);
+        }
+
+        fn take(&self, _: &str, _: Version) -> Option<StoredToken> {
+            self.0.lock().pop()
+        }
+    }
+
+    #[test]
+    fn received_tokens_are_bounded_and_detached_before_storage() {
+        for length in [
+            64,
+            usize::from(crate::proto::MAX_UDP_PAYLOAD),
+            usize::from(crate::proto::MAX_UDP_PAYLOAD) + 1,
+        ] {
+            let mut pair = Pair::default();
+            let (client, _) = pair.connect();
+            let now = pair.time;
+            let conn = pair.client_conn_mut(client);
+            let store = Arc::new(ObservedTokens::default());
+            let ConnectionSide::Client { token_store, .. } = &mut conn.side else {
+                panic!("client")
+            };
+            *token_store = store.clone();
+            let mut encoded = Vec::new();
+            frame::NewToken {
+                token: Bytes::from(vec![7; length]),
+            }
+            .encode(&mut encoded);
+            let backing = rama_core::bytes::BytesMut::from(encoded.as_slice());
+            let start = backing.as_ptr() as usize;
+            let end = start + backing.len();
+            let packet = Packet {
+                header: Header::Short {
+                    spin: false,
+                    key_phase: false,
+                    dst_cid: conn.handshake_cid,
+                    number: PacketNumber::U8(0),
+                },
+                header_data: Bytes::new(),
+                payload: backing,
+            };
+            conn.process_payload(now, conn.path.remote, conn.path.local, 0, packet, None)
+                .unwrap();
+            let tokens = store.0.lock();
+            if length > usize::from(crate::proto::MAX_UDP_PAYLOAD) {
+                assert!(tokens.is_empty());
+            } else {
+                assert_eq!(tokens.len(), 1);
+                assert_eq!(tokens[0].token().as_ref(), vec![7; length]);
+                let retained = tokens[0].token().as_ptr() as usize;
+                assert!(retained < start || retained >= end);
+            }
+        }
+    }
 
     #[test]
     fn ack_frequency_frames_require_one_rtt() {

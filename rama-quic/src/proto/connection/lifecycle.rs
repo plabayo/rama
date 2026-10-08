@@ -8,6 +8,7 @@ use crate::proto::{
     TokenStore,
     config::{PreferredAddressPolicy, ServerConfig, TimeSource},
     connection::{ConnectionError, streams::StreamEvent},
+    token::bounded_token,
 };
 use rama_quic_proto::{ConnectionId, Side, Version, frame::Close, version::ClientVersionPolicy};
 
@@ -63,7 +64,12 @@ impl From<SideArgs> for ConnectionSide {
                 negotiation_offer,
                 time_source,
             } => {
-                let stored = token_store.take(&server_name, versions.original());
+                let stored = token_store
+                    .take(&server_name, versions.original())
+                    .and_then(|mut stored| {
+                        stored.token = bounded_token(&stored.token)?;
+                        Some(stored)
+                    });
                 let grease_quic_bit_early = stored
                     .as_ref()
                     .is_some_and(|stored| stored.allows_early_quic_bit_grease(time_source.now()));

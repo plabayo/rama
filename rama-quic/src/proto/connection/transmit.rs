@@ -9,7 +9,7 @@ use rama_core::{
 };
 
 use crate::proto::{
-    Duration, INITIAL_MTU, Instant, MIN_INITIAL_SIZE, TIMER_GRANULARITY, Transmit,
+    Duration, Instant, MIN_INITIAL_SIZE, TIMER_GRANULARITY, Transmit,
     connection::{
         Connection, State,
         migration::{PrevCid, PrevPath},
@@ -29,6 +29,16 @@ use rama_quic_proto::{
 };
 
 impl Connection {
+    fn loss_probe_size(&self, space: SpaceId, segment_size: usize) -> usize {
+        let minimum = if space == SpaceId::Initial {
+            PacketBuilder::initial_probe_size(self).unwrap_or(segment_size)
+        } else {
+            0
+        };
+        // A loss probe must still carry its token and a useful frame.
+        cmp::min(segment_size, minimum.max(usize::from(self.config.min_mtu)))
+    }
+
     /// Returns packets to transmit
     ///
     /// Connections should be polled for transmit after:
@@ -208,7 +218,7 @@ impl Connection {
                 // probe is clamped to the minimum MTU so it can get through a shrunken path.
                 let admitting = match self.spaces[space_id].loss_probes {
                     0 => segment_size,
-                    _ => cmp::min(segment_size, usize::from(INITIAL_MTU)),
+                    _ => self.loss_probe_size(space_id, segment_size),
                 };
 
                 // `total_sent` is updated at the end of this method, so what is already
@@ -341,7 +351,7 @@ impl Connection {
                     segment_size
                 } else {
                     self.spaces[space_id].loss_probes -= 1;
-                    cmp::min(segment_size, usize::from(INITIAL_MTU))
+                    self.loss_probe_size(space_id, segment_size)
                 };
 
                 buf_capacity += next_datagram_size_limit;
@@ -430,19 +440,15 @@ impl Connection {
                         &self.spaces[space_id],
                         buf,
                         &mut self.stats,
-                        buf_capacity,
+                        builder
+                            .max_size
+                            .saturating_sub(frame::ConnectionClose::SIZE_BOUND),
                     );
                 }
 
-                // Since there only 64 ACK frames there will always be enough space
-                // to encode the ConnectionClose frame too. However we still have the
-                // check here to prevent crashes if something changes.
-                debug_assert!(
-                    buf.len() + frame::ConnectionClose::SIZE_BOUND < builder.max_size,
-                    "ACKs should leave space for ConnectionClose"
-                );
                 let mut encoded = false;
-                if buf.len() + frame::ConnectionClose::SIZE_BOUND < builder.max_size {
+                if builder.max_size.saturating_sub(buf.len()) >= frame::ConnectionClose::SIZE_BOUND
+                {
                     encoded = true;
                     // The only place a close frame is written, so the only place one is
                     // counted.

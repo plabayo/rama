@@ -1665,21 +1665,126 @@ mod tests {
 
     #[test]
     fn max_stream_data_cannot_open_a_remote_stream_past_the_limit() {
-        let mut state = make(Side::Server);
-        let limit = state.max_remote[Dir::Bi as usize];
-        let id = StreamId::new(Side::Client, Dir::Bi, limit);
-        let error = state.received_max_stream_data(id, 1).unwrap_err();
-        assert_eq!(error.code, TransportErrorCode::STREAM_LIMIT_ERROR);
-        assert!(state.poll().is_none());
-        let conn_state = ConnState::Established;
-        assert!(
-            (Streams {
-                state: &mut state,
-                conn_state: &conn_state
-            })
-            .accept(Dir::Bi)
-            .is_none()
-        );
+        for side in [Side::Client, Side::Server] {
+            let limit = make(side).max_remote[Dir::Bi as usize];
+            for index in [limit, 1 << 40, rama_quic_proto::MAX_STREAM_COUNT - 1] {
+                let mut state = make(side);
+                let next = state.next_remote[Dir::Bi as usize];
+                let send_entries = state.send.len();
+                let recv_entries = state.recv.len();
+                let id = StreamId::new(!side, Dir::Bi, index);
+                let error = state.received_max_stream_data(id, 1).unwrap_err();
+                assert_eq!(error.code, TransportErrorCode::STREAM_LIMIT_ERROR);
+                assert_eq!(state.next_remote[Dir::Bi as usize], next);
+                assert_eq!(state.send.len(), send_entries);
+                assert_eq!(state.recv.len(), recv_entries);
+                assert!(state.poll().is_none());
+                let conn_state = ConnState::Established;
+                assert!(
+                    (Streams {
+                        state: &mut state,
+                        conn_state: &conn_state
+                    })
+                    .accept(Dir::Bi)
+                    .is_none()
+                );
+            }
+            let mut state = make(side);
+            let id = StreamId::new(!side, Dir::Bi, limit - 1);
+            state.received_max_stream_data(id, 1).unwrap();
+            assert_eq!(state.next_remote[Dir::Bi as usize], limit);
+        }
+    }
+
+    #[test]
+    fn unordered_transition_credits_duplicate_stream_data_once() {
+        for side in [Side::Client, Side::Server] {
+            for dir in [Dir::Bi, Dir::Uni] {
+                for termination in 0..3 {
+                    let mut state = make(side);
+                    let id = StreamId::new(!side, dir, 0);
+                    let initial_credit = state.local_max_data;
+                    for _ in 0..2 {
+                        let _transmit = state
+                            .received(
+                                frame::Stream {
+                                    id,
+                                    offset: 0,
+                                    fin: false,
+                                    data: Bytes::from_static(b"abcdef"),
+                                },
+                                6,
+                            )
+                            .unwrap();
+                    }
+                    let mut pending = Retransmits::default();
+                    let mut recv = RecvStream {
+                        id,
+                        state: &mut state,
+                        pending: &mut pending,
+                    };
+                    let mut chunks = recv.read(true).unwrap();
+                    assert_eq!(&chunks.next(3).unwrap().unwrap().bytes[..], b"abc");
+                    let _transmit = chunks.finalize();
+                    let mut chunks = recv.read(false).unwrap();
+                    let mut delivered = Vec::new();
+                    loop {
+                        match chunks.next(2) {
+                            Ok(Some(chunk)) => {
+                                assert_eq!(chunk.offset as usize, 3 + delivered.len());
+                                delivered.extend_from_slice(&chunk.bytes);
+                            }
+                            Err(crate::proto::ReadError::Blocked) => break,
+                            other => panic!("unexpected unfinished stream read: {other:?}"),
+                        }
+                    }
+                    let _transmit = chunks.finalize();
+                    assert_eq!(delivered, b"def");
+                    assert_eq!(state.local_max_data, initial_credit + 6);
+                    match termination {
+                        0 => {
+                            let _transmit = state
+                                .received(
+                                    frame::Stream {
+                                        id,
+                                        offset: 6,
+                                        fin: true,
+                                        data: Bytes::new(),
+                                    },
+                                    0,
+                                )
+                                .unwrap();
+                            let mut recv = RecvStream {
+                                id,
+                                state: &mut state,
+                                pending: &mut pending,
+                            };
+                            let mut chunks = recv.read(false).unwrap();
+                            assert!(chunks.next(1).unwrap().is_none());
+                            let _transmit = chunks.finalize();
+                        }
+                        1 => {
+                            let mut recv = RecvStream {
+                                id,
+                                state: &mut state,
+                                pending: &mut pending,
+                            };
+                            recv.stop(VarInt::from_u32(0)).unwrap();
+                        }
+                        _ => {
+                            let _transmit = state
+                                .received_reset(frame::ResetStream {
+                                    id,
+                                    error_code: VarInt::from_u32(0),
+                                    final_offset: VarInt::from_u32(6),
+                                })
+                                .unwrap();
+                        }
+                    }
+                    assert_eq!(state.local_max_data, initial_credit + 6);
+                }
+            }
+        }
     }
 
     #[test]

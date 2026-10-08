@@ -27,6 +27,7 @@ use crate::proto::{
         timer::Timer,
     },
     shared::EndpointEventInner,
+    token::bounded_token,
 };
 
 #[cfg(test)]
@@ -484,6 +485,7 @@ impl Connection {
                                 &packet.header_data,
                                 &packet.payload,
                             )
+                            || rem_cid == self.initial_dst_cid
                 {
                     trace!("discarding invalid Retry");
                     self.qlog_packet_dropped(now, info, DropReason::Invalid);
@@ -551,7 +553,9 @@ impl Connection {
                 let ConnectionSide::Client { ref mut token, .. } = self.side else {
                     unreachable!("we already short-circuited if we're server");
                 };
-                *token = packet.payload.freeze().split_to(token_len);
+                *token = bounded_token(&packet.payload[..token_len]).ok_or_else(|| {
+                    TransportError::PROTOCOL_VIOLATION("Retry token exceeds retention limit")
+                })?;
                 self.state = State::Handshake(state::Handshake {
                     expected_token: Bytes::new(),
                     rem_cid_set: false,

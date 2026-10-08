@@ -12,7 +12,7 @@ use super::{Connection, spaces::SentPacket};
 use crate::proto::{Instant, connection::ConnectionSide};
 use rama_quic_proto::{
     ConnectionId, TransportError,
-    frame::Close,
+    frame::{self, Close, FrameStruct},
     packet::{FIXED_BIT, Header, InitialHeader, LongType, PacketNumber, PartialEncode, SpaceId},
     profile::InitialFlightLayout,
 };
@@ -40,7 +40,7 @@ impl PacketBuilder {
     /// Write a new packet header to `buffer` and determine the packet's properties
     ///
     /// Marks the connection drained and returns `None` if the confidentiality limit would be
-    /// violated.
+    /// violated, or an Initial token leaves insufficient space for frames.
     #[expect(
         clippy::unwrap_used,
         clippy::unreachable,
@@ -146,6 +146,14 @@ impl PacketBuilder {
                 version,
             }),
         };
+        if let Header::Initial(initial) = &header
+            && initial
+                .encoded_len()
+                .is_none_or(|len| len > buffer_capacity.saturating_sub(buffer.len()))
+        {
+            Self::reject_initial_token(now, conn);
+            return None;
+        }
         let partial_encode = header.encode(buffer);
         if grease_quic_bit && conn.rng.random() {
             buffer[partial_encode.start] ^= FIXED_BIT;
@@ -175,7 +183,16 @@ impl PacketBuilder {
             buffer.len() + (sample_size + 4).saturating_sub(number.len() + tag_len),
             partial_encode.start + dst_cid.len() + 6,
         );
-        let max_size = buffer_capacity - tag_len;
+        let max_size = buffer_capacity.saturating_sub(tag_len);
+        // Initials need space for a close or a CRYPTO frame that makes progress.
+        let required_frame_space = Self::initial_frame_space();
+        if space_id == SpaceId::Initial
+            && (max_size < min_size || max_size.saturating_sub(buffer.len()) < required_frame_space)
+        {
+            buffer.truncate(partial_encode.start);
+            Self::reject_initial_token(now, conn);
+            return None;
+        }
         debug_assert!(max_size >= min_size);
 
         Some(Self {
@@ -190,6 +207,45 @@ impl PacketBuilder {
             ack_eliciting,
             _span: span,
         })
+    }
+
+    pub(super) fn initial_probe_size(conn: &Connection) -> Option<usize> {
+        let space = &conn.spaces[SpaceId::Initial];
+        let keys = space.crypto.as_ref()?;
+        let number = PacketNumber::new_at_least(
+            space.next_packet_number,
+            space.largest_acked_packet.unwrap_or(0),
+            conn.config.wire.packetization.min_packet_number_len(),
+        );
+        let header = InitialHeader {
+            src_cid: conn.handshake_cid,
+            dst_cid: conn.rem_cids.active(),
+            token: match &conn.side {
+                ConnectionSide::Client { token, .. } => token.clone(),
+                ConnectionSide::Server { .. } => Bytes::new(),
+            },
+            number,
+            version: conn.wire_version,
+        };
+        let tag = keys.local.packet.tag_len();
+        let frames = Self::initial_frame_space()
+            .max((keys.local.header.sample_size() + 4).saturating_sub(number.len() + tag));
+        header.encoded_len()?.checked_add(frames)?.checked_add(tag)
+    }
+
+    fn initial_frame_space() -> usize {
+        (frame::Crypto::SIZE_BOUND + 1).max(frame::ConnectionClose::SIZE_BOUND)
+    }
+
+    fn reject_initial_token(now: Instant, conn: &mut Connection) {
+        if let ConnectionSide::Client { token, .. } = &mut conn.side {
+            *token = Bytes::new();
+        }
+        conn.kill(
+            now,
+            TransportError::PROTOCOL_VIOLATION("Initial token leaves insufficient packet space")
+                .into(),
+        );
     }
 
     /// Append the minimum amount of padding to the packet such that, after encryption, the
@@ -358,3 +414,147 @@ impl PacketBuilder {
     )
 ))]
 mod tests;
+
+#[cfg(all(
+    test,
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "ring", feature = "aws-lc"))
+    )
+))]
+mod token_budget_tests {
+    use super::PacketBuilder;
+    use crate::proto::{Endpoint, EndpointConfig, Instant, connection::ConnectionSide};
+    use rama_core::bytes::Bytes;
+    use rama_quic_proto::{ConnectionId, Version, packet::SpaceId, version::ClientVersionPolicy};
+    use std::sync::Arc;
+
+    struct SuppliedToken(Bytes);
+
+    impl crate::proto::TokenStore for SuppliedToken {
+        fn insert(&self, _: &str, _: Version, _: crate::proto::StoredToken) {}
+
+        fn take(&self, _: &str, _: Version) -> Option<crate::proto::StoredToken> {
+            Some(crate::proto::StoredToken::new(
+                self.0.clone(),
+                crate::proto::UNIX_EPOCH,
+            ))
+        }
+    }
+
+    #[test]
+    fn custom_token_store_output_obeys_connection_retention_limits() {
+        let backing = Bytes::from(vec![7; 1024 * 1024]);
+        for length in [64, 65528] {
+            let token = backing.slice(100..100 + length);
+            let pointer = token.as_ptr();
+            let mut config = crate::test_helpers::client(&crate::test_helpers::identity());
+            config.set_token_store(Arc::new(SuppliedToken(token)));
+            let mut endpoint = Endpoint::new(
+                Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+                None,
+                true,
+                None,
+            );
+            let (_, conn) = endpoint
+                .connect(
+                    Instant::now(),
+                    config,
+                    "[::1]:4433".parse().unwrap(),
+                    "localhost",
+                )
+                .unwrap();
+            let ConnectionSide::Client { token, .. } = &conn.side else {
+                panic!("client")
+            };
+            if length == 64 {
+                assert_eq!(token.as_ref(), &[7; 64]);
+                assert_ne!(token.as_ptr(), pointer);
+            } else {
+                assert!(token.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn initial_token_remains_sendable_in_loss_probes() {
+        for min_mtu in [1200, 1500] {
+            let mut config = crate::test_helpers::client(&crate::test_helpers::identity());
+            let transport = Arc::get_mut(&mut config.transport).unwrap();
+            transport.set_initial_mtu(1500).set_min_mtu(min_mtu);
+            config.token_store.insert(
+                "localhost",
+                Version::V1,
+                crate::proto::StoredToken::new(vec![0; 1200].into(), crate::proto::UNIX_EPOCH),
+            );
+            let mut endpoint = Endpoint::new(
+                Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+                None,
+                true,
+                None,
+            );
+            let now = Instant::now();
+            let (_, mut conn) = endpoint
+                .connect(now, config, "[::1]:4433".parse().unwrap(), "localhost")
+                .unwrap();
+            let mut buffer = Vec::new();
+            assert!(conn.poll_transmit(now, 1, &mut buffer).is_some());
+            assert_eq!(conn.path.current_mtu(), 1500);
+            conn.spaces[SpaceId::Initial].loss_probes = 1;
+            buffer.clear();
+            assert!(conn.poll_transmit(now, 1, &mut buffer).is_some());
+            assert!(!conn.is_drained());
+            assert!(buffer.len() <= 1500);
+            assert_eq!(conn.path.current_mtu(), 1500);
+        }
+    }
+
+    #[test]
+    fn rejected_initial_tokens_preserve_prior_packets_and_release_bytes() {
+        for version in [Version::V1, Version::V2] {
+            for token_len in [1200, 65536] {
+                let mut config = crate::test_helpers::client(&crate::test_helpers::identity());
+                config
+                    .set_versions(ClientVersionPolicy::new(version).unwrap())
+                    .unwrap();
+                let mut endpoint = Endpoint::new(
+                    Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+                    None,
+                    true,
+                    None,
+                );
+                let now = Instant::now();
+                let (_, mut conn) = endpoint
+                    .connect(now, config, "[::1]:4433".parse().unwrap(), "localhost")
+                    .unwrap();
+                let ConnectionSide::Client { token, .. } = &mut conn.side else {
+                    panic!("client")
+                };
+                *token = Bytes::from(vec![0; token_len]);
+                let mut buffer = Vec::with_capacity(1300);
+                buffer.extend_from_slice(&[42; 100]);
+                let capacity = buffer.capacity();
+                assert!(
+                    PacketBuilder::new(
+                        now,
+                        SpaceId::Initial,
+                        ConnectionId::new(&[1; 20]),
+                        &mut buffer,
+                        1300,
+                        100,
+                        true,
+                        &mut conn
+                    )
+                    .is_none()
+                );
+                assert_eq!(buffer, &[42; 100]);
+                assert_eq!(buffer.capacity(), capacity);
+                let ConnectionSide::Client { token, .. } = &conn.side else {
+                    panic!("client")
+                };
+                assert!(token.is_empty());
+                assert!(conn.is_drained());
+            }
+        }
+    }
+}

@@ -603,6 +603,7 @@ fn recv_via_recvmmsg(
 }
 
 #[cfg(any(
+    test,
     target_os = "openbsd",
     target_os = "netbsd",
     target_os = "dragonfly",
@@ -617,29 +618,37 @@ pub(crate) fn recv_single(
     bufs: &mut [IoSliceMut<'_>],
     meta: &mut [RecvMeta],
 ) -> io::Result<usize> {
+    recv_single_with(bufs, meta, |hdr| {
+        // SAFETY: the prepared header owns writable buffers for the duration of the syscall.
+        unsafe { libc::recvmsg(io.as_raw_fd(), hdr, RECV_FLAGS) }
+    })
+}
+
+#[cfg(any(
+    test,
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly",
+    target_os = "redox",
+    target_os = "hurd",
+    target_os = "solaris",
+    target_os = "illumos",
+    target_vendor = "apple"
+))]
+fn recv_single_with(
+    bufs: &mut [IoSliceMut<'_>],
+    meta: &mut [RecvMeta],
+    mut receive: impl FnMut(&mut libc::msghdr) -> isize,
+) -> io::Result<usize> {
     // The kernel may initialize only the active sockaddr prefix.
     let mut name = MaybeUninit::<libc::sockaddr_storage>::zeroed();
     let mut ctrl = cmsg::Aligned(MaybeUninit::<[u8; cmsg::LEN]>::uninit());
-    // SAFETY: all-zero is a valid empty `msghdr`; `prepare_recv` initializes
-    // every field consumed by `recvmsg`.
+    // SAFETY: preparation initializes every field consumed by the receive syscall.
     let mut hdr = unsafe { mem::zeroed::<libc::msghdr>() };
-    prepare_recv(&mut bufs[0], &mut name, &mut ctrl, &mut hdr);
-    let n = loop {
-        // SAFETY: `prepare_recv` supplied writable buffers and matching lengths;
-        // they and the header remain alive for the duration of the call.
-        let n = unsafe { libc::recvmsg(io.as_raw_fd(), &mut hdr, RECV_FLAGS) };
-
-        if n >= 0 {
-            break n;
-        }
-
-        let e = io::Error::last_os_error();
-        match e.kind() {
-            // Retry receiving
-            io::ErrorKind::Interrupted => {}
-            _ => return Err(e),
-        }
-    };
+    let n = retry_if_interrupted(|| {
+        prepare_recv(&mut bufs[0], &mut name, &mut ctrl, &mut hdr);
+        receive(&mut hdr)
+    })?;
     let original_len = n as usize;
     meta[0] = decode_recv(
         &name,
@@ -796,7 +805,7 @@ pub(crate) fn decode_recv<M: cmsg::MsgHdr<ControlMessage = libc::cmsghdr>>(
     for cmsg in cmsg_iter {
         // SAFETY: `cmsg` was yielded from the live native buffer walked by
         // `cmsg_iter`.
-        unsafe { ctrl.decode(cmsg)? };
+        unsafe { ctrl.decode(&cmsg)? };
     }
 
     Ok(RecvMeta {
@@ -829,11 +838,11 @@ impl ControlMetadata {
     /// # Safety
     ///
     /// `cmsg` must come from a live native control-message buffer.
-    unsafe fn decode(&mut self, cmsg: &libc::cmsghdr) -> io::Result<()> {
+    unsafe fn decode(&mut self, cmsg: &cmsg::CMsg<'_, libc::cmsghdr>) -> io::Result<()> {
         match (cmsg.cmsg_level, cmsg.cmsg_type) {
             (libc::IPPROTO_IP, libc::IP_TOS) => {
                 // SAFETY: required by this function's contract.
-                self.ecn_bits = Some(unsafe { cmsg::decode::<u8, libc::cmsghdr>(cmsg) }?);
+                self.ecn_bits = Some(unsafe { cmsg.decode::<u8>() }?);
             }
             // FreeBSD uses IP_RECVTOS here, and we can be liberal because cmsgs are opt-in.
             #[cfg(not(any(
@@ -846,28 +855,27 @@ impl ControlMetadata {
             )))]
             (libc::IPPROTO_IP, libc::IP_RECVTOS) => {
                 // SAFETY: required by this function's contract.
-                self.ecn_bits = Some(unsafe { cmsg::decode::<u8, libc::cmsghdr>(cmsg) }?);
+                self.ecn_bits = Some(unsafe { cmsg.decode::<u8>() }?);
             }
             #[cfg(not(target_os = "redox",))]
             (libc::IPPROTO_IPV6, libc::IPV6_TCLASS) => {
                 // Temporary hack around broken macos ABI. Remove once upstream fixes it.
                 // https://bugreport.apple.com/web/?problemID=48761855
                 let byte_sized = cfg!(target_vendor = "apple")
-                    && cmsg::CMsgHdr::len(cmsg)
+                    && cmsg::CMsgHdr::len(&**cmsg)
                         == <libc::cmsghdr as cmsg::CMsgHdr>::cmsg_len(size_of::<u8>());
                 if byte_sized {
                     // SAFETY: required by this function's contract.
-                    self.ecn_bits = Some(unsafe { cmsg::decode::<u8, libc::cmsghdr>(cmsg) }?);
+                    self.ecn_bits = Some(unsafe { cmsg.decode::<u8>() }?);
                 } else {
                     // SAFETY: required by this function's contract.
-                    self.ecn_bits =
-                        Some(unsafe { cmsg::decode::<libc::c_int, libc::cmsghdr>(cmsg) }? as u8);
+                    self.ecn_bits = Some(unsafe { cmsg.decode::<libc::c_int>() }? as u8);
                 }
             }
             #[cfg(any(target_os = "linux", target_os = "android"))]
             (libc::IPPROTO_IP, libc::IP_PKTINFO) => {
                 // SAFETY: required by this function's contract.
-                let pktinfo = unsafe { cmsg::decode::<libc::in_pktinfo, libc::cmsghdr>(cmsg) }?;
+                let pktinfo = unsafe { cmsg.decode::<libc::in_pktinfo>() }?;
                 self.dst_ip = Some(IpAddr::V4(Ipv4Addr::from(
                     pktinfo.ipi_addr.s_addr.to_ne_bytes(),
                 )));
@@ -881,13 +889,13 @@ impl ControlMetadata {
             ))]
             (libc::IPPROTO_IP, libc::IP_RECVDSTADDR) => {
                 // SAFETY: required by this function's contract.
-                let in_addr = unsafe { cmsg::decode::<libc::in_addr, libc::cmsghdr>(cmsg) }?;
+                let in_addr = unsafe { cmsg.decode::<libc::in_addr>() }?;
                 self.dst_ip = Some(IpAddr::V4(Ipv4Addr::from(in_addr.s_addr.to_ne_bytes())));
             }
             #[cfg(not(any(target_os = "redox", target_os = "hurd")))]
             (libc::IPPROTO_IPV6, libc::IPV6_PKTINFO) => {
                 // SAFETY: required by this function's contract.
-                let pktinfo = unsafe { cmsg::decode::<libc::in6_pktinfo, libc::cmsghdr>(cmsg) }?;
+                let pktinfo = unsafe { cmsg.decode::<libc::in6_pktinfo>() }?;
                 self.dst_ip = Some(IpAddr::V6(Ipv6Addr::from(pktinfo.ipi6_addr.s6_addr)));
                 #[cfg(target_os = "android")]
                 {
@@ -901,7 +909,7 @@ impl ControlMetadata {
             #[cfg(any(target_os = "linux", target_os = "android"))]
             (libc::IPPROTO_IP, IP_RECV_ORIGINAL_DESTINATION) => {
                 // SAFETY: required by this function's contract.
-                let addr = unsafe { cmsg::decode::<libc::sockaddr_in, libc::cmsghdr>(cmsg) }?;
+                let addr = unsafe { cmsg.decode::<libc::sockaddr_in>() }?;
                 self.original_destination = Some(SocketAddr::V4(SocketAddrV4::new(
                     Ipv4Addr::from(addr.sin_addr.s_addr.to_ne_bytes()),
                     u16::from_be(addr.sin_port),
@@ -910,7 +918,7 @@ impl ControlMetadata {
             #[cfg(any(target_os = "linux", target_os = "android"))]
             (libc::IPPROTO_IPV6, IPV6_RECV_ORIGINAL_DESTINATION) => {
                 // SAFETY: required by this function's contract.
-                let addr = unsafe { cmsg::decode::<libc::sockaddr_in6, libc::cmsghdr>(cmsg) }?;
+                let addr = unsafe { cmsg.decode::<libc::sockaddr_in6>() }?;
                 self.original_destination = Some(SocketAddr::V6(SocketAddrV6::new(
                     Ipv6Addr::from(addr.sin6_addr.s6_addr),
                     u16::from_be(addr.sin6_port),
@@ -921,12 +929,12 @@ impl ControlMetadata {
             #[cfg(any(target_os = "linux", target_os = "android"))]
             (libc::SOL_UDP, libc::UDP_GRO) => {
                 // SAFETY: required by this function's contract.
-                self.stride = unsafe { cmsg::decode::<libc::c_int, libc::cmsghdr>(cmsg) }? as usize;
+                self.stride = unsafe { cmsg.decode::<libc::c_int>() }? as usize;
             }
             #[cfg(any(target_os = "linux", target_os = "android"))]
             (libc::SOL_SOCKET, libc::SCM_TIMESTAMPNS) => {
                 // SAFETY: required by this function's contract.
-                let ts = unsafe { cmsg::decode::<libc::timespec, libc::cmsghdr>(cmsg) }?;
+                let ts = unsafe { cmsg.decode::<libc::timespec>() }?;
                 let secs = u64::try_from(ts.tv_sec).unwrap_or(0);
                 let nsecs = u32::try_from(ts.tv_nsec).unwrap_or(0);
                 self.timestamp = Some(Duration::new(secs, nsecs));
@@ -1085,7 +1093,92 @@ pub(crate) fn retry_if_interrupted(mut f: impl FnMut() -> isize) -> io::Result<i
 
 #[cfg(test)]
 mod tests {
+    use std::net::UdpSocket;
+
     use super::*;
+
+    #[cfg(any(target_vendor = "apple", target_os = "linux"))]
+    #[test]
+    fn interrupted_single_receive_restores_all_buffer_capacities() {
+        let mut bytes = [0_u8; 8];
+        let mut bufs = [IoSliceMut::new(&mut bytes)];
+        let mut meta = [RecvMeta::default()];
+        let mut attempts = 0;
+        let result = recv_single_with(&mut bufs, &mut meta, |hdr| {
+            attempts += 1;
+            assert_eq!(
+                hdr.msg_namelen as usize,
+                size_of::<libc::sockaddr_storage>()
+            );
+            assert_eq!(hdr.msg_controllen as usize, cmsg::LEN);
+            assert_eq!(hdr.msg_flags, 0);
+            assert_eq!(hdr.msg_iovlen, 1);
+            if attempts == 1 {
+                hdr.msg_namelen = 0;
+                hdr.msg_controllen = 0;
+                hdr.msg_flags = libc::MSG_TRUNC;
+                hdr.msg_iovlen = 0;
+                #[cfg(target_vendor = "apple")]
+                // SAFETY: the platform exposes a live thread-local errno slot.
+                let errno = unsafe { libc::__error() };
+                #[cfg(target_os = "linux")]
+                // SAFETY: the platform exposes a live thread-local errno slot.
+                let errno = unsafe { libc::__errno_location() };
+                // SAFETY: the slot returned by libc belongs to the current thread.
+                unsafe { *errno = libc::EINTR };
+                return -1;
+            }
+            assert_eq!(attempts, 2);
+            // SAFETY: preparation supplied aligned writable sockaddr storage.
+            unsafe {
+                hdr.msg_name
+                    .cast::<libc::sockaddr_storage>()
+                    .write(storage_v4(Ipv4Addr::LOCALHOST, 1234));
+            }
+            hdr.msg_controllen = 0;
+            1
+        })
+        .unwrap();
+        assert_eq!(result, 1);
+        assert_eq!(attempts, 2);
+        assert_eq!(meta[0].len, 1);
+        assert!(!meta[0].truncated);
+    }
+
+    #[test]
+    fn single_receive_reports_truncation_then_would_block() {
+        let receiver = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        sender
+            .send_to(&[7; 32], receiver.local_addr().unwrap())
+            .unwrap();
+        let mut bytes = [0; 8];
+        let mut bufs = [IoSliceMut::new(&mut bytes)];
+        let mut meta = [RecvMeta::default()];
+        let socket = SockRef::from(&receiver);
+        assert_eq!(recv_single(&socket, &mut bufs, &mut meta).unwrap(), 1);
+        assert_eq!(meta[0].len, 8);
+        assert!(meta[0].truncated);
+        assert_eq!(&*bufs[0], &[7; 8]);
+        receiver.set_nonblocking(true).unwrap();
+        assert_eq!(
+            recv_single(&socket, &mut bufs, &mut meta)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        receiver.set_nonblocking(false).unwrap();
+        sender
+            .send_to(&[9; 3], receiver.local_addr().unwrap())
+            .unwrap();
+        assert_eq!(recv_single(&socket, &mut bufs, &mut meta).unwrap(), 1);
+        assert_eq!(meta[0].len, 3);
+        assert!(!meta[0].truncated);
+        assert_eq!(&bufs[0][..3], &[9; 3]);
+    }
 
     /// Native storage for one address family, written through the same layout
     /// the kernel uses when it fills `msg_name`.

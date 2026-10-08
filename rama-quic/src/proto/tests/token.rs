@@ -2,6 +2,11 @@
 
 use std::assert_matches;
 
+use rama_quic_proto::{
+    packet::{FixedLengthConnectionIdParser, PartialDecode},
+    version::ClientVersionPolicy,
+};
+
 use parking_lot::Mutex;
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
 use wasm_bindgen_test::wasm_bindgen_test as test;
@@ -960,5 +965,225 @@ fn a_duplicate_initial_after_retry_or_refusal_is_a_fresh_attempt() {
         Some(ConnectionError::ConnectionClosed(close))
             if close.error_code == TransportErrorCode::CONNECTION_REFUSED => {}
         other => panic!("the client learns it was refused, not {other:?}"),
+    }
+}
+
+#[test]
+fn oversized_cached_initial_token() {
+    let _guard = subscribe();
+    for version in [Version::V1, Version::V2] {
+        for (token_len, mtu, fits) in [
+            (0, 1200, true),
+            (1080, 1200, true),
+            (1118, 1200, true),
+            (1119, 1200, true),
+            (1120, 1200, false),
+            (1140, 1200, false),
+            (1200, 1200, false),
+            (1200, 1500, true),
+        ] {
+            let mut config = client_config();
+            config
+                .set_versions(ClientVersionPolicy::new(version).unwrap())
+                .unwrap();
+            Arc::get_mut(&mut config.transport)
+                .unwrap()
+                .set_initial_mtu(mtu);
+            config.token_store.insert(
+                "localhost",
+                version,
+                StoredToken::new(vec![0; token_len].into(), UNIX_EPOCH),
+            );
+            let mut endpoint = Endpoint::new(
+                Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+                None,
+                true,
+                None,
+            );
+            let now = Instant::now();
+            let (_, mut conn) = endpoint
+                .connect(now, config, "[::1]:4433".parse().unwrap(), "localhost")
+                .unwrap();
+            let mut buf = Vec::new();
+            assert_eq!(
+                conn.poll_transmit(now, 1, &mut buf).is_some(),
+                fits,
+                "token {token_len}, MTU {mtu}"
+            );
+            if fits {
+                assert!(buf.len() <= mtu as usize);
+                assert!(conn.stats().frame_tx.crypto > 0);
+            } else {
+                assert_matches!(
+                    conn.poll(),
+                    Some(Event::ConnectionLost { reason: ConnectionError::TransportError(err) })
+                    if err.code == TransportErrorCode::PROTOCOL_VIOLATION
+                );
+                assert!(conn.poll_transmit(now, 1, &mut buf).is_none());
+                assert!(buf.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn oversized_retry_token() {
+    let _guard = subscribe();
+    for version in [Version::V1, Version::V2] {
+        for (token_len, fits) in [
+            (64, true),
+            (1118, true),
+            (1119, true),
+            (1120, false),
+            (1140, false),
+            (1200, false),
+        ] {
+            let address = "[::1]:4433".parse().unwrap();
+            let mut endpoint = Endpoint::new(
+                Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+                None,
+                true,
+                None,
+            );
+            let now = Instant::now();
+            let mut config = client_config();
+            config
+                .set_versions(ClientVersionPolicy::new(version).unwrap())
+                .unwrap();
+            let (_, mut conn) = endpoint.connect(now, config, address, "localhost").unwrap();
+            let mut buf = Vec::new();
+            let _transmit = conn.poll_transmit(now, 1, &mut buf).unwrap();
+            let (packet, _) = PartialDecode::new(
+                buf.as_slice().into(),
+                &FixedLengthConnectionIdParser::new(0),
+                DEFAULT_SUPPORTED_VERSIONS,
+                false,
+            )
+            .unwrap();
+            let initial = packet.initial_header().unwrap();
+            let header = Header::Retry {
+                src_cid: ConnectionId::new(&[1; 20]),
+                dst_cid: initial.src_cid,
+                version: initial.version,
+            };
+            let mut retry = Vec::new();
+            header.encode(&mut retry);
+            retry.resize(retry.len() + token_len, 0);
+            let tag = server_config()
+                .crypto
+                .initial()
+                .retry_tag(initial.version.into(), &initial.dst_cid, &retry)
+                .unwrap();
+            retry.extend_from_slice(&tag);
+            let Some(DatagramEvent::ConnectionEvent(_, event)) = endpoint.handle(
+                now,
+                address,
+                None,
+                None,
+                BytesMut::from(&retry[..]),
+                &mut buf,
+            ) else {
+                panic!("Retry must be routed to the client connection")
+            };
+            conn.handle_event(event);
+            let now = now + Duration::from_secs(1);
+            let crypto_before = conn.stats().frame_tx.crypto;
+            buf.clear();
+            assert_eq!(conn.poll_transmit(now, 1, &mut buf).is_some(), fits);
+            if fits {
+                assert!(conn.stats().frame_tx.crypto > crypto_before);
+                assert!(buf.len() <= 1200);
+            } else {
+                assert_matches!(
+                    conn.poll(),
+                    Some(Event::ConnectionLost { reason: ConnectionError::TransportError(err) })
+                    if err.code == TransportErrorCode::PROTOCOL_VIOLATION
+                );
+                assert!(conn.poll_transmit(now, 1, &mut buf).is_none());
+                assert!(buf.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn retry_source_must_change_the_initial_destination() {
+    for version in [Version::V1, Version::V2] {
+        for same_cid in [true, false] {
+            let address = "[::1]:4433".parse().unwrap();
+            let mut endpoint = Endpoint::new(
+                Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+                None,
+                true,
+                None,
+            );
+            let now = Instant::now();
+            let mut config = client_config();
+            config
+                .set_versions(ClientVersionPolicy::new(version).unwrap())
+                .unwrap();
+            let (_, mut conn) = endpoint.connect(now, config, address, "localhost").unwrap();
+            let mut buf = Vec::new();
+            let _transmit = conn.poll_transmit(now, 1, &mut buf).unwrap();
+            let (packet, _) = PartialDecode::new(
+                buf.as_slice().into(),
+                &FixedLengthConnectionIdParser::new(0),
+                DEFAULT_SUPPORTED_VERSIONS,
+                false,
+            )
+            .unwrap();
+            let initial = packet.initial_header().unwrap();
+            let mut changed = initial.dst_cid.to_vec();
+            changed[0] ^= 1;
+            let source = if same_cid {
+                initial.dst_cid
+            } else {
+                ConnectionId::new(&changed)
+            };
+            let mut retry = Vec::new();
+            Header::Retry {
+                src_cid: source,
+                dst_cid: initial.src_cid,
+                version: initial.version,
+            }
+            .encode(&mut retry);
+            retry.extend_from_slice(&[7; 8]);
+            let tag = server_config()
+                .crypto
+                .initial()
+                .retry_tag(initial.version.into(), &initial.dst_cid, &retry)
+                .unwrap();
+            retry.extend_from_slice(&tag);
+            let Some(DatagramEvent::ConnectionEvent(_, event)) = endpoint.handle(
+                now,
+                address,
+                None,
+                None,
+                BytesMut::from(&retry[..]),
+                &mut buf,
+            ) else {
+                panic!("Retry must be routed to the client connection");
+            };
+            conn.handle_event(event);
+            buf.clear();
+            let transmitted = conn.poll_transmit(now + Duration::from_secs(1), 1, &mut buf);
+            assert_eq!(
+                transmitted.is_some(),
+                !same_cid,
+                "version {version:?}, same CID {same_cid}"
+            );
+            if !same_cid {
+                let (packet, _) = PartialDecode::new(
+                    buf.as_slice().into(),
+                    &FixedLengthConnectionIdParser::new(0),
+                    DEFAULT_SUPPORTED_VERSIONS,
+                    false,
+                )
+                .unwrap();
+                let retried = packet.initial_header().unwrap();
+                assert_eq!(retried.dst_cid, source);
+                assert_eq!(&buf[retried.token_pos.clone()], &[7; 8]);
+            }
+        }
     }
 }

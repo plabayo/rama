@@ -4,7 +4,7 @@ use core::{cmp::Ordering, ops::Range};
 use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::{
-    ConnectionId, Version,
+    ConnectionId, VarInt, Version,
     coding::{self, BufExt, BufMutExt},
     crypto,
     version::{LongKind, Wire, WireVersion},
@@ -791,6 +791,16 @@ pub struct InitialHeader {
     pub version: WireVersion,
 }
 
+impl InitialHeader {
+    /// Encoded header bytes, or `None` if its token length is not representable.
+    pub fn encoded_len(&self) -> Option<usize> {
+        let token_length = VarInt::try_from(self.token.len()).ok()?;
+        self.token.len().checked_add(
+            9 + self.dst_cid.len() + self.src_cid.len() + token_length.size() + self.number.len(),
+        )
+    }
+}
+
 // An encoded packet number
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum PacketNumber {
@@ -1039,6 +1049,30 @@ impl SpaceId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_header_budget_covers_variable_length_fields() {
+        for version in [Version::V1, Version::V2] {
+            for cid_len in [0, 8, 20] {
+                for number in [PacketNumber::U8(0), PacketNumber::U32(0)] {
+                    for token_len in [0, 63, 64, 16383, 16384, 65527] {
+                        let initial = InitialHeader {
+                            dst_cid: ConnectionId::new(&[1; 20][..cid_len]),
+                            src_cid: ConnectionId::new(&[2; 20][..cid_len]),
+                            token: Bytes::from(alloc::vec![0; token_len]),
+                            number,
+                            version: version.to_wire().unwrap(),
+                        };
+                        let budget = initial.encoded_len().unwrap();
+                        let mut wire = alloc::vec![42; 100];
+                        let prefix = wire.len();
+                        Header::Initial(initial).encode(&mut wire);
+                        assert_eq!(wire.len() - prefix, budget);
+                    }
+                }
+            }
+        }
+    }
 
     fn check_pn(typed: PacketNumber, encoded: &[u8]) {
         let mut buf = Vec::new();
