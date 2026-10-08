@@ -1145,10 +1145,10 @@ mod tests {
         assert!(admits(&sender));
     }
 
-    /// Subscribers wake as the connection ends; after that its watch never fires again, so
+    /// Subscribers wake as the connection ends; after that nothing signals any more, so
     /// pool waiters cannot spin on it.
     #[tokio::test]
-    async fn an_ended_connection_watch_stays_pending() {
+    async fn an_ended_connection_stays_quiet() {
         let (sender, task) = one_stream_connection(65_535, answer_at_once()).await;
         let admission = sender.connection_admission();
         let before = admission.changed();

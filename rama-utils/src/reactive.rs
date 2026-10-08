@@ -1,17 +1,39 @@
 //! A lock-free-read value paired with a race-free change signal.
 
-use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::fmt;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use tokio::sync::{Notify, watch};
 
+#[cfg(not(all(loom, test)))]
+use {
+    parking_lot::Mutex,
+    std::sync::atomic::{AtomicBool, fence},
+};
+
+#[cfg(all(loom, test))]
+use loom::sync::atomic::{AtomicBool, fence};
+
+#[cfg(all(loom, test))]
+struct Mutex<T>(loom::sync::Mutex<T>);
+
+#[cfg(all(loom, test))]
+impl<T> Mutex<T> {
+    fn new(value: T) -> Self {
+        Self(loom::sync::Mutex::new(value))
+    }
+
+    fn lock(&self) -> loom::sync::MutexGuard<'_, T> {
+        self.0.lock().unwrap()
+    }
+}
+
 /// Woken, without a value, after a source it subscribed to changed.
 ///
-/// The source calls it synchronously from whatever changed it: wake and
-/// return. Never block, and never take a lock held while subscribing.
+/// The source calls it synchronously from whatever changed it, possibly under
+/// the source's own locks: only wake, never block or call into the source.
 pub trait ChangeListener: Send + Sync {
     /// The source changed.
     fn changed(&self);
@@ -28,11 +50,19 @@ impl ChangeListener for Notify {
 ///
 /// Listeners are held weakly: subscribing never keeps a listener alive, and
 /// dropped ones are pruned. Waking allocates nothing for up to four live
-/// listeners, and a source without listeners pays one atomic load.
-#[derive(Default)]
+/// listeners, and a source without listeners pays a fence and an atomic load.
 pub struct ChangeSignal {
     listening: AtomicBool,
     listeners: Mutex<SmallVec<[Weak<dyn ChangeListener>; 2]>>,
+}
+
+impl Default for ChangeSignal {
+    fn default() -> Self {
+        Self {
+            listening: AtomicBool::new(false),
+            listeners: Mutex::new(SmallVec::new()),
+        }
+    }
 }
 
 impl ChangeSignal {
@@ -43,19 +73,29 @@ impl ChangeSignal {
     }
 
     /// Wake `listener` after every later change, until it is dropped.
+    ///
+    /// A change made before this returns is seen by a check of the source
+    /// after it, or wakes `listener`.
     pub fn subscribe(&self, listener: Weak<dyn ChangeListener>) {
-        let mut listeners = self.listeners.lock();
-        // Prune before growing, so repeated subscribers never pile up.
-        if listeners.len() == listeners.capacity() {
-            listeners.retain(|listener| listener.strong_count() > 0);
+        {
+            let mut listeners = self.listeners.lock();
+            // Prune before growing, so repeated subscribers never pile up.
+            if listeners.len() == listeners.capacity() {
+                listeners.retain(|listener| listener.strong_count() > 0);
+            }
+            listeners.push(listener);
+            self.listening.store(true, Ordering::Relaxed);
         }
-        listeners.push(listener);
-        self.listening.store(true, Ordering::Release);
+        // Pairs with the fence in `notify`: of a change and a subscription
+        // racing, one sees the other.
+        fence(Ordering::SeqCst);
     }
 
-    /// Wake every live listener.
+    /// Wake every live listener. Call after changing the source.
     pub fn notify(&self) {
-        if !self.listening.load(Ordering::Acquire) {
+        // See `subscribe`.
+        fence(Ordering::SeqCst);
+        if !self.listening.load(Ordering::Relaxed) {
             return;
         }
         let mut live: SmallVec<[Arc<dyn ChangeListener>; 4]> = SmallVec::new();
@@ -69,7 +109,7 @@ impl ChangeSignal {
                 None => false,
             });
             self.listening
-                .store(!listeners.is_empty(), Ordering::Release);
+                .store(!listeners.is_empty(), Ordering::Relaxed);
         }
         // Outside the lock: a listener may subscribe again while woken.
         for listener in live {
@@ -243,7 +283,46 @@ impl<T: ReactiveRepr> Changed<T> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use super::*;
+    use loom::{sync::atomic::AtomicUsize, thread};
+
+    struct Flag(AtomicBool);
+
+    impl ChangeListener for Flag {
+        fn changed(&self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Subscribe-then-check: a change racing the first subscription is
+    /// either seen by the check or wakes the listener.
+    #[test]
+    fn a_first_subscriber_never_misses_a_concurrent_change() {
+        loom::model(|| {
+            let signal = Arc::new(ChangeSignal::new());
+            let source = Arc::new(AtomicUsize::new(0));
+            let listener = Arc::new(Flag(AtomicBool::new(false)));
+            let producer = {
+                let (signal, source) = (signal.clone(), source.clone());
+                thread::spawn(move || {
+                    source.store(1, Ordering::Release);
+                    signal.notify();
+                })
+            };
+            signal.subscribe(Arc::downgrade(&listener) as Weak<dyn ChangeListener>);
+            let seen = source.load(Ordering::Acquire);
+            producer.join().unwrap();
+            assert!(
+                seen == 1 || listener.0.load(Ordering::SeqCst),
+                "the change was neither seen nor signalled"
+            );
+        });
+    }
+}
+
+#[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
 
@@ -352,6 +431,24 @@ mod tests {
         signal.notify();
         signal.notify();
         assert!(listener.2.load(Ordering::Relaxed) >= 2);
+    }
+
+    #[tokio::test]
+    async fn a_notify_listener_wakes_every_waiting_task() {
+        let notify = Arc::new(Notify::new());
+        let signal = ChangeSignal::new();
+        signal.subscribe(Arc::downgrade(&notify) as Weak<dyn ChangeListener>);
+        let mut first = Box::pin(notify.notified());
+        let mut second = Box::pin(notify.notified());
+        first.as_mut().enable();
+        second.as_mut().enable();
+        signal.notify();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            first.await;
+            second.await;
+        })
+        .await
+        .expect("a change wakes every task that waits");
     }
 
     #[test]

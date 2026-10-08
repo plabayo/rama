@@ -174,3 +174,24 @@ impl ConnectionAdmissionPolicy for AdmissionPolicy {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn a_limit_raise_wakes_admission_subscribers() {
+        let max = Arc::new(MaxConcurrency::new(0));
+        let owner = AdmissionOwner::new(Arc::new(LocalStreams::new()), max.clone());
+        let admission = owner.policy();
+        let input = Extensions::new();
+        assert!(admission.try_acquire(&input).unwrap().is_none());
+        let changed = admission.changed();
+        max.set(1);
+        tokio::time::timeout(Duration::from_secs(5), changed)
+            .await
+            .expect("a raised peer limit wakes subscribers");
+        assert!(admission.try_acquire(&input).unwrap().is_some());
+    }
+}

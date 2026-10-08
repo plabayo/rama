@@ -826,7 +826,7 @@ impl Future for ConnectionDriver {
 
 impl Drop for ConnectionDriver {
     fn drop(&mut self) {
-        let (link, events, released) = {
+        let (link, events, released, budget_changed) = {
             let conn = &mut *self.conn.state.lock();
             // Discarding queued packets releases their budget charges.
             conn.packets.close();
@@ -849,8 +849,11 @@ impl Drop for ConnectionDriver {
                 conn.endpoint.clone(),
                 conn.take_endpoint_events_with_drained(),
                 released,
+                // Never polled again: deliver what terminating queued here.
+                std::mem::take(&mut conn.stream_budget_changed),
             )
         };
+        self.conn.shared.notify_stream_budget(budget_changed);
         link.deliver(events);
         link.release_senders(released);
     }
@@ -1049,12 +1052,17 @@ impl Connection {
     /// [`Endpoint::wait_idle()`]: crate::Endpoint::wait_idle
     /// [`close()`]: Connection::close
     pub fn close(&self, error_code: impl Into<VarInt>, reason: &[u8]) {
-        let conn = &mut *self.0.state.lock();
-        conn.close(
-            error_code.into(),
-            Bytes::copy_from_slice(reason),
-            &self.0.shared,
-        );
+        let budget_changed = {
+            let conn = &mut *self.0.state.lock();
+            conn.close(
+                error_code.into(),
+                Bytes::copy_from_slice(reason),
+                &self.0.shared,
+            );
+            std::mem::take(&mut conn.stream_budget_changed)
+        };
+        // Whether or not a driver still polls, subscribers learn of the close.
+        self.0.shared.notify_stream_budget(budget_changed);
     }
 
     /// Send a transport CONNECTION_CLOSE for protocol interoperability tests.
@@ -1063,10 +1071,14 @@ impl Connection {
     /// peers which finish with transport `NO_ERROR`, rather than an application code.
     #[cfg(feature = "test-utils")]
     pub fn close_transport(&self, error: rama_quic_proto::TransportError) {
-        let conn = &mut *self.0.state.lock();
-        conn.inner.close_transport(now(), error);
-        conn.terminate(ConnectionError::LocallyClosed, &self.0.shared);
-        conn.wake();
+        let budget_changed = {
+            let conn = &mut *self.0.state.lock();
+            conn.inner.close_transport(now(), error);
+            conn.terminate(ConnectionError::LocallyClosed, &self.0.shared);
+            conn.wake();
+            std::mem::take(&mut conn.stream_budget_changed)
+        };
+        self.0.shared.notify_stream_budget(budget_changed);
     }
 
     /// Wait for the handshake to be confirmed.
@@ -2236,15 +2248,19 @@ impl Drop for ConnectionRef {
             return;
         }
 
-        let conn = &mut *self.state.lock();
+        let budget_changed = {
+            let conn = &mut *self.state.lock();
 
-        if !conn.inner.is_closed() {
-            // If the driver is alive, it's just it and us, so we'd better shut it down. If it's
-            // not, we can't do any harm. If there were any streams being opened, then either
-            // the connection will be closed for an unrelated reason or a fresh reference will
-            // be constructed for the newly opened stream.
-            conn.implicit_close(&self.shared);
-        }
+            if !conn.inner.is_closed() {
+                // If the driver is alive, it's just it and us, so we'd better shut it down. If
+                // it's not, we can't do any harm. If there were any streams being opened, then
+                // either the connection will be closed for an unrelated reason or a fresh
+                // reference will be constructed for the newly opened stream.
+                conn.implicit_close(&self.shared);
+            }
+            std::mem::take(&mut conn.stream_budget_changed)
+        };
+        self.shared.notify_stream_budget(budget_changed);
     }
 }
 
@@ -2265,7 +2281,9 @@ pub(crate) struct ConnectionInner {
 impl ConnectionInner {
     /// Apply endpoint control; the caller holds the endpoint lock (see [`EndpointLink`]).
     pub(crate) fn control(&self, message: Control) {
-        let conn = &mut *self.state.lock();
+        let mut budget_changed = [false; 2];
+        let mut state = self.state.lock();
+        let conn = &mut *state;
         match message {
             Control::Proto(event) => conn.inner.handle_event(event),
             Control::Close {
@@ -2275,6 +2293,7 @@ impl ConnectionInner {
             } => {
                 conn.abandon_close |= abandon;
                 conn.close(error_code, reason, &self.shared);
+                budget_changed = std::mem::take(&mut conn.stream_budget_changed);
             }
             Control::Rebind(socket) => {
                 // A connection that may never send from the new address (a server, or a client
@@ -2290,6 +2309,9 @@ impl ConnectionInner {
             }
         }
         conn.wake();
+        drop(state);
+        // Outside the state lock; endpoint-then-connection order allows the wakers.
+        self.shared.notify_stream_budget(budget_changed);
     }
 
     /// The endpoint marked socket `failed` unusable: leave it now. A transmit still pending on
@@ -3701,7 +3723,7 @@ mod tests {
     use rama_udp::{
         DatagramCapabilities, DatagramError, DatagramMetadata, DatagramSender, DatagramSocket,
     };
-    use rama_utils::octets;
+    use rama_utils::{octets, reactive::ChangeWaiter};
 
     #[derive(Debug, Clone, Copy)]
     enum Failure {
@@ -3785,6 +3807,38 @@ mod tests {
     }
 
     /// Keep the real engine and its endpoint available without scheduling the connection driver.
+    fn unpolled_connection() -> (Connection, ConnectionDriver) {
+        let (connecting, driver, _alive, _packets, _endpoint) = unspawned_connection(
+            Failure::Datagram,
+            4,
+            PacketBudget::new(ReceiveQueueLimits::new(4, octets::kib(64)).unwrap()),
+            None,
+        );
+        (
+            Connection(connecting.conn.as_ref().unwrap().clone()),
+            driver,
+        )
+    }
+
+    /// Budget subscribers learn of a close that no driver poll follows.
+    #[tokio::test]
+    async fn closing_without_a_driver_poll_wakes_budget_subscribers() {
+        for drop_driver in [true, false] {
+            let (connection, driver) = unpolled_connection();
+            let waiter = ChangeWaiter::new();
+            connection.stream_budget_subscribe(Dir::Bi, waiter.listener());
+            if drop_driver {
+                drop(driver);
+            } else {
+                connection.close(0u32, b"closed");
+            }
+            assert!(connection.close_reason().is_some());
+            tokio::time::timeout(Duration::from_secs(5), waiter.wait())
+                .await
+                .expect("the close is signalled to budget subscribers");
+        }
+    }
+
     fn unspawned_connection(
         failure: Failure,
         packet_limit: usize,

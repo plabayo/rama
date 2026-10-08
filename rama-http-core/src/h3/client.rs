@@ -348,7 +348,7 @@ impl ConnectionAdmissionPolicy for RequestAdmission {
 
     // Requests, their bodies and upgraded tunnels hold a permit until they end. A closed,
     // draining or failed connection admits nothing more, so it is left for the pool to
-    // retire: busy only while `watch` can still report its work ending.
+    // retire: busy only while its subscribers can still learn of its work ending.
     fn in_use(&self) -> bool {
         self.lifetime.upgrade().is_some_and(|lifetime| {
             lifetime.admission.available_permits() < lifetime.max_requests

@@ -647,13 +647,14 @@ async fn first_available_selects_across_lanes_in_creation_order() {
 #[tokio::test]
 async fn least_loaded_selects_across_lanes() {
     let (pool, [older, newer]) = two_lanes(MuxSelection::LeastLoaded).await;
-    drop(older);
+    // The newer one idle: creation order alone would pick the busy older one.
+    drop(newer);
     assert_eq!(
         name_of(&pool).await,
-        "older",
+        "newer",
         "an idle connection beats a busy one"
     );
-    drop(newer);
+    drop(older);
 }
 
 #[tokio::test]

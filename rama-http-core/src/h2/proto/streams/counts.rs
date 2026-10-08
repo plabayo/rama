@@ -15,7 +15,7 @@ pub(crate) struct LocalStreams {
 }
 
 impl LocalStreams {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             live: AtomicUsize::new(0),
             retired: Reactive::new(0),
