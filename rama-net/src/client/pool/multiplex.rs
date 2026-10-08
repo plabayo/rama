@@ -41,12 +41,11 @@ use rama_core::futures::stream::FuturesUnordered;
 use rama_core::telemetry::tracing::trace;
 use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::macros::generate_set_and_with;
+use rama_utils::reactive::ChangeListener;
 use rama_utils::time::{AtomicInstant, now_monotonic_nanos};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
-use std::future::Future;
 use std::num::NonZeroUsize;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -1320,193 +1319,151 @@ where
         // and we find no connections for the given ID, return subscriptions
         // for stream-slot releases and advertised capacity changes on the
         // matching connections.
-        let attempt = |want_cap_changes: bool| -> Result<
-            ConnectionResult<_, _>,
-            (
-                FuturesUnordered<_>,
-                FuturesUnordered<_>,
-                FuturesUnordered<_>,
-            ),
-        > {
-            // Common case: an idle or shareable connection is listed in one of
-            // the request's lanes. Waiters registering below want the exact view.
-            let lanes = if want_cap_changes {
-                self.request_lanes(id, input)
-            } else {
-                match self.checkout_open(id, input) {
-                    Ok(conn) => {
-                        trace!(?id, "multiplex pool: reusing connection");
-                        #[cfg(feature = "opentelemetry")]
-                        if let Some((metrics, attrs)) = &metrics {
-                            metrics.reused_connections.add(1, attrs);
-                            metrics.streams.add(1, attrs);
-                            metrics
-                                .concurrent_streams
-                                .record(conn.inner.active.load(Ordering::Relaxed) as f64, attrs);
-                            metrics
-                                .active_connection_delay_nanoseconds
-                                .record(start.elapsed().as_nanos() as f64, attrs);
-                        }
-                        return Ok(ConnectionResult::Connection(conn));
-                    }
-                    Err(lanes) => *lanes,
-                }
-            };
-
-            // Only this id's bucket is touched under the lock; swept
-            // connections close after it is released.
-            let mut doomed = Vec::new();
-            let (same_id, saturated_bucket) = self.snapshot_exact(id, &lanes, want_cap_changes);
-
-            // Subscribe to same-id notifications BEFORE the capacity
-            // check below (subscribe-then-check), so a handout release or
-            // SETTINGS raise landing between both cannot be lost.
-            let stream_capacity: FuturesUnordered<_> = if want_cap_changes {
-                same_id
-                    .iter()
-                    .map(|conn| {
-                        let mut notified = Box::pin(conn.capacity_notify.clone().notified_owned());
-                        notified.as_mut().enable();
-                        notified
-                    })
-                    .collect()
-            } else {
-                FuturesUnordered::new()
-            };
-            let cap_changes: FuturesUnordered<_> = if want_cap_changes {
-                same_id
-                    .iter()
-                    .filter_map(|conn| conn.max_concurrency.clone())
-                    .map(|mc| {
-                        let mut changed = mc.watch();
-                        async move { changed.changed().await }
-                    })
-                    .collect()
-            } else {
-                FuturesUnordered::new()
-            };
-
-            let mut admission_changes: FuturesUnordered<_> = if want_cap_changes {
-                same_id
-                    .iter()
-                    .filter_map(|conn| conn.admission.as_ref().map(ConnectionAdmission::watch))
-                    // A candidate going broken is swept on the next look, which may free a slot.
-                    .chain(same_id.iter().filter_map(|conn| {
-                        let mut changed = conn
-                            .conn
-                            .extensions()
-                            .get_ref::<ConnectionHealthWatcher>()?
-                            .watch();
-                        let changed: Pin<Box<dyn Future<Output = ()> + Send>> =
-                            Box::pin(async move {
-                                _ = changed.changed().await;
-                            });
-                        Some(changed)
-                    }))
-                    .collect()
-            } else {
-                FuturesUnordered::new()
-            };
-
-            if let Some(conn) = select_and_admit(
-                &same_id,
-                id,
-                self.selection,
-                &self.rr_cursor,
-                self.max_concurrent_streams,
-                input,
-            ) {
-                trace!(?id, "multiplex pool: reusing connection");
-                // Room the bucket's index did not show is listed from now on.
-                conn.inner.relist();
-                #[cfg(feature = "opentelemetry")]
-                if let Some((metrics, attrs)) = &metrics {
-                    metrics.reused_connections.add(1, attrs);
-                    metrics.streams.add(1, attrs);
-                    metrics
-                        .concurrent_streams
-                        .record(conn.inner.active.load(Ordering::Relaxed) as f64, attrs);
-                    metrics
-                        .active_connection_delay_nanoseconds
-                        .record(start.elapsed().as_nanos() as f64, attrs);
-                }
-                return Ok(ConnectionResult::Connection(conn));
-            }
-
-            let saturation = !same_id.is_empty() || saturated_bucket;
-
-            // Claim a fresh connection slot, evicting the least-recently-used idle
-            // connection (any id) if the pool is at its total capacity.
-            let pool_slot = if let Ok(permit) = self.total_slots.clone().try_acquire_owned() {
-                Some(PoolSlot(permit))
-            } else {
-                // Stale connections of other ids may hold slots: sweep them
-                // out, then let their permits flow back through the semaphore
-                // (to the oldest queued waiter, if any) before evicting.
-                self.sweep_all(&mut self.storage.lock(), &mut doomed);
-                doomed.clear();
-                if let Ok(permit) = self.total_slots.clone().try_acquire_owned() {
-                    Some(PoolSlot(permit))
+        let attempt =
+            |want_cap_changes: bool| -> Result<ConnectionResult<_, _>, FuturesUnordered<_>> {
+                // Common case: an idle or shareable connection is listed in one of
+                // the request's lanes. Waiters registering below want the exact view.
+                let lanes = if want_cap_changes {
+                    self.request_lanes(id, input)
                 } else {
-                    let mut storage = self.storage.lock();
-                    if want_cap_changes {
-                        // Subscribed before eviction looks: a connection whose handouts
-                        // are gone becomes evictable once its remaining work ends.
-                        admission_changes.extend(
-                            storage
-                                .by_id
-                                .values()
-                                .flat_map(IdBucket::conns)
-                                .filter(|conn| {
-                                    conn.active.load(Ordering::Relaxed) == 0
-                                        && conn.in_use_unleased()
-                                })
-                                .filter_map(|conn| {
-                                    conn.admission.as_ref().map(ConnectionAdmission::watch)
-                                }),
-                        );
-                    }
-                    let evicted = Self::evict_lru_idle(&mut storage);
-                    drop(storage);
-                    match evicted {
-                        Some((evicted, slot)) => {
-                            drop(evicted);
+                    match self.checkout_open(id, input) {
+                        Ok(conn) => {
+                            trace!(?id, "multiplex pool: reusing connection");
                             #[cfg(feature = "opentelemetry")]
                             if let Some((metrics, attrs)) = &metrics {
-                                metrics.evicted_connections.add(1, attrs);
+                                metrics.reused_connections.add(1, attrs);
+                                metrics.streams.add(1, attrs);
+                                metrics.concurrent_streams.record(
+                                    conn.inner.active.load(Ordering::Relaxed) as f64,
+                                    attrs,
+                                );
+                                metrics
+                                    .active_connection_delay_nanoseconds
+                                    .record(start.elapsed().as_nanos() as f64, attrs);
                             }
-                            // Transfer the evicted idle connection's permit without
-                            // releasing it to the semaphore queue. This lets the
-                            // evictor make progress without stealing a permit that
-                            // was released for the oldest queued waiter.
-                            slot
+                            return Ok(ConnectionResult::Connection(conn));
                         }
-                        None => None,
+                        Err(lanes) => *lanes,
                     }
+                };
+
+                // Only this id's bucket is touched under the lock; swept
+                // connections close after it is released.
+                let mut doomed = Vec::new();
+                let (same_id, saturated_bucket) = self.snapshot_exact(id, &lanes, want_cap_changes);
+
+                // Subscribe to the lanes' connections BEFORE the capacity check
+                // below (subscribe-then-check), so a handout release or a change
+                // their sources push (a SETTINGS raise, returned transport credit,
+                // a connection going broken) landing between both cannot be lost.
+                let subscribe = |conn: &Arc<StoredConnection<C, ID>>| {
+                    let mut notified = Box::pin(conn.capacity_notify.clone().notified_owned());
+                    notified.as_mut().enable();
+                    notified
+                };
+                let mut capacity_changes: FuturesUnordered<_> = if want_cap_changes {
+                    same_id.iter().map(subscribe).collect()
+                } else {
+                    FuturesUnordered::new()
+                };
+
+                if let Some(conn) = select_and_admit(
+                    &same_id,
+                    id,
+                    self.selection,
+                    &self.rr_cursor,
+                    self.max_concurrent_streams,
+                    input,
+                ) {
+                    trace!(?id, "multiplex pool: reusing connection");
+                    // Room the bucket's index did not show is listed from now on.
+                    conn.inner.relist();
+                    #[cfg(feature = "opentelemetry")]
+                    if let Some((metrics, attrs)) = &metrics {
+                        metrics.reused_connections.add(1, attrs);
+                        metrics.streams.add(1, attrs);
+                        metrics
+                            .concurrent_streams
+                            .record(conn.inner.active.load(Ordering::Relaxed) as f64, attrs);
+                        metrics
+                            .active_connection_delay_nanoseconds
+                            .record(start.elapsed().as_nanos() as f64, attrs);
+                    }
+                    return Ok(ConnectionResult::Connection(conn));
                 }
+
+                let saturation = !same_id.is_empty() || saturated_bucket;
+
+                // Claim a fresh connection slot, evicting the least-recently-used idle
+                // connection (any id) if the pool is at its total capacity.
+                let pool_slot = if let Ok(permit) = self.total_slots.clone().try_acquire_owned() {
+                    Some(PoolSlot(permit))
+                } else {
+                    // Stale connections of other ids may hold slots: sweep them
+                    // out, then let their permits flow back through the semaphore
+                    // (to the oldest queued waiter, if any) before evicting.
+                    self.sweep_all(&mut self.storage.lock(), &mut doomed);
+                    doomed.clear();
+                    if let Ok(permit) = self.total_slots.clone().try_acquire_owned() {
+                        Some(PoolSlot(permit))
+                    } else {
+                        let mut storage = self.storage.lock();
+                        if want_cap_changes {
+                            // Subscribed before eviction looks: a connection whose handouts
+                            // are gone becomes evictable once its remaining work ends.
+                            capacity_changes.extend(
+                                storage
+                                    .by_id
+                                    .values()
+                                    .flat_map(IdBucket::conns)
+                                    .filter(|conn| {
+                                        conn.active.load(Ordering::Relaxed) == 0
+                                            && conn.in_use_unleased()
+                                    })
+                                    .map(subscribe),
+                            );
+                        }
+                        let evicted = Self::evict_lru_idle(&mut storage);
+                        drop(storage);
+                        match evicted {
+                            Some((evicted, slot)) => {
+                                drop(evicted);
+                                #[cfg(feature = "opentelemetry")]
+                                if let Some((metrics, attrs)) = &metrics {
+                                    metrics.evicted_connections.add(1, attrs);
+                                }
+                                // Transfer the evicted idle connection's permit without
+                                // releasing it to the semaphore queue. This lets the
+                                // evictor make progress without stealing a permit that
+                                // was released for the oldest queued waiter.
+                                slot
+                            }
+                            None => None,
+                        }
+                    }
+                };
+
+                if let Some(pool_slot) = pool_slot {
+                    trace!(
+                        ?id,
+                        "multiplex pool: no connection with capacity, returning create permit"
+                    );
+                    #[cfg(feature = "opentelemetry")]
+                    if let Some((metrics, attrs)) = &metrics {
+                        if saturation {
+                            metrics.saturation_created_connections.add(1, attrs);
+                        }
+                        metrics
+                            .active_connection_delay_nanoseconds
+                            .record(start.elapsed().as_nanos() as f64, attrs);
+                    }
+                    #[cfg(not(feature = "opentelemetry"))]
+                    let _ = saturation;
+                    return Ok(ConnectionResult::CreatePermit(pool_slot));
+                }
+
+                Err(capacity_changes)
             };
-
-            if let Some(pool_slot) = pool_slot {
-                trace!(
-                    ?id,
-                    "multiplex pool: no connection with capacity, returning create permit"
-                );
-                #[cfg(feature = "opentelemetry")]
-                if let Some((metrics, attrs)) = &metrics {
-                    if saturation {
-                        metrics.saturation_created_connections.add(1, attrs);
-                    }
-                    metrics
-                        .active_connection_delay_nanoseconds
-                        .record(start.elapsed().as_nanos() as f64, attrs);
-                }
-                #[cfg(not(feature = "opentelemetry"))]
-                let _ = saturation;
-                return Ok(ConnectionResult::CreatePermit(pool_slot));
-            }
-
-            Err((stream_capacity, cap_changes, admission_changes))
-        };
 
         // Keep one semaphore acquisition alive across unrelated capacity
         // notifications. Recreating it after every wake would cancel and
@@ -1524,10 +1481,9 @@ where
             // to make sure we don't miss a notify while our check logic is running
             let mut notified = std::pin::pin!(self.notify.notified());
             notified.as_mut().enable();
-            let (mut stream_capacity, mut cap_changes, mut admission_changes) = match attempt(true)
-            {
+            let mut capacity_changes = match attempt(true) {
                 Ok(result) => return Ok(result),
-                Err(cap_changes) => cap_changes,
+                Err(changes) => changes,
             };
 
             trace!(?id, "multiplex pool: saturated, waiting for capacity");
@@ -1536,9 +1492,7 @@ where
             // permit that a queued waiter can take from the evicting caller.
             tokio::select! {
                 _ = notified => {}
-                _ = stream_capacity.next(), if !stream_capacity.is_empty() => {}
-                _ = cap_changes.next(), if !cap_changes.is_empty() => {}
-                _ = admission_changes.next(), if !admission_changes.is_empty() => {}
+                _ = capacity_changes.next(), if !capacity_changes.is_empty() => {}
                 permit = &mut total_slot_wait => {
                     let Ok(permit) = permit else {
                         // the pool never closes its semaphore; treat as spurious
@@ -1590,8 +1544,22 @@ where
         // Reuse requirements are read once: the connection keeps its lane.
         let reuse = conn.extensions().get_ref::<ConnectionReuse>();
         let lane = LaneKey::of_connection(reuse).filter(|_| id.is_reusable());
+        // One listener per connection: its sources push changes to the
+        // connection's waiters, without a task or an allocation per change.
+        let capacity_notify = Arc::new(Notify::new());
+        let listener: Weak<dyn ChangeListener> = Arc::downgrade(&capacity_notify) as Weak<Notify>;
+        let max_concurrency = conn.extensions().get_arc::<MaxConcurrency>();
+        if let Some(max_concurrency) = &max_concurrency {
+            max_concurrency.subscribe(listener.clone());
+        }
+        if let Some(health) = conn.extensions().get_ref::<ConnectionHealthWatcher>() {
+            health.subscribe(listener.clone());
+        }
+        if let Some(admission) = conn.extensions().self_get_ref::<ConnectionAdmission>() {
+            admission.subscribe(listener);
+        }
         let conn = Arc::new(StoredConnection {
-            max_concurrency: conn.extensions().get_arc::<MaxConcurrency>(),
+            max_concurrency,
             admission: conn
                 .extensions()
                 .self_get_ref::<ConnectionAdmission>()
@@ -1602,7 +1570,7 @@ where
             seq: self.next_seq.fetch_add(1, Ordering::Relaxed),
             stream_cap: self.max_concurrent_streams,
             active: AtomicUsize::new(1),
-            capacity_notify: Arc::new(Notify::new()),
+            capacity_notify,
             notify: self.notify.clone(),
             last_idle: AtomicInstant::now(),
             pool_slot: Mutex::new(ConnectionSlot {
@@ -1708,6 +1676,7 @@ mod tests {
         EstablishedClientConnection,
     };
     use rama_core::{ServiceInput, service::service_fn};
+    use rama_utils::reactive::ChangeSignal;
     use std::assert_matches;
     use std::{
         convert::Infallible,
@@ -1761,19 +1730,19 @@ mod tests {
         reserved: AtomicUsize,
         failed: AtomicBool,
         in_use: AtomicBool,
-        changed: Arc<Notify>,
+        changed: ChangeSignal,
         storage: Weak<Mutex<Storage<Conn, TestId>>>,
     }
 
     impl AdmissionState {
         fn set_limit(&self, limit: usize) {
             self.limit.store(limit, Ordering::SeqCst);
-            self.changed.notify_waiters();
+            self.changed.notify();
         }
 
         fn set_in_use(&self, in_use: bool) {
             self.in_use.store(in_use, Ordering::SeqCst);
-            self.changed.notify_waiters();
+            self.changed.notify();
         }
     }
 
@@ -1786,7 +1755,7 @@ mod tests {
     impl Drop for Reservation {
         fn drop(&mut self) {
             self.0.reserved.fetch_sub(1, Ordering::SeqCst);
-            self.0.changed.notify_waiters();
+            self.0.changed.notify();
         }
     }
 
@@ -1822,10 +1791,8 @@ mod tests {
             Ok(Some(ConnectionAdmissionLease::new(reservation, binding)))
         }
 
-        fn watch(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
-            let mut changed = Box::pin(self.0.changed.clone().notified_owned());
-            changed.as_mut().enable();
-            changed
+        fn subscribe(&self, listener: Weak<dyn ChangeListener>) {
+            self.0.changed.subscribe(listener);
         }
 
         fn in_use(&self) -> bool {
@@ -1842,7 +1809,7 @@ mod tests {
             reserved: AtomicUsize::new(0),
             failed: AtomicBool::new(false),
             in_use: AtomicBool::new(false),
-            changed: Arc::new(Notify::new()),
+            changed: ChangeSignal::new(),
             storage: Arc::downgrade(&pool.storage),
         });
         let conn = Conn {
@@ -2266,8 +2233,12 @@ mod tests {
                 Ok(reservation)
             }
 
-            fn watch(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
-                self.inner.watch()
+            fn subscribe(&self, listener: Weak<dyn ChangeListener>) {
+                self.inner.subscribe(listener);
+            }
+
+            fn in_use(&self) -> bool {
+                self.inner.in_use()
             }
         }
 
@@ -2352,7 +2323,7 @@ mod tests {
             reserved: AtomicUsize::new(0),
             failed: AtomicBool::new(false),
             in_use: AtomicBool::new(false),
-            changed: Arc::new(Notify::new()),
+            changed: ChangeSignal::new(),
             storage: Weak::new(),
         });
         let conn = Conn {

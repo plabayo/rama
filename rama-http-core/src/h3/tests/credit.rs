@@ -307,7 +307,7 @@ async fn draining_connection_wakes_admission_waiters_without_stream_credit() {
         let admission = sender.connection_admission();
         let first = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
         assert!(admission.in_use());
-        let changed = admission.watch();
+        let changed = admission.changed();
         assert!(admission.try_acquire(&Extensions::new()).unwrap().is_none());
         server.shutdown().unwrap();
         changed.await;
@@ -315,7 +315,7 @@ async fn draining_connection_wakes_admission_waiters_without_stream_credit() {
         // Its work goes on, but a draining connection is left for the pool to retire.
         assert!(!admission.in_use());
         // Nothing changes any more, so its watch cannot spin pool waiters.
-        let mut watch = pin!(admission.watch());
+        let mut watch = pin!(admission.changed());
         assert!(
             watch
                 .as_mut()
@@ -434,6 +434,28 @@ async fn closed_transports_are_never_busy() {
     drop(driver);
     drop(sender);
     pair.close().await;
+}
+
+/// Pool admission subscribers learn of a QUIC close pushed by the transport, before the
+/// HTTP/3 driver noticed it.
+#[tokio::test(start_paused = true)]
+async fn closing_the_transport_wakes_admission_subscribers() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (sender, driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let admission = sender.connection_admission();
+        let held = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
+        let changed = admission.changed();
+        pair.client.close(0u32, b"closed");
+        changed.await;
+        assert!(!admission.in_use());
+        drop((held, driver, sender));
+        pair.close().await;
+    })
+    .await
+    .unwrap();
 }
 
 /// A full pool whose only connection still holds work on a QUIC transport that closed lets a

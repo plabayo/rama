@@ -2,7 +2,7 @@
 
 use std::{
     marker::PhantomData,
-    pin::{Pin, pin},
+    pin::pin,
     sync::{Arc, Weak},
 };
 
@@ -34,7 +34,7 @@ use rama_quic::{
     BiStreamReservation, Connection as QuicConnection, ConnectionError as QuicConnectionError,
 };
 use rama_quic_proto::{Dir, Side};
-use rama_utils::reactive::Reactive;
+use rama_utils::reactive::{ChangeListener, Reactive};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::{
@@ -328,27 +328,22 @@ impl ConnectionAdmissionPolicy for RequestAdmission {
         Ok(Some(ConnectionAdmissionLease::new(ticket, binding)))
     }
 
-    fn watch(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+    fn subscribe(&self, listener: Weak<dyn ChangeListener>) {
         // Once ended or draining nothing changes any more, and its broken marking frees the
-        // waiters; an at once ready future would only spin them.
+        // waiters.
         let Some(lifetime) = self.lifetime.upgrade().filter(|lifetime| {
             lifetime.connection.close_reason().is_none()
                 && lifetime.shared.rejection(None).is_none()
         }) else {
-            return Box::pin(std::future::pending());
+            return;
         };
-        // Capture subscriptions before the pool tries to acquire, including
-        // local-permit releases that do not alter the transport's stream limit.
-        let mut local = lifetime.admission_changed.watch();
-        let mut transport = lifetime.connection.stream_budget_watch(Dir::Bi);
-        Box::pin(async move {
-            tokio::select! {
-                _ = local.changed() => (),
-                _ = transport.changed() => (),
-                _ = lifetime.connection.closed() => (),
-                _ = lifetime.shared.rejected(None) => (),
-            }
-        })
+        // Local-permit releases, which do not alter the transport's stream limit, peer
+        // credit and the close of the transport, and a GOAWAY or failure all push.
+        lifetime.admission_changed.subscribe(listener.clone());
+        lifetime
+            .connection
+            .stream_budget_subscribe(Dir::Bi, listener.clone());
+        lifetime.shared.subscribe_admission_end(listener);
     }
 
     // Requests, their bodies and upgraded tunnels hold a permit until they end. A closed,

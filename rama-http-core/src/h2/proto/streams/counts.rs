@@ -1,8 +1,8 @@
 use super::*;
 use rama_core::telemetry::tracing;
-use rama_utils::reactive::{Changed, Reactive};
+use rama_utils::reactive::{ChangeListener, Reactive};
 use std::sync::{
-    Arc,
+    Arc, Weak,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -26,9 +26,9 @@ impl LocalStreams {
         self.live.load(Ordering::Acquire)
     }
 
-    /// Subscribe to retirements.
-    pub(crate) fn watch(&self) -> Changed<usize> {
-        self.retired.watch()
+    /// Wake `listener` after every later retirement.
+    pub(crate) fn subscribe(&self, listener: Weak<dyn ChangeListener>) {
+        self.retired.subscribe(listener);
     }
 
     fn opened(&self) {

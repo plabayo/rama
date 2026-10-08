@@ -1,8 +1,130 @@
 //! A lock-free-read value paired with a race-free change signal.
 
+use parking_lot::Mutex;
+use smallvec::SmallVec;
+use std::fmt;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::watch;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Weak};
+use tokio::sync::{Notify, watch};
+
+/// Woken, without a value, after a source it subscribed to changed.
+///
+/// The source calls it synchronously from whatever changed it: wake and
+/// return. Never block, and never take a lock held while subscribing.
+pub trait ChangeListener: Send + Sync {
+    /// The source changed.
+    fn changed(&self);
+}
+
+/// Wakes the tasks waiting at this moment, as [`Notify::notify_waiters`].
+impl ChangeListener for Notify {
+    fn changed(&self) {
+        self.notify_waiters();
+    }
+}
+
+/// The listeners of one source, woken on every change.
+///
+/// Listeners are held weakly: subscribing never keeps a listener alive, and
+/// dropped ones are pruned. Waking allocates nothing for up to four live
+/// listeners, and a source without listeners pays one atomic load.
+#[derive(Default)]
+pub struct ChangeSignal {
+    listening: AtomicBool,
+    listeners: Mutex<SmallVec<[Weak<dyn ChangeListener>; 2]>>,
+}
+
+impl ChangeSignal {
+    /// Create a signal without listeners.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Wake `listener` after every later change, until it is dropped.
+    pub fn subscribe(&self, listener: Weak<dyn ChangeListener>) {
+        let mut listeners = self.listeners.lock();
+        // Prune before growing, so repeated subscribers never pile up.
+        if listeners.len() == listeners.capacity() {
+            listeners.retain(|listener| listener.strong_count() > 0);
+        }
+        listeners.push(listener);
+        self.listening.store(true, Ordering::Release);
+    }
+
+    /// Wake every live listener.
+    pub fn notify(&self) {
+        if !self.listening.load(Ordering::Acquire) {
+            return;
+        }
+        let mut live: SmallVec<[Arc<dyn ChangeListener>; 4]> = SmallVec::new();
+        {
+            let mut listeners = self.listeners.lock();
+            listeners.retain(|listener| match listener.upgrade() {
+                Some(listener) => {
+                    live.push(listener);
+                    true
+                }
+                None => false,
+            });
+            self.listening
+                .store(!listeners.is_empty(), Ordering::Release);
+        }
+        // Outside the lock: a listener may subscribe again while woken.
+        for listener in live {
+            listener.changed();
+        }
+    }
+}
+
+/// A source going away is its last change: listeners wake to see it.
+impl Drop for ChangeSignal {
+    fn drop(&mut self) {
+        self.notify();
+    }
+}
+
+impl fmt::Debug for ChangeSignal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChangeSignal")
+            .field("listeners", &self.listeners.lock().len())
+            .finish()
+    }
+}
+
+/// A [`ChangeListener`] that one task awaits: see [`Self::wait`].
+#[derive(Debug, Default)]
+pub struct ChangeWaiter {
+    notify: Notify,
+}
+
+impl ChangeWaiter {
+    /// Create a waiter to subscribe before checking the state it waits for.
+    #[must_use]
+    pub fn new() -> Arc<Self> {
+        Arc::default()
+    }
+
+    /// The waiter as a listener to subscribe.
+    #[must_use]
+    pub fn listener(self: &Arc<Self>) -> Weak<dyn ChangeListener> {
+        let weak: Weak<Self> = Arc::downgrade(self);
+        weak
+    }
+
+    /// Wait for a change since this waiter subscribed, or since the last wait.
+    pub async fn wait(&self) {
+        self.notify.notified().await;
+    }
+}
+
+impl ChangeListener for ChangeWaiter {
+    fn changed(&self) {
+        // A stored permit: a change before the wait starts is not lost.
+        self.notify.notify_one();
+    }
+}
 
 /// A value that can be stored in a [`Reactive`] as a `usize`.
 pub trait ReactiveRepr: Copy {
@@ -39,6 +161,7 @@ impl ReactiveRepr for usize {
 pub struct Reactive<T> {
     value: AtomicUsize,
     signal: watch::Sender<usize>,
+    changes: ChangeSignal,
     _repr: PhantomData<fn() -> T>,
 }
 
@@ -52,6 +175,7 @@ impl<T: ReactiveRepr> Reactive<T> {
         Self {
             value: AtomicUsize::new(bits),
             signal,
+            changes: ChangeSignal::new(),
             _repr: PhantomData,
         }
     }
@@ -72,6 +196,13 @@ impl<T: ReactiveRepr> Reactive<T> {
         // `send` errors only when there are no receivers, that's the idle case we
         // intentionally treat as a no-op.
         let _unused = self.signal.send(bits);
+        self.changes.notify();
+    }
+
+    /// Wake `listener` after every later [`Self::set`], without a task or an
+    /// allocation per change: see [`ChangeSignal`].
+    pub fn subscribe(&self, listener: Weak<dyn ChangeListener>) {
+        self.changes.subscribe(listener);
     }
 
     /// Subscribe to changes. Hold the returned [`Changed`] and loop
@@ -115,7 +246,6 @@ impl<T: ReactiveRepr> Changed<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     #[test]
     fn get_set_roundtrip() {
@@ -161,6 +291,87 @@ mod tests {
         let mut w = r.watch();
         r.set(2);
         assert_eq!(w.changed().await, Some(2));
+    }
+
+    #[derive(Default)]
+    struct Count(AtomicUsize);
+
+    impl ChangeListener for Count {
+        fn changed(&self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn subscribed_listeners_are_woken_until_dropped() {
+        let r = Reactive::<usize>::new(0);
+        let first = Arc::new(Count::default());
+        let second = Arc::new(Count::default());
+        r.subscribe(Arc::downgrade(&first) as Weak<dyn ChangeListener>);
+        r.subscribe(Arc::downgrade(&second) as Weak<dyn ChangeListener>);
+        r.set(1);
+        drop(second);
+        r.set(2);
+        assert_eq!(first.0.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            r.changes.listeners.lock().len(),
+            1,
+            "dropped listeners are pruned"
+        );
+    }
+
+    #[test]
+    fn repeated_subscriptions_do_not_pile_up() {
+        let signal = ChangeSignal::new();
+        let kept = Arc::new(Count::default());
+        signal.subscribe(Arc::downgrade(&kept) as Weak<dyn ChangeListener>);
+        for _ in 0..1000 {
+            let waiter = ChangeWaiter::new();
+            signal.subscribe(waiter.listener());
+        }
+        assert!(signal.listeners.lock().len() <= 2);
+        signal.notify();
+        assert_eq!(kept.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn a_listener_may_subscribe_again_while_woken() {
+        struct Resubscribe(Arc<ChangeSignal>, Weak<Self>, AtomicUsize);
+
+        impl ChangeListener for Resubscribe {
+            fn changed(&self) {
+                self.2.fetch_add(1, Ordering::Relaxed);
+                self.0.subscribe(self.1.clone() as Weak<dyn ChangeListener>);
+            }
+        }
+
+        let signal = Arc::new(ChangeSignal::new());
+        let listener =
+            Arc::new_cyclic(|weak| Resubscribe(signal.clone(), weak.clone(), AtomicUsize::new(0)));
+        signal.subscribe(Arc::downgrade(&listener) as Weak<dyn ChangeListener>);
+        signal.notify();
+        signal.notify();
+        assert!(listener.2.load(Ordering::Relaxed) >= 2);
+    }
+
+    #[test]
+    fn dropping_the_source_wakes_its_listeners() {
+        let r = Reactive::<usize>::new(0);
+        let listener = Arc::new(Count::default());
+        r.subscribe(Arc::downgrade(&listener) as Weak<dyn ChangeListener>);
+        drop(r);
+        assert_eq!(listener.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn a_change_before_the_wait_is_not_lost() {
+        let r = Reactive::<usize>::new(0);
+        let waiter = ChangeWaiter::new();
+        r.subscribe(waiter.listener());
+        r.set(1);
+        tokio::time::timeout(std::time::Duration::from_secs(5), waiter.wait())
+            .await
+            .expect("the change woke the waiter");
     }
 
     #[tokio::test]

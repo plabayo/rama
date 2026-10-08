@@ -4,7 +4,12 @@ use rama_core::{
     error::BoxError,
     extensions::{Extension, Extensions, TypeErasedExtension},
 };
-use std::{fmt, future::Future, pin::Pin, sync::Arc};
+use rama_utils::reactive::{ChangeListener, ChangeWaiter};
+use std::{
+    fmt,
+    future::Future,
+    sync::{Arc, Weak},
+};
 
 /// A transport's resources reserved for one pool handout.
 ///
@@ -53,8 +58,9 @@ impl fmt::Debug for ConnectionAdmissionLease {
 /// Unlike a concurrency limit, this reserves actual availability. A protocol can
 /// consume its typed reservation when it starts the request. Implementations
 /// must be nonblocking and must not reenter the pool. The pool calls
-/// [`Self::try_acquire`] outside its storage and admission locks; [`Self::watch`]
-/// and [`Self::in_use`] may run under them, so they only read state and subscribe.
+/// [`Self::try_acquire`] outside its storage and admission locks;
+/// [`Self::subscribe`] and [`Self::in_use`] may run under them, so they only
+/// read state and subscribe.
 pub trait ConnectionAdmissionPolicy: fmt::Debug + Send + Sync + 'static {
     /// Reserve one request's resources, or return `None` when currently exhausted.
     ///
@@ -69,21 +75,23 @@ pub trait ConnectionAdmissionPolicy: fmt::Debug + Send + Sync + 'static {
     fn try_acquire(&self, input: &Extensions)
     -> Result<Option<ConnectionAdmissionLease>, BoxError>;
 
-    /// Subscribe now to the next availability change.
+    /// Wake `listener` after every later availability change, until it is dropped.
     ///
-    /// Subscription must happen before this method returns, rather than when
-    /// the future is first polled. Wake for returned reservations, peer credit,
-    /// and terminal connection changes. Spurious notifications are permitted.
-    fn watch(&self) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+    /// Takes effect before it returns. Wake for returned reservations, peer
+    /// credit, the end of work [`Self::in_use`] reports, and the end of the
+    /// connection; after that, never again. Spurious wakes are permitted. Keep
+    /// listeners in a [`ChangeSignal`](rama_utils::reactive::ChangeSignal) or
+    /// subscribe them to the sources: a change then wakes them without a task
+    /// or an allocation. A source that only has an async change future
+    /// forwards it from a task that notifies such a signal.
+    fn subscribe(&self, listener: Weak<dyn ChangeListener>);
 
     /// Whether the connection still carries work no handout accounts for, such
     /// as an upgraded tunnel or a request body still being sent.
     ///
     /// The pool never treats such a connection as idle, so it is neither evicted
-    /// nor expired; [`Self::watch`] must also wake once this work ends.
-    fn in_use(&self) -> bool {
-        false
-    }
+    /// nor expired; subscribers must also wake once this work ends.
+    fn in_use(&self) -> bool;
 }
 
 /// Resource admission published on an established connection's extensions.
@@ -104,9 +112,17 @@ impl ConnectionAdmission {
         self.0.try_acquire(input)
     }
 
-    /// Subscribe before checking availability to avoid missing a returned credit.
-    pub fn watch(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        self.0.watch()
+    /// Wake `listener` after every later availability change, until it is dropped.
+    pub fn subscribe(&self, listener: Weak<dyn ChangeListener>) {
+        self.0.subscribe(listener);
+    }
+
+    /// Subscribe now: completes after the next availability change. Subscribe
+    /// before checking availability to avoid missing a returned credit.
+    pub fn changed(&self) -> impl Future<Output = ()> + Send + 'static {
+        let waiter = ChangeWaiter::new();
+        self.0.subscribe(waiter.listener());
+        async move { waiter.wait().await }
     }
 
     /// Whether the connection still carries work no handout accounts for.
@@ -119,7 +135,7 @@ impl ConnectionAdmission {
         input: &Extensions,
     ) -> Result<ConnectionAdmissionLease, BoxError> {
         loop {
-            let changed = self.watch();
+            let changed = self.changed();
             if let Some(lease) = self.try_acquire(input)? {
                 return Ok(lease);
             }

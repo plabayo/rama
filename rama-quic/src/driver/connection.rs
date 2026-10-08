@@ -21,7 +21,7 @@ use rama_core::{
 use rama_net::gate::{GateDirection, StreamGates};
 use rama_quic_proto::{ConnectionId, Dir, Side, StreamId, VarInt};
 use rama_udp::SendFailure;
-use rama_utils::reactive::{Changed, Reactive};
+use rama_utils::reactive::{ChangeListener, Changed, Reactive};
 use rustc_hash::FxHashMap;
 use tokio::sync::{Notify, futures::Notified, oneshot};
 
@@ -946,10 +946,17 @@ impl Connection {
     /// Subscribe before trying admission to observe newly available stream credit.
     ///
     /// Values are change revisions, not capacities. A signal means credit was
-    /// returned or increased, or the handshake finished; retry reservation or
-    /// inspect [`Self::available_streams`]. Acquisitions do not wake subscribers.
+    /// returned or increased, the handshake finished, or the connection closed;
+    /// retry reservation or inspect [`Self::available_streams`]. Acquisitions do
+    /// not wake subscribers.
     pub fn stream_budget_watch(&self, dir: Dir) -> Changed<usize> {
         self.0.shared.stream_budget_changes[dir as usize].watch()
+    }
+
+    /// Wake `listener` on every later signal of [`Self::stream_budget_watch`],
+    /// until it is dropped.
+    pub fn stream_budget_subscribe(&self, dir: Dir, listener: Weak<dyn ChangeListener>) {
+        self.0.shared.stream_budget_changes[dir as usize].subscribe(listener);
     }
 
     /// Accept the next incoming uni-directional stream
@@ -3485,6 +3492,9 @@ impl State {
         shared.handshake_confirmed.notify_waiters();
         wake_all_notify(&mut self.stopped);
         shared.closed.notify_waiters();
+        // Admission learns of the close with the next budget signal, sent
+        // outside the state lock.
+        self.stream_budget_changed = [true; 2];
     }
 
     fn close(&mut self, error_code: VarInt, reason: Bytes, shared: &Shared) {

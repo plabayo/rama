@@ -18,14 +18,10 @@ use rama_net::{
     },
     conn::MaxConcurrency,
 };
-use rama_utils::reactive::Reactive;
-use std::{
-    future::Future,
-    pin::Pin,
-    sync::{
-        Arc, Weak,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    },
+use rama_utils::reactive::{ChangeListener, Reactive};
+use std::sync::{
+    Arc, Weak,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 /// Per-connection admission state, shared by the connection task and its senders.
@@ -45,7 +41,7 @@ impl Admission {
 }
 
 /// Held by the connection task, the state's only owner: once the task ends, the pool's weak
-/// policy admits nothing more, and its waiters wake as the change signal goes away.
+/// policy admits nothing more, and its subscribers wake as the release signal goes away.
 #[derive(Debug)]
 pub(crate) struct AdmissionOwner(Arc<Admission>);
 
@@ -159,24 +155,17 @@ impl ConnectionAdmissionPolicy for AdmissionPolicy {
         Ok(Some(ConnectionAdmissionLease::new(reservation, binding)))
     }
 
-    fn watch(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+    fn subscribe(&self, listener: Weak<dyn ChangeListener>) {
         // The connection ended: nothing changes any more, and its broken marking frees the
-        // waiters; an at once ready future would only spin them.
+        // waiters.
         let Some(state) = self.0.upgrade() else {
-            return Box::pin(std::future::pending());
+            return;
         };
-        // Subscribe before the pool looks again, so no release, retirement, limit change or
-        // end of the connection (the release signal's owner drops) is missed.
-        let mut released = state.released.watch();
-        let mut retired = state.streams.watch();
-        let mut limit = state.max.watch();
-        Box::pin(async move {
-            tokio::select! {
-                _ = released.changed() => (),
-                _ = retired.changed() => (),
-                _ = limit.changed() => (),
-            }
-        })
+        // Releases, retirements, limit changes and the end of the connection (the release
+        // signal's owner drops) all push to the listener.
+        state.released.subscribe(listener.clone());
+        state.streams.subscribe(listener.clone());
+        state.max.subscribe(listener);
     }
 
     fn in_use(&self) -> bool {

@@ -3,7 +3,8 @@
 use std::io;
 
 use rama_core::extensions::{Extension, Extensions};
-use rama_utils::reactive::{Changed, Reactive, ReactiveRepr};
+use rama_utils::reactive::{ChangeListener, Changed, Reactive, ReactiveRepr};
+use std::sync::Weak;
 
 /// Check if the error is a connection error,
 /// in which case the error can be ignored.
@@ -87,6 +88,11 @@ impl ConnectionHealthWatcher {
     pub fn watch(&self) -> Changed<ConnectionHealth> {
         self.0.watch()
     }
+
+    /// Wake `listener` after every later health change, until it is dropped.
+    pub fn subscribe(&self, listener: Weak<dyn ChangeListener>) {
+        self.0.subscribe(listener);
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Copy, Eq, Default)]
@@ -145,6 +151,11 @@ impl MaxConcurrency {
     #[must_use]
     pub fn watch(&self) -> Changed<usize> {
         self.0.watch()
+    }
+
+    /// Wake `listener` after every later change, until it is dropped.
+    pub fn subscribe(&self, listener: Weak<dyn ChangeListener>) {
+        self.0.subscribe(listener);
     }
 }
 

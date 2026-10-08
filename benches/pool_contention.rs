@@ -17,17 +17,15 @@ use rama::{
         },
         conn::MaxConcurrency,
     },
+    utils::reactive::{ChangeListener, ChangeSignal},
 };
 use std::{
-    future::Future,
     num::NonZeroUsize,
-    pin::Pin,
     sync::{
-        Arc, LazyLock,
+        Arc, LazyLock, Weak,
         atomic::{AtomicUsize, Ordering},
     },
 };
-use tokio::sync::Notify;
 
 mod bench_alloc;
 
@@ -506,7 +504,7 @@ fn multiplex_mixed_class_hit(bencher: divan::Bencher, (resident, classes): (usiz
 #[derive(Debug)]
 struct Credit {
     available: AtomicUsize,
-    returned: Arc<Notify>,
+    returned: ChangeSignal,
 }
 
 #[derive(Debug, Clone, Extension)]
@@ -517,7 +515,7 @@ struct CreditLease(Arc<Credit>);
 impl Drop for CreditLease {
     fn drop(&mut self) {
         self.0.available.fetch_add(1, Ordering::AcqRel);
-        self.0.returned.notify_waiters();
+        self.0.returned.notify();
     }
 }
 
@@ -551,10 +549,12 @@ impl ConnectionAdmissionPolicy for CreditAdmission {
         }
     }
 
-    fn watch(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        let mut returned = Box::pin(self.0.returned.clone().notified_owned());
-        returned.as_mut().enable();
-        returned
+    fn subscribe(&self, listener: Weak<dyn ChangeListener>) {
+        self.0.returned.subscribe(listener);
+    }
+
+    fn in_use(&self) -> bool {
+        false
     }
 }
 
@@ -568,7 +568,7 @@ fn connection(streams: usize) -> ServiceInput<()> {
             .insert(ConnectionAdmission::new(CreditAdmission(Arc::new(
                 Credit {
                     available: AtomicUsize::new(streams),
-                    returned: Arc::new(Notify::new()),
+                    returned: ChangeSignal::new(),
                 },
             ))));
     }

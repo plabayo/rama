@@ -25,12 +25,15 @@ use rama_quic::{
     SendStream as QuicSendStream, StreamAbortHandle, TransportConfig,
 };
 use rama_quic_proto::{Dir, coding::Codec};
-use rama_utils::octets::{kib, mib};
+use rama_utils::{
+    octets::{kib, mib},
+    reactive::{ChangeListener, ChangeSignal},
+};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     pin::pin,
     sync::{
-        Arc,
+        Arc, Weak,
         atomic::{AtomicBool, Ordering},
     },
     task::{Context, Poll, Waker},
@@ -209,6 +212,8 @@ pub(crate) struct Shared {
     output: [Notify; 2],
     progress: Notify,
     request_rejected: Notify,
+    /// Pushed with `request_rejected`: a GOAWAY or a failure ends admission.
+    admission_ended: ChangeSignal,
     failure: Notify,
     control_ready: Notify,
     settings_ready: Notify,
@@ -281,6 +286,7 @@ impl Shared {
             output: [Notify::new(), Notify::new()],
             progress: Notify::new(),
             request_rejected: Notify::new(),
+            admission_ended: ChangeSignal::new(),
             failure: Notify::new(),
             control_ready: Notify::new(),
             settings_ready: Notify::new(),
@@ -347,6 +353,7 @@ impl Shared {
         self.push_ready.notify_waiters();
         self.failure.notify_waiters();
         self.request_rejected.notify_waiters();
+        self.admission_ended.notify();
         self.settings_ready.notify_waiters();
         for output in &self.output {
             output.notify_one();
@@ -370,6 +377,11 @@ impl Shared {
         self.goaway()
             .filter(|limit| id.is_none_or(|id| id >= *limit))
             .map(|_| Error::stream(Code::H3_REQUEST_REJECTED, "request excluded by GOAWAY"))
+    }
+
+    /// Wake `listener` once a GOAWAY or a failure ends request admission.
+    pub(crate) fn subscribe_admission_end(&self, listener: Weak<dyn ChangeListener>) {
+        self.admission_ended.subscribe(listener);
     }
 
     pub(crate) async fn rejected(&self, id: Option<u64>) -> Error {
@@ -1027,6 +1039,7 @@ pub(crate) async fn receive_uni(
                         shared.pushes.lock().reject_from(limit);
                     }
                     shared.request_rejected.notify_waiters();
+                    shared.admission_ended.notify();
                 }
                 if let FrameEvent::PriorityUpdate {
                     push,
