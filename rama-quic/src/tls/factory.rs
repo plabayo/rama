@@ -11,7 +11,12 @@ use {
 };
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use {
-    crate::proto::crypto::rustls as rustls_crypto,
+    crate::{profile::capture, proto::crypto::rustls as rustls_crypto},
+    rama_quic_proto::{
+        Side, Version,
+        capture::{CaptureError, InitialKeys, KeyProvider},
+        crypto::{HeaderKey, PacketKey},
+    },
     rama_tls_rustls::{client::RustlsTlsConnectorConfig, dep::rustls::crypto::CryptoProvider},
 };
 #[cfg(any(
@@ -128,6 +133,26 @@ impl QuicServerConfigProvider for RustlsTlsProvider {
         Ok(ServerConfig::with_random_token_key(
             rustls_crypto::server_config_from_rama(config, self.crypto.clone(), options)?,
         ))
+    }
+}
+
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+impl KeyProvider for RustlsTlsProvider {
+    type Header = Box<dyn HeaderKey>;
+    type Packet = Box<dyn PacketKey>;
+
+    fn initial_keys(
+        &self,
+        version: Version,
+        dcid: &[u8],
+        side: Side,
+    ) -> Result<InitialKeys<Self::Header, Self::Packet>, CaptureError> {
+        let dcid = capture::connection_id(dcid)?;
+        let suite = rustls_crypto::initial_suite_from_provider(&self.crypto)
+            .ok_or(CaptureError::Undecryptable)?;
+        let keys = rustls_crypto::server_initial_keys(version, &dcid, &suite)
+            .map_err(|_error| CaptureError::UnknownVersion(version))?;
+        capture::receiving_keys(keys, side)
     }
 }
 

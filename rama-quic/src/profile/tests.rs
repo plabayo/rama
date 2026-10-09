@@ -11,9 +11,11 @@
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use std::assert_matches;
 
-use rama_core::rt::Executor;
+use rama_core::{bytes::BytesMut, rt::Executor};
 use rama_quic_proto::{
-    capture::{FirstFlight, ObservedFrame, PacketKind, observe},
+    ConnectionId, Side,
+    capture::{CaptureError, FirstFlight, KeyProvider, ObservedFrame, PacketKind, observe},
+    crypto::{HeaderKey as _, PacketKey as _},
     version::Version,
 };
 
@@ -524,4 +526,73 @@ fn an_oversized_initial_connection_id_is_refused_before_key_derivation() {
             panic!("a {len}-byte connection ID reached key derivation");
         };
     }
+}
+
+fn verify_passive_provider(keys: &impl KeyProvider) {
+    let server = provider();
+    for version in [Version::V1, Version::V2] {
+        for side in [Side::Client, Side::Server] {
+            for cid_len in [0, 8, 20] {
+                let cid = vec![0x53; cid_len];
+                let expected = server
+                    .initial_keys(version, &ConnectionId::try_from_bytes(&cid).unwrap())
+                    .unwrap();
+                let expected = match side {
+                    Side::Server => expected.remote.unwrap(),
+                    Side::Client => expected.local,
+                };
+                let observed = keys.initial_keys(version, &cid, side).unwrap();
+                let mut packet = vec![0; 64];
+                packet[0] = 0xc0;
+                packet[1..5].copy_from_slice(&version.to_be_bytes());
+                expected.packet.encrypt(7, &mut packet, 8).unwrap();
+                let mut payload = BytesMut::from(&packet[8..]);
+                observed
+                    .packet
+                    .decrypt(7, &packet[..8], &mut payload)
+                    .unwrap();
+                assert_eq!(&payload[..], &[0; 40]);
+                let mut expected_header = packet.clone();
+                expected.header.encrypt(5, &mut expected_header);
+                let mut observed_header = packet;
+                observed.header.encrypt(5, &mut observed_header);
+                assert_eq!(observed_header, expected_header);
+            }
+            for cid_len in [21, 255] {
+                assert!(matches!(
+                    keys.initial_keys(version, &vec![0; cid_len], side),
+                    Err(CaptureError::Malformed(_))
+                ));
+            }
+            let unknown = Version::from_u32(0xface_b00c);
+            assert!(matches!(
+                keys.initial_keys(unknown, &[0; 8], side),
+                Err(CaptureError::UnknownVersion(version)) if version == unknown
+            ));
+        }
+    }
+    for names in [
+        ["chrome-153-initial-1.hex", "chrome-153-initial-2.hex"],
+        ["firefox-156-initial-1.hex", "firefox-156-initial-2.hex"],
+    ] {
+        let datagrams = names.map(hex);
+        let datagrams = datagrams.each_ref().map(Vec::as_slice);
+        let expected = capture::first_flight(&datagrams, &*server).unwrap();
+        let observed = rama_quic_proto::capture::first_flight(&datagrams, keys).unwrap();
+        assert_eq!(observed, expected);
+    }
+}
+
+#[cfg(feature = "boring")]
+#[test]
+fn passive_initial_keys_need_no_boring_server_identity() {
+    verify_passive_provider(&crate::tls::BoringTlsProvider);
+}
+
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[test]
+fn passive_initial_keys_need_no_rustls_server_identity() {
+    verify_passive_provider(&crate::tls::RustlsTlsProvider::new(
+        crate::proto::crypto::rustls::configured_provider(),
+    ));
 }

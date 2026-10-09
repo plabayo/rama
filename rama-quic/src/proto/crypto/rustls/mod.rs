@@ -932,7 +932,7 @@ impl QuicDynamicServerConfig {
 /// The most plaintext one TLS record carries (RFC 8446 §5.1).
 const MAX_RECORD_PAYLOAD: usize = 1 << 14;
 
-fn server_initial_keys(
+pub(crate) fn server_initial_keys(
     version: rama_quic_proto::Version,
     dst_cid: &ConnectionId,
     initial: &Suite,

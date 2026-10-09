@@ -183,8 +183,9 @@ impl PacketBuilder {
                 .is_none_or(|len| len > buffer_capacity.saturating_sub(buffer.len()))
         {
             if Self::drop_optional_token(conn) {
-                // The packet is rebuilt with the number it was about to use.
+                // Neither a packet number nor an encryption was consumed by the discarded header.
                 conn.spaces[space_id].next_packet_number = exact_number;
+                conn.spaces[space_id].sent_with_keys = sent_with_keys;
                 return Self::new(
                     now,
                     space_id,
@@ -237,8 +238,9 @@ impl PacketBuilder {
         {
             buffer.truncate(partial_encode.start);
             if Self::drop_optional_token(conn) {
-                // The packet is rebuilt with the number it was about to use.
+                // Neither a packet number nor an encryption was consumed by the discarded header.
                 conn.spaces[space_id].next_packet_number = exact_number;
+                conn.spaces[space_id].sent_with_keys = sent_with_keys;
                 return Self::new(
                     now,
                     space_id,
@@ -586,7 +588,7 @@ mod token_budget_tests {
     #[test]
     fn rejected_initial_tokens_preserve_prior_packets_and_release_bytes() {
         for version in [Version::V1, Version::V2] {
-            for token_len in [1200, 65536] {
+            for token_len in [1120, 1200, 65536] {
                 for retried in [true, false] {
                     let mut config = crate::test_helpers::client(&crate::test_helpers::identity());
                     config
@@ -637,6 +639,11 @@ mod token_budget_tests {
                             conn.spaces[SpaceId::Initial].next_packet_number,
                             1,
                             "the rebuilt packet keeps the first number"
+                        );
+                        assert_eq!(
+                            conn.spaces[SpaceId::Initial].sent_with_keys,
+                            1,
+                            "only the rebuilt packet consumes the key budget"
                         );
                     }
                 }

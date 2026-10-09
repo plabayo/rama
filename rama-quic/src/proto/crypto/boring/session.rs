@@ -29,14 +29,15 @@ use zeroize::Zeroizing;
 
 use super::packet::{self, Secret, Suite};
 
+use crate::proto::crypto::{
+    self, DirectionalKeys, HandshakeEvent, KeyPair, Keys, UnsupportedVersion,
+};
+
 #[cfg(test)]
 thread_local! {
     /// Tests: how often this thread parsed a peer's transport parameters.
     pub(super) static PEER_PARAMETER_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
-use crate::proto::crypto::{
-    self, DirectionalKeys, HandshakeEvent, KeyPair, Keys, UnsupportedVersion,
-};
 
 enum Event {
     Secret {
