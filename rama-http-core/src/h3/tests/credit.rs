@@ -557,3 +557,27 @@ async fn returned_stream_credit_reaches_admission_in_units() {
     .await
     .unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_raised_stream_limit_reaches_admission_in_units() {
+    tokio::time::timeout(LIMIT, async {
+        let mut transport = TransportConfig::default();
+        transport.set_max_concurrent_bidi_streams(1u32);
+        let pair = Pair::in_memory(None, Some(transport)).await;
+        let told = Arc::new(Told::default());
+        pair.client
+            .stream_budget_subscribe(Dir::Bi, Arc::downgrade(&told) as Weak<dyn ChangeListener>);
+        let mut changed = pair.client.stream_budget_watch(Dir::Bi);
+        pair.server.set_max_concurrent_bi_streams(4u32);
+        changed.changed().await.unwrap();
+        assert_eq!(pair.client.available_streams(Dir::Bi), 4);
+        assert_eq!(
+            std::mem::take(&mut *told.0.lock()),
+            [Change::Freed; 3],
+            "one per stream"
+        );
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}

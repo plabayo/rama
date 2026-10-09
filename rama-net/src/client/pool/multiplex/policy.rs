@@ -2,21 +2,24 @@
 
 use super::*;
 
-/// What a [`MultiplexPool`] at its [total connection limit] does for a checkout
-/// that needs a new connection.
+/// What a [`MultiplexPool`] at a [connection limit] does for a checkout that
+/// needs a new connection: wait, or replace an idle connection, of its own id
+/// at the id's limit and of any id at the total one.
 ///
 /// Closing another connection costs that connection's next request a new
 /// handshake, so the default waits a little for the checkout's own connections
-/// first (see [`Self::EvictIdleAfter`] for its timer). Waiting checkouts are
-/// served in arrival order, across ids.
+/// first (see [`Self::EvictIdleAfter`] for its timer). An idle connection goes
+/// to the checkout that arrived first among those waiting to use it, to replace
+/// it for the total limit and to replace it for its id's limit.
 ///
-/// [total connection limit]: MultiplexPool::with_max_connections_total
+/// [connection limit]: MultiplexPool::with_max_connections_total
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SaturationPolicy {
     /// Wait for a connection slot; never close another connection for one.
     Wait,
     /// Close the least recently used idle connection only for a checkout none
-    /// of whose connections exist yet; others wait for their own.
+    /// of whose connections can take a stream; others wait for their own.
     EvictIdleWhenCold,
     /// As [`Self::EvictIdleWhenCold`], and for any checkout that waited this long.
     ///

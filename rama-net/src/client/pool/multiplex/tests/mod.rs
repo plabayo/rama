@@ -27,6 +27,7 @@ use std::{
 mod admission;
 mod checkout;
 mod eviction;
+mod fairness;
 mod lanes;
 mod limits;
 mod listing;
@@ -451,6 +452,69 @@ fn assert_open_matches_capacity(pool: &MultiplexPool<Conn, TestId>) {
             assert!(!lanes.lanes.is_empty());
         }
     }
+}
+
+/// A new exclusive connection for `id`, through the pool's own create permit.
+async fn fresh(pool: &MultiplexPool<Conn, TestId>, id: u32) -> MultiplexedConnection<Conn, TestId> {
+    let ConnectionResult::CreatePermit(slot) =
+        pool.get_conn(&TestId(id), &EMPTY_INPUT).await.unwrap()
+    else {
+        panic!("a create permit");
+    };
+    let conn = Conn {
+        serial: 0,
+        extensions: Extensions::new(),
+    };
+    conn.extensions.insert(ConnectionHealthWatcher::default());
+    conn.extensions.insert(MaxConcurrency::new(1));
+    pool.create(TestId(id), conn, slot, &EMPTY_INPUT)
+        .await
+        .unwrap()
+}
+
+/// A new exclusive connection of `id` filed under `key`, through the pool's
+/// own create permit.
+async fn fresh_keyed(
+    pool: &MultiplexPool<Conn, TestId>,
+    id: u32,
+    key: u8,
+) -> MultiplexedConnection<Conn, TestId> {
+    let input = want(key);
+    let ConnectionResult::CreatePermit(slot) = pool.get_conn(&TestId(id), &input).await.unwrap()
+    else {
+        panic!("a create permit");
+    };
+    let conn = Conn {
+        serial: key.into(),
+        extensions: Extensions::new(),
+    };
+    conn.extensions.insert(keyed(0, key));
+    conn.extensions.insert(MaxConcurrency::new(1));
+    conn.extensions.insert(ConnectionHealthWatcher::default());
+    pool.create(TestId(id), conn, slot, &input).await.unwrap()
+}
+
+/// A checkout of `id` wanting `key`, polled once so it queues.
+fn queue_keyed<'a>(
+    pool: &'a MultiplexPool<Conn, TestId>,
+    id: u32,
+    input: &'a Extensions,
+) -> Checkout<'a> {
+    let mut checkout =
+        tokio_test::task::spawn(
+            Box::pin(async move { pool.get_conn(&TestId(id), input).await })
+                as Pin<Box<dyn Future<Output = _> + Send + 'a>>,
+        );
+    assert!(checkout.poll().is_pending(), "the pool is saturated");
+    checkout
+}
+
+/// A pool of `total` exclusive connections at most.
+fn exclusive(total: usize, policy: SaturationPolicy) -> MultiplexPool<Conn, TestId> {
+    MultiplexPool::new()
+        .with_max_streams_per_connection(NonZeroUsize::new(1).unwrap())
+        .with_max_connections_total(NonZeroUsize::new(total).unwrap())
+        .with_saturation_policy(policy)
 }
 
 fn checkout(pool: &MultiplexPool<Conn, TestId>, id: u32) -> Checkout<'_> {

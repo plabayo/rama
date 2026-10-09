@@ -2,24 +2,6 @@
 
 use super::*;
 
-/// A new exclusive connection for `id`, through the pool's own create permit.
-async fn fresh(pool: &MultiplexPool<Conn, TestId>, id: u32) -> MultiplexedConnection<Conn, TestId> {
-    let ConnectionResult::CreatePermit(slot) =
-        pool.get_conn(&TestId(id), &EMPTY_INPUT).await.unwrap()
-    else {
-        panic!("a create permit");
-    };
-    let conn = Conn {
-        serial: 0,
-        extensions: Extensions::new(),
-    };
-    conn.extensions.insert(ConnectionHealthWatcher::default());
-    conn.extensions.insert(MaxConcurrency::new(1));
-    pool.create(TestId(id), conn, slot, &EMPTY_INPUT)
-        .await
-        .unwrap()
-}
-
 #[tokio::test]
 async fn an_unlimited_pool_adds_connections_as_needed() {
     let pool = MultiplexPool::new();
@@ -366,4 +348,74 @@ async fn releasing_a_connection_of_another_key_wakes_a_checkout_at_its_id_limit(
         other_key.poll(),
         Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
     ));
+}
+
+#[tokio::test]
+async fn a_checkout_the_policy_keeps_from_evicting_never_replaces_within_its_id() {
+    // Wait never evicts; a warm checkout waits for its own connection.
+    for (policy, own_key) in [
+        (SaturationPolicy::Wait, 3),
+        (SaturationPolicy::EvictIdleWhenCold, 2),
+    ] {
+        let pool = per_id(2).with_saturation_policy(policy);
+        drop(fresh_keyed(&pool, 0, 1).await);
+        let busy = fresh_keyed(&pool, 0, own_key).await;
+        let input = want(2);
+        let waiting = queue_keyed(&pool, 0, &input);
+        drop((waiting, busy));
+    }
+}
+
+#[tokio::test]
+async fn a_replacement_takes_over_the_total_slot_too() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(2).unwrap())
+        .with_max_connections_per_id(NonZeroUsize::new(1).unwrap())
+        .with_saturation_policy(SaturationPolicy::EvictIdle);
+    drop(fresh_keyed(&pool, 0, 1).await);
+    let busy = fresh(&pool, 1).await;
+    let input = want(2);
+    let ConnectionResult::CreatePermit(slot) = pool.get_conn(&TestId(0), &input).await.unwrap()
+    else {
+        panic!("it replaces the idle connection of the other key");
+    };
+    assert!(slot.total.is_some() && slot.id.is_some());
+    assert_eq!(pool.free_slots(), 0, "the total limit holds");
+    drop((slot, busy));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_warm_checkout_at_its_id_limit_replaces_once_its_patience_ran_out() {
+    let after = Duration::from_millis(100);
+    let pool = per_id(2).with_saturation_policy(SaturationPolicy::EvictIdleAfter(after));
+    drop(fresh_keyed(&pool, 0, 1).await);
+    let busy = fresh_keyed(&pool, 0, 2).await;
+    let input = want(2);
+    let mut warm = queue_keyed(&pool, 0, &input);
+    tokio::time::advance(after).await;
+    assert!(warm.is_woken(), "its patience ran out");
+    let Poll::Ready(Ok(ConnectionResult::CreatePermit(slot))) = warm.poll() else {
+        panic!("it replaces the idle connection of the other key");
+    };
+    drop((slot, busy));
+}
+
+#[tokio::test]
+async fn forgetting_unused_id_limits_never_forgets_one_a_create_permit_holds() {
+    let pool = per_id(1);
+    let ConnectionResult::CreatePermit(slot) =
+        pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap()
+    else {
+        panic!("a create permit");
+    };
+    for id in 1..300 {
+        drop(fresh(&pool, id).await);
+        pool.storage.lock().by_id.clear();
+    }
+    let mut second = checkout(&pool, 0);
+    assert!(
+        second.poll().is_pending(),
+        "the create permit holds id 0's only slot"
+    );
+    drop((second, slot));
 }

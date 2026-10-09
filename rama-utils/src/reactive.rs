@@ -179,15 +179,33 @@ impl fmt::Debug for ChangeSignal {
 /// sees the other. Every unit reaches a waiter, which spends it on a look or, as
 /// it leaves, passes it on in this queue. A leaf lock: nothing else is taken
 /// while it is held.
+///
+/// Capacity several queues contend for goes to the oldest of their fronts: a
+/// party leaving it to an older waiter of another queue [gives way](Self::give_way)
+/// to it.
 pub struct WaitQueue {
-    queue: Mutex<VecDeque<Waiter>>,
+    queue: Mutex<Queued>,
     len: AtomicUsize,
+}
+
+#[derive(Default)]
+struct Queued {
+    waiters: VecDeque<Waiter>,
+    /// Parties that gave way to a waiter here, and their queues.
+    gave_way: Vec<GaveWay>,
+}
+
+/// A party of `queue`, of order `from`, gave way to the waiter of order `to`.
+struct GaveWay {
+    to: u64,
+    from: u64,
+    queue: Weak<WaitQueue>,
 }
 
 impl Default for WaitQueue {
     fn default() -> Self {
         Self {
-            queue: Mutex::new(VecDeque::new()),
+            queue: Mutex::new(Queued::default()),
             len: AtomicUsize::new(0),
         }
     }
@@ -200,12 +218,19 @@ impl WaitQueue {
         Self::default()
     }
 
-    /// Queue `waiter` at the back. Check the capacity it waits for after.
+    /// Queue `waiter` behind the older parties. Check the capacity it waits for
+    /// after.
     pub fn push(&self, waiter: &Waiter) {
         {
             let mut queue = self.queue.lock();
-            queue.push_back(waiter.clone());
-            self.len.store(queue.len(), Ordering::Relaxed);
+            let waiters = &mut queue.waiters;
+            // Mostly the back: a party queuing late goes ahead of younger ones.
+            let at = waiters
+                .iter()
+                .rposition(|queued| queued.party.order <= waiter.party.order)
+                .map_or(0, |at| at + 1);
+            waiters.insert(at, waiter.clone());
+            self.len.store(waiters.len(), Ordering::Relaxed);
         }
         // Pairs with the fence in `wake_*`: see the type's docs.
         fence(Ordering::SeqCst);
@@ -213,20 +238,67 @@ impl WaitQueue {
 
     /// Leave the queue, returning the wakes it sent the waiter that are not
     /// spent: capacity they stand for and the waiter does not use is left to
-    /// the others, so pass it on.
+    /// the others, so pass it on. Queues whose parties gave way to the waiter
+    /// get a wake.
     ///
     /// A party freeing capacity meets the leave under the queue's lock: it
     /// wakes the waiter before, or reports nobody waiting after.
     pub fn remove(&self, waiter: &Waiter) -> usize {
-        let mut queue = self.queue.lock();
-        // Mostly the front: served waiters leave in arrival order.
-        let Some(at) = queue.iter().position(|queued| queued.is(waiter)) else {
-            return 0;
+        let (held, gave_way) = {
+            let mut queue = self.queue.lock();
+            // Mostly the front: served waiters leave in arrival order.
+            let Some(at) = queue.waiters.iter().position(|queued| queued.is(waiter)) else {
+                return 0;
+            };
+            queue.waiters.remove(at);
+            self.len.store(queue.waiters.len(), Ordering::Relaxed);
+            let order = waiter.party.order;
+            let gave_way: SmallVec<[Weak<Self>; 2]> = queue
+                .gave_way
+                .extract_if(.., |gave| gave.to == order)
+                .map(|gave| gave.queue)
+                .collect();
+            // Under the lock: no wake of this queue reaches the waiter after.
+            (waiter.held(), gave_way)
         };
-        queue.remove(at);
-        self.len.store(queue.len(), Ordering::Relaxed);
-        // Under the lock: no wake of this queue reaches the waiter after.
-        waiter.held()
+        // Outside the lock, which is a leaf: one look again per party.
+        for queue in gave_way.iter().filter_map(Weak::upgrade) {
+            queue.wake_one();
+        }
+        held
+    }
+
+    /// Whether a waiter older than `than` waits here, for capacity the party of
+    /// order `from` in `queue` contends for too: that party gives way to it.
+    /// The waiter is woken to look, if it holds no wake, and `queue` gets a
+    /// wake once it leaves: atomic with the leave, so that wake is not lost.
+    pub fn give_way(&self, than: u64, from: u64, queue: &Arc<Self>) -> bool {
+        if self.is_empty() {
+            return false;
+        }
+        let mut queued = self.queue.lock();
+        let Some(front) = queued
+            .waiters
+            .front()
+            .filter(|front| front.party.order < than)
+            .cloned()
+        else {
+            return false;
+        };
+        let to = front.party.order;
+        let queue = Arc::downgrade(queue);
+        if !queued
+            .gave_way
+            .iter()
+            .any(|gave| gave.to == to && gave.from == from && gave.queue.ptr_eq(&queue))
+        {
+            queued.gave_way.push(GaveWay { to, from, queue });
+        }
+        // What it was left is worth a look.
+        if !front.is_woken() {
+            front.wake();
+        }
+        true
     }
 
     /// How many wait.
@@ -247,13 +319,22 @@ impl WaitQueue {
         if self.is_empty() {
             return None;
         }
-        self.queue.lock().front().map(|front| front.party.order)
+        self.queue
+            .lock()
+            .waiters
+            .front()
+            .map(|front| front.party.order)
     }
 
     /// The wakes this queue sent its waiters that they did not spend.
     #[must_use]
     pub fn unspent(&self) -> usize {
-        self.queue.lock().iter().map(|waiter| waiter.held()).sum()
+        self.queue
+            .lock()
+            .waiters
+            .iter()
+            .map(|waiter| waiter.held())
+            .sum()
     }
 
     /// Whether a party may take capacity now: nobody waits ahead of it, or it
@@ -270,6 +351,7 @@ impl WaitQueue {
             || self
                 .queue
                 .lock()
+                .waiters
                 .front()
                 .is_some_and(|front| front.is(waiter))
     }
@@ -283,10 +365,11 @@ impl WaitQueue {
             return false;
         }
         let queue = self.queue.lock();
-        let Some(front) = queue.front() else {
+        let Some(front) = queue.waiters.front() else {
             return false;
         };
         queue
+            .waiters
             .iter()
             .find(|waiter| !waiter.is_woken())
             .unwrap_or(front)
@@ -301,10 +384,10 @@ impl WaitQueue {
             return false;
         }
         let queue = self.queue.lock();
-        for waiter in queue.iter() {
+        for waiter in &queue.waiters {
             waiter.wake();
         }
-        !queue.is_empty()
+        !queue.waiters.is_empty()
     }
 }
 
@@ -845,6 +928,29 @@ mod loom_tests {
         });
     }
 
+    /// Of a party giving way to a waiter and that waiter leaving, one sees the
+    /// other: the party does not give way, or its queue is woken.
+    #[test]
+    fn a_party_giving_way_is_woken_once_the_waiter_leaves() {
+        loom::model(|| {
+            let [theirs, ours] = [Arc::new(WaitQueue::new()), Arc::new(WaitQueue::new())];
+            let ahead = Party::new(0).waiter();
+            theirs.push(&ahead);
+            let waiter = Party::new(1).waiter();
+            ours.push(&waiter);
+            let leaver = {
+                let theirs = theirs.clone();
+                thread::spawn(move || theirs.remove(&ahead))
+            };
+            let gave_way = theirs.give_way(1, 1, &ours);
+            leaver.join().unwrap();
+            assert!(
+                !gave_way || waiter.is_woken(),
+                "it gave way to a waiter that left without telling it"
+            );
+        });
+    }
+
     /// Subscribe-then-check: a change racing the first subscription is
     /// either seen by the check or wakes the listener.
     #[test]
@@ -1081,6 +1187,45 @@ mod tests {
             "nothing to pass on where nothing was sent"
         );
         assert_eq!(theirs.remove(&there), 1);
+    }
+
+    #[test]
+    fn a_party_queuing_late_goes_ahead_of_younger_ones() {
+        let queue = WaitQueue::new();
+        let [old, young, late] = [0, 2, 1].map(|order| Party::new(order).waiter());
+        queue.push(&old);
+        queue.push(&young);
+        queue.push(&late);
+        assert!(queue.remove(&old) == 0 && queue.front_order() == Some(1));
+        assert!(queue.wake_one());
+        assert!(late.is_woken() && !young.is_woken(), "the older one first");
+    }
+
+    #[test]
+    fn a_party_that_gave_way_is_woken_when_that_waiter_leaves() {
+        let [theirs, ours] = [Arc::new(WaitQueue::new()), Arc::new(WaitQueue::new())];
+        let [ahead, behind] = [0, 3].map(|order| Party::new(order).waiter());
+        theirs.push(&ahead);
+        theirs.push(&behind);
+        let [first, second] = [1, 2].map(|order| Party::new(order).waiter());
+        ours.push(&first);
+        ours.push(&second);
+        assert!(
+            !theirs.give_way(0, 0, &ours),
+            "nobody older than the oldest"
+        );
+        assert!(theirs.give_way(1, 1, &ours) && theirs.give_way(1, 1, &ours));
+        assert!(theirs.give_way(2, 2, &ours));
+        assert_eq!(ahead.held(), 1, "woken once to look at what it was left");
+        assert_eq!(theirs.remove(&behind), 0);
+        assert!(!first.is_woken(), "they gave way to another one");
+        assert_eq!(theirs.remove(&ahead), 1);
+        assert_eq!(
+            (first.held(), second.held()),
+            (1, 1),
+            "one wake per party that gave way, however often"
+        );
+        assert!(!theirs.give_way(1, 1, &ours) && theirs.is_empty());
     }
 
     #[test]

@@ -287,8 +287,12 @@ async fn policy_check_cannot_admit_a_snapshot_retired_during_the_check() {
 
         fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
             if self.evict {
-                let removed =
-                    MultiplexPool::evict_lru_idle(&mut self.pool.storage.lock(), None, None);
+                let removed = self.pool.evict_lru_idle(
+                    &mut self.pool.storage.lock(),
+                    None,
+                    &self.pool.slot_waiters,
+                    None,
+                );
                 assert!(removed.is_some());
                 drop(removed);
             } else {
@@ -353,7 +357,9 @@ async fn retired_preferred_candidate_does_not_hide_other_stream_capacity() {
         conn: retired,
         slots,
         ..
-    } = MultiplexPool::evict_lru_idle(&mut pool.storage.lock(), None, None).unwrap();
+    } = pool
+        .evict_lru_idle(&mut pool.storage.lock(), None, &pool.slot_waiters, None)
+        .unwrap();
     let transferred_slot = slots.total;
     let retired_index = snapshot
         .iter()

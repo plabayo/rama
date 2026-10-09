@@ -28,6 +28,8 @@ pub(super) struct StoredConnection<C, ID> {
     pub(super) max_concurrency: Option<Arc<MaxConcurrency>>,
     /// Read from its listener, which may not call into the connection itself.
     pub(super) health: Option<Arc<ConnectionHealthWatcher>>,
+    /// Whether waiting checkouts were told it broke.
+    pub(super) broken_told: AtomicBool,
     pub(super) admission: Option<ConnectionAdmission>,
     pub(super) active: AtomicUsize,
     /// The waiters of the lane the connection is filed under. A leaf lock:
@@ -272,9 +274,12 @@ impl<C: Send + Sync + 'static, ID: Send + Sync + 'static> ChangeListener
             Change::Other => WaitQueue::wake_all,
         };
         self.freed(wake, true);
-        if self.waiting.load(Ordering::Relaxed) != 0 && self.is_broken() {
+        if self.waiting.load(Ordering::Relaxed) != 0
+            && self.is_broken()
+            && !self.broken_told.swap(true, Ordering::Relaxed)
+        {
             // Only a look takes a broken connection out and frees its slots:
-            // let every waiting checkout look, whatever it waits for.
+            // let every waiting checkout look, whatever it waits for, once.
             self.notify.notify_waiters();
         }
     }

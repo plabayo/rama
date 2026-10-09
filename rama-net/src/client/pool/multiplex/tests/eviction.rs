@@ -558,3 +558,128 @@ async fn an_evictor_keeps_the_chance_it_used() {
     );
     drop((evicted, second));
 }
+
+#[tokio::test]
+async fn a_lane_left_empty_announces_its_idle_connection_to_the_ids_evictors() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_per_id(NonZeroUsize::new(1).unwrap())
+        .with_saturation_policy(SaturationPolicy::EvictIdleWhenCold);
+    let held = fresh_keyed(&pool, 0, 1).await;
+    let (own, other) = (want(1), want(2));
+    let lane = queue_keyed(&pool, 0, &own);
+    let mut evictor = queue_keyed(&pool, 0, &other);
+    drop(held);
+    assert!(!evictor.is_woken(), "the older lane waiter's");
+    drop(lane);
+    assert!(evictor.is_woken(), "its only waiter left");
+    let Poll::Ready(Ok(ConnectionResult::CreatePermit(slot))) = evictor.poll() else {
+        panic!("it replaces the idle connection");
+    };
+    drop(slot);
+}
+
+#[tokio::test]
+async fn an_evictor_passes_the_chance_on_while_more_idle_connections_wait() {
+    let pool = exclusive(3, SaturationPolicy::EvictIdleWhenCold);
+    let held = [add(&pool, 0, None).await, add(&pool, 0, None).await];
+    let busy = add(&pool, 3, None).await;
+    let lane = queue(&pool, &EMPTY_INPUT);
+    let mut first = checkout(&pool, 1);
+    assert!(first.poll().is_pending());
+    let mut second = checkout(&pool, 2);
+    assert!(second.poll().is_pending());
+    drop(held);
+    assert!(!first.is_woken(), "the older lane waiter's");
+    // One announcement for the lane's two idle connections.
+    drop(lane);
+    assert!(first.is_woken() && !second.is_woken());
+    let Poll::Ready(Ok(ConnectionResult::CreatePermit(evicted))) = first.poll() else {
+        panic!("it evicts one");
+    };
+    assert!(second.is_woken(), "another one could go too");
+    let Poll::Ready(Ok(ConnectionResult::CreatePermit(next))) = second.poll() else {
+        panic!("it evicts the other");
+    };
+    drop((evicted, next, busy));
+}
+
+#[tokio::test]
+async fn a_checkout_leaving_only_chance_queues_announces_nothing() {
+    let pool = MultiplexPool::new()
+        .with_max_streams_per_connection(NonZeroUsize::new(1).unwrap())
+        .with_max_connections_total(NonZeroUsize::new(2).unwrap())
+        .with_max_connections_per_id(NonZeroUsize::new(1).unwrap())
+        .with_saturation_policy(SaturationPolicy::EvictIdleWhenCold);
+    let held = fresh_keyed(&pool, 0, 1).await;
+    let busy = fresh(&pool, 2).await;
+    let mut slot_waiter = checkout(&pool, 1);
+    assert!(slot_waiter.poll().is_pending());
+    let input = want(2);
+    // At its id's limit, in no lane: only in the id's evictor queue.
+    let replacing = queue_keyed(&pool, 0, &input);
+    drop(replacing);
+    assert!(!slot_waiter.is_woken(), "no lane was left empty");
+    drop((slot_waiter, held, busy));
+}
+
+#[tokio::test]
+async fn a_fruitless_look_spends_the_chances_it_answered() {
+    let pool = exclusive(2, SaturationPolicy::EvictIdleWhenCold);
+    let held = add(&pool, 0, None).await;
+    let busy = add(&pool, 3, None).await;
+    let mut first = checkout(&pool, 1);
+    assert!(first.poll().is_pending());
+    let mut second = checkout(&pool, 2);
+    assert!(second.poll().is_pending());
+    // Two chances, nothing idle: lanes of the busy connection left empty.
+    for _ in 0..2 {
+        drop(queue(&pool, &EMPTY_INPUT));
+    }
+    assert!(first.is_woken() && second.is_woken());
+    assert!(second.poll().is_pending() && first.poll().is_pending());
+    drop(held);
+    // Both look, whoever was woken.
+    pool.notify.notify_waiters();
+    assert!(
+        second.poll().is_pending(),
+        "the younger evictor holds no chance any more"
+    );
+    let Poll::Ready(Ok(ConnectionResult::CreatePermit(slot))) = first.poll() else {
+        panic!("the older one evicts it");
+    };
+    drop((slot, second, busy));
+}
+
+#[tokio::test]
+async fn a_checkout_with_a_freed_slot_leaves_an_idle_connection_to_an_older_evictor() {
+    let pool = MultiplexPool::new()
+        .with_max_streams_per_connection(NonZeroUsize::new(1).unwrap())
+        .with_max_connections_total(NonZeroUsize::new(4).unwrap())
+        .with_max_connections_per_id(NonZeroUsize::new(2).unwrap())
+        .with_saturation_policy(SaturationPolicy::EvictIdleWhenCold);
+    let gone = fresh_keyed(&pool, 1, 1).await;
+    let _other = fresh_keyed(&pool, 1, 1).await;
+    let held = fresh(&pool, 0).await;
+    let _busy = fresh(&pool, 3).await;
+    // At id 1's limit first: it waits for an id slot, not yet for a total one.
+    let input = want(2);
+    let mut evictor = queue_keyed(&pool, 1, &input);
+    let mut lane = checkout(&pool, 0);
+    assert!(lane.poll().is_pending(), "warm: it waits for a total slot");
+    // A connection of id 1 goes: its id slot to the evictor, its total slot
+    // through the semaphore to the lane waiter, queued there first.
+    gone.extensions()
+        .get_ref::<ConnectionHealthWatcher>()
+        .unwrap()
+        .mark_broken();
+    drop(gone);
+    assert!(evictor.poll().is_pending(), "nothing idle to evict yet");
+    drop(held);
+    let Poll::Ready(Ok(ConnectionResult::CreatePermit(slot))) = lane.poll() else {
+        panic!("the idle connection is the older evictor's: dial with the slot");
+    };
+    let Poll::Ready(Ok(ConnectionResult::CreatePermit(evicted))) = evictor.poll() else {
+        panic!("the evictor takes it");
+    };
+    drop((slot, evicted));
+}

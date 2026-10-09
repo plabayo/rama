@@ -31,9 +31,10 @@
 //! A checkout that finds no room waits, first come first served, in every lane it can be
 //! served from: a released stream wakes the first waiter of its lane, a capacity change of a
 //! connection wakes all of them, and newcomers never take capacity ahead of them. A waiter
-//! that leaves without using a wake passes it on. An idle connection that can take a stream
-//! is its lane's waiters', unless a checkout waiting to evict it arrived before them: then it
-//! is that checkout's, whoever runs first.
+//! that leaves without using a wake passes it on. An idle connection goes to the checkout
+//! that arrived first among its lane's front and the fronts of those waiting to evict it, for
+//! the total limit or for its id's: whoever runs first, the others give way to it, and it is
+//! told; once it leaves, they are.
 
 mod connection;
 mod lanes;
@@ -278,7 +279,8 @@ impl<C, ID> MultiplexPool<C, ID> {
     /// ids. At the limit, [`SaturationPolicy`] decides. Without it, no limit.
     ///
     /// Configure it before the pool is used: clones share its connections, and
-    /// so the slots they hold.
+    /// so the slots they hold. Waiting at the limit may use tokio timers (the
+    /// default policy's, the idle timeout's): the runtime needs its time driver.
     #[must_use]
     pub fn with_max_connections_total(self, max: NonZeroUsize) -> Self {
         self.maybe_with_max_connections_total(Some(max))
@@ -308,6 +310,8 @@ impl<C, ID> MultiplexPool<C, ID> {
     /// other ids go on. Without it, no limit.
     ///
     /// Configure it before the pool is used: clones share the slots of each id.
+    /// Waiting at the limit may use tokio timers (the default policy's, the idle
+    /// timeout's): the runtime needs its time driver.
     #[must_use]
     pub fn with_max_connections_per_id(self, max: NonZeroUsize) -> Self {
         self.maybe_with_max_connections_per_id(Some(max))
@@ -480,32 +484,53 @@ where
     ///
     /// An idle connection that can take a stream is its lane's waiters', unless
     /// the evictor arrived before them or is their front (its own look just
-    /// found nothing it could use there).
+    /// found nothing it could use there). Its slots are the other limit's
+    /// evictors' if one of them arrived first: the evictor gives way to them,
+    /// queued in `chances`.
     fn evict_lru_idle(
+        &self,
         storage: &mut Storage<C, ID>,
         evictor: Option<&Waiting>,
+        chances: &Arc<WaitQueue>,
         within: Option<&ID>,
     ) -> Option<Evicted<C, ID>> {
-        let (conn, slots, more) = {
+        let order = evictor.map_or(u64::MAX, |evictor| evictor.party.order());
+        let (conn, slots, more) = loop {
+            let mut gave_way = SmallVec::new();
             let picked = match within {
                 Some(id) => Self::pick_lru_idle(
                     storage.by_id.get(id).into_iter().flat_map(IdBucket::lanes),
                     evictor,
+                    Some(&self.slot_waiters),
+                    &mut gave_way,
                 ),
-                None => {
-                    Self::pick_lru_idle(storage.by_id.values().flat_map(IdBucket::lanes), evictor)
-                }
+                None => Self::pick_lru_idle(
+                    storage.by_id.values().flat_map(IdBucket::lanes),
+                    evictor,
+                    None,
+                    &mut gave_way,
+                ),
             };
-            let (conn, mut slot, more) = picked?;
-            slot.retired = true;
-            let slots = std::mem::replace(
-                &mut slot.slots,
-                MultiplexSlot {
-                    total: None,
-                    id: None,
-                },
-            );
-            (conn.clone(), slots, more)
+            if let Some((conn, mut slot, more)) = picked {
+                slot.retired = true;
+                let slots = std::mem::replace(
+                    &mut slot.slots,
+                    MultiplexSlot {
+                        total: None,
+                        id: None,
+                    },
+                );
+                break (conn.clone(), slots, more);
+            }
+            // Woken once they leave. One that left meanwhile left its
+            // connection to this evictor: look again.
+            if evictor.is_none()
+                || gave_way
+                    .iter()
+                    .all(|rivals: &&Arc<WaitQueue>| rivals.give_way(order, order, chances))
+            {
+                return None;
+            }
         };
         let bucket = storage.by_id.get_mut(&conn.id)?;
         let conn = bucket.remove(&conn)?;
@@ -517,10 +542,14 @@ where
 
     /// The least recently used evictable connection of `lanes`, with its slot
     /// lock held so admission cannot take it meanwhile, and whether there were
-    /// more.
+    /// more. Connections whose slots the other limit's older evictors contend
+    /// for, `rivals` or else their id's, are left to them: their queues are
+    /// collected in `gave_way`.
     fn pick_lru_idle<'a>(
         lanes: impl Iterator<Item = &'a Lane<C, ID>>,
         evictor: Option<&Waiting>,
+        rivals: Option<&'a Arc<WaitQueue>>,
+        gave_way: &mut SmallVec<[&'a Arc<WaitQueue>; 2]>,
     ) -> Option<(
         &'a Arc<StoredConnection<C, ID>>,
         parking_lot::MutexGuard<'a, ConnectionSlot>,
@@ -530,6 +559,7 @@ where
         C: 'a,
         ID: 'a,
     {
+        let order = evictor.map_or(u64::MAX, |evictor| evictor.party.order());
         let mut candidate = None;
         let mut oldest = u64::MAX;
         let mut found = 0_usize;
@@ -538,12 +568,20 @@ where
             let spoken_for = lane
                 .waiters
                 .front_order()
-                .is_some_and(|front| evictor.is_none_or(|evictor| front < evictor.party.order()));
+                .is_some_and(|front| front < order);
             for conn in &lane.conns {
                 if spoken_for && conn.has_capacity(conn.stream_cap) {
                     continue;
                 }
                 if !conn.is_idle() {
+                    continue;
+                }
+                if let Some(rivals) = rivals.or(conn.id_evictors.as_ref())
+                    && rivals.front_order().is_some_and(|front| front < order)
+                {
+                    if !gave_way.iter().any(|queue| Arc::ptr_eq(queue, rivals)) {
+                        gave_way.push(rivals);
+                    }
                     continue;
                 }
                 found += 1;
@@ -601,7 +639,7 @@ where
             if !chances.admits(waiting.and_then(|waiting| waiting.waiter_in(chances))) {
                 return None;
             }
-            Self::evict_lru_idle(&mut storage, waiting, within)?
+            self.evict_lru_idle(&mut storage, waiting, chances, within)?
         };
         drop(evicted.conn);
         if let Look::Register(waiting) = look {
@@ -615,14 +653,43 @@ where
     }
 
     /// Whether `conn` is idle and kept for a checkout waiting to evict it that
-    /// arrived before this one (`waiting`, or a newcomer). Asks its admission
-    /// whether work outlives its handouts: call without the storage lock.
+    /// arrived before this one (`waiting`, or a newcomer) and before its lane's
+    /// front: a waiting checkout gives way to it, which looks then, and its
+    /// lane is woken once it leaves. Asks its admission whether work outlives
+    /// its handouts: call without the storage lock.
     fn kept_for_evictor(&self, conn: &StoredConnection<C, ID>, waiting: Option<&Waiting>) -> bool {
-        let order = waiting.map_or(u64::MAX, |waiting| waiting.party.order());
-        let older =
-            |evictors: &WaitQueue| evictors.front_order().is_some_and(|front| front < order);
-        (older(&self.slot_waiters) || conn.id_evictors.as_deref().is_some_and(older))
-            && conn.is_idle()
+        let lane = conn.lane_waiters.lock().clone();
+        // The lane's own front goes first: its FIFO serves this checkout in turn.
+        let than = waiting
+            .map_or(u64::MAX, |waiting| waiting.party.order())
+            .min(
+                lane.as_ref()
+                    .and_then(|lane| lane.front_order())
+                    .unwrap_or(u64::MAX),
+            );
+        let older = |evictors: &WaitQueue| evictors.front_order().is_some_and(|front| front < than);
+        if !(older(&self.slot_waiters) || conn.id_evictors.as_deref().is_some_and(older))
+            || !conn.is_idle()
+        {
+            return false;
+        }
+        // A newcomer looks again once it waits.
+        let (Some(waiting), Some(lane)) = (waiting, lane) else {
+            return true;
+        };
+        let from = waiting.party.order();
+        let total = self.slot_waiters.give_way(than, from, &lane);
+        let id = conn
+            .id_evictors
+            .as_ref()
+            .is_some_and(|evictors| evictors.give_way(than, from, &lane));
+        total || id
+    }
+
+    /// Leave the connections of `snapshot` kept for an older evictor out: see
+    /// [`Self::kept_for_evictor`].
+    fn leave_kept(&self, snapshot: &mut Snapshot<C, ID>, waiting: Option<&Waiting>) {
+        snapshot.retain(|(conn, _)| !self.kept_for_evictor(conn, waiting));
     }
 
     /// Fast checkout: hand out the connection the selection strategy prefers
@@ -825,7 +892,7 @@ where
             Snapshot::new()
         };
         drop(doomed);
-        same_lane.retain(|(conn, _)| !self.kept_for_evictor(conn, Some(waiting)));
+        self.leave_kept(&mut same_lane, Some(waiting));
         if let Some(conn) = select_and_admit(
             &same_lane,
             id,
@@ -1014,7 +1081,7 @@ where
             if let Look::Register(waiting) = look {
                 waiting.leave_other_lanes();
             }
-            same_id.retain(|(conn, _)| !self.kept_for_evictor(conn, look.waiting()));
+            self.leave_kept(&mut same_id, look.waiting());
 
             if let Some(conn) = select_and_admit(
                 &same_id,
@@ -1224,6 +1291,7 @@ where
         let conn = Arc::new(StoredConnection {
             max_concurrency: conn.extensions().get_arc::<MaxConcurrency>(),
             health: conn.extensions().get_arc::<ConnectionHealthWatcher>(),
+            broken_told: AtomicBool::new(false),
             admission: conn
                 .extensions()
                 .self_get_ref::<ConnectionAdmission>()

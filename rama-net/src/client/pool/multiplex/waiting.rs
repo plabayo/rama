@@ -167,7 +167,8 @@ impl Waiting {
     }
 
     /// A look found nothing: it spent the wakes it answered, and the checkout
-    /// leaves the chance queues the look no longer queued in.
+    /// leaves the chance queues the look no longer queued in. The lanes it no
+    /// longer uses it left during the look.
     pub(super) fn end_fruitless_look(&mut self) {
         for place in &self.places {
             if let Some(seen) = place.seen {
@@ -175,7 +176,7 @@ impl Waiting {
             }
         }
         let emptied = self.leave_where(|place| !place.looked);
-        self.announce(emptied, self.others_wait());
+        debug_assert!(!emptied, "the look left the lanes it no longer uses");
     }
 
     /// Whether other checkouts wait in the pool.
