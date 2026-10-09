@@ -1,11 +1,11 @@
 use itertools::Itertools as _;
 use rama::{
     error::{BoxError, ErrorContext},
-    extensions::{Extensions, ExtensionsRef},
+    extensions::ExtensionsRef,
     http::{
         BodyExtractExt, Response, StatusCode, Version,
         headers::{ContentType, all_client_hints},
-        proto::h2::{self, PseudoHeaderOrder},
+        proto::h2,
         protocols::html::*,
         request::Parts,
         service::web::{
@@ -19,6 +19,7 @@ use rama::{
         },
     },
     net::address::ip::geo::IpGeoInfo,
+    quic::proto::capture::QuicObservation,
     telemetry::tracing,
     tls::SecureTransport,
     ua::profile::{Http2Settings, JsProfileWebApis, UserAgentSourceInfo},
@@ -29,7 +30,7 @@ use serde_json::json;
 use super::{
     State, StorageAuthorized,
     data::{
-        DataSource, FetchMode, Initiator, RequestInfo, ResourceType, TlsDisplayInfo,
+        DataSource, FetchMode, Http3Info, Initiator, RequestInfo, ResourceType, TlsDisplayInfo,
         TlsDisplayInfoExtensionData, UserAgentInfo, get_akamai_h2_info, get_and_store_http_info,
         get_ja4h_info, get_request_info, get_tls_display_info_and_store, get_user_agent_info,
     },
@@ -85,6 +86,20 @@ fn consent_body() -> impl IntoHtml {
                             "https://h1.fp.ramaproxy.org"
                         ),
                         ": HTTP/1.1 and below only, TLS",
+                    ),
+                    li!(
+                        a!(
+                            href = "https://h2.fp.ramaproxy.org:443",
+                            "https://h2.fp.ramaproxy.org"
+                        ),
+                        ": HTTP/2 only, TLS",
+                    ),
+                    li!(
+                        a!(
+                            href = "https://h3.fp.ramaproxy.org:443",
+                            "https://h3.fp.ramaproxy.org"
+                        ),
+                        ": HTTP/3 only, TLS (requires browser HTTP/3 discovery support)",
                     ),
                 ),
             ),
@@ -251,7 +266,10 @@ pub(super) async fn get_report(
     }
 
     if parts.version == Version::HTTP_3 {
-        tables.push(http3_table(&parts.extensions));
+        tables.push(http3_table(
+            http_info.h3.as_ref(),
+            http_info.quic.as_deref(),
+        ));
     }
 
     let tls_info = get_tls_display_info_and_store(&state, &parts.extensions, user_agent)
@@ -277,20 +295,43 @@ pub(super) async fn get_report(
 
     Ok(page(
         "🕵️ Fingerprint Report",
-        script!(src = "/assets/script.js"),
+        (
+            script!(src = "/assets/script.js"),
+            meta!(
+                name = "rama-h3-probe",
+                content = if state.probe_http3 {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            ),
+        ),
         (geo_comment, report_body(None::<&str>, tables)),
     )
     .into_response())
 }
 
-/// HTTP/3 requests are shown but not collected into UA profiles yet.
-fn http3_table(extensions: &Extensions) -> Table {
-    let mut rows = vec![(
-        "profile collection".to_owned(),
-        "not collected yet: HTTP/3 requests are shown, never stored".to_owned(),
-    )];
-    if let Some(pseudo) = extensions.get_ref::<PseudoHeaderOrder>() {
-        rows.push(("pseudo header order".to_owned(), pseudo.iter().join(", ")));
+/// Show both request-time capture and the explicitly bounded SETTINGS finalization.
+fn http3_table(h3: Option<&Http3Info>, quic: Option<&QuicObservation>) -> Table {
+    let mut rows = Vec::new();
+    if let Some(h3) = h3 {
+        rows.push((
+            "SETTINGS observation".to_owned(),
+            h3.settings_status.to_owned(),
+        ));
+        if let Some(pseudo) = &h3.pseudo_headers {
+            rows.push(("pseudo header order".to_owned(), pseudo.iter().join(", ")));
+        }
+        rows.push((
+            "HTTP/3 observation".to_owned(),
+            serde_json::to_string(h3).unwrap_or_default(),
+        ));
+    }
+    if let Some(quic) = quic {
+        rows.push((
+            "QUIC observation".to_owned(),
+            serde_json::to_string(quic).unwrap_or_default(),
+        ));
     }
     Table {
         title: "🚀 HTTP/3".to_owned(),
@@ -457,7 +498,7 @@ pub(super) async fn post_api_fetch_number(
     let request_info = get_request_info(
         FetchMode::SameOrigin,
         ResourceType::Xhr,
-        Initiator::Fetch,
+        Initiator::XMLHttpRequest,
         &parts,
         state.geo_db.as_deref(),
     )
@@ -516,9 +557,13 @@ pub(super) async fn post_api_fetch_number(
             "user_agent_info": user_agent_info,
             "request_info": request_info,
             "tls_info": tls_info,
+            "quic": http_info.quic,
             "http_info": json!({
                 "headers": http_info.headers,
+                "version": http_info.version,
+                "initiator": http_info.initiator,
                 "h2": http_info.h2_settings,
+                "h3": http_info.h3,
                 "ja4h": ja4h,
             }),
             "js_web_apis": request.js_web_apis,
@@ -569,9 +614,13 @@ pub(super) async fn post_api_xml_http_request_number(
             "user_agent_info": user_agent_info,
             "request_info": request_info,
             "tls_info": tls_info,
+            "quic": http_info.quic,
             "http_info": json!({
                 "headers": http_info.headers,
+                "version": http_info.version,
+                "initiator": http_info.initiator,
                 "h2": http_info.h2_settings,
+                "h3": http_info.h3,
                 "ja4h": ja4h,
             }),
         }
@@ -652,7 +701,10 @@ pub(super) async fn form(
     }
 
     if parts.version == Version::HTTP_3 {
-        tables.push(http3_table(&parts.extensions));
+        tables.push(http3_table(
+            http_info.h3.as_ref(),
+            http_info.quic.as_deref(),
+        ));
     }
 
     let tls_info = get_tls_display_info_and_store(&state, &parts.extensions, user_agent)
@@ -743,10 +795,11 @@ pub(super) async fn ws_api(state: State, ws: ServerWebSocket) -> Result<(), BoxE
     .await?;
     tracing::debug!("ws api: http info stored");
 
-    if let Some(hello) = parts
-        .extensions
-        .get_ref::<SecureTransport>()
-        .and_then(|st| st.client_hello())
+    if parts.version != Version::HTTP_3
+        && let Some(hello) = parts
+            .extensions
+            .get_ref::<SecureTransport>()
+            .and_then(|st| st.client_hello())
         && let Some(storage) = state.storage.as_ref()
     {
         let auth = parts.extensions.contains::<StorageAuthorized>();
@@ -757,7 +810,7 @@ pub(super) async fn ws_api(state: State, ws: ServerWebSocket) -> Result<(), BoxE
         tracing::debug!("ws api: tls overwrite info stored");
     }
 
-    ws.send_message("hello".into())
+    ws.send_message(json!({ "initiator": "ws", "version": format!("{:?}", parts.version), "h3": if parts.version == Version::HTTP_3 { "negotiated" } else { "unsupported_or_not_negotiated" } }).to_string().into())
         .await
         .context("send hello msg")?;
 
@@ -1067,6 +1120,7 @@ mod tests {
     async fn fetch_endpoint_extracts_parts_and_body_without_json_content_type() {
         let service = Router::new_with_state(State {
             data_source: DataSource::default(),
+            probe_http3: false,
             storage: None,
             storage_auth: None,
             geo_db: None,

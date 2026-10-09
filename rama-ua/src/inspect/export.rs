@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use rama_http::inspect::capture::ExchangeCapture;
+use rama_http::{Version, inspect::capture::ExchangeCapture};
 
 use super::*;
 
@@ -74,7 +74,7 @@ impl ProfileExport {
                 continue;
             };
             #[cfg(feature = "tls")]
-            if profile.tls_client_hello.is_none() {
+            if version != Version::HTTP_3 && profile.tls_client_hello.is_none() {
                 profile.tls_client_hello = metadata
                     .connection
                     .get_ref::<TlsObservation>()

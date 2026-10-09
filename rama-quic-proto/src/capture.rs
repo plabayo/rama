@@ -20,10 +20,16 @@
 use alloc::vec::Vec;
 use core::{fmt, ops::Range};
 
-use rama_core::bytes::{Buf, BytesMut};
+use rama_core::{
+    bytes::{Buf, BytesMut},
+    extensions::Extension,
+};
 use rama_tls::{
     ExtensionId,
-    client::{ClientHelloExtension, ClientHelloHandshakePrefix, parse_client_hello_message_prefix},
+    client::{
+        ClientHello, ClientHelloExtension, ClientHelloHandshakePrefix,
+        parse_client_hello_message_prefix,
+    },
 };
 use serde::{Deserialize, Serialize};
 
@@ -77,6 +83,8 @@ pub enum CaptureError {
     UnknownVersion(Version),
     /// The Initial keys could not be derived or did not open the packet.
     Undecryptable,
+    /// A configured observation budget was exhausted.
+    LimitExceeded(&'static str),
 }
 
 impl fmt::Display for CaptureError {
@@ -85,11 +93,89 @@ impl fmt::Display for CaptureError {
             Self::Malformed(what) => write!(f, "malformed QUIC datagram: {what}"),
             Self::UnknownVersion(version) => write!(f, "unknown QUIC version {version}"),
             Self::Undecryptable => f.write_str("the Initial packet did not decrypt"),
+            Self::LimitExceeded(what) => write!(f, "QUIC capture limit exceeded: {what}"),
         }
     }
 }
 
 impl core::error::Error for CaptureError {}
+
+/// Retention and work budgets for a first-flight observation.
+///
+/// Limits are local policy, independent of the transport's admission limits. Exhaustion
+/// stops capture, never the connection. The default ClientHello bound matches server peeking.
+#[derive(Debug, Clone, Copy)]
+pub struct CaptureLimits {
+    pub datagrams: usize,
+    pub bytes: usize,
+    pub packets: usize,
+    pub frames: usize,
+    pub crypto_fragments: usize,
+    pub client_hello_bytes: usize,
+    pub parameters: usize,
+}
+
+impl Default for CaptureLimits {
+    fn default() -> Self {
+        Self {
+            datagrams: 32,
+            bytes: 256 * 1024,
+            packets: 128,
+            frames: 2048,
+            crypto_fragments: 128,
+            client_hello_bytes: 16 * 1024,
+            parameters: 256,
+        }
+    }
+}
+
+/// Which parts of an observation are suitable as exact comparison inputs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureCompleteness {
+    pub datagrams: bool,
+    pub frames: bool,
+    pub client_hello: bool,
+    pub transport_parameters: bool,
+    /// False when only the accepted, post-Retry attempt was observed.
+    pub original_attempt: bool,
+}
+
+impl CaptureCompleteness {
+    #[must_use]
+    pub fn is_complete(self) -> bool {
+        self.datagrams
+            && self.frames
+            && self.client_hello
+            && self.transport_parameters
+            && self.original_attempt
+    }
+}
+
+/// A bounded server observation of one attempt, including its Retry lineage.
+///
+/// The parsed ClientHello belongs to the connection's SecureTransport extension.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuicObservation {
+    pub connection_id: Vec<u8>,
+    pub attempt_id: Vec<u8>,
+    pub retry_parent: Option<Vec<u8>>,
+    pub first_flight: Option<FirstFlight>,
+    pub transport_parameters: Vec<RawParameter>,
+    /// Retained internally; display and profile serialization omit the raw handshake.
+    #[serde(skip)]
+    pub client_hello_message: Vec<u8>,
+    pub completeness: CaptureCompleteness,
+}
+
+impl Extension for QuicObservation {}
+
+fn within(value: usize, limit: usize, name: &'static str) -> Result<(), CaptureError> {
+    if value > limit {
+        Err(CaptureError::LimitExceeded(name))
+    } else {
+        Ok(())
+    }
+}
 
 /// What kind of packet a header announces (RFC 8999 §5, RFC 9000 §17).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,10 +257,24 @@ fn cid(buf: &[u8], at: &mut usize) -> Result<Vec<u8>, CaptureError> {
 /// version's type bits and Length fields. A short header takes the rest of the datagram; bytes
 /// after a packet that cannot start another one are reported as trailing.
 pub fn observe(datagram: &[u8]) -> Result<ObservedDatagram, CaptureError> {
+    observe_with_limits(datagram, &CaptureLimits::default())
+}
+
+/// Split one datagram under explicit local observation budgets.
+pub fn observe_with_limits(
+    datagram: &[u8],
+    limits: &CaptureLimits,
+) -> Result<ObservedDatagram, CaptureError> {
+    within(datagram.len(), limits.bytes, "bytes")?;
     let mut packets = Vec::new();
     let mut at = 0;
     let mut trailing = 0;
     while at < datagram.len() {
+        if datagram[at] == 0 && !packets.is_empty() {
+            trailing = datagram.len() - at;
+            break;
+        }
+        within(packets.len().saturating_add(1), limits.packets, "packets")?;
         let start = at;
         let first_byte = datagram[at];
         if first_byte & 0x80 == 0 {
@@ -309,8 +409,40 @@ impl ObservedDatagram {
         side: Side,
         original_dcid: Option<&[u8]>,
     ) -> Result<Vec<InitialPacket>, CaptureError> {
+        self.unprotect_initials_with_limits(
+            datagram,
+            provider,
+            side,
+            original_dcid,
+            &CaptureLimits::default(),
+        )
+    }
+
+    /// Remove Initial protection without exceeding the supplied capture budgets.
+    pub fn unprotect_initials_with_limits<P: KeyProvider>(
+        &self,
+        datagram: &[u8],
+        provider: &P,
+        side: Side,
+        original_dcid: Option<&[u8]>,
+        limits: &CaptureLimits,
+    ) -> Result<Vec<InitialPacket>, CaptureError> {
+        within(datagram.len(), limits.bytes, "bytes")?;
+        within(self.packets.len(), limits.packets, "packets")?;
+        let mut frame_count = 0usize;
+        let mut fragment_count = 0usize;
+        let mut copied_bytes = 0usize;
         let mut initials = Vec::new();
         for observed in &self.packets {
+            let metadata_bytes = observed
+                .dcid
+                .len()
+                .saturating_add(observed.scid.as_ref().map_or(0, Vec::len))
+                .saturating_add(observed.token.as_ref().map_or(0, Vec::len));
+            copied_bytes = copied_bytes
+                .saturating_add(metadata_bytes)
+                .saturating_add(observed.range.end.saturating_sub(observed.range.start));
+            within(copied_bytes, limits.bytes, "retained bytes")?;
             if observed.kind != PacketKind::Initial {
                 continue;
             }
@@ -356,6 +488,12 @@ impl ObservedDatagram {
                 .map_err(|_error| CaptureError::Malformed("empty Initial payload"))?;
             for item in iter {
                 let item = item.map_err(|_error| CaptureError::Malformed("frame"))?;
+                if !matches!(item, Frame::Padding)
+                    || !matches!(frames.last(), Some(ObservedFrame::Padding { .. }))
+                {
+                    frame_count = frame_count.saturating_add(1);
+                    within(frame_count, limits.frames, "frames")?;
+                }
                 match item {
                     Frame::Padding => match frames.last_mut() {
                         Some(ObservedFrame::Padding { len }) => *len += 1,
@@ -364,6 +502,10 @@ impl ObservedDatagram {
                     Frame::Ping => frames.push(ObservedFrame::Ping),
                     Frame::Ack(_) => frames.push(ObservedFrame::Ack),
                     Frame::Crypto(frame) => {
+                        fragment_count = fragment_count.saturating_add(1);
+                        within(fragment_count, limits.crypto_fragments, "CRYPTO fragments")?;
+                        copied_bytes = copied_bytes.saturating_add(frame.data.len());
+                        within(copied_bytes, limits.bytes, "retained bytes")?;
                         frames.push(ObservedFrame::Crypto {
                             offset: frame.offset,
                             len: frame.data.len(),
@@ -391,6 +533,20 @@ impl ObservedDatagram {
 /// offset zero through its length.
 #[must_use]
 pub fn client_hello(initials: &[InitialPacket]) -> Option<Vec<u8>> {
+    client_hello_with_limits(initials, &CaptureLimits::default())
+}
+
+/// Reassemble only a bounded ClientHello, including for caller-supplied packet records.
+#[must_use]
+pub fn client_hello_with_limits(
+    initials: &[InitialPacket],
+    limits: &CaptureLimits,
+) -> Option<Vec<u8>> {
+    within(initials.len(), limits.packets, "packets").ok()?;
+    let fragments = initials
+        .iter()
+        .try_fold(0usize, |n, packet| n.checked_add(packet.crypto.len()))?;
+    within(fragments, limits.crypto_fragments, "CRYPTO fragments").ok()?;
     let mut chunks: Vec<(u64, &[u8])> = initials
         .iter()
         .flat_map(|packet| {
@@ -409,7 +565,8 @@ pub fn client_hello(initials: &[InitialPacket]) -> Option<Vec<u8>> {
         }
         // A chunk already covered by what was assembled adds nothing (retransmitted CRYPTO).
         if let Some(new) = data.get(stream.len() - offset..) {
-            stream.extend_from_slice(new);
+            let room = limits.client_hello_bytes.checked_sub(stream.len())?;
+            stream.extend_from_slice(&new[..new.len().min(room)]);
         }
     }
     let header: [u8; 4] = stream.get(..4)?.try_into().ok()?;
@@ -433,11 +590,32 @@ pub struct RawParameter {
 
 /// The transport parameters of a ClientHello handshake message, in the order they were sent.
 pub fn transport_parameters(client_hello: &[u8]) -> Result<Vec<RawParameter>, CaptureError> {
+    transport_parameters_with_limits(client_hello, &CaptureLimits::default())
+}
+
+/// Read ordered parameter values under a byte and entry budget.
+pub fn transport_parameters_with_limits(
+    client_hello: &[u8],
+    limits: &CaptureLimits,
+) -> Result<Vec<RawParameter>, CaptureError> {
+    within(
+        client_hello.len(),
+        limits.client_hello_bytes,
+        "ClientHello bytes",
+    )?;
     let ClientHelloHandshakePrefix::Complete(hello) =
         parse_client_hello_message_prefix(client_hello)
     else {
         return Err(CaptureError::Malformed("ClientHello"));
     };
+    transport_parameters_from_hello(&hello, limits)
+}
+
+/// Read parameter values from an already parsed hello without parsing it again.
+pub fn transport_parameters_from_hello(
+    hello: &ClientHello,
+    limits: &CaptureLimits,
+) -> Result<Vec<RawParameter>, CaptureError> {
     let data = hello
         .extensions()
         .iter()
@@ -450,9 +628,19 @@ pub fn transport_parameters(client_hello: &[u8]) -> Result<Vec<RawParameter>, Ca
             _ => None,
         })
         .ok_or(CaptureError::Malformed("no quic_transport_parameters"))?;
+    within(
+        data.len(),
+        limits.client_hello_bytes,
+        "transport parameter bytes",
+    )?;
     let mut reader = &data[..];
     let mut parameters = Vec::new();
     while reader.has_remaining() {
+        within(
+            parameters.len().saturating_add(1),
+            limits.parameters,
+            "transport parameters",
+        )?;
         let id = reader
             .get_var()
             .map_err(|_error| CaptureError::Malformed("transport parameter id"))?;
@@ -500,6 +688,10 @@ pub struct FirstFlight {
     pub parameters: Vec<ParameterId>,
     pub chosen_version: Option<Version>,
     pub available_versions: Vec<Version>,
+    /// Packet numbers in observed order; duplicates are retained as retransmission evidence.
+    pub packet_numbers: Vec<u64>,
+    /// Whether the complete ClientHello and its parameters were available.
+    pub complete: bool,
 }
 
 /// Read a client's first flight: the datagrams it sent before hearing from the server.
@@ -507,13 +699,31 @@ pub fn first_flight<P: KeyProvider>(
     datagrams: &[&[u8]],
     provider: &P,
 ) -> Result<FirstFlight, CaptureError> {
+    first_flight_with_limits(datagrams, provider, &CaptureLimits::default())
+}
+
+/// Read a flight with explicit budgets applied before retaining peer-controlled data.
+pub fn first_flight_with_limits<P: KeyProvider>(
+    datagrams: &[&[u8]],
+    provider: &P,
+    limits: &CaptureLimits,
+) -> Result<FirstFlight, CaptureError> {
     if datagrams.is_empty() {
         return Err(CaptureError::Malformed("no datagrams"));
     }
-    let observed: Vec<ObservedDatagram> = datagrams
+    within(datagrams.len(), limits.datagrams, "datagrams")?;
+    let bytes = datagrams
         .iter()
-        .map(|datagram| observe(datagram))
-        .collect::<Result<_, _>>()?;
+        .try_fold(0usize, |n, d| n.checked_add(d.len()))
+        .ok_or(CaptureError::LimitExceeded("bytes"))?;
+    within(bytes, limits.bytes, "bytes")?;
+    let mut observed = Vec::new();
+    let mut admission = *limits;
+    for datagram in datagrams {
+        let value = observe_with_limits(datagram, &admission)?;
+        admission.packets = admission.packets.saturating_sub(value.packets.len());
+        observed.push(value);
+    }
     let lead = observed[0]
         .packets
         .first()
@@ -522,19 +732,33 @@ pub fn first_flight<P: KeyProvider>(
             "the first packet is not an Initial",
         ))?
         .clone();
+    let packet_count = observed
+        .iter()
+        .try_fold(0usize, |n, d| n.checked_add(d.packets.len()))
+        .ok_or(CaptureError::LimitExceeded("packets"))?;
+    within(packet_count, limits.packets, "packets")?;
     let mut initials = Vec::new();
+    let mut remaining = *limits;
     for (datagram, observed) in datagrams.iter().zip(&observed) {
-        initials.extend(observed.unprotect_initials(
+        let packets = observed.unprotect_initials_with_limits(
             datagram,
             provider,
             Side::Server,
             Some(&lead.dcid),
-        )?);
+            &remaining,
+        )?;
+        for packet in &packets {
+            remaining.frames = remaining.frames.saturating_sub(packet.frames.len());
+            remaining.crypto_fragments = remaining
+                .crypto_fragments
+                .saturating_sub(packet.crypto.len());
+        }
+        initials.extend(packets);
     }
-    let hello = client_hello(&initials);
+    let hello = client_hello_with_limits(&initials, limits);
     let parameters = hello
         .as_deref()
-        .map(transport_parameters)
+        .map(|hello| transport_parameters_with_limits(hello, limits))
         .transpose()?
         .unwrap_or_default();
     let info = version_information(&parameters);
@@ -563,21 +787,30 @@ pub fn first_flight<P: KeyProvider>(
         packet_number_len: first_initial.packet_number_len,
         frames: initials
             .iter()
-            .map(|packet| packet.frames.clone())
+            .enumerate()
+            .filter(|(i, packet)| {
+                !initials[..*i]
+                    .iter()
+                    .any(|earlier| earlier.packet_number == packet.packet_number)
+            })
+            .map(|(_, packet)| packet.frames.clone())
             .collect(),
         padding,
         coalesced,
         parameters: parameters.iter().map(|parameter| parameter.id).collect(),
         chosen_version: info.as_ref().map(VersionInformation::chosen),
         available_versions: info.map_or_else(Vec::new, |info| info.available().to_vec()),
+        packet_numbers: initials.iter().map(|packet| packet.packet_number).collect(),
+        complete: hello.is_some(),
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::transport_parameters;
+    use super::*;
     use crate::VarInt;
     use rama_core::bytes::BufMut;
+    use std::slice;
 
     fn hello_with_parameter_len(len: u64, value: &[u8]) -> Vec<u8> {
         let mut parameters = vec![0x21];
@@ -608,5 +841,104 @@ mod tests {
             assert_eq!(parameters[0].id.0, 0x21);
             assert_eq!(parameters[0].value, value);
         }
+    }
+    #[test]
+    fn observation_budgets_bound_bytes_packets_hello_and_parameters() {
+        let wire = [0x40, 1, 2, 3];
+        observe_with_limits(
+            &wire,
+            &CaptureLimits {
+                bytes: wire.len(),
+                ..CaptureLimits::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            observe_with_limits(
+                &wire,
+                &CaptureLimits {
+                    bytes: wire.len() - 1,
+                    ..CaptureLimits::default()
+                }
+            ),
+            Err(CaptureError::LimitExceeded("bytes"))
+        );
+        assert_eq!(
+            observe_with_limits(
+                &wire,
+                &CaptureLimits {
+                    packets: 0,
+                    ..CaptureLimits::default()
+                }
+            ),
+            Err(CaptureError::LimitExceeded("packets"))
+        );
+        let hello = hello_with_parameter_len(3, b"abc");
+        let packet = InitialPacket {
+            header: ObservedPacket {
+                first_byte: 0xc0,
+                kind: PacketKind::Initial,
+                version: Some(Version::V1),
+                dcid: vec![],
+                scid: None,
+                token: None,
+                range: 0..0,
+            },
+            packet_number: 0,
+            packet_number_len: 1,
+            frames: vec![],
+            crypto: vec![(0, hello.clone())],
+        };
+        assert_eq!(
+            client_hello_with_limits(
+                slice::from_ref(&packet),
+                &CaptureLimits {
+                    client_hello_bytes: hello.len(),
+                    ..CaptureLimits::default()
+                }
+            ),
+            Some(hello.clone())
+        );
+        for limits in [
+            CaptureLimits {
+                packets: 0,
+                ..CaptureLimits::default()
+            },
+            CaptureLimits {
+                crypto_fragments: 0,
+                ..CaptureLimits::default()
+            },
+            CaptureLimits {
+                client_hello_bytes: hello.len() - 1,
+                ..CaptureLimits::default()
+            },
+        ] {
+            assert!(client_hello_with_limits(slice::from_ref(&packet), &limits).is_none());
+        }
+        assert_eq!(
+            transport_parameters_with_limits(
+                &hello,
+                &CaptureLimits {
+                    parameters: 0,
+                    ..CaptureLimits::default()
+                }
+            ),
+            Err(CaptureError::LimitExceeded("transport parameters"))
+        );
+        assert_eq!(
+            transport_parameters_with_limits(
+                &hello,
+                &CaptureLimits {
+                    client_hello_bytes: hello.len() - 1,
+                    ..CaptureLimits::default()
+                }
+            ),
+            Err(CaptureError::LimitExceeded("ClientHello bytes"))
+        );
+        let huge_offset = InitialPacket {
+            crypto: vec![(u64::MAX, vec![0])],
+            ..packet
+        };
+        assert!(client_hello(&[huge_offset]).is_none());
     }
 }

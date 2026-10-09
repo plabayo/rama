@@ -148,10 +148,13 @@ impl KeyProvider for RustlsTlsProvider {
         side: Side,
     ) -> Result<InitialKeys<Self::Header, Self::Packet>, CaptureError> {
         let dcid = capture::connection_id(dcid)?;
+        version
+            .wire()
+            .ok_or(CaptureError::UnknownVersion(version))?;
         let suite = rustls_crypto::initial_suite_from_provider(&self.crypto)
             .ok_or(CaptureError::Undecryptable)?;
         let keys = rustls_crypto::server_initial_keys(version, &dcid, &suite)
-            .map_err(|_error| CaptureError::UnknownVersion(version))?;
+            .map_err(|_error| CaptureError::Undecryptable)?;
         capture::receiving_keys(keys, side)
     }
 }

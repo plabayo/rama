@@ -207,7 +207,7 @@ async fn bind_echo_http_service(
         "starting http(s) echo service: bind interface = {:?}",
         cfg.bind
     );
-    let listeners = HttpListeners::bind(
+    let listeners = HttpListeners::bind_observed(
         exec.clone(),
         cfg.bind,
         cfg.http_version,

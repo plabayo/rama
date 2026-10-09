@@ -34,3 +34,5 @@ mod settings;
 pub use settings::{DEFAULT_MAX_SETTINGS_ENTRIES, Setting, SettingId, Settings, SettingsError};
 
 pub mod qpack;
+
+pub mod observation;

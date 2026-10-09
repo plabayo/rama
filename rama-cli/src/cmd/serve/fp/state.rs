@@ -9,6 +9,7 @@ use super::{data::DataSource, redacted_storage_auth, storage::Storage};
 #[non_exhaustive]
 pub(super) struct State {
     pub(super) data_source: DataSource,
+    pub(super) probe_http3: bool,
     pub(super) storage: Option<Storage>,
     pub(super) storage_auth: Option<String>,
     /// Optional IP geolocation database, configured via `RAMA_IP_GEO_DB`.
@@ -44,6 +45,7 @@ impl State {
 
         Ok(Self {
             data_source: DataSource::default(),
+            probe_http3: false,
             storage,
             storage_auth: storage_auth.map(|s| s.to_owned()),
             geo_db,
@@ -59,6 +61,7 @@ mod tests {
     fn state_debug_redacts_storage_auth() {
         let state = State {
             data_source: DataSource::default(),
+            probe_http3: false,
             storage: None,
             storage_auth: Some("super-secret-cookie".to_owned()),
             geo_db: None,

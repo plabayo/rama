@@ -15,6 +15,7 @@ use rama::{
     net::{address::SocketAddress, tls::ApplicationProtocol},
     quic::{
         Connection, Endpoint, ServerConfig, TransportConfig,
+        proto::capture::CaptureLimits,
         tls::{BoringTlsProvider, TlsOptions},
     },
     rt::Executor,
@@ -57,6 +58,28 @@ impl HttpListeners {
         tls: Option<&TlsServerConfig>,
         http3: &Http3Args,
     ) -> Result<Self, BoxError> {
+        Self::bind_with_capture(exec, bind, versions, tls, http3, false).await
+    }
+
+    /// Bind echo/fingerprint listeners with bounded QUIC observation enabled.
+    pub async fn bind_observed(
+        exec: Executor,
+        bind: SocketAddress,
+        versions: HttpVersions,
+        tls: Option<&TlsServerConfig>,
+        http3: &Http3Args,
+    ) -> Result<Self, BoxError> {
+        Self::bind_with_capture(exec, bind, versions, tls, http3, true).await
+    }
+
+    async fn bind_with_capture(
+        exec: Executor,
+        bind: SocketAddress,
+        versions: HttpVersions,
+        tls: Option<&TlsServerConfig>,
+        http3: &Http3Args,
+        capture: bool,
+    ) -> Result<Self, BoxError> {
         let serve_http3 = versions.http3(tls.is_some())?;
         if http3.h3_bind.is_some() && !serve_http3 {
             return Err(BoxError::from_static_str(
@@ -79,7 +102,7 @@ impl HttpListeners {
                     (None, Some(tcp)) => tcp.local_addr().context("TCP listener address")?.into(),
                     (None, None) => bind,
                 };
-                match bind_http3(addr, tls).await {
+                match bind_http3_with_capture(addr, tls, capture).await {
                     Ok(endpoint) => Some(endpoint),
                     // HTTP/3 that `auto` only implied must not take h1 and h2 down with it.
                     Err(error)
@@ -125,6 +148,14 @@ impl HttpListeners {
 /// The endpoint stays outside graceful shutdown, so HTTP/3 can drain its connections first;
 /// serve it with [`Http3Endpoints::serve`].
 pub async fn bind_http3(addr: SocketAddress, tls: &TlsServerConfig) -> Result<Endpoint, BoxError> {
+    bind_http3_with_capture(addr, tls, false).await
+}
+
+async fn bind_http3_with_capture(
+    addr: SocketAddress,
+    tls: &TlsServerConfig,
+    capture: bool,
+) -> Result<Endpoint, BoxError> {
     let tls = tls
         .clone()
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
@@ -139,6 +170,9 @@ pub async fn bind_http3(addr: SocketAddress, tls: &TlsServerConfig) -> Result<En
     )
     .context("QUIC TLS server config")?;
     config.set_transport_config(Arc::new(transport));
+    if capture {
+        config.set_capture(CaptureLimits::default());
+    }
     let builder = Endpoint::build(Executor::new()).with_server_config(config);
     #[cfg(target_os = "windows")]
     let endpoint = builder

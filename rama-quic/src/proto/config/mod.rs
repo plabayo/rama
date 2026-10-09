@@ -19,6 +19,7 @@ use rama_core::error::BoxError;
 use rama_crypto::hmac::HmacSha2;
 use rama_quic_proto::{
     ConnectionId, VarInt, VarIntBoundsExceeded, Version,
+    capture::CaptureLimits,
     version::{ClientVersionPolicy, ServerVersionPolicy, VersionPolicyError},
 };
 use rama_utils::octets;
@@ -321,6 +322,7 @@ impl fmt::Debug for EndpointConfig {
 /// Default values should be suitable for most internet applications.
 #[derive(Clone)]
 pub struct ServerConfig {
+    pub(crate) capture: Option<CaptureLimits>,
     /// Transport configuration to use for incoming connections
     pub(crate) transport: Arc<TransportConfig>,
 
@@ -405,6 +407,7 @@ impl ServerConfig {
 
     pub(crate) fn from_crypto(crypto: ServerCrypto, token_key: Arc<dyn HandshakeTokenKey>) -> Self {
         Self {
+            capture: None,
             transport: Arc::new(TransportConfig::default()),
             crypto,
 
@@ -425,6 +428,15 @@ impl ServerConfig {
             time_source: Arc::new(StdSystemTime),
 
             versions: ServerVersionPolicy::new(),
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Retain bounded QUIC/TLS observations in accepted connection extensions.
+        /// Capture exhaustion marks incomplete data and does not reject the connection.
+        pub fn capture(mut self, limits: Option<CaptureLimits>) -> Self {
+            self.capture = limits;
+            self
         }
     }
 

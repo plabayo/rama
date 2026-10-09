@@ -14,10 +14,15 @@ use std::assert_matches;
 use rama_core::{bytes::BytesMut, rt::Executor};
 use rama_quic_proto::{
     ConnectionId, Side,
-    capture::{CaptureError, FirstFlight, KeyProvider, ObservedFrame, PacketKind, observe},
+    capture::{
+        CaptureError, CaptureLimits, FirstFlight, KeyProvider, ObservedFrame, PacketKind,
+        first_flight_with_limits, observe,
+    },
     crypto::{HeaderKey as _, PacketKey as _},
     version::Version,
 };
+use rama_tls::client::TlsClientConfig;
+use std::net::{Ipv4Addr, SocketAddr};
 
 use super::{
     browsers::{chrome_153, firefox_156},
@@ -42,6 +47,7 @@ fn include_fixture(name: &str) -> &'static str {
         "chrome-153-initial-2.hex" => include_fixture!("chrome-153-initial-2.hex"),
         "firefox-156-initial-1.hex" => include_fixture!("firefox-156-initial-1.hex"),
         "firefox-156-initial-2.hex" => include_fixture!("firefox-156-initial-2.hex"),
+        "rama-standard-initial-1.hex" => include_fixture!("rama-standard-initial-1.hex"),
         other => panic!("unknown fixture {other}"),
     }
 }
@@ -112,8 +118,6 @@ fn the_observer_split_needs_no_keys() {
 /// loopback socket, and return what a server reads from it, together with whether the client's
 /// TLS backend can change version mid-handshake (so the profile's compatible offer stands).
 fn rama_first_flight(profile: &QuicProfile) -> (FirstFlight, bool) {
-    use std::net::{Ipv4Addr, SocketAddr};
-
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -414,7 +418,6 @@ fn the_firefox_profile_needs_a_switch_capable_backend_on_boring() {
 
 #[cfg(feature = "boring")]
 fn boring_client(identity: &rama_tls::server::ServerAuthData) -> ClientConfig {
-    use rama_tls::client::TlsClientConfig;
     let tls = TlsClientConfig::new()
         .with_alpn([b"rama-quic-test".as_slice().into()].into_iter().collect())
         .try_with_server_trust_anchors([identity.cert_chain.last().unwrap().clone()])
@@ -430,7 +433,6 @@ fn boring_client(identity: &rama_tls::server::ServerAuthData) -> ClientConfig {
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 #[test]
 fn the_firefox_profile_is_refused_on_a_rustls_client() {
-    use rama_tls::client::TlsClientConfig;
     let identity = crate::test_helpers::identity();
     let tls = TlsClientConfig::new()
         .with_alpn([b"rama-quic-test".as_slice().into()].into_iter().collect())
@@ -595,4 +597,76 @@ fn passive_initial_keys_need_no_rustls_server_identity() {
     verify_passive_provider(&crate::tls::RustlsTlsProvider::new(
         crate::proto::crypto::rustls::configured_provider(),
     ));
+}
+
+#[test]
+fn standard_initial_observation_snapshot_and_budgets() {
+    let datagrams = [hex("rama-standard-initial-1.hex")];
+    let borrowed: Vec<_> = datagrams.iter().map(Vec::as_slice).collect();
+    let provider = provider();
+    let keys = capture::ProviderKeys(provider.as_ref());
+    let flight = first_flight_with_limits(&borrowed, &keys, &CaptureLimits::default()).unwrap();
+    assert!(flight.complete);
+    let expected: serde_json::Value =
+        serde_json::from_str(include_fixture!("rama-standard-first-flight.json")).unwrap();
+    assert_eq!(serde_json::to_value(&flight).unwrap(), expected);
+    let frame_count = flight.frames.iter().map(Vec::len).sum::<usize>();
+    let fragments = flight
+        .frames
+        .iter()
+        .flatten()
+        .filter(|f| matches!(f, ObservedFrame::Crypto { .. }))
+        .count();
+    for limits in [
+        CaptureLimits {
+            datagrams: datagrams.len() - 1,
+            ..CaptureLimits::default()
+        },
+        CaptureLimits {
+            bytes: datagrams.iter().map(Vec::len).sum::<usize>() - 1,
+            ..CaptureLimits::default()
+        },
+        CaptureLimits {
+            packets: flight.packet_numbers.len() - 1,
+            ..CaptureLimits::default()
+        },
+        CaptureLimits {
+            frames: frame_count - 1,
+            ..CaptureLimits::default()
+        },
+        CaptureLimits {
+            crypto_fragments: fragments - 1,
+            ..CaptureLimits::default()
+        },
+        CaptureLimits {
+            parameters: flight.parameters.len() - 1,
+            ..CaptureLimits::default()
+        },
+    ] {
+        assert!(
+            matches!(
+                first_flight_with_limits(&borrowed, &keys, &limits),
+                Err(CaptureError::LimitExceeded(_))
+            ),
+            "{limits:?}"
+        );
+    }
+    let incomplete = first_flight_with_limits(
+        &borrowed,
+        &keys,
+        &CaptureLimits {
+            client_hello_bytes: 1,
+            ..CaptureLimits::default()
+        },
+    )
+    .unwrap();
+    assert!(!incomplete.complete);
+    let mut duplicate = borrowed.clone();
+    duplicate.push(borrowed[0]);
+    let repeated = first_flight_with_limits(&duplicate, &keys, &CaptureLimits::default()).unwrap();
+    assert_eq!(
+        repeated.packet_numbers.len(),
+        flight.packet_numbers.len() + 1
+    );
+    assert_eq!(repeated.frames, flight.frames);
 }

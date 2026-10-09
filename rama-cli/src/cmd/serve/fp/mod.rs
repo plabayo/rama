@@ -15,8 +15,8 @@ use rama::{
         BodyLimitLayer, HeaderName, HeaderValue, Request,
         header::COOKIE,
         headers::{
-            AcceptCh, ClientHint, Cookie, CriticalCh, HeaderMapExt, SecWebSocketProtocol, Vary,
-            all_client_hint_header_names, all_client_hints,
+            AcceptCh, AltSvc, ClientHint, Cookie, CriticalCh, HeaderMapExt, SecWebSocketProtocol,
+            Vary, all_client_hint_header_names, all_client_hints,
             exotic::XClacksOverhead,
             forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
             sec_websocket_extensions,
@@ -194,7 +194,7 @@ pub async fn run(
             )
         })
         .transpose()?;
-    let listeners = HttpListeners::bind(
+    let listeners = HttpListeners::bind_observed(
         exec.clone(),
         cfg.bind,
         cfg.http_version,
@@ -207,9 +207,10 @@ pub async fn run(
     let pg_url = std::env::var("DATABASE_URL").ok();
     let storage_auth = std::env::var("RAMA_FP_STORAGE_COOKIE").ok();
 
-    let state = State::new(pg_url, storage_auth.as_deref())
+    let mut state = State::new(pg_url, storage_auth.as_deref())
         .await
         .context("create state")?;
+    state.probe_http3 = listeners.http3.is_some() && listeners.tcp.is_some();
 
     let ws_service = ConsumeErrLayer::default().into_layer(
         WebSocketAcceptor::new()
@@ -285,9 +286,7 @@ pub async fn run(
         (
             AddRequiredResponseHeadersLayer::default(),
             geo_attribution,
-            listeners
-                .alt_svc()?
-                .map(SetResponseHeaderLayer::if_not_present_typed),
+            SetResponseHeaderLayer::overriding_typed(listeners.alt_svc()?.unwrap_or(AltSvc::Clear)),
         ),
         SetResponseHeaderLayer::overriding(
             HeaderName::from_static("x-sponsored-by"),
@@ -385,6 +384,7 @@ where
     if let Some(endpoint) = listeners.http3 {
         let mut http3 = HttpServer::new_http3(exec.clone());
         // RFC 9220: WebSockets over HTTP/3 use Extended CONNECT — see the `/api/ws` route.
+        http3.http3_mut().observation = Some(Default::default());
         http3.http3_mut().extended_connect = true;
         let http3_service = (
             ConsumeErrLayer::trace_as(tracing::Level::WARN),

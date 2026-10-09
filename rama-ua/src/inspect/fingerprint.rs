@@ -42,6 +42,9 @@ impl FingerprintCache {
         parts: &rama_http::request::Parts,
         metadata: &CaptureMetadata,
     ) -> Option<KnownFingerprint> {
+        if parts.version == Version::HTTP_3 {
+            return None; // QUIC/H3 observations must not match TCP/H1 components.
+        }
         let ua = user_agent?;
         let expected = self.0.get(ua)?;
         let profile = database.get_exact_header_str(ua)?;
@@ -142,12 +145,15 @@ fn http(profile: &UserAgentProfile, method: Method, h2: bool) -> [Option<Ja4H>; 
 #[cfg(all(test, feature = "embed-profiles"))]
 mod tests {
     use super::*;
+    use rama_http::Request;
+    #[cfg(feature = "tls")]
+    use rama_tls::SecureTransport;
     #[test]
     fn custom_methods_do_not_wait_for_the_shared_cache_lock() {
         let database = UserAgentDatabase::try_embedded().unwrap();
         let cache = FingerprintCache::new(&database);
         let ua = database.iter_ua_str().next().unwrap();
-        let (parts, ()) = rama_http::Request::builder()
+        let (parts, ()) = Request::builder()
             .method("Custom-Method")
             .header("user-agent", ua)
             .body(())
@@ -175,14 +181,14 @@ mod tests {
         let cache = FingerprintCache::new(&database);
         let ua = database.iter_ua_str().next().unwrap();
         for index in 0..128 {
-            let (parts, ()) = rama_http::Request::builder()
+            let (parts, ()) = Request::builder()
                 .header("user-agent", ua)
                 .body(())
                 .unwrap()
                 .into_parts();
             cache.match_request(&database, Some(ua), &parts, &CaptureMetadata::default());
             let method: Method = format!("CUSTOM{index}").parse().unwrap();
-            let (parts, ()) = rama_http::Request::builder()
+            let (parts, ()) = Request::builder()
                 .method(method)
                 .header("user-agent", ua)
                 .body(())
@@ -191,5 +197,32 @@ mod tests {
             cache.match_request(&database, Some(ua), &parts, &CaptureMetadata::default());
         }
         assert_eq!(cache.0[ua].http.lock().len(), 1);
+    }
+    #[cfg(feature = "tls")]
+    #[test]
+    fn h3_observation_does_not_match_a_tcp_tls_fingerprint() {
+        let database = UserAgentDatabase::try_embedded().unwrap();
+        let cache = FingerprintCache::new(&database);
+        let ua = database.iter_ua_str().next().unwrap();
+        let hello = database
+            .get_exact_header_str(ua)
+            .unwrap()
+            .tls
+            .client_hello
+            .clone();
+        let (parts, ()) = Request::builder()
+            .version(Version::HTTP_3)
+            .header("user-agent", ua)
+            .extension(SecureTransport::with_client_hello(hello))
+            .body(())
+            .unwrap()
+            .into_parts();
+        let metadata = CaptureMetadata::default();
+        TlsObservation::capture(&parts.extensions, &metadata.connection);
+        assert!(
+            cache
+                .match_request(&database, Some(ua), &parts, &metadata)
+                .is_none()
+        );
     }
 }

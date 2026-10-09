@@ -6,7 +6,7 @@ use rama::{
     bytes::BytesMut,
     quic::proto::{
         MAX_CID_SIZE, Side,
-        capture::{self, CaptureError, InitialKeys, KeyProvider},
+        capture::{self, CaptureError, CaptureLimits, InitialKeys, KeyProvider},
         crypto::{CryptoError, HeaderKey, PacketKey},
         version::Version,
     },
@@ -74,7 +74,18 @@ impl KeyProvider for PlainKeys {
 }
 
 fuzz_target!(|data: &[u8]| {
-    if let Ok(observed) = capture::observe(data) {
+    let bound = usize::from(data.first().copied().unwrap_or(0));
+    let limits = CaptureLimits {
+        bytes: 8192,
+        packets: bound,
+        frames: bound,
+        crypto_fragments: bound,
+        client_hello_bytes: 4096,
+        parameters: bound,
+        datagrams: 4,
+    };
+    let _ = capture::first_flight_with_limits(&[data], &PlainKeys, &limits);
+    if let Ok(observed) = capture::observe_with_limits(data, &limits) {
         let mut previous_end = 0;
         for packet in &observed.packets {
             assert_eq!(packet.range.start, previous_end);
@@ -84,12 +95,14 @@ fuzz_target!(|data: &[u8]| {
         }
         assert_eq!(previous_end + observed.trailing, data.len());
         for side in [Side::Server, Side::Client] {
-            if let Ok(initials) = observed.unprotect_initials(data, &PlainKeys, side, None) {
-                let _ = capture::client_hello(&initials);
+            if let Ok(initials) =
+                observed.unprotect_initials_with_limits(data, &PlainKeys, side, None, &limits)
+            {
+                let _ = capture::client_hello_with_limits(&initials, &limits);
             }
         }
     }
-    if let Ok(parameters) = capture::transport_parameters(data) {
+    if let Ok(parameters) = capture::transport_parameters_with_limits(data, &limits) {
         let _ = capture::version_information(&parameters);
     }
 });

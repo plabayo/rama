@@ -3,16 +3,23 @@
     reason = "feature-gated dead_code: variants used by some build configs but not others"
 )]
 
-use std::str::FromStr;
+use std::{str::FromStr, sync::Arc, time::Duration};
+use tokio::time::Instant;
 
 use rama::{
     error::{BoxError, ErrorContext},
     extensions::Extensions,
     http::{
         self, HeaderMap,
-        core::h2::frame::EarlyFrameCapture,
+        core::{
+            h2::frame::EarlyFrameCapture,
+            h3::observation::{H3Observer, SettingsObservation},
+        },
         fingerprint::{AkamaiH2, Ja4H},
-        proto::h2::PseudoHeaderOrder,
+        proto::{
+            h2::PseudoHeaderOrder,
+            h3::observation::{H3ObservationSnapshot, H3RequestObservation},
+        },
         request::HttpRequestParts,
     },
     net::{
@@ -21,6 +28,7 @@ use rama::{
         forwarded::ForwardedClientExt as _,
         stream::SocketInfo,
     },
+    quic::proto::capture::{CaptureCompleteness, QuicObservation},
     telemetry::tracing,
     tls::{
         ExtensionId, SecureTransport,
@@ -259,7 +267,53 @@ pub(super) fn get_akamai_h2_info(ext: &Extensions) -> Option<AkamaiH2Info> {
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct HttpInfo {
     pub(super) headers: Vec<(String, String)>,
+    pub(super) version: String,
+    pub(super) initiator: String,
     pub(super) h2_settings: Option<Http2Settings>,
+    pub(super) h3: Option<Http3Info>,
+    pub(super) quic: Option<Arc<QuicObservation>>,
+}
+
+/// The request snapshot remains immutable; fp explicitly waits for connection SETTINGS.
+#[derive(Debug, Clone)]
+pub(super) struct Http3Info {
+    pub(super) request: Arc<H3RequestObservation>,
+    pub(super) connection: Arc<H3ObservationSnapshot>,
+    pub(super) settings_status: &'static str,
+    pub(super) pseudo_headers: Option<PseudoHeaderOrder>,
+}
+
+impl Serialize for Http3Info {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.request
+            .view(
+                &self.connection,
+                self.settings_status,
+                self.pseudo_headers.as_ref(),
+            )
+            .serialize(serializer)
+    }
+}
+
+async fn http3_info(ext: &Extensions) -> Option<Http3Info> {
+    let request = ext.get_arc::<H3RequestObservation>()?;
+    let (connection, settings_status) = match ext.get_ref::<H3Observer>() {
+        Some(observer) => match observer
+            .settings(Instant::now() + Duration::from_millis(250))
+            .await
+        {
+            SettingsObservation::Received(value) => (value, "received"),
+            SettingsObservation::TimedOut(value) => (value, "timed_out"),
+            SettingsObservation::Closed { snapshot, .. } => (snapshot, "closed"),
+        },
+        None => (request.connection.clone(), "unavailable"),
+    };
+    Some(Http3Info {
+        request: request.clone(),
+        connection,
+        settings_status,
+        pseudo_headers: ext.get_ref::<PseudoHeaderOrder>().cloned(),
+    })
 }
 
 pub(super) async fn get_and_store_http_info(
@@ -271,6 +325,13 @@ pub(super) async fn get_and_store_http_info(
     initiator: Initiator,
 ) -> Result<HttpInfo, BoxError> {
     let original_headers = headers;
+    let initiator_label = initiator.to_string();
+    let h3 = if http_version == http::Version::HTTP_3 {
+        http3_info(ext).await
+    } else {
+        None
+    };
+    let quic = ext.get_arc::<QuicObservation>();
 
     let h2_settings = match http_version {
         http::Version::HTTP_2 => Some(Http2Settings {
@@ -404,12 +465,18 @@ pub(super) async fn get_and_store_http_info(
 
     Ok(HttpInfo {
         headers,
+        version: format!("{http_version:?}"),
+        initiator: initiator_label,
         h2_settings,
+        h3,
+        quic,
     })
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct TlsDisplayInfo {
+    pub(super) transport: &'static str,
+    pub(super) completeness: Option<CaptureCompleteness>,
     pub(super) ja4: Ja4DisplayInfo,
     pub(super) ja3: Ja3DisplayInfo,
     pub(super) peet: PeetDisplayInfo,
@@ -487,6 +554,10 @@ pub(super) async fn get_tls_display_info_and_store(
     let peet = PeetPrint::compute(extensions).context("peet print compute")?;
 
     Ok(Some(TlsDisplayInfo {
+        transport: if from_quic { "quic" } else { "tcp" },
+        completeness: extensions
+            .get_ref::<QuicObservation>()
+            .map(|value| value.completeness),
         ja4: Ja4DisplayInfo {
             full: format!("{ja4:?}"),
             hash: format!("{ja4}"),

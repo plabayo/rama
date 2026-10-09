@@ -9,10 +9,13 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use rama_core::bytes::{Buf, Bytes, BytesMut};
-use rama_http_types::proto::h3::VarInt;
 use rama_http_types::proto::h3::qpack::prefix::int_encoded_len;
 use rama_http_types::proto::h3::qpack::{
     DecoderInstruction, EncoderInstruction, FieldLine, HeaderPrefix, PrefixError, static_table,
+};
+use rama_http_types::proto::h3::{
+    VarInt,
+    observation::{ObservationLimits, ObservedEncoderInstruction, ObservedFieldRepresentation},
 };
 
 use rama_utils::octets::{kib, kib_u64};
@@ -75,6 +78,7 @@ struct BlockedSection {
 
 /// A stateful QPACK decoder for one connection.
 pub struct Decoder {
+    observation: Option<Box<DecoderObservation>>,
     config: DecoderConfig,
     table: DynamicTable,
     /// Retained, not-yet-complete bytes of the peer's encoder stream.
@@ -89,11 +93,46 @@ pub struct Decoder {
     blocked_bytes: usize,
 }
 
+#[derive(Debug)]
+struct DecoderObservation {
+    limits: ObservationLimits,
+    instructions: Vec<ObservedEncoderInstruction>,
+    fields: BTreeMap<u64, Vec<ObservedFieldRepresentation>>,
+    field_bytes: usize,
+    complete: bool,
+}
+
 impl Decoder {
+    pub(crate) fn observe(&mut self, limits: ObservationLimits) {
+        self.observation = Some(Box::new(DecoderObservation {
+            limits,
+            instructions: Vec::new(),
+            fields: BTreeMap::new(),
+            field_bytes: 0,
+            complete: true,
+        }));
+    }
+
+    pub(crate) fn take_field_observation(
+        &mut self,
+        stream_id: u64,
+    ) -> Option<Vec<ObservedFieldRepresentation>> {
+        let observation = self.observation.as_mut()?;
+        let fields = observation.fields.remove(&stream_id)?;
+        observation.field_bytes -= fields.len() * size_of::<ObservedFieldRepresentation>();
+        Some(fields)
+    }
+
+    pub(crate) fn instruction_observation(&self) -> Option<(&[ObservedEncoderInstruction], bool)> {
+        self.observation
+            .as_ref()
+            .map(|o| (o.instructions.as_slice(), o.complete))
+    }
     /// Create a decoder with the given limits.
     #[must_use]
     pub fn new(config: DecoderConfig) -> Self {
         Self {
+            observation: None,
             table: DynamicTable::new(config.max_table_capacity),
             config,
             encoder_stream: BytesMut::new(),
@@ -269,7 +308,11 @@ impl Decoder {
 
     /// Apply one encoder-stream instruction. Returns whether it inserted an entry.
     fn apply_encoder_instruction(&mut self, inst: EncoderInstruction) -> Result<bool, QpackError> {
-        match inst {
+        let observed = self
+            .observation
+            .as_ref()
+            .map(|_| ObservedEncoderInstruction::from(&inst));
+        let result = match inst {
             EncoderInstruction::SetDynamicTableCapacity { capacity } => {
                 if !self.table.set_capacity(capacity) {
                     return Err(QpackError::EncoderStreamError(
@@ -312,7 +355,22 @@ impl Decoder {
                     .ok_or(QpackError::EncoderStreamError("bad duplicate index"))?;
                 self.insert(&name, &value)
             }
+        };
+        if result.is_ok()
+            && let Some(observed) = observed
+            && let Some(capture) = &mut self.observation
+        {
+            let bound = capture
+                .limits
+                .events
+                .min(capture.limits.bytes / size_of::<ObservedEncoderInstruction>());
+            if capture.instructions.len() < bound {
+                capture.instructions.push(observed);
+            } else {
+                capture.complete = false;
+            }
         }
+        result
     }
 
     fn encoder_relative_to_abs(&self, rel: u64) -> Result<u64, QpackError> {
@@ -440,7 +498,9 @@ impl Decoder {
         // A writer may complete an earlier write after this synchronous decode.
         // Preserve its reservation so that completion cannot underflow accounting.
         self.output_in_flight = output_in_flight;
-        self.drop_blocked_stream(stream_id);
+        if result.as_ref().is_ok_and(Option::is_none) || result.is_err() {
+            self.drop_blocked_stream(stream_id);
+        }
         self.decoder_output.clear();
         result
     }
@@ -544,7 +604,11 @@ impl Decoder {
         if prefix.required_insert_count > 0 {
             self.reserve_instruction(DecoderInstruction::SectionAcknowledgment { stream_id })?;
         }
-        let fields = self.decode_lines(body.clone(), prefix)?;
+        let fields = if self.observation.is_some() {
+            self.decode_lines::<true>(stream_id, body.clone(), prefix)?
+        } else {
+            self.decode_lines::<false>(stream_id, body.clone(), prefix)?
+        };
         if prefix.required_insert_count > 0 {
             DecoderInstruction::SectionAcknowledgment { stream_id }
                 .encode(&mut self.decoder_output);
@@ -563,6 +627,7 @@ impl Decoder {
     }
 
     pub(crate) fn drop_blocked_stream(&mut self, stream_id: u64) {
+        self.take_field_observation(stream_id);
         if let Some(queue) = self.blocked.remove(&stream_id) {
             for section in queue {
                 self.blocked_bytes -= section.size;
@@ -570,15 +635,34 @@ impl Decoder {
         }
     }
 
-    fn decode_lines(
-        &self,
+    fn decode_lines<const OBSERVE: bool>(
+        &mut self,
+        stream_id: u64,
         mut body: Bytes,
         prefix: &HeaderPrefix,
     ) -> Result<Vec<FieldPair>, QpackError> {
+        // The disabled specialization has no representation collection or per-field branch.
+        let mut observed = Vec::new();
+        let bound = if OBSERVE {
+            self.take_field_observation(stream_id);
+            self.observation.as_ref().and_then(|capture| {
+                (capture.fields.len() < capture.limits.retained_snapshots).then_some(
+                    capture.limits.fields.min(
+                        capture.limits.bytes.saturating_sub(capture.field_bytes)
+                            / size_of::<ObservedFieldRepresentation>(),
+                    ),
+                )
+            })
+        } else {
+            None
+        };
         let mut fields = Vec::new();
         let mut section_size: u64 = 0;
         while body.has_remaining() {
             let line = FieldLine::decode_bytes(&mut body, self.config.max_field_section_size)?;
+            if OBSERVE && bound.is_some_and(|bound| observed.len() < bound) {
+                observed.push(ObservedFieldRepresentation::from(&line));
+            }
             let pair = self.resolve_line(line, prefix)?;
             // account the uncompressed size (RFC 9114 §4.2.2: name + value + 32).
             section_size =
@@ -587,6 +671,13 @@ impl Decoder {
                 return Err(QpackError::StreamResourceLimit("field section too large"));
             }
             fields.push(pair);
+        }
+        if OBSERVE
+            && bound.is_some()
+            && let Some(capture) = &mut self.observation
+        {
+            capture.field_bytes += observed.len() * size_of::<ObservedFieldRepresentation>();
+            capture.fields.insert(stream_id, observed);
         }
         Ok(fields)
     }
@@ -1284,5 +1375,229 @@ mod regression_tests {
         assert_eq!(decoder.blocked_bytes, 0);
         assert_eq!(decoder.decode_field_section(8, bytes).unwrap(), None);
         assert_eq!(decoder.blocked_bytes, 3 + size_of::<BlockedSection>());
+    }
+    #[test]
+    fn observation_qpack_keeps_representation_before_resolution() {
+        let lines = [
+            FieldLine::Indexed {
+                is_static: true,
+                index: 17,
+            },
+            FieldLine::Indexed {
+                is_static: false,
+                index: 0,
+            },
+            FieldLine::IndexedPostBase { index: 0 },
+            FieldLine::LiteralWithNameRef {
+                is_static: true,
+                name_index: 17,
+                value: Bytes::from_static(b"GET"),
+                value_huffman: true,
+                never_index: true,
+            },
+            FieldLine::LiteralWithNameRef {
+                is_static: false,
+                name_index: 0,
+                value: Bytes::from_static(b"c"),
+                value_huffman: false,
+                never_index: true,
+            },
+            FieldLine::LiteralWithPostBaseNameRef {
+                name_index: 0,
+                value: Bytes::from_static(b"d"),
+                value_huffman: true,
+                never_index: false,
+            },
+            FieldLine::LiteralWithLiteralName {
+                name: Bytes::from_static(b"x"),
+                value: Bytes::from_static(b"e"),
+                name_huffman: true,
+                value_huffman: true,
+                never_index: true,
+            },
+        ];
+        for line in lines {
+            let mut decoder = Decoder::new(DecoderConfig::default());
+            decoder.observe(ObservationLimits::default());
+            decoder.feed_encoder_stream(&insertion()).unwrap();
+            let base = if matches!(
+                line,
+                FieldLine::IndexedPostBase { .. } | FieldLine::LiteralWithPostBaseNameRef { .. }
+            ) {
+                0
+            } else {
+                1
+            };
+            let fields = decoder
+                .decode_field_section(0, section(1, base, &line))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                decoder.take_field_observation(0).unwrap(),
+                [ObservedFieldRepresentation::from(&line)]
+            );
+            assert!(!fields[0].name.is_empty());
+        }
+    }
+
+    #[test]
+    fn observation_pending_fields_are_bounded_and_release_on_take_or_cancel() {
+        let mut decoder = Decoder::new(DecoderConfig::default());
+        decoder.observe(ObservationLimits {
+            retained_snapshots: 1,
+            bytes: size_of::<ObservedFieldRepresentation>(),
+            ..ObservationLimits::default()
+        });
+        let encoded = section(
+            0,
+            0,
+            &FieldLine::Indexed {
+                is_static: true,
+                index: 17,
+            },
+        );
+        for stream in [0, 4] {
+            assert_eq!(
+                decoder
+                    .decode_field_section(stream, encoded.clone())
+                    .unwrap()
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+        assert!(decoder.take_field_observation(4).is_none());
+        assert_eq!(decoder.take_field_observation(0).unwrap().len(), 1);
+        decoder
+            .decode_field_section(8, encoded.clone())
+            .unwrap()
+            .unwrap();
+        decoder.cancel_stream(8).unwrap();
+        assert!(decoder.take_field_observation(8).is_none());
+        decoder.decode_field_section(12, encoded).unwrap().unwrap();
+        assert_eq!(decoder.take_field_observation(12).unwrap().len(), 1);
+        let observation = decoder.observation.as_ref().unwrap();
+        assert_eq!(observation.field_bytes, 0);
+        assert!(observation.fields.is_empty());
+    }
+
+    #[test]
+    fn observation_pending_field_bytes_are_shared_across_streams() {
+        let mut decoder = Decoder::new(DecoderConfig::default());
+        decoder.observe(ObservationLimits {
+            retained_snapshots: 2,
+            bytes: size_of::<ObservedFieldRepresentation>(),
+            ..ObservationLimits::default()
+        });
+        let encoded = section(
+            0,
+            0,
+            &FieldLine::Indexed {
+                is_static: true,
+                index: 17,
+            },
+        );
+        for stream in [0, 4] {
+            decoder
+                .decode_field_section(stream, encoded.clone())
+                .unwrap()
+                .unwrap();
+        }
+        assert!(decoder.take_field_observation(4).unwrap().is_empty());
+        assert_eq!(decoder.take_field_observation(0).unwrap().len(), 1);
+        decoder.decode_field_section(8, encoded).unwrap().unwrap();
+        assert_eq!(decoder.take_field_observation(8).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn observation_disabled_keeps_the_ordinary_field_layout_and_no_capture_state() {
+        assert_eq!(size_of::<FieldPair>(), size_of::<(Bytes, Bytes, bool)>());
+        let mut decoder = Decoder::new(DecoderConfig::default());
+        let encoded = section(
+            0,
+            0,
+            &FieldLine::Indexed {
+                is_static: true,
+                index: 17,
+            },
+        );
+        let fields = decoder.decode_field_section(0, encoded).unwrap().unwrap();
+        assert_eq!(fields[0].value, b"GET"[..]);
+        assert!(decoder.observation.is_none());
+        assert!(decoder.take_field_observation(0).is_none());
+    }
+
+    #[test]
+    fn observation_qpack_byte_budget_bounds_instruction_and_field_metadata() {
+        for bytes in [0, size_of::<ObservedFieldRepresentation>() - 1] {
+            let mut decoder = Decoder::new(DecoderConfig::default());
+            decoder.observe(ObservationLimits {
+                bytes,
+                ..ObservationLimits::default()
+            });
+            decoder.feed_encoder_stream(&insertion()).unwrap();
+            let (instructions, complete) = decoder.instruction_observation().unwrap();
+            assert!(instructions.len() <= bytes / size_of::<ObservedEncoderInstruction>());
+            assert!(!complete);
+            let fields = decoder
+                .decode_field_section(
+                    0,
+                    section(
+                        0,
+                        0,
+                        &FieldLine::Indexed {
+                            is_static: true,
+                            index: 17,
+                        },
+                    ),
+                )
+                .unwrap()
+                .unwrap();
+            assert!(decoder.take_field_observation(0).unwrap().is_empty());
+            assert_eq!(fields[0].value, b"GET"[..]);
+        }
+    }
+
+    #[test]
+    fn observation_qpack_limits_and_output_retry_are_transactional() {
+        let mut decoder = Decoder::new(DecoderConfig {
+            max_decoder_stream_bytes: 1,
+            ..DecoderConfig::default()
+        });
+        decoder.observe(ObservationLimits {
+            events: 2,
+            fields: 0,
+            ..ObservationLimits::default()
+        });
+        decoder.feed_encoder_stream(&insertion()).unwrap();
+        assert_eq!(decoder.instruction_observation().unwrap().0.len(), 2);
+        assert!(decoder.instruction_observation().unwrap().1);
+        // A full output queue must not record an instruction before the retry succeeds.
+        assert_eq!(
+            decoder.feed_encoder_stream(&[0]),
+            Err(QpackError::OutputBlocked)
+        );
+        assert!(decoder.instruction_observation().unwrap().1);
+        decoder.take_decoder_stream();
+        decoder.feed_encoder_stream(&[0]).unwrap();
+        assert_eq!(decoder.instruction_observation().unwrap().0.len(), 2);
+        assert!(!decoder.instruction_observation().unwrap().1);
+        decoder.take_decoder_stream();
+        let fields = decoder
+            .decode_field_section(
+                0,
+                section(
+                    0,
+                    0,
+                    &FieldLine::Indexed {
+                        is_static: true,
+                        index: 17,
+                    },
+                ),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(decoder.take_field_observation(0).unwrap().is_empty());
+        assert_eq!(fields[0].value, b"GET"[..]);
     }
 }

@@ -7,6 +7,7 @@ mod demux;
 mod extended_connect;
 mod fairness;
 mod loss;
+mod observation;
 mod robustness;
 
 use std::{assert_matches, num::NonZeroUsize, sync::Arc, time::Duration};
@@ -46,24 +47,31 @@ impl Pair {
         client_transport: Option<TransportConfig>,
         server_transport: Option<TransportConfig>,
     ) -> Self {
-        Self::build(client_transport, server_transport, None).await
+        Self::build(client_transport, server_transport, None, false).await
     }
 
     async fn in_memory(
         client_transport: Option<TransportConfig>,
         server_transport: Option<TransportConfig>,
     ) -> Self {
-        Self::build(client_transport, server_transport, Some(NonZeroUsize::MIN)).await
+        Self::build(
+            client_transport,
+            server_transport,
+            Some(NonZeroUsize::MIN),
+            false,
+        )
+        .await
     }
 
     async fn impaired() -> Self {
-        Self::build(None, None, NonZeroUsize::new(4)).await
+        Self::build(None, None, NonZeroUsize::new(4), false).await
     }
 
     async fn build(
         client_transport: Option<TransportConfig>,
         server_transport: Option<TransportConfig>,
         memory_capacity: Option<NonZeroUsize>,
+        capture: bool,
     ) -> Self {
         let identity = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
         let server_tls = TlsServerConfig::new()
@@ -75,6 +83,9 @@ impl Pair {
             .unwrap();
         let mut server_config =
             rama_quic::ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default()).unwrap();
+        if capture {
+            server_config.set_capture(Default::default());
+        }
         let mut client_config =
             rama_quic::ClientConfig::try_from_rama_tls(&client_tls, TlsOptions::default()).unwrap();
         let default_transport = || {

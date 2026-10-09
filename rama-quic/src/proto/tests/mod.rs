@@ -42,6 +42,7 @@ mod closing;
 mod datagrams;
 mod grease;
 mod loss_config;
+mod observation;
 mod packet_vectors;
 mod qlog;
 mod qlog_drops;

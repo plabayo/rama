@@ -17,7 +17,7 @@ use rama::{
             server,
         },
         proto::h3::{
-            VarInt,
+            FrameHeader, FrameType, VarInt,
             qpack::{DecoderInstruction, EncoderInstruction},
         },
     },
@@ -40,7 +40,6 @@ fn main() {
 
 #[divan::bench]
 fn data_frame_slices(bencher: divan::Bencher) {
-    use rama::http::proto::h3::{FrameHeader, FrameType};
     let mut bytes = BytesMut::new();
     FrameHeader::new(FrameType::DATA, kib(16) as u64)
         .encode(&mut bytes)
@@ -71,12 +70,13 @@ fn pooled_streaming_round_trip(bencher: divan::Bencher, size: usize) {
         size,
         false,
         0,
+        false,
     );
 }
 
 #[divan::bench(sample_count = 20)]
 fn abandoned_response_churn(bencher: divan::Bencher) {
-    round_trip(bencher, kib(16), true, 0);
+    round_trip(bencher, kib(16), true, 0, false);
 }
 
 // Retained responses keep scheduler entries alive without ready DATA. The
@@ -88,10 +88,16 @@ fn streaming_with_idle_responses(bencher: divan::Bencher, idle: usize) {
         kib(16),
         false,
         idle,
+        false,
     );
 }
 
-fn round_trip(bencher: divan::Bencher, size: usize, abandon: bool, idle: usize) {
+#[divan::bench(args = [false, true], sample_count = 20)]
+fn observation_round_trip(bencher: divan::Bencher, observed: bool) {
+    round_trip(bencher, 0, false, 0, observed);
+}
+
+fn round_trip(bencher: divan::Bencher, size: usize, abandon: bool, idle: usize, observed: bool) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -108,6 +114,7 @@ fn round_trip(bencher: divan::Bencher, size: usize, abandon: bool, idle: usize) 
         let mut transport = TransportConfig::default();
         let config = Config {
             max_requests: Config::default().max_requests.max(idle + 1),
+            observation: observed.then(Default::default),
             ..Config::default()
         };
         config.configure_transport(&mut transport).unwrap();
@@ -116,6 +123,9 @@ fn round_trip(bencher: divan::Bencher, size: usize, abandon: bool, idle: usize) 
                 .unwrap();
         let transport = Arc::new(transport);
         server_config.set_transport_config(transport.clone());
+        if observed {
+            server_config.set_capture(Default::default());
+        }
         let mut client_config =
             rama::quic::ClientConfig::try_from_rama_tls(&client_tls, TlsOptions::default())
                 .unwrap();
@@ -222,7 +232,6 @@ fn round_trip(bencher: divan::Bencher, size: usize, abandon: bool, idle: usize) 
 // become one bounded QPACK input while contiguous DATA keeps shared storage.
 #[divan::bench(args = [1, 16, kib(4)])]
 fn fragmented_headers(bencher: divan::Bencher, fragment: usize) {
-    use rama::http::proto::h3::{FrameHeader, FrameType};
     let mut bytes = BytesMut::new();
     FrameHeader::new(FrameType::HEADERS, kib(4) as u64)
         .encode(&mut bytes)

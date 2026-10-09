@@ -154,15 +154,23 @@ impl RequestStream {
         mut self,
     ) -> Result<(Request<crate::body::Incoming>, SendResponse), Error> {
         let extended_connect = self.reader.shared.config.extended_connect;
-        let request = match self
+        let fields = self
             .reader
             .headers()
             .await
-            .and_then(|fields| headers::request_head(fields, extended_connect))
-        {
+            .map_err(|error| self.reader.reject(error))?;
+        let observation = self
+            .reader
+            .shared
+            .request_observation(self.reader.id, &fields);
+        let request = match headers::request_head(fields, extended_connect) {
             Ok(request) => request,
             Err(error) => return Err(self.reader.reject(error)),
         };
+        if let Some((observer, snapshot)) = observation {
+            request.extensions().insert(observer);
+            request.extensions().insert(snapshot);
+        }
         let remaining = headers::content_length(request.headers())?;
         let method = request.method().clone();
         // Only an Extended CONNECT can be declared to carry datagrams, by its 2xx response.

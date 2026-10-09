@@ -3,12 +3,11 @@ primary_region = 'fra'
 
 [processes]
 # Public-demo guardrails: rate is process-wide; throttle is per connection/direction.
-# No HTTP/3 yet: advertising it moves browsers to h3, whose profiles are not collected.
-app_secure = "serve fp --bind 0.0.0.0:8443 -c 2048 -t 16 --rate 100 --throttle 1048576 -f haproxy --http-version h1,h2 -s"
+app_secure = "serve fp --bind 0.0.0.0:8443 -c 2048 -t 16 --rate 100 --throttle 1048576 -f haproxy --http-version auto --h3-bind 0.0.0.0:443 -s"
 app_insecure = "serve fp --bind 0.0.0.0:8080 -c 2048 -t 16 --rate 100 --throttle 1048576 -f haproxy --http-version auto"
 
 [build]
-image = "glendc/rama:edge"
+dockerfile = '../Dockerfile.h3'
 
 [env]
   RUST_LOG = 'info'
@@ -51,6 +50,15 @@ processes = ['app_secure']
 [[services.ports]]
 handlers = ["proxy_proto"]
 port = "443"
+
+# UDP keeps its public port and requires this app's dedicated IPv4 address.
+[[services]]
+protocol = 'udp'
+internal_port = 443
+processes = ['app_secure']
+
+[[services.ports]]
+port = 443
 
 [[vm]]
 memory = '256mb'

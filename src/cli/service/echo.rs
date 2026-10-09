@@ -30,7 +30,7 @@ use crate::{
             required_header::AddRequiredResponseHeadersLayer, set_header::SetResponseHeaderLayer,
             trace::TraceLayer,
         },
-        proto::h2::PseudoHeaderOrder,
+        proto::{h2::PseudoHeaderOrder, h3::observation::H3RequestObservation},
         server::HttpServer,
         service::web::{extract::Json, response::IntoResponse},
         ws::handshake::{
@@ -52,7 +52,7 @@ use crate::{
         },
     },
     proxy::haproxy::server::HaProxyLayer,
-    quic,
+    quic::{self, proto::capture::QuicObservation},
     rt::Executor,
     tcp::TcpStream,
     telemetry::tracing,
@@ -381,6 +381,7 @@ where
 
         let mut http3 = HttpServer::new_http3(exec);
         // RFC 9220: WebSockets over HTTP/3 use Extended CONNECT.
+        http3.http3_mut().observation = Some(Default::default());
         http3.http3_mut().extended_connect = self.ws_support;
         let http3_service = (
             ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
@@ -617,7 +618,8 @@ impl Service<Request> for EchoService {
 
                 let mut profile_ja4: Option<FingerprintProfileData> = None;
 
-                if let Some(uadb) = self.uadb.as_deref()
+                if parts.version != Version::HTTP_3
+                    && let Some(uadb) = self.uadb.as_deref()
                     && let Some(profile) =
                         ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
                 {
@@ -653,7 +655,8 @@ impl Service<Request> for EchoService {
 
                 let mut profile_ja3: Option<FingerprintProfileData> = None;
 
-                if let Some(uadb) = self.uadb.as_deref()
+                if parts.version != Version::HTTP_3
+                    && let Some(uadb) = self.uadb.as_deref()
                     && let Some(profile) =
                         ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
                 {
@@ -689,7 +692,8 @@ impl Service<Request> for EchoService {
 
                 let mut profile_peet: Option<FingerprintProfileData> = None;
 
-                if let Some(uadb) = self.uadb.as_deref()
+                if parts.version != Version::HTTP_3
+                    && let Some(uadb) = self.uadb.as_deref()
                     && let Some(profile) =
                         ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
                 {
@@ -720,6 +724,8 @@ impl Service<Request> for EchoService {
                 });
 
                 json!({
+                    "transport": if parts.version == Version::HTTP_3 { "quic" } else { "tcp" },
+                    "completeness": parts.extensions.get_ref::<QuicObservation>().map(|value| value.completeness),
                     "header": {
                         "version": hello.protocol_version().to_string(),
                         "cipher_suites": hello
@@ -831,6 +837,21 @@ impl Service<Request> for EchoService {
             }));
         }
 
+        let h3 = parts
+            .extensions
+            .get_ref::<H3RequestObservation>()
+            .map(|observation| {
+                observation.view(
+                    &observation.connection,
+                    if observation.connection.settings.is_some() {
+                        "received"
+                    } else {
+                        "pending"
+                    },
+                    parts.extensions.get_ref::<PseudoHeaderOrder>(),
+                )
+            });
+
         // attribution rides in the x-geo-attribution response header, not the body
         let geo = self
             .geo_db
@@ -852,12 +873,14 @@ impl Service<Request> for EchoService {
                 "path": parts.uri.path_or_root().into_owned(),
                 "query": parts.uri.query().map(|q| q.as_encoded_str().into_owned()),
                 "h2": h2,
+                "h3": h3,
                 "headers": headers,
                 "payload": body,
                 "ja4h": ja4h,
                 "curl": curl_request,
             },
             "tls": tls_info,
+            "quic": parts.extensions.get_ref::<QuicObservation>(),
             "socket_addr": parts.extensions.forwarded_client_socket_addr()
                 .map(|addr| addr.to_string())
                 .or_else(|| parts.extensions.forwarded_client_ip().map(|ip| ip.to_string()))
@@ -909,5 +932,53 @@ mod tests {
             .expect("PowerShell curl script");
         assert!(powershell.contains("[Convert]::FromBase64String"));
         assert!(powershell.contains("--data-binary ('@' + $__ramaCurlPayload)"));
+    }
+    #[tokio::test]
+    async fn observation_schema_distinguishes_absent_and_incomplete_h3() {
+        for captured in [false, true] {
+            let request = Request::builder()
+                .version(Version::HTTP_3)
+                .uri("https://example.test/")
+                .header("user-agent", "custom/1")
+                .body(Body::empty())
+                .unwrap();
+            if captured {
+                request.extensions().insert(H3RequestObservation {
+                    connection: Arc::new(Default::default()),
+                    fields: Vec::new(),
+                    fields_complete: false,
+                    priority: None,
+                });
+            }
+            let response = EchoService {
+                uadb: None,
+                geo_db: None,
+            }
+            .serve(request)
+            .await
+            .unwrap();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["http"]["version"], "HTTP/3.0");
+            assert!(value["http"]["h2"].is_null());
+            assert!(value["quic"].is_null());
+            assert!(value["tls"].is_null());
+            let h3 = &value["http"]["h3"];
+            if captured {
+                assert_eq!(h3["settings_status"], "pending");
+                assert!(h3["settings"].is_null());
+                assert_eq!(h3["completeness"]["snapshot"], false);
+                assert_eq!(h3["completeness"]["fields"], false);
+                assert_eq!(h3["request_fields"], json!([]));
+            } else {
+                assert!(h3.is_null());
+            }
+            assert!(
+                value["http"]["ja4h"]["verbose"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("ge30")
+            );
+        }
     }
 }

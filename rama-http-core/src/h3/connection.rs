@@ -4,6 +4,7 @@ use super::{
     DatagramConfig, Error,
     control::{Control, Role},
     frame::{FrameDecoder, FrameEvent},
+    observation::{H3Observer, Recorder, SettingsObservation},
     qpack::{Decoder, DecoderConfig, Encoder, EncoderConfig, FieldPair, QpackError},
 };
 use parking_lot::Mutex;
@@ -18,6 +19,9 @@ use rama_http::{
 };
 use rama_http_types::proto::h3::{
     Code, FrameHeader, FrameType, SettingId, Settings, StreamType, VarInt, VarIntDecoder,
+    observation::{
+        H3ObservationSnapshot, H3RequestObservation, ObservationLimits, ObservedFieldRepresentation,
+    },
 };
 use rama_net::{stream::SocketInfo, tls::ApplicationProtocol};
 use rama_quic::{
@@ -37,12 +41,14 @@ use std::{
 };
 use tokio::{
     sync::{Notify, oneshot},
-    time::Instant,
+    time::{Instant, timeout_at},
 };
 
 /// Local HTTP/3 connection budgets. Peer limits are negotiated independently.
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// Optional independent budgets for wire observation; disabled by default.
+    pub observation: Option<Box<ObservationLimits>>,
     /// Local QPACK decoder limits, advertised where the protocol defines settings.
     pub decoder: DecoderConfig,
     /// Local encoder budgets. Peer capacity/blocked-stream settings override those fields.
@@ -77,6 +83,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            observation: None,
             decoder: DecoderConfig::default(),
             encoder: EncoderConfig::default(),
             max_requests: 128,
@@ -186,6 +193,7 @@ pub(crate) const CRITICAL_SEND_RESERVE: u64 = 64;
 
 type Decoded = Result<Vec<FieldPair>, Error>;
 struct State {
+    observation: Option<Box<Recorder>>,
     control: Control,
     encoder: Encoder,
     decoder: Decoder,
@@ -220,7 +228,94 @@ pub(crate) struct Shared {
     pub(crate) schedule: super::priority::Schedule,
 }
 
+impl State {
+    fn observation_snapshot(&mut self) -> Option<Arc<H3ObservationSnapshot>> {
+        let Self {
+            observation,
+            decoder,
+            error,
+            ..
+        } = self;
+        observation.as_mut().map(|record| {
+            record.snapshot(decoder.instruction_observation(), error.map(Error::code))
+        })
+    }
+}
+
 impl Shared {
+    pub(super) fn observation_snapshot(&self) -> Option<Arc<H3ObservationSnapshot>> {
+        self.state.lock().observation_snapshot()
+    }
+
+    pub(super) async fn observation_settings(
+        &self,
+        deadline: Instant,
+        unavailable: &Arc<H3ObservationSnapshot>,
+    ) -> SettingsObservation {
+        loop {
+            let ready = self.settings_ready.notified();
+            let mut ready = pin!(ready);
+            ready.as_mut().enable();
+            {
+                let mut state = self.state.lock();
+                let received = state.control.settings().is_some();
+                let error = state.error;
+                let closed = state.receive_closed || error.is_some();
+                if received || closed || Instant::now() >= deadline {
+                    let snapshot = state
+                        .observation_snapshot()
+                        .unwrap_or_else(|| unavailable.clone());
+                    return if received {
+                        SettingsObservation::Received(snapshot)
+                    } else if closed {
+                        SettingsObservation::Closed {
+                            snapshot,
+                            error: error.map(Error::code),
+                        }
+                    } else {
+                        SettingsObservation::TimedOut(snapshot)
+                    };
+                }
+            }
+            _ = timeout_at(deadline, ready).await;
+        }
+    }
+
+    pub(crate) fn request_observation(
+        self: &Arc<Self>,
+        stream_id: u64,
+        fields: &[FieldPair],
+    ) -> Option<(H3Observer, H3RequestObservation)> {
+        let limits = self.config.observation.as_deref()?;
+        let mut state = self.state.lock();
+        let unavailable = state.observation.as_ref()?.unavailable.clone();
+        let snapshot = state.observation_snapshot()?;
+        let captured = state.decoder.take_field_observation(stream_id);
+        let captured_complete = captured.is_some();
+        let retained = captured.unwrap_or_default();
+        let priority_field = fields.iter().find(|field| field.name == b"priority"[..]);
+        let priority = priority_field.and_then(|field| {
+            (field.value.len()
+                <= limits.bytes.saturating_sub(
+                    retained
+                        .len()
+                        .saturating_mul(size_of::<ObservedFieldRepresentation>()),
+                ))
+            .then(|| field.value.to_vec())
+        });
+        let fields_complete = captured_complete
+            && retained.len() == fields.len()
+            && (priority_field.is_none() || priority.is_some());
+        Some((
+            H3Observer::new(self, unavailable),
+            H3RequestObservation {
+                connection: snapshot,
+                fields: retained,
+                fields_complete,
+                priority,
+            },
+        ))
+    }
     pub(crate) fn from_connection(
         config: Config,
         role: Role,
@@ -255,7 +350,11 @@ impl Shared {
         role: Role,
         transport_extensions: Extensions,
     ) -> Result<Arc<Self>, Error> {
-        config.settings()?;
+        let local_settings = config.settings()?;
+        let mut decoder = Decoder::new(config.decoder);
+        if let Some(limits) = config.observation.as_deref() {
+            decoder.observe(*limits);
+        }
         Ok(Arc::new(Self {
             role,
             pushes: Mutex::new(super::push::State::new()),
@@ -263,9 +362,13 @@ impl Shared {
             transport_extensions,
             encoder_stream: Mutex::new(None),
             state: Mutex::new(State {
+                observation: config
+                    .observation
+                    .as_deref()
+                    .map(|limits| Box::new(Recorder::new(*limits, &local_settings))),
                 control: Control::new(role),
                 encoder: Encoder::before_peer_settings(config.encoder),
-                decoder: Decoder::new(config.decoder),
+                decoder,
                 waiting: BTreeMap::new(),
                 cancelled: BTreeSet::new(),
                 error: None,
@@ -327,6 +430,9 @@ impl Shared {
         let mut state = self.state.lock();
         if state.error.is_none_or(Error::is_clean_close) {
             state.error = Some(error);
+        }
+        if let Some(observation) = &mut state.observation {
+            observation.changed();
         }
         let error = state.error.unwrap_or(error);
         for (id, tx) in std::mem::take(&mut state.waiting) {
@@ -832,11 +938,24 @@ impl Shared {
         if state.receive_closed {
             state.decoder.discard_output_after_close();
         }
+        let before = state
+            .decoder
+            .instruction_observation()
+            .map(|(instructions, complete)| (instructions.len(), complete));
         let result = if ty == StreamType::QPACK_ENCODER {
             state.decoder.feed_encoder_stream(chunk)
         } else {
             state.encoder.feed_decoder_stream(chunk)
         };
+        let after = state
+            .decoder
+            .instruction_observation()
+            .map(|(instructions, complete)| (instructions.len(), complete));
+        if before != after
+            && let Some(observation) = &mut state.observation
+        {
+            observation.changed();
+        }
         let blocked = match result {
             Ok(()) => {
                 Self::resume(&mut state)?;
@@ -960,7 +1079,13 @@ pub(crate) async fn receive_uni(
             break (StreamType::new(value.into_inner()), bytes);
         }
     };
-    shared.state.lock().control.register(ty)?;
+    {
+        let mut state = shared.state.lock();
+        if let Some(observation) = &mut state.observation {
+            observation.stream(stream.id().into(), ty);
+        }
+        state.control.register(ty)?;
+    }
     if ty == StreamType::PUSH {
         let mut id = VarIntDecoder::new();
         loop {
@@ -1002,6 +1127,9 @@ pub(crate) async fn receive_uni(
                 budget.consume().await;
                 let mut state = shared.state.lock();
                 state.control.receive(&event)?;
+                if let Some(observation) = &mut state.observation {
+                    observation.control(&event);
+                }
                 if let FrameEvent::Settings(ref settings) = event {
                     state
                         .encoder
@@ -1391,6 +1519,7 @@ impl Driver {
             // be discarded. Keep blocked fields pending until all received inserts
             // and GOAWAY frames have been processed.
             self.shared.state.lock().receive_closed = true;
+            self.shared.settings_ready.notify_waiters();
             self.shared.progress.notify_waiters();
             let mut accepting = true;
             while accepting || !streams.is_empty() {
@@ -1548,5 +1677,298 @@ mod tests {
         assert!(state.decoder.take_decoder_stream().is_empty());
         assert!(state.cancelled.is_empty());
         assert_eq!(state.error, Some(error));
+    }
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use rama_http_types::proto::h3::{
+        Setting,
+        qpack::{EncoderInstruction, FieldLine},
+    };
+    use std::{
+        future::Future,
+        task::{Context, Poll, Waker},
+    };
+    use tokio::time::Duration;
+
+    fn shared(limits: ObservationLimits) -> Arc<Shared> {
+        Shared::new(
+            Config {
+                observation: Some(Box::new(limits)),
+                ..Config::default()
+            },
+            Role::Server,
+            Extensions::new(),
+        )
+        .unwrap()
+    }
+
+    fn observer(shared: &Arc<Shared>) -> H3Observer {
+        shared.request_observation(0, &[]).unwrap().0
+    }
+
+    fn settings(shared: &Shared) {
+        let mut settings = Settings::new();
+        settings
+            .insert(Setting::new(SettingId::new(0x21), 19))
+            .unwrap();
+        settings
+            .insert(Setting::new(SettingId::QPACK_MAX_TABLE_CAPACITY, 0))
+            .unwrap();
+        let mut state = shared.state.lock();
+        for event in [
+            FrameEvent::Header(FrameHeader::new(FrameType::SETTINGS, 5)),
+            FrameEvent::Settings(settings),
+        ] {
+            state.control.receive(&event).unwrap();
+            state.observation.as_mut().unwrap().control(&event);
+        }
+        drop(state);
+        shared.settings_ready.notify_waiters();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn observation_settings_waits_are_explicit_and_snapshots_are_immutable() {
+        let shared = shared(ObservationLimits::default());
+        let observer = observer(&shared);
+        let before = observer.snapshot();
+        assert!(before.settings.is_none());
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut first = Box::pin(observer.settings(deadline));
+        let mut second = Box::pin(observer.settings(deadline));
+        let mut cancelled = Box::pin(observer.settings(deadline));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(first.as_mut().poll(&mut cx).is_pending());
+        assert!(second.as_mut().poll(&mut cx).is_pending());
+        assert!(cancelled.as_mut().poll(&mut cx).is_pending());
+        drop(cancelled);
+        settings(&shared);
+        for future in [&mut first, &mut second] {
+            let Poll::Ready(SettingsObservation::Received(snapshot)) =
+                future.as_mut().poll(&mut cx)
+            else {
+                panic!("SETTINGS must wake every remaining waiter");
+            };
+            let settings = snapshot.settings.as_ref().unwrap();
+            assert_eq!(settings[0].id, 0x21);
+            assert!(settings[0].grease);
+            assert_eq!(settings[1].id, 1);
+        }
+        assert!(
+            before.settings.is_none(),
+            "an already-delivered snapshot is immutable"
+        );
+        assert!(matches!(
+            observer.settings(Instant::now()).await,
+            SettingsObservation::Received(_)
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn observation_settings_timeout_and_close_are_distinct() {
+        let shared = shared(ObservationLimits::default());
+        let observer = observer(&shared);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut waiting = Box::pin(observer.settings(deadline));
+        assert!(
+            waiting
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let SettingsObservation::TimedOut(snapshot) = waiting.await else {
+            panic!("expected capture timeout");
+        };
+        assert!(snapshot.settings.is_none());
+        let mut waiting = Box::pin(observer.settings(Instant::now() + Duration::from_secs(1)));
+        assert!(
+            waiting
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        shared.fail(Error::connection(
+            Code::H3_GENERAL_PROTOCOL_ERROR,
+            "test close",
+        ));
+        assert!(matches!(
+            waiting.await,
+            SettingsObservation::Closed {
+                error: Some(Code::H3_GENERAL_PROTOCOL_ERROR),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn observation_snapshot_retention_is_bounded_and_recovers_when_released() {
+        let shared = shared(ObservationLimits {
+            retained_snapshots: 1,
+            ..ObservationLimits::default()
+        });
+        let observer = observer(&shared);
+        let first = observer.snapshot();
+        assert!(first.completeness.snapshot);
+        settings(&shared);
+        let unavailable = observer.snapshot();
+        assert!(!unavailable.completeness.snapshot);
+        assert!(Arc::ptr_eq(&unavailable, &observer.snapshot()));
+        assert!(first.settings.is_none());
+        drop(first);
+        let current = observer.snapshot();
+        assert!(current.completeness.snapshot);
+        assert!(current.settings.is_some());
+    }
+
+    #[test]
+    fn observation_consumed_instructions_survive_a_later_invalid_instruction() {
+        let shared = shared(ObservationLimits::default());
+        let observer = observer(&shared);
+        let before = observer.snapshot();
+        let mut input = Vec::new();
+        EncoderInstruction::SetDynamicTableCapacity { capacity: 64 }.encode(&mut input);
+        EncoderInstruction::Duplicate { index: 0 }.encode(&mut input);
+        shared
+            .feed_instructions(StreamType::QPACK_ENCODER, &input)
+            .unwrap_err();
+        let after = observer.snapshot();
+        assert_eq!(after.encoder_instructions.len(), 1);
+        assert!(after.revision > before.revision);
+        assert!(before.encoder_instructions.is_empty());
+    }
+
+    #[test]
+    fn observation_request_fields_and_priority_share_a_bounded_budget() {
+        let mut encoded = vec![0, 0];
+        FieldLine::LiteralWithLiteralName {
+            name: Bytes::from_static(b"priority"),
+            value: Bytes::from_static(b"u=1"),
+            name_huffman: false,
+            value_huffman: false,
+            never_index: false,
+        }
+        .encode(&mut encoded);
+        for (limits, count, priority, complete) in [
+            (ObservationLimits::default(), 1, true, true),
+            (
+                ObservationLimits {
+                    fields: 0,
+                    ..ObservationLimits::default()
+                },
+                0,
+                true,
+                false,
+            ),
+            (
+                ObservationLimits {
+                    bytes: size_of::<ObservedFieldRepresentation>(),
+                    ..ObservationLimits::default()
+                },
+                1,
+                false,
+                false,
+            ),
+            (
+                ObservationLimits {
+                    bytes: 0,
+                    ..ObservationLimits::default()
+                },
+                0,
+                false,
+                false,
+            ),
+        ] {
+            let shared = shared(limits);
+            let fields = shared
+                .state
+                .lock()
+                .decoder
+                .decode_field_section(0, Bytes::copy_from_slice(&encoded))
+                .unwrap()
+                .unwrap();
+            let (_, request) = shared.request_observation(0, &fields).unwrap();
+            assert_eq!(request.fields.len(), count);
+            assert_eq!(request.priority.is_some(), priority);
+            assert_eq!(request.fields_complete, complete);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn observation_settings_remain_received_when_close_races_delivery() {
+        let shared = shared(ObservationLimits::default());
+        let observer = observer(&shared);
+        let mut waiting = Box::pin(observer.settings(Instant::now() + Duration::from_secs(1)));
+        assert!(
+            waiting
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        settings(&shared);
+        shared.fail(Error::connection(
+            Code::H3_GENERAL_PROTOCOL_ERROR,
+            "test close",
+        ));
+        let SettingsObservation::Received(snapshot) = waiting.await else {
+            panic!("received SETTINGS must remain observable after close");
+        };
+        assert!(snapshot.settings.is_some());
+        assert_eq!(
+            snapshot.connection_error,
+            Some(Code::H3_GENERAL_PROTOCOL_ERROR.value())
+        );
+    }
+
+    #[test]
+    fn observation_stream_event_and_byte_caps_do_not_grow_with_peer_repeats() {
+        for limits in [
+            ObservationLimits {
+                streams: 1,
+                events: 1,
+                ..ObservationLimits::default()
+            },
+            ObservationLimits {
+                bytes: 0,
+                ..ObservationLimits::default()
+            },
+        ] {
+            let shared = shared(limits);
+            let observer = observer(&shared);
+            for index in 0..1000 {
+                let mut state = shared.state.lock();
+                let record = state.observation.as_mut().unwrap();
+                record.stream(index * 4 + 2, StreamType::new(0x21));
+                record.control(&FrameEvent::Header(FrameHeader::new(
+                    FrameType::new(0x21),
+                    1000,
+                )));
+                record.control(&FrameEvent::Ignored {
+                    ty: FrameType::new(0x21),
+                    len: 1000,
+                });
+            }
+            let snapshot = observer.snapshot();
+            assert!(snapshot.streams.len() <= limits.streams);
+            assert!(snapshot.control.len() <= limits.events);
+            assert!(!snapshot.completeness.streams);
+            assert!(!snapshot.completeness.control);
+            if limits.bytes == 0 {
+                assert!(snapshot.streams.is_empty() && snapshot.control.is_empty());
+            }
+        }
+        let shared = Shared::new(Config::default(), Role::Server, Extensions::new()).unwrap();
+        assert!(shared.state.lock().observation.is_none());
+        assert!(
+            shared
+                .state
+                .lock()
+                .decoder
+                .instruction_observation()
+                .is_none()
+        );
+        assert!(shared.request_observation(0, &[]).is_none());
     }
 }

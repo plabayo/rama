@@ -62,6 +62,7 @@ mod quic;
 mod headers;
 
 pub mod connection;
+pub mod observation;
 
 pub(crate) mod body;
 mod stream;

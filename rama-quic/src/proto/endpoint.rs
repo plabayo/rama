@@ -40,6 +40,7 @@ use crate::proto::{
     connection::{Connection, ConnectionError, SideArgs},
     crypto::{self, Keys},
     first_flight::{ClientHelloPeek, HelloAssembly, IncomingProgress},
+    observation::ServerObservation,
     shared::{
         ConnectionEvent, ConnectionEventInner, DatagramConnectionEvent, EndpointEvent,
         EndpointEventInner, IssuedCid,
@@ -659,6 +660,13 @@ impl Endpoint {
             trace!("initial packet has no remote header protection key");
             return None;
         };
+        let observation = server_config.capture.map(|limits| {
+            Box::new(ServerObservation::new(
+                limits,
+                event.first_decode.data(),
+                event.remaining.as_deref(),
+            ))
+        });
         let packet = match event.first_decode.finish_protected(remote.header.as_ref()) {
             Ok(packet) => packet,
             Err(e) => {
@@ -710,6 +718,7 @@ impl Endpoint {
             total_bytes: 0,
             progress: progress.clone(),
             hello: HelloAssembly::default(),
+            observation,
         });
         let resolving = matches!(server_config.crypto, ServerCrypto::Resolver(_))
             .then(|| server_config.clone());
@@ -965,6 +974,16 @@ impl Endpoint {
                 }
             })?;
         self.index.insert_initial(dst_cid, ch);
+        if let Some(mut observation) = incoming_buffer.observation.take() {
+            observation.identify(
+                loc_cid,
+                dst_cid,
+                incoming.token.orig_dst_cid,
+                incoming.token.retry_src_cid.is_some(),
+            );
+            observation.hello = incoming_buffer.hello;
+            conn.observation = Some(observation);
+        }
         conn.qlog_local_parameters(incoming.received_at, &params);
 
         match conn.handle_first_packet(
@@ -983,6 +1002,10 @@ impl Endpoint {
                     conn.handle_event(ConnectionEvent(ConnectionEventInner::Datagram(event)))
                 }
 
+                if let Some(observation) = &mut conn.observation {
+                    observation.defer_completion = false;
+                    observation.end_datagram();
+                }
                 Ok((ch, conn))
             }
             Err(e) => {
@@ -1671,6 +1694,7 @@ struct IncomingBuffer {
     progress: Arc<IncomingProgress>,
     /// The ClientHello taken in so far, packet by packet.
     hello: HelloAssembly,
+    observation: Option<Box<ServerObservation>>,
 }
 
 /// Take a pending attempt's Initial packets into its ClientHello assembly: the first packet

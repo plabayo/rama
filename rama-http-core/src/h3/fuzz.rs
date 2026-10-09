@@ -10,23 +10,29 @@ use super::{
     },
     frame::{FrameDecoder, FrameEvent},
     headers::{encode_request, request_head as decode_request_head},
-    qpack::{Decoder, DecoderConfig, FieldPair},
+    observation::Recorder,
+    qpack::{Decoder, DecoderConfig, Encoder, EncoderConfig, FieldPair},
     quic::RecvStream,
     stream::{Phase, Reader},
 };
 use crate::proto::target::{OutgoingHost, outgoing_host};
 use ahash::{HashMap, HashSet};
-use rama_core::{bytes::Bytes, extensions::ExtensionsRef as _};
+use rama_core::{
+    bytes::{Buf as _, Bytes, BytesMut},
+    extensions::ExtensionsRef as _,
+};
 use rama_http::datagram::ViolationPolicy;
 use rama_http_types::{
     Method,
     proto::{
         ext::Protocol,
-        h3::{Code, StreamType},
+        h3::{Code, Settings, StreamType, observation::ObservationLimits},
     },
 };
 use std::{
     cell::RefCell,
+    future::Future,
+    pin::Pin,
     rc::Rc,
     sync::{Arc, atomic::AtomicBool},
     task::{Context, Poll, Waker},
@@ -76,8 +82,18 @@ pub fn state(input: &[u8]) {
     let fragment = usize::from(input[2] % 32) + 1;
     let bytes = Bytes::copy_from_slice(&input[3..input.len().min(rama_utils::octets::kib(64))]);
     let mut control = Control::new(role);
+    let limits = ObservationLimits {
+        bytes: 1024,
+        events: usize::from(input[0]),
+        fields: 8,
+        streams: 4,
+        retained_snapshots: 2,
+    };
+    let mut observation = Recorder::new(limits, &Settings::new());
     for &kind in &input[..3] {
-        let _result = control.register(StreamType::new(u64::from(kind & 7)));
+        let ty = StreamType::new(u64::from(kind & 7));
+        observation.stream(u64::from(kind), ty);
+        let _result = control.register(ty);
     }
     let mut frames =
         FrameDecoder::with_input_limit(rama_utils::octets::kib(4), 32).with_header_events();
@@ -89,10 +105,15 @@ pub fn state(input: &[u8]) {
             if control.receive(&event).is_err() {
                 break;
             }
+            observation.control(&event);
         }
     }
+    let snapshot = observation.snapshot(None, None);
+    assert!(snapshot.control.len() <= limits.events);
+    assert!(snapshot.streams.len() <= limits.streams);
     let Ok(shared) = Shared::new(
         Config {
+            observation: Some(Box::new(limits)),
             max_frame_size: rama_utils::octets::kib(4),
             read_chunk_size: 32,
             ..Config::default()
@@ -145,15 +166,19 @@ pub fn state(input: &[u8]) {
     reason = "correlated valid streams must succeed or explicitly exhaust their budget"
 )]
 fn compression_schedule(input: &[u8]) {
-    use super::qpack::{DecoderConfig, Encoder, EncoderConfig};
-    use rama_core::bytes::{Buf as _, BytesMut};
-    use std::{future::Future, pin::Pin};
     let shared = Shared::new(
         Config {
             decoder: DecoderConfig {
                 max_decoder_stream_bytes: 10,
                 ..DecoderConfig::default()
             },
+            observation: Some(Box::new(ObservationLimits {
+                bytes: 1024,
+                events: 8,
+                fields: 4,
+                streams: 4,
+                retained_snapshots: 2,
+            })),
             max_requests: 4,
             ..Config::default()
         },
@@ -217,6 +242,9 @@ fn compression_schedule(input: &[u8]) {
                 let fields = fields.unwrap();
                 assert_eq!(fields.len(), 1);
                 assert_eq!(fields[0].value, "repeated dynamic value");
+                let (_, captured) = shared.request_observation(ids[slot], &fields).unwrap();
+                assert!(captured.fields.len() <= 4);
+                assert!(captured.connection.encoder_instructions.len() <= 8);
                 pending[slot] = None;
                 ids[slot] += 16;
             }

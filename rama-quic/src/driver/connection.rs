@@ -803,7 +803,7 @@ impl Future for ConnectionDriver {
         let (outcome, endpoint_work, wanted_local, budget_changed) = {
             let conn = &mut *self.conn.state.lock();
             let _guard = self.span.enter();
-            let outcome = conn.drive(&self.conn.shared, cx);
+            let outcome = conn.drive(&self.conn.shared, &self.conn.extensions, cx);
             (
                 outcome,
                 !conn.pending_endpoint_events.is_empty() || !conn.released_senders.is_empty(),
@@ -2141,7 +2141,7 @@ impl ConnectionRef {
     )]
     fn new(
         handle: ConnectionHandle,
-        conn: crate::proto::Connection,
+        mut conn: crate::proto::Connection,
         endpoint: EndpointLink,
         packets: BoundedReceiver<QueuedPacket>,
         on_handshake_data: oneshot::Sender<()>,
@@ -2149,8 +2149,12 @@ impl ConnectionRef {
         socket: Sender,
         receive_queue: PacketBudget,
     ) -> Self {
+        let extensions = Extensions::new();
+        if let Some(observation) = &mut conn.observation {
+            observation.publish(&extensions, true, false);
+        }
         Self(Arc::new(ConnectionInner {
-            extensions: Extensions::new(),
+            extensions,
             state: Mutex::new(State {
                 inner: conn,
                 driver: None,
@@ -2576,7 +2580,12 @@ pub(crate) struct State {
 }
 
 impl State {
-    fn drive(&mut self, shared: &Shared, cx: &mut Context) -> Poll<io::Result<()>> {
+    fn drive(
+        &mut self,
+        shared: &Shared,
+        extensions: &Extensions,
+        cx: &mut Context,
+    ) -> Poll<io::Result<()>> {
         self.inner.expire_handshake(now());
 
         let mut keep_going = match self.process_packets(cx) {
@@ -2607,6 +2616,10 @@ impl State {
             self.inner.abandon_close(now());
         }
         self.forward_endpoint_events();
+        let closed = self.inner.is_closed();
+        if let Some(observation) = &mut self.inner.observation {
+            observation.publish(extensions, false, closed);
+        }
         self.forward_app_events(shared);
 
         if !self.inner.is_drained() {

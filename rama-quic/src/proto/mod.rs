@@ -24,6 +24,8 @@ pub(crate) mod cid_queue;
 mod tests;
 pub(crate) mod transport_parameters;
 
+mod observation;
+
 mod bloom_token_log;
 pub use bloom_token_log::BloomTokenLog;
 

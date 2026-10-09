@@ -262,6 +262,18 @@ impl Connection {
                 };
                 let _guard = span.enter();
 
+                let capture_token_valid = match (&packet.header, &self.state) {
+                    (Header::Initial(header), State::Handshake(hs)) => {
+                        header.token == hs.expected_token
+                    }
+                    _ => true,
+                };
+                if capture_token_valid
+                    && let Some(number) = number
+                    && let Some(observation) = &mut self.observation
+                {
+                    observation.packet(&packet, number);
+                }
                 let is_duplicate = |n| self.spaces[packet.header.space()].dedup.insert(n);
                 if number.is_some_and(is_duplicate) {
                     debug!("discarding possible duplicate packet");

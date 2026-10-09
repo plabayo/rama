@@ -130,14 +130,13 @@ desired_caps = desktop_desired_caps + mobile_desired_caps
 # desired_caps = desktop_desired_caps
 # desired_caps = mobile_desired_caps
 
-# ensure auto comes last, so we get h2
-# as tls profile... even though rama emulate
-# should be able to adapt stuff like ALPN on the fly,
-# doesn't hurt to make sure the default is also the UA
-# default...
+# Protocol-specific origins keep HTTPS records and cached Alt-Svc discovery
+# from changing the HTTP/1 and HTTP/2 reference flows.
 entrypoints = [
     "http://h1.fp.ramaproxy.org:80/",
     "https://h1.fp.ramaproxy.org:443/",
+    "https://h2.fp.ramaproxy.org:443/",
+    "https://h3.fp.ramaproxy.org:443/",
     "http://fp.ramaproxy.org:80/",
     "https://fp.ramaproxy.org:443/",
 ]

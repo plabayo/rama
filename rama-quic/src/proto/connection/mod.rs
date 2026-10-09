@@ -30,6 +30,7 @@ use crate::proto::{
     cid_queue::CidQueue,
     config::TransportConfig,
     crypto::{self, KeyPair},
+    observation::ServerObservation,
     shared::EndpointEventInner,
 };
 use rama_quic_proto::{
@@ -162,6 +163,7 @@ use timer::{Timer, TimerTable};
 /// call to [`handle_event`](Self::handle_event) at that same instant; however
 /// events or timeouts with different instants must not be interleaved.
 pub(crate) struct Connection {
+    pub(crate) observation: Option<Box<ServerObservation>>,
     endpoint_config: Arc<EndpointConfig>,
     config: Arc<TransportConfig>,
     rng: StdRng,
@@ -377,6 +379,7 @@ impl Connection {
         });
         let mut rng = StdRng::from_seed(rng_seed);
         let mut this = Self {
+            observation: None,
             endpoint_config,
             crypto,
             handshake_cid: loc_cid,

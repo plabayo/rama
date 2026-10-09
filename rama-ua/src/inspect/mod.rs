@@ -4,7 +4,7 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use rama_core::{error::BoxError, extensions::Extension};
 use rama_http::{
-    HeaderMap,
+    HeaderMap, Version,
     headers::{ContentType, HeaderMapExt},
     inspect::capture::{CaptureMetadata, CaptureStore, StoredRecord},
     proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture},
@@ -53,7 +53,7 @@ impl ProfileInspector {
             .headers
             .get(rama_http::header::USER_AGENT)
             .and_then(|value| value.to_str().ok());
-        let settings = (parts.version == rama_http::Version::HTTP_2).then(|| Http2Settings {
+        let settings = (parts.version == Version::HTTP_2).then(|| Http2Settings {
             http_pseudo_headers: parts.extensions.get_ref::<PseudoHeaderOrder>().cloned(),
             early_frames: parts.extensions.get_ref::<EarlyFrameCapture>().cloned(),
         });
@@ -87,7 +87,10 @@ fn fill_profile(
     request_initiator: Option<RequestInitiator>,
     h2_settings: Option<Http2Settings>,
 ) {
-    let destination = if parts.version == rama_http::Version::HTTP_2 {
+    if parts.version == Version::HTTP_3 {
+        return; // The H3 profile component is exported separately.
+    }
+    let destination = if parts.version == Version::HTTP_2 {
         if profile.h2_settings.is_none() {
             profile.h2_settings = h2_settings;
         }

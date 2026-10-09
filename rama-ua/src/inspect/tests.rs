@@ -5,8 +5,10 @@ use rama_http::{
     inspect::capture::{CaptureConfig, CaptureHttpLayer, CaptureObserver, ConnectionId},
 };
 use rama_inspect::storage::{MemoryStore, Storage, StorageLimits};
+use rama_net::Protocol;
 #[cfg(all(feature = "embed-profiles", feature = "tls"))]
 use rama_tls::{ProtocolVersion, SecureTransport, client::NegotiatedTlsParameters};
+use std::convert::Infallible;
 
 use super::*;
 
@@ -80,12 +82,12 @@ fn h2_upgrade_initiator_belongs_to_the_supplied_protocol_observation() {
 async fn exports_merge_only_observed_fields_and_respect_selected_connections() {
     let store = store(UserAgentDatabase::default());
     let connection = store
-        .begin_connection_if_enabled(None, rama_net::Protocol::HTTP, None)
+        .begin_connection_if_enabled(None, Protocol::HTTP, None)
         .unwrap();
     let service =
         CaptureHttpLayer::new(Some(store.clone())).layer(service_fn(async |request: Request| {
             request.into_body().collect().await.unwrap();
-            Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
+            Ok::<_, Infallible>(Response::new(Body::empty()))
         }));
     for (version, ua) in [
         (Version::HTTP_11, Some("custom/1")),
@@ -142,12 +144,12 @@ async fn captured_tls_and_native_fingerprints_are_shared_per_connection() {
         .clone();
     let store = store(database);
     let connection = store
-        .begin_connection_if_enabled(None, rama_net::Protocol::HTTPS, None)
+        .begin_connection_if_enabled(None, Protocol::HTTPS, None)
         .unwrap();
     let service =
         CaptureHttpLayer::new(Some(store.clone())).layer(service_fn(async |request: Request| {
             request.into_body().collect().await.unwrap();
-            Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
+            Ok::<_, Infallible>(Response::new(Body::empty()))
         }));
     for _ in 0..2 {
         service
@@ -223,7 +225,7 @@ async fn profile_cursor_pins_groups_and_keeps_the_first_observed_headers() {
     let service =
         CaptureHttpLayer::new(Some(store.clone())).layer(service_fn(async |request: Request| {
             request.into_body().collect().await.unwrap();
-            Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
+            Ok::<_, Infallible>(Response::new(Body::empty()))
         }));
     for (ua, choice) in [
         ("z-agent", "first"),
@@ -255,4 +257,79 @@ async fn profile_cursor_pins_groups_and_keeps_the_first_observed_headers() {
         assert_eq!(profile.h1_headers_navigate.unwrap()["x-choice"], "first");
     }
     assert!(export.next_profile().await.unwrap().is_none());
+}
+
+#[test]
+fn h3_observation_never_populates_tcp_protocol_slots() {
+    for initiator in [
+        RequestInitiator::Navigate,
+        RequestInitiator::Fetch,
+        RequestInitiator::Xhr,
+        RequestInitiator::Form,
+        RequestInitiator::Ws,
+    ] {
+        let (parts, ()) = Request::builder()
+            .version(Version::HTTP_3)
+            .header("user-agent", "custom/1")
+            .header("accept", "text/html")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let mut profile = UserAgentProfileInput::new("custom/1");
+        fill_profile(&mut profile, parts, Some(initiator), None);
+        assert!(profile.h1_settings.is_none());
+        assert!(profile.h1_headers_navigate.is_none());
+        assert!(profile.h1_headers_fetch.is_none());
+        assert!(profile.h1_headers_xhr.is_none());
+        assert!(profile.h1_headers_form.is_none());
+        assert!(profile.h1_headers_ws.is_none());
+        assert!(profile.h2_settings.is_none());
+        assert!(profile.h2_headers_navigate.is_none());
+    }
+}
+
+#[cfg(all(feature = "embed-profiles", feature = "tls"))]
+#[tokio::test]
+async fn h3_observation_export_keeps_tcp_tls_and_headers_empty() {
+    let database = UserAgentDatabase::try_embedded().unwrap();
+    let ua = database.iter_ua_str().next().unwrap().to_owned();
+    let hello = database
+        .get_exact_header_str(&ua)
+        .unwrap()
+        .tls
+        .client_hello
+        .clone();
+    let store = store(database);
+    let connection = store
+        .begin_connection_if_enabled(None, Protocol::HTTPS, None)
+        .unwrap();
+    let service =
+        CaptureHttpLayer::new(Some(store.clone())).layer(service_fn(async |_: Request| {
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        }));
+    service
+        .serve(
+            Request::builder()
+                .uri("https://example.test/")
+                .version(Version::HTTP_3)
+                .header("user-agent", ua)
+                .header("sec-fetch-mode", "navigate")
+                .extension(ConnectionId(connection))
+                .extension(SecureTransport::with_client_hello(hello))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .into_body()
+        .collect()
+        .await
+        .unwrap();
+    let profiles = export_profiles(&store, &[1].into(), &BTreeSet::new())
+        .await
+        .unwrap();
+    assert_eq!(profiles.len(), 1);
+    assert!(profiles[0].tls_client_hello.is_none());
+    assert!(profiles[0].h1_headers_navigate.is_none());
+    assert!(profiles[0].h2_headers_navigate.is_none());
 }

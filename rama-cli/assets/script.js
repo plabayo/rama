@@ -132,7 +132,8 @@ function connectWebSocket() {
     );
 
     socket.onmessage = function (event) {
-      console.log(`WebSocket message received: ${event.data}`);
+      const result = JSON.parse(event.data);
+      showProtocol("WebSocket", result.version, result.h3);
     };
 
     socket.onerror = function () {
@@ -151,8 +152,31 @@ function connectWebSocket() {
   });
 }
 
+function showProtocol(flow, protocol, status = "") {
+  let report = document.getElementById("flow-protocols");
+  if (!report) {
+    report = document.createElement("ul");
+    report.id = "flow-protocols";
+    document.getElementById("input").before(report);
+  }
+  const item = document.createElement("li");
+  item.textContent = `${flow}: ${protocol || "unavailable"}${status ? ` (${status})` : ""}`;
+  report.append(item);
+}
+
 // Main function to execute the requests
 async function main() {
+  // The first HTTPS navigation learns Alt-Svc. Reload once before probing each
+  // flow; a second navigation can still negotiate h1/h2 and must report that.
+  const url = new URL(location.href);
+  const probeHttp3 = document.querySelector('meta[name="rama-h3-probe"]')?.content === "enabled";
+  if (probeHttp3 && url.protocol === "https:" && !url.searchParams.has("h3_probe")) {
+    url.searchParams.set("h3_probe", "1");
+    location.replace(url.href);
+    return;
+  }
+  const navigation = performance.getEntriesByType("navigation")[0];
+  showProtocol("Navigation", navigation?.nextHopProtocol);
   try {
     // Generate random numbers for the requests
     const number = Math.floor(Math.random() * 1000) + 1;
@@ -167,6 +191,7 @@ async function main() {
     );
     console.log("Fetch POST request response:", response2);
     const result = await response2.json();
+    showProtocol("Fetch", result.fp.request_info.version);
 
     // XMLHttpRequest POST request
     const response4 = await makeRequestWithXHR(
@@ -176,6 +201,7 @@ async function main() {
     );
     console.log("XMLHttpRequest POST request response:", response4);
     const result2 = JSON.parse(response4);
+    showProtocol("XMLHttpRequest", result2.fp.request_info.version);
 
     // WS connection — best-effort probe. The fingerprint is captured
     // on connect, so a WS hiccup must not fail the whole report (and
@@ -184,6 +210,7 @@ async function main() {
       await connectWebSocket();
     } catch (wsError) {
       console.warn("WebSocket probe failed:", wsError);
+      showProtocol("WebSocket", "unavailable", "unsupported or connection failed");
     }
 
     console.log("Requests completed successfully");

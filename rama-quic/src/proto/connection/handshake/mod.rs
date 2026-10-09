@@ -175,7 +175,11 @@ impl Connection {
             self.trace_cid,
         );
 
-        self.process_decrypted_packet(now, remote, local, Some(packet_number), packet.into())
+        let packet = packet.into();
+        if let Some(observation) = &mut self.observation {
+            observation.packet(&packet, packet_number);
+        }
+        self.process_decrypted_packet(now, remote, local, Some(packet_number), packet)
             .inspect_err(|error| {
                 self.qlog_connection_error(now, error);
                 self.qlog_discarded(now);
@@ -183,6 +187,9 @@ impl Connection {
         self.qlog_observe_state(now);
         if let Some(data) = remaining {
             self.handle_coalesced(now, remote, local, ecn, &data);
+        }
+        if let Some(observation) = &mut self.observation {
+            observation.end_datagram();
         }
 
         self.qlog_sink

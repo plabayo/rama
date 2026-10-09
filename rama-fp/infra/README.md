@@ -6,9 +6,9 @@ Fly.io deployment configs for the public rama demo services and supporting scrip
 
 These free community services run **one Machine per process group** in `fra`:
 one `app_secure` Machine for HTTPS and one `app_insecure` Machine for HTTP.
-All six apps currently need that split, for 12 Machines total. The five GeoIP
-apps each use two `geoip` volumes; `rama-http-test` uses none, for 10 volumes total.
-Each Machine uses one shared CPU and 256 MB of RAM.
+The H3-only fingerprint service has only `app_secure`. Each GeoIP-enabled
+Machine has its own `geoip` volume. Each Machine uses one shared CPU and 256 MB
+of RAM.
 
 CI and the GeoIP rollout reconcile the count with
 `fly scale count app_secure=1 app_insecure=1 --yes`, then deploy with `--ha=false`
@@ -26,7 +26,7 @@ in `pending_destroy` are soft deleted and no longer accrue volume charges.
 
 ## HTTP/3
 
-`echo`, `ipv4` and `http-test` serve HTTP/3 next to h1 and h2: the `app_secure`
+`echo`, `ipv4`, `http-test` and `fp` serve HTTP/3 next to h1 and h2: the `app_secure`
 process binds QUIC on UDP `0.0.0.0:443` (`--h3-bind`) and advertises it with
 `Alt-Svc: h3=":443"; ma=86400` on its TLS responses. Fly.io constrains this:
 
@@ -45,9 +45,24 @@ process binds QUIC on UDP `0.0.0.0:443` (`--h3-bind`) and advertises it with
   Its token is sealed with a key of the running process, so each app keeps one
   Machine per process group.
 
-`fp` stays on h1 and h2 (`--http-version h1,h2`) until its UA profiles collect
-HTTP/3: advertising it would move browsers to h3 for follow-up requests, whose
-data is shown but not stored. `fp-h1` serves HTTP/1.1 only by design.
+The fingerprint service has four isolated origins:
+
+| Origin | Versions | Deployment |
+|---|---|---|
+| `fp.ramaproxy.org` | automatic H1/H2/H3 | `deployments/fp/fly.toml` |
+| `h1.fp.ramaproxy.org` | H1 | `deployments/fp-h1/fly.toml` |
+| `h2.fp.ramaproxy.org` | H2 | `deployments/fp-h2/fly.toml` |
+| `h3.fp.ramaproxy.org` | H3 | `deployments/fp-h3/fly.toml` |
+
+BrowserStack visits each HTTPS origin and records the negotiated protocol for
+navigation, fetch, XHR, forms and WebSockets. The automatic origin reloads once
+after learning Alt-Svc. H1/H2 origins clear Alt-Svc and have no UDP listener;
+the H3 origin has no TCP listener. Unsupported clients are reported explicitly.
+
+Each origin has its own address and a DNS HTTPS record advertising only its
+supported ALPNs. H3 services use dedicated IPv4 addresses and a running
+`app_secure` Machine. Browsers reach the H2 origin through HTTPS and discover
+the H3-only origin through its HTTPS record.
 
 ## Deployment host capacity failures
 
