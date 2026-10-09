@@ -2599,6 +2599,7 @@ dependencies = [
  "serde",
  "serde_html_form",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

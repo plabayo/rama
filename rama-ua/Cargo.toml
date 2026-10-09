@@ -49,6 +49,7 @@ rand = { workspace = true }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

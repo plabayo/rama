@@ -34,3 +34,12 @@ pub use runtime_hints::*;
 
 mod input;
 pub use input::*;
+
+mod canonical;
+pub use canonical::{CanonicalValue, ProfileDataError, ValueId};
+
+mod capture;
+pub use capture::*;
+
+mod identity;
+pub use identity::*;

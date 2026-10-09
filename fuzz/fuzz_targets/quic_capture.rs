@@ -10,6 +10,7 @@ use rama::{
         crypto::{CryptoError, HeaderKey, PacketKey},
         version::Version,
     },
+    utils::octets::kib,
 };
 
 /// Keys that leave packets as they are, so every observed Initial reaches key derivation,
@@ -77,10 +78,10 @@ fuzz_target!(|data: &[u8]| {
     let Some((&budget, data)) = data.split_first() else {
         return;
     };
-    let data = &data[..data.len().min(8192)];
+    let data = &data[..data.len().min(kib(8))];
     let bound = usize::from(budget);
     let limits = CaptureLimits {
-        bytes: 8192,
+        bytes: kib(8),
         packets: bound,
         frames: bound,
         crypto_fragments: bound,

@@ -1,5 +1,8 @@
 use std::fmt;
 
+#[cfg(test)]
+use std::time::Duration;
+
 use jiff::Timestamp;
 use rama::{
     error::{BoxError, ErrorContext},
@@ -52,7 +55,7 @@ impl Storage {
         );
         Self {
             pool: Pool::builder()
-                .connection_timeout(std::time::Duration::from_millis(1))
+                .connection_timeout(Duration::from_millis(1))
                 .build_unchecked(manager),
         }
     }

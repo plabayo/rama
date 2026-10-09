@@ -112,6 +112,7 @@ impl FromStr for RequestInitiator {
                 "form" => Ok(Self::Form),
                 "xhr" => Ok(Self::Xhr),
                 "fetch" => Ok(Self::Fetch),
+                "ws" => Ok(Self::Ws),
                 _ => Err(BoxError::from_static_str("invalid request initiator").context_str_field("str", s)),
             }
         }
