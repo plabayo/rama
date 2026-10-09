@@ -59,7 +59,8 @@ async fn cloned_request_metadata_cannot_exchange_or_retain_handout_reservations(
     let (conn, state) = admission_connection(&pool, 2);
     let shared = Extensions::new();
     let first = pool.create(TestId(0), conn, permit, &shared).await.unwrap();
-    let ConnectionResult::Connection(second) = pool.get_conn(&TestId(0), &shared).await.unwrap()
+    let ConnectionResult::Connection(second) =
+        pool.get_conn(&TestId(0), &shared, None).await.unwrap()
     else {
         panic!("second reserved checkout")
     };
@@ -103,7 +104,7 @@ async fn admission_wakes_on_transport_credit_without_releasing_pool_handout() {
         let input = Extensions::new();
         let first = pool.create(TestId(0), conn, permit, &input).await.unwrap();
         let next_input = Extensions::new();
-        let mut next = tokio_test::task::spawn(pool.get_conn(&TestId(0), &next_input));
+        let mut next = tokio_test::task::spawn(pool.get_conn(&TestId(0), &next_input, None));
         assert!(next.poll().is_pending());
         state.set_limit(2);
         assert!(next.is_woken());
@@ -127,7 +128,7 @@ async fn work_outliving_its_handouts_keeps_a_connection_from_eviction() {
     state.set_in_use(true);
     drop(first);
 
-    let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT));
+    let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT, None));
     assert!(other.poll().is_pending(), "a busy connection was evicted");
     assert!(pool.storage.lock().by_id.contains_key(&TestId(0)));
 
@@ -149,8 +150,8 @@ async fn the_end_of_work_outliving_the_last_handout_is_an_eviction_chance() {
     let (conn, state) = admission_connection(&pool, 4);
     let input = Extensions::new();
     let first = pool.create(TestId(0), conn, permit, &input).await.unwrap();
-    let mut leaving = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT));
-    let mut staying = tokio_test::task::spawn(pool.get_conn(&TestId(2), &EMPTY_INPUT));
+    let mut leaving = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT, None));
+    let mut staying = tokio_test::task::spawn(pool.get_conn(&TestId(2), &EMPTY_INPUT, None));
     assert!(leaving.poll().is_pending());
     assert!(staying.poll().is_pending());
 
@@ -183,7 +184,7 @@ async fn a_busy_connection_is_asked_again_only_after_a_change() {
         .unwrap();
     state.set_in_use(true);
     drop(first);
-    let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT));
+    let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT, None));
     assert!(other.poll().is_pending(), "a busy connection was evicted");
     let asked = state.asked.load(Ordering::SeqCst);
     assert!(asked > 0);
@@ -211,7 +212,8 @@ async fn work_outliving_its_handouts_keeps_a_connection_from_expiring() {
     drop(first);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let Ok(ConnectionResult::Connection(reused)) = pool.get_conn(&TestId(0), &EMPTY_INPUT).await
+    let Ok(ConnectionResult::Connection(reused)) =
+        pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await
     else {
         panic!("a busy connection expired as idle")
     };
@@ -219,7 +221,7 @@ async fn work_outliving_its_handouts_keeps_a_connection_from_expiring() {
     state.set_in_use(false);
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_matches!(
-        pool.get_conn(&TestId(0), &EMPTY_INPUT).await,
+        pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await,
         Ok(ConnectionResult::CreatePermit(_))
     );
 }
@@ -239,7 +241,7 @@ async fn an_expired_connection_asked_outside_the_lock_frees_its_slot() {
     );
     tokio::time::sleep(Duration::from_millis(30)).await;
     // Only a sweep of all ids comes across it, and asks once it let go.
-    let Ok(ConnectionResult::CreatePermit(_)) = pool.get_conn(&TestId(1), &EMPTY_INPUT).await
+    let Ok(ConnectionResult::CreatePermit(_)) = pool.get_conn(&TestId(1), &EMPTY_INPUT, None).await
     else {
         panic!("its slot is free once it expired")
     };
@@ -258,13 +260,13 @@ async fn the_idle_clock_restarts_when_the_pool_sees_outliving_work() {
     drop(first);
     tokio::time::sleep(Duration::from_millis(40)).await;
     // A full pool sweeps every connection for another destination's request.
-    let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT));
+    let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT, None));
     assert!(other.poll().is_pending());
     drop(other);
 
     state.set_in_use(false);
     assert_matches!(
-        pool.get_conn(&TestId(0), &EMPTY_INPUT).await,
+        pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await,
         Ok(ConnectionResult::Connection(_)),
         "work that just ended does not count as idle time"
     );
@@ -283,7 +285,7 @@ async fn a_lookup_during_outliving_work_restarts_the_idle_clock() {
     state.set_limit(0);
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert_matches!(
-        pool.get_conn(&TestId(0), &EMPTY_INPUT).await,
+        pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await,
         Ok(ConnectionResult::CreatePermit(_))
     );
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -291,7 +293,7 @@ async fn a_lookup_during_outliving_work_restarts_the_idle_clock() {
     state.set_limit(4);
     tokio::time::sleep(Duration::from_millis(5)).await;
     assert_matches!(
-        pool.get_conn(&TestId(0), &EMPTY_INPUT).await,
+        pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await,
         Ok(ConnectionResult::Connection(_)),
         "idle for 5ms of a 30ms timeout"
     );
@@ -440,7 +442,7 @@ async fn admission_failure_on_cached_connection_tries_another_candidate() {
         drop((first, second));
         state.failed.store(true, Ordering::SeqCst);
         let ConnectionResult::Connection(next) =
-            pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap()
+            pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await.unwrap()
         else {
             panic!("healthy candidate must be reused")
         };
@@ -535,7 +537,7 @@ async fn concurrent_pool_checkouts_cannot_oversubscribe_transport_credit() {
     let inputs: Vec<_> = (0..16).map(|_| Extensions::new()).collect();
     let mut pending: Vec<_> = inputs
         .iter()
-        .map(|input| tokio_test::task::spawn(pool.get_conn(&TestId(0), input)))
+        .map(|input| tokio_test::task::spawn(pool.get_conn(&TestId(0), input, None)))
         .collect();
     let mut admitted = vec![first];
     for waiter in &mut pending {
@@ -571,7 +573,7 @@ async fn exclusive_pool_replaces_connection_with_exhausted_transport_credit() {
     conn.extensions
         .insert(ConnectionAdmission::new(FakeAdmission(state.clone())));
     let ConnectionResult::CreatePermit(permit) =
-        pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap()
+        pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await.unwrap()
     else {
         panic!("new connection required")
     };
@@ -582,7 +584,7 @@ async fn exclusive_pool_replaces_connection_with_exhausted_transport_credit() {
     assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
     state.set_limit(0);
     assert_matches!(
-        pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap(),
+        pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await.unwrap(),
         ConnectionResult::CreatePermit(_),
     );
 }
@@ -670,7 +672,7 @@ async fn a_source_notification_never_calls_back_into_the_source() {
     probe.in_use.store(true, Ordering::SeqCst);
     drop(first);
     let other_input = Extensions::new();
-    let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &other_input));
+    let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &other_input, None));
     assert!(other.poll().is_pending(), "busy: nothing to evict");
     probe.in_use.store(false, Ordering::SeqCst);
     probe.notify();
@@ -708,13 +710,15 @@ async fn a_release_wakes_its_lane_and_not_an_eviction_waiter() {
     busy.in_use.store(true, Ordering::SeqCst);
     drop(first);
     let other_input = Extensions::new();
-    let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &other_input));
+    let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &other_input, None));
     assert!(other.poll().is_pending());
-    let ConnectionResult::Connection(a) = pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap()
+    let ConnectionResult::Connection(a) =
+        pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await.unwrap()
     else {
         panic!("a free stream");
     };
-    let ConnectionResult::Connection(b) = pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap()
+    let ConnectionResult::Connection(b) =
+        pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await.unwrap()
     else {
         panic!("a free stream");
     };

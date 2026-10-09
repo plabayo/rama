@@ -62,13 +62,12 @@ pub(super) struct StoredConnection<C, ID> {
     pub(super) storage: Weak<Mutex<Storage<C, ID>>>,
     pub(super) relist_fn: fn(&Arc<Self>),
     /// The pool's idle limits, if it has any.
-    pub(super) idle_limits: Option<Arc<IdleLimits>>,
+    pub(super) idle_limits: Option<Arc<IdleLimits<ID>>>,
     /// Its standing in the idle limits' count: [`COUNTED`] as it goes idle,
     /// [`UNCOUNTED`] again as a stream is admitted or outliving work is seen,
     /// [`GONE`] while it is not stored.
     pub(super) idle_count: AtomicU8,
-    pub(super) trim_fn: fn(&Arc<Self>),
-    pub(super) trim_all_fn: TrimAll<C, ID>,
+    pub(super) ask_trim_fn: AskTrim<C, ID>,
 }
 
 /// [`StoredConnection::idle_count`]: stored, not counted idle.
@@ -78,8 +77,9 @@ pub(super) const COUNTED: u8 = 1;
 /// [`StoredConnection::idle_count`]: not stored, never counted.
 pub(super) const GONE: u8 = 2;
 
-/// Trims every id's idle connections over the limits, see [`trim_all`].
-pub(super) type TrimAll<C, ID> = fn(&Weak<Mutex<Storage<C, ID>>>, &IdleLimits, &AtomicUsize);
+/// Asks for a trim of the idle connections over the limits, see [`ask_trim`].
+pub(super) type AskTrim<C, ID> =
+    fn(&Weak<Mutex<Storage<C, ID>>>, &Arc<IdleLimits<ID>>, &Arc<AtomicUsize>, Option<&ID>, bool);
 
 /// A stream reserved on a connection by [`StoredConnection::try_admit`], with
 /// the transport credit reserved for it, if the connection has a provider.
@@ -167,37 +167,17 @@ impl<C, ID> StoredConnection<C, ID> {
         }
     }
 
-    /// Trim the idle connections over the limits from a task of its own, if
-    /// they may be over: a listener may hold its source's locks, and trimming
-    /// asks admissions.
-    fn trim_later(&self)
-    where
-        C: Send + Sync + 'static,
-        ID: Send + Sync + 'static,
-    {
-        let Some(limits) = &self.idle_limits else {
-            return;
-        };
-        let over_total = limits
-            .total
-            .is_some_and(|max| limits.idle.load(Ordering::Relaxed) > max.get());
-        if !over_total && limits.per_id.is_none() || limits.trimming.swap(true, Ordering::AcqRel) {
-            return;
+    /// Ask for a trim of its id's idle connections, if they may be over the
+    /// limits: here if `inline`, else on a task, as for a listener, which may
+    /// hold its source's locks while trimming asks admissions.
+    fn ask_trim(&self, inline: bool) {
+        if let Some(limits) = self
+            .idle_limits
+            .as_ref()
+            .filter(|limits| limits.may_be_over())
+        {
+            (self.ask_trim_fn)(&self.storage, limits, &self.waiting, Some(&self.id), inline);
         }
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            limits.trimming.store(false, Ordering::Release);
-            return;
-        };
-        let (storage, limits, waiting, trim) = (
-            self.storage.clone(),
-            limits.clone(),
-            self.waiting.clone(),
-            self.trim_all_fn,
-        );
-        runtime.spawn(async move {
-            trim(&storage, &limits, &waiting);
-            limits.trimming.store(false, Ordering::Release);
-        });
     }
 
     /// Work outlived its handouts, such as an upgraded tunnel.
@@ -408,7 +388,7 @@ impl<C: Send + Sync + 'static, ID: Send + Sync + 'static> ChangeListener
             // starts now. A trim asks.
             self.last_idle.set_now();
             if self.count_idle() {
-                self.trim_later();
+                self.ask_trim(false);
             }
         }
         fence(Ordering::SeqCst);
@@ -443,34 +423,86 @@ pub(super) fn relist_stored<C, ID: ConnID>(conn: &Arc<StoredConnection<C, ID>>) 
     }
 }
 
-/// [`StoredConnection::trim_fn`]: close the least recently used idle
-/// connections beyond the pool's idle limits, of the connection's id first,
-/// then in total.
-pub(super) fn trim_idle<C, ID: ConnID>(conn: &Arc<StoredConnection<C, ID>>) {
-    if let (Some(limits), Some(storage)) = (&conn.idle_limits, conn.storage.upgrade()) {
-        trim(&storage, limits, &conn.waiting, Some(&conn.id));
-    }
-}
-
-/// [`TrimAll`]: as [`trim_idle`], for every id.
-pub(super) fn trim_all<C, ID: ConnID>(
+/// [`AskTrim`]: ask for the idle connections over the limits of `id` (else of
+/// every id) to be closed. Nobody else trimming, the asker trims here once if
+/// `inline`; what is asked meanwhile, or by a listener, a task trims.
+pub(super) fn ask_trim<C: Send + Sync + 'static, ID: ConnID>(
     storage: &Weak<Mutex<Storage<C, ID>>>,
-    limits: &IdleLimits,
-    waiting: &AtomicUsize,
+    limits: &Arc<IdleLimits<ID>>,
+    waiting: &Arc<AtomicUsize>,
+    id: Option<&ID>,
+    inline: bool,
 ) {
-    if let Some(storage) = storage.upgrade() {
-        trim(&storage, limits, waiting, None);
+    if !limits.ask(id) {
+        return;
+    }
+    if inline {
+        if let Some(storage) = storage.upgrade() {
+            trim(&storage, limits, waiting, &limits.take());
+        }
+        if !limits.let_go() {
+            return;
+        }
+    }
+    // The current runtime, else that of the newest connection: a source may
+    // change on a thread of neither.
+    let runtime = tokio::runtime::Handle::try_current()
+        .ok()
+        .or_else(|| limits.runtime.lock().clone());
+    let Some(runtime) = runtime else {
+        limits.give_up();
+        return;
+    };
+    let (storage, waiting) = (storage.clone(), waiting.clone());
+    let mut trimmer = Trimmer {
+        limits: limits.clone(),
+        held: true,
+    };
+    runtime.spawn(async move {
+        while let Some(storage) = storage.upgrade() {
+            let asked = trimmer.limits.take();
+            if !asked.is_empty() {
+                trim(&storage, &trimmer.limits, &waiting, &asked);
+            } else if !trimmer.let_go() {
+                return;
+            }
+            drop(storage);
+            tokio::task::yield_now().await;
+        }
+    });
+}
+
+/// A task's hold on the trimmer: given up if the task ends without letting go,
+/// such as when its runtime shuts down before it runs.
+struct Trimmer<ID> {
+    limits: Arc<IdleLimits<ID>>,
+    held: bool,
+}
+
+impl<ID> Trimmer<ID> {
+    /// See [`IdleLimits::let_go`].
+    fn let_go(&mut self) -> bool {
+        self.held = self.limits.let_go();
+        self.held
     }
 }
 
-/// Close the least recently used idle connections beyond the limits, of `own`
-/// (else of any id) first, then in total. Picks from atomics under the storage
-/// lock, asks the pick's admission without it.
+impl<ID> Drop for Trimmer<ID> {
+    fn drop(&mut self) {
+        if self.held {
+            self.limits.give_up();
+        }
+    }
+}
+
+/// Close the least recently used idle connections beyond the limits, of the
+/// ids `asked` first, then in total. Picks from atomics under the storage lock,
+/// asks the pick's admission without it.
 fn trim<C, ID: ConnID>(
     storage: &Mutex<Storage<C, ID>>,
-    limits: &IdleLimits,
+    limits: &IdleLimits<ID>,
     waiting: &AtomicUsize,
-    own: Option<&ID>,
+    asked: &Asked<ID>,
 ) {
     let mut busy: SmallVec<[u64; 2]> = SmallVec::new();
     // Waiting checkouts take idle connections: none of them is extra then.
@@ -488,9 +520,14 @@ fn trim<C, ID: ConnID>(
                         > max.get()
                 })
             };
-            let bucket = match own {
-                Some(id) => storage.by_id.get(id).filter(over),
-                None => storage.by_id.values().find(over),
+            let bucket = if asked.all {
+                storage.by_id.values().find(over)
+            } else {
+                asked
+                    .ids
+                    .iter()
+                    .filter_map(|id| storage.by_id.get(id))
+                    .find(over)
             };
             match bucket {
                 Some(bucket) => least_recently_idle(bucket.lanes(), &busy),
@@ -555,7 +592,7 @@ impl<C, ID> Drop for MultiplexedConnection<C, ID> {
         self.inner.freed(WaitQueue::wake_one, false);
         if last && self.inner.idle_limits.is_some() && self.inner.is_idle() {
             self.inner.count_idle();
-            (self.inner.trim_fn)(&self.inner);
+            self.inner.ask_trim(true);
         }
     }
 }

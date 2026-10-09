@@ -76,7 +76,7 @@ async fn pool_with_resident_ids(resident: usize) -> Arc<MultiplexPool<ServiceInp
     let pool = Arc::new(evicting::<HostId>(usize::MAX, resident));
     for n in 0..resident {
         let id = HostId::nth(n);
-        let permit = match pool.get_conn(&id, &EMPTY_INPUT).await.unwrap() {
+        let permit = match pool.get_conn(&id, &EMPTY_INPUT, None).await.unwrap() {
             ConnectionResult::CreatePermit(permit) => permit,
             ConnectionResult::Connection(_) => unreachable!("this id has no connection yet"),
         };
@@ -90,7 +90,7 @@ async fn pool_with_resident_ids(resident: usize) -> Arc<MultiplexPool<ServiceInp
 }
 
 async fn hit_resident_id(pool: &MultiplexPool<ServiceInput<()>, HostId>, id: &HostId) {
-    let handout = match pool.get_conn(id, &EMPTY_INPUT).await.unwrap() {
+    let handout = match pool.get_conn(id, &EMPTY_INPUT, None).await.unwrap() {
         ConnectionResult::Connection(handout) => handout,
         ConnectionResult::CreatePermit(_) => unreachable!("the id has an idle connection"),
     };
@@ -98,7 +98,7 @@ async fn hit_resident_id(pool: &MultiplexPool<ServiceInput<()>, HostId>, id: &Ho
 }
 
 async fn miss_evicts_lru(pool: &MultiplexPool<ServiceInput<()>, HostId>, id: HostId) {
-    let permit = match pool.get_conn(&id, &EMPTY_INPUT).await.unwrap() {
+    let permit = match pool.get_conn(&id, &EMPTY_INPUT, None).await.unwrap() {
         ConnectionResult::CreatePermit(permit) => permit,
         ConnectionResult::Connection(_) => unreachable!("a fresh id has no connection"),
     };
@@ -146,7 +146,11 @@ async fn park_all(started: &AtomicUsize, waiters: usize) {
 
 async fn hand_off_one_stream_at_a_time(waiters: usize) {
     let pool = Arc::new(limited::<BenchId>(1, 1));
-    let permit = match pool.get_conn(&BenchId(0), &EMPTY_INPUT).await.unwrap() {
+    let permit = match pool
+        .get_conn(&BenchId(0), &EMPTY_INPUT, None)
+        .await
+        .unwrap()
+    {
         ConnectionResult::CreatePermit(permit) => permit,
         ConnectionResult::Connection(_) => unreachable!("a fresh pool is empty"),
     };
@@ -164,7 +168,11 @@ async fn hand_off_one_stream_at_a_time(waiters: usize) {
         let started = Arc::clone(&started);
         tasks.push(tokio::spawn(async move {
             started.fetch_add(1, Ordering::Relaxed);
-            let handout = match pool.get_conn(&BenchId(0), &EMPTY_INPUT).await.unwrap() {
+            let handout = match pool
+                .get_conn(&BenchId(0), &EMPTY_INPUT, None)
+                .await
+                .unwrap()
+            {
                 ConnectionResult::Connection(handout) => handout,
                 ConnectionResult::CreatePermit(_) => {
                     unreachable!("the sole connection remains in the pool")
@@ -187,7 +195,7 @@ async fn hand_off_streams_for_two_ids(waiters_per_id: usize) {
     let mut releases = Vec::with_capacity(2);
     for id in 0..2 {
         let id = BenchId(id);
-        let permit = match pool.get_conn(&id, &EMPTY_INPUT).await.unwrap() {
+        let permit = match pool.get_conn(&id, &EMPTY_INPUT, None).await.unwrap() {
             ConnectionResult::CreatePermit(permit) => permit,
             ConnectionResult::Connection(_) => unreachable!("this ID has no connection yet"),
         };
@@ -198,12 +206,14 @@ async fn hand_off_streams_for_two_ids(waiters_per_id: usize) {
                 .await
                 .unwrap(),
         );
-        releases.push(match pool.get_conn(&id, &EMPTY_INPUT).await.unwrap() {
-            ConnectionResult::Connection(handout) => handout,
-            ConnectionResult::CreatePermit(_) => {
-                unreachable!("the connection has spare capacity")
-            }
-        });
+        releases.push(
+            match pool.get_conn(&id, &EMPTY_INPUT, None).await.unwrap() {
+                ConnectionResult::Connection(handout) => handout,
+                ConnectionResult::CreatePermit(_) => {
+                    unreachable!("the connection has spare capacity")
+                }
+            },
+        );
     }
 
     let started = Arc::new(AtomicUsize::new(0));
@@ -216,7 +226,7 @@ async fn hand_off_streams_for_two_ids(waiters_per_id: usize) {
             let started = Arc::clone(&started);
             tasks.push(tokio::spawn(async move {
                 started.fetch_add(1, Ordering::Relaxed);
-                let handout = match pool.get_conn(&id, &EMPTY_INPUT).await.unwrap() {
+                let handout = match pool.get_conn(&id, &EMPTY_INPUT, None).await.unwrap() {
                     ConnectionResult::Connection(handout) => handout,
                     ConnectionResult::CreatePermit(_) => {
                         unreachable!("both pool slots remain occupied")
@@ -293,7 +303,7 @@ fn exclusive_policy_hit(bencher: divan::Bencher, resident: usize) {
         let mut held = Vec::with_capacity(resident);
         for _ in 0..resident {
             let ConnectionResult::CreatePermit(permit) =
-                pool.get_conn(&BenchId(0), &input).await.unwrap()
+                pool.get_conn(&BenchId(0), &input, None).await.unwrap()
             else {
                 unreachable!("all previous connections are still leased");
             };
@@ -311,7 +321,7 @@ fn exclusive_policy_hit(bencher: divan::Bencher, resident: usize) {
     bencher.bench_local(|| {
         runtime.block_on(async {
             let ConnectionResult::Connection(conn) =
-                pool.get_conn(&BenchId(0), &input).await.unwrap()
+                pool.get_conn(&BenchId(0), &input, None).await.unwrap()
             else {
                 unreachable!("all resident policies are compatible");
             };
@@ -331,7 +341,7 @@ fn bench_multiplex_same_id(bencher: divan::Bencher, resident: usize, with_policy
         let mut held = Vec::with_capacity(resident);
         for _ in 0..resident {
             let ConnectionResult::CreatePermit(permit) =
-                pool.get_conn(&BenchId(0), &input).await.unwrap()
+                pool.get_conn(&BenchId(0), &input, None).await.unwrap()
             else {
                 unreachable!("all previous connections are at capacity");
             };
@@ -351,7 +361,7 @@ fn bench_multiplex_same_id(bencher: divan::Bencher, resident: usize, with_policy
     bencher.bench_local(|| {
         runtime.block_on(async {
             let ConnectionResult::Connection(conn) =
-                pool.get_conn(&BenchId(0), &input).await.unwrap()
+                pool.get_conn(&BenchId(0), &input, None).await.unwrap()
             else {
                 unreachable!("resident connections have capacity");
             };
@@ -390,8 +400,10 @@ fn bench_multiplex_contended_checkout(
     setup.block_on(async {
         let mut held = Vec::with_capacity(resident);
         for _ in 0..resident {
-            let ConnectionResult::CreatePermit(permit) =
-                pool.get_conn(&BenchId(0), &EMPTY_INPUT).await.unwrap()
+            let ConnectionResult::CreatePermit(permit) = pool
+                .get_conn(&BenchId(0), &EMPTY_INPUT, None)
+                .await
+                .unwrap()
             else {
                 unreachable!("all previous connections are at capacity");
             };
@@ -421,8 +433,10 @@ fn bench_multiplex_contended_checkout(
                             .unwrap();
                         runtime.block_on(async {
                             for _ in 0..CHECKOUTS_PER_THREAD {
-                                let ConnectionResult::Connection(conn) =
-                                    pool.get_conn(&BenchId(0), &EMPTY_INPUT).await.unwrap()
+                                let ConnectionResult::Connection(conn) = pool
+                                    .get_conn(&BenchId(0), &EMPTY_INPUT, None)
+                                    .await
+                                    .unwrap()
                                 else {
                                     unreachable!("resident connections are idle");
                                 };
@@ -494,7 +508,7 @@ fn multiplex_mixed_class_hit(bencher: divan::Bencher, (resident, classes): (usiz
             let input = Extensions::new();
             input.insert(class);
             let ConnectionResult::CreatePermit(permit) =
-                pool.get_conn(&BenchId(0), &input).await.unwrap()
+                pool.get_conn(&BenchId(0), &input, None).await.unwrap()
             else {
                 unreachable!("all previous connections are leased");
             };
@@ -510,7 +524,7 @@ fn multiplex_mixed_class_hit(bencher: divan::Bencher, (resident, classes): (usiz
     bencher.bench_local(|| {
         runtime.block_on(async {
             let ConnectionResult::Connection(conn) =
-                pool.get_conn(&BenchId(0), &input).await.unwrap()
+                pool.get_conn(&BenchId(0), &input, None).await.unwrap()
             else {
                 unreachable!("an idle connection of the class is resident");
             };
@@ -630,7 +644,11 @@ fn bench_saturated(
                     let id = BenchId((client % ids) as u8);
                     tasks.push(tokio::spawn(async move {
                         for _ in 0..ROUNDS {
-                            let handout = match pool.get_conn(&id, &EMPTY_INPUT).await.unwrap() {
+                            let handout = match pool
+                                .get_conn(&id, &EMPTY_INPUT, None)
+                                .await
+                                .unwrap()
+                            {
                                 ConnectionResult::Connection(handout) => handout,
                                 ConnectionResult::CreatePermit(permit) => pool
                                     .create(id.clone(), connection(streams), permit, &EMPTY_INPUT)

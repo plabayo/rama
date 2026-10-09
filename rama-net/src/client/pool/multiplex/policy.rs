@@ -73,19 +73,55 @@ impl IdLimit {
     }
 }
 
-/// How many idle connections a pool keeps, per id and in total, and how many
-/// it counts: see [`MultiplexPool::with_max_idle_per_id`].
-#[derive(Debug)]
-pub(super) struct IdleLimits {
+/// How many idle connections a pool keeps, per id and in total, how many it
+/// counts, and the trims asked for: see [`MultiplexPool::with_max_idle_per_id`].
+///
+/// One trimmer at a time closes what is over: whoever asks while it runs
+/// leaves the ask to it, and it looks again after letting go.
+pub(super) struct IdleLimits<ID> {
     pub(super) per_id: Option<NonZeroUsize>,
     pub(super) total: Option<NonZeroUsize>,
     /// Stored connections counted idle, see [`StoredConnection::idle_count`].
     pub(super) idle: AtomicUsize,
-    /// Whether a trim of its own task is due.
-    pub(super) trimming: AtomicBool,
+    asked: Mutex<Asked<ID>>,
+    trimmer: AtomicBool,
+    /// Where a trim asked for outside a runtime runs: the runtime of the pool's
+    /// newest connection.
+    pub(super) runtime: Mutex<Option<tokio::runtime::Handle>>,
 }
 
-impl IdleLimits {
+impl<ID> std::fmt::Debug for IdleLimits<ID> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IdleLimits")
+            .field("per_id", &self.per_id)
+            .field("total", &self.total)
+            .field("idle", &self.idle)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The trims asked for: of these ids, or of every id.
+pub(super) struct Asked<ID> {
+    pub(super) ids: Vec<ID>,
+    pub(super) all: bool,
+}
+
+impl<ID> Default for Asked<ID> {
+    fn default() -> Self {
+        Self {
+            ids: Vec::new(),
+            all: false,
+        }
+    }
+}
+
+impl<ID> Asked<ID> {
+    pub(super) fn is_empty(&self) -> bool {
+        !self.all && self.ids.is_empty()
+    }
+}
+
+impl<ID> IdleLimits<ID> {
     /// The limits, if there are any.
     pub(super) fn new(
         per_id: Option<NonZeroUsize>,
@@ -96,9 +132,59 @@ impl IdleLimits {
                 per_id,
                 total,
                 idle: AtomicUsize::new(0),
-                trimming: AtomicBool::new(false),
+                asked: Mutex::new(Asked::default()),
+                trimmer: AtomicBool::new(false),
+                runtime: Mutex::new(None),
             })
         })
+    }
+
+    /// Whether idle connections may be over the limits: per id they are only
+    /// counted by a trim.
+    pub(super) fn may_be_over(&self) -> bool {
+        self.per_id.is_some()
+            || self
+                .total
+                .is_some_and(|max| self.idle.load(Ordering::Relaxed) > max.get())
+    }
+
+    /// Ask for a trim of `id`'s idle connections, else of every id's: whether
+    /// the caller is the trimmer now, and runs it.
+    pub(super) fn ask(&self, id: Option<&ID>) -> bool
+    where
+        ID: Clone + PartialEq,
+    {
+        {
+            let mut asked = self.asked.lock();
+            match id {
+                None => {
+                    asked.all = true;
+                    asked.ids.clear();
+                }
+                Some(id) if !asked.all && !asked.ids.contains(id) => asked.ids.push(id.clone()),
+                Some(_) => {}
+            }
+        }
+        // Pairs with the trimmer letting go: it sees this ask, or this sees it gone.
+        !self.trimmer.swap(true, Ordering::AcqRel)
+    }
+
+    /// The trims asked for so far, for the trimmer.
+    pub(super) fn take(&self) -> Asked<ID> {
+        std::mem::take(&mut *self.asked.lock())
+    }
+
+    /// The trimmer lets go: whether it is the trimmer again, for what was asked
+    /// meanwhile.
+    pub(super) fn let_go(&self) -> bool {
+        self.trimmer.store(false, Ordering::Release);
+        !self.asked.lock().is_empty() && !self.trimmer.swap(true, Ordering::AcqRel)
+    }
+
+    /// The trimmer gives up without trimming, such as when its task is
+    /// dropped before it ran: the next ask runs what is left.
+    pub(super) fn give_up(&self) {
+        self.trimmer.store(false, Ordering::Release);
     }
 }
 

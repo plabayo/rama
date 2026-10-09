@@ -11,7 +11,7 @@ use rama_core::{Layer, Service};
 use rama_utils::macros::generate_set_and_with;
 
 use tokio::sync::OwnedSemaphorePermit;
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout, timeout_at};
 
 #[cfg(feature = "opentelemetry")]
 #[cfg_attr(docsrs, doc(cfg(feature = "opentelemetry")))]
@@ -58,10 +58,14 @@ pub trait Pool<C, ID>: Send + Sync + 'static {
     /// A [`Pool::CreatePermit`] is needed to add a new connection to the pool. Depending on how
     /// the [`Pool::CreatePermit`] is used a pool can implement policies for max connection and max
     /// total connections.
+    ///
+    /// `deadline` is when the caller stops waiting, if it does: a pool that lets
+    /// a checkout wait for another's connect has it dial its own by then.
     fn get_conn(
         &self,
         id: &ID,
         input: &Extensions,
+        deadline: Option<Instant>,
     ) -> impl Future<
         Output = Result<ConnectionResult<Self::Connection, Self::CreatePermit>, BoxError>,
     > + Send;
@@ -124,6 +128,7 @@ where
         &self,
         _id: &ID,
         _input: &Extensions,
+        _deadline: Option<Instant>,
     ) -> Result<ConnectionResult<Self::Connection, Self::CreatePermit>, BoxError> {
         Ok(ConnectionResult::CreatePermit(()))
     }
@@ -218,7 +223,8 @@ impl<S, P, R> PooledConnector<S, P, R> {
     generate_set_and_with!(
         /// Bound each wait for a pool slot or newly established transport credit.
         ///
-        /// The transport handshake is separate. `None` leaves these waits unbounded.
+        /// The transport handshake is separate: a checkout waiting for another's
+        /// connect dials its own by then. `None` leaves these waits unbounded.
         pub fn wait_for_pool_timeout(mut self, timeout: Option<Duration>) -> Self {
             self.wait_for_pool_timeout = timeout;
             self
@@ -257,7 +263,8 @@ where
         };
 
         let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
-            timeout(duration, pool.get_conn(&conn_id, input.extensions()))
+            let deadline = Instant::now() + duration;
+            timeout_at(deadline, pool.get_conn(&conn_id, input.extensions(), Some(deadline)))
                     .await
                     .inspect_err(|err|{
                         trace!(%err, "pooled connector: timeout triggered while waiting for a connection (/w conn id: {conn_id:?}) from pool");
@@ -267,7 +274,7 @@ where
                             .context("pooled connector: wait for connection")
                     })?
         } else {
-            pool.get_conn(&conn_id, input.extensions()).await
+            pool.get_conn(&conn_id, input.extensions(), None).await
         };
 
         match pool_result.map_err(|error| match error.downcast::<ConnectionError>() {

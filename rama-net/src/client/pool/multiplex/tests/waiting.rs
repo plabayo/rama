@@ -28,7 +28,8 @@ async fn waiters_are_served_in_arrival_order() {
 async fn two_released_streams_wake_two_waiters() {
     let pool = MultiplexPool::evicting(2, 1);
     let a = add(&pool, 0, None).await;
-    let ConnectionResult::Connection(b) = pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap()
+    let ConnectionResult::Connection(b) =
+        pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await.unwrap()
     else {
         panic!("a free stream");
     };
@@ -146,7 +147,8 @@ async fn waiters_never_stall_under_churn() {
             let max = max.clone();
             tasks.push(tokio::spawn(async move {
                 for round in 0..64_u32 {
-                    let handout = match pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap() {
+                    let handout = match pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await.unwrap()
+                    {
                         ConnectionResult::Connection(handout) => handout,
                         ConnectionResult::CreatePermit(permit) => {
                             let conn = Conn {
@@ -206,12 +208,12 @@ async fn a_waiter_served_in_another_lane_passes_its_wake_on() {
     let unrestricted = add(&pool, 0, None).await;
     let keyed_conn = add(&pool, 0, Some(keyed(0, 1))).await;
     let ConnectionResult::Connection(full_unrestricted) =
-        pool.get_conn(&TestId(0), &want(2)).await.unwrap()
+        pool.get_conn(&TestId(0), &want(2), None).await.unwrap()
     else {
         panic!("a free stream");
     };
     let ConnectionResult::Connection(full_keyed) =
-        pool.get_conn(&TestId(0), &want(1)).await.unwrap()
+        pool.get_conn(&TestId(0), &want(1), None).await.unwrap()
     else {
         panic!("a free stream");
     };
@@ -306,7 +308,7 @@ async fn maxconcurrency_increase_wakes_manually_driven_waiter() {
     // Connection A: at its advertised capacity of 1, holding the only slot.
     let c1 = svc.connect(ServiceInput::new(0u32)).await.unwrap();
 
-    let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0), &EMPTY_INPUT));
+    let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0), &EMPTY_INPUT, None));
     assert!(
         waiter.poll().is_pending(),
         "waiter must park: A is at capacity"
@@ -370,9 +372,9 @@ async fn stream_release_wakes_a_waiter_for_the_matching_id() {
 
     // Register B first. A pool-global `notify_one` would wake this
     // incompatible waiter and strand A even though A gains capacity.
-    let mut b_waiter = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT));
+    let mut b_waiter = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT, None));
     assert!(b_waiter.poll().is_pending());
-    let mut a_waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0), &EMPTY_INPUT));
+    let mut a_waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0), &EMPTY_INPUT, None));
     assert!(a_waiter.poll().is_pending());
 
     // A remains active, so only an A waiter can use the released stream;

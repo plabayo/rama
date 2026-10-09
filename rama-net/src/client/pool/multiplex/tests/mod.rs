@@ -183,7 +183,7 @@ fn admission_connection(
 }
 
 async fn new_slot(pool: &MultiplexPool<Conn, TestId>) -> MultiplexSlot {
-    match pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap() {
+    match pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await.unwrap() {
         ConnectionResult::CreatePermit(permit) => permit,
         ConnectionResult::Connection(_) => panic!("expected an empty pool"),
     }
@@ -290,7 +290,7 @@ async fn create_with_reuse(
     reuse: impl FnOnce(&Conn) -> ConnectionReuse,
 ) -> MultiplexedConnection<Conn, TestId> {
     let ConnectionResult::CreatePermit(permit) =
-        pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap()
+        pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await.unwrap()
     else {
         panic!("expected an empty pool");
     };
@@ -380,9 +380,8 @@ type Checkout<'a> = tokio_test::task::Spawn<
 
 /// A checkout of `input`, polled once so it queues if it has to wait.
 fn queue<'a>(pool: &'a MultiplexPool<Conn, TestId>, input: &'a Extensions) -> Checkout<'a> {
-    let mut checkout =
-        tokio_test::task::spawn(Box::pin(pool.get_conn(&TestId(0), input))
-            as Pin<Box<dyn Future<Output = _> + Send + 'a>>);
+    let mut checkout = tokio_test::task::spawn(Box::pin(pool.get_conn(&TestId(0), input, None))
+        as Pin<Box<dyn Future<Output = _> + Send + 'a>>);
     assert!(checkout.poll().is_pending(), "the pool is saturated");
     checkout
 }
@@ -467,8 +466,10 @@ fn assert_open_matches_capacity(pool: &MultiplexPool<Conn, TestId>) {
 
 /// A new exclusive connection for `id`, through the pool's own create permit.
 async fn fresh(pool: &MultiplexPool<Conn, TestId>, id: u32) -> MultiplexedConnection<Conn, TestId> {
-    let ConnectionResult::CreatePermit(slot) =
-        pool.get_conn(&TestId(id), &EMPTY_INPUT).await.unwrap()
+    let ConnectionResult::CreatePermit(slot) = pool
+        .get_conn(&TestId(id), &EMPTY_INPUT, None)
+        .await
+        .unwrap()
     else {
         panic!("a create permit");
     };
@@ -491,7 +492,8 @@ async fn fresh_keyed(
     key: u8,
 ) -> MultiplexedConnection<Conn, TestId> {
     let input = want(key);
-    let ConnectionResult::CreatePermit(slot) = pool.get_conn(&TestId(id), &input).await.unwrap()
+    let ConnectionResult::CreatePermit(slot) =
+        pool.get_conn(&TestId(id), &input, None).await.unwrap()
     else {
         panic!("a create permit");
     };
@@ -512,10 +514,9 @@ fn queue_keyed<'a>(
     input: &'a Extensions,
 ) -> Checkout<'a> {
     let mut checkout =
-        tokio_test::task::spawn(
-            Box::pin(async move { pool.get_conn(&TestId(id), input).await })
-                as Pin<Box<dyn Future<Output = _> + Send + 'a>>,
-        );
+        tokio_test::task::spawn(Box::pin(
+            async move { pool.get_conn(&TestId(id), input, None).await },
+        ) as Pin<Box<dyn Future<Output = _> + Send + 'a>>);
     assert!(checkout.poll().is_pending(), "the pool is saturated");
     checkout
 }
@@ -529,10 +530,9 @@ fn exclusive(total: usize, policy: SaturationPolicy) -> MultiplexPool<Conn, Test
 }
 
 fn checkout(pool: &MultiplexPool<Conn, TestId>, id: u32) -> Checkout<'_> {
-    tokio_test::task::spawn(
-        Box::pin(async move { pool.get_conn(&TestId(id), &EMPTY_INPUT).await })
-            as Pin<Box<dyn Future<Output = _> + Send + '_>>,
-    )
+    tokio_test::task::spawn(Box::pin(
+        async move { pool.get_conn(&TestId(id), &EMPTY_INPUT, None).await },
+    ) as Pin<Box<dyn Future<Output = _> + Send + '_>>)
 }
 
 async fn serial_of(handout: &MultiplexedConnection<Conn, TestId>) -> usize {

@@ -48,7 +48,8 @@ async fn rekey_fences_candidates_selected_under_the_old_lane() {
     );
     assert_open_matches_capacity(&pool);
     // The new lane does admit.
-    let ConnectionResult::Connection(stream) = pool.get_conn(&TestId(0), &want(2)).await.unwrap()
+    let ConnectionResult::Connection(stream) =
+        pool.get_conn(&TestId(0), &want(2), None).await.unwrap()
     else {
         panic!("the rekeyed connection serves its new lane");
     };
@@ -192,7 +193,7 @@ async fn permit_wakeup_rederives_lanes_outside_storage_lock() {
     })
     .await;
     let permit = pool.test_slot();
-    let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0), &EMPTY_INPUT));
+    let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0), &EMPTY_INPUT, None));
     assert!(waiter.poll().is_pending());
 
     // Only the total-slot semaphore wakes this waiter. Its admission path
@@ -251,7 +252,7 @@ async fn policy_check_cannot_admit_a_connection_marked_broken_during_the_check()
             })
             .await;
             let reserved = after_wait.then(|| pool.test_slot());
-            let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0), &EMPTY_INPUT));
+            let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0), &EMPTY_INPUT, None));
             if after_wait {
                 assert!(waiter.poll().is_pending());
                 enabled.store(true, Ordering::Relaxed);
@@ -326,7 +327,7 @@ async fn policy_check_cannot_admit_a_snapshot_retired_during_the_check() {
         })
         .await;
         drop(held);
-        let result = pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap();
+        let result = pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await.unwrap();
         assert_matches!(
             result,
             ConnectionResult::CreatePermit(_),

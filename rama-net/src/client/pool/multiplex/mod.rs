@@ -41,9 +41,10 @@
 //! a burst opens the connections it needs at once, not one each. What a new connection takes
 //! is that of the newest connection of the lanes, else of the id's last one, else what the
 //! request expects (see [`MultiplexPool::with_streams_hint`]); a guess dials a few connects
-//! before one shows its own. A connect failing with nothing else in flight fails the
-//! checkouts that waited for it alike, and [`MultiplexPool::with_max_wait_before_dial`] bounds
-//! the wait.
+//! before one shows its own. A connect failing fails the checkouts that waited for it and saw
+//! none land, if their requests would fail alike, and has the others dial their own. A checkout
+//! waiting for connects holds no connection slot, and dials its own once
+//! [`MultiplexPool::with_max_wait_before_dial`] or its caller's deadline is up.
 
 mod connecting;
 mod connection;
@@ -51,13 +52,11 @@ mod lanes;
 mod policy;
 mod waiting;
 
-use self::connecting::{Coalesce, Connect, ConnectKey, Connects, Failure};
+use self::connecting::{Coalesce, Connect, ConnectKey, Connects, Failure, Seen, connect_key};
 pub use self::connection::MultiplexedConnection;
-use self::connection::{
-    Admitted, ConnectionSlot, GONE, StoredConnection, relist_stored, trim_all, trim_idle,
-};
+use self::connection::{Admitted, ConnectionSlot, GONE, StoredConnection, ask_trim, relist_stored};
 use self::lanes::{Claimed, IdBucket, Lane, OnlyLane, RequestLanes, Snapshot, select_and_admit};
-use self::policy::{IdLimit, IdPermit, IdleLimits};
+use self::policy::{Asked, IdLimit, IdPermit, IdleLimits};
 pub use self::policy::{MultiplexSlot, SaturationPolicy};
 use self::waiting::{Blocked, IdSlotWait, Look, SlotWait, Waiting, maybe, maybe_pinned};
 
@@ -161,15 +160,24 @@ struct Storage<C, ID> {
     /// The connection slots of every id, if the pool limits them per id: kept
     /// while a connection, create permit or waiter holds one of them.
     id_slots: HashMap<ID, Arc<IdLimit>>,
-    /// The connects in flight per id and request keys, while counted or waited
+    /// The connects in flight per id and keyed lanes, while counted or waited
     /// for.
-    connects: HashMap<ID, SmallVec<[(ConnectKey, Arc<Connects>); 1]>>,
-    /// The streams a connection of each id took last: a guess for the next one
-    /// once its connections are gone.
-    learned: HashMap<ID, NonZeroUsize>,
+    connects: HashMap<ID, SmallVec<[Arc<Connects>; 1]>>,
+    /// What the connections of each id were like: a guess for the next ones
+    /// once they are gone.
+    learned: HashMap<ID, Learned>,
     /// The streams a multiplexed connection of any id took last: a guess for
     /// an id the pool has not seen, if its requests expect to multiplex.
     learned_any: Option<NonZeroUsize>,
+}
+
+/// What the last connections of an id were like.
+struct Learned {
+    /// The streams the last one took.
+    streams: NonZeroUsize,
+    /// The reuse classes they had: a cold id's requests still derive their
+    /// keys, so a burst of each key waits for its own connects.
+    classes: Option<Arc<[ReuseClass]>>,
 }
 
 /// Take `conn` out of storage, if it is still stored.
@@ -197,7 +205,7 @@ pub struct MultiplexPool<C, ID> {
     total_slots: Option<Arc<Semaphore>>,
     saturation: SaturationPolicy,
     max_connections_per_id: Option<NonZeroUsize>,
-    idle_limits: Option<Arc<IdleLimits>>,
+    idle_limits: Option<Arc<IdleLimits<ID>>>,
     idle_timeout: Option<Duration>,
     max_concurrent_streams: usize,
     streams_hint: Option<StreamsHint>,
@@ -454,7 +462,7 @@ impl<C, ID> MultiplexPool<C, ID> {
         /// request can tell, such as one requiring a multiplexing protocol.
         /// The streams such a connection takes are what the pool's multiplexed
         /// connections took last, the hint's guess only if it saw none; once an
-        /// id had a connection, what it took.
+        /// id had a connection, what it took. It runs outside the pool's locks.
         pub fn streams_hint(mut self, hint: Option<StreamsHint>) -> Self {
             self.streams_hint = hint;
             self
@@ -463,7 +471,8 @@ impl<C, ID> MultiplexPool<C, ID> {
 
     generate_set_and_with! {
         /// How long a checkout waits for connects in flight before it dials its
-        /// own, if its limits let it. Unset, it waits for them.
+        /// own, if its limits let it. Unset, it waits for them until its
+        /// caller's deadline, if any (see [`Pool::get_conn`]).
         pub fn max_wait_before_dial(mut self, wait: Option<Duration>) -> Self {
             self.max_wait_before_dial = wait;
             self
@@ -615,12 +624,16 @@ where
     /// storage lock. A lane can be missing from storage by the time it is
     /// used, which only means it has no connections.
     fn request_lanes(&self, id: &ID, input: &Extensions) -> RequestLanes {
-        let classes = self
-            .storage
-            .lock()
-            .by_id
-            .get(id)
-            .and_then(IdBucket::classes);
+        let classes = {
+            let storage = self.storage.lock();
+            match storage.by_id.get(id) {
+                Some(bucket) => bucket.classes(),
+                None => storage
+                    .learned
+                    .get(id)
+                    .and_then(|learned| learned.classes.clone()),
+            }
+        };
         RequestLanes::derive(classes, input)
     }
 
@@ -960,12 +973,28 @@ where
         let now = now_monotonic_nanos();
         let (only_lane, mut next, mut classes) = {
             let mut storage = self.storage.lock();
-            let Some(bucket) = storage.by_id.get_mut(id) else {
-                return Err(Box::new(RequestLanes::unrestricted()));
+            let bucket = match storage.by_id.get_mut(id) {
+                Some(bucket) if now >= bucket.next_sweep => {
+                    self.sweep_bucket(bucket, &mut swept);
+                    if bucket.is_empty() {
+                        storage.by_id.remove(id);
+                        None
+                    } else {
+                        storage.by_id.get_mut(id)
+                    }
+                }
+                bucket => bucket,
             };
-            if now >= bucket.next_sweep {
-                self.sweep_bucket(bucket, &mut swept);
-            }
+            let Some(bucket) = bucket else {
+                // A cold id's requests derive their keys from the classes it had.
+                let classes = storage
+                    .learned
+                    .get(id)
+                    .and_then(|learned| learned.classes.clone());
+                drop(storage);
+                self.settle(swept);
+                return Err(Box::new(RequestLanes::derive(classes, input)));
+            };
             let classes = bucket.classes();
             match bucket.claim_only(self.selection, cap, waiting) {
                 Some((only, claimed)) => (Some(only), claimed, classes),
@@ -1155,60 +1184,91 @@ where
     fn idle_trim(&self) -> Option<Box<dyn Fn() + Send + Sync>> {
         let limits = self.idle_limits.clone()?;
         let (storage, waiting) = (Arc::downgrade(&self.storage), self.waiting.clone());
-        Some(Box::new(move || trim_all(&storage, &limits, &waiting)))
+        Some(Box::new(move || {
+            ask_trim(&storage, &limits, &waiting, None, true)
+        }))
     }
 
     /// Dial, or wait for the connects in flight for the request's lanes, as
     /// many as the checkouts waiting for them need: see [`Connects::coalesce`].
     /// A new connection takes what the newest one of the lanes took, else what
-    /// the id's last one took, else what the request expects: a guess.
+    /// the id's last one took, else what the request expects: a guess. A claim
+    /// `held` from an earlier look is used if it still counts for these lanes.
     fn coalesce(
         &self,
         id: &ID,
         lanes: &RequestLanes,
         input: &Extensions,
         look: &mut Look<'_>,
+        held: &mut Option<Connect>,
         impatient: bool,
     ) -> Coalesce {
-        if !id.is_reusable() {
+        let estimate = id
+            .is_reusable()
+            .then(|| self.estimate(id, lanes, input))
+            .flatten();
+        let Some((streams, cold, connects)) = estimate else {
+            // Counted for lanes that no longer multiplex: one of their waiters looks.
+            drop(held.take());
             return Coalesce::Dial(None);
-        }
-        let (streams, cold, connects) = {
-            let mut storage = self.storage.lock();
-            let (streams, cold) = match Self::newest_streams(&mut storage, id, lanes) {
-                Some(streams) => (streams, false),
-                None => match storage.learned.get(id).copied().or_else(|| {
-                    let guess = self.streams_hint.and_then(|hint| hint(input))?;
-                    Some(storage.learned_any.unwrap_or(guess))
-                }) {
-                    Some(streams) => (streams.get(), true),
-                    None => return Coalesce::Dial(None),
-                },
-            };
-            if streams <= 1 {
-                return Coalesce::Dial(None);
-            }
-            (
-                streams,
-                cold,
-                Self::connects_in(&mut storage, id, &lanes.keys),
-            )
         };
+        if let Some(connect) = held.take() {
+            if connect.is_in(&connects) {
+                return Coalesce::Dial(Some(connect));
+            }
+            drop(connect);
+        }
+        let mut impatient = impatient;
         if let Look::Register(waiting) = look {
             // Queued before it counts them: a connect ending meanwhile wakes it.
             let seen = waiting.wait_for_connects(&connects);
-            if let Some(failure) = connects.failed_since(seen) {
-                return Coalesce::Failed(failure);
+            match connects.failed_since(seen) {
+                Some(failure) if failure.is_shared() => return Coalesce::Failed(failure),
+                Some(_) => impatient = true,
+                None => {}
             }
         }
         connects.coalesce(streams, cold, impatient)
     }
 
+    /// The streams a new connection for the request's lanes takes, whether that
+    /// is a guess, and their connects; `None` if it takes one. The streams hint
+    /// runs outside the lock, only for an id without connections.
+    fn estimate(
+        &self,
+        id: &ID,
+        lanes: &RequestLanes,
+        input: &Extensions,
+    ) -> Option<(usize, bool, Arc<Connects>)> {
+        let key = connect_key(lanes);
+        let mut hint = self.streams_hint.is_none().then_some(None);
+        loop {
+            let mut storage = self.storage.lock();
+            let (streams, cold) = match Self::newest_streams(&mut storage, id, lanes) {
+                Some(streams) => (streams, false),
+                None => match (storage.learned.get(id), hint) {
+                    (Some(learned), _) => (learned.streams.get(), true),
+                    (None, Some(Some(guess))) => (storage.learned_any.unwrap_or(guess).get(), true),
+                    (None, Some(None)) => return None,
+                    (None, None) => {
+                        drop(storage);
+                        hint = Some(self.streams_hint.and_then(|hint| hint(input)));
+                        continue;
+                    }
+                },
+            };
+            return (streams > 1)
+                .then(|| (streams, cold, Self::connects_in(&mut storage, id, &key)));
+        }
+    }
+
     /// Count a connect in flight for the request's lanes whatever is in flight,
-    /// if they multiplex: a checkout dials with a slot it waited for.
-    fn count_connect(&self, id: &ID, input: &Extensions) -> Option<Connect> {
+    /// if they multiplex, or keep `held` if it counts for them: a checkout
+    /// dials with a slot it waited for.
+    fn count_connect(&self, id: &ID, input: &Extensions, held: Option<Connect>) -> Option<Connect> {
         let lanes = self.request_lanes(id, input);
-        match self.coalesce(id, &lanes, input, &mut Look::New, true) {
+        let mut held = held;
+        match self.coalesce(id, &lanes, input, &mut Look::New, &mut held, true) {
             Coalesce::Dial(connect) => connect,
             Coalesce::Wait | Coalesce::Failed(_) => None,
         }
@@ -1241,8 +1301,12 @@ where
         if streams.get() > 1 {
             storage.learned_any = Some(streams);
         }
+        let classes = storage.by_id.get(id).and_then(IdBucket::classes);
         if let Some(learned) = storage.learned.get_mut(id) {
-            *learned = streams;
+            learned.streams = streams;
+            if classes.is_some() {
+                learned.classes = classes;
+            }
             return;
         }
         // Forget ids without connections once the map is full, then leave it
@@ -1255,35 +1319,43 @@ where
                 learned.reserve(capacity);
             }
         }
-        storage.learned.insert(id.clone(), streams);
+        storage
+            .learned
+            .insert(id.clone(), Learned { streams, classes });
     }
 
-    /// The connects of `id` for `keys`.
-    fn connects_in(storage: &mut Storage<C, ID>, id: &ID, keys: &ConnectKey) -> Arc<Connects> {
-        if let Some(connects) = storage.connects.get(id).and_then(|all| {
-            all.iter()
-                .find(|(of, _)| of == keys)
-                .map(|(_, connects)| connects.clone())
-        }) {
-            return connects;
+    /// The connects of `id` for `key`.
+    fn connects_in(storage: &mut Storage<C, ID>, id: &ID, key: &ConnectKey) -> Arc<Connects> {
+        if let Some(connects) = storage
+            .connects
+            .get(id)
+            .and_then(|all| all.iter().find(|connects| connects.is_for(key)))
+        {
+            return connects.clone();
         }
         // Forget the unused ones once the map is full, as for the id limits.
         let capacity = storage.connects.capacity();
         if storage.connects.len() >= capacity {
             storage.connects.retain(|_, all| {
-                all.retain(|(_, connects)| !connects.is_unused());
+                all.retain(|connects| !connects.is_unused());
                 !all.is_empty()
             });
             if storage.connects.len() * 2 > capacity {
                 storage.connects.reserve(capacity);
             }
         }
-        let connects = Arc::new(Connects::default());
-        storage
-            .connects
-            .entry(id.clone())
-            .or_default()
-            .push((keys.clone(), connects.clone()));
+        let all = storage.connects.entry(id.clone()).or_default();
+        // And of the id's own, once they fill theirs: a churn of keys is bounded
+        // by those in use.
+        let capacity = all.capacity();
+        if all.len() >= capacity {
+            all.retain(|connects| !connects.is_unused());
+            if all.len() * 2 > capacity {
+                all.reserve(capacity);
+            }
+        }
+        let connects = Arc::new(Connects::new(key.clone()));
+        all.push(connects.clone());
         connects
     }
 
@@ -1409,6 +1481,7 @@ where
         &self,
         id: &ID,
         input: &Extensions,
+        deadline: Option<tokio::time::Instant>,
     ) -> Result<ConnectionResult<Self::Connection, Self::CreatePermit>, BoxError> {
         #[cfg(feature = "opentelemetry")]
         let metrics = self
@@ -1476,13 +1549,14 @@ where
 
             // A burst on a multiplexed lane waits for the connects in flight
             // instead of each dialing its own. Kept across looks, like the slot.
-            let connect = match held_connect.take() {
-                Some(connect) => Some(connect),
-                None => match self.coalesce(id, &lanes, input, look, impatient) {
-                    Coalesce::Dial(connect) => connect,
-                    Coalesce::Wait => return Err(Blocked::Connecting),
-                    Coalesce::Failed(failure) => return Err(Blocked::Failed(failure)),
-                },
+            let connect = match self.coalesce(id, &lanes, input, look, held_connect, impatient) {
+                Coalesce::Dial(connect) => connect,
+                Coalesce::Wait => {
+                    // Its id's slot is for the connects it waits for.
+                    drop(held_id.take());
+                    return Err(Blocked::Connecting);
+                }
+                Coalesce::Failed(failure) => return Err(Blocked::Failed(failure)),
             };
 
             // A new connection takes a slot of its id's limit, then one of the
@@ -1614,10 +1688,21 @@ where
                     }
                 }
                 Blocked::Connecting => {
-                    if let Some(wait) = self.max_wait_before_dial
+                    // It neither holds nor queues for a slot the connects it
+                    // waits for may need.
+                    id_slot_wait = None;
+                    total_slot_wait = None;
+                    // Dials its own before its caller stops waiting.
+                    let at = self
+                        .max_wait_before_dial
+                        .map(|wait| tokio::time::Instant::now() + wait)
+                        .into_iter()
+                        .chain(deadline)
+                        .min();
+                    if let Some(at) = at
                         && dial_patience.is_none()
                     {
-                        dial_patience.set(Some(tokio::time::sleep(wait)));
+                        dial_patience.set(Some(tokio::time::sleep_until(at)));
                     }
                 }
                 Blocked::Failed(failure) => return Err(failure.into_error()),
@@ -1678,7 +1763,7 @@ where
                     let slot = MultiplexSlot {
                         total: Some(permit),
                         id: held_id.take(),
-                        connect: held_connect.take().or_else(|| self.count_connect(id, input)),
+                        connect: self.count_connect(id, input, held_connect.take()),
                     };
                     let result = self.admit_with_permit(id, slot, input, &waiting);
                     match &result {
@@ -1731,7 +1816,17 @@ where
         // The establishing request owns the first reservation before concurrent
         // checkouts can see this connection in storage.
         let admission = match conn.extensions().self_get_ref::<ConnectionAdmission>() {
-            Some(provider) => Some(provider.acquire(input).await?),
+            Some(provider) => match provider.acquire(input).await {
+                Ok(admission) => Some(admission),
+                Err(error) => {
+                    // Its waiters fail, or dial, as if the connect failed.
+                    let error = ConnectionError::from(error);
+                    if let Some(connect) = connect {
+                        connect.failed(&error);
+                    }
+                    return Err(error.into_box_error());
+                }
+            },
             None => None,
         };
         // Reuse requirements are read once: the connection keeps its lane.
@@ -1771,8 +1866,7 @@ where
             relist_fn: relist_stored,
             idle_limits: self.idle_limits.clone(),
             idle_count: AtomicU8::new(GONE),
-            trim_fn: trim_idle,
-            trim_all_fn: trim_all,
+            ask_trim_fn: ask_trim,
         });
 
         // The connection is its sources' listener: a change wakes its lane's
@@ -1789,8 +1883,22 @@ where
             admission.subscribe(listener);
         }
 
+        if let Some(limits) = &self.idle_limits
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            // Trims asked for outside a runtime run on the newest connection's.
+            *limits.runtime.lock() = Some(runtime);
+        }
         trace!(id = ?conn.id, "multiplex pool: adding new connection");
         let streams = conn.effective_capacity(conn.stream_cap);
+        let serves = connect
+            .as_ref()
+            .zip(lane.as_ref())
+            .is_some_and(|(connect, lane)| connect.serves(lane));
+        if lane.is_none() && connect.is_some() {
+            // Kept by none: the checkouts of its id dial their own until one is.
+            Self::learn(&mut self.storage.lock(), &conn.id, NonZeroUsize::MIN);
+        }
         let new_lane = lane.is_some_and(|lane| {
             let mut storage = self.storage.lock();
             let bucket = storage
@@ -1814,15 +1922,12 @@ where
         // in its lane; a lane it opens has none queued, those waiting for it
         // look again.
         if let Some(connect) = connect {
-            connect.landed(streams);
+            connect.landed(streams, serves || new_lane);
         }
         if new_lane {
             self.notify.notify_waiters();
         } else if let Some(waiters) = conn.lane_waiters.lock().clone() {
-            fence(Ordering::SeqCst);
-            for _ in 1..streams.min(waiters.len().saturating_add(1)) {
-                waiters.wake_one();
-            }
+            waiters.wake_many(streams.saturating_sub(1).min(waiters.len()));
         }
 
         #[cfg(feature = "opentelemetry")]

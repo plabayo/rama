@@ -8,7 +8,7 @@ async fn non_reusable_policy_keeps_capacity_without_retaining_connections() {
     let svc = connector(pool.clone());
     let first = connect(&svc, u32::MAX).await;
     assert!(pool.storage.lock().by_id.is_empty());
-    let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(u32::MAX), &EMPTY_INPUT));
+    let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(u32::MAX), &EMPTY_INPUT, None));
     assert!(waiter.poll().is_pending());
     drop(first);
     match waiter.poll() {

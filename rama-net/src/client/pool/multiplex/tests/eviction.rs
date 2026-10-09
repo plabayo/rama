@@ -7,7 +7,7 @@ async fn an_idle_connection_its_waiters_leave_can_be_evicted() {
     let (pool, held) = saturated().await;
     let same = queue(&pool, &EMPTY_INPUT);
     let other_input = Extensions::new();
-    let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &other_input));
+    let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &other_input, None));
     assert!(other.poll().is_pending(), "nothing to evict yet");
     drop(held);
     assert!(
@@ -30,7 +30,7 @@ async fn an_idle_connection_its_waiters_leave_can_be_evicted() {
 async fn an_older_slot_waiter_evicts_a_spoken_for_idle_connection() {
     let (pool, held) = saturated().await;
     let other_input = Extensions::new();
-    let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &other_input));
+    let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &other_input, None));
     assert!(other.poll().is_pending(), "nothing to evict yet");
     let mut same = queue(&pool, &EMPTY_INPUT);
     drop(held);
@@ -105,14 +105,14 @@ async fn an_evicted_slot_goes_to_the_oldest_waiting_checkout() {
 
     // Keep the only connection active while another id waits for a slot.
     let active = connect(&svc, 0).await;
-    let mut parked = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT));
+    let mut parked = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT, None));
     assert!(parked.poll().is_pending());
 
     // The idle connection is an eviction chance for the waiting checkout,
     // not for a newcomer that happens to look first.
     drop(active);
     assert!(parked.is_woken());
-    let mut newcomer = tokio_test::task::spawn(pool.get_conn(&TestId(2), &EMPTY_INPUT));
+    let mut newcomer = tokio_test::task::spawn(pool.get_conn(&TestId(2), &EMPTY_INPUT, None));
     assert!(newcomer.poll().is_pending(), "the newcomer queues behind");
     let parked_permit = match parked.poll() {
         Poll::Ready(Ok(ConnectionResult::CreatePermit(permit))) => permit,
@@ -132,16 +132,16 @@ async fn an_evicted_slot_goes_to_the_oldest_waiting_checkout() {
 #[tokio::test]
 async fn total_slot_waiters_are_fifo_and_cancellation_safe() {
     let pool = MultiplexPool::<Conn, TestId>::evicting(1, 1);
-    let held = match pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap() {
+    let held = match pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await.unwrap() {
         ConnectionResult::CreatePermit(permit) => permit,
         ConnectionResult::Connection(_) => panic!("empty pool unexpectedly reused a slot"),
     };
 
-    let mut first = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT));
+    let mut first = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT, None));
     assert!(first.poll().is_pending());
-    let mut cancelled = tokio_test::task::spawn(pool.get_conn(&TestId(2), &EMPTY_INPUT));
+    let mut cancelled = tokio_test::task::spawn(pool.get_conn(&TestId(2), &EMPTY_INPUT, None));
     assert!(cancelled.poll().is_pending());
-    let mut last = tokio_test::task::spawn(pool.get_conn(&TestId(3), &EMPTY_INPUT));
+    let mut last = tokio_test::task::spawn(pool.get_conn(&TestId(3), &EMPTY_INPUT, None));
     assert!(last.poll().is_pending());
     drop(cancelled);
 
@@ -402,7 +402,7 @@ async fn an_eviction_chance_taken_by_a_waiter_served_elsewhere_passes_on() {
     let _d = add(&pool, 3, None).await;
     let mut w = queue(&pool, &EMPTY_INPUT);
     let other_input = Extensions::new();
-    let mut y = tokio_test::task::spawn(pool.get_conn(&TestId(1), &other_input));
+    let mut y = tokio_test::task::spawn(pool.get_conn(&TestId(1), &other_input, None));
     assert!(y.poll().is_pending());
     // At once: id 2's connection goes idle (an eviction chance) and id 0's
     // stream frees (w's own lane).
@@ -428,7 +428,7 @@ async fn another_id_gets_its_turn_while_an_id_keeps_waiters() {
     let mut held = add(&pool, 0, None).await;
     let mut busy = queue(&pool, &EMPTY_INPUT);
     let other_input = Extensions::new();
-    let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &other_input));
+    let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &other_input, None));
     assert!(other.poll().is_pending());
     // Id 0 keeps one more waiter queued at every idle moment.
     for round in 0.. {

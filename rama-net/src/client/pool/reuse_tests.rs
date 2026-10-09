@@ -74,7 +74,8 @@ async fn establish_with<P: Pool<ServiceInput<()>, Route>>(
     request: &Extensions,
     conn: ServiceInput<()>,
 ) -> P::Connection {
-    let ConnectionResult::CreatePermit(permit) = pool.get_conn(&Route, request).await.unwrap()
+    let ConnectionResult::CreatePermit(permit) =
+        pool.get_conn(&Route, request, None).await.unwrap()
     else {
         panic!("a distinct policy must establish its own connection");
     };
@@ -102,7 +103,8 @@ async fn idle_incompatible_is_replaced<P: Pool<ServiceInput<()>, Route>>(pool: P
     let conn = establish(&pool, 2, true).await;
     assert_eq!(conn.extensions().get_ref::<PolicyId>().unwrap().0, 2);
     drop(conn);
-    let ConnectionResult::Connection(conn) = pool.get_conn(&Route, &input(2)).await.unwrap() else {
+    let ConnectionResult::Connection(conn) = pool.get_conn(&Route, &input(2), None).await.unwrap()
+    else {
         panic!("equivalent policy must reuse the established connection");
     };
     assert_eq!(conn.extensions().get_ref::<PolicyId>().unwrap().0, 2);
@@ -121,11 +123,11 @@ async fn multiplex_replaces_incompatible_idle_connection_at_capacity() {
 async fn incompatible_waiter_and_cancellation<P: Pool<ServiceInput<()>, Route>>(pool: P) {
     let held = establish(&pool, 1, true).await;
     let request = input(2);
-    let mut cancelled = tokio_test::task::spawn(pool.get_conn(&Route, &request));
+    let mut cancelled = tokio_test::task::spawn(pool.get_conn(&Route, &request, None));
     assert!(cancelled.poll().is_pending());
     drop(cancelled);
 
-    let mut waiter = tokio_test::task::spawn(pool.get_conn(&Route, &request));
+    let mut waiter = tokio_test::task::spawn(pool.get_conn(&Route, &request, None));
     assert!(
         waiter.poll().is_pending(),
         "spare capacity of an incompatible policy is unusable"
@@ -165,7 +167,7 @@ async fn multiplex_selection_only_admits_matching_policies() {
         let second = establish(&pool, 2, true).await;
         for id in [1, 2, 2, 1] {
             let ConnectionResult::Connection(conn) =
-                pool.get_conn(&Route, &input(id)).await.unwrap()
+                pool.get_conn(&Route, &input(id), None).await.unwrap()
             else {
                 panic!("matching policy has spare capacity");
             };
@@ -178,7 +180,7 @@ async fn multiplex_selection_only_admits_matching_policies() {
 async fn opaque_policy_is_not_retained<P: Pool<ServiceInput<()>, Route>>(pool: P) {
     let held = establish(&pool, 1, false).await;
     let request = input(1);
-    let mut waiter = tokio_test::task::spawn(pool.get_conn(&Route, &request));
+    let mut waiter = tokio_test::task::spawn(pool.get_conn(&Route, &request, None));
     assert!(waiter.poll().is_pending());
     drop(held);
     let Poll::Ready(Ok(ConnectionResult::CreatePermit(permit))) = waiter.poll() else {
@@ -264,7 +266,8 @@ async fn one_key_derivation_per_classifier<P: Pool<ServiceInput<()>, Route>>(poo
         })));
         conn.extensions().insert(PolicyId(n % 16));
         // Earlier connections are still leased, so each request establishes.
-        let ConnectionResult::CreatePermit(permit) = pool.get_conn(&Route, &request).await.unwrap()
+        let ConnectionResult::CreatePermit(permit) =
+            pool.get_conn(&Route, &request, None).await.unwrap()
         else {
             panic!("all previous connections are leased");
         };
@@ -276,7 +279,8 @@ async fn one_key_derivation_per_classifier<P: Pool<ServiceInput<()>, Route>>(poo
     }
     drop(held);
     calls.store(0, Ordering::Relaxed);
-    let ConnectionResult::Connection(conn) = pool.get_conn(&Route, &input(9)).await.unwrap() else {
+    let ConnectionResult::Connection(conn) = pool.get_conn(&Route, &input(9), None).await.unwrap()
+    else {
         panic!("an idle connection of the lane is stored");
     };
     assert_eq!(conn.extensions().get_ref::<PolicyId>().unwrap().0, 9);
@@ -306,7 +310,7 @@ async fn exclusive_skips_incompatible_policies_in_both_reuse_orders() {
         drop((first, second));
         for id in [1, 2, 2, 1] {
             let ConnectionResult::Connection(conn) =
-                pool.get_conn(&Route, &input(id)).await.unwrap()
+                pool.get_conn(&Route, &input(id), None).await.unwrap()
             else {
                 panic!("matching idle policy must be found after a mismatch");
             };
@@ -355,11 +359,11 @@ async fn semaphore_handoff_rechecks_origin_and_proxy_policy_against_current_inpu
             let request = input(2);
             request.insert(ProxyPolicyId(1));
             let ConnectionResult::CreatePermit(reserved) =
-                pool.get_conn(&Route, &request).await.unwrap()
+                pool.get_conn(&Route, &request, None).await.unwrap()
             else {
                 panic!("different origin policy must reserve the unused connection slot");
             };
-            let mut waiter = tokio_test::task::spawn(pool.get_conn(&Route, &request));
+            let mut waiter = tokio_test::task::spawn(pool.get_conn(&Route, &request, None));
             assert!(waiter.poll().is_pending());
 
             // The connection remains active with spare stream capacity. Only
@@ -384,7 +388,7 @@ async fn semaphore_handoff_rechecks_origin_and_proxy_policy_against_current_inpu
             // Neither a rejected policy nor returning an unused create permit
             // may strand the slot needed by the next incompatible request.
             let ConnectionResult::CreatePermit(permit) =
-                pool.get_conn(&Route, &input(3)).await.unwrap()
+                pool.get_conn(&Route, &input(3), None).await.unwrap()
             else {
                 panic!("incompatible request must retain a fresh-connection path");
             };
@@ -399,7 +403,7 @@ async fn requirements_are_read_once<P: Pool<ServiceInput<()>, Route>>(pool: P) {
     held.extensions().insert(reuse(2, true));
     drop(held);
     assert!(matches!(
-        pool.get_conn(&Route, &input(1)).await.unwrap(),
+        pool.get_conn(&Route, &input(1), None).await.unwrap(),
         ConnectionResult::Connection(_),
     ));
 }
@@ -436,7 +440,8 @@ async fn classifiers_share_an_id<P: Pool<ServiceInput<()>, Route>>(pool: P) {
     let mut served = Vec::new();
     let mut handouts = Vec::new();
     for _ in 0..2 {
-        let ConnectionResult::Connection(conn) = pool.get_conn(&Route, &only_origin).await.unwrap()
+        let ConnectionResult::Connection(conn) =
+            pool.get_conn(&Route, &only_origin, None).await.unwrap()
         else {
             panic!("the origin lane and the unrestricted lane can serve it");
         };
@@ -449,7 +454,7 @@ async fn classifiers_share_an_id<P: Pool<ServiceInput<()>, Route>>(pool: P) {
     );
     assert!(
         matches!(
-            pool.get_conn(&Route, &only_origin).await.unwrap(),
+            pool.get_conn(&Route, &only_origin, None).await.unwrap(),
             ConnectionResult::CreatePermit(_),
         ),
         "the proxy lane must not serve a request without its key",
@@ -458,7 +463,8 @@ async fn classifiers_share_an_id<P: Pool<ServiceInput<()>, Route>>(pool: P) {
 
     let only_proxy = Extensions::new();
     only_proxy.insert(ProxyPolicyId(1));
-    let ConnectionResult::Connection(conn) = pool.get_conn(&Route, &only_proxy).await.unwrap()
+    let ConnectionResult::Connection(conn) =
+        pool.get_conn(&Route, &only_proxy, None).await.unwrap()
     else {
         panic!("the proxy lane and the unrestricted lane can serve it");
     };
@@ -488,11 +494,11 @@ async fn exclusive_rekey_files_the_connection_on_return() {
     );
     drop(held);
     assert_matches!(
-        pool.get_conn(&Route, &input(1)).await.unwrap(),
+        pool.get_conn(&Route, &input(1), None).await.unwrap(),
         ConnectionResult::CreatePermit(_),
     );
     assert_matches!(
-        pool.get_conn(&Route, &input(2)).await.unwrap(),
+        pool.get_conn(&Route, &input(2), None).await.unwrap(),
         ConnectionResult::Connection(_),
     );
 
@@ -500,7 +506,7 @@ async fn exclusive_rekey_files_the_connection_on_return() {
     held.rekey(reuse(3, false));
     drop(held);
     assert_matches!(
-        pool.get_conn(&Route, &input(3)).await.unwrap(),
+        pool.get_conn(&Route, &input(3), None).await.unwrap(),
         ConnectionResult::CreatePermit(_),
         "a connection rekeyed as not reusable is dropped on return",
     );
@@ -511,25 +517,25 @@ async fn multiplex_rekey_moves_the_shared_connection() {
     let pool = MultiplexPool::evicting(4, 1);
     let held: MultiplexedConnection<_, _> = establish(&pool, 1, true).await;
     assert_matches!(
-        pool.get_conn(&Route, &input(1)).await.unwrap(),
+        pool.get_conn(&Route, &input(1), None).await.unwrap(),
         ConnectionResult::Connection(_),
     );
     held.rekey(reuse(2, true));
     let first_lane = input(1);
-    let mut waiter = tokio_test::task::spawn(pool.get_conn(&Route, &first_lane));
+    let mut waiter = tokio_test::task::spawn(pool.get_conn(&Route, &first_lane, None));
     assert!(
         waiter.poll().is_pending(),
         "the old lane no longer has the connection"
     );
     assert_matches!(
-        pool.get_conn(&Route, &input(2)).await.unwrap(),
+        pool.get_conn(&Route, &input(2), None).await.unwrap(),
         ConnectionResult::Connection(_),
         "streams of the new lane share it at once",
     );
 
     held.rekey(reuse(2, false));
     let second_lane = input(2);
-    let mut second = tokio_test::task::spawn(pool.get_conn(&Route, &second_lane));
+    let mut second = tokio_test::task::spawn(pool.get_conn(&Route, &second_lane, None));
     assert!(second.poll().is_pending(), "unreusable: no lane has it");
 
     held.rekey(reuse(1, true));
@@ -552,14 +558,15 @@ async fn multiplex_rekey_does_not_revive_a_dropped_connection() {
         .unwrap()
         .mark_broken();
     // The next checkout of its lane drops it from the pool.
-    let ConnectionResult::CreatePermit(permit) = pool.get_conn(&Route, &input(1)).await.unwrap()
+    let ConnectionResult::CreatePermit(permit) =
+        pool.get_conn(&Route, &input(1), None).await.unwrap()
     else {
         panic!("a broken connection is not handed out");
     };
     drop(permit);
     held.rekey(reuse(2, true));
     assert_matches!(
-        pool.get_conn(&Route, &input(2)).await.unwrap(),
+        pool.get_conn(&Route, &input(2), None).await.unwrap(),
         ConnectionResult::CreatePermit(_),
         "a dropped connection stays out of the pool",
     );
@@ -599,8 +606,10 @@ async fn two_lanes(
     // Both permits first: the older connection could serve the second dial.
     let mut permits = Vec::new();
     for _ in 0..2 {
-        let ConnectionResult::CreatePermit(permit) =
-            pool.get_conn(&Route, &Extensions::new()).await.unwrap()
+        let ConnectionResult::CreatePermit(permit) = pool
+            .get_conn(&Route, &Extensions::new(), None)
+            .await
+            .unwrap()
         else {
             panic!("the pool is empty");
         };
@@ -623,8 +632,10 @@ async fn two_lanes(
 }
 
 async fn name_of(pool: &MultiplexPool<ServiceInput<()>, Route>) -> &'static str {
-    let ConnectionResult::Connection(conn) =
-        pool.get_conn(&Route, &Extensions::new()).await.unwrap()
+    let ConnectionResult::Connection(conn) = pool
+        .get_conn(&Route, &Extensions::new(), None)
+        .await
+        .unwrap()
     else {
         panic!("both connections have room");
     };
@@ -689,7 +700,7 @@ impl ConnID for SwitchId {
 async fn non_reusable_ids_get_fresh_connections<P: Pool<ServiceInput<()>, SwitchId>>(pool: P) {
     let id = SwitchId(Arc::new(std::sync::atomic::AtomicBool::new(true)));
     let ConnectionResult::CreatePermit(permit) =
-        pool.get_conn(&id, &Extensions::new()).await.unwrap()
+        pool.get_conn(&id, &Extensions::new(), None).await.unwrap()
     else {
         panic!("empty pool");
     };
@@ -705,7 +716,7 @@ async fn non_reusable_ids_get_fresh_connections<P: Pool<ServiceInput<()>, Switch
     );
     id.0.store(false, Ordering::SeqCst);
     assert!(matches!(
-        pool.get_conn(&id, &Extensions::new()).await.unwrap(),
+        pool.get_conn(&id, &Extensions::new(), None).await.unwrap(),
         ConnectionResult::CreatePermit(_),
     ));
 }
@@ -778,7 +789,8 @@ async fn keys_derived_from_stale_classes_never_reach_another_class() {
     // Key 1 for the vanishing class, key 2 for `Policy`: nothing serves it.
     let request = input(2);
     request.insert(Arm);
-    if let ConnectionResult::Connection(conn) = pool.get_conn(&Route, &request).await.unwrap() {
+    if let ConnectionResult::Connection(conn) = pool.get_conn(&Route, &request, None).await.unwrap()
+    {
         panic!(
             "served by {:?} although none of the request's lanes has a connection",
             conn.extensions().get_ref::<Name>()
@@ -908,7 +920,10 @@ mod model {
                         .filter(|(_, conn)| conn.requirements.serves(keys) && conn.active < streams)
                         .map(|(serial, _)| serial)
                         .collect();
-                    match runtime.block_on(pool.get_conn(&Route, &request)).unwrap() {
+                    match runtime
+                        .block_on(pool.get_conn(&Route, &request, None))
+                        .unwrap()
+                    {
                         ConnectionResult::Connection(handout) => {
                             let serial = handout.extensions().get_ref::<Serial>().unwrap().0;
                             assert!(

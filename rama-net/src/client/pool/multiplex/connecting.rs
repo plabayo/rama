@@ -3,38 +3,81 @@
 //! one each.
 
 use super::*;
-use rama_core::error::BoxErrorExt as _;
+use rama_core::error::{BoxErrorExt as _, ErrorExt as _};
 
 /// Connects a cold lane makes before one lands and shows its real capacity.
 const COLD_CONNECTS: usize = 2;
 
-/// Which checkouts a connect may serve: those of its id with the same keys.
-pub(super) type ConnectKey = SmallVec<[Option<ReuseKey>; 1]>;
+/// Which checkouts a connect may serve: those of its id able to use the same
+/// keyed lanes, each a classifier and the key a request derives in it.
+pub(super) type ConnectKey = SmallVec<[(ReuseKey, ReuseKey); 1]>;
 
-/// The connects in flight for one id and keys, and the checkouts waiting for
-/// them.
-#[derive(Debug, Default)]
+/// The keyed lanes of `lanes`.
+pub(super) fn connect_key(lanes: &RequestLanes) -> ConnectKey {
+    lanes
+        .classes
+        .iter()
+        .flat_map(|classes| classes.iter())
+        .zip(&lanes.keys)
+        .filter_map(|(class, key)| Some((class.classifier().clone(), key.clone()?)))
+        .collect()
+}
+
+/// The connects in flight for one id and keyed lanes, and the checkouts
+/// waiting for them.
+#[derive(Debug)]
 pub(super) struct Connects {
+    key: ConnectKey,
     in_flight: AtomicUsize,
     /// A connect is worth a look to as many as it brings streams for.
     pub(super) waiters: Arc<WaitQueue>,
-    /// Bumped as the last connect in flight fails: its waiters fail with it.
+    /// Bumped as a connect lands: the endpoint is up.
+    landings: AtomicU64,
+    /// Bumped as a connect fails: a waiter that saw none land since it began
+    /// waiting fails with it.
     failures: AtomicU64,
     failure: Mutex<Option<Failure>>,
 }
 
-/// How the last connect failed: its waiters fail the same way.
+/// The landings and failures of its connects a waiter saw as it began waiting.
 #[derive(Debug, Clone, Copy)]
+pub(super) struct Seen {
+    landings: u64,
+    failures: u64,
+}
+
+/// How the last connect failed.
+#[derive(Debug, Clone)]
 pub(super) struct Failure {
     domain: ConnectionErrorDomain,
     kind: ConnectionErrorKind,
     scope: ConnectionPolicyScope,
+    cause: Arc<str>,
 }
 
 impl Failure {
+    fn of(error: &ConnectionError) -> Self {
+        Self {
+            domain: error.domain(),
+            kind: error.kind(),
+            scope: error.policy_scope(),
+            cause: error.to_string().into(),
+        }
+    }
+
+    /// Whether its waiters would fail alike: the endpoint failed, or the
+    /// connector's own policy. A request's own policy failing says nothing
+    /// about theirs: they dial their own.
+    pub(super) fn is_shared(&self) -> bool {
+        self.scope != ConnectionPolicyScope::Request
+            && (self.domain == ConnectionErrorDomain::Transport
+                || self.scope == ConnectionPolicyScope::Connector)
+    }
+
     pub(super) fn into_error(self) -> BoxError {
         ConnectionError::new(
-            BoxError::from_static_str("the connection this checkout waited for failed"),
+            BoxError::from_static_str("the connection this checkout waited for failed")
+                .context_str_field("cause", &*self.cause),
             self.domain,
             self.kind,
         )
@@ -54,14 +97,42 @@ pub(super) enum Coalesce {
 }
 
 impl Connects {
+    pub(super) fn new(key: ConnectKey) -> Self {
+        Self {
+            key,
+            in_flight: AtomicUsize::new(0),
+            waiters: Arc::default(),
+            landings: AtomicU64::new(0),
+            failures: AtomicU64::new(0),
+            failure: Mutex::new(None),
+        }
+    }
+
+    pub(super) fn is_for(&self, key: &ConnectKey) -> bool {
+        self.key == *key
+    }
+
+    /// Whether a connection filed in `lane` serves its checkouts.
+    fn serves(&self, lane: &LaneKey) -> bool {
+        match lane {
+            LaneKey::Unrestricted => true,
+            LaneKey::Keyed(keyed) => self.key.iter().any(|(classifier, key)| {
+                classifier == keyed.class.classifier() && *key == keyed.key
+            }),
+        }
+    }
+
     /// Whether nothing is in flight or waits, so it can be forgotten.
     pub(super) fn is_unused(self: &Arc<Self>) -> bool {
         Arc::strong_count(self) == 1 && self.waiters.is_empty()
     }
 
-    /// The failures so far: a waiter fails once they grow.
-    pub(super) fn failures(&self) -> u64 {
-        self.failures.load(Ordering::Acquire)
+    /// What a waiter beginning to wait now sees.
+    pub(super) fn seen(&self) -> Seen {
+        Seen {
+            landings: self.landings.load(Ordering::Acquire),
+            failures: self.failures.load(Ordering::Acquire),
+        }
     }
 
     /// Dial, or wait for the connects in flight: a connection brings `streams`,
@@ -95,10 +166,12 @@ impl Connects {
         }
     }
 
-    /// How the last connect failed, once failures grew past `seen`.
-    pub(super) fn failed_since(&self, seen: u64) -> Option<Failure> {
-        (self.failures() > seen)
-            .then(|| *self.failure.lock())
+    /// How the last connect failed, if one failed since `seen` and none landed:
+    /// the endpoint is down for all that waited since.
+    pub(super) fn failed_since(&self, seen: Seen) -> Option<Failure> {
+        let now = self.seen();
+        (now.failures != seen.failures && now.landings == seen.landings)
+            .then(|| self.failure.lock().clone())
             .flatten()
     }
 }
@@ -109,39 +182,50 @@ impl Connects {
 pub(super) struct Connect(Option<Arc<Connects>>);
 
 impl Connect {
-    /// The connection is stored and takes `streams`, one for its own checkout:
-    /// its lane's waiters take the others. One more looks if what is still in
+    /// Whether it is counted in `connects`.
+    pub(super) fn is_in(&self, connects: &Arc<Connects>) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|counted| Arc::ptr_eq(counted, connects))
+    }
+
+    /// Whether a connection filed in `lane` serves the checkouts waiting for it.
+    pub(super) fn serves(&self, lane: &LaneKey) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|connects| connects.serves(lane))
+    }
+
+    /// The connection takes `streams`, one for its own checkout; `reached`
+    /// says whether the others are woken for its waiters, through its lane or
+    /// a lane it opens. One more looks if they are not, or if what is still in
     /// flight leaves waiters out, such as when it takes fewer than guessed: it
     /// dials, and passes its wake on to the next one left out.
-    pub(super) fn landed(self, streams: usize) {
+    pub(super) fn landed(self, streams: usize, reached: bool) {
         let Some(connects) = self.end() else {
             return;
         };
+        connects.landings.fetch_add(1, Ordering::AcqRel);
         // Pairs with the fence of a waiter queuing: it is woken, or sees the
         // connect ended.
         fence(Ordering::SeqCst);
         let spare = streams.saturating_sub(1);
         let in_flight = connects.in_flight.load(Ordering::Acquire);
-        if connects.waiters.len() > spare.saturating_add(in_flight.saturating_mul(spare)) {
+        if !reached
+            || connects.waiters.len() > spare.saturating_add(in_flight.saturating_mul(spare))
+        {
             connects.waiters.wake_one();
         }
     }
 
-    /// The dial failed with `error`: with nothing else in flight, its waiters
-    /// fail too; else one of them looks.
+    /// The dial failed with `error`: every waiter looks, and those that saw no
+    /// connect land since they began waiting fail with it if it is shared, else
+    /// dial their own. None of them waits for another dial to fail.
     pub(super) fn failed(self, error: &ConnectionError) {
         let Some(connects) = self.end() else {
             return;
         };
-        if connects.in_flight.load(Ordering::Acquire) != 0 {
-            connects.waiters.wake_one();
-            return;
-        }
-        *connects.failure.lock() = Some(Failure {
-            domain: error.domain(),
-            kind: error.kind(),
-            scope: error.policy_scope(),
-        });
+        *connects.failure.lock() = Some(Failure::of(error));
         connects.failures.fetch_add(1, Ordering::AcqRel);
         connects.waiters.wake_all();
     }

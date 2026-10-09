@@ -503,7 +503,7 @@ async fn pool_waiters_for_other_ids_pass_a_closed_connection() {
     let pool = MultiplexPool::new()
         .with_max_streams_per_connection(NonZeroUsize::new(32).unwrap())
         .with_max_connections_total(NonZeroUsize::new(1).unwrap());
-    let ConnectionResult::CreatePermit(permit) = pool.get_conn(&Id(0), &input).await.unwrap()
+    let ConnectionResult::CreatePermit(permit) = pool.get_conn(&Id(0), &input, None).await.unwrap()
     else {
         panic!("a fresh pool creates");
     };
@@ -517,7 +517,7 @@ async fn pool_waiters_for_other_ids_pass_a_closed_connection() {
     drop(handout);
 
     pair.client.close(0u32, b"closed");
-    let waiting = tokio::time::timeout(LIMIT, pool.get_conn(&Id(1), &input))
+    let waiting = tokio::time::timeout(LIMIT, pool.get_conn(&Id(1), &input, None))
         .await
         .expect("a waiter for another id is not parked behind a closed connection")
         .unwrap();

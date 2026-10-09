@@ -30,7 +30,7 @@ impl Look<'_> {
 }
 
 /// Why a look found neither a connection nor a create permit.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub(super) enum Blocked {
     /// The id is at its connection limit: wait for one of its slots.
     Id,
@@ -79,8 +79,8 @@ pub(super) struct Waiting {
     pub(super) spent: bool,
     /// When the first idle connection the current look's sweeps kept expires.
     pub(super) next_expiry: u64,
-    /// The connects it waits for, and their failures when it started waiting.
-    pub(super) connects_seen: Option<(Weak<Connects>, u64)>,
+    /// The connects it waits for, and what it saw of them as it began waiting.
+    pub(super) connects_seen: Option<(Weak<Connects>, Seen)>,
     pub(super) waiting: Arc<AtomicUsize>,
     pub(super) slot_waiters: Arc<WaitQueue>,
     /// The checkouts at its id's limit that may replace one of the id's idle
@@ -154,14 +154,15 @@ impl Waiting {
         self.register_in(queue, true);
     }
 
-    fn register_in(&mut self, queue: &Arc<WaitQueue>, chances: bool) {
+    /// Whether it queued anew.
+    fn register_in(&mut self, queue: &Arc<WaitQueue>, chances: bool) -> bool {
         if let Some(place) = self
             .places
             .iter_mut()
             .find(|place| Arc::ptr_eq(&place.queue, queue))
         {
             place.looked = true;
-            return;
+            return false;
         }
         let waiter = self.party.waiter();
         queue.push(&waiter);
@@ -172,16 +173,19 @@ impl Waiting {
             looked: true,
             chances,
         });
+        true
     }
 
-    /// Wait for the connects of `connects`, once: their failures from now on
-    /// are its own.
-    pub(super) fn wait_for_connects(&mut self, connects: &Arc<Connects>) -> u64 {
-        self.register_in(&connects.waiters, true);
+    /// Wait for the connects of `connects`: what happens to them from the time
+    /// it queues is its own, also when it queues there again.
+    pub(super) fn wait_for_connects(&mut self, connects: &Arc<Connects>) -> Seen {
+        let queued = self.register_in(&connects.waiters, true);
         match &self.connects_seen {
-            Some((of, seen)) if std::ptr::eq(of.as_ptr(), Arc::as_ptr(connects)) => *seen,
+            Some((of, seen)) if !queued && std::ptr::eq(of.as_ptr(), Arc::as_ptr(connects)) => {
+                *seen
+            }
             _ => {
-                let seen = connects.failures();
+                let seen = connects.seen();
                 self.connects_seen = Some((Arc::downgrade(connects), seen));
                 seen
             }
@@ -204,10 +208,11 @@ impl Waiting {
     }
 
     /// A look found nothing: it spent the wakes it answered, and the checkout
-    /// leaves the chance queues the look no longer queued in. The lanes it no
-    /// longer uses it left during the look.
+    /// leaves the chance queues the look no longer queued in, passing on a
+    /// chance it did not look at. The lanes it no longer uses it left during
+    /// the look.
     pub(super) fn end_fruitless_look(&mut self) {
-        for place in &self.places {
+        for place in self.places.iter().filter(|place| place.looked) {
             if let Some(seen) = place.seen {
                 place.waiter.spend(seen);
             }

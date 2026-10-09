@@ -354,7 +354,7 @@ fn connections_left_to_an_older_evictor_are_served_on_a_real_runtime() {
             let first = {
                 let (pool, release) = (pool.clone(), release.clone());
                 tokio::spawn(async move {
-                    let result = pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap();
+                    let result = pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await.unwrap();
                     release.notified().await;
                     drop(result);
                 })
@@ -364,7 +364,9 @@ fn connections_left_to_an_older_evictor_are_served_on_a_real_runtime() {
                 let pool = pool.clone();
                 tokio::spawn(async move {
                     // Holds what it got until the end.
-                    pool.get_conn(&TestId(id), &EMPTY_INPUT).await.unwrap()
+                    pool.get_conn(&TestId(id), &EMPTY_INPUT, None)
+                        .await
+                        .unwrap()
                 })
             };
             let evictor = spawn(1);

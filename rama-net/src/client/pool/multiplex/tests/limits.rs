@@ -11,7 +11,8 @@ async fn an_unlimited_pool_adds_connections_as_needed() {
     }
     assert_eq!(pool.storage.lock().by_id[&TestId(0)].conns().count(), 64);
     drop(held);
-    let Ok(ConnectionResult::Connection(_)) = pool.get_conn(&TestId(0), &EMPTY_INPUT).await else {
+    let Ok(ConnectionResult::Connection(_)) = pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await
+    else {
         panic!("an idle connection is reused");
     };
 }
@@ -166,7 +167,8 @@ async fn keyed_per_id_pool() -> (
         .with_max_connections_per_id(NonZeroUsize::new(1).unwrap())
         .with_saturation_policy(SaturationPolicy::EvictIdle);
     let input = want(1);
-    let ConnectionResult::CreatePermit(slot) = pool.get_conn(&TestId(0), &input).await.unwrap()
+    let ConnectionResult::CreatePermit(slot) =
+        pool.get_conn(&TestId(0), &input, None).await.unwrap()
     else {
         panic!("a create permit");
     };
@@ -185,7 +187,7 @@ async fn an_idle_connection_of_another_key_gives_up_its_id_slot() {
     let (pool, held) = keyed_per_id_pool().await;
     drop(held);
     let input = want(2);
-    let mut other_key = tokio_test::task::spawn(pool.get_conn(&TestId(0), &input));
+    let mut other_key = tokio_test::task::spawn(pool.get_conn(&TestId(0), &input, None));
     assert!(
         matches!(
             other_key.poll(),
@@ -375,7 +377,8 @@ async fn a_replacement_takes_over_the_total_slot_too() {
     drop(fresh_keyed(&pool, 0, 1).await);
     let busy = fresh(&pool, 1).await;
     let input = want(2);
-    let ConnectionResult::CreatePermit(slot) = pool.get_conn(&TestId(0), &input).await.unwrap()
+    let ConnectionResult::CreatePermit(slot) =
+        pool.get_conn(&TestId(0), &input, None).await.unwrap()
     else {
         panic!("it replaces the idle connection of the other key");
     };
@@ -404,7 +407,7 @@ async fn a_warm_checkout_at_its_id_limit_replaces_once_its_patience_ran_out() {
 async fn forgetting_unused_id_limits_never_forgets_one_a_create_permit_holds() {
     let pool = per_id(1);
     let ConnectionResult::CreatePermit(slot) =
-        pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap()
+        pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await.unwrap()
     else {
         panic!("a create permit");
     };
@@ -506,7 +509,8 @@ async fn idle_connections_over_the_total_limit_close_across_ids() {
     idle_in_order(&pool, &[0, 1, 2, 3]).await;
     assert_eq!(stored(&pool), [(2, 2), (3, 3)]);
     // A reused connection is no longer idle: two more fit.
-    let Ok(ConnectionResult::Connection(reused)) = pool.get_conn(&TestId(2), &EMPTY_INPUT).await
+    let Ok(ConnectionResult::Connection(reused)) =
+        pool.get_conn(&TestId(2), &EMPTY_INPUT, None).await
     else {
         panic!("its idle connection is reused");
     };
@@ -538,7 +542,8 @@ async fn idle_limits_close_nothing_while_checkouts_wait() {
 async fn a_connection_in_use_is_not_counted_idle() {
     let pool = MultiplexPool::new().with_max_idle_total(NonZeroUsize::new(1).unwrap());
     drop(fresh(&pool, 0).await);
-    let Ok(ConnectionResult::Connection(reused)) = pool.get_conn(&TestId(0), &EMPTY_INPUT).await
+    let Ok(ConnectionResult::Connection(reused)) =
+        pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await
     else {
         panic!("its idle connection is reused");
     };
@@ -563,7 +568,8 @@ async fn a_connection_that_is_not_stored_is_not_counted_idle() {
     pool.settle(swept);
     drop(broken);
     drop(fresh(&pool, 0).await);
-    let Ok(ConnectionResult::Connection(reused)) = pool.get_conn(&TestId(0), &EMPTY_INPUT).await
+    let Ok(ConnectionResult::Connection(reused)) =
+        pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await
     else {
         panic!("the only idle connection stays within the limit");
     };
@@ -589,4 +595,129 @@ async fn a_checkout_at_its_id_limit_is_woken_at_the_first_expiry_its_ids_sweep_s
         panic!("its slot is free once it expired")
     };
     drop(slot);
+}
+
+/// A pool keeping one idle connection, of 8 at most.
+fn keeping_one() -> MultiplexPool<Conn, TestId> {
+    MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(8).unwrap())
+        .with_max_idle_total(NonZeroUsize::new(1).unwrap())
+}
+
+/// A connection of `id` whose handout is gone while work outlives it.
+async fn outlived(pool: &MultiplexPool<Conn, TestId>, id: u32) -> Arc<AdmissionState> {
+    let (conn, state) = admission_connection(pool, 4);
+    let handout = pool
+        .create(TestId(id), conn, pool.test_slot(), &EMPTY_INPUT)
+        .await
+        .unwrap();
+    state.set_in_use(true);
+    drop(handout);
+    state
+}
+
+fn current_thread() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+}
+
+async fn settle() {
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+}
+
+#[test]
+fn work_ending_on_a_thread_without_a_runtime_is_trimmed_on_the_pools() {
+    let runtime = current_thread();
+    let pool = keeping_one();
+    let states = runtime.block_on(async {
+        [
+            outlived(&pool, 0).await,
+            outlived(&pool, 1).await,
+            outlived(&pool, 2).await,
+        ]
+    });
+    std::thread::spawn(move || {
+        for state in states {
+            state.set_in_use(false);
+        }
+    })
+    .join()
+    .unwrap();
+    runtime.block_on(settle());
+    assert_eq!(
+        pool.storage.lock().by_id.len(),
+        1,
+        "one idle connection kept"
+    );
+}
+
+#[test]
+fn a_trim_whose_runtime_went_away_leaves_trims_to_the_next() {
+    let pool = keeping_one();
+    let runtime = current_thread();
+    runtime.block_on(async {
+        let [first, second] = [outlived(&pool, 0).await, outlived(&pool, 1).await];
+        first.set_in_use(false);
+        second.set_in_use(false);
+    });
+    // The trim's task never ran.
+    drop(runtime);
+    current_thread().block_on(async {
+        outlived(&pool, 2).await.set_in_use(false);
+        settle().await;
+    });
+    assert_eq!(
+        pool.storage.lock().by_id.len(),
+        1,
+        "one idle connection kept"
+    );
+}
+
+#[test]
+fn a_trim_asked_for_while_one_runs_is_left_to_it() {
+    let limits = IdleLimits::<TestId>::new(None, NonZeroUsize::new(1)).unwrap();
+    assert!(limits.ask(Some(&TestId(0))), "the trimmer");
+    assert!(!limits.ask(Some(&TestId(1))), "left to the trimmer");
+    let asked = limits.take();
+    assert_eq!(asked.ids, [TestId(0), TestId(1)]);
+    // Asked as the trimmer finished its last look, before it let go.
+    assert!(!limits.ask(Some(&TestId(2))));
+    assert!(limits.let_go(), "it looks again");
+    assert_eq!(limits.take().ids, [TestId(2)]);
+    assert!(!limits.let_go(), "nothing left");
+    assert!(limits.ask(None), "the next asker trims");
+    assert!(limits.take().all);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idle_connections_going_idle_at_once_keep_exactly_the_limit() {
+    for _ in 0..20 {
+        let pool = keeping_one();
+        let mut states = Vec::new();
+        for id in 0..6 {
+            states.push(outlived(&pool, id).await);
+        }
+        let ends: Vec<_> = states
+            .into_iter()
+            .map(|state| tokio::spawn(async move { state.set_in_use(false) }))
+            .collect();
+        for end in ends {
+            end.await.unwrap();
+        }
+        for _ in 0..100 {
+            if pool.storage.lock().by_id.len() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert_eq!(
+            pool.storage.lock().by_id.len(),
+            1,
+            "neither over nor under the limit"
+        );
+    }
 }

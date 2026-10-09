@@ -345,6 +345,7 @@ where
         &self,
         id: &ID,
         input: &Extensions,
+        _deadline: Option<tokio::time::Instant>,
     ) -> Result<ConnectionResult<Self::Connection, Self::CreatePermit>, BoxError> {
         if self.retired.load(Ordering::Acquire) {
             return Err(BoxError::from_static_str(
@@ -917,8 +918,10 @@ mod tests {
             }
         }
         let pool: LruDropPool<InnerService, Fresh> = LruDropPool::try_new(1, 1).unwrap();
-        let ConnectionResult::CreatePermit(permit) =
-            pool.get_conn(&Fresh, &Extensions::new()).await.unwrap()
+        let ConnectionResult::CreatePermit(permit) = pool
+            .get_conn(&Fresh, &Extensions::new(), None)
+            .await
+            .unwrap()
         else {
             panic!("non-reusable policy must acquire a fresh connection");
         };
@@ -1008,7 +1011,7 @@ mod tests {
 
     async fn add(pool: &LruDropPool<Conn, usize>, conn: Conn) -> LeasedConnection<Conn, usize> {
         let ConnectionResult::CreatePermit(permit) =
-            pool.get_conn(&0, &Extensions::new()).await.unwrap()
+            pool.get_conn(&0, &Extensions::new(), None).await.unwrap()
         else {
             panic!("all previous connections are leased");
         };
@@ -1029,7 +1032,7 @@ mod tests {
         // Y returns while a checkout for key 2 derives its key against X.
         let returner = gate.during(move || drop(y));
         assert_matches!(
-            pool.get_conn(&0, &want(2)).await.unwrap(),
+            pool.get_conn(&0, &want(2), None).await.unwrap(),
             ConnectionResult::CreatePermit(_),
         );
         returner.join().unwrap();
@@ -1057,7 +1060,7 @@ mod tests {
             .unwrap();
         drop(add(&pool, conn).await);
         let closer = gate.during(move || health.mark_broken());
-        let result = pool.get_conn(&0, &want(1)).await.unwrap();
+        let result = pool.get_conn(&0, &want(1), None).await.unwrap();
         closer.join().unwrap();
         assert_matches!(result, ConnectionResult::CreatePermit(_));
     }
@@ -1106,7 +1109,7 @@ mod tests {
         drop(add(&pool, conn).await);
         armed.store(true, Ordering::SeqCst);
         assert_matches!(
-            pool.get_conn(&0, &Extensions::new()).await.unwrap(),
+            pool.get_conn(&0, &Extensions::new(), None).await.unwrap(),
             ConnectionResult::CreatePermit(_),
         );
     }
@@ -1123,8 +1126,10 @@ mod tests {
         let pool = LruDropPool::try_new(1, 1)
             .unwrap()
             .with_drop_connection_if_no_response(false);
-        let ConnectionResult::CreatePermit(permit) =
-            pool.get_conn(&Fresh, &Extensions::new()).await.unwrap()
+        let ConnectionResult::CreatePermit(permit) = pool
+            .get_conn(&Fresh, &Extensions::new(), None)
+            .await
+            .unwrap()
         else {
             panic!("a non-reusable id always establishes");
         };
@@ -1169,7 +1174,7 @@ mod tests {
             .unwrap()
             .with_drop_connection_if_no_response(false);
         let input = Extensions::new();
-        let ConnectionResult::CreatePermit(permit) = pool.get_conn(&0, &input).await.unwrap()
+        let ConnectionResult::CreatePermit(permit) = pool.get_conn(&0, &input, None).await.unwrap()
         else {
             panic!("empty pool must allow creation");
         };
@@ -1184,7 +1189,7 @@ mod tests {
                 .unwrap(),
         );
         assert_matches!(
-            pool.get_conn(&0, &input).await.unwrap(),
+            pool.get_conn(&0, &input, None).await.unwrap(),
             ConnectionResult::Connection(_),
         );
     }
@@ -1213,7 +1218,7 @@ mod tests {
             .unwrap()
             .with_drop_connection_if_no_response(false);
         let input = Extensions::new();
-        let ConnectionResult::CreatePermit(permit) = pool.get_conn(&0, &input).await.unwrap()
+        let ConnectionResult::CreatePermit(permit) = pool.get_conn(&0, &input, None).await.unwrap()
         else {
             panic!("empty pool must allow creation");
         };
@@ -1225,7 +1230,7 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        pool.get_conn(&0, &input).await.unwrap_err();
+        pool.get_conn(&0, &input, None).await.unwrap_err();
         assert_eq!(pool.total_slots.available_permits(), 1);
         assert_eq!(pool.active_slots.available_permits(), 1);
     }

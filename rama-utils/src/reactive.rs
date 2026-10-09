@@ -383,6 +383,31 @@ impl WaitQueue {
         true
     }
 
+    /// `n` units of capacity at once: as [`Self::wake_one`] `n` times, in one
+    /// pass over the queue. False if nobody waits.
+    pub fn wake_many(&self, n: usize) -> bool {
+        fence(Ordering::SeqCst);
+        if n == 0 || self.is_empty() {
+            return false;
+        }
+        let queue = self.queue.lock();
+        let Some(front) = queue.waiters.front() else {
+            return false;
+        };
+        let mut left = n;
+        for waiter in queue.waiters.iter().filter(|waiter| !waiter.is_woken()) {
+            if left == 0 {
+                return true;
+            }
+            waiter.wake();
+            left -= 1;
+        }
+        if left > 0 {
+            front.wake_by(left);
+        }
+        true
+    }
+
     /// A change of unknown size: wake every waiter. False if nobody waits.
     pub fn wake_all(&self) -> bool {
         fence(Ordering::SeqCst);
@@ -569,8 +594,12 @@ impl Waiter {
     }
 
     fn wake(&self) {
-        self.counters().wakes.fetch_add(1, Ordering::AcqRel);
-        self.party.wakes.fetch_add(1, Ordering::AcqRel);
+        self.wake_by(1);
+    }
+
+    fn wake_by(&self, n: usize) {
+        self.counters().wakes.fetch_add(n, Ordering::AcqRel);
+        self.party.wakes.fetch_add(n, Ordering::AcqRel);
         self.party.waker.wake();
     }
 }
@@ -1225,6 +1254,29 @@ mod tests {
             "nothing to pass on where nothing was sent"
         );
         assert_eq!(theirs.remove(&there), 1);
+    }
+
+    #[test]
+    fn waking_many_wakes_as_waking_one_as_often() {
+        let [many, one] = [WaitQueue::new(), WaitQueue::new()];
+        let waiters = |queue: &WaitQueue| {
+            let waiters = [0, 1, 2].map(|order| Party::new(order).waiter());
+            for waiter in &waiters {
+                queue.push(waiter);
+            }
+            waiters
+        };
+        let [by_many, by_one] = [waiters(&many), waiters(&one)];
+        by_many[1].wake();
+        by_one[1].wake();
+        assert!(many.wake_many(4));
+        for _ in 0..4 {
+            assert!(one.wake_one());
+        }
+        let held = |waiters: &[Waiter; 3]| waiters.each_ref().map(Waiter::held);
+        assert_eq!(held(&by_many), held(&by_one));
+        assert_eq!(held(&by_many), [3, 1, 1], "the rest goes to the front");
+        assert!(!WaitQueue::new().wake_many(1) && !many.wake_many(0));
     }
 
     #[test]
