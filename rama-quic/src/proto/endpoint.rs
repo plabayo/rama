@@ -344,12 +344,13 @@ impl Endpoint {
             // Handle packet on existing connection
             match route_to {
                 RouteDatagramTo::Incoming(incoming_idx) => {
+                    // A pending attempt outlives a server config cleared after it arrived; it
+                    // buffers nothing more then, as the config is what bounds that buffer.
+                    let Some(config) = self.server_config.as_ref() else {
+                        trace!("dropping a datagram for a pending connection: no server config");
+                        return None;
+                    };
                     let incoming_buffer = &mut self.incoming_buffers[incoming_idx];
-                    #[expect(
-                        clippy::unwrap_used,
-                        reason = "`RouteDatagramTo::Incoming` entries are only created by `handle_first_packet` on endpoints with a server config"
-                    )]
-                    let config = &self.server_config.as_ref().unwrap();
 
                     let charge = incoming_datagram_charge(datagram_len);
                     if incoming_buffer
@@ -724,7 +725,7 @@ impl Endpoint {
                 header,
                 header_data: packet.header_data,
                 payload: packet.payload,
-                wire_len: packet.wire_len,
+                allocated: packet.allocated,
             },
             rest: event.remaining,
             crypto,
@@ -1721,9 +1722,11 @@ fn take_in_initials(assembly: &mut HelloAssembly, mut bytes: BytesMut, flight: &
     let Some(keys) = flight.crypto.remote.as_ref() else {
         return;
     };
+    let allocated = bytes.len();
     loop {
-        let Ok((decode, rest)) = PartialDecode::new(
+        let Ok((decode, rest)) = PartialDecode::new_within(
             bytes,
+            allocated,
             &flight.parser,
             &[flight.version],
             flight.grease_quic_bit,

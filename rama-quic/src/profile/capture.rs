@@ -28,9 +28,11 @@ impl KeyProvider for ProviderKeys<'_> {
         dcid: &[u8],
         side: Side,
     ) -> Result<InitialKeys<Self::Header, Self::Packet>, CaptureError> {
+        let dcid = ConnectionId::try_from_bytes(dcid)
+            .map_err(|_error| CaptureError::Malformed("connection ID longer than 20 bytes"))?;
         let keys = self
             .0
-            .initial_keys(version, &ConnectionId::new(dcid))
+            .initial_keys(version, &dcid)
             .map_err(|_error| CaptureError::Undecryptable)?;
         // The provider gives keys as a server holds them: `remote` opens what the client sent,
         // `local` what the server sent.

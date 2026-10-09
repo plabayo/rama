@@ -9,19 +9,19 @@ pub(super) struct Retained {
     pub(super) charge: usize,
 }
 
-/// Prepare `bytes`, a slice of a received packet of `wire_len` bytes, to be kept.
+/// Prepare `bytes`, a slice of a received packet that keeps `allocated` bytes alive, to be kept.
 ///
-/// A slice keeps its whole packet allocated, so one under half of it is copied out and charged
-/// its own length; a larger one stays shared and is charged the packet.
-pub(super) fn retain(bytes: Bytes, wire_len: usize) -> Retained {
-    if bytes.len().saturating_mul(2) < wire_len {
+/// A slice keeps all of that alive, so one under half of it is copied out and charged its own
+/// length; a larger one stays shared and is charged the allocation.
+pub(super) fn retain(bytes: Bytes, allocated: usize) -> Retained {
+    if bytes.len().saturating_mul(2) < allocated {
         let charge = bytes.len();
         Retained {
             bytes: Bytes::copy_from_slice(&bytes),
             charge,
         }
     } else {
-        let charge = wire_len.max(bytes.len());
+        let charge = allocated.max(bytes.len());
         Retained { bytes, charge }
     }
 }

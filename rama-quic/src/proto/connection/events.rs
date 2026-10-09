@@ -101,7 +101,7 @@ impl Connection {
 
                 if let Some(data) = remaining {
                     self.stats.udp_rx.bytes += data.len() as u64;
-                    self.handle_coalesced(now, remote, local, ecn, data);
+                    self.handle_coalesced(now, remote, local, ecn, &data);
                 }
 
                 self.qlog_sink.emit_recovery_metrics(

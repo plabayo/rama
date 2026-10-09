@@ -23,7 +23,7 @@ use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 
-use rama_core::bytes::{BufMut, BytesMut};
+use rama_core::bytes::BytesMut;
 use rama_core::futures::{Sink, Stream};
 use rama_core::stream::codec::{Decoder, Encoder};
 use rama_utils::octets::kib;
@@ -119,20 +119,14 @@ where
             // capacity as the per-datagram window.
             this.rd.reserve(INITIAL_RD_CAPACITY);
 
-            // Bytes between len() and capacity() are uninit but we only
-            // expose [0..filled.len()] back to the codec. This mirrors
-            // tokio_util::udp::UdpFramed's approach.
+            // The spare capacity is uninitialized, so it is lent as such: only what the
+            // receive wrote is exposed to the codec.
             let n = {
-                let dst = unsafe {
-                    // SAFETY: chunk_mut points at uninit spare capacity we own.
-                    let chunk = this.rd.chunk_mut();
-                    std::slice::from_raw_parts_mut(chunk.as_mut_ptr().cast::<u8>(), chunk.len())
-                };
-                let mut read_buf = tokio::io::ReadBuf::new(dst);
+                let mut read_buf = tokio::io::ReadBuf::uninit(this.rd.spare_capacity_mut());
                 ready!(this.socket.poll_recv(cx, &mut read_buf))?;
                 read_buf.filled().len()
             };
-            // SAFETY: poll_recv filled `n` bytes into the spare capacity.
+            // SAFETY: poll_recv initialized the first `n` bytes of the spare capacity.
             unsafe { this.rd.set_len(this.rd.len() + n) };
             this.is_readable = true;
         }

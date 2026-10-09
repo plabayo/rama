@@ -31,7 +31,7 @@ use crate::proto::{Duration, Instant};
 pub(super) const DEFAULT_MTU: usize = 1452;
 
 pub(crate) struct Pair {
-    pub(super) server: TestEndpoint,
+    pub(crate) server: TestEndpoint,
     pub(super) client: TestEndpoint,
     /// Start time
     epoch: Instant,
@@ -63,7 +63,7 @@ impl Pair {
         Self::new(Arc::new(EndpointConfig::try_with_rand_key().unwrap()), cfg)
     }
 
-    pub(super) fn new(endpoint_config: Arc<EndpointConfig>, server_config: ServerConfig) -> Self {
+    pub(crate) fn new(endpoint_config: Arc<EndpointConfig>, server_config: ServerConfig) -> Self {
         let server = Endpoint::new(
             endpoint_config.clone(),
             Some(Arc::new(server_config)),
@@ -464,9 +464,9 @@ fn walk_packets(buffer: &[u8]) -> Vec<SentPacket> {
     packets
 }
 
-pub(super) struct TestEndpoint {
+pub(crate) struct TestEndpoint {
     pub(super) endpoint: Endpoint,
-    pub(super) addr: SocketAddr,
+    pub(crate) addr: SocketAddr,
     socket: Option<UdpSocket>,
     /// Each connection's own next deadline. One shared cell would let one connection's timer fire
     /// for another, and would overwrite one deadline with another's.
@@ -475,7 +475,7 @@ pub(super) struct TestEndpoint {
     delayed: VecDeque<(Transmit, Bytes)>,
     pub(super) inbound: VecDeque<Inbound>,
     /// A second address this endpoint receives at, such as a server's preferred one.
-    pub(super) alt_addr: Option<SocketAddr>,
+    pub(crate) alt_addr: Option<SocketAddr>,
     /// While set, datagrams reach this endpoint without local provenance, as they do on a host
     /// whose socket cannot report which address received them.
     pub(super) hide_local: bool,
@@ -996,7 +996,7 @@ impl Write for TestWriter {
     }
 }
 
-pub(super) fn server_config() -> ServerConfig {
+pub(crate) fn server_config() -> ServerConfig {
     ServerConfig::with_crypto(Arc::new(server_crypto()))
 }
 

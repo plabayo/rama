@@ -151,12 +151,13 @@ impl CidState {
 
     /// Update CidState for receipt of a `RETIRE_CONNECTION_ID` frame
     ///
-    /// Returns whether a new CID can be issued, or an error if the frame was illegal.
+    /// Returns whether a new CID can be issued when the frame retired an identifier still in
+    /// use, `None` when it was retired already, or an error if the frame was illegal.
     pub(crate) fn on_cid_retirement(
         &mut self,
         sequence: u64,
         limit: u64,
-    ) -> Result<bool, TransportError> {
+    ) -> Result<Option<bool>, TransportError> {
         if self.cid_len == 0 {
             return Err(TransportError::PROTOCOL_VIOLATION(
                 "RETIRE_CONNECTION_ID when CIDs aren't in use",
@@ -171,13 +172,15 @@ impl CidState {
                 "RETIRE_CONNECTION_ID for unissued sequence number",
             ));
         }
-        self.active_seq.remove(&sequence);
+        if !self.active_seq.remove(&sequence) {
+            return Ok(None);
+        }
         // Consider a scenario where peer A has active remote cid 0,1,2.
         // Peer B first send a NEW_CONNECTION_ID with cid 3 and retire_prior_to set to 1.
         // Peer A processes this NEW_CONNECTION_ID frame; update remote cid to 1,2,3
         // and meanwhile send a RETIRE_CONNECTION_ID to retire cid 0 to peer B.
         // If peer B doesn't check the cid limit here and send a new cid again, peer A will then face CONNECTION_ID_LIMIT_ERROR
-        Ok(limit > self.active_seq.len() as u64)
+        Ok(Some(limit > self.active_seq.len() as u64))
     }
 
     /// Length of local Connection IDs

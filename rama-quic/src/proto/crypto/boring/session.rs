@@ -28,6 +28,12 @@ use rama_tls::client::NegotiatedTlsAlgorithms;
 use zeroize::Zeroizing;
 
 use super::packet::{self, Secret, Suite};
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: how often this thread parsed a peer's transport parameters.
+    pub(super) static PEER_PARAMETER_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 use crate::proto::crypto::{
     self, DirectionalKeys, HandshakeEvent, KeyPair, Keys, UnsupportedVersion,
 };
@@ -326,12 +332,19 @@ impl TlsSession {
             }
             self.certificates = Some(chain);
         }
-        let params = self.inner.peer_transport_parameters();
-        if !params.is_empty() || ssl.is_init_finished() {
-            *self.peer_params.lock() = Some(
-                TransportParameters::read(self.side, &mut &params[..])
-                    .map_err(TransportError::from)?,
-            );
+        // The peer's parameters arrive once and never change, so they are parsed once: this runs
+        // for every CRYPTO frame, and a large parameter list must not be re-read for each.
+        let mut peer_params = self.peer_params.lock();
+        if peer_params.is_none() {
+            let params = self.inner.peer_transport_parameters();
+            if !params.is_empty() || ssl.is_init_finished() {
+                #[cfg(test)]
+                PEER_PARAMETER_PARSES.with(|parses| parses.set(parses.get() + 1));
+                *peer_params = Some(
+                    TransportParameters::read(self.side, &mut &params[..])
+                        .map_err(TransportError::from)?,
+                );
+            }
         }
         Ok(())
     }

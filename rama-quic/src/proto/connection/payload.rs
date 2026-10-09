@@ -146,7 +146,7 @@ impl Connection {
         received_bytes: Option<usize>,
     ) -> Result<(), TransportError> {
         let received_dcid = packet.header.dst_cid();
-        let wire_len = packet.wire_len;
+        let allocated = packet.allocated;
         let payload = packet.payload.freeze();
         let mut is_probing_packet = true;
         let mut close = None;
@@ -206,10 +206,10 @@ impl Connection {
             }
             match frame {
                 Frame::Crypto(frame) => {
-                    self.read_crypto(SpaceId::Data, &frame, wire_len)?;
+                    self.read_crypto(SpaceId::Data, &frame, allocated)?;
                 }
                 Frame::Stream(frame) => {
-                    if self.streams.received(frame, wire_len)?.should_transmit() {
+                    if self.streams.received(frame, allocated)?.should_transmit() {
                         self.spaces[SpaceId::Data].pending.max_data = true;
                     }
                 }
@@ -308,16 +308,18 @@ impl Connection {
                     self.streams.received_stop_sending(id, error_code);
                 }
                 Frame::RetireConnectionId { sequence } => {
-                    let allow_more_cids = self.local_cid_state.on_cid_retirement(
+                    // A repeat retires nothing, so it tells the endpoint nothing either.
+                    if let Some(allow_more_cids) = self.local_cid_state.on_cid_retirement(
                         sequence,
                         transport_parameters::issue_cids_limit(&self.peer_params),
-                    )?;
-                    self.endpoint_events
-                        .push_back(EndpointEventInner::RetireConnectionId(
-                            now,
-                            sequence,
-                            allow_more_cids,
-                        ));
+                    )? {
+                        self.endpoint_events
+                            .push_back(EndpointEventInner::RetireConnectionId(
+                                now,
+                                sequence,
+                                allow_more_cids,
+                            ));
+                    }
                 }
                 Frame::NewConnectionId(frame) => self.handle_new_cid(now, frame)?,
                 Frame::NewToken(NewToken { token }) => {
@@ -344,7 +346,7 @@ impl Connection {
                 Frame::Datagram(datagram) => {
                     if self.datagrams.received(
                         datagram,
-                        wire_len,
+                        allocated,
                         self.config.datagram_receive_buffer_size,
                     )? {
                         self.events.push_back(Event::DatagramReceived);
@@ -383,10 +385,14 @@ impl Connection {
                             "client sent HANDSHAKE_DONE",
                         ));
                     }
+                    let confirmed_before = self.handshake_confirmed();
                     if self.spaces[SpaceId::Handshake].crypto.is_some() {
                         self.discard_space(now, SpaceId::Handshake);
                     }
-                    self.events.push_back(Event::HandshakeConfirmed);
+                    // Confirmation happens once; a repeated frame changes nothing to report.
+                    if !confirmed_before {
+                        self.events.push_back(Event::HandshakeConfirmed);
+                    }
                     self.qlog_observe_state(now);
                     trace!("handshake confirmed");
                     // Migration, the preferred address included, waits for confirmation
@@ -446,12 +452,11 @@ impl Connection {
                 }
                 ConnectionSide::Client { .. } => None,
             };
-            if let Some(allowed) = migration_allowed {
-                debug_assert!(
-                    allowed,
-                    "a packet from a new peer address is dropped before it reaches here when \
-                     migration is disabled"
-                );
+            if migration_allowed == Some(false) {
+                // A deferred move resumed earlier in this packet can leave it arriving off the
+                // current path from an address the policy does not let the connection follow.
+                trace!(%remote, ?local, "ignoring a peer move the migration policy forbids");
+            } else if migration_allowed == Some(true) {
                 // RFC 9000 §9.5: a connection ID is never reused towards more than one destination.
                 // The one exception is a peer whose address changed without changing the connection
                 // ID it sends to us while we keep our local address (a NAT rebinding): then we may
@@ -500,11 +505,14 @@ mod tests {
     use parking_lot::Mutex;
     use rama_core::bytes::Bytes;
     use rama_quic_proto::{
-        TransportErrorCode, VarInt, Version,
+        Side, StreamId, TransportErrorCode, VarInt, Version,
         coding::Codec,
         packet::{Header, LongType, PacketNumber},
     };
-    use std::sync::Arc;
+    use std::{
+        net::{Ipv6Addr, SocketAddrV6},
+        sync::Arc,
+    };
 
     #[derive(Default)]
     struct ObservedTokens(Mutex<Vec<StoredToken>>);
@@ -519,15 +527,15 @@ mod tests {
         }
     }
 
-    /// A received 1-RTT packet of `wire_len` bytes: `frames`, then PADDING, in one allocation
+    /// A received 1-RTT packet of `allocated` bytes: `frames`, then PADDING, in one allocation
     /// as the driver hands a datagram over. Returns the packet and its backing address range.
     fn padded_packet(
         dst_cid: rama_quic_proto::ConnectionId,
         frames: &[u8],
-        wire_len: usize,
+        allocated: usize,
     ) -> (Packet, std::ops::Range<usize>) {
         let mut payload = frames.to_vec();
-        payload.resize(wire_len, 0);
+        payload.resize(allocated, 0);
         let backing = rama_core::bytes::BytesMut::from(payload.as_slice());
         let start = backing.as_ptr() as usize;
         let packet = Packet {
@@ -539,9 +547,145 @@ mod tests {
             },
             header_data: Bytes::new(),
             payload: backing,
-            wire_len,
+            allocated,
         };
-        (packet, start..start + wire_len)
+        (packet, start..start + allocated)
+    }
+
+    /// A deferred move to the preferred address can be resumed by a NEW_CONNECTION_ID inside a
+    /// packet that arrives on the old path; that packet then comes from an address the policy
+    /// does not let the server follow, and the server keeps the path it moved to.
+    #[test]
+    fn a_resumed_deferred_move_leaves_a_forbidden_move_unfollowed() {
+        let alt_v6 = SocketAddrV6::new(Ipv6Addr::LOCALHOST, 47_311, 0, 0);
+        let alt = SocketAddr::V6(alt_v6);
+        let mut config = crate::proto::tests::util::server_config();
+        config.set_preferred_address_v6(alt_v6);
+        config.set_migration(false);
+        let mut pair = Pair::new(
+            Arc::new(crate::proto::EndpointConfig::try_with_rand_key().expect("an endpoint key")),
+            config,
+        );
+        pair.server.alt_addr = Some(alt);
+        let (_, server) = pair.connect();
+        let now = pair.time;
+        // The address the handshake used, which the policy does not let the peer move to.
+        let handshake_local = Some(pair.server.addr);
+        let conn = pair.server_conn_mut(server);
+        let original = conn.path.remote;
+        let moved = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 47_312, 0, 0));
+        let number = conn.spaces[SpaceId::Data].rx_packet;
+        conn.deferred_migration = Some(DeferredMigration {
+            remote: moved,
+            local: Some(alt),
+            received_dcid: conn.handshake_cid,
+            number,
+            generation: conn.path_counter,
+        });
+        let mut frames = Vec::new();
+        // A new identifier: the unused one a deferred move waits for.
+        frame::NewConnectionId {
+            sequence: conn.rem_cids.active_seq() + 1,
+            retire_prior_to: 0,
+            id: rama_quic_proto::ConnectionId::new(&[9; 8]),
+            reset_token: rama_quic_proto::ResetToken::from([9; rama_quic_proto::RESET_TOKEN_SIZE]),
+        }
+        .encode(&mut frames);
+        frame::FrameType::PING.encode(&mut frames);
+        let (packet, _) = padded_packet(conn.handshake_cid, &frames, frames.len());
+        conn.process_payload(now, original, handshake_local, number, packet, None)
+            .expect("the packet is processed");
+        assert_eq!(
+            conn.path.remote, moved,
+            "the move the policy allows was followed"
+        );
+        assert!(!conn.is_closed());
+    }
+
+    /// A frame repeated many times in one packet changes state at most once, so it queues at
+    /// most one event: a peer cannot grow the event queues by repeating itself.
+    #[test]
+    fn repeated_frames_queue_one_event() {
+        const REPEATS: usize = 500;
+        for side in [Side::Server, Side::Client] {
+            // RETIRE_CONNECTION_ID for the same sequence.
+            let mut pair = Pair::default();
+            let (now, conn) = connected(&mut pair, side);
+            let before = conn.endpoint_events.len();
+            let mut frames = Vec::new();
+            for _ in 0..REPEATS {
+                frame::FrameType::RETIRE_CONNECTION_ID.encode(&mut frames);
+                VarInt::from_u32(1).encode(&mut frames);
+            }
+            receive(conn, now, &frames).expect("the packet is processed");
+            assert!(conn.endpoint_events.len() - before <= 1, "{side:?}");
+
+            // Empty STREAM frames on a stream the peer opened.
+            let mut pair = Pair::default();
+            let (now, conn) = connected(&mut pair, side);
+            let id = StreamId::new(!side, Dir::Uni, 0);
+            let mut frames = Vec::new();
+            frame::StreamMeta {
+                id,
+                offsets: 0..1,
+                fin: false,
+            }
+            .encode(true, &mut frames);
+            frames.push(5);
+            for _ in 0..REPEATS {
+                frame::StreamMeta {
+                    id,
+                    offsets: 1..1,
+                    fin: false,
+                }
+                .encode(true, &mut frames);
+            }
+            receive(conn, now, &frames).expect("the packet is processed");
+            let mut readable = 0;
+            while let Some(event) = conn.streams.poll() {
+                readable +=
+                    usize::from(matches!(event, crate::proto::StreamEvent::Readable { .. }));
+            }
+            assert!(readable <= 1, "{side:?}: {readable} readable events");
+
+            // MAX_STREAMS raising the unidirectional limit one at a time.
+            let mut pair = Pair::default();
+            let (now, conn) = connected(&mut pair, side);
+            while conn.streams.poll().is_some() {}
+            let mut frames = Vec::new();
+            for count in 0..REPEATS as u32 {
+                frame::FrameType::MAX_STREAMS_UNI.encode(&mut frames);
+                VarInt::from_u32(1_000 + count).encode(&mut frames);
+            }
+            receive(conn, now, &frames).expect("the packet is processed");
+            let mut available = 0;
+            while let Some(event) = conn.streams.poll() {
+                available +=
+                    usize::from(matches!(event, crate::proto::StreamEvent::Available { .. }));
+            }
+            assert_eq!(available, 1, "{side:?}: {available} available events");
+        }
+
+        // HANDSHAKE_DONE, at a client whose handshake is confirmed already (only servers send it).
+        let mut pair = Pair::default();
+        let (now, conn) = connected(&mut pair, Side::Client);
+        while conn.poll().is_some() {}
+        receive(conn, now, &[0x1e_u8; REPEATS]).expect("the packet is processed");
+        assert!(conn.events.is_empty(), "{:?}", conn.events.len());
+    }
+
+    fn connected(pair: &mut Pair, side: Side) -> (Instant, &mut Connection) {
+        let (client, server) = pair.connect();
+        let now = pair.time;
+        match side {
+            Side::Client => (now, pair.client_conn_mut(client)),
+            Side::Server => (now, pair.server_conn_mut(server)),
+        }
+    }
+
+    fn receive(conn: &mut Connection, now: Instant, frames: &[u8]) -> Result<(), TransportError> {
+        let (packet, _) = padded_packet(conn.handshake_cid, frames, frames.len());
+        conn.process_payload(now, conn.path.remote, conn.path.local, 0, packet, None)
     }
 
     #[test]
@@ -652,7 +796,7 @@ mod tests {
                     number: PacketNumber::U8(0),
                 },
                 header_data: Bytes::new(),
-                wire_len: backing.len(),
+                allocated: backing.len(),
                 payload: backing,
             };
             conn.process_payload(now, conn.path.remote, conn.path.local, 0, packet, None)
@@ -711,7 +855,7 @@ mod tests {
                     header,
                     header_data: Default::default(),
                     payload: payload.as_slice().into(),
-                    wire_len: payload.len(),
+                    allocated: payload.len(),
                 };
                 let result =
                     conn.process_payload(now, conn.path.remote, conn.path.local, 0, packet, None);

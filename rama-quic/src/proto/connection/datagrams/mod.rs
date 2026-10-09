@@ -133,11 +133,11 @@ pub(super) struct DatagramState {
 }
 
 impl DatagramState {
-    /// Queue a DATAGRAM frame that arrived in a packet of `wire_len` bytes.
+    /// Queue a DATAGRAM frame that arrived in a packet of `allocated` bytes.
     pub(super) fn received(
         &mut self,
         arrived: ArrivedDatagram,
-        wire_len: usize,
+        allocated: usize,
         window: Option<usize>,
     ) -> Result<bool, TransportError> {
         let ArrivedDatagram { datagram, encoded } = arrived;
@@ -157,7 +157,7 @@ impl DatagramState {
 
         // Storage is a separate matter. A frame that is valid on the wire but will not fit
         // is dropped, which RFC 9221 §5.3 allows; it is not the peer's protocol error.
-        let Retained { bytes, charge } = retain(datagram.data, wire_len);
+        let Retained { bytes, charge } = retain(datagram.data, allocated);
         let stored = charge + size_of::<Datagram>();
         // Nothing is given up for a frame that would not fit an empty queue: discarding
         // readable datagrams could not make room for it.

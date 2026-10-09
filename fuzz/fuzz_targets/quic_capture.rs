@@ -2,18 +2,92 @@
 #![cfg(fuzzing)]
 
 use libfuzzer_sys::fuzz_target;
-use rama::quic::proto::capture;
+use rama::{
+    bytes::BytesMut,
+    quic::proto::{
+        MAX_CID_SIZE, Side,
+        capture::{self, CaptureError, InitialKeys, KeyProvider},
+        crypto::{CryptoError, HeaderKey, PacketKey},
+        version::Version,
+    },
+};
+
+/// Keys that leave packets as they are, so every observed Initial reaches key derivation,
+/// header and frame parsing and ClientHello reassembly.
+struct Plain;
+
+impl HeaderKey for Plain {
+    fn decrypt(&self, _: usize, _: &mut [u8]) {}
+
+    fn encrypt(&self, _: usize, _: &mut [u8]) {}
+
+    fn sample_size(&self) -> usize {
+        16
+    }
+}
+
+impl PacketKey for Plain {
+    fn encrypt(&self, _: u64, _: &mut [u8], _: usize) -> Result<(), CryptoError> {
+        Ok(())
+    }
+
+    fn decrypt(&self, _: u64, _: &[u8], payload: &mut BytesMut) -> Result<(), CryptoError> {
+        let len = payload.len().checked_sub(16).ok_or_else(CryptoError::new)?;
+        payload.truncate(len);
+        Ok(())
+    }
+
+    fn tag_len(&self) -> usize {
+        16
+    }
+
+    fn confidentiality_limit(&self) -> u64 {
+        u64::MAX
+    }
+
+    fn integrity_limit(&self) -> u64 {
+        u64::MAX
+    }
+}
+
+struct PlainKeys;
+
+impl KeyProvider for PlainKeys {
+    type Header = Plain;
+    type Packet = Plain;
+
+    fn initial_keys(
+        &self,
+        _: Version,
+        dcid: &[u8],
+        _: Side,
+    ) -> Result<InitialKeys<Plain, Plain>, CaptureError> {
+        assert!(
+            dcid.len() <= MAX_CID_SIZE,
+            "an oversized connection ID reached key derivation"
+        );
+        Ok(InitialKeys {
+            header: Plain,
+            packet: Plain,
+        })
+    }
+}
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(observed) = capture::observe(data) {
         let mut previous_end = 0;
-        for packet in observed.packets {
+        for packet in &observed.packets {
             assert_eq!(packet.range.start, previous_end);
             assert!(packet.range.end > packet.range.start);
             assert!(packet.range.end <= data.len());
             previous_end = packet.range.end;
         }
         assert_eq!(previous_end + observed.trailing, data.len());
+        for side in [Side::Server, Side::Client] {
+            if let Ok(initials) = observed.unprotect_initials(data, &PlainKeys, side, None) {
+                let _ = capture::client_hello(&initials);
+            }
+        }
     }
     if let Ok(parameters) = capture::transport_parameters(data) {
         let _ = capture::version_information(&parameters);

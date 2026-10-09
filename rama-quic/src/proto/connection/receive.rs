@@ -83,13 +83,18 @@ impl Connection {
         remote: SocketAddr,
         local: Option<SocketAddr>,
         ecn: Option<EcnCodepoint>,
-        data: BytesMut,
+        data: &[u8],
     ) {
         let received_bytes = data.len() as u64;
+        // What followed the first packet still shares its datagram's allocation; one copy gives
+        // it a buffer of its own, which each packet split from it is then charged against.
+        let data = BytesMut::from(data);
+        let allocated = data.len();
         let mut remaining = Some(data);
         while let Some(data) = remaining {
-            match PartialDecode::new(
+            match PartialDecode::new_within(
                 data,
+                allocated,
                 &FixedLengthConnectionIdParser::new(self.local_cid_state.cid_len()),
                 &self.decodable_versions(),
                 self.endpoint_config.grease_quic_bit,
@@ -513,6 +518,9 @@ impl Connection {
                 )]
                 let client_hello = state.client_hello.take().unwrap();
                 self.retry_src_cid = Some(rem_cid);
+                // A Retry that validates is a packet processed successfully (RFC 9000 §10.1).
+                self.reset_idle_timeout(now, SpaceId::Initial);
+                self.reset_keep_alive(now);
                 let old_remote_cid = self.rem_cids.active();
                 self.rem_cids.update_initial_cid(rem_cid);
                 self.qlog_remote_cid_updated(now, old_remote_cid);
@@ -744,7 +752,7 @@ impl Connection {
         packet: Packet,
     ) -> Result<(), TransportError> {
         debug_assert_ne!(packet.header.space(), SpaceId::Data);
-        let wire_len = packet.wire_len;
+        let allocated = packet.allocated;
         let mut ack_eliciting = false;
         for result in frame::Iter::new(packet.payload.freeze())? {
             let frame = result?;
@@ -762,7 +770,7 @@ impl Connection {
             match frame {
                 Frame::Padding | Frame::Ping => {}
                 Frame::Crypto(frame) => {
-                    self.read_crypto(packet.header.space(), &frame, wire_len)?;
+                    self.read_crypto(packet.header.space(), &frame, allocated)?;
                 }
                 Frame::Ack(ack) => {
                     self.on_ack_received(now, packet.header.space(), &ack)?;

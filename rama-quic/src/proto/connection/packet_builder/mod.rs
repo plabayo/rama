@@ -183,6 +183,8 @@ impl PacketBuilder {
                 .is_none_or(|len| len > buffer_capacity.saturating_sub(buffer.len()))
         {
             if Self::drop_optional_token(conn) {
+                // The packet is rebuilt with the number it was about to use.
+                conn.spaces[space_id].next_packet_number = exact_number;
                 return Self::new(
                     now,
                     space_id,
@@ -235,6 +237,8 @@ impl PacketBuilder {
         {
             buffer.truncate(partial_encode.start);
             if Self::drop_optional_token(conn) {
+                // The packet is rebuilt with the number it was about to use.
+                conn.spaces[space_id].next_packet_number = exact_number;
                 return Self::new(
                     now,
                     space_id,
@@ -629,6 +633,11 @@ mod token_budget_tests {
                     assert_eq!(conn.is_drained(), retried);
                     if !retried {
                         assert!(buffer.len() > 100, "the header follows the earlier packets");
+                        assert_eq!(
+                            conn.spaces[SpaceId::Initial].next_packet_number,
+                            1,
+                            "the rebuilt packet keeps the first number"
+                        );
                     }
                 }
             }

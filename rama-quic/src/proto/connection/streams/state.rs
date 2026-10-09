@@ -14,7 +14,7 @@ use rama_quic_proto::{
     frame::{self, FrameStruct, StreamMetaVec},
     transport_parameters::TransportParameters,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{
     PendingStreamsQueue, Recv, Retransmits, Send, SendState, ShouldTransmit, StreamEvent,
@@ -116,6 +116,10 @@ pub struct StreamsState {
     pub(super) pending: PendingStreamsQueue,
 
     events: VecDeque<StreamEvent>,
+    /// Streams with a `Readable` event in `events`: one is enough until the application reads.
+    readable_queued: FxHashSet<StreamId>,
+    /// Directions with an `Available` event in `events`, likewise one until the application opens.
+    available_queued: [bool; 2],
     /// Streams blocked on connection-level flow control or stream window space
     ///
     /// Streams are only added to this list when a write fails.
@@ -216,6 +220,8 @@ impl StreamsState {
             send_streams: 0,
             pending: PendingStreamsQueue::new(),
             events: VecDeque::new(),
+            readable_queued: FxHashSet::default(),
+            available_queued: [false; 2],
             connection_blocked: Vec::new(),
             blocked_scan: None,
             max_data: 0,
@@ -262,7 +268,7 @@ impl StreamsState {
             if self.blocked_open[index] && self.next[index] < self.max[index] {
                 self.blocked_open[index] = false;
                 self.streams_blocked[index] = false;
-                self.events.push_back(StreamEvent::Available { dir });
+                self.queue_available(dir);
             }
         }
         self.initial_send_credit = params.initial_max_data.into();
@@ -332,7 +338,7 @@ impl StreamsState {
     pub(crate) fn received(
         &mut self,
         frame: frame::Stream,
-        wire_len: usize,
+        allocated: usize,
     ) -> Result<ShouldTransmit, TransportError> {
         let id = frame.id;
         self.validate_receive_id(id).inspect_err(|_e| {
@@ -351,7 +357,7 @@ impl StreamsState {
         }
 
         let (new_bytes, closed) =
-            rs.ingest(frame, wire_len, self.data_recvd, self.local_max_data)?;
+            rs.ingest(frame, allocated, self.data_recvd, self.local_max_data)?;
         self.data_recvd = self.data_recvd.saturating_add(new_bytes);
 
         if !rs.stopped {
@@ -747,7 +753,7 @@ impl StreamsState {
         if stream.initiator() == self.side {
             // Notifying about the opening of locally-initiated streams would be redundant.
             if notify_readable {
-                self.events.push_back(StreamEvent::Readable { id: stream });
+                self.queue_readable(stream);
             }
             return;
         }
@@ -756,8 +762,34 @@ impl StreamsState {
             *next = stream.index() + 1;
             self.opened[stream.dir() as usize] = true;
         } else if notify_readable {
+            self.queue_readable(stream);
+        }
+    }
+
+    /// Queue a `Readable` event unless one for `stream` is already waiting.
+    fn queue_readable(&mut self, stream: StreamId) {
+        if self.readable_queued.insert(stream) {
             self.events.push_back(StreamEvent::Readable { id: stream });
         }
+    }
+
+    fn queue_available(&mut self, dir: Dir) {
+        if !mem::replace(&mut self.available_queued[dir as usize], true) {
+            self.events.push_back(StreamEvent::Available { dir });
+        }
+    }
+
+    /// The next queued event, keeping the queued markers in step with what is left.
+    fn pop_event(&mut self) -> Option<StreamEvent> {
+        let event = self.events.pop_front()?;
+        match event {
+            StreamEvent::Readable { id } => {
+                self.readable_queued.remove(&id);
+            }
+            StreamEvent::Available { dir } => self.available_queued[dir as usize] = false,
+            _ => {}
+        }
+        Some(event)
     }
 
     pub(crate) fn received_ack_of(&mut self, frame: frame::StreamMeta) {
@@ -841,7 +873,7 @@ impl StreamsState {
             *current = count;
             self.streams_blocked[dir as usize] = false;
             self.blocked_open[dir as usize] = false;
-            self.events.push_back(StreamEvent::Available { dir });
+            self.queue_available(dir);
         }
 
         Ok(())
@@ -919,12 +951,12 @@ impl StreamsState {
 
         let limit = self.write_limit();
         if limit == 0 {
-            return self.events.pop_front();
+            return self.pop_event();
         }
         let reserve_cap = (self.initial_send_credit / 2).min(self.send_window / 2);
         let scan = (limit, reserve_cap, self.connection_blocked.len());
         if self.blocked_scan == Some(scan) {
-            return self.events.pop_front();
+            return self.pop_event();
         }
         self.blocked_scan = None;
         while let Some(index) = self.connection_blocked.iter().rposition(|id| {
@@ -945,7 +977,7 @@ impl StreamsState {
         }
 
         self.blocked_scan = Some((limit, reserve_cap, self.connection_blocked.len()));
-        self.events.pop_front()
+        self.pop_event()
     }
 
     /// Queues MAX_STREAM_ID frames in `pending` if needed

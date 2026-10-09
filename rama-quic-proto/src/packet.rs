@@ -75,16 +75,39 @@ impl<T: AsRef<[u8]>> Buf for Cursor<T> {
 pub struct PartialDecode {
     plain_header: ProtectedHeader,
     buf: Cursor<BytesMut>,
+    /// What this packet's bytes keep allocated, see [`Packet::allocated`].
+    allocated: usize,
 }
 
 impl PartialDecode {
-    /// Begin decoding a QUIC packet from `bytes`, returning any trailing data not part of that packet
+    /// Begin decoding a QUIC packet from `bytes`, a datagram in an allocation of its own size,
+    /// returning any trailing data not part of that packet.
     pub fn new(
         bytes: BytesMut,
         cid_parser: &(impl ConnectionIdParser + ?Sized),
         supported_versions: &[Version],
         grease_quic_bit: bool,
     ) -> Result<(Self, Option<BytesMut>), PacketDecodeError> {
+        let allocated = bytes.len();
+        Self::new_within(
+            bytes,
+            allocated,
+            cid_parser,
+            supported_versions,
+            grease_quic_bit,
+        )
+    }
+
+    /// As [`Self::new`] for `bytes` that are part of a larger allocation of `allocated` bytes,
+    /// such as the trailing data an earlier call returned, which shares that allocation.
+    pub fn new_within(
+        bytes: BytesMut,
+        allocated: usize,
+        cid_parser: &(impl ConnectionIdParser + ?Sized),
+        supported_versions: &[Version],
+        grease_quic_bit: bool,
+    ) -> Result<(Self, Option<BytesMut>), PacketDecodeError> {
+        let allocated = allocated.max(bytes.len());
         let mut buf = Cursor::new(bytes);
         let plain_header =
             ProtectedHeader::decode(&mut buf, cid_parser, supported_versions, grease_quic_bit)?;
@@ -99,19 +122,33 @@ impl PartialDecode {
             None => dgram_len,
         };
         match dgram_len.cmp(&packet_len) {
-            Ordering::Equal => Ok((Self { plain_header, buf }, None)),
+            Ordering::Equal => Ok((
+                Self {
+                    plain_header,
+                    buf,
+                    allocated,
+                },
+                None,
+            )),
             Ordering::Less => Err(PacketDecodeError::InvalidHeader(
                 "packet too short to contain payload length",
             )),
             Ordering::Greater => {
-                // Coalesced packets each get their own allocation, so bytes one of them keeps
-                // alive never hold the rest of the datagram.
+                // The packet is copied out so it owns its bytes; the rest stays a view of the
+                // datagram, so splitting all of a datagram's packets copies it only once.
                 let position = buf.pos;
-                let bytes = buf.into_inner();
-                let rest = BytesMut::from(&bytes[packet_len..]);
-                let mut buf = Cursor::new(BytesMut::from(&bytes[..packet_len]));
+                let mut bytes = buf.into_inner();
+                let rest = bytes.split_off(packet_len);
+                let mut buf = Cursor::new(BytesMut::from(&bytes[..]));
                 buf.pos = position;
-                Ok((Self { plain_header, buf }, Some(rest)))
+                Ok((
+                    Self {
+                        plain_header,
+                        buf,
+                        allocated: packet_len,
+                    },
+                    Some(rest),
+                ))
             }
         }
     }
@@ -213,8 +250,8 @@ impl PartialDecode {
         let Self {
             plain_header,
             mut buf,
+            allocated,
         } = self;
-        let wire_len = buf.get_ref().len();
 
         if let ProtectedHeader::Initial(ProtectedInitialHeader {
             dst_cid,
@@ -245,7 +282,7 @@ impl PartialDecode {
                 }),
                 header_data,
                 payload: bytes,
-                wire_len,
+                allocated,
             });
         }
 
@@ -310,7 +347,7 @@ impl PartialDecode {
             header,
             header_data: bytes.split_to(header_len).freeze(),
             payload: bytes,
-            wire_len,
+            allocated,
         })
     }
 
@@ -337,9 +374,9 @@ pub struct Packet {
     pub header: Header,
     pub header_data: Bytes,
     pub payload: BytesMut,
-    /// The packet's size in its datagram, before decryption; slices of the packet keep this
-    /// much allocated when the datagram buffer handed to [`PartialDecode::new`] was exact.
-    pub wire_len: usize,
+    /// What the packet's bytes keep allocated: its own size when it owns its buffer, or the whole
+    /// datagram when it is the last of several coalesced into one. Any slice of it keeps as much.
+    pub allocated: usize,
 }
 
 impl Packet {
@@ -356,8 +393,8 @@ pub struct InitialPacket {
     pub header: InitialHeader,
     pub header_data: Bytes,
     pub payload: BytesMut,
-    /// See [`Packet::wire_len`].
-    pub wire_len: usize,
+    /// See [`Packet::allocated`].
+    pub allocated: usize,
 }
 
 impl From<InitialPacket> for Packet {
@@ -366,7 +403,7 @@ impl From<InitialPacket> for Packet {
             header: Header::Initial(x.header),
             header_data: x.header_data,
             payload: x.payload,
-            wire_len: x.wire_len,
+            allocated: x.allocated,
         }
     }
 }
@@ -1182,35 +1219,52 @@ mod tests {
         }
     }
 
+    /// Splitting a datagram of many coalesced packets copies each packet once: the packet split
+    /// off owns its bytes, the rest stays a view of the datagram, and the last packet, still in
+    /// that view, is charged the whole datagram.
     #[test]
-    fn coalesced_packets_do_not_share_an_allocation() {
+    fn coalesced_packets_split_in_linear_time_and_own_their_bytes() {
         for version in [Version::V1, Version::V2] {
-            let mut datagram = long_packet(version, LongHeaderType::Initial, 0, 20);
-            datagram.resize(datagram.len() + 19, 0);
-            let first_len = datagram.len();
-            datagram.extend(long_packet(
-                version,
-                LongHeaderType::Standard(LongType::Handshake),
-                0,
-                20,
-            ));
-            datagram.resize(datagram.len() + 19, 0);
+            let count = 8_188;
+            let mut datagram = Vec::with_capacity(count * 8);
+            for _ in 0..count {
+                datagram.push(
+                    LongHeaderType::Standard(LongType::Handshake)
+                        .to_byte(version.to_wire().unwrap()),
+                );
+                datagram.extend_from_slice(&version.to_be_bytes());
+                // Empty connection IDs and a Length of zero: the smallest coalesced packet.
+                datagram.extend_from_slice(&[0, 0, 0]);
+            }
             let backing = BytesMut::from(datagram.as_slice());
-            let start = backing.as_ptr() as usize;
+            let start = backing.as_ptr().addr();
             let range = start..start + backing.len();
-            let (first, rest) = PartialDecode::new(
-                backing,
-                &FixedLengthConnectionIdParser::new(0),
-                &[version],
-                false,
-            )
-            .unwrap();
-            let rest = rest.expect("a second packet follows");
-            assert_eq!(first.len(), first_len);
-            assert_eq!(first.data(), &datagram[..first_len]);
-            assert_eq!(rest.as_ref(), &datagram[first_len..]);
-            assert!(!range.contains(&(first.data().as_ptr() as usize)));
-            assert!(!range.contains(&(rest.as_ptr() as usize)));
+            let mut rest = Some(backing);
+            let mut packets = 0;
+            while let Some(bytes) = rest {
+                let (packet, next) = PartialDecode::new_within(
+                    bytes,
+                    datagram.len(),
+                    &FixedLengthConnectionIdParser::new(0),
+                    &[version],
+                    false,
+                )
+                .unwrap();
+                packets += 1;
+                if let Some(next) = &next {
+                    assert!(
+                        range.contains(&next.as_ptr().addr()),
+                        "the rest is not copied"
+                    );
+                    assert!(!range.contains(&packet.data().as_ptr().addr()));
+                    assert_eq!(packet.allocated, packet.len());
+                } else {
+                    assert!(range.contains(&packet.data().as_ptr().addr()));
+                    assert_eq!(packet.allocated, datagram.len());
+                }
+                rest = next;
+            }
+            assert_eq!(packets, count);
         }
     }
 

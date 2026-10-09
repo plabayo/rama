@@ -28,7 +28,7 @@ use rama_tls::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Side, Version,
+    MAX_CID_SIZE, Side, Version,
     coding::{BufExt, bounded_len},
     crypto::{HeaderKey, PacketKey},
     frame::{self, Frame},
@@ -318,6 +318,13 @@ impl ObservedDatagram {
                 continue;
             };
             let seed = original_dcid.unwrap_or(&observed.dcid);
+            // Every version this crate implements limits connection IDs to 20 bytes (RFC 9000
+            // §17.2); a longer one is refused before it reaches key derivation.
+            if seed.len() > MAX_CID_SIZE {
+                return Err(CaptureError::Malformed(
+                    "Initial connection ID longer than 20 bytes",
+                ));
+            }
             let keys = provider.initial_keys(version, seed, side)?;
             let header_key: &dyn HeaderKey = &keys.header;
             // The observation may come from elsewhere (it is serializable), so its range is not

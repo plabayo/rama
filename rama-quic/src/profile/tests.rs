@@ -492,3 +492,36 @@ fn a_covered_crypto_chunk_does_not_lose_the_client_hello() {
         Some(hello)
     );
 }
+
+/// An Initial's destination connection ID chooses its keys, so one longer than any version
+/// allows (RFC 9000 §17.2) is refused before key derivation, in every build.
+#[test]
+fn an_oversized_initial_connection_id_is_refused_before_key_derivation() {
+    let provider = provider();
+    let keys = capture::ProviderKeys(&*provider);
+    for len in [21u8, 255] {
+        let mut datagram = vec![0xc0, 0, 0, 0, 1, len];
+        datagram.extend(std::iter::repeat_n(7, usize::from(len)));
+        datagram.extend_from_slice(&[0, 0, 1, 0]);
+        let observed = observe(&datagram).expect("the invariant layout parses");
+        for side in [rama_quic_proto::Side::Server, rama_quic_proto::Side::Client] {
+            let error = observed
+                .unprotect_initials(&datagram, &keys, side, None)
+                .unwrap_err();
+            assert!(
+                matches!(error, rama_quic_proto::capture::CaptureError::Malformed(_)),
+                "{len}-byte connection ID: {error:?}"
+            );
+        }
+        let Err(rama_quic_proto::capture::CaptureError::Malformed(_)) =
+            rama_quic_proto::capture::KeyProvider::initial_keys(
+                &keys,
+                Version::V1,
+                &datagram[6..6 + usize::from(len)],
+                rama_quic_proto::Side::Server,
+            )
+        else {
+            panic!("a {len}-byte connection ID reached key derivation");
+        };
+    }
+}

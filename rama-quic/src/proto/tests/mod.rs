@@ -1212,13 +1212,18 @@ fn zero_rtt_rejection() {
     assert_eq!(pair.client_conn_mut(client_ch).stats().path.lost_packets, 0);
 }
 
+/// A budget that holds three buffered datagrams of up to 1200 bytes and not a fourth.
+fn three_buffered_datagrams() -> u64 {
+    3 * endpoint::incoming_datagram_charge(1200)
+}
+
 fn test_zero_rtt_incoming_limit<F: FnOnce(&mut ServerConfig)>(configure_server: F) {
-    // caller sets the server limit to 4000 bytes
+    // caller sets the server limit to three buffered datagrams
     // the client writes 8000 bytes
     const CLIENT_WRITES: usize = 8000;
     // this gets split across 8 packets
     // the first packet is stored in the Incoming
-    // the next three are incoming-buffered, bringing the incoming buffer size to 3600 bytes
+    // the next three are incoming-buffered, filling the budget
     // the last four are dropped due to the buffering limit and must be retransmitted
     const EXPECTED_DROPPED: u64 = 4;
 
@@ -1330,14 +1335,14 @@ fn test_zero_rtt_incoming_limit<F: FnOnce(&mut ServerConfig)>(configure_server: 
 #[test]
 fn zero_rtt_incoming_buffer_size() {
     test_zero_rtt_incoming_limit(|config| {
-        config.set_incoming_buffer_size(4000);
+        config.set_incoming_buffer_size(three_buffered_datagrams());
     });
 }
 
 #[test]
 fn zero_rtt_incoming_buffer_size_total() {
     test_zero_rtt_incoming_limit(|config| {
-        config.set_incoming_buffer_size_total(4000);
+        config.set_incoming_buffer_size_total(three_buffered_datagrams());
     });
 }
 
@@ -1393,6 +1398,46 @@ fn tiny_datagrams_for_a_pending_connection_are_charged_their_entries() {
     }
     assert_eq!(incoming.progress().generation() - before, fits);
     assert_eq!(pair.server.endpoint.incoming_buffer_bytes(), fits * charge);
+    pair.server.reject(incoming);
+}
+
+/// A server config cleared while a connection attempt is pending stops new attempts; a datagram
+/// the client still sends for the pending one is dropped, never a panic of the endpoint.
+#[test]
+fn a_pending_attempt_survives_its_server_config_being_cleared() {
+    let mut pair = Pair::default();
+    pair.server.handle_incoming = Box::new(|_| IncomingConnectionBehavior::Wait);
+    pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    let incoming = pair
+        .server
+        .waiting_incoming
+        .pop()
+        .expect("an attempt is pending");
+    let dst_cid = *incoming.orig_dst_cid();
+    pair.server.endpoint.set_server_config(None);
+    let mut datagram = vec![0xd0];
+    datagram.extend_from_slice(&Version::V1.to_be_bytes());
+    datagram.push(dst_cid.len() as u8);
+    datagram.extend_from_slice(&dst_cid);
+    datagram.extend_from_slice(&[0, 1, 0]);
+    let before = pair.server.endpoint.incoming_buffer_bytes();
+    let mut buf = Vec::new();
+    assert!(
+        pair.server
+            .endpoint
+            .handle(
+                pair.time,
+                pair.client.addr,
+                None,
+                None,
+                BytesMut::from(datagram.as_slice()),
+                &mut buf,
+            )
+            .is_none()
+    );
+    assert_eq!(pair.server.endpoint.incoming_buffer_bytes(), before);
     pair.server.reject(incoming);
 }
 

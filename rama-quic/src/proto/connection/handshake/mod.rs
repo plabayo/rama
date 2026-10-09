@@ -182,7 +182,7 @@ impl Connection {
             })?;
         self.qlog_observe_state(now);
         if let Some(data) = remaining {
-            self.handle_coalesced(now, remote, local, ecn, data);
+            self.handle_coalesced(now, remote, local, ecn, &data);
         }
 
         self.qlog_sink
@@ -235,7 +235,7 @@ impl Connection {
         &mut self,
         space: SpaceId,
         crypto: &frame::Crypto,
-        wire_len: usize,
+        allocated: usize,
     ) -> Result<(), TransportError> {
         let expected = if !self.state.is_handshake() {
             SpaceId::Data
@@ -272,7 +272,7 @@ impl Connection {
         // As above: the assembler reports only that it holds too many spans.
         if space
             .crypto_stream
-            .insert(crypto.offset, crypto.data.clone(), wire_len)
+            .insert(crypto.offset, crypto.data.clone(), allocated)
             .is_err()
         {
             return Err(TransportError::INTERNAL_ERROR(

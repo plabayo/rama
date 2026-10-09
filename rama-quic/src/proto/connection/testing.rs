@@ -186,6 +186,12 @@ impl Connection {
         self.spaces[SpaceId::Data].sent_with_keys = sent;
     }
 
+    /// Tests: when the idle timer fires, if it is armed.
+    #[cfg(test)]
+    pub(crate) fn idle_timer(&self) -> Option<Instant> {
+        self.timers.get(Timer::Idle)
+    }
+
     /// Tests: put the next 1-RTT packet number `distance` past the largest acknowledged one, so
     /// the encoding limit is reachable without sending billions of packets.
     #[cfg(test)]

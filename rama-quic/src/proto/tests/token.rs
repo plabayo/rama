@@ -1034,6 +1034,17 @@ fn oversized_cached_initial_token() {
 /// A client connection that sent its first Initial and then received a Retry, with a valid tag,
 /// carrying a `token_len`-byte token and a 20-byte source connection ID.
 fn retried_client(version: Version, token_len: usize) -> (Connection, Instant) {
+    let (conn, retried_at, _) = retried_client_after(version, token_len, Duration::ZERO);
+    (conn, retried_at + Duration::from_secs(1))
+}
+
+/// As [`retried_client`], with the Retry arriving `delay` after the first Initial; also returns
+/// when it arrived and the idle deadline just before it.
+fn retried_client_after(
+    version: Version,
+    token_len: usize,
+    delay: Duration,
+) -> (Connection, Instant, Option<Instant>) {
     let address = "[::1]:4433".parse().unwrap();
     let mut endpoint = Endpoint::new(
         Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
@@ -1049,6 +1060,8 @@ fn retried_client(version: Version, token_len: usize) -> (Connection, Instant) {
     let (_, mut conn) = endpoint.connect(now, config, address, "localhost").unwrap();
     let mut buf = Vec::new();
     let _transmit = conn.poll_transmit(now, 1, &mut buf).unwrap();
+    let idle_before = conn.idle_timer();
+    let now = now + delay;
     let (packet, _) = PartialDecode::new(
         buf.as_slice().into(),
         &FixedLengthConnectionIdParser::new(0),
@@ -1082,7 +1095,20 @@ fn retried_client(version: Version, token_len: usize) -> (Connection, Instant) {
         panic!("Retry must be routed to the client connection")
     };
     conn.handle_event(event);
-    (conn, now + Duration::from_secs(1))
+    (conn, now, idle_before)
+}
+
+/// A Retry that validates is a packet processed successfully, so it restarts the idle timer
+/// (RFC 9000 §10.1), as any other packet from the peer does.
+#[test]
+fn a_valid_retry_restarts_the_idle_timer() {
+    let _guard = subscribe();
+    for version in [Version::V1, Version::V2] {
+        let delay = Duration::from_secs(3);
+        let (conn, _, idle_before) = retried_client_after(version, 64, delay);
+        let idle_before = idle_before.expect("an idle timer is armed after the first Initial");
+        assert_eq!(conn.idle_timer(), Some(idle_before + delay), "{version:?}");
+    }
 }
 
 /// A Retry token is required to go on, so one that leaves the Initial no room ends the attempt

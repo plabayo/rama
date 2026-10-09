@@ -167,12 +167,12 @@ impl Assembler {
         &mut self,
         mut offset: u64,
         bytes: Bytes,
-        wire_len: usize,
+        allocated: usize,
     ) -> Result<(), TooManyChunks> {
         let Retained {
             mut bytes,
             charge: allocation_size,
-        } = retain(bytes, wire_len);
+        } = retain(bytes, allocated);
         self.end = self.end.max(offset + bytes.len() as u64);
         if let State::Unordered { ref mut recvd } = self.state {
             // Discard duplicate data
@@ -190,6 +190,10 @@ impl Assembler {
                 }
                 bytes.advance((duplicate.end - offset) as usize);
                 offset = duplicate.end;
+            }
+            // Delivered spans leave the data but stay here, so the gaps they mark need their own cap.
+            if recvd.len() > MAX_CHUNKS {
+                return Err(TooManyChunks);
             }
         } else if offset < self.bytes_read {
             if (offset + bytes.len() as u64) <= self.bytes_read {
@@ -981,6 +985,28 @@ mod test {
                 x.data.len()
             );
         }
+    }
+
+    #[test]
+    fn bounded_gaps_when_read_unordered() {
+        // An unordered reader drains each island as it lands, so only the received set keeps it.
+        let mut x = Assembler::new();
+        x.ensure_ordering(false).unwrap();
+        let mut result = Ok(());
+        let mut islands = 0;
+        for i in 0..(MAX_CHUNKS as u64 * 8) {
+            result = x.insert(1 + i * 2, Bytes::from_static(b"x"), 1);
+            if result.is_err() {
+                break;
+            }
+            islands += 1;
+            while x.read(usize::MAX, false).is_some() {}
+        }
+        match result {
+            Err(TooManyChunks) => {}
+            other => panic!("assertion failed: `{other:?}` does not match `Err(TooManyChunks)`"),
+        }
+        assert_eq!(islands, MAX_CHUNKS, "gapped spans kept past the bound");
     }
 
     #[test]

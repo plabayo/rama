@@ -93,8 +93,8 @@ impl ReceivedAlone for DatagramState {
         arrived: ArrivedDatagram,
         window: Option<usize>,
     ) -> Result<bool, TransportError> {
-        let wire_len = arrived.datagram.data.len();
-        self.received(arrived, wire_len, window)
+        let allocated = arrived.datagram.data.len();
+        self.received(arrived, allocated, window)
     }
 }
 

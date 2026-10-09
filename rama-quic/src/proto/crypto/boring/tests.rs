@@ -883,3 +883,43 @@ async fn udp_endpoints_exchange_streams_datagrams_and_early_data() {
         });
     }
 }
+
+/// Handshake data arrives in as many CRYPTO frames as the peer likes, and each one drives the
+/// session; the peer's transport parameters are still parsed once per side.
+#[test]
+fn transport_parameters_are_parsed_once_however_the_handshake_is_split() {
+    let (client_tls, server_tls) = configs();
+    let options = TlsOptions::default();
+    let client = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
+    let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
+    let mut c = client
+        .start_session(Version::V1, "localhost", &params(Side::Client))
+        .unwrap();
+    let mut s = server
+        .start_session(Version::V1, &params(Side::Server))
+        .unwrap();
+    super::session::PEER_PARAMETER_PARSES.with(|parses| parses.set(0));
+    fn bytewise(from: &mut dyn Session, to: &mut dyn Session) -> bool {
+        let mut progress = false;
+        while let Some(event) = from.poll_handshake().unwrap() {
+            progress = true;
+            if let HandshakeEvent::Data(level, bytes) = event {
+                for byte in bytes.chunks(1) {
+                    to.read_handshake(level, byte).unwrap();
+                }
+            }
+        }
+        progress
+    }
+    for _ in 0..4096 {
+        let progress = bytewise(&mut *c, &mut *s) | bytewise(&mut *s, &mut *c);
+        if !progress {
+            break;
+        }
+    }
+    assert!(!c.is_handshaking() && !s.is_handshaking());
+    assert_eq!(
+        super::session::PEER_PARAMETER_PARSES.with(|parses| parses.get()),
+        2
+    );
+}
