@@ -531,6 +531,7 @@ async fn idle_limits_close_nothing_while_checkouts_wait() {
         "what is idle now may serve a waiter"
     );
     drop(waiting);
+    assert_eq!(stored(&pool).len(), 1, "trimmed once the last waiter left");
 }
 
 #[tokio::test(start_paused = true)]
@@ -544,4 +545,48 @@ async fn a_connection_in_use_is_not_counted_idle() {
     drop(fresh(&pool, 1).await);
     assert_eq!(stored(&pool).len(), 2, "one is in use, one idle");
     drop(reused);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_that_is_not_stored_is_not_counted_idle() {
+    let pool = MultiplexPool::new().with_max_idle_total(NonZeroUsize::new(1).unwrap());
+    // Never stored, then stored and taken out while in use.
+    drop(fresh(&pool, u32::MAX).await);
+    let broken = fresh(&pool, 1).await;
+    broken
+        .extensions()
+        .get_ref::<ConnectionHealthWatcher>()
+        .unwrap()
+        .mark_broken();
+    let mut swept = Swept::default();
+    pool.sweep_all(&mut pool.storage.lock(), &mut swept);
+    pool.settle(swept);
+    drop(broken);
+    drop(fresh(&pool, 0).await);
+    let Ok(ConnectionResult::Connection(reused)) = pool.get_conn(&TestId(0), &EMPTY_INPUT).await
+    else {
+        panic!("the only idle connection stays within the limit");
+    };
+    drop(reused);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_checkout_at_its_id_limit_is_woken_at_the_first_expiry_its_ids_sweep_saw() {
+    let timeout = Duration::from_millis(30);
+    let pool = per_id(1)
+        .with_saturation_policy(SaturationPolicy::Wait)
+        .with_idle_timeout(timeout);
+    drop(fresh_keyed(&pool, 0, 1).await);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let input = want(2);
+    let mut waiting = queue_keyed(&pool, 0, &input);
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert!(
+        waiting.is_woken(),
+        "the idle connection expires 30ms after it went idle, not after the look"
+    );
+    let Poll::Ready(Ok(ConnectionResult::CreatePermit(slot))) = waiting.poll() else {
+        panic!("its slot is free once it expired")
+    };
+    drop(slot);
 }

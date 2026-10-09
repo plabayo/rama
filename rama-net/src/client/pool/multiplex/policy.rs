@@ -79,8 +79,10 @@ impl IdLimit {
 pub(super) struct IdleLimits {
     pub(super) per_id: Option<NonZeroUsize>,
     pub(super) total: Option<NonZeroUsize>,
-    /// Stored connections counted idle, see [`StoredConnection::counted_idle`].
+    /// Stored connections counted idle, see [`StoredConnection::idle_count`].
     pub(super) idle: AtomicUsize,
+    /// Whether a trim of its own task is due.
+    pub(super) trimming: AtomicBool,
 }
 
 impl IdleLimits {
@@ -94,6 +96,7 @@ impl IdleLimits {
                 per_id,
                 total,
                 idle: AtomicUsize::new(0),
+                trimming: AtomicBool::new(false),
             })
         })
     }

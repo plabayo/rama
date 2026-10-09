@@ -86,6 +86,9 @@ pub(super) struct Waiting {
     /// The checkouts at its id's limit that may replace one of the id's idle
     /// connections, if the pool limits connections per id.
     pub(super) id_evictors: Option<Arc<WaitQueue>>,
+    /// Trims the idle connections over the pool's limits, if it has any, once
+    /// the last waiting checkout leaves.
+    pub(super) idle_trim: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 /// A waiting checkout's place in one queue.
@@ -108,6 +111,7 @@ impl Waiting {
         slot_waiters: &Arc<WaitQueue>,
         id_evictors: Option<Arc<WaitQueue>>,
         order: u64,
+        idle_trim: Option<Box<dyn Fn() + Send + Sync>>,
     ) -> Self {
         waiting.fetch_add(1, Ordering::Relaxed);
         // Pairs with the fence of a release: for a checkout that queues in no
@@ -123,6 +127,7 @@ impl Waiting {
             waiting: waiting.clone(),
             slot_waiters: slot_waiters.clone(),
             id_evictors,
+            idle_trim,
         }
     }
 
@@ -282,5 +287,8 @@ impl Drop for Waiting {
         }
         let others = self.waiting.fetch_sub(1, Ordering::Relaxed) > 1;
         self.announce(emptied, others);
+        if !others && let Some(trim) = &self.idle_trim {
+            trim();
+        }
     }
 }

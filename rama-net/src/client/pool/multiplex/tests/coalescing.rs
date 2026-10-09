@@ -300,3 +300,16 @@ async fn checkouts_that_waited_dial_their_own_once_a_connection_lands_with_one_s
         "one connection each, once the first shows it"
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_new_id_expecting_to_multiplex_takes_what_other_ids_took() {
+    // The hint expects 10, the pool's connections take 4.
+    let pool = MultiplexPool::new().with_streams_hint(expect_ten);
+    let svc = dialing(pool, Dialer::new(Some(4)));
+    drop(hold(&svc, 0, 1).await);
+    let before = dials(&svc);
+    let start = tokio::time::Instant::now();
+    let _burst = burst(&svc, 1, 8).await;
+    assert_eq!(dials(&svc) - before, 2, "8 checkouts of 4 streams each");
+    assert!(start.elapsed() < HANDSHAKE * 2, "dialed at once");
+}

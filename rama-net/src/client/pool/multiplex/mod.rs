@@ -53,7 +53,9 @@ mod waiting;
 
 use self::connecting::{Coalesce, Connect, ConnectKey, Connects, Failure};
 pub use self::connection::MultiplexedConnection;
-use self::connection::{Admitted, ConnectionSlot, StoredConnection, relist_stored, trim_idle};
+use self::connection::{
+    Admitted, ConnectionSlot, GONE, StoredConnection, relist_stored, trim_all, trim_idle,
+};
 use self::lanes::{Claimed, IdBucket, Lane, OnlyLane, RequestLanes, Snapshot, select_and_admit};
 use self::policy::{IdLimit, IdPermit, IdleLimits};
 pub use self::policy::{MultiplexSlot, SaturationPolicy};
@@ -82,7 +84,7 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering, fence};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering, fence};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::sync::{AcquireError, Notify, OwnedSemaphorePermit, Semaphore};
@@ -165,6 +167,9 @@ struct Storage<C, ID> {
     /// The streams a connection of each id took last: a guess for the next one
     /// once its connections are gone.
     learned: HashMap<ID, NonZeroUsize>,
+    /// The streams a multiplexed connection of any id took last: a guess for
+    /// an id the pool has not seen, if its requests expect to multiplex.
+    learned_any: Option<NonZeroUsize>,
 }
 
 /// Take `conn` out of storage, if it is still stored.
@@ -180,8 +185,8 @@ fn unstore<C, ID: ConnID>(
     removed
 }
 
-/// The streams a request expects a new connection to take, if it knows: see
-/// [`MultiplexPool::with_streams_hint`].
+/// Whether a request expects a new connection to multiplex, with a guess of
+/// its streams for a pool that knows none: see [`MultiplexPool::with_streams_hint`].
 pub type StreamsHint = fn(&Extensions) -> Option<NonZeroUsize>;
 
 /// Connection pool that multiplexes concurrent users over shared
@@ -276,6 +281,7 @@ impl<C, ID> Default for MultiplexPool<C, ID> {
                 id_slots: HashMap::new(),
                 connects: HashMap::new(),
                 learned: HashMap::new(),
+                learned_any: None,
             })),
             max_connections_total: None,
             total_slots: None,
@@ -442,11 +448,13 @@ impl<C, ID> MultiplexPool<C, ID> {
     }
 
     generate_set_and_with! {
-        /// How many streams a request expects a connection to take before the
-        /// pool knows, so a burst on a new id waits for a few connects instead
-        /// of each request dialing its own: the protocol is negotiated, so only
-        /// a request can tell, such as one requiring a multiplexing protocol.
-        /// Once an id had a connection, what it took is the guess.
+        /// Whether a request expects a connection to multiplex before the pool
+        /// knows, so a burst on a new id waits for a few connects instead of
+        /// each request dialing its own: the protocol is negotiated, so only a
+        /// request can tell, such as one requiring a multiplexing protocol.
+        /// The streams such a connection takes are what the pool's multiplexed
+        /// connections took last, the hint's guess only if it saw none; once an
+        /// id had a connection, what it took.
         pub fn streams_hint(mut self, hint: Option<StreamsHint>) -> Self {
             self.streams_hint = hint;
             self
@@ -760,10 +768,10 @@ where
             }
             // Woken once they leave. One that left meanwhile left its
             // connection to this evictor: look again.
-            if evictor.is_none()
-                || gave_way
-                    .iter()
-                    .all(|rivals: &&Arc<WaitQueue>| rivals.give_way(order, order, chances))
+            let giver = evictor.and_then(|evictor| evictor.waiter_in(chances))?;
+            if gave_way
+                .iter()
+                .all(|rivals: &&Arc<WaitQueue>| rivals.give_way(order, giver))
             {
                 return None;
             }
@@ -875,6 +883,12 @@ where
     /// lane is woken once it leaves. Asks its admission whether work outlives
     /// its handouts: call without the storage lock.
     fn kept_for_evictor(&self, conn: &StoredConnection<C, ID>, waiting: Option<&Waiting>) -> bool {
+        // Mostly nobody waits to evict: a claim costs no lock then.
+        if self.slot_waiters.is_empty()
+            && conn.id_evictors.as_deref().is_none_or(WaitQueue::is_empty)
+        {
+            return false;
+        }
         let lane = conn.lane_waiters.lock().clone();
         // The lane's own front goes first: its FIFO serves this checkout in turn.
         let than = waiting
@@ -890,16 +904,19 @@ where
         {
             return false;
         }
-        // A newcomer looks again once it waits.
-        let (Some(waiting), Some(lane)) = (waiting, lane) else {
+        // A newcomer looks again once it waits, and a checkout that does not
+        // queue in the lane yet once it does.
+        let Some(giver) = waiting
+            .zip(lane)
+            .and_then(|(waiting, lane)| waiting.waiter_in(&lane).cloned())
+        else {
             return true;
         };
-        let from = waiting.party.order();
-        let total = self.slot_waiters.give_way(than, from, &lane);
+        let total = self.slot_waiters.give_way(than, &giver);
         let id = conn
             .id_evictors
             .as_ref()
-            .is_some_and(|evictors| evictors.give_way(than, from, &lane));
+            .is_some_and(|evictors| evictors.give_way(than, &giver));
         total || id
     }
 
@@ -1133,6 +1150,14 @@ where
         ConnectionResult::CreatePermit(slot)
     }
 
+    /// Trims the idle connections over the limits once the last waiting
+    /// checkout leaves: those it left alone may be over.
+    fn idle_trim(&self) -> Option<Box<dyn Fn() + Send + Sync>> {
+        let limits = self.idle_limits.clone()?;
+        let (storage, waiting) = (Arc::downgrade(&self.storage), self.waiting.clone());
+        Some(Box::new(move || trim_all(&storage, &limits, &waiting)))
+    }
+
     /// Dial, or wait for the connects in flight for the request's lanes, as
     /// many as the checkouts waiting for them need: see [`Connects::coalesce`].
     /// A new connection takes what the newest one of the lanes took, else what
@@ -1152,12 +1177,10 @@ where
             let mut storage = self.storage.lock();
             let (streams, cold) = match Self::newest_streams(&mut storage, id, lanes) {
                 Some(streams) => (streams, false),
-                None => match storage
-                    .learned
-                    .get(id)
-                    .copied()
-                    .or_else(|| self.streams_hint.and_then(|hint| hint(input)))
-                {
+                None => match storage.learned.get(id).copied().or_else(|| {
+                    let guess = self.streams_hint.and_then(|hint| hint(input))?;
+                    Some(storage.learned_any.unwrap_or(guess))
+                }) {
                     Some(streams) => (streams.get(), true),
                     None => return Coalesce::Dial(None),
                 },
@@ -1215,6 +1238,9 @@ where
 
     /// Keep what a connection of `id` took, for after its connections are gone.
     fn learn(storage: &mut Storage<C, ID>, id: &ID, streams: NonZeroUsize) {
+        if streams.get() > 1 {
+            storage.learned_any = Some(streams);
+        }
         if let Some(learned) = storage.learned.get_mut(id) {
             *learned = streams;
             return;
@@ -1531,6 +1557,7 @@ where
             &self.slot_waiters,
             self.id_limit(id).map(|limit| limit.evictors.clone()),
             self.next_order.fetch_add(1, Ordering::Relaxed),
+            self.idle_trim(),
         );
         let party = waiting.party.clone();
         let mut id_slot_wait: Option<IdSlotWait> = None;
@@ -1743,8 +1770,9 @@ where
             storage: Arc::downgrade(&self.storage),
             relist_fn: relist_stored,
             idle_limits: self.idle_limits.clone(),
-            counted_idle: AtomicBool::new(false),
+            idle_count: AtomicU8::new(GONE),
             trim_fn: trim_idle,
+            trim_all_fn: trim_all,
         });
 
         // The connection is its sources' listener: a change wakes its lane's

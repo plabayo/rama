@@ -389,3 +389,17 @@ fn connections_left_to_an_older_evictor_are_served_on_a_real_runtime() {
         });
     }
 }
+
+#[tokio::test]
+async fn an_evictor_leaves_an_idle_connection_to_its_lanes_older_front() {
+    let pool = exclusive(1, SaturationPolicy::EvictIdleWhenCold);
+    let held = add(&pool, 0, None).await;
+    let mut lane = queue(&pool, &EMPTY_INPUT);
+    let mut evictor = checkout(&pool, 1);
+    assert!(evictor.poll().is_pending());
+    drop(held);
+    // It looks, whatever woke it.
+    pool.notify.notify_waiters();
+    assert!(evictor.poll().is_pending(), "the lane's front is older");
+    drop((handout(&mut lane), evictor));
+}

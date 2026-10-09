@@ -455,7 +455,7 @@ fn a_wake_landing_during_a_look_is_passed_on_by_the_served_waiter() {
     let count = Arc::new(AtomicUsize::new(0));
     let slot_waiters = Arc::new(WaitQueue::new());
     let lane = Arc::new(WaitQueue::new());
-    let mut waiting = Waiting::new(&count, &slot_waiters, None, 0);
+    let mut waiting = Waiting::new(&count, &slot_waiters, None, 0, None);
     waiting.register(&lane);
     let behind = Party::new(1).waiter();
     lane.push(&behind);
@@ -528,7 +528,7 @@ fn a_cancellation_wave_through_the_slot_queue_stays_linear() {
         .iter()
         .enumerate()
         .map(|(order, lane)| {
-            let mut waiting = Waiting::new(&count, &slot_waiters, None, order as u64);
+            let mut waiting = Waiting::new(&count, &slot_waiters, None, order as u64, None);
             waiting.register(lane);
             waiting.register_for_chances(&slot_waiters);
             waiting

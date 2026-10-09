@@ -827,3 +827,36 @@ async fn the_exact_path_hands_out_no_connection_past_the_idle_timeout() {
     assert!(state.asked.load(Ordering::SeqCst) > 0);
     assert!(pool.storage.lock().by_id.is_empty());
 }
+
+#[tokio::test(start_paused = true)]
+async fn outliving_work_ending_trims_over_the_idle_limits() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(8).unwrap())
+        .with_max_idle_total(NonZeroUsize::new(1).unwrap());
+    let mut states = Vec::new();
+    for id in 0..4 {
+        let (conn, state) = admission_connection(&pool, 4);
+        let tunnel = pool
+            .create(TestId(id), conn, pool.test_slot(), &Extensions::new())
+            .await
+            .unwrap();
+        state.set_in_use(true);
+        drop(tunnel);
+        states.push(state);
+    }
+    assert_eq!(pool.storage.lock().by_id.len(), 4, "all busy");
+    for state in &states {
+        state.set_in_use(false);
+        tokio::time::advance(Duration::from_millis(1)).await;
+    }
+    // The listener trims from a task of its own.
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    let storage = pool.storage.lock();
+    assert_eq!(storage.by_id.len(), 1, "one idle connection is the limit");
+    assert!(
+        storage.by_id.contains_key(&TestId(3)),
+        "the most recently used"
+    );
+}

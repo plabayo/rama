@@ -195,11 +195,10 @@ struct Queued {
     gave_way: Vec<GaveWay>,
 }
 
-/// A party of `queue`, of order `from`, gave way to the waiter of order `to`.
+/// A party gave way, with its place `giver`, to the waiter of order `to`.
 struct GaveWay {
     to: u64,
-    from: u64,
-    queue: Weak<WaitQueue>,
+    giver: WeakWaiter,
 }
 
 impl Default for WaitQueue {
@@ -253,26 +252,28 @@ impl WaitQueue {
             queue.waiters.remove(at);
             self.len.store(queue.waiters.len(), Ordering::Relaxed);
             let order = waiter.party.order;
-            let gave_way: SmallVec<[Weak<Self>; 2]> = queue
+            let gave_way: SmallVec<[WeakWaiter; 2]> = queue
                 .gave_way
                 .extract_if(.., |gave| gave.to == order)
-                .map(|gave| gave.queue)
+                .map(|gave| gave.giver)
                 .collect();
             // Under the lock: no wake of this queue reaches the waiter after.
             (waiter.held(), gave_way)
         };
-        // Outside the lock, which is a leaf: one look again per party.
-        for queue in gave_way.iter().filter_map(Weak::upgrade) {
-            queue.wake_one();
+        // Outside the lock, which is a leaf: each party that gave way and
+        // still waits looks again.
+        for giver in gave_way.iter().filter_map(WeakWaiter::upgrade) {
+            giver.wake();
         }
         held
     }
 
     /// Whether a waiter older than `than` waits here, for capacity the party of
-    /// order `from` in `queue` contends for too: that party gives way to it.
-    /// The waiter is woken to look, if it holds no wake, and `queue` gets a
-    /// wake once it leaves: atomic with the leave, so that wake is not lost.
-    pub fn give_way(&self, than: u64, from: u64, queue: &Arc<Self>) -> bool {
+    /// `giver`, its place in another queue, contends for too: that party gives
+    /// way to it. The waiter is woken to look, if it holds no wake, and `giver`
+    /// once it leaves, if its party still waits: atomic with the leave, so that
+    /// wake is not lost.
+    pub fn give_way(&self, than: u64, giver: &Waiter) -> bool {
         if self.is_empty() {
             return false;
         }
@@ -286,18 +287,23 @@ impl WaitQueue {
             return false;
         };
         let to = front.party.order;
-        let queue = Arc::downgrade(queue);
-        if !queued
-            .gave_way
+        let gave_way = &mut queued.gave_way;
+        if !gave_way
             .iter()
-            .any(|gave| gave.to == to && gave.from == from && gave.queue.ptr_eq(&queue))
+            .any(|gave| gave.to == to && gave.giver.is(giver))
         {
-            queued.gave_way.push(GaveWay { to, from, queue });
+            // Parties that left are not woken: forget them before growing.
+            if gave_way.len() == gave_way.capacity() {
+                gave_way.retain(|gave| gave.giver.party.strong_count() > 0);
+            }
+            gave_way.push(GaveWay {
+                to,
+                giver: WeakWaiter::new(giver),
+            });
         }
-        // What it was left is worth a look.
-        if !front.is_woken() {
-            front.wake();
-        }
+        // What it was left is worth a look, also if its current look began
+        // before the capacity was there.
+        front.wake();
         true
     }
 
@@ -566,6 +572,38 @@ impl Waiter {
         self.counters().wakes.fetch_add(1, Ordering::AcqRel);
         self.party.wakes.fetch_add(1, Ordering::AcqRel);
         self.party.waker.wake();
+    }
+}
+
+/// A [`Waiter`] that does not keep its party alive.
+struct WeakWaiter {
+    party: Weak<Party>,
+    place: PlaceRef,
+}
+
+impl WeakWaiter {
+    fn new(waiter: &Waiter) -> Self {
+        Self {
+            party: Arc::downgrade(&waiter.party),
+            place: waiter.place.clone(),
+        }
+    }
+
+    fn upgrade(&self) -> Option<Waiter> {
+        Some(Waiter {
+            party: self.party.upgrade()?,
+            place: self.place.clone(),
+        })
+    }
+
+    /// Whether `waiter` is this same place.
+    fn is(&self, waiter: &Waiter) -> bool {
+        std::ptr::eq(self.party.as_ptr(), Arc::as_ptr(&waiter.party))
+            && match (&self.place, &waiter.place) {
+                (PlaceRef::Inline(ours), PlaceRef::Inline(theirs)) => ours == theirs,
+                (PlaceRef::Extra(ours), PlaceRef::Extra(theirs)) => Arc::ptr_eq(ours, theirs),
+                _ => false,
+            }
     }
 }
 
@@ -942,7 +980,7 @@ mod loom_tests {
                 let theirs = theirs.clone();
                 thread::spawn(move || theirs.remove(&ahead))
             };
-            let gave_way = theirs.give_way(1, 1, &ours);
+            let gave_way = theirs.give_way(1, &waiter);
             leaver.join().unwrap();
             assert!(
                 !gave_way || waiter.is_woken(),
@@ -1203,29 +1241,66 @@ mod tests {
 
     #[test]
     fn a_party_that_gave_way_is_woken_when_that_waiter_leaves() {
-        let [theirs, ours] = [Arc::new(WaitQueue::new()), Arc::new(WaitQueue::new())];
+        let theirs = WaitQueue::new();
+        let ours = WaitQueue::new();
         let [ahead, behind] = [0, 3].map(|order| Party::new(order).waiter());
         theirs.push(&ahead);
         theirs.push(&behind);
         let [first, second] = [1, 2].map(|order| Party::new(order).waiter());
         ours.push(&first);
         ours.push(&second);
-        assert!(
-            !theirs.give_way(0, 0, &ours),
-            "nobody older than the oldest"
-        );
-        assert!(theirs.give_way(1, 1, &ours) && theirs.give_way(1, 1, &ours));
-        assert!(theirs.give_way(2, 2, &ours));
-        assert_eq!(ahead.held(), 1, "woken once to look at what it was left");
+        assert!(!theirs.give_way(0, &first), "nobody older than the oldest");
+        assert!(theirs.give_way(1, &first) && theirs.give_way(1, &first));
+        assert!(theirs.give_way(2, &second));
+        assert!(ahead.held() >= 1, "woken to look at what it was left");
         assert_eq!(theirs.remove(&behind), 0);
         assert!(!first.is_woken(), "they gave way to another one");
-        assert_eq!(theirs.remove(&ahead), 1);
+        assert_eq!(theirs.remove(&ahead), 3, "woken by each look that gave way");
         assert_eq!(
             (first.held(), second.held()),
             (1, 1),
             "one wake per party that gave way, however often"
         );
-        assert!(!theirs.give_way(1, 1, &ours) && theirs.is_empty());
+        assert!(!theirs.give_way(1, &first) && theirs.is_empty());
+    }
+
+    #[test]
+    fn giving_way_during_the_fronts_look_keeps_it_woken() {
+        let [theirs, ours] = [WaitQueue::new(), WaitQueue::new()];
+        let front = Party::new(0).waiter();
+        theirs.push(&front);
+        let giver = Party::new(1).waiter();
+        ours.push(&giver);
+        assert!(theirs.wake_one(), "a unit before its look");
+        let seen = front.wakes();
+        assert!(theirs.give_way(1, &giver), "during its look");
+        front.spend(seen);
+        assert!(front.is_woken(), "it looks again at what it was left");
+    }
+
+    #[test]
+    fn parties_that_gave_way_and_left_are_forgotten() {
+        let [theirs, ours] = [WaitQueue::new(), WaitQueue::new()];
+        let ahead = Party::new(0).waiter();
+        theirs.push(&ahead);
+        for order in 1..10_000 {
+            let giver = Party::new(order).waiter();
+            ours.push(&giver);
+            assert!(theirs.give_way(order, &giver));
+            ours.remove(&giver);
+        }
+        assert!(
+            theirs.queue.lock().gave_way.len() < 64,
+            "records of parties that left do not pile up"
+        );
+        let tail = Party::new(10_000).waiter();
+        ours.push(&tail);
+        theirs.remove(&ahead);
+        assert_eq!(
+            tail.held(),
+            0,
+            "nobody that left is woken, nor anyone for them"
+        );
     }
 
     #[test]
