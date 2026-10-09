@@ -31,7 +31,9 @@ pub use identifier::{BasicConnId, BasicConnIdentifier};
 
 pub mod multiplex;
 #[doc(inline)]
-pub use multiplex::{MultiplexPool, MultiplexedConnection, MuxSelection};
+pub use multiplex::{
+    MultiplexPool, MultiplexSlot, MultiplexedConnection, MuxSelection, SaturationPolicy,
+};
 
 mod reuse;
 #[doc(inline)]

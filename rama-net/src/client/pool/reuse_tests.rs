@@ -115,7 +115,7 @@ async fn exclusive_replaces_incompatible_idle_connection_at_capacity() {
 
 #[tokio::test]
 async fn multiplex_replaces_incompatible_idle_connection_at_capacity() {
-    idle_incompatible_is_replaced(MultiplexPool::try_new(4, 1).unwrap()).await;
+    idle_incompatible_is_replaced(MultiplexPool::evicting(4, 1)).await;
 }
 
 async fn incompatible_waiter_and_cancellation<P: Pool<ServiceInput<()>, Route>>(pool: P) {
@@ -150,7 +150,7 @@ async fn exclusive_incompatible_waiter_cancellation_preserves_capacity() {
 
 #[tokio::test]
 async fn multiplex_incompatible_waiter_cancellation_preserves_capacity() {
-    incompatible_waiter_and_cancellation(MultiplexPool::try_new(4, 1).unwrap()).await;
+    incompatible_waiter_and_cancellation(MultiplexPool::evicting(4, 1)).await;
 }
 
 #[tokio::test]
@@ -160,9 +160,7 @@ async fn multiplex_selection_only_admits_matching_policies() {
         MuxSelection::LeastLoaded,
         MuxSelection::RoundRobin,
     ] {
-        let pool = MultiplexPool::try_new(8, 2)
-            .unwrap()
-            .with_selection(selection);
+        let pool = MultiplexPool::evicting(8, 2).with_selection(selection);
         let first = establish(&pool, 1, true).await;
         let second = establish(&pool, 2, true).await;
         for id in [1, 2, 2, 1] {
@@ -197,7 +195,7 @@ async fn exclusive_opaque_policy_is_not_retained() {
 
 #[tokio::test]
 async fn multiplex_opaque_policy_is_not_retained() {
-    opaque_policy_is_not_retained(MultiplexPool::try_new(4, 1).unwrap()).await;
+    opaque_policy_is_not_retained(MultiplexPool::evicting(4, 1)).await;
 }
 
 #[test]
@@ -296,7 +294,7 @@ async fn exclusive_derives_one_request_key_per_classifier() {
 
 #[tokio::test]
 async fn multiplex_derives_one_request_key_per_classifier() {
-    one_key_derivation_per_classifier(MultiplexPool::try_new(1, 128).unwrap()).await;
+    one_key_derivation_per_classifier(MultiplexPool::evicting(1, 128)).await;
 }
 
 #[tokio::test]
@@ -346,9 +344,7 @@ async fn semaphore_handoff_rechecks_origin_and_proxy_policy_against_current_inpu
         MuxSelection::RoundRobin,
     ] {
         for (origin_policy, proxy_policy, reuse) in [(1, 1, true), (2, 1, false), (1, 2, false)] {
-            let pool = MultiplexPool::try_new(4, 2)
-                .unwrap()
-                .with_selection(selection);
+            let pool = MultiplexPool::evicting(4, 2).with_selection(selection);
             let conn = connection_with(Some(
                 self::reuse(1, true).and(ConnectionReuse::restriction(ProxyPolicy)),
             ));
@@ -415,7 +411,7 @@ async fn exclusive_reads_requirements_once() {
 
 #[tokio::test]
 async fn multiplex_reads_requirements_once() {
-    requirements_are_read_once(MultiplexPool::try_new(1, 2).unwrap()).await;
+    requirements_are_read_once(MultiplexPool::evicting(1, 2)).await;
 }
 
 /// A request is served by a connection of any classifier whose key it matches,
@@ -476,7 +472,7 @@ async fn exclusive_classifiers_share_an_id() {
 
 #[tokio::test]
 async fn multiplex_classifiers_share_an_id() {
-    classifiers_share_an_id(MultiplexPool::try_new(1, 4).unwrap()).await;
+    classifiers_share_an_id(MultiplexPool::evicting(1, 4)).await;
 }
 
 #[tokio::test]
@@ -512,7 +508,7 @@ async fn exclusive_rekey_files_the_connection_on_return() {
 
 #[tokio::test]
 async fn multiplex_rekey_moves_the_shared_connection() {
-    let pool = MultiplexPool::try_new(4, 1).unwrap();
+    let pool = MultiplexPool::evicting(4, 1);
     let held: MultiplexedConnection<_, _> = establish(&pool, 1, true).await;
     assert_matches!(
         pool.get_conn(&Route, &input(1)).await.unwrap(),
@@ -547,7 +543,7 @@ async fn multiplex_rekey_moves_the_shared_connection() {
 
 #[tokio::test]
 async fn multiplex_rekey_does_not_revive_a_dropped_connection() {
-    let pool = MultiplexPool::try_new(4, 2).unwrap();
+    let pool = MultiplexPool::evicting(4, 2);
     let conn = connection(1, true);
     conn.extensions().insert(ConnectionHealthWatcher::default());
     let held = establish_with(&pool, &input(1), conn).await;
@@ -599,9 +595,7 @@ async fn two_lanes(
     MultiplexPool<ServiceInput<()>, Route>,
     [MultiplexedConnection<ServiceInput<()>, Route>; 2],
 ) {
-    let pool = MultiplexPool::try_new(10, 2)
-        .unwrap()
-        .with_selection(selection);
+    let pool = MultiplexPool::evicting(10, 2).with_selection(selection);
     // Both permits first: the older connection could serve the second dial.
     let mut permits = Vec::new();
     for _ in 0..2 {
@@ -728,7 +722,7 @@ async fn exclusive_non_reusable_ids_get_fresh_connections() {
 
 #[tokio::test]
 async fn multiplex_non_reusable_ids_get_fresh_connections() {
-    non_reusable_ids_get_fresh_connections(MultiplexPool::try_new(2, 2).unwrap()).await;
+    non_reusable_ids_get_fresh_connections(MultiplexPool::evicting(2, 2)).await;
 }
 
 #[derive(Debug, Clone, Copy, Extension)]
@@ -766,7 +760,7 @@ impl ConnectionReusePolicy for VanishingClass {
 
 #[tokio::test]
 async fn keys_derived_from_stale_classes_never_reach_another_class() {
-    let pool = MultiplexPool::try_new(4, 4).unwrap();
+    let pool = MultiplexPool::evicting(4, 4);
     let held = Arc::new(Mutex::new(None));
     // The vanishing class first, at class index 0.
     let first = connection_with(Some(ConnectionReuse::new(VanishingClass {
@@ -981,9 +975,7 @@ mod model {
                 MuxSelection::LeastLoaded,
                 MuxSelection::RoundRobin,
             ] {
-                let pool = MultiplexPool::try_new(streams, 64)
-                    .unwrap()
-                    .with_selection(selection);
+                let pool = MultiplexPool::evicting(streams, 64).with_selection(selection);
                 run(&pool, streams, &ops);
             }
         }

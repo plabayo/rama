@@ -2,7 +2,7 @@
 
 use std::{num::NonZeroUsize, time::Duration};
 
-use rama_core::error::BoxError;
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorExt as _};
 use rama_core::{Layer, extensions::ExtensionsRef};
 use rama_http_types::{
     Version, conn::FallbackHttpVersion, proto::ext::extended_connect_pseudo_scheme,
@@ -252,7 +252,9 @@ impl HttpPooledConnectorConfig {
         R: ReqToConnID<ConnectRequest, ID = HttpConnId>,
     {
         let config = Self::default();
-        let pool = MultiplexPool::new(DEFAULT_MAX_CONCURRENT_STREAMS, DEFAULT_MAX_TOTAL)
+        let pool = MultiplexPool::new()
+            .with_max_streams_per_connection(DEFAULT_MAX_CONCURRENT_STREAMS)
+            .with_max_connections_total(DEFAULT_MAX_TOTAL)
             .with_selection(config.selection)
             .maybe_with_idle_timeout(config.idle_timeout);
 
@@ -302,7 +304,19 @@ impl HttpPooledConnectorConfig {
         S: ConnectorService<ConnectRequest>,
         R: ReqToConnID<ConnectRequest, ID = HttpConnId>,
     {
-        let pool = MultiplexPool::try_new(self.max_concurrent_streams, self.max_total)?
+        let (Some(max_concurrent_streams), Some(max_total)) = (
+            NonZeroUsize::new(self.max_concurrent_streams),
+            NonZeroUsize::new(self.max_total),
+        ) else {
+            return Err(BoxError::from_static_str(
+                "max_concurrent_streams and max_total must be greater than 0",
+            )
+            .context_field("max_concurrent_streams", self.max_concurrent_streams)
+            .context_field("max_total", self.max_total));
+        };
+        let pool = MultiplexPool::new()
+            .with_max_streams_per_connection(max_concurrent_streams)
+            .with_max_connections_total(max_total)
             .with_selection(self.selection)
             .maybe_with_idle_timeout(self.idle_timeout);
 
@@ -316,6 +330,7 @@ impl HttpPooledConnectorConfig {
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
+    use std::num::NonZeroUsize;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -432,7 +447,9 @@ mod tests {
                 }
             }
         });
-        let pool = MultiplexPool::try_new(10, 10).unwrap();
+        let pool = MultiplexPool::new()
+            .with_max_streams_per_connection(NonZeroUsize::new(10).unwrap())
+            .with_max_connections_total(NonZeroUsize::new(10).unwrap());
         // No origin TLS provider is installed.
         let connector = PooledConnector::new(inner, pool, HttpConnIdentifier::new());
         let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
@@ -826,7 +843,9 @@ mod tests {
                 }
             }
         });
-        let pool = MultiplexPool::try_new(10, 10).unwrap();
+        let pool = MultiplexPool::new()
+            .with_max_streams_per_connection(NonZeroUsize::new(10).unwrap())
+            .with_max_connections_total(NonZeroUsize::new(10).unwrap());
         let pooled = PooledConnector::new(inner, pool, BasicConnIdentifier::new());
         let connector = ProxyRoutesConnector::new(pooled);
 
@@ -897,7 +916,9 @@ mod tests {
                     }
                 }
             });
-            let pool = MultiplexPool::try_new(10, 10).unwrap();
+            let pool = MultiplexPool::new()
+                .with_max_streams_per_connection(NonZeroUsize::new(10).unwrap())
+                .with_max_connections_total(NonZeroUsize::new(10).unwrap());
             let connector = PooledConnector::new(inner, pool, HttpConnIdentifier::new());
             let proxy: ProxyAddress = proxy.parse().unwrap();
 

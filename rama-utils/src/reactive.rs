@@ -172,14 +172,15 @@ impl fmt::Debug for ChangeSignal {
 
 /// Parties waiting, in arrival order, for capacity that others free.
 ///
-/// A waiter queues with [`Self::push`] before it checks the capacity it waits
-/// for; whoever frees capacity calls [`Self::wake_one`] for one unit, or
-/// [`Self::wake_all`] for a change of unknown size, after freeing it. Both
-/// sides fence, so of a waiter queuing and capacity freeing at once, one sees
-/// the other. Every unit reaches a waiter, which spends it on a look or passes
-/// it on when it leaves. A leaf lock: nothing else is taken while it is held.
+/// A [`Party`] queues a [`Waiter`] with [`Self::push`] before it checks the
+/// capacity it waits for; whoever frees capacity calls [`Self::wake_one`] for one
+/// unit, or [`Self::wake_all`] for a change of unknown size, after freeing it.
+/// Both sides fence, so of a waiter queuing and capacity freeing at once, one
+/// sees the other. Every unit reaches a waiter, which spends it on a look or, as
+/// it leaves, passes it on in this queue. A leaf lock: nothing else is taken
+/// while it is held.
 pub struct WaitQueue {
-    queue: Mutex<VecDeque<Arc<Waiter>>>,
+    queue: Mutex<VecDeque<Waiter>>,
     len: AtomicUsize,
 }
 
@@ -200,7 +201,7 @@ impl WaitQueue {
     }
 
     /// Queue `waiter` at the back. Check the capacity it waits for after.
-    pub fn push(&self, waiter: &Arc<Waiter>) {
+    pub fn push(&self, waiter: &Waiter) {
         {
             let mut queue = self.queue.lock();
             queue.push_back(waiter.clone());
@@ -210,23 +211,28 @@ impl WaitQueue {
         fence(Ordering::SeqCst);
     }
 
-    /// Leave the queue, returning the wakes the waiter holds: capacity they
-    /// stand for and it does not use is left to the others, so pass it on.
+    /// Leave the queue, returning the wakes it sent the waiter that are not
+    /// spent: capacity they stand for and the waiter does not use is left to
+    /// the others, so pass it on.
     ///
     /// A party freeing capacity meets the leave under the queue's lock: it
     /// wakes the waiter before, or reports nobody waiting after.
     pub fn remove(&self, waiter: &Waiter) -> usize {
         let mut queue = self.queue.lock();
         // Mostly the front: served waiters leave in arrival order.
-        if let Some(at) = queue
-            .iter()
-            .position(|queued| std::ptr::eq(&**queued, waiter))
-        {
-            queue.remove(at);
-        }
+        let Some(at) = queue.iter().position(|queued| queued.is(waiter)) else {
+            return 0;
+        };
+        queue.remove(at);
         self.len.store(queue.len(), Ordering::Relaxed);
         // Under the lock: no wake of this queue reaches the waiter after.
         waiter.held()
+    }
+
+    /// How many wait.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.len.load(Ordering::Relaxed)
     }
 
     /// Whether nobody waits.
@@ -235,8 +241,23 @@ impl WaitQueue {
         self.len.load(Ordering::Relaxed) == 0
     }
 
+    /// The [`Party::order`] of the first waiter, if any waits.
+    #[must_use]
+    pub fn front_order(&self) -> Option<u64> {
+        if self.is_empty() {
+            return None;
+        }
+        self.queue.lock().front().map(|front| front.party.order)
+    }
+
+    /// The wakes this queue sent its waiters that they did not spend.
+    #[must_use]
+    pub fn unspent(&self) -> usize {
+        self.queue.lock().iter().map(|waiter| waiter.held()).sum()
+    }
+
     /// Whether a party may take capacity now: nobody waits ahead of it, or it
-    /// holds a wake. `None` is a party that does not wait.
+    /// holds a wake of this queue. `None` is a party that does not wait here.
     #[must_use]
     pub fn admits(&self, waiter: Option<&Waiter>) -> bool {
         if self.is_empty() {
@@ -250,12 +271,12 @@ impl WaitQueue {
                 .queue
                 .lock()
                 .front()
-                .is_some_and(|front| std::ptr::eq(&**front, waiter))
+                .is_some_and(|front| front.is(waiter))
     }
 
-    /// One unit of capacity: wake the first waiter without a wake or, if all
-    /// of them hold one, the first again, since its look may have begun before
-    /// the unit. False if nobody waits: the capacity is nobody's.
+    /// One unit of capacity: wake the first waiter without a wake of this queue
+    /// or, if all of them hold one, the first again, since its look may have
+    /// begun before the unit. False if nobody waits: the capacity is nobody's.
     pub fn wake_one(&self) -> bool {
         fence(Ordering::SeqCst);
         if self.is_empty() {
@@ -295,13 +316,100 @@ impl fmt::Debug for WaitQueue {
     }
 }
 
-/// One party of a [`WaitQueue`]. It holds the wakes it received and has not
-/// spent: each is a unit of capacity, or a change, to look at.
-pub struct Waiter {
+/// One waiting task. It queues a [`Waiter`] in each [`WaitQueue`] it waits in,
+/// and any of them wakes it: see [`Self::woken`].
+pub struct Party {
+    order: u64,
+    /// Wakes of all its waiters.
+    wakes: AtomicUsize,
+    waker: AtomicWaker,
+    /// The counters of its first places, in the same allocation.
+    places: [Place; INLINE_PLACES],
+    /// Inline places handed out so far.
+    placed: AtomicUsize,
+}
+
+/// Places a [`Party`] keeps inline: a lane, a keyed lane and the slot queue.
+const INLINE_PLACES: usize = 3;
+
+/// The wakes one queue sent a party, and how many of them it spent.
+#[derive(Default)]
+struct Place {
     wakes: AtomicUsize,
     /// Only the waiting party writes it.
     spent: AtomicUsize,
-    waker: AtomicWaker,
+}
+
+impl Party {
+    /// Create a party, `order` being its arrival among its owner's parties:
+    /// lower is older.
+    #[must_use]
+    pub fn new(order: u64) -> Arc<Self> {
+        Arc::new(Self {
+            order,
+            wakes: AtomicUsize::new(0),
+            waker: AtomicWaker::new(),
+            places: Default::default(),
+            placed: AtomicUsize::new(0),
+        })
+    }
+
+    /// Its arrival among its owner's parties: lower is older.
+    #[must_use]
+    pub fn order(&self) -> u64 {
+        self.order
+    }
+
+    /// A place for the party in one more queue, to [`WaitQueue::push`].
+    #[must_use]
+    pub fn waiter(self: &Arc<Self>) -> Waiter {
+        let index = self.placed.fetch_add(1, Ordering::Relaxed);
+        Waiter {
+            party: self.clone(),
+            place: if index < INLINE_PLACES {
+                PlaceRef::Inline(index)
+            } else {
+                PlaceRef::Extra(Arc::default())
+            },
+        }
+    }
+
+    /// The wakes of all its waiters so far: read before a look.
+    #[must_use]
+    pub fn wakes(&self) -> usize {
+        self.wakes.load(Ordering::Acquire)
+    }
+
+    /// Completes once any of its waiters is woken after `seen`, the count of
+    /// [`Self::wakes`] read before the look: no wake between the look and the
+    /// wait is lost.
+    pub fn woken(&self, seen: usize) -> Woken<'_> {
+        Woken { party: self, seen }
+    }
+}
+
+impl fmt::Debug for Party {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Party")
+            .field("order", &self.order)
+            .field("wakes", &self.wakes.load(Ordering::Relaxed))
+            .finish()
+    }
+}
+
+/// A [`Party`]'s place in one [`WaitQueue`], holding the wakes that queue sent
+/// it and the party did not spend: each a unit of capacity, or a change, to
+/// look at. Cloning it shares the place.
+#[derive(Clone)]
+pub struct Waiter {
+    party: Arc<Party>,
+    place: PlaceRef,
+}
+
+#[derive(Clone)]
+enum PlaceRef {
+    Inline(usize),
+    Extra(Arc<Place>),
 }
 
 /// The wakes a [`Waiter`] had received when a look at its capacity began.
@@ -321,14 +429,22 @@ impl Wakes {
 }
 
 impl Waiter {
-    /// Create a waiter to queue.
+    /// The party it is a place of.
     #[must_use]
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            wakes: AtomicUsize::new(0),
-            spent: AtomicUsize::new(0),
-            waker: AtomicWaker::new(),
-        })
+    pub fn party(&self) -> &Arc<Party> {
+        &self.party
+    }
+
+    fn counters(&self) -> &Place {
+        match &self.place {
+            PlaceRef::Inline(index) => &self.party.places[*index],
+            PlaceRef::Extra(place) => place,
+        }
+    }
+
+    /// Whether `other` is this same place.
+    fn is(&self, other: &Self) -> bool {
+        std::ptr::eq(self.counters(), other.counters())
     }
 
     /// Whether the waiter holds a wake it has not spent.
@@ -337,47 +453,53 @@ impl Waiter {
         self.held() != 0
     }
 
-    fn held(&self) -> usize {
-        self.wakes
+    /// The wakes the waiter holds and has not spent.
+    #[must_use]
+    pub fn held(&self) -> usize {
+        let place = self.counters();
+        place
+            .wakes
             .load(Ordering::Acquire)
-            .wrapping_sub(self.spent.load(Ordering::Relaxed))
+            .wrapping_sub(place.spent.load(Ordering::Relaxed))
     }
 
     /// The wakes so far: read before a look at the capacity waited for.
     #[must_use]
     pub fn wakes(&self) -> Wakes {
+        let place = self.counters();
         Wakes {
-            wakes: self.wakes.load(Ordering::Acquire),
-            spent: self.spent.load(Ordering::Relaxed),
+            wakes: place.wakes.load(Ordering::Acquire),
+            spent: place.spent.load(Ordering::Relaxed),
         }
     }
 
     /// The look begun at `seen` found nothing: the wakes it answered are
     /// spent, a wake since keeps the waiter woken.
     pub fn spend(&self, seen: Wakes) {
-        self.spent.store(seen.wakes, Ordering::Relaxed);
-    }
-
-    /// Completes once a wake arrives after `seen`, the snapshot taken before
-    /// the look: no wake between the look and the wait is lost.
-    pub fn woken(&self, seen: Wakes) -> Woken<'_> {
-        Woken {
-            waiter: self,
-            seen: seen.wakes,
-        }
+        self.counters().spent.store(seen.wakes, Ordering::Relaxed);
     }
 
     fn wake(&self) {
-        self.wakes.fetch_add(1, Ordering::AcqRel);
-        self.waker.wake();
+        self.counters().wakes.fetch_add(1, Ordering::AcqRel);
+        self.party.wakes.fetch_add(1, Ordering::AcqRel);
+        self.party.waker.wake();
     }
 }
 
-/// Completes once its [`Waiter`] is woken after a snapshot: see [`Waiter::woken`].
+impl fmt::Debug for Waiter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Waiter")
+            .field("party", &self.party.order)
+            .field("held", &self.held())
+            .finish()
+    }
+}
+
+/// Completes once its [`Party`] is woken after a count: see [`Party::woken`].
 #[derive(Debug)]
 #[must_use = "futures do nothing unless polled"]
 pub struct Woken<'a> {
-    waiter: &'a Waiter,
+    party: &'a Party,
     seen: usize,
 }
 
@@ -385,24 +507,16 @@ impl Future for Woken<'_> {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        if self.waiter.wakes.load(Ordering::Acquire) != self.seen {
+        if self.party.wakes.load(Ordering::Acquire) != self.seen {
             return Poll::Ready(());
         }
-        self.waiter.waker.register(cx.waker());
+        self.party.waker.register(cx.waker());
         // A wake before the registration found no waker to wake.
-        if self.waiter.wakes.load(Ordering::Acquire) == self.seen {
+        if self.party.wakes.load(Ordering::Acquire) == self.seen {
             Poll::Pending
         } else {
             Poll::Ready(())
         }
-    }
-}
-
-impl fmt::Debug for Waiter {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Waiter")
-            .field("held", &self.held())
-            .finish()
     }
 }
 
@@ -499,8 +613,13 @@ impl<T: ReactiveRepr> Reactive<T> {
         T::from_usize(self.value.load(Ordering::Acquire))
     }
 
-    /// Store `value` and wake watchers.
+    /// Store `value` and wake watchers; listeners learn of a [`Change::Other`].
     pub fn set(&self, value: T) {
+        self.set_change(value, Change::Other);
+    }
+
+    /// Store `value` and wake watchers; listeners learn of `change`.
+    pub fn set_change(&self, value: T, change: Change) {
         let bits = value.to_usize();
         // Publish to the atomic first (lock-free reads see it immediately), then
         // signal. `send` is a no-op when there are no watchers, so an idle value
@@ -509,7 +628,7 @@ impl<T: ReactiveRepr> Reactive<T> {
         // `send` errors only when there are no receivers, that's the idle case we
         // intentionally treat as a no-op.
         let _unused = self.signal.send(bits);
-        self.changes.notify(Change::Other);
+        self.changes.notify(change);
     }
 
     /// Wake `listener` after every later [`Self::set`], without a task or an
@@ -583,7 +702,7 @@ mod loom_tests {
                     queue.wake_one();
                 })
             };
-            let waiter = Waiter::new();
+            let waiter = Party::new(0).waiter();
             queue.push(&waiter);
             let seen = capacity.load(Ordering::Acquire);
             releaser.join().unwrap();
@@ -601,7 +720,7 @@ mod loom_tests {
         loom::model(|| {
             let queue = Arc::new(WaitQueue::new());
             let capacity = Arc::new(AtomicUsize::new(0));
-            let waiter = Waiter::new();
+            let waiter = Party::new(0).waiter();
             queue.push(&waiter);
             assert!(queue.wake_all());
             let releaser = {
@@ -624,22 +743,78 @@ mod loom_tests {
         });
     }
 
+    /// A change of unknown size during a woken waiter's look is not spent by
+    /// that look either.
+    #[test]
+    fn a_change_during_a_woken_look_is_not_spent() {
+        loom::model(|| {
+            let queue = Arc::new(WaitQueue::new());
+            let capacity = Arc::new(AtomicUsize::new(0));
+            let waiter = Party::new(0).waiter();
+            queue.push(&waiter);
+            assert!(queue.wake_one());
+            let changer = {
+                let (queue, capacity) = (queue.clone(), capacity.clone());
+                thread::spawn(move || {
+                    capacity.store(1, Ordering::Release);
+                    queue.wake_all();
+                })
+            };
+            let seen = waiter.wakes();
+            let found = capacity.load(Ordering::Acquire);
+            if found == 0 {
+                waiter.spend(seen);
+            }
+            changer.join().unwrap();
+            assert!(
+                found == 1 || waiter.is_woken(),
+                "the change was spent by a look that missed it"
+            );
+        });
+    }
+
+    /// Queue-then-check against a change: a change made while a waiter
+    /// queues is either seen by its check or wakes it.
+    #[test]
+    fn a_queuing_waiter_never_misses_a_change() {
+        loom::model(|| {
+            let queue = Arc::new(WaitQueue::new());
+            let capacity = Arc::new(AtomicUsize::new(0));
+            let changer = {
+                let (queue, capacity) = (queue.clone(), capacity.clone());
+                thread::spawn(move || {
+                    capacity.store(1, Ordering::Release);
+                    queue.wake_all();
+                })
+            };
+            let waiter = Party::new(0).waiter();
+            queue.push(&waiter);
+            let seen = capacity.load(Ordering::Acquire);
+            changer.join().unwrap();
+            assert!(
+                seen == 1 || waiter.is_woken(),
+                "the change was neither seen nor signalled"
+            );
+        });
+    }
+
     /// Check-register-check: a wake racing the waiter's registration still
     /// ends its wait.
     #[test]
     fn a_wake_racing_the_registration_ends_the_wait() {
         loom::model(|| {
             let queue = Arc::new(WaitQueue::new());
-            let waiter = Waiter::new();
+            let party = Party::new(0);
+            let waiter = party.waiter();
             queue.push(&waiter);
-            let seen = waiter.wakes();
+            let seen = party.wakes();
             let releaser = {
                 let queue = queue.clone();
                 thread::spawn(move || {
                     queue.wake_one();
                 })
             };
-            loom::future::block_on(waiter.woken(seen));
+            loom::future::block_on(party.woken(seen));
             releaser.join().unwrap();
         });
     }
@@ -651,7 +826,7 @@ mod loom_tests {
         loom::model(|| {
             let queue = Arc::new(WaitQueue::new());
             let freed = Arc::new(AtomicBool::new(false));
-            let waiter = Waiter::new();
+            let waiter = Party::new(0).waiter();
             queue.push(&waiter);
             let releaser = {
                 let (queue, freed) = (queue.clone(), freed.clone());
@@ -828,10 +1003,11 @@ mod tests {
     #[test]
     fn a_wait_queue_wakes_in_arrival_order_once_per_unit() {
         let queue = WaitQueue::new();
-        let [first, second] = [Waiter::new(), Waiter::new()];
+        let [first, second] = [Party::new(0).waiter(), Party::new(1).waiter()];
         queue.push(&first);
         queue.push(&second);
         assert!(!queue.admits(None));
+        assert_eq!(queue.front_order(), Some(0));
         assert!(queue.admits(Some(&first)) && !queue.admits(Some(&second)));
         queue.wake_one();
         assert!(first.is_woken() && !second.is_woken());
@@ -850,6 +1026,61 @@ mod tests {
         assert_eq!(queue.remove(&first), 1);
         assert_eq!(queue.remove(&second), 1);
         assert!(queue.is_empty() && queue.admits(None) && !queue.wake_one());
+        assert_eq!(queue.front_order(), None);
+    }
+
+    #[test]
+    fn a_cancellation_wave_across_queues_passes_each_wake_once() {
+        let queues = [WaitQueue::new(), WaitQueue::new()];
+        let waiters: Vec<_> = (0..32)
+            .map(|order| {
+                let party = Party::new(order);
+                queues.each_ref().map(|queue| {
+                    let waiter = party.waiter();
+                    queue.push(&waiter);
+                    waiter
+                })
+            })
+            .collect();
+        assert!(queues[0].wake_one());
+        // Each leaves without a look, passing on what each queue sent it.
+        for places in &waiters[..31] {
+            for (queue, waiter) in queues.iter().zip(places) {
+                for _ in 0..queue.remove(waiter) {
+                    queue.wake_one();
+                }
+            }
+        }
+        let last = &waiters[31];
+        assert_eq!(
+            last[0].held() + last[1].held(),
+            1,
+            "one wake, passed on along its queue"
+        );
+        assert_eq!(last[0].party().wakes(), 1);
+    }
+
+    #[test]
+    fn a_wake_of_one_queue_admits_only_there() {
+        let [ours, theirs] = [WaitQueue::new(), WaitQueue::new()];
+        let ahead = Party::new(0).waiter();
+        ours.push(&ahead);
+        let party = Party::new(1);
+        let [here, there] = [party.waiter(), party.waiter()];
+        ours.push(&here);
+        theirs.push(&there);
+        assert!(theirs.wake_one());
+        assert!(theirs.admits(Some(&there)));
+        assert!(
+            !ours.admits(Some(&here)),
+            "its wake came from another queue"
+        );
+        assert_eq!(
+            ours.remove(&here),
+            0,
+            "nothing to pass on where nothing was sent"
+        );
+        assert_eq!(theirs.remove(&there), 1);
     }
 
     #[test]

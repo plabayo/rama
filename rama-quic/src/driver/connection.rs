@@ -21,7 +21,7 @@ use rama_core::{
 use rama_net::gate::{GateDirection, StreamGates};
 use rama_quic_proto::{ConnectionId, Dir, Side, StreamId, VarInt};
 use rama_udp::SendFailure;
-use rama_utils::reactive::{ChangeListener, Changed, Reactive};
+use rama_utils::reactive::{Change, ChangeListener, Changed, Reactive};
 use rustc_hash::FxHashMap;
 use tokio::sync::{Notify, futures::Notified, oneshot};
 
@@ -2178,7 +2178,7 @@ impl ConnectionRef {
                 on_connected: Some(on_connected),
                 connected: false,
                 available_streams: [0; 2],
-                stream_budget_changed: [false; 2],
+                stream_budget_changed: [BudgetChange::default(); 2],
                 reserved_streams: [0; 2],
                 handshake_confirmed: false,
                 timer: DeadlineTimer::default(),
@@ -2281,7 +2281,7 @@ pub(crate) struct ConnectionInner {
 impl ConnectionInner {
     /// Apply endpoint control; the caller holds the endpoint lock (see [`EndpointLink`]).
     pub(crate) fn control(&self, message: Control) {
-        let mut budget_changed = [false; 2];
+        let mut budget_changed = [BudgetChange::default(); 2];
         let mut state = self.state.lock();
         let conn = &mut *state;
         match message {
@@ -2503,12 +2503,41 @@ pub(crate) struct Shared {
 
 impl Shared {
     /// Admission wakers may re-enter the connection; call outside its state lock.
-    fn notify_stream_budget(&self, changed: [bool; 2]) {
+    fn notify_stream_budget(&self, changed: [BudgetChange; 2]) {
         for (revision, changed) in self.stream_budget_changes.iter().zip(changed) {
-            if changed {
+            if changed.other || changed.freed > FREED_STREAMS_MAX {
                 revision.set(revision.get().wrapping_add(1));
+            } else {
+                // One request more for each: one waiter each.
+                for _ in 0..changed.freed {
+                    revision.set_change(revision.get().wrapping_add(1), Change::Freed);
+                }
             }
         }
+    }
+}
+
+/// Beyond this many streams of credit at once, a raise wakes every waiter.
+const FREED_STREAMS_MAX: u64 = 64;
+
+/// What happened to one direction's stream credit since admission last heard.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct BudgetChange {
+    /// Streams of unreserved credit that came free.
+    freed: u64,
+    /// Anything else: the handshake finished, the connection closed.
+    other: bool,
+}
+
+impl BudgetChange {
+    const OTHER: Self = Self {
+        freed: 0,
+        other: true,
+    };
+
+    fn merge(&mut self, change: Self) {
+        self.freed = self.freed.saturating_add(change.freed);
+        self.other |= change.other;
     }
 }
 
@@ -2520,7 +2549,7 @@ pub(crate) struct State {
     on_connected: Option<oneshot::Sender<Result<bool, ConnectionError>>>,
     connected: bool,
     available_streams: [u64; 2],
-    stream_budget_changed: [bool; 2],
+    stream_budget_changed: [BudgetChange; 2],
     reserved_streams: [u64; 2],
     handshake_confirmed: bool,
     timer: DeadlineTimer,
@@ -3344,7 +3373,9 @@ impl State {
                     self.connected = true;
                     // Reservations are disabled before this event, even when
                     // provisional transport parameters already exposed credit.
-                    self.stream_budget_changed = [true; 2];
+                    for pending in &mut self.stream_budget_changed {
+                        pending.merge(BudgetChange::OTHER);
+                    }
                     if let Some(x) = self.on_connected.take() {
                         // Nobody waiting for it is not an error: the receiver may be gone.
                         drop(x.send(Ok(
@@ -3399,14 +3430,15 @@ impl State {
         }
         let changed = self.refresh_stream_budget();
         for (pending, changed) in self.stream_budget_changed.iter_mut().zip(changed) {
-            *pending |= changed;
+            pending.merge(changed);
         }
     }
 
-    /// Wake admission only when unreserved stream credit increases.
-    /// Acquiring or consuming a reservation cannot help another waiter.
-    fn refresh_stream_budget(&mut self) -> [bool; 2] {
-        let mut changed = [false; 2];
+    /// Wake admission only when unreserved stream credit increases, by how
+    /// much it did. Acquiring or consuming a reservation cannot help another
+    /// waiter.
+    fn refresh_stream_budget(&mut self) -> [BudgetChange; 2] {
+        let mut changed = [BudgetChange::default(); 2];
         for dir in Dir::iter() {
             let index = dir as usize;
             let available = self
@@ -3414,7 +3446,7 @@ impl State {
                 .streams()
                 .available_local_streams(dir)
                 .saturating_sub(self.reserved_streams[index]);
-            changed[index] = available > self.available_streams[index];
+            changed[index].freed = available.saturating_sub(self.available_streams[index]);
             self.available_streams[index] = available;
         }
         changed
@@ -3516,7 +3548,9 @@ impl State {
         shared.closed.notify_waiters();
         // Admission learns of the close with the next budget signal, sent
         // outside the state lock.
-        self.stream_budget_changed = [true; 2];
+        for pending in &mut self.stream_budget_changed {
+            pending.merge(BudgetChange::OTHER);
+        }
     }
 
     fn close(&mut self, error_code: VarInt, reason: Bytes, shared: &Shared) {
@@ -3818,6 +3852,50 @@ mod tests {
             Connection(connecting.conn.as_ref().unwrap().clone()),
             driver,
         )
+    }
+
+    /// Records what a signal tells its listeners.
+    #[derive(Default)]
+    struct Changes(Mutex<Vec<Change>>);
+
+    impl ChangeListener for Changes {
+        fn changed(&self, change: Change) {
+            self.0.lock().push(change);
+        }
+    }
+
+    #[test]
+    fn returned_stream_credit_is_reported_in_units() {
+        let shared = Shared::default();
+        let listener = Arc::new(Changes::default());
+        shared.stream_budget_changes[Dir::Bi as usize]
+            .subscribe(Arc::downgrade(&listener) as Weak<dyn ChangeListener>);
+        let told = |changed: BudgetChange| {
+            shared.notify_stream_budget([changed, BudgetChange::default()]);
+            std::mem::take(&mut *listener.0.lock())
+        };
+        let freed = |freed| BudgetChange {
+            freed,
+            other: false,
+        };
+        assert_eq!(
+            told(freed(2)),
+            [Change::Freed, Change::Freed],
+            "one per stream"
+        );
+        assert_eq!(
+            told(BudgetChange {
+                freed: 3,
+                other: true
+            }),
+            [Change::Other]
+        );
+        assert_eq!(
+            told(freed(FREED_STREAMS_MAX + 1)),
+            [Change::Other],
+            "too many to count out"
+        );
+        assert!(told(BudgetChange::default()).is_empty());
     }
 
     /// Budget subscribers learn of a close that no driver poll follows.

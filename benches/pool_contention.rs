@@ -13,7 +13,7 @@ use rama::{
         client::pool::{
             ConnID, ConnectionAdmission, ConnectionAdmissionLease, ConnectionAdmissionPolicy,
             ConnectionResult, ConnectionReuse, ConnectionReusePolicy, LruDropPool, MultiplexPool,
-            MuxSelection, Pool, ReuseKey,
+            MuxSelection, Pool, ReuseKey, SaturationPolicy,
         },
         conn::MaxConcurrency,
     },
@@ -28,6 +28,23 @@ use std::{
 };
 
 mod bench_alloc;
+
+/// A pool of at most `streams` per connection and `total` connections, with
+/// the default saturation policy.
+fn limited<ID: ConnID>(streams: usize, total: usize) -> MultiplexPool<ServiceInput<()>, ID> {
+    MultiplexPool::new()
+        .with_max_streams_per_connection(NonZeroUsize::new(streams).unwrap())
+        .with_max_connections_total(NonZeroUsize::new(total).unwrap())
+}
+
+/// A pool of at most `streams` per connection and `total` connections that
+/// evicts an idle connection whenever a checkout needs a slot.
+fn evicting<ID: ConnID>(streams: usize, total: usize) -> MultiplexPool<ServiceInput<()>, ID> {
+    MultiplexPool::new()
+        .with_max_streams_per_connection(NonZeroUsize::new(streams).unwrap())
+        .with_max_connections_total(NonZeroUsize::new(total).unwrap())
+        .with_saturation_policy(SaturationPolicy::EvictIdle)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct BenchId(u8);
@@ -56,10 +73,7 @@ const RESIDENT_IDS: &[usize] = &[1, 256, 4096];
 
 /// A pool holding one idle connection for each of `resident` distinct ids.
 async fn pool_with_resident_ids(resident: usize) -> Arc<MultiplexPool<ServiceInput<()>, HostId>> {
-    let pool = Arc::new(MultiplexPool::<ServiceInput<()>, HostId>::new(
-        NonZeroUsize::new(usize::MAX).unwrap(),
-        NonZeroUsize::new(resident).unwrap(),
-    ));
+    let pool = Arc::new(evicting::<HostId>(usize::MAX, resident));
     for n in 0..resident {
         let id = HostId::nth(n);
         let permit = match pool.get_conn(&id, &EMPTY_INPUT).await.unwrap() {
@@ -131,10 +145,7 @@ async fn park_all(started: &AtomicUsize, waiters: usize) {
 }
 
 async fn hand_off_one_stream_at_a_time(waiters: usize) {
-    let pool = Arc::new(MultiplexPool::<ServiceInput<()>, BenchId>::new(
-        NonZeroUsize::new(1).unwrap(),
-        NonZeroUsize::new(1).unwrap(),
-    ));
+    let pool = Arc::new(limited::<BenchId>(1, 1));
     let permit = match pool.get_conn(&BenchId(0), &EMPTY_INPUT).await.unwrap() {
         ConnectionResult::CreatePermit(permit) => permit,
         ConnectionResult::Connection(_) => unreachable!("a fresh pool is empty"),
@@ -170,10 +181,7 @@ async fn hand_off_one_stream_at_a_time(waiters: usize) {
 }
 
 async fn hand_off_streams_for_two_ids(waiters_per_id: usize) {
-    let pool = Arc::new(MultiplexPool::<ServiceInput<()>, BenchId>::new(
-        NonZeroUsize::new(2).unwrap(),
-        NonZeroUsize::new(2).unwrap(),
-    ));
+    let pool = Arc::new(limited::<BenchId>(2, 2));
 
     let mut anchors = Vec::with_capacity(2);
     let mut releases = Vec::with_capacity(2);
@@ -230,6 +238,7 @@ async fn hand_off_streams_for_two_ids(waiters_per_id: usize) {
 #[divan::bench(args = [1_usize, 8, 64], sample_count = 50)]
 fn multiplex_waiter_handoff(bencher: divan::Bencher, waiters: usize) {
     let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
         .build()
         .unwrap();
     bencher
@@ -242,6 +251,7 @@ fn multiplex_waiter_handoff(bencher: divan::Bencher, waiters: usize) {
 #[divan::bench(args = [1_usize, 8, 64], sample_count = 50)]
 fn multiplex_two_id_waiter_handoff(bencher: divan::Bencher, waiters_per_id: usize) {
     let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
         .build()
         .unwrap();
     bencher
@@ -314,7 +324,7 @@ fn bench_multiplex_same_id(bencher: divan::Bencher, resident: usize, with_policy
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    let pool = MultiplexPool::<ServiceInput<()>, BenchId>::try_new(1, resident).unwrap();
+    let pool = evicting::<BenchId>(1, resident);
     let input = Extensions::new();
     input.insert(MaxConcurrency::new(4));
     runtime.block_on(async {
@@ -373,11 +383,7 @@ fn bench_multiplex_contended_checkout(
 ) {
     const CHECKOUTS_PER_THREAD: usize = 2_000;
 
-    let pool = Arc::new(
-        MultiplexPool::<ServiceInput<()>, BenchId>::try_new(1, resident)
-            .unwrap()
-            .with_selection(selection),
-    );
+    let pool = Arc::new(evicting::<BenchId>(1, resident).with_selection(selection));
     let setup = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -480,7 +486,7 @@ fn multiplex_mixed_class_hit(bencher: divan::Bencher, (resident, classes): (usiz
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    let pool = MultiplexPool::<ServiceInput<()>, BenchId>::try_new(1, resident).unwrap();
+    let pool = evicting::<BenchId>(1, resident);
     runtime.block_on(async {
         let mut held = Vec::with_capacity(resident);
         for n in 0..resident {
@@ -600,10 +606,12 @@ fn bench_saturated(
     max_total: usize,
     streams: usize,
     hold: usize,
+    policy: SaturationPolicy,
 ) {
     const ROUNDS: usize = 64;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
+        .enable_time()
         .build()
         .unwrap();
     bencher
@@ -611,8 +619,9 @@ fn bench_saturated(
         .bench_local(|| {
             runtime.block_on(async {
                 let pool = Arc::new(
-                    MultiplexPool::<ServiceInput<()>, BenchId>::try_new(usize::MAX, max_total)
-                        .unwrap(),
+                    MultiplexPool::<ServiceInput<()>, BenchId>::new()
+                        .with_max_connections_total(NonZeroUsize::new(max_total).unwrap())
+                        .with_saturation_policy(policy),
                 );
                 let mut tasks = Vec::with_capacity(clients);
                 for client in 0..clients {
@@ -649,12 +658,22 @@ fn bench_saturated(
     sample_count = 10
 )]
 fn multiplex_saturated_exclusive(bencher: divan::Bencher, (clients, ids): (usize, usize)) {
-    bench_saturated(bencher, clients, ids, 50, 1, 2);
+    bench_saturated(bencher, clients, ids, 50, 1, 2, SaturationPolicy::default());
+}
+
+/// As [`multiplex_saturated_exclusive`], closing another id's idle connection
+/// whenever a checkout needs a slot: the evict-and-dial churn the default avoids.
+#[divan::bench(args = [(256_usize, 1_usize), (256, 4)], sample_count = 10)]
+fn multiplex_saturated_exclusive_evict_idle(
+    bencher: divan::Bencher,
+    (clients, ids): (usize, usize),
+) {
+    bench_saturated(bencher, clients, ids, 50, 1, 2, SaturationPolicy::EvictIdle);
 }
 
 /// Multiplexed connections with transport credit (h2/h3 shaped), saturated:
 /// 4 connections of 16 streams for 256 clients.
 #[divan::bench(args = [1_usize, 4], sample_count = 10)]
 fn multiplex_saturated_credit(bencher: divan::Bencher, ids: usize) {
-    bench_saturated(bencher, 256, ids, 4, 16, 2);
+    bench_saturated(bencher, 256, ids, 4, 16, 2, SaturationPolicy::default());
 }

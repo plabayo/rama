@@ -25,12 +25,14 @@ use rama_net::{
 };
 use rama_quic::{Connection, TransportConfig};
 use rama_quic_proto::{Dir, Side, StreamId, coding::Codec as _};
+use rama_utils::reactive::{Change, ChangeListener};
 use std::assert_matches;
 use std::{
     future::Future,
+    num::NonZeroUsize,
     pin::pin,
     sync::{
-        Arc,
+        Arc, Weak,
         atomic::{AtomicU64, Ordering},
     },
     task::{Context, Poll, Wake, Waker},
@@ -436,6 +438,16 @@ async fn closed_transports_are_never_busy() {
     pair.close().await;
 }
 
+/// Records what a signal tells its listeners.
+#[derive(Default)]
+struct Told(parking_lot::Mutex<Vec<Change>>);
+
+impl ChangeListener for Told {
+    fn changed(&self, change: Change) {
+        self.0.lock().push(change);
+    }
+}
+
 /// Pool admission subscribers learn of a QUIC close pushed by the transport, before the
 /// HTTP/3 driver noticed it.
 #[tokio::test(start_paused = true)]
@@ -447,11 +459,20 @@ async fn closing_the_transport_wakes_admission_subscribers() {
                 .unwrap();
         let admission = sender.connection_admission();
         let held = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
+        let told = Arc::new(Told::default());
+        admission.subscribe(Arc::downgrade(&told) as Weak<dyn ChangeListener>);
         let changed = admission.changed();
         pair.client.close(0u32, b"closed");
         changed.await;
         assert!(!admission.in_use());
-        drop((held, driver, sender));
+        // The driver notices the close too, and ends admission.
+        let _ended = driver.run().await;
+        let told = told.0.lock().clone();
+        assert!(
+            !told.is_empty() && told.iter().all(|change| *change == Change::Other),
+            "a close is no freed unit: {told:?}"
+        );
+        drop((held, sender));
         pair.close().await;
     })
     .await
@@ -479,7 +500,9 @@ async fn pool_waiters_for_other_ids_pass_a_closed_connection() {
     let input = Extensions::new();
     // Work that outlives its pool handout, as an upgraded tunnel does.
     let held = admission.try_acquire(&input).unwrap().unwrap();
-    let pool = MultiplexPool::try_new(32, 1).unwrap();
+    let pool = MultiplexPool::new()
+        .with_max_streams_per_connection(NonZeroUsize::new(32).unwrap())
+        .with_max_connections_total(NonZeroUsize::new(1).unwrap());
     let ConnectionResult::CreatePermit(permit) = pool.get_conn(&Id(0), &input).await.unwrap()
     else {
         panic!("a fresh pool creates");

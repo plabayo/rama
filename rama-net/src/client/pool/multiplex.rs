@@ -33,27 +33,28 @@
 use super::reuse::{KeyedLane, LaneKey, ReuseClass};
 use super::{
     ConnID, ConnectionAdmission, ConnectionAdmissionLease, ConnectionResult, ConnectionReuse, Pool,
-    PoolSlot, ReuseKey,
+    ReuseKey,
 };
 use crate::conn::{ConnectionHealth, ConnectionHealthWatcher, MaxConcurrency};
 use ahash::{HashMap, HashMapExt as _};
 use parking_lot::Mutex;
 use rama_core::Service;
-use rama_core::error::BoxErrorExt as _;
-use rama_core::error::{BoxError, ErrorExt};
+use rama_core::error::BoxError;
 use rama_core::extensions::{Extension, Extensions, ExtensionsMut, ExtensionsRef, NetExtension};
 use rama_core::telemetry::tracing::trace;
 use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::macros::generate_set_and_with;
-use rama_utils::reactive::{Change, ChangeListener, WaitQueue, Waiter, Wakes};
+use rama_utils::reactive::{Change, ChangeListener, Party, WaitQueue, Waiter, Wakes};
 use rama_utils::time::{AtomicInstant, now_monotonic_nanos};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering, fence};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
-use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{AcquireError, Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::time::Sleep;
 
 #[cfg(feature = "opentelemetry")]
 use super::metrics;
@@ -72,6 +73,51 @@ pub enum MuxSelection {
     FirstAvailable,
     /// Cycle through the eligible connections.
     RoundRobin,
+}
+
+/// What a [`MultiplexPool`] at its [total connection limit] does for a checkout
+/// that needs a new connection.
+///
+/// Closing another connection costs that connection's next request a new
+/// handshake, so the default waits a little for the checkout's own connections
+/// first (see [`Self::EvictIdleAfter`] for its timer). Waiting checkouts are
+/// served in arrival order, across ids.
+///
+/// [total connection limit]: MultiplexPool::with_max_connections_total
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaturationPolicy {
+    /// Wait for a connection slot; never close another connection for one.
+    Wait,
+    /// Close the least recently used idle connection only for a checkout none
+    /// of whose connections exist yet; others wait for their own.
+    EvictIdleWhenCold,
+    /// As [`Self::EvictIdleWhenCold`], and for any checkout that waited this long.
+    ///
+    /// Waits on a tokio timer: the runtime needs its time driver enabled.
+    EvictIdleAfter(Duration),
+    /// Close the least recently used idle connection whenever a checkout needs a
+    /// slot.
+    EvictIdle,
+}
+
+impl Default for SaturationPolicy {
+    fn default() -> Self {
+        Self::EvictIdleAfter(DEFAULT_EVICT_IDLE_AFTER)
+    }
+}
+
+/// The share of a [`MultiplexPool`]'s limits a new connection takes: the create
+/// permit of [`MultiplexPool::get_conn`]. The connection keeps it while stored.
+#[derive(Debug)]
+pub struct MultiplexSlot {
+    /// Of the total limit, if the pool has one.
+    total: Option<OwnedSemaphorePermit>,
+    /// Of the connection's id, if the pool limits connections per id.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "held: dropping it frees the id's slot")
+    )]
+    id: Option<OwnedSemaphorePermit>,
 }
 
 /// A connection stored in a [`MultiplexPool`].
@@ -106,8 +152,11 @@ struct StoredConnection<C, ID> {
     /// Checkouts waiting anywhere in the pool: while none waits, releases and
     /// pushed changes skip the waiters.
     waiting: Arc<AtomicUsize>,
-    /// Every waiter of the pool: new connections, rekeys, eviction chances.
+    /// Every waiter of the pool: new connections and rekeys.
     notify: Arc<Notify>,
+    /// Checkouts waiting for a total slot: an idle connection nobody else
+    /// waits for is a chance to evict it for one.
+    slot_waiters: Arc<WaitQueue>,
     last_idle: AtomicInstant,
     pool_slot: Mutex<ConnectionSlot>,
     /// Whether the lane's `open` set lists this connection. Only written with
@@ -127,7 +176,7 @@ struct Admitted(Option<ConnectionAdmissionLease>);
 /// Admission and eviction share this lock so a previously captured snapshot
 /// cannot acquire a stream after the connection's capacity has been transferred.
 struct ConnectionSlot {
-    permit: Option<PoolSlot>,
+    slots: MultiplexSlot,
     retired: bool,
 }
 
@@ -177,9 +226,8 @@ impl<C, ID> StoredConnection<C, ID> {
     /// A connection stays listed while it has room, so a busy multiplexed
     /// connection costs no lock here. It is only unlisted when a checkout took
     /// its last slot, and only exclusive connections pay the lock on every
-    /// release. A release racing that unlisting can skip the re-listing; the
-    /// connection then rejoins on its next release, or on the next exact
-    /// checkout, since `open` is only a hint (see [`Lane`]).
+    /// release. Of a release and an unlisting racing it, one sees the other:
+    /// see the fences in [`MultiplexedConnection::drop`] and [`Lane::pick`].
     fn relist(self: &Arc<Self>) {
         if !self.listed.load(Ordering::Relaxed) && self.filed.load(Ordering::Relaxed) {
             (self.relist_fn)(self);
@@ -273,14 +321,34 @@ impl<C, ID> StoredConnection<C, ID> {
     /// Call after a `SeqCst` fence that follows the change. It pairs with the
     /// fence of [`WaitQueue::push`]: of a waiter queuing and this change, one
     /// sees the other; a waiter leaving meets it under the queue's lock.
-    fn freed(&self, wake: fn(&WaitQueue) -> bool) {
+    ///
+    /// `in_listener`: called from a source's notification, which may hold the
+    /// source's locks, so nothing may call into a source. Work outliving the
+    /// handouts is then not asked about: the woken checkout checks it.
+    fn freed(&self, wake: fn(&WaitQueue) -> bool, in_listener: bool) {
         if self.waiting.load(Ordering::Relaxed) == 0 {
             return;
         }
         let waiters = self.lane_waiters.lock().clone();
-        // Eviction skips lanes with waiters, so only without is it a chance.
-        if !waiters.is_some_and(|waiters| wake(&waiters)) && self.is_idle() {
-            self.notify.notify_one();
+        let spoken_for = waiters.as_ref().is_some_and(|waiters| wake(waiters))
+            && self.has_capacity(self.stream_cap);
+        let idle = if in_listener {
+            self.active.load(Ordering::Relaxed) == 0
+        } else {
+            self.is_idle()
+        };
+        // Eviction leaves an idle connection to its lane's waiters, unless a
+        // checkout waiting for a slot arrived before them.
+        if idle
+            && (!spoken_for
+                || self.slot_waiters.front_order().is_some_and(|slot| {
+                    waiters
+                        .as_ref()
+                        .and_then(|waiters| waiters.front_order())
+                        .is_none_or(|lane| slot < lane)
+                }))
+        {
+            self.slot_waiters.wake_one();
         }
     }
 }
@@ -292,11 +360,12 @@ impl<C: Send + Sync + 'static, ID: Send + Sync + 'static> ChangeListener
 {
     fn changed(&self, change: Change) {
         fence(Ordering::SeqCst);
-        self.freed(match change {
+        let wake = match change {
             Change::Freed => WaitQueue::wake_one,
             // How much capacity changed is unknown: every waiter of the lane looks.
             Change::Other => WaitQueue::wake_all,
-        });
+        };
+        self.freed(wake, true);
     }
 }
 
@@ -340,7 +409,7 @@ impl<C, ID> Drop for MultiplexedConnection<C, ID> {
         // One released handout is one unit of capacity: for the first waiter
         // of its lane without a wake, else an eviction chance if now idle.
         // Work outliving the handout is announced by the admission's change.
-        self.inner.freed(WaitQueue::wake_one);
+        self.inner.freed(WaitQueue::wake_one, false);
     }
 }
 
@@ -476,6 +545,10 @@ const OPEN_CANDIDATES: usize = 4;
 /// in a bucket whose checkouts never come across it. Sweeping the bucket at
 /// this pace amortizes to nothing.
 const MAX_SWEEP_INTERVAL: Duration = Duration::from_secs(1);
+
+/// How long [`SaturationPolicy::default`] lets a checkout wait for its own
+/// connections before it may close another id's idle one.
+const DEFAULT_EVICT_IDLE_AFTER: Duration = Duration::from_millis(100);
 const MIN_SWEEP_INTERVAL: Duration = Duration::from_millis(1);
 
 /// Who looks at a bucket's lanes.
@@ -485,87 +558,192 @@ enum Look<'a> {
     /// A waiting checkout, queuing in the lanes it looks at.
     Register(&'a mut Waiting),
     /// A waiting checkout, looking again.
-    Waiting(&'a Waiter),
+    Waiting(&'a Waiting),
 }
 
 impl Look<'_> {
-    fn waiter(&self) -> Option<&Waiter> {
+    fn waiting(&self) -> Option<&Waiting> {
         match self {
             Self::New => None,
-            Self::Register(waiting) => Some(&waiting.waiter),
-            Self::Waiting(waiter) => Some(waiter),
+            Self::Register(waiting) => Some(waiting),
+            Self::Waiting(waiting) => Some(waiting),
         }
+    }
+}
+
+/// Why a look found neither a connection nor a create permit.
+#[derive(Debug, Clone, Copy)]
+enum Blocked {
+    /// The id is at its connection limit: wait for one of its slots.
+    Id,
+    /// The pool is at its total connection limit: wait for a total slot.
+    Total,
+}
+
+/// A queued acquisition of a pool or id slot, kept across wakes so the
+/// checkout keeps its place in the semaphore's FIFO.
+type SlotWait = Pin<Box<dyn Future<Output = Result<OwnedSemaphorePermit, AcquireError>> + Send>>;
+
+/// The output of `future` if there is one, else never.
+async fn maybe<F: Future + Unpin>(future: &mut Option<F>) -> F::Output {
+    match future {
+        Some(future) => future.await,
+        None => std::future::pending().await,
+    }
+}
+
+/// As [`maybe`], for a future pinned in place.
+async fn maybe_pinned<F: Future>(future: Pin<&mut Option<F>>) -> F::Output {
+    match future.as_pin_mut() {
+        Some(future) => future.await,
+        None => std::future::pending().await,
     }
 }
 
 /// A waiting checkout's place in the lanes it can be served from, and in the
-/// pool's count of waiting checkouts. Dropped when the checkout ends: an
-/// unused wake passes on to the next waiter of each lane.
+/// pool's count of waiting checkouts. Dropped when the checkout ends: each
+/// lane gets back the wakes it sent and the checkout did not use.
 struct Waiting {
-    waiter: Arc<Waiter>,
-    lanes: SmallVec<[Arc<WaitQueue>; 2]>,
+    party: Arc<Party>,
+    places: SmallVec<[Place; 2]>,
     /// The lane of the connection that served the checkout, if filed.
     served: Option<Arc<WaitQueue>>,
-    /// Whether serving it spent a wake.
+    /// Whether serving it spent a wake of that lane.
     spent: bool,
     waiting: Arc<AtomicUsize>,
-    notify: Arc<Notify>,
+    slot_waiters: Arc<WaitQueue>,
+}
+
+/// A waiting checkout's place in one queue.
+struct Place {
+    queue: Arc<WaitQueue>,
+    waiter: Waiter,
+    /// Its wakes when the current look began, if it was queued by then.
+    seen: Option<Wakes>,
+    /// Whether the current look queued in it: a look leaves the queues its
+    /// request no longer uses.
+    looked: bool,
 }
 
 impl Waiting {
-    fn new(waiting: &Arc<AtomicUsize>, notify: &Arc<Notify>) -> Self {
+    fn new(waiting: &Arc<AtomicUsize>, slot_waiters: &Arc<WaitQueue>, order: u64) -> Self {
         waiting.fetch_add(1, Ordering::Relaxed);
+        // Pairs with the fence of a release: for a checkout that queues in no
+        // lane, this is what orders its count before its look.
+        fence(Ordering::SeqCst);
         Self {
-            waiter: Waiter::new(),
-            lanes: SmallVec::new(),
+            party: Party::new(order),
+            places: SmallVec::new(),
             served: None,
             spent: false,
             waiting: waiting.clone(),
-            notify: notify.clone(),
+            slot_waiters: slot_waiters.clone(),
         }
     }
 
-    /// Queue in `lane`, once. Call with the storage lock held, before the
+    /// Start a look: returns the party's wakes to wait past if it finds nothing.
+    fn begin_look(&mut self) -> usize {
+        let seen = self.party.wakes();
+        for place in &mut self.places {
+            place.seen = Some(place.waiter.wakes());
+            place.looked = false;
+        }
+        seen
+    }
+
+    /// Queue in `queue`, once. Call with the storage lock held, before the
     /// look at the lane's capacity: see [`StoredConnection::freed`].
-    fn register(&mut self, lane: &Arc<WaitQueue>) {
-        if !self.lanes.iter().any(|known| Arc::ptr_eq(known, lane)) {
-            lane.push(&self.waiter);
-            self.lanes.push(lane.clone());
+    fn register(&mut self, queue: &Arc<WaitQueue>) {
+        if let Some(place) = self
+            .places
+            .iter_mut()
+            .find(|place| Arc::ptr_eq(&place.queue, queue))
+        {
+            place.looked = true;
+            return;
         }
+        let waiter = self.party.waiter();
+        queue.push(&waiter);
+        self.places.push(Place {
+            queue: queue.clone(),
+            waiter,
+            seen: None,
+            looked: true,
+        });
     }
-}
 
-impl Waiting {
-    /// The checkout was served by `conn`, in a look begun at `seen`.
-    fn served<C, ID>(&mut self, conn: &StoredConnection<C, ID>, seen: Wakes) {
-        self.served = conn.lane_waiters.lock().clone();
-        self.spent = seen.held();
+    /// The checkout's place in `queue`, if it queues there.
+    fn waiter_in(&self, queue: &Arc<WaitQueue>) -> Option<&Waiter> {
+        self.places
+            .iter()
+            .find(|place| Arc::ptr_eq(&place.queue, queue))
+            .map(|place| &place.waiter)
+    }
+
+    /// Leave the lanes the current look did not queue in: the request no
+    /// longer uses them. Call once the look queued in the request's lanes.
+    fn leave_other_lanes(&mut self) {
+        let slot_waiters = self.slot_waiters.clone();
+        self.leave_where(|place| !place.looked && !Arc::ptr_eq(&place.queue, &slot_waiters));
+    }
+
+    /// A look found nothing: it spent the wakes it answered, and the checkout
+    /// leaves the slot waiters unless the look queued there.
+    fn end_fruitless_look(&mut self) {
+        for place in &self.places {
+            if let Some(seen) = place.seen {
+                place.waiter.spend(seen);
+            }
+        }
+        self.leave_where(|place| !place.looked);
+    }
+
+    /// Leave the queues `leave` picks, passing on the wakes each sent.
+    fn leave_where(&mut self, mut leave: impl FnMut(&Place) -> bool) {
+        self.places.retain(|place| {
+            if !leave(place) {
+                return true;
+            }
+            for _ in 0..place.queue.remove(&place.waiter) {
+                place.queue.wake_one();
+            }
+            false
+        });
+    }
+
+    /// The checkout was served by a connection of `lane`, if filed.
+    fn served(&mut self, lane: Option<Arc<WaitQueue>>) {
+        self.served = lane;
+        self.spent = self.served.as_ref().is_some_and(|served| {
+            self.places.iter().any(|place| {
+                Arc::ptr_eq(&place.queue, served) && place.seen.is_some_and(Wakes::held)
+            })
+        });
     }
 }
 
 impl Drop for Waiting {
     fn drop(&mut self) {
         let mut emptied = false;
-        for lane in &self.lanes {
-            let mut held = lane.remove(&self.waiter);
+        for place in &self.places {
+            let mut held = place.queue.remove(&place.waiter);
             if self.spent
                 && self
                     .served
                     .as_ref()
-                    .is_some_and(|served| Arc::ptr_eq(served, lane))
+                    .is_some_and(|served| Arc::ptr_eq(served, &place.queue))
             {
                 held = held.saturating_sub(1);
             }
-            // Which lane sent a wake is unknown: each passes on all it may
-            // have sent, the capacity they stand for is there for others.
+            // The capacity these wakes stand for is there for the others.
             for _ in 0..held {
-                lane.wake_one();
+                place.queue.wake_one();
             }
-            emptied |= lane.is_empty();
+            emptied |= place.queue.is_empty();
         }
         if self.waiting.fetch_sub(1, Ordering::Relaxed) > 1 && emptied {
             // Idle connections of a lane nobody waits in can be evicted now.
-            self.notify.notify_one();
+            self.slot_waiters.wake_one();
         }
     }
 }
@@ -865,7 +1043,7 @@ impl<C, ID> IdBucket<C, ID> {
         &mut self,
         selection: MuxSelection,
         cap: usize,
-        waiter: Option<&Waiter>,
+        waiting: Option<&Waiting>,
     ) -> Option<(OnlyLane, Option<Claimed<C, ID>>)> {
         let Self {
             unrestricted,
@@ -881,7 +1059,9 @@ impl<C, ID> IdBucket<C, ID> {
             }
             _ => return None,
         };
-        let admitted = lane.waiters.admits(waiter);
+        let admitted = lane
+            .waiters
+            .admits(waiting.and_then(|waiting| waiting.waiter_in(&lane.waiters)));
         let claimed = admitted
             .then(|| lane.pick(selection, cap, &[], *rr_after))
             .flatten()
@@ -903,13 +1083,16 @@ impl<C, ID> IdBucket<C, ID> {
         selection: MuxSelection,
         cap: usize,
         skip: &[u64],
-        waiter: Option<&Waiter>,
+        waiting: Option<&Waiting>,
     ) -> Option<Claimed<C, ID>> {
         let rr_after = self.rr_after;
         let mut lanes = self.request_lanes_mut(request);
         let mut best: Option<(usize, Pick)> = None;
         for (index, lane) in lanes.iter_mut().enumerate() {
-            if !lane.waiters.admits(waiter) {
+            if !lane
+                .waiters
+                .admits(waiting.and_then(|waiting| waiting.waiter_in(&lane.waiters)))
+            {
                 continue;
             }
             let Some(pick) = lane.pick(selection, cap, skip, rr_after) else {
@@ -1086,13 +1269,19 @@ impl<C, ID> IdBucket<C, ID> {
 /// the lock is never held for a scan of the whole pool.
 struct Storage<C, ID> {
     by_id: HashMap<ID, IdBucket<C, ID>>,
+    /// The connection slots of every id, if the pool limits them per id: kept
+    /// while a connection, create permit or waiter holds one of them.
+    id_slots: HashMap<ID, Arc<Semaphore>>,
 }
 
 /// Connection pool that multiplexes concurrent users over shared
 /// connections.
 pub struct MultiplexPool<C, ID> {
     storage: Arc<Mutex<Storage<C, ID>>>,
-    total_slots: Arc<Semaphore>,
+    max_connections_total: Option<NonZeroUsize>,
+    total_slots: Option<Arc<Semaphore>>,
+    saturation: SaturationPolicy,
+    max_connections_per_id: Option<NonZeroUsize>,
     idle_timeout: Option<Duration>,
     max_concurrent_streams: usize,
     selection: MuxSelection,
@@ -1102,6 +1291,10 @@ pub struct MultiplexPool<C, ID> {
     notify: Arc<Notify>,
     /// Checkouts waiting for capacity, see [`StoredConnection::waiting`].
     waiting: Arc<AtomicUsize>,
+    /// See [`StoredConnection::slot_waiters`].
+    slot_waiters: Arc<WaitQueue>,
+    /// Arrival order of waiting checkouts, across ids.
+    next_order: Arc<AtomicU64>,
     #[cfg(feature = "opentelemetry")]
     metrics: Option<Arc<metrics::PoolMetrics>>,
 }
@@ -1125,6 +1318,9 @@ where
 impl<C, ID> Debug for MultiplexPool<C, ID> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MultiplexPool")
+            .field("max_connections_total", &self.max_connections_total)
+            .field("saturation", &self.saturation)
+            .field("max_connections_per_id", &self.max_connections_per_id)
             .field("idle_timeout", &self.idle_timeout)
             .field("max_concurrent_streams", &self.max_concurrent_streams)
             .field("selection", &self.selection)
@@ -1136,7 +1332,10 @@ impl<C, ID> Clone for MultiplexPool<C, ID> {
     fn clone(&self) -> Self {
         Self {
             storage: self.storage.clone(),
+            max_connections_total: self.max_connections_total,
             total_slots: self.total_slots.clone(),
+            saturation: self.saturation,
+            max_connections_per_id: self.max_connections_per_id,
             idle_timeout: self.idle_timeout,
             max_concurrent_streams: self.max_concurrent_streams,
             selection: self.selection,
@@ -1144,52 +1343,113 @@ impl<C, ID> Clone for MultiplexPool<C, ID> {
             next_seq: self.next_seq.clone(),
             notify: self.notify.clone(),
             waiting: self.waiting.clone(),
+            slot_waiters: self.slot_waiters.clone(),
+            next_order: self.next_order.clone(),
             #[cfg(feature = "opentelemetry")]
             metrics: self.metrics.clone(),
         }
     }
 }
 
-impl<C, ID> MultiplexPool<C, ID> {
-    /// Create a new [`MultiplexPool`] from validated, non-zero limits.
-    #[must_use]
-    pub fn new(max_concurrent_streams: NonZeroUsize, max_total: NonZeroUsize) -> Self {
+impl<C, ID> Default for MultiplexPool<C, ID> {
+    fn default() -> Self {
         Self {
             storage: Arc::new(Mutex::new(Storage {
                 by_id: HashMap::new(),
+                id_slots: HashMap::new(),
             })),
-            total_slots: Arc::new(Semaphore::new(max_total.get())),
+            max_connections_total: None,
+            total_slots: None,
+            saturation: SaturationPolicy::default(),
+            max_connections_per_id: None,
             idle_timeout: None,
-            max_concurrent_streams: max_concurrent_streams.get(),
+            max_concurrent_streams: usize::MAX,
             selection: MuxSelection::default(),
             rr_cursor: Arc::new(AtomicUsize::new(0)),
             next_seq: Arc::new(AtomicU64::new(0)),
             notify: Arc::new(Notify::new()),
             waiting: Arc::new(AtomicUsize::new(0)),
+            slot_waiters: Arc::new(WaitQueue::new()),
+            next_order: Arc::new(AtomicU64::new(0)),
             #[cfg(feature = "opentelemetry")]
             metrics: None,
         }
     }
+}
 
-    /// Create a new [`MultiplexPool`].
-    ///
-    /// - `max_concurrent_streams`: upper bound on the concurrent users a single
-    ///   connection serves. The actual per-connection concurrency is the minimum of
-    ///   this and the connection's [`MaxConcurrency`] extension ([`usize::MAX`] if unset), so
-    ///   use [`usize::MAX`] to defer entirely to what each connection advertises.
-    /// - `max_total`: max number of connections (across all ids).
-    pub fn try_new(max_concurrent_streams: usize, max_total: usize) -> Result<Self, BoxError> {
-        let (Some(max_concurrent_streams), Some(max_total)) = (
-            NonZeroUsize::new(max_concurrent_streams),
-            NonZeroUsize::new(max_total),
-        ) else {
-            return Err(BoxError::from_static_str(
-                "max_concurrent_streams and max_total must be greater than 0",
-            )
-            .context_field("max_concurrent_streams", max_concurrent_streams)
-            .context_field("max_total", max_total));
-        };
-        Ok(Self::new(max_concurrent_streams, max_total))
+impl<C, ID> MultiplexPool<C, ID> {
+    /// Create a [`MultiplexPool`] without limits: each connection serves as many
+    /// concurrent users as its peer allows, and connections are added as needed.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The pool most tests use: at most `streams` per connection and `total`
+    /// connections, evicting an idle one whenever a checkout needs a slot.
+    #[cfg(test)]
+    pub(crate) fn evicting(streams: usize, total: usize) -> Self {
+        Self::new()
+            .with_max_streams_per_connection(NonZeroUsize::new(streams).unwrap())
+            .with_max_connections_total(NonZeroUsize::new(total).unwrap())
+            .with_saturation_policy(SaturationPolicy::EvictIdle)
+    }
+
+    /// The total limit's free slots.
+    #[cfg(test)]
+    pub(crate) fn free_slots(&self) -> usize {
+        self.total_slots
+            .as_ref()
+            .expect("a total limit")
+            .available_permits()
+    }
+
+    /// A create permit taken from the total limit directly.
+    #[cfg(test)]
+    pub(crate) fn test_slot(&self) -> MultiplexSlot {
+        let total = self.total_slots.as_ref().expect("a total limit");
+        MultiplexSlot {
+            total: Some(total.clone().try_acquire_owned().expect("a free slot")),
+            id: None,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Serve at most this many concurrent users per connection, below what the
+        /// connection's [`MaxConcurrency`] allows. Unset, the peer decides.
+        pub fn max_streams_per_connection(mut self, max: Option<NonZeroUsize>) -> Self {
+            self.max_concurrent_streams = max.map_or(usize::MAX, NonZeroUsize::get);
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Keep at most this many connections, stored or being established, across
+        /// all ids. At the limit, [`SaturationPolicy`] decides. Unset, no limit.
+        pub fn max_connections_total(mut self, max: Option<NonZeroUsize>) -> Self {
+            self.max_connections_total = max;
+            self.total_slots = max.map(|max| Arc::new(Semaphore::new(max.get())));
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// What a checkout that needs a connection does at the total limit, see
+        /// [`Self::with_max_connections_total`].
+        pub fn saturation_policy(mut self, policy: SaturationPolicy) -> Self {
+            self.saturation = policy;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Keep at most this many connections, stored or being established, per id:
+        /// at the limit a checkout waits for its id's capacity, other ids go on.
+        /// Unset, no limit.
+        pub fn max_connections_per_id(mut self, max: Option<NonZeroUsize>) -> Self {
+            self.max_connections_per_id = max;
+            self
+        }
     }
 
     generate_set_and_with! {
@@ -1301,7 +1561,7 @@ where
         id: &ID,
         lanes: &RequestLanes,
         doomed: &mut Doomed<C, ID>,
-        mut look: Look<'_>,
+        look: &mut Look<'_>,
     ) -> Snapshot<C, ID> {
         let Some(bucket) = storage.by_id.get_mut(id) else {
             return Snapshot::new();
@@ -1314,10 +1574,13 @@ where
         let mut snapshot = Snapshot::new();
         let mut lanes_seen = 0;
         for lane in bucket.request_lanes_mut(lanes) {
-            if let Look::Register(waiting) = &mut look {
+            if let Look::Register(waiting) = look {
                 waiting.register(&lane.waiters);
             }
-            if !lane.waiters.admits(look.waiter()) {
+            if !lane.waiters.admits(
+                look.waiting()
+                    .and_then(|waiting| waiting.waiter_in(&lane.waiters)),
+            ) {
                 continue;
             }
             lanes_seen += usize::from(!lane.conns.is_empty());
@@ -1343,21 +1606,28 @@ where
     }
 
     /// Remove the least-recently-used idle connection (any id), returning it
-    /// together with its pool slot so the caller can reuse the slot and drop
+    /// together with its total slot so the caller can reuse the slot and drop
     /// the connection outside the lock.
+    ///
+    /// An idle connection that can take a stream is its lane's waiters', unless
+    /// the evictor arrived before them or is their front (its own look just
+    /// found nothing it could use there).
     fn evict_lru_idle(
         storage: &mut Storage<C, ID>,
-    ) -> Option<(Arc<StoredConnection<C, ID>>, Option<PoolSlot>)> {
+        evictor: Option<&Waiting>,
+    ) -> Option<(Arc<StoredConnection<C, ID>>, Option<OwnedSemaphorePermit>)> {
         let (conn, slot) = {
             let mut candidate = None;
             let mut oldest = u64::MAX;
             // Plain loops: this scans every stored connection.
             for lane in storage.by_id.values().flat_map(IdBucket::lanes) {
-                if !lane.waiters.is_empty() {
-                    // Spoken for: the lane's waiters take its idle connections.
-                    continue;
-                }
+                let spoken_for = lane.waiters.front_order().is_some_and(|front| {
+                    evictor.is_none_or(|evictor| front < evictor.party.order())
+                });
                 for conn in &lane.conns {
+                    if spoken_for && conn.has_capacity(conn.stream_cap) {
+                        continue;
+                    }
                     let last_idle = conn.last_idle.as_nanos();
                     if last_idle >= oldest || !conn.is_idle() {
                         continue;
@@ -1374,7 +1644,7 @@ where
             }
             let (conn, mut slot) = candidate?;
             slot.retired = true;
-            (conn.clone(), slot.permit.take())
+            (conn.clone(), slot.slots.total.take())
         };
         let bucket = storage.by_id.get_mut(&conn.id)?;
         let evicted = bucket.remove(&conn)?;
@@ -1399,7 +1669,7 @@ where
         &self,
         id: &ID,
         input: &Extensions,
-        waiter: Option<&Waiter>,
+        waiting: Option<&Waiting>,
     ) -> Result<MultiplexedConnection<C, ID>, Box<RequestLanes>> {
         if !id.is_reusable() {
             return Err(Box::new(RequestLanes::unrestricted()));
@@ -1425,7 +1695,7 @@ where
                 self.sweep_bucket(bucket, &mut doomed);
             }
             let classes = bucket.classes();
-            match bucket.claim_only(self.selection, cap, waiter) {
+            match bucket.claim_only(self.selection, cap, waiting) {
                 Some((only, claimed)) => (Some(only), claimed, classes),
                 None => (None, None, classes),
             }
@@ -1455,7 +1725,7 @@ where
                     let Some(bucket) = storage.by_id.get_mut(id) else {
                         break;
                     };
-                    let Some(claimed) = bucket.claim(lanes, self.selection, cap, &skip, waiter)
+                    let Some(claimed) = bucket.claim(lanes, self.selection, cap, &skip, waiting)
                     else {
                         break;
                     };
@@ -1522,7 +1792,7 @@ where
         &self,
         id: &ID,
         lanes: &RequestLanes,
-        look: Look<'_>,
+        look: &mut Look<'_>,
     ) -> (Snapshot<C, ID>, bool) {
         if !id.is_reusable() {
             return (Snapshot::new(), false);
@@ -1559,10 +1829,10 @@ where
     fn admit_with_permit(
         &self,
         id: &ID,
-        permit: OwnedSemaphorePermit,
+        slot: MultiplexSlot,
         input: &Extensions,
-        waiter: &Waiter,
-    ) -> ConnectionResult<MultiplexedConnection<C, ID>, PoolSlot> {
+        waiting: &Waiting,
+    ) -> ConnectionResult<MultiplexedConnection<C, ID>, MultiplexSlot> {
         let lanes = self.request_lanes(id, input);
         let mut doomed = Vec::new();
         let same_lane = if id.is_reusable() {
@@ -1571,7 +1841,7 @@ where
                 id,
                 &lanes,
                 &mut doomed,
-                Look::Waiting(waiter),
+                &mut Look::Waiting(waiting),
             )
         } else {
             Snapshot::new()
@@ -1596,7 +1866,120 @@ where
             ?id,
             "multiplex pool: freed slot acquired, returning create permit"
         );
-        ConnectionResult::CreatePermit(PoolSlot(permit))
+        ConnectionResult::CreatePermit(slot)
+    }
+
+    /// A slot of `id`'s connection limit, if the pool has one per id.
+    fn try_id_slot(&self, id: &ID) -> Result<Option<OwnedSemaphorePermit>, Blocked> {
+        let Some(max) = self.max_connections_per_id else {
+            return Ok(None);
+        };
+        self.id_slots(id, max)
+            .try_acquire_owned()
+            .map(Some)
+            .map_err(|_at_limit| Blocked::Id)
+    }
+
+    /// Queue for a slot of `id`'s connection limit, if the pool has one per id.
+    fn id_slot_wait(&self, id: &ID) -> Option<SlotWait> {
+        let max = self.max_connections_per_id?;
+        Some(Box::pin(self.id_slots(id, max).acquire_owned()))
+    }
+
+    /// The connection slots of `id`.
+    fn id_slots(&self, id: &ID, max: NonZeroUsize) -> Arc<Semaphore> {
+        let mut storage = self.storage.lock();
+        if let Some(slots) = storage.id_slots.get(id) {
+            return slots.clone();
+        }
+        // Forget the slots of ids that hold none, at a pace that amortizes to O(1).
+        if storage.id_slots.len() >= storage.id_slots.capacity() {
+            storage
+                .id_slots
+                .retain(|_, slots| Arc::strong_count(slots) > 1);
+        }
+        storage
+            .id_slots
+            .entry(id.clone())
+            .or_insert_with(|| Arc::new(Semaphore::new(max.get())))
+            .clone()
+    }
+
+    /// A slot of the total limit for a new connection of `id`, if the pool has
+    /// one: a free one, one freed by sweeping stale connections, or one evicted
+    /// as the saturation policy allows. Also says whether it was evicted.
+    fn take_total_slot(
+        &self,
+        id: &ID,
+        lanes: &RequestLanes,
+        look: &mut Look<'_>,
+        patient: bool,
+    ) -> Result<(Option<OwnedSemaphorePermit>, bool), Blocked> {
+        let Some(total) = &self.total_slots else {
+            return Ok((None, false));
+        };
+        if let Ok(permit) = total.clone().try_acquire_owned() {
+            return Ok((Some(permit), false));
+        }
+        // Stale connections of any id may hold slots: sweep them out, then let
+        // their permits flow back through the semaphore (to the oldest queued
+        // waiter, if any) first.
+        let mut doomed = Vec::new();
+        self.sweep_all(&mut self.storage.lock(), &mut doomed);
+        drop(doomed);
+        if let Ok(permit) = total.clone().try_acquire_owned() {
+            return Ok((Some(permit), false));
+        }
+        let evicted = {
+            let mut storage = self.storage.lock();
+            // Connections that cannot take a stream do not count.
+            let cold = storage.by_id.get_mut(id).is_none_or(|bucket| {
+                bucket.request_lanes_mut(lanes).into_iter().all(|lane| {
+                    !lane
+                        .conns
+                        .iter()
+                        .any(|conn| conn.effective_capacity(conn.stream_cap) > 0)
+                })
+            });
+            if !self.may_evict(cold, patient) {
+                return Err(Blocked::Total);
+            }
+            // Only checkouts that may evict queue for eviction chances, before
+            // looking for one: see `StoredConnection::freed`.
+            if let Look::Register(waiting) = look {
+                waiting.register(&self.slot_waiters);
+            }
+            let waiting = look.waiting();
+            if !self
+                .slot_waiters
+                .admits(waiting.and_then(|waiting| waiting.waiter_in(&self.slot_waiters)))
+            {
+                // Older ones evict first.
+                return Err(Blocked::Total);
+            }
+            Self::evict_lru_idle(&mut storage, waiting)
+        };
+        let Some((evicted, permit)) = evicted else {
+            return Err(Blocked::Total);
+        };
+        drop(evicted);
+        // The evicted connection's slot moves to this checkout without passing
+        // the semaphore, where it would go to the oldest queued waiter.
+        permit
+            .map(|permit| (Some(permit), true))
+            .ok_or(Blocked::Total)
+    }
+
+    /// Whether the saturation policy lets a checkout of `lanes` evict: `cold`
+    /// says none of its lanes holds a connection, `patient` that it has not
+    /// waited past [`SaturationPolicy::EvictIdleAfter`].
+    fn may_evict(&self, cold: bool, patient: bool) -> bool {
+        match self.saturation {
+            SaturationPolicy::Wait => false,
+            SaturationPolicy::EvictIdleWhenCold => cold,
+            SaturationPolicy::EvictIdleAfter(after) => cold || !patient || after.is_zero(),
+            SaturationPolicy::EvictIdle => true,
+        }
     }
 }
 
@@ -1606,7 +1989,7 @@ where
     ID: ConnID,
 {
     type Connection = MultiplexedConnection<C, ID>;
-    type CreatePermit = PoolSlot;
+    type CreatePermit = MultiplexSlot;
 
     async fn get_conn(
         &self,
@@ -1637,20 +2020,26 @@ where
             ConnectionResult::Connection(conn)
         };
 
-        // One look for a connection with room or a pool slot. A waiting
-        // checkout queues in the lanes it looks at before it looks.
-        let attempt = |look: Look<'_>| -> Option<ConnectionResult<_, _>> {
+        // One look for a connection with room or a create permit. A waiting
+        // checkout queues in the lanes it looks at before it looks. A slot of
+        // the id's limit taken by an earlier look is used, or kept.
+        let attempt = |look: &mut Look<'_>,
+                       held_id: &mut Option<OwnedSemaphorePermit>,
+                       patient: bool|
+         -> Result<ConnectionResult<_, _>, Blocked> {
             // Common case: an idle or shareable connection is listed in one of
             // the request's lanes.
-            let lanes = match self.checkout_open(id, input, look.waiter()) {
-                Ok(conn) => return Some(reused(conn)),
+            let lanes = match self.checkout_open(id, input, look.waiting()) {
+                Ok(conn) => return Ok(reused(conn)),
                 Err(lanes) => *lanes,
             };
 
             // Only this id's bucket is touched under the lock; swept
             // connections close after it is released.
-            let mut doomed = Vec::new();
             let (same_id, saturated_bucket) = self.snapshot_exact(id, &lanes, look);
+            if let Look::Register(waiting) = look {
+                waiting.leave_other_lanes();
+            }
 
             if let Some(conn) = select_and_admit(
                 &same_id,
@@ -1662,44 +2051,33 @@ where
             ) {
                 // Room the bucket's index did not show is listed from now on.
                 conn.inner.relist();
-                return Some(reused(conn));
+                return Ok(reused(conn));
             }
 
             let saturation = !same_id.is_empty() || saturated_bucket;
+            drop(same_id);
 
-            // Claim a fresh connection slot, evicting the least-recently-used idle
-            // connection (any id) if the pool is at its total capacity.
-            let pool_slot = if let Ok(permit) = self.total_slots.clone().try_acquire_owned() {
-                Some(PoolSlot(permit))
-            } else {
-                // Stale connections of other ids may hold slots: sweep them
-                // out, then let their permits flow back through the semaphore
-                // (to the oldest queued waiter, if any) before evicting.
-                self.sweep_all(&mut self.storage.lock(), &mut doomed);
-                doomed.clear();
-                if let Ok(permit) = self.total_slots.clone().try_acquire_owned() {
-                    Some(PoolSlot(permit))
-                } else {
-                    let evicted = Self::evict_lru_idle(&mut self.storage.lock());
-                    match evicted {
-                        Some((evicted, slot)) => {
-                            drop(evicted);
-                            #[cfg(feature = "opentelemetry")]
-                            if let Some((metrics, attrs)) = &metrics {
-                                metrics.evicted_connections.add(1, attrs);
-                            }
-                            // Transfer the evicted idle connection's permit without
-                            // releasing it to the semaphore queue. This lets the
-                            // evictor make progress without stealing a permit that
-                            // was released for the oldest queued waiter.
-                            slot
-                        }
-                        None => None,
+            // A new connection takes a slot of its id's limit, then one of the total.
+            let id_slot = match held_id.take() {
+                Some(slot) => Some(slot),
+                None => self.try_id_slot(id)?,
+            };
+            let total = match self.take_total_slot(id, &lanes, look, patient) {
+                Ok((total, evicted)) => {
+                    #[cfg(feature = "opentelemetry")]
+                    if evicted && let Some((metrics, attrs)) = &metrics {
+                        metrics.evicted_connections.add(1, attrs);
                     }
+                    #[cfg(not(feature = "opentelemetry"))]
+                    let _ = evicted;
+                    total
+                }
+                Err(blocked) => {
+                    *held_id = id_slot;
+                    return Err(blocked);
                 }
             };
 
-            let pool_slot = pool_slot?;
             trace!(
                 ?id,
                 "multiplex pool: no connection with capacity, returning create permit"
@@ -1715,54 +2093,104 @@ where
             }
             #[cfg(not(feature = "opentelemetry"))]
             let _ = saturation;
-            Some(ConnectionResult::CreatePermit(pool_slot))
+            Ok(ConnectionResult::CreatePermit(MultiplexSlot {
+                total,
+                id: id_slot,
+            }))
         };
 
         // Fast path: a look without waiting.
-        if let Some(result) = attempt(Look::New) {
+        let mut held_id = None;
+        if let Ok(result) = attempt(&mut Look::New, &mut held_id, true) {
             return Ok(result);
         }
 
         // Saturated: queue in the request's lanes, FIFO, and look again on
-        // every wake. Keep one semaphore acquisition alive across them:
-        // recreating it would requeue this checkout at the back of the
-        // semaphore's FIFO admission, where a busy connection could starve it.
-        let mut waiting = Waiting::new(&self.waiting, &self.notify);
-        let waiter = waiting.waiter.clone();
-        let mut total_slot_wait = Box::pin(self.total_slots.clone().acquire_owned());
-        let mut look = Look::Register(&mut waiting);
+        // every wake. Slot acquisitions start once a look is blocked on them.
+        let mut waiting = Waiting::new(
+            &self.waiting,
+            &self.slot_waiters,
+            self.next_order.fetch_add(1, Ordering::Relaxed),
+        );
+        let party = waiting.party.clone();
+        let mut id_slot_wait: Option<SlotWait> = None;
+        let mut total_slot_wait: Option<SlotWait> = None;
+        // Armed once a look is blocked on the total limit, in place.
+        let mut patience: Pin<&mut Option<Sleep>> = std::pin::pin!(None);
+        let mut patient = true;
         loop {
             // Enabled before the look, so no wake between both is lost.
             let mut notified = std::pin::pin!(self.notify.notified());
             notified.as_mut().enable();
-            let seen = waiter.wakes();
-            if let Some(result) = attempt(look) {
-                if let ConnectionResult::Connection(conn) = &result {
-                    waiting.served(&conn.inner, seen);
+            let seen = waiting.begin_look();
+            let blocked = match attempt(&mut Look::Register(&mut waiting), &mut held_id, patient) {
+                Ok(result) => {
+                    if let ConnectionResult::Connection(conn) = &result {
+                        waiting.served(conn.inner.lane_waiters.lock().clone());
+                    }
+                    // A create permit leaves the capacity a wake stood for unused:
+                    // dropping `waiting` passes the wake on.
+                    return Ok(result);
                 }
-                // A create permit leaves the capacity a wake stood for unused:
-                // dropping `waiting` passes the wake on.
-                return Ok(result);
-            }
+                Err(blocked) => blocked,
+            };
             // Nothing for the wakes this look answered: wait for the next one,
             // keeping the place.
-            waiter.spend(seen);
-            look = Look::Register(&mut waiting);
+            waiting.end_fruitless_look();
+            match blocked {
+                Blocked::Id => {
+                    if id_slot_wait.is_none() {
+                        id_slot_wait = self.id_slot_wait(id);
+                    }
+                }
+                Blocked::Total => {
+                    if total_slot_wait.is_none() {
+                        total_slot_wait = self
+                            .total_slots
+                            .clone()
+                            .map(|total| Box::pin(total.acquire_owned()) as SlotWait);
+                    }
+                    if let SaturationPolicy::EvictIdleAfter(after) = self.saturation
+                        && patient
+                        && patience.is_none()
+                    {
+                        patience.set(Some(tokio::time::sleep(after)));
+                    }
+                }
+            }
 
-            trace!(?id, "multiplex pool: saturated, waiting for capacity");
+            trace!(
+                ?id,
+                ?blocked,
+                "multiplex pool: saturated, waiting for capacity"
+            );
             tokio::select! {
                 _ = notified => {}
-                () = waiter.woken(seen) => {}
-                permit = &mut total_slot_wait => {
+                () = party.woken(seen) => {}
+                permit = maybe(&mut id_slot_wait) => {
+                    id_slot_wait = None;
+                    // The pool never closes its semaphores.
+                    held_id = permit.ok();
+                }
+                () = maybe_pinned(patience.as_mut()) => {
+                    patience.set(None);
+                    patient = false;
+                }
+                permit = maybe(&mut total_slot_wait) => {
+                    total_slot_wait = None;
                     let Ok(permit) = permit else {
-                        // the pool never closes its semaphore; treat as spurious
+                        // The pool never closes its semaphores; treat as spurious.
                         continue;
                     };
-                    let seen = waiter.wakes();
-                    let result = self.admit_with_permit(id, permit, input, &waiter);
+                    waiting.begin_look();
+                    let slot = MultiplexSlot {
+                        total: Some(permit),
+                        id: held_id.take(),
+                    };
+                    let result = self.admit_with_permit(id, slot, input, &waiting);
                     match &result {
                         ConnectionResult::Connection(conn) => {
-                            waiting.served(&conn.inner, seen);
+                            waiting.served(conn.inner.lane_waiters.lock().clone());
                             #[cfg(feature = "opentelemetry")]
                             if let Some((metrics, attrs)) = &metrics {
                                 metrics.reused_connections.add(1, attrs);
@@ -1796,7 +2224,7 @@ where
         &self,
         id: ID,
         conn: C,
-        pool_slot: PoolSlot,
+        slot: MultiplexSlot,
         input: &Extensions,
     ) -> Result<Self::Connection, BoxError> {
         // The establishing request owns the first reservation before concurrent
@@ -1825,9 +2253,10 @@ where
             lane_waiters: Mutex::new(None),
             waiting: self.waiting.clone(),
             notify: self.notify.clone(),
+            slot_waiters: self.slot_waiters.clone(),
             last_idle: AtomicInstant::now(),
             pool_slot: Mutex::new(ConnectionSlot {
-                permit: Some(pool_slot),
+                slots: slot,
                 retired: false,
             }),
             listed: AtomicBool::new(false),
@@ -1942,6 +2371,7 @@ mod tests {
         ConnectionError, ConnectionErrorDomain, ConnectionErrorKind, ConnectorService,
         EstablishedClientConnection,
     };
+    use rama_core::error::BoxErrorExt as _;
     use rama_core::{ServiceInput, service::service_fn};
     use rama_utils::reactive::ChangeSignal;
     use std::assert_matches;
@@ -2089,7 +2519,7 @@ mod tests {
         (conn, state)
     }
 
-    async fn new_slot(pool: &MultiplexPool<Conn, TestId>) -> PoolSlot {
+    async fn new_slot(pool: &MultiplexPool<Conn, TestId>) -> MultiplexSlot {
         match pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap() {
             ConnectionResult::CreatePermit(permit) => permit,
             ConnectionResult::Connection(_) => panic!("expected an empty pool"),
@@ -2098,7 +2528,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_freed_unit_wakes_one_waiter_and_other_changes_all() {
-        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let pool = MultiplexPool::evicting(32, 1);
         let permit = new_slot(&pool).await;
         let (conn, state) = admission_connection(&pool, 1);
         let held = pool
@@ -2123,7 +2553,7 @@ mod tests {
 
     #[tokio::test]
     async fn admission_reserves_before_publication_and_releases_unused_handouts() {
-        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let pool = MultiplexPool::evicting(32, 1);
         let permit = new_slot(&pool).await;
         let (conn, state) = admission_connection(&pool, 0);
         let input = Extensions::new();
@@ -2148,7 +2578,7 @@ mod tests {
 
     #[tokio::test]
     async fn cloned_request_metadata_cannot_exchange_or_retain_handout_reservations() {
-        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let pool = MultiplexPool::evicting(32, 1);
         let permit = new_slot(&pool).await;
         let (conn, state) = admission_connection(&pool, 2);
         let shared = Extensions::new();
@@ -2192,9 +2622,7 @@ mod tests {
             MuxSelection::LeastLoaded,
             MuxSelection::RoundRobin,
         ] {
-            let pool = MultiplexPool::try_new(32, 1)
-                .unwrap()
-                .with_selection(selection);
+            let pool = MultiplexPool::evicting(32, 1).with_selection(selection);
             let permit = new_slot(&pool).await;
             let (conn, state) = admission_connection(&pool, 1);
             let input = Extensions::new();
@@ -2215,7 +2643,7 @@ mod tests {
 
     #[tokio::test]
     async fn work_outliving_its_handouts_keeps_a_connection_from_eviction() {
-        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let pool = MultiplexPool::evicting(32, 1);
         let permit = new_slot(&pool).await;
         let (conn, state) = admission_connection(&pool, 4);
         let input = Extensions::new();
@@ -2241,7 +2669,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_end_of_work_outliving_the_last_handout_is_an_eviction_chance() {
-        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let pool = MultiplexPool::evicting(32, 1);
         let permit = new_slot(&pool).await;
         let (conn, state) = admission_connection(&pool, 4);
         let input = Extensions::new();
@@ -2271,9 +2699,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn work_outliving_its_handouts_keeps_a_connection_from_expiring() {
-        let pool = MultiplexPool::try_new(32, 1)
-            .unwrap()
-            .with_idle_timeout(Duration::from_micros(1));
+        let pool = MultiplexPool::evicting(32, 1).with_idle_timeout(Duration::from_micros(1));
         let permit = new_slot(&pool).await;
         let (conn, state) = admission_connection(&pool, 4);
         let input = Extensions::new();
@@ -2298,9 +2724,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_idle_clock_restarts_when_the_pool_sees_outliving_work() {
-        let pool = MultiplexPool::try_new(32, 1)
-            .unwrap()
-            .with_idle_timeout(Duration::from_millis(30));
+        let pool = MultiplexPool::evicting(32, 1).with_idle_timeout(Duration::from_millis(30));
         let permit = new_slot(&pool).await;
         let (conn, state) = admission_connection(&pool, 4);
         let input = Extensions::new();
@@ -2323,9 +2747,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_lookup_during_outliving_work_restarts_the_idle_clock() {
-        let pool = MultiplexPool::try_new(32, 2)
-            .unwrap()
-            .with_idle_timeout(Duration::from_millis(30));
+        let pool = MultiplexPool::evicting(32, 2).with_idle_timeout(Duration::from_millis(30));
         let permit = new_slot(&pool).await;
         let (conn, state) = admission_connection(&pool, 4);
         let input = Extensions::new();
@@ -2354,7 +2776,7 @@ mod tests {
     /// by its own policy only, never the outer connection's.
     #[tokio::test]
     async fn admission_is_the_connections_own_not_an_ancestors() {
-        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let pool = MultiplexPool::evicting(32, 1);
         let permit = new_slot(&pool).await;
         let (outer, state) = admission_connection(&pool, 0);
         let inner = Conn {
@@ -2376,7 +2798,7 @@ mod tests {
     /// than wait for its handouts.
     #[tokio::test]
     async fn a_saturated_candidate_going_broken_wakes_its_waiters() {
-        let pool = MultiplexPool::try_new(1, 1).unwrap();
+        let pool = MultiplexPool::evicting(1, 1);
         let svc = connector(pool);
         let held = connect(&svc, 0).await;
         let mut waiter = tokio_test::task::spawn(connect(&svc, 0));
@@ -2406,7 +2828,7 @@ mod tests {
 
     #[tokio::test]
     async fn admission_failure_does_not_publish_or_leak_new_connection_slot() {
-        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let pool = MultiplexPool::evicting(32, 1);
         let permit = new_slot(&pool).await;
         let (conn, state) = admission_connection(&pool, 1);
         state.failed.store(true, Ordering::SeqCst);
@@ -2416,13 +2838,13 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.to_string(), "admission failed");
         assert!(pool.storage.lock().by_id.is_empty());
-        assert_eq!(pool.total_slots.available_permits(), 1);
+        assert_eq!(pool.free_slots(), 1);
         assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
     async fn admission_cancellation_before_publication_releases_create_permit() {
-        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let pool = MultiplexPool::evicting(32, 1);
         let permit = new_slot(&pool).await;
         let (conn, state) = admission_connection(&pool, 0);
         let mut create =
@@ -2430,13 +2852,13 @@ mod tests {
         assert!(create.poll().is_pending());
         drop(create);
         assert!(pool.storage.lock().by_id.is_empty());
-        assert_eq!(pool.total_slots.available_permits(), 1);
+        assert_eq!(pool.free_slots(), 1);
         assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test(start_paused = true)]
     async fn pool_timeout_also_bounds_fresh_transport_admission() {
-        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let pool = MultiplexPool::evicting(32, 1);
         let (_, state) = admission_connection(&pool, 0);
         let connector_state = state.clone();
         let inner = service_fn(move |input: ServiceInput<u32>| {
@@ -2460,7 +2882,7 @@ mod tests {
         let error = client.connect(ServiceInput::new(0)).await.unwrap_err();
         assert_eq!(error.kind(), ConnectionErrorKind::Timeout);
         assert!(pool.storage.lock().by_id.is_empty());
-        assert_eq!(pool.total_slots.available_permits(), 1);
+        assert_eq!(pool.free_slots(), 1);
         assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
     }
 
@@ -2471,9 +2893,7 @@ mod tests {
             MuxSelection::LeastLoaded,
             MuxSelection::RoundRobin,
         ] {
-            let pool = MultiplexPool::try_new(32, 2)
-                .unwrap()
-                .with_selection(selection);
+            let pool = MultiplexPool::evicting(32, 2).with_selection(selection);
             let permit = new_slot(&pool).await;
             let (conn, state) = admission_connection(&pool, 1);
             let first = pool
@@ -2535,7 +2955,7 @@ mod tests {
             }
         }
 
-        let pool = MultiplexPool::try_new(32, 2).unwrap();
+        let pool = MultiplexPool::evicting(32, 2);
         let permit = new_slot(&pool).await;
         let (conn, state) = admission_connection(&pool, 2);
         let health = Arc::new(ConnectionHealthWatcher::default());
@@ -2564,7 +2984,7 @@ mod tests {
 
     #[tokio::test]
     async fn admission_failure_on_only_cached_connection_returns_fresh_slot() {
-        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let pool = MultiplexPool::evicting(32, 1);
         let permit = new_slot(&pool).await;
         let (conn, state) = admission_connection(&pool, 1);
         drop(
@@ -2576,12 +2996,12 @@ mod tests {
         let permit = new_slot(&pool).await;
         assert_eq!(state.reserved.load(Ordering::SeqCst), 0);
         drop(permit);
-        assert_eq!(pool.total_slots.available_permits(), 1);
+        assert_eq!(pool.free_slots(), 1);
     }
 
     #[tokio::test]
     async fn concurrent_pool_checkouts_cannot_oversubscribe_transport_credit() {
-        let pool = MultiplexPool::try_new(32, 1).unwrap();
+        let pool = MultiplexPool::evicting(32, 1);
         let permit = new_slot(&pool).await;
         let (conn, state) = admission_connection(&pool, 4);
         let first = pool
@@ -2738,7 +3158,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_reusable_policy_keeps_capacity_without_retaining_connections() {
-        let pool = MultiplexPool::try_new(10, 1).unwrap();
+        let pool = MultiplexPool::evicting(10, 1);
         let svc = connector(pool.clone());
         let first = connect(&svc, u32::MAX).await;
         assert!(pool.storage.lock().by_id.is_empty());
@@ -2753,7 +3173,7 @@ mod tests {
         assert_eq!(created(&svc), 2);
         drop(second);
         assert!(pool.storage.lock().by_id.is_empty());
-        assert_eq!(pool.total_slots.available_permits(), 1);
+        assert_eq!(pool.free_slots(), 1);
     }
 
     /// Add a connection publishing the requirements `reuse` builds, as a
@@ -2823,7 +3243,7 @@ mod tests {
         id: u32,
         reuse: Option<ConnectionReuse>,
     ) -> MultiplexedConnection<Conn, TestId> {
-        let permit = PoolSlot(pool.total_slots.clone().try_acquire_owned().unwrap());
+        let permit = pool.test_slot();
         let conn = Conn {
             serial: pool.next_seq.load(Ordering::Relaxed) as usize,
             extensions: Extensions::new(),
@@ -2842,7 +3262,7 @@ mod tests {
             Box<
                 dyn Future<
                         Output = Result<
-                            ConnectionResult<MultiplexedConnection<Conn, TestId>, PoolSlot>,
+                            ConnectionResult<MultiplexedConnection<Conn, TestId>, MultiplexSlot>,
                             BoxError,
                         >,
                     > + Send
@@ -2871,7 +3291,7 @@ mod tests {
         MultiplexPool<Conn, TestId>,
         MultiplexedConnection<Conn, TestId>,
     ) {
-        let pool = MultiplexPool::try_new(1, 1).unwrap();
+        let pool = MultiplexPool::evicting(1, 1);
         let held = add(&pool, 0, None).await;
         (pool, held)
     }
@@ -2900,7 +3320,7 @@ mod tests {
 
     #[tokio::test]
     async fn two_released_streams_wake_two_waiters() {
-        let pool = MultiplexPool::try_new(2, 1).unwrap();
+        let pool = MultiplexPool::evicting(2, 1);
         let a = add(&pool, 0, None).await;
         let ConnectionResult::Connection(b) =
             pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap()
@@ -2951,10 +3371,10 @@ mod tests {
     #[tokio::test]
     async fn an_idle_connection_its_waiters_leave_can_be_evicted() {
         let (pool, held) = saturated().await;
+        let same = queue(&pool, &EMPTY_INPUT);
         let other_input = Extensions::new();
         let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &other_input));
         assert!(other.poll().is_pending(), "nothing to evict yet");
-        let same = queue(&pool, &EMPTY_INPUT);
         drop(held);
         assert!(
             same.is_woken() && !other.is_woken(),
@@ -2973,15 +3393,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_older_slot_waiter_evicts_a_spoken_for_idle_connection() {
+        let (pool, held) = saturated().await;
+        let other_input = Extensions::new();
+        let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &other_input));
+        assert!(other.poll().is_pending(), "nothing to evict yet");
+        let mut same = queue(&pool, &EMPTY_INPUT);
+        drop(held);
+        assert!(
+            same.is_woken() && other.is_woken(),
+            "its own waiter and the older slot waiter both get the chance"
+        );
+        let Poll::Ready(Ok(ConnectionResult::CreatePermit(evicted))) = other.poll() else {
+            panic!("the older slot waiter evicts");
+        };
+        assert!(
+            same.poll().is_pending(),
+            "the connection went to the older one"
+        );
+        drop(evicted);
+        assert!(matches!(
+            same.poll(),
+            Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+        ));
+    }
+
+    #[tokio::test]
     async fn a_waiter_woken_for_nothing_keeps_its_place() {
-        let pool = MultiplexPool::try_new(4, 1).unwrap();
+        let pool = MultiplexPool::evicting(4, 1);
         let conn = Conn {
             serial: 0,
             extensions: Extensions::new(),
         };
         let max = Arc::new(MaxConcurrency::new(1));
         conn.extensions.insert_arc(max.clone());
-        let permit = PoolSlot(pool.total_slots.clone().try_acquire_owned().unwrap());
+        let permit = pool.test_slot();
         let held = pool
             .create(TestId(0), conn, permit, &EMPTY_INPUT)
             .await
@@ -2992,18 +3438,29 @@ mod tests {
         max.set(1);
         assert!(first.is_woken() && second.is_woken());
         assert!(first.poll().is_pending() && second.poll().is_pending());
+        assert_eq!(
+            pool.storage.lock().by_id[&TestId(0)]
+                .unrestricted
+                .waiters
+                .len(),
+            2,
+            "a look queues once per lane"
+        );
         drop(held);
         assert!(
             first.is_woken() && !second.is_woken(),
             "the first in line comes first"
         );
+        // A look for another reason: a spent wake admits nobody.
+        pool.notify.notify_waiters();
+        assert!(second.poll().is_pending());
         drop(handout(&mut first));
         drop(handout(&mut second));
     }
 
     #[tokio::test]
     async fn a_waiter_of_several_lanes_leaves_all_of_them() {
-        let pool = MultiplexPool::try_new(1, 2).unwrap();
+        let pool = MultiplexPool::evicting(1, 2);
         let unrestricted = add(&pool, 0, None).await;
         let keyed = add(&pool, 0, Some(keyed(0, 1))).await;
         let input = want(1);
@@ -3026,9 +3483,7 @@ mod tests {
             MuxSelection::LeastLoaded,
             MuxSelection::RoundRobin,
         ] {
-            let pool = MultiplexPool::try_new(1, 4)
-                .unwrap()
-                .with_selection(selection);
+            let pool = MultiplexPool::evicting(1, 4).with_selection(selection);
             let max = Arc::new(MaxConcurrency::new(1));
             let mut tasks = Vec::new();
             for task in 0..32_u32 {
@@ -3100,9 +3555,106 @@ mod tests {
         }
     }
 
+    /// An admission source that records being called while it notifies.
+    #[derive(Debug, Default)]
+    struct Probe {
+        in_use: AtomicBool,
+        notifying: AtomicBool,
+        reentered: AtomicBool,
+        changed: ChangeSignal,
+    }
+
+    impl Probe {
+        fn notify(&self) {
+            self.notifying.store(true, Ordering::SeqCst);
+            self.changed.notify(Change::Other);
+            self.notifying.store(false, Ordering::SeqCst);
+        }
+    }
+
+    #[derive(Debug)]
+    struct ProbeAdmission(Arc<Probe>);
+
+    impl ConnectionAdmissionPolicy for ProbeAdmission {
+        fn try_acquire(
+            &self,
+            _: &Extensions,
+        ) -> Result<Option<ConnectionAdmissionLease>, BoxError> {
+            Ok(Some(ConnectionAdmissionLease::new(Arc::new(()), Binding)))
+        }
+
+        fn subscribe(&self, listener: Weak<dyn ChangeListener>) {
+            self.0.changed.subscribe(listener);
+        }
+
+        fn in_use(&self) -> bool {
+            if self.0.notifying.load(Ordering::SeqCst) {
+                self.0.reentered.store(true, Ordering::SeqCst);
+            }
+            self.0.in_use.load(Ordering::SeqCst)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_source_notification_never_calls_back_into_the_source() {
+        let pool = MultiplexPool::evicting(2, 1);
+        let permit = new_slot(&pool).await;
+        let probe = Arc::new(Probe::default());
+        let conn = Conn {
+            serial: 0,
+            extensions: Extensions::new(),
+        };
+        conn.extensions
+            .insert(ConnectionAdmission::new(ProbeAdmission(probe.clone())));
+        let first = pool
+            .create(TestId(0), conn, permit, &EMPTY_INPUT)
+            .await
+            .unwrap();
+        probe.in_use.store(true, Ordering::SeqCst);
+        drop(first);
+        let other_input = Extensions::new();
+        let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &other_input));
+        assert!(other.poll().is_pending(), "busy: nothing to evict");
+        probe.in_use.store(false, Ordering::SeqCst);
+        probe.notify();
+        assert!(
+            !probe.reentered.load(Ordering::SeqCst),
+            "a listener only wakes"
+        );
+        assert!(
+            other.is_woken(),
+            "the end of the work is an eviction chance"
+        );
+        assert!(matches!(
+            other.poll(),
+            Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_cancellation_wave_across_lanes_passes_each_wake_once() {
+        let pool = MultiplexPool::evicting(1, 2);
+        let unrestricted = add(&pool, 0, None).await;
+        let keyed_conn = add(&pool, 0, Some(keyed(0, 1))).await;
+        let input = want(1);
+        let mut waiters: Vec<_> = (0..32).map(|_| queue(&pool, &input)).collect();
+        let mut last = waiters.pop().unwrap();
+        drop(keyed_conn);
+        // The others leave in arrival order, without a look: one wake moves on.
+        drop(waiters);
+        let unspent: usize = pool.storage.lock().by_id[&TestId(0)]
+            .lanes()
+            .map(|lane| lane.waiters.unspent())
+            .sum();
+        assert_eq!(unspent, 1, "one release, one wake");
+        assert!(last.is_woken());
+        drop((handout(&mut last), unrestricted));
+        assert_eq!(pool.waiting.load(Ordering::Relaxed), 0);
+    }
+
     #[tokio::test]
     async fn a_release_wakes_its_lane_and_not_an_eviction_waiter() {
-        let pool = MultiplexPool::try_new(2, 1).unwrap();
+        let pool = MultiplexPool::evicting(2, 1);
         let permit = new_slot(&pool).await;
         let busy = Arc::new(Busy::default());
         let conn = Conn {
@@ -3147,9 +3699,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_waiter_served_in_another_lane_passes_its_wake_on() {
-        let pool = MultiplexPool::try_new(2, 2)
-            .unwrap()
-            .with_selection(MuxSelection::FirstAvailable);
+        let pool = MultiplexPool::evicting(2, 2).with_selection(MuxSelection::FirstAvailable);
         let unrestricted = add(&pool, 0, None).await;
         let keyed_conn = add(&pool, 0, Some(keyed(0, 1))).await;
         let ConnectionResult::Connection(full_unrestricted) =
@@ -3186,7 +3736,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_capacity_raise_wakes_every_waiter() {
-        let pool = MultiplexPool::try_new(10, 1).unwrap();
+        let pool = MultiplexPool::evicting(10, 1);
         let permit = new_slot(&pool).await;
         let conn = Conn {
             serial: 0,
@@ -3207,7 +3757,7 @@ mod tests {
 
     #[tokio::test]
     async fn rekey_fences_candidates_selected_under_the_old_lane() {
-        let pool = MultiplexPool::try_new(2, 2).unwrap();
+        let pool = MultiplexPool::evicting(2, 2);
         let held = add(&pool, 0, Some(keyed(0, 1))).await;
         let lanes = pool.request_lanes(&TestId(0), &want(1));
 
@@ -3217,7 +3767,7 @@ mod tests {
             &TestId(0),
             &lanes,
             &mut Vec::new(),
-            Look::New,
+            &mut Look::New,
         );
         // The fast path: a claim made before the rekey.
         let claimed = pool
@@ -3261,7 +3811,7 @@ mod tests {
 
     #[tokio::test]
     async fn snapshots_of_several_lanes_keep_creation_order() {
-        let pool = MultiplexPool::try_new(4, 4).unwrap();
+        let pool = MultiplexPool::evicting(4, 4);
         let held = [
             add(&pool, 0, Some(keyed(0, 1))).await,
             add(&pool, 0, None).await,
@@ -3274,7 +3824,7 @@ mod tests {
             &TestId(0),
             &lanes,
             &mut Vec::new(),
-            Look::New,
+            &mut Look::New,
         );
         let seqs: Vec<_> = snapshot.iter().map(|(conn, _)| conn.seq).collect();
         assert_eq!(seqs.len(), 4);
@@ -3284,7 +3834,7 @@ mod tests {
 
     #[tokio::test]
     async fn emptied_lanes_and_classes_leave_the_bucket() {
-        let pool = MultiplexPool::try_new(4, 8).unwrap();
+        let pool = MultiplexPool::evicting(4, 8);
         let mut held = Vec::new();
         for (class, key) in [(0, 1), (0, 2), (1, 1), (1, 2)] {
             held.push(add(&pool, 0, Some(keyed(class, key))).await);
@@ -3332,7 +3882,7 @@ mod tests {
 
     #[tokio::test]
     async fn connections_that_must_not_be_reused_are_never_stored() {
-        let pool = MultiplexPool::try_new(4, 4).unwrap();
+        let pool = MultiplexPool::evicting(4, 4);
         let fresh = add(
             &pool,
             0,
@@ -3355,7 +3905,7 @@ mod tests {
 
     #[tokio::test]
     async fn rekey_lists_a_connection_with_room_in_its_new_lane() {
-        let pool = MultiplexPool::try_new(4, 2).unwrap();
+        let pool = MultiplexPool::evicting(4, 2);
         let held = add(&pool, 0, Some(keyed(0, 1))).await;
         held.rekey(keyed(1, 7));
         assert_open_matches_capacity(&pool);
@@ -3390,12 +3940,12 @@ mod tests {
             }
         }
 
-        let pool = MultiplexPool::try_new(4, 2).unwrap();
+        let pool = MultiplexPool::evicting(4, 2);
         let held = create_with_reuse(&pool, |_| {
             ConnectionReuse::new(RejectReuse(Arc::downgrade(&pool.storage)))
         })
         .await;
-        let permit = pool.total_slots.clone().try_acquire_owned().unwrap();
+        let permit = pool.test_slot();
         let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0), &EMPTY_INPUT));
         assert!(waiter.poll().is_pending());
 
@@ -3442,9 +3992,7 @@ mod tests {
             MuxSelection::RoundRobin,
         ] {
             for after_wait in [false, true] {
-                let pool = MultiplexPool::try_new(4, 2)
-                    .unwrap()
-                    .with_selection(selection);
+                let pool = MultiplexPool::evicting(4, 2).with_selection(selection);
                 let enabled = Arc::new(AtomicBool::new(!after_wait));
                 let held = create_with_reuse(&pool, |conn| {
                     ConnectionReuse::new(CloseDuringMatch {
@@ -3456,8 +4004,7 @@ mod tests {
                     })
                 })
                 .await;
-                let reserved =
-                    after_wait.then(|| pool.total_slots.clone().try_acquire_owned().unwrap());
+                let reserved = after_wait.then(|| pool.test_slot());
                 let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0), &EMPTY_INPUT));
                 if after_wait {
                     assert!(waiter.poll().is_pending());
@@ -3494,7 +4041,8 @@ mod tests {
 
             fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
                 if self.evict {
-                    let removed = MultiplexPool::evict_lru_idle(&mut self.pool.storage.lock());
+                    let removed =
+                        MultiplexPool::evict_lru_idle(&mut self.pool.storage.lock(), None);
                     assert!(removed.is_some());
                     drop(removed);
                 } else {
@@ -3519,7 +4067,7 @@ mod tests {
         }
 
         for evict in [false, true] {
-            let pool = MultiplexPool::try_new(4, 1).unwrap();
+            let pool = MultiplexPool::evicting(4, 1);
             let held = create_with_reuse(&pool, |_| {
                 ConnectionReuse::new(RetireDuringMatch {
                     pool: pool.clone(),
@@ -3535,13 +4083,13 @@ mod tests {
                 "a retired snapshot must not bypass health or pool capacity (evict={evict})",
             );
             drop(result);
-            assert_eq!(pool.total_slots.available_permits(), 1);
+            assert_eq!(pool.free_slots(), 1);
         }
     }
 
     #[tokio::test]
     async fn retired_preferred_candidate_does_not_hide_other_stream_capacity() {
-        let pool = MultiplexPool::try_new(1, 2).unwrap();
+        let pool = MultiplexPool::evicting(1, 2);
         let svc = connector(pool.clone());
         let first = connect(&svc, 0).await;
         let second = connect(&svc, 0).await;
@@ -3553,10 +4101,10 @@ mod tests {
             &TestId(0),
             &lanes,
             &mut doomed,
-            Look::New,
+            &mut Look::New,
         );
         let (retired, transferred_slot) =
-            MultiplexPool::evict_lru_idle(&mut pool.storage.lock()).unwrap();
+            MultiplexPool::evict_lru_idle(&mut pool.storage.lock(), None).unwrap();
         let retired_index = snapshot
             .iter()
             .position(|(conn, _)| Arc::ptr_eq(conn, &retired))
@@ -3582,7 +4130,7 @@ mod tests {
 
     #[tokio::test]
     async fn shares_one_connection() {
-        let pool = MultiplexPool::new(NonZeroUsize::new(4).unwrap(), NonZeroUsize::new(4).unwrap());
+        let pool = MultiplexPool::evicting(4, 4);
         let svc = connector(pool);
 
         let mut handles = Vec::new();
@@ -3601,7 +4149,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_a_handout_releases_its_stream_slot_immediately() {
-        let pool = MultiplexPool::try_new(1, 1).unwrap();
+        let pool = MultiplexPool::evicting(1, 1);
         let svc = connector(pool.clone());
         let handout = connect(&svc, 0).await;
         let stored = Arc::clone(
@@ -3622,7 +4170,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn maxconcurrency_increase_wakes_waiters() {
-        let pool = MultiplexPool::try_new(10, 1).unwrap();
+        let pool = MultiplexPool::evicting(10, 1);
         let svc = Arc::new(connector_with(pool, Some(1)));
 
         let c1 = svc.connect(ServiceInput::new(0)).await.unwrap();
@@ -3662,7 +4210,7 @@ mod tests {
     /// without another wake source: it queued before its check.
     #[tokio::test]
     async fn maxconcurrency_increase_wakes_manually_driven_waiter() {
-        let pool = MultiplexPool::try_new(10, 1).unwrap();
+        let pool = MultiplexPool::evicting(10, 1);
         let svc = connector_with(pool.clone(), Some(1));
 
         // Connection A: at its advertised capacity of 1, holding the only slot.
@@ -3692,7 +4240,7 @@ mod tests {
 
     #[tokio::test]
     async fn maxconcurrency_zero_admits_no_streams() {
-        let pool = MultiplexPool::try_new(4, 4).unwrap();
+        let pool = MultiplexPool::evicting(4, 4);
         let svc = connector_with(pool, Some(0));
 
         let c1 = connect(&svc, 0).await;
@@ -3712,7 +4260,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn new_multiplexed_connection_wakes_waiters() {
-        let pool = MultiplexPool::try_new(2, 1).unwrap();
+        let pool = MultiplexPool::evicting(2, 1);
         let svc = PooledConnector::new(
             SlowConnector {
                 created: AtomicUsize::new(0),
@@ -3741,7 +4289,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_connection_when_saturated() {
-        let pool = MultiplexPool::try_new(2, 2).unwrap();
+        let pool = MultiplexPool::evicting(2, 2);
         let svc = connector(pool);
 
         let _c1 = connect(&svc, 0).await;
@@ -3763,7 +4311,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_release_wakes_a_waiter_for_the_matching_id() {
-        let pool = MultiplexPool::try_new(2, 2).unwrap();
+        let pool = MultiplexPool::evicting(2, 2);
         let svc = connector(pool.clone());
 
         let a1 = connect(&svc, 0).await;
@@ -3794,7 +4342,7 @@ mod tests {
 
     #[tokio::test]
     async fn extensions_propagate_at_establish() {
-        let pool = MultiplexPool::try_new(2, 2).unwrap();
+        let pool = MultiplexPool::evicting(2, 2);
         let svc = connector(pool);
 
         let c = connect(&svc, 0).await;
@@ -3809,7 +4357,7 @@ mod tests {
 
     #[tokio::test]
     async fn broken_removed_while_handles_survive() {
-        let pool = MultiplexPool::try_new(2, 2).unwrap();
+        let pool = MultiplexPool::evicting(2, 2);
         let svc = connector(pool);
 
         let c1 = connect(&svc, 0).await;
@@ -3843,9 +4391,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn idle_eviction() {
-        let pool = MultiplexPool::try_new(2, 5)
-            .unwrap()
-            .with_idle_timeout(Duration::from_micros(1));
+        let pool = MultiplexPool::evicting(2, 5).with_idle_timeout(Duration::from_micros(1));
         let svc = connector(pool);
 
         let c = connect(&svc, 0).await;
@@ -3860,9 +4406,7 @@ mod tests {
 
     #[tokio::test]
     async fn least_loaded_selection() {
-        let pool = MultiplexPool::try_new(3, 2)
-            .unwrap()
-            .with_selection(MuxSelection::LeastLoaded);
+        let pool = MultiplexPool::evicting(3, 2).with_selection(MuxSelection::LeastLoaded);
         let svc = connector(pool);
 
         let c1 = connect(&svc, 0).await;
@@ -3883,9 +4427,7 @@ mod tests {
 
     #[tokio::test]
     async fn first_available_selection() {
-        let pool = MultiplexPool::try_new(3, 2)
-            .unwrap()
-            .with_selection(MuxSelection::FirstAvailable);
+        let pool = MultiplexPool::evicting(3, 2).with_selection(MuxSelection::FirstAvailable);
         let svc = connector(pool);
 
         let c1 = connect(&svc, 0).await;
@@ -3906,7 +4448,7 @@ mod tests {
 
     #[tokio::test]
     async fn capacity_one_is_exclusive() {
-        let pool = MultiplexPool::try_new(1, 3).unwrap();
+        let pool = MultiplexPool::evicting(1, 3);
         let svc = connector(pool);
 
         let c1 = connect(&svc, 0).await;
@@ -3921,7 +4463,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn saturation_waits_and_times_out() {
-        let pool = MultiplexPool::try_new(1, 1).unwrap();
+        let pool = MultiplexPool::evicting(1, 1);
         let svc = connector(pool).with_wait_for_pool_timeout(Duration::from_millis(50));
 
         let c1 = connect(&svc, 0).await;
@@ -3941,7 +4483,7 @@ mod tests {
     #[tokio::test]
     async fn capacity_from_extension() {
         // pool cap 5, but each connection advertises only 2 -> effective 2
-        let pool = MultiplexPool::try_new(5, 5).unwrap();
+        let pool = MultiplexPool::evicting(5, 5);
         let svc = connector_with(pool, Some(2));
 
         let _c1 = connect(&svc, 0).await;
@@ -3963,7 +4505,7 @@ mod tests {
     #[tokio::test]
     async fn capacity_is_read_live() {
         // Connections start advertising 1, pool cap is high.
-        let pool = MultiplexPool::try_new(10, 5).unwrap();
+        let pool = MultiplexPool::evicting(10, 5);
         let svc = connector_with(pool, Some(1));
 
         let c1 = connect(&svc, 0).await; // conn A, now at its limit of 1
@@ -3991,7 +4533,7 @@ mod tests {
     async fn no_extension_uses_pool_cap() {
         // Without a MaxConcurrency extension there is "no limit", so the pool's
         // max_concurrent_streams governs: cap 2 -> 2 streams share one connection.
-        let pool = MultiplexPool::try_new(2, 8).unwrap();
+        let pool = MultiplexPool::evicting(2, 8);
         let svc = connector_with(pool, None);
 
         let _c1 = connect(&svc, 0).await;
@@ -4012,7 +4554,7 @@ mod tests {
 
     #[tokio::test]
     async fn lru_eviction_when_full() {
-        let pool = MultiplexPool::try_new(1, 2).unwrap();
+        let pool = MultiplexPool::evicting(1, 2);
         let svc = connector(pool);
 
         // A (id 0) and B (id 1), both idle. Then touch A again so A becomes more
@@ -4042,50 +4584,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lru_eviction_keeps_the_freed_slot_with_the_evicting_caller() {
-        let pool = MultiplexPool::try_new(1, 1).unwrap();
+    async fn an_evicted_slot_goes_to_the_oldest_waiting_checkout() {
+        let pool = MultiplexPool::evicting(1, 1);
         let svc = connector(pool.clone());
 
-        // Keep the only connection active while another id parks. The former
-        // semaphore-based wait path queued a fair acquire at this point.
+        // Keep the only connection active while another id waits for a slot.
         let active = connect(&svc, 0).await;
-        {
-            let storage = pool.storage.lock();
-            assert!(storage.by_id.contains_key(&TestId(0)));
-            assert!(!storage.by_id.contains_key(&TestId(1)));
-        }
         let mut parked = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT));
         assert!(parked.poll().is_pending());
 
-        // Make connection 0 idle without polling the parked waiter. A caller
-        // for id 2 must be able to evict it and immediately claim that slot.
-        // A queued semaphore waiter used to steal the released permit here.
+        // The idle connection is an eviction chance for the waiting checkout,
+        // not for a newcomer that happens to look first.
         drop(active);
-        let mut evicting = tokio_test::task::spawn(pool.get_conn(&TestId(2), &EMPTY_INPUT));
-        let evicting_permit = match evicting.poll() {
+        assert!(parked.is_woken());
+        let mut newcomer = tokio_test::task::spawn(pool.get_conn(&TestId(2), &EMPTY_INPUT));
+        assert!(newcomer.poll().is_pending(), "the newcomer queues behind");
+        let parked_permit = match parked.poll() {
             Poll::Ready(Ok(ConnectionResult::CreatePermit(permit))) => permit,
-            Poll::Ready(Ok(ConnectionResult::Connection(_))) => {
-                panic!("different-id idle connection was unexpectedly reused")
-            }
-            Poll::Ready(Err(error)) => panic!("pool lookup failed: {error}"),
-            std::task::Poll::Pending => {
-                panic!("evicting caller lost the released slot to a parked waiter")
-            }
+            other => panic!("the oldest waiter evicts: {other:?}"),
         };
 
-        // Once the evictor releases its directly transferred slot, the queued
-        // waiter receives it through the semaphore and makes progress.
-        drop(evicting_permit);
-        assert!(parked.is_woken());
-        match parked.poll() {
+        // Its slot then goes on through the semaphore, in arrival order.
+        drop(parked_permit);
+        assert!(newcomer.is_woken());
+        match newcomer.poll() {
             Poll::Ready(Ok(ConnectionResult::CreatePermit(_))) => {}
-            other => panic!("parked waiter did not receive the released slot: {other:?}"),
+            other => panic!("the newcomer gets the released slot: {other:?}"),
         }
+        assert_eq!(pool.waiting.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
     async fn total_slot_waiters_are_fifo_and_cancellation_safe() {
-        let pool = MultiplexPool::<Conn, TestId>::try_new(1, 1).unwrap();
+        let pool = MultiplexPool::<Conn, TestId>::evicting(1, 1);
         let held = match pool.get_conn(&TestId(0), &EMPTY_INPUT).await.unwrap() {
             ConnectionResult::CreatePermit(permit) => permit,
             ConnectionResult::Connection(_) => panic!("empty pool unexpectedly reused a slot"),
@@ -4154,7 +4685,7 @@ mod tests {
             }
         }
 
-        let pool = MultiplexPool::try_new(1, 1).unwrap();
+        let pool = MultiplexPool::evicting(1, 1);
         let svc = Arc::new(
             PooledConnector::new(
                 FailFirstConnector {
@@ -4189,7 +4720,7 @@ mod tests {
     /// already-swept (broken) connection drops and its slot frees up.
     #[tokio::test(start_paused = true)]
     async fn slot_freed_by_swept_connection_teardown_wakes_waiter() {
-        let pool = MultiplexPool::try_new(1, 1).unwrap();
+        let pool = MultiplexPool::evicting(1, 1);
         let svc = Arc::new(connector(pool).with_wait_for_pool_timeout(Duration::from_secs(120)));
 
         let c1 = svc.connect(ServiceInput::new(0u32)).await.unwrap();
@@ -4220,8 +4751,17 @@ mod tests {
     /// connection knows its lane.
     fn assert_open_matches_capacity(pool: &MultiplexPool<Conn, TestId>) {
         let storage = pool.storage.lock();
+        let idle = pool.waiting.load(Ordering::Relaxed) == 0;
+        if idle {
+            assert!(pool.slot_waiters.is_empty(), "no checkout waits for a slot");
+        }
         for bucket in storage.by_id.values() {
             assert!(!bucket.is_empty());
+            if idle {
+                for lane in bucket.lanes() {
+                    assert!(lane.waiters.is_empty(), "no checkout waits in a lane");
+                }
+            }
             let lanes = std::iter::once((LaneKey::Unrestricted, &bucket.unrestricted)).chain(
                 bucket
                     .keyed
@@ -4278,9 +4818,7 @@ mod tests {
             (MuxSelection::LeastLoaded, [0, 0, 0, 0, 0, 0]),
             (MuxSelection::RoundRobin, [0, 1, 2, 3, 0, 1]),
         ] {
-            let pool = MultiplexPool::try_new(1, 8)
-                .unwrap()
-                .with_selection(selection);
+            let pool = MultiplexPool::evicting(1, 8).with_selection(selection);
             let svc = connector(pool.clone());
             let mut held = Vec::new();
             for _ in 0..4 {
@@ -4318,7 +4856,7 @@ mod tests {
 
     #[tokio::test]
     async fn multiplexed_connection_stays_listed_until_full() {
-        let pool = MultiplexPool::try_new(3, 4).unwrap();
+        let pool = MultiplexPool::evicting(3, 4);
         let svc = connector(pool.clone());
         let first = connect(&svc, 0).await;
         let second = connect(&svc, 0).await;
@@ -4343,7 +4881,7 @@ mod tests {
 
     #[tokio::test]
     async fn released_connection_is_found_again_after_its_bucket_was_swept_empty() {
-        let pool = MultiplexPool::try_new(1, 2).unwrap();
+        let pool = MultiplexPool::evicting(1, 2);
         let svc = connector(pool.clone());
         let held = connect(&svc, 0).await;
         held.conn
@@ -4366,7 +4904,7 @@ mod tests {
 
     #[tokio::test]
     async fn broken_listed_connection_is_retired_when_selected() {
-        let pool = MultiplexPool::try_new(1, 8).unwrap();
+        let pool = MultiplexPool::evicting(1, 8);
         let svc = connector(pool.clone());
         let mut held = Vec::new();
         for _ in 0..3 {
@@ -4395,9 +4933,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn cold_idle_connections_are_reaped_while_a_hot_one_serves() {
-        let pool = MultiplexPool::try_new(1, 8)
-            .unwrap()
-            .with_idle_timeout(Duration::from_secs(4));
+        let pool = MultiplexPool::evicting(1, 8).with_idle_timeout(Duration::from_secs(4));
         let svc = connector(pool.clone());
         let mut held = Vec::new();
         for _ in 0..4 {
@@ -4413,7 +4949,7 @@ mod tests {
             assert_eq!(serial_of(&handout.conn).await, 0);
         }
         assert_eq!(pool.storage.lock().by_id[&TestId(0)].conns().count(), 1);
-        assert_eq!(pool.total_slots.available_permits(), 7);
+        assert_eq!(pool.free_slots(), 7);
         assert_eq!(created(&svc), 4);
         assert_open_matches_capacity(&pool);
     }
@@ -4425,9 +4961,7 @@ mod tests {
             MuxSelection::LeastLoaded,
             MuxSelection::RoundRobin,
         ] {
-            let pool = MultiplexPool::try_new(1, 12)
-                .unwrap()
-                .with_selection(selection);
+            let pool = MultiplexPool::evicting(1, 12).with_selection(selection);
             let svc = Arc::new(connector(pool.clone()));
             let mut tasks = Vec::new();
             for task in 0..32 {
@@ -4452,7 +4986,7 @@ mod tests {
             let stored: Vec<_> = storage.by_id[&TestId(0)].conns().collect();
             assert!(stored.len() <= 12);
             assert_eq!(
-                pool.total_slots.available_permits(),
+                pool.free_slots(),
                 12 - stored.len(),
                 "no slot leaked ({selection:?})"
             );
@@ -4462,6 +4996,463 @@ mod tests {
             drop(storage);
             assert_open_matches_capacity(&pool);
         }
+    }
+
+    /// A new exclusive connection for `id`, through the pool's own create permit.
+    async fn fresh(
+        pool: &MultiplexPool<Conn, TestId>,
+        id: u32,
+    ) -> MultiplexedConnection<Conn, TestId> {
+        let ConnectionResult::CreatePermit(slot) =
+            pool.get_conn(&TestId(id), &EMPTY_INPUT).await.unwrap()
+        else {
+            panic!("a create permit");
+        };
+        let conn = Conn {
+            serial: 0,
+            extensions: Extensions::new(),
+        };
+        conn.extensions.insert(ConnectionHealthWatcher::default());
+        conn.extensions.insert(MaxConcurrency::new(1));
+        pool.create(TestId(id), conn, slot, &EMPTY_INPUT)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_unlimited_pool_adds_connections_as_needed() {
+        let pool = MultiplexPool::new();
+        let mut held = Vec::new();
+        for _ in 0..64 {
+            held.push(fresh(&pool, 0).await);
+        }
+        assert_eq!(pool.storage.lock().by_id[&TestId(0)].conns().count(), 64);
+        drop(held);
+        let Ok(ConnectionResult::Connection(_)) = pool.get_conn(&TestId(0), &EMPTY_INPUT).await
+        else {
+            panic!("an idle connection is reused");
+        };
+    }
+
+    fn per_id(max: usize) -> MultiplexPool<Conn, TestId> {
+        MultiplexPool::new().with_max_connections_per_id(NonZeroUsize::new(max).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_per_id_limit_holds_back_only_that_id() {
+        let pool = per_id(1);
+        let held = fresh(&pool, 0).await;
+        let mut same = queue(&pool, &EMPTY_INPUT);
+        let other = fresh(&pool, 1).await;
+        drop(held);
+        assert!(same.is_woken(), "the id's own connection serves it");
+        drop((handout(&mut same), other));
+        assert_eq!(pool.waiting.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn a_closed_connection_frees_its_id_slot_for_a_waiter() {
+        let pool = per_id(1);
+        let held = fresh(&pool, 0).await;
+        let mut waiter = queue(&pool, &EMPTY_INPUT);
+        held.inner
+            .conn
+            .extensions()
+            .get_ref::<ConnectionHealthWatcher>()
+            .unwrap()
+            .mark_broken();
+        drop(held);
+        assert!(waiter.is_woken());
+        let Poll::Ready(Ok(ConnectionResult::CreatePermit(slot))) = waiter.poll() else {
+            panic!("the broken connection's slot goes to the waiter");
+        };
+        assert!(slot.id.is_some(), "the permit carries the id's slot");
+        let mut next = queue(&pool, &EMPTY_INPUT);
+        drop(slot);
+        assert!(next.is_woken(), "an unused permit frees the slot again");
+        assert!(matches!(
+            next.poll(),
+            Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn per_id_slots_of_ids_without_connections_are_forgotten() {
+        let pool = per_id(1);
+        for id in 0..256 {
+            drop(fresh(&pool, id).await);
+            pool.storage.lock().by_id.clear();
+        }
+        let kept = pool.storage.lock().id_slots.len();
+        assert!(
+            kept < 256,
+            "slots of ids nothing holds are dropped ({kept} kept)"
+        );
+    }
+
+    /// A pool of two exclusive connections: id 0's sits idle, id 1's is held.
+    async fn full_pool(
+        policy: SaturationPolicy,
+    ) -> (
+        MultiplexPool<Conn, TestId>,
+        MultiplexedConnection<Conn, TestId>,
+    ) {
+        let pool = MultiplexPool::new()
+            .with_max_streams_per_connection(NonZeroUsize::new(1).unwrap())
+            .with_max_connections_total(NonZeroUsize::new(2).unwrap())
+            .with_saturation_policy(policy);
+        drop(add(&pool, 0, None).await);
+        let busy = add(&pool, 1, None).await;
+        (pool, busy)
+    }
+
+    fn checkout(pool: &MultiplexPool<Conn, TestId>, id: u32) -> Checkout<'_> {
+        tokio_test::task::spawn(Box::pin(
+            async move { pool.get_conn(&TestId(id), &EMPTY_INPUT).await },
+        ) as Pin<Box<dyn Future<Output = _> + Send + '_>>)
+    }
+
+    #[tokio::test]
+    async fn the_wait_policy_never_evicts() {
+        let (pool, busy) = full_pool(SaturationPolicy::Wait).await;
+        let mut cold = checkout(&pool, 2);
+        assert!(cold.poll().is_pending(), "id 0's idle connection stays");
+        drop(busy);
+        if cold.is_woken() {
+            assert!(cold.poll().is_pending(), "still no eviction");
+        }
+        assert_eq!(pool.storage.lock().by_id.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn evict_idle_when_cold_evicts_only_for_a_cold_checkout() {
+        let (pool, busy) = full_pool(SaturationPolicy::EvictIdleWhenCold).await;
+        let mut warm = checkout(&pool, 1);
+        assert!(
+            warm.poll().is_pending(),
+            "id 1 waits for its own connection"
+        );
+        let mut cold = checkout(&pool, 2);
+        assert!(
+            matches!(
+                cold.poll(),
+                Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+            ),
+            "a warm waiter never holds back a cold checkout"
+        );
+        drop(busy);
+        assert!(warm.is_woken());
+        let Poll::Ready(Ok(ConnectionResult::Connection(_))) = warm.poll() else {
+            panic!("id 1's own connection serves it");
+        };
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn evict_idle_after_evicts_once_the_checkout_waited() {
+        let after = Duration::from_millis(100);
+        let (pool, busy) = full_pool(SaturationPolicy::EvictIdleAfter(after)).await;
+        let mut warm = checkout(&pool, 1);
+        assert!(
+            warm.poll().is_pending(),
+            "id 1 waits for its own connection first"
+        );
+        tokio::time::advance(after / 2).await;
+        assert!(!warm.is_woken());
+        tokio::time::advance(after).await;
+        assert!(warm.is_woken(), "its patience ran out");
+        assert!(matches!(
+            warm.poll(),
+            Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+        ));
+        assert!(
+            !pool.storage.lock().by_id.contains_key(&TestId(0)),
+            "id 0's idle connection went"
+        );
+        drop(busy);
+    }
+
+    #[tokio::test]
+    async fn the_default_policy_evicts_for_a_cold_checkout_at_once() {
+        let (pool, busy) = full_pool(SaturationPolicy::default()).await;
+        assert!(matches!(
+            checkout(&pool, 2).poll(),
+            Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+        ));
+        drop(busy);
+    }
+
+    #[tokio::test]
+    async fn an_idle_connection_that_cannot_take_a_stream_is_evictable() {
+        // Who waits: its own lane, another id, or both (the older one evicts).
+        for (same_waits, other_waits) in [(true, false), (false, true), (true, true)] {
+            let pool = MultiplexPool::evicting(usize::MAX, 1);
+            let conn = Conn {
+                serial: 0,
+                extensions: Extensions::new(),
+            };
+            let max = Arc::new(MaxConcurrency::new(1));
+            conn.extensions.insert_arc(max.clone());
+            let held = pool
+                .create(TestId(0), conn, pool.test_slot(), &EMPTY_INPUT)
+                .await
+                .unwrap();
+            let mut same = same_waits.then(|| queue(&pool, &EMPTY_INPUT));
+            let mut other = other_waits.then(|| {
+                let mut other = checkout(&pool, 1);
+                assert!(other.poll().is_pending());
+                other
+            });
+            // The peer allows no streams any more, and the connection goes idle.
+            max.set(0);
+            drop(held);
+            let evictor = same.as_mut().or(other.as_mut()).unwrap();
+            assert!(
+                evictor.is_woken()
+                    && matches!(
+                        evictor.poll(),
+                        Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+                    ),
+                "a connection nobody can use is nobody's ({same_waits}, {other_waits})"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_checkout_whose_connections_cannot_take_a_stream_counts_as_cold() {
+        let pool = MultiplexPool::new()
+            .with_max_connections_total(NonZeroUsize::new(1).unwrap())
+            .with_saturation_policy(SaturationPolicy::EvictIdleWhenCold);
+        let conn = Conn {
+            serial: 0,
+            extensions: Extensions::new(),
+        };
+        let max = Arc::new(MaxConcurrency::new(1));
+        conn.extensions.insert_arc(max.clone());
+        let held = pool
+            .create(TestId(0), conn, pool.test_slot(), &EMPTY_INPUT)
+            .await
+            .unwrap();
+        let mut waiter = queue(&pool, &EMPTY_INPUT);
+        max.set(0);
+        drop(held);
+        assert!(matches!(
+            waiter.poll(),
+            Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_younger_id_evicts_an_idle_connection_its_waiters_cannot_use() {
+        let pool = MultiplexPool::new()
+            .with_max_connections_total(NonZeroUsize::new(1).unwrap())
+            .with_saturation_policy(SaturationPolicy::EvictIdleWhenCold);
+        let conn = Conn {
+            serial: 0,
+            extensions: Extensions::new(),
+        };
+        let max = Arc::new(MaxConcurrency::new(1));
+        conn.extensions.insert_arc(max.clone());
+        let held = pool
+            .create(TestId(0), conn, pool.test_slot(), &EMPTY_INPUT)
+            .await
+            .unwrap();
+        // The older waiter is warm and may not evict; the younger id is cold.
+        let mut warm = queue(&pool, &EMPTY_INPUT);
+        let mut cold = checkout(&pool, 1);
+        assert!(cold.poll().is_pending());
+        max.set(0);
+        drop(held);
+        assert!(cold.is_woken(), "nobody can use it: an eviction chance");
+        let Poll::Ready(Ok(ConnectionResult::CreatePermit(evicted))) = cold.poll() else {
+            panic!("the cold id evicts");
+        };
+        assert!(warm.poll().is_pending(), "the slot went to the cold id");
+        drop(evicted);
+    }
+
+    #[tokio::test]
+    async fn the_front_waiter_evicts_an_idle_connection_that_refuses_it() {
+        let pool = MultiplexPool::evicting(32, 1);
+        let (conn, state) = admission_connection(&pool, 1);
+        let held = pool
+            .create(TestId(0), conn, pool.test_slot(), &EMPTY_INPUT)
+            .await
+            .unwrap();
+        let mut waiter = queue(&pool, &EMPTY_INPUT);
+        // Credit stays exhausted although the connection goes idle.
+        state.set_limit(0);
+        drop(held);
+        assert!(
+            matches!(
+                waiter.poll(),
+                Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+            ),
+            "its own look found nothing usable there"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_eviction_chance_taken_by_a_waiter_served_elsewhere_passes_on() {
+        let pool = MultiplexPool::evicting(1, 3);
+        let a = add(&pool, 0, None).await;
+        let c = add(&pool, 2, None).await;
+        let _d = add(&pool, 3, None).await;
+        let mut w = queue(&pool, &EMPTY_INPUT);
+        let other_input = Extensions::new();
+        let mut y = tokio_test::task::spawn(pool.get_conn(&TestId(1), &other_input));
+        assert!(y.poll().is_pending());
+        // At once: id 2's connection goes idle (an eviction chance) and id 0's
+        // stream frees (w's own lane).
+        drop(c);
+        drop(a);
+        drop(handout(&mut w));
+        assert!(
+            y.is_woken(),
+            "the chance w did not use reaches the next one"
+        );
+        assert!(matches!(
+            y.poll(),
+            Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_waiter_whose_request_changed_leaves_its_old_lane() {
+        let pool = MultiplexPool::new()
+            .with_max_streams_per_connection(NonZeroUsize::new(1).unwrap())
+            .with_max_connections_total(NonZeroUsize::new(2).unwrap())
+            .with_saturation_policy(SaturationPolicy::Wait);
+        let one = add(&pool, 0, Some(keyed(0, 1))).await;
+        let _two = add(&pool, 0, Some(keyed(0, 2))).await;
+        let changing = want(1);
+        let mut moved = queue(&pool, &changing);
+        let staying = want(1);
+        let mut behind = queue(&pool, &staying);
+        changing.insert(Want(2));
+        drop(one);
+        // The front waiter of key 1 now wants key 2: it hands its wake on.
+        assert!(moved.poll().is_pending(), "key 2's connection is busy");
+        assert!(
+            behind.is_woken(),
+            "key 1's freed stream reaches its next waiter"
+        );
+        drop(handout(&mut behind));
+        for lane in pool.storage.lock().by_id[&TestId(0)].lanes() {
+            if !lane.waiters.is_empty() {
+                assert_eq!(lane.waiters.unspent(), 0);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn another_id_gets_its_turn_while_an_id_keeps_waiters() {
+        let pool = MultiplexPool::new()
+            .with_max_streams_per_connection(NonZeroUsize::new(1).unwrap())
+            .with_max_connections_total(NonZeroUsize::new(1).unwrap())
+            .with_saturation_policy(SaturationPolicy::EvictIdleWhenCold);
+        let mut held = add(&pool, 0, None).await;
+        let mut busy = queue(&pool, &EMPTY_INPUT);
+        let other_input = Extensions::new();
+        let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &other_input));
+        assert!(other.poll().is_pending());
+        // Id 0 keeps one more waiter queued at every idle moment.
+        for round in 0.. {
+            let mut next = queue(&pool, &EMPTY_INPUT);
+            drop(held);
+            if other.is_woken()
+                && let Poll::Ready(Ok(ConnectionResult::CreatePermit(_))) = other.poll()
+            {
+                assert!(round <= 1, "served in arrival order across ids");
+                break;
+            }
+            held = handout(&mut busy);
+            busy = std::mem::replace(&mut next, queue(&pool, &EMPTY_INPUT));
+            drop(next);
+            assert!(round < 8, "another id starves");
+        }
+    }
+
+    #[tokio::test]
+    async fn newcomers_queue_behind_waiters_of_several_lanes() {
+        let pool = MultiplexPool::evicting(1, 2);
+        let unrestricted = add(&pool, 0, None).await;
+        let keyed_conn = add(&pool, 0, Some(keyed(0, 1))).await;
+        let input = want(1);
+        let mut waiter = queue(&pool, &input);
+        drop(keyed_conn);
+        let newcomer_input = want(1);
+        let newcomer = queue(&pool, &newcomer_input);
+        assert!(waiter.is_woken() && !newcomer.is_woken());
+        drop((handout(&mut waiter), newcomer, unrestricted));
+        assert_open_matches_capacity(&pool);
+    }
+
+    #[test]
+    fn a_wake_landing_during_a_look_is_passed_on_by_the_served_waiter() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let slot_waiters = Arc::new(WaitQueue::new());
+        let lane = Arc::new(WaitQueue::new());
+        let mut waiting = Waiting::new(&count, &slot_waiters, 0);
+        waiting.register(&lane);
+        let behind = Party::new(1).waiter();
+        lane.push(&behind);
+        waiting.begin_look();
+        // A unit frees in the lane while the look runs: the look began unwoken,
+        // so serving it spends no wake of the lane.
+        assert!(lane.wake_one());
+        waiting.served(Some(lane.clone()));
+        drop(waiting);
+        assert!(
+            behind.is_woken(),
+            "the unit is still there for the next one"
+        );
+    }
+
+    /// Notifies the pool from the request key derivation of look `at`.
+    #[derive(Debug, Clone)]
+    struct NotifyOnLook {
+        notify: Arc<Notify>,
+        looks: Arc<AtomicUsize>,
+        at: Arc<AtomicUsize>,
+    }
+
+    impl ConnectionReusePolicy for NotifyOnLook {
+        fn classifier(&self) -> ReuseKey {
+            ReuseKey::of::<Self>()
+        }
+
+        fn connection_key(&self) -> Option<ReuseKey> {
+            Some(ReuseKey::from_bits::<Self>(1))
+        }
+
+        fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
+            if self.looks.fetch_add(1, Ordering::SeqCst) + 1 == self.at.load(Ordering::SeqCst) {
+                self.notify.notify_waiters();
+            }
+            Some(ReuseKey::from_bits::<Self>(1))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_notification_during_a_look_leads_to_another_look() {
+        let pool = MultiplexPool::evicting(1, 1);
+        let policy = NotifyOnLook {
+            notify: pool.notify.clone(),
+            looks: Arc::default(),
+            at: Arc::new(AtomicUsize::new(usize::MAX)),
+        };
+        let held = add(&pool, 0, Some(ConnectionReuse::new(policy.clone()))).await;
+        let before = policy.looks.load(Ordering::SeqCst);
+        // A new connection or rekey announced while the waiting look runs: the
+        // look before it waits (the fast one, then the first queued one).
+        policy.at.store(before + 2, Ordering::SeqCst);
+        let mut waiter = queue(&pool, &EMPTY_INPUT);
+        assert_eq!(
+            policy.looks.load(Ordering::SeqCst),
+            before + 3,
+            "the announcement was not lost between the look and the wait"
+        );
+        drop((held, waiter.poll()));
     }
 
     #[test]

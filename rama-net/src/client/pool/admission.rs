@@ -93,7 +93,8 @@ pub trait ConnectionAdmissionPolicy: fmt::Debug + Send + Sync + 'static {
     /// as an upgraded tunnel or a request body still being sent.
     ///
     /// The pool never treats such a connection as idle, so it is neither evicted
-    /// nor expired; subscribers must also wake once this work ends.
+    /// nor expired; subscribers must also wake once this work ends. The pool
+    /// asks while it holds its own locks: answer from atomics, never block.
     fn in_use(&self) -> bool;
 }
 
