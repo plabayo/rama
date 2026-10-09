@@ -210,6 +210,23 @@ pub struct HttpPooledConnectorConfig {
     pub idle_timeout: Option<Duration>,
     /// How long to wait for the pool to hand out a connection before timing out.
     pub wait_for_pool_timeout: Option<Duration>,
+    /// How many streams to assume a new connection will hold for an authority
+    /// that has no connection yet.
+    ///
+    /// A burst that finds no free stream waits for a connection already being
+    /// established instead of each request establishing its own, which needs to
+    /// know how many streams a new connection will hold. For a cold authority
+    /// that is only a guess, so this is a per-connection stream count, not a
+    /// number of connections.
+    ///
+    /// `1` (the default) assumes no multiplexing and keeps every request
+    /// establishing its own: expecting a shared connection and then negotiating
+    /// HTTP/1 would cost the whole burst a wasted handshake. Raise it when the
+    /// authorities are known to speak HTTP/2 or HTTP/3.
+    ///
+    /// Once an authority has a connection, what that connection advertises is
+    /// used instead and this no longer applies.
+    pub cold_stream_capacity: NonZeroUsize,
 }
 
 const DEFAULT_MAX_TOTAL: NonZeroUsize = NonZeroUsize::new(50).unwrap();
@@ -223,6 +240,7 @@ impl Default for HttpPooledConnectorConfig {
             selection: MuxSelection::default(),
             idle_timeout: Some(Duration::from_secs(300)),
             wait_for_pool_timeout: Some(Duration::from_secs(120)),
+            cold_stream_capacity: NonZeroUsize::MIN,
         }
     }
 }
@@ -254,7 +272,8 @@ impl HttpPooledConnectorConfig {
         let config = Self::default();
         let pool = MultiplexPool::new(DEFAULT_MAX_CONCURRENT_STREAMS, DEFAULT_MAX_TOTAL)
             .with_selection(config.selection)
-            .maybe_with_idle_timeout(config.idle_timeout);
+            .maybe_with_idle_timeout(config.idle_timeout)
+            .with_cold_stream_capacity(config.cold_stream_capacity);
 
         let connector = PooledConnector::new(inner, pool, identifier)
             .maybe_with_wait_for_pool_timeout(config.wait_for_pool_timeout);
@@ -304,7 +323,8 @@ impl HttpPooledConnectorConfig {
     {
         let pool = MultiplexPool::try_new(self.max_concurrent_streams, self.max_total)?
             .with_selection(self.selection)
-            .maybe_with_idle_timeout(self.idle_timeout);
+            .maybe_with_idle_timeout(self.idle_timeout)
+            .with_cold_stream_capacity(self.cold_stream_capacity);
 
         let connector = PooledConnector::new(inner, pool, identifier)
             .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout);
