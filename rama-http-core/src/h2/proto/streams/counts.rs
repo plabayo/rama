@@ -1,6 +1,6 @@
 use super::*;
 use rama_core::telemetry::tracing;
-use rama_utils::reactive::{ChangeListener, Reactive};
+use rama_utils::reactive::{Change, ChangeListener, ChangeSignal};
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicUsize, Ordering},
@@ -11,14 +11,14 @@ use std::sync::{
 #[derive(Debug)]
 pub(crate) struct LocalStreams {
     live: AtomicUsize,
-    retired: Reactive<usize>,
+    retired: ChangeSignal,
 }
 
 impl LocalStreams {
     pub(crate) fn new() -> Self {
         Self {
             live: AtomicUsize::new(0),
-            retired: Reactive::new(0),
+            retired: ChangeSignal::new(),
         }
     }
 
@@ -37,7 +37,8 @@ impl LocalStreams {
 
     fn retired(&self) {
         self.live.fetch_sub(1, Ordering::AcqRel);
-        self.retired.set(self.retired.get().wrapping_add(1));
+        // One stream slot came free.
+        self.retired.notify(Change::Freed);
     }
 }
 

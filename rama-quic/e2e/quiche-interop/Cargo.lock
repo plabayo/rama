@@ -2084,6 +2084,7 @@ dependencies = [
 name = "rama-utils"
 version = "0.5.0"
 dependencies = [
+ "atomic-waker",
  "base64",
  "const_format",
  "memchr",

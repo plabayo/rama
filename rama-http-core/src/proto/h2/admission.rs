@@ -18,7 +18,7 @@ use rama_net::{
     },
     conn::MaxConcurrency,
 };
-use rama_utils::reactive::{ChangeListener, Reactive};
+use rama_utils::reactive::{Change, ChangeListener, ChangeSignal};
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -31,12 +31,12 @@ pub(crate) struct Admission {
     reserved: AtomicUsize,
     streams: Arc<LocalStreams>,
     max: Arc<MaxConcurrency>,
-    released: Reactive<usize>,
+    released: ChangeSignal,
 }
 
 impl Admission {
     fn bump(&self) {
-        self.released.set(self.released.get().wrapping_add(1));
+        self.released.notify(Change::Freed);
     }
 }
 
@@ -51,7 +51,7 @@ impl AdmissionOwner {
             reserved: AtomicUsize::new(0),
             streams,
             max,
-            released: Reactive::new(0),
+            released: ChangeSignal::new(),
         }))
     }
 

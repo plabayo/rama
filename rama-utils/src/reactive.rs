@@ -1,20 +1,25 @@
 //! A lock-free-read value paired with a race-free change signal.
 
 use smallvec::SmallVec;
+use std::collections::VecDeque;
 use std::fmt;
+use std::future::Future;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::pin::Pin;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
+use std::task::{Context, Poll};
 use tokio::sync::{Notify, watch};
 
 #[cfg(not(all(loom, test)))]
 use {
+    atomic_waker::AtomicWaker,
     parking_lot::Mutex,
-    std::sync::atomic::{AtomicBool, fence},
+    std::sync::atomic::{AtomicBool, AtomicUsize, fence},
 };
 
 #[cfg(all(loom, test))]
-use loom::sync::atomic::{AtomicBool, fence};
+use loom::sync::atomic::{AtomicBool, AtomicUsize, fence};
 
 #[cfg(all(loom, test))]
 struct Mutex<T>(loom::sync::Mutex<T>);
@@ -30,18 +35,50 @@ impl<T> Mutex<T> {
     }
 }
 
+/// A waker slot loom can model, in place of the lock-free one.
+#[cfg(all(loom, test))]
+struct AtomicWaker(Mutex<Option<std::task::Waker>>);
+
+#[cfg(all(loom, test))]
+impl AtomicWaker {
+    fn new() -> Self {
+        Self(Mutex::new(None))
+    }
+
+    fn register(&self, waker: &std::task::Waker) {
+        *self.0.lock() = Some(waker.clone());
+    }
+
+    fn wake(&self) {
+        let waker = self.0.lock().take();
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+}
+
 /// Woken, without a value, after a source it subscribed to changed.
 ///
 /// The source calls it synchronously from whatever changed it, possibly under
 /// the source's own locks: only wake, never block or call into the source.
 pub trait ChangeListener: Send + Sync {
     /// The source changed.
-    fn changed(&self);
+    fn changed(&self, change: Change);
+}
+
+/// What changed at a source, so a listener wakes as many waiters as can use it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Change {
+    /// One unit of what the source counts came free, such as a stream slot.
+    Freed,
+    /// Anything else, by an amount the source does not count: a limit, a
+    /// state, the source going away.
+    Other,
 }
 
 /// Wakes the tasks waiting at this moment, as [`Notify::notify_waiters`].
 impl ChangeListener for Notify {
-    fn changed(&self) {
+    fn changed(&self, _: Change) {
         self.notify_waiters();
     }
 }
@@ -91,8 +128,8 @@ impl ChangeSignal {
         fence(Ordering::SeqCst);
     }
 
-    /// Wake every live listener. Call after changing the source.
-    pub fn notify(&self) {
+    /// Wake every live listener with `change`. Call after changing the source.
+    pub fn notify(&self, change: Change) {
         // See `subscribe`.
         fence(Ordering::SeqCst);
         if !self.listening.load(Ordering::Relaxed) {
@@ -113,7 +150,7 @@ impl ChangeSignal {
         }
         // Outside the lock: a listener may subscribe again while woken.
         for listener in live {
-            listener.changed();
+            listener.changed(change);
         }
     }
 }
@@ -121,7 +158,7 @@ impl ChangeSignal {
 /// A source going away is its last change: listeners wake to see it.
 impl Drop for ChangeSignal {
     fn drop(&mut self) {
-        self.notify();
+        self.notify(Change::Other);
     }
 }
 
@@ -129,6 +166,242 @@ impl fmt::Debug for ChangeSignal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ChangeSignal")
             .field("listeners", &self.listeners.lock().len())
+            .finish()
+    }
+}
+
+/// Parties waiting, in arrival order, for capacity that others free.
+///
+/// A waiter queues with [`Self::push`] before it checks the capacity it waits
+/// for; whoever frees capacity calls [`Self::wake_one`] for one unit, or
+/// [`Self::wake_all`] for a change of unknown size, after freeing it. Both
+/// sides fence, so of a waiter queuing and capacity freeing at once, one sees
+/// the other. Every unit reaches a waiter, which spends it on a look or passes
+/// it on when it leaves. A leaf lock: nothing else is taken while it is held.
+pub struct WaitQueue {
+    queue: Mutex<VecDeque<Arc<Waiter>>>,
+    len: AtomicUsize,
+}
+
+impl Default for WaitQueue {
+    fn default() -> Self {
+        Self {
+            queue: Mutex::new(VecDeque::new()),
+            len: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl WaitQueue {
+    /// Create an empty queue.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Queue `waiter` at the back. Check the capacity it waits for after.
+    pub fn push(&self, waiter: &Arc<Waiter>) {
+        {
+            let mut queue = self.queue.lock();
+            queue.push_back(waiter.clone());
+            self.len.store(queue.len(), Ordering::Relaxed);
+        }
+        // Pairs with the fence in `wake_*`: see the type's docs.
+        fence(Ordering::SeqCst);
+    }
+
+    /// Leave the queue, returning the wakes the waiter holds: capacity they
+    /// stand for and it does not use is left to the others, so pass it on.
+    ///
+    /// A party freeing capacity meets the leave under the queue's lock: it
+    /// wakes the waiter before, or reports nobody waiting after.
+    pub fn remove(&self, waiter: &Waiter) -> usize {
+        let mut queue = self.queue.lock();
+        // Mostly the front: served waiters leave in arrival order.
+        if let Some(at) = queue
+            .iter()
+            .position(|queued| std::ptr::eq(&**queued, waiter))
+        {
+            queue.remove(at);
+        }
+        self.len.store(queue.len(), Ordering::Relaxed);
+        // Under the lock: no wake of this queue reaches the waiter after.
+        waiter.held()
+    }
+
+    /// Whether nobody waits.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len.load(Ordering::Relaxed) == 0
+    }
+
+    /// Whether a party may take capacity now: nobody waits ahead of it, or it
+    /// holds a wake. `None` is a party that does not wait.
+    #[must_use]
+    pub fn admits(&self, waiter: Option<&Waiter>) -> bool {
+        if self.is_empty() {
+            return true;
+        }
+        let Some(waiter) = waiter else {
+            return false;
+        };
+        waiter.is_woken()
+            || self
+                .queue
+                .lock()
+                .front()
+                .is_some_and(|front| std::ptr::eq(&**front, waiter))
+    }
+
+    /// One unit of capacity: wake the first waiter without a wake or, if all
+    /// of them hold one, the first again, since its look may have begun before
+    /// the unit. False if nobody waits: the capacity is nobody's.
+    pub fn wake_one(&self) -> bool {
+        fence(Ordering::SeqCst);
+        if self.is_empty() {
+            return false;
+        }
+        let queue = self.queue.lock();
+        let Some(front) = queue.front() else {
+            return false;
+        };
+        queue
+            .iter()
+            .find(|waiter| !waiter.is_woken())
+            .unwrap_or(front)
+            .wake();
+        true
+    }
+
+    /// A change of unknown size: wake every waiter. False if nobody waits.
+    pub fn wake_all(&self) -> bool {
+        fence(Ordering::SeqCst);
+        if self.is_empty() {
+            return false;
+        }
+        let queue = self.queue.lock();
+        for waiter in queue.iter() {
+            waiter.wake();
+        }
+        !queue.is_empty()
+    }
+}
+
+impl fmt::Debug for WaitQueue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WaitQueue")
+            .field("len", &self.len.load(Ordering::Relaxed))
+            .finish()
+    }
+}
+
+/// One party of a [`WaitQueue`]. It holds the wakes it received and has not
+/// spent: each is a unit of capacity, or a change, to look at.
+pub struct Waiter {
+    wakes: AtomicUsize,
+    /// Only the waiting party writes it.
+    spent: AtomicUsize,
+    waker: AtomicWaker,
+}
+
+/// The wakes a [`Waiter`] had received when a look at its capacity began.
+#[derive(Debug, Clone, Copy)]
+pub struct Wakes {
+    wakes: usize,
+    spent: usize,
+}
+
+impl Wakes {
+    /// Whether the look began with a wake held: one it spends if it takes
+    /// capacity.
+    #[must_use]
+    pub fn held(self) -> bool {
+        self.wakes != self.spent
+    }
+}
+
+impl Waiter {
+    /// Create a waiter to queue.
+    #[must_use]
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            wakes: AtomicUsize::new(0),
+            spent: AtomicUsize::new(0),
+            waker: AtomicWaker::new(),
+        })
+    }
+
+    /// Whether the waiter holds a wake it has not spent.
+    #[must_use]
+    pub fn is_woken(&self) -> bool {
+        self.held() != 0
+    }
+
+    fn held(&self) -> usize {
+        self.wakes
+            .load(Ordering::Acquire)
+            .wrapping_sub(self.spent.load(Ordering::Relaxed))
+    }
+
+    /// The wakes so far: read before a look at the capacity waited for.
+    #[must_use]
+    pub fn wakes(&self) -> Wakes {
+        Wakes {
+            wakes: self.wakes.load(Ordering::Acquire),
+            spent: self.spent.load(Ordering::Relaxed),
+        }
+    }
+
+    /// The look begun at `seen` found nothing: the wakes it answered are
+    /// spent, a wake since keeps the waiter woken.
+    pub fn spend(&self, seen: Wakes) {
+        self.spent.store(seen.wakes, Ordering::Relaxed);
+    }
+
+    /// Completes once a wake arrives after `seen`, the snapshot taken before
+    /// the look: no wake between the look and the wait is lost.
+    pub fn woken(&self, seen: Wakes) -> Woken<'_> {
+        Woken {
+            waiter: self,
+            seen: seen.wakes,
+        }
+    }
+
+    fn wake(&self) {
+        self.wakes.fetch_add(1, Ordering::AcqRel);
+        self.waker.wake();
+    }
+}
+
+/// Completes once its [`Waiter`] is woken after a snapshot: see [`Waiter::woken`].
+#[derive(Debug)]
+#[must_use = "futures do nothing unless polled"]
+pub struct Woken<'a> {
+    waiter: &'a Waiter,
+    seen: usize,
+}
+
+impl Future for Woken<'_> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.waiter.wakes.load(Ordering::Acquire) != self.seen {
+            return Poll::Ready(());
+        }
+        self.waiter.waker.register(cx.waker());
+        // A wake before the registration found no waker to wake.
+        if self.waiter.wakes.load(Ordering::Acquire) == self.seen {
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
+    }
+}
+
+impl fmt::Debug for Waiter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Waiter")
+            .field("held", &self.held())
             .finish()
     }
 }
@@ -160,7 +433,7 @@ impl ChangeWaiter {
 }
 
 impl ChangeListener for ChangeWaiter {
-    fn changed(&self) {
+    fn changed(&self, _: Change) {
         // A stored permit: a change before the wait starts is not lost.
         self.notify.notify_one();
     }
@@ -236,7 +509,7 @@ impl<T: ReactiveRepr> Reactive<T> {
         // `send` errors only when there are no receivers, that's the idle case we
         // intentionally treat as a no-op.
         let _unused = self.signal.send(bits);
-        self.changes.notify();
+        self.changes.notify(Change::Other);
     }
 
     /// Wake `listener` after every later [`Self::set`], without a task or an
@@ -286,14 +559,115 @@ impl<T: ReactiveRepr> Changed<T> {
 #[cfg(all(test, loom))]
 mod loom_tests {
     use super::*;
-    use loom::{sync::atomic::AtomicUsize, thread};
+    use loom::thread;
 
     struct Flag(AtomicBool);
 
     impl ChangeListener for Flag {
-        fn changed(&self) {
+        fn changed(&self, _: Change) {
             self.0.store(true, Ordering::SeqCst);
         }
+    }
+
+    /// Queue-then-check: capacity freed while a waiter queues is either seen
+    /// by its check or wakes it.
+    #[test]
+    fn a_queuing_waiter_never_misses_freed_capacity() {
+        loom::model(|| {
+            let queue = Arc::new(WaitQueue::new());
+            let capacity = Arc::new(AtomicUsize::new(0));
+            let releaser = {
+                let (queue, capacity) = (queue.clone(), capacity.clone());
+                thread::spawn(move || {
+                    capacity.store(1, Ordering::Release);
+                    queue.wake_one();
+                })
+            };
+            let waiter = Waiter::new();
+            queue.push(&waiter);
+            let seen = capacity.load(Ordering::Acquire);
+            releaser.join().unwrap();
+            assert!(
+                seen == 1 || waiter.is_woken(),
+                "the freed capacity was neither seen nor signalled"
+            );
+        });
+    }
+
+    /// A look that began before a unit was freed and found nothing does
+    /// not spend the wake that unit sent: the waiter looks again.
+    #[test]
+    fn a_woken_waiter_never_spends_a_unit_freed_during_its_look() {
+        loom::model(|| {
+            let queue = Arc::new(WaitQueue::new());
+            let capacity = Arc::new(AtomicUsize::new(0));
+            let waiter = Waiter::new();
+            queue.push(&waiter);
+            assert!(queue.wake_all());
+            let releaser = {
+                let (queue, capacity) = (queue.clone(), capacity.clone());
+                thread::spawn(move || {
+                    capacity.store(1, Ordering::Release);
+                    queue.wake_one();
+                })
+            };
+            let seen = waiter.wakes();
+            let found = capacity.load(Ordering::Acquire);
+            if found == 0 {
+                waiter.spend(seen);
+            }
+            releaser.join().unwrap();
+            assert!(
+                found == 1 || waiter.is_woken(),
+                "the freed unit was spent by a look that missed it"
+            );
+        });
+    }
+
+    /// Check-register-check: a wake racing the waiter's registration still
+    /// ends its wait.
+    #[test]
+    fn a_wake_racing_the_registration_ends_the_wait() {
+        loom::model(|| {
+            let queue = Arc::new(WaitQueue::new());
+            let waiter = Waiter::new();
+            queue.push(&waiter);
+            let seen = waiter.wakes();
+            let releaser = {
+                let queue = queue.clone();
+                thread::spawn(move || {
+                    queue.wake_one();
+                })
+            };
+            loom::future::block_on(waiter.woken(seen));
+            releaser.join().unwrap();
+        });
+    }
+
+    /// Of the last waiter leaving and capacity freed for the queue at once,
+    /// one announces the capacity as nobody's.
+    #[test]
+    fn capacity_freed_as_the_last_waiter_leaves_is_announced() {
+        loom::model(|| {
+            let queue = Arc::new(WaitQueue::new());
+            let freed = Arc::new(AtomicBool::new(false));
+            let waiter = Waiter::new();
+            queue.push(&waiter);
+            let releaser = {
+                let (queue, freed) = (queue.clone(), freed.clone());
+                thread::spawn(move || {
+                    freed.store(true, Ordering::Relaxed);
+                    !queue.wake_one()
+                })
+            };
+            queue.remove(&waiter);
+            let seen = queue.is_empty() && freed.load(Ordering::Relaxed);
+            let announced = releaser.join().unwrap();
+            assert!(
+                announced || seen,
+                "the freed capacity was announced by nobody"
+            );
+        });
     }
 
     /// Subscribe-then-check: a change racing the first subscription is
@@ -308,7 +682,7 @@ mod loom_tests {
                 let (signal, source) = (signal.clone(), source.clone());
                 thread::spawn(move || {
                     source.store(1, Ordering::Release);
-                    signal.notify();
+                    signal.notify(Change::Other);
                 })
             };
             signal.subscribe(Arc::downgrade(&listener) as Weak<dyn ChangeListener>);
@@ -376,7 +750,7 @@ mod tests {
     struct Count(AtomicUsize);
 
     impl ChangeListener for Count {
-        fn changed(&self) {
+        fn changed(&self, _: Change) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -409,7 +783,7 @@ mod tests {
             signal.subscribe(waiter.listener());
         }
         assert!(signal.listeners.lock().len() <= 2);
-        signal.notify();
+        signal.notify(Change::Other);
         assert_eq!(kept.0.load(Ordering::Relaxed), 1);
     }
 
@@ -418,7 +792,7 @@ mod tests {
         struct Resubscribe(Arc<ChangeSignal>, Weak<Self>, AtomicUsize);
 
         impl ChangeListener for Resubscribe {
-            fn changed(&self) {
+            fn changed(&self, _: Change) {
                 self.2.fetch_add(1, Ordering::Relaxed);
                 self.0.subscribe(self.1.clone() as Weak<dyn ChangeListener>);
             }
@@ -428,8 +802,8 @@ mod tests {
         let listener =
             Arc::new_cyclic(|weak| Resubscribe(signal.clone(), weak.clone(), AtomicUsize::new(0)));
         signal.subscribe(Arc::downgrade(&listener) as Weak<dyn ChangeListener>);
-        signal.notify();
-        signal.notify();
+        signal.notify(Change::Other);
+        signal.notify(Change::Other);
         assert!(listener.2.load(Ordering::Relaxed) >= 2);
     }
 
@@ -442,13 +816,64 @@ mod tests {
         let mut second = Box::pin(notify.notified());
         first.as_mut().enable();
         second.as_mut().enable();
-        signal.notify();
+        signal.notify(Change::Other);
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             first.await;
             second.await;
         })
         .await
         .expect("a change wakes every task that waits");
+    }
+
+    #[test]
+    fn a_wait_queue_wakes_in_arrival_order_once_per_unit() {
+        let queue = WaitQueue::new();
+        let [first, second] = [Waiter::new(), Waiter::new()];
+        queue.push(&first);
+        queue.push(&second);
+        assert!(!queue.admits(None));
+        assert!(queue.admits(Some(&first)) && !queue.admits(Some(&second)));
+        queue.wake_one();
+        assert!(first.is_woken() && !second.is_woken());
+        queue.wake_one();
+        assert!(second.is_woken() && queue.admits(Some(&second)));
+        first.spend(first.wakes());
+        second.spend(second.wakes());
+        assert!(queue.wake_all());
+        assert!(first.is_woken() && second.is_woken());
+        // Both hold a wake: the next unit goes to the first, whose look may
+        // have begun before it.
+        let seen = first.wakes();
+        assert!(queue.wake_one());
+        first.spend(seen);
+        assert!(first.is_woken(), "a wake during a look is not spent by it");
+        assert_eq!(queue.remove(&first), 1);
+        assert_eq!(queue.remove(&second), 1);
+        assert!(queue.is_empty() && queue.admits(None) && !queue.wake_one());
+    }
+
+    #[test]
+    fn a_listener_learns_what_changed() {
+        #[derive(Default)]
+        struct Last(Mutex<Option<Change>>);
+
+        impl ChangeListener for Last {
+            fn changed(&self, change: Change) {
+                *self.0.lock() = Some(change);
+            }
+        }
+
+        let signal = ChangeSignal::new();
+        let listener = Arc::new(Last::default());
+        signal.subscribe(Arc::downgrade(&listener) as Weak<dyn ChangeListener>);
+        signal.notify(Change::Freed);
+        assert_eq!(*listener.0.lock(), Some(Change::Freed));
+        drop(signal);
+        assert_eq!(
+            *listener.0.lock(),
+            Some(Change::Other),
+            "going away is no unit"
+        );
     }
 
     #[test]

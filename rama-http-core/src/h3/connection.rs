@@ -27,7 +27,7 @@ use rama_quic::{
 use rama_quic_proto::{Dir, coding::Codec};
 use rama_utils::{
     octets::{kib, mib},
-    reactive::{ChangeListener, ChangeSignal},
+    reactive::{Change, ChangeListener, ChangeSignal},
 };
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -353,7 +353,7 @@ impl Shared {
         self.push_ready.notify_waiters();
         self.failure.notify_waiters();
         self.request_rejected.notify_waiters();
-        self.admission_ended.notify();
+        self.admission_ended.notify(Change::Other);
         self.settings_ready.notify_waiters();
         for output in &self.output {
             output.notify_one();
@@ -1039,7 +1039,7 @@ pub(crate) async fn receive_uni(
                         shared.pushes.lock().reject_from(limit);
                     }
                     shared.request_rejected.notify_waiters();
-                    shared.admission_ended.notify();
+                    shared.admission_ended.notify(Change::Other);
                 }
                 if let FrameEvent::PriorityUpdate {
                     push,

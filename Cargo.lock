@@ -4946,6 +4946,7 @@ name = "rama-utils"
 version = "0.5.0"
 dependencies = [
  "ahash",
+ "atomic-waker",
  "base64 0.23.1",
  "const_format",
  "loom",

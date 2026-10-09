@@ -17,7 +17,7 @@ use rama::{
         },
         conn::MaxConcurrency,
     },
-    utils::reactive::{ChangeListener, ChangeSignal},
+    utils::reactive::{Change, ChangeListener, ChangeSignal},
 };
 use std::{
     num::NonZeroUsize,
@@ -122,6 +122,14 @@ fn multiplex_miss_evicts_lru(bencher: divan::Bencher, resident: usize) {
     });
 }
 
+/// Until every one of `waiters` tasks was polled once, so all of them wait in
+/// the pool: a scheduler tick polls only so many tasks before yielding back.
+async fn park_all(started: &AtomicUsize, waiters: usize) {
+    while started.load(Ordering::Relaxed) < waiters {
+        tokio::task::yield_now().await;
+    }
+}
+
 async fn hand_off_one_stream_at_a_time(waiters: usize) {
     let pool = Arc::new(MultiplexPool::<ServiceInput<()>, BenchId>::new(
         NonZeroUsize::new(1).unwrap(),
@@ -138,10 +146,13 @@ async fn hand_off_one_stream_at_a_time(waiters: usize) {
         .await
         .unwrap();
 
+    let started = Arc::new(AtomicUsize::new(0));
     let mut tasks = Vec::with_capacity(waiters);
     for _ in 0..waiters {
         let pool = Arc::clone(&pool);
+        let started = Arc::clone(&started);
         tasks.push(tokio::spawn(async move {
+            started.fetch_add(1, Ordering::Relaxed);
             let handout = match pool.get_conn(&BenchId(0), &EMPTY_INPUT).await.unwrap() {
                 ConnectionResult::Connection(handout) => handout,
                 ConnectionResult::CreatePermit(_) => {
@@ -151,7 +162,7 @@ async fn hand_off_one_stream_at_a_time(waiters: usize) {
             black_box(handout);
         }));
     }
-    tokio::task::yield_now().await;
+    park_all(&started, waiters).await;
     drop(held);
     for task in tasks {
         task.await.unwrap();
@@ -187,13 +198,16 @@ async fn hand_off_streams_for_two_ids(waiters_per_id: usize) {
         });
     }
 
+    let started = Arc::new(AtomicUsize::new(0));
     let mut tasks = Vec::with_capacity(waiters_per_id * 2);
     for _ in 0..waiters_per_id {
         // Register the IDs in the opposite order of their storage so a global
         // wake-up cannot rely on coincidental waiter/connection ordering.
         for id in [BenchId(1), BenchId(0)] {
             let pool = Arc::clone(&pool);
+            let started = Arc::clone(&started);
             tasks.push(tokio::spawn(async move {
+                started.fetch_add(1, Ordering::Relaxed);
                 let handout = match pool.get_conn(&id, &EMPTY_INPUT).await.unwrap() {
                     ConnectionResult::Connection(handout) => handout,
                     ConnectionResult::CreatePermit(_) => {
@@ -204,7 +218,7 @@ async fn hand_off_streams_for_two_ids(waiters_per_id: usize) {
             }));
         }
     }
-    tokio::task::yield_now().await;
+    park_all(&started, waiters_per_id * 2).await;
     drop(releases);
     for task in tasks {
         task.await.unwrap();
@@ -515,7 +529,7 @@ struct CreditLease(Arc<Credit>);
 impl Drop for CreditLease {
     fn drop(&mut self) {
         self.0.available.fetch_add(1, Ordering::AcqRel);
-        self.0.returned.notify();
+        self.0.returned.notify(Change::Freed);
     }
 }
 

@@ -27,6 +27,7 @@ targets = [
 [features]
 default = ["std"]
 std = [
+    "dep:atomic-waker",
     "rama-macros/std",
     "smallvec/write",
     "smol_str/std",
@@ -39,6 +40,7 @@ std = [
 ]
 
 [dependencies]
+atomic-waker = { workspace = true, optional = true }
 # Keep the shared byte serializer usable with alloc-only builds.
 base64 = { workspace = true, default-features = false, features = ["alloc"] }
 const_format = { workspace = true }
@@ -65,7 +67,7 @@ tokio = { workspace = true, features = ["fs", "io-util", "time", "macros", "sync
 trybuild = { workspace = true }
 
 [target.'cfg(loom)'.dev-dependencies]
-loom = { workspace = true }
+loom = { workspace = true, features = ["futures"] }
 
 [lints]
 workspace = true

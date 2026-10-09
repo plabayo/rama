@@ -79,7 +79,10 @@ pub trait ConnectionAdmissionPolicy: fmt::Debug + Send + Sync + 'static {
     ///
     /// Takes effect before it returns. Wake for returned reservations, peer
     /// credit, the end of work [`Self::in_use`] reports, and the end of the
-    /// connection; after that, never again. Spurious wakes are permitted. Keep
+    /// connection; after that, never again. Spurious wakes are permitted. Report
+    /// one returned stream as [`Freed`](rama_utils::reactive::Change::Freed), so
+    /// one waiter wakes for it, and anything else as
+    /// [`Other`](rama_utils::reactive::Change::Other), which wakes them all. Keep
     /// listeners in a [`ChangeSignal`](rama_utils::reactive::ChangeSignal) or
     /// subscribe them to the sources: a change then wakes them without a task
     /// or an allocation. A source that only has an async change future

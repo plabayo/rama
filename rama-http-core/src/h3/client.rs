@@ -34,7 +34,7 @@ use rama_quic::{
     BiStreamReservation, Connection as QuicConnection, ConnectionError as QuicConnectionError,
 };
 use rama_quic_proto::{Dir, Side};
-use rama_utils::reactive::{ChangeListener, Reactive};
+use rama_utils::reactive::{Change, ChangeListener, ChangeSignal};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::{
@@ -64,7 +64,7 @@ pub(crate) struct ConnectionLifetime {
     shared: Arc<Shared>,
     admission: Arc<Semaphore>,
     max_requests: usize,
-    admission_changed: Reactive<usize>,
+    admission_changed: ChangeSignal,
 }
 
 impl Drop for ConnectionLifetime {
@@ -121,7 +121,7 @@ pub fn handshake<B>(
                 shared: shared.clone(),
                 admission,
                 max_requests,
-                admission_changed: Reactive::new(0),
+                admission_changed: ChangeSignal::new(),
             }),
             connection,
             shared,
@@ -252,8 +252,7 @@ impl Drop for RequestPermit {
         // the returned local admission permit.
         self.permit.take();
         if let Some(lifetime) = self.lifetime.upgrade() {
-            let changed = &lifetime.admission_changed;
-            changed.set(changed.get().wrapping_add(1));
+            lifetime.admission_changed.notify(Change::Freed);
         }
     }
 }
