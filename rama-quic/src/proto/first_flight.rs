@@ -10,11 +10,12 @@ use std::{
 use parking_lot::Mutex;
 use rama_core::bytes::Bytes;
 use rama_tls::client::{ClientHelloHandshakePrefix, parse_client_hello_message_prefix};
+use rama_utils::octets;
 
 use crate::proto::crypto::ClientHelloMessage;
 
 /// A ClientHello larger than this is not looked at.
-pub(crate) const LIMIT: usize = 16 * 1024;
+pub(crate) const LIMIT: usize = octets::kib(16);
 
 /// CRYPTO data held beyond a gap is kept for at most this many offsets.
 const AHEAD_LIMIT: usize = 32;

@@ -29,6 +29,7 @@ use rama_http_types::{
         h3::{Code, Settings, StreamType, observation::ObservationLimits},
     },
 };
+use rama_utils::octets;
 use std::{
     cell::RefCell,
     future::Future,
@@ -83,7 +84,7 @@ pub fn state(input: &[u8]) {
     let bytes = Bytes::copy_from_slice(&input[3..input.len().min(rama_utils::octets::kib(64))]);
     let mut control = Control::new(role);
     let limits = ObservationLimits {
-        bytes: 1024,
+        bytes: octets::kib(1),
         events: usize::from(input[0]),
         fields: 8,
         streams: 4,
@@ -174,7 +175,7 @@ fn compression_schedule(input: &[u8]) {
                 ..DecoderConfig::default()
             },
             observation: Some(Box::new(ObservationLimits {
-                bytes: 1024,
+                bytes: octets::kib(1),
                 events: 8,
                 fields: 4,
                 streams: 4,

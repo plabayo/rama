@@ -31,6 +31,7 @@ use rama_tls::{
         parse_client_hello_message_prefix,
     },
 };
+use rama_utils::octets;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -126,11 +127,11 @@ impl Default for CaptureLimits {
     fn default() -> Self {
         Self {
             datagrams: 32,
-            bytes: 256 * 1024,
+            bytes: octets::kib(256),
             packets: 128,
             frames: 2048,
             crypto_fragments: 128,
-            client_hello_bytes: 16 * 1024,
+            client_hello_bytes: octets::kib(16),
             parameters: 256,
         }
     }

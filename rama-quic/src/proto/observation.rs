@@ -369,6 +369,7 @@ pub(crate) mod fuzzing {
 mod tests {
     use super::*;
     use rama_core::bytes::Bytes;
+    use rama_utils::octets;
 
     #[test]
     fn observation_assembly_honors_large_hello_limit_without_provider_admission() {
@@ -387,7 +388,7 @@ mod tests {
         let expected = message.len();
         let mut recorder = ServerObservation::new(
             CaptureLimits {
-                client_hello_bytes: 32 * 1024,
+                client_hello_bytes: octets::kib(32),
                 ..CaptureLimits::default()
             },
             &[0x40],

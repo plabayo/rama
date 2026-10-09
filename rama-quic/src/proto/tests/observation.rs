@@ -419,13 +419,13 @@ fn observation_client_hello_limit_above_sixteen_kib_is_honored() {
     let mut server =
         ServerConfig::with_crypto(Arc::new(server_crypto_with_alpn(vec![b"h3".to_vec()])));
     server.set_capture(CaptureLimits {
-        bytes: 1024 * 1024,
+        bytes: octets::mib(1),
         datagrams: 128,
-        client_hello_bytes: 32 * 1024,
+        client_hello_bytes: octets::kib(32),
         ..CaptureLimits::default()
     });
     let mut transport = TransportConfig::default();
-    transport.set_crypto_buffer_size(64 * 1024);
+    transport.set_crypto_buffer_size(octets::kib(64));
     server.set_transport_config(Arc::new(transport));
     let mut pair = Pair::new(
         Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
@@ -441,6 +441,6 @@ fn observation_client_hello_limit_above_sixteen_kib_is_honored() {
         .publish_observation(&extensions, true, false);
     let observed = extensions.get_ref::<QuicObservation>().unwrap();
     assert!(observed.completeness.client_hello, "{observed:?}");
-    assert!(observed.client_hello_message.len() > 16 * 1024);
+    assert!(observed.client_hello_message.len() > octets::kib(16));
     assert!(extensions.contains::<SecureTransport>());
 }

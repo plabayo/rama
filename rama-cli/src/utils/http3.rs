@@ -23,6 +23,7 @@ use rama::{
     tcp::server::TcpListener,
     telemetry::tracing,
     tls::server::TlsServerConfig,
+    utils::octets,
 };
 #[cfg(target_os = "windows")]
 use rama::{
@@ -45,7 +46,7 @@ pub struct Http3Args {
 
 /// Diagnostic capture budgets: 8 KiB per retained component and four live snapshots.
 pub(crate) const OBSERVATION_LIMITS: ObservationLimits = ObservationLimits {
-    bytes: 8 * 1024,
+    bytes: octets::kib(8),
     events: 64,
     fields: 128,
     streams: 16,

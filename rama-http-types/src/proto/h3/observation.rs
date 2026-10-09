@@ -3,6 +3,7 @@
 use super::qpack::{EncoderInstruction, FieldLine};
 use crate::proto::h2::PseudoHeaderOrder;
 use rama_core::extensions::Extension;
+use rama_utils::octets;
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -24,7 +25,7 @@ pub struct ObservationLimits {
 impl Default for ObservationLimits {
     fn default() -> Self {
         Self {
-            bytes: 64 * 1024,
+            bytes: octets::kib(64),
             events: 256,
             fields: 256,
             streams: 32,
