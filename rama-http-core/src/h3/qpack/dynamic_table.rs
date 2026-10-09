@@ -133,10 +133,8 @@ impl DynamicTable {
             return false;
         }
         self.capacity = capacity;
-        while self.size > self.capacity {
-            // there is always an entry to evict while size > 0
-            self.evict_front();
-        }
+        // Eviction stops with the entries even if the size accounting were ever wrong.
+        while self.size > self.capacity && self.evict_front().is_some() {}
         true
     }
 
@@ -181,9 +179,7 @@ impl DynamicTable {
     ) -> Result<u64, InsertError> {
         let need = entry_size(&name, &value);
         self.can_insert(need, acknowledged)?;
-        while self.capacity - self.size < need {
-            self.evict_front();
-        }
+        while self.capacity.saturating_sub(self.size) < need && self.evict_front().is_some() {}
         self.entries.push_back(Entry {
             name,
             value,

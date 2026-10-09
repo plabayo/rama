@@ -222,7 +222,7 @@ impl Decoder {
                     Err(error) => return Err(encoder_parse_error(error)),
                 }
             }
-            if self.encoder_stream.len() == self.max_instruction_bytes() {
+            if self.encoder_stream.len() >= self.max_instruction_bytes() {
                 return Err(QpackError::ResourceLimit(
                     "encoder-stream instruction too large",
                 ));
@@ -299,10 +299,10 @@ impl Decoder {
                         .ok_or(QpackError::EncoderStreamError("bad dynamic name index"))?
                         .0
                 };
-                self.insert(name, value)
+                self.insert(&name, &value)
             }
             EncoderInstruction::InsertWithLiteralName { name, value, .. } => {
-                self.insert(name, value)
+                self.insert(&name, &value)
             }
             EncoderInstruction::Duplicate { index } => {
                 let abs = self.encoder_relative_to_abs(index)?;
@@ -310,7 +310,7 @@ impl Decoder {
                     .table
                     .get(abs)
                     .ok_or(QpackError::EncoderStreamError("bad duplicate index"))?;
-                self.insert(name, value)
+                self.insert(&name, &value)
             }
         }
     }
@@ -324,7 +324,11 @@ impl Decoder {
             .ok_or(QpackError::EncoderStreamError("dynamic index out of range"))
     }
 
-    fn insert(&mut self, name: Bytes, value: Bytes) -> Result<bool, QpackError> {
+    fn insert(&mut self, name: &[u8], value: &[u8]) -> Result<bool, QpackError> {
+        // Entries own exactly their bytes: the table capacity counts their lengths, and a decoded
+        // Huffman string keeps the spare capacity it was decoded into.
+        let name = Bytes::copy_from_slice(name);
+        let value = Bytes::copy_from_slice(value);
         match self.table.insert(name, value, None) {
             Ok(_) => Ok(true),
             Err(InsertError::TooLarge) => Err(QpackError::EncoderStreamError(
@@ -730,7 +734,8 @@ mod regression_tests {
     fn section(ric: u64, base: u64, line: &FieldLine) -> Bytes {
         let mut bytes = BytesMut::new();
         HeaderPrefix::new(ric, base)
-            .encode(&mut bytes, DecoderConfig::default().max_table_capacity / 32);
+            .encode(&mut bytes, DecoderConfig::default().max_table_capacity / 32)
+            .unwrap();
         line.encode(&mut bytes);
         bytes.freeze()
     }
@@ -749,6 +754,35 @@ mod regression_tests {
         }
         .encode(&mut bytes);
         bytes.freeze()
+    }
+
+    /// The table capacity counts names and values only, so an entry holds no more than those:
+    /// a value decoded from Huffman codes far longer than a byte keeps no spare capacity.
+    #[test]
+    fn dynamic_table_entries_hold_only_their_own_bytes() {
+        for value_huffman in [true, false] {
+            let mut bytes = BytesMut::new();
+            EncoderInstruction::SetDynamicTableCapacity {
+                capacity: kib_u64(4),
+            }
+            .encode(&mut bytes);
+            EncoderInstruction::InsertWithLiteralName {
+                name: Bytes::from_static(b"a"),
+                value: Bytes::from(vec![0x0a; 100]),
+                name_huffman: false,
+                value_huffman,
+            }
+            .encode(&mut bytes);
+            let mut decoder = Decoder::new(DecoderConfig::default());
+            decoder.feed_encoder_stream(&bytes).unwrap();
+            let (_, value) = decoder.table.get(0).expect("the entry was inserted");
+            drop(decoder);
+            assert_eq!(value.as_ref(), [0x0a; 100]);
+            let value = value
+                .try_into_mut()
+                .expect("nothing else holds the entry once the decoder is gone");
+            assert_eq!(value.capacity(), value.len(), "huffman: {value_huffman}");
+        }
     }
 
     #[test]

@@ -2,7 +2,7 @@ use super::{EncodeField, Encoder, EncoderConfig};
 use crate::h3::qpack::{Decoder, DecoderConfig, ErrorScope, QpackError};
 use rama_core::bytes::{Bytes, BytesMut};
 use rama_http_types::proto::h3::{
-    Code,
+    Code, SettingId, Settings,
     qpack::{DecoderInstruction, FieldLine, HeaderPrefix},
 };
 use rama_utils::octets::kib;
@@ -614,4 +614,67 @@ fn outgoing_section_size_limit_is_stream_scoped_and_recovers() {
     assert_eq!(encoder.encoder_stream_len(), 0);
     encoder.encode(4, [("a", "b")]).unwrap();
     assert_eq!(encoder.tracked_section_count(), 1);
+}
+
+/// Whatever SETTINGS a peer sends, the encoder only produces sections that peer can decode: a
+/// table too small for one entry gets no references, and extreme limits change nothing else.
+#[test]
+fn extreme_peer_settings_still_produce_decodable_sections() {
+    const MAX: u64 = (1 << 62) - 1;
+    for capacity in [0, 1, 31, 32, 64, 4096, MAX] {
+        for blocked in [0, 1, MAX] {
+            let mut settings = Settings::new();
+            settings
+                .set(SettingId::QPACK_MAX_TABLE_CAPACITY, capacity)
+                .unwrap();
+            settings
+                .set(SettingId::QPACK_BLOCKED_STREAMS, blocked)
+                .unwrap();
+            let mut enc = Encoder::before_peer_settings(EncoderConfig::default());
+            enc.apply_peer_settings(&settings).unwrap();
+            let mut dec = Decoder::new(DecoderConfig {
+                max_table_capacity: capacity,
+                max_blocked_streams: blocked,
+                ..DecoderConfig::default()
+            });
+            for stream in 0..16u64 {
+                let section = enc
+                    .encode(stream * 4, [(b"custom-name", b"custom-value")])
+                    .unwrap();
+                dec.feed_encoder_stream(&enc.take_encoder_stream()).unwrap();
+                let fields = dec
+                    .decode_field_section(stream * 4, section)
+                    .unwrap()
+                    .expect("the encoder stream arrived first");
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].name.as_ref(), b"custom-name");
+                assert_eq!(fields[0].value.as_ref(), b"custom-value");
+            }
+            if capacity < 32 {
+                assert_eq!(enc.insert_count(), 0, "capacity {capacity}");
+            }
+        }
+    }
+}
+
+/// A peer that accepts no field section at all refuses every message without touching the
+/// compression state, so the connection stays usable.
+#[test]
+fn a_zero_field_section_limit_refuses_each_message() {
+    let mut settings = Settings::new();
+    settings
+        .set(SettingId::QPACK_MAX_TABLE_CAPACITY, 4096)
+        .unwrap();
+    settings.set(SettingId::MAX_FIELD_SECTION_SIZE, 0).unwrap();
+    let mut enc = Encoder::before_peer_settings(EncoderConfig::default());
+    enc.apply_peer_settings(&settings).unwrap();
+    for stream in 0..4u64 {
+        assert_matches!(
+            enc.encode(stream * 4, [(b"custom-name", b"custom-value")]),
+            Err(QpackError::EncodeFieldSectionLimit(_)),
+        );
+        assert_eq!(enc.insert_count(), 0);
+        assert_eq!(enc.encoder_stream_len(), 0);
+        assert_eq!(enc.tracked_section_count(), 0);
+    }
 }

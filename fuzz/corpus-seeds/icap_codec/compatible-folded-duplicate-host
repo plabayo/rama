@@ -1,5 +1,0 @@
-OPTIONS icap://icap.test/service ICAP/1.0
-Host: wrong.test
- folded
-Host: icap.test
-

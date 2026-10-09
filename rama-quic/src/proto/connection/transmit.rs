@@ -1,7 +1,7 @@
 //! Building what goes on the wire: the datagrams one pass produces, the challenges that go
 //! out on their own, and the sizes a 1-RTT packet has to fit.
 
-use std::cmp;
+use std::{cmp, num::NonZeroUsize};
 
 use rama_core::{
     bytes::Bytes,
@@ -674,9 +674,10 @@ impl Connection {
             } else {
                 None
             },
+            // Every datagram is at least the minimum datagram size, so a segment is never empty.
             segment_size: match num_datagrams {
                 1 => None,
-                _ => Some(segment_size),
+                _ => NonZeroUsize::new(segment_size),
             },
             local: self.path.local,
         })
@@ -896,7 +897,7 @@ impl Connection {
                 pn,
                 self.spaces[SpaceId::Data].largest_acked_packet.unwrap_or(0),
             )
-            .len(),
+            .map_or(4, |number| number.len()),
             // Upper bound
             None => 4,
         };

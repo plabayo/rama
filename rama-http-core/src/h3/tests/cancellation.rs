@@ -72,6 +72,41 @@ async fn abandoned_push_stream_releases_peer_qpack_sections_in_both_arrival_orde
     }
 }
 
+/// A push stream must name a push this client granted (RFC 9114 §4.6), and only one stream may
+/// carry each push.
+#[tokio::test]
+async fn push_streams_need_a_granted_unique_push_id() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let shared = Shared::new(Config::default(), Role::Client, Default::default()).unwrap();
+        shared.pushes.lock().grant(1);
+        let mut streams = Vec::new();
+        for _ in 0..3 {
+            let send = pair.server.open_uni().await.unwrap();
+            streams.push(send);
+        }
+        for send in &mut streams {
+            send.write_chunk(Bytes::from_static(b"x")).await.unwrap();
+        }
+        let ungranted = pair.client.accept_uni().await.unwrap();
+        let error = shared
+            .accept_push_stream(2, ungranted, Bytes::new())
+            .unwrap_err();
+        assert_eq!(error.code(), Code::H3_ID_ERROR);
+        let first = pair.client.accept_uni().await.unwrap();
+        shared.accept_push_stream(1, first, Bytes::new()).unwrap();
+        let duplicate = pair.client.accept_uni().await.unwrap();
+        let error = shared
+            .accept_push_stream(1, duplicate, Bytes::new())
+            .unwrap_err();
+        assert_eq!(error.code(), Code::H3_ID_ERROR);
+        drop(streams);
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn dropping_unread_request_body_cancels_peer_qpack_sections() {
     tokio::time::timeout(LIMIT, async {

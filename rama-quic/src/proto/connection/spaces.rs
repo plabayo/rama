@@ -986,6 +986,34 @@ mod test {
     use super::*;
 
     #[test]
+    fn sparse_sent_packet_numbers_only_retain_live_entries() {
+        let now = Instant::now();
+        let mut space = PacketSpace::new(now);
+        for number in [1, 1 << 20, 1 << 40, (1 << 62) - 1] {
+            let packet = SentPacket {
+                path_generation: 0,
+                time_sent: now,
+                size: 0,
+                ack_eliciting: false,
+                is_0rtt: false,
+                is_mtu_probe_packet: false,
+                largest_acked: None,
+                retransmits: ThinRetransmits::default(),
+                stream_frames: Default::default(),
+            };
+            assert!(space.sent(number, packet).is_none());
+        }
+        assert_eq!(space.sent_packets.len(), 4);
+        assert_eq!(space.unacked_non_ack_eliciting_tail, 4);
+        for number in [1 << 40, 1, (1 << 62) - 1, 1 << 20] {
+            assert!(space.take(number).is_some());
+            assert!(space.take(number).is_none());
+        }
+        assert!(space.sent_packets.is_empty());
+        assert_eq!(space.unacked_non_ack_eliciting_tail, 0);
+    }
+
+    #[test]
     fn sanity() {
         let mut dedup = Dedup::new();
         assert!(!dedup.insert(0));

@@ -440,8 +440,10 @@ impl Encoder {
         }
         let mut prefix = [0u8; PREFIX_HEADROOM];
         let mut cursor = &mut prefix[..];
+        // A referenced entry fits the table, so the table holds at least one entry.
         HeaderPrefix::new(ric, if ric == 0 { 0 } else { base })
-            .encode(&mut cursor, self.table.max_entries());
+            .encode(&mut cursor, self.table.max_entries())
+            .map_err(|_invalid| QpackError::ResourceLimit("dynamic table holds no entry"))?;
         let prefix_len = PREFIX_HEADROOM - cursor.len();
         out[PREFIX_HEADROOM - prefix_len..PREFIX_HEADROOM].copy_from_slice(&prefix[..prefix_len]);
         if ric > 0 {

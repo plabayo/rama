@@ -456,7 +456,7 @@ fn encode_unix_secs(buf: &mut Vec<u8>, time: SystemTime) {
 }
 
 fn decode_unix_secs<B: Buf>(buf: &mut B) -> Option<SystemTime> {
-    Some(UNIX_EPOCH + Duration::from_secs(buf.get::<u64>().ok()?))
+    UNIX_EPOCH.checked_add(Duration::from_secs(buf.get::<u64>().ok()?))
 }
 
 /// Derive the stateless reset token for `id` from the endpoint's reset key (RFC 9000 §10.3).
@@ -472,6 +472,17 @@ pub(crate) fn reset_token(key: &HmacSha2, id: ConnectionId) -> ResetToken {
 #[cfg(any(feature = "boring", feature = "aws-lc", feature = "ring"))]
 mod test {
     use super::*;
+
+    /// A timestamp is read from a token this endpoint sealed, but a malformed or hostile one must
+    /// still not overflow the clock.
+    #[test]
+    fn an_unrepresentable_issue_time_is_no_time() {
+        assert_eq!(decode_unix_secs(&mut &u64::MAX.to_be_bytes()[..]), None);
+        assert_eq!(
+            decode_unix_secs(&mut &7_u64.to_be_bytes()[..]),
+            Some(UNIX_EPOCH + Duration::from_secs(7))
+        );
+    }
 
     fn token_round_trip(payload: TokenPayload) -> TokenPayload {
         let rng = &mut rand::rng();

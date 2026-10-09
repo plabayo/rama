@@ -11,7 +11,7 @@
 #![cfg_attr(test, allow(dead_code))]
 #![expect(clippy::too_many_arguments)]
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, num::NonZeroUsize};
 
 use rama_quic_proto::{EcnCodepoint, Version};
 
@@ -133,6 +133,12 @@ pub use token_memory_cache::TokenMemoryCache;
 
 #[cfg(fuzzing)]
 pub(crate) mod fuzzing {
+    #[cfg(any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    ))]
+    pub use crate::proto::connection::token_sequence;
+
     pub use rama_core::bytes::{BufMut, Bytes, BytesMut};
     use rama_quic_proto::{
         TransportError,
@@ -218,7 +224,7 @@ pub(crate) struct Transmit {
     pub(crate) size: usize,
     /// The segment size if this transmission contains multiple datagrams.
     /// This is `None` if the transmit only contains a single datagram
-    pub(crate) segment_size: Option<usize>,
+    pub(crate) segment_size: Option<NonZeroUsize>,
     /// The local socket address this datagram belongs to (ip and port): the socket that received
     /// the path's packets, when the endpoint knows it. The driver sends from that socket and
     /// selects the source ip when it is specified.

@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Side, Version,
-    coding::BufExt,
+    coding::{BufExt, bounded_len},
     crypto::{HeaderKey, PacketKey},
     frame::{self, Frame},
     packet::{FixedLengthConnectionIdParser, PartialDecode},
@@ -239,7 +239,11 @@ pub fn observe(datagram: &[u8]) -> Result<ObservedDatagram, CaptureError> {
             break;
         }
         if kind == LongKind::Initial {
-            let len = varint(datagram, &mut at)? as usize;
+            let len = bounded_len(
+                varint(datagram, &mut at)?,
+                datagram.len().saturating_sub(at),
+            )
+            .map_err(|_error| CaptureError::Malformed("truncated token"))?;
             token = Some(
                 datagram
                     .get(at..at + len)
@@ -248,11 +252,12 @@ pub fn observe(datagram: &[u8]) -> Result<ObservedDatagram, CaptureError> {
             );
             at += len;
         }
-        let length = varint(datagram, &mut at)? as usize;
+        let length = bounded_len(
+            varint(datagram, &mut at)?,
+            datagram.len().saturating_sub(at),
+        )
+        .map_err(|_error| CaptureError::Malformed("packet length exceeds datagram"))?;
         let end = at + length;
-        if end > datagram.len() {
-            return Err(CaptureError::Malformed("packet length exceeds datagram"));
-        }
         packets.push(ObservedPacket {
             first_byte,
             kind: kind.into(),
@@ -315,7 +320,13 @@ impl ObservedDatagram {
             let seed = original_dcid.unwrap_or(&observed.dcid);
             let keys = provider.initial_keys(version, seed, side)?;
             let header_key: &dyn HeaderKey = &keys.header;
-            let bytes = BytesMut::from(&datagram[observed.range.clone()]);
+            // The observation may come from elsewhere (it is serializable), so its range is not
+            // trusted to fit the datagram handed in.
+            let bytes = BytesMut::from(
+                datagram
+                    .get(observed.range.clone())
+                    .ok_or(CaptureError::Malformed("packet range outside the datagram"))?,
+            );
             let (decode, _) = PartialDecode::new(
                 bytes,
                 &FixedLengthConnectionIdParser::new(0),
@@ -389,7 +400,10 @@ pub fn client_hello(initials: &[InitialPacket]) -> Option<Vec<u8>> {
         if offset > stream.len() {
             return None;
         }
-        stream.extend_from_slice(data.get(stream.len() - offset..)?);
+        // A chunk already covered by what was assembled adds nothing (retransmitted CRYPTO).
+        if let Some(new) = data.get(stream.len() - offset..) {
+            stream.extend_from_slice(new);
+        }
     }
     let header: [u8; 4] = stream.get(..4)?.try_into().ok()?;
     if header[0] != 0x01 {
@@ -437,11 +451,9 @@ pub fn transport_parameters(client_hello: &[u8]) -> Result<Vec<RawParameter>, Ca
             .map_err(|_error| CaptureError::Malformed("transport parameter id"))?;
         let len = reader
             .get_var()
-            .map_err(|_error| CaptureError::Malformed("transport parameter length"))?
-            as usize;
-        if reader.remaining() < len {
-            return Err(CaptureError::Malformed("transport parameter value"));
-        }
+            .map_err(|_error| CaptureError::Malformed("transport parameter length"))?;
+        let len = bounded_len(len, reader.remaining())
+            .map_err(|_error| CaptureError::Malformed("transport parameter value"))?;
         let value = reader[..len].to_vec();
         reader.advance(len);
         parameters.push(RawParameter {
@@ -552,4 +564,42 @@ pub fn first_flight<P: KeyProvider>(
         chosen_version: info.as_ref().map(VersionInformation::chosen),
         available_versions: info.map_or_else(Vec::new, |info| info.available().to_vec()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::transport_parameters;
+    use crate::VarInt;
+    use rama_core::bytes::BufMut;
+
+    fn hello_with_parameter_len(len: u64, value: &[u8]) -> Vec<u8> {
+        let mut parameters = vec![0x21];
+        parameters.put_u64(len | (0b11 << 62));
+        parameters.extend_from_slice(value);
+        let mut body = vec![0x03, 0x03];
+        body.extend_from_slice(&[0; 32]);
+        body.extend_from_slice(&[0, 0, 2, 0x13, 0x01, 1, 0]);
+        body.extend_from_slice(&((parameters.len() + 4) as u16).to_be_bytes());
+        body.extend_from_slice(&[0, 0x39]);
+        body.extend_from_slice(&(parameters.len() as u16).to_be_bytes());
+        body.extend_from_slice(&parameters);
+        let len = body.len() as u32;
+        let mut hello = vec![1, (len >> 16) as u8, (len >> 8) as u8, len as u8];
+        hello.extend_from_slice(&body);
+        hello
+    }
+
+    #[test]
+    fn captured_parameter_lengths_are_bounded_before_narrowing() {
+        for len in [1u64 << 32, (1u64 << 32) + 1, VarInt::MAX.into_inner()] {
+            transport_parameters(&hello_with_parameter_len(len, &[])).unwrap_err();
+        }
+        for value in [b"".as_slice(), b"a", b"abc"] {
+            let parameters =
+                transport_parameters(&hello_with_parameter_len(value.len() as u64, value)).unwrap();
+            assert_eq!(parameters.len(), 1);
+            assert_eq!(parameters[0].id.0, 0x21);
+            assert_eq!(parameters[0].value, value);
+        }
+    }
 }

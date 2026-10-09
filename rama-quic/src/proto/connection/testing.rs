@@ -186,6 +186,14 @@ impl Connection {
         self.spaces[SpaceId::Data].sent_with_keys = sent;
     }
 
+    /// Tests: put the next 1-RTT packet number `distance` past the largest acknowledged one, so
+    /// the encoding limit is reachable without sending billions of packets.
+    #[cfg(test)]
+    pub(crate) fn set_packet_number_distance(&mut self, distance: u64) {
+        let space = &mut self.spaces[SpaceId::Data];
+        space.next_packet_number = space.largest_acked_packet.unwrap_or(0) + distance;
+    }
+
     /// Tests: arrange for the next 1-RTT packet number to be one the filter passes over, which
     /// is otherwise chosen at random.
     #[cfg(test)]

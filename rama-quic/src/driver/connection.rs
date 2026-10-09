@@ -644,7 +644,7 @@ struct Work {
 fn datagrams(transmit: &crate::proto::Transmit) -> usize {
     match transmit.segment_size {
         None => 1,
-        Some(size) => transmit.size.div_ceil(size), // round up
+        Some(size) => transmit.size.div_ceil(size.get()), // round up
     }
 }
 
@@ -2641,7 +2641,7 @@ impl State {
             id: held.id.0,
             size: held.transmit.size,
             bytes,
-            segment_size: held.transmit.segment_size,
+            segment_size: held.transmit.segment_size.map(|size| size.get()),
             destination: held.transmit.destination,
             cid_used: held.transmit.cid_used,
             outcome,
@@ -3666,6 +3666,8 @@ fn is_mtu_probe(transmit: &crate::proto::Transmit, confirmed_mtu: u16) -> bool {
     all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
 ))]
 mod tests {
+    use std::num::NonZeroUsize;
+
     use super::*;
     use crate::{driver::Instant, proto::ReceiveQueueLimits};
 
@@ -3683,7 +3685,10 @@ mod tests {
         assert!(is_mtu_probe(&transmit(1452, None), 1200));
         assert!(!is_mtu_probe(&transmit(1200, None), 1200));
         assert!(!is_mtu_probe(&transmit(1000, None), 1200));
-        assert!(!is_mtu_probe(&transmit(2400, Some(1200)), 1200));
+        assert!(!is_mtu_probe(
+            &transmit(2400, NonZeroUsize::new(1200)),
+            1200
+        ));
     }
     use std::{assert_matches, error::Error as _, io::IoSliceMut};
 

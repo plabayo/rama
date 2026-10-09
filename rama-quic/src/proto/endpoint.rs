@@ -351,18 +351,19 @@ impl Endpoint {
                     )]
                     let config = &self.server_config.as_ref().unwrap();
 
+                    let charge = incoming_datagram_charge(datagram_len);
                     if incoming_buffer
                         .total_bytes
-                        .checked_add(datagram_len as u64)
+                        .checked_add(charge)
                         .is_some_and(|n| n <= config.incoming_buffer_size)
                         && self
                             .all_incoming_buffers_total_bytes
-                            .checked_add(datagram_len as u64)
+                            .checked_add(charge)
                             .is_some_and(|n| n <= config.incoming_buffer_size_total)
                     {
                         incoming_buffer.datagrams.push(event);
-                        incoming_buffer.total_bytes += datagram_len as u64;
-                        self.all_incoming_buffers_total_bytes += datagram_len as u64;
+                        incoming_buffer.total_bytes += charge;
+                        self.all_incoming_buffers_total_bytes += charge;
                         incoming_buffer.progress.advance();
                     }
 
@@ -723,6 +724,7 @@ impl Endpoint {
                 header,
                 header_data: packet.header_data,
                 payload: packet.payload,
+                wire_len: packet.wire_len,
             },
             rest: event.remaining,
             crypto,
@@ -1680,6 +1682,12 @@ struct FirstFlight<'a> {
     rest: Option<&'a BytesMut>,
     parser: FixedLengthConnectionIdParser,
     grease_quic_bit: bool,
+}
+
+/// What buffering a datagram for a pending connection holds: its bytes and its entry, so a
+/// flood of tiny datagrams is charged for what it occupies.
+pub(crate) fn incoming_datagram_charge(datagram_len: usize) -> u64 {
+    datagram_len.saturating_add(size_of::<DatagramConnectionEvent>()) as u64
 }
 
 fn assemble_client_hello(

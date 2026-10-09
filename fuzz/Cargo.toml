@@ -288,10 +288,24 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "quic_capture"
+path = "fuzz_targets/quic_capture.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "quic_tokens"
+path = "fuzz_targets/quic_tokens.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
 arbitrary = { workspace = true }
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
-rama = { path = "../", features = ["dns", "ua", "http-backend", "net", "html", "icap", "js", "quic", "ring", "fuzz-utils", "unstable"] }
+rama = { path = "../", features = ["dns", "ua", "http-backend", "net", "html", "icap", "js", "quic", "ring", "rustls", "fuzz-utils", "unstable"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 

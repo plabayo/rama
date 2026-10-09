@@ -1004,26 +1004,99 @@ fn oversized_cached_initial_token() {
             let (_, mut conn) = endpoint
                 .connect(now, config, "[::1]:4433".parse().unwrap(), "localhost")
                 .unwrap();
+            // A token from an earlier connection is optional (RFC 9000 §8.1.3): one that leaves
+            // no room is left out, and the first flight goes without it.
             let mut buf = Vec::new();
-            assert_eq!(
+            assert!(
                 conn.poll_transmit(now, 1, &mut buf).is_some(),
-                fits,
                 "token {token_len}, MTU {mtu}"
             );
-            if fits {
-                assert!(buf.len() <= mtu as usize);
-                assert!(conn.stats().frame_tx.crypto > 0);
-            } else {
-                assert_matches!(
-                    conn.poll(),
-                    Some(Event::ConnectionLost { reason: ConnectionError::TransportError(err) })
-                    if err.code == TransportErrorCode::PROTOCOL_VIOLATION
-                );
-                assert!(conn.poll_transmit(now, 1, &mut buf).is_none());
-                assert!(buf.is_empty());
+            assert!(buf.len() <= mtu as usize);
+            assert!(conn.stats().frame_tx.crypto > 0);
+            assert!(conn.poll().is_none(), "token {token_len}, MTU {mtu}");
+            let dcid_len = usize::from(buf[5]);
+            let scid_len = usize::from(buf[6 + dcid_len]);
+            let token_len_at = 7 + dcid_len + scid_len;
+            let width = 1usize << (buf[token_len_at] >> 6);
+            let mut sent_len = u64::from(buf[token_len_at] & 0x3f);
+            for &byte in &buf[token_len_at + 1..token_len_at + width] {
+                sent_len = (sent_len << 8) | u64::from(byte);
             }
+            assert_eq!(
+                sent_len,
+                if fits { token_len as u64 } else { 0 },
+                "token {token_len}, MTU {mtu}"
+            );
         }
     }
+}
+
+/// A client connection that sent its first Initial and then received a Retry, with a valid tag,
+/// carrying a `token_len`-byte token and a 20-byte source connection ID.
+fn retried_client(version: Version, token_len: usize) -> (Connection, Instant) {
+    let address = "[::1]:4433".parse().unwrap();
+    let mut endpoint = Endpoint::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        None,
+        true,
+        None,
+    );
+    let now = Instant::now();
+    let mut config = client_config();
+    config
+        .set_versions(ClientVersionPolicy::new(version).unwrap())
+        .unwrap();
+    let (_, mut conn) = endpoint.connect(now, config, address, "localhost").unwrap();
+    let mut buf = Vec::new();
+    let _transmit = conn.poll_transmit(now, 1, &mut buf).unwrap();
+    let (packet, _) = PartialDecode::new(
+        buf.as_slice().into(),
+        &FixedLengthConnectionIdParser::new(0),
+        DEFAULT_SUPPORTED_VERSIONS,
+        false,
+    )
+    .unwrap();
+    let initial = packet.initial_header().unwrap();
+    let header = Header::Retry {
+        src_cid: ConnectionId::new(&[1; 20]),
+        dst_cid: initial.src_cid,
+        version: initial.version,
+    };
+    let mut retry = Vec::new();
+    header.encode(&mut retry);
+    retry.resize(retry.len() + token_len, 0);
+    let tag = server_config()
+        .crypto
+        .initial()
+        .retry_tag(initial.version.into(), &initial.dst_cid, &retry)
+        .unwrap();
+    retry.extend_from_slice(&tag);
+    let Some(DatagramEvent::ConnectionEvent(_, event)) = endpoint.handle(
+        now,
+        address,
+        None,
+        None,
+        BytesMut::from(&retry[..]),
+        &mut buf,
+    ) else {
+        panic!("Retry must be routed to the client connection")
+    };
+    conn.handle_event(event);
+    (conn, now + Duration::from_secs(1))
+}
+
+/// A Retry token is required to go on, so one that leaves the Initial no room ends the attempt
+/// cleanly instead of reaching an unbuildable packet.
+fn assert_retry_ends_the_attempt(mut conn: Connection, now: Instant, case: &str) {
+    let mut buf = Vec::new();
+    assert!(conn.poll_transmit(now, 1, &mut buf).is_none(), "{case}");
+    assert!(buf.is_empty(), "{case}");
+    assert_matches!(
+        conn.poll(),
+        Some(Event::ConnectionLost { reason: ConnectionError::TransportError(err) })
+        if err.code == TransportErrorCode::PROTOCOL_VIOLATION,
+        "{case}"
+    );
 }
 
 #[test]
@@ -1038,70 +1111,29 @@ fn oversized_retry_token() {
             (1140, false),
             (1200, false),
         ] {
-            let address = "[::1]:4433".parse().unwrap();
-            let mut endpoint = Endpoint::new(
-                Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
-                None,
-                true,
-                None,
-            );
-            let now = Instant::now();
-            let mut config = client_config();
-            config
-                .set_versions(ClientVersionPolicy::new(version).unwrap())
-                .unwrap();
-            let (_, mut conn) = endpoint.connect(now, config, address, "localhost").unwrap();
-            let mut buf = Vec::new();
-            let _transmit = conn.poll_transmit(now, 1, &mut buf).unwrap();
-            let (packet, _) = PartialDecode::new(
-                buf.as_slice().into(),
-                &FixedLengthConnectionIdParser::new(0),
-                DEFAULT_SUPPORTED_VERSIONS,
-                false,
-            )
-            .unwrap();
-            let initial = packet.initial_header().unwrap();
-            let header = Header::Retry {
-                src_cid: ConnectionId::new(&[1; 20]),
-                dst_cid: initial.src_cid,
-                version: initial.version,
-            };
-            let mut retry = Vec::new();
-            header.encode(&mut retry);
-            retry.resize(retry.len() + token_len, 0);
-            let tag = server_config()
-                .crypto
-                .initial()
-                .retry_tag(initial.version.into(), &initial.dst_cid, &retry)
-                .unwrap();
-            retry.extend_from_slice(&tag);
-            let Some(DatagramEvent::ConnectionEvent(_, event)) = endpoint.handle(
-                now,
-                address,
-                None,
-                None,
-                BytesMut::from(&retry[..]),
-                &mut buf,
-            ) else {
-                panic!("Retry must be routed to the client connection")
-            };
-            conn.handle_event(event);
-            let now = now + Duration::from_secs(1);
-            let crypto_before = conn.stats().frame_tx.crypto;
-            buf.clear();
-            assert_eq!(conn.poll_transmit(now, 1, &mut buf).is_some(), fits);
+            let (mut conn, now) = retried_client(version, token_len);
             if fits {
+                let crypto_before = conn.stats().frame_tx.crypto;
+                let mut buf = Vec::new();
+                assert!(conn.poll_transmit(now, 1, &mut buf).is_some());
                 assert!(conn.stats().frame_tx.crypto > crypto_before);
                 assert!(buf.len() <= 1200);
             } else {
-                assert_matches!(
-                    conn.poll(),
-                    Some(Event::ConnectionLost { reason: ConnectionError::TransportError(err) })
-                    if err.code == TransportErrorCode::PROTOCOL_VIOLATION
-                );
-                assert!(conn.poll_transmit(now, 1, &mut buf).is_none());
-                assert!(buf.is_empty());
+                assert_retry_ends_the_attempt(conn, now, &format!("{version:?} {token_len}"));
             }
+        }
+    }
+}
+
+/// The shape GHSA-wppq-2f6r-wfvm reported: a Retry whose token and source connection ID total
+/// at least 1162 bytes. The next transmission must neither assert nor size a packet from it.
+#[test]
+fn retry_token_and_scid_of_the_reported_size_end_the_attempt() {
+    let _guard = subscribe();
+    for version in [Version::V1, Version::V2] {
+        for token_len in [1162 - 20, 1200, 4096] {
+            let (conn, now) = retried_client(version, token_len);
+            assert_retry_ends_the_attempt(conn, now, &format!("{version:?} {token_len}"));
         }
     }
 }
@@ -1186,4 +1218,68 @@ fn retry_source_must_change_the_initial_destination() {
             }
         }
     }
+}
+
+/// A Retry whose integrity tag does not verify is anyone's to send. It must not use up the one
+/// Retry a client acts on, so the server's real Retry behind it still moves the handshake on.
+#[test]
+fn a_forged_retry_does_not_use_up_the_clients_retry() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    pair.server.handle_incoming = Box::new(validate_incoming);
+    let client_ch = pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    let mut forged = pair
+        .client
+        .inbound
+        .front()
+        .expect("the server answers with a Retry")
+        .clone();
+    assert_eq!(forged.packet[0] & 0xf0, 0xf0, "a v1 Retry");
+    let last = forged.packet.len() - 1;
+    forged.packet[last] ^= 0xff;
+    pair.client.inbound.push_front(forged);
+    pair.drive_bounded();
+    assert_eq!(pair.server.retries_sent, 1);
+    assert!(
+        pair.client_conn_mut(client_ch).handshake_confirmed(),
+        "the real Retry was acted on"
+    );
+}
+
+/// Servers never receive a Retry, and one can be spoofed by anyone who knows the connection's
+/// identifier, so a server drops it instead of closing a handshake in progress.
+#[test]
+fn a_retry_sent_to_a_server_does_not_end_its_handshake() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let client_ch = pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    let first = &pair
+        .client
+        .inbound
+        .front()
+        .expect("the server answers")
+        .packet;
+    let dcid_len = usize::from(first[5]);
+    let scid_len = usize::from(first[6 + dcid_len]);
+    let server_cid = first[7 + dcid_len..7 + dcid_len + scid_len].to_vec();
+    let mut retry = vec![0xf0, 0, 0, 0, 1, server_cid.len() as u8];
+    retry.extend_from_slice(&server_cid);
+    retry.push(8);
+    retry.extend_from_slice(&[7; 8]);
+    retry.extend_from_slice(&[1; 32]);
+    pair.server.inbound.push_front(Inbound {
+        at: pair.time,
+        ecn: None,
+        packet: retry.as_slice().into(),
+        from: None,
+        to: None,
+    });
+    pair.drive_bounded();
+    let server_ch = pair.server.assert_accept();
+    assert!(!pair.server_conn_mut(server_ch).is_closed());
+    assert!(pair.client_conn_mut(client_ch).handshake_confirmed());
 }

@@ -1,3 +1,20 @@
+#[cfg(all(
+    any(fuzzing, test),
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
+mod token_sequence;
+#[cfg(all(
+    fuzzing,
+    any(
+        feature = "boring",
+        all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+    )
+))]
+pub use token_sequence::token_sequence;
+
 #[cfg(feature = "test-utils")]
 pub(crate) mod benchmarks;
 
@@ -42,6 +59,7 @@ mod preferred;
 pub(crate) mod qlog;
 mod receive;
 mod recovery;
+mod retained;
 mod send_buffer;
 mod spaces;
 mod stats;

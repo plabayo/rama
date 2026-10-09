@@ -332,7 +332,7 @@ impl StreamsState {
     pub(crate) fn received(
         &mut self,
         frame: frame::Stream,
-        payload_len: usize,
+        wire_len: usize,
     ) -> Result<ShouldTransmit, TransportError> {
         let id = frame.id;
         self.validate_receive_id(id).inspect_err(|_e| {
@@ -351,7 +351,7 @@ impl StreamsState {
         }
 
         let (new_bytes, closed) =
-            rs.ingest(frame, payload_len, self.data_recvd, self.local_max_data)?;
+            rs.ingest(frame, wire_len, self.data_recvd, self.local_max_data)?;
         self.data_recvd = self.data_recvd.saturating_add(new_bytes);
 
         if !rs.stopped {

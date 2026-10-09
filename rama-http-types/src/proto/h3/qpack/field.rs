@@ -31,13 +31,19 @@ impl HeaderPrefix {
     }
 
     /// Encode this prefix (RFC 9204 §4.5.1.1, §4.5.1.2). `max_entries` is `floor(capacity / 32)`.
-    pub fn encode<B: BufMut>(&self, dst: &mut B, max_entries: u64) {
+    ///
+    /// A Required Insert Count names dynamic entries, so it cannot be encoded for a table that
+    /// holds none.
+    pub fn encode<B: BufMut>(&self, dst: &mut B, max_entries: u64) -> Result<(), InvalidPrefix> {
         let ric = self.required_insert_count;
         let encoded_insert_count = if ric == 0 {
             0
         } else {
-            debug_assert!(max_entries > 0, "RIC>0 requires a dynamic table");
-            (ric % (2 * max_entries)) + 1
+            let full_range = max_entries
+                .checked_mul(2)
+                .filter(|&range| range > 0)
+                .ok_or(InvalidPrefix::InvalidRequiredInsertCount)?;
+            (ric % full_range) + 1
         };
         encode_int(dst, encoded_insert_count, 8, 0);
 
@@ -48,6 +54,7 @@ impl HeaderPrefix {
             // S = 1
             encode_int(dst, ric - self.base - 1, 7, 0x80);
         }
+        Ok(())
     }
 
     /// Decode a prefix, reconstructing the Required Insert Count against the decoder's current
@@ -520,11 +527,52 @@ mod tests {
     fn prefix_round_trip() {
         for (ric, base, inserts) in [(0u64, 0u64, 0u64), (2, 0, 2), (4, 4, 4), (3, 5, 3)] {
             let mut buf = BytesMut::new();
-            HeaderPrefix::new(ric, base).encode(&mut buf, MAX_ENTRIES);
+            HeaderPrefix::new(ric, base)
+                .encode(&mut buf, MAX_ENTRIES)
+                .unwrap();
             let mut cursor = &buf[..];
             let decoded = HeaderPrefix::decode(&mut cursor, MAX_ENTRIES, inserts).unwrap();
             assert_eq!(decoded, HeaderPrefix::new(ric, base));
             assert!(cursor.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_prefix_naming_entries_needs_a_table_that_holds_one() {
+        let mut buf = BytesMut::new();
+        HeaderPrefix::new(0, 0).encode(&mut buf, 0).unwrap();
+        assert_eq!(buf.as_ref(), [0, 0]);
+        for max_entries in [0, u64::MAX] {
+            let mut buf = BytesMut::new();
+            assert_eq!(
+                HeaderPrefix::new(1, 1).encode(&mut buf, max_entries),
+                Err(InvalidPrefix::InvalidRequiredInsertCount),
+                "{max_entries} entries"
+            );
+        }
+    }
+
+    /// RFC 9204 §4.5.1.1: every Required Insert Count in the window a decoder accepts survives
+    /// the modular encoding, on both sides of each wrap.
+    #[test]
+    fn required_insert_counts_wrap_around_the_window() {
+        for max_entries in [1u64, 2, 4, 128] {
+            let full_range = 2 * max_entries;
+            for total_inserts in 0..5 * full_range {
+                let max_value = total_inserts + max_entries;
+                let lowest = (max_value + 1).saturating_sub(full_range).max(1);
+                for ric in lowest..=max_value {
+                    let mut buf = BytesMut::new();
+                    HeaderPrefix::new(ric, ric)
+                        .encode(&mut buf, max_entries)
+                        .unwrap();
+                    assert_eq!(
+                        HeaderPrefix::decode(&mut &buf[..], max_entries, total_inserts),
+                        Ok(HeaderPrefix::new(ric, ric)),
+                        "ric {ric}, {total_inserts} inserts, {max_entries} entries"
+                    );
+                }
+            }
         }
     }
 

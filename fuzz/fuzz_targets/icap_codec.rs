@@ -5,8 +5,7 @@
 //! arbitrary bytes.
 //!
 //! Run with:
-//!     cargo +nightly fuzz run icap_codec fuzz/corpus/icap_codec \
-//!       fuzz/corpus-seeds/icap_codec -- \
+//!     cargo +nightly fuzz run icap_codec fuzz/corpus/icap_codec -- \
 //!       -dict=fuzz/dictionaries/icap.dict -max_len=65536 -timeout=5
 #![expect(
     clippy::panic,

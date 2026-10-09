@@ -517,6 +517,55 @@ mod tests {
             .unwrap()
     }
 
+    #[tokio::test]
+    async fn extreme_push_ids_never_expand_the_local_quota() {
+        for role in [Role::Client, Role::Server] {
+            for quota in [0, 2] {
+                for id in [0, 1, 2, (1u64 << 62) - 1] {
+                    let shared = Shared::new(
+                        Config {
+                            max_pushes: quota,
+                            ..Config::default()
+                        },
+                        role,
+                        Default::default(),
+                    )
+                    .unwrap();
+                    {
+                        let mut pushes = shared.pushes.lock();
+                        pushes.max_id((1u64 << 62) - 1);
+                        if quota != 0 {
+                            pushes.grant(quota as u64 - 1);
+                        }
+                        if role == Role::Server {
+                            for expected in 0..quota as u64 {
+                                assert_eq!(pushes.allocate(quota, None).unwrap(), expected);
+                                pushes.mark_promised(expected);
+                            }
+                            pushes.allocate(quota, None).unwrap_err();
+                        }
+                    }
+                    let before = shared.pushes.lock().entries.len();
+                    let cancellation = shared.cancel_push(id, false);
+                    if id < quota as u64 {
+                        cancellation.unwrap();
+                    } else {
+                        assert_eq!(cancellation.unwrap_err().code(), Code::H3_ID_ERROR);
+                        assert_eq!(shared.pushes.lock().entries.len(), before);
+                    }
+                    let origin = Some(rama_net::uri::Uri::parse("https://example.com/").unwrap());
+                    let received = shared.promise(0, id, promise("/a"), origin).await;
+                    if role == Role::Client && id < quota as u64 {
+                        received.unwrap();
+                    } else {
+                        assert_eq!(received.unwrap_err().code(), Code::H3_ID_ERROR);
+                    }
+                    assert!(shared.pushes.lock().entries.len() <= quota);
+                }
+            }
+        }
+    }
+
     #[test]
     fn client_cancels_only_pushes_whose_stream_has_not_arrived() {
         for stream_seen in [false, true] {

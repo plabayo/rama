@@ -624,3 +624,49 @@ fn a_new_token_validates_only_the_version_that_issued_it() {
         .close(now, VarInt::from_u32(0), [][..].into());
     pair.drive();
 }
+
+/// A Version Negotiation packet is as long as a datagram allows. The longest one is read once, in
+/// full, and ends the attempt with every version it offered.
+#[test]
+fn a_maximal_version_negotiation_is_read_whole() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let client_ch = pair.begin_connect(client_config());
+    pair.drive_client();
+    let first = pair
+        .server
+        .inbound
+        .pop_front()
+        .expect("the client's Initial")
+        .packet;
+    pair.server.inbound.clear();
+    let dcid_len = usize::from(first[5]);
+    let dcid = &first[6..6 + dcid_len];
+    let scid_len = usize::from(first[6 + dcid_len]);
+    let scid = &first[7 + dcid_len..7 + dcid_len + scid_len];
+    let mut negotiation = vec![0x80, 0, 0, 0, 0, scid_len as u8];
+    negotiation.extend_from_slice(scid);
+    negotiation.push(dcid_len as u8);
+    negotiation.extend_from_slice(dcid);
+    let count = (usize::from(crate::proto::MAX_UDP_PAYLOAD) - negotiation.len()) / 4;
+    for i in 0..count as u32 {
+        negotiation.extend_from_slice(&(0xfa00_0000 | i).to_be_bytes());
+    }
+    for _ in 0..2 {
+        pair.client.inbound.push_back(Inbound {
+            at: pair.time,
+            ecn: None,
+            packet: negotiation.as_slice().into(),
+            from: None,
+            to: None,
+        });
+    }
+    pair.drive_client();
+    match pair.client_conn_mut(client_ch).poll() {
+        Some(Event::ConnectionLost {
+            reason: ConnectionError::VersionMismatch { offered },
+        }) => assert_eq!(offered.len(), count),
+        other => panic!("expected a version mismatch, got {other:?}"),
+    }
+    assert!(pair.client_conn_mut(client_ch).poll().is_none());
+}

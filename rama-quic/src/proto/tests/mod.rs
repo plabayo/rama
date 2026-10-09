@@ -1342,6 +1342,61 @@ fn zero_rtt_incoming_buffer_size_total() {
 }
 
 #[test]
+fn tiny_datagrams_for_a_pending_connection_are_charged_their_entries() {
+    const LIMIT: u64 = 8_000;
+    let mut server_config = server_config();
+    server_config.set_incoming_buffer_size(LIMIT);
+    let mut pair = Pair::new(
+        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+        server_config,
+    );
+    pair.server.handle_incoming = Box::new(|_| IncomingConnectionBehavior::Wait);
+    pair.begin_connect(client_config());
+    pair.drive_client();
+    pair.drive_server();
+    let incoming = pair
+        .server
+        .waiting_incoming
+        .pop()
+        .expect("an attempt is pending");
+    let dst_cid = *incoming.orig_dst_cid();
+
+    // The smallest 0-RTT long header that routes to the attempt: a one-byte body.
+    let mut datagram = vec![0xd0];
+    datagram.extend_from_slice(&Version::V1.to_be_bytes());
+    datagram.push(dst_cid.len() as u8);
+    datagram.extend_from_slice(&dst_cid);
+    datagram.extend_from_slice(&[0, 1, 0]);
+    let charge = endpoint::incoming_datagram_charge(datagram.len());
+    let fits = LIMIT / charge;
+    assert!(
+        fits < LIMIT / datagram.len() as u64,
+        "the entry is part of the charge"
+    );
+
+    let before = incoming.progress().generation();
+    let mut buf = Vec::new();
+    for _ in 0..LIMIT {
+        assert!(
+            pair.server
+                .endpoint
+                .handle(
+                    pair.time,
+                    pair.client.addr,
+                    None,
+                    None,
+                    BytesMut::from(datagram.as_slice()),
+                    &mut buf,
+                )
+                .is_none()
+        );
+    }
+    assert_eq!(incoming.progress().generation() - before, fits);
+    assert_eq!(pair.server.endpoint.incoming_buffer_bytes(), fits * charge);
+    pair.server.reject(incoming);
+}
+
+#[test]
 fn alpn_success() {
     let _guard = subscribe();
     let server_config = ServerConfig::with_crypto(Arc::new(server_crypto_with_alpn(vec![
@@ -1902,6 +1957,72 @@ fn streams_blocked_cleared_by_max_streams() {
             .streams_blocked_uni,
         1
     );
+}
+
+/// A peer that stops acknowledging while it keeps the connection busy must not let packet
+/// numbers outrun their 4-byte encoding: near the limit the connection closes, naming why, and
+/// past it nothing more is sent.
+#[test]
+fn packet_numbers_cannot_outrun_acknowledgements() {
+    let _guard = subscribe();
+    for server_sends in [false, true] {
+        for (distance, closes_with_a_packet) in [
+            (
+                rama_quic_proto::packet::MAX_PACKET_NUMBER_DISTANCE - 1000,
+                true,
+            ),
+            (
+                rama_quic_proto::packet::MAX_PACKET_NUMBER_DISTANCE + 1,
+                false,
+            ),
+            (u64::from(u32::MAX) * 4, false),
+        ] {
+            let mut pair = Pair::default();
+            let (client_ch, server_ch) = pair.connect();
+            let before = if server_sends {
+                pair.server_conn_mut(server_ch)
+                    .set_packet_number_distance(distance);
+                let stream = pair.server_streams(server_ch).open(Dir::Uni).unwrap();
+                pair.server_send(server_ch, stream).write(b"data").unwrap();
+                pair.server_sent.len()
+            } else {
+                pair.client_conn_mut(client_ch)
+                    .set_packet_number_distance(distance);
+                let stream = pair.client_streams(client_ch).open(Dir::Uni).unwrap();
+                pair.client_send(client_ch, stream).write(b"data").unwrap();
+                pair.client_sent.len()
+            };
+            let (sent, event) = if server_sends {
+                pair.drive_server();
+                (
+                    pair.server_sent.len() - before,
+                    pair.server_conn_mut(server_ch).poll(),
+                )
+            } else {
+                pair.drive_client();
+                (
+                    pair.client_sent.len() - before,
+                    pair.client_conn_mut(client_ch).poll(),
+                )
+            };
+            assert_eq!(
+                sent > 0,
+                closes_with_a_packet,
+                "distance {distance}, server sends: {server_sends}"
+            );
+            match event {
+                Some(Event::ConnectionLost {
+                    reason:
+                        ConnectionError::TransportError(TransportError {
+                            code: TransportErrorCode::INTERNAL_ERROR,
+                            ref reason,
+                            ..
+                        }),
+                }) if reason == "packet numbers outran acknowledgements" => {}
+                other => panic!("distance {distance}, server sends: {server_sends}: {other:?}"),
+            }
+        }
+    }
 }
 
 /// RFC 9001 §6.6 at three points: one packet of budget left, none left, and past the limit. A

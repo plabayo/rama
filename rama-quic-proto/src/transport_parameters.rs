@@ -17,7 +17,7 @@ use rand::{Rng, RngExt, seq::SliceRandom as _};
 use crate::{
     MAX_CID_SIZE, MAX_STREAM_COUNT, RESET_TOKEN_SIZE, ResetToken, Side, TransportError, VarInt,
     VarIntBoundsExceeded,
-    coding::{BufExt, BufMutExt, UnexpectedEnd},
+    coding::{BufExt, BufMutExt, UnexpectedEnd, bounded_len},
     profile::{ParameterId, ParameterOrder},
     shared::ConnectionId,
     version::VersionInformation,
@@ -468,11 +468,8 @@ impl TransportParameters {
 
         while r.has_remaining() {
             let id = r.get_var()?;
-            let len = r.get_var()?;
-            if (r.remaining() as u64) < len {
-                return Err(Error::Malformed);
-            }
-            let len = len as usize;
+            let len =
+                bounded_len(r.get_var()?, r.remaining()).map_err(|_error| Error::Malformed)?;
             let Ok(id) = TransportParameterId::try_from(id) else {
                 // unknown transport parameters are ignored
                 r.advance(len);
@@ -808,6 +805,25 @@ mod test {
     use rand::TryRng;
 
     use super::*;
+
+    #[test]
+    fn parameter_lengths_past_the_buffer_are_refused() {
+        for len in [9, 1u64 << 32, (1u64 << 32) + 1, VarInt::MAX.into_inner()] {
+            let mut buf = Vec::new();
+            buf.write_var(0x01);
+            buf.write_var(len);
+            buf.extend_from_slice(&[0; 8]);
+            for side in [Side::Client, Side::Server] {
+                assert!(
+                    matches!(
+                        TransportParameters::read(side, &mut buf.as_slice()),
+                        Err(Error::Malformed)
+                    ),
+                    "length {len}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn coding() {

@@ -544,3 +544,9 @@ oss-endpoint-healthcheck:
 # Native QUIC peer prerequisites are documented in rama-quic/e2e.
 qa-quic-interop:
     just rama-quic/qa-interop
+
+# Socket-free ancillary buffer round trips under both aliasing models.
+[unix]
+miri-udp-cmsg:
+    MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test --locked -p rama-udp --lib sys::cmsg
+    MIRIFLAGS="-Zmiri-strict-provenance -Zmiri-tree-borrows" cargo +nightly miri test --locked -p rama-udp --lib sys::cmsg

@@ -300,6 +300,11 @@ impl FrameDecoder {
             return Ok(Some(FrameEvent::DataHeader { len }));
         }
         if is_buffered(ty) {
+            // A frame that is one varint is malformed at any other length (RFC 9114 §7.1), so
+            // it is refused before anything is buffered for it.
+            if is_single_varint(ty) && !(1..=8).contains(&len) {
+                return Err(FrameError::Malformed(ty));
+            }
             if len > self.max_frame_size as u64 {
                 return Err(FrameError::FrameTooLarge { ty, len });
             }
@@ -356,6 +361,13 @@ fn finish_buffered(ty: FrameType, payload: Bytes) -> Result<FrameEvent, FrameErr
 
 /// Whether a frame type is a small/known frame whose payload we buffer and parse (as opposed to
 /// DATA, which is streamed, or unknown/reserved, which is skipped).
+fn is_single_varint(ty: FrameType) -> bool {
+    matches!(
+        ty,
+        FrameType::CANCEL_PUSH | FrameType::GOAWAY | FrameType::MAX_PUSH_ID
+    )
+}
+
 fn is_buffered(ty: FrameType) -> bool {
     matches!(
         ty,
@@ -610,20 +622,47 @@ mod tests {
 
     #[test]
     fn rejects_oversized_buffered_frame_before_allocating() {
-        // advertise a huge HEADERS length; must error before buffering
-        let mut wire = BytesMut::new();
-        FrameHeader::new(FrameType::HEADERS, 10_000_000)
-            .encode(&mut wire)
-            .unwrap();
-        let mut dec = FrameDecoder::new(4096);
-        dec.feed(&wire).unwrap();
-        assert_eq!(
-            dec.poll(),
-            Err(FrameError::FrameTooLarge {
-                ty: FrameType::HEADERS,
-                len: 10_000_000
-            })
-        );
+        for ty in [
+            FrameType::HEADERS,
+            FrameType::PUSH_PROMISE,
+            FrameType::MAX_PUSH_ID,
+            FrameType::CANCEL_PUSH,
+            FrameType::SETTINGS,
+            FrameType::GOAWAY,
+            FrameType::PRIORITY_UPDATE_REQUEST,
+            FrameType::PRIORITY_UPDATE_PUSH,
+        ] {
+            for len in [0, 7, 8, 9, (1u64 << 62) - 1] {
+                // An empty payload is a complete frame, except where the payload is one varint.
+                if len == 0 && !is_single_varint(ty) {
+                    continue;
+                }
+                for headers in [false, true] {
+                    let mut wire = BytesMut::new();
+                    FrameHeader::new(ty, len).encode(&mut wire).unwrap();
+                    let mut decoder = FrameDecoder::new(8);
+                    if headers {
+                        decoder = decoder.with_header_events();
+                    }
+                    decoder.feed(&wire).unwrap();
+                    if headers {
+                        assert_eq!(
+                            decoder.poll(),
+                            Ok(Some(FrameEvent::Header(FrameHeader::new(ty, len))))
+                        );
+                    }
+                    if is_single_varint(ty) && !(1..=8).contains(&len) {
+                        assert_eq!(decoder.poll(), Err(FrameError::Malformed(ty)));
+                    } else if len > 8 {
+                        assert_eq!(decoder.poll(), Err(FrameError::FrameTooLarge { ty, len }));
+                    } else {
+                        assert_eq!(decoder.poll(), Ok(None));
+                    }
+                    assert!(decoder.payload.is_empty());
+                    assert_eq!(decoder.payload.capacity(), 0);
+                }
+            }
+        }
     }
 
     #[test]

@@ -3,7 +3,7 @@ use rama_core::telemetry::tracing::{debug, trace};
 use rama_quic_proto::{
     RESET_TOKEN_SIZE, ResetToken, TransportError, Version,
     crypto::{HeaderKey, PacketKey},
-    packet::{Packet, PartialDecode, SpaceId},
+    packet::{MAX_PACKET_NUMBER, Packet, PartialDecode, SpaceId},
 };
 
 use crate::proto::{
@@ -110,6 +110,11 @@ pub(super) fn decrypt_packet_body(
     let space = packet.header.space();
     let rx_packet = spaces[space].rx_packet;
     let number = packet.header.number().ok_or(None)?.expand(rx_packet + 1);
+    // No packet number exceeds 2^62 - 1 (RFC 9000 §12.3). This runs before authentication, so
+    // such a packet is dropped like any other that does not open, rather than closing anything.
+    if number > MAX_PACKET_NUMBER {
+        return Err(None);
+    }
     let packet_key_phase = packet.header.key_phase();
 
     let mut crypto_update = false;

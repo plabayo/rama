@@ -39,20 +39,16 @@ uri-resolve SECONDS="0": (_run "uri_resolve" SECONDS "-max_len=65534")
 
 js-value-boundary SECONDS="0": (_run "js_value_boundary" SECONDS "-max_len=16384")
 
-# A structured ICAP seed shorter than its fixed header cannot reach the roundtrip target.
-icap-seeds-check:
-    @for seed in fuzz/corpus-seeds/icap_codec_roundtrip/*; do if [ "$(wc -c < "$seed")" -lt 38 ]; then echo "unreachable structured ICAP seed: $seed" >&2; exit 1; fi; done
-
-icap SECONDS="0": icap-seeds-check
+icap SECONDS="0":
     mkdir -p fuzz/corpus/icap_codec fuzz/corpus/icap_codec_roundtrip
-    cargo +nightly fuzz run {{ target-flag }} icap_codec fuzz/corpus/icap_codec fuzz/corpus-seeds/icap_codec -- -dict=fuzz/dictionaries/icap.dict -max_len=65536 -timeout=5 -max_total_time={{ SECONDS }}
-    cargo +nightly fuzz run {{ target-flag }} icap_codec_roundtrip fuzz/corpus/icap_codec_roundtrip fuzz/corpus-seeds/icap_codec_roundtrip -- -max_len=64 -timeout=5 -max_total_time={{ SECONDS }}
+    cargo +nightly fuzz run {{ target-flag }} icap_codec fuzz/corpus/icap_codec -- -dict=fuzz/dictionaries/icap.dict -max_len=65536 -timeout=5 -max_total_time={{ SECONDS }}
+    cargo +nightly fuzz run {{ target-flag }} icap_codec_roundtrip fuzz/corpus/icap_codec_roundtrip -- -max_len=64 -timeout=5 -max_total_time={{ SECONDS }}
 
 # Sustained pre-release ICAP fuzzing; override the durations for a shorter local pass.
-icap-release RAW_SECONDS="21600" ROUNDTRIP_SECONDS="7200": icap-seeds-check
+icap-release RAW_SECONDS="21600" ROUNDTRIP_SECONDS="7200":
     mkdir -p fuzz/corpus/icap_codec fuzz/corpus/icap_codec_roundtrip
-    cargo +nightly fuzz run {{ target-flag }} -j 4 icap_codec fuzz/corpus/icap_codec fuzz/corpus-seeds/icap_codec -- -dict=fuzz/dictionaries/icap.dict -max_len=65536 -timeout=5 -max_total_time={{ RAW_SECONDS }}
-    cargo +nightly fuzz run {{ target-flag }} -j 4 icap_codec_roundtrip fuzz/corpus/icap_codec_roundtrip fuzz/corpus-seeds/icap_codec_roundtrip -- -max_len=64 -timeout=5 -max_total_time={{ ROUNDTRIP_SECONDS }}
+    cargo +nightly fuzz run {{ target-flag }} -j 4 icap_codec fuzz/corpus/icap_codec -- -dict=fuzz/dictionaries/icap.dict -max_len=65536 -timeout=5 -max_total_time={{ RAW_SECONDS }}
+    cargo +nightly fuzz run {{ target-flag }} -j 4 icap_codec_roundtrip fuzz/corpus/icap_codec_roundtrip -- -max_len=64 -timeout=5 -max_total_time={{ ROUNDTRIP_SECONDS }}
 
 # The honggfuzz h2 harness (`cargo install honggfuzz`).
 h2-main:
@@ -70,6 +66,8 @@ h2 SECONDS="0": (h2-client SECONDS) (h2-hpack SECONDS) (h2-e2e SECONDS)
 # QUIC wire decoding and stream state.
 quic-packet SECONDS="0": (_run "quic_packet" SECONDS "-max_len=4096 -timeout=10")
 
+quic-capture SECONDS="0": (_run "quic_capture" SECONDS "-max_len=65536 -timeout=10")
+
 quic-frame SECONDS="0": (_run "quic_frame" SECONDS "-max_len=4096 -timeout=10")
 
 quic-params SECONDS="0": (_run "quic_params" SECONDS "-max_len=4096 -timeout=10")
@@ -78,7 +76,11 @@ quic-streamid SECONDS="0": (_run "quic_streamid" SECONDS "-max_len=4096 -timeout
 
 quic-streams SECONDS="0": (_run "quic_streams" SECONDS "-max_len=4096 -timeout=10")
 
-quic SECONDS="0": (quic-packet SECONDS) (quic-frame SECONDS) (quic-params SECONDS) (quic-streamid SECONDS) (quic-streams SECONDS)
+quic-tokens SECONDS="0":
+    mkdir -p fuzz/corpus/quic_tokens
+    cargo +nightly fuzz run {{ target-flag }} quic_tokens fuzz/corpus/quic_tokens -- -max_len=65 -timeout=10 -max_total_time={{ SECONDS }}
+
+quic SECONDS="0": (quic-packet SECONDS) (quic-capture SECONDS) (quic-frame SECONDS) (quic-params SECONDS) (quic-streamid SECONDS) (quic-streams SECONDS) (quic-tokens SECONDS)
 
 # HTTP/3 frame/settings codecs and QPACK instruction/field-section decoding.
 http-capsule SECONDS="0": (_run "http_capsule" SECONDS "-max_len=65536 -timeout=10")

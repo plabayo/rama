@@ -1168,7 +1168,7 @@ fn split_transmit(transmit: Transmit, buffer: &[u8]) -> Vec<(Transmit, Bytes)> {
 
     let mut transmits = Vec::new();
     while !buffer.is_empty() {
-        let end = segment_size.min(buffer.len());
+        let end = segment_size.get().min(buffer.len());
 
         let contents = buffer.split_to(end);
         transmits.push((

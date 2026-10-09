@@ -557,6 +557,36 @@ fn recv_via_recvmmsg(
     bufs: &mut [IoSliceMut<'_>],
     meta: &mut [RecvMeta],
 ) -> io::Result<usize> {
+    recv_via_recvmmsg_with(bufs, meta, |hdrs, count| {
+        // SAFETY: each submitted header contains live writable address,
+        // payload and control buffers with matching lengths.
+        unsafe {
+            libc::recvmmsg(
+                io.as_raw_fd(),
+                hdrs.as_mut_ptr(),
+                count as _,
+                RECV_FLAGS as _,
+                ptr::null_mut::<libc::timespec>(),
+            ) as isize
+        }
+    })
+}
+
+#[cfg(not(any(
+    target_vendor = "apple",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly",
+    target_os = "redox",
+    target_os = "hurd",
+    target_os = "solaris",
+    target_os = "illumos"
+)))]
+fn recv_via_recvmmsg_with(
+    bufs: &mut [IoSliceMut<'_>],
+    meta: &mut [RecvMeta],
+    mut receive: impl FnMut(&mut [libc::mmsghdr; BATCH_SIZE], usize) -> isize,
+) -> io::Result<usize> {
     // The kernel may initialize only the active sockaddr prefix, so zero the
     // remaining storage before `decode_recv` materializes the whole value.
     let mut names = [MaybeUninit::<libc::sockaddr_storage>::zeroed(); BATCH_SIZE];
@@ -565,26 +595,19 @@ fn recv_via_recvmmsg(
     // `prepare_recv` initializes every entry passed to `recvmmsg`.
     let mut hdrs = unsafe { mem::zeroed::<[libc::mmsghdr; BATCH_SIZE]>() };
     let max_msg_count = bufs.len().min(BATCH_SIZE);
-    for i in 0..max_msg_count {
-        prepare_recv(
-            &mut bufs[i],
-            &mut names[i],
-            &mut ctrls[i],
-            &mut hdrs[i].msg_hdr,
-        );
-    }
+    // Every attempt submits freshly prepared headers: an interrupted call may have left any
+    // field, so nothing from it carries over.
     let msg_count = retry_if_interrupted(|| {
-        // SAFETY: each submitted header contains live writable address,
-        // payload and control buffers with matching lengths.
-        unsafe {
-            libc::recvmmsg(
-                io.as_raw_fd(),
-                hdrs.as_mut_ptr(),
-                bufs.len().min(BATCH_SIZE) as _,
-                RECV_FLAGS as _,
-                ptr::null_mut::<libc::timespec>(),
-            ) as isize
+        for i in 0..max_msg_count {
+            prepare_recv(
+                &mut bufs[i],
+                &mut names[i],
+                &mut ctrls[i],
+                &mut hdrs[i].msg_hdr,
+            );
+            hdrs[i].msg_len = 0;
         }
+        receive(&mut hdrs, max_msg_count)
     })?;
     for i in 0..(msg_count as usize) {
         let original_len = hdrs[i].msg_len as usize;
@@ -596,7 +619,7 @@ fn recv_via_recvmmsg(
             &hdrs[i].msg_hdr,
             copied_len,
             original_len,
-            hdrs[i].msg_hdr.msg_flags & libc::MSG_TRUNC != 0,
+            hdrs[i].msg_hdr.msg_flags,
         )?;
     }
     Ok(msg_count as usize)
@@ -655,7 +678,7 @@ fn recv_single_with(
         &hdr,
         original_len.min(bufs[0].len()),
         original_len,
-        hdr.msg_flags & libc::MSG_TRUNC != 0,
+        hdr.msg_flags,
     )?;
     Ok(1)
 }
@@ -783,7 +806,7 @@ pub(crate) fn decode_recv<M: cmsg::MsgHdr<ControlMessage = libc::cmsghdr>>(
     hdr: &M,
     len: usize,
     original_len: usize,
-    truncated: bool,
+    flags: libc::c_int,
 ) -> io::Result<RecvMeta> {
     // SAFETY: receive callers create `name` with `MaybeUninit::zeroed`, so the
     // complete storage is initialized even if the kernel writes only a prefix.
@@ -799,13 +822,18 @@ pub(crate) fn decode_recv<M: cmsg::MsgHdr<ControlMessage = libc::cmsghdr>>(
         timestamp: None,
     };
 
-    // SAFETY: the receive syscall initialized `hdr`'s reported control-message
-    // region, and its backing buffer remains alive while this function runs.
-    let cmsg_iter = unsafe { cmsg::Iter::new(hdr) };
-    for cmsg in cmsg_iter {
-        // SAFETY: `cmsg` was yielded from the live native buffer walked by
-        // `cmsg_iter`.
-        unsafe { ctrl.decode(&cmsg)? };
+    // Metadata the kernel cut short cannot be trusted to describe the datagram (a lost segment
+    // size alone misreads a coalesced batch), so such an entry is reported truncated instead.
+    let control_truncated = flags & libc::MSG_CTRUNC != 0;
+    if !control_truncated {
+        // SAFETY: the receive syscall initialized `hdr`'s reported control-message
+        // region, and its backing buffer remains alive while this function runs.
+        let cmsg_iter = unsafe { cmsg::Iter::new(hdr) };
+        for cmsg in cmsg_iter {
+            // SAFETY: `cmsg` was yielded from the live native buffer walked by
+            // `cmsg_iter`.
+            unsafe { ctrl.decode(&cmsg)? };
+        }
     }
 
     Ok(RecvMeta {
@@ -818,7 +846,7 @@ pub(crate) fn decode_recv<M: cmsg::MsgHdr<ControlMessage = libc::cmsghdr>>(
         interface_index: ctrl.interface_index,
         original_destination: ctrl.original_destination,
         timestamp: ctrl.timestamp,
-        truncated: truncated || original_len > len,
+        truncated: flags & libc::MSG_TRUNC != 0 || control_truncated || original_len > len,
     })
 }
 
@@ -1110,7 +1138,7 @@ mod tests {
                 hdr.msg_namelen as usize,
                 size_of::<libc::sockaddr_storage>()
             );
-            assert_eq!(hdr.msg_controllen as usize, cmsg::LEN);
+            assert_eq!(cmsg::MsgHdr::control_len(hdr), cmsg::LEN);
             assert_eq!(hdr.msg_flags, 0);
             assert_eq!(hdr.msg_iovlen, 1);
             if attempts == 1 {
@@ -1136,6 +1164,62 @@ mod tests {
                     .write(storage_v4(Ipv4Addr::LOCALHOST, 1234));
             }
             hdr.msg_controllen = 0;
+            1
+        })
+        .unwrap();
+        assert_eq!(result, 1);
+        assert_eq!(attempts, 2);
+        assert_eq!(meta[0].len, 1);
+        assert!(!meta[0].truncated);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn interrupted_batch_receive_restores_every_header() {
+        let mut first = [0_u8; 8];
+        let mut second = [0_u8; 8];
+        let mut bufs = [IoSliceMut::new(&mut first), IoSliceMut::new(&mut second)];
+        let mut meta = [RecvMeta::default(); 2];
+        let mut attempts = 0;
+        let result = recv_via_recvmmsg_with(&mut bufs, &mut meta, |hdrs, count| {
+            attempts += 1;
+            assert_eq!(count, 2);
+            for entry in &mut hdrs[..count] {
+                let hdr = &mut entry.msg_hdr;
+                assert_eq!(
+                    hdr.msg_namelen as usize,
+                    size_of::<libc::sockaddr_storage>()
+                );
+                assert_eq!(cmsg::MsgHdr::control_len(hdr), cmsg::LEN);
+                assert_eq!(hdr.msg_flags, 0);
+                assert_eq!(hdr.msg_iovlen, 1);
+                assert_eq!(entry.msg_len, 0);
+            }
+            if attempts == 1 {
+                for entry in &mut hdrs[..count] {
+                    entry.msg_hdr.msg_namelen = 0;
+                    entry.msg_hdr.msg_controllen = 0;
+                    entry.msg_hdr.msg_flags = libc::MSG_TRUNC | libc::MSG_CTRUNC;
+                    entry.msg_hdr.msg_iovlen = 0;
+                    entry.msg_len = 9_999;
+                }
+                // SAFETY: the platform exposes a live thread-local errno slot.
+                let errno = unsafe { libc::__errno_location() };
+                // SAFETY: the slot returned by libc belongs to the current thread.
+                unsafe { *errno = libc::EINTR };
+                return -1;
+            }
+            assert_eq!(attempts, 2);
+            // SAFETY: preparation supplied aligned writable sockaddr storage.
+            unsafe {
+                hdrs[0]
+                    .msg_hdr
+                    .msg_name
+                    .cast::<libc::sockaddr_storage>()
+                    .write(storage_v4(Ipv4Addr::LOCALHOST, 1234));
+            }
+            hdrs[0].msg_hdr.msg_controllen = 0;
+            hdrs[0].msg_len = 1;
             1
         })
         .unwrap();
@@ -1239,6 +1323,18 @@ mod tests {
         original_len: usize,
         push: impl FnOnce(&mut cmsg::Encoder<'_, libc::msghdr>),
     ) -> io::Result<RecvMeta> {
+        decode_with_flags(control, name, len, original_len, 0, push)
+    }
+
+    /// As [`decode_with`], for a receive that reported `flags`.
+    fn decode_with_flags(
+        control: &mut cmsg::Aligned<[u8; cmsg::LEN]>,
+        name: libc::sockaddr_storage,
+        len: usize,
+        original_len: usize,
+        flags: libc::c_int,
+        push: impl FnOnce(&mut cmsg::Encoder<'_, libc::msghdr>),
+    ) -> io::Result<RecvMeta> {
         // SAFETY: all-zero is a valid empty `msghdr`; the control pointer and
         // length written below describe `control`, which outlives this call.
         let mut hdr: libc::msghdr = unsafe { mem::zeroed() };
@@ -1251,7 +1347,40 @@ mod tests {
             let mut encoder = unsafe { cmsg::Encoder::new(&mut hdr) };
             push(&mut encoder);
         }
-        decode_recv(&MaybeUninit::new(name), &hdr, len, original_len, false)
+        decode_recv(&MaybeUninit::new(name), &hdr, len, original_len, flags)
+    }
+
+    /// Control messages the kernel cut short describe the datagram only in part, so the entry
+    /// is reported truncated, and none of them is read: not even a malformed one fails the
+    /// receive, which would end the socket over one peer's datagram.
+    #[test]
+    fn cut_short_control_messages_truncate_the_entry_instead_of_failing() {
+        for malformed in [false, true] {
+            let push = |encoder: &mut cmsg::Encoder<'_, libc::msghdr>| {
+                if malformed {
+                    encoder
+                        .push(libc::IPPROTO_IP, libc::IP_TOS, [2_u8; 3])
+                        .unwrap();
+                } else {
+                    encoder.push(libc::IPPROTO_IP, libc::IP_TOS, 2_u8).unwrap();
+                }
+            };
+            let mut control = cmsg::Aligned([0; cmsg::LEN]);
+            let complete = decode_with(&mut control, loopback_name(), 100, 100, push);
+            assert_eq!(complete.is_err(), malformed);
+            let mut control = cmsg::Aligned([0; cmsg::LEN]);
+            let meta = decode_with_flags(
+                &mut control,
+                loopback_name(),
+                100,
+                100,
+                libc::MSG_CTRUNC,
+                push,
+            )
+            .unwrap();
+            assert!(meta.truncated, "malformed: {malformed}");
+            assert_eq!(meta.ecn, None, "malformed: {malformed}");
+        }
     }
 
     fn loopback_name() -> libc::sockaddr_storage {

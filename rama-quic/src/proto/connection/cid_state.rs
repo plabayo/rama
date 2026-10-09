@@ -7,6 +7,11 @@ use rustc_hash::FxHashSet;
 use crate::proto::{Duration, Instant, shared::IssuedCid};
 use rama_quic_proto::TransportError;
 
+/// How many retirement batches are tracked at once. A peer that keeps retiring identifiers keeps
+/// new ones being issued; past this many, a new one joins the latest batch and so retires a
+/// little before its lifetime is up, which is always permitted.
+const MAX_RETIREMENT_BATCHES: usize = 64;
+
 /// Local connection ID management
 pub(super) struct CidState {
     /// Timestamp when issued cids should be retired
@@ -72,13 +77,14 @@ impl CidState {
             return;
         };
 
+        let at_bound = self.retire_timestamp.len() >= MAX_RETIREMENT_BATCHES;
         let last_record = self.retire_timestamp.back_mut();
         if let Some(last) = last_record {
             // Compare the timestamp with the last inserted record
-            // Combine into a single batch if timestamp of current cid is same as the last record
-            if expire_at == last.timestamp {
-                debug_assert!(new_cid_seq > last.sequence);
-                last.sequence = new_cid_seq;
+            // Combine into a single batch if timestamp of current cid is same as the last record,
+            // or when no further batch may be tracked
+            if expire_at == last.timestamp || at_bound {
+                last.sequence = last.sequence.max(new_cid_seq);
                 return;
             }
         }
@@ -216,4 +222,29 @@ struct CidTimestamp {
     sequence: u64,
     /// Timestamp when cid needs to be retired
     timestamp: Instant,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_quic_proto::{ConnectionId, RESET_TOKEN_SIZE, ResetToken};
+
+    /// A peer that retires every identifier it is given keeps new ones being issued; however
+    /// long it keeps at it, the retirement schedule stays bounded and still retires the newest.
+    #[test]
+    fn retirement_batches_stay_bounded_under_identifier_churn() {
+        let start = Instant::now();
+        let mut state = CidState::new(8, Some(Duration::from_mins(10)), start, 1);
+        for sequence in 1..10_000u64 {
+            let issued = IssuedCid {
+                sequence,
+                id: ConnectionId::new(&[1; 8]),
+                reset_token: ResetToken::from([0; RESET_TOKEN_SIZE]),
+            };
+            state.new_cids(&[issued], start + Duration::from_millis(sequence));
+            assert!(state.retire_timestamp.len() <= MAX_RETIREMENT_BATCHES);
+        }
+        assert_eq!(state.retire_timestamp.back().unwrap().sequence, 9_999);
+        assert_eq!(state.next_timeout(), Some(start + Duration::from_mins(10)));
+    }
 }

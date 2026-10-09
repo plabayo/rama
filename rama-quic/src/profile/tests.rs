@@ -441,3 +441,54 @@ fn the_firefox_profile_is_refused_on_a_rustls_client() {
         Err(crate::ConfigError::VersionPolicy(_)),
     );
 }
+
+/// An observation is serializable data that may describe another datagram; one whose packet range
+/// runs past the bytes handed in is refused, not trusted.
+#[test]
+fn an_observation_that_outruns_its_datagram_is_refused() {
+    let one = hex("chrome-153-initial-1.hex");
+    let observed = observe(&one).expect("a chrome Initial");
+    let provider = provider();
+    let keys = capture::ProviderKeys(&*provider);
+    for len in [0, 1, 100, one.len() - 1] {
+        let error = observed
+            .unprotect_initials(&one[..len], &keys, rama_quic_proto::Side::Server, None)
+            .unwrap_err();
+        assert!(
+            matches!(error, rama_quic_proto::capture::CaptureError::Malformed(_)),
+            "{len} bytes: {error:?}"
+        );
+    }
+    observed
+        .unprotect_initials(&one, &keys, rama_quic_proto::Side::Server, None)
+        .unwrap();
+}
+
+/// CRYPTO data repeats when a client retransmits; a chunk already covered by what came before
+/// leaves the ClientHello as it was.
+#[test]
+fn a_covered_crypto_chunk_does_not_lose_the_client_hello() {
+    let one = hex("chrome-153-initial-1.hex");
+    let two = hex("chrome-153-initial-2.hex");
+    let provider = provider();
+    let keys = capture::ProviderKeys(&*provider);
+    let mut initials = Vec::new();
+    for datagram in [&one, &two] {
+        initials.extend(
+            observe(datagram)
+                .unwrap()
+                .unprotect_initials(datagram, &keys, rama_quic_proto::Side::Server, None)
+                .unwrap(),
+        );
+    }
+    let hello = rama_quic_proto::capture::client_hello(&initials).expect("chrome's ClientHello");
+    let mut repeated = initials.clone();
+    let (offset, data) = repeated[0].crypto[0].clone();
+    repeated[0]
+        .crypto
+        .push((offset + 1, data[1..data.len() / 2].to_vec()));
+    assert_eq!(
+        rama_quic_proto::capture::client_hello(&repeated),
+        Some(hello)
+    );
+}

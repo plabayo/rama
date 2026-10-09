@@ -146,10 +146,10 @@ impl Connection {
         received_bytes: Option<usize>,
     ) -> Result<(), TransportError> {
         let received_dcid = packet.header.dst_cid();
+        let wire_len = packet.wire_len;
         let payload = packet.payload.freeze();
         let mut is_probing_packet = true;
         let mut close = None;
-        let payload_len = payload.len();
         let mut ack_eliciting = false;
         for result in frame::Iter::new(payload)? {
             let frame = result?;
@@ -206,10 +206,10 @@ impl Connection {
             }
             match frame {
                 Frame::Crypto(frame) => {
-                    self.read_crypto(SpaceId::Data, &frame, payload_len)?;
+                    self.read_crypto(SpaceId::Data, &frame, wire_len)?;
                 }
                 Frame::Stream(frame) => {
-                    if self.streams.received(frame, payload_len)?.should_transmit() {
+                    if self.streams.received(frame, wire_len)?.should_transmit() {
                         self.spaces[SpaceId::Data].pending.max_data = true;
                     }
                 }
@@ -342,10 +342,11 @@ impl Connection {
                     token_store.insert(server_name, self.version(), stored);
                 }
                 Frame::Datagram(datagram) => {
-                    if self
-                        .datagrams
-                        .received(datagram, self.config.datagram_receive_buffer_size)?
-                    {
+                    if self.datagrams.received(
+                        datagram,
+                        wire_len,
+                        self.config.datagram_receive_buffer_size,
+                    )? {
                         self.events.push_back(Event::DatagramReceived);
                     }
                 }
@@ -518,6 +519,107 @@ mod tests {
         }
     }
 
+    /// A received 1-RTT packet of `wire_len` bytes: `frames`, then PADDING, in one allocation
+    /// as the driver hands a datagram over. Returns the packet and its backing address range.
+    fn padded_packet(
+        dst_cid: rama_quic_proto::ConnectionId,
+        frames: &[u8],
+        wire_len: usize,
+    ) -> (Packet, std::ops::Range<usize>) {
+        let mut payload = frames.to_vec();
+        payload.resize(wire_len, 0);
+        let backing = rama_core::bytes::BytesMut::from(payload.as_slice());
+        let start = backing.as_ptr() as usize;
+        let packet = Packet {
+            header: Header::Short {
+                spin: false,
+                key_phase: false,
+                dst_cid,
+                number: PacketNumber::U8(0),
+            },
+            header_data: Bytes::new(),
+            payload: backing,
+            wire_len,
+        };
+        (packet, start..start + wire_len)
+    }
+
+    #[test]
+    fn small_received_datagrams_do_not_keep_their_packet_allocated() {
+        const WIRE_LEN: usize = 1200;
+        for server_receives in [true, false] {
+            for (len, detached) in [(0, true), (1, true), (64, true), (1100, false)] {
+                let mut pair = Pair::default();
+                let (client, server) = pair.connect();
+                let now = pair.time;
+                let conn = if server_receives {
+                    pair.server_conn_mut(server)
+                } else {
+                    pair.client_conn_mut(client)
+                };
+                let mut frames = Vec::new();
+                frame::Datagram {
+                    data: Bytes::from(vec![9; len]),
+                }
+                .encode(true, &mut frames);
+                let (packet, backing) = padded_packet(conn.handshake_cid, &frames, WIRE_LEN);
+                conn.process_payload(now, conn.path.remote, conn.path.local, 0, packet, None)
+                    .unwrap();
+                let data = conn.datagrams.recv().expect("the datagram is queued");
+                assert_eq!(data.as_ref(), vec![9; len]);
+                let at = data.as_ptr() as usize;
+                assert_eq!(
+                    !backing.contains(&at),
+                    detached || len == 0,
+                    "{len}-byte datagram, server receives: {server_receives}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn small_received_stream_data_does_not_keep_its_packet_allocated() {
+        const WIRE_LEN: usize = 1200;
+        for server_receives in [true, false] {
+            for (len, detached) in [(1, true), (64, true), (1100, false)] {
+                let mut pair = Pair::default();
+                let (client, server) = pair.connect();
+                let now = pair.time;
+                let (conn, initiator) = if server_receives {
+                    (pair.server_conn_mut(server), rama_quic_proto::Side::Client)
+                } else {
+                    (pair.client_conn_mut(client), rama_quic_proto::Side::Server)
+                };
+                let id = rama_quic_proto::StreamId::new(initiator, Dir::Uni, 0);
+                let mut frames = Vec::new();
+                frame::StreamMeta {
+                    id,
+                    offsets: 0..len as u64,
+                    fin: false,
+                }
+                .encode(true, &mut frames);
+                frames.extend(std::iter::repeat_n(5, len));
+                let (packet, backing) = padded_packet(conn.handshake_cid, &frames, WIRE_LEN);
+                conn.process_payload(now, conn.path.remote, conn.path.local, 0, packet, None)
+                    .unwrap();
+                let mut stream = conn.recv_stream(id);
+                let mut chunks = stream.read(true).unwrap();
+                let chunk = chunks
+                    .next(usize::MAX)
+                    .unwrap()
+                    .expect("the data is buffered");
+                let _transmit = chunks.finalize();
+                assert_eq!(chunk.bytes.as_ref(), vec![5; len]);
+                let at = chunk.bytes.as_ptr() as usize;
+                assert_eq!(
+                    !backing.contains(&at),
+                    detached,
+                    "{len}-byte stream frame, server receives: {server_receives}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn received_tokens_are_bounded_and_detached_before_storage() {
         for length in [
@@ -550,6 +652,7 @@ mod tests {
                     number: PacketNumber::U8(0),
                 },
                 header_data: Bytes::new(),
+                wire_len: backing.len(),
                 payload: backing,
             };
             conn.process_payload(now, conn.path.remote, conn.path.local, 0, packet, None)
@@ -608,6 +711,7 @@ mod tests {
                     header,
                     header_data: Default::default(),
                     payload: payload.as_slice().into(),
+                    wire_len: payload.len(),
                 };
                 let result =
                     conn.process_payload(now, conn.path.remote, conn.path.local, 0, packet, None);

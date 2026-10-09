@@ -15,7 +15,7 @@ use rama_utils::collections::smallvec::SmallVec;
 use crate::{
     Dir, MAX_CID_SIZE, RESET_TOKEN_SIZE, ResetToken, StreamId, TransportError, TransportErrorCode,
     VarInt,
-    coding::{self, BufExt, BufMutExt, UnexpectedEnd},
+    coding::{self, BufExt, BufMutExt, UnexpectedEnd, bounded_len},
     range_set::ArrayRangeSet,
     shared::{ConnectionId, EcnCodepoint},
 };
@@ -654,11 +654,8 @@ impl Iter {
     }
 
     fn take_len(&mut self) -> Result<Bytes, UnexpectedEnd> {
-        let len = self.bytes.get_var()?;
-        if len > self.bytes.remaining() as u64 {
-            return Err(UnexpectedEnd::new());
-        }
-        Ok(self.bytes.split_to(len as usize))
+        let len = bounded_len(self.bytes.get_var()?, self.bytes.remaining())?;
+        Ok(self.bytes.split_to(len))
     }
 
     fn try_next(&mut self) -> Result<Frame, IterErr> {
@@ -725,7 +722,7 @@ impl Iter {
             FrameType::ACK | FrameType::ACK_ECN => {
                 let largest = self.bytes.get_var()?;
                 let delay = self.bytes.get_var()?;
-                let extra_blocks = self.bytes.get_var()? as usize;
+                let extra_blocks = self.bytes.get_var()?;
                 let n = scan_ack_blocks(&self.bytes, largest, extra_blocks)?;
                 Frame::Ack(Ack {
                     delay,
@@ -856,10 +853,11 @@ impl From<InvalidFrame> for TransportError {
 }
 
 /// Validate exactly `n` ACK ranges in `buf` and return the number of bytes they cover
-fn scan_ack_blocks(mut buf: &[u8], largest: u64, n: usize) -> Result<usize, IterErr> {
+fn scan_ack_blocks(mut buf: &[u8], largest: u64, n: u64) -> Result<usize, IterErr> {
     let total_len = buf.remaining();
     let first_block = buf.get_var()?;
     let mut smallest = largest.checked_sub(first_block).ok_or(IterErr::Malformed)?;
+    let n = bounded_len(n, buf.remaining() / 2).map_err(|_error| IterErr::Malformed)?;
     for _ in 0..n {
         let gap = buf.get_var()?;
         smallest = smallest.checked_sub(gap + 2).ok_or(IterErr::Malformed)?;
@@ -1066,6 +1064,28 @@ mod test {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap()
+    }
+
+    #[test]
+    fn ack_counts_are_bounded_before_narrowing() {
+        for ty in [FrameType::ACK, FrameType::ACK_ECN] {
+            for count in [1u64 << 32, (1u64 << 32) + 1, VarInt::MAX.into_inner()] {
+                let mut bytes = Vec::new();
+                bytes.write(ty);
+                bytes.write_var(0);
+                bytes.write_var(0);
+                bytes.write_var(count);
+                bytes.write_var(0);
+                if ty == FrameType::ACK_ECN {
+                    bytes.extend_from_slice(&[0, 0, 0]);
+                }
+                Iter::new(bytes.into())
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap_err();
+            }
+        }
     }
 
     /// RFC 9000 §19.15: a NEW_CONNECTION_ID that retires identifiers the peer never issued is a

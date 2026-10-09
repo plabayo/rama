@@ -13,9 +13,20 @@ use crate::proto::{Instant, connection::ConnectionSide};
 use rama_quic_proto::{
     ConnectionId, TransportError,
     frame::{self, Close, FrameStruct},
-    packet::{FIXED_BIT, Header, InitialHeader, LongType, PacketNumber, PartialEncode, SpaceId},
+    packet::{
+        FIXED_BIT, Header, InitialHeader, LongType, MAX_PACKET_NUMBER_DISTANCE, PacketNumber,
+        PartialEncode, SpaceId,
+    },
     profile::InitialFlightLayout,
 };
+
+/// Packet numbers kept back for closing once acknowledgements stop keeping up; closing answers
+/// what the peer sends ever less often, so this lasts far longer than the close does.
+const PACKET_NUMBER_CLOSE_MARGIN: u64 = 1 << 16;
+
+fn packet_numbers_outran_acknowledgements() -> TransportError {
+    TransportError::INTERNAL_ERROR("packet numbers outran acknowledgements")
+}
 
 pub(super) struct PacketBuilder {
     pub(super) datagram_start: usize,
@@ -95,6 +106,22 @@ impl PacketBuilder {
             return None;
         }
 
+        // Packet numbers may not outrun acknowledgements by more than their encoding covers, so
+        // a peer that stops acknowledging gets a close while the close still has numbers to use.
+        let space = &conn.spaces[space_id];
+        if space
+            .next_packet_number
+            .saturating_sub(space.largest_acked_packet.unwrap_or(0))
+            >= MAX_PACKET_NUMBER_DISTANCE - PACKET_NUMBER_CLOSE_MARGIN
+            && !conn.state.is_closed()
+        {
+            let error = packet_numbers_outran_acknowledgements();
+            conn.close_inner(now, Close::Connection(error.clone().into()));
+            if conn.error.is_none() {
+                conn.error = Some(error.into());
+            }
+        }
+
         let grease_quic_bit = conn.may_grease_quic_bit();
         let space = &mut conn.spaces[space_id];
         let exact_number = match space_id {
@@ -104,11 +131,15 @@ impl PacketBuilder {
 
         let span = trace_span!("send", space = ?space_id, pn = exact_number).entered();
 
-        let number = PacketNumber::new_at_least(
+        let Some(number) = PacketNumber::new_at_least(
             exact_number,
             space.largest_acked_packet.unwrap_or(0),
             conn.config.wire.packetization.min_packet_number_len(),
-        );
+        ) else {
+            // Even the margin above is used up: nothing more can be numbered on this connection.
+            conn.kill(now, packet_numbers_outran_acknowledgements().into());
+            return None;
+        };
         let header = match space_id {
             SpaceId::Data if space.crypto.is_some() => Header::Short {
                 dst_cid,
@@ -151,10 +182,23 @@ impl PacketBuilder {
                 .encoded_len()
                 .is_none_or(|len| len > buffer_capacity.saturating_sub(buffer.len()))
         {
+            if Self::drop_optional_token(conn) {
+                return Self::new(
+                    now,
+                    space_id,
+                    dst_cid,
+                    buffer,
+                    buffer_capacity,
+                    datagram_start,
+                    ack_eliciting,
+                    conn,
+                );
+            }
             Self::reject_initial_token(now, conn);
             return None;
         }
-        let partial_encode = header.encode(buffer);
+        let max_packet_len = buffer_capacity.saturating_sub(buffer.len());
+        let partial_encode = header.encode_with_max_packet_len(buffer, max_packet_len);
         if grease_quic_bit && conn.rng.random() {
             buffer[partial_encode.start] ^= FIXED_BIT;
         }
@@ -190,6 +234,18 @@ impl PacketBuilder {
             && (max_size < min_size || max_size.saturating_sub(buffer.len()) < required_frame_space)
         {
             buffer.truncate(partial_encode.start);
+            if Self::drop_optional_token(conn) {
+                return Self::new(
+                    now,
+                    space_id,
+                    dst_cid,
+                    buffer,
+                    buffer_capacity,
+                    datagram_start,
+                    ack_eliciting,
+                    conn,
+                );
+            }
             Self::reject_initial_token(now, conn);
             return None;
         }
@@ -216,7 +272,7 @@ impl PacketBuilder {
             space.next_packet_number,
             space.largest_acked_packet.unwrap_or(0),
             conn.config.wire.packetization.min_packet_number_len(),
-        );
+        )?;
         let header = InitialHeader {
             src_cid: conn.handshake_cid,
             dst_cid: conn.rem_cids.active(),
@@ -235,6 +291,20 @@ impl PacketBuilder {
 
     fn initial_frame_space() -> usize {
         (frame::Crypto::SIZE_BOUND + 1).max(frame::ConnectionClose::SIZE_BOUND)
+    }
+
+    /// Give up a client token that leaves the Initial no room when the token is optional: one a
+    /// server issued for a later connection (RFC 9000 §8.1.3), not one a Retry asked for. Whether
+    /// one was dropped, so the packet can be built again without it.
+    fn drop_optional_token(conn: &mut Connection) -> bool {
+        let retried = conn.retry_src_cid.is_some();
+        match &mut conn.side {
+            ConnectionSide::Client { token, .. } if !retried && !token.is_empty() => {
+                *token = Bytes::new();
+                true
+            }
+            _ => false,
+        }
     }
 
     fn reject_initial_token(now: Instant, conn: &mut Connection) {
@@ -513,29 +583,33 @@ mod token_budget_tests {
     fn rejected_initial_tokens_preserve_prior_packets_and_release_bytes() {
         for version in [Version::V1, Version::V2] {
             for token_len in [1200, 65536] {
-                let mut config = crate::test_helpers::client(&crate::test_helpers::identity());
-                config
-                    .set_versions(ClientVersionPolicy::new(version).unwrap())
-                    .unwrap();
-                let mut endpoint = Endpoint::new(
-                    Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
-                    None,
-                    true,
-                    None,
-                );
-                let now = Instant::now();
-                let (_, mut conn) = endpoint
-                    .connect(now, config, "[::1]:4433".parse().unwrap(), "localhost")
-                    .unwrap();
-                let ConnectionSide::Client { token, .. } = &mut conn.side else {
-                    panic!("client")
-                };
-                *token = Bytes::from(vec![0; token_len]);
-                let mut buffer = Vec::with_capacity(1300);
-                buffer.extend_from_slice(&[42; 100]);
-                let capacity = buffer.capacity();
-                assert!(
-                    PacketBuilder::new(
+                for retried in [true, false] {
+                    let mut config = crate::test_helpers::client(&crate::test_helpers::identity());
+                    config
+                        .set_versions(ClientVersionPolicy::new(version).unwrap())
+                        .unwrap();
+                    let mut endpoint = Endpoint::new(
+                        Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
+                        None,
+                        true,
+                        None,
+                    );
+                    let now = Instant::now();
+                    let (_, mut conn) = endpoint
+                        .connect(now, config, "[::1]:4433".parse().unwrap(), "localhost")
+                        .unwrap();
+                    // A Retry token is required to go on; one from an earlier connection is not.
+                    if retried {
+                        conn.retry_src_cid = Some(ConnectionId::new(&[9; 8]));
+                    }
+                    let ConnectionSide::Client { token, .. } = &mut conn.side else {
+                        panic!("client")
+                    };
+                    *token = Bytes::from(vec![0; token_len]);
+                    let mut buffer = Vec::with_capacity(1300);
+                    buffer.extend_from_slice(&[42; 100]);
+                    let capacity = buffer.capacity();
+                    let built = PacketBuilder::new(
                         now,
                         SpaceId::Initial,
                         ConnectionId::new(&[1; 20]),
@@ -543,17 +617,20 @@ mod token_budget_tests {
                         1300,
                         100,
                         true,
-                        &mut conn
-                    )
-                    .is_none()
-                );
-                assert_eq!(buffer, &[42; 100]);
-                assert_eq!(buffer.capacity(), capacity);
-                let ConnectionSide::Client { token, .. } = &conn.side else {
-                    panic!("client")
-                };
-                assert!(token.is_empty());
-                assert!(conn.is_drained());
+                        &mut conn,
+                    );
+                    assert_eq!(built.is_some(), !retried, "retried: {retried}");
+                    assert_eq!(&buffer[..100], &[42; 100]);
+                    assert_eq!(buffer.capacity(), capacity);
+                    let ConnectionSide::Client { token, .. } = &conn.side else {
+                        panic!("client")
+                    };
+                    assert!(token.is_empty());
+                    assert_eq!(conn.is_drained(), retried);
+                    if !retried {
+                        assert!(buffer.len() > 100, "the header follows the earlier packets");
+                    }
+                }
             }
         }
     }

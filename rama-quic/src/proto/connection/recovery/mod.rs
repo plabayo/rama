@@ -9,7 +9,7 @@ use crate::proto::{
     Duration, Instant, TIMER_GRANULARITY,
     connection::{Connection, Event, spaces::SentPacket, timer::Timer},
 };
-use rama_quic_proto::{TransportError, frame, packet::SpaceId, range_set::ArrayRangeSet};
+use rama_quic_proto::{TransportError, frame, packet::SpaceId};
 
 impl Connection {
     /// Returns the next time at which `handle_timeout` should be called
@@ -55,23 +55,37 @@ impl Connection {
             }
         };
 
-        // Avoid DoS from unreasonably huge ack ranges by filtering out just the new acks.
-        let mut newly_acked = ArrayRangeSet::new();
+        // Avoid DoS from unreasonably huge ack ranges by filtering out just the new acks. The
+        // ranges are disjoint and arrive largest first, so walking them backwards lists the
+        // newly acknowledged packets in order, in time linear in what the frame carries.
+        let mut ranges = Vec::new();
         for range in ack.iter() {
             self.packet_number_filter.check_ack(space, range.clone())?;
-            for (&pn, _) in self.spaces[space].sent_packets.range(range) {
-                newly_acked.insert_one(pn);
-            }
+            ranges.push(range);
+        }
+        let mut newly_acked = Vec::new();
+        for range in ranges.into_iter().rev() {
+            newly_acked.extend(
+                self.spaces[space]
+                    .sent_packets
+                    .range(range)
+                    .map(|(&pn, _)| pn),
+            );
         }
 
         if newly_acked.is_empty() {
             return Ok(());
         }
+        // ECN validation is given the number of contiguous runs of newly acknowledged packets.
+        let newly_acked_runs = 1 + newly_acked
+            .windows(2)
+            .filter(|pair| pair[1] != pair[0] + 1)
+            .count();
 
         let mut ack_eliciting_acked = false;
         let mut largest_current_acked = None;
         let mut all_on_current_path = true;
-        for packet in newly_acked.elts() {
+        for packet in newly_acked {
             if let Some(info) = self.spaces[space].take(packet) {
                 if let Some(acked) = info.largest_acked {
                     // Assume ACKs for all packets below the largest acknowledged in `packet` have
@@ -157,7 +171,7 @@ impl Connection {
                     self.process_ecn(
                         now,
                         space,
-                        newly_acked.len() as u64,
+                        newly_acked_runs as u64,
                         ecn,
                         (all_on_current_path && largest_on_current_path).then_some(sent),
                     );

@@ -8,6 +8,8 @@ use rama_core::bytes::{Buf, Bytes, BytesMut};
 
 use rama_quic_proto::range_set::RangeSet;
 
+use super::retained::{Retained, retain};
+
 /// Helper to assemble unordered stream frames into an ordered stream
 #[derive(Debug, Default)]
 pub(super) struct Assembler {
@@ -164,15 +166,13 @@ impl Assembler {
     pub(super) fn insert(
         &mut self,
         mut offset: u64,
-        mut bytes: Bytes,
-        allocation_size: usize,
+        bytes: Bytes,
+        wire_len: usize,
     ) -> Result<(), TooManyChunks> {
-        debug_assert!(
-            bytes.len() <= allocation_size,
-            "allocation_size less than bytes.len(): {:?} < {:?}",
-            allocation_size,
-            bytes.len()
-        );
+        let Retained {
+            mut bytes,
+            charge: allocation_size,
+        } = retain(bytes, wire_len);
         self.end = self.end.max(offset + bytes.len() as u64);
         if let State::Unordered { ref mut recvd } = self.state {
             // Discard duplicate data

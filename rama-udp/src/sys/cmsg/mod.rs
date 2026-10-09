@@ -112,6 +112,8 @@ impl<C: CMsgHdr> CMsg<'_, C> {
 pub(crate) struct Iter<'a, M: MsgHdr> {
     hdr: &'a M,
     cmsg: Option<NonNull<M::ControlMessage>>,
+    /// One past the last byte the kernel reported writing; no entry is read beyond it.
+    end: usize,
 }
 
 impl<'a, M: MsgHdr> Iter<'a, M> {
@@ -121,8 +123,13 @@ impl<'a, M: MsgHdr> Iter<'a, M> {
     /// lifetime of the constructed `Iter` and contains a buffer of native cmsgs, i.e. is aligned
     /// for native `cmsghdr`, is fully initialized, and has correct internal links.
     pub(crate) unsafe fn new(hdr: &'a M) -> Self {
-        let cmsg = NonNull::new(hdr.cmsg_first_hdr());
-        Self { hdr, cmsg }
+        let first = hdr.cmsg_first_hdr();
+        let end = first.addr().saturating_add(hdr.control_len());
+        Self {
+            hdr,
+            cmsg: NonNull::new(first),
+            end,
+        }
     }
 }
 
@@ -131,27 +138,27 @@ impl<'a, M: MsgHdr> Iterator for Iter<'a, M> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let current = self.cmsg.take()?;
-        // SAFETY: `current` belongs to the valid native control-message chain
-        // established by `Iter::new`.
-        self.cmsg = NonNull::new(unsafe { self.hdr.cmsg_nxt_hdr(current.as_ptr()) });
-
-        let current = CMsg {
-            ptr: current,
-            marker: PhantomData,
-        };
-
-        // A native length that cannot cover its own header is malformed, and
-        // both platforms keep walking such an entry forever: on MacOS < 14
-        // CMSG_NXTHDR might continuously return a zeroed cmsg, and the Winsock
-        // rule advances by the aligned length, so a zero never leaves the
-        // current entry. End the cmsghdr chain instead.
-        #[cfg(any(target_vendor = "apple", windows))]
-        if current.len() < size_of::<M::ControlMessage>() {
-            self.cmsg = None;
+        let start = current.as_ptr().addr();
+        let header = size_of::<M::ControlMessage>();
+        if start.checked_add(header).is_none_or(|end| end > self.end) {
             return None;
         }
+        // SAFETY: the header lies inside the control region the kernel wrote.
+        let len = unsafe { current.as_ref() }.len();
+        // An entry must cover its own header and end inside that region. A shorter one is walked
+        // forever by some native helpers, and a control area cut short (MSG_CTRUNC) can keep a
+        // header whose length runs past what was written. Either ends the chain.
+        if len < header || start.saturating_add(len) > self.end {
+            return None;
+        }
+        // SAFETY: `current` is an entry of the valid native control-message chain established by
+        // `Iter::new`, checked to lie inside it.
+        self.cmsg = NonNull::new(unsafe { self.hdr.cmsg_nxt_hdr(current.as_ptr()) });
 
-        Some(current)
+        Some(CMsg {
+            ptr: current,
+            marker: PhantomData,
+        })
     }
 }
 
@@ -333,11 +340,47 @@ mod tests {
         }
     }
 
-    /// Both platforms can be asked to walk an entry whose native length does
+    /// A control area the kernel cut short can end inside an entry whose
+    /// header still records its full length. That entry, and anything after
+    /// it, lies past what was written, so the chain ends before it.
+    #[test]
+    fn entries_running_past_the_written_control_area_are_not_read() {
+        let mut control = Aligned([0; TEST_LEN]);
+        let mut header = message_header(&mut control, TEST_LEN);
+        // SAFETY: the aligned writable buffer lives beyond the encoder.
+        let mut encoder = unsafe { Encoder::new(&mut header) };
+        encoder.push(TEST_LEVEL, TEST_TYPE, 42_u32).unwrap();
+        encoder.push(TEST_LEVEL, TEST_TYPE + 1, [7_u8; 20]).unwrap();
+        encoder.push(TEST_LEVEL, TEST_TYPE + 2, [9_u8; 20]).unwrap();
+        drop(encoder);
+        let first = <NativeCMsgHdr as CMsgHdr>::cmsg_space(size_of::<u32>());
+        let second = <NativeCMsgHdr as CMsgHdr>::cmsg_space(20);
+        let third_len = <NativeCMsgHdr as CMsgHdr>::cmsg_len(20);
+        for (written, entries) in [
+            (first + second + third_len, 3),
+            (first + second + third_len - 1, 2),
+            (first + second + size_of::<NativeCMsgHdr>(), 2),
+            (first + 1, 1),
+        ] {
+            let header = message_header(&mut control, written);
+            // SAFETY: the encoder initialized the complete chain in the live
+            // buffer; the reported length only shortens the region to walk.
+            let messages = unsafe { Iter::new(&header) };
+            let mut seen = 0;
+            for message in messages {
+                let start = (&raw const *message).addr() - control.0.as_ptr().addr();
+                assert!(start + message.len() <= written, "{written} bytes written");
+                seen += 1;
+            }
+            assert_eq!(seen, entries, "{written} bytes written");
+        }
+    }
+
+    /// Every platform can be asked to walk an entry whose native length does
     /// not even cover its own header: MacOS < 14 by returning a zeroed cmsg,
-    /// and Winsock because the chain advances by that length alone. Neither
-    /// may loop on it, and a length exactly at the boundary still decodes.
-    #[cfg(any(target_vendor = "apple", windows))]
+    /// several native helpers and Winsock because the chain advances by that
+    /// length alone. None may loop on it, and a length exactly at the boundary
+    /// still decodes.
     #[test]
     fn iterator_ends_on_a_header_too_short_to_advance_the_chain() {
         let mut control = Aligned([0; TEST_LEN]);

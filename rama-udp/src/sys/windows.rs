@@ -235,6 +235,10 @@ impl UdpSocketState {
             }
         }
         truncated |= wsa_msg.dwFlags & WinSock::MSG_PARTIAL != 0;
+        // Metadata cut short cannot be trusted to describe the datagram, so such an entry is
+        // reported truncated and its control messages are not read.
+        let control_truncated = wsa_msg.dwFlags & WinSock::MSG_CTRUNC != 0;
+        truncated |= control_truncated;
 
         let initialize_address = |addr_storage: *mut SockAddrStorage, len: *mut socklen_t| {
             // SAFETY: try_init provides a valid pointer to its length slot.
@@ -254,49 +258,52 @@ impl UdpSocketState {
         let mut interface_index = None;
         let mut stride = len;
 
-        // SAFETY: `WSARecvMsg` initialized the reported part of the control
-        // buffer, which remains alive for the whole iteration.
-        let cmsg_iter = unsafe { cmsg::Iter::new(&wsa_msg) };
-        for cmsg in cmsg_iter {
-            const UDP_COALESCED_INFO: i32 = WinSock::UDP_COALESCED_INFO as i32;
-            // [header (len)][data][padding(len + sizeof(data))] -> [header][data][padding]
-            match (cmsg.cmsg_level, cmsg.cmsg_type) {
-                (WinSock::IPPROTO_IP, WinSock::IP_PKTINFO) => {
-                    // SAFETY: `cmsg` was yielded from the live native control
-                    // buffer walked by `cmsg_iter`.
-                    let pktinfo = unsafe { cmsg.decode::<WinSock::IN_PKTINFO>() }?;
-                    // Addr is stored in big endian format
-                    // SAFETY: `decode` initialized every byte of `IN_PKTINFO`;
-                    // reading this union view yields its IPv4 address bytes.
-                    let ip4 = Ipv4Addr::from(u32::from_be(unsafe { pktinfo.ipi_addr.S_un.S_addr }));
-                    dst_ip = Some(ip4.into());
-                    interface_index = Some(pktinfo.ipi_ifindex);
+        if !control_truncated {
+            // SAFETY: `WSARecvMsg` initialized the reported part of the control
+            // buffer, which remains alive for the whole iteration.
+            let cmsg_iter = unsafe { cmsg::Iter::new(&wsa_msg) };
+            for cmsg in cmsg_iter {
+                const UDP_COALESCED_INFO: i32 = WinSock::UDP_COALESCED_INFO as i32;
+                // [header (len)][data][padding(len + sizeof(data))] -> [header][data][padding]
+                match (cmsg.cmsg_level, cmsg.cmsg_type) {
+                    (WinSock::IPPROTO_IP, WinSock::IP_PKTINFO) => {
+                        // SAFETY: `cmsg` was yielded from the live native control
+                        // buffer walked by `cmsg_iter`.
+                        let pktinfo = unsafe { cmsg.decode::<WinSock::IN_PKTINFO>() }?;
+                        // Addr is stored in big endian format
+                        // SAFETY: `decode` initialized every byte of `IN_PKTINFO`;
+                        // reading this union view yields its IPv4 address bytes.
+                        let ip4 =
+                            Ipv4Addr::from(u32::from_be(unsafe { pktinfo.ipi_addr.S_un.S_addr }));
+                        dst_ip = Some(ip4.into());
+                        interface_index = Some(pktinfo.ipi_ifindex);
+                    }
+                    (WinSock::IPPROTO_IPV6, WinSock::IPV6_PKTINFO) => {
+                        // SAFETY: `cmsg` was yielded from the live native control
+                        // buffer walked by `cmsg_iter`.
+                        let pktinfo = unsafe { cmsg.decode::<WinSock::IN6_PKTINFO>() }?;
+                        // Addr is stored in big endian format
+                        // SAFETY: `decode` initialized every byte of `IN6_PKTINFO`;
+                        // the byte-array union view covers the complete IPv6 address.
+                        dst_ip = Some(IpAddr::from(unsafe { pktinfo.ipi6_addr.u.Byte }));
+                        interface_index = Some(pktinfo.ipi6_ifindex);
+                    }
+                    (WinSock::IPPROTO_IP, WinSock::IP_ECN)
+                    | (WinSock::IPPROTO_IPV6, WinSock::IPV6_ECN) => {
+                        // ECN is a C integer https://learn.microsoft.com/en-us/windows/win32/winsock/winsock-ecn
+                        // SAFETY: `cmsg` was yielded from the live native control
+                        // buffer walked by `cmsg_iter`.
+                        ecn_bits = Some(unsafe { cmsg.decode::<c_int>() }?);
+                    }
+                    (WinSock::IPPROTO_UDP, UDP_COALESCED_INFO) => {
+                        // Has type u32 (aka DWORD) per
+                        // https://learn.microsoft.com/en-us/windows/win32/winsock/ipproto-udp-socket-options
+                        // SAFETY: `cmsg` was yielded from the live native control
+                        // buffer walked by `cmsg_iter`.
+                        stride = unsafe { cmsg.decode::<u32>() }?;
+                    }
+                    _ => {}
                 }
-                (WinSock::IPPROTO_IPV6, WinSock::IPV6_PKTINFO) => {
-                    // SAFETY: `cmsg` was yielded from the live native control
-                    // buffer walked by `cmsg_iter`.
-                    let pktinfo = unsafe { cmsg.decode::<WinSock::IN6_PKTINFO>() }?;
-                    // Addr is stored in big endian format
-                    // SAFETY: `decode` initialized every byte of `IN6_PKTINFO`;
-                    // the byte-array union view covers the complete IPv6 address.
-                    dst_ip = Some(IpAddr::from(unsafe { pktinfo.ipi6_addr.u.Byte }));
-                    interface_index = Some(pktinfo.ipi6_ifindex);
-                }
-                (WinSock::IPPROTO_IP, WinSock::IP_ECN)
-                | (WinSock::IPPROTO_IPV6, WinSock::IPV6_ECN) => {
-                    // ECN is a C integer https://learn.microsoft.com/en-us/windows/win32/winsock/winsock-ecn
-                    // SAFETY: `cmsg` was yielded from the live native control
-                    // buffer walked by `cmsg_iter`.
-                    ecn_bits = Some(unsafe { cmsg.decode::<c_int>() }?);
-                }
-                (WinSock::IPPROTO_UDP, UDP_COALESCED_INFO) => {
-                    // Has type u32 (aka DWORD) per
-                    // https://learn.microsoft.com/en-us/windows/win32/winsock/ipproto-udp-socket-options
-                    // SAFETY: `cmsg` was yielded from the live native control
-                    // buffer walked by `cmsg_iter`.
-                    stride = unsafe { cmsg.decode::<u32>() }?;
-                }
-                _ => {}
             }
         }
 

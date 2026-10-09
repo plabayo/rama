@@ -235,7 +235,7 @@ impl Connection {
         &mut self,
         space: SpaceId,
         crypto: &frame::Crypto,
-        payload_len: usize,
+        wire_len: usize,
     ) -> Result<(), TransportError> {
         let expected = if !self.state.is_handshake() {
             SpaceId::Data
@@ -272,7 +272,7 @@ impl Connection {
         // As above: the assembler reports only that it holds too many spans.
         if space
             .crypto_stream
-            .insert(crypto.offset, crypto.data.clone(), payload_len)
+            .insert(crypto.offset, crypto.data.clone(), wire_len)
             .is_err()
         {
             return Err(TransportError::INTERNAL_ERROR(

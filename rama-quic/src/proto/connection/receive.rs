@@ -283,7 +283,9 @@ impl Connection {
                     if packet.header.space() == SpaceId::Handshake && self.state.is_handshake() {
                         self.qlog_handshake_started(now);
                     }
-                    if !self.state.is_closed() {
+                    // Only a packet that passed packet protection carries a number; Retry and
+                    // Version Negotiation are unprotected and must not count as the peer's.
+                    if !self.state.is_closed() && number.is_some() {
                         let spin = match packet.header {
                             Header::Short { spin, .. } => spin,
                             _ => false,
@@ -474,11 +476,16 @@ impl Connection {
             Header::Retry {
                 src_cid: rem_cid, ..
             } => {
+                // Anyone can spoof an unprotected Retry, so a server drops one rather than
+                // letting it end the connection.
                 if self.side.is_server() {
-                    return Err(TransportError::PROTOCOL_VIOLATION("client sent Retry").into());
+                    trace!("discarding Retry sent to a server");
+                    self.qlog_packet_dropped(now, info, DropReason::Rejected);
+                    return Ok(());
                 }
 
-                if self.total_authed_packets > 1
+                if self.total_authed_packets > 0
+                            || self.retry_src_cid.is_some()
                             || packet.payload.len() <= 16 // token + 16 byte tag
                             || !self.crypto.is_valid_retry(
                                 &self.rem_cids.active(),
@@ -502,7 +509,7 @@ impl Connection {
                 trace!("retrying with CID {}", rem_cid);
                 #[expect(
                     clippy::unwrap_used,
-                    reason = "a second Retry is discarded above (`total_authed_packets > 1`), so `client_hello` has not been taken yet"
+                    reason = "a second Retry is discarded above (`retry_src_cid` is set), so `client_hello` has not been taken yet"
                 )]
                 let client_hello = state.client_hello.take().unwrap();
                 self.retry_src_cid = Some(rem_cid);
@@ -699,7 +706,8 @@ impl Connection {
                         ..
                     }
                 );
-                if self.total_authed_packets > 1 || reacted {
+                // RFC 9000 §6.2: discarded once any other packet was processed, a Retry included.
+                if self.total_authed_packets > 0 || self.retry_src_cid.is_some() || reacted {
                     self.qlog_packet_dropped(now, info, DropReason::Rejected);
                     return Ok(());
                 }
@@ -736,7 +744,7 @@ impl Connection {
         packet: Packet,
     ) -> Result<(), TransportError> {
         debug_assert_ne!(packet.header.space(), SpaceId::Data);
-        let payload_len = packet.payload.len();
+        let wire_len = packet.wire_len;
         let mut ack_eliciting = false;
         for result in frame::Iter::new(packet.payload.freeze())? {
             let frame = result?;
@@ -754,7 +762,7 @@ impl Connection {
             match frame {
                 Frame::Padding | Frame::Ping => {}
                 Frame::Crypto(frame) => {
-                    self.read_crypto(packet.header.space(), &frame, payload_len)?;
+                    self.read_crypto(packet.header.space(), &frame, wire_len)?;
                 }
                 Frame::Ack(ack) => {
                     self.on_ack_received(now, packet.header.space(), &ack)?;
