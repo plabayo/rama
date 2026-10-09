@@ -5,11 +5,19 @@ use std::{error::Error, fmt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::{FlowKey, HeaderCapture, HeaderCapturePolicy, ProfileKey};
+use super::{
+    FlowKey, HeaderCapture, HeaderCapturePolicy, JointCapture, JointCaptureLimits,
+    OrderCaptureLimits, OrderedProtocolCapture, ProfileKey, joint::validate_joint_structure,
+    order_capture::validate_structure,
+};
 
 pub(super) const HEADER_DOMAIN: u16 = 1;
 pub(super) const PROFILE_DOMAIN: u16 = 2;
 pub(super) const FLOW_DOMAIN: u16 = 3;
+pub(super) const ORDER_DOMAIN: u16 = 4;
+pub(super) const ORDER_STRUCTURE_DOMAIN: u16 = 5;
+pub(super) const JOINT_DOMAIN: u16 = 6;
+pub(super) const JOINT_STRUCTURE_DOMAIN: u16 = 7;
 
 const PREFIX: &[u8] = b"rama-profile\0";
 const VERSION: u16 = 1;
@@ -75,6 +83,27 @@ impl CanonicalValue {
             FLOW_DOMAIN => {
                 FlowKey::from_canonical(self, maximum_bytes)?;
             }
+            ORDER_DOMAIN => {
+                OrderedProtocolCapture::from_canonical(
+                    self,
+                    OrderCaptureLimits {
+                        elements: maximum_bytes,
+                        bytes: maximum_bytes,
+                    },
+                )?;
+            }
+            ORDER_STRUCTURE_DOMAIN => validate_structure(self, maximum_bytes)?,
+            JOINT_DOMAIN => {
+                JointCapture::from_canonical(
+                    self,
+                    JointCaptureLimits {
+                        slots: maximum_bytes,
+                        value_bytes: maximum_bytes,
+                        bytes: maximum_bytes,
+                    },
+                )?;
+            }
+            JOINT_STRUCTURE_DOMAIN => validate_joint_structure(self, maximum_bytes)?,
             _ => return Err(ProfileDataError::Unsupported("canonical content domain")),
         }
         Ok(())

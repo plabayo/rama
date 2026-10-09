@@ -16,6 +16,7 @@ use rama::{
     },
 };
 
+mod migrations;
 mod postgres;
 use postgres::Pool;
 use tokio_postgres::types;
@@ -67,6 +68,10 @@ impl Storage {
             "create new PG storage",
         );
         let pool = postgres::try_new_pool(pg_url).await?;
+        {
+            let mut client = pool.get().await.context("get fp migration client")?;
+            migrations::apply(&mut client).await?;
+        }
         Ok(Self { pool })
     }
 }
