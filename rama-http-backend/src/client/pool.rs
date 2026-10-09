@@ -2,7 +2,7 @@
 
 use std::{num::NonZeroUsize, time::Duration};
 
-use rama_core::error::{BoxError, BoxErrorExt as _, ErrorExt as _};
+use rama_core::error::BoxError;
 use rama_core::{
     Layer,
     extensions::{Extensions, ExtensionsRef},
@@ -15,7 +15,7 @@ use rama_http_types::{
 };
 use rama_net::client::pool::{
     BasicConnId, BasicConnIdentifier, ConnID, MultiplexPool, MuxSelection, PooledConnector,
-    ReqToConnID,
+    ReqToConnID, SaturationPolicy,
 };
 use rama_net::client::{ConnectRequest, ConnectorService, ProxyRoute};
 use rama_net::http::HttpRequestVersion;
@@ -25,7 +25,7 @@ use rama_tls::client::TlsPoolId;
 use super::{BindBodyToConnLayer, BindBodyToConnector};
 
 /// Default HTTP pooled connector assembled by
-/// [`HttpPooledConnectorConfig::try_build_connector`].
+/// [`HttpPooledConnectorConfig::build_connector`].
 pub type HttpPooledConnector<S, R = HttpConnIdentifier> = BindBodyToConnector<
     PooledConnector<
         S,
@@ -191,37 +191,46 @@ pub(crate) fn connection_version_requirement(input: &ConnectRequest) -> Option<V
     if plaintext_http { version } else { target }
 }
 
-#[derive(Debug, Clone)]
 /// Config used to create a multiplexing http connection pool ([`MultiplexPool`]).
 ///
-/// The per-connection concurrency comes from the connection's
-/// [`MaxConcurrency`](rama_net::conn::MaxConcurrency) extension (set by the http
-/// connectors: 1 for http/1, the stream capacity for http/2), clamped to
-/// `max_concurrent_streams` as an upper bound.
+/// Each connection serves as many concurrent requests as it advertises through
+/// its [`MaxConcurrency`](rama_net::conn::MaxConcurrency) extension (1 for
+/// http/1, the peer's stream limit for http/2 and http/3), unless
+/// `max_streams_per_connection` is lower. A burst on a multiplexed origin waits
+/// for the connections it needs instead of dialing one per request.
+#[derive(Debug, Clone)]
 pub struct HttpPooledConnectorConfig {
-    /// Set the max amount of connections that this connection pool will contain
-    ///
-    /// This is the sum of active connections and idle connections. When this limit
-    /// is hit idle connections will be replaced with new ones.
-    pub max_total: usize,
-    /// Upper bound on the concurrent requests a single connection may serve.
-    ///
-    /// Acts as a ceiling for each connection, each connection also figures
-    /// it's own max concurrency out by itself
-    pub max_concurrent_streams: usize,
+    /// At most this many concurrent requests per connection, below what the
+    /// connection allows. `None`: the peer decides.
+    pub max_streams_per_connection: Option<NonZeroUsize>,
+    /// At most this many connections, stored or being established, across all
+    /// origins; at the limit `saturation_policy` decides. `None`: no limit.
+    pub max_connections_total: Option<NonZeroUsize>,
+    /// At most this many connections per origin. `None`: no limit.
+    pub max_connections_per_id: Option<NonZeroUsize>,
+    /// Idle connections kept per origin: more close, least recently used
+    /// first. `None`: no limit.
+    pub max_idle_per_id: Option<NonZeroUsize>,
+    /// Idle connections kept across all origins, as `max_idle_per_id`.
+    pub max_idle_total: Option<NonZeroUsize>,
+    /// What a request that needs a new connection does at a connection limit.
+    pub saturation_policy: SaturationPolicy,
+    /// How long a request waits for connections being established before it
+    /// dials its own, limits permitting. `None`: it waits for them.
+    pub max_wait_before_dial: Option<Duration>,
     /// How a connection is chosen among several that can serve a request.
     pub selection: MuxSelection,
-    /// If connections have been idle (no active streams) for longer than this
-    /// timeout they are dropped. Only checked when a connection is requested.
+    /// Connections idle (no active streams) for longer than this are dropped.
     pub idle_timeout: Option<Duration>,
     /// How long to wait for the pool to hand out a connection before timing out.
     pub wait_for_pool_timeout: Option<Duration>,
 }
 
-const DEFAULT_MAX_TOTAL: NonZeroUsize = NonZeroUsize::new(50).unwrap();
+const DEFAULT_MAX_CONNECTIONS_TOTAL: NonZeroUsize = NonZeroUsize::new(50).unwrap();
+const DEFAULT_MAX_STREAMS_PER_CONNECTION: NonZeroUsize = NonZeroUsize::new(100).unwrap();
 
-/// Streams to expect of a connection before one shows its own: the least
-/// RFC 9113 recommends a peer to allow.
+/// Streams to expect of a connection before the pool saw any multiplex: the
+/// least RFC 9113 recommends a peer to allow.
 const EXPECTED_STREAMS: NonZeroUsize = NonZeroUsize::new(100).unwrap();
 
 /// The pool's [streams hint](MultiplexPool::with_streams_hint): a request that
@@ -239,56 +248,38 @@ fn expected_streams(input: &Extensions) -> Option<NonZeroUsize> {
     matches!(version, Some(Version::HTTP_2 | Version::HTTP_3)).then_some(EXPECTED_STREAMS)
 }
 
-const DEFAULT_MAX_CONCURRENT_STREAMS: NonZeroUsize = NonZeroUsize::new(100).unwrap();
-
 impl Default for HttpPooledConnectorConfig {
     fn default() -> Self {
         Self {
-            max_total: DEFAULT_MAX_TOTAL.get(),
-            max_concurrent_streams: DEFAULT_MAX_CONCURRENT_STREAMS.get(),
+            max_streams_per_connection: Some(DEFAULT_MAX_STREAMS_PER_CONNECTION),
+            max_connections_total: Some(DEFAULT_MAX_CONNECTIONS_TOTAL),
+            max_connections_per_id: None,
+            max_idle_per_id: None,
+            max_idle_total: None,
+            saturation_policy: SaturationPolicy::default(),
+            max_wait_before_dial: None,
             selection: MuxSelection::default(),
-            idle_timeout: Some(Duration::from_secs(300)),
-            wait_for_pool_timeout: Some(Duration::from_secs(120)),
+            idle_timeout: Some(Duration::from_mins(5)),
+            wait_for_pool_timeout: Some(Duration::from_mins(2)),
         }
     }
 }
 
 impl HttpPooledConnectorConfig {
-    /// Build a pooled HTTP connector using Rama's known-valid default limits.
-    ///
-    /// Unlike [`Self::try_build_connector`], this constructor is infallible because
-    /// its connection and concurrency limits are non-zero constants owned by
-    /// Rama.
-    /// The pool belongs to one fixed connector policy and checks connection-owned
-    /// reuse rules published by transport connectors before every checkout.
-    pub fn build_default_connector<S>(inner: S) -> HttpPooledConnector<S>
-    where
-        S: ConnectorService<ConnectRequest>,
-    {
-        Self::build_default_connector_with_identifier(inner, HttpConnIdentifier::new())
-    }
-
-    /// Build the default pool with a custom connection identifier.
-    pub fn build_default_connector_with_identifier<S, R>(
-        inner: S,
-        identifier: R,
-    ) -> HttpPooledConnector<S, R>
-    where
-        S: ConnectorService<ConnectRequest>,
-        R: ReqToConnID<ConnectRequest, ID = HttpConnId>,
-    {
-        let config = Self::default();
-        let pool = MultiplexPool::new()
-            .with_max_streams_per_connection(DEFAULT_MAX_CONCURRENT_STREAMS)
-            .with_max_connections_total(DEFAULT_MAX_TOTAL)
-            .with_selection(config.selection)
+    /// The pool this config describes, for a [`PooledConnector`] of one's own.
+    #[must_use]
+    pub fn build_pool<C, ID>(&self) -> MultiplexPool<C, ID> {
+        MultiplexPool::new()
+            .maybe_with_max_streams_per_connection(self.max_streams_per_connection)
+            .maybe_with_max_connections_total(self.max_connections_total)
+            .maybe_with_max_connections_per_id(self.max_connections_per_id)
+            .maybe_with_max_idle_per_id(self.max_idle_per_id)
+            .maybe_with_max_idle_total(self.max_idle_total)
+            .with_saturation_policy(self.saturation_policy)
+            .maybe_with_max_wait_before_dial(self.max_wait_before_dial)
+            .with_selection(self.selection)
             .with_streams_hint(expected_streams)
-            .maybe_with_idle_timeout(config.idle_timeout);
-
-        let connector = PooledConnector::new(inner, pool, identifier)
-            .maybe_with_wait_for_pool_timeout(config.wait_for_pool_timeout);
-
-        BindBodyToConnLayer::new().into_layer(connector)
+            .maybe_with_idle_timeout(self.idle_timeout)
     }
 
     /// Build a pooled HTTP connector around `inner`.
@@ -300,7 +291,7 @@ impl HttpPooledConnectorConfig {
     /// and native hooks. Retire it before changing that policy or mutable hook
     /// behavior. Transport connectors publish their request compatibility rules
     /// as connection metadata. Custom identifiers may further partition routes
-    /// through [`Self::try_build_connector_with_identifier`].
+    /// through [`Self::build_connector_with_identifier`].
     ///
     /// A pool injected through request extensions must obey the same fixed-policy
     /// contract. Share it only between compatible connectors, or supply a custom
@@ -314,44 +305,26 @@ impl HttpPooledConnectorConfig {
     /// Warning: the connection returned by this pool should only be used for a single
     /// request. Every request should go through the connector stack again, and will
     /// receive a new or reused connection (maybe multiplexed) of its own.
-    pub fn try_build_connector<S>(self, inner: S) -> Result<HttpPooledConnector<S>, BoxError>
+    pub fn build_connector<S>(self, inner: S) -> HttpPooledConnector<S>
     where
         S: ConnectorService<ConnectRequest>,
     {
-        self.try_build_connector_with_identifier(inner, HttpConnIdentifier::new())
+        self.build_connector_with_identifier(inner, HttpConnIdentifier::new())
     }
 
     /// Build a pool with a custom identifier for the fixed policy of `inner`.
-    pub fn try_build_connector_with_identifier<S, R>(
+    pub fn build_connector_with_identifier<S, R>(
         self,
         inner: S,
         identifier: R,
-    ) -> Result<HttpPooledConnector<S, R>, BoxError>
+    ) -> HttpPooledConnector<S, R>
     where
         S: ConnectorService<ConnectRequest>,
         R: ReqToConnID<ConnectRequest, ID = HttpConnId>,
     {
-        let (Some(max_concurrent_streams), Some(max_total)) = (
-            NonZeroUsize::new(self.max_concurrent_streams),
-            NonZeroUsize::new(self.max_total),
-        ) else {
-            return Err(BoxError::from_static_str(
-                "max_concurrent_streams and max_total must be greater than 0",
-            )
-            .context_field("max_concurrent_streams", self.max_concurrent_streams)
-            .context_field("max_total", self.max_total));
-        };
-        let pool = MultiplexPool::new()
-            .with_max_streams_per_connection(max_concurrent_streams)
-            .with_max_connections_total(max_total)
-            .with_selection(self.selection)
-            .with_streams_hint(expected_streams)
-            .maybe_with_idle_timeout(self.idle_timeout);
-
-        let connector = PooledConnector::new(inner, pool, identifier)
+        let connector = PooledConnector::new(inner, self.build_pool(), identifier)
             .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout);
-
-        Ok(BindBodyToConnLayer::new().into_layer(connector))
+        BindBodyToConnLayer::new().into_layer(connector)
     }
 }
 
@@ -419,7 +392,7 @@ mod tests {
     where
         S: ConnectorService<ConnectRequest>,
     {
-        HttpConnectRequestAdapter::new(config.try_build_connector(inner).unwrap())
+        HttpConnectRequestAdapter::new(config.build_connector(inner))
     }
 
     #[test]
@@ -1012,8 +985,8 @@ mod tests {
     async fn pool_keeps_h2_connection_in_use_until_response_body_consumed() {
         let connector = build_test_connector(
             HttpPooledConnectorConfig {
-                max_concurrent_streams: 1,
-                max_total: 4,
+                max_streams_per_connection: NonZeroUsize::new(1),
+                max_connections_total: NonZeroUsize::new(4),
                 ..Default::default()
             },
             tagging_mock_connector(),
@@ -1043,8 +1016,8 @@ mod tests {
     async fn pool_keeps_h1_connection_in_use_until_response_body_consumed() {
         let connector = build_test_connector(
             HttpPooledConnectorConfig {
-                max_concurrent_streams: 1,
-                max_total: 4,
+                max_streams_per_connection: NonZeroUsize::new(1),
+                max_connections_total: NonZeroUsize::new(4),
                 ..Default::default()
             },
             tagging_mock_connector(),
@@ -1089,7 +1062,7 @@ mod tests {
             }));
         let connector = build_test_connector(
             HttpPooledConnectorConfig {
-                max_total: 4,
+                max_connections_total: NonZeroUsize::new(4),
                 ..Default::default()
             },
             inner,
@@ -1206,7 +1179,7 @@ mod tests {
             }));
         let connector = build_test_connector(
             HttpPooledConnectorConfig {
-                max_total: 4,
+                max_connections_total: NonZeroUsize::new(4),
                 ..Default::default()
             },
             inner,
@@ -1261,7 +1234,7 @@ mod tests {
             }));
         let connector = build_test_connector(
             HttpPooledConnectorConfig {
-                max_total: 4,
+                max_connections_total: NonZeroUsize::new(4),
                 ..Default::default()
             },
             inner,
@@ -1313,7 +1286,7 @@ mod tests {
             }));
         let connector = build_test_connector(
             HttpPooledConnectorConfig {
-                max_total: 4,
+                max_connections_total: NonZeroUsize::new(4),
                 ..Default::default()
             },
             inner,
@@ -1380,7 +1353,7 @@ mod tests {
             .into_layer(HttpProxyConnectorLayer::required().into_layer(mock));
         let connector = build_test_connector(
             HttpPooledConnectorConfig {
-                max_total: 4,
+                max_connections_total: NonZeroUsize::new(4),
                 ..Default::default()
             },
             inner,
@@ -1457,7 +1430,7 @@ mod tests {
             }));
         let connector = build_test_connector(
             HttpPooledConnectorConfig {
-                max_total: 4,
+                max_connections_total: NonZeroUsize::new(4),
                 ..Default::default()
             },
             inner,
@@ -1501,8 +1474,8 @@ mod tests {
     async fn pool_reuses_connection_after_body_consumed() {
         let connector = build_test_connector(
             HttpPooledConnectorConfig {
-                max_concurrent_streams: 1,
-                max_total: 4,
+                max_streams_per_connection: NonZeroUsize::new(1),
+                max_connections_total: NonZeroUsize::new(4),
                 ..Default::default()
             },
             tagging_mock_connector(),
@@ -1610,8 +1583,8 @@ mod tests {
     async fn pool_respects_max_concurrent_streams() {
         let connector = build_test_connector(
             HttpPooledConnectorConfig {
-                max_concurrent_streams: 2,
-                max_total: 4,
+                max_streams_per_connection: NonZeroUsize::new(2),
+                max_connections_total: NonZeroUsize::new(4),
                 ..Default::default()
             },
             tagging_mock_connector(),
@@ -1682,8 +1655,8 @@ mod tests {
     async fn pool_binds_connection_across_streaming_body() {
         let connector = build_test_connector(
             HttpPooledConnectorConfig {
-                max_concurrent_streams: 1,
-                max_total: 4,
+                max_streams_per_connection: NonZeroUsize::new(1),
+                max_connections_total: NonZeroUsize::new(4),
                 ..Default::default()
             },
             large_body_mock_connector(),

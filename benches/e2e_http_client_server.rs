@@ -12,6 +12,7 @@
 use std::{
     convert::Infallible,
     future::Future,
+    num::NonZeroUsize,
     pin::Pin,
     sync::{
         Arc,
@@ -30,7 +31,7 @@ use rama::{
     http::{
         HeaderName, HeaderValue, Request, Response, Version,
         body::util::BodyExt,
-        client::{EasyHttpWebClient, Http3Connector},
+        client::{EasyHttpWebClient, Http3Connector, HttpPooledConnectorConfig},
         layer::{
             compression::CompressionLayer,
             cors::CorsLayer,
@@ -64,7 +65,7 @@ use rama::{
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
-        client::ProxyRoute,
+        client::{ProxyRoute, pool::SaturationPolicy},
         http::server::HttpPeekRouter,
         proxy::IoForwardService,
         socket::SocketOptions,
@@ -682,6 +683,41 @@ fn load_tls_client_config(alpn: ApplicationProtocol) -> TlsClientConfig {
         .with_server_verify(ServerVerifyMode::Disable)
 }
 
+/// The pool of the load clients: the default, or as `RAMA_BENCH_POOL` sets it,
+/// such as `streams=none,total=none,per_id=32,idle_per_id=8,idle_total=256,policy=after:100`
+/// (`policy` is `wait`, `cold`, `idle` or `after:<ms>`, `dial_after` in ms).
+fn load_pool() -> HttpPooledConnectorConfig {
+    let mut config = HttpPooledConnectorConfig::default();
+    let Ok(knobs) = std::env::var("RAMA_BENCH_POOL") else {
+        return config;
+    };
+    let limit = |value: &str| value.parse().ok().and_then(NonZeroUsize::new);
+    let millis = |value: &str| value.parse().ok().map(Duration::from_millis);
+    for knob in knobs.split(',').filter(|knob| !knob.is_empty()) {
+        let (key, value) = knob.split_once('=').expect("key=value");
+        match key {
+            "streams" => config.max_streams_per_connection = limit(value),
+            "total" => config.max_connections_total = limit(value),
+            "per_id" => config.max_connections_per_id = limit(value),
+            "idle_per_id" => config.max_idle_per_id = limit(value),
+            "idle_total" => config.max_idle_total = limit(value),
+            "dial_after" => config.max_wait_before_dial = millis(value),
+            "policy" => {
+                config.saturation_policy = match value {
+                    "wait" => SaturationPolicy::Wait,
+                    "cold" => SaturationPolicy::EvictIdleWhenCold,
+                    "idle" => SaturationPolicy::EvictIdle,
+                    after => SaturationPolicy::EvictIdleAfter(
+                        millis(after.trim_start_matches("after:")).expect("after:<ms>"),
+                    ),
+                }
+            }
+            other => panic!("unknown RAMA_BENCH_POOL knob {other}"),
+        }
+    }
+    config
+}
+
 /// The stock client used on both legs: pooled, any certificate accepted.
 fn load_client(
     version: HttpVersion,
@@ -697,7 +733,7 @@ fn load_client(
             builder
                 .with_tls_support_using_boringssl(load_tls_client_config(load_alpn(version)))
                 .with_default_http_connector(Executor::default())
-                .with_default_connection_pool()
+                .with_connection_pool(load_pool())
                 .build_client(),
         )
     } else {
@@ -705,7 +741,7 @@ fn load_client(
             builder
                 .without_tls_support()
                 .with_default_http_connector(Executor::default())
-                .with_default_connection_pool()
+                .with_connection_pool(load_pool())
                 .build_client(),
         )
     }
@@ -726,7 +762,7 @@ fn load_h3_client() -> impl Service<Request, Output = Response, Error = OpaqueEr
         .with_tls_support_using_boringssl(load_tls_client_config(ApplicationProtocol::HTTP_2))
         .with_default_http_connector(Executor::default())
         .with_http3_support(h3)
-        .with_default_connection_pool()
+        .with_connection_pool(load_pool())
         .build_client()
 }
 

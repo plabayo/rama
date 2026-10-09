@@ -1,7 +1,6 @@
-use std::{fmt, num::NonZeroUsize};
+use std::fmt;
 
 use rama::{
-    error::BoxErrorExt as _,
     extensions::Extension,
     http::{
         client::{
@@ -14,7 +13,7 @@ use rama::{
         Protocol,
         client::{
             ConnectRequest, ProxyRoutesConnector,
-            pool::{ConnID, MultiplexPool, ReqToConnID},
+            pool::{ConnID, ReqToConnID},
         },
     },
     tcp::client::service::TcpConnector,
@@ -59,19 +58,7 @@ pub(super) fn replay_client(
     let tls_config = TlsClientConfig::default_http();
     let transport = TcpConnector::new().with_connector(tcp_options);
     let config = HttpPooledConnectorConfig::default();
-    let (Some(max_concurrent_streams), Some(max_total)) = (
-        NonZeroUsize::new(config.max_concurrent_streams),
-        NonZeroUsize::new(config.max_total),
-    ) else {
-        return Err(BoxError::from_static_str(
-            "max_concurrent_streams and max_total must be greater than 0",
-        ));
-    };
-    let pool = MultiplexPool::new()
-        .with_max_streams_per_connection(max_concurrent_streams)
-        .with_max_connections_total(max_total)
-        .with_selection(config.selection)
-        .maybe_with_idle_timeout(config.idle_timeout);
+    let pool = config.build_pool();
     let client = EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(transport)
         .with_default_dns_connector()

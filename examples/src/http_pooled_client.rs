@@ -44,9 +44,12 @@ use rama::{
 
 // Everything else we need is provided by the standard library, community crates or tokio.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    num::NonZeroUsize,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tokio::{sync::oneshot::Sender, sync::oneshot::channel};
 
@@ -70,11 +73,10 @@ async fn main() {
         // We override a single field here only to show the config is tunable.
         // `max_concurrent_streams` caps how many requests one connection may
         // multiplex over a single connection, every other field keeps its default.
-        .try_with_connection_pool(HttpPooledConnectorConfig {
-            max_concurrent_streams: 20,
+        .with_connection_pool(HttpPooledConnectorConfig {
+            max_streams_per_connection: NonZeroUsize::new(20),
             ..Default::default()
         })
-        .expect("connection pool")
         .build_client();
 
     let resp = client

@@ -447,6 +447,7 @@ where
 mod tests {
     use std::{
         convert::Infallible,
+        num::NonZeroUsize,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
@@ -1622,12 +1623,11 @@ mod tests {
             .without_proxy_support()
             .without_tls_support()
             .with_default_http_connector(Executor::default())
-            .try_with_connection_pool(HttpPooledConnectorConfig {
-                max_concurrent_streams: 1,
-                max_total: 4,
+            .with_connection_pool(HttpPooledConnectorConfig {
+                max_streams_per_connection: NonZeroUsize::new(1),
+                max_connections_total: NonZeroUsize::new(4),
                 ..Default::default()
             })
-            .unwrap()
             .build_client();
 
         let req = || {
@@ -1736,11 +1736,10 @@ mod tests {
             .without_proxy_support()
             .without_tls_support()
             .with_default_http_connector(Executor::default())
-            .try_with_connection_pool(HttpPooledConnectorConfig {
-                max_concurrent_streams: 2,
+            .with_connection_pool(HttpPooledConnectorConfig {
+                max_streams_per_connection: NonZeroUsize::new(2),
                 ..Default::default()
             })
-            .unwrap()
             .build_client();
 
         let req = || {
