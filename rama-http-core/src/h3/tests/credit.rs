@@ -527,3 +527,33 @@ async fn pool_waiters_for_other_ids_pass_a_closed_connection() {
     drop(sender);
     pair.close().await;
 }
+
+/// Credit a returned reservation frees reaches admission as one unit; a close
+/// as a change of any size.
+#[tokio::test(start_paused = true)]
+async fn returned_stream_credit_reaches_admission_in_units() {
+    tokio::time::timeout(LIMIT, async {
+        let mut transport = TransportConfig::default();
+        transport.set_max_concurrent_bidi_streams(4u32);
+        let pair = Pair::in_memory(None, Some(transport)).await;
+        let told = Arc::new(Told::default());
+        pair.client
+            .stream_budget_subscribe(Dir::Bi, Arc::downgrade(&told) as Weak<dyn ChangeListener>);
+        let first = pair.client.try_reserve_bi().unwrap().unwrap();
+        let second = pair.client.try_reserve_bi().unwrap().unwrap();
+        assert!(told.0.lock().is_empty(), "reserving frees nothing");
+        drop(first);
+        assert_eq!(std::mem::take(&mut *told.0.lock()), [Change::Freed]);
+        let (send, recv) = second.open().unwrap();
+        assert!(
+            told.0.lock().is_empty(),
+            "opening a reserved stream frees nothing"
+        );
+        pair.client.close(0u32, b"done");
+        assert_eq!(std::mem::take(&mut *told.0.lock()), [Change::Other]);
+        drop((send, recv));
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}

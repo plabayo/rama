@@ -455,7 +455,7 @@ fn a_wake_landing_during_a_look_is_passed_on_by_the_served_waiter() {
     let count = Arc::new(AtomicUsize::new(0));
     let slot_waiters = Arc::new(WaitQueue::new());
     let lane = Arc::new(WaitQueue::new());
-    let mut waiting = Waiting::new(&count, &slot_waiters, 0);
+    let mut waiting = Waiting::new(&count, &slot_waiters, None, 0);
     waiting.register(&lane);
     let behind = Party::new(1).waiter();
     lane.push(&behind);
@@ -516,4 +516,33 @@ async fn a_notification_during_a_look_leads_to_another_look() {
         "the announcement was not lost between the look and the wait"
     );
     drop((held, waiter.poll()));
+}
+
+#[test]
+fn a_cancellation_wave_through_the_slot_queue_stays_linear() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let slot_waiters = Arc::new(WaitQueue::new());
+    let lanes: Vec<_> = (0..256).map(|_| Arc::new(WaitQueue::new())).collect();
+    // Each waits in its own lane and for a slot; each leave empties its lane.
+    let waitings: Vec<_> = lanes
+        .iter()
+        .enumerate()
+        .map(|(order, lane)| {
+            let mut waiting = Waiting::new(&count, &slot_waiters, None, order as u64);
+            waiting.register(lane);
+            waiting.register_for_chances(&slot_waiters);
+            waiting
+        })
+        .collect();
+    let parties: Vec<_> = waitings
+        .iter()
+        .map(|waiting| waiting.party.clone())
+        .collect();
+    drop(waitings);
+    let wakes: usize = parties.iter().map(|party| party.wakes()).sum();
+    assert!(
+        wakes <= 3 * lanes.len(),
+        "{wakes} wakes for {} leaves",
+        lanes.len()
+    );
 }

@@ -40,11 +40,40 @@ pub struct MultiplexSlot {
     /// Of the total limit, if the pool has one.
     pub(super) total: Option<OwnedSemaphorePermit>,
     /// Of the connection's id, if the pool limits connections per id.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "held: dropping it frees the id's slot")
-    )]
-    pub(super) id: Option<OwnedSemaphorePermit>,
+    pub(super) id: Option<IdPermit>,
+}
+
+/// The connection limit of one id: its slots, and the checkouts at the limit
+/// that may replace one of its idle connections.
+#[derive(Debug)]
+pub(super) struct IdLimit {
+    pub(super) slots: Arc<Semaphore>,
+    pub(super) evictors: Arc<WaitQueue>,
+}
+
+impl IdLimit {
+    pub(super) fn new(max: NonZeroUsize) -> Self {
+        Self {
+            slots: Arc::new(Semaphore::new(max.get())),
+            evictors: Arc::new(WaitQueue::new()),
+        }
+    }
+
+    /// Whether nothing holds a slot of it, waits for one, or a checkout of its
+    /// id may queue in it.
+    pub(super) fn is_unused(self: &Arc<Self>) -> bool {
+        Arc::strong_count(self) == 1
+            && Arc::strong_count(&self.slots) == 1
+            && Arc::strong_count(&self.evictors) == 1
+    }
+}
+
+/// One slot of an id's limit, with the limit it belongs to.
+#[derive(Debug)]
+pub(super) struct IdPermit {
+    #[expect(dead_code, reason = "held: dropping it frees the id's slot")]
+    pub(super) permit: OwnedSemaphorePermit,
+    pub(super) limit: Arc<IdLimit>,
 }
 
 /// How long [`SaturationPolicy::default`] lets a checkout wait for its own

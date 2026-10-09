@@ -446,3 +446,115 @@ async fn another_id_gets_its_turn_while_an_id_keeps_waiters() {
         assert!(round < 8, "another id starves");
     }
 }
+
+#[tokio::test]
+async fn an_older_slot_waiter_gets_the_idle_connection_whatever_runs_first() {
+    let pool = MultiplexPool::new()
+        .with_max_streams_per_connection(NonZeroUsize::new(1).unwrap())
+        .with_max_connections_total(NonZeroUsize::new(1).unwrap())
+        .with_saturation_policy(SaturationPolicy::EvictIdleWhenCold);
+    let held = add(&pool, 0, None).await;
+    let mut other = checkout(&pool, 1);
+    assert!(other.poll().is_pending());
+    let mut same = queue(&pool, &EMPTY_INPUT);
+    drop(held);
+    // Both may run: the younger lane waiter runs first and must leave it.
+    assert!(
+        same.poll().is_pending(),
+        "kept for the older checkout of another id"
+    );
+    assert!(matches!(
+        other.poll(),
+        Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+    ));
+}
+
+#[tokio::test]
+async fn a_newcomer_leaves_an_idle_connection_to_an_older_slot_waiter() {
+    let pool = MultiplexPool::new()
+        .with_max_streams_per_connection(NonZeroUsize::new(1).unwrap())
+        .with_max_connections_total(NonZeroUsize::new(1).unwrap())
+        .with_saturation_policy(SaturationPolicy::EvictIdleWhenCold);
+    let held = add(&pool, 0, None).await;
+    let mut other = checkout(&pool, 1);
+    assert!(other.poll().is_pending());
+    drop(held);
+    // A keep-alive loop's next request comes before the woken waiter runs.
+    let mut next = checkout(&pool, 0);
+    assert!(
+        next.poll().is_pending(),
+        "the idle connection is not the newcomer's"
+    );
+    assert!(matches!(
+        other.poll(),
+        Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+    ));
+}
+
+#[tokio::test]
+async fn leaving_a_lane_empty_announces_its_idle_connection() {
+    let pool =
+        MultiplexPool::evicting(1, 2).with_saturation_policy(SaturationPolicy::EvictIdleWhenCold);
+    let one = add(&pool, 0, Some(keyed(0, 1))).await;
+    let _two = add(&pool, 0, Some(keyed(0, 2))).await;
+    let input = want(1);
+    let mut moved = queue(&pool, &input);
+    let mut other = checkout(&pool, 1);
+    assert!(other.poll().is_pending());
+    input.insert(Want(2));
+    drop(one);
+    // Its only waiter wants another key now: it leaves the lane empty.
+    assert!(moved.poll().is_pending());
+    assert!(
+        other.is_woken(),
+        "the idle connection nobody waits for is announced"
+    );
+    assert!(matches!(
+        other.poll(),
+        Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+    ));
+}
+
+#[tokio::test]
+async fn a_connection_breaking_lets_a_checkout_waiting_for_a_slot_take_it_out() {
+    let pool = MultiplexPool::new()
+        .with_max_streams_per_connection(NonZeroUsize::new(1).unwrap())
+        .with_max_connections_total(NonZeroUsize::new(1).unwrap())
+        .with_saturation_policy(SaturationPolicy::Wait);
+    let held = add(&pool, 0, None).await;
+    let health = held
+        .extensions()
+        .get_arc::<ConnectionHealthWatcher>()
+        .unwrap();
+    drop(held);
+    let mut other = checkout(&pool, 1);
+    assert!(other.poll().is_pending(), "it may not evict");
+    health.mark_broken();
+    assert!(
+        other.is_woken(),
+        "a broken connection is no one's: let it be taken out"
+    );
+    assert!(matches!(
+        other.poll(),
+        Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+    ));
+}
+
+#[tokio::test]
+async fn an_evictor_keeps_the_chance_it_used() {
+    let pool = MultiplexPool::evicting(1, 1);
+    let held = add(&pool, 0, None).await;
+    let mut first = checkout(&pool, 1);
+    assert!(first.poll().is_pending());
+    let mut second = checkout(&pool, 2);
+    assert!(second.poll().is_pending());
+    drop(held);
+    let Poll::Ready(Ok(ConnectionResult::CreatePermit(evicted))) = first.poll() else {
+        panic!("the first slot waiter evicts");
+    };
+    assert!(
+        !second.is_woken(),
+        "one idle connection, one chance: nothing left for the next"
+    );
+    drop((evicted, second));
+}

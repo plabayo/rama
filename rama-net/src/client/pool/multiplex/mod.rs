@@ -1,13 +1,11 @@
 //! Multiplexing connection pool.
 //!
 //! [`MultiplexPool`] keeps every connection in storage and hands out a cheap
-//! [`MultiplexedConnection`] that shares a connection connection through `&self`. A single
-//! connection serves up to `min(max_concurrent_streams, MaxConcurrency)` concurrent
-//! users (where [`MaxConcurrency`] is the connection's advertised capacity,
-//! defaulting to [`usize::MAX`] when unset), the exclusive [`super::LruDropPool`] is the
-//! special case of capacity = 1 for owned connections. If the connection pool is at max
-//! capacity the pool will wait until a connection with a matching ID has capacity again
-//! or it will evict an idle connection with a LRU policy.
+//! [`MultiplexedConnection`] that shares a connection through `&self`. A single connection
+//! serves up to `min(max_streams_per_connection, MaxConcurrency)` concurrent users, where
+//! [`MaxConcurrency`] is the connection's advertised capacity ([`usize::MAX`] when unset) and
+//! the pool's own cap is unset by default, so the peer decides. The exclusive
+//! [`super::LruDropPool`] is the special case of capacity 1 for owned connections.
 //!
 //! Because the connector stack runs for every request, a [`MultiplexedConnection`] is
 //! established, serves its single request, and is dropped, so a [`MultiplexedConnection`]
@@ -24,11 +22,18 @@
 //! opened many connections leaves the later ones untouched and idle, where the idle timeout
 //! reaps them (see [`MultiplexPool::with_idle_timeout`]).
 //!
+//! Connections are not limited by default. With a limit per ID or in total (see
+//! [`MultiplexPool::with_max_connections_per_id`] and
+//! [`MultiplexPool::with_max_connections_total`]), a checkout that needs a new connection at
+//! the limit waits for a slot or, as the [`SaturationPolicy`] allows, replaces an idle
+//! connection: of its own ID at the ID's limit, of any ID at the total one.
+//!
 //! A checkout that finds no room waits, first come first served, in every lane it can be
 //! served from: a released stream wakes the first waiter of its lane, a capacity change of a
 //! connection wakes all of them, and newcomers never take capacity ahead of them. A waiter
-//! that leaves without using a wake passes it on. Idle connections of a lane with waiters are
-//! theirs: only once nobody waits there can they be evicted for another ID.
+//! that leaves without using a wake passes it on. An idle connection that can take a stream
+//! is its lane's waiters', unless a checkout waiting to evict it arrived before them: then it
+//! is that checkout's, whoever runs first.
 
 mod connection;
 mod lanes;
@@ -37,9 +42,10 @@ mod waiting;
 
 pub use self::connection::MultiplexedConnection;
 use self::connection::{Admitted, ConnectionSlot, StoredConnection, relist_stored};
-use self::lanes::{Claimed, IdBucket, OnlyLane, RequestLanes, Snapshot, select_and_admit};
+use self::lanes::{Claimed, IdBucket, Lane, OnlyLane, RequestLanes, Snapshot, select_and_admit};
+use self::policy::{IdLimit, IdPermit};
 pub use self::policy::{MultiplexSlot, SaturationPolicy};
-use self::waiting::{Blocked, Look, SlotWait, Waiting, maybe, maybe_pinned};
+use self::waiting::{Blocked, IdSlotWait, Look, SlotWait, Waiting, maybe, maybe_pinned};
 
 use super::reuse::{KeyedLane, LaneKey, ReuseClass};
 use super::{
@@ -86,25 +92,17 @@ pub enum MuxSelection {
     RoundRobin,
 }
 
-/// A source of the connection changed: its MaxConcurrency, transport credit,
-/// health, or work outliving its handouts.
-impl<C: Send + Sync + 'static, ID: Send + Sync + 'static> ChangeListener
-    for StoredConnection<C, ID>
-{
-    fn changed(&self, change: Change) {
-        fence(Ordering::SeqCst);
-        let wake = match change {
-            Change::Freed => WaitQueue::wake_one,
-            // How much capacity changed is unknown: every waiter of the lane looks.
-            Change::Other => WaitQueue::wake_all,
-        };
-        self.freed(wake, true);
-    }
-}
-
 /// Connections taken out of storage, dropped only after the storage lock is
 /// released so their sockets close outside it.
 type Doomed<C, ID> = Vec<Arc<StoredConnection<C, ID>>>;
+
+/// A connection taken out of storage to make room, with its slots.
+struct Evicted<C, ID> {
+    conn: Arc<StoredConnection<C, ID>>,
+    slots: MultiplexSlot,
+    /// Whether another connection could have gone instead.
+    more: bool,
+}
 
 /// How many `open` candidates one checkout tries before it falls back to the
 /// exact path. Refusing candidates are the exception; the exact path handles
@@ -124,7 +122,7 @@ struct Storage<C, ID> {
     by_id: HashMap<ID, IdBucket<C, ID>>,
     /// The connection slots of every id, if the pool limits them per id: kept
     /// while a connection, create permit or waiter holds one of them.
-    id_slots: HashMap<ID, Arc<Semaphore>>,
+    id_slots: HashMap<ID, Arc<IdLimit>>,
 }
 
 /// Connection pool that multiplexes concurrent users over shared
@@ -276,33 +274,50 @@ impl<C, ID> MultiplexPool<C, ID> {
         }
     }
 
-    generate_set_and_with! {
-        /// Keep at most this many connections, stored or being established, across
-        /// all ids. At the limit, [`SaturationPolicy`] decides. Unset, no limit.
-        pub fn max_connections_total(mut self, max: Option<NonZeroUsize>) -> Self {
-            self.max_connections_total = max;
-            self.total_slots = max.map(|max| Arc::new(Semaphore::new(max.get())));
-            self
-        }
+    /// Keep at most `max` connections, stored or being established, across all
+    /// ids. At the limit, [`SaturationPolicy`] decides. Without it, no limit.
+    ///
+    /// Configure it before the pool is used: clones share its connections, and
+    /// so the slots they hold.
+    #[must_use]
+    pub fn with_max_connections_total(self, max: NonZeroUsize) -> Self {
+        self.maybe_with_max_connections_total(Some(max))
+    }
+
+    /// See [`Self::with_max_connections_total`]; `None` is no limit.
+    #[must_use]
+    pub fn maybe_with_max_connections_total(mut self, max: Option<NonZeroUsize>) -> Self {
+        self.max_connections_total = max;
+        self.total_slots = max.map(|max| Arc::new(Semaphore::new(max.get())));
+        self
     }
 
     generate_set_and_with! {
-        /// What a checkout that needs a connection does at the total limit, see
-        /// [`Self::with_max_connections_total`].
+        /// What a checkout that needs a connection does at a limit, see
+        /// [`Self::with_max_connections_total`] and
+        /// [`Self::with_max_connections_per_id`].
         pub fn saturation_policy(mut self, policy: SaturationPolicy) -> Self {
             self.saturation = policy;
             self
         }
     }
 
-    generate_set_and_with! {
-        /// Keep at most this many connections, stored or being established, per id:
-        /// at the limit a checkout waits for its id's capacity, other ids go on.
-        /// Unset, no limit.
-        pub fn max_connections_per_id(mut self, max: Option<NonZeroUsize>) -> Self {
-            self.max_connections_per_id = max;
-            self
-        }
+    /// Keep at most `max` connections, stored or being established, per id: at
+    /// the limit a checkout waits for its id's capacity or, as
+    /// [`SaturationPolicy`] allows, replaces one of the id's idle connections;
+    /// other ids go on. Without it, no limit.
+    ///
+    /// Configure it before the pool is used: clones share the slots of each id.
+    #[must_use]
+    pub fn with_max_connections_per_id(self, max: NonZeroUsize) -> Self {
+        self.maybe_with_max_connections_per_id(Some(max))
+    }
+
+    /// See [`Self::with_max_connections_per_id`]; `None` is no limit.
+    #[must_use]
+    pub fn maybe_with_max_connections_per_id(mut self, max: Option<NonZeroUsize>) -> Self {
+        self.max_connections_per_id = max;
+        self
     }
 
     generate_set_and_with! {
@@ -458,9 +473,10 @@ where
         });
     }
 
-    /// Remove the least-recently-used idle connection (any id), returning it
-    /// together with its total slot so the caller can reuse the slot and drop
-    /// the connection outside the lock.
+    /// Remove the least-recently-used idle connection, of `within` or of any
+    /// id, returning it with its slots, so the caller can take them over and
+    /// drop the connection outside the lock, and whether another one could
+    /// have gone.
     ///
     /// An idle connection that can take a stream is its lane's waiters', unless
     /// the evictor arrived before them or is their front (its own look just
@@ -468,43 +484,145 @@ where
     fn evict_lru_idle(
         storage: &mut Storage<C, ID>,
         evictor: Option<&Waiting>,
-    ) -> Option<(Arc<StoredConnection<C, ID>>, Option<OwnedSemaphorePermit>)> {
-        let (conn, slot) = {
-            let mut candidate = None;
-            let mut oldest = u64::MAX;
-            // Plain loops: this scans every stored connection.
-            for lane in storage.by_id.values().flat_map(IdBucket::lanes) {
-                let spoken_for = lane.waiters.front_order().is_some_and(|front| {
-                    evictor.is_none_or(|evictor| front < evictor.party.order())
-                });
-                for conn in &lane.conns {
-                    if spoken_for && conn.has_capacity(conn.stream_cap) {
-                        continue;
-                    }
-                    let last_idle = conn.last_idle.as_nanos();
-                    if last_idle >= oldest || !conn.is_idle() {
-                        continue;
-                    }
-                    let slot = conn.pool_slot.lock();
-                    if slot.retired || !conn.is_idle() {
-                        continue;
-                    }
-                    // Keep the best candidate idle until its slot is transferred.
-                    // Admission takes this same lock; no retry loop is needed.
-                    oldest = last_idle;
-                    candidate = Some((conn, slot));
+        within: Option<&ID>,
+    ) -> Option<Evicted<C, ID>> {
+        let (conn, slots, more) = {
+            let picked = match within {
+                Some(id) => Self::pick_lru_idle(
+                    storage.by_id.get(id).into_iter().flat_map(IdBucket::lanes),
+                    evictor,
+                ),
+                None => {
+                    Self::pick_lru_idle(storage.by_id.values().flat_map(IdBucket::lanes), evictor)
                 }
-            }
-            let (conn, mut slot) = candidate?;
+            };
+            let (conn, mut slot, more) = picked?;
             slot.retired = true;
-            (conn.clone(), slot.slots.total.take())
+            let slots = std::mem::replace(
+                &mut slot.slots,
+                MultiplexSlot {
+                    total: None,
+                    id: None,
+                },
+            );
+            (conn.clone(), slots, more)
         };
         let bucket = storage.by_id.get_mut(&conn.id)?;
-        let evicted = bucket.remove(&conn)?;
+        let conn = bucket.remove(&conn)?;
         if bucket.is_empty() {
             storage.by_id.remove(&conn.id);
         }
-        Some((evicted, slot))
+        Some(Evicted { conn, slots, more })
+    }
+
+    /// The least recently used evictable connection of `lanes`, with its slot
+    /// lock held so admission cannot take it meanwhile, and whether there were
+    /// more.
+    fn pick_lru_idle<'a>(
+        lanes: impl Iterator<Item = &'a Lane<C, ID>>,
+        evictor: Option<&Waiting>,
+    ) -> Option<(
+        &'a Arc<StoredConnection<C, ID>>,
+        parking_lot::MutexGuard<'a, ConnectionSlot>,
+        bool,
+    )>
+    where
+        C: 'a,
+        ID: 'a,
+    {
+        let mut candidate = None;
+        let mut oldest = u64::MAX;
+        let mut found = 0_usize;
+        // Plain loops: this scans every connection of the lanes.
+        for lane in lanes {
+            let spoken_for = lane
+                .waiters
+                .front_order()
+                .is_some_and(|front| evictor.is_none_or(|evictor| front < evictor.party.order()));
+            for conn in &lane.conns {
+                if spoken_for && conn.has_capacity(conn.stream_cap) {
+                    continue;
+                }
+                if !conn.is_idle() {
+                    continue;
+                }
+                found += 1;
+                let last_idle = conn.last_idle.as_nanos();
+                if last_idle >= oldest {
+                    continue;
+                }
+                let slot = conn.pool_slot.lock();
+                if slot.retired || !conn.is_idle() {
+                    continue;
+                }
+                // Keep the best candidate idle until its slots are taken.
+                // Admission takes this same lock; no retry loop is needed.
+                oldest = last_idle;
+                candidate = Some((conn, slot));
+            }
+        }
+        let (conn, slot) = candidate?;
+        Some((conn, slot, found > 1))
+    }
+
+    /// Evict an idle connection, of `within` or of any id, for a checkout of
+    /// `id` the saturation policy lets evict: it queues for the chances of
+    /// `chances` first, and the older ones there go first. Returns the slots of
+    /// the evicted connection.
+    fn evict_for(
+        &self,
+        id: &ID,
+        lanes: &RequestLanes,
+        look: &mut Look<'_>,
+        patient: bool,
+        chances: &Arc<WaitQueue>,
+        within: Option<&ID>,
+    ) -> Option<MultiplexSlot> {
+        let evicted = {
+            let mut storage = self.storage.lock();
+            // Connections that cannot take a stream do not count.
+            let cold = storage.by_id.get_mut(id).is_none_or(|bucket| {
+                bucket.request_lanes_mut(lanes).into_iter().all(|lane| {
+                    !lane
+                        .conns
+                        .iter()
+                        .any(|conn| conn.effective_capacity(conn.stream_cap) > 0)
+                })
+            });
+            if !self.may_evict(cold, patient) {
+                return None;
+            }
+            // Queued before looking for a connection to evict: see
+            // `StoredConnection::freed`.
+            if let Look::Register(waiting) = look {
+                waiting.register_for_chances(chances);
+            }
+            let waiting = look.waiting();
+            if !chances.admits(waiting.and_then(|waiting| waiting.waiter_in(chances))) {
+                return None;
+            }
+            Self::evict_lru_idle(&mut storage, waiting, within)?
+        };
+        drop(evicted.conn);
+        if let Look::Register(waiting) = look {
+            waiting.served(Some(chances.clone()));
+        }
+        if evicted.more {
+            // Another idle connection could go too: the next one may look.
+            chances.wake_one();
+        }
+        Some(evicted.slots)
+    }
+
+    /// Whether `conn` is idle and kept for a checkout waiting to evict it that
+    /// arrived before this one (`waiting`, or a newcomer). Asks its admission
+    /// whether work outlives its handouts: call without the storage lock.
+    fn kept_for_evictor(&self, conn: &StoredConnection<C, ID>, waiting: Option<&Waiting>) -> bool {
+        let order = waiting.map_or(u64::MAX, |waiting| waiting.party.order());
+        let older =
+            |evictors: &WaitQueue| evictors.front_order().is_some_and(|front| front < order);
+        (older(&self.slot_waiters) || conn.id_evictors.as_deref().is_some_and(older))
+            && conn.is_idle()
     }
 
     /// Fast checkout: hand out the connection the selection strategy prefers
@@ -591,6 +709,10 @@ where
                 retired.push(conn);
                 continue;
             }
+            if self.kept_for_evictor(&conn, waiting) {
+                rejected.push(conn);
+                continue;
+            }
             match conn.try_admit(lane_gen, cap, input) {
                 Some(Admitted(admission)) => {
                     handout = Some(MultiplexedConnection {
@@ -652,10 +774,13 @@ where
         }
         let mut doomed = Doomed::new();
         let mut storage = self.storage.lock();
-        let Some(bucket) = storage.by_id.get_mut(id) else {
+        if !storage.by_id.contains_key(id) {
             return (Snapshot::new(), false);
-        };
+        }
         if matches!(look, Look::New) {
+            let Some(bucket) = storage.by_id.get_mut(id) else {
+                return (Snapshot::new(), false);
+            };
             let mut stored = false;
             let mut room = false;
             for lane in bucket.request_lanes_mut(lanes) {
@@ -688,7 +813,7 @@ where
     ) -> ConnectionResult<MultiplexedConnection<C, ID>, MultiplexSlot> {
         let lanes = self.request_lanes(id, input);
         let mut doomed = Vec::new();
-        let same_lane = if id.is_reusable() {
+        let mut same_lane = if id.is_reusable() {
             self.snapshot(
                 &mut self.storage.lock(),
                 id,
@@ -700,6 +825,7 @@ where
             Snapshot::new()
         };
         drop(doomed);
+        same_lane.retain(|(conn, _)| !self.kept_for_evictor(conn, Some(waiting)));
         if let Some(conn) = select_and_admit(
             &same_lane,
             id,
@@ -723,38 +849,48 @@ where
     }
 
     /// A slot of `id`'s connection limit, if the pool has one per id.
-    fn try_id_slot(&self, id: &ID) -> Result<Option<OwnedSemaphorePermit>, Blocked> {
-        let Some(max) = self.max_connections_per_id else {
+    fn try_id_slot(&self, id: &ID) -> Result<Option<IdPermit>, Blocked> {
+        let Some(limit) = self.id_limit(id) else {
             return Ok(None);
         };
-        self.id_slots(id, max)
-            .try_acquire_owned()
-            .map(Some)
-            .map_err(|_at_limit| Blocked::Id)
+        match limit.slots.clone().try_acquire_owned() {
+            Ok(permit) => Ok(Some(IdPermit { permit, limit })),
+            Err(_at_limit) => Err(Blocked::Id),
+        }
     }
 
     /// Queue for a slot of `id`'s connection limit, if the pool has one per id.
-    fn id_slot_wait(&self, id: &ID) -> Option<SlotWait> {
-        let max = self.max_connections_per_id?;
-        Some(Box::pin(self.id_slots(id, max).acquire_owned()))
+    fn id_slot_wait(&self, id: &ID) -> Option<IdSlotWait> {
+        let limit = self.id_limit(id)?;
+        Some(Box::pin(async move {
+            let permit = limit.slots.clone().acquire_owned().await?;
+            Ok(IdPermit { permit, limit })
+        }))
     }
 
-    /// The connection slots of `id`.
-    fn id_slots(&self, id: &ID, max: NonZeroUsize) -> Arc<Semaphore> {
-        let mut storage = self.storage.lock();
-        if let Some(slots) = storage.id_slots.get(id) {
-            return slots.clone();
+    /// The connection limit of `id`, if the pool has one per id.
+    fn id_limit(&self, id: &ID) -> Option<Arc<IdLimit>> {
+        let max = self.max_connections_per_id?;
+        Some(Self::id_limit_in(&mut self.storage.lock(), id, max))
+    }
+
+    fn id_limit_in(storage: &mut Storage<C, ID>, id: &ID, max: NonZeroUsize) -> Arc<IdLimit> {
+        if let Some(limit) = storage.id_slots.get(id) {
+            return limit.clone();
         }
-        // Forget the slots of ids that hold none, at a pace that amortizes to O(1).
-        if storage.id_slots.len() >= storage.id_slots.capacity() {
-            storage
-                .id_slots
-                .retain(|_, slots| Arc::strong_count(slots) > 1);
+        // Forget the limits of ids that use none, once the map is full; then
+        // leave it room for as many again, so this amortizes to O(1).
+        let capacity = storage.id_slots.capacity();
+        if storage.id_slots.len() >= capacity {
+            storage.id_slots.retain(|_, limit| !limit.is_unused());
+            if storage.id_slots.len() * 2 > capacity {
+                storage.id_slots.reserve(capacity);
+            }
         }
         storage
             .id_slots
             .entry(id.clone())
-            .or_insert_with(|| Arc::new(Semaphore::new(max.get())))
+            .or_insert_with(|| Arc::new(IdLimit::new(max)))
             .clone()
     }
 
@@ -783,44 +919,29 @@ where
         if let Ok(permit) = total.clone().try_acquire_owned() {
             return Ok((Some(permit), false));
         }
-        let evicted = {
-            let mut storage = self.storage.lock();
-            // Connections that cannot take a stream do not count.
-            let cold = storage.by_id.get_mut(id).is_none_or(|bucket| {
-                bucket.request_lanes_mut(lanes).into_iter().all(|lane| {
-                    !lane
-                        .conns
-                        .iter()
-                        .any(|conn| conn.effective_capacity(conn.stream_cap) > 0)
-                })
-            });
-            if !self.may_evict(cold, patient) {
-                return Err(Blocked::Total);
-            }
-            // Only checkouts that may evict queue for eviction chances, before
-            // looking for one: see `StoredConnection::freed`.
-            if let Look::Register(waiting) = look {
-                waiting.register(&self.slot_waiters);
-            }
-            let waiting = look.waiting();
-            if !self
-                .slot_waiters
-                .admits(waiting.and_then(|waiting| waiting.waiter_in(&self.slot_waiters)))
-            {
-                // Older ones evict first.
-                return Err(Blocked::Total);
-            }
-            Self::evict_lru_idle(&mut storage, waiting)
-        };
-        let Some((evicted, permit)) = evicted else {
-            return Err(Blocked::Total);
-        };
-        drop(evicted);
-        // The evicted connection's slot moves to this checkout without passing
-        // the semaphore, where it would go to the oldest queued waiter.
-        permit
+        let slots = self
+            .evict_for(id, lanes, look, patient, &self.slot_waiters, None)
+            .ok_or(Blocked::Total)?;
+        // The evicted connection's total slot moves to this checkout without
+        // passing the semaphore, where it would go to the oldest queued waiter.
+        slots
+            .total
             .map(|permit| (Some(permit), true))
             .ok_or(Blocked::Total)
+    }
+
+    /// A slot of `id`'s limit taken over from one of its idle connections, as
+    /// the saturation policy allows, with that connection's total slot.
+    fn replace_within_id(
+        &self,
+        id: &ID,
+        lanes: &RequestLanes,
+        look: &mut Look<'_>,
+        patient: bool,
+    ) -> Option<(IdPermit, Option<OwnedSemaphorePermit>)> {
+        let limit = self.id_limit(id)?;
+        let mut slots = self.evict_for(id, lanes, look, patient, &limit.evictors, Some(id))?;
+        Some((slots.id.take()?, slots.total.take()))
     }
 
     /// Whether the saturation policy lets a checkout of `lanes` evict: `cold`
@@ -877,7 +998,7 @@ where
         // checkout queues in the lanes it looks at before it looks. A slot of
         // the id's limit taken by an earlier look is used, or kept.
         let attempt = |look: &mut Look<'_>,
-                       held_id: &mut Option<OwnedSemaphorePermit>,
+                       held_id: &mut Option<IdPermit>,
                        patient: bool|
          -> Result<ConnectionResult<_, _>, Blocked> {
             // Common case: an idle or shareable connection is listed in one of
@@ -889,10 +1010,11 @@ where
 
             // Only this id's bucket is touched under the lock; swept
             // connections close after it is released.
-            let (same_id, saturated_bucket) = self.snapshot_exact(id, &lanes, look);
+            let (mut same_id, saturated_bucket) = self.snapshot_exact(id, &lanes, look);
             if let Look::Register(waiting) = look {
                 waiting.leave_other_lanes();
             }
+            same_id.retain(|(conn, _)| !self.kept_for_evictor(conn, look.waiting()));
 
             if let Some(conn) = select_and_admit(
                 &same_id,
@@ -910,26 +1032,34 @@ where
             let saturation = !same_id.is_empty() || saturated_bucket;
             drop(same_id);
 
-            // A new connection takes a slot of its id's limit, then one of the total.
-            let id_slot = match held_id.take() {
-                Some(slot) => Some(slot),
-                None => self.try_id_slot(id)?,
+            // A new connection takes a slot of its id's limit, then one of the
+            // total; replacing one of the id's idle connections takes both.
+            let (id_slot, replaced) = match held_id.take() {
+                Some(slot) => (Some(slot), None),
+                None => match self.try_id_slot(id) {
+                    Ok(slot) => (slot, None),
+                    Err(blocked) => match self.replace_within_id(id, &lanes, look, patient) {
+                        Some((slot, total)) => (Some(slot), Some(total)),
+                        None => return Err(blocked),
+                    },
+                },
             };
-            let total = match self.take_total_slot(id, &lanes, look, patient) {
-                Ok((total, evicted)) => {
-                    #[cfg(feature = "opentelemetry")]
-                    if evicted && let Some((metrics, attrs)) = &metrics {
-                        metrics.evicted_connections.add(1, attrs);
+            let (total, evicted) = match replaced {
+                Some(total) => (total, true),
+                None => match self.take_total_slot(id, &lanes, look, patient) {
+                    Ok(taken) => taken,
+                    Err(blocked) => {
+                        *held_id = id_slot;
+                        return Err(blocked);
                     }
-                    #[cfg(not(feature = "opentelemetry"))]
-                    let _ = evicted;
-                    total
-                }
-                Err(blocked) => {
-                    *held_id = id_slot;
-                    return Err(blocked);
-                }
+                },
             };
+            #[cfg(feature = "opentelemetry")]
+            if evicted && let Some((metrics, attrs)) = &metrics {
+                metrics.evicted_connections.add(1, attrs);
+            }
+            #[cfg(not(feature = "opentelemetry"))]
+            let _ = evicted;
 
             trace!(
                 ?id,
@@ -963,12 +1093,13 @@ where
         let mut waiting = Waiting::new(
             &self.waiting,
             &self.slot_waiters,
+            self.id_limit(id).map(|limit| limit.evictors.clone()),
             self.next_order.fetch_add(1, Ordering::Relaxed),
         );
         let party = waiting.party.clone();
-        let mut id_slot_wait: Option<SlotWait> = None;
+        let mut id_slot_wait: Option<IdSlotWait> = None;
         let mut total_slot_wait: Option<SlotWait> = None;
-        // Armed once a look is blocked on the total limit, in place.
+        // Armed once a look is blocked on a limit, in place.
         let mut patience: Pin<&mut Option<Sleep>> = std::pin::pin!(None);
         let mut patient = true;
         loop {
@@ -1003,13 +1134,13 @@ where
                             .clone()
                             .map(|total| Box::pin(total.acquire_owned()) as SlotWait);
                     }
-                    if let SaturationPolicy::EvictIdleAfter(after) = self.saturation
-                        && patient
-                        && patience.is_none()
-                    {
-                        patience.set(Some(tokio::time::sleep(after)));
-                    }
                 }
+            }
+            if let SaturationPolicy::EvictIdleAfter(after) = self.saturation
+                && patient
+                && patience.is_none()
+            {
+                patience.set(Some(tokio::time::sleep(after)));
             }
 
             trace!(
@@ -1089,8 +1220,10 @@ where
         // Reuse requirements are read once: the connection keeps its lane.
         let reuse = conn.extensions().get_ref::<ConnectionReuse>();
         let lane = LaneKey::of_connection(reuse).filter(|_| id.is_reusable());
+        let id_evictors = slot.id.as_ref().map(|id| id.limit.evictors.clone());
         let conn = Arc::new(StoredConnection {
             max_concurrency: conn.extensions().get_arc::<MaxConcurrency>(),
+            health: conn.extensions().get_arc::<ConnectionHealthWatcher>(),
             admission: conn
                 .extensions()
                 .self_get_ref::<ConnectionAdmission>()
@@ -1107,6 +1240,7 @@ where
             waiting: self.waiting.clone(),
             notify: self.notify.clone(),
             slot_waiters: self.slot_waiters.clone(),
+            id_evictors,
             last_idle: AtomicInstant::now(),
             pool_slot: Mutex::new(ConnectionSlot {
                 slots: slot,

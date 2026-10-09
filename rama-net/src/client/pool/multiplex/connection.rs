@@ -26,6 +26,8 @@ pub(super) struct StoredConnection<C, ID> {
     /// a handout is released.
     pub(super) stream_cap: usize,
     pub(super) max_concurrency: Option<Arc<MaxConcurrency>>,
+    /// Read from its listener, which may not call into the connection itself.
+    pub(super) health: Option<Arc<ConnectionHealthWatcher>>,
     pub(super) admission: Option<ConnectionAdmission>,
     pub(super) active: AtomicUsize,
     /// The waiters of the lane the connection is filed under. A leaf lock:
@@ -39,6 +41,9 @@ pub(super) struct StoredConnection<C, ID> {
     /// Checkouts waiting for a total slot: an idle connection nobody else
     /// waits for is a chance to evict it for one.
     pub(super) slot_waiters: Arc<WaitQueue>,
+    /// Checkouts at its id's limit, if the pool has one: the same chance, to
+    /// replace it with a connection they can use.
+    pub(super) id_evictors: Option<Arc<WaitQueue>>,
     pub(super) last_idle: AtomicInstant,
     pub(super) pool_slot: Mutex<ConnectionSlot>,
     /// Whether the lane's `open` set lists this connection. Only written with
@@ -224,18 +229,53 @@ impl<C, ID> StoredConnection<C, ID> {
         } else {
             self.is_idle()
         };
+        if !idle {
+            return;
+        }
         // Eviction leaves an idle connection to its lane's waiters, unless a
         // checkout waiting for a slot arrived before them.
-        if idle
-            && (!spoken_for
-                || self.slot_waiters.front_order().is_some_and(|slot| {
-                    waiters
-                        .as_ref()
-                        .and_then(|waiters| waiters.front_order())
-                        .is_none_or(|lane| slot < lane)
-                }))
-        {
+        let lane_front = waiters.as_ref().and_then(|waiters| waiters.front_order());
+        let chance_for = |evictors: &WaitQueue| {
+            !spoken_for
+                || evictors
+                    .front_order()
+                    .is_some_and(|evictor| lane_front.is_none_or(|lane| evictor < lane))
+        };
+        if chance_for(&self.slot_waiters) {
             self.slot_waiters.wake_one();
+        }
+        if let Some(id_evictors) = &self.id_evictors
+            && chance_for(id_evictors)
+        {
+            id_evictors.wake_one();
+        }
+    }
+
+    /// Whether the health watcher it was created with marks it broken.
+    pub(super) fn is_broken(&self) -> bool {
+        self.health
+            .as_ref()
+            .is_some_and(|health| health.health() == ConnectionHealth::Broken)
+    }
+}
+
+/// A source of the connection changed: its MaxConcurrency, transport credit,
+/// health, or work outliving its handouts.
+impl<C: Send + Sync + 'static, ID: Send + Sync + 'static> ChangeListener
+    for StoredConnection<C, ID>
+{
+    fn changed(&self, change: Change) {
+        fence(Ordering::SeqCst);
+        let wake = match change {
+            Change::Freed => WaitQueue::wake_one,
+            // How much capacity changed is unknown: every waiter of the lane looks.
+            Change::Other => WaitQueue::wake_all,
+        };
+        self.freed(wake, true);
+        if self.waiting.load(Ordering::Relaxed) != 0 && self.is_broken() {
+            // Only a look takes a broken connection out and frees its slots:
+            // let every waiting checkout look, whatever it waits for.
+            self.notify.notify_waiters();
         }
     }
 }

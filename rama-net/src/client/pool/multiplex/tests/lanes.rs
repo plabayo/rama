@@ -287,7 +287,8 @@ async fn policy_check_cannot_admit_a_snapshot_retired_during_the_check() {
 
         fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
             if self.evict {
-                let removed = MultiplexPool::evict_lru_idle(&mut self.pool.storage.lock(), None);
+                let removed =
+                    MultiplexPool::evict_lru_idle(&mut self.pool.storage.lock(), None, None);
                 assert!(removed.is_some());
                 drop(removed);
             } else {
@@ -348,8 +349,12 @@ async fn retired_preferred_candidate_does_not_hide_other_stream_capacity() {
         &mut doomed,
         &mut Look::New,
     );
-    let (retired, transferred_slot) =
-        MultiplexPool::evict_lru_idle(&mut pool.storage.lock(), None).unwrap();
+    let Evicted {
+        conn: retired,
+        slots,
+        ..
+    } = MultiplexPool::evict_lru_idle(&mut pool.storage.lock(), None, None).unwrap();
+    let transferred_slot = slots.total;
     let retired_index = snapshot
         .iter()
         .position(|(conn, _)| Arc::ptr_eq(conn, &retired))

@@ -52,18 +52,25 @@ pub(super) async fn maybe_pinned<F: Future>(future: Pin<&mut Option<F>>) -> F::O
     }
 }
 
-/// A waiting checkout's place in the lanes it can be served from, and in the
+/// An acquisition of an id's slot, kept across wakes like [`SlotWait`].
+pub(super) type IdSlotWait = Pin<Box<dyn Future<Output = Result<IdPermit, AcquireError>> + Send>>;
+
+/// A waiting checkout's place in the queues it can be served from, and in the
 /// pool's count of waiting checkouts. Dropped when the checkout ends: each
-/// lane gets back the wakes it sent and the checkout did not use.
+/// queue gets back the wakes it sent and the checkout did not use.
 pub(super) struct Waiting {
     pub(super) party: Arc<Party>,
     pub(super) places: SmallVec<[Place; 2]>,
-    /// The lane of the connection that served the checkout, if filed.
+    /// The queue that served the checkout, if filed: the lane of its
+    /// connection, or the queue of the eviction chance it took.
     pub(super) served: Option<Arc<WaitQueue>>,
-    /// Whether serving it spent a wake of that lane.
+    /// Whether serving it spent a wake of that queue.
     pub(super) spent: bool,
     pub(super) waiting: Arc<AtomicUsize>,
     pub(super) slot_waiters: Arc<WaitQueue>,
+    /// The checkouts at its id's limit that may replace one of the id's idle
+    /// connections, if the pool limits connections per id.
+    pub(super) id_evictors: Option<Arc<WaitQueue>>,
 }
 
 /// A waiting checkout's place in one queue.
@@ -75,12 +82,16 @@ pub(super) struct Place {
     /// Whether the current look queued in it: a look leaves the queues its
     /// request no longer uses.
     pub(super) looked: bool,
+    /// A queue of eviction chances, not of units of capacity: a chance is
+    /// worth one more look, however many reached the checkout.
+    pub(super) chances: bool,
 }
 
 impl Waiting {
     pub(super) fn new(
         waiting: &Arc<AtomicUsize>,
         slot_waiters: &Arc<WaitQueue>,
+        id_evictors: Option<Arc<WaitQueue>>,
         order: u64,
     ) -> Self {
         waiting.fetch_add(1, Ordering::Relaxed);
@@ -94,6 +105,7 @@ impl Waiting {
             spent: false,
             waiting: waiting.clone(),
             slot_waiters: slot_waiters.clone(),
+            id_evictors,
         }
     }
 
@@ -107,9 +119,19 @@ impl Waiting {
         seen
     }
 
-    /// Queue in `queue`, once. Call with the storage lock held, before the
-    /// look at the lane's capacity: see [`StoredConnection::freed`].
+    /// Queue in the lane `queue`, once. Call with the storage lock held, before
+    /// the look at the lane's capacity: see [`StoredConnection::freed`].
     pub(super) fn register(&mut self, queue: &Arc<WaitQueue>) {
+        self.register_in(queue, false);
+    }
+
+    /// Queue for the eviction chances of `queue`, once, before looking for an
+    /// idle connection to evict.
+    pub(super) fn register_for_chances(&mut self, queue: &Arc<WaitQueue>) {
+        self.register_in(queue, true);
+    }
+
+    fn register_in(&mut self, queue: &Arc<WaitQueue>, chances: bool) {
         if let Some(place) = self
             .places
             .iter_mut()
@@ -125,6 +147,7 @@ impl Waiting {
             waiter,
             seen: None,
             looked: true,
+            chances,
         });
     }
 
@@ -139,37 +162,72 @@ impl Waiting {
     /// Leave the lanes the current look did not queue in: the request no
     /// longer uses them. Call once the look queued in the request's lanes.
     pub(super) fn leave_other_lanes(&mut self) {
-        let slot_waiters = self.slot_waiters.clone();
-        self.leave_where(|place| !place.looked && !Arc::ptr_eq(&place.queue, &slot_waiters));
+        let emptied = self.leave_where(|place| !place.looked && !place.chances);
+        self.announce(emptied, self.others_wait());
     }
 
     /// A look found nothing: it spent the wakes it answered, and the checkout
-    /// leaves the slot waiters unless the look queued there.
+    /// leaves the chance queues the look no longer queued in.
     pub(super) fn end_fruitless_look(&mut self) {
         for place in &self.places {
             if let Some(seen) = place.seen {
                 place.waiter.spend(seen);
             }
         }
-        self.leave_where(|place| !place.looked);
+        let emptied = self.leave_where(|place| !place.looked);
+        self.announce(emptied, self.others_wait());
     }
 
-    /// Leave the queues `leave` picks, passing on the wakes each sent.
-    pub(super) fn leave_where(&mut self, mut leave: impl FnMut(&Place) -> bool) {
+    /// Whether other checkouts wait in the pool.
+    fn others_wait(&self) -> bool {
+        self.waiting.load(Ordering::Relaxed) > 1
+    }
+
+    /// Leave the queues `leave` picks; whether a lane was left empty.
+    fn leave_where(&mut self, mut leave: impl FnMut(&Place) -> bool) -> bool {
+        let mut emptied = false;
         self.places.retain(|place| {
             if !leave(place) {
                 return true;
             }
-            for _ in 0..place.queue.remove(&place.waiter) {
-                place.queue.wake_one();
-            }
+            emptied |= Self::leave(place, false);
             false
         });
+        emptied
     }
 
-    /// The checkout was served by a connection of `lane`, if filed.
-    pub(super) fn served(&mut self, lane: Option<Arc<WaitQueue>>) {
-        self.served = lane;
+    /// Leave `place`'s queue, passing on the wakes it sent that the checkout
+    /// did not use, minus one it spent there; whether a lane was left empty.
+    fn leave(place: &Place, spent_there: bool) -> bool {
+        let mut held = place.queue.remove(&place.waiter);
+        if spent_there {
+            held = held.saturating_sub(1);
+        }
+        if place.chances {
+            held = held.min(1);
+        }
+        // The capacity these wakes stand for is there for the others.
+        for _ in 0..held {
+            place.queue.wake_one();
+        }
+        !place.chances && place.queue.is_empty()
+    }
+
+    /// Lanes left empty while others wait: their idle connections can be
+    /// evicted now.
+    fn announce(&self, emptied: bool, others: bool) {
+        if emptied && others {
+            self.slot_waiters.wake_one();
+            if let Some(id_evictors) = &self.id_evictors {
+                id_evictors.wake_one();
+            }
+        }
+    }
+
+    /// The checkout was served through `queue`: the lane of its connection, if
+    /// filed, or the chance queue of the idle connection it evicted.
+    pub(super) fn served(&mut self, queue: Option<Arc<WaitQueue>>) {
+        self.served = queue;
         self.spent = self.served.as_ref().is_some_and(|served| {
             self.places.iter().any(|place| {
                 Arc::ptr_eq(&place.queue, served) && place.seen.is_some_and(Wakes::held)
@@ -182,24 +240,14 @@ impl Drop for Waiting {
     fn drop(&mut self) {
         let mut emptied = false;
         for place in &self.places {
-            let mut held = place.queue.remove(&place.waiter);
-            if self.spent
+            let spent_there = self.spent
                 && self
                     .served
                     .as_ref()
-                    .is_some_and(|served| Arc::ptr_eq(served, &place.queue))
-            {
-                held = held.saturating_sub(1);
-            }
-            // The capacity these wakes stand for is there for the others.
-            for _ in 0..held {
-                place.queue.wake_one();
-            }
-            emptied |= place.queue.is_empty();
+                    .is_some_and(|served| Arc::ptr_eq(served, &place.queue));
+            emptied |= Self::leave(place, spent_there);
         }
-        if self.waiting.fetch_sub(1, Ordering::Relaxed) > 1 && emptied {
-            // Idle connections of a lane nobody waits in can be evicted now.
-            self.slot_waiters.wake_one();
-        }
+        let others = self.waiting.fetch_sub(1, Ordering::Relaxed) > 1;
+        self.announce(emptied, others);
     }
 }
