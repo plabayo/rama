@@ -13,10 +13,8 @@ use serde::Serialize;
 
 use super::{
     CanonicalValue, ProfileDataError,
-    canonical::{CanonicalReader, CanonicalWriter},
+    canonical::{CanonicalReader, CanonicalWriter, HEADER_DOMAIN},
 };
-
-const HEADER_DOMAIN: u16 = 1;
 
 /// Values produced by the actual request or protocol adapter, never replayed from a capture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

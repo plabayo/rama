@@ -5,6 +5,12 @@ use std::{error::Error, fmt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use super::{FlowKey, HeaderCapture, HeaderCapturePolicy, ProfileKey};
+
+pub(super) const HEADER_DOMAIN: u16 = 1;
+pub(super) const PROFILE_DOMAIN: u16 = 2;
+pub(super) const FLOW_DOMAIN: u16 = 3;
+
 const PREFIX: &[u8] = b"rama-profile\0";
 const VERSION: u16 = 1;
 
@@ -46,6 +52,34 @@ impl fmt::Display for ProfileDataError {
 impl Error for ProfileDataError {}
 
 impl CanonicalValue {
+    /// An envelope and digest do not establish the payload's ownership or semantics.
+    pub(super) fn validate_content(
+        &self,
+        domain: u16,
+        maximum_bytes: usize,
+    ) -> Result<(), ProfileDataError> {
+        match domain {
+            HEADER_DOMAIN => {
+                // Every encoded occurrence consumes bytes; decoding remains bounded even
+                // for callers whose capture field budget exceeds the default.
+                let policy = HeaderCapturePolicy {
+                    fields: maximum_bytes,
+                    bytes: maximum_bytes,
+                    overrides: Box::default(),
+                };
+                HeaderCapture::from_canonical(self, &policy)?;
+            }
+            PROFILE_DOMAIN => {
+                ProfileKey::from_canonical(self, maximum_bytes)?;
+            }
+            FLOW_DOMAIN => {
+                FlowKey::from_canonical(self, maximum_bytes)?;
+            }
+            _ => return Err(ProfileDataError::Unsupported("canonical content domain")),
+        }
+        Ok(())
+    }
+
     /// Verify persisted identity and envelope before interpreting the domain's payload.
     pub fn verify(&self, domain: u16, maximum_bytes: usize) -> Result<(), ProfileDataError> {
         if self.bytes.len() > maximum_bytes {

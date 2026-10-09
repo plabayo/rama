@@ -9,11 +9,8 @@ use crate::{DeviceKind, PlatformKind};
 
 use super::{
     CanonicalValue, ProfileDataError, RequestInitiator,
-    canonical::{CanonicalReader, CanonicalWriter},
+    canonical::{CanonicalReader, CanonicalWriter, FLOW_DOMAIN, PROFILE_DOMAIN},
 };
-
-const PROFILE_DOMAIN: u16 = 2;
-const FLOW_DOMAIN: u16 = 3;
 
 /// A client can be an application or library, with no User-Agent header at all.
 #[derive(Debug, Clone, Serialize, Deserialize)]
