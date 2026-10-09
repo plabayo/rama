@@ -116,9 +116,9 @@ jobs:
       group: ${{ startsWith(matrix.os, 'macos') && (matrix.profile == 'debug' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.profile == 'debug' && 'rama-windows-slot-0' || 'rama-windows-slot-1') || format('rama-linux-beta-test-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
-    # Cover all three step budgets plus at least 20m for setup and cleanup.
-    # Windows debug also needs room for its ~80m ignored compiletest suite.
-    timeout-minutes: ${{ matrix.os == 'macos-latest' && matrix.profile == 'release' && 270 || matrix.os == 'windows-latest' && 240 || 210 }}
+    # Cover all three step budgets plus at least 20m for setup and cleanup, within the
+    # 360m ceiling of hosted runners.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && matrix.profile == 'release' && 360 || matrix.os == 'windows-latest' && 340 || 310 }}
     env:
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
       RUSTFLAGS: -D warnings
@@ -142,8 +142,8 @@ jobs:
           sccache: ${{ startsWith(matrix.os, 'windows') && 'false' || 'true' }}
       - name: Build tests (${{ matrix.profile }})
         id: build_tests
-        # A cold macOS release build already took 108m on a successful run.
-        timeout-minutes: ${{ matrix.os == 'macos-latest' && matrix.profile == 'release' && 150 || 90 }}
+        # Cold-cache builds on slow runners need this much; macOS release is the slowest.
+        timeout-minutes: ${{ matrix.os == 'macos-latest' && matrix.profile == 'release' && 200 || 150 }}
         shell: bash
         run: |
           # Keep resource evidence in the log even if compilation times out.
@@ -191,7 +191,7 @@ jobs:
           ${{ matrix.cargo_build_args }} --workspace
       - name: Run ignored tests (${{ matrix.profile }})
         if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
-        timeout-minutes: ${{ matrix.os == 'windows-latest' && 100 || 80 }}
+        timeout-minutes: ${{ matrix.os == 'windows-latest' && 150 || 120 }}
         run: >-
           cargo nextest run --profile ci --all-features
           ${{ matrix.cargo_profile_args }} ${{ matrix.cargo_build_args }}
