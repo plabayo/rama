@@ -12,6 +12,7 @@ use super::{
     ConnectionReuse, Pool, PoolSlot, ReuseKey,
 };
 use crate::address::SocketAddress;
+use crate::client::ConnectionError;
 use crate::conn::{ConnectionHealth, ConnectionHealthWatcher};
 use crate::stream::Socket;
 use parking_lot::Mutex;
@@ -495,6 +496,8 @@ where
         drop(doomed);
         result
     }
+
+    fn abandon(&self, _create_permit: Self::CreatePermit, _error: &ConnectionError) {}
 
     async fn create(
         &self,

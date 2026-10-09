@@ -21,6 +21,7 @@ pub struct PoolMetrics {
     pub(super) streams: Counter<u64>,
     pub(super) concurrent_streams: Histogram<f64>,
     pub(super) saturation_created_connections: Counter<u64>,
+    pub(super) coalesced_checkouts: Counter<u64>,
     // _available_active_connections: ObservableGauge<u64>,
     // _available_total_connections: ObservableGauge<u64>,
 }
@@ -39,6 +40,7 @@ const CONNPOOL_ACTIVE_CONNECTION_DELAY: &str = "connpool.active_connection_delay
 const CONNPOOL_STREAMS: &str = "connpool.streams";
 const CONNPOOL_CONCURRENT_STREAMS: &str = "connpool.concurrent_streams";
 const CONNPOOL_SATURATION_CREATED_CONNECTIONS: &str = "connpool.saturation_created_connections";
+const CONNPOOL_COALESCED_CHECKOUTS: &str = "connpool.coalesced_checkouts";
 
 fn prefix_metric<'a>(prefix: Option<&str>, name: &'a str) -> Cow<'a, str> {
     match prefix {
@@ -113,6 +115,12 @@ impl PoolMetrics {
                 .u64_counter(prefix_metric(prefix, CONNPOOL_SATURATION_CREATED_CONNECTIONS))
                 .with_description(
                     "Connections created because all same-id connections were at capacity (multiplex)",
+                )
+                .build(),
+            coalesced_checkouts: meter
+                .u64_counter(prefix_metric(prefix, CONNPOOL_COALESCED_CHECKOUTS))
+                .with_description(
+                    "Checkouts that waited for connects in flight instead of dialing their own (multiplex)",
                 )
                 .build(),
         }

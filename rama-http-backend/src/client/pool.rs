@@ -3,9 +3,14 @@
 use std::{num::NonZeroUsize, time::Duration};
 
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorExt as _};
-use rama_core::{Layer, extensions::ExtensionsRef};
+use rama_core::{
+    Layer,
+    extensions::{Extensions, ExtensionsRef},
+};
 use rama_http_types::{
-    Version, conn::FallbackHttpVersion, proto::ext::extended_connect_pseudo_scheme,
+    Version,
+    conn::{FallbackHttpVersion, TargetHttpVersion},
+    proto::ext::extended_connect_pseudo_scheme,
     proxy::PlaintextHttpProxyMode,
 };
 use rama_net::client::pool::{
@@ -13,6 +18,7 @@ use rama_net::client::pool::{
     ReqToConnID,
 };
 use rama_net::client::{ConnectRequest, ConnectorService, ProxyRoute};
+use rama_net::http::HttpRequestVersion;
 use rama_net::{HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt};
 use rama_tls::client::TlsPoolId;
 
@@ -213,6 +219,26 @@ pub struct HttpPooledConnectorConfig {
 }
 
 const DEFAULT_MAX_TOTAL: NonZeroUsize = NonZeroUsize::new(50).unwrap();
+
+/// Streams to expect of a connection before one shows its own: the least
+/// RFC 9113 recommends a peer to allow.
+const EXPECTED_STREAMS: NonZeroUsize = NonZeroUsize::new(100).unwrap();
+
+/// The pool's [streams hint](MultiplexPool::with_streams_hint): a request that
+/// targets or speaks HTTP/2 or HTTP/3, as gRPC does, likely shares a connection.
+/// Only a guess: the version is negotiated, and HTTP/1 does not multiplex.
+fn expected_streams(input: &Extensions) -> Option<NonZeroUsize> {
+    let version = input
+        .get_ref::<TargetHttpVersion>()
+        .map(|target| target.0)
+        .or_else(|| {
+            input
+                .get_ref::<HttpRequestVersion>()
+                .map(|version| version.0)
+        });
+    matches!(version, Some(Version::HTTP_2 | Version::HTTP_3)).then_some(EXPECTED_STREAMS)
+}
+
 const DEFAULT_MAX_CONCURRENT_STREAMS: NonZeroUsize = NonZeroUsize::new(100).unwrap();
 
 impl Default for HttpPooledConnectorConfig {
@@ -256,6 +282,7 @@ impl HttpPooledConnectorConfig {
             .with_max_streams_per_connection(DEFAULT_MAX_CONCURRENT_STREAMS)
             .with_max_connections_total(DEFAULT_MAX_TOTAL)
             .with_selection(config.selection)
+            .with_streams_hint(expected_streams)
             .maybe_with_idle_timeout(config.idle_timeout);
 
         let connector = PooledConnector::new(inner, pool, identifier)
@@ -318,6 +345,7 @@ impl HttpPooledConnectorConfig {
             .with_max_streams_per_connection(max_concurrent_streams)
             .with_max_connections_total(max_total)
             .with_selection(self.selection)
+            .with_streams_hint(expected_streams)
             .maybe_with_idle_timeout(self.idle_timeout);
 
         let connector = PooledConnector::new(inner, pool, identifier)

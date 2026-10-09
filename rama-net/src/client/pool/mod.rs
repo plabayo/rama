@@ -66,6 +66,10 @@ pub trait Pool<C, ID>: Send + Sync + 'static {
         Output = Result<ConnectionResult<Self::Connection, Self::CreatePermit>, BoxError>,
     > + Send;
 
+    /// The connection `create_permit` was for could not be established. Pools
+    /// that let checkouts wait for it instead of dialing fail them alike.
+    fn abandon(&self, create_permit: Self::CreatePermit, error: &ConnectionError);
+
     /// Admit the establishing request before publishing its new connection.
     ///
     /// Retaining pools reserve any [`ConnectionAdmission`] resources against
@@ -123,6 +127,8 @@ where
     ) -> Result<ConnectionResult<Self::Connection, Self::CreatePermit>, BoxError> {
         Ok(ConnectionResult::CreatePermit(()))
     }
+
+    fn abandon(&self, _create_permit: (), _error: &ConnectionError) {}
 
     async fn create(
         &self,
@@ -264,9 +270,11 @@ where
             pool.get_conn(&conn_id, input.extensions()).await
         };
 
-        match pool_result.map_err(|error| {
-            ConnectionError::local(error, ConnectionErrorKind::Internal)
-                .context("pooled connector: acquire connection")
+        match pool_result.map_err(|error| match error.downcast::<ConnectionError>() {
+            // Such as the connect it waited for failing: classified already.
+            Ok(error) => *error,
+            Err(error) => ConnectionError::local(error, ConnectionErrorKind::Internal)
+                .context("pooled connector: acquire connection"),
         })? {
             ConnectionResult::Connection(conn) => {
                 trace!(
@@ -279,7 +287,14 @@ where
                 trace!(
                     "pooled connector: no connection (w/ conn id: {conn_id:?}) found, received permit to create a new one"
                 );
-                let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
+                let EstablishedClientConnection { input, conn } =
+                    match self.inner.connect(input).await {
+                        Ok(established) => established,
+                        Err(error) => {
+                            pool.abandon(permit, &error);
+                            return Err(error);
+                        }
+                    };
 
                 trace!(
                     "pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}"

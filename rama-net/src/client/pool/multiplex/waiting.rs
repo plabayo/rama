@@ -36,6 +36,10 @@ pub(super) enum Blocked {
     Id,
     /// The pool is at its total connection limit: wait for a total slot.
     Total,
+    /// Enough connects are in flight for the request's lanes: wait for them.
+    Connecting,
+    /// The connects it waited for failed.
+    Failed(Failure),
 }
 
 /// A queued acquisition of a pool or id slot, kept across wakes so the
@@ -75,6 +79,8 @@ pub(super) struct Waiting {
     pub(super) spent: bool,
     /// When the first idle connection the current look's sweeps kept expires.
     pub(super) next_expiry: u64,
+    /// The connects it waits for, and their failures when it started waiting.
+    pub(super) connects_seen: Option<(Weak<Connects>, u64)>,
     pub(super) waiting: Arc<AtomicUsize>,
     pub(super) slot_waiters: Arc<WaitQueue>,
     /// The checkouts at its id's limit that may replace one of the id's idle
@@ -113,6 +119,7 @@ impl Waiting {
             served: None,
             spent: false,
             next_expiry: u64::MAX,
+            connects_seen: None,
             waiting: waiting.clone(),
             slot_waiters: slot_waiters.clone(),
             id_evictors,
@@ -160,6 +167,20 @@ impl Waiting {
             looked: true,
             chances,
         });
+    }
+
+    /// Wait for the connects of `connects`, once: their failures from now on
+    /// are its own.
+    pub(super) fn wait_for_connects(&mut self, connects: &Arc<Connects>) -> u64 {
+        self.register_in(&connects.waiters, true);
+        match &self.connects_seen {
+            Some((of, seen)) if std::ptr::eq(of.as_ptr(), Arc::as_ptr(connects)) => *seen,
+            _ => {
+                let seen = connects.failures();
+                self.connects_seen = Some((Arc::downgrade(connects), seen));
+                seen
+            }
+        }
     }
 
     /// The checkout's place in `queue`, if it queues there.

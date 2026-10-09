@@ -44,6 +44,8 @@ pub struct MultiplexSlot {
     pub(super) total: Option<OwnedSemaphorePermit>,
     /// Of the connection's id, if the pool limits connections per id.
     pub(super) id: Option<IdPermit>,
+    /// Counted in flight for its lane, if that multiplexes.
+    pub(super) connect: Option<Connect>,
 }
 
 /// The connection limit of one id: its slots, and the checkouts at the limit
