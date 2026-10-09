@@ -197,9 +197,18 @@ fn consent_body() -> impl IntoHtml {
 }
 
 pub(super) async fn get_report(
-    StateParam(state): StateParam<State>,
+    StateParam(mut state): StateParam<State>,
     parts: Parts,
 ) -> Result<Response, ErrorResponse> {
+    // Script navigation is a protocol probe, not the user-activated navigation sample.
+    if parts.uri.query().is_some_and(|query| {
+        query
+            .as_encoded_str()
+            .split('&')
+            .any(|pair| pair.split('=').next() == Some("h3_probe"))
+    }) {
+        state.storage = None;
+    }
     let ja4h = get_ja4h_info(&parts);
 
     let mut request_info = get_request_info(
@@ -317,7 +326,7 @@ fn http3_table(h3: Option<&Http3Info>, quic: Option<&QuicObservation>) -> Table 
     if let Some(h3) = h3 {
         rows.push((
             "SETTINGS observation".to_owned(),
-            h3.settings_status.to_owned(),
+            h3.settings_status.to_string(),
         ));
         if let Some(pseudo) = &h3.pseudo_headers {
             rows.push(("pseudo header order".to_owned(), pseudo.iter().join(", ")));
@@ -498,7 +507,7 @@ pub(super) async fn post_api_fetch_number(
     let request_info = get_request_info(
         FetchMode::SameOrigin,
         ResourceType::Xhr,
-        Initiator::XMLHttpRequest,
+        Initiator::Fetch,
         &parts,
         state.geo_db.as_deref(),
     )
@@ -582,7 +591,7 @@ pub(super) async fn post_api_xml_http_request_number(
     let request_info = get_request_info(
         FetchMode::SameOrigin,
         ResourceType::Xhr,
-        Initiator::Fetch,
+        Initiator::XMLHttpRequest,
         &parts,
         state.geo_db.as_deref(),
     )
@@ -1154,6 +1163,63 @@ mod tests {
                 .unwrap()
                 .contains(&json!(["x-rama-test", "preserved"]))
         );
+    }
+
+    #[tokio::test]
+    async fn observation_fetch_and_xhr_display_their_stored_initiator() {
+        let service = Router::new_with_state(State {
+            data_source: DataSource::default(),
+            probe_http3: false,
+            storage: None,
+            storage_auth: None,
+            geo_db: None,
+        })
+        .with_post("/fetch/{number}", post_api_fetch_number)
+        .with_post("/xhr/{number}", post_api_xml_http_request_number);
+        for (path, expected) in [("/fetch/1", "Fetch"), ("/xhr/1", "XMLHttpRequest")] {
+            let response = service
+                .serve(
+                    Request::post(path)
+                        .header("host", "example.com")
+                        .body(r#"{"number":1}"#.into())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let payload: serde_json::Value = response.try_into_json().await.unwrap();
+            assert_eq!(payload["fp"]["request_info"]["initiator"], expected);
+            assert_eq!(payload["fp"]["http_info"]["initiator"], expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn observation_probe_report_never_stores_navigation_headers() {
+        let service = Router::new_with_state(State {
+            data_source: DataSource::default(),
+            probe_http3: true,
+            storage: Some(super::super::storage::Storage::unavailable()),
+            storage_auth: None,
+            geo_db: None,
+        })
+        .with_get("/report", get_report);
+        for (path, expected) in [
+            ("/report", StatusCode::INTERNAL_SERVER_ERROR),
+            ("/report?h3_probe=1", StatusCode::OK),
+            ("/report?other=1&h3_probe=1", StatusCode::OK),
+        ] {
+            let response = service
+                .serve(
+                    Request::get(path)
+                        .header("host", "example.com")
+                        .header("user-agent", "capture-regression/1")
+                        .body(Default::default())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "{path}");
+        }
     }
 
     /// Header values, table titles, and table row keys/values all flow into

@@ -2150,9 +2150,7 @@ impl ConnectionRef {
         receive_queue: PacketBudget,
     ) -> Self {
         let extensions = Extensions::new();
-        if let Some(observation) = &mut conn.observation {
-            observation.publish(&extensions, true, false);
-        }
+        conn.publish_observation(&extensions, true, false);
         Self(Arc::new(ConnectionInner {
             extensions,
             state: Mutex::new(State {
@@ -2617,9 +2615,7 @@ impl State {
         }
         self.forward_endpoint_events();
         let closed = self.inner.is_closed();
-        if let Some(observation) = &mut self.inner.observation {
-            observation.publish(extensions, false, closed);
-        }
+        self.inner.publish_observation(extensions, false, closed);
         self.forward_app_events(shared);
 
         if !self.inner.is_drained() {

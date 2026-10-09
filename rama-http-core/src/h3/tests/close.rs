@@ -5,6 +5,7 @@ use crate::h3::{
     Error, client,
     connection::{Config, Driver, Shared, initial_control},
     control::Role,
+    observation::{H3Observer, SettingsObservation},
     qpack::{Encoder, EncoderConfig, ErrorScope},
 };
 use rama_core::extensions::Extensions;
@@ -22,7 +23,8 @@ use rama_http_types::{
 };
 use rama_net::uri::Uri;
 use rama_quic_proto::{MAX_STREAM_COUNT, VarInt, coding::Codec};
-use std::{convert::Infallible, future::poll_fn, pin::pin, task::Poll};
+use std::{convert::Infallible, future::poll_fn, pin::pin, sync::Arc, task::Poll};
+use tokio::time::Instant;
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     sync::oneshot,
@@ -512,4 +514,50 @@ async fn memory_tunnels_ended_in_order_free_their_request_slot() {
         .await
         .unwrap();
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn observation_settings_arriving_in_clean_close_drain_are_received() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let shared = Shared::from_connection(
+            Config {
+                observation: Some(Default::default()),
+                ..Config::default()
+            },
+            Role::Client,
+            &pair.client,
+        )
+        .unwrap();
+        let observer = H3Observer::new(&shared, Arc::new(Default::default()));
+        let mut driver = pin!(Driver::new(pair.client.clone(), shared.clone(), Role::Client).run());
+        assert!(poll_fn(|cx| Poll::Ready(driver.as_mut().poll(cx).is_pending())).await);
+        let mut control = pair.server.open_uni().await.unwrap();
+        control.write_all(&[0]).await.unwrap();
+        poll_fn(|cx| {
+            assert!(driver.as_mut().poll(cx).is_pending());
+            if !observer.snapshot().streams.is_empty() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+        let mut waiting = pin!(observer.settings(Instant::now() + LIMIT));
+        assert!(poll_fn(|cx| Poll::Ready(waiting.as_mut().poll(cx).is_pending())).await);
+        control.write_all(&[4, 0]).await.unwrap();
+        control.finish().unwrap();
+        assert_eq!(control.stopped().await.unwrap(), None);
+        pair.server.close(0u32, b"complete");
+        pair.client.closed().await;
+        let (result, observed) = tokio::join!(&mut driver, &mut waiting);
+        result.unwrap();
+        let SettingsObservation::Received(snapshot) = observed else {
+            panic!("received SETTINGS must win the drain");
+        };
+        assert!(snapshot.completeness.settings);
+        pair.close().await;
+    })
+    .await
+    .unwrap();
 }

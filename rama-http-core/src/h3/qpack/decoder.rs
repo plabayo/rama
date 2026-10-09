@@ -646,7 +646,7 @@ impl Decoder {
         let bound = if OBSERVE {
             self.take_field_observation(stream_id);
             self.observation.as_ref().and_then(|capture| {
-                (capture.fields.len() < capture.limits.retained_snapshots).then_some(
+                (capture.fields.len() < capture.limits.pending_fields).then_some(
                     capture.limits.fields.min(
                         capture.limits.bytes.saturating_sub(capture.field_bytes)
                             / size_of::<ObservedFieldRepresentation>(),
@@ -1433,8 +1433,8 @@ mod regression_tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(
-                decoder.take_field_observation(0).unwrap(),
-                [ObservedFieldRepresentation::from(&line)]
+                format!("{:?}", decoder.take_field_observation(0).unwrap()),
+                format!("{:?}", [ObservedFieldRepresentation::from(&line)])
             );
             assert!(!fields[0].name.is_empty());
         }
@@ -1444,7 +1444,7 @@ mod regression_tests {
     fn observation_pending_fields_are_bounded_and_release_on_take_or_cancel() {
         let mut decoder = Decoder::new(DecoderConfig::default());
         decoder.observe(ObservationLimits {
-            retained_snapshots: 1,
+            pending_fields: 1,
             bytes: size_of::<ObservedFieldRepresentation>(),
             ..ObservationLimits::default()
         });
@@ -1485,7 +1485,7 @@ mod regression_tests {
     fn observation_pending_field_bytes_are_shared_across_streams() {
         let mut decoder = Decoder::new(DecoderConfig::default());
         decoder.observe(ObservationLimits {
-            retained_snapshots: 2,
+            pending_fields: 2,
             bytes: size_of::<ObservedFieldRepresentation>(),
             ..ObservationLimits::default()
         });

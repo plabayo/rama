@@ -106,12 +106,19 @@ impl core::error::Error for CaptureError {}
 /// stops capture, never the connection. The default ClientHello bound matches server peeking.
 #[derive(Debug, Clone, Copy)]
 pub struct CaptureLimits {
+    /// Maximum datagrams inspected per attempt, including non-Initial datagrams.
     pub datagrams: usize,
+    /// Maximum total datagram bytes inspected per attempt.
     pub bytes: usize,
+    /// Maximum Initial packets retained, including retransmissions.
     pub packets: usize,
+    /// Maximum retained frame classifications; adjacent PADDING counts once.
     pub frames: usize,
+    /// Maximum CRYPTO fragments retained across Initial packets.
     pub crypto_fragments: usize,
+    /// Maximum assembled ClientHello message bytes, including the handshake header.
     pub client_hello_bytes: usize,
+    /// Maximum transport parameter entries, including unknown identifiers.
     pub parameters: usize,
 }
 
@@ -130,7 +137,7 @@ impl Default for CaptureLimits {
 }
 
 /// Which parts of an observation are suitable as exact comparison inputs.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct CaptureCompleteness {
     pub datagrams: bool,
     pub frames: bool,
@@ -154,7 +161,7 @@ impl CaptureCompleteness {
 /// A bounded server observation of one attempt, including its Retry lineage.
 ///
 /// The parsed ClientHello belongs to the connection's SecureTransport extension.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct QuicObservation {
     pub connection_id: Vec<u8>,
     pub attempt_id: Vec<u8>,
@@ -284,9 +291,6 @@ pub fn observe_with_limits(
                 if first_byte == 0 {
                     return Err(CaptureError::Malformed("datagram starts with padding"));
                 }
-            } else if first_byte == 0 {
-                trailing = datagram.len() - at;
-                break;
             }
             packets.push(ObservedPacket {
                 first_byte,
@@ -534,19 +538,22 @@ impl ObservedDatagram {
 #[must_use]
 pub fn client_hello(initials: &[InitialPacket]) -> Option<Vec<u8>> {
     client_hello_with_limits(initials, &CaptureLimits::default())
+        .ok()
+        .flatten()
 }
 
-/// Reassemble only a bounded ClientHello, including for caller-supplied packet records.
-#[must_use]
+/// Reassemble a bounded ClientHello, including for caller-supplied packet records.
+/// Missing or invalid handshake data returns `Ok(None)`; exhausted budgets return an error.
 pub fn client_hello_with_limits(
     initials: &[InitialPacket],
     limits: &CaptureLimits,
-) -> Option<Vec<u8>> {
-    within(initials.len(), limits.packets, "packets").ok()?;
+) -> Result<Option<Vec<u8>>, CaptureError> {
+    within(initials.len(), limits.packets, "packets")?;
     let fragments = initials
         .iter()
-        .try_fold(0usize, |n, packet| n.checked_add(packet.crypto.len()))?;
-    within(fragments, limits.crypto_fragments, "CRYPTO fragments").ok()?;
+        .try_fold(0usize, |n, packet| n.checked_add(packet.crypto.len()))
+        .ok_or(CaptureError::LimitExceeded("CRYPTO fragments"))?;
+    within(fragments, limits.crypto_fragments, "CRYPTO fragments")?;
     let mut chunks: Vec<(u64, &[u8])> = initials
         .iter()
         .flat_map(|packet| {
@@ -559,26 +566,32 @@ pub fn client_hello_with_limits(
     chunks.sort_by_key(|(offset, _)| *offset);
     let mut stream: Vec<u8> = Vec::new();
     for (offset, data) in chunks {
-        let offset = usize::try_from(offset).ok()?;
+        let Ok(offset) = usize::try_from(offset) else {
+            return Ok(None);
+        };
         if offset > stream.len() {
-            return None;
+            return Ok(None);
         }
-        // A chunk already covered by what was assembled adds nothing (retransmitted CRYPTO).
         if let Some(new) = data.get(stream.len() - offset..) {
-            let room = limits.client_hello_bytes.checked_sub(stream.len())?;
+            let room = limits.client_hello_bytes.saturating_sub(stream.len());
             stream.extend_from_slice(&new[..new.len().min(room)]);
+            if stream.len() < 4 && new.len() > room {
+                return Err(CaptureError::LimitExceeded("ClientHello bytes"));
+            }
+        }
+        if let Some(&[kind, a, b, c]) = stream.get(..4) {
+            if kind != 0x01 {
+                return Ok(None);
+            }
+            let len = 4 + (usize::from(a) << 16 | usize::from(b) << 8 | usize::from(c));
+            within(len, limits.client_hello_bytes, "ClientHello bytes")?;
+            if stream.len() >= len {
+                stream.truncate(len);
+                return Ok(Some(stream));
+            }
         }
     }
-    let header: [u8; 4] = stream.get(..4)?.try_into().ok()?;
-    if header[0] != 0x01 {
-        return None;
-    }
-    let len = usize::from(header[1]) << 16 | usize::from(header[2]) << 8 | usize::from(header[3]);
-    // Keep the reassembled buffer itself rather than copying its prefix back out.
-    (stream.len() >= 4 + len).then(|| {
-        stream.truncate(4 + len);
-        stream
-    })
+    Ok(None)
 }
 
 /// A transport parameter as it was sent: identifier and raw value, in wire order.
@@ -755,7 +768,7 @@ pub fn first_flight_with_limits<P: KeyProvider>(
         }
         initials.extend(packets);
     }
-    let hello = client_hello_with_limits(&initials, limits);
+    let hello = client_hello_with_limits(&initials, limits)?;
     let parameters = hello
         .as_deref()
         .map(|hello| transport_parameters_with_limits(hello, limits))
@@ -897,7 +910,7 @@ mod tests {
                     ..CaptureLimits::default()
                 }
             ),
-            Some(hello.clone())
+            Ok(Some(hello.clone()))
         );
         for limits in [
             CaptureLimits {
@@ -913,7 +926,10 @@ mod tests {
                 ..CaptureLimits::default()
             },
         ] {
-            assert!(client_hello_with_limits(slice::from_ref(&packet), &limits).is_none());
+            assert!(matches!(
+                client_hello_with_limits(slice::from_ref(&packet), &limits),
+                Err(CaptureError::LimitExceeded(_))
+            ));
         }
         assert_eq!(
             transport_parameters_with_limits(

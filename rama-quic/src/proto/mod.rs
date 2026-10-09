@@ -135,6 +135,7 @@ pub use token_memory_cache::TokenMemoryCache;
 
 #[cfg(fuzzing)]
 pub(crate) mod fuzzing {
+    pub use super::observation::fuzzing::observe_sequence;
     #[cfg(any(
         feature = "boring",
         all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))

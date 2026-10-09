@@ -18,7 +18,7 @@ use rama::{
         fingerprint::{AkamaiH2, Ja4H},
         proto::{
             h2::PseudoHeaderOrder,
-            h3::observation::{H3ObservationSnapshot, H3RequestObservation},
+            h3::observation::{H3ObservationSnapshot, H3RequestObservation, SettingsStatus},
         },
         request::HttpRequestParts,
     },
@@ -267,8 +267,8 @@ pub(super) fn get_akamai_h2_info(ext: &Extensions) -> Option<AkamaiH2Info> {
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct HttpInfo {
     pub(super) headers: Vec<(String, String)>,
-    pub(super) version: String,
-    pub(super) initiator: String,
+    pub(super) version: http::Version,
+    pub(super) initiator: Initiator,
     pub(super) h2_settings: Option<Http2Settings>,
     pub(super) h3: Option<Http3Info>,
     pub(super) quic: Option<Arc<QuicObservation>>,
@@ -279,7 +279,7 @@ pub(super) struct HttpInfo {
 pub(super) struct Http3Info {
     pub(super) request: Arc<H3RequestObservation>,
     pub(super) connection: Arc<H3ObservationSnapshot>,
-    pub(super) settings_status: &'static str,
+    pub(super) settings_status: SettingsStatus,
     pub(super) pseudo_headers: Option<PseudoHeaderOrder>,
 }
 
@@ -302,16 +302,16 @@ async fn http3_info(ext: &Extensions) -> Option<Http3Info> {
             .settings(Instant::now() + Duration::from_millis(250))
             .await
         {
-            SettingsObservation::Received(value) => (value, "received"),
-            SettingsObservation::TimedOut(value) => (value, "timed_out"),
-            SettingsObservation::Closed { snapshot, .. } => (snapshot, "closed"),
+            SettingsObservation::Received(value) => (value, SettingsStatus::Received),
+            SettingsObservation::TimedOut(value) => (value, SettingsStatus::TimedOut),
+            SettingsObservation::Closed { snapshot, .. } => (snapshot, SettingsStatus::Closed),
         },
-        None => (request.connection.clone(), "unavailable"),
+        None => (request.connection.clone(), SettingsStatus::Unavailable),
     };
     Some(Http3Info {
         request: request.clone(),
+        settings_status: settings_status.for_snapshot(&connection),
         connection,
-        settings_status,
         pseudo_headers: ext.get_ref::<PseudoHeaderOrder>().cloned(),
     })
 }
@@ -325,7 +325,6 @@ pub(super) async fn get_and_store_http_info(
     initiator: Initiator,
 ) -> Result<HttpInfo, BoxError> {
     let original_headers = headers;
-    let initiator_label = initiator.to_string();
     let h3 = if http_version == http::Version::HTTP_3 {
         http3_info(ext).await
     } else {
@@ -465,8 +464,8 @@ pub(super) async fn get_and_store_http_info(
 
     Ok(HttpInfo {
         headers,
-        version: format!("{http_version:?}"),
-        initiator: initiator_label,
+        version: http_version,
+        initiator,
         h2_settings,
         h3,
         quic,
@@ -659,4 +658,182 @@ pub(super) async fn get_tls_display_info_and_store(
             })
             .collect::<Vec<_>>(),
     }))
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use rama::{
+        Service as _,
+        bytes::BytesMut,
+        cli::service::echo::EchoServiceBuilder,
+        extensions::{ExtensionsRef as _, Ingress},
+        http::{
+            Body, BodyExtractExt as _, Request, Version,
+            core::h3::{
+                connection::Config,
+                qpack::{Encoder, EncoderConfig},
+                server,
+            },
+            proto::h3::{FrameHeader, FrameType},
+            service::web::response::IntoResponse as _,
+        },
+        net::address::SocketAddress,
+        quic::{ClientConfig, Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
+        rt::{Executor, spawn},
+        tls::{
+            client::TlsClientConfig,
+            server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+        },
+        udp::test_utils::MemoryDatagramSocket,
+    };
+    use std::{
+        future::{Future as _, poll_fn},
+        num::NonZeroUsize,
+        pin::pin,
+        task::{Context, Poll, Waker},
+    };
+
+    #[tokio::test(start_paused = true)]
+    async fn observation_fp_waits_for_settings_and_echo_and_fp_report_ja4_quic() {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            let identity =
+                ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
+            let server_tls = TlsServerConfig::new()
+                .with_alpn([b"h3".as_slice().into()].into_iter().collect())
+                .with_server_auth(identity.clone());
+            let client_tls = TlsClientConfig::new()
+                .with_alpn([b"h3".as_slice().into()].into_iter().collect())
+                .try_with_server_trust_anchors([identity.cert_chain.last().unwrap().clone()])
+                .unwrap();
+            let mut server_config =
+                ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default()).unwrap();
+            server_config.set_capture(Default::default());
+            let mut client_config =
+                ClientConfig::try_from_rama_tls(&client_tls, TlsOptions::default()).unwrap();
+            let mut transport = TransportConfig::default();
+            Config::default()
+                .configure_transport(&mut transport)
+                .unwrap();
+            let transport = Arc::new(transport);
+            server_config.set_transport_config(transport.clone());
+            client_config.set_transport_config(transport);
+            let (server_socket, client_socket) = MemoryDatagramSocket::pair(
+                SocketAddress::local_ipv4(443),
+                SocketAddress::local_ipv4(444),
+                NonZeroUsize::MIN,
+            );
+            let server_endpoint = Endpoint::build(Executor::new())
+                .with_server_config(server_config)
+                .with_datagram_socket(server_socket)
+                .unwrap();
+            let client_endpoint = Endpoint::build(Executor::new())
+                .with_datagram_socket(client_socket)
+                .unwrap();
+            let accepting = spawn({
+                let endpoint = server_endpoint.clone();
+                async move { endpoint.accept().await.unwrap().await.unwrap() }
+            });
+            let client = client_endpoint
+                .connect_with(
+                    client_config,
+                    server_endpoint.local_addr().unwrap(),
+                    "localhost",
+                )
+                .unwrap()
+                .await
+                .unwrap();
+            let connection = accepting.await.unwrap();
+            let (mut server, driver) = server::handshake(
+                connection.clone(),
+                Config {
+                    observation: Some(Default::default()),
+                    ..Config::default()
+                },
+            )
+            .unwrap();
+            spawn(driver.run());
+            let (mut send, _receive) = client.open_bi().await.unwrap();
+            let mut encoder = Encoder::before_peer_settings(EncoderConfig::default());
+            let section = encoder
+                .encode(
+                    u64::from(send.id()),
+                    [
+                        (":method", "GET"),
+                        (":scheme", "https"),
+                        (":authority", "localhost"),
+                        (":path", "/"),
+                    ],
+                )
+                .unwrap();
+            let mut wire = BytesMut::new();
+            FrameHeader::new(FrameType::HEADERS, section.len() as u64)
+                .encode(&mut wire)
+                .unwrap();
+            wire.extend_from_slice(&section);
+            send.write_all(&wire).await.unwrap();
+            send.finish().unwrap();
+            let (request, _response) = server.accept().await.unwrap().resolve().await.unwrap();
+            request
+                .extensions()
+                .insert(Ingress(connection.extensions().clone()));
+            let ext = request.extensions();
+            let timed_out = http3_info(ext).await.unwrap();
+            assert!(matches!(
+                timed_out.settings_status,
+                SettingsStatus::TimedOut
+            ));
+            let mut waiting = pin!(http3_info(ext));
+            assert!(
+                poll_fn(|_| Poll::Ready(
+                    waiting
+                        .as_mut()
+                        .poll(&mut Context::from_waker(Waker::noop()))
+                        .is_pending()
+                ))
+                .await
+            );
+            let mut control = client.open_uni().await.unwrap();
+            control.write_all(&[0, 4, 0]).await.unwrap();
+            let captured = waiting.await.unwrap();
+            assert!(matches!(captured.settings_status, SettingsStatus::Received));
+            assert!(captured.connection.completeness.settings);
+            assert!(captured.request.connection.settings.is_none());
+            let state = State {
+                data_source: DataSource::default(),
+                probe_http3: false,
+                storage: None,
+                storage_auth: None,
+                geo_db: None,
+            };
+            let tls = get_tls_display_info_and_store(&state, ext, "test/1".to_owned())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(tls.ja4.hash.starts_with('q'), "{}", tls.ja4.hash);
+            let echo_request = Request::builder()
+                .uri("https://localhost/")
+                .version(Version::HTTP_3)
+                .body(Body::empty())
+                .unwrap();
+            echo_request.extensions().insert(Ingress(ext.clone()));
+            let response = EchoServiceBuilder::new()
+                .build_http(Executor::new())
+                .serve(echo_request)
+                .await
+                .unwrap()
+                .into_response();
+            let json: serde_json::Value = response.try_into_json().await.unwrap();
+            assert!(
+                json["tls"]["ja4"]["hash"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with('q')
+            );
+            client.close(0u32, b"test complete");
+            tokio::join!(client_endpoint.shutdown(), server_endpoint.shutdown());
+        })
+        .await
+        .unwrap();
+    }
 }

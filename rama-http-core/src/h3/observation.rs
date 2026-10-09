@@ -90,6 +90,7 @@ impl Recorder {
             value: H3ObservationSnapshot {
                 completeness: ObservationCompleteness {
                     settings: false,
+                    local_settings: true,
                     streams: true,
                     control: true,
                     qpack: true,
@@ -110,7 +111,7 @@ impl Recorder {
         if this.reserve(bytes) {
             this.value.local_settings = settings(local);
         } else {
-            this.value.completeness.control = false;
+            this.value.completeness.local_settings = false;
         }
         this
     }
@@ -128,13 +129,16 @@ impl Recorder {
     }
 
     pub(super) fn stream(&mut self, stream_id: u64, ty: StreamType) {
-        self.changed();
         if self.value.streams.len() >= self.limits.streams
             || !self.reserve(size_of::<ObservedUniStream>())
         {
-            self.value.completeness.streams = false;
+            if self.value.completeness.streams {
+                self.value.completeness.streams = false;
+                self.changed();
+            }
             return;
         }
+        self.changed();
         self.value.streams.push(ObservedUniStream {
             sequence: self.value.revision,
             stream_id,
@@ -151,7 +155,6 @@ impl Recorder {
         let Some(header) = self.pending.take() else {
             return;
         };
-        self.changed();
         let (element_id, value) = match event {
             FrameEvent::CancelPush(id) | FrameEvent::GoAway(id) | FrameEvent::MaxPushId(id) => {
                 (Some(*id), &[][..])
@@ -164,6 +167,8 @@ impl Recorder {
             _ => (None, &[][..]),
         };
         if let FrameEvent::Settings(peer) = event {
+            self.value.settings_received = true;
+            self.changed();
             let charge = peer
                 .entries()
                 .len()
@@ -176,15 +181,19 @@ impl Recorder {
         if self.value.control.len() >= self.limits.events
             || !self.reserve(size_of::<ObservedControlFrame>().saturating_add(value.len()))
         {
-            self.value.completeness.control = false;
+            if self.value.completeness.control {
+                self.value.completeness.control = false;
+                self.changed();
+            }
             return;
         }
+        self.changed();
         self.value.control.push(ObservedControlFrame {
             sequence: self.value.revision,
             frame_type: header.ty.value(),
             length: header.len,
             element_id,
-            value: value.to_vec(),
+            value: value.into(),
         });
     }
 

@@ -35,7 +35,7 @@ use tokio::sync::mpsc::Sender;
 
 use crate::utils::{
     http::{HttpVersions, TcpHttpVersion},
-    http3::{Http3Args, Http3Endpoints, HttpListeners},
+    http3::{Http3Args, Http3Endpoints, HttpListeners, OBSERVATION_LIMITS},
     rate::opt_per_sec,
     tls::try_new_server_config,
 };
@@ -218,6 +218,7 @@ async fn bind_echo_http_service(
     .context("bind http(s) echo service")?;
 
     let (tcp_service, http3_service) = EchoServiceBuilder::new()
+        .with_http3_observation(OBSERVATION_LIMITS)
         .with_concurrent(cfg.concurrent.unwrap_or_default())
         .maybe_with_rate_limit(opt_per_sec(cfg.rate))
         .maybe_with_throttle(opt_per_sec(cfg.throttle))

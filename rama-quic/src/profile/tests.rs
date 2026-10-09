@@ -658,9 +658,11 @@ fn standard_initial_observation_snapshot_and_budgets() {
             client_hello_bytes: 1,
             ..CaptureLimits::default()
         },
-    )
-    .unwrap();
-    assert!(!incomplete.complete);
+    );
+    assert!(matches!(
+        incomplete,
+        Err(CaptureError::LimitExceeded("ClientHello bytes"))
+    ));
     let mut duplicate = borrowed.clone();
     duplicate.push(borrowed[0]);
     let repeated = first_flight_with_limits(&duplicate, &keys, &CaptureLimits::default()).unwrap();

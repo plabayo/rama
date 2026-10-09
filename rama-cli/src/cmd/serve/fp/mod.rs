@@ -67,7 +67,7 @@ use state::State;
 
 use crate::utils::{
     http::{HttpVersions, TcpHttpVersion},
-    http3::{Http3Args, Http3Endpoints, HttpListeners},
+    http3::{Http3Args, Http3Endpoints, HttpListeners, OBSERVATION_LIMITS},
     rate::opt_per_sec,
     tls::try_new_server_config,
 };
@@ -384,7 +384,7 @@ where
     if let Some(endpoint) = listeners.http3 {
         let mut http3 = HttpServer::new_http3(exec.clone());
         // RFC 9220: WebSockets over HTTP/3 use Extended CONNECT — see the `/api/ws` route.
-        http3.http3_mut().observation = Some(Default::default());
+        http3.http3_mut().observation = Some(Box::new(OBSERVATION_LIMITS));
         http3.http3_mut().extended_connect = true;
         let http3_service = (
             ConsumeErrLayer::trace_as(tracing::Level::WARN),

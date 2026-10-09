@@ -347,11 +347,14 @@ impl Endpoint {
                 RouteDatagramTo::Incoming(incoming_idx) => {
                     // A pending attempt outlives a server config cleared after it arrived; it
                     // buffers nothing more then, as the config is what bounds that buffer.
+                    let incoming_buffer = &mut self.incoming_buffers[incoming_idx];
                     let Some(config) = self.server_config.as_ref() else {
+                        if let Some(observation) = &mut incoming_buffer.observation {
+                            observation.lost_datagram();
+                        }
                         trace!("dropping a datagram for a pending connection: no server config");
                         return None;
                     };
-                    let incoming_buffer = &mut self.incoming_buffers[incoming_idx];
 
                     let charge = incoming_datagram_charge(datagram_len);
                     if incoming_buffer
@@ -367,6 +370,8 @@ impl Endpoint {
                         incoming_buffer.total_bytes += charge;
                         self.all_incoming_buffers_total_bytes += charge;
                         incoming_buffer.progress.advance();
+                    } else if let Some(observation) = &mut incoming_buffer.observation {
+                        observation.lost_datagram();
                     }
 
                     None
@@ -820,6 +825,26 @@ impl Endpoint {
             });
         }
 
+        let datagrams_complete = incoming_buffer
+            .observation
+            .as_ref()
+            .is_some_and(|observation| observation.datagrams_complete());
+        incoming_buffer.observation = server_config.capture.map(|limits| {
+            let mut observation = Box::new(ServerObservation::new_parts(
+                limits,
+                &[
+                    &incoming.packet.header_data,
+                    &incoming.packet.payload,
+                    incoming.rest.as_deref().unwrap_or_default(),
+                ],
+            ));
+            // Capture enabled only at accept cannot account for earlier buffer drops.
+            if !datagrams_complete {
+                observation.lost_datagram();
+            }
+            observation
+        });
+
         if incoming.crypto.remote.as_ref().is_none_or(|keys| {
             keys.packet
                 .decrypt(
@@ -981,7 +1006,6 @@ impl Endpoint {
                 incoming.token.orig_dst_cid,
                 incoming.token.retry_src_cid.is_some(),
             );
-            observation.hello = incoming_buffer.hello;
             conn.observation = Some(observation);
         }
         conn.qlog_local_parameters(incoming.received_at, &params);
@@ -1003,8 +1027,7 @@ impl Endpoint {
                 }
 
                 if let Some(observation) = &mut conn.observation {
-                    observation.defer_completion = false;
-                    observation.end_datagram();
+                    observation.finish_buffered();
                 }
                 Ok((ch, conn))
             }

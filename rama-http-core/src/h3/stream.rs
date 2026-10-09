@@ -294,10 +294,14 @@ impl<R: RecvStream> Reader<R> {
                 "expected field section",
             ));
         };
-        let result = self
-            .shared
-            .decode_for_stream(self.id, self.push_id, bytes)
-            .await;
+        let result =
+            if self.shared.role == super::control::Role::Server && self.phase == Phase::Headers {
+                self.shared.decode_request(self.id, bytes).await
+            } else {
+                self.shared
+                    .decode_for_stream(self.id, self.push_id, bytes)
+                    .await
+            };
         result.map_err(|error| self.reject(error))
     }
 }

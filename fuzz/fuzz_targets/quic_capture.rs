@@ -74,16 +74,28 @@ impl KeyProvider for PlainKeys {
 }
 
 fuzz_target!(|data: &[u8]| {
-    let bound = usize::from(data.first().copied().unwrap_or(0));
+    let Some((&budget, data)) = data.split_first() else {
+        return;
+    };
+    let data = &data[..data.len().min(8192)];
+    let bound = usize::from(budget);
     let limits = CaptureLimits {
         bytes: 8192,
         packets: bound,
         frames: bound,
         crypto_fragments: bound,
-        client_hello_bytes: 4096,
+        client_hello_bytes: bound * 16,
         parameters: bound,
         datagrams: 4,
     };
+    rama::quic::fuzzing::observe_sequence(data, limits);
+    if let Ok(observed) = serde_json::from_slice::<capture::ObservedDatagram>(data) {
+        let _ =
+            observed.unprotect_initials_with_limits(data, &PlainKeys, Side::Server, None, &limits);
+    }
+    if let Ok(initial) = serde_json::from_slice::<capture::InitialPacket>(data) {
+        let _ = capture::client_hello_with_limits(&[initial], &limits);
+    }
     let _ = capture::first_flight_with_limits(&[data], &PlainKeys, &limits);
     if let Ok(observed) = capture::observe_with_limits(data, &limits) {
         let mut previous_end = 0;

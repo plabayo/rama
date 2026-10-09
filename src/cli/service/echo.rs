@@ -30,7 +30,10 @@ use crate::{
             required_header::AddRequiredResponseHeadersLayer, set_header::SetResponseHeaderLayer,
             trace::TraceLayer,
         },
-        proto::{h2::PseudoHeaderOrder, h3::observation::H3RequestObservation},
+        proto::{
+            h2::PseudoHeaderOrder,
+            h3::observation::{H3RequestObservation, ObservationLimits, SettingsStatus},
+        },
         server::HttpServer,
         service::web::{extract::Json, response::IntoResponse},
         ws::handshake::{
@@ -94,6 +97,7 @@ pub struct EchoServiceBuilder<H> {
     tls_server_config: Option<TlsServerConfig>,
 
     http_version: Option<Version>,
+    http3_observation: Option<ObservationLimits>,
 
     ws_support: bool,
 
@@ -120,6 +124,7 @@ impl Default for EchoServiceBuilder<()> {
             tls_server_config: None,
 
             http_version: None,
+            http3_observation: None,
 
             ws_support: false,
 
@@ -233,6 +238,14 @@ impl<H> EchoServiceBuilder<H> {
         }
     }
 
+    crate::utils::macros::generate_set_and_with! {
+        /// Retain bounded HTTP/3 metadata for echo responses. Disabled by default.
+        pub fn http3_observation(mut self, limits: Option<ObservationLimits>) -> Self {
+            self.http3_observation = limits;
+            self
+        }
+    }
+
     /// add a custom http layer which will be applied to the existing http layers
     pub fn with_http_layer<H2>(self, layer: H2) -> EchoServiceBuilder<(H, H2)> {
         EchoServiceBuilder {
@@ -247,6 +260,7 @@ impl<H> EchoServiceBuilder<H> {
             tls_server_config: self.tls_server_config,
 
             http_version: self.http_version,
+            http3_observation: self.http3_observation,
 
             ws_support: self.ws_support,
 
@@ -381,7 +395,7 @@ where
 
         let mut http3 = HttpServer::new_http3(exec);
         // RFC 9220: WebSockets over HTTP/3 use Extended CONNECT.
-        http3.http3_mut().observation = Some(Default::default());
+        http3.http3_mut().observation = self.http3_observation.map(Box::new);
         http3.http3_mut().extended_connect = self.ws_support;
         let http3_service = (
             ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
@@ -843,11 +857,7 @@ impl Service<Request> for EchoService {
             .map(|observation| {
                 observation.view(
                     &observation.connection,
-                    if observation.connection.settings.is_some() {
-                        "received"
-                    } else {
-                        "pending"
-                    },
+                    SettingsStatus::Pending,
                     parts.extensions.get_ref::<PseudoHeaderOrder>(),
                 )
             });
@@ -965,7 +975,7 @@ mod tests {
             assert!(value["tls"].is_null());
             let h3 = &value["http"]["h3"];
             if captured {
-                assert_eq!(h3["settings_status"], "pending");
+                assert_eq!(h3["settings_status"], "unavailable");
                 assert!(h3["settings"].is_null());
                 assert_eq!(h3["completeness"]["snapshot"], false);
                 assert_eq!(h3["completeness"]["fields"], false);

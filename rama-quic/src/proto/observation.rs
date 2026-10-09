@@ -4,8 +4,8 @@ use rama_core::{bytes::BytesMut, extensions::Extensions};
 use rama_quic_proto::{
     ConnectionId,
     capture::{
-        self, CaptureCompleteness, CaptureLimits, FirstFlight, ObservedFrame, PacketKind,
-        QuicObservation,
+        self, CaptureCompleteness, CaptureError, CaptureLimits, FirstFlight, ObservedFrame,
+        PacketKind, QuicObservation,
     },
     frame::{self, Frame},
     packet::{Header, Packet},
@@ -13,7 +13,10 @@ use rama_quic_proto::{
 };
 use rama_tls::{SecureTransport, client::ClientHello};
 
-use super::first_flight::{ClientHelloPeek, HelloAssembly, LIMIT};
+use super::{
+    Connection,
+    first_flight::{ClientHelloPeek, HelloAssembly},
+};
 
 #[derive(Debug)]
 struct Datagram {
@@ -26,23 +29,27 @@ struct Datagram {
 #[derive(Debug)]
 pub(crate) struct ServerObservation {
     limits: CaptureLimits,
-    pub(crate) hello: HelloAssembly,
+    hello: HelloAssembly,
     value: QuicObservation,
     pending: Option<Datagram>,
     bytes: usize,
+    datagrams: usize,
     frames: usize,
     fragments: usize,
     done: bool,
-    published: bool,
-    pub(crate) defer_completion: bool,
+    defer_completion: bool,
     parsed: Option<ClientHello>,
 }
 
 impl ServerObservation {
     pub(crate) fn new(limits: CaptureLimits, first: &[u8], rest: Option<&[u8]>) -> Self {
+        Self::new_parts(limits, &[first, rest.unwrap_or_default()])
+    }
+
+    pub(crate) fn new_parts(limits: CaptureLimits, parts: &[&[u8]]) -> Self {
         let mut this = Self {
             limits,
-            hello: HelloAssembly::default(),
+            hello: HelloAssembly::with_limit(limits.client_hello_bytes),
             value: QuicObservation {
                 connection_id: Vec::new(),
                 attempt_id: Vec::new(),
@@ -59,14 +66,14 @@ impl ServerObservation {
             },
             pending: None,
             bytes: 0,
+            datagrams: 0,
             frames: 0,
             fragments: 0,
             done: false,
-            published: false,
             defer_completion: true,
             parsed: None,
         };
-        this.begin_datagram(first, rest);
+        this.begin_parts(parts);
         this
     }
 
@@ -86,37 +93,49 @@ impl ServerObservation {
     }
 
     pub(crate) fn begin_datagram(&mut self, first: &[u8], rest: Option<&[u8]>) {
+        self.begin_parts(&[first, rest.unwrap_or_default()]);
+    }
+
+    fn begin_parts(&mut self, parts: &[&[u8]]) {
         self.pending = None;
         if self.done {
             return;
         }
-        let size = first.len().saturating_add(rest.map_or(0, <[u8]>::len));
-        let count = self
-            .value
-            .first_flight
-            .as_ref()
-            .map_or(0, |f| f.datagram_sizes.len());
-        if count >= self.limits.datagrams || size > self.limits.bytes.saturating_sub(self.bytes) {
+        let size = parts
+            .iter()
+            .fold(0usize, |size, part| size.saturating_add(part.len()));
+        if self.datagrams >= self.limits.datagrams
+            || size > self.limits.bytes.saturating_sub(self.bytes)
+        {
             self.value.completeness.datagrams = false;
             self.done = true;
             return;
         }
-        // The split decoder owns separate buffers; this temporary copy is charged before allocation.
+        self.datagrams += 1;
+        self.bytes += size;
+        // Check the remaining byte budget before joining the split decoder buffers.
         let mut wire = Vec::with_capacity(size);
-        wire.extend_from_slice(first);
-        wire.extend_from_slice(rest.unwrap_or_default());
-        if let Ok(observed) = capture::observe_with_limits(&wire, &self.limits) {
-            self.pending = Some(Datagram {
-                size,
-                trailing: observed.trailing,
-                coalesced: observed
-                    .packets
-                    .iter()
-                    .any(|p| p.kind != PacketKind::Initial),
-            });
-        } else {
-            self.value.completeness.datagrams = false;
-            self.done = true;
+        for part in parts {
+            wire.extend_from_slice(part);
+        }
+        match capture::observe_with_limits(&wire, &self.limits) {
+            Ok(observed) => {
+                self.pending = Some(Datagram {
+                    size,
+                    trailing: observed.trailing,
+                    coalesced: observed
+                        .packets
+                        .iter()
+                        .any(|p| p.kind != PacketKind::Initial),
+                })
+            }
+            Err(error) => {
+                self.value.completeness.datagrams = false;
+                if matches!(error, CaptureError::LimitExceeded("packets")) {
+                    self.value.completeness.frames = false;
+                }
+                self.done = true;
+            }
         }
     }
 
@@ -146,7 +165,6 @@ impl ServerObservation {
             complete: false,
         });
         if let Some(datagram) = self.pending.take() {
-            self.bytes += datagram.size;
             flight.datagram_sizes.push(datagram.size);
             flight.trailing_bytes.push(datagram.trailing);
             flight.coalesced |= datagram.coalesced;
@@ -200,9 +218,7 @@ impl ServerObservation {
                     }
                     self.fragments += 1;
                     let end = crypto.offset.checked_add(crypto.data.len() as u64);
-                    if end.is_none_or(|end| end > self.limits.client_hello_bytes.min(LIMIT) as u64)
-                    {
-                        self.value.completeness.frames = false;
+                    if end.is_none_or(|end| end > self.limits.client_hello_bytes as u64) {
                         self.done = true;
                     } else {
                         self.hello.take_in(crypto.offset, crypto.data.clone());
@@ -221,11 +237,17 @@ impl ServerObservation {
     }
 
     pub(crate) fn end_datagram(&mut self) {
-        self.pending = None;
+        if self.pending.take().is_some() {
+            self.value.completeness.datagrams = false;
+        }
         if self.defer_completion || self.value.completeness.client_hello {
             return;
         }
-        if let ClientHelloPeek::Complete(message) = self.hello.peek() {
+        let peek = self.hello.peek();
+        if matches!(peek, ClientHelloPeek::Invalid) {
+            self.done = true;
+        }
+        if let ClientHelloPeek::Complete(message) = peek {
             if message.message().len() <= self.limits.client_hello_bytes {
                 self.value.client_hello_message = message.message().to_vec();
                 self.value.completeness.client_hello = true;
@@ -233,14 +255,12 @@ impl ServerObservation {
                     capture::transport_parameters_from_hello(message.client_hello(), &self.limits)
                 {
                     if let Some(flight) = self.value.first_flight.as_mut() {
+                        flight.complete = true;
                         flight.parameters = parameters.iter().map(|p| p.id).collect();
                         if let Some(info) = capture::version_information(&parameters) {
                             flight.chosen_version = Some(info.chosen());
                             flight.available_versions = info.available().to_vec();
                         }
-                        flight.complete = self.value.completeness.datagrams
-                            && self.value.completeness.frames
-                            && self.value.completeness.original_attempt;
                     }
                     self.value.transport_parameters = parameters;
                     self.value.completeness.transport_parameters = true;
@@ -254,14 +274,167 @@ impl ServerObservation {
         }
     }
 
-    pub(crate) fn publish(&mut self, extensions: &Extensions, initial: bool, closed: bool) {
-        if self.published || (!initial && !self.done && !closed) {
+    pub(crate) fn finish_buffered(&mut self) {
+        self.defer_completion = false;
+        self.end_datagram();
+    }
+
+    pub(crate) fn finish(&mut self) {
+        self.finish_buffered();
+        self.done = true;
+        self.pending = None;
+        self.hello = HelloAssembly::default();
+    }
+
+    pub(crate) fn datagrams_complete(&self) -> bool {
+        self.value.completeness.datagrams
+    }
+
+    pub(crate) fn lost_datagram(&mut self) {
+        self.value.completeness.datagrams = false;
+    }
+}
+
+impl Connection {
+    pub(crate) fn publish_observation(
+        &mut self,
+        extensions: &Extensions,
+        initial: bool,
+        closed: bool,
+    ) {
+        let Some(mut observation) = self.observation.take() else {
             return;
+        };
+        if closed {
+            observation.finish();
         }
-        if let Some(hello) = self.parsed.take() {
+        if let Some(hello) = observation.parsed.take() {
             extensions.insert(SecureTransport::with_client_hello(hello));
         }
-        extensions.insert(self.value.clone());
-        self.published = self.done || closed;
+        if observation.done {
+            extensions.insert(observation.value);
+        } else {
+            if initial {
+                extensions.insert(observation.value.clone());
+            }
+            self.observation = Some(observation);
+        }
+    }
+}
+
+#[cfg(fuzzing)]
+pub(crate) mod fuzzing {
+    use super::*;
+    use rama_core::bytes::Bytes;
+    use rama_quic_proto::{
+        Version,
+        packet::{InitialHeader, PacketNumber},
+    };
+
+    /// Exercise incremental authenticated-frame observation independently of TLS admission.
+    pub fn observe_sequence(data: &[u8], limits: CaptureLimits) {
+        let mut recorder = ServerObservation::new(limits, &[0x40], None);
+        recorder.finish_buffered();
+        for (number, payload) in data.chunks(128).take(64).enumerate() {
+            recorder.begin_datagram(&[0x40], None);
+            recorder.packet(
+                &Packet {
+                    header: Header::Initial(InitialHeader {
+                        dst_cid: ConnectionId::new(&[]),
+                        src_cid: ConnectionId::new(&[]),
+                        token: Bytes::new(),
+                        number: PacketNumber::U8(number as u8),
+                        version: Version::V1.to_wire().unwrap(),
+                    }),
+                    header_data: Bytes::new(),
+                    payload: BytesMut::from(payload),
+                    allocated: payload.len(),
+                },
+                number as u64,
+            );
+            recorder.end_datagram();
+        }
+        recorder.finish();
+        assert!(recorder.done);
+        assert!(recorder.value.client_hello_message.len() <= limits.client_hello_bytes);
+        assert!(recorder.value.transport_parameters.len() <= limits.parameters);
+        if let Some(flight) = recorder.value.first_flight {
+            assert!(flight.packet_numbers.len() <= limits.packets);
+            assert!(flight.frames.iter().map(Vec::len).sum::<usize>() <= limits.frames);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_core::bytes::Bytes;
+
+    #[test]
+    fn observation_assembly_honors_large_hello_limit_without_provider_admission() {
+        let mut body = vec![3, 3];
+        body.extend_from_slice(&[0; 32]);
+        body.extend_from_slice(&[0, 0, 2, 0x13, 1, 1, 0]);
+        let padding = 18_000u16;
+        body.extend_from_slice(&(padding + 8).to_be_bytes());
+        body.extend_from_slice(&[0, 21]);
+        body.extend_from_slice(&padding.to_be_bytes());
+        body.resize(body.len() + usize::from(padding), 0);
+        body.extend_from_slice(&[0, 0x39, 0, 0]);
+        let mut message = vec![1];
+        message.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
+        message.extend_from_slice(&body);
+        let expected = message.len();
+        let mut recorder = ServerObservation::new(
+            CaptureLimits {
+                client_hello_bytes: 32 * 1024,
+                ..CaptureLimits::default()
+            },
+            &[0x40],
+            None,
+        );
+        recorder.hello.take_in(0, Bytes::from(message));
+        recorder.finish_buffered();
+        assert!(recorder.done);
+        assert!(recorder.value.completeness.client_hello);
+        assert!(recorder.value.completeness.transport_parameters);
+        assert_eq!(recorder.value.client_hello_message.len(), expected);
+        assert!(recorder.parsed.is_some());
+    }
+
+    #[test]
+    fn observation_invalid_hello_is_terminal_and_releases_assembly() {
+        let mut recorder = ServerObservation::new(CaptureLimits::default(), &[0x40], None);
+        recorder.hello.take_in(0, Bytes::from_static(&[2, 0, 0, 0]));
+        recorder.finish_buffered();
+        assert!(recorder.done);
+        assert!(matches!(recorder.hello.peek(), ClientHelloPeek::Incomplete));
+        let inspected = recorder.bytes;
+        for _ in 0..100 {
+            recorder.begin_datagram(&[0x40; 64], None);
+            recorder.end_datagram();
+        }
+        assert_eq!(recorder.bytes, inspected);
+    }
+
+    #[test]
+    fn observation_non_initial_datagrams_exhaust_the_work_budget() {
+        let mut recorder = ServerObservation::new(
+            CaptureLimits {
+                datagrams: 2,
+                ..CaptureLimits::default()
+            },
+            &[0x40],
+            None,
+        );
+        recorder.finish_buffered();
+        recorder.begin_datagram(&[0x40], None);
+        recorder.end_datagram();
+        recorder.begin_datagram(&[0x40], None);
+        recorder.end_datagram();
+        assert!(recorder.done);
+        assert!(!recorder.value.completeness.datagrams);
+        assert_eq!(recorder.datagrams, 2);
+        assert_eq!(recorder.bytes, 2);
     }
 }

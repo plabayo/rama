@@ -11,6 +11,7 @@ use rama::{
     http::{
         core::h3::connection::Config,
         headers::{AltSvc, AlternativeService},
+        proto::h3::observation::ObservationLimits,
     },
     net::{address::SocketAddress, tls::ApplicationProtocol},
     quic::{
@@ -41,6 +42,16 @@ pub struct Http3Args {
     /// serving alone; this flag or `h3` in `--http-version` makes it an error.
     pub h3_bind: Option<SocketAddress>,
 }
+
+/// Diagnostic capture budgets: 8 KiB per retained component and four live snapshots.
+pub(crate) const OBSERVATION_LIMITS: ObservationLimits = ObservationLimits {
+    bytes: 8 * 1024,
+    events: 64,
+    fields: 128,
+    streams: 16,
+    retained_snapshots: 4,
+    pending_fields: 8,
+};
 
 /// What a serve command listens on: TCP for HTTP/1.1 and h2, QUIC for HTTP/3.
 #[derive(Debug)]

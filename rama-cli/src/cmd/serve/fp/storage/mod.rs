@@ -44,6 +44,19 @@ fn debug_pg_url(pg_url: &str) -> DebugPgUrl {
 }
 
 impl Storage {
+    #[cfg(test)]
+    pub(super) fn unavailable() -> Self {
+        let manager = bb8_postgres::PostgresConnectionManager::new(
+            tokio_postgres::Config::new(),
+            tokio_postgres::NoTls,
+        );
+        Self {
+            pool: Pool::builder()
+                .connection_timeout(std::time::Duration::from_millis(1))
+                .build_unchecked(manager),
+        }
+    }
+
     pub(super) async fn try_new(pg_url: String) -> Result<Self, BoxError> {
         let url = debug_pg_url(&pg_url);
         tracing::debug!(

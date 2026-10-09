@@ -3,18 +3,22 @@
 use super::qpack::{EncoderInstruction, FieldLine};
 use crate::proto::h2::PseudoHeaderOrder;
 use rama_core::extensions::Extension;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ObservationLimits {
+    /// Retained bytes per component: connection recorder, QPACK instructions, pending
+    /// fields, and each live snapshot. Collection capacity adds bounded overhead.
+    /// Request field metadata and its priority share a separate `bytes` allowance.
     pub bytes: usize,
     pub events: usize,
     pub fields: usize,
     pub streams: usize,
-    /// Maximum live connection snapshots and pending decoded field observations,
-    /// each independently capped. Request consumers release field observations on delivery.
+    /// Maximum live connection snapshots.
     pub retained_snapshots: usize,
+    /// Maximum decoded request heads awaiting delivery.
+    pub pending_fields: usize,
 }
 
 impl Default for ObservationLimits {
@@ -25,11 +29,12 @@ impl Default for ObservationLimits {
             fields: 256,
             streams: 32,
             retained_snapshots: 8,
+            pending_fields: 8,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum FieldRepresentation {
     StaticIndex,
     DynamicIndex,
@@ -40,7 +45,7 @@ pub enum FieldRepresentation {
     LiteralName,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct ObservedFieldRepresentation {
     pub representation: FieldRepresentation,
     pub index: Option<u64>,
@@ -122,7 +127,7 @@ impl From<&FieldLine> for ObservedFieldRepresentation {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub enum ObservedEncoderInstruction {
     Capacity {
         capacity: u64,
@@ -177,14 +182,14 @@ impl From<&EncoderInstruction> for ObservedEncoderInstruction {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ObservedSetting {
     pub id: u64,
     pub value: u64,
     pub grease: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ObservedUniStream {
     pub sequence: u64,
     pub stream_id: u64,
@@ -192,18 +197,19 @@ pub struct ObservedUniStream {
     pub grease: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ObservedControlFrame {
     pub sequence: u64,
     pub frame_type: u64,
     pub length: u64,
     pub element_id: Option<u64>,
-    pub value: Vec<u8>,
+    pub value: Box<[u8]>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct ObservationCompleteness {
     pub settings: bool,
+    pub local_settings: bool,
     pub streams: bool,
     pub control: bool,
     pub qpack: bool,
@@ -211,9 +217,11 @@ pub struct ObservationCompleteness {
     pub snapshot: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct H3ObservationSnapshot {
     pub revision: u64,
+    /// Receipt is retained even when the SETTINGS values exceed the capture budget.
+    pub settings_received: bool,
     pub settings: Option<Vec<ObservedSetting>>,
     pub local_settings: Vec<ObservedSetting>,
     pub streams: Vec<ObservedUniStream>,
@@ -229,22 +237,62 @@ pub struct H3RequestObservation {
     pub connection: Arc<H3ObservationSnapshot>,
     pub fields: Vec<ObservedFieldRepresentation>,
     pub fields_complete: bool,
-    pub priority: Option<Vec<u8>>,
+    pub priority: Option<Box<[u8]>>,
 }
 impl Extension for H3RequestObservation {}
+
+/// SETTINGS availability, separate from the reason a consumer stopped waiting.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsStatus {
+    Pending,
+    Received,
+    Incomplete,
+    TimedOut,
+    Closed,
+    Unavailable,
+}
+
+impl SettingsStatus {
+    #[must_use]
+    pub fn for_snapshot(self, snapshot: &H3ObservationSnapshot) -> Self {
+        if !snapshot.completeness.snapshot {
+            Self::Unavailable
+        } else if snapshot.completeness.settings {
+            Self::Received
+        } else if snapshot.settings_received || matches!(self, Self::Received) {
+            Self::Incomplete
+        } else {
+            self
+        }
+    }
+}
+
+impl core::fmt::Display for SettingsStatus {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Pending => "pending",
+            Self::Received => "received",
+            Self::Incomplete => "incomplete",
+            Self::TimedOut => "timed_out",
+            Self::Closed => "closed",
+            Self::Unavailable => "unavailable",
+        })
+    }
+}
 
 /// Additive echo/fingerprint view. Missing SETTINGS remain `null`, with an explicit status.
 #[derive(Debug, Serialize)]
 pub struct H3ObservationView<'a> {
     pub connection_revision: u64,
     pub request_revision: u64,
-    pub settings_status: &'a str,
+    pub settings_status: SettingsStatus,
     pub settings: &'a Option<Vec<ObservedSetting>>,
     pub local_settings: &'a [ObservedSetting],
     pub streams: &'a [ObservedUniStream],
     pub control: &'a [ObservedControlFrame],
     pub qpack: &'a [ObservedEncoderInstruction],
-    pub priorities: &'a Option<Vec<u8>>,
+    pub priorities: &'a Option<Box<[u8]>>,
     pub pseudo_headers: Option<&'a PseudoHeaderOrder>,
     pub request_fields: &'a [ObservedFieldRepresentation],
     pub completeness: ObservationCompleteness,
@@ -255,7 +303,7 @@ impl H3RequestObservation {
     pub fn view<'a>(
         &'a self,
         connection: &'a H3ObservationSnapshot,
-        settings_status: &'a str,
+        settings_status: SettingsStatus,
         pseudo_headers: Option<&'a PseudoHeaderOrder>,
     ) -> H3ObservationView<'a> {
         let mut completeness = connection.completeness;
@@ -263,7 +311,7 @@ impl H3RequestObservation {
         H3ObservationView {
             connection_revision: connection.revision,
             request_revision: self.connection.revision,
-            settings_status,
+            settings_status: settings_status.for_snapshot(connection),
             settings: &connection.settings,
             local_settings: &connection.local_settings,
             streams: &connection.streams,
@@ -273,6 +321,46 @@ impl H3RequestObservation {
             pseudo_headers,
             request_fields: &self.fields,
             completeness,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn observation_settings_status_reflects_retained_completeness() {
+        let mut snapshot = H3ObservationSnapshot::default();
+        assert!(matches!(
+            SettingsStatus::Received.for_snapshot(&snapshot),
+            SettingsStatus::Unavailable
+        ));
+        snapshot.completeness.snapshot = true;
+        assert!(matches!(
+            SettingsStatus::Received.for_snapshot(&snapshot),
+            SettingsStatus::Incomplete
+        ));
+        assert!(matches!(
+            SettingsStatus::Pending.for_snapshot(&snapshot),
+            SettingsStatus::Pending
+        ));
+        snapshot.settings_received = true;
+        assert!(matches!(
+            SettingsStatus::Pending.for_snapshot(&snapshot),
+            SettingsStatus::Incomplete
+        ));
+        snapshot.completeness.settings = true;
+        for status in [
+            SettingsStatus::Pending,
+            SettingsStatus::Received,
+            SettingsStatus::TimedOut,
+            SettingsStatus::Closed,
+        ] {
+            assert!(matches!(
+                status.for_snapshot(&snapshot),
+                SettingsStatus::Received
+            ));
         }
     }
 }

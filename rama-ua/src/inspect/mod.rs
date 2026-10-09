@@ -87,8 +87,11 @@ fn fill_profile(
     request_initiator: Option<RequestInitiator>,
     h2_settings: Option<Http2Settings>,
 ) {
-    if parts.version == Version::HTTP_3 {
-        return; // The H3 profile component is exported separately.
+    if !matches!(
+        parts.version,
+        Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 | Version::HTTP_2
+    ) {
+        return;
     }
     let destination = if parts.version == Version::HTTP_2 {
         if profile.h2_settings.is_none() {

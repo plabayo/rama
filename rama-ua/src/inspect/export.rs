@@ -74,7 +74,11 @@ impl ProfileExport {
                 continue;
             };
             #[cfg(feature = "tls")]
-            if version != Version::HTTP_3 && profile.tls_client_hello.is_none() {
+            if matches!(
+                version,
+                Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 | Version::HTTP_2
+            ) && profile.tls_client_hello.is_none()
+            {
                 profile.tls_client_hello = metadata
                     .connection
                     .get_ref::<TlsObservation>()

@@ -322,6 +322,7 @@ impl fmt::Debug for EndpointConfig {
 /// Default values should be suitable for most internet applications.
 #[derive(Clone)]
 pub struct ServerConfig {
+    /// Optional first-flight observation, disabled by default.
     pub(crate) capture: Option<CaptureLimits>,
     /// Transport configuration to use for incoming connections
     pub(crate) transport: Arc<TransportConfig>,
@@ -434,6 +435,8 @@ impl ServerConfig {
     rama_utils::macros::generate_set_and_with! {
         /// Retain bounded QUIC/TLS observations in accepted connection extensions.
         /// Capture exhaustion marks incomplete data and does not reject the connection.
+        /// Per-accept overrides control the accepted recorder. Enabling only at accept
+        /// marks datagram coverage incomplete because earlier buffer drops are unknown.
         pub fn capture(mut self, limits: Option<CaptureLimits>) -> Self {
             self.capture = limits;
             self
@@ -662,6 +665,7 @@ impl fmt::Debug for ServerConfig {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("ServerConfig")
             .field("transport", &self.transport)
+            .field("capture", &self.capture)
             // crypto not debug
             // token not debug
             .field("retry_token_lifetime", &self.retry_token_lifetime)

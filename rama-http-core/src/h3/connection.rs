@@ -260,7 +260,7 @@ impl Shared {
                 let mut state = self.state.lock();
                 let received = state.control.settings().is_some();
                 let error = state.error;
-                let closed = state.receive_closed || error.is_some();
+                let closed = error.is_some();
                 if received || closed || Instant::now() >= deadline {
                     let snapshot = state
                         .observation_snapshot()
@@ -301,7 +301,7 @@ impl Shared {
                         .len()
                         .saturating_mul(size_of::<ObservedFieldRepresentation>()),
                 ))
-            .then(|| field.value.to_vec())
+            .then(|| Box::from(&field.value[..]))
         });
         let fields_complete = captured_complete
             && retained.len() == fields.len()
@@ -430,9 +430,6 @@ impl Shared {
         let mut state = self.state.lock();
         if state.error.is_none_or(Error::is_clean_close) {
             state.error = Some(error);
-        }
-        if let Some(observation) = &mut state.observation {
-            observation.changed();
         }
         let error = state.error.unwrap_or(error);
         for (id, tx) in std::mem::take(&mut state.waiting) {
@@ -809,6 +806,14 @@ impl Shared {
     }
 
     pub(crate) async fn decode(&self, id: u64, bytes: Bytes) -> Decoded {
+        let result = self.decode_request(id, bytes).await;
+        if self.config.observation.is_some() {
+            self.state.lock().decoder.take_field_observation(id);
+        }
+        result
+    }
+
+    pub(crate) async fn decode_request(&self, id: u64, bytes: Bytes) -> Decoded {
         loop {
             // Enable before trying the codec, closing the drain-before-wait race.
             let progress = self.progress.notified();
@@ -903,8 +908,12 @@ impl Shared {
             }
             let result = result.map_err(|error| compression_error(error).remote());
             let failure = result.as_ref().err().copied();
-            if let Some(tx) = state.waiting.remove(&id) {
-                _ = tx.send(result);
+            if state
+                .waiting
+                .remove(&id)
+                .is_none_or(|tx| tx.send(result).is_err())
+            {
+                state.decoder.take_field_observation(id);
             }
             if let Some(error) = failure
                 && error.scope() == super::qpack::ErrorScope::Connection
@@ -1685,6 +1694,7 @@ mod observation_tests {
     use super::*;
     use rama_http_types::proto::h3::{
         Setting,
+        observation::SettingsStatus,
         qpack::{EncoderInstruction, FieldLine},
     };
     use std::{
@@ -1920,6 +1930,102 @@ mod observation_tests {
             snapshot.connection_error,
             Some(Code::H3_GENERAL_PROTOCOL_ERROR.value())
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn observation_client_sections_release_pending_field_metadata() {
+        let shared = Shared::new(
+            Config {
+                observation: Some(Box::new(ObservationLimits {
+                    pending_fields: 2,
+                    ..ObservationLimits::default()
+                })),
+                ..Config::default()
+            },
+            Role::Client,
+            Extensions::new(),
+        )
+        .unwrap();
+        let mut encoder = Encoder::before_peer_settings(EncoderConfig::default());
+        for id in (0..40).step_by(4) {
+            let encoded = encoder.encode(id, [(":status", "200")]).unwrap();
+            assert_eq!(shared.decode(id, encoded).await.unwrap().len(), 1);
+            assert!(
+                shared
+                    .state
+                    .lock()
+                    .decoder
+                    .take_field_observation(id)
+                    .is_none()
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn observation_settings_waits_through_receive_drain() {
+        let shared = shared(ObservationLimits::default());
+        let observer = observer(&shared);
+        shared.state.lock().receive_closed = true;
+        let mut waiting = Box::pin(observer.settings(Instant::now() + Duration::from_secs(1)));
+        assert!(
+            waiting
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        settings(&shared);
+        assert!(matches!(waiting.await, SettingsObservation::Received(_)));
+    }
+
+    #[test]
+    fn observation_settings_receipt_survives_exhausted_capture_budgets() {
+        let shared = shared(ObservationLimits {
+            bytes: 0,
+            events: 0,
+            ..ObservationLimits::default()
+        });
+        let observer = observer(&shared);
+        let before = observer.snapshot();
+        settings(&shared);
+        let after = observer.snapshot();
+        assert!(!before.settings_received);
+        assert!(after.settings_received);
+        assert!(after.settings.is_none());
+        assert!(!after.completeness.settings);
+        assert!(after.revision > before.revision);
+        assert!(matches!(
+            SettingsStatus::Pending.for_snapshot(&after),
+            SettingsStatus::Incomplete
+        ));
+    }
+
+    #[test]
+    fn observation_overflow_without_new_data_reuses_snapshot() {
+        let shared = shared(ObservationLimits {
+            streams: 0,
+            events: 0,
+            ..ObservationLimits::default()
+        });
+        let observer = observer(&shared);
+        let record_event = || {
+            let mut state = shared.state.lock();
+            let record = state.observation.as_mut().unwrap();
+            record.stream(2, StreamType::new(0x21));
+            record.control(&FrameEvent::Header(FrameHeader::new(
+                FrameType::new(0x21),
+                0,
+            )));
+            record.control(&FrameEvent::Ignored {
+                ty: FrameType::new(0x21),
+                len: 0,
+            });
+        };
+        record_event();
+        let first = observer.snapshot();
+        for _ in 0..100 {
+            record_event();
+            assert!(Arc::ptr_eq(&first, &observer.snapshot()));
+        }
     }
 
     #[test]

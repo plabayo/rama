@@ -25,15 +25,16 @@ pub(crate) enum ClientHelloPeek {
     Complete(ClientHelloMessage),
     /// The start of a ClientHello whose remainder has not arrived.
     Incomplete,
-    /// Bytes that are not, and cannot become, a ClientHello of at most [`LIMIT`] bytes.
+    /// Bytes that cannot become a ClientHello within the assembly's configured limit.
     Invalid,
 }
 
 /// The start of a pending attempt's CRYPTO stream, taken in packet by packet.
 ///
 /// Every packet is opened once, whatever the number of looks.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct HelloAssembly {
+    limit: usize,
     /// The first packet, and what was coalesced behind it, are taken in.
     pub(crate) started: bool,
     /// Buffered datagrams already taken in.
@@ -46,21 +47,37 @@ pub(crate) struct HelloAssembly {
     ahead_bytes: usize,
 }
 
+impl Default for HelloAssembly {
+    fn default() -> Self {
+        Self::with_limit(LIMIT)
+    }
+}
+
 impl HelloAssembly {
-    /// Take in CRYPTO data at `offset`; anything at or past [`LIMIT`] is dropped.
+    pub(crate) fn with_limit(limit: usize) -> Self {
+        Self {
+            limit,
+            started: false,
+            taken: 0,
+            stream: Vec::new(),
+            ahead: BTreeMap::new(),
+            ahead_bytes: 0,
+        }
+    }
+    /// Take in CRYPTO data at `offset`; anything beyond the configured limit is dropped.
     pub(crate) fn take_in(&mut self, offset: u64, data: Bytes) {
         let Some(offset) = usize::try_from(offset)
             .ok()
-            .filter(|offset| *offset < LIMIT)
+            .filter(|offset| *offset < self.limit)
         else {
             return;
         };
         let mut data = data;
-        data.truncate(LIMIT - offset);
+        data.truncate(self.limit - offset);
         if offset > self.stream.len() {
             let held = self.ahead.get(&offset).map_or(0, Bytes::len);
             let room = held < data.len()
-                && self.ahead_bytes - held + data.len() <= LIMIT
+                && self.ahead_bytes - held + data.len() <= self.limit
                 && (self.ahead.len() < AHEAD_LIMIT || held > 0);
             if room {
                 // A copy, so a fragment never keeps the whole packet it came in alive.
@@ -93,7 +110,7 @@ impl HelloAssembly {
             return ClientHelloPeek::Incomplete;
         };
         let len = 4 + (usize::from(a) << 16 | usize::from(b) << 8 | usize::from(c));
-        if len > LIMIT {
+        if len > self.limit {
             return ClientHelloPeek::Invalid;
         }
         let Some(message) = self.stream.get(..len) else {

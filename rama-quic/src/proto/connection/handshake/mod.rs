@@ -413,6 +413,9 @@ impl Connection {
         debug_assert!(space_id != SpaceId::Data);
         trace!("discarding {:?} keys", space_id);
         if space_id == SpaceId::Initial {
+            if let Some(observation) = &mut self.observation {
+                observation.finish();
+            }
             // No longer needed
             if let ConnectionSide::Client { token, .. } = &mut self.side {
                 *token = Bytes::new();

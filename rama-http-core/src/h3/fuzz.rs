@@ -88,6 +88,7 @@ pub fn state(input: &[u8]) {
         fields: 8,
         streams: 4,
         retained_snapshots: 2,
+        pending_fields: 2,
     };
     let mut observation = Recorder::new(limits, &Settings::new());
     for &kind in &input[..3] {
@@ -178,6 +179,7 @@ fn compression_schedule(input: &[u8]) {
                 fields: 4,
                 streams: 4,
                 retained_snapshots: 2,
+                pending_fields: 2,
             })),
             max_requests: 4,
             ..Config::default()
