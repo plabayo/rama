@@ -80,6 +80,8 @@ struct AdmissionState {
     reserved: AtomicUsize,
     failed: AtomicBool,
     in_use: AtomicBool,
+    /// How often the pool asked about outliving work.
+    asked: AtomicUsize,
     changed: ChangeSignal,
     storage: Weak<Mutex<Storage<Conn, TestId>>>,
 }
@@ -146,6 +148,13 @@ impl ConnectionAdmissionPolicy for FakeAdmission {
     }
 
     fn in_use(&self) -> bool {
+        if let Some(storage) = self.0.storage.upgrade() {
+            assert!(
+                storage.try_lock().is_some(),
+                "outliving work asked about under the storage lock"
+            );
+        }
+        self.0.asked.fetch_add(1, Ordering::SeqCst);
         self.0.in_use.load(Ordering::SeqCst)
     }
 }
@@ -159,6 +168,7 @@ fn admission_connection(
         reserved: AtomicUsize::new(0),
         failed: AtomicBool::new(false),
         in_use: AtomicBool::new(false),
+        asked: AtomicUsize::new(0),
         changed: ChangeSignal::new(),
         storage: Arc::downgrade(&pool.storage),
     });

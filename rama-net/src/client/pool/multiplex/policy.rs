@@ -71,6 +71,32 @@ impl IdLimit {
     }
 }
 
+/// How many idle connections a pool keeps, per id and in total, and how many
+/// it counts: see [`MultiplexPool::with_max_idle_per_id`].
+#[derive(Debug)]
+pub(super) struct IdleLimits {
+    pub(super) per_id: Option<NonZeroUsize>,
+    pub(super) total: Option<NonZeroUsize>,
+    /// Stored connections counted idle, see [`StoredConnection::counted_idle`].
+    pub(super) idle: AtomicUsize,
+}
+
+impl IdleLimits {
+    /// The limits, if there are any.
+    pub(super) fn new(
+        per_id: Option<NonZeroUsize>,
+        total: Option<NonZeroUsize>,
+    ) -> Option<Arc<Self>> {
+        (per_id.is_some() || total.is_some()).then(|| {
+            Arc::new(Self {
+                per_id,
+                total,
+                idle: AtomicUsize::new(0),
+            })
+        })
+    }
+}
+
 /// One slot of an id's limit, with the limit it belongs to.
 #[derive(Debug)]
 pub(super) struct IdPermit {

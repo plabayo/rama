@@ -115,6 +115,7 @@ impl<C, ID> Lane<C, ID> {
             if open.remove(&conn.seq).is_some() {
                 conn.listed.store(false, Ordering::Relaxed);
             }
+            conn.uncount_idle();
             *conn.lane.lock() = None;
             *conn.lane_waiters.lock() = None;
             conn.filed.store(false, Ordering::Relaxed);
@@ -127,6 +128,7 @@ impl<C, ID> Lane<C, ID> {
     pub(super) fn remove_at(&mut self, pos: usize) -> Arc<StoredConnection<C, ID>> {
         let conn = self.conns.remove(pos);
         self.unlist(conn.seq);
+        conn.uncount_idle();
         *conn.lane_waiters.lock() = None;
         conn.filed.store(false, Ordering::Relaxed);
         conn

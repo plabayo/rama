@@ -419,3 +419,129 @@ async fn forgetting_unused_id_limits_never_forgets_one_a_create_permit_holds() {
     );
     drop((second, slot));
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_checkout_waiting_at_a_limit_is_woken_once_an_idle_connection_expires() {
+    let timeout = Duration::from_millis(30);
+    let total = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(1).unwrap())
+        .with_saturation_policy(SaturationPolicy::Wait)
+        .with_idle_timeout(timeout);
+    let per_id = MultiplexPool::new()
+        .with_max_connections_per_id(NonZeroUsize::new(1).unwrap())
+        .with_saturation_policy(SaturationPolicy::Wait)
+        .with_idle_timeout(timeout);
+    // Nothing else wakes a checkout that may not evict: of another id, or key.
+    for (pool, id) in [(total, 1), (per_id, 0)] {
+        drop(fresh_keyed(&pool, 0, 1).await);
+        let input = want(2);
+        let mut waiting = queue_keyed(&pool, id, &input);
+        tokio::time::sleep(timeout).await;
+        assert!(waiting.is_woken(), "the idle connection expired");
+        let Poll::Ready(Ok(ConnectionResult::CreatePermit(slot))) = waiting.poll() else {
+            panic!("its slot is free once it expired")
+        };
+        drop(slot);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_going_idle_while_a_checkout_waits_wakes_it_once_expired() {
+    let timeout = Duration::from_millis(30);
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(1).unwrap())
+        .with_saturation_policy(SaturationPolicy::Wait)
+        .with_idle_timeout(timeout);
+    let held = fresh(&pool, 0).await;
+    let mut waiting = checkout(&pool, 1);
+    assert!(waiting.poll().is_pending());
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    drop(held);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(waiting.is_woken(), "it looks again within the timeout");
+    assert!(waiting.poll().is_pending(), "idle for 20ms of 30ms");
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert!(waiting.is_woken(), "and once that connection expires");
+    let Poll::Ready(Ok(ConnectionResult::CreatePermit(slot))) = waiting.poll() else {
+        panic!("its slot is free once it expired")
+    };
+    drop(slot);
+}
+
+/// Exclusive connections of `ids`, released oldest first, a millisecond apart.
+async fn idle_in_order(pool: &MultiplexPool<Conn, TestId>, ids: &[u32]) {
+    let mut held = Vec::new();
+    for id in ids {
+        held.push(fresh(pool, *id).await);
+    }
+    for conn in held {
+        drop(conn);
+        tokio::time::advance(Duration::from_millis(1)).await;
+    }
+}
+
+/// The ids and serials of the stored connections, in creation order.
+fn stored(pool: &MultiplexPool<Conn, TestId>) -> Vec<(u32, u64)> {
+    let storage = pool.storage.lock();
+    let mut stored: Vec<_> = storage
+        .by_id
+        .values()
+        .flat_map(|bucket| bucket.conns())
+        .map(|conn| (conn.id.0, conn.seq))
+        .collect();
+    stored.sort_unstable_by_key(|(_, seq)| *seq);
+    stored
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_connections_over_the_per_id_limit_close_least_recently_used_first() {
+    let pool = MultiplexPool::new().with_max_idle_per_id(NonZeroUsize::new(2).unwrap());
+    idle_in_order(&pool, &[0, 0, 0, 0, 1, 1]).await;
+    assert_eq!(stored(&pool), [(0, 2), (0, 3), (1, 4), (1, 5)]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_connections_over_the_total_limit_close_across_ids() {
+    let pool = MultiplexPool::new().with_max_idle_total(NonZeroUsize::new(2).unwrap());
+    idle_in_order(&pool, &[0, 1, 2, 3]).await;
+    assert_eq!(stored(&pool), [(2, 2), (3, 3)]);
+    // A reused connection is no longer idle: two more fit.
+    let Ok(ConnectionResult::Connection(reused)) = pool.get_conn(&TestId(2), &EMPTY_INPUT).await
+    else {
+        panic!("its idle connection is reused");
+    };
+    drop(reused);
+    assert_eq!(stored(&pool).len(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_limits_close_nothing_while_checkouts_wait() {
+    let pool = MultiplexPool::new()
+        .with_max_streams_per_connection(NonZeroUsize::new(1).unwrap())
+        .with_max_connections_total(NonZeroUsize::new(2).unwrap())
+        .with_saturation_policy(SaturationPolicy::Wait)
+        .with_max_idle_total(NonZeroUsize::new(1).unwrap());
+    let held = [fresh(&pool, 0).await, fresh(&pool, 1).await];
+    let mut waiting = checkout(&pool, 2);
+    assert!(waiting.poll().is_pending());
+    drop(held);
+    assert_eq!(
+        stored(&pool).len(),
+        2,
+        "what is idle now may serve a waiter"
+    );
+    drop(waiting);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_in_use_is_not_counted_idle() {
+    let pool = MultiplexPool::new().with_max_idle_total(NonZeroUsize::new(1).unwrap());
+    drop(fresh(&pool, 0).await);
+    let Ok(ConnectionResult::Connection(reused)) = pool.get_conn(&TestId(0), &EMPTY_INPUT).await
+    else {
+        panic!("its idle connection is reused");
+    };
+    drop(fresh(&pool, 1).await);
+    assert_eq!(stored(&pool).len(), 2, "one is in use, one idle");
+    drop(reused);
+}

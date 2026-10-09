@@ -42,9 +42,9 @@ mod policy;
 mod waiting;
 
 pub use self::connection::MultiplexedConnection;
-use self::connection::{Admitted, ConnectionSlot, StoredConnection, relist_stored};
+use self::connection::{Admitted, ConnectionSlot, StoredConnection, relist_stored, trim_idle};
 use self::lanes::{Claimed, IdBucket, Lane, OnlyLane, RequestLanes, Snapshot, select_and_admit};
-use self::policy::{IdLimit, IdPermit};
+use self::policy::{IdLimit, IdPermit, IdleLimits};
 pub use self::policy::{MultiplexSlot, SaturationPolicy};
 use self::waiting::{Blocked, IdSlotWait, Look, SlotWait, Waiting, maybe, maybe_pinned};
 
@@ -97,6 +97,27 @@ pub enum MuxSelection {
 /// released so their sockets close outside it.
 type Doomed<C, ID> = Vec<Arc<StoredConnection<C, ID>>>;
 
+/// What a sweep found under the storage lock, settled once it is released:
+/// see [`MultiplexPool::settle`].
+struct Swept<C, ID> {
+    doomed: Doomed<C, ID>,
+    /// Idle connections past the idle timeout whose admission is asked, outside
+    /// the lock, whether work outlives their handouts.
+    expiring: Doomed<C, ID>,
+    /// When the first idle connection the sweep kept expires.
+    next_expiry: u64,
+}
+
+impl<C, ID> Default for Swept<C, ID> {
+    fn default() -> Self {
+        Self {
+            doomed: Vec::new(),
+            expiring: Vec::new(),
+            next_expiry: u64::MAX,
+        }
+    }
+}
+
 /// A connection taken out of storage to make room, with its slots.
 struct Evicted<C, ID> {
     conn: Arc<StoredConnection<C, ID>>,
@@ -126,6 +147,19 @@ struct Storage<C, ID> {
     id_slots: HashMap<ID, Arc<IdLimit>>,
 }
 
+/// Take `conn` out of storage, if it is still stored.
+fn unstore<C, ID: ConnID>(
+    storage: &mut Storage<C, ID>,
+    conn: &StoredConnection<C, ID>,
+) -> Option<Arc<StoredConnection<C, ID>>> {
+    let bucket = storage.by_id.get_mut(&conn.id)?;
+    let removed = bucket.remove(conn);
+    if bucket.is_empty() {
+        storage.by_id.remove(&conn.id);
+    }
+    removed
+}
+
 /// Connection pool that multiplexes concurrent users over shared
 /// connections.
 pub struct MultiplexPool<C, ID> {
@@ -134,6 +168,7 @@ pub struct MultiplexPool<C, ID> {
     total_slots: Option<Arc<Semaphore>>,
     saturation: SaturationPolicy,
     max_connections_per_id: Option<NonZeroUsize>,
+    idle_limits: Option<Arc<IdleLimits>>,
     idle_timeout: Option<Duration>,
     max_concurrent_streams: usize,
     selection: MuxSelection,
@@ -173,6 +208,7 @@ impl<C, ID> Debug for MultiplexPool<C, ID> {
             .field("max_connections_total", &self.max_connections_total)
             .field("saturation", &self.saturation)
             .field("max_connections_per_id", &self.max_connections_per_id)
+            .field("idle_limits", &self.idle_limits)
             .field("idle_timeout", &self.idle_timeout)
             .field("max_concurrent_streams", &self.max_concurrent_streams)
             .field("selection", &self.selection)
@@ -188,6 +224,7 @@ impl<C, ID> Clone for MultiplexPool<C, ID> {
             total_slots: self.total_slots.clone(),
             saturation: self.saturation,
             max_connections_per_id: self.max_connections_per_id,
+            idle_limits: self.idle_limits.clone(),
             idle_timeout: self.idle_timeout,
             max_concurrent_streams: self.max_concurrent_streams,
             selection: self.selection,
@@ -214,6 +251,7 @@ impl<C, ID> Default for MultiplexPool<C, ID> {
             total_slots: None,
             saturation: SaturationPolicy::default(),
             max_connections_per_id: None,
+            idle_limits: None,
             idle_timeout: None,
             max_concurrent_streams: usize::MAX,
             selection: MuxSelection::default(),
@@ -324,11 +362,46 @@ impl<C, ID> MultiplexPool<C, ID> {
         self
     }
 
+    /// Keep at most `max` idle connections per id: once more go idle, the least
+    /// recently used ones close. It never holds back a checkout, and nothing
+    /// closes while checkouts wait. Without it, no limit.
+    ///
+    /// Configure it before the pool is used: clones share their count.
+    #[must_use]
+    pub fn with_max_idle_per_id(self, max: NonZeroUsize) -> Self {
+        self.maybe_with_max_idle_per_id(Some(max))
+    }
+
+    /// See [`Self::with_max_idle_per_id`]; `None` is no limit.
+    #[must_use]
+    pub fn maybe_with_max_idle_per_id(mut self, max: Option<NonZeroUsize>) -> Self {
+        let total = self.idle_limits.as_ref().and_then(|limits| limits.total);
+        self.idle_limits = IdleLimits::new(max, total);
+        self
+    }
+
+    /// Keep at most `max` idle connections across all ids, as
+    /// [`Self::with_max_idle_per_id`] does per id.
+    #[must_use]
+    pub fn with_max_idle_total(self, max: NonZeroUsize) -> Self {
+        self.maybe_with_max_idle_total(Some(max))
+    }
+
+    /// See [`Self::with_max_idle_total`]; `None` is no limit.
+    #[must_use]
+    pub fn maybe_with_max_idle_total(mut self, max: Option<NonZeroUsize>) -> Self {
+        let per_id = self.idle_limits.as_ref().and_then(|limits| limits.per_id);
+        self.idle_limits = IdleLimits::new(per_id, max);
+        self
+    }
+
     generate_set_and_with! {
         /// Drop connections that have been idle (no active streams) for longer than
         /// the given timeout. Only checked when a connection is requested: the
         /// connection a checkout is about to hand out is always checked, and the
-        /// id's other connections are swept at least about once a second.
+        /// id's other connections are swept at least about once a second. A
+        /// checkout waiting at a connection limit looks again once one would
+        /// expire, on a tokio timer: the runtime needs its time driver enabled.
         pub fn idle_timeout(mut self, timeout: Option<Duration>) -> Self {
             self.idle_timeout = timeout;
             self
@@ -358,19 +431,21 @@ where
     C: Send + Sync + ExtensionsRef + 'static,
     ID: ConnID,
 {
-    /// Whether a stored connection may still be handed out: not idle past the
-    /// idle timeout and not marked broken (in-flight streams keep a broken
-    /// connection alive via the outstanding handles, but it is no longer
-    /// handed out).
-    fn is_eligible(&self, conn: &StoredConnection<C, ID>) -> bool {
-        // Idle first: seeing work that outlived its handouts restarts the idle clock.
-        if let Some(idle_timeout) = self.idle_timeout
-            && conn.is_idle()
-            && conn.last_idle.elapsed() >= idle_timeout
-        {
-            trace!(id = ?conn.id, "multiplex pool: dropping idle connection");
+    /// Whether a stored connection may still be handed out: not marked broken
+    /// (in-flight streams keep a broken connection alive via the outstanding
+    /// handles, but it is no longer handed out) and not idle past the idle
+    /// timeout, which retires it. Asks its admission: call without the storage
+    /// lock.
+    fn is_eligible(&self, conn: &StoredConnection<C, ID>, now: u64) -> bool {
+        if Self::is_broken(conn) {
             return false;
         }
+        !(self.expiry(conn).is_some_and(|at| at <= now)
+            && conn.retire_if(|conn| self.has_expired(conn)).is_some())
+    }
+
+    /// Whether the health watcher of `conn` marks it broken.
+    fn is_broken(conn: &StoredConnection<C, ID>) -> bool {
         let broken = conn
             .conn
             .extensions()
@@ -379,7 +454,31 @@ where
         if broken {
             trace!(id = ?conn.id, "multiplex pool: dropping broken connection");
         }
-        !broken
+        broken
+    }
+
+    /// When `conn` passes the idle timeout, if it can be idle: from atomics, so
+    /// work outliving its handouts is only known once its admission is asked.
+    fn expiry(&self, conn: &StoredConnection<C, ID>) -> Option<u64> {
+        let timeout = self.idle_timeout?;
+        conn.maybe_idle().then(|| {
+            conn.last_idle
+                .as_nanos()
+                .saturating_add(timeout.as_nanos() as u64)
+        })
+    }
+
+    /// Whether `conn` is idle past the idle timeout. Asks its admission first:
+    /// seeing work that outlived its handouts restarts the idle clock.
+    fn has_expired(&self, conn: &StoredConnection<C, ID>) -> bool {
+        let expired = conn.is_idle()
+            && self
+                .idle_timeout
+                .is_some_and(|timeout| conn.last_idle.elapsed() >= timeout);
+        if expired {
+            trace!(id = ?conn.id, "multiplex pool: dropping idle connection");
+        }
+        expired
     }
 
     /// The pace of the full bucket sweeps that reap connections which checkouts
@@ -395,18 +494,56 @@ where
         now.saturating_add(self.sweep_interval().as_nanos() as u64)
     }
 
-    /// Move ineligible connections out of `bucket` into `doomed`, so their
-    /// sockets close once the caller has released the storage lock.
-    fn sweep_bucket(&self, bucket: &mut IdBucket<C, ID>, doomed: &mut Doomed<C, ID>) {
-        bucket.next_sweep = self.next_sweep_after(now_monotonic_nanos());
+    /// Move broken connections, and idle ones past the idle timeout without an
+    /// admission to ask, out of `bucket` into `swept`. Idle ones past it with
+    /// an admission stay: their admission is asked once the lock is released.
+    fn sweep_bucket(&self, bucket: &mut IdBucket<C, ID>, swept: &mut Swept<C, ID>) {
+        let now = now_monotonic_nanos();
+        bucket.next_sweep = self.next_sweep_after(now);
         bucket.retain(|conn| {
-            if self.is_eligible(conn) {
-                return true;
+            let gone = if Self::is_broken(conn) {
+                conn.pool_slot.lock().retired = true;
+                true
+            } else {
+                match self.expiry(conn) {
+                    Some(at) if at > now => {
+                        swept.next_expiry = swept.next_expiry.min(at);
+                        false
+                    }
+                    Some(_) if conn.admission.is_some() => {
+                        swept.expiring.push(conn.clone());
+                        false
+                    }
+                    // Nothing outlives its handouts unannounced: it is idle.
+                    Some(_) => conn.retire_if(StoredConnection::maybe_idle).is_some(),
+                    None => false,
+                }
+            };
+            if gone {
+                swept.doomed.push(conn.clone());
             }
-            conn.pool_slot.lock().retired = true;
-            doomed.push(conn.clone());
-            false
+            !gone
         });
+    }
+
+    /// Finish a sweep without the storage lock: retire the expiring connections
+    /// their admission reports idle, take them out of storage, and close
+    /// everything the sweep took out.
+    fn settle(&self, swept: Swept<C, ID>) {
+        let Swept {
+            doomed, expiring, ..
+        } = swept;
+        let expired: Doomed<C, ID> = expiring
+            .into_iter()
+            .filter(|conn| conn.retire_if(|conn| self.has_expired(conn)).is_some())
+            .collect();
+        if !expired.is_empty() {
+            let mut storage = self.storage.lock();
+            for conn in &expired {
+                drop(unstore(&mut storage, conn));
+            }
+        }
+        drop((expired, doomed));
     }
 
     /// The lanes able to serve `input`: its key's lane in each class of the
@@ -432,13 +569,14 @@ where
         storage: &mut Storage<C, ID>,
         id: &ID,
         lanes: &RequestLanes,
-        doomed: &mut Doomed<C, ID>,
+        swept: &mut Swept<C, ID>,
         look: &mut Look<'_>,
     ) -> Snapshot<C, ID> {
         let Some(bucket) = storage.by_id.get_mut(id) else {
             return Snapshot::new();
         };
-        self.sweep_bucket(bucket, doomed);
+        self.sweep_bucket(bucket, swept);
+        look.note_expiry(swept.next_expiry);
         if bucket.is_empty() {
             storage.by_id.remove(id);
             return Snapshot::new();
@@ -456,10 +594,15 @@ where
                 continue;
             }
             lanes_seen += usize::from(!lane.conns.is_empty());
-            snapshot.extend(lane.conns.iter().map(|conn| {
-                let Claimed { conn, lane_gen } = Claimed::new(conn.clone());
-                (conn, lane_gen)
-            }));
+            snapshot.extend(
+                lane.conns
+                    .iter()
+                    .filter(|conn| !swept.expiring.iter().any(|gone| Arc::ptr_eq(gone, conn)))
+                    .map(|conn| {
+                        let Claimed { conn, lane_gen } = Claimed::new(conn.clone());
+                        (conn, lane_gen)
+                    }),
+            );
         }
         // Selection treats the lanes as one index in creation order.
         if lanes_seen > 1 {
@@ -470,57 +613,95 @@ where
 
     /// Sweep every bucket. Slow path only: it frees pool slots held by stale
     /// connections of other ids before falling back to LRU eviction.
-    fn sweep_all(&self, storage: &mut Storage<C, ID>, doomed: &mut Doomed<C, ID>) {
+    fn sweep_all(&self, storage: &mut Storage<C, ID>, swept: &mut Swept<C, ID>) {
         storage.by_id.retain(|_, bucket| {
-            self.sweep_bucket(bucket, doomed);
+            self.sweep_bucket(bucket, swept);
             !bucket.is_empty()
         });
     }
 
-    /// Remove the least-recently-used idle connection, of `within` or of any
-    /// id, returning it with its slots, so the caller can take them over and
-    /// drop the connection outside the lock, and whether another one could
+    /// Evict the least recently used idle connection, of `within` or of any
+    /// id, for `evictor` (none: a newcomer) of `chances`, returning it with its
+    /// slots, so the caller can take them over, and whether another one could
     /// have gone.
+    ///
+    /// Picks from atomics under `storage`, then retires the pick with the lock
+    /// released: its admission is asked about work outliving its handouts and
+    /// may take the source's own locks. A pick that turns out busy is skipped.
+    fn evict_lru_idle<'a>(
+        &'a self,
+        mut storage: parking_lot::MutexGuard<'a, Storage<C, ID>>,
+        evictor: Option<&Waiting>,
+        chances: &Arc<WaitQueue>,
+        within: Option<&ID>,
+    ) -> Option<Evicted<C, ID>> {
+        let mut busy: SmallVec<[u64; 2]> = SmallVec::new();
+        loop {
+            let (conn, more) = self.pick_lru_idle(&storage, evictor, chances, within, &busy)?;
+            drop(storage);
+            let retired = conn.retire_if(StoredConnection::is_idle).map(|mut slot| {
+                std::mem::replace(
+                    &mut slot.slots,
+                    MultiplexSlot {
+                        total: None,
+                        id: None,
+                    },
+                )
+            });
+            if let Some(slots) = retired {
+                let stored = unstore(&mut self.storage.lock(), &conn);
+                return Some(Evicted {
+                    conn: stored.unwrap_or(conn),
+                    slots,
+                    more,
+                });
+            }
+            busy.push(conn.seq);
+            storage = self.storage.lock();
+            // An older evictor may have queued ahead meanwhile.
+            if !chances.admits(evictor.and_then(|evictor| evictor.waiter_in(chances))) {
+                return None;
+            }
+        }
+    }
+
+    /// The least recently used connection that can be idle, of `within` or of
+    /// any id, but not `busy`, and whether another one could have gone instead.
     ///
     /// An idle connection that can take a stream is its lane's waiters', unless
     /// the evictor arrived before them or is their front (its own look just
     /// found nothing it could use there). Its slots are the other limit's
     /// evictors' if one of them arrived first: the evictor gives way to them,
     /// queued in `chances`.
-    fn evict_lru_idle(
+    fn pick_lru_idle(
         &self,
-        storage: &mut Storage<C, ID>,
+        storage: &Storage<C, ID>,
         evictor: Option<&Waiting>,
         chances: &Arc<WaitQueue>,
         within: Option<&ID>,
-    ) -> Option<Evicted<C, ID>> {
+        busy: &[u64],
+    ) -> Option<(Arc<StoredConnection<C, ID>>, bool)> {
         let order = evictor.map_or(u64::MAX, |evictor| evictor.party.order());
-        let (conn, slots, more) = loop {
+        loop {
             let mut gave_way = SmallVec::new();
             let picked = match within {
-                Some(id) => Self::pick_lru_idle(
+                Some(id) => Self::pick_lru_idle_of(
                     storage.by_id.get(id).into_iter().flat_map(IdBucket::lanes),
-                    evictor,
+                    order,
                     Some(&self.slot_waiters),
+                    busy,
                     &mut gave_way,
                 ),
-                None => Self::pick_lru_idle(
+                None => Self::pick_lru_idle_of(
                     storage.by_id.values().flat_map(IdBucket::lanes),
-                    evictor,
+                    order,
                     None,
+                    busy,
                     &mut gave_way,
                 ),
             };
-            if let Some((conn, mut slot, more)) = picked {
-                slot.retired = true;
-                let slots = std::mem::replace(
-                    &mut slot.slots,
-                    MultiplexSlot {
-                        total: None,
-                        id: None,
-                    },
-                );
-                break (conn.clone(), slots, more);
+            if let Some((conn, more)) = picked {
+                return Some((conn.clone(), more));
             }
             // Woken once they leave. One that left meanwhile left its
             // connection to this evictor: look again.
@@ -531,35 +712,24 @@ where
             {
                 return None;
             }
-        };
-        let bucket = storage.by_id.get_mut(&conn.id)?;
-        let conn = bucket.remove(&conn)?;
-        if bucket.is_empty() {
-            storage.by_id.remove(&conn.id);
         }
-        Some(Evicted { conn, slots, more })
     }
 
-    /// The least recently used evictable connection of `lanes`, with its slot
-    /// lock held so admission cannot take it meanwhile, and whether there were
-    /// more. Connections whose slots the other limit's older evictors contend
-    /// for, `rivals` or else their id's, are left to them: their queues are
+    /// [`Self::pick_lru_idle`] among `lanes` for an evictor of `order`.
+    /// Connections whose slots the other limit's older evictors contend for,
+    /// `rivals` or else their id's, are left to them: their queues are
     /// collected in `gave_way`.
-    fn pick_lru_idle<'a>(
+    fn pick_lru_idle_of<'a>(
         lanes: impl Iterator<Item = &'a Lane<C, ID>>,
-        evictor: Option<&Waiting>,
+        order: u64,
         rivals: Option<&'a Arc<WaitQueue>>,
+        busy: &[u64],
         gave_way: &mut SmallVec<[&'a Arc<WaitQueue>; 2]>,
-    ) -> Option<(
-        &'a Arc<StoredConnection<C, ID>>,
-        parking_lot::MutexGuard<'a, ConnectionSlot>,
-        bool,
-    )>
+    ) -> Option<(&'a Arc<StoredConnection<C, ID>>, bool)>
     where
         C: 'a,
         ID: 'a,
     {
-        let order = evictor.map_or(u64::MAX, |evictor| evictor.party.order());
         let mut candidate = None;
         let mut oldest = u64::MAX;
         let mut found = 0_usize;
@@ -573,7 +743,7 @@ where
                 if spoken_for && conn.has_capacity(conn.stream_cap) {
                     continue;
                 }
-                if !conn.is_idle() {
+                if !conn.maybe_idle() || busy.contains(&conn.seq) {
                     continue;
                 }
                 if let Some(rivals) = rivals.or(conn.id_evictors.as_ref())
@@ -586,21 +756,13 @@ where
                 }
                 found += 1;
                 let last_idle = conn.last_idle.as_nanos();
-                if last_idle >= oldest {
-                    continue;
+                if last_idle < oldest {
+                    oldest = last_idle;
+                    candidate = Some(conn);
                 }
-                let slot = conn.pool_slot.lock();
-                if slot.retired || !conn.is_idle() {
-                    continue;
-                }
-                // Keep the best candidate idle until its slots are taken.
-                // Admission takes this same lock; no retry loop is needed.
-                oldest = last_idle;
-                candidate = Some((conn, slot));
             }
         }
-        let (conn, slot) = candidate?;
-        Some((conn, slot, found > 1))
+        Some((candidate?, found > 1))
     }
 
     /// Evict an idle connection, of `within` or of any id, for a checkout of
@@ -639,7 +801,7 @@ where
             if !chances.admits(waiting.and_then(|waiting| waiting.waiter_in(chances))) {
                 return None;
             }
-            self.evict_lru_idle(&mut storage, waiting, chances, within)?
+            self.evict_lru_idle(storage, waiting, chances, within)?
         };
         drop(evicted.conn);
         if let Look::Register(waiting) = look {
@@ -720,7 +882,7 @@ where
         let mut rejected: SmallVec<[Arc<StoredConnection<C, ID>>; 2]> = SmallVec::new();
         let mut retired: SmallVec<[Arc<StoredConnection<C, ID>>; 2]> = SmallVec::new();
         let mut skip: SmallVec<[u64; 4]> = SmallVec::new();
-        let mut doomed = Doomed::new();
+        let mut swept = Swept::default();
         let mut handout = None;
 
         let now = now_monotonic_nanos();
@@ -730,7 +892,7 @@ where
                 return Err(Box::new(RequestLanes::unrestricted()));
             };
             if now >= bucket.next_sweep {
-                self.sweep_bucket(bucket, &mut doomed);
+                self.sweep_bucket(bucket, &mut swept);
             }
             let classes = bucket.classes();
             match bucket.claim_only(self.selection, cap, waiting) {
@@ -772,7 +934,7 @@ where
             };
             exhausted = false;
             skip.push(conn.seq);
-            if !self.is_eligible(&conn) {
+            if !self.is_eligible(&conn, now) {
                 retired.push(conn);
                 continue;
             }
@@ -792,7 +954,7 @@ where
             }
         }
 
-        if !rejected.is_empty() || !retired.is_empty() || !doomed.is_empty() {
+        if !rejected.is_empty() || !retired.is_empty() {
             {
                 let mut storage = self.storage.lock();
                 let mut empty = false;
@@ -800,7 +962,7 @@ where
                     for conn in &retired {
                         if let Some(removed) = bucket.remove(conn) {
                             removed.pool_slot.lock().retired = true;
-                            doomed.push(removed);
+                            swept.doomed.push(removed);
                         }
                     }
                     for conn in &rejected {
@@ -814,8 +976,9 @@ where
             }
             // Connections that were retired, and so may be the last handle to a
             // socket, close outside the lock.
-            drop((retired, rejected, doomed));
+            drop((retired, rejected));
         }
+        self.settle(swept);
         handout
             .ok_or_else(|| Box::new(lanes.unwrap_or_else(|| RequestLanes::derive(classes, input))))
     }
@@ -839,7 +1002,6 @@ where
         if !id.is_reusable() {
             return (Snapshot::new(), false);
         }
-        let mut doomed = Doomed::new();
         let mut storage = self.storage.lock();
         if !storage.by_id.contains_key(id) {
             return (Snapshot::new(), false);
@@ -862,9 +1024,10 @@ where
                 return (Snapshot::new(), stored);
             }
         }
-        let snapshot = self.snapshot(&mut storage, id, lanes, &mut doomed, look);
+        let mut swept = Swept::default();
+        let snapshot = self.snapshot(&mut storage, id, lanes, &mut swept, look);
         drop(storage);
-        drop(doomed);
+        self.settle(swept);
         (snapshot, false)
     }
 
@@ -879,19 +1042,19 @@ where
         waiting: &Waiting,
     ) -> ConnectionResult<MultiplexedConnection<C, ID>, MultiplexSlot> {
         let lanes = self.request_lanes(id, input);
-        let mut doomed = Vec::new();
+        let mut swept = Swept::default();
         let mut same_lane = if id.is_reusable() {
             self.snapshot(
                 &mut self.storage.lock(),
                 id,
                 &lanes,
-                &mut doomed,
+                &mut swept,
                 &mut Look::Waiting(waiting),
             )
         } else {
             Snapshot::new()
         };
-        drop(doomed);
+        self.settle(swept);
         self.leave_kept(&mut same_lane, Some(waiting));
         if let Some(conn) = select_and_admit(
             &same_lane,
@@ -980,9 +1143,10 @@ where
         // Stale connections of any id may hold slots: sweep them out, then let
         // their permits flow back through the semaphore (to the oldest queued
         // waiter, if any) first.
-        let mut doomed = Vec::new();
-        self.sweep_all(&mut self.storage.lock(), &mut doomed);
-        drop(doomed);
+        let mut swept = Swept::default();
+        self.sweep_all(&mut self.storage.lock(), &mut swept);
+        look.note_expiry(swept.next_expiry);
+        self.settle(swept);
         if let Ok(permit) = total.clone().try_acquire_owned() {
             return Ok((Some(permit), false));
         }
@@ -1168,6 +1332,7 @@ where
         let mut total_slot_wait: Option<SlotWait> = None;
         // Armed once a look is blocked on a limit, in place.
         let mut patience: Pin<&mut Option<Sleep>> = std::pin::pin!(None);
+        let mut expiry: Pin<&mut Option<Sleep>> = std::pin::pin!(None);
         let mut patient = true;
         loop {
             // Enabled before the look, so no wake between both is lost.
@@ -1209,6 +1374,20 @@ where
             {
                 patience.set(Some(tokio::time::sleep(after)));
             }
+            if let Some(timeout) = self.idle_timeout {
+                // An idle connection frees its slots once it expires, and one
+                // going idle after this look does not expire before the timeout.
+                let now = now_monotonic_nanos();
+                let at = waiting
+                    .next_expiry
+                    .min(now.saturating_add(timeout.as_nanos() as u64));
+                let deadline =
+                    tokio::time::Instant::now() + Duration::from_nanos(at.saturating_sub(now));
+                match expiry.as_mut().as_pin_mut() {
+                    Some(sleep) => sleep.reset(deadline),
+                    None => expiry.set(Some(tokio::time::sleep_until(deadline))),
+                }
+            }
 
             trace!(
                 ?id,
@@ -1227,6 +1406,8 @@ where
                     patience.set(None);
                     patient = false;
                 }
+                // Looks again: its sweep takes out what expired.
+                () = maybe_pinned(expiry.as_mut()) => {}
                 permit = maybe(&mut total_slot_wait) => {
                     total_slot_wait = None;
                     let Ok(permit) = permit else {
@@ -1303,6 +1484,8 @@ where
             lane_gen: AtomicU64::new(0),
             seq: self.next_seq.fetch_add(1, Ordering::Relaxed),
             stream_cap: self.max_concurrent_streams,
+            changes: AtomicU64::new(0),
+            busy_at: AtomicU64::new(0),
             active: AtomicUsize::new(1),
             lane_waiters: Mutex::new(None),
             waiting: self.waiting.clone(),
@@ -1317,6 +1500,9 @@ where
             listed: AtomicBool::new(false),
             storage: Arc::downgrade(&self.storage),
             relist_fn: relist_stored,
+            idle_limits: self.idle_limits.clone(),
+            counted_idle: AtomicBool::new(false),
+            trim_fn: trim_idle,
         });
 
         // The connection is its sources' listener: a change wakes its lane's

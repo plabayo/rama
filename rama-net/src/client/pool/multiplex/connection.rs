@@ -31,6 +31,11 @@ pub(super) struct StoredConnection<C, ID> {
     /// Whether waiting checkouts were told it broke.
     pub(super) broken_told: AtomicBool,
     pub(super) admission: Option<ConnectionAdmission>,
+    /// Changes its sources reported: counted by its listener.
+    pub(super) changes: AtomicU64,
+    /// One past the count of changes when its admission last reported work
+    /// outliving its handouts: until the next change it is not asked again.
+    pub(super) busy_at: AtomicU64,
     pub(super) active: AtomicUsize,
     /// The waiters of the lane the connection is filed under. A leaf lock:
     /// releases and pushed changes reach it without the storage lock.
@@ -56,6 +61,12 @@ pub(super) struct StoredConnection<C, ID> {
     /// the connection.
     pub(super) storage: Weak<Mutex<Storage<C, ID>>>,
     pub(super) relist_fn: fn(&Arc<Self>),
+    /// The pool's idle limits, if it has any.
+    pub(super) idle_limits: Option<Arc<IdleLimits>>,
+    /// Whether the idle limits count it idle: set as it goes idle, cleared as a
+    /// stream is admitted, outliving work is seen, or it leaves storage.
+    pub(super) counted_idle: AtomicBool,
+    pub(super) trim_fn: fn(&Arc<Self>),
 }
 
 /// A stream reserved on a connection by [`StoredConnection::try_admit`], with
@@ -72,11 +83,19 @@ pub(super) struct ConnectionSlot {
 impl<C, ID> StoredConnection<C, ID> {
     /// A connection is idle when none of its handouts are in flight and no work
     /// they outlived still occupies it.
+    ///
+    /// Asks its admission, which may take the source's own locks: never call it
+    /// with the storage lock held, see [`Self::maybe_idle`].
     pub(super) fn is_idle(&self) -> bool {
-        if self.active.load(Ordering::Relaxed) != 0 {
+        if !self.maybe_idle() {
             return false;
         }
+        // Read before asking: a change after the answer makes it ask again.
+        let changes = self.changes.load(Ordering::Acquire);
         if self.in_use_unleased() {
+            self.busy_at
+                .store(changes.wrapping_add(1), Ordering::Relaxed);
+            self.uncount_idle();
             // Such work is activity: the idle clock starts once it ends.
             self.last_idle.set_now();
             return false;
@@ -84,11 +103,52 @@ impl<C, ID> StoredConnection<C, ID> {
         true
     }
 
+    /// Whether the connection can be idle, from atomics only: none of its
+    /// handouts are in flight, and its admission did not report work outliving
+    /// them since its last change, which it reports once such work ends.
+    pub(super) fn maybe_idle(&self) -> bool {
+        self.active.load(Ordering::Relaxed) == 0
+            && self.busy_at.load(Ordering::Relaxed)
+                != self.changes.load(Ordering::Acquire).wrapping_add(1)
+    }
+
+    /// Count the connection idle for the pool's idle limits, once.
+    pub(super) fn count_idle(&self) {
+        if let Some(limits) = &self.idle_limits
+            && !self.counted_idle.swap(true, Ordering::Relaxed)
+        {
+            limits.idle.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// No longer count the connection idle.
+    pub(super) fn uncount_idle(&self) {
+        if let Some(limits) = &self.idle_limits
+            && self.counted_idle.swap(false, Ordering::Relaxed)
+        {
+            limits.idle.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
     /// Work outlived its handouts, such as an upgraded tunnel.
-    pub(super) fn in_use_unleased(&self) -> bool {
+    fn in_use_unleased(&self) -> bool {
         self.admission
             .as_ref()
             .is_some_and(ConnectionAdmission::in_use)
+    }
+
+    /// Retire the connection if `idle` holds under its slot lock, so it admits
+    /// no stream any more: returns that lock, with the slots to take over.
+    pub(super) fn retire_if(
+        &self,
+        idle: impl FnOnce(&Self) -> bool,
+    ) -> Option<parking_lot::MutexGuard<'_, ConnectionSlot>> {
+        let mut slot = self.pool_slot.lock();
+        if slot.retired || !idle(self) {
+            return None;
+        }
+        slot.retired = true;
+        Some(slot)
     }
 
     /// Effective per-connection concurrency: the connection's [`MaxConcurrency`]
@@ -203,6 +263,7 @@ impl<C, ID> StoredConnection<C, ID> {
         // decrease the count, so no compare/exchange loop is needed here.
         self.active.fetch_add(1, Ordering::Relaxed);
         drop(slot);
+        self.uncount_idle();
         Some(Admitted(admission))
     }
 }
@@ -267,6 +328,15 @@ impl<C: Send + Sync + 'static, ID: Send + Sync + 'static> ChangeListener
     for StoredConnection<C, ID>
 {
     fn changed(&self, change: Change) {
+        // Pairs with the read before asking about outliving work: once it ends,
+        // the connection is asked again.
+        self.changes.fetch_add(1, Ordering::Release);
+        if self.active.load(Ordering::Relaxed) == 0 {
+            // Such as the end of work outliving the handouts: the idle clock
+            // starts now. The next release or idle trim asks.
+            self.last_idle.set_now();
+            self.count_idle();
+        }
         fence(Ordering::SeqCst);
         let wake = match change {
             Change::Freed => WaitQueue::wake_one,
@@ -299,6 +369,61 @@ pub(super) fn relist_stored<C, ID: ConnID>(conn: &Arc<StoredConnection<C, ID>>) 
     }
 }
 
+/// [`StoredConnection::trim_fn`]: close the least recently used idle
+/// connections beyond the pool's idle limits, of the connection's id first,
+/// then in total. Picks from atomics under the storage lock, asks the pick's
+/// admission without it.
+pub(super) fn trim_idle<C, ID: ConnID>(conn: &Arc<StoredConnection<C, ID>>) {
+    let (Some(limits), Some(storage)) = (&conn.idle_limits, conn.storage.upgrade()) else {
+        return;
+    };
+    let mut busy: SmallVec<[u64; 2]> = SmallVec::new();
+    // Waiting checkouts take idle connections: none of them is extra then.
+    while conn.waiting.load(Ordering::Relaxed) == 0 {
+        let over_total = limits
+            .total
+            .is_some_and(|max| limits.idle.load(Ordering::Relaxed) > max.get());
+        let extra = {
+            let storage = storage.lock();
+            let own = storage.by_id.get(&conn.id).filter(|bucket| {
+                limits.per_id.is_some_and(|max| {
+                    let idle = bucket.lanes().flat_map(|lane| &lane.conns);
+                    idle.filter(|conn| conn.maybe_idle()).count() > max.get()
+                })
+            });
+            match own {
+                Some(bucket) => least_recently_idle(bucket.lanes(), &busy),
+                None if over_total => {
+                    least_recently_idle(storage.by_id.values().flat_map(IdBucket::lanes), &busy)
+                }
+                None => None,
+            }
+        };
+        let Some(extra) = extra else {
+            return;
+        };
+        if extra.retire_if(StoredConnection::is_idle).is_none() {
+            busy.push(extra.seq);
+            continue;
+        }
+        trace!(id = ?extra.id, "multiplex pool: closing an idle connection over the idle limits");
+        let stored = unstore(&mut storage.lock(), &extra);
+        drop((stored, extra));
+    }
+}
+
+/// The connection of `lanes` idle the longest, from atomics, but not `busy`.
+fn least_recently_idle<'a, C: 'a, ID: 'a>(
+    lanes: impl Iterator<Item = &'a Lane<C, ID>>,
+    busy: &[u64],
+) -> Option<Arc<StoredConnection<C, ID>>> {
+    lanes
+        .flat_map(|lane| &lane.conns)
+        .filter(|conn| conn.maybe_idle() && !busy.contains(&conn.seq))
+        .min_by_key(|conn| conn.last_idle.as_nanos())
+        .cloned()
+}
+
 /// A cheap handle to a shared connection in a [`MultiplexPool`].
 ///
 /// It implements [`Service`] by forwarding to the inner connection and counts as
@@ -313,7 +438,8 @@ impl<C, ID> Drop for MultiplexedConnection<C, ID> {
     fn drop(&mut self) {
         // Return unused transport credit before waking pool-capacity waiters.
         self.admission.take();
-        if self.inner.active.fetch_sub(1, Ordering::Release) == 1 {
+        let last = self.inner.active.fetch_sub(1, Ordering::Release) == 1;
+        if last {
             self.inner.last_idle.set_now();
         }
         // Pairs with the fences of a checkout unlisting a full connection and
@@ -326,6 +452,10 @@ impl<C, ID> Drop for MultiplexedConnection<C, ID> {
         // of its lane without a wake, else an eviction chance if now idle.
         // Work outliving the handout is announced by the admission's change.
         self.inner.freed(WaitQueue::wake_one, false);
+        if last && self.inner.idle_limits.is_some() && self.inner.is_idle() {
+            self.inner.count_idle();
+            (self.inner.trim_fn)(&self.inner);
+        }
     }
 }
 

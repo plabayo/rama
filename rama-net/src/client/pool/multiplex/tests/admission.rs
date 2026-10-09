@@ -172,6 +172,34 @@ async fn the_end_of_work_outliving_the_last_handout_is_an_eviction_chance() {
     };
 }
 
+#[tokio::test]
+async fn a_busy_connection_is_asked_again_only_after_a_change() {
+    let pool = MultiplexPool::evicting(32, 1);
+    let permit = new_slot(&pool).await;
+    let (conn, state) = admission_connection(&pool, 4);
+    let first = pool
+        .create(TestId(0), conn, permit, &Extensions::new())
+        .await
+        .unwrap();
+    state.set_in_use(true);
+    drop(first);
+    let mut other = tokio_test::task::spawn(pool.get_conn(&TestId(1), &EMPTY_INPUT));
+    assert!(other.poll().is_pending(), "a busy connection was evicted");
+    let asked = state.asked.load(Ordering::SeqCst);
+    assert!(asked > 0);
+    // Looks without a change of the connection do not ask again.
+    for _ in 0..3 {
+        pool.notify.notify_waiters();
+        assert!(other.poll().is_pending());
+    }
+    assert_eq!(state.asked.load(Ordering::SeqCst), asked);
+    state.set_in_use(false);
+    let Poll::Ready(Ok(ConnectionResult::CreatePermit(_))) = other.poll() else {
+        panic!("asked again after its change, the idle connection is evicted")
+    };
+    assert!(state.asked.load(Ordering::SeqCst) > asked);
+}
+
 #[tokio::test(start_paused = true)]
 async fn work_outliving_its_handouts_keeps_a_connection_from_expiring() {
     let pool = MultiplexPool::evicting(32, 1).with_idle_timeout(Duration::from_micros(1));
@@ -194,6 +222,29 @@ async fn work_outliving_its_handouts_keeps_a_connection_from_expiring() {
         pool.get_conn(&TestId(0), &EMPTY_INPUT).await,
         Ok(ConnectionResult::CreatePermit(_))
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_expired_connection_asked_outside_the_lock_frees_its_slot() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(1).unwrap())
+        .with_saturation_policy(SaturationPolicy::Wait)
+        .with_idle_timeout(Duration::from_millis(30));
+    let permit = new_slot(&pool).await;
+    let (conn, state) = admission_connection(&pool, 4);
+    drop(
+        pool.create(TestId(0), conn, permit, &Extensions::new())
+            .await
+            .unwrap(),
+    );
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    // Only a sweep of all ids comes across it, and asks once it let go.
+    let Ok(ConnectionResult::CreatePermit(_)) = pool.get_conn(&TestId(1), &EMPTY_INPUT).await
+    else {
+        panic!("its slot is free once it expired")
+    };
+    assert!(state.asked.load(Ordering::SeqCst) > 0);
+    assert!(pool.storage.lock().by_id.is_empty());
 }
 
 #[tokio::test(start_paused = true)]
@@ -509,6 +560,7 @@ async fn exclusive_pool_replaces_connection_with_exhausted_transport_credit() {
         reserved: AtomicUsize::new(0),
         failed: AtomicBool::new(false),
         in_use: AtomicBool::new(false),
+        asked: AtomicUsize::new(0),
         changed: ChangeSignal::new(),
         storage: Weak::new(),
     });
@@ -677,4 +729,101 @@ async fn a_release_wakes_its_lane_and_not_an_eviction_waiter() {
     );
     drop(handout(&mut same));
     drop((a, other));
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_limits_never_close_a_connection_with_outliving_work() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(4).unwrap())
+        .with_max_idle_per_id(NonZeroUsize::new(1).unwrap());
+    let permit = pool.test_slot();
+    let (conn, state) = admission_connection(&pool, 4);
+    let tunnel = pool
+        .create(TestId(0), conn, permit, &Extensions::new())
+        .await
+        .unwrap();
+    state.set_in_use(true);
+    drop(tunnel);
+    for slot in [pool.test_slot(), pool.test_slot()] {
+        let conn = Conn {
+            serial: 2,
+            extensions: Extensions::new(),
+        };
+        drop(
+            pool.create(TestId(0), conn, slot, &Extensions::new())
+                .await
+                .unwrap(),
+        );
+        tokio::time::advance(Duration::from_millis(1)).await;
+    }
+    let storage = pool.storage.lock();
+    let serials: Vec<_> = storage.by_id[&TestId(0)]
+        .conns()
+        .map(|conn| conn.conn.serial)
+        .collect();
+    assert_eq!(
+        serials,
+        [1, 2],
+        "the busy one stays, the extra idle one goes"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn outliving_work_seen_uncounts_a_connection_from_the_idle_limits() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(4).unwrap())
+        .with_max_idle_total(NonZeroUsize::new(1).unwrap());
+    let (conn, state) = admission_connection(&pool, 4);
+    let tunnel = pool
+        .create(TestId(0), conn, pool.test_slot(), &Extensions::new())
+        .await
+        .unwrap();
+    state.set_in_use(true);
+    drop(tunnel);
+    // A change of its source counts it idle until it is asked.
+    state.set_limit(4);
+    tokio::time::advance(Duration::from_millis(1)).await;
+    let other = Conn {
+        serial: 2,
+        extensions: Extensions::new(),
+    };
+    drop(
+        pool.create(TestId(1), other, pool.test_slot(), &Extensions::new())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        pool.storage.lock().by_id.len(),
+        2,
+        "the busy one is not idle, so one idle connection is within the limit"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_exact_path_hands_out_no_connection_past_the_idle_timeout() {
+    let pool = MultiplexPool::evicting(32, 1).with_idle_timeout(Duration::from_millis(30));
+    let permit = new_slot(&pool).await;
+    let (conn, state) = admission_connection(&pool, 4);
+    drop(
+        pool.create(TestId(0), conn, permit, &Extensions::new())
+            .await
+            .unwrap(),
+    );
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let lanes = pool.request_lanes(&TestId(0), &EMPTY_INPUT);
+    let mut swept = Swept::default();
+    let snapshot = pool.snapshot(
+        &mut pool.storage.lock(),
+        &TestId(0),
+        &lanes,
+        &mut swept,
+        &mut Look::New,
+    );
+    assert!(
+        snapshot.is_empty(),
+        "its admission is asked first, without the lock"
+    );
+    pool.settle(swept);
+    assert!(state.asked.load(Ordering::SeqCst) > 0);
+    assert!(pool.storage.lock().by_id.is_empty());
 }

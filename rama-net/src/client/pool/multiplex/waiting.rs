@@ -20,6 +20,13 @@ impl Look<'_> {
             Self::Waiting(waiting) => Some(waiting),
         }
     }
+
+    /// A sweep of the look found an idle connection expiring `at`.
+    pub(super) fn note_expiry(&mut self, at: u64) {
+        if let Self::Register(waiting) = self {
+            waiting.next_expiry = waiting.next_expiry.min(at);
+        }
+    }
 }
 
 /// Why a look found neither a connection nor a create permit.
@@ -66,6 +73,8 @@ pub(super) struct Waiting {
     pub(super) served: Option<Arc<WaitQueue>>,
     /// Whether serving it spent a wake of that queue.
     pub(super) spent: bool,
+    /// When the first idle connection the current look's sweeps kept expires.
+    pub(super) next_expiry: u64,
     pub(super) waiting: Arc<AtomicUsize>,
     pub(super) slot_waiters: Arc<WaitQueue>,
     /// The checkouts at its id's limit that may replace one of the id's idle
@@ -103,6 +112,7 @@ impl Waiting {
             places: SmallVec::new(),
             served: None,
             spent: false,
+            next_expiry: u64::MAX,
             waiting: waiting.clone(),
             slot_waiters: slot_waiters.clone(),
             id_evictors,
@@ -112,6 +122,7 @@ impl Waiting {
     /// Start a look: returns the party's wakes to wait past if it finds nothing.
     pub(super) fn begin_look(&mut self) -> usize {
         let seen = self.party.wakes();
+        self.next_expiry = u64::MAX;
         for place in &mut self.places {
             place.seen = Some(place.waiter.wakes());
             place.looked = false;

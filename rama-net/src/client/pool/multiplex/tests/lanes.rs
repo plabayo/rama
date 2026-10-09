@@ -13,7 +13,7 @@ async fn rekey_fences_candidates_selected_under_the_old_lane() {
         &mut pool.storage.lock(),
         &TestId(0),
         &lanes,
-        &mut Vec::new(),
+        &mut Swept::default(),
         &mut Look::New,
     );
     // The fast path: a claim made before the rekey.
@@ -69,7 +69,7 @@ async fn snapshots_of_several_lanes_keep_creation_order() {
         &mut pool.storage.lock(),
         &TestId(0),
         &lanes,
-        &mut Vec::new(),
+        &mut Swept::default(),
         &mut Look::New,
     );
     let seqs: Vec<_> = snapshot.iter().map(|(conn, _)| conn.seq).collect();
@@ -101,7 +101,7 @@ async fn emptied_lanes_and_classes_leave_the_bucket() {
     };
     // Class 0 key 1 goes; its class keeps key 2.
     mark_broken(0);
-    pool.sweep_all(&mut pool.storage.lock(), &mut Vec::new());
+    pool.sweep_all(&mut pool.storage.lock(), &mut Swept::default());
     assert_open_matches_capacity(&pool);
     assert_eq!(
         pool.storage.lock().by_id[&TestId(0)].keyed[0].lanes.len(),
@@ -109,7 +109,7 @@ async fn emptied_lanes_and_classes_leave_the_bucket() {
     );
     // Class 0 goes as a whole.
     mark_broken(1);
-    pool.sweep_all(&mut pool.storage.lock(), &mut Vec::new());
+    pool.sweep_all(&mut pool.storage.lock(), &mut Swept::default());
     assert_open_matches_capacity(&pool);
     {
         let storage = pool.storage.lock();
@@ -121,7 +121,7 @@ async fn emptied_lanes_and_classes_leave_the_bucket() {
     for index in 2..5 {
         mark_broken(index);
     }
-    pool.sweep_all(&mut pool.storage.lock(), &mut Vec::new());
+    pool.sweep_all(&mut pool.storage.lock(), &mut Swept::default());
     assert!(pool.storage.lock().by_id.is_empty());
     drop(held);
 }
@@ -288,7 +288,7 @@ async fn policy_check_cannot_admit_a_snapshot_retired_during_the_check() {
         fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
             if self.evict {
                 let removed = self.pool.evict_lru_idle(
-                    &mut self.pool.storage.lock(),
+                    self.pool.storage.lock(),
                     None,
                     &self.pool.slot_waiters,
                     None,
@@ -296,7 +296,7 @@ async fn policy_check_cannot_admit_a_snapshot_retired_during_the_check() {
                 assert!(removed.is_some());
                 drop(removed);
             } else {
-                let mut doomed = Vec::new();
+                let mut swept = Swept::default();
                 {
                     let mut storage = self.pool.storage.lock();
                     storage.by_id[&TestId(0)]
@@ -308,9 +308,9 @@ async fn policy_check_cannot_admit_a_snapshot_retired_during_the_check() {
                         .get_ref::<ConnectionHealthWatcher>()
                         .unwrap()
                         .mark_broken();
-                    self.pool.sweep_all(&mut storage, &mut doomed);
+                    self.pool.sweep_all(&mut storage, &mut swept);
                 }
-                drop(doomed);
+                self.pool.settle(swept);
             }
             Some(ReuseKey::of::<Self>())
         }
@@ -344,13 +344,13 @@ async fn retired_preferred_candidate_does_not_hide_other_stream_capacity() {
     let first = connect(&svc, 0).await;
     let second = connect(&svc, 0).await;
     drop((first, second));
-    let mut doomed = Vec::new();
+    let mut swept = Swept::default();
     let lanes = pool.request_lanes(&TestId(0), &EMPTY_INPUT);
     let mut snapshot = pool.snapshot(
         &mut pool.storage.lock(),
         &TestId(0),
         &lanes,
-        &mut doomed,
+        &mut swept,
         &mut Look::New,
     );
     let Evicted {
@@ -358,7 +358,7 @@ async fn retired_preferred_candidate_does_not_hide_other_stream_capacity() {
         slots,
         ..
     } = pool
-        .evict_lru_idle(&mut pool.storage.lock(), None, &pool.slot_waiters, None)
+        .evict_lru_idle(pool.storage.lock(), None, &pool.slot_waiters, None)
         .unwrap();
     let transferred_slot = slots.total;
     let retired_index = snapshot
