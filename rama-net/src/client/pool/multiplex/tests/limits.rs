@@ -760,10 +760,6 @@ async fn a_change_of_a_busy_connection_does_not_count_it_idle() {
     assert_eq!(stored(&pool), [(1, 1)], "the least recently idle closes");
 }
 
-/// The binding of [`AdmittingOnAsk`]'s leases.
-#[derive(Debug, Extension)]
-struct AskToken;
-
 /// An admission that runs `on_ask` once, as it is asked about outliving work.
 struct AdmittingOnAsk(Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>);
 
@@ -1455,6 +1451,28 @@ fn a_change_during_an_expirys_busy_answer_asks_without_deadlock() {
     }
 }
 
+/// An idle connection of `id`, counted without the trim its release asks.
+async fn counted_idle(
+    pool: &MultiplexPool<Conn, TestId>,
+    id: u32,
+) -> Arc<StoredConnection<Conn, TestId>> {
+    let (conn, state) = admission_connection(pool, 4);
+    let handout = pool
+        .create(TestId(id), conn, pool.test_slot(), &EMPTY_INPUT)
+        .await
+        .unwrap();
+    // Work outlives the handout: its release counts nothing.
+    state.in_use.store(true, Ordering::SeqCst);
+    let inner = handout.inner.clone();
+    drop(handout);
+    // It ends: a change of its source, without the listener's trim.
+    state.in_use.store(false, Ordering::SeqCst);
+    inner.changes.fetch_add(1, Ordering::Release);
+    assert!(inner.count_if_idle());
+    tokio::time::advance(Duration::from_millis(1)).await;
+    inner
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_trim_passes_over_an_id_whose_counted_connections_are_all_busy() {
     let pool = MultiplexPool::new()
@@ -1463,21 +1481,7 @@ async fn a_trim_passes_over_an_id_whose_counted_connections_are_all_busy() {
     let mut conns = Vec::new();
     for id in 0..16 {
         for _ in 0..2 {
-            let (conn, state) = admission_connection(&pool, 4);
-            let handout = pool
-                .create(TestId(id), conn, pool.test_slot(), &EMPTY_INPUT)
-                .await
-                .unwrap();
-            // Work outlives the handout: its release counts nothing.
-            state.in_use.store(true, Ordering::SeqCst);
-            let inner = handout.inner.clone();
-            drop(handout);
-            // It ends: a change of its source, without the listener's trim.
-            state.in_use.store(false, Ordering::SeqCst);
-            inner.changes.fetch_add(1, Ordering::Release);
-            assert!(inner.count_if_idle());
-            conns.push(inner);
-            tokio::time::advance(Duration::from_millis(1)).await;
+            conns.push(counted_idle(&pool, id).await);
         }
     }
     // Every id is over its limit of one, all but the last found busy.
@@ -1496,6 +1500,29 @@ async fn a_trim_passes_over_an_id_whose_counted_connections_are_all_busy() {
         panic!("the last id's ask is served")
     };
     assert_eq!(conn.id, TestId(15));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_trim_over_the_total_passes_an_id_over_its_own_limit_all_busy() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(8).unwrap())
+        .with_max_idle_per_id(NonZeroUsize::new(1).unwrap())
+        .with_max_idle_total(NonZeroUsize::new(2).unwrap());
+    let busy = [
+        counted_idle(&pool, 0).await.seq,
+        counted_idle(&pool, 0).await.seq,
+    ];
+    let other = counted_idle(&pool, 1).await;
+    let asked = Asked {
+        ids: [TestId(0)].into_iter().collect(),
+        all: false,
+    };
+    let limits = pool.idle_limits.as_ref().unwrap();
+    let picked = pick_extra(&pool.storage.lock(), limits, &asked, &busy);
+    let Some((conn, Excess::Total)) = picked else {
+        panic!("over the total, another id's connection goes")
+    };
+    assert_eq!(conn.seq, other.seq);
 }
 
 /// A connection of id 0, counted idle, then busy with work it did not announce.

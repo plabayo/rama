@@ -27,7 +27,7 @@ pub(super) struct StoredConnection<C, ID> {
     pub(super) stream_cap: usize,
     pub(super) max_concurrency: Option<Arc<MaxConcurrency>>,
     /// Read from its listener, which may not call into the connection itself.
-    pub(super) health: Option<Arc<ConnectionHealthWatcher>>,
+    pub(super) health: Arc<ConnectionHealthWatcher>,
     /// Whether waiting checkouts were told it can serve no more.
     pub(super) unusable_told: AtomicBool,
     pub(super) admission: Option<ConnectionAdmission>,
@@ -307,7 +307,7 @@ impl<C, ID> StoredConnection<C, ID> {
 
     /// Only a look takes an unusable connection out and frees its slots: let
     /// every waiting checkout look, whatever it waits for, once.
-    pub(super) fn tell_unusable(&self) {
+    fn tell_unusable(&self) {
         if self.waiting.load(Ordering::Relaxed) != 0
             && !self.unusable_told.swap(true, Ordering::Relaxed)
         {
@@ -424,20 +424,10 @@ impl<C, ID> StoredConnection<C, ID> {
                 Ok(Some(lease)) => Some(lease),
                 Ok(None) => return None,
                 Err(error) => {
-                    // Publish retirement through the existing health signal so
-                    // later sweeps need no additional lock on healthy lookups.
-                    if let Some(health) =
-                        self.conn.extensions().get_ref::<ConnectionHealthWatcher>()
-                    {
-                        health.mark_broken();
-                    } else {
-                        let health = ConnectionHealthWatcher::default();
-                        health.mark_broken();
-                        self.conn.extensions().insert(health);
-                    }
+                    // Retire through its health signal: its listener tells the
+                    // waiters, and later sweeps need no lock on healthy lookups.
+                    self.health.mark_broken();
                     self.retire();
-                    // A watcher inserted here has no subscriber to tell.
-                    self.tell_unusable();
                     trace!(%error, "multiplex pool: resource provider retired connection");
                     return None;
                 }
@@ -518,9 +508,7 @@ impl<C, ID> StoredConnection<C, ID> {
 
     /// Whether the health watcher it was created with marks it broken.
     pub(super) fn is_broken(&self) -> bool {
-        self.health
-            .as_ref()
-            .is_some_and(|health| health.health() == ConnectionHealth::Broken)
+        self.health.health() == ConnectionHealth::Broken
     }
 }
 

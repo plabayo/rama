@@ -774,3 +774,152 @@ async fn a_connection_its_provider_retires_tells_the_waiters() {
     );
     drop((served, other));
 }
+
+/// An admission that breaks its connection as the pool subscribes to it, and
+/// stalls there: a woken waiter looks before the connection is stored.
+#[derive(Debug)]
+struct BreaksOnSubscribe(Extensions);
+
+impl ConnectionAdmissionPolicy for BreaksOnSubscribe {
+    fn try_acquire(&self, _: &Extensions) -> Result<Option<ConnectionAdmissionLease>, BoxError> {
+        Ok(Some(ConnectionAdmissionLease::new(Arc::new(()), AskToken)))
+    }
+
+    fn subscribe(&self, _: Weak<dyn ChangeListener>) {
+        self.0
+            .get_ref::<ConnectionHealthWatcher>()
+            .unwrap()
+            .mark_broken();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    fn in_use(&self) -> bool {
+        false
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connection_breaking_before_it_is_stored_tells_the_waiters_after() {
+    let pool = Arc::new(exclusive(2, SaturationPolicy::Wait));
+    drop(fresh(&pool, 0).await);
+    let slot = pool.test_slot();
+    let waiter = tokio::spawn({
+        let pool = pool.clone();
+        async move {
+            matches!(
+                pool.get_conn(&TestId(1), &EMPTY_INPUT, None).await,
+                Ok(ConnectionResult::CreatePermit(_))
+            )
+        }
+    });
+    // Parked at the limit before the break.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let conn = Conn {
+        serial: 1,
+        extensions: Extensions::new(),
+    };
+    conn.extensions.insert(ConnectionHealthWatcher::default());
+    let breaks = BreaksOnSubscribe(conn.extensions.clone());
+    conn.extensions.insert(ConnectionAdmission::new(breaks));
+    drop(
+        pool.create(TestId(0), conn, slot, &EMPTY_INPUT)
+            .await
+            .unwrap(),
+    );
+    let served = tokio::time::timeout(Duration::from_secs(5), waiter).await;
+    assert_matches!(
+        served,
+        Ok(Ok(true)),
+        "told once it is stored, it takes its slot"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_checkout_that_reuses_nothing_reaps_too() {
+    let pool = MultiplexPool::new().with_idle_timeout(Duration::from_millis(20));
+    for id in 0..64 {
+        drop(fresh(&pool, id).await);
+    }
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let not_reusable = pool.get_conn(&TestId(u32::MAX), &EMPTY_INPUT, None).await;
+    assert_matches!(not_reusable, Ok(ConnectionResult::CreatePermit(_)));
+    assert!(pool.storage.lock().by_id.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn ids_nobody_asks_for_again_are_swept_at_least_every_minute() {
+    let pool = MultiplexPool::new().with_idle_timeout(Duration::MAX);
+    let handout = fresh(&pool, 0).await;
+    handout
+        .extensions()
+        .get_ref::<ConnectionHealthWatcher>()
+        .unwrap()
+        .mark_broken();
+    drop(handout);
+    tokio::time::advance(Duration::from_mins(1)).await;
+    drop(fresh(&pool, 1).await);
+    assert_eq!(
+        pool.storage.lock().by_id.len(),
+        1,
+        "a long idle timeout does not stop the sweeps"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_break_marked_on_a_connection_created_without_a_watcher_tells_the_waiters() {
+    let pool = exclusive(2, SaturationPolicy::Wait);
+    // Without a health watcher, as some connectors mark a break only later.
+    let conn = Conn {
+        serial: 1,
+        extensions: Extensions::new(),
+    };
+    let extensions = conn.extensions.clone();
+    drop(
+        pool.create(TestId(0), conn, pool.test_slot(), &EMPTY_INPUT)
+            .await
+            .unwrap(),
+    );
+    let other = fresh(&pool, 2).await;
+    let mut waiter = checkout(&pool, 1);
+    assert!(waiter.poll().is_pending(), "both slots are taken");
+    extensions
+        .get_ref_or_insert(ConnectionHealthWatcher::default)
+        .mark_broken();
+    assert!(waiter.is_woken(), "told of the break");
+    assert_matches!(
+        waiter.poll(),
+        Poll::Ready(Ok(ConnectionResult::CreatePermit(_))),
+        "its slot is the waiter's"
+    );
+    drop(other);
+}
+
+#[tokio::test(start_paused = true)]
+async fn expiring_connections_of_ids_nobody_asks_for_again_are_asked_and_reaped() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(1024).unwrap())
+        .with_idle_timeout(Duration::from_millis(20));
+    let mut states = Vec::new();
+    for id in 0..64 {
+        let (conn, state) = admission_connection(&pool, 4);
+        drop(
+            pool.create(TestId(id), conn, pool.test_slot(), &EMPTY_INPUT)
+                .await
+                .unwrap(),
+        );
+        states.push(state);
+    }
+    tokio::time::advance(Duration::from_secs(1)).await;
+    drop(fresh(&pool, 1000).await);
+    // Each admission is asked outside the storage lock, as the fake asserts.
+    let asked: usize = states
+        .iter()
+        .map(|state| state.asked.load(Ordering::SeqCst))
+        .sum();
+    assert!(asked >= 64, "asked {asked}");
+    assert_eq!(
+        pool.storage.lock().by_id.len(),
+        1,
+        "only the id asked for since"
+    );
+}

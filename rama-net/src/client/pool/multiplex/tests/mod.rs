@@ -160,6 +160,10 @@ impl ConnectionAdmissionPolicy for FakeAdmission {
     }
 }
 
+/// The binding of the leases of test admissions that track no reservation.
+#[derive(Debug, Extension)]
+struct AskToken;
+
 fn admission_connection(
     pool: &MultiplexPool<Conn, TestId>,
     limit: usize,

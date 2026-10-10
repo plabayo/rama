@@ -201,7 +201,8 @@ pub(crate) fn connection_version_requirement(input: &ConnectRequest) -> Option<V
 ///
 /// By default nothing is capped: connections close once idle for
 /// `idle_timeout`, found by a later request to any origin, as requests sweep
-/// every origin about every quarter of the timeout. A cap below what the
+/// every origin about every quarter of the timeout, at most a minute apart. A
+/// cap below what the
 /// traffic keeps busy costs handshakes: requests queue at a connection limit,
 /// and idle connections closed over an idle limit are dialed again by the
 /// next ones.
