@@ -128,7 +128,9 @@ impl CountedObservationBucket {
             ));
         }
         if value.bytes.len() > self.limits.value_bytes {
-            return self.counts.observe_unretained(ObservationLoss::Oversize);
+            return self
+                .counts
+                .observe_unretained(value.id, ObservationLoss::Oversize);
         }
         if let Some(previous) = self.values.get(&value.id)
             && previous.bytes != value.bytes
@@ -152,7 +154,9 @@ impl CountedObservationBucket {
                     .len()
             };
             let Some(next) = remaining.checked_sub(bytes) else {
-                return self.counts.observe_unretained(ObservationLoss::Retention);
+                return self
+                    .counts
+                    .observe_unretained(value.id, ObservationLoss::Retention);
             };
             remaining = next;
         }
@@ -587,6 +591,7 @@ mod tests {
             domain: CanonicalDomain::Headers,
             scope,
             counts: CounterSnapshot {
+                untracked_distinct: Default::default(),
                 losses: ObservationLosses {
                     history_known: true,
                     ..ObservationLosses::default()

@@ -15,6 +15,7 @@ use rama::{
         ProfileCapture, ProfileDataError, ProfileObservationScope, ReservoirEntry,
         StoredObservationBucket, ValueId,
     },
+    utils::octets::kib,
 };
 use tokio_postgres::{Client, Transaction};
 
@@ -353,7 +354,8 @@ async fn load_bucket(
         .query_opt(
             "SELECT scope_canonical = $4, domain, format_version, total, untracked, retained_bytes,
           structure_id = $5 AND profile_id = $6 AND flow_id IS NOT DISTINCT FROM $7,
-          dropped_oversize, dropped_retention, history_known
+          dropped_oversize, dropped_retention, history_known,
+          CASE WHEN octet_length(untracked_distinct::text)::bigint <= $8 THEN untracked_distinct::text END
          FROM fp_v2.buckets WHERE authorized=$1 AND scope=$2 AND day=$3",
             &[
                 &authorized,
@@ -363,6 +365,7 @@ async fn load_bucket(
                 &&input.structure.id.0[..],
                 &&decoded.profile.0[..],
                 &flow,
+                &integer(kib(8))?,
             ],
         )
         .await?;
@@ -487,6 +490,10 @@ async fn load_bucket(
             domain,
             scope: input.scope.id,
             counts: CounterSnapshot {
+                untracked_distinct: serde_json::from_str(
+                    &row.try_get::<_, Option<String>>(10)?
+                        .ok_or_else(|| bounded("stored distinct bytes"))?,
+                )?,
                 total: u64::try_from(row.try_get::<_, i64>(3)?)?,
                 untracked: u64::try_from(row.try_get::<_, i64>(4)?)?,
                 values: counts.into(),
@@ -629,9 +636,9 @@ async fn save_bucket(
         quota.change(6, integer(input.scope.bytes.len())?)?;
     }
     transaction.execute(
-        "UPDATE fp_v2.buckets SET total=$4,untracked=$5,retained_bytes=$6,dropped_oversize=$7,dropped_retention=$8,history_known=$9 WHERE authorized=$1 AND scope=$2 AND day=$3",
+        "UPDATE fp_v2.buckets SET total=$4,untracked=$5,retained_bytes=$6,dropped_oversize=$7,dropped_retention=$8,history_known=$9,untracked_distinct=$10::text::jsonb WHERE authorized=$1 AND scope=$2 AND day=$3",
         &[&authorized, &scope, &day, &count(bucket.counts.total)?, &count(bucket.counts.untracked)?, &integer(retained)?,
-          &count(bucket.counts.losses.oversize)?, &count(bucket.counts.losses.retention)?, &bucket.counts.losses.history_known],
+          &count(bucket.counts.losses.oversize)?, &count(bucket.counts.losses.retention)?, &bucket.counts.losses.history_known, &serde_json::to_string(&bucket.counts.untracked_distinct)?],
     ).await?;
     let old_counts: BTreeMap<_, _> = previous
         .bucket

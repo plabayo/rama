@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::ProfileDataError;
+use super::{ProfileDataError, time::MAXIMUM_UTC_DAY};
 
 /// A writer assigns sequences only after reserving capacity in its bounded queue.
 /// Retries keep the same run and sequence; a new run never reuses its identifier.
@@ -178,6 +178,9 @@ impl Default for RetentionWindow {
 
 impl RetentionWindow {
     pub fn first_day(self, current_day: u32, horizon: u32) -> Result<u32, ProfileDataError> {
+        if current_day > MAXIMUM_UTC_DAY {
+            return Err(ProfileDataError::Unsupported("profile UTC calendar range"));
+        }
         if self.days == 0 || horizon == 0 || horizon > self.days {
             return Err(ProfileDataError::Unsupported("retention horizon"));
         }
@@ -190,7 +193,10 @@ impl RetentionWindow {
         observation_day: u32,
     ) -> Result<(), ProfileDataError> {
         let first = self.first_day(current_day, self.days)?;
-        if observation_day < first || observation_day > current_day {
+        if observation_day < first {
+            return Err(ProfileDataError::Expired);
+        }
+        if observation_day > current_day {
             return Err(ProfileDataError::Invalid(
                 "observation outside retention window",
             ));

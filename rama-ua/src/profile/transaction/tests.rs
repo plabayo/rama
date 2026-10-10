@@ -274,9 +274,20 @@ fn ingestion_expired_run_cannot_restart_after_checkpoint_pruning() {
         previous: &bucket,
         value: &a,
     }];
-    run.prepare(114, attempt(&run, 1, 114), &pending, [3; 32], limits)
-        .unwrap_err();
-    CaptureRunCheckpoint::new(run.run, false, 114, limits).unwrap_err();
+    assert!(matches!(
+        run.prepare(114, attempt(&run, 1, 114), &pending, [3; 32], limits),
+        Err(ProfileDataError::Expired)
+    ));
+    let mut committed = run.clone();
+    committed.sequences.prefix = 1;
+    assert!(matches!(
+        committed.prepare(114, attempt(&committed, 1, 114), &pending, [3; 32], limits),
+        Err(ProfileDataError::Expired)
+    ));
+    assert!(matches!(
+        CaptureRunCheckpoint::new(run.run, false, 114, limits),
+        Err(ProfileDataError::Expired)
+    ));
     CaptureRunCheckpoint::new(CaptureRunId::new(101, [2; 12]), false, 100, limits).unwrap_err();
     CaptureRunCheckpoint::new(CaptureRunId::new(114, [2; 12]), false, 114, limits).unwrap();
     let valid_bucket = empty(1, 100);

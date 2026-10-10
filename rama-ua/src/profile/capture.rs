@@ -40,7 +40,7 @@ pub enum RequestBinding {
 }
 
 impl RequestBinding {
-    fn tag(self) -> u8 {
+    pub(super) fn tag(self) -> u8 {
         match self {
             Self::Authority => 0,
             Self::Framing => 1,

@@ -8,7 +8,8 @@ use sha2::{Digest as _, Sha256};
 use super::{
     FlowKey, HeaderCapture, HeaderCapturePolicy, JointCapture, JointCaptureLimits,
     OrderCaptureLimits, OrderedProtocolCapture, ProfileKey, ProfileObservationScope,
-    joint::validate_joint_structure, order_capture::validate_structure,
+    header_structure::validate_header_structure, joint::validate_joint_structure,
+    order_capture::validate_structure,
 };
 
 /// Stable canonical domains; serialized tags remain independent of Rust enum layout.
@@ -24,6 +25,7 @@ pub enum CanonicalDomain {
     Joint = 6,
     JointStructure = 7,
     Scope = 8,
+    HeaderStructure = 9,
 }
 
 impl From<CanonicalDomain> for u16 {
@@ -50,12 +52,14 @@ impl TryFrom<u16> for CanonicalDomain {
             6 => Ok(Self::Joint),
             7 => Ok(Self::JointStructure),
             8 => Ok(Self::Scope),
+            9 => Ok(Self::HeaderStructure),
             _ => Err(ProfileDataError::Unsupported("canonical content domain")),
         }
     }
 }
 
 pub(super) const HEADER_DOMAIN: CanonicalDomain = CanonicalDomain::Headers;
+pub(super) const HEADER_STRUCTURE_DOMAIN: CanonicalDomain = CanonicalDomain::HeaderStructure;
 pub(super) const PROFILE_DOMAIN: CanonicalDomain = CanonicalDomain::Profile;
 pub(super) const FLOW_DOMAIN: CanonicalDomain = CanonicalDomain::Flow;
 pub(super) const ORDER_DOMAIN: CanonicalDomain = CanonicalDomain::Order;
@@ -87,6 +91,7 @@ pub enum ProfileDataError {
     Unsupported(&'static str),
     IdentityMismatch,
     CounterOverflow,
+    Expired,
 }
 
 impl fmt::Display for ProfileDataError {
@@ -98,6 +103,7 @@ impl fmt::Display for ProfileDataError {
             Self::Unsupported(value) => write!(f, "unsupported profile data: {value}"),
             Self::IdentityMismatch => f.write_str("profile digest does not match canonical bytes"),
             Self::CounterOverflow => f.write_str("profile observation count overflow"),
+            Self::Expired => f.write_str("profile observation expired"),
         }
     }
 }
@@ -157,6 +163,7 @@ impl CanonicalValue {
                 )?;
             }
             ORDER_STRUCTURE_DOMAIN => validate_structure(self, maximum_bytes)?,
+            HEADER_STRUCTURE_DOMAIN => validate_header_structure(self, maximum_bytes)?,
             JOINT_DOMAIN => {
                 JointCapture::from_canonical(
                     self,
@@ -333,6 +340,7 @@ mod tests {
             (6, CanonicalDomain::Joint),
             (7, CanonicalDomain::JointStructure),
             (8, CanonicalDomain::Scope),
+            (9, CanonicalDomain::HeaderStructure),
         ] {
             assert_eq!(u16::from(domain), tag);
             assert_eq!(CanonicalDomain::try_from(tag).unwrap(), domain);
@@ -343,7 +351,7 @@ mod tests {
                 domain
             );
         }
-        for tag in [0, 9, u16::MAX] {
+        for tag in [0, 10, u16::MAX] {
             CanonicalDomain::try_from(tag).unwrap_err();
             serde_json::from_str::<CanonicalDomain>(&tag.to_string()).unwrap_err();
         }

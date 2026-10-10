@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{ProfileDataError, ValueId};
+use super::{
+    ProfileDataError, UntrackedDistinctCount, UntrackedDistinctSnapshot, ValueId,
+    distinct::UntrackedDistinct,
+};
 
 /// Persistent and in-memory counters share the signed 64-bit ceiling.
 const MAXIMUM_COUNT: u64 = i64::MAX as u64;
@@ -39,6 +42,8 @@ pub struct CounterSnapshot {
     pub values: Box<[LiteralCount]>,
     #[serde(default)]
     pub losses: ObservationLosses,
+    #[serde(default)]
+    pub untracked_distinct: UntrackedDistinctSnapshot,
 }
 
 /// Partial literal coverage never masquerades as an exact full-history weight.
@@ -56,6 +61,7 @@ pub struct LiteralCounters {
     untracked: u64,
     values: BTreeMap<ValueId, u64>,
     losses: ObservationLosses,
+    distinct: UntrackedDistinct,
 }
 
 fn add_count(left: u64, right: u64) -> Result<u64, ProfileDataError> {
@@ -72,6 +78,7 @@ impl LiteralCounters {
             total: 0,
             untracked: 0,
             values: BTreeMap::new(),
+            distinct: UntrackedDistinct::new(),
             losses: ObservationLosses {
                 history_known: true,
                 ..ObservationLosses::default()
@@ -109,6 +116,10 @@ impl LiteralCounters {
             total,
             untracked: snapshot.untracked,
             losses: snapshot.losses,
+            distinct: UntrackedDistinct::from_snapshot(
+                &snapshot.untracked_distinct,
+                snapshot.untracked,
+            )?,
             values: snapshot
                 .values
                 .iter()
@@ -123,6 +134,7 @@ impl LiteralCounters {
             total: self.total,
             untracked: self.untracked,
             losses: self.losses,
+            untracked_distinct: self.distinct.snapshot(),
             values: self
                 .values
                 .iter()
@@ -153,8 +165,10 @@ impl LiteralCounters {
                     self.values.pop_last();
                     self.values.insert(value, 1);
                     self.untracked = untracked;
+                    self.distinct.observe(largest);
                 } else {
                     self.untracked = add_count(self.untracked, 1)?;
+                    self.distinct.observe(value);
                 }
             }
         }
@@ -163,7 +177,11 @@ impl LiteralCounters {
     }
 
     /// Record a validated observation without retaining its literal or sample.
-    pub fn observe_unretained(&mut self, reason: ObservationLoss) -> Result<(), ProfileDataError> {
+    pub fn observe_unretained(
+        &mut self,
+        value: ValueId,
+        reason: ObservationLoss,
+    ) -> Result<(), ProfileDataError> {
         let total = add_count(self.total, 1)?;
         let untracked = add_count(self.untracked, 1)?;
         let count = match reason {
@@ -173,7 +191,13 @@ impl LiteralCounters {
         *count = add_count(*count, 1)?;
         self.total = total;
         self.untracked = untracked;
+        self.distinct.observe(value);
         Ok(())
+    }
+
+    #[must_use]
+    pub fn untracked_distinct(&self) -> UntrackedDistinctCount {
+        self.distinct.count()
     }
 
     #[must_use]
@@ -218,6 +242,7 @@ impl LiteralCounters {
     fn merge_with_capacity(&self, other: &Self, capacity: usize) -> Result<Self, ProfileDataError> {
         let total = add_count(self.total, other.total)?;
         let mut merged = Self::new(capacity);
+        merged.distinct = self.distinct.merge(&other.distinct);
         let mut left = self.values.iter().peekable();
         let mut right = other.values.iter().peekable();
         let mut tracked = 0;
@@ -237,11 +262,13 @@ impl LiteralCounters {
                 (Some(_), None) => left.next().map(|(&value, &count)| (value, count)),
                 (None, None) => break,
             };
-            if let Some((value, count)) = next
-                && merged.values.len() < merged.capacity
-            {
-                tracked = add_count(tracked, count)?;
-                merged.values.insert(value, count);
+            if let Some((value, count)) = next {
+                if merged.values.len() < merged.capacity {
+                    tracked = add_count(tracked, count)?;
+                    merged.values.insert(value, count);
+                } else {
+                    merged.distinct.observe(value);
+                }
             }
         }
         merged.losses = ObservationLosses {
@@ -436,6 +463,7 @@ mod tests {
     #[test]
     fn counters_reject_corrupt_snapshots_and_bigint_overflow_without_mutation() {
         let snapshot = CounterSnapshot {
+            untracked_distinct: UntrackedDistinctSnapshot::default(),
             losses: ObservationLosses {
                 history_known: true,
                 ..ObservationLosses::default()
@@ -465,6 +493,7 @@ mod tests {
         invalid.total = u64::MAX;
         LiteralCounters::from_snapshot(&invalid, 2).unwrap_err();
         let mut duplicate = CounterSnapshot {
+            untracked_distinct: UntrackedDistinctSnapshot::default(),
             losses: ObservationLosses {
                 history_known: true,
                 ..ObservationLosses::default()
@@ -490,9 +519,11 @@ mod tests {
     fn loss_counts_validate_merge_and_preserve_unknown_import_history() {
         let mut a = LiteralCounters::new(1);
         a.observe(value(1)).unwrap();
-        a.observe_unretained(ObservationLoss::Oversize).unwrap();
+        a.observe_unretained(value(2), ObservationLoss::Oversize)
+            .unwrap();
         let mut b = LiteralCounters::new(1);
-        b.observe_unretained(ObservationLoss::Retention).unwrap();
+        b.observe_unretained(value(2), ObservationLoss::Retention)
+            .unwrap();
         let merged = a.coarsen(&b).unwrap();
         let snapshot = merged.snapshot();
         assert_eq!(snapshot.total, 3);
@@ -532,6 +563,7 @@ mod tests {
                 .history_known
         );
         let full = CounterSnapshot {
+            untracked_distinct: UntrackedDistinctSnapshot::default(),
             total: MAXIMUM_COUNT,
             untracked: MAXIMUM_COUNT,
             values: Box::default(),
@@ -543,10 +575,79 @@ mod tests {
         };
         let mut full = LiteralCounters::from_snapshot(&full, 1).unwrap();
         let before = encoded(&full);
-        full.observe_unretained(ObservationLoss::Retention)
+        full.observe_unretained(value(2), ObservationLoss::Retention)
             .unwrap_err();
-        full.observe_unretained(ObservationLoss::Oversize)
+        full.observe_unretained(value(2), ObservationLoss::Oversize)
             .unwrap_err();
         assert_eq!(before, encoded(&full));
+    }
+
+    #[test]
+    fn untracked_distinct_includes_evicted_values_and_losses_without_counting_repeats() {
+        let mut counts = LiteralCounters::new(1);
+        for _ in 0..10_000 {
+            counts.observe(value(3)).unwrap();
+        }
+        assert_eq!(
+            counts.untracked_distinct(),
+            UntrackedDistinctCount::Exact(0)
+        );
+        counts.observe(value(1)).unwrap();
+        assert_eq!(
+            counts.untracked_distinct(),
+            UntrackedDistinctCount::Exact(1)
+        );
+        counts.observe(value(3)).unwrap();
+        assert_eq!(
+            counts.untracked_distinct(),
+            UntrackedDistinctCount::Exact(1)
+        );
+        counts
+            .observe_unretained(value(2), ObservationLoss::Oversize)
+            .unwrap();
+        counts
+            .observe_unretained(value(2), ObservationLoss::Retention)
+            .unwrap();
+        assert_eq!(
+            counts.untracked_distinct(),
+            UntrackedDistinctCount::Exact(2)
+        );
+        let mut lower = LiteralCounters::new(1);
+        lower.observe(value(0)).unwrap();
+        assert_eq!(
+            counts.merge(&lower).unwrap().untracked_distinct(),
+            UntrackedDistinctCount::Exact(3)
+        );
+        assert_eq!(
+            counts.coarsen(&lower).unwrap().untracked_distinct(),
+            UntrackedDistinctCount::Exact(2)
+        );
+        assert_eq!(
+            LiteralCounters::from_snapshot(&counts.snapshot(), 1)
+                .unwrap()
+                .untracked_distinct(),
+            counts.untracked_distinct()
+        );
+    }
+
+    #[test]
+    fn old_counter_snapshots_never_acquire_complete_distinct_history() {
+        let mut counts = LiteralCounters::new(0);
+        counts.observe(value(1)).unwrap();
+        let mut json = serde_json::to_value(counts.snapshot()).unwrap();
+        json.as_object_mut().unwrap().remove("untracked_distinct");
+        let old =
+            LiteralCounters::from_snapshot(&serde_json::from_value(json).unwrap(), 0).unwrap();
+        assert_eq!(
+            old.untracked_distinct(),
+            UntrackedDistinctCount::UnknownHistory { at_least: 0 }
+        );
+        assert_eq!(
+            old.merge(&counts).unwrap().untracked_distinct(),
+            UntrackedDistinctCount::UnknownHistory { at_least: 1 }
+        );
+        let mut corrupt = counts.snapshot();
+        corrupt.untracked_distinct.values = vec![value(1), value(2)].into();
+        LiteralCounters::from_snapshot(&corrupt, 0).unwrap_err();
     }
 }

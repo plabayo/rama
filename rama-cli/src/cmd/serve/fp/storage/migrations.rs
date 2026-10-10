@@ -11,6 +11,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0001.sql"),
     include_str!("migrations/0002.sql"),
     include_str!("migrations/0003.sql"),
+    include_str!("migrations/0004.sql"),
 ];
 
 pub(super) async fn apply(client: &mut Client) -> Result<(), BoxError> {

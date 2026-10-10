@@ -5,11 +5,11 @@ use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    CanonicalValue, OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture, ProfileDataError,
-    ValueId,
+    CanonicalValue, HeaderCapture, HeaderCapturePolicy, OrderCaptureLimits, OrderNamespace,
+    OrderedProtocolCapture, ProfileDataError, ValueId,
     canonical::{
-        CanonicalReader, CanonicalWriter, HEADER_DOMAIN, JOINT_DOMAIN, JOINT_STRUCTURE_DOMAIN,
-        ORDER_STRUCTURE_DOMAIN,
+        CanonicalReader, CanonicalWriter, HEADER_DOMAIN, HEADER_STRUCTURE_DOMAIN, JOINT_DOMAIN,
+        JOINT_STRUCTURE_DOMAIN, ORDER_STRUCTURE_DOMAIN,
     },
     order_capture::validate_structure,
 };
@@ -89,7 +89,12 @@ impl CapturedSlot {
     pub fn structural(&self, maximum_bytes: usize) -> Result<CanonicalValue, ProfileDataError> {
         validate_slot(self, false, maximum_bytes)?;
         if self.kind.namespace().is_none() {
-            Ok(self.value.clone())
+            let policy = HeaderCapturePolicy {
+                fields: maximum_bytes,
+                bytes: maximum_bytes,
+                overrides: Box::default(),
+            };
+            HeaderCapture::from_canonical(&self.value, &policy)?.structural(&policy)
         } else {
             let limits = OrderCaptureLimits {
                 elements: maximum_bytes,
@@ -129,7 +134,14 @@ fn validate_slot(
     maximum: usize,
 ) -> Result<(), ProfileDataError> {
     let Some(namespace) = slot.kind.namespace() else {
-        return slot.value.validate_content(HEADER_DOMAIN, maximum);
+        return slot.value.validate_content(
+            if structural {
+                HEADER_STRUCTURE_DOMAIN
+            } else {
+                HEADER_DOMAIN
+            },
+            maximum,
+        );
     };
     if structural {
         validate_structure(&slot.value, maximum)?;
@@ -267,7 +279,7 @@ impl JointCapture {
     }
 
     /// Structural normalization changes the index, never the retained complete tuple.
-    /// Header slots retain literal keys; numeric protocol orders use their owned normalizer.
+    /// Each component uses its owned normalizer and a separate structural namespace.
     pub fn structural(
         &self,
         limits: JointCaptureLimits,

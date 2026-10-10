@@ -123,6 +123,7 @@ impl RetainedBucketWindow {
     }
 
     /// Remove expired state even when no new observations arrive.
+    /// The day comes from the receiver clock via `profile_utc_day`, never peer metadata.
     pub fn advance(&mut self, current_day: u32) -> Result<(), ProfileDataError> {
         self.validate_clock(current_day)?;
         let first = self
@@ -208,6 +209,9 @@ impl RetainedBucketWindow {
         if snapshot.buckets.len() as u64 > u64::from(limits.retention.days) {
             return Err(ProfileDataError::LimitExceeded("retained days"));
         }
+        limits
+            .retention
+            .first_day(snapshot.last_day, limits.retention.days)?;
         let mut window = Self::new(snapshot.domain, snapshot.scope, seed, limits)?;
         let maximum_values = limits
             .bucket
@@ -583,7 +587,7 @@ mod tests {
         let bucket =
             CountedObservationBucket::new(CanonicalDomain::Headers, scope, [3; 32], limits.bucket)
                 .unwrap();
-        let bucket_json = r#"{"format_version":1,"domain":1,"scope":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"counts":{"total":0,"untracked":0,"values":[],"losses":{"oversize":0,"retention":0,"history_known":true}},"samples":[],"values":[]}"#;
+        let bucket_json = r#"{"format_version":1,"domain":1,"scope":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"counts":{"total":0,"untracked":0,"values":[],"losses":{"oversize":0,"retention":0,"history_known":true},"untracked_distinct":{"values":[],"saturated":false,"history_known":true}},"samples":[],"values":[]}"#;
         let window_json = r#"{"format_version":1,"domain":1,"scope":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"last_day":0,"buckets":[]}"#;
         assert_eq!(
             serde_json::to_string(&bucket.snapshot()).unwrap(),

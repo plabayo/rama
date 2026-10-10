@@ -38,17 +38,25 @@ pub use input::*;
 mod canonical;
 pub use canonical::{CanonicalDomain, CanonicalValue, ProfileDataError, ValueId};
 
+mod header_structure;
+
 mod capture;
 pub use capture::*;
 
 mod identity;
 pub use identity::*;
 
+mod time;
+pub use time::*;
+
 mod ingestion;
 pub use ingestion::*;
 
 mod reservoir;
 pub use reservoir::*;
+
+mod distinct;
+pub use distinct::{UntrackedDistinctCount, UntrackedDistinctSnapshot};
 
 mod counts;
 pub use counts::*;

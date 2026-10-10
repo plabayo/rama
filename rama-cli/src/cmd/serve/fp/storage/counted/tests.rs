@@ -1,11 +1,11 @@
 use super::super::migrations;
 use super::*;
 use rama::{
-    http::{HeaderMap, HeaderValue, Method, Version},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, Version},
     ua::profile::{
-        CaptureLevel, CapturedSlot, CapturedSlotKind, ConnectionContext, FlowKey,
-        HeaderCapturePolicy, JointCapture, ObservationWeight, OrderCaptureLimits, OrderNamespace,
-        OrderedProtocolCapture, ProfileKey,
+        CanonicalDomain, CaptureLevel, CapturedSlot, CapturedSlotKind, ConnectionContext, FlowKey,
+        HeaderCapture, HeaderCapturePolicy, JointCapture, ObservationWeight, OrderCaptureLimits,
+        OrderNamespace, OrderedProtocolCapture, ProfileKey, UntrackedDistinctSnapshot,
     },
     utils::octets::{kib, mib},
 };
@@ -410,7 +410,7 @@ async fn fp_counted_retention_expires_weights_and_reclaims_shared_values() {
     assert_eq!(private_total, 2);
     // An expired run remains expired after its checkpoint was reclaimed.
     let before = state(&client).await.unwrap();
-    ingest(
+    let error = ingest(
         &mut client,
         127,
         attempt(false, 1),
@@ -420,6 +420,13 @@ async fn fp_counted_retention_expires_weights_and_reclaims_shared_values() {
     )
     .await
     .unwrap_err();
+    let IngestFailure::Rejected(error) = error else {
+        panic!("expired attempt reached COMMIT")
+    };
+    assert!(matches!(
+        error.downcast_ref::<ProfileDataError>(),
+        Some(ProfileDataError::Expired)
+    ));
     assert_eq!(state(&client).await.unwrap(), before);
 }
 
@@ -1560,4 +1567,239 @@ async fn fp_default_joint_limit_counts_oversize_without_losing_its_components() 
     .await
     .unwrap_err();
     assert_eq!(before, state(&client).await.unwrap());
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn fp_counted_header_permutations_share_rows_at_full_quota() {
+    let (_config, mut client) = migrations::tests::isolated_database().await.unwrap();
+    client
+        .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+        .await
+        .unwrap();
+    migrations::apply(&mut client).await.unwrap();
+    let mut limits = limits();
+    limits.ingestion.bucket.literal_values = 0;
+    limits.ingestion.bucket.samples = 1;
+    limits.retained[..6].copy_from_slice(&[1, 1, 2, 2, 1, 2]);
+    let policy = HeaderCapturePolicy::default();
+    let mut state = 1_u64;
+    let mut last = None;
+    let mut identities = BTreeSet::new();
+    for sequence in 1..=10_000 {
+        let mut order: Vec<_> = (0..12).collect();
+        for index in (1..order.len()).rev() {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            order.swap(index, (state % (index as u64 + 1)) as usize);
+        }
+        let mut headers = HeaderMap::new();
+        for index in order {
+            headers.insert(
+                HeaderName::from_bytes(format!("x-mode-{index:02}").as_bytes()).unwrap(),
+                HeaderValue::from_static("constant"),
+            );
+        }
+        let raw = policy
+            .capture(Version::HTTP_3, &headers, None)
+            .unwrap()
+            .canonical(&policy)
+            .unwrap();
+        identities.insert(raw.id);
+        let mut captured = capture("unused").unwrap();
+        captured.joint.slots[0].value = raw;
+        assert!(
+            ingest(
+                &mut client,
+                100,
+                attempt(false, sequence),
+                &captured,
+                [3; 32],
+                limits
+            )
+            .await
+            .unwrap()
+        );
+        if sequence == 1 {
+            let bytes: i64 = client
+                .query_one(
+                    "SELECT canonical_bytes FROM fp_v2.quotas WHERE authorized=FALSE",
+                    &[],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            limits.retained[6] = usize::try_from(bytes).unwrap();
+        }
+        last = Some(captured);
+    }
+    assert!(identities.len() > 9_000);
+    let row = client.query_one("SELECT profiles,flows,structures,buckets,runs,interned_values,canonical_bytes FROM fp_v2.quotas WHERE authorized=FALSE", &[]).await.unwrap();
+    for (index, expected) in [
+        1_i64,
+        1,
+        2,
+        2,
+        1,
+        2,
+        i64::try_from(limits.retained[6]).unwrap(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(row.get::<_, i64>(index), expected);
+    }
+    let captured = last.unwrap();
+    assert!(
+        !ingest(
+            &mut client,
+            100,
+            attempt(false, 10_000),
+            &captured,
+            [3; 32],
+            limits
+        )
+        .await
+        .unwrap()
+    );
+    let prepared = captured.prepare(false, limits.capture).unwrap();
+    let transaction = client.transaction().await.unwrap();
+    let mut remaining = limits.ingestion.input_bytes;
+    for input in &prepared.buckets {
+        let restored = load_bucket(
+            &transaction,
+            false,
+            100,
+            input,
+            [3; 32],
+            limits,
+            &mut remaining,
+        )
+        .await
+        .unwrap();
+        assert_eq!(restored.bucket.counts.total, 10_000);
+        assert_eq!(restored.bucket.counts.untracked, 10_000);
+        assert_eq!(restored.bucket.samples.len(), 1);
+        assert_eq!(restored.bucket.values.len(), 1);
+        let raw = &restored.bucket.values[0];
+        if input.value.validated_domain(limits.capture.bytes).unwrap() == CanonicalDomain::Headers {
+            let decoded = HeaderCapture::from_canonical(raw, &policy).unwrap();
+            assert_eq!(decoded.fields.len(), 12);
+            assert!(identities.contains(&raw.id));
+        } else {
+            JointCapture::from_canonical(raw, limits.capture).unwrap();
+        }
+    }
+    transaction.rollback().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn fp_counted_distinct_evidence_survives_restart_and_bounds_corrupt_rows() {
+    let (config, _fixture_guard) = migrations::tests::isolated_database().await.unwrap();
+    let (mut client, connection) = config.connect(NoTls).await.unwrap();
+    tokio::spawn(connection);
+    client
+        .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+        .await
+        .unwrap();
+    migrations::apply(&mut client).await.unwrap();
+    let mut limits = limits();
+    limits.ingestion.bucket.literal_values = 0;
+    let capture = capture("fixed").unwrap();
+    for sequence in 1..=3 {
+        ingest(
+            &mut client,
+            100,
+            attempt(false, sequence),
+            &capture,
+            [3; 32],
+            limits,
+        )
+        .await
+        .unwrap();
+    }
+    drop(client);
+    let (mut client, connection) = config.connect(NoTls).await.unwrap();
+    tokio::spawn(connection);
+    let rows = client
+        .query("SELECT untracked_distinct::text FROM fp_v2.buckets", &[])
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    for row in rows {
+        let evidence: UntrackedDistinctSnapshot =
+            serde_json::from_str(&row.get::<_, String>(0)).unwrap();
+        assert_eq!(evidence.values.len(), 1);
+        assert!(evidence.history_known);
+        assert!(!evidence.saturated);
+    }
+    let snapshot = state(&client).await.unwrap();
+    assert!(
+        !ingest(
+            &mut client,
+            100,
+            attempt(false, 3),
+            &capture,
+            [3; 32],
+            limits
+        )
+        .await
+        .unwrap()
+    );
+    assert_eq!(state(&client).await.unwrap(), snapshot);
+    client.execute("UPDATE fp_v2.buckets SET untracked_distinct=jsonb_build_object('values',jsonb_build_array(),'saturated',FALSE,'history_known',TRUE)", &[]).await.unwrap();
+    let before = state(&client).await.unwrap();
+    ingest(
+        &mut client,
+        100,
+        attempt(false, 4),
+        &capture,
+        [3; 32],
+        limits,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(state(&client).await.unwrap(), before);
+    client.execute("UPDATE fp_v2.buckets SET untracked_distinct=jsonb_build_object('values',jsonb_build_array(),'saturated',FALSE,'history_known',FALSE,'padding',repeat('x',$1))", &[&i32::try_from(kib(8) + 1).unwrap()]).await.unwrap();
+    let IngestFailure::Rejected(error) = ingest(
+        &mut client,
+        100,
+        attempt(false, 4),
+        &capture,
+        [3; 32],
+        limits,
+    )
+    .await
+    .unwrap_err() else {
+        panic!("corrupt evidence reached COMMIT")
+    };
+    assert!(matches!(
+        error.downcast_ref::<ProfileDataError>(),
+        Some(ProfileDataError::LimitExceeded("stored distinct bytes"))
+    ));
+    client.execute("UPDATE fp_v2.buckets SET untracked_distinct=jsonb_build_object('values',jsonb_build_array(),'saturated',FALSE,'history_known',FALSE)", &[]).await.unwrap();
+    ingest(
+        &mut client,
+        100,
+        attempt(false, 4),
+        &capture,
+        [3; 32],
+        limits,
+    )
+    .await
+    .unwrap();
+    for row in client
+        .query(
+            "SELECT untracked_distinct::text,total FROM fp_v2.buckets",
+            &[],
+        )
+        .await
+        .unwrap()
+    {
+        let evidence: UntrackedDistinctSnapshot =
+            serde_json::from_str(&row.get::<_, String>(0)).unwrap();
+        assert_eq!(evidence.values.len(), 1);
+        assert!(!evidence.history_known);
+        assert_eq!(row.get::<_, i64>(1), 4);
+    }
 }
