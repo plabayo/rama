@@ -48,8 +48,11 @@ impl Shape {
         versions.sort_by_key(|version| version.is_none());
         Ok(Self {
             version: flight.version.as_u32(),
-            dcid: flight.dcid_len,
-            scid: flight.scid_len,
+            // RFC 9000 §7.2: an original client DCID is at least eight bytes.
+            // Its exact length is a connection draw retained in the literal sample.
+            dcid: flight.dcid_len.min(8),
+            // Zero-length CIDs disable CID-based routing; nonzero lengths can vary.
+            scid: usize::from(flight.scid_len != 0),
             pn_width: flight.packet_number_len,
             token: flight.token_len != 0,
             padding: match flight.padding {
@@ -124,8 +127,8 @@ impl Shape {
 
     fn validate(&self, limits: QuicFlightCaptureLimits) -> Result<(), ProfileDataError> {
         if self.version == 0
-            || self.dcid > 20
-            || self.scid > 20
+            || self.dcid > 8
+            || self.scid > 1
             || !(1..=4).contains(&self.pn_width)
             || self.padding > 1
             || self.frames.is_empty()

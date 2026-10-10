@@ -773,7 +773,7 @@ mod tests {
             let mut changed = base.clone();
             match case {
                 0 => changed.flight.version = Version::V2,
-                1 => changed.flight.dcid_len += 1,
+                1 => changed.flight.dcid_len = 7,
                 2 => changed.flight.scid_len += 1,
                 3 => changed.flight.packet_number_len += 1,
                 4 => changed.flight.token_len = 1,
@@ -792,6 +792,100 @@ mod tests {
         let ordered = versions.structural(limits).unwrap();
         versions.flight.available_versions.reverse();
         assert_ne!(ordered.id, versions.structural(limits).unwrap().id);
+    }
+
+    #[test]
+    fn firefox_connection_id_draws_share_flight_and_joint_structures() {
+        // Four Firefox 157.0.1 loopback connections, captured before authentication.
+        // The fixture contains flight metadata only, without ClientHello or CID bytes.
+        let flights: Vec<FirstFlight> =
+            serde_json::from_str(include_str!("firefox_flights.json")).unwrap();
+        assert_eq!(flights.len(), 4);
+        assert_eq!(
+            flights
+                .iter()
+                .map(|flight| flight.dcid_len)
+                .collect::<Vec<_>>(),
+            [12, 8, 9, 14]
+        );
+        let limits = QuicFlightCaptureLimits::default();
+        let mut literals = BTreeSet::new();
+        let mut structures = BTreeSet::new();
+        let mut joints = BTreeSet::new();
+        for flight in flights {
+            let captured = QuicFlightCapture {
+                completeness: ProfileCaptureCompleteness::Complete,
+                flight,
+            };
+            let literal = captured.canonical(limits).unwrap();
+            let restored = QuicFlightCapture::from_canonical(&literal, limits).unwrap();
+            assert_eq!(
+                serde_json::to_value(&restored.flight).unwrap(),
+                serde_json::to_value(&captured.flight).unwrap()
+            );
+            literals.insert(literal.id);
+            let structure = captured.structural(limits).unwrap();
+            QuicFlightCapture::validate_structure(&structure, limits).unwrap();
+            structures.insert(structure.id);
+            let joint = JointCapture {
+                completeness: ProfileCaptureCompleteness::Complete,
+                level: CaptureLevel::Connection,
+                slots: vec![CapturedSlot {
+                    kind: CapturedSlotKind::QuicFirstFlight,
+                    value: literal,
+                }]
+                .into(),
+            };
+            joints.insert(joint.structural(JointCaptureLimits::default()).unwrap().id);
+        }
+        assert_eq!(literals.len(), 4);
+        assert_eq!(structures.len(), 1);
+        assert_eq!(joints.len(), 1);
+    }
+
+    #[test]
+    fn cid_length_classes_preserve_literal_draws_and_routing_choices() {
+        let limits = QuicFlightCaptureLimits::default();
+        for version in [Version::V1, Version::V2] {
+            let mut expected = None;
+            for dcid in 8..=20 {
+                for scid in 1..=20 {
+                    let mut captured = capture();
+                    captured.flight.version = version;
+                    captured.flight.dcid_len = dcid;
+                    captured.flight.scid_len = scid;
+                    let literal = captured.canonical(limits).unwrap();
+                    let restored = QuicFlightCapture::from_canonical(&literal, limits).unwrap();
+                    assert_eq!(restored.flight.dcid_len, dcid);
+                    assert_eq!(restored.flight.scid_len, scid);
+                    let structure = captured.structural(limits).unwrap();
+                    QuicFlightCapture::validate_structure(&structure, limits).unwrap();
+                    assert_eq!(*expected.get_or_insert(structure.id), structure.id);
+                }
+            }
+            let mut captured = capture();
+            captured.flight.version = version;
+            assert_ne!(expected.unwrap(), captured.structural(limits).unwrap().id);
+            captured.flight.scid_len = 1;
+            for dcid in 0..8 {
+                captured.flight.dcid_len = dcid;
+                assert_ne!(expected.unwrap(), captured.structural(limits).unwrap().id);
+            }
+        }
+    }
+
+    #[test]
+    fn flight_structure_import_rejects_unclassified_cid_lengths() {
+        let limits = QuicFlightCaptureLimits::default();
+        let value = capture().structural(limits).unwrap();
+        // The canonical domain/version prefix is followed by QUIC version and CID classes.
+        for (offset, lengths) in [(21, 9..=20u64), (29, 2..=20u64)] {
+            for length in lengths {
+                let mut bytes = value.bytes.to_vec();
+                bytes[offset..offset + 8].copy_from_slice(&length.to_be_bytes());
+                QuicFlightCapture::validate_structure(&resign(bytes), limits).unwrap_err();
+            }
+        }
     }
 
     #[test]

@@ -1,8 +1,10 @@
-use crate::profile::ProfileCaptureCompleteness;
 use std::cell::Cell;
 
 use super::*;
-use crate::profile::{CountedObservationBucket, ObservationId, ProfileBucketLimits, ValueId};
+use crate::profile::{
+    CaptureLevel, CapturedSlot, CapturedSlotKind, CountedObservationBucket, JointCapture,
+    JointCaptureLimits, ObservationId, ProfileBucketLimits, ProfileCaptureCompleteness, ValueId,
+};
 
 fn capture(namespace: OrderNamespace, fields: &[(u64, &[u8])]) -> OrderedProtocolCapture {
     OrderedProtocolCapture::capture(
@@ -28,6 +30,9 @@ fn protocol_bindings_do_not_retain_connection_identifiers_or_tokens() {
                 (0x0d, secret.as_bytes()),
                 (0x0f, secret.as_bytes()),
                 (0x10, secret.as_bytes()),
+                (0x26ab, secret.as_bytes()),
+                (0x4751, secret.as_bytes()),
+                (0x219bbcd0, secret.as_bytes()),
             ],
         );
         let canonical = captured.canonical(limits).unwrap();
@@ -61,38 +66,40 @@ fn protocol_bindings_do_not_retain_connection_identifiers_or_tokens() {
     };
     oversized_shape.canonical(limits).unwrap_err();
     // A valid digest does not grant literal ownership to a connection-bound field.
-    for domain in [ORDER_DOMAIN, ORDER_STRUCTURE_DOMAIN] {
-        let mut writer = CanonicalWriter::new(domain, limits.bytes).unwrap();
-        writer.u8(0).unwrap();
-        if domain == ORDER_DOMAIN {
-            writer.u8(1).unwrap();
-        }
-        writer.u64(1).unwrap();
-        if domain == ORDER_STRUCTURE_DOMAIN {
+    for id in [0x0f, 0x26ab, 0x4751, 0x219bbcd0] {
+        for domain in [ORDER_DOMAIN, ORDER_STRUCTURE_DOMAIN] {
+            let mut writer = CanonicalWriter::new(domain, limits.bytes).unwrap();
             writer.u8(0).unwrap();
-        }
-        writer.u64(0x0f).unwrap();
-        writer.u8(0).unwrap();
-        writer.bytes(b"connection-secret").unwrap();
-        let forged = writer.finish();
-        forged.verify(domain, limits.bytes).unwrap();
-        let mut bucket = CountedObservationBucket::new(
-            domain,
-            ValueId([1; 32]),
-            [2; 32],
-            ProfileBucketLimits::default(),
-        )
-        .unwrap();
-        bucket
-            .observe(
-                ObservationId {
-                    run: [1; 16],
-                    sequence: 1,
-                },
-                &forged,
+            if domain == ORDER_DOMAIN {
+                writer.u8(1).unwrap();
+            }
+            writer.u64(1).unwrap();
+            if domain == ORDER_STRUCTURE_DOMAIN {
+                writer.u8(0).unwrap();
+            }
+            writer.u64(id).unwrap();
+            writer.u8(0).unwrap();
+            writer.bytes(b"connection-secret").unwrap();
+            let forged = writer.finish();
+            forged.verify(domain, limits.bytes).unwrap();
+            let mut bucket = CountedObservationBucket::new(
+                domain,
+                ValueId([1; 32]),
+                [2; 32],
+                ProfileBucketLimits::default(),
             )
-            .unwrap_err();
-        assert_eq!(bucket.snapshot().counts.total, 0);
+            .unwrap();
+            bucket
+                .observe(
+                    ObservationId {
+                        run: [1; 16],
+                        sequence: 1,
+                    },
+                    &forged,
+                )
+                .unwrap_err();
+            assert_eq!(bucket.snapshot().counts.total, 0);
+        }
     }
 }
 
@@ -467,4 +474,146 @@ fn redacted_transport_shape_uses_encoded_budget_without_recharging_wire_bytes() 
         exact,
     )
     .unwrap_err();
+}
+
+#[test]
+fn connection_parameter_values_do_not_multiply_structures() {
+    let limits = OrderCaptureLimits::default();
+    for id in [0x3127, 0x173e] {
+        let first = capture(OrderNamespace::QuicParameter, &[(id, b"\x42\xf9")]);
+        let other = capture(OrderNamespace::QuicParameter, &[(id, b"\x42\xb7")]);
+        let wider = capture(OrderNamespace::QuicParameter, &[(id, b"\x80\x00\xff\xff")]);
+        let structure = first.structural(limits).unwrap();
+        validate_structure(&structure, limits.bytes).unwrap();
+        for value in [&other, &wider] {
+            assert_eq!(structure.id, value.structural(limits).unwrap().id);
+            assert_ne!(
+                first.canonical(limits).unwrap().id,
+                value.canonical(limits).unwrap().id
+            );
+        }
+        assert_ne!(
+            structure.id,
+            capture(OrderNamespace::QuicParameter, &[])
+                .structural(limits)
+                .unwrap()
+                .id
+        );
+        assert_ne!(
+            structure.id,
+            capture(OrderNamespace::QuicParameter, &[(id, b"x"), (id, b"y")])
+                .structural(limits)
+                .unwrap()
+                .id
+        );
+        assert!(
+            matches!(&first.fields[0].value, ProtocolValue::Literal(bytes) if bytes.as_ref() == b"\x42\xf9")
+        );
+        // A canonical digest cannot disguise an unnormalized structural value.
+        let mut writer = CanonicalWriter::new(ORDER_STRUCTURE_DOMAIN, limits.bytes).unwrap();
+        writer.u8(OrderNamespace::QuicParameter.tag()).unwrap();
+        writer.u64(1).unwrap();
+        writer.u8(0).unwrap();
+        writer.u64(id).unwrap();
+        writer.u8(0).unwrap();
+        writer.bytes(b"\x42\xf9").unwrap();
+        validate_structure(&writer.finish(), limits.bytes).unwrap_err();
+    }
+    // Measured/padding ownership is specific to QUIC, not the numeric id alone.
+    for id in [0x3127, 0x173e, 0x3128, 0xff04de1b, 0x219e, 0x17f7586d2cb571] {
+        let a = capture(OrderNamespace::Http3Setting, &[(id, &1u64.to_be_bytes())]);
+        let b = capture(OrderNamespace::Http3Setting, &[(id, &2u64.to_be_bytes())]);
+        if !OrderNamespace::Http3Setting.reserved_candidate(id) {
+            assert_ne!(
+                a.structural(limits).unwrap().id,
+                b.structural(limits).unwrap().id
+            );
+        }
+    }
+    for id in [0x3128, 0xff04de1b, 0x219e, 0x17f7586d2cb571, 0x1234] {
+        let a = capture(OrderNamespace::QuicParameter, &[(id, b"a")]);
+        let b = capture(OrderNamespace::QuicParameter, &[(id, b"b")]);
+        assert_ne!(
+            a.structural(limits).unwrap().id,
+            b.structural(limits).unwrap().id
+        );
+    }
+}
+
+#[test]
+fn chrome_repeat_visits_keep_rtt_presence_without_splitting_by_measurement() {
+    // Task-owned Chrome 154 loopback captures: first and repeat visits from two
+    // independent browser profiles. The repeat visits report 761 and 695 us.
+    let limits = OrderCaptureLimits::default();
+    let samples: Vec<Vec<(u64, Vec<u8>)>> =
+        serde_json::from_str(include_str!("chrome_repeat_parameters.json")).unwrap();
+    assert_eq!(samples.len(), 4);
+    let captures: Vec<_> = samples
+        .iter()
+        .map(|sample| {
+            OrderedProtocolCapture::capture(
+                ProfileCaptureCompleteness::Complete,
+                OrderNamespace::QuicParameter,
+                sample.iter().map(|(id, value)| (*id, value)),
+                limits,
+            )
+            .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        captures[0].structural(limits).unwrap().id,
+        captures[2].structural(limits).unwrap().id
+    );
+    assert_eq!(
+        captures[1].structural(limits).unwrap().id,
+        captures[3].structural(limits).unwrap().id
+    );
+    assert_ne!(
+        captures[0].structural(limits).unwrap().id,
+        captures[1].structural(limits).unwrap().id
+    );
+    assert_ne!(
+        captures[1].canonical(limits).unwrap().id,
+        captures[3].canonical(limits).unwrap().id
+    );
+    let joint_limits = JointCaptureLimits::default();
+    let joints: Vec<_> = captures
+        .iter()
+        .map(|capture| JointCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            level: CaptureLevel::Connection,
+            slots: vec![CapturedSlot {
+                kind: CapturedSlotKind::QuicParameters,
+                value: capture.canonical(limits).unwrap(),
+            }]
+            .into(),
+        })
+        .collect();
+    assert_eq!(
+        joints[0].structural(joint_limits).unwrap().id,
+        joints[2].structural(joint_limits).unwrap().id
+    );
+    assert_eq!(
+        joints[1].structural(joint_limits).unwrap().id,
+        joints[3].structural(joint_limits).unwrap().id
+    );
+    assert_ne!(
+        joints[0].structural(joint_limits).unwrap().id,
+        joints[1].structural(joint_limits).unwrap().id
+    );
+    assert_ne!(
+        joints[1].canonical(joint_limits).unwrap().id,
+        joints[3].canonical(joint_limits).unwrap().id
+    );
+    for capture in captures {
+        let value = capture.canonical(limits).unwrap();
+        assert_eq!(
+            OrderedProtocolCapture::from_canonical(&value, limits)
+                .unwrap()
+                .canonical(limits)
+                .unwrap()
+                .bytes,
+            value.bytes
+        );
+    }
 }

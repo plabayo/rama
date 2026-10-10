@@ -47,7 +47,21 @@ impl OrderNamespace {
     }
 
     fn connection_owned(self, id: u64) -> bool {
-        matches!(self, Self::QuicParameter) && matches!(id, 0 | 2 | 0x0d | 0x0f | 0x10)
+        // Transport bindings, opaque handshake messages (0x26ab/0x4751), and debugging
+        // SNI (0x219bbcd0) belong to the connection, not a reusable profile.
+        matches!(self, Self::QuicParameter)
+            && matches!(
+                id,
+                0 | 2 | 0x0d | 0x0f | 0x10 | 0x26ab | 0x4751 | 0x219bbcd0
+            )
+    }
+
+    fn connection_value(self, id: u64) -> bool {
+        // Cached RTT (0x3127) is a path measurement; discard padding (0x173e)
+        // has no transport semantics. Keep their literal samples for analysis,
+        // but only their presence in a structure. Capability/configuration
+        // values, including Google's connection options (0x3128), stay literal.
+        matches!(self, Self::QuicParameter) && matches!(id, 0x3127 | 0x173e)
     }
 
     fn validate_field(
@@ -110,7 +124,7 @@ impl Default for OrderCaptureLimits {
     }
 }
 
-/// Connection IDs, reset tokens and preferred addresses retain only their shape.
+/// Transport bindings and opaque handshake messages retain only their shape.
 /// Literal ordering is also used to canonicalize structural multisets.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum ProtocolValue {
@@ -262,7 +276,7 @@ impl OrderedProtocolCapture {
 
     /// Order and reserved-candidate identifiers do not multiply structural rows.
     /// Literal semantic choices and duplicate multiplicity remain in the key.
-    /// Complete samples retain variable lengths and nested version ordering.
+    /// Complete samples retain path measurements, padding and nested version ordering.
     pub fn structural(
         &self,
         limits: OrderCaptureLimits,
@@ -377,6 +391,9 @@ fn normalized_field(
 ) -> Result<OrderedProtocolField, ProfileDataError> {
     let value = match &field.value {
         ProtocolValue::ConnectionLength(_) => ProtocolValue::ConnectionLength(0),
+        ProtocolValue::Literal(_) if namespace.connection_value(field.id) => {
+            ProtocolValue::Literal(Box::default())
+        }
         ProtocolValue::Literal(bytes)
             if matches!(namespace, OrderNamespace::QuicParameter) && field.id == 0x11 =>
         {
