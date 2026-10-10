@@ -257,13 +257,18 @@ impl WaitQueue {
                 .extract_if(.., |gave| gave.to == order)
                 .map(|gave| gave.giver)
                 .collect();
+            // Leaving before those it gave way to: its turn is its queue's, a
+            // wake to pass on. Taken before the wakes are read: a turn handed
+            // back meanwhile is a wake read, or still counted here.
+            let turn = waiter.counters().gave_way.swap(0, Ordering::AcqRel) > 0;
             // Under the lock: no wake of this queue reaches the waiter after.
-            (waiter.held(), gave_way)
+            (waiter.held() + usize::from(turn), gave_way)
         };
         // Outside the lock, which is a leaf: each party that gave way and
-        // still waits looks again.
+        // still waits looks again, its turn handed back.
         for giver in gave_way.iter().filter_map(WeakWaiter::upgrade) {
             giver.wake();
+            giver.hand_back_turn();
         }
         held
     }
@@ -300,6 +305,7 @@ impl WaitQueue {
                 to,
                 giver: WeakWaiter::new(giver),
             });
+            giver.counters().gave_way.fetch_add(1, Ordering::AcqRel);
         }
         // What it was left is worth a look, also if its current look began
         // before the capacity was there.
@@ -446,12 +452,14 @@ pub struct Party {
 /// Places a [`Party`] keeps inline: a lane, a keyed lane and the slot queue.
 const INLINE_PLACES: usize = 3;
 
-/// The wakes one queue sent a party, and how many of them it spent.
+/// The wakes one queue sent a party, how many of them it spent, and the turns
+/// it gave way with that are not handed back yet.
 #[derive(Default)]
 struct Place {
     wakes: AtomicUsize,
     /// Only the waiting party writes it.
     spent: AtomicUsize,
+    gave_way: AtomicUsize,
 }
 
 impl Party {
@@ -595,6 +603,19 @@ impl Waiter {
 
     fn wake(&self) {
         self.wake_by(1);
+    }
+
+    /// One of the turns it gave way with is handed back.
+    fn hand_back_turn(&self) {
+        let turns = &self.counters().gave_way;
+        let mut left = turns.load(Ordering::Acquire);
+        // None left: it passed its turn on as it left.
+        while left > 0 {
+            match turns.compare_exchange_weak(left, left - 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return,
+                Err(now) => left = now,
+            }
+        }
     }
 
     fn wake_by(&self, n: usize) {
@@ -1018,6 +1039,27 @@ mod loom_tests {
         });
     }
 
+    /// Of a party that gave way leaving and the waiter it gave way to leaving,
+    /// whichever comes first, the turn it gave away is passed on.
+    #[test]
+    fn a_turn_given_away_is_passed_on_whoever_leaves_first() {
+        loom::model(|| {
+            let [theirs, ours] = [Arc::new(WaitQueue::new()), Arc::new(WaitQueue::new())];
+            let ahead = Party::new(0).waiter();
+            theirs.push(&ahead);
+            let giver = Party::new(1).waiter();
+            ours.push(&giver);
+            assert!(theirs.give_way(1, &giver));
+            let leaver = {
+                let theirs = theirs.clone();
+                thread::spawn(move || theirs.remove(&ahead))
+            };
+            let passed = ours.remove(&giver);
+            leaver.join().unwrap();
+            assert!(passed >= 1, "the turn it gave away is lost");
+        });
+    }
+
     /// Subscribe-then-check: a change racing the first subscription is
     /// either seen by the check or wakes the listener.
     #[test]
@@ -1314,6 +1356,33 @@ mod tests {
             "one wake per party that gave way, however often"
         );
         assert!(!theirs.give_way(1, &first) && theirs.is_empty());
+    }
+
+    #[test]
+    fn a_party_that_gave_way_and_leaves_first_passes_its_turn_on() {
+        let [theirs, ours] = [WaitQueue::new(), WaitQueue::new()];
+        let older = Party::new(0).waiter();
+        theirs.push(&older);
+        let [giver, behind] = [1, 2].map(|order| Party::new(order).waiter());
+        ours.push(&giver);
+        ours.push(&behind);
+        assert!(theirs.give_way(1, &giver));
+        assert_eq!(ours.remove(&giver), 1, "its turn, to pass on");
+        assert_eq!(theirs.remove(&older), 1, "its own look's wake");
+        assert!(!behind.is_woken(), "the leaver passes the turn on, once");
+    }
+
+    #[test]
+    fn a_turn_handed_back_is_passed_on_once() {
+        let [theirs, ours] = [WaitQueue::new(), WaitQueue::new()];
+        let older = Party::new(0).waiter();
+        theirs.push(&older);
+        let giver = Party::new(1).waiter();
+        ours.push(&giver);
+        assert!(theirs.give_way(1, &giver));
+        theirs.remove(&older);
+        assert_eq!(giver.held(), 1, "handed back");
+        assert_eq!(ours.remove(&giver), 1, "that wake, not one more");
     }
 
     #[test]

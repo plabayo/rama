@@ -71,8 +71,8 @@ async fn main() {
         .with_default_http_connector(Executor::default())
         // The pool works out of the box with `HttpPooledConnectorConfig::default()`.
         // We override a single field here only to show the config is tunable.
-        // `max_concurrent_streams` caps how many requests one connection may
-        // multiplex over a single connection, every other field keeps its default.
+        // `max_streams_per_connection` caps how many requests one connection
+        // multiplexes, every other field keeps its default.
         .with_connection_pool(HttpPooledConnectorConfig {
             max_streams_per_connection: NonZeroUsize::new(20),
             ..Default::default()

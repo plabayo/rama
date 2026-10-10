@@ -405,3 +405,49 @@ async fn an_evictor_leaves_an_idle_connection_to_its_lanes_older_front() {
     assert!(evictor.poll().is_pending(), "the lane's front is older");
     drop((handout(&mut lane), evictor));
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_lane_waiter_that_gave_way_and_left_hands_its_turn_to_its_lane() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(1).unwrap())
+        .with_saturation_policy(SaturationPolicy::EvictIdleWhenCold);
+    let held = fresh_keyed(&pool, 0, 1).await;
+    let (other, own) = (want(2), want(1));
+    let evictor = queue_keyed(&pool, 1, &other);
+    let mut giver = queue_keyed(&pool, 0, &own);
+    let mut next = queue_keyed(&pool, 0, &own);
+    drop(held);
+    assert!(giver.poll().is_pending(), "kept for the older evictor");
+    drop(giver);
+    drop(evictor);
+    assert!(next.is_woken(), "the idle connection is its lane's again");
+    assert!(matches!(
+        next.poll(),
+        Poll::Ready(Ok(ConnectionResult::Connection(_)))
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_evictor_that_gave_way_and_left_hands_its_turn_to_its_queue() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(1).unwrap())
+        .with_max_connections_per_id(NonZeroUsize::new(1).unwrap())
+        .with_saturation_policy(SaturationPolicy::EvictIdle);
+    let held = fresh_keyed(&pool, 0, 1).await;
+    let input = want(2);
+    let older = queue_keyed(&pool, 0, &input);
+    let mut younger = queue_keyed(&pool, 1, &input);
+    let mut third = queue_keyed(&pool, 2, &input);
+    drop(held);
+    assert!(
+        younger.poll().is_pending(),
+        "gives way to the older id evictor"
+    );
+    drop(younger);
+    drop(older);
+    assert!(third.is_woken(), "the idle connection is there to evict");
+    assert!(matches!(
+        third.poll(),
+        Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+    ));
+}

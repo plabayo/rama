@@ -36,7 +36,18 @@ pub(super) struct Connects {
     /// Bumped as a connect fails: a waiter that saw none land since it began
     /// waiting fails with it.
     failures: AtomicU64,
-    failure: Mutex<Option<Failure>>,
+    failure: Mutex<Failures>,
+    /// Whether its last landing reached none of its waiters (kept by none, or
+    /// filed for other keys): its waiters dial their own.
+    lands_unusable: AtomicBool,
+}
+
+/// The last failure of a group's connects, and the last one its waiters would
+/// share, with the failures counted by then.
+#[derive(Debug, Default)]
+struct Failures {
+    last: Option<Failure>,
+    shared: Option<(u64, Failure)>,
 }
 
 /// The landings and failures of its connects a waiter saw as it began waiting.
@@ -104,7 +115,8 @@ impl Connects {
             waiters: Arc::default(),
             landings: AtomicU64::new(0),
             failures: AtomicU64::new(0),
-            failure: Mutex::new(None),
+            failure: Mutex::new(Failures::default()),
+            lands_unusable: AtomicBool::new(false),
         }
     }
 
@@ -169,10 +181,30 @@ impl Connects {
     /// How the last connect failed, if one failed since `seen` and none landed:
     /// the endpoint is down for all that waited since.
     pub(super) fn failed_since(&self, seen: Seen) -> Option<Failure> {
-        let now = self.seen();
-        (now.failures != seen.failures && now.landings == seen.landings)
-            .then(|| self.failure.lock().clone())
-            .flatten()
+        // Failures first: a landing between both reads keeps the waiter going.
+        let failures = self.failures.load(Ordering::Acquire);
+        if failures == seen.failures || self.landings.load(Ordering::Acquire) != seen.landings {
+            return None;
+        }
+        let known = self.failure.lock();
+        known
+            .shared
+            .as_ref()
+            .filter(|(at, _)| *at > seen.failures)
+            .map(|(_, failure)| failure.clone())
+            .or_else(|| known.last.clone())
+    }
+
+    /// Whether a connect failed after one landed since `seen`: the endpoint
+    /// was up, it may no longer be.
+    pub(super) fn failed_after_landing(&self, seen: Seen) -> bool {
+        self.failures.load(Ordering::Acquire) != seen.failures
+            && self.landings.load(Ordering::Acquire) != seen.landings
+    }
+
+    /// Whether its last landing reached none of its waiters.
+    pub(super) fn lands_unusable(&self) -> bool {
+        self.lands_unusable.load(Ordering::Acquire)
     }
 }
 
@@ -198,13 +230,14 @@ impl Connect {
 
     /// The connection takes `streams`, one for its own checkout; `reached`
     /// says whether the others are woken for its waiters, through its lane or
-    /// a lane it opens. One more looks if they are not, or if what is still in
+    /// a lane it opens, and `usable` whether they can use it. One more looks if they are not, or if what is still in
     /// flight leaves waiters out, such as when it takes fewer than guessed: it
     /// dials, and passes its wake on to the next one left out.
-    pub(super) fn landed(self, streams: usize, reached: bool) {
+    pub(super) fn landed(self, streams: usize, reached: bool, usable: bool) {
         let Some(connects) = self.end() else {
             return;
         };
+        connects.lands_unusable.store(!usable, Ordering::Release);
         connects.landings.fetch_add(1, Ordering::AcqRel);
         // Pairs with the fence of a waiter queuing: it is woken, or sees the
         // connect ended.
@@ -225,8 +258,15 @@ impl Connect {
         let Some(connects) = self.end() else {
             return;
         };
-        *connects.failure.lock() = Some(Failure::of(error));
-        connects.failures.fetch_add(1, Ordering::AcqRel);
+        let failure = Failure::of(error);
+        {
+            let mut known = connects.failure.lock();
+            let at = connects.failures.fetch_add(1, Ordering::AcqRel) + 1;
+            if failure.is_shared() {
+                known.shared = Some((at, failure.clone()));
+            }
+            known.last = Some(failure);
+        }
         connects.waiters.wake_all();
     }
 

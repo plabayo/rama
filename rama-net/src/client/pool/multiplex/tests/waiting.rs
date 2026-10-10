@@ -548,3 +548,9 @@ fn a_cancellation_wave_through_the_slot_queue_stays_linear() {
         lanes.len()
     );
 }
+
+#[tokio::test]
+async fn a_pool_timeout_too_long_for_an_instant_is_a_wait_without_deadline() {
+    let svc = connector(MultiplexPool::new()).with_wait_for_pool_timeout(Duration::MAX);
+    let _served = connect(&svc, 0).await;
+}

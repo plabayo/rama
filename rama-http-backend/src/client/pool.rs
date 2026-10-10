@@ -220,7 +220,8 @@ pub struct HttpPooledConnectorConfig {
     pub max_wait_before_dial: Option<Duration>,
     /// How a connection is chosen among several that can serve a request.
     pub selection: MuxSelection,
-    /// Connections idle (no active streams) for longer than this are dropped.
+    /// Connections idle (no active streams) for longer than this are dropped,
+    /// as the pool notices: when a request asks it for a connection.
     pub idle_timeout: Option<Duration>,
     /// How long to wait for the pool to hand out a connection before timing out.
     pub wait_for_pool_timeout: Option<Duration>,
@@ -266,7 +267,8 @@ impl Default for HttpPooledConnectorConfig {
 }
 
 impl HttpPooledConnectorConfig {
-    /// The pool this config describes, for a [`PooledConnector`] of one's own.
+    /// The pool this config describes, for a [`PooledConnector`] of one's own:
+    /// `wait_for_pool_timeout` is the connector's, not the pool's.
     #[must_use]
     pub fn build_pool<C, ID>(&self) -> MultiplexPool<C, ID> {
         MultiplexPool::new()
@@ -348,7 +350,8 @@ mod tests {
     use rama_http_types::{Body, HeaderValue, Method, Request, Response, StatusCode, Version};
     use rama_net::address::{HostWithPort, ProxyAddress};
     use rama_net::client::pool::{
-        BasicConnIdentifier, ConnID as _, MultiplexPool, PooledConnector, ReqToConnID, ReuseKey,
+        BasicConnIdentifier, ConnID as _, MultiplexPool, MuxSelection, PooledConnector,
+        ReqToConnID, ReuseKey, SaturationPolicy,
     };
     use rama_net::client::{
         ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService,
@@ -1718,5 +1721,55 @@ mod tests {
             id1,
             "a connection is reused once its streaming body reaches end-of-stream"
         );
+    }
+
+    #[test]
+    fn a_built_pool_takes_every_field_of_its_config() {
+        let config = HttpPooledConnectorConfig {
+            max_streams_per_connection: NonZeroUsize::new(3),
+            max_connections_total: NonZeroUsize::new(5),
+            max_connections_per_id: NonZeroUsize::new(4),
+            max_idle_per_id: NonZeroUsize::new(2),
+            max_idle_total: NonZeroUsize::new(6),
+            saturation_policy: SaturationPolicy::EvictIdle,
+            max_wait_before_dial: Some(Duration::from_millis(7)),
+            selection: MuxSelection::RoundRobin,
+            idle_timeout: Some(Duration::from_secs(9)),
+            wait_for_pool_timeout: Some(Duration::from_secs(10)),
+        };
+        let pool = format!("{:?}", config.build_pool::<(), u8>());
+        for field in [
+            "max_connections_total: Some(5)",
+            "saturation: EvictIdle",
+            "max_connections_per_id: Some(4)",
+            "per_id: Some(2)",
+            "total: Some(6)",
+            "idle_timeout: Some(9s)",
+            "max_concurrent_streams: 3",
+            "selection: RoundRobin",
+            "streams_hint: true",
+            "max_wait_before_dial: Some(7ms)",
+        ] {
+            assert!(pool.contains(field), "{field} in {pool}");
+        }
+    }
+
+    #[test]
+    fn the_default_config() {
+        let config = HttpPooledConnectorConfig::default();
+        assert_eq!(config.max_streams_per_connection, NonZeroUsize::new(100));
+        assert_eq!(config.max_connections_total, NonZeroUsize::new(50));
+        assert_eq!(
+            (
+                config.max_connections_per_id,
+                config.max_idle_per_id,
+                config.max_idle_total
+            ),
+            (None, None, None)
+        );
+        assert_eq!(config.saturation_policy, SaturationPolicy::default());
+        assert_eq!(config.max_wait_before_dial, None);
+        assert_eq!(config.idle_timeout, Some(Duration::from_mins(5)));
+        assert_eq!(config.wait_for_pool_timeout, Some(Duration::from_mins(2)));
     }
 }

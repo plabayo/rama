@@ -65,8 +65,10 @@ pub(super) struct StoredConnection<C, ID> {
     pub(super) idle_limits: Option<Arc<IdleLimits<ID>>>,
     /// Its standing in the idle limits' count: [`COUNTED`] as it goes idle,
     /// [`UNCOUNTED`] again as a stream is admitted or outliving work is seen,
-    /// [`GONE`] while it is not stored.
+    /// [`GONE`] while it is not stored, and once retired.
     pub(super) idle_count: AtomicU8,
+    /// The idle count of its id, if the pool limits connections per id.
+    pub(super) id_idle: Option<Arc<AtomicIsize>>,
     pub(super) ask_trim_fn: AskTrim<C, ID>,
 }
 
@@ -74,7 +76,7 @@ pub(super) struct StoredConnection<C, ID> {
 pub(super) const UNCOUNTED: u8 = 0;
 /// [`StoredConnection::idle_count`]: stored and counted idle.
 pub(super) const COUNTED: u8 = 1;
-/// [`StoredConnection::idle_count`]: not stored, never counted.
+/// [`StoredConnection::idle_count`]: not stored or retired, never counted.
 pub(super) const GONE: u8 = 2;
 
 /// Asks for a trim of the idle connections over the limits, see [`ask_trim`].
@@ -135,9 +137,76 @@ impl<C, ID> StoredConnection<C, ID> {
             .compare_exchange(UNCOUNTED, COUNTED, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok();
         if counted {
-            limits.idle.fetch_add(1, Ordering::Relaxed);
+            self.add_idle(limits, 1);
         }
         counted
+    }
+
+    fn add_idle(&self, limits: &IdleLimits<ID>, n: isize) {
+        limits.idle.fetch_add(n, Ordering::Relaxed);
+        if let Some(id_idle) = &self.id_idle {
+            id_idle.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+
+    /// Take the connection out of the idle counts if it is one beyond the
+    /// limit of `excess` now: a trim's decision, made at its commit, so a
+    /// removal by anyone else since it chose is seen. Under its slot lock.
+    pub(super) fn take_excess(&self, excess: Excess) -> bool {
+        let Some(limits) = &self.idle_limits else {
+            return false;
+        };
+        let (counter, max, other) = match excess {
+            Excess::PerId => (self.id_idle.as_deref(), limits.per_id, Some(&limits.idle)),
+            Excess::Total => (Some(&limits.idle), limits.total, self.id_idle.as_deref()),
+        };
+        let (Some(counter), Some(max)) = (counter, max) else {
+            return false;
+        };
+        if counter
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |idle| {
+                usize::try_from(idle)
+                    .is_ok_and(|idle| idle > max.get())
+                    .then(|| idle - 1)
+            })
+            .is_err()
+        {
+            return false;
+        }
+        if self
+            .idle_count
+            .compare_exchange(COUNTED, GONE, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            // No longer counted: whoever uncounted it took it out of the counts.
+            counter.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+        if let Some(other) = other {
+            other.fetch_sub(1, Ordering::Relaxed);
+        }
+        true
+    }
+
+    /// Count the connection idle if it is: whether it is counted now. Asks
+    /// about outliving work: call outside pool locks and listeners.
+    pub(super) fn count_if_idle(&self) -> bool {
+        if !self.is_idle() || !self.count_idle() {
+            return false;
+        }
+        // Pairs with the fence of an admission: it uncounts this count, or
+        // this sees its stream.
+        fence(Ordering::SeqCst);
+        if self.active.load(Ordering::Relaxed) != 0 {
+            self.uncount_idle();
+            return false;
+        }
+        true
+    }
+
+    /// Whether the connection is counted idle.
+    pub(super) fn is_counted_idle(&self) -> bool {
+        self.idle_count.load(Ordering::Acquire) == COUNTED
     }
 
     /// No longer count the connection idle.
@@ -148,7 +217,7 @@ impl<C, ID> StoredConnection<C, ID> {
                 .compare_exchange(COUNTED, UNCOUNTED, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
         {
-            limits.idle.fetch_sub(1, Ordering::Relaxed);
+            self.add_idle(limits, -1);
         }
     }
 
@@ -163,19 +232,15 @@ impl<C, ID> StoredConnection<C, ID> {
         if self.idle_count.swap(GONE, Ordering::AcqRel) == COUNTED
             && let Some(limits) = &self.idle_limits
         {
-            limits.idle.fetch_sub(1, Ordering::Relaxed);
+            self.add_idle(limits, -1);
         }
     }
 
-    /// Ask for a trim of its id's idle connections, if they may be over the
-    /// limits: here if `inline`, else on a task, as for a listener, which may
-    /// hold its source's locks while trimming asks admissions.
+    /// Ask for a trim of its id's idle connections: here if `inline`, else on
+    /// a task, as for a listener, which may hold its source's locks while
+    /// trimming asks admissions.
     fn ask_trim(&self, inline: bool) {
-        if let Some(limits) = self
-            .idle_limits
-            .as_ref()
-            .filter(|limits| limits.may_be_over())
-        {
+        if let Some(limits) = &self.idle_limits {
             (self.ask_trim_fn)(&self.storage, limits, &self.waiting, Some(&self.id), inline);
         }
     }
@@ -197,10 +262,19 @@ impl<C, ID> StoredConnection<C, ID> {
         if slot.retired || !idle(self) {
             return None;
         }
-        slot.retired = true;
-        // On its way out: not idle for the limits any more.
-        self.uncount_idle();
+        self.retire_in(&mut slot);
         Some(slot)
+    }
+
+    /// Retire the connection: it admits no stream any more.
+    pub(super) fn retire(&self) {
+        self.retire_in(&mut self.pool_slot.lock());
+    }
+
+    fn retire_in(&self, slot: &mut ConnectionSlot) {
+        slot.retired = true;
+        // On its way out: never counted idle again.
+        self.unfile_idle();
     }
 
     /// Effective per-connection concurrency: the connection's [`MaxConcurrency`]
@@ -291,7 +365,7 @@ impl<C, ID> StoredConnection<C, ID> {
                         health.mark_broken();
                         self.conn.extensions().insert(health);
                     }
-                    self.pool_slot.lock().retired = true;
+                    self.retire();
                     trace!(%error, "multiplex pool: resource provider retired connection");
                     return None;
                 }
@@ -315,6 +389,8 @@ impl<C, ID> StoredConnection<C, ID> {
         // decrease the count, so no compare/exchange loop is needed here.
         self.active.fetch_add(1, Ordering::Relaxed);
         drop(slot);
+        // Pairs with the fence of a count: of it and this stream, one sees the other.
+        fence(Ordering::SeqCst);
         self.uncount_idle();
         Some(Admitted(admission))
     }
@@ -387,7 +463,8 @@ impl<C: Send + Sync + 'static, ID: Send + Sync + 'static> ChangeListener
             // Such as the end of work outliving the handouts: the idle clock
             // starts now. A trim asks.
             self.last_idle.set_now();
-            if self.count_idle() {
+            // Counted by a trim, which may ask about outliving work.
+            if self.idle_count.load(Ordering::Relaxed) == UNCOUNTED {
                 self.ask_trim(false);
             }
         }
@@ -424,7 +501,7 @@ pub(super) fn relist_stored<C, ID: ConnID>(conn: &Arc<StoredConnection<C, ID>>) 
 }
 
 /// [`AskTrim`]: ask for the idle connections over the limits of `id` (else of
-/// every id) to be closed. Nobody else trimming, the asker trims here once if
+/// every id) to be closed. Nobody else trimming, the asker trims here if
 /// `inline`; what is asked meanwhile, or by a listener, a task trims.
 pub(super) fn ask_trim<C: Send + Sync + 'static, ID: ConnID>(
     storage: &Weak<Mutex<Storage<C, ID>>>,
@@ -433,16 +510,9 @@ pub(super) fn ask_trim<C: Send + Sync + 'static, ID: ConnID>(
     id: Option<&ID>,
     inline: bool,
 ) {
-    if !limits.ask(id) {
+    limits.ask(id);
+    if (inline && trim_asked(storage, limits, waiting)) || !limits.schedule() {
         return;
-    }
-    if inline {
-        if let Some(storage) = storage.upgrade() {
-            trim(&storage, limits, waiting, &limits.take());
-        }
-        if !limits.let_go() {
-            return;
-        }
     }
     // The current runtime, else that of the newest connection: a source may
     // change on a thread of neither.
@@ -450,48 +520,48 @@ pub(super) fn ask_trim<C: Send + Sync + 'static, ID: ConnID>(
         .ok()
         .or_else(|| limits.runtime.lock().clone());
     let Some(runtime) = runtime else {
-        limits.give_up();
+        // The next asker trims what is left.
+        limits.unschedule();
         return;
     };
-    let (storage, waiting) = (storage.clone(), waiting.clone());
-    let mut trimmer = Trimmer {
-        limits: limits.clone(),
-        held: true,
-    };
+    let (storage, waiting, scheduled) =
+        (storage.clone(), waiting.clone(), Scheduled(limits.clone()));
     runtime.spawn(async move {
-        while let Some(storage) = storage.upgrade() {
-            let asked = trimmer.limits.take();
-            if !asked.is_empty() {
-                trim(&storage, &trimmer.limits, &waiting, &asked);
-            } else if !trimmer.let_go() {
-                return;
-            }
-            drop(storage);
+        let limits = scheduled.0.clone();
+        // Running: an ask from now on may schedule another.
+        drop(scheduled);
+        while !trim_asked(&storage, &limits, &waiting) {
             tokio::task::yield_now().await;
         }
     });
 }
 
-/// A task's hold on the trimmer: given up if the task ends without letting go,
-/// such as when its runtime shuts down before it runs.
-struct Trimmer<ID> {
-    limits: Arc<IdleLimits<ID>>,
-    held: bool,
+/// Trim what is asked, unless someone else trims: whether nothing is left
+/// asked for this caller to see to. The trimmer is held only while it trims.
+fn trim_asked<C, ID: ConnID>(
+    storage: &Weak<Mutex<Storage<C, ID>>>,
+    limits: &IdleLimits<ID>,
+    waiting: &AtomicUsize,
+) -> bool {
+    let Some(hold) = limits.hold() else {
+        // Whoever trims looks at the asks again as it lets go.
+        return true;
+    };
+    let Some(storage) = storage.upgrade() else {
+        return true;
+    };
+    trim(&storage, limits, waiting, &limits.take());
+    drop(hold);
+    limits.nothing_asked()
 }
 
-impl<ID> Trimmer<ID> {
-    /// See [`IdleLimits::let_go`].
-    fn let_go(&mut self) -> bool {
-        self.held = self.limits.let_go();
-        self.held
-    }
-}
+/// A task scheduled to trim: if it is dropped before it runs, such as when
+/// its runtime shuts down, a later ask schedules another.
+struct Scheduled<ID>(Arc<IdleLimits<ID>>);
 
-impl<ID> Drop for Trimmer<ID> {
+impl<ID> Drop for Scheduled<ID> {
     fn drop(&mut self) {
-        if self.held {
-            self.limits.give_up();
-        }
+        self.0.unschedule();
     }
 }
 
@@ -504,43 +574,57 @@ fn trim<C, ID: ConnID>(
     waiting: &AtomicUsize,
     asked: &Asked<ID>,
 ) {
+    // Count what went idle without a release that counted it, such as work
+    // outliving its handouts ending: asked about here, outside the lock.
+    let uncounted: SmallVec<[Arc<StoredConnection<C, ID>>; 4]> = {
+        let storage = storage.lock();
+        asked_ids(&storage, asked)
+            .flat_map(IdBucket::lanes)
+            .flat_map(|lane| &lane.conns)
+            .filter(|conn| conn.maybe_idle() && !conn.is_counted_idle())
+            .cloned()
+            .collect()
+    };
+    for conn in &uncounted {
+        conn.count_if_idle();
+    }
+    drop(uncounted);
     let mut busy: SmallVec<[u64; 2]> = SmallVec::new();
+    // Pairs with the fence of the last waiting checkout leaving: this sees it
+    // gone, or its trim sees these counts.
+    fence(Ordering::SeqCst);
     // Waiting checkouts take idle connections: none of them is extra then.
     while waiting.load(Ordering::Relaxed) == 0 {
-        let over_total = limits
-            .total
-            .is_some_and(|max| limits.idle.load(Ordering::Relaxed) > max.get());
         let extra = {
             let storage = storage.lock();
-            let over = |bucket: &&IdBucket<C, ID>| {
-                limits.per_id.is_some_and(|max| {
-                    let idle = bucket.lanes().flat_map(|lane| &lane.conns);
-                    idle.filter(|conn| conn.maybe_idle() && !busy.contains(&conn.seq))
-                        .count()
-                        > max.get()
-                })
+            let over_id = |bucket: &&IdBucket<C, ID>| {
+                let counter = bucket
+                    .lanes()
+                    .flat_map(|lane| &lane.conns)
+                    .find_map(|conn| conn.id_idle.as_deref());
+                counter
+                    .zip(limits.per_id)
+                    .is_some_and(|(counter, max)| over(counter, max))
             };
-            let bucket = if asked.all {
-                storage.by_id.values().find(over)
-            } else {
-                asked
-                    .ids
-                    .iter()
-                    .filter_map(|id| storage.by_id.get(id))
-                    .find(over)
-            };
-            match bucket {
-                Some(bucket) => least_recently_idle(bucket.lanes(), &busy),
-                None if over_total => {
+            match asked_ids(&storage, asked).find(over_id) {
+                Some(bucket) => {
+                    least_recently_idle(bucket.lanes(), &busy).map(|conn| (conn, Excess::PerId))
+                }
+                None if limits.total.is_some_and(|max| limits.idle_over(max)) => {
                     least_recently_idle(storage.by_id.values().flat_map(IdBucket::lanes), &busy)
+                        .map(|conn| (conn, Excess::Total))
                 }
                 None => None,
             }
         };
-        let Some(extra) = extra else {
+        let Some((extra, excess)) = extra else {
             return;
         };
-        if extra.retire_if(StoredConnection::is_idle).is_none() {
+        // Still over at the commit, whatever others closed since the pick.
+        if extra
+            .retire_if(|conn| conn.is_idle() && conn.take_excess(excess))
+            .is_none()
+        {
             busy.push(extra.seq);
             continue;
         }
@@ -550,14 +634,27 @@ fn trim<C, ID: ConnID>(
     }
 }
 
-/// The connection of `lanes` idle the longest, from atomics, but not `busy`.
+/// The buckets of the ids `asked` for.
+fn asked_ids<'a, C, ID: ConnID>(
+    storage: &'a Storage<C, ID>,
+    asked: &'a Asked<ID>,
+) -> impl Iterator<Item = &'a IdBucket<C, ID>> {
+    let every = asked.all.then(|| storage.by_id.values());
+    let some = (!asked.all).then(|| asked.ids.iter().filter_map(|id| storage.by_id.get(id)));
+    every
+        .into_iter()
+        .flatten()
+        .chain(some.into_iter().flatten())
+}
+
+/// The connection of `lanes` counted idle the longest, but not `busy`.
 fn least_recently_idle<'a, C: 'a, ID: 'a>(
     lanes: impl Iterator<Item = &'a Lane<C, ID>>,
     busy: &[u64],
 ) -> Option<Arc<StoredConnection<C, ID>>> {
     lanes
         .flat_map(|lane| &lane.conns)
-        .filter(|conn| conn.maybe_idle() && !busy.contains(&conn.seq))
+        .filter(|conn| conn.is_counted_idle() && !busy.contains(&conn.seq))
         .min_by_key(|conn| conn.last_idle.as_nanos())
         .cloned()
 }
@@ -590,8 +687,11 @@ impl<C, ID> Drop for MultiplexedConnection<C, ID> {
         // of its lane without a wake, else an eviction chance if now idle.
         // Work outliving the handout is announced by the admission's change.
         self.inner.freed(WaitQueue::wake_one, false);
-        if last && self.inner.idle_limits.is_some() && self.inner.is_idle() {
-            self.inner.count_idle();
+        if last
+            && let Some(limits) = &self.inner.idle_limits
+            && self.inner.count_if_idle()
+            && limits.may_be_over()
+        {
             self.inner.ask_trim(true);
         }
     }

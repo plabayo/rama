@@ -691,7 +691,15 @@ fn load_pool() -> HttpPooledConnectorConfig {
     let Ok(knobs) = std::env::var("RAMA_BENCH_POOL") else {
         return config;
     };
-    let limit = |value: &str| value.parse().ok().and_then(NonZeroUsize::new);
+    let limit = |value: &str| {
+        (value != "none").then(|| {
+            value
+                .parse()
+                .ok()
+                .and_then(NonZeroUsize::new)
+                .expect("a positive limit, or none")
+        })
+    };
     let millis = |value: &str| value.parse().ok().map(Duration::from_millis);
     for knob in knobs.split(',').filter(|knob| !knob.is_empty()) {
         let (key, value) = knob.split_once('=').expect("key=value");

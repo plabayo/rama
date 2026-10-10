@@ -680,17 +680,31 @@ fn a_trim_whose_runtime_went_away_leaves_trims_to_the_next() {
 #[test]
 fn a_trim_asked_for_while_one_runs_is_left_to_it() {
     let limits = IdleLimits::<TestId>::new(None, NonZeroUsize::new(1)).unwrap();
-    assert!(limits.ask(Some(&TestId(0))), "the trimmer");
-    assert!(!limits.ask(Some(&TestId(1))), "left to the trimmer");
-    let asked = limits.take();
-    assert_eq!(asked.ids, [TestId(0), TestId(1)]);
-    // Asked as the trimmer finished its last look, before it let go.
-    assert!(!limits.ask(Some(&TestId(2))));
-    assert!(limits.let_go(), "it looks again");
-    assert_eq!(limits.take().ids, [TestId(2)]);
-    assert!(!limits.let_go(), "nothing left");
-    assert!(limits.ask(None), "the next asker trims");
+    limits.ask(Some(&TestId(0)));
+    let hold = limits.hold().expect("nobody trims");
+    assert!(limits.hold().is_none(), "one trimmer at a time");
+    assert!(limits.take().ids.contains(&TestId(0)));
+    // Asked as the trimmer finishes its last look, before it lets go.
+    limits.ask(Some(&TestId(2)));
+    drop(hold);
+    assert!(!limits.nothing_asked(), "it looks again");
+    let hold = limits.hold().expect("let go");
+    assert!(limits.take().ids.contains(&TestId(2)));
+    drop(hold);
+    assert!(limits.nothing_asked());
+    limits.ask(None);
     assert!(limits.take().all);
+}
+
+#[test]
+fn a_trimmer_unwinding_lets_go() {
+    let limits = IdleLimits::<TestId>::new(None, NonZeroUsize::new(1)).unwrap();
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _hold = limits.hold();
+        panic!("an admission panicked");
+    }));
+    assert!(unwound.is_err());
+    assert!(limits.hold().is_some(), "the next asker trims");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -720,4 +734,293 @@ async fn idle_connections_going_idle_at_once_keep_exactly_the_limit() {
             "neither over nor under the limit"
         );
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_change_of_a_busy_connection_does_not_count_it_idle() {
+    let pool = keeping_one();
+    drop(fresh(&pool, 0).await);
+    tokio::time::advance(Duration::from_millis(1)).await;
+    let tunnel = outlived(&pool, 1).await;
+    tokio::time::advance(Duration::from_millis(1)).await;
+    // Another of its streams ends while its work goes on.
+    tunnel.changed.notify(Change::Freed);
+    settle().await;
+    assert_eq!(stored(&pool).len(), 2, "one idle, one busy");
+    tunnel.set_in_use(false);
+    settle().await;
+    assert_eq!(stored(&pool), [(1, 1)], "the least recently idle closes");
+}
+
+/// The binding of [`AdmittingOnAsk`]'s leases.
+#[derive(Debug, Extension)]
+struct AskToken;
+
+/// An admission that runs `on_ask` once, as it is asked about outliving work.
+struct AdmittingOnAsk(Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>);
+
+impl std::fmt::Debug for AdmittingOnAsk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AdmittingOnAsk")
+    }
+}
+
+impl ConnectionAdmissionPolicy for AdmittingOnAsk {
+    fn try_acquire(&self, _: &Extensions) -> Result<Option<ConnectionAdmissionLease>, BoxError> {
+        Ok(Some(ConnectionAdmissionLease::new(Arc::new(()), AskToken)))
+    }
+
+    fn subscribe(&self, _: Weak<dyn ChangeListener>) {}
+
+    fn in_use(&self) -> bool {
+        let on_ask = self.0.lock().take();
+        if let Some(on_ask) = on_ask {
+            on_ask();
+        }
+        false
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stream_admitted_as_its_release_counts_it_keeps_it_uncounted() {
+    let pool = keeping_one();
+    drop(fresh(&pool, 1).await);
+    tokio::time::advance(Duration::from_millis(1)).await;
+    let on_ask = Arc::new(Mutex::new(None));
+    let conn = Conn {
+        serial: 7,
+        extensions: Extensions::new(),
+    };
+    conn.extensions
+        .insert(ConnectionAdmission::new(AdmittingOnAsk(on_ask.clone())));
+    let shared = pool
+        .create(TestId(0), conn, pool.test_slot(), &EMPTY_INPUT)
+        .await
+        .unwrap();
+    let admitted = Arc::new(Mutex::new(None));
+    {
+        let (pool, admitted) = (pool.clone(), admitted.clone());
+        // Between the release's idle check and its count.
+        *on_ask.lock() = Some(Box::new(move || {
+            let mut checkout = tokio_test::task::spawn(Box::pin(async move {
+                pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await
+            }));
+            let Poll::Ready(Ok(ConnectionResult::Connection(conn))) = checkout.poll() else {
+                panic!("the shared connection admits it");
+            };
+            *admitted.lock() = Some(conn);
+        }) as Box<dyn FnOnce() + Send>);
+    }
+    drop(shared);
+    assert!(admitted.lock().is_some());
+    assert_eq!(stored(&pool).len(), 2, "the busy one is not counted idle");
+    drop(admitted.lock().take());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_retired_by_another_is_not_counted_against_its_id() {
+    let pool = MultiplexPool::new().with_max_idle_per_id(NonZeroUsize::new(3).unwrap());
+    let [a, b, c, d] = [
+        fresh(&pool, 0).await,
+        fresh(&pool, 0).await,
+        fresh(&pool, 0).await,
+        fresh(&pool, 0).await,
+    ];
+    let c_stored = c.inner.clone();
+    for conn in [a, b, c] {
+        drop(conn);
+        tokio::time::advance(Duration::from_millis(1)).await;
+    }
+    // Another party retired it, and takes it out of storage next.
+    drop(c_stored.retire_if(StoredConnection::is_idle).expect("idle"));
+    drop(d);
+    drop(unstore(&mut pool.storage.lock(), &c_stored));
+    assert_eq!(stored(&pool).len(), 3, "three idle fit the limit of three");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_idle_connection_taken_out_broken_is_no_longer_counted() {
+    let pool = keeping_one();
+    let gone = fresh(&pool, 0).await;
+    let broken = gone.inner.clone();
+    drop(gone);
+    broken
+        .conn
+        .extensions()
+        .get_ref::<ConnectionHealthWatcher>()
+        .unwrap()
+        .mark_broken();
+    // A look sweeps it out.
+    drop(pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await.unwrap());
+    drop(broken);
+    drop(fresh(&pool, 1).await);
+    assert_eq!(stored(&pool), [(1, 1)], "the one idle connection fits");
+}
+
+#[tokio::test(start_paused = true)]
+async fn outliving_work_ending_trims_over_the_per_id_limit() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(8).unwrap())
+        .with_max_idle_per_id(NonZeroUsize::new(1).unwrap());
+    let tunnels = [outlived(&pool, 0).await, outlived(&pool, 0).await];
+    for tunnel in &tunnels {
+        tunnel.set_in_use(false);
+    }
+    settle().await;
+    assert_eq!(stored(&pool).len(), 1, "one idle connection of the id kept");
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_last_waiter_leaving_trims_over_the_per_id_limit() {
+    let pool = MultiplexPool::new()
+        .with_max_streams_per_connection(NonZeroUsize::new(1).unwrap())
+        .with_max_connections_total(NonZeroUsize::new(2).unwrap())
+        .with_saturation_policy(SaturationPolicy::Wait)
+        .with_max_idle_per_id(NonZeroUsize::new(1).unwrap());
+    let held = [fresh(&pool, 0).await, fresh(&pool, 0).await];
+    let mut waiting = checkout(&pool, 1);
+    assert!(waiting.poll().is_pending());
+    drop(held);
+    assert_eq!(
+        stored(&pool).len(),
+        2,
+        "what is idle now may serve a waiter"
+    );
+    drop(waiting);
+    assert_eq!(stored(&pool).len(), 1, "trimmed once the last waiter left");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_counted_connection_found_busy_is_kept_and_not_counted() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(8).unwrap())
+        .with_max_idle_per_id(NonZeroUsize::new(1).unwrap());
+    let (conn, older) = admission_connection(&pool, 4);
+    conn.extensions.insert(keyed(0, 1));
+    let handout = pool
+        .create(TestId(0), conn, pool.test_slot(), &want(1))
+        .await
+        .unwrap();
+    drop(handout);
+    tokio::time::advance(Duration::from_millis(1)).await;
+    // Its work outlives it from now on, unannounced: still counted idle.
+    older.in_use.store(true, Ordering::SeqCst);
+    drop(fresh_keyed(&pool, 0, 2).await);
+    assert_eq!(
+        stored(&pool).len(),
+        2,
+        "the busy one is kept, the idle one fits"
+    );
+}
+
+/// Two idle connections of `ids`, counted without a trim, in a pool limiting
+/// idle connections with `limited`.
+async fn two_counted_idle(
+    limited: fn(MultiplexPool<Conn, TestId>) -> MultiplexPool<Conn, TestId>,
+    ids: [u32; 2],
+) -> (
+    MultiplexPool<Conn, TestId>,
+    [Arc<StoredConnection<Conn, TestId>>; 2],
+) {
+    let pool =
+        limited(MultiplexPool::new().with_max_connections_total(NonZeroUsize::new(8).unwrap()));
+    let mut stored = Vec::new();
+    for id in ids {
+        let (conn, state) = admission_connection(&pool, 4);
+        let handout = pool
+            .create(TestId(id), conn, pool.test_slot(), &EMPTY_INPUT)
+            .await
+            .unwrap();
+        // Work outlives the handout: its release counts nothing.
+        state.in_use.store(true, Ordering::SeqCst);
+        let inner = handout.inner.clone();
+        drop(handout);
+        // It ends: a change of its source, without the listener's trim.
+        state.in_use.store(false, Ordering::SeqCst);
+        inner.changes.fetch_add(1, Ordering::Release);
+        stored.push(inner);
+        tokio::time::advance(Duration::from_millis(1)).await;
+    }
+    for conn in &stored {
+        assert!(conn.count_if_idle(), "counted as a trim does");
+    }
+    (pool, stored.try_into().ok().unwrap())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_trim_closes_nothing_another_brought_within_the_total_limit() {
+    let (pool, [picked, other]) = two_counted_idle(
+        |pool| pool.with_max_idle_total(NonZeroUsize::new(1).unwrap()),
+        [0, 1],
+    )
+    .await;
+    // The trim picked one while two were idle; another party then closed the other.
+    drop(other.retire_if(StoredConnection::is_idle).expect("idle"));
+    assert!(
+        picked
+            .retire_if(|conn| conn.is_idle() && conn.take_excess(Excess::Total))
+            .is_none(),
+        "within the limit at the commit: kept"
+    );
+    assert!(picked.is_counted_idle());
+    drop(pool);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_trim_closes_nothing_another_brought_within_the_per_id_limit() {
+    let (pool, [picked, other]) = two_counted_idle(
+        |pool| pool.with_max_idle_per_id(NonZeroUsize::new(1).unwrap()),
+        [0, 0],
+    )
+    .await;
+    drop(other.retire_if(StoredConnection::is_idle).expect("idle"));
+    assert!(
+        picked
+            .retire_if(|conn| conn.is_idle() && conn.take_excess(Excess::PerId))
+            .is_none(),
+        "within the limit at the commit: kept"
+    );
+    assert!(picked.is_counted_idle());
+    drop(pool);
+}
+
+#[test]
+fn inline_trims_run_while_a_trim_task_waits_on_a_parked_runtime() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(16).unwrap())
+        .with_max_idle_total(NonZeroUsize::new(1).unwrap());
+    let parked = current_thread();
+    parked.block_on(async {
+        let tunnels = [outlived(&pool, 0).await, outlived(&pool, 1).await];
+        // Their listeners schedule a trim on this runtime, which then parks.
+        for tunnel in &tunnels {
+            tunnel.set_in_use(false);
+        }
+    });
+    current_thread().block_on(async {
+        for id in 2..6 {
+            drop(fresh(&pool, id).await);
+        }
+        settle().await;
+    });
+    assert_eq!(stored(&pool).len(), 1, "each release trimmed");
+    parked.block_on(settle());
+    assert_eq!(stored(&pool).len(), 1);
+}
+
+#[tokio::test]
+async fn a_listener_asks_no_admission_with_idle_limits() {
+    let pool = keeping_one();
+    let tunnels = [outlived(&pool, 0).await, outlived(&pool, 1).await];
+    tunnels[0].set_in_use(false);
+    let asked = |tunnels: &[Arc<AdmissionState>; 2]| {
+        tunnels
+            .each_ref()
+            .map(|tunnel| tunnel.asked.load(Ordering::SeqCst))
+    };
+    let before = asked(&tunnels);
+    tunnels[1].set_in_use(false);
+    assert_eq!(asked(&tunnels), before, "a listener asks no source");
+    settle().await;
+    assert_eq!(stored(&pool).len(), 1, "its task trimmed");
 }

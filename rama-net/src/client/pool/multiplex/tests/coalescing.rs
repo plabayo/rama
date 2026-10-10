@@ -522,7 +522,7 @@ struct HintPool(MultiplexPool<Conn, TestId>);
 fn hint_using_the_pool(input: &Extensions) -> Option<NonZeroUsize> {
     if let Some(HintPool(pool)) = input.get_ref::<HintPool>() {
         assert!(
-            pool.storage.try_lock().is_some(),
+            pool.storage.try_lock_for(Duration::from_secs(1)).is_some(),
             "the hint runs outside the pool's lock"
         );
         let mut nested = std::pin::pin!(pool.get_conn(&TestId(1), &EMPTY_INPUT, None));
@@ -996,4 +996,209 @@ async fn a_checkout_rejoining_its_connects_is_not_failed_by_one_failing_while_it
         ),
         "the failure was not its own: it dials"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn connections_of_one_stream_teach_new_ids_nothing() {
+    let pool = MultiplexPool::new().with_streams_hint(expect_ten);
+    let single = dialing(pool.clone(), Dialer::new(Some(1)));
+    let _held = hold(&single, 0, 1).await;
+    let svc = dialing(pool, Dialer::new(Some(10)));
+    let _burst = burst(&svc, 1, 8).await;
+    assert_eq!(dials(&svc), 1, "the hint's guess: one connection");
+}
+
+#[tokio::test]
+async fn a_dial_wait_too_long_for_an_instant_is_no_dial_wait() {
+    let pool = MultiplexPool::new()
+        .with_streams_hint(expect_ten)
+        .with_max_wait_before_dial(Duration::MAX);
+    let _claim = permit(&pool, 0, &EMPTY_INPUT).await;
+    let waiting = queue(&pool, &EMPTY_INPUT);
+    drop(waiting);
+}
+
+#[tokio::test(start_paused = true)]
+async fn waiters_that_saw_a_landing_dial_their_own_once_connects_fail() {
+    /// The first dial lands; every later one fails after a second.
+    struct FirstOnly(AtomicUsize);
+
+    impl Service<ServiceInput<u32>> for FirstOnly {
+        type Output = EstablishedClientConnection<Conn, ServiceInput<u32>>;
+        type Error = ConnectionError;
+
+        async fn serve(&self, input: ServiceInput<u32>) -> Result<Self::Output, Self::Error> {
+            let serial = self.0.fetch_add(1, Ordering::Relaxed);
+            if serial > 0 {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                return Err(ConnectionError::transport(
+                    BoxError::from_static_str("connect timed out"),
+                    ConnectionErrorKind::Timeout,
+                ));
+            }
+            tokio::time::sleep(HANDSHAKE).await;
+            let conn = Conn {
+                serial,
+                extensions: Extensions::new(),
+            };
+            conn.extensions.insert(ConnectionHealthWatcher::default());
+            conn.extensions.insert(MaxConcurrency::new(10));
+            Ok(EstablishedClientConnection { input, conn })
+        }
+    }
+
+    let svc = PooledConnector::new(
+        FirstOnly(AtomicUsize::new(0)),
+        MultiplexPool::new().with_streams_hint(expect_ten),
+        id_fn as fn(&ServiceInput<u32>) -> Result<TestId, BoxError>,
+    )
+    .with_wait_for_pool_timeout(Duration::from_secs(5));
+    let start = tokio::time::Instant::now();
+    // Served ones keep their stream: the landing serves ten.
+    let results = join_all((0..30).map(|_| async {
+        let result = svc.connect(ServiceInput::new(0)).await;
+        (result, start.elapsed())
+    }))
+    .await;
+    let slowest = results
+        .iter()
+        .filter(|(result, _)| result.is_err())
+        .map(|(_, took)| *took)
+        .max();
+    assert!(
+        slowest.is_some_and(|slowest| slowest < Duration::from_millis(2200)),
+        "the endpoint stopped accepting: each failed within about a connect, not after {slowest:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_burst_whose_connections_are_filed_for_other_keys_dials_at_once() {
+    let mut dialer = Dialer::new(Some(10));
+    // Keyed by what was negotiated, not by what the request wanted.
+    dialer.key = |_| Some(2);
+    let svc = dialing(MultiplexPool::new().with_streams_hint(expect_ten), dialer);
+    let start = tokio::time::Instant::now();
+    let served = join_all((0..8).map(|_| svc.connect(wanting(1)))).await;
+    assert!(served.iter().all(Result::is_ok));
+    assert!(
+        start.elapsed() < HANDSHAKE * 4,
+        "once one shows it, the rest dial at once"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_kept_by_none_leaves_other_keys_coalescing() {
+    let pool = MultiplexPool::new().with_streams_hint(expect_ten);
+    let mut kept_by_none = Dialer::new(Some(10));
+    kept_by_none.kept_by_none = true;
+    let kept_by_none = dialing(pool.clone(), kept_by_none);
+    let mut keyed = Dialer::new(Some(10));
+    keyed.key = want_key;
+    let svc = dialing(pool, keyed);
+    let _seed = svc.connect(wanting(0)).await.unwrap();
+    drop(kept_by_none.connect(wanting(2)).await.unwrap());
+    let before = dials(&svc);
+    let served = join_all((0..8).map(|_| svc.connect(wanting(1)))).await;
+    assert!(served.iter().all(Result::is_ok));
+    assert_eq!(
+        dials(&svc) - before,
+        1,
+        "one connection for the burst of key 1"
+    );
+}
+
+#[tokio::test]
+async fn a_claim_moves_with_its_keys_when_its_total_slot_arrives_unannounced() {
+    let pool = MultiplexPool::new()
+        .with_streams_hint(expect_ten)
+        .with_max_connections_total(NonZeroUsize::new(2).unwrap());
+    let slot = permit(&pool, 0, &want(0)).await;
+    let _seed = land(&pool, 0, slot, 10, Some(keyed(0, 0)), &want(0)).await;
+    let other = permit(&pool, 1, &EMPTY_INPUT).await;
+    let moving = want(1);
+    let mut claimant = queue(&pool, &moving);
+    let staying = want(1);
+    let mut waiter = queue(&pool, &staying);
+    moving.insert(Want(2));
+    // Frees the total slot without a wake of any checkout.
+    drop(other);
+    let Poll::Ready(Ok(ConnectionResult::CreatePermit(slot))) = claimant.poll() else {
+        panic!("the freed slot is the claimant's");
+    };
+    pool.abandon(slot, &refused());
+    assert!(
+        !matches!(waiter.poll(), Poll::Ready(Err(_))),
+        "another key's connect failing is not its failure"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_request_scoped_transport_failure_fails_no_other_request() {
+    let pool = MultiplexPool::new().with_streams_hint(expect_ten);
+    let mut dialer = Dialer::new(Some(10));
+    // Through a proxy only this request uses, say.
+    dialer.fail = |input| {
+        (want_key(input) == Some(1)).then(|| {
+            ConnectionError::transport(
+                BoxError::from_static_str("its proxy refused"),
+                ConnectionErrorKind::Unavailable,
+            )
+            .with_policy_scope(ConnectionPolicyScope::Request)
+        })
+    };
+    dialer.key = want_key;
+    let svc = dialing(pool, dialer);
+    let (refused, other) = tokio::join!(svc.connect(wanting(1)), svc.connect(wanting(2)));
+    assert_eq!(
+        refused.map(drop).map_err(|error| error.kind()),
+        Err(ConnectionErrorKind::Unavailable)
+    );
+    assert!(other.is_ok(), "it dials its own");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connector_policy_failure_fails_the_checkouts_that_waited_for_it() {
+    let pool = MultiplexPool::new().with_streams_hint(expect_ten);
+    let mut dialer = Dialer::new(Some(10));
+    dialer.fail = |_| {
+        Some(
+            ConnectionError::application(
+                BoxError::from_static_str("the connector's pin rejected"),
+                ConnectionErrorKind::Authentication,
+            )
+            .with_policy_scope(ConnectionPolicyScope::Connector),
+        )
+    };
+    let svc = dialing(pool, dialer);
+    let results = join_all((0..4).map(|_| svc.connect(ServiceInput::new(0)))).await;
+    for result in results {
+        assert_eq!(
+            result.map(drop).map_err(|error| error.kind()),
+            Err(ConnectionErrorKind::Authentication)
+        );
+    }
+    assert_eq!(dials(&svc), 1, "they fail alike, without dialing again");
+}
+
+#[tokio::test]
+async fn a_shared_failure_is_not_masked_by_a_later_one_of_a_request() {
+    let pool = MultiplexPool::new().with_streams_hint(expect_ten);
+    let first = permit(&pool, 0, &EMPTY_INPUT).await;
+    let second = pool
+        .count_connect(&TestId(0), &EMPTY_INPUT, None)
+        .expect("counted");
+    let mut waiting = queue(&pool, &EMPTY_INPUT);
+    pool.abandon(first, &refused());
+    second.failed(
+        &ConnectionError::application(
+            BoxError::from_static_str("its own pin rejected"),
+            ConnectionErrorKind::Authentication,
+        )
+        .with_policy_scope(ConnectionPolicyScope::Request),
+    );
+    let Poll::Ready(Err(error)) = waiting.poll() else {
+        panic!("the endpoint failed: it fails");
+    };
+    let error = error.downcast::<ConnectionError>().expect("classified");
+    assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
 }

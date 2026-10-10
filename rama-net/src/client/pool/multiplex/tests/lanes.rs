@@ -180,7 +180,7 @@ async fn permit_wakeup_rederives_lanes_outside_storage_lock() {
         fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
             let storage = self.0.upgrade().unwrap();
             assert!(
-                storage.try_lock().is_some(),
+                storage.try_lock_for(Duration::from_secs(1)).is_some(),
                 "connector policy must not run under the pool lock"
             );
             None

@@ -293,6 +293,9 @@ impl Drop for Waiting {
         let others = self.waiting.fetch_sub(1, Ordering::Relaxed) > 1;
         self.announce(emptied, others);
         if !others && let Some(trim) = &self.idle_trim {
+            // Pairs with the fence of a trim: it sees this checkout gone, or
+            // this trim sees its counts.
+            fence(Ordering::SeqCst);
             trim();
         }
     }

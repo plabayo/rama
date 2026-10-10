@@ -122,7 +122,7 @@ impl ConnectionAdmissionPolicy for FakeAdmission {
     ) -> Result<Option<ConnectionAdmissionLease>, BoxError> {
         if let Some(storage) = self.0.storage.upgrade() {
             assert!(
-                storage.try_lock().is_some(),
+                storage.try_lock_for(Duration::from_secs(1)).is_some(),
                 "resource provider called under storage lock"
             );
         }
@@ -151,7 +151,7 @@ impl ConnectionAdmissionPolicy for FakeAdmission {
     fn in_use(&self) -> bool {
         if let Some(storage) = self.0.storage.upgrade() {
             assert!(
-                storage.try_lock().is_some(),
+                storage.try_lock_for(Duration::from_secs(1)).is_some(),
                 "outliving work asked about under the storage lock"
             );
         }

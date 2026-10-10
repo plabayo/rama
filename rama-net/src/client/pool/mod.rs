@@ -263,9 +263,14 @@ where
         };
 
         let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
-            let deadline = Instant::now() + duration;
-            timeout_at(deadline, pool.get_conn(&conn_id, input.extensions(), Some(deadline)))
-                    .await
+            // A wait too long to have an instant is a wait without a deadline.
+            let deadline = Instant::now().checked_add(duration);
+            let checkout = pool.get_conn(&conn_id, input.extensions(), deadline);
+            let waited = match deadline {
+                Some(deadline) => timeout_at(deadline, checkout).await,
+                None => timeout(duration, checkout).await,
+            };
+            waited
                     .inspect_err(|err|{
                         trace!(%err, "pooled connector: timeout triggered while waiting for a connection (/w conn id: {conn_id:?}) from pool");
                     })

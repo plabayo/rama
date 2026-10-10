@@ -9,6 +9,15 @@ use tokio::time::Instant;
 /// Frequency at which we resync the cached wall clock with the system clock.
 const RESYNC_EVERY_MS: u64 = 60 * 60 * 1000;
 
+/// How far before its first read the epoch lies, as far as the platform's clock
+/// goes back: a clock that began earlier, such as a test runtime's paused one,
+/// reads the time elapsed since, not zero.
+const EPOCH_SLACK: [Duration; 3] = [
+    Duration::from_hours(1),
+    Duration::from_mins(1),
+    Duration::from_secs(1),
+];
+
 struct State {
     start_instant: Instant,
 
@@ -25,12 +34,17 @@ static STATE: LazyLock<State> = LazyLock::new(State::init);
 
 impl State {
     fn init() -> Self {
-        let start_instant = Instant::now();
+        let now = Instant::now();
+        let start_instant = EPOCH_SLACK
+            .into_iter()
+            .find_map(|slack| now.checked_sub(slack))
+            .unwrap_or(now);
+        let elapsed_ms = (now - start_instant).as_millis() as u64;
         let unix_ms = unix_timestamp_millis_slow();
         Self {
             start_instant,
-            skew_ms: AtomicI64::new(unix_ms),
-            next_resync_elapsed_ms: AtomicU64::new(RESYNC_EVERY_MS),
+            skew_ms: AtomicI64::new(unix_ms - elapsed_ms as i64),
+            next_resync_elapsed_ms: AtomicU64::new(elapsed_ms + RESYNC_EVERY_MS),
         }
     }
 
@@ -217,6 +231,21 @@ impl From<&AtomicInstant> for Instant {
 mod tests {
     use super::*;
     use std::{thread, time::Duration};
+
+    #[test]
+    fn a_clock_read_before_the_epoch_was_set_reads_time_since_it() {
+        let before = Instant::now();
+        let state = State::init();
+        assert!(
+            state.start_instant <= before,
+            "the epoch lies before its first read"
+        );
+        let unix = state.now_unix_ms();
+        assert!(
+            (unix - unix_timestamp_millis_slow()).abs() < 1000,
+            "the wall clock is unchanged: {unix}"
+        );
+    }
 
     #[test]
     fn test_progression_non_decreasing() {
