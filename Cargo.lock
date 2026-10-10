@@ -4903,6 +4903,7 @@ dependencies = [
  "rama-http",
  "rama-inspect",
  "rama-net",
+ "rama-quic-proto",
  "rama-tls",
  "rama-utils",
  "rand 0.10.3",

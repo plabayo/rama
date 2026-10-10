@@ -1968,6 +1968,7 @@ dependencies = [
  "rama-core",
  "rama-http",
  "rama-net",
+ "rama-quic-proto",
  "rama-tls",
  "rama-utils",
  "rand",

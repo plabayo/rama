@@ -39,6 +39,9 @@ impl TlsCapture {
                 continue;
             }
             match &mut extension.value {
+                TlsCapturedExtensionValue::ConnectionLength(length) => *length = 0,
+                TlsCapturedExtensionValue::PreSharedKeys { identities, .. } => identities.fill(1),
+                TlsCapturedExtensionValue::EchOuter { payload, .. } => *payload = 0,
                 TlsCapturedExtensionValue::U16List(values) if extension.id != 28 => {
                     if matches!(extension.id, 10 | 13 | 34 | 43 | 50) {
                         for value in &mut *values {

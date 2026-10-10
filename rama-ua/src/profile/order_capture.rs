@@ -1,5 +1,6 @@
 //! Protocol-owned order normalization precedes statistical classification.
 
+use rama_quic_proto::{Version, version::VersionInformation};
 use rama_utils::octets::kib;
 use serde::Serialize;
 
@@ -58,7 +59,13 @@ impl OrderNamespace {
             Self::QuicVersion => u64::from(u32::MAX),
             Self::QuicParameter | Self::Http3Setting => (1 << 62) - 1,
         };
-        if field.id > limit || field.value.length() > limits.bytes {
+        if field.id > limit
+            || match &field.value {
+                ProtocolValue::Literal(bytes) => bytes.len() > limits.bytes,
+                // Redacted transport bindings retain a scalar, not the wire payload.
+                ProtocolValue::ConnectionLength(length) => *length > usize::from(u16::MAX),
+            }
+        {
             return Err(ProfileDataError::LimitExceeded("ordered protocol field"));
         }
         if self.connection_owned(field.id)
@@ -75,6 +82,9 @@ impl OrderNamespace {
                 if u64::from_be_bytes(bytes) >= (1 << 62) {
                     return Err(ProfileDataError::Invalid("SETTINGS value range"));
                 }
+            }
+            (Self::QuicParameter, ProtocolValue::Literal(bytes)) if field.id == 0x11 => {
+                version_information(bytes, limits)?;
             }
             (Self::QuicVersion, ProtocolValue::Literal(bytes)) if !bytes.is_empty() => {
                 return Err(ProfileDataError::Invalid("QUIC version payload"));
@@ -109,13 +119,6 @@ pub enum ProtocolValue {
 }
 
 impl ProtocolValue {
-    fn length(&self) -> usize {
-        match self {
-            Self::Literal(bytes) => bytes.len(),
-            Self::ConnectionLength(length) => *length,
-        }
-    }
-
     fn encode(&self, writer: &mut CanonicalWriter) -> Result<(), ProfileDataError> {
         match self {
             Self::Literal(bytes) => {
@@ -135,7 +138,7 @@ impl ProtocolValue {
     ) -> Result<Self, ProfileDataError> {
         match reader.u8()? {
             0 => Ok(Self::Literal(reader.bytes(limits.bytes)?.into())),
-            1 => Ok(Self::ConnectionLength(reader.count(limits.bytes)?)),
+            1 => Ok(Self::ConnectionLength(reader.count(usize::from(u16::MAX))?)),
             _ => Err(ProfileDataError::Invalid("protocol value tag")),
         }
     }
@@ -246,7 +249,8 @@ impl OrderedProtocolCapture {
     }
 
     /// Order and reserved-candidate identifiers do not multiply structural rows.
-    /// Literal semantic values, duplicate multiplicity and candidate lengths do.
+    /// Literal semantic choices and duplicate multiplicity remain in the key.
+    /// Complete samples retain variable lengths and nested version ordering.
     pub fn structural(
         &self,
         limits: OrderCaptureLimits,
@@ -257,12 +261,16 @@ impl OrderedProtocolCapture {
             .iter()
             .map(|field| {
                 if self.namespace.reserved_candidate(field.id) {
-                    StructureEntry::Reserved(field.value.length())
+                    Ok(StructureEntry::Reserved)
                 } else {
-                    StructureEntry::Literal(field.clone())
+                    Ok(StructureEntry::Literal(normalized_field(
+                        self.namespace,
+                        field,
+                        limits,
+                    )?))
                 }
             })
-            .collect();
+            .collect::<Result<Vec<_>, ProfileDataError>>()?;
         entries.sort_unstable();
         encode_structure(self.namespace, &entries, limits)
     }
@@ -271,7 +279,7 @@ impl OrderedProtocolCapture {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum StructureEntry {
     Literal(OrderedProtocolField),
-    Reserved(usize),
+    Reserved,
 }
 
 fn encode_structure(
@@ -289,10 +297,7 @@ fn encode_structure(
                 writer.u64(field.id)?;
                 field.value.encode(&mut writer)?;
             }
-            StructureEntry::Reserved(length) => {
-                writer.u8(1)?;
-                writer.u64(*length as u64)?;
-            }
+            StructureEntry::Reserved => writer.u8(1)?,
         }
     }
     Ok(writer.finish())
@@ -322,21 +327,12 @@ pub(super) fn validate_structure(
                 if namespace.reserved_candidate(field.id) {
                     return Err(ProfileDataError::Invalid("literal reserved structural key"));
                 }
+                if normalized_field(namespace, &field, limits)? != field {
+                    return Err(ProfileDataError::Invalid("unnormalized protocol structure"));
+                }
                 StructureEntry::Literal(field)
             }
-            1 => {
-                let length = reader.count(limits.bytes)?;
-                match namespace {
-                    OrderNamespace::Http3Setting if length != 8 => {
-                        return Err(ProfileDataError::Invalid("reserved SETTINGS shape"));
-                    }
-                    OrderNamespace::QuicVersion if length != 0 => {
-                        return Err(ProfileDataError::Invalid("reserved version shape"));
-                    }
-                    _ => (),
-                }
-                StructureEntry::Reserved(length)
-            }
+            1 => StructureEntry::Reserved,
             _ => return Err(ProfileDataError::Invalid("structural element tag")),
         };
         if entries.last().is_some_and(|previous| previous > &entry) {
@@ -349,6 +345,53 @@ pub(super) fn validate_structure(
         return Err(ProfileDataError::Invalid("noncanonical structural key"));
     }
     Ok(())
+}
+
+fn version_information(
+    bytes: &[u8],
+    limits: OrderCaptureLimits,
+) -> Result<VersionInformation, ProfileDataError> {
+    if bytes.len() / 4 > limits.elements {
+        return Err(ProfileDataError::LimitExceeded("QUIC version information"));
+    }
+    VersionInformation::read(true, bytes.len(), &mut &bytes[..])
+        .map_err(|_error| ProfileDataError::Invalid("QUIC version information"))
+}
+
+fn normalized_field(
+    namespace: OrderNamespace,
+    field: &OrderedProtocolField,
+    limits: OrderCaptureLimits,
+) -> Result<OrderedProtocolField, ProfileDataError> {
+    let value = match &field.value {
+        ProtocolValue::ConnectionLength(_) => ProtocolValue::ConnectionLength(0),
+        ProtocolValue::Literal(bytes)
+            if matches!(namespace, OrderNamespace::QuicParameter) && field.id == 0x11 =>
+        {
+            let versions = version_information(bytes, limits)?;
+            let chosen = versions.chosen();
+            let mut available: Vec<_> = versions
+                .available()
+                .iter()
+                .map(|version| {
+                    if version.is_reserved() && *version != chosen {
+                        Version::from_u32(0x0a0a0a0a)
+                    } else {
+                        *version
+                    }
+                })
+                .collect();
+            available.sort_unstable();
+            let mut bytes = Vec::new();
+            VersionInformation::new(chosen, available).write(&mut bytes);
+            ProtocolValue::Literal(bytes.into())
+        }
+        value @ ProtocolValue::Literal(_) => value.clone(),
+    };
+    Ok(OrderedProtocolField {
+        id: field.id,
+        value,
+    })
 }
 
 #[cfg(test)]

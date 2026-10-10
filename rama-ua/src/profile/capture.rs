@@ -6,7 +6,10 @@ use rama_http::{
     HeaderMap, HeaderName, HeaderValue, Version,
     header::{CONTENT_LENGTH, HOST, TE, TRANSFER_ENCODING},
     headers::{Connection, ContentLength, HeaderDecode as _, HeaderMapExt as _},
-    proto::h3::observation::{FieldRepresentation, ObservedFieldRepresentation},
+    proto::h3::{
+        observation::{FieldRepresentation, ObservedFieldRepresentation},
+        qpack::static_table,
+    },
 };
 use rama_utils::octets::kib;
 use serde::Serialize;
@@ -280,8 +283,13 @@ impl HeaderCapturePolicy {
             return Err(ProfileDataError::Incomplete("header representations"));
         }
         if let Some(values) = representations {
-            for value in values {
-                validate_representation(version, *value)?;
+            for ((name, field), metadata) in headers.ordered_iter().zip(values) {
+                validate_representation(version, *metadata)?;
+                validate_static_binding(
+                    name.as_lower_str().as_bytes(),
+                    Some(field.as_bytes()),
+                    *metadata,
+                )?;
             }
         }
         validate_framing(version, headers)?;
@@ -394,7 +402,7 @@ fn forbidden_multiplexed_field(name: &HeaderName) -> bool {
     )
 }
 
-fn validate_representation(
+pub(super) fn validate_representation(
     version: Version,
     value: ObservedFieldRepresentation,
 ) -> Result<(), ProfileDataError> {
@@ -484,6 +492,12 @@ impl HeaderCapture {
             transfer_encoding |= field.name == TRANSFER_ENCODING;
             if let Some(value) = field.representation {
                 validate_representation(self.version, value)?;
+                let literal = match &field.value {
+                    HeaderValueSource::Profile(bytes)
+                    | HeaderValueSource::CaptureSafeProfile(bytes) => Some(bytes.as_ref()),
+                    HeaderValueSource::Request(_) => None,
+                };
+                validate_static_binding(field.name.as_lower_str().as_bytes(), literal, value)?;
                 if value.never_index && !field.sensitive {
                     return Err(ProfileDataError::Invalid(
                         "never-index field without sensitivity",
@@ -515,23 +529,7 @@ impl HeaderCapture {
             writer.bytes(name.as_bytes())?;
             writer.u32(field.occurrence)?;
             writer.u8(u8::from(field.sensitive))?;
-            match field.representation {
-                Some(value) => {
-                    writer.u8(1)?;
-                    writer.u8(representation_tag(value.representation))?;
-                    match value.index {
-                        Some(index) => {
-                            writer.u8(1)?;
-                            writer.u64(index)?;
-                        }
-                        None => writer.u8(0)?,
-                    }
-                    writer.u8(u8::from(value.name_huffman))?;
-                    writer.u8(u8::from(value.value_huffman))?;
-                    writer.u8(u8::from(value.never_index))?;
-                }
-                None => writer.u8(0)?,
-            }
+            encode_representation(&mut writer, field.representation)?;
             match &field.value {
                 HeaderValueSource::Profile(value)
                 | HeaderValueSource::CaptureSafeProfile(value) => {
@@ -599,32 +597,7 @@ impl HeaderCapture {
                 .map_err(|_error| ProfileDataError::Invalid("header name"))?;
             let occurrence = reader.u32()?;
             let sensitive = read_bool(&mut reader)?;
-            let representation = if read_bool(&mut reader)? {
-                let representation = match reader.u8()? {
-                    0 => FieldRepresentation::StaticIndex,
-                    1 => FieldRepresentation::DynamicIndex,
-                    2 => FieldRepresentation::DynamicPostBaseIndex,
-                    3 => FieldRepresentation::LiteralStaticName,
-                    4 => FieldRepresentation::LiteralDynamicName,
-                    5 => FieldRepresentation::LiteralPostBaseName,
-                    6 => FieldRepresentation::LiteralName,
-                    _ => return Err(ProfileDataError::Invalid("header representation")),
-                };
-                let index = if read_bool(&mut reader)? {
-                    Some(reader.u64()?)
-                } else {
-                    None
-                };
-                Some(ObservedFieldRepresentation {
-                    representation,
-                    index,
-                    name_huffman: read_bool(&mut reader)?,
-                    value_huffman: read_bool(&mut reader)?,
-                    never_index: read_bool(&mut reader)?,
-                })
-            } else {
-                None
-            };
+            let representation = decode_representation(&mut reader)?;
             let source = match reader.u8()? {
                 0 => HeaderValueSource::Profile(reader.bytes(policy.bytes)?.into()),
                 1 => HeaderValueSource::Request(RequestBinding::from_tag(reader.u8()?)?),
@@ -662,3 +635,89 @@ fn read_bool(reader: &mut CanonicalReader<'_>) -> Result<bool, ProfileDataError>
 
 #[cfg(test)]
 mod tests;
+
+pub(super) fn encode_representation(
+    writer: &mut CanonicalWriter,
+    representation: Option<ObservedFieldRepresentation>,
+) -> Result<(), ProfileDataError> {
+    match representation {
+        Some(value) => {
+            writer.u8(1)?;
+            writer.u8(representation_tag(value.representation))?;
+            match value.index {
+                Some(index) => {
+                    writer.u8(1)?;
+                    writer.u64(index)?;
+                }
+                None => writer.u8(0)?,
+            }
+            writer.u8(u8::from(value.name_huffman))?;
+            writer.u8(u8::from(value.value_huffman))?;
+            writer.u8(u8::from(value.never_index))?;
+        }
+        None => writer.u8(0)?,
+    }
+    Ok(())
+}
+
+pub(super) fn decode_representation(
+    reader: &mut CanonicalReader<'_>,
+) -> Result<Option<ObservedFieldRepresentation>, ProfileDataError> {
+    let representation = if read_bool(reader)? {
+        let representation = match reader.u8()? {
+            0 => FieldRepresentation::StaticIndex,
+            1 => FieldRepresentation::DynamicIndex,
+            2 => FieldRepresentation::DynamicPostBaseIndex,
+            3 => FieldRepresentation::LiteralStaticName,
+            4 => FieldRepresentation::LiteralDynamicName,
+            5 => FieldRepresentation::LiteralPostBaseName,
+            6 => FieldRepresentation::LiteralName,
+            _ => return Err(ProfileDataError::Invalid("header representation")),
+        };
+        let index = if read_bool(reader)? {
+            Some(reader.u64()?)
+        } else {
+            None
+        };
+        Some(ObservedFieldRepresentation {
+            representation,
+            index,
+            name_huffman: read_bool(reader)?,
+            value_huffman: read_bool(reader)?,
+            never_index: read_bool(reader)?,
+        })
+    } else {
+        None
+    };
+    Ok(representation)
+}
+
+/// Static entries constrain the decoded name and, for an indexed field, its value.
+/// Dynamic references remain tied to their observed connection's table context.
+pub(super) fn validate_static_binding(
+    name: &[u8],
+    value: Option<&[u8]>,
+    metadata: ObservedFieldRepresentation,
+) -> Result<(), ProfileDataError> {
+    if matches!(
+        metadata.representation,
+        FieldRepresentation::StaticIndex | FieldRepresentation::LiteralStaticName
+    ) {
+        let index = metadata
+            .index
+            .ok_or(ProfileDataError::Invalid("QPACK static table index"))?;
+        let index = usize::try_from(index)
+            .map_err(|_error| ProfileDataError::Invalid("QPACK static table index"))?;
+        let (expected_name, expected_value) = static_table::get(index)
+            .ok_or(ProfileDataError::Invalid("QPACK static table index"))?;
+        if name != expected_name {
+            return Err(ProfileDataError::Invalid("QPACK static name binding"));
+        }
+        if metadata.representation == FieldRepresentation::StaticIndex
+            && value.is_some_and(|value| value != expected_value)
+        {
+            return Err(ProfileDataError::Invalid("QPACK static value binding"));
+        }
+    }
+    Ok(())
+}

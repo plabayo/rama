@@ -3,7 +3,7 @@
 use super::{
     CanonicalValue, CaptureLevel, CapturedSlotKind, ConnectionContext, FlowKey, HeaderCapture,
     HeaderCapturePolicy, JointCapture, JointCaptureLimits, ProfileDataError, ProfileKey,
-    ProfileObservationScope,
+    ProfileObservationScope, PseudoHeaderCapture,
 };
 
 #[derive(Debug, Clone)]
@@ -45,6 +45,7 @@ impl ProfileCapture {
                 CaptureLevel::Request,
                 Some(FlowKey::Http {
                     version,
+                    method,
                     connection,
                     ..
                 }),
@@ -55,6 +56,14 @@ impl ProfileCapture {
                 // Canonicalizing the joint first bounds and validates every leaf.
                 self.joint.canonical(limits)?;
                 for slot in &self.joint.slots {
+                    if slot.kind == CapturedSlotKind::PseudoHeaders {
+                        let pseudo =
+                            PseudoHeaderCapture::from_canonical(&slot.value, limits.value_bytes)?;
+                        pseudo.validate_method(method)?;
+                        if pseudo.version != *version {
+                            return Err(ProfileDataError::Invalid("flow pseudo-header protocol"));
+                        }
+                    }
                     if slot.kind == CapturedSlotKind::Headers {
                         let policy = HeaderCapturePolicy {
                             fields: limits.value_bytes,

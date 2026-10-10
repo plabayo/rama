@@ -55,7 +55,7 @@ fn protocol_bindings_do_not_retain_connection_identifiers_or_tokens() {
         namespace: OrderNamespace::QuicParameter,
         fields: vec![OrderedProtocolField {
             id: 0x0f,
-            value: ProtocolValue::ConnectionLength(limits.bytes + 1),
+            value: ProtocolValue::ConnectionLength(usize::from(u16::MAX) + 1),
         }]
         .into(),
     };
@@ -164,7 +164,7 @@ fn ten_thousand_orders_keep_one_structure_and_exact_total() {
 }
 
 #[test]
-fn structure_preserves_semantic_values_multiplicity_namespace_and_candidate_shape() {
+fn structure_preserves_semantic_values_multiplicity_and_namespace() {
     let limits = OrderCaptureLimits::default();
     let base = capture(
         OrderNamespace::QuicParameter,
@@ -175,12 +175,6 @@ fn structure_preserves_semantic_values_multiplicity_namespace_and_candidate_shap
         vec![
             (0xff04de1b, b"\x02".as_slice()),
             (27, b"x"),
-            (1, b"v"),
-            (1, b"v"),
-        ],
-        vec![
-            (0xff04de1b, b"\x01".as_slice()),
-            (27, b"xx"),
             (1, b"v"),
             (1, b"v"),
         ],
@@ -352,4 +346,117 @@ fn protocol_order_has_fixed_canonical_bytes_and_digest() {
     assert_eq!(canonical.bytes.as_ref(), b"\x72\x61\x6d\x61\x2d\x70\x72\x6f\x66\x69\x6c\x65\x00\x00\x02\x00\x04\x00\x01\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x0a\x00\x00\x00\x00\x00\x00\x00\x0f\x01\x00\x00\x00\x00\x00\x00\x00\x05");
     let decoded = OrderedProtocolCapture::from_canonical(&canonical, limits).unwrap();
     assert_eq!(decoded.canonical(limits).unwrap().bytes, canonical.bytes);
+}
+
+#[test]
+fn ten_thousand_reserved_lengths_and_nested_versions_share_one_quic_structure() {
+    let limits = OrderCaptureLimits::default();
+    let mut key = None;
+    let mut bucket = CountedObservationBucket::new(
+        ORDER_DOMAIN,
+        ValueId([7; 32]),
+        [8; 32],
+        ProfileBucketLimits::default(),
+    )
+    .unwrap();
+    for sequence in 1..=10_000u64 {
+        let reserved = 0x0a0a0a0a
+            | (((sequence as u32) & 0xf) << 28)
+            | ((((sequence as u32) >> 4) & 0xf) << 20);
+        let mut versions = vec![Version::V1, Version::V2, Version::from_u32(reserved)];
+        versions.rotate_left(sequence as usize % 3);
+        let mut bytes = Vec::new();
+        VersionInformation::new(Version::V1, versions).write(&mut bytes);
+        let random = vec![sequence as u8; sequence as usize % 17];
+        let connection = vec![b'c'; 8 + sequence as usize % 13];
+        let mut fields = vec![
+            (0x11, bytes.as_slice()),
+            (31 * sequence + 27, random.as_slice()),
+            (0x0f, connection.as_slice()),
+            (1, b"choice"),
+        ];
+        fields.rotate_left(sequence as usize % 4);
+        let captured = capture(OrderNamespace::QuicParameter, &fields);
+        let structure = captured.structural(limits).unwrap();
+        assert_eq!(*key.get_or_insert(structure.id), structure.id);
+        validate_structure(&structure, limits.bytes).unwrap();
+        let value = captured.canonical(limits).unwrap();
+        bucket
+            .observe(
+                ObservationId {
+                    run: [9; 16],
+                    sequence,
+                },
+                &value,
+            )
+            .unwrap();
+    }
+    let snapshot = bucket.snapshot();
+    assert_eq!(snapshot.counts.total, 10_000);
+    assert!(snapshot.values.len() <= 272);
+    for value in snapshot.values.iter() {
+        OrderedProtocolCapture::from_canonical(value, limits).unwrap();
+    }
+}
+
+#[test]
+fn nested_versions_retain_semantics_and_reject_malformed_values() {
+    let limits = OrderCaptureLimits::default();
+    for bytes in [
+        vec![],
+        vec![0; 3],
+        vec![0; 4],
+        vec![0, 0, 0, 1],
+        vec![0, 0, 0, 1, 0, 0, 0, 0],
+        vec![0, 0, 0, 1, 0, 0, 0, 2],
+        vec![0, 0, 0, 1, 0],
+    ] {
+        OrderedProtocolCapture::capture(
+            ProfileCaptureCompleteness::Complete,
+            OrderNamespace::QuicParameter,
+            [(0x11, bytes)],
+            limits,
+        )
+        .unwrap_err();
+    }
+    let mut first = Vec::new();
+    VersionInformation::new(Version::V1, vec![Version::V1, Version::V2]).write(&mut first);
+    let mut other = Vec::new();
+    VersionInformation::new(Version::V1, vec![Version::V1, Version::from_u32(7)]).write(&mut other);
+    let first = capture(OrderNamespace::QuicParameter, &[(0x11, &first)]);
+    let other = capture(OrderNamespace::QuicParameter, &[(0x11, &other)]);
+    assert_ne!(
+        first.structural(limits).unwrap().id,
+        other.structural(limits).unwrap().id
+    );
+    first
+        .canonical(OrderCaptureLimits {
+            elements: 1,
+            ..limits
+        })
+        .unwrap_err();
+}
+
+#[test]
+fn redacted_transport_shape_uses_encoded_budget_without_recharging_wire_bytes() {
+    let limits = OrderCaptureLimits::default();
+    let mut preferred = [0_u8; 61];
+    preferred[24] = 20;
+    let capture = capture(OrderNamespace::QuicParameter, &[(0x0d, &preferred)]);
+    let value = capture.canonical(limits).unwrap();
+    assert!(value.bytes.len() < preferred.len());
+    let exact = OrderCaptureLimits {
+        bytes: value.bytes.len(),
+        ..limits
+    };
+    capture.canonical(exact).unwrap();
+    OrderedProtocolCapture::from_canonical(&value, exact).unwrap();
+    value.validated_domain(value.bytes.len()).unwrap();
+    OrderedProtocolCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        OrderNamespace::QuicParameter,
+        [(0x0d, preferred)],
+        exact,
+    )
+    .unwrap_err();
 }

@@ -11,7 +11,8 @@ use super::{TlsCapture, TlsCaptureLimits, tls_capture::structure::validate_tls_s
 use super::{
     FlowKey, H2Capture, H2CaptureLimits, HeaderCapture, HeaderCapturePolicy, JointCapture,
     JointCaptureLimits, OrderCaptureLimits, OrderedProtocolCapture, ProfileKey,
-    ProfileObservationScope, header_structure::validate_header_structure,
+    ProfileObservationScope, PseudoHeaderCapture, QuicFlightCapture, QuicFlightCaptureLimits,
+    RuntimeProfileCapture, header_structure::validate_header_structure,
     joint::validate_joint_structure, order_capture::validate_structure,
 };
 
@@ -33,6 +34,11 @@ pub enum CanonicalDomain {
     TlsStructure = 11,
     H2 = 12,
     H2Structure = 13,
+    PseudoHeaders = 14,
+    PseudoHeaderStructure = 15,
+    RuntimeMetadata = 16,
+    RuntimeMetadataStructure = 17,
+    QuicFlight = 18,
 }
 
 impl From<CanonicalDomain> for u16 {
@@ -64,6 +70,11 @@ impl TryFrom<u16> for CanonicalDomain {
             11 => Ok(Self::TlsStructure),
             12 => Ok(Self::H2),
             13 => Ok(Self::H2Structure),
+            14 => Ok(Self::PseudoHeaders),
+            15 => Ok(Self::PseudoHeaderStructure),
+            16 => Ok(Self::RuntimeMetadata),
+            17 => Ok(Self::RuntimeMetadataStructure),
+            18 => Ok(Self::QuicFlight),
             _ => Err(ProfileDataError::Unsupported("canonical content domain")),
         }
     }
@@ -87,7 +98,10 @@ fn canonical_version(domain: CanonicalDomain) -> u16 {
         CanonicalDomain::Headers
         | CanonicalDomain::Order
         | CanonicalDomain::Joint
-        | CanonicalDomain::JointStructure => 2,
+        | CanonicalDomain::JointStructure
+        | CanonicalDomain::Tls
+        | CanonicalDomain::TlsStructure
+        | CanonicalDomain::OrderStructure => 2,
         _ => VERSION,
     }
 }
@@ -174,6 +188,28 @@ impl CanonicalValue {
                         elements: maximum_bytes,
                         bytes: maximum_bytes,
                     },
+                )?;
+            }
+            CanonicalDomain::QuicFlight => {
+                QuicFlightCapture::from_canonical(
+                    self,
+                    QuicFlightCaptureLimits {
+                        bytes: maximum_bytes,
+                        ..QuicFlightCaptureLimits::default()
+                    },
+                )?;
+            }
+            CanonicalDomain::RuntimeMetadata => {
+                RuntimeProfileCapture::from_canonical(self, maximum_bytes)?;
+            }
+            CanonicalDomain::RuntimeMetadataStructure => {
+                RuntimeProfileCapture::validate_structure(self, maximum_bytes)?;
+            }
+            CanonicalDomain::PseudoHeaders | CanonicalDomain::PseudoHeaderStructure => {
+                PseudoHeaderCapture::decode(
+                    self,
+                    maximum_bytes,
+                    domain == CanonicalDomain::PseudoHeaderStructure,
                 )?;
             }
             CanonicalDomain::H2 | CanonicalDomain::H2Structure => {
@@ -395,6 +431,11 @@ mod tests {
             (11, CanonicalDomain::TlsStructure),
             (12, CanonicalDomain::H2),
             (13, CanonicalDomain::H2Structure),
+            (14, CanonicalDomain::PseudoHeaders),
+            (15, CanonicalDomain::PseudoHeaderStructure),
+            (16, CanonicalDomain::RuntimeMetadata),
+            (17, CanonicalDomain::RuntimeMetadataStructure),
+            (18, CanonicalDomain::QuicFlight),
         ] {
             assert_eq!(u16::from(domain), tag);
             assert_eq!(CanonicalDomain::try_from(tag).unwrap(), domain);
@@ -405,7 +446,7 @@ mod tests {
                 domain
             );
         }
-        for tag in [0, 14, u16::MAX] {
+        for tag in [0, 19, u16::MAX] {
             CanonicalDomain::try_from(tag).unwrap_err();
             serde_json::from_str::<CanonicalDomain>(&tag.to_string()).unwrap_err();
         }

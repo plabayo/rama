@@ -14,6 +14,7 @@ pub(super) fn connection_owned(id: u16) -> bool {
             | 8
             | 12
             | 17
+            | 21
             | 25
             | 29
             | 30
@@ -24,9 +25,11 @@ pub(super) fn connection_owned(id: u16) -> bool {
             | 36
             | 37
             | 38
+            | 40
             | 44
             | 47
             | 48
+            | 53
             | 54
             | 55
             | 56
@@ -34,6 +37,9 @@ pub(super) fn connection_owned(id: u16) -> bool {
             | 59
             | 51764
             | 65281
+            | 0xffce
+            | 0xffa5
+            | 0xfe08..=0xfe0c
     )
 }
 
@@ -53,8 +59,13 @@ impl TlsCapturedExtension {
             TlsCapturedExtensionValue::Protocols(values) => {
                 2 + values.iter().map(|value| value.len() + 1).sum::<usize>()
             }
-            TlsCapturedExtensionValue::ServerNameLength(value) => {
-                2 + value.map_or(0, |size| usize::from(size) + 3)
+            // Only a minimum shape remains for destination-owned SNI.
+            TlsCapturedExtensionValue::ServerName { present } => {
+                if *present {
+                    6
+                } else {
+                    2
+                }
             }
             TlsCapturedExtensionValue::KeyShares(values) => {
                 2 + values
@@ -85,6 +96,8 @@ impl TlsCapturedExtension {
         Ok(size + 4)
     }
 
+    // Canonical budgets charge retained shapes. The borrowed capture path bounds
+    // original wire payloads; wire_length independently enforces TLS vector limits.
     fn validate(&self, budget: &mut InputBudget) -> Result<(), ProfileDataError> {
         let valid = match &self.value {
             TlsCapturedExtensionValue::Literal(bytes) => {
@@ -92,9 +105,6 @@ impl TlsCapturedExtension {
                 length(bytes.len())?;
                 if matches!(self.id, 18 | 22 | 23 | 42 | 49) && !bytes.is_empty() {
                     return Err(ProfileDataError::Invalid("nonempty TLS empty extension"));
-                }
-                if self.id == 21 && bytes.iter().any(|byte| *byte != 0) {
-                    return Err(ProfileDataError::Invalid("TLS padding bytes"));
                 }
                 !connection_owned(self.id)
                     && !matches!(
@@ -148,15 +158,12 @@ impl TlsCapturedExtension {
                     && bytes <= usize::from(u16::MAX)
                     && matches!(self.id, 16 | 17513 | 17613)
             }
-            TlsCapturedExtensionValue::ServerNameLength(size) => {
-                budget.take(0, usize::from(size.unwrap_or(0)))?;
-                self.id == 0 && size.is_none_or(|size| size != 0)
-            }
+            TlsCapturedExtensionValue::ServerName { .. } => self.id == 0,
             TlsCapturedExtensionValue::KeyShares(shapes) => {
                 budget.take(shapes.len(), 2)?;
                 let mut bytes = 0usize;
                 for (index, shape) in shapes.iter().enumerate() {
-                    budget.take(0, usize::from(shape.length) + 4)?;
+                    budget.take(0, 4)?;
                     bytes = bytes
                         .checked_add(usize::from(shape.length) + 4)
                         .ok_or(ProfileDataError::LimitExceeded("TLS key share vector"))?;
@@ -182,7 +189,7 @@ impl TlsCapturedExtension {
                     if *size == 0 {
                         return Err(ProfileDataError::Invalid("TLS PSK identity shape"));
                     }
-                    budget.take(0, usize::from(*size) + 6)?;
+                    budget.take(0, 2)?;
                     identity_bytes = identity_bytes
                         .checked_add(usize::from(*size) + 6)
                         .ok_or(ProfileDataError::LimitExceeded("TLS PSK identity vector"))?;
@@ -191,7 +198,7 @@ impl TlsCapturedExtension {
                     if *size < 32 {
                         return Err(ProfileDataError::Invalid("TLS PSK binder shape"));
                     }
-                    budget.take(0, usize::from(*size) + 1)?;
+                    budget.take(0, 1)?;
                     binder_bytes = binder_bytes
                         .checked_add(usize::from(*size) + 1)
                         .ok_or(ProfileDataError::LimitExceeded("TLS PSK binder vector"))?;
@@ -202,15 +209,14 @@ impl TlsCapturedExtension {
                     && identity_bytes <= usize::from(u16::MAX)
                     && binder_bytes <= usize::from(u16::MAX)
             }
-            TlsCapturedExtensionValue::EchOuter { enc, payload, .. } => {
-                budget.take(0, usize::from(*enc))?;
-                budget.take(0, usize::from(*payload))?;
+            TlsCapturedExtensionValue::EchOuter { .. } => {
+                budget.take(0, 8)?;
                 self.id == 65037
             }
             TlsCapturedExtensionValue::EchInner => self.id == 65037,
             TlsCapturedExtensionValue::ConnectionLength(size) => {
-                budget.take(0, usize::from(*size))?;
-                connection_owned(self.id)
+                budget.take(0, 2)?;
+                connection_owned(self.id) && (self.id != 21 || *size == 0)
             }
         };
         if !valid {
@@ -359,12 +365,9 @@ fn write_value(
                 writer.bytes(value)?;
             }
         }
-        TlsCapturedExtensionValue::ServerNameLength(size) => {
+        TlsCapturedExtensionValue::ServerName { present } => {
             writer.u8(4)?;
-            writer.u8(u8::from(size.is_some()))?;
-            if let Some(size) = size {
-                writer.u16(*size)?;
-            }
+            writer.u8(u8::from(*present))?;
         }
         TlsCapturedExtensionValue::KeyShares(values) => {
             writer.u8(5)?;
@@ -418,11 +421,13 @@ fn read_value(
             }
             TlsCapturedExtensionValue::Protocols(values.into())
         }
-        4 => TlsCapturedExtensionValue::ServerNameLength(match reader.u8()? {
-            0 => None,
-            1 => Some(reader.u16()?),
-            _ => return Err(ProfileDataError::Invalid("TLS server name shape")),
-        }),
+        4 => TlsCapturedExtensionValue::ServerName {
+            present: match reader.u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(ProfileDataError::Invalid("TLS server name shape")),
+            },
+        },
         5 => {
             let count = reader.count(limits.elements)?;
             let mut values = Vec::new();

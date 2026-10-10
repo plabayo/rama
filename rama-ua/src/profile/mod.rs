@@ -91,5 +91,14 @@ mod tls_capture;
 #[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
 pub use tls_capture::*;
 
+mod runtime_capture;
+pub use runtime_capture::*;
+
+mod pseudo_capture;
+pub use pseudo_capture::*;
+
 mod h2_capture;
 pub use h2_capture::*;
+
+mod quic_flight_capture;
+pub use quic_flight_capture::*;

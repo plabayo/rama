@@ -43,7 +43,10 @@ pub enum TlsCapturedExtensionValue {
     U16List(Box<[u16]>),
     U8List(Box<[u8]>),
     Protocols(Box<[Box<[u8]>]>),
-    ServerNameLength(Option<u16>),
+    /// SNI is supplied by the destination. Its length is not a profile property.
+    ServerName {
+        present: bool,
+    },
     KeyShares(Box<[TlsKeyShareShape]>),
     PreSharedKeys {
         identities: Box<[u16]>,
@@ -244,7 +247,9 @@ impl TlsCapture {
                         .map(|name| length(name.as_str().len()))
                         .transpose()?;
                     budget.take(0, usize::from(size.unwrap_or(0)))?;
-                    TlsCapturedExtensionValue::ServerNameLength(size)
+                    TlsCapturedExtensionValue::ServerName {
+                        present: name.is_some(),
+                    }
                 }
                 ClientHelloExtension::SupportedGroups(values) => {
                     budget.list(values.len(), 2)?;
@@ -339,6 +344,13 @@ impl TlsCapture {
                                     .map(u16::from_be_bytes)
                                     .collect(),
                             )
+                        }
+                        21 => {
+                            if data.iter().any(|byte| *byte != 0) {
+                                return Err(ProfileDataError::Invalid("TLS padding bytes"));
+                            }
+                            // Padding size follows the destination-dependent ClientHello.
+                            TlsCapturedExtensionValue::ConnectionLength(0)
                         }
                         // Identities, certificates, cookies, tickets and connection metadata.
                         id if codec::connection_owned(id) => {

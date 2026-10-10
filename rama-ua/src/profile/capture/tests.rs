@@ -501,7 +501,7 @@ fn canonical_import_cannot_bypass_header_shape_validation() {
 #[test]
 fn representation_metadata_is_validated_on_capture_and_import() {
     let policy = HeaderCapturePolicy::default();
-    let input = headers(&[("X-Test", "a")]);
+    let input = headers(&[("accept", "*/*")]);
     for kind in [
         FieldRepresentation::StaticIndex,
         FieldRepresentation::DynamicIndex,
@@ -513,7 +513,7 @@ fn representation_metadata_is_validated_on_capture_and_import() {
     ] {
         let valid = ObservedFieldRepresentation {
             representation: kind,
-            index: (kind != FieldRepresentation::LiteralName).then_some(0),
+            index: (kind != FieldRepresentation::LiteralName).then_some(29),
             name_huffman: false,
             value_huffman: false,
             never_index: false,

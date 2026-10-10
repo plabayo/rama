@@ -66,7 +66,7 @@ fn tls_capture_discards_connection_secrets_while_retaining_shapes_and_order() {
     );
     assert!(matches!(
         value.extensions[0].value,
-        TlsCapturedExtensionValue::ServerNameLength(Some(15))
+        TlsCapturedExtensionValue::ServerName { present: true }
     ));
     assert!(
         matches!(&value.extensions[2].value,TlsCapturedExtensionValue::KeyShares(values) if values.len()==1 && values[0].group==0x1a1a && values[0].length==8)
@@ -439,10 +439,6 @@ fn tls_extension_wire_lengths_include_vector_and_entry_overhead() {
     };
     for extension in [
         TlsCapturedExtension {
-            id: 0,
-            value: TlsCapturedExtensionValue::ServerNameLength(Some(u16::MAX)),
-        },
-        TlsCapturedExtension {
             id: 65037,
             value: TlsCapturedExtensionValue::EchOuter {
                 kdf: 1,
@@ -573,7 +569,7 @@ fn tls_canonical_and_structural_encodings_match_independent_vectors() {
             },
             TlsCapturedExtension {
                 id: 0,
-                value: TlsCapturedExtensionValue::ServerNameLength(Some(7)),
+                value: TlsCapturedExtensionValue::ServerName { present: true },
             },
             TlsCapturedExtension {
                 id: 16,
@@ -595,30 +591,30 @@ fn tls_canonical_and_structural_encodings_match_independent_vectors() {
     assert_eq!(
         value.bytes.as_ref(),
         &[
-            114, 97, 109, 97, 45, 112, 114, 111, 102, 105, 108, 101, 0, 0, 1, 0, 10, 0, 1, 3, 3, 0,
+            114, 97, 109, 97, 45, 112, 114, 111, 102, 105, 108, 101, 0, 0, 2, 0, 10, 0, 1, 3, 3, 0,
             0, 0, 0, 0, 0, 0, 3, 26, 26, 19, 2, 19, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
             0, 5, 42, 42, 0, 0, 0, 0, 0, 0, 0, 0, 2, 190, 239, 0, 10, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0,
-            29, 58, 58, 0, 0, 4, 1, 0, 7, 0, 16, 3, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2,
-            104, 50, 0, 0, 0, 0, 0, 0, 0, 8, 104, 116, 116, 112, 47, 49, 46, 49, 0, 45, 2, 0, 0, 0,
-            0, 0, 0, 0, 2, 1, 73
+            29, 58, 58, 0, 0, 4, 1, 0, 16, 3, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 104,
+            50, 0, 0, 0, 0, 0, 0, 0, 8, 104, 116, 116, 112, 47, 49, 46, 49, 0, 45, 2, 0, 0, 0, 0,
+            0, 0, 0, 2, 1, 73
         ]
     );
     assert_eq!(
         value.id.0,
         [
-            193, 147, 20, 183, 33, 29, 81, 29, 191, 189, 185, 5, 108, 12, 15, 241, 180, 42, 45,
-            234, 185, 224, 111, 103, 155, 224, 125, 204, 102, 84, 83, 250
+            231, 164, 58, 150, 105, 13, 124, 43, 135, 189, 246, 41, 152, 23, 52, 247, 111, 85, 143,
+            89, 89, 62, 175, 164, 209, 118, 34, 84, 151, 30, 102, 105
         ]
     );
     let value = capture.structural(limits).unwrap();
     assert_eq!(
         value.bytes.as_ref(),
         &[
-            114, 97, 109, 97, 45, 112, 114, 111, 102, 105, 108, 101, 0, 0, 1, 0, 11, 0, 0, 0, 0, 0,
-            0, 0, 134, 114, 97, 109, 97, 45, 112, 114, 111, 102, 105, 108, 101, 0, 0, 1, 0, 10, 0,
+            114, 97, 109, 97, 45, 112, 114, 111, 102, 105, 108, 101, 0, 0, 2, 0, 11, 0, 0, 0, 0, 0,
+            0, 0, 132, 114, 97, 109, 97, 45, 112, 114, 111, 102, 105, 108, 101, 0, 0, 2, 0, 10, 0,
             1, 3, 3, 0, 0, 0, 0, 0, 0, 0, 3, 10, 10, 19, 1, 19, 2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
-            0, 0, 0, 0, 0, 5, 0, 0, 4, 1, 0, 7, 0, 10, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 29, 10, 10, 0,
-            16, 3, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 104, 50, 0, 0, 0, 0, 0, 0, 0, 8,
+            0, 0, 0, 0, 0, 5, 0, 0, 4, 1, 0, 10, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 29, 10, 10, 0, 16,
+            3, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 104, 50, 0, 0, 0, 0, 0, 0, 0, 8,
             104, 116, 116, 112, 47, 49, 46, 49, 0, 45, 2, 0, 0, 0, 0, 0, 0, 0, 2, 1, 11, 10, 10, 0,
             0, 0, 0, 0, 0, 0, 0, 0
         ]
@@ -626,8 +622,8 @@ fn tls_canonical_and_structural_encodings_match_independent_vectors() {
     assert_eq!(
         value.id.0,
         [
-            110, 175, 247, 247, 254, 103, 134, 47, 201, 151, 72, 63, 231, 134, 252, 87, 234, 48,
-            162, 217, 68, 21, 7, 202, 234, 9, 131, 156, 28, 110, 2, 241
+            47, 171, 152, 190, 179, 159, 189, 113, 157, 206, 222, 237, 94, 90, 103, 65, 199, 28,
+            224, 150, 145, 22, 170, 13, 46, 117, 8, 162, 17, 178, 217, 239
         ]
     );
 }
@@ -648,7 +644,11 @@ fn ech_and_sni_secret_changes_keep_only_their_capture_shapes() {
         ])
     };
     let first = capture(&observed(b"private-canary", 42, "private.example"));
-    let other = capture(&observed(b"another-secret", 19, "another.example"));
+    let other = capture(&observed(
+        b"another-secret",
+        19,
+        "another.destination.example",
+    ));
     assert_eq!(
         first.canonical(limits).unwrap().bytes,
         other.canonical(limits).unwrap().bytes
@@ -788,4 +788,234 @@ fn psk_and_key_share_nested_lengths_and_order_are_enforced() {
     value.completeness = ProfileCaptureCompleteness::Incomplete;
     value.canonical(limits).unwrap_err();
     value.structural(limits).unwrap_err();
+}
+
+#[test]
+fn destination_names_and_padding_do_not_become_profile_values() {
+    let limits = TlsCaptureLimits::default();
+    let mut identity = None;
+    for size in 1..=63 {
+        let observed = hello(vec![
+            ClientHelloExtension::ServerName(Some(
+                Domain::try_from(format!("{}.example", "x".repeat(size))).unwrap(),
+            )),
+            opaque(21, vec![0; size * 8]),
+        ]);
+        let captured = capture(&observed);
+        let encoded = captured.canonical(limits).unwrap();
+        assert_eq!(*identity.get_or_insert(encoded.id), encoded.id);
+        assert!(matches!(
+            captured.extensions[0].value,
+            TlsCapturedExtensionValue::ServerName { present: true }
+        ));
+        assert!(matches!(
+            captured.extensions[1].value,
+            TlsCapturedExtensionValue::ConnectionLength(0)
+        ));
+    }
+    TlsCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        TlsCaptureTransport::Tcp,
+        &hello(vec![opaque(21, vec![1])]),
+        limits,
+    )
+    .unwrap_err();
+    let mut forged = capture(&hello(vec![opaque(21, vec![0; 5])]));
+    forged.extensions[0].value = TlsCapturedExtensionValue::ConnectionLength(5);
+    forged.canonical(limits).unwrap_err();
+    forged.extensions[0].value = TlsCapturedExtensionValue::Literal(Box::new([0]));
+    forged.canonical(limits).unwrap_err();
+}
+
+#[test]
+fn ten_thousand_connection_and_destination_lengths_share_one_tls_structure() {
+    let limits = TlsCaptureLimits::default();
+    let mut structure = None;
+    let mut joint_structure = None;
+    let mut bucket = CountedObservationBucket::new(
+        CanonicalDomain::Tls,
+        ValueId([4; 32]),
+        [5; 32],
+        ProfileBucketLimits::default(),
+    )
+    .unwrap();
+    for sequence in 1..=10_000u64 {
+        let size = 1 + sequence as usize % 63;
+        let identity_length = 1 + sequence as usize % 1000;
+        let mut psk = Vec::new();
+        psk.extend_from_slice(&u16::try_from(identity_length + 6).unwrap().to_be_bytes());
+        psk.extend_from_slice(&u16::try_from(identity_length).unwrap().to_be_bytes());
+        psk.extend(vec![b'x'; identity_length]);
+        psk.extend_from_slice(&[0; 4]);
+        psk.extend_from_slice(&[0, 33, 32]);
+        psk.extend_from_slice(&[b'p'; 32]);
+        let observed = hello(vec![
+            ClientHelloExtension::ServerName(Some(
+                Domain::try_from(format!("{}.example", "x".repeat(size))).unwrap(),
+            )),
+            opaque(21, vec![0; sequence as usize % 512]),
+            opaque(35, vec![b't'; identity_length]),
+            ClientHelloExtension::EncryptedClientHello(
+                serde_json::from_value(json!({"Outer": {
+                    "cipher_suite": {"kdf_id":1,"aead_id":1}, "config_id": 7,
+                    "enc":vec![b'e';32], "payload":vec![b'p'; 1 + sequence as usize % 511],
+                }}))
+                .unwrap(),
+            ),
+            opaque(41, psk),
+        ]);
+        let captured = capture(&observed);
+        let key = captured.structural(limits).unwrap();
+        assert_eq!(*structure.get_or_insert(key.id), key.id);
+        key.validated_domain(limits.bytes).unwrap();
+        let value = captured.canonical(limits).unwrap();
+        let joint = JointCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            level: CaptureLevel::Connection,
+            slots: Box::new([CapturedSlot {
+                kind: CapturedSlotKind::QuicTls,
+                value: value.clone(),
+            }]),
+        };
+        let joint = joint.structural(JointCaptureLimits::default()).unwrap();
+        assert_eq!(*joint_structure.get_or_insert(joint.id), joint.id);
+        bucket
+            .observe(
+                ObservationId {
+                    run: [6; 16],
+                    sequence,
+                },
+                &value,
+            )
+            .unwrap();
+    }
+    let snapshot = bucket.snapshot();
+    assert_eq!(snapshot.counts.total, 10_000);
+    assert!(snapshot.values.len() <= 272);
+    for value in snapshot.values.iter() {
+        TlsCapture::from_canonical(value, limits).unwrap();
+    }
+}
+
+#[test]
+fn historical_secret_extensions_never_retain_literal_values_or_connection_lengths_in_keys() {
+    let limits = TlsCaptureLimits::default();
+    for id in [
+        40, 53, 0xffce, 0xffa5, 0xfe08, 0xfe09, 0xfe0a, 0xfe0b, 0xfe0c,
+    ] {
+        let first = capture(&hello(vec![opaque(id, b"private-canary".to_vec())]));
+        let other = capture(&hello(vec![opaque(
+            id,
+            b"different-private-secret".to_vec(),
+        )]));
+        let encoded = first.canonical(limits).unwrap();
+        assert!(!encoded.bytes.windows(7).any(|bytes| bytes == b"private"));
+        assert_eq!(
+            first.structural(limits).unwrap().id,
+            other.structural(limits).unwrap().id
+        );
+        let mut forged = first;
+        forged.extensions[0].value =
+            TlsCapturedExtensionValue::Literal(b"private-canary".as_slice().into());
+        forged.canonical(limits).unwrap_err();
+    }
+}
+
+#[test]
+fn canonical_tls_budgets_charge_retained_shapes_not_discarded_payloads() {
+    for extension in [
+        TlsCapturedExtension {
+            id: 51,
+            value: TlsCapturedExtensionValue::KeyShares(Box::new([TlsKeyShareShape {
+                group: 0x1234,
+                length: 4096,
+            }])),
+        },
+        TlsCapturedExtension {
+            id: 41,
+            value: TlsCapturedExtensionValue::PreSharedKeys {
+                identities: Box::new([1000]),
+                binders: Box::new([255]),
+            },
+        },
+        TlsCapturedExtension {
+            id: 65037,
+            value: TlsCapturedExtensionValue::EchOuter {
+                kdf: 1,
+                aead: 1,
+                enc: 512,
+                payload: 2048,
+            },
+        },
+        TlsCapturedExtension {
+            id: 35,
+            value: TlsCapturedExtensionValue::ConnectionLength(4096),
+        },
+    ] {
+        let capture = TlsCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            transport: TlsCaptureTransport::Quic,
+            protocol_version: 0x0303,
+            ciphers: Box::new([0x1301]),
+            compression: Box::new([0]),
+            extensions: Box::new([extension]),
+        };
+        let value = capture.canonical(TlsCaptureLimits::default()).unwrap();
+        let size = value.bytes.len();
+        let limits = TlsCaptureLimits {
+            bytes: size,
+            ..TlsCaptureLimits::default()
+        };
+        assert_eq!(capture.canonical(limits).unwrap().id, value.id);
+        TlsCapture::from_canonical(&value, limits).unwrap();
+        value.validated_domain(size).unwrap();
+        let mut bucket = CountedObservationBucket::new(
+            CanonicalDomain::Tls,
+            ValueId([1; 32]),
+            [2; 32],
+            ProfileBucketLimits {
+                literal_values: 1,
+                samples: 1,
+                value_bytes: size,
+                input_bytes: size,
+                retained_bytes: size,
+            },
+        )
+        .unwrap();
+        bucket
+            .observe(
+                ObservationId {
+                    run: [3; 16],
+                    sequence: 1,
+                },
+                &value,
+            )
+            .unwrap();
+        assert_eq!(bucket.snapshot().counts.total, 1);
+        capture
+            .canonical(TlsCaptureLimits {
+                bytes: size - 1,
+                ..limits
+            })
+            .unwrap_err();
+    }
+}
+
+#[test]
+fn borrowed_tls_budgets_still_bound_discarded_wire_payloads() {
+    let source = hello(vec![opaque(35, vec![b'x'; 4096])]);
+    let value = capture(&source)
+        .canonical(TlsCaptureLimits::default())
+        .unwrap();
+    assert!(value.bytes.len() < 128);
+    TlsCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        TlsCaptureTransport::Quic,
+        &source,
+        TlsCaptureLimits {
+            bytes: 128,
+            ..TlsCaptureLimits::default()
+        },
+    )
+    .unwrap_err();
 }

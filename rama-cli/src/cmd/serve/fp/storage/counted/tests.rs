@@ -2,6 +2,7 @@ use super::super::migrations;
 use super::*;
 use rama::{
     http::{HeaderMap, HeaderName, HeaderValue, Method, Version},
+    quic::proto::{Version as QuicVersion, version::VersionInformation},
     ua::profile::{
         CanonicalDomain, CaptureLevel, CapturedSlot, CapturedSlotKind, ConnectionContext, FlowKey,
         H2Capture, H2CaptureLimits, H2CapturedFrame, H2CapturedSetting, HeaderCapture,
@@ -451,13 +452,29 @@ async fn fp_counted_reservoir_reuses_full_quota_and_survives_restart() {
     let mut limits = limits();
     limits.ingestion.bucket.literal_values = 0;
     limits.ingestion.bucket.samples = 1;
-    limits.retained[5] = 2;
+    limits.retained[..6].copy_from_slice(&[1, 0, 2, 2, 1, 2]);
     let mut last = None;
     for sequence in 1_u64..=10_000 {
+        let grease = 0x0a0a0a0a | (((sequence as u32) & 0xf) << 28);
+        let mut versions = vec![
+            QuicVersion::V1,
+            QuicVersion::V2,
+            QuicVersion::from_u32(grease),
+        ];
+        versions.rotate_left(sequence as usize % 3);
+        let mut information = Vec::new();
+        VersionInformation::new(QuicVersion::V1, versions).write(&mut information);
+        // The first sample reserves enough bytes for every later 0..16-byte value.
+        let random = vec![sequence as u8; 16 - (sequence as usize - 1) % 17];
+        let mut fields = vec![
+            (31 * sequence + 27, random.as_slice()),
+            (0x11, information.as_slice()),
+        ];
+        fields.rotate_left(sequence as usize % 2);
         let value = OrderedProtocolCapture::capture(
             ProfileCaptureCompleteness::Complete,
             OrderNamespace::QuicParameter,
-            [(27, sequence.to_be_bytes().as_slice())],
+            fields,
             OrderCaptureLimits::default(),
         )
         .unwrap()
@@ -502,6 +519,11 @@ async fn fp_counted_reservoir_reuses_full_quota_and_survives_restart() {
         }
         last = Some(capture);
     }
+    let row = client.query_one("SELECT profiles,flows,structures,buckets,runs,interned_values,canonical_bytes FROM fp_v2.quotas WHERE authorized=FALSE", &[]).await.unwrap();
+    for (index, expected) in [1_i64, 0, 2, 2, 1, 2].into_iter().enumerate() {
+        assert_eq!(row.get::<_, i64>(index), expected);
+    }
+    assert!(usize::try_from(row.get::<_, i64>(6)).unwrap() <= limits.retained[6]);
     let prepared = last.unwrap().prepare(false, limits.capture).unwrap();
     let transaction = client.transaction().await.unwrap();
     let mut remaining = limits.ingestion.input_bytes;
@@ -545,10 +567,10 @@ async fn fp_counted_reservoir_reuses_full_quota_and_survives_restart() {
         ),
         (2, 2, 1, 2)
     );
-    assert_eq!(
-        usize::try_from(row.get::<_, i64>(4)).unwrap(),
-        limits.retained[6]
-    );
+    let retained_bytes = usize::try_from(row.get::<_, i64>(4)).unwrap();
+    assert!(retained_bytes <= limits.retained[6]);
+    let stored_bytes: i64 = client.query_one("SELECT COALESCE(sum(octet_length(canonical)),0)::bigint FROM (SELECT canonical FROM fp_v2.profiles WHERE authorized=FALSE UNION ALL SELECT canonical FROM fp_v2.flows WHERE authorized=FALSE UNION ALL SELECT canonical FROM fp_v2.structures WHERE authorized=FALSE UNION ALL SELECT canonical FROM fp_v2.values WHERE authorized=FALSE UNION ALL SELECT scope_canonical FROM fp_v2.buckets WHERE authorized=FALSE) AS stored", &[]).await.unwrap().get(0);
+    assert_eq!(retained_bytes, usize::try_from(stored_bytes).unwrap());
     let orphaned: bool = client.query_one("SELECT EXISTS(SELECT 1 FROM fp_v2.values v WHERE NOT EXISTS(SELECT 1 FROM fp_v2.samples s WHERE s.authorized=v.authorized AND s.value_id=v.id))", &[]).await.unwrap().get(0);
     assert!(!orphaned);
 }
@@ -1897,6 +1919,36 @@ async fn fp_counted_tls_permutations_share_rows_at_full_quota() {
                 (sequence >> 8) as u8,
             ])),
         });
+        extensions.extend([
+            TlsCapturedExtension {
+                id: 0,
+                value: TlsCapturedExtensionValue::ServerName { present: true },
+            },
+            TlsCapturedExtension {
+                id: 21,
+                value: TlsCapturedExtensionValue::ConnectionLength(0),
+            },
+            TlsCapturedExtension {
+                id: 35,
+                value: TlsCapturedExtensionValue::ConnectionLength((1 + sequence % 1000) as u16),
+            },
+            TlsCapturedExtension {
+                id: 65037,
+                value: TlsCapturedExtensionValue::EchOuter {
+                    kdf: 1,
+                    aead: 1,
+                    enc: 32,
+                    payload: (1 + sequence % 511) as u16,
+                },
+            },
+            TlsCapturedExtension {
+                id: 41,
+                value: TlsCapturedExtensionValue::PreSharedKeys {
+                    identities: Box::new([(1 + sequence % 1000) as u16]),
+                    binders: Box::new([32]),
+                },
+            },
+        ]);
         let raw = TlsCapture {
             completeness: ProfileCaptureCompleteness::Complete,
             transport: TlsCaptureTransport::Quic,
@@ -1991,7 +2043,7 @@ async fn fp_counted_tls_permutations_share_rows_at_full_quota() {
         let raw = &restored.bucket.values[0];
         if input.value.validated_domain(limits.capture.bytes).unwrap() == CanonicalDomain::Tls {
             let decoded = TlsCapture::from_canonical(raw, tls_limits).unwrap();
-            assert_eq!(decoded.extensions.len(), 13);
+            assert_eq!(decoded.extensions.len(), 18);
             assert!(identities.contains(&raw.id));
         } else {
             JointCapture::from_canonical(raw, limits.capture).unwrap();
