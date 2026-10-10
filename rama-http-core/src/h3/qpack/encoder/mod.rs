@@ -663,5 +663,4 @@ fn encode_dynamic_index(out: &mut BytesMut, abs: u64, base: u64) {
 }
 
 #[cfg(test)]
-#[path = "encoder_tests.rs"]
 mod tests;

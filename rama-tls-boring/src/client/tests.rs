@@ -11,7 +11,7 @@ use rama_tls::{
     ProtocolVersion, SignatureScheme, SupportedGroup,
     client::{ClientHello, ClientHelloExtension, TlsClientConfig, parse_client_hello_handshake},
 };
-use rama_ua::{PlatformKind, UserAgentKind, profile::UserAgentDatabase};
+use rama_ua::profile::UserAgentDatabase;
 
 use super::{
     BoringClientConfigExt, BoringRequestedTrustAnchors, BoringTlsConnectorConfig,
@@ -205,7 +205,8 @@ fn embedded_profiles_are_mirrored_on_the_wire() {
     let db = UserAgentDatabase::try_embedded().unwrap();
     assert!(!db.is_empty());
     for profile in db.iter() {
-        let captured = &profile.tls.client_hello;
+        let Some(tls) = &profile.tls else { continue };
+        let captured = &tls.client_hello;
         let context =
             TlsConnectorContextBuilder::try_from(&TlsClientConfig::new_from_client_hello(captured))
                 .unwrap()
@@ -260,17 +261,12 @@ fn embedded_profiles_are_mirrored_on_the_wire() {
 }
 
 #[test]
-fn embedded_chromium_profiles_permute_extensions() {
+fn legacy_profiles_do_not_infer_permutation_from_browser_identity() {
     let db = UserAgentDatabase::try_embedded().unwrap();
     for profile in db.iter() {
-        let permutes = profile.ua_kind == UserAgentKind::Chromium
-            && profile.platform != Some(PlatformKind::IOS);
-        assert_eq!(
-            profile.tls.permute_extensions,
-            permutes,
-            "{:?}",
-            profile.ua_str()
-        );
+        if let Some(tls) = &profile.tls {
+            assert!(!tls.permute_extensions, "{:?}", profile.ua_str());
+        }
     }
 }
 

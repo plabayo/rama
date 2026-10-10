@@ -1,4 +1,5 @@
-//! Bounded first-flight facts without connection identifiers or handshake bytes.
+mod structure;
+// Bounded first-flight facts without connection identifiers or handshake bytes.
 
 use super::{
     CanonicalDomain, CanonicalValue, ProfileCaptureCompleteness, ProfileDataError,
@@ -22,6 +23,7 @@ pub struct QuicFlightCaptureLimits {
     pub observed_bytes: usize,
     pub bytes: usize,
 }
+
 impl Default for QuicFlightCaptureLimits {
     fn default() -> Self {
         Self {
@@ -43,6 +45,7 @@ pub struct QuicFlightCapture {
     pub completeness: ProfileCaptureCompleteness,
     pub flight: FirstFlight,
 }
+
 impl QuicFlightCapture {
     pub fn capture(
         observed: &QuicObservation,
@@ -70,19 +73,29 @@ impl QuicFlightCapture {
             flight: flight.clone(),
         })
     }
+
     pub fn canonical(
         &self,
         limits: QuicFlightCaptureLimits,
     ) -> Result<CanonicalValue, ProfileDataError> {
         encode(self.completeness, &self.flight, limits)
     }
-    /// Layouts retain literal structural keys until an analysis rule establishes
-    /// a lossless coarsening. Numeric distributions remain complete sampled facts.
+    /// Preserve client choices while connection-owned sizes and draws remain in
+    /// complete samples, outside the grouping identity.
     pub fn structural(
         &self,
         limits: QuicFlightCaptureLimits,
     ) -> Result<CanonicalValue, ProfileDataError> {
-        self.canonical(limits)
+        self.completeness.require_complete("QUIC first flight")?;
+        validate(&self.flight, limits)?;
+        structure::encode(&self.flight, limits)
+    }
+
+    pub(super) fn validate_structure(
+        value: &CanonicalValue,
+        limits: QuicFlightCaptureLimits,
+    ) -> Result<(), ProfileDataError> {
+        structure::validate(value, limits)
     }
     pub fn from_canonical(
         value: &CanonicalValue,
@@ -174,6 +187,7 @@ impl QuicFlightCapture {
         Ok(result)
     }
 }
+
 fn flag(reader: &mut CanonicalReader<'_>) -> Result<bool, ProfileDataError> {
     match reader.u8()? {
         0 => Ok(false),
@@ -181,6 +195,7 @@ fn flag(reader: &mut CanonicalReader<'_>) -> Result<bool, ProfileDataError> {
         _ => Err(ProfileDataError::Invalid("QUIC flight flag")),
     }
 }
+
 fn read_sizes(
     reader: &mut CanonicalReader<'_>,
     count: usize,
@@ -192,6 +207,7 @@ fn read_sizes(
     }
     Ok(values)
 }
+
 fn write_sizes(writer: &mut CanonicalWriter, values: &[usize]) -> Result<(), ProfileDataError> {
     writer.u64(values.len() as u64)?;
     for value in values {
@@ -199,6 +215,7 @@ fn write_sizes(writer: &mut CanonicalWriter, values: &[usize]) -> Result<(), Pro
     }
     Ok(())
 }
+
 fn validate(flight: &FirstFlight, limits: QuicFlightCaptureLimits) -> Result<(), ProfileDataError> {
     if !flight.complete {
         return Err(ProfileDataError::Incomplete("QUIC first flight layout"));
@@ -227,7 +244,7 @@ fn validate(flight: &FirstFlight, limits: QuicFlightCaptureLimits) -> Result<(),
     }
     let mut bytes = limits.observed_bytes;
     for (&size, &trailing) in flight.datagram_sizes.iter().zip(&flight.trailing_bytes) {
-        if size == 0 || size > 65_527 || trailing > size {
+        if size == 0 || size > 65_527 || trailing >= size {
             return Err(ProfileDataError::Invalid("QUIC datagram shape"));
         }
         bytes = bytes
@@ -236,8 +253,25 @@ fn validate(flight: &FirstFlight, limits: QuicFlightCaptureLimits) -> Result<(),
                 "QUIC observed datagram bytes",
             ))?;
     }
+    if matches!(flight.padding, PaddingPlacement::DatagramTail)
+        != flight.trailing_bytes.iter().any(|trailing| *trailing != 0)
+    {
+        return Err(ProfileDataError::Invalid(
+            "QUIC padding placement and trailing bytes",
+        ));
+    }
     let mut remaining = limits.frames;
     for packet in &flight.frames {
+        if packet.is_empty()
+            || packet.windows(2).any(|pair| {
+                matches!(
+                    pair,
+                    [ObservedFrame::Padding { .. }, ObservedFrame::Padding { .. }]
+                )
+            })
+        {
+            return Err(ProfileDataError::Invalid("noncanonical QUIC frame runs"));
+        }
         remaining = remaining
             .checked_sub(packet.len())
             .ok_or(ProfileDataError::LimitExceeded("QUIC Initial frame shapes"))?;
@@ -254,7 +288,9 @@ fn validate(flight: &FirstFlight, limits: QuicFlightCaptureLimits) -> Result<(),
                 {
                     return Err(ProfileDataError::Invalid("QUIC CRYPTO shape"));
                 }
-                ObservedFrame::Other { ty } if *ty >= (1 << 62) => {
+                ObservedFrame::Other { ty }
+                    if *ty >= (1 << 62) || matches!(*ty, 0 | 1 | 2 | 3 | 6) =>
+                {
                     return Err(ProfileDataError::Invalid("QUIC frame type"));
                 }
                 _ => {}
@@ -307,6 +343,7 @@ fn validate(flight: &FirstFlight, limits: QuicFlightCaptureLimits) -> Result<(),
     }
     Ok(())
 }
+
 fn encode(
     completeness: ProfileCaptureCompleteness,
     flight: &FirstFlight,
@@ -380,6 +417,7 @@ mod tests {
     };
     use rama_quic_proto::capture::{CaptureCompleteness, RawParameter};
     use sha2::{Digest as _, Sha256};
+    use std::collections::BTreeSet;
 
     fn observation() -> QuicObservation {
         QuicObservation {
@@ -424,15 +462,18 @@ mod tests {
             },
         }
     }
+
     fn capture() -> QuicFlightCapture {
         QuicFlightCapture::capture(&observation(), QuicFlightCaptureLimits::default()).unwrap()
     }
+
     fn resign(bytes: Vec<u8>) -> CanonicalValue {
         CanonicalValue {
             id: ValueId(Sha256::digest(&bytes).into()),
             bytes: bytes.into(),
         }
     }
+
     #[test]
     fn flight_roundtrip_retains_layout_without_connection_secrets() {
         let limits = QuicFlightCaptureLimits::default();
@@ -462,7 +503,16 @@ mod tests {
                     .any(|value| value == secret)
             );
         }
-        assert_eq!(canonical.id, capture.structural(limits).unwrap().id);
+        assert_ne!(canonical.id, capture.structural(limits).unwrap().id);
+        let structure = capture.structural(limits).unwrap();
+        assert_eq!(
+            structure.id.0,
+            [
+                247, 8, 56, 218, 217, 61, 209, 171, 225, 40, 116, 113, 134, 77, 119, 228, 7, 210,
+                160, 71, 208, 179, 116, 253, 75, 112, 85, 164, 127, 205, 104, 195
+            ]
+        );
+        assert_eq!(structure.bytes.as_ref(), b"\x72\x61\x6d\x61\x2d\x70\x72\x6f\x66\x69\x6c\x65\x00\x00\x01\x00\x15\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00");
         assert_eq!(canonical.bytes.len(), 172);
         assert_eq!(
             canonical.id.0,
@@ -472,6 +522,7 @@ mod tests {
             ]
         );
     }
+
     #[test]
     fn flight_capture_requires_all_source_completeness_flags() {
         let limits = QuicFlightCaptureLimits::default();
@@ -495,6 +546,7 @@ mod tests {
         capture.completeness = ProfileCaptureCompleteness::Incomplete;
         capture.canonical(limits).unwrap_err();
     }
+
     #[test]
     fn flight_limits_apply_before_retention_to_each_nested_collection() {
         let source = observation();
@@ -555,6 +607,7 @@ mod tests {
             })
             .unwrap_err();
     }
+
     #[test]
     fn flight_rejects_inconsistent_lengths_numbers_and_version_context() {
         let limits = QuicFlightCaptureLimits::default();
@@ -607,6 +660,7 @@ mod tests {
         capture.flight.available_versions = vec![Version::V2];
         capture.canonical(limits).unwrap_err();
     }
+
     #[test]
     fn flight_import_rejects_bad_envelopes_truncation_and_trailers() {
         let limits = QuicFlightCaptureLimits::default();
@@ -627,6 +681,7 @@ mod tests {
             resign(bytes).validated_domain(limits.bytes).unwrap_err();
         }
     }
+
     #[test]
     fn flight_joint_slot_is_connection_owned() {
         let mut joint = JointCapture {
@@ -649,5 +704,155 @@ mod tests {
             .unwrap();
         joint.level = CaptureLevel::Request;
         joint.canonical(limits).unwrap_err();
+    }
+
+    #[test]
+    fn ten_thousand_flights_share_structures_without_discarding_raw_draws() {
+        let limits = QuicFlightCaptureLimits::default();
+        let mut first = None;
+        let mut first_joint = None;
+        let mut raw = BTreeSet::new();
+        for index in 0..10_000_u64 {
+            let mut captured = capture();
+            let flight = &mut captured.flight;
+            flight.datagram_sizes[0] += (index % 17) as usize;
+            flight.token_len = 1 + (index % 32) as usize;
+            flight.first_packet_number = index + 3;
+            flight.packet_numbers = vec![index + 3; 1 + (index % 3) as usize];
+            flight.frames[0] = vec![
+                ObservedFrame::Crypto {
+                    offset: 0,
+                    len: 50 + (index % 50) as usize,
+                },
+                ObservedFrame::Crypto {
+                    offset: 50 + index % 50,
+                    len: 100 + (index % 100) as usize,
+                },
+                ObservedFrame::Padding {
+                    len: 700 + (index % 100) as usize,
+                },
+            ];
+            flight.parameters = vec![
+                ParameterId(1),
+                ParameterId::VERSION_INFORMATION,
+                ParameterId(31 * (index + 1) + 27),
+            ];
+            flight.parameters.rotate_left((index % 3) as usize);
+            flight.chosen_version = Some(Version::V1);
+            flight.available_versions = vec![Version::V1, Version::V2];
+            flight.available_versions.insert(
+                (index % 3) as usize,
+                Version::from_u32(0x0a0a_0a0a | ((index % 16) as u32 * 0x1010_1010)),
+            );
+            let value = captured.canonical(limits).unwrap();
+            let structure = captured.structural(limits).unwrap();
+            structure.validated_domain(limits.bytes).unwrap();
+            assert_eq!(*first.get_or_insert(structure.id), structure.id);
+            raw.insert(value.id);
+            let joint = JointCapture {
+                completeness: ProfileCaptureCompleteness::Complete,
+                level: CaptureLevel::Connection,
+                slots: vec![CapturedSlot {
+                    kind: CapturedSlotKind::QuicFirstFlight,
+                    value,
+                }]
+                .into(),
+            };
+            let structure = joint.structural(JointCaptureLimits::default()).unwrap();
+            assert_eq!(*first_joint.get_or_insert(structure.id), structure.id);
+        }
+        assert_eq!(raw.len(), 10_000);
+    }
+
+    #[test]
+    fn flight_structures_keep_client_choices_and_known_version_preference() {
+        let limits = QuicFlightCaptureLimits::default();
+        let base = capture();
+        let expected = base.structural(limits).unwrap();
+        for case in 0..7 {
+            let mut changed = base.clone();
+            match case {
+                0 => changed.flight.version = Version::V2,
+                1 => changed.flight.dcid_len += 1,
+                2 => changed.flight.scid_len += 1,
+                3 => changed.flight.packet_number_len += 1,
+                4 => changed.flight.token_len = 1,
+                5 => changed.flight.coalesced = true,
+                _ => changed.flight.frames[0].reverse(),
+            }
+            assert_ne!(expected.id, changed.structural(limits).unwrap().id);
+        }
+        let mut versions = base;
+        versions
+            .flight
+            .parameters
+            .push(ParameterId::VERSION_INFORMATION);
+        versions.flight.chosen_version = Some(Version::V1);
+        versions.flight.available_versions = vec![Version::V1, Version::V2];
+        let ordered = versions.structural(limits).unwrap();
+        versions.flight.available_versions.reverse();
+        assert_ne!(ordered.id, versions.structural(limits).unwrap().id);
+    }
+
+    #[test]
+    fn flight_import_rejects_noncanonical_runs_and_padding_placement() {
+        let limits = QuicFlightCaptureLimits::default();
+        for case in 0..9 {
+            let mut captured = capture();
+            match case {
+                0 => captured.flight.frames[0].push(ObservedFrame::Padding { len: 1 }),
+                1 => {
+                    captured.flight.padding = PaddingPlacement::DatagramTail;
+                    captured.flight.trailing_bytes[0] = captured.flight.datagram_sizes[0];
+                }
+                2 => captured.flight.padding = PaddingPlacement::DatagramTail,
+                3 => captured.flight.trailing_bytes[0] = 1,
+                4 => captured.flight.frames[0].clear(),
+                case => {
+                    captured.flight.frames[0][0] = ObservedFrame::Other {
+                        ty: [0, 1, 2, 6][case - 5],
+                    }
+                }
+            }
+            captured.canonical(limits).unwrap_err();
+        }
+        let mut captured = capture();
+        captured.flight.padding = PaddingPlacement::DatagramTail;
+        captured.flight.trailing_bytes[0] = 1;
+        let value = captured.canonical(limits).unwrap();
+        QuicFlightCapture::from_canonical(&value, limits).unwrap();
+    }
+
+    #[test]
+    fn flight_structure_decoder_checks_bounds_canonicality_and_truncation() {
+        let limits = QuicFlightCaptureLimits::default();
+        let value = capture().structural(limits).unwrap();
+        for end in 0..value.bytes.len() {
+            QuicFlightCapture::validate_structure(&resign(value.bytes[..end].to_vec()), limits)
+                .unwrap_err();
+        }
+        let mut bytes = value.bytes.to_vec();
+        bytes.push(0);
+        QuicFlightCapture::validate_structure(&resign(bytes), limits).unwrap_err();
+        for limits in [
+            QuicFlightCaptureLimits {
+                packets: 0,
+                ..limits
+            },
+            QuicFlightCaptureLimits {
+                frames: 1,
+                ..limits
+            },
+            QuicFlightCaptureLimits {
+                parameters: 0,
+                ..limits
+            },
+            QuicFlightCaptureLimits {
+                bytes: value.bytes.len() - 1,
+                ..limits
+            },
+        ] {
+            QuicFlightCapture::validate_structure(&value, limits).unwrap_err();
+        }
     }
 }

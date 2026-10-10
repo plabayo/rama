@@ -36,9 +36,9 @@ pub static CUSTOM_HEADER_MARKER: HeaderName =
 /// [`Http2Profile`]: crate::profile::Http2Profile
 pub struct HttpProfile {
     /// The HTTP/1.1 profile.
-    pub h1: Http1Profile,
+    pub h1: Option<Http1Profile>,
     /// The HTTP/2 profile.
-    pub h2: Http2Profile,
+    pub h2: Option<Http2Profile>,
 }
 
 impl HttpProfile {
@@ -46,12 +46,15 @@ impl HttpProfile {
     ///
     /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
-    pub fn ja4h_h1_navigate(&self, method: Option<Method>) -> Result<Ja4H, Ja4HComputeError> {
-        Ja4H::compute(HttpRequestInput {
-            header_map: self.h1.headers.navigate.clone(),
+    pub fn ja4h_h1_navigate(
+        &self,
+        method: Option<Method>,
+    ) -> Option<Result<Ja4H, Ja4HComputeError>> {
+        Some(Ja4H::compute(HttpRequestInput {
+            header_map: self.h1.as_ref()?.headers.navigate.clone()?,
             http_method: method.unwrap_or(Method::GET),
             version: Version::HTTP_11,
-        })
+        }))
     }
 
     /// Compute the [`Ja4H`] (hash) for the h1 fetch headers in this [`HttpProfile`], if such headers are available for fetch.
@@ -60,7 +63,7 @@ impl HttpProfile {
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
     #[must_use]
     pub fn ja4h_h1_fetch(&self, method: Option<Method>) -> Option<Result<Ja4H, Ja4HComputeError>> {
-        self.h1.headers.fetch.clone().map(|header_map| {
+        self.h1.as_ref()?.headers.fetch.clone().map(|header_map| {
             Ja4H::compute(HttpRequestInput {
                 header_map,
                 http_method: method.unwrap_or(Method::GET),
@@ -75,7 +78,7 @@ impl HttpProfile {
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
     #[must_use]
     pub fn ja4h_h1_xhr(&self, method: Option<Method>) -> Option<Result<Ja4H, Ja4HComputeError>> {
-        self.h1.headers.xhr.clone().map(|header_map| {
+        self.h1.as_ref()?.headers.xhr.clone().map(|header_map| {
             Ja4H::compute(HttpRequestInput {
                 header_map,
                 http_method: method.unwrap_or(Method::GET),
@@ -90,7 +93,7 @@ impl HttpProfile {
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
     #[must_use]
     pub fn ja4h_h1_form(&self, method: Option<Method>) -> Option<Result<Ja4H, Ja4HComputeError>> {
-        self.h1.headers.form.clone().map(|header_map| {
+        self.h1.as_ref()?.headers.form.clone().map(|header_map| {
             Ja4H::compute(HttpRequestInput {
                 header_map,
                 http_method: method.unwrap_or(Method::GET),
@@ -103,12 +106,15 @@ impl HttpProfile {
     ///
     /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
-    pub fn ja4h_h2_navigate(&self, method: Option<Method>) -> Result<Ja4H, Ja4HComputeError> {
-        Ja4H::compute(HttpRequestInput {
-            header_map: self.h2.headers.navigate.clone(),
+    pub fn ja4h_h2_navigate(
+        &self,
+        method: Option<Method>,
+    ) -> Option<Result<Ja4H, Ja4HComputeError>> {
+        Some(Ja4H::compute(HttpRequestInput {
+            header_map: self.h2.as_ref()?.headers.navigate.clone()?,
             http_method: method.unwrap_or(Method::GET),
             version: Version::HTTP_2,
-        })
+        }))
     }
 
     /// Compute the [`Ja4H`] (hash) for the h2 fetch headers in this [`HttpProfile`], if such headers are available for fetch.
@@ -117,7 +123,7 @@ impl HttpProfile {
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
     #[must_use]
     pub fn ja4h_h2_fetch(&self, method: Option<Method>) -> Option<Result<Ja4H, Ja4HComputeError>> {
-        self.h2.headers.fetch.clone().map(|header_map| {
+        self.h2.as_ref()?.headers.fetch.clone().map(|header_map| {
             Ja4H::compute(HttpRequestInput {
                 header_map,
                 http_method: method.unwrap_or(Method::GET),
@@ -132,7 +138,7 @@ impl HttpProfile {
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
     #[must_use]
     pub fn ja4h_h2_xhr(&self, method: Option<Method>) -> Option<Result<Ja4H, Ja4HComputeError>> {
-        self.h2.headers.xhr.clone().map(|header_map| {
+        self.h2.as_ref()?.headers.xhr.clone().map(|header_map| {
             Ja4H::compute(HttpRequestInput {
                 header_map,
                 http_method: method.unwrap_or(Method::GET),
@@ -147,7 +153,7 @@ impl HttpProfile {
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
     #[must_use]
     pub fn ja4h_h2_form(&self, method: Option<Method>) -> Option<Result<Ja4H, Ja4HComputeError>> {
-        self.h2.headers.form.clone().map(|header_map| {
+        self.h2.as_ref()?.headers.form.clone().map(|header_map| {
             Ja4H::compute(HttpRequestInput {
                 header_map,
                 http_method: method.unwrap_or(Method::GET),
@@ -182,14 +188,14 @@ impl Serialize for HttpProfile {
 
 #[derive(Debug, Serialize)]
 struct HttpProfileSerialize<'a> {
-    h1: &'a Http1Profile,
-    h2: &'a Http2Profile,
+    h1: &'a Option<Http1Profile>,
+    h2: &'a Option<Http2Profile>,
 }
 
 #[derive(Debug, Deserialize)]
 struct HttpProfileDeserialize {
-    h1: Http1Profile,
-    h2: Http2Profile,
+    h1: Option<Http1Profile>,
+    h2: Option<Http2Profile>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -199,7 +205,7 @@ pub struct HttpHeadersProfile {
     /// A navigation request is the regular request that a user-agent
     /// makes automatically or on behalf of the user, but that is not
     /// triggered directly by a script.
-    pub navigate: HeaderMap,
+    pub navigate: Option<HeaderMap>,
     /// The headers to be used for fetch requests.
     ///
     /// A fetch request is a request made by a script to retrieve a resource from a server,
@@ -245,7 +251,7 @@ pub struct Http1Profile {
     /// The (base) headers to be used for the HTTP/1.1 profile.
     pub headers: HttpHeadersProfile,
     /// The settings for the HTTP/1.1 profile.
-    pub settings: Http1Settings,
+    pub settings: Option<Http1Settings>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -263,7 +269,7 @@ pub struct Http2Profile {
     /// The headers to be used for the HTTP/2 profile.
     pub headers: HttpHeadersProfile,
     /// The settings for the HTTP/2 profile.
-    pub settings: Http2Settings,
+    pub settings: Option<Http2Settings>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]

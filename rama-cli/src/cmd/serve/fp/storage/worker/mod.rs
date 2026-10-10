@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use parking_lot::RwLock;
 use rama::{
     error::BoxError,
+    telemetry::tracing,
     ua::profile::{CaptureLevel, IngestionAttempt, ProfileCapture, ProfileDataError},
     utils::octets::{kib, mib},
 };
@@ -38,6 +39,7 @@ pub(super) struct QueueConfig {
     pub maintenance_interval: Duration,
     pub maintenance_rows: usize,
 }
+
 impl Default for QueueConfig {
     fn default() -> Self {
         Self {
@@ -48,6 +50,7 @@ impl Default for QueueConfig {
         }
     }
 }
+
 impl QueueConfig {
     fn validate(self, limits: StoreLimits) -> Result<(), BoxError> {
         let bytes = self
@@ -94,11 +97,13 @@ pub(super) struct CollectionCounters {
     rejected: AtomicU64,
     unconfirmed: AtomicU64,
 }
+
 fn increment(counter: &AtomicU64) {
     _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         Some(value.saturating_add(1))
     });
 }
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CollectionCounts {
     pub dropped_jobs: u64,
@@ -117,6 +122,7 @@ pub(super) struct CollectionCounts {
     pub rejected: u64,
     pub unconfirmed: u64,
 }
+
 impl CollectionCounters {
     /// Failure categories never retain error messages or captured values. These
     /// count attempts; the terminal counters count retired observations.
@@ -126,6 +132,7 @@ impl CollectionCounters {
             self.rejected_attempt(error);
         }
     }
+
     fn rejected_attempt(&self, error: &BoxError) {
         increment(match error.downcast_ref::<ProfileDataError>() {
             Some(ProfileDataError::Expired) => &self.expired,
@@ -133,6 +140,28 @@ impl CollectionCounters {
             Some(_) => &self.invalid_capture,
             None => &self.database_rejections,
         });
+    }
+
+    fn log(&self) {
+        let counts = self.snapshot();
+        tracing::debug!(
+            dropped_jobs = counts.dropped_jobs,
+            maintenance_failures = counts.maintenance_failures,
+            queue_full = counts.queue_full,
+            queue_closed = counts.queue_closed,
+            preparation_drops = counts.preparation_drops,
+            clock_failures = counts.clock_failures,
+            admission_failures = counts.admission_failures,
+            expired = counts.expired,
+            storage_limits = counts.storage_limits,
+            invalid_capture = counts.invalid_capture,
+            database_rejections = counts.database_rejections,
+            uncertain_attempts = counts.uncertain_attempts,
+            confirmed = counts.confirmed,
+            rejected = counts.rejected,
+            unconfirmed = counts.unconfirmed,
+            "fingerprint collection counters"
+        );
     }
 
     pub(super) fn snapshot(&self) -> CollectionCounts {
@@ -163,6 +192,7 @@ pub(super) struct CollectionQueue {
     counters: Arc<CollectionCounters>,
     limits: StoreLimits,
 }
+
 #[derive(Debug)]
 pub(super) struct CollectionReceiver {
     receiver: mpsc::Receiver<Job>,
@@ -177,6 +207,7 @@ impl CollectionReceiver {
         self.receiver.close();
     }
 }
+
 impl Drop for CollectionReceiver {
     fn drop(&mut self) {
         // Also order cancellation and never-started receivers against sends.
@@ -197,6 +228,7 @@ pub(super) struct CollectionReservation {
     counters: Arc<CollectionCounters>,
     limits: StoreLimits,
 }
+
 impl CollectionQueue {
     pub(super) fn new(
         config: QueueConfig,
@@ -240,6 +272,8 @@ impl CollectionQueue {
             }
         }
     }
+
+    #[cfg(test)]
     pub(super) fn counts(&self) -> CollectionCounts {
         self.counters.snapshot()
     }
@@ -252,6 +286,7 @@ pub(super) struct Job {
     connection: Option<ObservationJob>,
     request: ObservationJob,
 }
+
 #[derive(Debug)]
 struct ObservationJob {
     capture: ProfileCapture,
@@ -260,11 +295,13 @@ struct ObservationJob {
     attempted: bool,
     finished: bool,
 }
+
 impl ObservationJob {
     fn finish(mut self, result: CollectionResult) {
         self.record(result);
         self.finished = true;
     }
+
     fn record(&mut self, result: CollectionResult) {
         increment(match result {
             CollectionResult::Stored => &self.counters.confirmed,
@@ -276,6 +313,7 @@ impl ObservationJob {
         }
     }
 }
+
 impl Drop for ObservationJob {
     fn drop(&mut self) {
         if !self.finished {
@@ -287,7 +325,19 @@ impl Drop for ObservationJob {
         }
     }
 }
+
 impl CollectionReservation {
+    pub(super) fn reject_clock(mut self) {
+        self.finished = true;
+        increment(&self.counters.dropped_jobs);
+        increment(&self.counters.clock_failures);
+    }
+
+    pub(super) fn reject_capture(mut self) {
+        self.finished = true;
+        increment(&self.counters.dropped_jobs);
+        increment(&self.counters.invalid_capture);
+    }
     /// This method has no await point between transferring connection ownership
     /// and sending to the reserved queue slot.
     pub(super) fn submit(
@@ -312,6 +362,7 @@ impl CollectionReservation {
             increment(&self.counters.queue_closed);
             return Err(ProfileDataError::Invalid("closed collection queue").into());
         }
+
         #[cfg(test)]
         BEFORE_SEND.with(|hook| {
             if let Some(hook) = hook.borrow_mut().take() {
@@ -344,6 +395,7 @@ impl CollectionReservation {
         });
         Ok(())
     }
+
     fn validate(
         &self,
         owner: CollectionOwner,
@@ -398,12 +450,14 @@ pub(super) trait CollectionSink {
         capture: &ProfileCapture,
     ) -> impl Future<Output = Result<bool, IngestFailure>> + Send;
 }
+
 #[derive(Debug)]
 pub(super) struct PostgresSink {
     pub pool: Pool,
     pub seeds: [[u8; 32]; 2],
     pub limits: StoreLimits,
 }
+
 impl CollectionSink for PostgresSink {
     async fn maintain(&mut self, current_day: u32, rows: usize) -> Result<(), BoxError> {
         let mut client = self.pool.get().await?;
@@ -412,6 +466,7 @@ impl CollectionSink for PostgresSink {
         }
         Ok(())
     }
+
     async fn ingest(
         &mut self,
         current_day: u32,
@@ -422,7 +477,7 @@ impl CollectionSink for PostgresSink {
             .pool
             .get()
             .await
-            .map_err(|_error| IngestFailure::Rejected(_error.into()))?;
+            .map_err(|error| IngestFailure::Rejected(error.into()))?;
         counted::ingest(
             &mut client,
             current_day,
@@ -468,6 +523,7 @@ pub(super) async fn run(
                 }
                 Err(_error) => increment(&counters.maintenance_failures),
             }
+            counters.log();
             next_maintenance = Instant::now() + config.maintenance_interval;
         }
         // Closure is ordered against every send. Outstanding preparation
@@ -547,9 +603,9 @@ pub(super) async fn run(
             observation.finish(result);
         }
     }
+    counters.log();
     Ok(())
 }
 
 #[cfg(test)]
-#[path = "worker/tests.rs"]
 mod tests;

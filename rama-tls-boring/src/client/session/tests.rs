@@ -464,7 +464,7 @@ async fn sessions_only_resume_on_their_own_context_and_server() {
 async fn emulated_profiles_resume_without_changing_their_hello() {
     let db = UserAgentDatabase::try_embedded().unwrap();
     for profile in db.iter() {
-        let tls = &profile.tls;
+        let Some(tls) = &profile.tls else { continue };
         let mut emulated = TlsClientConfig::new_from_client_hello(&tls.client_hello);
         if tls.permute_extensions {
             emulated.set_permute_extensions(true);

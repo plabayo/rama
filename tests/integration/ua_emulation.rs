@@ -24,7 +24,7 @@ use rama::ua::profile::UserAgentDatabase;
 use rama::ua::profile::{
     Http1Profile, Http1Settings, Http2Profile, Http2Settings, HttpHeadersProfile,
 };
-use rama::ua::profile::{TlsProfile, UserAgentProfile};
+use rama::ua::profile::{ProfileKey, TlsProfile, UserAgentProfile};
 use rama::ua::{PlatformKind, UserAgentKind};
 use rama::{Layer, Service};
 use rama_http::layer::version_adapter::RequestVersionAdapter;
@@ -201,19 +201,19 @@ async fn test_ua_emulation() {
                 0x70, 0x73, 0x79, 0x80,
             ],
             http_profile: HttpProfile {
-                h1: Http1Profile {
+                h1: Some(Http1Profile {
                     headers: HttpHeadersProfile {
-                        navigate: HeaderMap::default(),
+                        navigate: Some(HeaderMap::default()),
                         fetch: None,
                         xhr: None,
                         form: None,
                         ws : None,
                     },
-                    settings: Http1Settings::default(),
-                },
-                h2: Http2Profile {
+                    settings: Some(Http1Settings::default()),
+                }),
+                h2: Some(Http2Profile {
                     headers: HttpHeadersProfile {
-                        navigate: [
+                        navigate: Some([
                             (HeaderName::from_static("user-agent"), HeaderValue::from_static("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0")),
                             (HeaderName::from_static("accept"), HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")),
                             (HeaderName::from_static("accept-language"), HeaderValue::from_static("en-US,en;q=0.5")),
@@ -227,14 +227,14 @@ async fn test_ua_emulation() {
                             (HeaderName::from_static("sec-gpc"), HeaderValue::from_static("1")),
                             (HeaderName::from_static("priority"), HeaderValue::from_static("u=0, i")),
                             (HeaderName::from_static("te"), HeaderValue::from_static("trailers")),
-                        ].into_iter().collect(),
+                        ].into_iter().collect()),
                         fetch: None,
                         xhr: None,
                         form: None,
                         ws : None,
                     },
-                    settings: Http2Settings::default(),
-                },
+                    settings: Some(Http2Settings::default()),
+                }),
             },
             expected: TestCaseExpected {
                 ja4: "t13d1717h2_5b57614c22b0_3cbfd9057e0d",
@@ -274,19 +274,17 @@ async fn test_ua_emulation() {
         let client_hello = parse_client_hello(test_case.tls_client_hello_data).expect(description);
 
         let profile = UserAgentProfile {
-            ua_kind: test_case.ua_kind,
+            key: ProfileKey::new("wire-test"),
+            captured: None,
+            ua_kind: Some(test_case.ua_kind),
             ua_version: test_case.ua_version,
             platform: test_case.ua_platform,
-            http: Arc::new(test_case.http_profile),
-            tls: Arc::new(TlsProfile {
+            http: Some(Arc::new(test_case.http_profile)),
+            tls: Some(Arc::new(TlsProfile {
                 client_hello,
-                permute_extensions: TlsProfile::user_agent_permutes_extensions(
-                    test_case.ua_kind,
-                    test_case.ua_version,
-                    test_case.ua_platform,
-                ),
+                permute_extensions: false,
                 ws_client_config_overwrites: None,
-            }),
+            })),
             runtime: None,
         };
 

@@ -21,18 +21,17 @@ use rama::{
     net::address::ip::geo::IpGeoInfo,
     quic::proto::capture::QuicObservation,
     telemetry::tracing,
-    tls::SecureTransport,
     ua::profile::{Http2Settings, JsProfileWebApis, UserAgentSourceInfo},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::{
-    State, StorageAuthorized,
+    State,
     data::{
         DataSource, FetchMode, Http3Info, Initiator, RequestInfo, ResourceType, TlsDisplayInfo,
-        TlsDisplayInfoExtensionData, UserAgentInfo, get_akamai_h2_info, get_and_store_http_info,
-        get_ja4h_info, get_request_info, get_tls_display_info_and_store, get_user_agent_info,
+        TlsDisplayInfoExtensionData, UserAgentInfo, get_akamai_h2_info, get_http_info_and_capture,
+        get_ja4h_info, get_request_info, get_tls_display_info, get_user_agent_info,
     },
 };
 
@@ -201,12 +200,7 @@ pub(super) async fn get_report(
     parts: Parts,
 ) -> Result<Response, ErrorResponse> {
     // Script navigation is a protocol probe, not the user-activated navigation sample.
-    if parts.uri.query().is_some_and(|query| {
-        query
-            .as_encoded_str()
-            .split('&')
-            .any(|pair| pair.split('=').next() == Some("h3_probe"))
-    }) {
+    if super::storage::is_protocol_probe(&parts.uri) {
         state.storage = None;
     }
     let ja4h = get_ja4h_info(&parts);
@@ -225,14 +219,11 @@ pub(super) async fn get_report(
 
     let user_agent_info = get_user_agent_info(&parts.extensions).await;
 
-    let user_agent = user_agent_info.user_agent.clone();
-
-    let http_info = get_and_store_http_info(
+    let http_info = get_http_info_and_capture(
         &state,
         parts.headers,
         &parts.extensions,
         parts.version,
-        user_agent.clone(),
         Initiator::Navigator,
     )
     .await
@@ -281,7 +272,7 @@ pub(super) async fn get_report(
         ));
     }
 
-    let tls_info = get_tls_display_info_and_store(&state, &parts.extensions, user_agent)
+    let tls_info = get_tls_display_info(&parts.extensions)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
@@ -516,46 +507,29 @@ pub(super) async fn post_api_fetch_number(
 
     let user_agent_info = get_user_agent_info(parts.extensions()).await;
 
-    let user_agent = user_agent_info.user_agent.clone();
+    let request: APINumberRequest = body
+        .try_into_json()
+        .await
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()).into_response())?;
+    if let Some(storage) = state.storage.as_ref() {
+        storage.capture_runtime(
+            &parts.extensions,
+            request.source_info.as_ref(),
+            request.js_web_apis.as_ref(),
+        );
+    }
 
-    let http_info = get_and_store_http_info(
+    let http_info = get_http_info_and_capture(
         &state,
         parts.headers,
         &parts.extensions,
         parts.version,
-        user_agent.clone(),
         Initiator::Fetch,
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
-    let request: APINumberRequest = body
-        .try_into_json()
-        .await
-        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()).into_response())?;
-
-    if let Some(storage) = state.storage.as_ref() {
-        let auth = parts.extensions.contains::<StorageAuthorized>();
-        if let Some(js_web_apis) = request.js_web_apis.clone() {
-            storage
-                .store_js_web_apis(user_agent.clone(), auth, js_web_apis)
-                .await
-                .map_err(|err| {
-                    (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
-                })?;
-        }
-
-        if let Some(source_info) = request.source_info.clone() {
-            storage
-                .store_source_info(user_agent.clone(), auth, source_info)
-                .await
-                .map_err(|err| {
-                    (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
-                })?;
-        }
-    }
-
-    let tls_info = get_tls_display_info_and_store(&state, &parts.extensions, user_agent)
+    let tls_info = get_tls_display_info(&parts.extensions)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
@@ -600,20 +574,17 @@ pub(super) async fn post_api_xml_http_request_number(
 
     let user_agent_info = get_user_agent_info(&parts.extensions).await;
 
-    let user_agent = user_agent_info.user_agent.clone();
-
-    let http_info = get_and_store_http_info(
+    let http_info = get_http_info_and_capture(
         &state,
         parts.headers,
         &parts.extensions,
         parts.version,
-        user_agent.clone(),
         Initiator::XMLHttpRequest,
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
-    let tls_info = get_tls_display_info_and_store(&state, &parts.extensions, user_agent)
+    let tls_info = get_tls_display_info(&parts.extensions)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
@@ -660,14 +631,11 @@ pub(super) async fn form(
 
     let user_agent_info = get_user_agent_info(&parts.extensions).await;
 
-    let user_agent = user_agent_info.user_agent.clone();
-
-    let http_info = get_and_store_http_info(
+    let http_info = get_http_info_and_capture(
         &state,
         parts.headers,
         &parts.extensions,
         parts.version,
-        user_agent.clone(),
         Initiator::Form,
     )
     .await
@@ -716,7 +684,7 @@ pub(super) async fn form(
         ));
     }
 
-    let tls_info = get_tls_display_info_and_store(&state, &parts.extensions, user_agent)
+    let tls_info = get_tls_display_info(&parts.extensions)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
@@ -789,35 +757,15 @@ pub(super) async fn ws_api(state: State, ws: ServerWebSocket) -> Result<(), BoxE
         request: parts,
     } = ws;
 
-    let user_agent_info = get_user_agent_info(&parts.extensions).await;
-
-    let user_agent = user_agent_info.user_agent.clone();
-
-    _ = get_and_store_http_info(
+    _ = get_http_info_and_capture(
         &state,
         parts.headers,
         &parts.extensions,
         parts.version,
-        user_agent.clone(),
         Initiator::Ws,
     )
     .await?;
-    tracing::debug!("ws api: http info stored");
-
-    if parts.version != Version::HTTP_3
-        && let Some(hello) = parts
-            .extensions
-            .get_ref::<SecureTransport>()
-            .and_then(|st| st.client_hello())
-        && let Some(storage) = state.storage.as_ref()
-    {
-        let auth = parts.extensions.contains::<StorageAuthorized>();
-        storage
-            .store_tls_ws_client_overwrites_from_client_hello(user_agent, auth, hello.clone())
-            .await
-            .context("store tls client hello as ws client overwrites")?;
-        tracing::debug!("ws api: tls overwrite info stored");
-    }
+    tracing::debug!("ws api: request observation submitted");
 
     ws.send_message(json!({ "initiator": "ws", "version": format!("{:?}", parts.version), "h3": if parts.version == Version::HTTP_3 { "negotiated" } else { "unsupported_or_not_negotiated" } }).to_string().into())
         .await
@@ -1194,7 +1142,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn observation_probe_report_never_stores_navigation_headers() {
+    async fn unavailable_storage_does_not_fail_reports_or_protocol_probes() {
         let service = Router::new_with_state(State {
             data_source: DataSource::default(),
             probe_http3: true,
@@ -1204,7 +1152,7 @@ mod tests {
         })
         .with_get("/report", get_report);
         for (path, expected) in [
-            ("/report", StatusCode::INTERNAL_SERVER_ERROR),
+            ("/report", StatusCode::OK),
             ("/report?h3_probe=1", StatusCode::OK),
             ("/report?other=1&h3_probe=1", StatusCode::OK),
         ] {

@@ -657,7 +657,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn custom_emulation_database_rejects_missing_invalid_empty_and_incomplete_files() {
+    async fn custom_emulation_database_rejects_invalid_files_and_keeps_partial_profiles() {
         let directory = rama::utils::fs::tempdir().unwrap();
 
         let missing = directory.path().join("missing.json");
@@ -679,7 +679,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("deserialize user-agent profiles"),
+                .contains("deserialize bounded profile rows"),
             "{error}"
         );
 
@@ -697,10 +697,15 @@ mod tests {
         tokio::fs::write(&incomplete, serde_json::to_vec(&profile).unwrap())
             .await
             .unwrap();
-        let error = load_emulation_database(&EmulationProfiles::File(incomplete))
+        let database = load_emulation_database(&EmulationProfiles::File(incomplete))
             .await
-            .unwrap_err();
-        assert!(error.to_string().contains("h2_settings"), "{error}");
+            .unwrap();
+        let profile = database.iter().next().unwrap();
+        let http = profile.http.as_ref().unwrap();
+        assert!(http.h1.is_some());
+        let h2 = http.h2.as_ref().unwrap();
+        assert!(h2.settings.is_none());
+        assert!(h2.headers.navigate.is_some());
     }
 
     /// Serve `handler` on an ephemeral loopback port and return its address.

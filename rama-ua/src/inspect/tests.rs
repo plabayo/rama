@@ -140,6 +140,8 @@ async fn captured_tls_and_native_fingerprints_are_shared_per_connection() {
         .get_exact_header_str(UA)
         .unwrap()
         .tls
+        .as_ref()
+        .unwrap()
         .client_hello
         .clone();
     let store = store(database);
@@ -297,6 +299,8 @@ async fn h3_observation_export_keeps_tcp_tls_and_headers_empty() {
         .get_exact_header_str(&ua)
         .unwrap()
         .tls
+        .as_ref()
+        .unwrap()
         .client_hello
         .clone();
     let store = store(database);

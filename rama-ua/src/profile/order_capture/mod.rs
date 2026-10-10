@@ -196,21 +196,33 @@ impl OrderedProtocolCapture {
         Ok(captured)
     }
 
-    pub fn canonical(
+    // Nested formats share semantic validation without allocating an unrelated
+    // canonical envelope or charging its overhead to their own encoding budget.
+    pub(super) fn validate_fields(
         &self,
         limits: OrderCaptureLimits,
-    ) -> Result<CanonicalValue, ProfileDataError> {
+    ) -> Result<(), ProfileDataError> {
         self.completeness
             .require_complete("protocol order observation")?;
         if self.fields.len() > limits.elements {
             return Err(ProfileDataError::LimitExceeded("ordered elements"));
         }
+        for field in &self.fields {
+            self.namespace.validate_field(field, limits)?;
+        }
+        Ok(())
+    }
+
+    pub fn canonical(
+        &self,
+        limits: OrderCaptureLimits,
+    ) -> Result<CanonicalValue, ProfileDataError> {
+        self.validate_fields(limits)?;
         let mut writer = CanonicalWriter::new(ORDER_DOMAIN, limits.bytes)?;
         writer.u8(self.namespace.tag())?;
         writer.u8(self.completeness.tag())?;
         writer.u64(self.fields.len() as u64)?;
         for field in &self.fields {
-            self.namespace.validate_field(field, limits)?;
             writer.u64(field.id)?;
             field.value.encode(&mut writer)?;
         }
@@ -381,7 +393,8 @@ fn normalized_field(
                     }
                 })
                 .collect();
-            available.sort_unstable();
+            // Keep known-version preference order; only reserved placement is a draw.
+            available.sort_by_key(|version| version.is_reserved() && *version != chosen);
             let mut bytes = Vec::new();
             VersionInformation::new(chosen, available).write(&mut bytes);
             ProtocolValue::Literal(bytes.into())

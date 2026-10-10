@@ -10,10 +10,11 @@ use super::{
 };
 
 use super::{
-    CanonicalDomain, CanonicalValue, H2Capture, H2CaptureLimits, HeaderCapture,
-    HeaderCapturePolicy, OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture,
-    ProfileCaptureCompleteness, ProfileDataError, PseudoHeaderCapture, QuicFlightCapture,
-    QuicFlightCaptureLimits, RuntimeProfileCapture, ValueId,
+    CanonicalDomain, CanonicalValue, H2Capture, H2CaptureLimits, H3ClientSequenceCapture,
+    H3SequenceCaptureLimits, HeaderCapture, HeaderCapturePolicy, OrderCaptureLimits,
+    OrderNamespace, OrderedProtocolCapture, ProfileCaptureCompleteness, ProfileDataError,
+    PseudoHeaderCapture, QuicFlightCapture, QuicFlightCaptureLimits, RuntimeProfileCapture,
+    ValueId,
     canonical::{
         CanonicalReader, CanonicalWriter, HEADER_DOMAIN, HEADER_STRUCTURE_DOMAIN, JOINT_DOMAIN,
         JOINT_STRUCTURE_DOMAIN, ORDER_STRUCTURE_DOMAIN,
@@ -34,6 +35,7 @@ impl CaptureLevel {
             Self::Request => 1,
         }
     }
+
     fn from_tag(tag: u8) -> Result<Self, ProfileDataError> {
         match tag {
             0 => Ok(Self::Connection),
@@ -55,6 +57,7 @@ pub enum CapturedSlotKind {
     PseudoHeaders,
     RuntimeMetadata,
     QuicFirstFlight,
+    Http3Sequence,
 }
 
 impl CapturedSlotKind {
@@ -70,8 +73,10 @@ impl CapturedSlotKind {
             Self::PseudoHeaders => 7,
             Self::RuntimeMetadata => 8,
             Self::QuicFirstFlight => 9,
+            Self::Http3Sequence => 10,
         }
     }
+
     fn from_tag(tag: u16) -> Result<Self, ProfileDataError> {
         match tag {
             0 => Ok(Self::Headers),
@@ -84,18 +89,22 @@ impl CapturedSlotKind {
             7 => Ok(Self::PseudoHeaders),
             8 => Ok(Self::RuntimeMetadata),
             9 => Ok(Self::QuicFirstFlight),
+            10 => Ok(Self::Http3Sequence),
             _ => Err(ProfileDataError::Unsupported("joint slot kind")),
         }
     }
+
     fn level(self) -> CaptureLevel {
         match self {
             Self::Headers | Self::PseudoHeaders | Self::RuntimeMetadata => CaptureLevel::Request,
             _ => CaptureLevel::Connection,
         }
     }
+
     fn namespace(self) -> Option<OrderNamespace> {
         match self {
             Self::Headers
+            | Self::Http3Sequence
             | Self::QuicFirstFlight
             | Self::RuntimeMetadata
             | Self::PseudoHeaders
@@ -119,6 +128,14 @@ impl CapturedSlot {
     /// The same owned normalization is used by joint and individual buckets.
     pub fn structural(&self, maximum_bytes: usize) -> Result<CanonicalValue, ProfileDataError> {
         validate_slot(self, false, maximum_bytes)?;
+        if self.kind == CapturedSlotKind::Http3Sequence {
+            let limits = H3SequenceCaptureLimits {
+                bytes: maximum_bytes,
+                ..H3SequenceCaptureLimits::default()
+            };
+            return H3ClientSequenceCapture::from_canonical(&self.value, limits)?
+                .structural(limits);
+        }
         if self.kind == CapturedSlotKind::QuicFirstFlight {
             let limits = QuicFlightCaptureLimits {
                 bytes: maximum_bytes,
@@ -154,6 +171,7 @@ impl CapturedSlot {
                 };
                 return TlsCapture::from_canonical(&self.value, limits)?.structural(limits);
             }
+
             #[cfg(not(feature = "tls"))]
             return Err(ProfileDataError::Unsupported("TLS profile component"));
         }
@@ -229,13 +247,29 @@ fn validate_slot(
             }
             return Ok(());
         }
+
         #[cfg(not(feature = "tls"))]
         return Err(ProfileDataError::Unsupported("TLS profile component"));
     }
+    if slot.kind == CapturedSlotKind::Http3Sequence {
+        return slot.value.validate_content(
+            if structural {
+                CanonicalDomain::H3SequenceStructure
+            } else {
+                CanonicalDomain::H3Sequence
+            },
+            maximum,
+        );
+    }
     if slot.kind == CapturedSlotKind::QuicFirstFlight {
-        return slot
-            .value
-            .validate_content(CanonicalDomain::QuicFlight, maximum);
+        return slot.value.validate_content(
+            if structural {
+                CanonicalDomain::QuicFlightStructure
+            } else {
+                CanonicalDomain::QuicFlight
+            },
+            maximum,
+        );
     }
     if slot.kind == CapturedSlotKind::RuntimeMetadata {
         return slot.value.validate_content(
@@ -316,7 +350,8 @@ fn encode_joint(
             | CapturedSlotKind::PseudoHeaders
             | CapturedSlotKind::RuntimeMetadata => None,
             CapturedSlotKind::TcpTls | CapturedSlotKind::Http2EarlyFrames => Some(0),
-            CapturedSlotKind::QuicFirstFlight
+            CapturedSlotKind::Http3Sequence
+            | CapturedSlotKind::QuicFirstFlight
             | CapturedSlotKind::QuicTls
             | CapturedSlotKind::QuicParameters
             | CapturedSlotKind::Http3Settings

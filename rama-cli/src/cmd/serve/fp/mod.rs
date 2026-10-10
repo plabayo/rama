@@ -57,10 +57,12 @@ use rama::{
     },
 };
 
+mod collection;
 mod data;
 mod endpoints;
 mod state;
 mod storage;
+pub(crate) use storage::{CountedProfileSource, export_counted_profiles};
 
 #[doc(inline)]
 use state::State;
@@ -128,7 +130,7 @@ pub struct CliCommandFingerprint {
     /// http versions to serve: `auto` or a comma separated list of h1, h2 and h3
     ///
     /// `auto` serves HTTP/1.1 and h2 over TCP and, in secure mode, HTTP/3 over QUIC.
-    /// HTTP/3 requests are shown but not collected into the profile storage.
+    /// HTTP/3 observations use the configured bounded profile store.
     #[arg(long, default_value = "auto")]
     http_version: HttpVersions,
 
@@ -207,7 +209,7 @@ pub async fn run(
     let pg_url = std::env::var("DATABASE_URL").ok();
     let storage_auth = std::env::var("RAMA_FP_STORAGE_COOKIE").ok();
 
-    let mut state = State::new(pg_url, storage_auth.as_deref())
+    let mut state = State::new(pg_url, storage_auth.as_deref(), &exec)
         .await
         .context("create state")?;
     state.probe_http3 = listeners.http3.is_some() && listeners.tcp.is_some();
@@ -296,7 +298,13 @@ pub async fn run(
         nosniff_layer,
         referrer_layer,
         frame_layer,
-        StorageAuthLayer::new(&state),
+        (
+            state
+                .storage
+                .as_ref()
+                .and_then(storage::Storage::capture_layer),
+            StorageAuthLayer::new(&state),
+        ),
         SetResponseHeaderLayer::if_not_present_typed(AcceptCh(client_hints.clone())),
         SetResponseHeaderLayer::if_not_present_typed(CriticalCh(client_hints)),
         SetResponseHeaderLayer::if_not_present_typed(vary_client_hints),
@@ -305,6 +313,11 @@ pub async fn run(
         http_forwarded_layer,
     );
 
+    let collection_layer = state
+        .storage
+        .as_ref()
+        .and_then(storage::Storage::capture_layer)
+        .map(|_| collection::CollectionLayer);
     let router = Router::new_with_state(state)
         .with_get("/", Redirect::temporary("/consent"))
         .with_get("/consent", endpoints::get_consent)
@@ -346,7 +359,7 @@ pub async fn run(
         listeners,
         maybe_tls_server_config,
         http_service,
-        tcp_forwarded_layer,
+        (tcp_forwarded_layer, collection_layer),
     )
 }
 
@@ -357,11 +370,12 @@ fn serve_http<Response>(
     listeners: HttpListeners,
     maybe_tls_server_config: Option<TlsServerConfig>,
     http_service: impl Service<Request, Output = Response, Error = Infallible> + Clone,
-    maybe_ha_proxy_layer: Option<HaProxyLayer>,
+    connection_layers: (Option<HaProxyLayer>, Option<collection::CollectionLayer>),
 ) -> Result<(), BoxError>
 where
     Response: IntoResponse + Send + 'static,
 {
+    let (maybe_ha_proxy_layer, collection_layer) = connection_layers;
     let connection_timeout = if cfg.timeout > 0. {
         TimeoutLayer::new(Duration::from_secs_f64(cfg.timeout))
     } else {
@@ -392,6 +406,7 @@ where
             connection_limit.clone(),
             throttle.clone(),
             body_limit.clone(),
+            collection_layer,
         )
             .into_layer(http3.service(http_service.clone()));
         http3_endpoints.serve(&exec, "FP", endpoint, Arc::new(http3_service));
@@ -411,6 +426,7 @@ where
         connection_limit,
         throttle,
         body_limit,
+        collection_layer,
         maybe_tls_server_config.map(|cfg| TlsAcceptorLayer::new(cfg).with_store_client_hello(true)),
     );
 

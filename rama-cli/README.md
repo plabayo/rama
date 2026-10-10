@@ -42,6 +42,22 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 `rama-cli` is the official rama binary, which can be used to proxy requests, make requests and inspect your traffic. It serves mostly as an example to showcase some of what you can do with rama, but of course if you wish you can also use it for your actual production use cases, just know we give no guarantees of any kind.
 
 
+### User-agent tools
+
+`rama ua parse '<User-Agent>'` describes the recognized family, version,
+platform and device. Add `-j` or `--json` for JSON output.
+
+`rama ua view profiles.json` browses captured profiles in a terminal. Use `/`
+to filter, arrow keys to select, Page Up/Down to scroll details, and `q` to quit.
+The overview shows observed protocols, counts, freshness and sampling coverage.
+`--summary` prints a compact list; piped output uses that format automatically.
+
+Without a path, `rama ua view` reads `RAMA_FP_DATABASE_URL`, as does
+`rama ua export --output profiles.json`. Both read public observations from the
+last 14 UTC day buckets by default; `--days` changes the window and `--authorized`
+selects the authorized partition. Export validates every profile before publishing
+the file; `--replace` permits replacing an existing destination.
+
 ### Proxy interception
 
 Start the inspector with `rama serve proxy --mitm`. Forwarding is automatic by

@@ -48,6 +48,7 @@ impl FingerprintCache {
         let ua = user_agent?;
         let expected = self.0.get(ua)?;
         let profile = database.get_exact_header_str(ua)?;
+        let kind = profile.ua_kind?;
         #[cfg(feature = "tls")]
         if metadata
             .connection
@@ -57,9 +58,9 @@ impl FingerprintCache {
                     .tls
                     .get_or_init(|| {
                         Box::new((
-                            profile.tls.compute_ja3().ok(),
-                            profile.tls.compute_ja4().ok(),
-                            profile.tls.compute_peet().ok(),
+                            profile.tls.as_ref().and_then(|tls| tls.compute_ja3().ok()),
+                            profile.tls.as_ref().and_then(|tls| tls.compute_ja4().ok()),
+                            profile.tls.as_ref().and_then(|tls| tls.compute_peet().ok()),
                         ))
                     })
                     .as_ref();
@@ -77,7 +78,7 @@ impl FingerprintCache {
             })
         {
             return Some(KnownFingerprint {
-                kind: profile.ua_kind,
+                kind,
                 version: profile.ua_version,
             });
         }
@@ -116,27 +117,30 @@ impl FingerprintCache {
             matches(&http(profile, parts.method.clone(), h2))
         };
         matched.then_some(KnownFingerprint {
-            kind: profile.ua_kind,
+            kind,
             version: profile.ua_version,
         })
     }
 }
 
 fn http(profile: &UserAgentProfile, method: Method, h2: bool) -> [Option<Ja4H>; 4] {
+    let Some(profile) = profile.http.as_ref() else {
+        return [None, None, None, None];
+    };
     let method = Some(method);
     let values = if h2 {
         [
-            Some(profile.http.ja4h_h2_navigate(method.clone())),
-            profile.http.ja4h_h2_fetch(method.clone()),
-            profile.http.ja4h_h2_xhr(method.clone()),
-            profile.http.ja4h_h2_form(method),
+            profile.ja4h_h2_navigate(method.clone()),
+            profile.ja4h_h2_fetch(method.clone()),
+            profile.ja4h_h2_xhr(method.clone()),
+            profile.ja4h_h2_form(method),
         ]
     } else {
         [
-            Some(profile.http.ja4h_h1_navigate(method.clone())),
-            profile.http.ja4h_h1_fetch(method.clone()),
-            profile.http.ja4h_h1_xhr(method.clone()),
-            profile.http.ja4h_h1_form(method),
+            profile.ja4h_h1_navigate(method.clone()),
+            profile.ja4h_h1_fetch(method.clone()),
+            profile.ja4h_h1_xhr(method.clone()),
+            profile.ja4h_h1_form(method),
         ]
     };
     values.map(|value| value.and_then(Result::ok))
@@ -198,6 +202,7 @@ mod tests {
         }
         assert_eq!(cache.0[ua].http.lock().len(), 1);
     }
+
     #[cfg(feature = "tls")]
     #[test]
     fn h3_observation_does_not_match_a_tcp_tls_fingerprint() {
@@ -208,6 +213,8 @@ mod tests {
             .get_exact_header_str(ua)
             .unwrap()
             .tls
+            .as_ref()
+            .unwrap()
             .client_hello
             .clone();
         let (parts, ()) = Request::builder()

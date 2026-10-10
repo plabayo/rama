@@ -7,11 +7,15 @@ fn profile() -> UserAgentProfileInput {
     let database = UserAgentDatabase::try_embedded().unwrap();
     let observed = database.iter().next().unwrap();
     let mut profile = UserAgentProfileInput::new(observed.ua_str().unwrap());
-    profile.h1_settings = Some(observed.http.h1.settings.clone());
-    profile.h1_headers_navigate = Some(observed.http.h1.headers.navigate.clone());
-    profile.h2_settings = Some(observed.http.h2.settings.clone());
-    profile.h2_headers_navigate = Some(observed.http.h2.headers.navigate.clone());
-    profile.tls_client_hello = Some(observed.tls.client_hello.clone());
+    let http = observed.http.as_ref().unwrap();
+    let h1 = http.h1.as_ref().unwrap();
+    let h2 = http.h2.as_ref().unwrap();
+    profile.h1_settings = h1.settings.clone();
+    profile.h1_headers_navigate = h1.headers.navigate.clone();
+    profile.h2_settings = h2.settings.clone();
+    profile.h2_headers_navigate = h2.headers.navigate.clone();
+    profile.tls_client_hello = Some(observed.tls.as_ref().unwrap().client_hello.clone());
+
     profile
 }
 
@@ -62,7 +66,7 @@ async fn invalid_profiles_remove_staged_output_and_release_admission() {
     let path = staged.staging.path().to_owned();
     let error = tokio::task::spawn_blocking(move || {
         staged
-            .write(UserAgentProfileInput::new("incomplete"), true)
+            .write(UserAgentProfileInput::new(""), true)
             .err()
             .unwrap()
     })

@@ -6,6 +6,7 @@ use super::{
     UserAgentSourceInfo,
     canonical::{CanonicalReader, CanonicalWriter},
 };
+use rama_utils::octets::kib;
 use serde::Serialize;
 use std::str;
 
@@ -25,9 +26,11 @@ impl RuntimeProfileCapture {
         maximum_bytes: usize,
     ) -> Result<Self, ProfileDataError> {
         encode(completeness, runtime, maximum_bytes, false)?;
+        let mut runtime = runtime.clone();
+        normalize_runtime(&mut runtime);
         Ok(Self {
             completeness,
-            runtime: runtime.clone(),
+            runtime,
         })
     }
     /// The HTTP adapter borrows decoded report fields and validates their aggregate
@@ -45,16 +48,19 @@ impl RuntimeProfileCapture {
             maximum_bytes,
             false,
         )?;
+        let mut runtime = UserAgentRuntimeProfile {
+            source_info: source.cloned(),
+            js_info: web_apis.map(|value| JsProfile {
+                web_apis: Some(value.clone()),
+            }),
+        };
+        normalize_runtime(&mut runtime);
         Ok(Self {
             completeness,
-            runtime: UserAgentRuntimeProfile {
-                source_info: source.cloned(),
-                js_info: web_apis.map(|value| JsProfile {
-                    web_apis: Some(value.clone()),
-                }),
-            },
+            runtime,
         })
     }
+
     pub fn canonical(&self, maximum_bytes: usize) -> Result<CanonicalValue, ProfileDataError> {
         encode(self.completeness, &self.runtime, maximum_bytes, false)
     }
@@ -64,12 +70,14 @@ impl RuntimeProfileCapture {
         self.canonical(maximum_bytes)?;
         encode(self.completeness, &self.runtime, maximum_bytes, true)
     }
+
     pub fn from_canonical(
         value: &CanonicalValue,
         maximum_bytes: usize,
     ) -> Result<Self, ProfileDataError> {
         decode(value, maximum_bytes, false)
     }
+
     pub(super) fn validate_structure(
         value: &CanonicalValue,
         maximum_bytes: usize,
@@ -77,6 +85,29 @@ impl RuntimeProfileCapture {
         decode(value, maximum_bytes, true)?;
         Ok(())
     }
+}
+
+fn normalize_runtime(runtime: &mut UserAgentRuntimeProfile) {
+    if let Some(screen) = runtime
+        .js_info
+        .as_mut()
+        .and_then(|js| js.web_apis.as_mut())
+        .and_then(|apis| apis.screen.as_mut())
+        && let Some(value) = &mut screen.moz_brightness
+        && value.to_bits() & 0x7fff_ffff == 0
+    {
+        *value = 0.0;
+    }
+}
+
+fn validate_text(value: &str, maximum: usize) -> Result<(), ProfileDataError> {
+    if value.len() > maximum {
+        return Err(ProfileDataError::LimitExceeded("runtime text field"));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(ProfileDataError::Invalid("runtime text control character"));
+    }
+    Ok(())
 }
 
 fn encode(
@@ -99,6 +130,7 @@ fn encode(
         structural,
     )
 }
+
 #[derive(Clone, Copy)]
 enum RuntimeJs<'a> {
     Absent,
@@ -211,20 +243,40 @@ fn flag(reader: &mut CanonicalReader<'_>) -> Result<bool, ProfileDataError> {
         _ => Err(ProfileDataError::Invalid("runtime presence flag")),
     }
 }
+
 fn write_text(
     writer: &mut CanonicalWriter,
     value: Option<&str>,
     structural: bool,
 ) -> Result<(), ProfileDataError> {
+    write_text_bounded(writer, value, structural, kib(1))
+}
+
+fn write_text_bounded(
+    writer: &mut CanonicalWriter,
+    value: Option<&str>,
+    structural: bool,
+    maximum: usize,
+) -> Result<(), ProfileDataError> {
     writer.u8(u8::from(value.is_some()))?;
-    if let Some(value) = value
-        && !structural
-    {
-        writer.bytes(value.as_bytes())?;
+    if let Some(value) = value {
+        validate_text(value, maximum)?;
+        if !structural {
+            writer.bytes(value.as_bytes())?;
+        }
     }
     Ok(())
 }
+
 fn read_text(
+    reader: &mut CanonicalReader<'_>,
+    maximum: usize,
+    structural: bool,
+) -> Result<Option<String>, ProfileDataError> {
+    read_text_bounded(reader, maximum.min(kib(1)), structural)
+}
+
+fn read_text_bounded(
     reader: &mut CanonicalReader<'_>,
     maximum: usize,
     structural: bool,
@@ -232,14 +284,15 @@ fn read_text(
     if !flag(reader)? {
         return Ok(None);
     }
-    Ok(Some(if structural {
-        String::new()
-    } else {
-        str::from_utf8(reader.bytes(maximum)?)
-            .map_err(|_error| ProfileDataError::Invalid("runtime UTF-8"))?
-            .to_owned()
-    }))
+    if structural {
+        return Ok(Some(String::new()));
+    }
+    let value = str::from_utf8(reader.bytes(maximum)?)
+        .map_err(|_error| ProfileDataError::Invalid("runtime UTF-8"))?;
+    validate_text(value, maximum)?;
+    Ok(Some(value.to_owned()))
 }
+
 fn write_texts(
     writer: &mut CanonicalWriter,
     value: Option<&[String]>,
@@ -253,12 +306,14 @@ fn write_texts(
         if !structural {
             writer.u64(value.len() as u64)?;
             for text in value {
+                validate_text(text, kib(1))?;
                 writer.bytes(text.as_bytes())?;
             }
         }
     }
     Ok(())
 }
+
 fn read_texts(
     reader: &mut CanonicalReader<'_>,
     maximum: usize,
@@ -270,11 +325,10 @@ fn read_texts(
     let mut values = Vec::new();
     if !structural {
         for _ in 0..reader.count(64)? {
-            values.push(
-                str::from_utf8(reader.bytes(maximum)?)
-                    .map_err(|_error| ProfileDataError::Invalid("runtime UTF-8"))?
-                    .to_owned(),
-            );
+            let text = str::from_utf8(reader.bytes(maximum.min(kib(1)))?)
+                .map_err(|_error| ProfileDataError::Invalid("runtime UTF-8"))?;
+            validate_text(text, kib(1))?;
+            values.push(text.to_owned());
         }
     }
     Ok(Some(values))
@@ -293,6 +347,7 @@ fn write_bool(
     }
     Ok(())
 }
+
 fn read_bool(
     reader: &mut CanonicalReader<'_>,
     _maximum: usize,
@@ -317,6 +372,7 @@ fn write_int(
     }
     Ok(())
 }
+
 fn read_int(
     reader: &mut CanonicalReader<'_>,
     _maximum: usize,
@@ -352,6 +408,7 @@ fn write_float(
     }
     Ok(())
 }
+
 fn read_float(
     reader: &mut CanonicalReader<'_>,
     _maximum: usize,
@@ -379,6 +436,7 @@ fn write_source(
     write_text(writer, value.browser_version.as_deref(), structural)?;
     Ok(())
 }
+
 fn read_source(
     reader: &mut CanonicalReader<'_>,
     maximum: usize,
@@ -410,11 +468,12 @@ fn write_navigator(
     write_text(writer, value.platform.as_deref(), structural)?;
     write_text(writer, value.product.as_deref(), structural)?;
     write_text(writer, value.product_sub.as_deref(), structural)?;
-    write_text(writer, value.user_agent.as_deref(), structural)?;
+    write_text_bounded(writer, value.user_agent.as_deref(), structural, kib(8))?;
     write_text(writer, value.vendor.as_deref(), structural)?;
     write_text(writer, value.vendor_sub.as_deref(), structural)?;
     Ok(())
 }
+
 fn read_navigator(
     reader: &mut CanonicalReader<'_>,
     maximum: usize,
@@ -433,7 +492,7 @@ fn read_navigator(
         platform: read_text(reader, maximum, structural)?,
         product: read_text(reader, maximum, structural)?,
         product_sub: read_text(reader, maximum, structural)?,
-        user_agent: read_text(reader, maximum, structural)?,
+        user_agent: read_text_bounded(reader, maximum.min(kib(8)), structural)?,
         vendor: read_text(reader, maximum, structural)?,
         vendor_sub: read_text(reader, maximum, structural)?,
     })
@@ -461,6 +520,7 @@ fn write_screen(
     write_text(writer, value.unlock_orientation.as_deref(), structural)?;
     Ok(())
 }
+
 fn read_screen(
     reader: &mut CanonicalReader<'_>,
     maximum: usize,
@@ -506,15 +566,18 @@ mod tests {
             }),
         }
     }
+
     fn fixture() -> UserAgentRuntimeProfile {
         serde_json::from_value(serde_json::json!({"source_info":{"device_name":"synthetic","os":"OS","os_version":"1.2","browser_name":"Browser","browser_version":"3.4"},"js_info":{"web_apis":{"navigator":{"app_code_name":"Mozilla","app_name":"Netscape","build_id":"7","cookie_enabled":false,"do_not_track":"1","language":"en-US","languages":["en-US","en","fr"],"oscpu":"test","pdf_viewer_enabled":true,"platform":"platform","product":"Gecko","product_sub":"1","user_agent":"Synthetic/1","vendor":"Vendor","vendor_sub":""},"screen":{"width":1024,"height":768,"avail_width":1000,"avail_height":700,"avail_left":-100,"left":-200,"avail_top":-300,"top":-400,"color_depth":24,"pixel_depth":24,"type":"lcd","moz_orientation":"landscape","moz_brightness":0.5,"lock_orientation":"lock","unlock_orientation":"unlock"}}}})).unwrap()
     }
+
     fn resign(bytes: Vec<u8>) -> CanonicalValue {
         CanonicalValue {
             id: ValueId(Sha256::digest(&bytes).into()),
             bytes: bytes.into(),
         }
     }
+
     #[test]
     fn runtime_metadata_uses_versioned_independent_canonical_bytes() {
         let capture = RuntimeProfileCapture::capture(
@@ -545,6 +608,7 @@ mod tests {
             ]
         );
     }
+
     #[test]
     fn runtime_round_trip_preserves_every_typed_field_and_absence() {
         for runtime in [
@@ -581,6 +645,7 @@ mod tests {
             );
         }
     }
+
     #[test]
     fn runtime_budget_completeness_and_language_limits_precede_retention() {
         let runtime = fixture();
@@ -623,6 +688,7 @@ mod tests {
         RuntimeProfileCapture::capture(ProfileCaptureCompleteness::Complete, &empty, kib(16))
             .unwrap_err();
     }
+
     #[test]
     fn runtime_floats_are_finite_and_negative_zero_has_one_identity() {
         let mut runtime = fixture();
@@ -668,6 +734,7 @@ mod tests {
         }
         assert_eq!(ids[0], ids[1]);
     }
+
     #[test]
     fn runtime_structures_group_values_but_preserve_field_presence() {
         let mut runtime = fixture();
@@ -705,6 +772,7 @@ mod tests {
                 .id
         );
     }
+
     #[test]
     fn runtime_decode_rejects_bad_envelopes_tags_strings_and_trailing_bytes() {
         let original = RuntimeProfileCapture::capture(
@@ -751,6 +819,7 @@ mod tests {
         bytes[20] = 2;
         resign(bytes).validated_domain(kib(16)).unwrap_err();
     }
+
     #[test]
     fn runtime_metadata_is_request_owned_in_complete_joint_samples() {
         let value = RuntimeProfileCapture::capture(
@@ -798,5 +867,132 @@ mod tests {
                 .unwrap_err();
         }
         RuntimeProfileCapture::capture_report(None, None, kib(16)).unwrap_err();
+    }
+    fn text_paths(value: &serde_json::Value, prefix: &str, paths: &mut Vec<String>) {
+        match value {
+            serde_json::Value::String(_) => paths.push(prefix.into()),
+            serde_json::Value::Object(values) => {
+                for (key, value) in values {
+                    text_paths(value, &format!("{prefix}/{key}"), paths);
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for (index, value) in values.iter().enumerate() {
+                    text_paths(value, &format!("{prefix}/{index}"), paths);
+                }
+            }
+            _ => (),
+        }
+    }
+
+    #[test]
+    fn every_runtime_text_field_has_a_local_bound_and_rejects_controls() {
+        let source = serde_json::to_value(fixture()).unwrap();
+        let mut paths = Vec::new();
+        text_paths(&source, "", &mut paths);
+        assert_eq!(paths.len(), 24);
+        for path in paths {
+            let maximum = if path.ends_with("/user_agent") {
+                kib(8)
+            } else {
+                kib(1)
+            };
+            for text in [
+                "x\0y".to_owned(),
+                "x\u{7f}y".to_owned(),
+                "x\u{85}y".to_owned(),
+                "x".repeat(maximum + 1),
+            ] {
+                let mut invalid = source.clone();
+                *invalid.pointer_mut(&path).unwrap() = text.into();
+                let runtime: UserAgentRuntimeProfile = serde_json::from_value(invalid).unwrap();
+                RuntimeProfileCapture::capture(
+                    ProfileCaptureCompleteness::Complete,
+                    &runtime,
+                    kib(16),
+                )
+                .unwrap_err();
+                RuntimeProfileCapture::capture_report(
+                    runtime.source_info.as_ref(),
+                    runtime.js_info.as_ref().and_then(|js| js.web_apis.as_ref()),
+                    kib(16),
+                )
+                .unwrap_err();
+            }
+            let mut valid = source.clone();
+            *valid.pointer_mut(&path).unwrap() = "x".repeat(maximum).into();
+            let runtime: UserAgentRuntimeProfile = serde_json::from_value(valid).unwrap();
+            RuntimeProfileCapture::capture(ProfileCaptureCompleteness::Complete, &runtime, kib(16))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn imported_runtime_text_controls_are_rejected() {
+        let value = RuntimeProfileCapture::capture(
+            ProfileCaptureCompleteness::Complete,
+            &source(),
+            kib(16),
+        )
+        .unwrap()
+        .canonical(kib(16))
+        .unwrap();
+        let mut bytes = value.bytes.to_vec();
+        let start = bytes
+            .windows(6)
+            .position(|value| value == b"TestOS")
+            .unwrap();
+        bytes[start] = 0;
+        RuntimeProfileCapture::from_canonical(&resign(bytes), kib(16)).unwrap_err();
+    }
+
+    #[test]
+    fn retained_runtime_numbers_match_their_canonical_zero() {
+        let mut runtime = fixture();
+        runtime
+            .js_info
+            .as_mut()
+            .unwrap()
+            .web_apis
+            .as_mut()
+            .unwrap()
+            .screen
+            .as_mut()
+            .unwrap()
+            .moz_brightness = Some(-0.0);
+        let captured =
+            RuntimeProfileCapture::capture(ProfileCaptureCompleteness::Complete, &runtime, kib(16))
+                .unwrap();
+        let report = RuntimeProfileCapture::capture_report(
+            runtime.source_info.as_ref(),
+            runtime.js_info.as_ref().and_then(|js| js.web_apis.as_ref()),
+            kib(16),
+        )
+        .unwrap();
+        for captured in [captured, report] {
+            let retained = captured
+                .runtime
+                .js_info
+                .as_ref()
+                .unwrap()
+                .web_apis
+                .as_ref()
+                .unwrap()
+                .screen
+                .as_ref()
+                .unwrap()
+                .moz_brightness
+                .unwrap();
+            assert_eq!(retained.to_bits(), 0);
+            let decoded = RuntimeProfileCapture::from_canonical(
+                &captured.canonical(kib(16)).unwrap(),
+                kib(16),
+            )
+            .unwrap();
+            assert_eq!(
+                serde_json::to_vec(&captured).unwrap(),
+                serde_json::to_vec(&decoded).unwrap()
+            );
+        }
     }
 }

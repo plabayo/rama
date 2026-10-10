@@ -25,6 +25,7 @@ fn limits() -> StoreLimits {
         checkpoint_bytes: kib(16),
     }
 }
+
 fn capture(connection: bool) -> ProfileCapture {
     let policy = HeaderCapturePolicy::default();
     let mut headers = HeaderMap::new();
@@ -82,18 +83,21 @@ fn capture(connection: bool) -> ProfileCapture {
         },
     }
 }
+
 fn owner(authorized: bool) -> CollectionOwner {
     CollectionOwner {
         authorized,
         profile: capture(false).profile.canonical(kib(16)).unwrap().id,
     }
 }
+
 fn permit(lease: &Arc<CollectionLease>, owner: CollectionOwner) -> ConnectionPermit {
     match lease.claim(owner) {
         CollectionClaim::Connection(permit) => permit,
         claim => panic!("expected permit, got {claim:?}"),
     }
 }
+
 #[derive(Clone, Copy)]
 enum Outcome {
     Confirmed,
@@ -101,6 +105,7 @@ enum Outcome {
     Unconfirmed,
     Pending,
 }
+
 #[derive(Default)]
 struct Recorded {
     attempts: Vec<(IngestionAttempt, ValueId)>,
@@ -112,6 +117,7 @@ struct Sink {
     started: Option<oneshot::Sender<()>>,
     advance: Duration,
 }
+
 fn sink(actions: impl IntoIterator<Item = Outcome>) -> (Sink, Arc<Mutex<Recorded>>) {
     let records = Arc::new(Mutex::new(Recorded::default()));
     (
@@ -124,11 +130,13 @@ fn sink(actions: impl IntoIterator<Item = Outcome>) -> (Sink, Arc<Mutex<Recorded
         records,
     )
 }
+
 impl CollectionSink for Sink {
     async fn maintain(&mut self, current_day: u32, rows: usize) -> Result<(), BoxError> {
         self.records.lock().maintenance.push((current_day, rows));
         Ok(())
     }
+
     async fn ingest(
         &mut self,
         _current_day: u32,
@@ -161,6 +169,7 @@ impl CollectionSink for Sink {
         }
     }
 }
+
 fn nonce() -> impl FnMut() -> Result<[u8; 12], BoxError> {
     let mut n = 0u8;
     move || {
@@ -573,10 +582,12 @@ async fn fp_collection_queue_retries_committed_observations_and_separates_owners
         lose: bool,
         attempts: Arc<Mutex<Vec<IngestionAttempt>>>,
     }
+
     impl CollectionSink for LoseCommitReply {
         async fn maintain(&mut self, day: u32, rows: usize) -> Result<(), BoxError> {
             self.inner.maintain(day, rows).await
         }
+
         async fn ingest(
             &mut self,
             day: u32,
@@ -956,5 +967,23 @@ fn dropped_receiver_rejects_reserved_jobs_before_last_sender_drops() {
             counts.invalid_capture
         ),
         (1, 1, 0, 0)
+    );
+}
+
+#[test]
+fn preparation_failures_keep_clock_capture_and_cancellation_separate() {
+    let (queue, _receiver) = CollectionQueue::new(QueueConfig::default(), limits()).unwrap();
+    queue.try_reserve().unwrap().reject_clock();
+    queue.try_reserve().unwrap().reject_capture();
+    drop(queue.try_reserve().unwrap());
+    let counts = queue.counts();
+    assert_eq!(
+        (
+            counts.dropped_jobs,
+            counts.clock_failures,
+            counts.invalid_capture,
+            counts.preparation_drops
+        ),
+        (3, 1, 1, 1)
     );
 }

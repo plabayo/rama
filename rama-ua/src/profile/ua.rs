@@ -3,9 +3,9 @@ use std::sync::Arc;
 use rama_http::header::USER_AGENT;
 use serde::{Deserialize, Serialize};
 
-use crate::{PlatformKind, UserAgentKind};
+use crate::{PlatformKind, UserAgent, UserAgentKind};
 
-use super::JsProfile;
+use super::{AnalyzedProfile, HttpProfile, JsProfile, ProfileKey};
 
 #[derive(Debug, Clone)]
 /// The main profile for the user-agent.
@@ -25,51 +25,61 @@ use super::JsProfile;
 /// [`TlsProfile`]: crate::profile::TlsProfile
 /// [`JsProfile`]: crate::profile::JsProfile
 pub struct UserAgentProfile {
+    pub key: ProfileKey,
+    /// Validated counted observations, including optional H3 and QUIC components.
+    pub captured: Option<Arc<AnalyzedProfile>>,
     /// The kind of [`crate::UserAgent`]
-    pub ua_kind: UserAgentKind,
+    pub ua_kind: Option<UserAgentKind>,
     /// The version of the [`crate::UserAgent`]
     pub ua_version: Option<usize>,
     /// The platform the [`crate::UserAgent`] is running on.
     pub platform: Option<PlatformKind>,
 
     /// The profile information regarding the http implementation of the [`crate::UserAgent`].
-    pub http: Arc<super::HttpProfile>,
+    pub http: Option<Arc<HttpProfile>>,
 
     #[cfg(feature = "tls")]
     #[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
     /// The profile information regarding the tls implementation of the [`crate::UserAgent`].
-    pub tls: Arc<super::TlsProfile>,
+    pub tls: Option<Arc<super::TlsProfile>>,
 
     /// Runtime (meta) info about the [`crate::UserAgent`].
     pub runtime: Option<Arc<UserAgentRuntimeProfile>>,
 }
 
 impl UserAgentProfile {
-    /// Get the user-agent string of the [`crate::UserAgent`].
-    ///
-    /// Extracts the user-agent string from the http headers of the [`crate::UserAgent`].
-    pub fn ua_str(&self) -> Option<&str> {
-        if let Some(ua) = self
-            .http
-            .h1
-            .headers
-            .navigate
-            .get(USER_AGENT)
-            .and_then(|v| v.to_str().ok())
-        {
-            Some(ua)
-        } else if let Some(ua) = self
-            .http
-            .h2
-            .headers
-            .navigate
-            .get(USER_AGENT)
-            .and_then(|v| v.to_str().ok())
-        {
-            Some(ua)
-        } else {
-            None
+    pub fn new(key: ProfileKey) -> Self {
+        let ua = key.user_agent.as_deref().map(UserAgent::new);
+        Self {
+            ua_kind: ua.as_ref().and_then(UserAgent::ua_kind),
+            ua_version: ua.as_ref().and_then(UserAgent::ua_version),
+            platform: key.platform,
+            key,
+            captured: None,
+            http: None,
+            #[cfg(feature = "tls")]
+            tls: None,
+            runtime: None,
         }
+    }
+
+    pub fn from_captured(captured: AnalyzedProfile) -> Self {
+        let mut profile = Self::new(captured.key.clone());
+        profile.captured = Some(Arc::new(captured));
+        profile
+    }
+
+    /// The exact observed User-Agent, when present.
+    pub fn ua_str(&self) -> Option<&str> {
+        self.key.user_agent.as_deref().or_else(|| {
+            let http = self.http.as_ref()?;
+            http.h1
+                .as_ref()
+                .and_then(|h1| h1.headers.navigate.as_ref())
+                .or_else(|| http.h2.as_ref().and_then(|h2| h2.headers.navigate.as_ref()))
+                .and_then(|headers| headers.get(USER_AGENT))
+                .and_then(|value| value.to_str().ok())
+        })
     }
 }
 

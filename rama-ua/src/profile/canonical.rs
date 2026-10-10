@@ -9,11 +9,12 @@ use sha2::{Digest as _, Sha256};
 use super::{TlsCapture, TlsCaptureLimits, tls_capture::structure::validate_tls_structure};
 
 use super::{
-    FlowKey, H2Capture, H2CaptureLimits, HeaderCapture, HeaderCapturePolicy, JointCapture,
-    JointCaptureLimits, OrderCaptureLimits, OrderedProtocolCapture, ProfileKey,
-    ProfileObservationScope, PseudoHeaderCapture, QuicFlightCapture, QuicFlightCaptureLimits,
-    RuntimeProfileCapture, header_structure::validate_header_structure,
-    joint::validate_joint_structure, order_capture::validate_structure,
+    FlowKey, H2Capture, H2CaptureLimits, H3ClientSequenceCapture, H3SequenceCaptureLimits,
+    HeaderCapture, HeaderCapturePolicy, JointCapture, JointCaptureLimits, OrderCaptureLimits,
+    OrderedProtocolCapture, ProfileKey, ProfileObservationScope, PseudoHeaderCapture,
+    QuicFlightCapture, QuicFlightCaptureLimits, RuntimeProfileCapture,
+    header_structure::validate_header_structure, joint::validate_joint_structure,
+    order_capture::validate_structure,
 };
 
 /// Stable canonical domains; serialized tags remain independent of Rust enum layout.
@@ -39,6 +40,9 @@ pub enum CanonicalDomain {
     RuntimeMetadata = 16,
     RuntimeMetadataStructure = 17,
     QuicFlight = 18,
+    H3Sequence = 19,
+    H3SequenceStructure = 20,
+    QuicFlightStructure = 21,
 }
 
 impl From<CanonicalDomain> for u16 {
@@ -75,6 +79,9 @@ impl TryFrom<u16> for CanonicalDomain {
             16 => Ok(Self::RuntimeMetadata),
             17 => Ok(Self::RuntimeMetadataStructure),
             18 => Ok(Self::QuicFlight),
+            19 => Ok(Self::H3Sequence),
+            20 => Ok(Self::H3SequenceStructure),
+            21 => Ok(Self::QuicFlightStructure),
             _ => Err(ProfileDataError::Unsupported("canonical content domain")),
         }
     }
@@ -176,10 +183,12 @@ impl CanonicalValue {
             CanonicalDomain::TlsStructure | CanonicalDomain::Tls => {
                 return Err(ProfileDataError::Unsupported("TLS profile component"));
             }
+
             #[cfg(feature = "tls")]
             CanonicalDomain::TlsStructure => {
                 validate_tls_structure(self, maximum_bytes)?;
             }
+
             #[cfg(feature = "tls")]
             CanonicalDomain::Tls => {
                 TlsCapture::from_canonical(
@@ -187,6 +196,25 @@ impl CanonicalValue {
                     TlsCaptureLimits {
                         elements: maximum_bytes,
                         bytes: maximum_bytes,
+                    },
+                )?;
+            }
+            CanonicalDomain::H3Sequence | CanonicalDomain::H3SequenceStructure => {
+                H3ClientSequenceCapture::decode(
+                    self,
+                    H3SequenceCaptureLimits {
+                        bytes: maximum_bytes,
+                        ..H3SequenceCaptureLimits::default()
+                    },
+                    domain == CanonicalDomain::H3SequenceStructure,
+                )?;
+            }
+            CanonicalDomain::QuicFlightStructure => {
+                QuicFlightCapture::validate_structure(
+                    self,
+                    QuicFlightCaptureLimits {
+                        bytes: maximum_bytes,
+                        ..QuicFlightCaptureLimits::default()
                     },
                 )?;
             }
@@ -436,6 +464,9 @@ mod tests {
             (16, CanonicalDomain::RuntimeMetadata),
             (17, CanonicalDomain::RuntimeMetadataStructure),
             (18, CanonicalDomain::QuicFlight),
+            (19, CanonicalDomain::H3Sequence),
+            (20, CanonicalDomain::H3SequenceStructure),
+            (21, CanonicalDomain::QuicFlightStructure),
         ] {
             assert_eq!(u16::from(domain), tag);
             assert_eq!(CanonicalDomain::try_from(tag).unwrap(), domain);
@@ -446,7 +477,7 @@ mod tests {
                 domain
             );
         }
-        for tag in [0, 19, u16::MAX] {
+        for tag in [0, 22, u16::MAX] {
             CanonicalDomain::try_from(tag).unwrap_err();
             serde_json::from_str::<CanonicalDomain>(&tag.to_string()).unwrap_err();
         }

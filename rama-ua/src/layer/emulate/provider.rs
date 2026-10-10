@@ -18,7 +18,7 @@ pub struct SelectedUserAgentProfile {
     pub user_agent_header: Option<ArcStr>,
 
     /// The kind of [`crate::UserAgent`]
-    pub ua_kind: UserAgentKind,
+    pub ua_kind: Option<UserAgentKind>,
     /// The version of the [`crate::UserAgent`]
     pub ua_version: Option<usize>,
     /// The platform the [`crate::UserAgent`] is running on.

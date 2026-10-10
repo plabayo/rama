@@ -1,0 +1,257 @@
+//! Request-owned preparation, before display middleware rewrites headers.
+
+use parking_lot::Mutex;
+use rama::{
+    Service,
+    error::BoxError,
+    extensions::{Extension, Extensions, ExtensionsRef},
+    http::{Method, Request, header::USER_AGENT},
+    layer::Layer,
+    net::uri::Uri,
+    ua::profile::{
+        CapturedSlot, CapturedSlotKind, FlowKey, JointCaptureLimits, JsProfileWebApis,
+        ProfileCapture, ProfileDataError, RuntimeProfileCapture, UserAgentSourceInfo,
+    },
+};
+
+use super::{
+    super::{
+        StorageAuthorized,
+        collection::{CollectionClaim, CollectionLease, CollectionOwner},
+        data::{Http3Info, Initiator},
+    },
+    collector,
+    startup::current_day,
+    worker::{CollectionQueue, CollectionReservation},
+};
+
+#[derive(Debug, Clone)]
+pub(in super::super) struct CaptureLayer {
+    queue: CollectionQueue,
+}
+
+impl CaptureLayer {
+    pub(super) fn new(queue: CollectionQueue) -> Self {
+        Self { queue }
+    }
+}
+
+impl<S> Layer<S> for CaptureLayer {
+    type Service = CaptureService<S>;
+    fn layer(&self, inner: S) -> Self::Service {
+        CaptureService {
+            inner,
+            queue: self.queue.clone(),
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        CaptureService {
+            inner,
+            queue: self.queue,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(in super::super) struct CaptureService<S> {
+    inner: S,
+    queue: CollectionQueue,
+}
+
+#[derive(Debug, Extension)]
+struct CaptureIntent(Mutex<Option<PreparedRequest>>);
+#[derive(Debug)]
+struct PreparedRequest {
+    reservation: CollectionReservation,
+    day: u32,
+    request: ProfileCapture,
+}
+
+pub(in super::super) fn is_protocol_probe(uri: &Uri) -> bool {
+    uri.query().is_some_and(|query| {
+        query
+            .as_encoded_str()
+            .split('&')
+            .any(|pair| pair.split('=').next() == Some("h3_probe"))
+    })
+}
+
+fn initiator(method: &Method, uri: &Uri) -> Option<Initiator> {
+    let path = uri.path()?.as_encoded_str();
+    if method == Method::GET && path == "/report" && !is_protocol_probe(uri) {
+        Some(Initiator::Navigator)
+    } else if method == Method::POST && path.starts_with("/api/fetch/number/") {
+        Some(Initiator::Fetch)
+    } else if method == Method::POST && path.starts_with("/api/xml/number/") {
+        Some(Initiator::XMLHttpRequest)
+    } else if (method == Method::GET || method == Method::POST) && path == "/form" {
+        Some(Initiator::Form)
+    } else if (method == Method::GET || method == Method::CONNECT) && path == "/api/ws" {
+        Some(Initiator::Ws)
+    } else {
+        None
+    }
+}
+
+impl<S, B> Service<Request<B>> for CaptureService<S>
+where
+    B: Send + 'static,
+    S: Service<Request<B>>,
+{
+    type Output = S::Output;
+    type Error = S::Error;
+    async fn serve(&self, request: Request<B>) -> Result<Self::Output, Self::Error> {
+        // Ordinary routes never reserve or build a profile observation.
+        if let Some(initiator) = initiator(request.method(), request.uri())
+            && let Some(reservation) = self.queue.try_reserve()
+        {
+            let day = match current_day() {
+                Ok(day) => day,
+                Err(_error) => {
+                    reservation.reject_clock();
+                    return self.inner.serve(request).await;
+                }
+            };
+            let result = prepare(&request, &initiator);
+            match result {
+                Ok(captured) => {
+                    request
+                        .extensions()
+                        .insert(CaptureIntent(Mutex::new(Some(PreparedRequest {
+                            reservation,
+                            day,
+                            request: captured,
+                        }))));
+                }
+                Err(_error) => reservation.reject_capture(),
+            }
+        }
+        self.inner.serve(request).await
+    }
+}
+
+fn prepare<B>(request: &Request<B>, initiator: &Initiator) -> Result<ProfileCapture, BoxError> {
+    let ua = request
+        .headers()
+        .get(USER_AGENT)
+        .ok_or(ProfileDataError::Incomplete("client identity"))?
+        .to_str()?;
+    let profile = collector::profile_key(ua)?;
+    let connection = collector::connection_context(request.extensions());
+    let captured = collector::request_capture(
+        profile,
+        connection,
+        request.version(),
+        request.method().clone(),
+        initiator,
+        request.headers(),
+        request.extensions(),
+    )?;
+    Ok(captured)
+}
+
+pub(super) fn attach_runtime(
+    ext: &Extensions,
+    source: Option<&UserAgentSourceInfo>,
+    web_apis: Option<&JsProfileWebApis>,
+) {
+    if source.is_none() && web_apis.is_none() {
+        return;
+    }
+    let Some(intent) = ext.get_ref::<CaptureIntent>() else {
+        return;
+    };
+    let mut guard = intent.0.lock();
+    let Some(mut prepared) = guard.take() else {
+        return;
+    };
+    if prepared
+        .request
+        .joint
+        .slots
+        .iter()
+        .any(|slot| slot.kind == CapturedSlotKind::RuntimeMetadata)
+    {
+        prepared.reservation.reject_capture();
+        return;
+    }
+    let maximum = JointCaptureLimits::default().value_bytes;
+    let value = RuntimeProfileCapture::capture_report(source, web_apis, maximum)
+        .and_then(|capture| capture.canonical(maximum));
+    match value {
+        Ok(value) => {
+            let mut slots = prepared.request.joint.slots.into_vec();
+            slots.push(CapturedSlot {
+                kind: CapturedSlotKind::RuntimeMetadata,
+                value,
+            });
+            prepared.request.joint.slots = slots.into();
+            *guard = Some(prepared);
+        }
+        Err(_error) => prepared.reservation.reject_capture(),
+    }
+}
+
+pub(super) fn submit(ext: &Extensions, h3: Option<&Http3Info>) {
+    let Some(prepared) = ext
+        .get_ref::<CaptureIntent>()
+        .and_then(|intent| intent.0.lock().take())
+    else {
+        return;
+    };
+    let PreparedRequest {
+        reservation,
+        day,
+        request,
+    } = prepared;
+    let owner = match request
+        .profile
+        .canonical(JointCaptureLimits::default().value_bytes)
+    {
+        Ok(profile) => CollectionOwner {
+            authorized: ext.contains::<StorageAuthorized>(),
+            profile: profile.id,
+        },
+        Err(_error) => {
+            reservation.reject_capture();
+            return;
+        }
+    };
+    let Some(lease) = ext.get_arc::<CollectionLease>() else {
+        reservation.reject_capture();
+        return;
+    };
+    let connection = match lease.claim(owner) {
+        CollectionClaim::OwnerMismatch => {
+            reservation.reject_capture();
+            return;
+        }
+        CollectionClaim::RequestOnly => None,
+        CollectionClaim::Connection(permit) => {
+            let Some(FlowKey::Http { version, .. }) = &request.flow else {
+                reservation.reject_capture();
+                return;
+            };
+            match collector::connection_capture(
+                request.profile.clone(),
+                request.connection.clone(),
+                *version,
+                ext,
+                h3,
+            ) {
+                Ok(Some(capture)) => Some((capture, permit)),
+                Ok(None) => None,
+                Err(_error) => {
+                    reservation.reject_capture();
+                    return;
+                }
+            }
+        }
+    };
+    // Validation failures are counted by submit; collection cannot fail the response.
+    _ = reservation.submit(owner, day, request, connection);
+}
+
+#[cfg(test)]
+mod tests;

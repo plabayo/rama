@@ -131,5 +131,4 @@ impl Drop for PendingSequence<'_> {
 }
 
 #[cfg(test)]
-#[path = "issuer/tests.rs"]
 mod tests;

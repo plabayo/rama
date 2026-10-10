@@ -1,5 +1,10 @@
+mod index;
+use super::{ProfileArchiveLimits, ProfileDataError, load_profile_archive};
 use ahash::HashMap;
+use index::ProfileVersionIndex;
+pub use index::{ProfileCandidate, ProfileCandidateFilter, ProfileCapabilities, ProfileVersion};
 use itertools::Itertools as _;
+use rama_core::error::BoxError;
 use rand::seq::IndexedRandom as _;
 
 use crate::{DeviceKind, PlatformKind, UserAgent, UserAgentKind, profile::UserAgentProfile};
@@ -17,6 +22,7 @@ use crate::{DeviceKind, PlatformKind, UserAgent, UserAgentKind, profile::UserAge
 /// [`UserAgentProvider`]: crate::layer::emulate::UserAgentProvider
 pub struct UserAgentDatabase {
     profiles: Vec<UserAgentProfile>,
+    version_index: ProfileVersionIndex,
 
     map_ua_string: HashMap<String, usize>,
 
@@ -46,6 +52,60 @@ impl UserAgentDatabase {
     pub fn try_from_json_slice(bytes: &[u8]) -> Result<Self, rama_core::error::BoxError> {
         let profiles = crate::profile::try_load_profiles_json(bytes)?;
         Ok(Self::from_iter(profiles))
+    }
+
+    pub fn try_from_archive(
+        bytes: &[u8],
+        authorized: bool,
+        current_day: u32,
+        horizon: u32,
+        limits: ProfileArchiveLimits,
+    ) -> Result<Self, BoxError> {
+        Ok(
+            load_profile_archive(bytes, authorized, current_day, horizon, limits)?
+                .into_vec()
+                .into_iter()
+                .map(|entry| UserAgentProfile::from_captured(entry.analysis))
+                .collect(),
+        )
+    }
+
+    pub fn candidates(
+        &self,
+        filter: ProfileCandidateFilter<'_>,
+    ) -> Result<Box<[ProfileCandidate<'_>]>, ProfileDataError> {
+        let latest = filter
+            .latest_versions
+            .map(|maximum| self.version_index.latest(filter, maximum));
+        self.profiles
+            .iter()
+            .enumerate()
+            .filter(|(index, profile)| {
+                filter
+                    .client
+                    .is_none_or(|client| client == profile.key.client.as_ref())
+                    && filter
+                        .platform
+                        .is_none_or(|platform| Some(platform) == profile.key.platform)
+                    && filter.device.is_none_or(|device| {
+                        Some(device)
+                            == profile
+                                .key
+                                .device
+                                .or_else(|| profile.key.platform.map(|platform| platform.device()))
+                    })
+                    && latest
+                        .as_ref()
+                        .is_none_or(|indices| indices.contains(index))
+                    && profile.capabilities().supports(filter.capabilities)
+            })
+            .map(|(_index, profile)| {
+                Ok(ProfileCandidate {
+                    profile,
+                    weight: profile.observation_weight()?,
+                })
+            })
+            .collect()
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -102,24 +162,23 @@ impl UserAgentDatabase {
     /// [`UserAgentKind`], [`PlatformKind`] and [`DeviceKind`].
     pub fn insert(&mut self, profile: UserAgentProfile) {
         let index = self.profiles.len();
+        self.version_index.insert(&profile.key, index);
         if let Some(ua_header) = profile.ua_str() {
             self.map_ua_string.insert(ua_header.to_owned(), index);
         }
 
-        self.map_ua_kind
-            .entry(profile.ua_kind)
-            .or_default()
-            .push(index);
-
-        if let Some(platform) = profile.platform {
-            self.map_platform
-                .entry((profile.ua_kind, platform))
-                .or_default()
-                .push(index);
-            self.map_device
-                .entry((profile.ua_kind, platform.device()))
-                .or_default()
-                .push(index);
+        if let Some(kind) = profile.ua_kind {
+            self.map_ua_kind.entry(kind).or_default().push(index);
+            if let Some(platform) = profile.platform {
+                self.map_platform
+                    .entry((kind, platform))
+                    .or_default()
+                    .push(index);
+                self.map_device
+                    .entry((kind, platform.device()))
+                    .or_default()
+                    .push(index);
+            }
         }
 
         self.profiles.push(profile);
@@ -272,6 +331,7 @@ impl FromIterator<UserAgentProfile> for UserAgentDatabase {
 
 #[cfg(test)]
 mod tests {
+    use crate::profile::ProfileKey;
     use std::sync::Arc;
 
     use ahash::{HashSet, HashSetExt as _};
@@ -302,15 +362,21 @@ mod tests {
         let db = get_dummy_ua_db();
 
         let profile = db.get(&UserAgent::new("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0")).unwrap();
-        assert_eq!(profile.ua_kind, UserAgentKind::Chromium);
+        assert_eq!(profile.ua_kind, Some(UserAgentKind::Chromium));
         assert_eq!(profile.ua_version, Some(120));
         assert_eq!(profile.platform, Some(PlatformKind::Windows));
         assert_eq!(
             profile
                 .http
+                .as_ref()
+                .unwrap()
                 .h1
+                .as_ref()
+                .unwrap()
                 .headers
                 .navigate
+                .as_ref()
+                .unwrap()
                 .get(USER_AGENT)
                 .unwrap()
                 .to_str()
@@ -320,9 +386,15 @@ mod tests {
         assert_eq!(
             profile
                 .http
+                .as_ref()
+                .unwrap()
                 .h2
+                .as_ref()
+                .unwrap()
                 .headers
                 .navigate
+                .as_ref()
+                .unwrap()
                 .get(USER_AGENT)
                 .unwrap()
                 .to_str()
@@ -361,7 +433,7 @@ mod tests {
 
         for (ua_str, ua_kind, device) in test_cases {
             let profile = db.get(&UserAgent::new(ua_str)).expect(ua_str);
-            assert_eq!(profile.ua_kind, ua_kind);
+            assert_eq!(profile.ua_kind, Some(ua_kind));
             assert!(
                 profile
                     .platform
@@ -405,7 +477,7 @@ mod tests {
 
         for (ua_str, ua_kind, platform) in test_cases {
             let profile = db.get(&UserAgent::new(ua_str)).expect(ua_str);
-            assert_eq!(profile.ua_kind, ua_kind);
+            assert_eq!(profile.ua_kind, Some(ua_kind));
             assert_eq!(profile.platform, Some(platform));
         }
     }
@@ -422,7 +494,7 @@ mod tests {
 
         for (ua_str, ua_kind) in test_cases {
             let profile = db.get(&UserAgent::new(ua_str)).expect(ua_str);
-            assert_eq!(profile.ua_kind, ua_kind, "ua_str: {ua_str}");
+            assert_eq!(profile.ua_kind, Some(ua_kind), "ua_str: {ua_str}");
         }
     }
 
@@ -473,9 +545,15 @@ mod tests {
             let rnd = db.rnd().unwrap();
             set.insert(
                 rnd.http
+                    .as_ref()
+                    .unwrap()
                     .h1
+                    .as_ref()
+                    .unwrap()
                     .headers
                     .navigate
+                    .as_ref()
+                    .unwrap()
                     .get(USER_AGENT)
                     .expect("ua header")
                     .to_str()
@@ -495,46 +573,48 @@ mod tests {
         ));
 
         for _ in 0..100 {
-            assert_eq!(db.rnd().unwrap().ua_kind, UserAgentKind::Safari);
+            assert_eq!(db.rnd().unwrap().ua_kind, Some(UserAgentKind::Safari));
         }
     }
 
     fn dummy_ua_profile_from_str(s: &str) -> UserAgentProfile {
         let ua = UserAgent::new(s);
         UserAgentProfile {
-            ua_kind: ua.ua_kind().unwrap(),
+            key: ProfileKey::new("synthetic-test"),
+            captured: None,
+            ua_kind: Some(ua.ua_kind().unwrap()),
             ua_version: ua.ua_version(),
             platform: ua.platform(),
-            http: Arc::new(crate::profile::HttpProfile {
-                h1: crate::profile::Http1Profile {
+            http: Some(Arc::new(crate::profile::HttpProfile {
+                h1: Some(crate::profile::Http1Profile {
                     headers: crate::profile::HttpHeadersProfile {
-                        navigate: HeaderMap::from_iter([(
+                        navigate: Some(HeaderMap::from_iter([(
                             USER_AGENT,
                             HeaderValue::from_str(s).unwrap(),
-                        )]),
+                        )])),
                         fetch: None,
                         xhr: None,
                         form: None,
                         ws: None,
                     },
-                    settings: crate::profile::Http1Settings::default(),
-                },
-                h2: crate::profile::Http2Profile {
+                    settings: Some(crate::profile::Http1Settings::default()),
+                }),
+                h2: Some(crate::profile::Http2Profile {
                     headers: crate::profile::HttpHeadersProfile {
-                        navigate: HeaderMap::from_iter([(
+                        navigate: Some(HeaderMap::from_iter([(
                             USER_AGENT,
                             HeaderValue::from_str(s).unwrap(),
-                        )]),
+                        )])),
                         fetch: None,
                         xhr: None,
                         form: None,
                         ws: None,
                     },
-                    settings: crate::profile::Http2Settings::default(),
-                },
-            }),
+                    settings: Some(crate::profile::Http2Settings::default()),
+                }),
+            })),
             #[cfg(feature = "tls")]
-            tls: Arc::new(crate::profile::TlsProfile {
+            tls: Some(Arc::new(crate::profile::TlsProfile {
                 client_hello: ClientHello::new(
                     rama_tls::ProtocolVersion::TLSv1_3,
                     Vec::new(),
@@ -543,7 +623,7 @@ mod tests {
                 ),
                 permute_extensions: false,
                 ws_client_config_overwrites: None,
-            }),
+            })),
             runtime: None,
         }
     }

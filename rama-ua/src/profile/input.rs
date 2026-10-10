@@ -1,15 +1,17 @@
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
-use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _};
+use rama_core::error::BoxError;
 use rama_http::HeaderMap;
+use rama_utils::octets::kib;
 use serde::{Deserialize, Serialize};
 
+use super::archive::read_bounded_profile_rows;
 use crate::{profile::*, *};
 
 /// Load the profiles embedded with the rama-ua crate.
 ///
-/// Complementary captures are merged before incomplete profiles are skipped with
-/// a warning. Malformed data and bundles with no usable profiles remain errors.
+/// Complementary captures are merged without synthesizing absent components.
+/// Malformed data and empty bundles remain errors.
 /// This function is only available if the `embed-profiles` feature is enabled.
 #[cfg(feature = "embed-profiles")]
 #[cfg_attr(docsrs, doc(cfg(feature = "embed-profiles")))]
@@ -19,16 +21,7 @@ pub fn try_load_embedded_profiles() -> Result<impl Iterator<Item = UserAgentProf
 
 #[cfg(feature = "embed-profiles")]
 fn load_embedded_profiles(bytes: &[u8]) -> Result<Vec<UserAgentProfile>, BoxError> {
-    let mut profiles = Vec::new();
-    for row in parse_profile_rows(bytes)? {
-        match row.try_into_profile() {
-            Ok(profile) => profiles.push(profile),
-            Err(error) if error.is::<IncompleteProfile>() => {
-                rama_core::telemetry::tracing::warn!(%error, "skip incomplete embedded user-agent profile");
-            }
-            Err(error) => return Err(error),
-        }
-    }
+    let profiles = try_load_profiles_json(bytes)?;
     if profiles.is_empty() {
         return Err("embedded user-agent database has no usable profiles".into());
     }
@@ -37,11 +30,27 @@ fn load_embedded_profiles(bytes: &[u8]) -> Result<Vec<UserAgentProfile>, BoxErro
 
 /// Load a JSON array of captured user-agent profile rows.
 ///
-/// Rows with the same User-Agent are merged by filling fields that were not
-/// observed in another row. The resulting database remains strict: every
-/// merged profile must contain the HTTP/1, HTTP/2 and TLS components required
-/// by [`UserAgentProfile`]. No embedded or synthetic data is used to fill gaps.
+/// Legacy rows with the same User-Agent fill only previously absent fields.
+/// Versioned archives reproduce their recorded public snapshot. No embedded
+/// or synthetic data fills missing components.
 pub fn try_load_profiles_json(bytes: &[u8]) -> Result<Vec<UserAgentProfile>, BoxError> {
+    if bytes.len() > ProfileArchiveLimits::default().bytes {
+        return Err(ProfileDataError::LimitExceeded("profile input bytes").into());
+    }
+    if bytes
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+        == Some(b'{')
+    {
+        return Ok(
+            load_profile_archive_snapshot(bytes, false, ProfileArchiveLimits::default())?
+                .into_vec()
+                .into_iter()
+                .map(|entry| UserAgentProfile::from_captured(entry.analysis))
+                .collect(),
+        );
+    }
     parse_profile_rows(bytes)?
         .into_iter()
         .map(UserAgentProfileInput::try_into_profile)
@@ -50,7 +59,7 @@ pub fn try_load_profiles_json(bytes: &[u8]) -> Result<Vec<UserAgentProfile>, Box
 
 fn parse_profile_rows(bytes: &[u8]) -> Result<Vec<UserAgentProfileInput>, BoxError> {
     let rows: Vec<UserAgentProfileInput> =
-        serde_json::from_slice(bytes).context("deserialize user-agent profiles")?;
+        read_bounded_profile_rows(bytes, ProfileArchiveLimits::default().profiles)?;
     let mut profiles = Vec::<UserAgentProfileInput>::new();
     let mut indices = BTreeMap::<String, usize>::new();
     for row in rows {
@@ -63,24 +72,6 @@ fn parse_profile_rows(bytes: &[u8]) -> Result<Vec<UserAgentProfileInput>, BoxErr
     }
     Ok(profiles)
 }
-
-#[derive(Debug)]
-struct IncompleteProfile {
-    user_agent: String,
-    field: &'static str,
-}
-
-impl fmt::Display for IncompleteProfile {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "user-agent profile '{}' is missing {}",
-            self.user_agent, self.field
-        )
-    }
-}
-
-impl std::error::Error for IncompleteProfile {}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 /// Serializable user-agent profile input used by Rama's embedded and custom
@@ -174,71 +165,76 @@ impl UserAgentProfileInput {
         Ok(())
     }
 
-    /// Validate captured fields and move them into a complete emulation profile.
+    /// Validate captured fields and retain their observed protocol components.
     /// This uses the same validation as JSON database loading, without encoding
     /// or parsing JSON and without cloning the captured header maps.
     pub fn try_into_profile(self) -> Result<UserAgentProfile, BoxError> {
         let ua = UserAgent::new(self.uastr);
-        let missing = |field| IncompleteProfile {
-            user_agent: ua.header_str().to_owned(),
-            field,
-        };
-        let ua_kind = ua.ua_kind().ok_or_else(|| {
-            BoxError::from_static_str("unrecognized User-Agent in profile")
-                .context_field("user_agent", ua.header_str().to_owned())
-        })?;
-        let ua_version = ua.ua_version();
-        let platform = ua.platform();
-        Ok(UserAgentProfile {
-            ua_kind,
-            ua_version,
-            platform,
-            http: Arc::new(HttpProfile {
-                h1: Http1Profile {
-                    settings: self.h1_settings.ok_or_else(|| missing("h1_settings"))?,
-                    headers: HttpHeadersProfile {
-                        navigate: self
-                            .h1_headers_navigate
-                            .ok_or_else(|| missing("h1_headers_navigate"))?,
-                        fetch: self.h1_headers_fetch,
-                        xhr: self.h1_headers_xhr,
-                        form: self.h1_headers_form,
-                        ws: self.h1_headers_ws,
-                    },
-                },
-                h2: Http2Profile {
-                    settings: self.h2_settings.ok_or_else(|| missing("h2_settings"))?,
-                    headers: HttpHeadersProfile {
-                        navigate: self
-                            .h2_headers_navigate
-                            .ok_or_else(|| missing("h2_headers_navigate"))?,
-                        fetch: self.h2_headers_fetch,
-                        xhr: self.h2_headers_xhr,
-                        form: self.h2_headers_form,
-                        ws: self.h2_headers_ws,
-                    },
-                },
-            }),
-            #[cfg(feature = "tls")]
-            tls: Arc::new(TlsProfile {
-                client_hello: self
-                    .tls_client_hello
-                    .ok_or_else(|| missing("tls_client_hello"))?,
-                permute_extensions: TlsProfile::user_agent_permutes_extensions(
-                    ua_kind, ua_version, platform,
-                ),
-                ws_client_config_overwrites: self.tls_ws_client_config_overwrites,
-            }),
-            runtime: match (&self.js_web_apis, &self.source_info) {
-                (Some(_), _) | (_, Some(_)) => Some(Arc::new(UserAgentRuntimeProfile {
-                    js_info: self.js_web_apis.map(|web_apis| JsProfile {
-                        web_apis: Some(web_apis),
-                    }),
-                    source_info: self.source_info,
-                })),
-                _ => None,
+        let key = ProfileKey::from_user_agent(&ua);
+        key.canonical(kib(16))?;
+        let mut profile = UserAgentProfile::new(key);
+        let h1 = (self.h1_settings.is_some()
+            || self.h1_headers_navigate.is_some()
+            || self.h1_headers_fetch.is_some()
+            || self.h1_headers_xhr.is_some()
+            || self.h1_headers_form.is_some()
+            || self.h1_headers_ws.is_some())
+        .then(|| Http1Profile {
+            settings: self.h1_settings,
+            headers: HttpHeadersProfile {
+                navigate: self.h1_headers_navigate,
+                fetch: self.h1_headers_fetch,
+                xhr: self.h1_headers_xhr,
+                form: self.h1_headers_form,
+                ws: self.h1_headers_ws,
             },
-        })
+        });
+        let h2 = (self.h2_settings.is_some()
+            || self.h2_headers_navigate.is_some()
+            || self.h2_headers_fetch.is_some()
+            || self.h2_headers_xhr.is_some()
+            || self.h2_headers_form.is_some()
+            || self.h2_headers_ws.is_some())
+        .then(|| Http2Profile {
+            settings: self.h2_settings,
+            headers: HttpHeadersProfile {
+                navigate: self.h2_headers_navigate,
+                fetch: self.h2_headers_fetch,
+                xhr: self.h2_headers_xhr,
+                form: self.h2_headers_form,
+                ws: self.h2_headers_ws,
+            },
+        });
+        if h1.is_some() || h2.is_some() {
+            profile.http = Some(Arc::new(HttpProfile { h1, h2 }));
+        }
+
+        #[cfg(feature = "tls")]
+        {
+            if self.tls_client_hello.is_none() && self.tls_ws_client_config_overwrites.is_some() {
+                return Err(ProfileDataError::Incomplete(
+                    "WebSocket TLS overrides without ClientHello",
+                )
+                .into());
+            }
+            profile.tls = self.tls_client_hello.map(|client_hello| {
+                Arc::new(TlsProfile {
+                    client_hello,
+                    permute_extensions: false,
+                    ws_client_config_overwrites: self.tls_ws_client_config_overwrites,
+                })
+            });
+        }
+        profile.runtime = match (&self.js_web_apis, &self.source_info) {
+            (Some(_), _) | (_, Some(_)) => Some(Arc::new(UserAgentRuntimeProfile {
+                js_info: self.js_web_apis.map(|web_apis| JsProfile {
+                    web_apis: Some(web_apis),
+                }),
+                source_info: self.source_info,
+            })),
+            _ => None,
+        };
+        Ok(profile)
     }
 }
 
@@ -295,90 +291,92 @@ mod tests {
     }
 
     #[test]
-    fn profile_loader_rejects_incomplete_capture_without_polyfilling() {
-        let user_agent =
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/149.0.0.0 Safari/537.36";
-        let mut row = UserAgentProfileInput::new(user_agent);
-        row.h1_settings = Some(Http1Settings::default());
-        row.h1_headers_navigate = Some(HeaderMap::new());
-
-        let error = try_load_profiles_json(&serde_json::to_vec(&[row]).unwrap()).unwrap_err();
-        assert!(error.to_string().contains("h2_settings"));
-    }
-
-    fn complete_row() -> Result<serde_json::Value, BoxError> {
-        let rows: Vec<serde_json::Value> =
-            serde_json::from_slice(include_bytes!("embed_profiles.json"))?;
-        for row in rows {
-            if serde_json::from_value::<UserAgentProfileInput>(row.clone())?
-                .try_into_profile()
-                .is_ok()
-            {
-                return Ok(row);
-            }
-        }
-        Err("embedded fixtures contain no complete profile".into())
+    fn partial_library_profiles_preserve_only_observed_components() {
+        let mut row = UserAgentProfileInput::new("example-library/1.2");
+        row.h2_headers_fetch = Some(HeaderMap::new());
+        let profile = row.try_into_profile().unwrap();
+        assert_eq!(profile.ua_str(), Some("example-library/1.2"));
+        assert!(profile.ua_kind.is_none());
+        assert!(profile.http.as_ref().unwrap().h1.is_none());
+        let h2 = profile.http.as_ref().unwrap().h2.as_ref().unwrap();
+        assert!(h2.settings.is_none());
+        assert!(h2.headers.navigate.is_none());
+        assert!(h2.headers.fetch.is_some());
+        #[cfg(feature = "tls")]
+        assert!(profile.tls.is_none());
     }
 
     #[test]
-    fn embedded_skips_incomplete_profiles_while_custom_imports_remain_strict() {
-        let complete = complete_row().unwrap();
-        let fields = [
-            "h1_settings",
-            "h1_headers_navigate",
-            "h2_settings",
-            "h2_headers_navigate",
-            #[cfg(feature = "tls")]
-            "tls_client_hello",
-        ];
-        for field in fields {
-            let mut incomplete = complete.clone();
-            incomplete["uastr"] = serde_json::json!(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/999.0.0.0 Safari/537.36"
-            );
-            incomplete[field] = serde_json::Value::Null;
-            let bytes = serde_json::to_vec(&[&incomplete, &complete]).unwrap();
-            let profiles = load_embedded_profiles(&bytes).unwrap();
-            assert_eq!(profiles.len(), 1, "{field}");
-            assert_eq!(profiles[0].ua_str(), complete["uastr"].as_str());
-            let error = try_load_profiles_json(&bytes).unwrap_err();
-            assert_eq!(
-                error.downcast_ref::<IncompleteProfile>().unwrap().field,
-                field
-            );
-            let bytes = serde_json::to_vec(&[incomplete]).unwrap();
-            assert!(
-                load_embedded_profiles(&bytes)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("no usable profiles")
-            );
+    fn metadata_only_profile_has_no_synthetic_protocol_components() {
+        let profile = UserAgentProfileInput::new("metadata-only")
+            .try_into_profile()
+            .unwrap();
+        assert!(profile.http.is_none());
+        assert!(profile.captured.is_none());
+        #[cfg(feature = "tls")]
+        assert!(profile.tls.is_none());
+    }
+
+    #[test]
+    fn embedded_and_custom_loaders_keep_partial_profiles() {
+        let mut row = UserAgentProfileInput::new("partial-library");
+        row.h1_settings = Some(Http1Settings {
+            title_case_headers: true,
+        });
+        let bytes = serde_json::to_vec(&[row]).unwrap();
+        for profiles in [
+            load_embedded_profiles(&bytes).unwrap(),
+            try_load_profiles_json(&bytes).unwrap(),
+        ] {
+            assert_eq!(profiles.len(), 1);
+            let http = profiles[0].http.as_ref().unwrap();
+            let h1 = http.h1.as_ref().unwrap();
+            assert!(h1.settings.as_ref().unwrap().title_case_headers);
+            assert!(h1.headers.navigate.is_none());
+            assert!(http.h2.is_none());
         }
+        load_embedded_profiles(b"[]").unwrap_err();
+        load_embedded_profiles(b"[").unwrap_err();
+        try_load_profiles_json(br#"[{"uastr":"library","h1_settings":"invalid"}]"#).unwrap_err();
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn websocket_tls_overrides_require_their_observed_client_hello() {
+        let mut row = UserAgentProfileInput::new("library/1.2");
+        row.tls_ws_client_config_overwrites = Some(WsClientConfigOverwrites { alpn: None });
+        let error = row.try_into_profile().unwrap_err();
         assert!(
-            load_embedded_profiles(b"[]")
-                .unwrap_err()
+            error
                 .to_string()
-                .contains("no usable profiles")
+                .contains("WebSocket TLS overrides without ClientHello")
         );
     }
 
     #[test]
-    fn embedded_does_not_hide_malformed_or_unsupported_profiles() {
-        load_embedded_profiles(b"[").unwrap_err();
-        let complete = complete_row().unwrap();
-        for (field, value) in [
-            ("h2_settings", serde_json::json!("invalid settings")),
-            (
-                "h1_headers_navigate",
-                serde_json::json!([["invalid header name", "value"]]),
-            ),
-            ("uastr", serde_json::json!("unknown-browser")),
-        ] {
-            let mut invalid = complete.clone();
-            invalid[field] = value;
-            let bytes = serde_json::to_vec(&[&complete, &invalid]).unwrap();
-            assert!(load_embedded_profiles(&bytes).is_err(), "{field}");
-            assert!(try_load_profiles_json(&bytes).is_err(), "{field}");
+    fn imported_and_live_headers_have_the_same_profile_identity() {
+        for header in ["example-library/1.2", "Mozilla/5.0 Firefox/135.0"] {
+            let imported = UserAgentProfileInput::new(header)
+                .try_into_profile()
+                .unwrap();
+            let live = ProfileKey::from_user_agent(&UserAgent::new(header));
+            assert_eq!(
+                imported.key.canonical(kib(16)).unwrap().bytes,
+                live.canonical(kib(16)).unwrap().bytes
+            );
+        }
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn legacy_browser_name_never_invents_extension_permutation() {
+        let rows: Vec<UserAgentProfileInput> =
+            serde_json::from_slice(include_bytes!("embed_profiles.json")).unwrap();
+        for row in rows {
+            let profile = row.try_into_profile().unwrap();
+            if let Some(tls) = profile.tls {
+                assert!(!tls.permute_extensions);
+            }
         }
     }
 }

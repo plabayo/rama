@@ -35,14 +35,11 @@ use rama::{
         client::{ClientHello, ClientHelloExtension, ECHClientHello},
         fingerprint::{Ja3, Ja4, PeetPrint},
     },
-    ua::{
-        UserAgent,
-        profile::{Http1Settings, Http2Settings},
-    },
+    ua::{UserAgent, profile::Http2Settings},
 };
 use serde::Serialize;
 
-use super::{State, StorageAuthorized};
+use super::State;
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[allow(
@@ -316,12 +313,11 @@ async fn http3_info(ext: &Extensions) -> Option<Http3Info> {
     })
 }
 
-pub(super) async fn get_and_store_http_info(
+pub(super) async fn get_http_info_and_capture(
     state: &State,
     headers: HeaderMap,
     ext: &Extensions,
     http_version: http::Version,
-    ua: String,
     initiator: Initiator,
 ) -> Result<HttpInfo, BoxError> {
     let original_headers = headers;
@@ -341,113 +337,7 @@ pub(super) async fn get_and_store_http_info(
     };
 
     if let Some(storage) = state.storage.as_ref() {
-        let auth = ext.contains::<StorageAuthorized>();
-
-        match http_version {
-            http::Version::HTTP_09 | http::Version::HTTP_10 | http::Version::HTTP_11 => {
-                match initiator {
-                    Initiator::Navigator => {
-                        storage
-                            .store_h1_headers_navigate(ua, auth, original_headers.clone())
-                            .await
-                            .context("store h1 headers navigate")?;
-                    }
-                    Initiator::Fetch => {
-                        storage
-                            .store_h1_headers_fetch(ua, auth, original_headers.clone())
-                            .await
-                            .context("store h1 headers fetch")?;
-                    }
-                    Initiator::XMLHttpRequest => {
-                        if let Some((header_name, _)) = original_headers
-                            .ordered_iter()
-                            .find(|(name, _)| *name == "x-rama-custom-header-marker")
-                        {
-                            // Check if the header name is title-cased or not
-                            let header_str = header_name.as_str();
-                            let title_case_headers = header_str.split('-').all(|part| {
-                                part.chars().next().is_none_or(|c| c.is_ascii_uppercase())
-                                    && part.chars().skip(1).all(|c| c.is_ascii_lowercase())
-                            });
-
-                            tracing::debug!(
-                                http.header.name = %header_str,
-                                http.header.title_cased = %title_case_headers,
-                                "Custom header marker found",
-                            );
-
-                            storage
-                                .store_h1_settings(
-                                    ua.clone(),
-                                    auth,
-                                    Http1Settings { title_case_headers },
-                                )
-                                .await
-                                .context("store h1 settings")?;
-                        }
-
-                        storage
-                            .store_h1_headers_xhr(ua, auth, original_headers.clone())
-                            .await
-                            .context("store h1 headers xhr")?;
-                    }
-                    Initiator::Form => {
-                        storage
-                            .store_h1_headers_form(ua, auth, original_headers.clone())
-                            .await
-                            .context("store h1 headers form")?;
-                    }
-                    Initiator::Ws => {
-                        storage
-                            .store_h1_headers_ws(ua, auth, original_headers.clone())
-                            .await
-                            .context("store h1 headers ws")?;
-                    }
-                }
-            }
-            http::Version::HTTP_2 => {
-                if let Some(settings) = h2_settings.clone() {
-                    storage
-                        .store_h2_settings(ua.clone(), auth, settings)
-                        .await
-                        .context("store h2 settings")?;
-                }
-                match initiator {
-                    Initiator::Navigator => {
-                        storage
-                            .store_h2_headers_navigate(ua, auth, original_headers.clone())
-                            .await
-                            .context("store h2 headers navigate")?;
-                    }
-                    Initiator::Fetch => {
-                        storage
-                            .store_h2_headers_fetch(ua, auth, original_headers.clone())
-                            .await
-                            .context("store h2 headers fetch")?;
-                    }
-                    Initiator::XMLHttpRequest => {
-                        storage
-                            .store_h2_headers_xhr(ua, auth, original_headers.clone())
-                            .await
-                            .context("store h2 headers xhr")?;
-                    }
-                    Initiator::Form => {
-                        storage
-                            .store_h2_headers_form(ua, auth, original_headers.clone())
-                            .await
-                            .context("store h2 headers form")?;
-                    }
-                    Initiator::Ws => {
-                        storage
-                            .store_h2_headers_ws(ua, auth, original_headers.clone())
-                            .await
-                            .context("store h2 headers ws")?;
-                    }
-                }
-            }
-            // HTTP/3 profiles are not collected yet: such requests are shown, never stored.
-            _ => (),
-        }
+        storage.submit(ext, h3.as_ref());
     }
 
     let headers: Vec<_> = original_headers
@@ -521,10 +411,8 @@ fn multi<T: ToString>(v: &[T]) -> Option<TlsDisplayInfoExtensionData> {
     ))
 }
 
-pub(super) async fn get_tls_display_info_and_store(
-    state: &State,
+pub(super) async fn get_tls_display_info(
     extensions: &Extensions,
-    ua: String,
 ) -> Result<Option<TlsDisplayInfo>, BoxError> {
     let hello: &ClientHello = match extensions
         .get_ref::<SecureTransport>()
@@ -534,20 +422,11 @@ pub(super) async fn get_tls_display_info_and_store(
         None => return Ok(None),
     };
 
-    // A QUIC ClientHello carries transport parameters and differs from the TCP one: it must
-    // never replace the TLS profile, which is only collected over TCP.
+    // TLS fingerprint display distinguishes the QUIC and TCP ClientHello namespaces.
     let from_quic = hello
         .extensions()
         .iter()
         .any(|ext| ext.id() == ExtensionId::QUIC_TRANSPORT_PARAMETERS);
-    if !from_quic && let Some(storage) = state.storage.as_ref() {
-        let auth = extensions.contains::<StorageAuthorized>();
-        storage
-            .store_tls_client_hello(ua, auth, hello.clone())
-            .await
-            .context("store tls client hello")?;
-    }
-
     let ja4 = Ja4::compute(extensions).context("ja4 compute")?;
     let ja3 = Ja3::compute(extensions).context("ja3 compute")?;
     let peet = PeetPrint::compute(extensions).context("peet print compute")?;
@@ -799,17 +678,7 @@ mod observation_tests {
             assert!(matches!(captured.settings_status, SettingsStatus::Received));
             assert!(captured.connection.completeness.settings);
             assert!(captured.request.connection.settings.is_none());
-            let state = State {
-                data_source: DataSource::default(),
-                probe_http3: false,
-                storage: None,
-                storage_auth: None,
-                geo_db: None,
-            };
-            let tls = get_tls_display_info_and_store(&state, ext, "test/1".to_owned())
-                .await
-                .unwrap()
-                .unwrap();
+            let tls = get_tls_display_info(ext).await.unwrap().unwrap();
             assert!(tls.ja4.hash.starts_with('q'), "{}", tls.ja4.hash);
             let echo_request = Request::builder()
                 .uri("https://localhost/")

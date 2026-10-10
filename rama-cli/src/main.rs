@@ -49,6 +49,7 @@ struct Cli {
     reason = "Subcommand variants vary in size; reordering would change CLI semantics"
 )]
 enum CliCommands {
+    Ua(cmd::ua::UaCommand),
     Inspect(cmd::inspect::InspectCommand),
     Pac(cmd::pac::PacCommand),
     Resolve(cmd::resolve::ResolveCommand),
@@ -155,6 +156,7 @@ fn main() -> Result<(), BoxError> {
 
 async fn run(cmds: CliCommands) -> Result<(), BoxError> {
     match cmds {
+        CliCommands::Ua(cfg) => Box::pin(cmd::ua::run(cfg)).await,
         CliCommands::Inspect(cfg) => Box::pin(cmd::inspect::run(cfg)).await,
         CliCommands::Pac(cfg) => Box::pin(cmd::pac::run(cfg)).await,
         CliCommands::Resolve(cfg) => Box::pin(cmd::resolve::run(cfg)).await,

@@ -363,8 +363,8 @@ fn ten_thousand_reserved_lengths_and_nested_versions_share_one_quic_structure() 
         let reserved = 0x0a0a0a0a
             | (((sequence as u32) & 0xf) << 28)
             | ((((sequence as u32) >> 4) & 0xf) << 20);
-        let mut versions = vec![Version::V1, Version::V2, Version::from_u32(reserved)];
-        versions.rotate_left(sequence as usize % 3);
+        let mut versions = vec![Version::V1, Version::V2];
+        versions.insert(sequence as usize % 3, Version::from_u32(reserved));
         let mut bytes = Vec::new();
         VersionInformation::new(Version::V1, versions).write(&mut bytes);
         let random = vec![sequence as u8; sequence as usize % 17];
@@ -423,7 +423,15 @@ fn nested_versions_retain_semantics_and_reject_malformed_values() {
     VersionInformation::new(Version::V1, vec![Version::V1, Version::V2]).write(&mut first);
     let mut other = Vec::new();
     VersionInformation::new(Version::V1, vec![Version::V1, Version::from_u32(7)]).write(&mut other);
+    let mut reversed = Vec::new();
+    VersionInformation::new(Version::V1, vec![Version::V2, Version::V1]).write(&mut reversed);
+    let reversed = capture(OrderNamespace::QuicParameter, &[(0x11, &reversed)]);
     let first = capture(OrderNamespace::QuicParameter, &[(0x11, &first)]);
+    assert_ne!(
+        first.structural(limits).unwrap().id,
+        reversed.structural(limits).unwrap().id
+    );
+
     let other = capture(OrderNamespace::QuicParameter, &[(0x11, &other)]);
     assert_ne!(
         first.structural(limits).unwrap().id,

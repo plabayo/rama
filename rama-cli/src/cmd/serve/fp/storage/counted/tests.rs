@@ -7,13 +7,18 @@ use rama::{
         CanonicalDomain, CaptureLevel, CapturedSlot, CapturedSlotKind, ConnectionContext, FlowKey,
         H2Capture, H2CaptureLimits, H2CapturedFrame, H2CapturedSetting, HeaderCapture,
         HeaderCapturePolicy, JointCapture, ObservationWeight, OrderCaptureLimits, OrderNamespace,
-        OrderedProtocolCapture, ProfileCaptureCompleteness, ProfileKey, TlsCapture,
-        TlsCaptureLimits, TlsCaptureTransport, TlsCapturedExtension, TlsCapturedExtensionValue,
-        UntrackedDistinctSnapshot,
+        OrderedProtocolCapture, ProfileAnalysisLimits, ProfileCaptureCompleteness, ProfileKey,
+        ProtocolValue, RequestInitiator, TlsCapture, TlsCaptureLimits, TlsCaptureTransport,
+        TlsCapturedExtension, TlsCapturedExtensionValue, UntrackedDistinctSnapshot,
+        analyze_profile_evidence,
     },
     utils::octets::{kib, mib},
 };
-use std::error::Error;
+use std::{
+    error::Error,
+    io::{Write as _, stdout},
+    time::Instant,
+};
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt},
     net::UnixStream,
@@ -33,6 +38,7 @@ fn limits() -> StoreLimits {
         checkpoint_bytes: kib(16),
     }
 }
+
 fn capture(value: &'static str) -> Result<ProfileCapture, BoxError> {
     let policy = HeaderCapturePolicy::default();
     let mut headers = HeaderMap::new();
@@ -69,6 +75,7 @@ fn capture(value: &'static str) -> Result<ProfileCapture, BoxError> {
         },
     })
 }
+
 fn attempt(authorized: bool, sequence: u64) -> IngestionAttempt {
     IngestionAttempt {
         authorized,
@@ -79,6 +86,7 @@ fn attempt(authorized: bool, sequence: u64) -> IngestionAttempt {
         },
     }
 }
+
 async fn state(client: &Client) -> Result<Vec<String>, BoxError> {
     let mut output = Vec::new();
     for query in [
@@ -456,12 +464,9 @@ async fn fp_counted_reservoir_reuses_full_quota_and_survives_restart() {
     let mut last = None;
     for sequence in 1_u64..=10_000 {
         let grease = 0x0a0a0a0a | (((sequence as u32) & 0xf) << 28);
-        let mut versions = vec![
-            QuicVersion::V1,
-            QuicVersion::V2,
-            QuicVersion::from_u32(grease),
-        ];
-        versions.rotate_left(sequence as usize % 3);
+        let mut versions = vec![QuicVersion::V1, QuicVersion::V2];
+        // Reserved placement varies; the known-version preference stays fixed.
+        versions.insert(sequence as usize % 3, QuicVersion::from_u32(grease));
         let mut information = Vec::new();
         VersionInformation::new(QuicVersion::V1, versions).write(&mut information);
         // The first sample reserves enough bytes for every later 0..16-byte value.
@@ -524,7 +529,43 @@ async fn fp_counted_reservoir_reuses_full_quota_and_survives_restart() {
         assert_eq!(row.get::<_, i64>(index), expected);
     }
     assert!(usize::try_from(row.get::<_, i64>(6)).unwrap() <= limits.retained[6]);
-    let prepared = last.unwrap().prepare(false, limits.capture).unwrap();
+    let last = last.unwrap();
+    let mut changed = last.clone();
+    let mut parameters = OrderedProtocolCapture::from_canonical(
+        &changed.joint.slots[0].value,
+        OrderCaptureLimits::default(),
+    )
+    .unwrap();
+    let mut information = Vec::new();
+    VersionInformation::new(QuicVersion::V1, vec![QuicVersion::V2, QuicVersion::V1])
+        .write(&mut information);
+    parameters
+        .fields
+        .iter_mut()
+        .find(|field| field.id == 0x11)
+        .unwrap()
+        .value = ProtocolValue::Literal(information.into());
+    changed.joint.slots[0].value = parameters.canonical(OrderCaptureLimits::default()).unwrap();
+    let prepared = last.prepare(false, limits.capture).unwrap();
+    assert_ne!(
+        prepared.buckets[0].structure.id,
+        changed.prepare(false, limits.capture).unwrap().buckets[0]
+            .structure
+            .id
+    );
+    let before = state(&client).await.unwrap();
+    let failure = ingest(
+        &mut client,
+        100,
+        attempt(false, 10_001),
+        &changed,
+        [3; 32],
+        limits,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(failure, IngestFailure::Rejected(_)));
+    assert_eq!(state(&client).await.unwrap(), before);
     let transaction = client.transaction().await.unwrap();
     let mut remaining = limits.ingestion.input_bytes;
     for input in &prepared.buckets {
@@ -2201,4 +2242,427 @@ async fn fp_counted_h2_permutations_share_rows_at_full_quota() {
         }
     }
     transaction.rollback().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn fp_counted_h3_settings_permutations_share_rows_at_full_quota() {
+    let (_config, mut client) = migrations::tests::isolated_database().await.unwrap();
+    client
+        .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+        .await
+        .unwrap();
+    migrations::apply(&mut client).await.unwrap();
+    let mut limits = limits();
+    limits.ingestion.bucket.literal_values = 0;
+    limits.ingestion.bucket.samples = 1;
+    limits.retained[..6].copy_from_slice(&[1, 0, 2, 2, 1, 2]);
+    let order_limits = OrderCaptureLimits::default();
+    let mut state = 1_u64;
+    let mut last = None;
+    let mut identities = BTreeSet::new();
+    for sequence in 1_u64..=10_000 {
+        let mut order: Vec<_> = (0..12).collect();
+        for index in (1..order.len()).rev() {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            order.swap(index, (state % (index as u64 + 1)) as usize);
+        }
+        let entries: Vec<_> = order
+            .into_iter()
+            .map(|index| (100 + index, 32u64.to_be_bytes()))
+            .chain([
+                (1, 4096u64.to_be_bytes()),
+                (0x21 + 31 * sequence, sequence.to_be_bytes()),
+            ])
+            .collect();
+        let raw = OrderedProtocolCapture::capture(
+            ProfileCaptureCompleteness::Complete,
+            OrderNamespace::Http3Setting,
+            entries,
+            order_limits,
+        )
+        .unwrap()
+        .canonical(order_limits)
+        .unwrap();
+        identities.insert(raw.id);
+        let mut captured = capture("unused").unwrap();
+        captured.flow = None;
+        captured.joint.level = CaptureLevel::Connection;
+        captured.joint.slots = Box::new([CapturedSlot {
+            kind: CapturedSlotKind::Http3Settings,
+            value: raw,
+        }]);
+        assert!(
+            ingest(
+                &mut client,
+                100,
+                attempt(false, sequence),
+                &captured,
+                [3; 32],
+                limits
+            )
+            .await
+            .unwrap()
+        );
+        if sequence == 1 {
+            let bytes: i64 = client
+                .query_one(
+                    "SELECT canonical_bytes FROM fp_v2.quotas WHERE authorized=FALSE",
+                    &[],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            limits.retained[6] = usize::try_from(bytes).unwrap();
+        }
+        last = Some(captured);
+    }
+    assert!(identities.len() > 9_000);
+    let row = client.query_one("SELECT profiles,flows,structures,buckets,runs,interned_values,canonical_bytes FROM fp_v2.quotas WHERE authorized=FALSE", &[]).await.unwrap();
+    for (index, expected) in [
+        1_i64,
+        0,
+        2,
+        2,
+        1,
+        2,
+        i64::try_from(limits.retained[6]).unwrap(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(row.get::<_, i64>(index), expected);
+    }
+    let captured = last.unwrap();
+    assert!(
+        !ingest(
+            &mut client,
+            100,
+            attempt(false, 10_000),
+            &captured,
+            [3; 32],
+            limits
+        )
+        .await
+        .unwrap()
+    );
+    let prepared = captured.prepare(false, limits.capture).unwrap();
+    let transaction = client.transaction().await.unwrap();
+    let mut remaining = limits.ingestion.input_bytes;
+    for input in &prepared.buckets {
+        let restored = load_bucket(
+            &transaction,
+            false,
+            100,
+            input,
+            [3; 32],
+            limits,
+            &mut remaining,
+        )
+        .await
+        .unwrap();
+        assert_eq!(restored.bucket.counts.total, 10_000);
+        assert_eq!(restored.bucket.counts.untracked, 10_000);
+        assert_eq!(restored.bucket.samples.len(), 1);
+        assert_eq!(restored.bucket.values.len(), 1);
+        let raw = &restored.bucket.values[0];
+        if input.value.validated_domain(limits.capture.bytes).unwrap() == CanonicalDomain::Order {
+            let decoded = OrderedProtocolCapture::from_canonical(raw, order_limits).unwrap();
+            assert!(matches!(decoded.namespace, OrderNamespace::Http3Setting));
+            assert_eq!(decoded.fields.len(), 14);
+            assert_eq!(
+                decoded.fields.iter().filter(|field| field.id == 1).count(),
+                1
+            );
+            assert_eq!(
+                decoded
+                    .fields
+                    .iter()
+                    .filter(|field| field.id >= 0x21 && (field.id - 0x21).is_multiple_of(31))
+                    .count(),
+                1
+            );
+            assert!(identities.contains(&raw.id));
+        } else {
+            JointCapture::from_canonical(raw, limits.capture).unwrap();
+        }
+    }
+    transaction.rollback().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn counted_export_reanalyzes_fresh_partitioned_profiles_without_writes() {
+    let (_config, mut client) = migrations::tests::isolated_database().await.unwrap();
+    client
+        .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+        .await
+        .unwrap();
+    migrations::apply(&mut client).await.unwrap();
+    let stored = capture("text/html").unwrap();
+    let limits = limits();
+    for sequence in 1..=3 {
+        ingest(
+            &mut client,
+            100,
+            attempt(false, sequence),
+            &stored,
+            [3; 32],
+            limits,
+        )
+        .await
+        .unwrap();
+    }
+    ingest(&mut client, 100, attempt(true, 1), &stored, [4; 32], limits)
+        .await
+        .unwrap();
+    let before = state(&client).await.unwrap();
+    let analysis_limits = ProfileAnalysisLimits::default();
+    let (public, seed) = next_profile(&mut client, false, None, 100, 14, analysis_limits, limits)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(seed, [3; 32]);
+    let analyzed =
+        analyze_profile_evidence(&public, false, seed, 100, 14, analysis_limits).unwrap();
+    assert!(analyzed.components.h3.is_some());
+    assert!(analyzed.components.h1.is_none());
+    assert!(analyzed.components.tls_tcp.is_none());
+    assert_eq!(analyzed.scopes.len(), 2);
+    assert!(
+        analyzed
+            .scopes
+            .iter()
+            .all(|scope| scope.observations.counts.total == 3)
+    );
+    assert!(
+        !serde_json::to_string(&analyzed)
+            .unwrap()
+            .contains("excluded-credential")
+    );
+    assert!(
+        next_profile(
+            &mut client,
+            false,
+            Some(public.profile.id),
+            100,
+            14,
+            analysis_limits,
+            limits
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    let (private, seed) = next_profile(&mut client, true, None, 100, 14, analysis_limits, limits)
+        .await
+        .unwrap()
+        .unwrap();
+    let analyzed =
+        analyze_profile_evidence(&private, true, seed, 100, 14, analysis_limits).unwrap();
+    assert_eq!(seed, [4; 32]);
+    assert!(
+        analyzed
+            .scopes
+            .iter()
+            .all(|scope| scope.observations.counts.total == 1)
+    );
+    analyze_profile_evidence(&private, false, seed, 100, 14, analysis_limits).unwrap_err();
+    assert!(
+        next_profile(&mut client, false, None, 101, 1, analysis_limits, limits)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        next_profile(&mut client, false, None, 114, 14, analysis_limits, limits)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    next_profile(
+        &mut client,
+        false,
+        None,
+        100,
+        14,
+        ProfileAnalysisLimits {
+            scopes: 1,
+            ..analysis_limits
+        },
+        limits,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(state(&client).await.unwrap(), before);
+}
+
+#[tokio::test]
+#[ignore = "measures the private PostgreSQL fixture; run without competing builds"]
+async fn measure_counted_profile_day_storage_and_fourteen_day_merge() {
+    let (_config, mut client) = migrations::tests::isolated_database().await.unwrap();
+    client
+        .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+        .await
+        .unwrap();
+    migrations::apply(&mut client).await.unwrap();
+    let store_limits = super::super::startup::store_limits();
+    let seed = [37; 32];
+    let policy = HeaderCapturePolicy::default();
+    let versions = [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3];
+    for day in 100..114 {
+        for (protocol, version) in versions.into_iter().enumerate() {
+            for sample in 0..64 {
+                let mut headers = HeaderMap::new();
+                // Deterministic cyclic/reversed order and four observed values.
+                // This is a stated synthetic header workload, not browser traffic.
+                for position in 0..8 {
+                    let position = if sample & 8 == 0 {
+                        position
+                    } else {
+                        7 - position
+                    };
+                    let index = (position + sample) % 8;
+                    headers.insert(
+                        HeaderName::from_bytes(format!("x-profile-field-{index}").as_bytes())
+                            .unwrap(),
+                        HeaderValue::from_str(&format!("value-{}", sample / 16)).unwrap(),
+                    );
+                }
+                let captured = ProfileCapture {
+                    profile: ProfileKey::new(format!("storage-size-{protocol}")),
+                    flow: Some(FlowKey::Http {
+                        version,
+                        method: Method::GET,
+                        initiator: Some(RequestInitiator::Navigate),
+                        fetch: None,
+                        connection: ConnectionContext::default(),
+                    }),
+                    connection: ConnectionContext::default(),
+                    joint: JointCapture {
+                        completeness: ProfileCaptureCompleteness::Complete,
+                        level: CaptureLevel::Request,
+                        slots: Box::new([CapturedSlot {
+                            kind: CapturedSlotKind::Headers,
+                            value: policy
+                                .capture(
+                                    ProfileCaptureCompleteness::Complete,
+                                    version,
+                                    &headers,
+                                    None,
+                                )
+                                .unwrap()
+                                .canonical(&policy)
+                                .unwrap(),
+                        }]),
+                    },
+                };
+                let attempt = IngestionAttempt {
+                    authorized: false,
+                    observation_day: day,
+                    observation: ObservationId {
+                        run: CaptureRunId::new(100, [protocol as u8 + 1; 12]).0,
+                        sequence: u64::from((day - 100) * 64 + sample + 1),
+                    },
+                };
+                ingest(&mut client, day, attempt, &captured, seed, store_limits)
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+    let mut storage = serde_json::Map::new();
+    for table in [
+        "profiles",
+        "flows",
+        "structures",
+        "values",
+        "buckets",
+        "literal_counts",
+        "samples",
+        "runs",
+        "quotas",
+    ] {
+        client
+            .batch_execute(&format!("VACUUM (ANALYZE) fp_v2.{table}"))
+            .await
+            .unwrap();
+        let row = client.query_one(&format!("SELECT count(*)::bigint, COALESCE(sum(pg_column_size(t)),0)::bigint, pg_total_relation_size('fp_v2.{table}') FROM fp_v2.{table} t"), &[]).await.unwrap();
+        storage.insert(table.into(), serde_json::json!({"rows":row.get::<_,i64>(0),"tuple_bytes":row.get::<_,i64>(1),"relation_and_index_bytes":row.get::<_,i64>(2)}));
+    }
+    let mut per_day = serde_json::Map::new();
+    for table in ["buckets", "literal_counts", "samples"] {
+        let row = client.query_one(&format!("SELECT count(*)::bigint, COALESCE(sum(pg_column_size(t)),0)::bigint FROM fp_v2.{table} t WHERE day=113"), &[]).await.unwrap();
+        per_day.insert(table.into(), serde_json::json!({"rows_three_profiles":row.get::<_,i64>(0),"tuple_bytes_three_profiles":row.get::<_,i64>(1)}));
+    }
+    let mut measurements = Vec::new();
+    for _ in 0..7 {
+        let started = Instant::now();
+        let mut after = None;
+        let mut profiles = 0;
+        while let Some((evidence, seed)) = next_profile(
+            &mut client,
+            false,
+            after,
+            113,
+            14,
+            ProfileAnalysisLimits::default(),
+            store_limits,
+        )
+        .await
+        .unwrap()
+        {
+            after = Some(evidence.profile.id);
+            let analysis = analyze_profile_evidence(
+                &evidence,
+                false,
+                seed,
+                113,
+                14,
+                ProfileAnalysisLimits::default(),
+            )
+            .unwrap();
+            // Four literal value sets each retain a header and a request-joint
+            // structure. Each sees sixteen orders per day; order does not split it.
+            assert_eq!(analysis.scopes.len(), 8);
+            for domain in [CanonicalDomain::Headers, CanonicalDomain::Joint] {
+                let scopes: Vec<_> = analysis
+                    .scopes
+                    .iter()
+                    .filter(|scope| scope.observations.domain == domain)
+                    .collect();
+                assert_eq!(scopes.len(), 4);
+                assert!(
+                    scopes
+                        .iter()
+                        .all(|scope| scope.observations.counts.total == 14 * 16)
+                );
+                assert_eq!(
+                    scopes
+                        .iter()
+                        .map(|scope| scope.observations.counts.total)
+                        .sum::<u64>(),
+                    14 * 64
+                );
+            }
+            profiles += 1;
+        }
+        assert_eq!(profiles, 3);
+        measurements.push(started.elapsed().as_micros());
+    }
+    let postgres: String = client
+        .query_one("SELECT version()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    writeln!(
+        stdout().lock(),
+        "PR10_STORAGE_SIZING {}",
+        serde_json::json!({
+            "fixture":"three protocol profiles; one GET/navigation flow each; four literal value sets times sixteen eight-field header orders per UTC day; 14 days; four header and four request-joint scopes per profile",
+            "profiles":3,"days":14,"observations_per_profile_day":64,"postgres":postgres,
+            "tables":storage,"last_day":per_day,"three_profile_fourteen_day_read_and_analysis_microseconds":measurements,
+            "timing_assertions":false
+        })
+    ).unwrap();
 }

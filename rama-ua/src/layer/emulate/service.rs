@@ -178,7 +178,7 @@ where
         };
 
         tracing::debug!(
-            user_agent.kind = %profile.ua_kind,
+            user_agent.kind = ?profile.ua_kind,
             user_agent.version = ?profile.ua_version,
             user_agent.platform = ?profile.platform,
             "user agent profile selected for emulation"
@@ -193,19 +193,22 @@ where
 
         if preserve_http {
             tracing::trace!(
-                user_agent.kind = %profile.ua_kind,
+                user_agent.kind = ?profile.ua_kind,
                 user_agent.version = ?profile.ua_version,
                 user_agent.platform = ?profile.platform,
                 "user agent emulation: skip http settings as http is instructed to be preserved"
             );
         } else {
             tracing::trace!(
-                user_agent.kind = %profile.ua_kind,
+                user_agent.kind = ?profile.ua_kind,
                 user_agent.version = ?profile.ua_version,
                 user_agent.platform = ?profile.platform,
                 "user agent emulation: inject http context data to prepare for HTTP emulation"
             );
-            req.extensions().insert_arc(profile.http.clone());
+            req.extensions()
+                .insert_arc(profile.http.clone().ok_or_else(|| {
+                    BoxError::from_static_str("selected profile has no compiled HTTP component")
+                })?);
         }
 
         #[cfg(feature = "tls")]
@@ -220,15 +223,21 @@ where
             );
             if preserve_tls {
                 tracing::trace!(
-                    user_agent.kind = %profile.ua_kind,
+                    user_agent.kind = ?profile.ua_kind,
                     user_agent.version = ?profile.ua_version,
                     user_agent.platform = ?profile.platform,
                     "user agent emulation: skip tls settings as tls is instructed to be preserved"
                 );
             } else {
-                req.extensions().insert_arc(profile.tls.clone());
+                if let Some(tls) = &profile.tls {
+                    req.extensions().insert_arc(tls.clone());
+                } else if req.uri().scheme_str() == Some("https") {
+                    return Err(BoxError::from_static_str(
+                        "selected profile has no compiled TLS component",
+                    ));
+                }
                 tracing::trace!(
-                    user_agent.kind = %profile.ua_kind,
+                    user_agent.kind = ?profile.ua_kind,
                     user_agent.version = ?profile.ua_version,
                     user_agent.platform = ?profile.platform,
                     "user agent emulation: tls profile injected in ctx"
@@ -289,7 +298,8 @@ where
                         http.version = ?version,
                         "http profile found in context to use for http connection emulation, proceed",
                     );
-                    emulate_http_connect_settings(&req, version, &http_profile);
+                    emulate_http_connect_settings(&req, version, &http_profile)
+                        .map_err(ConnectionError::unknown)?;
                 } else {
                     tracing::trace!(
                         "http profile found but HTTP version is unknown, request is passed through as-is",
@@ -322,17 +332,27 @@ fn emulate_http_connect_settings(
     input: &impl ExtensionsRef,
     version: Version,
     profile: &HttpProfile,
-) {
+) -> Result<(), BoxError> {
     match version {
         Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => {
             tracing::trace!("UA emulation add http1-specific settings",);
             input.extensions().insert(Http1ClientContextParams {
-                title_header_case: profile.h1.settings.title_case_headers,
+                title_header_case: profile
+                    .h1
+                    .as_ref()
+                    .and_then(|h1| h1.settings.as_ref())
+                    .ok_or_else(|| BoxError::from_static_str("missing HTTP/1 settings"))?
+                    .title_case_headers,
             });
         }
         Version::HTTP_2 => {
-            let pseudo_headers = profile.h2.settings.http_pseudo_headers.clone();
-            let early_frames = profile.h2.settings.early_frames.clone();
+            let settings = profile
+                .h2
+                .as_ref()
+                .and_then(|h2| h2.settings.as_ref())
+                .ok_or_else(|| BoxError::from_static_str("missing HTTP/2 settings"))?;
+            let pseudo_headers = settings.http_pseudo_headers.clone();
+            let early_frames = settings.early_frames.clone();
 
             if pseudo_headers.is_some() || early_frames.is_some() {
                 tracing::trace!(
@@ -347,9 +367,11 @@ fn emulate_http_connect_settings(
                 });
             }
         }
-        Version::HTTP_3 => tracing::debug!(
-            "UA emulation not yet supported for h3: not applying anything h3-specific"
-        ),
+        Version::HTTP_3 => {
+            return Err(BoxError::from_static_str(
+                "selected profile has no compiled HTTP/3 component",
+            ));
+        }
         // defensive forward-compat arm; native Version is currently exhaustive
         #[expect(
             unreachable_patterns,
@@ -360,6 +382,7 @@ fn emulate_http_connect_settings(
             "UA emulation not supported for unknown http version: not applying anything version-specific",
         ),
     }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default)]
@@ -432,7 +455,13 @@ where
                 }
 
                 if req.version() == Version::HTTP_2 {
-                    let pseudo_headers = http_profile.h2.settings.http_pseudo_headers.clone();
+                    let pseudo_headers = http_profile
+                        .h2
+                        .as_ref()
+                        .and_then(|h2| h2.settings.as_ref())
+                        .ok_or_else(|| BoxError::from_static_str("missing HTTP/2 settings"))?
+                        .http_pseudo_headers
+                        .clone();
 
                     tracing::trace!(
                         "user agent emulation: insert h2 pseudo headers into request extensions: {pseudo_headers:?}"
@@ -476,8 +505,8 @@ fn get_base_http_headers<'a, Body>(
     profile: &'a HttpProfile,
 ) -> Option<&'a HeaderMap> {
     let headers_profile = match req.version() {
-        Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => &profile.h1.headers,
-        Version::HTTP_2 => &profile.h2.headers,
+        Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => &profile.h1.as_ref()?.headers,
+        Version::HTTP_2 => &profile.h2.as_ref()?.headers,
         _ => {
             tracing::debug!(
                 http.version = ?req.version(),
@@ -574,22 +603,18 @@ fn get_base_http_headers_from_req_init(
     headers: &HttpHeadersProfile,
 ) -> Option<&HeaderMap> {
     match req_init {
-        RequestInitiator::Navigate => Some(&headers.navigate),
-        RequestInitiator::Form => Some(headers.form.as_ref().unwrap_or(&headers.navigate)),
-        RequestInitiator::Xhr => Some(
-            headers
-                .xhr
-                .as_ref()
-                .or(headers.fetch.as_ref())
-                .unwrap_or(&headers.navigate),
-        ),
-        RequestInitiator::Fetch => Some(
-            headers
-                .fetch
-                .as_ref()
-                .or(headers.xhr.as_ref())
-                .unwrap_or(&headers.navigate),
-        ),
+        RequestInitiator::Navigate => headers.navigate.as_ref(),
+        RequestInitiator::Form => headers.form.as_ref().or(headers.navigate.as_ref()),
+        RequestInitiator::Xhr => headers
+            .xhr
+            .as_ref()
+            .or(headers.fetch.as_ref())
+            .or(headers.navigate.as_ref()),
+        RequestInitiator::Fetch => headers
+            .fetch
+            .as_ref()
+            .or(headers.xhr.as_ref())
+            .or(headers.navigate.as_ref()),
         RequestInitiator::Ws => headers.ws.as_ref(),
     }
 }
@@ -826,6 +851,7 @@ fn compute_sec_fetch_site_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::profile::ProfileKey;
 
     use std::{convert::Infallible, str::FromStr, sync::Arc};
 
@@ -861,26 +887,26 @@ mod tests {
             .extensions
             .insert(HttpRequestVersion(Version::HTTP_11));
         let headers = || HttpHeadersProfile {
-            navigate: HeaderMap::new(),
+            navigate: Some(HeaderMap::new()),
             fetch: None,
             xhr: None,
             form: None,
             ws: None,
         };
         input.extensions.insert(HttpProfile {
-            h1: Http1Profile {
+            h1: Some(Http1Profile {
                 headers: headers(),
-                settings: Http1Settings {
+                settings: Some(Http1Settings {
                     title_case_headers: true,
-                },
-            },
-            h2: Http2Profile {
+                }),
+            }),
+            h2: Some(Http2Profile {
                 headers: headers(),
-                settings: Http2Settings {
+                settings: Some(Http2Settings {
                     http_pseudo_headers: Some(PseudoHeaderOrder::new()),
                     early_frames: None,
-                },
-            },
+                }),
+            }),
         });
 
         let established = modifier.serve(input).await.unwrap();
@@ -1511,36 +1537,38 @@ mod tests {
         );
 
         let ua_profile = UserAgentProfile {
-            ua_kind: ua.ua_kind().unwrap(),
+            key: ProfileKey::new("synthetic-test"),
+            captured: None,
+            ua_kind: Some(ua.ua_kind().unwrap()),
             ua_version: ua.ua_version(),
             platform: ua.platform(),
-            http: Arc::new(HttpProfile {
-                h1: Http1Profile {
+            http: Some(Arc::new(HttpProfile {
+                h1: Some(Http1Profile {
                     headers: HttpHeadersProfile {
-                        navigate: HeaderMap::default(),
+                        navigate: Some(HeaderMap::default()),
                         fetch: None,
                         xhr: None,
                         form: None,
                         ws: None,
                     },
-                    settings: Http1Settings::default(),
-                },
-                h2: Http2Profile {
+                    settings: Some(Http1Settings::default()),
+                }),
+                h2: Some(Http2Profile {
                     headers: HttpHeadersProfile {
-                        navigate: HeaderMap::from_iter([(
+                        navigate: Some(HeaderMap::from_iter([(
                             ETAG,
                             HeaderValue::from_static("navigate"),
-                        )]),
+                        )])),
                         fetch: None,
                         xhr: None,
                         form: None,
                         ws: None,
                     },
-                    settings: Http2Settings::default(),
-                },
-            }),
+                    settings: Some(Http2Settings::default()),
+                }),
+            })),
             #[cfg(feature = "tls")]
-            tls: Arc::new(crate::profile::TlsProfile {
+            tls: Some(Arc::new(crate::profile::TlsProfile {
                 client_hello: rama_tls::client::ClientHello::new(
                     rama_tls::ProtocolVersion::TLSv1_3,
                     Vec::new(),
@@ -1549,7 +1577,7 @@ mod tests {
                 ),
                 permute_extensions: false,
                 ws_client_config_overwrites: None,
-            }),
+            })),
             runtime: None,
         };
 
@@ -1588,36 +1616,38 @@ mod tests {
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         );
         let ua_profile = UserAgentProfile {
-            ua_kind: ua.ua_kind().unwrap(),
+            key: ProfileKey::new("synthetic-test"),
+            captured: None,
+            ua_kind: Some(ua.ua_kind().unwrap()),
             ua_version: ua.ua_version(),
             platform: ua.platform(),
-            http: Arc::new(HttpProfile {
-                h1: Http1Profile {
+            http: Some(Arc::new(HttpProfile {
+                h1: Some(Http1Profile {
                     headers: HttpHeadersProfile {
-                        navigate: HeaderMap::from_iter([(
+                        navigate: Some(HeaderMap::from_iter([(
                             ETAG,
                             HeaderValue::from_static("navigate"),
-                        )]),
+                        )])),
                         xhr: None,
                         fetch: None,
                         form: None,
                         ws: None,
                     },
-                    settings: Http1Settings::default(),
-                },
-                h2: Http2Profile {
+                    settings: Some(Http1Settings::default()),
+                }),
+                h2: Some(Http2Profile {
                     headers: HttpHeadersProfile {
-                        navigate: HeaderMap::default(),
+                        navigate: Some(HeaderMap::default()),
                         fetch: None,
                         xhr: None,
                         form: None,
                         ws: None,
                     },
-                    settings: Http2Settings::default(),
-                },
-            }),
+                    settings: Some(Http2Settings::default()),
+                }),
+            })),
             #[cfg(feature = "tls")]
-            tls: Arc::new(crate::profile::TlsProfile {
+            tls: Some(Arc::new(crate::profile::TlsProfile {
                 client_hello: rama_tls::client::ClientHello::new(
                     rama_tls::ProtocolVersion::TLSv1_3,
                     Vec::new(),
@@ -1626,7 +1656,7 @@ mod tests {
                 ),
                 permute_extensions: false,
                 ws_client_config_overwrites: None,
-            }),
+            })),
             runtime: None,
         };
 
@@ -1657,16 +1687,18 @@ mod tests {
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         );
         let ua_profile = UserAgentProfile {
-            ua_kind: ua.ua_kind().unwrap(),
+            key: ProfileKey::new("synthetic-test"),
+            captured: None,
+            ua_kind: Some(ua.ua_kind().unwrap()),
             ua_version: ua.ua_version(),
             platform: ua.platform(),
-            http: Arc::new(HttpProfile {
-                h1: Http1Profile {
+            http: Some(Arc::new(HttpProfile {
+                h1: Some(Http1Profile {
                     headers: HttpHeadersProfile {
-                        navigate: HeaderMap::from_iter([(
+                        navigate: Some(HeaderMap::from_iter([(
                             ETAG,
                             HeaderValue::from_static("navigate"),
-                        )]),
+                        )])),
                         xhr: Some(HeaderMap::from_iter([(
                             ETAG,
                             HeaderValue::from_static("xhr"),
@@ -1678,21 +1710,21 @@ mod tests {
                         )])),
                         ws: None,
                     },
-                    settings: Http1Settings::default(),
-                },
-                h2: Http2Profile {
+                    settings: Some(Http1Settings::default()),
+                }),
+                h2: Some(Http2Profile {
                     headers: HttpHeadersProfile {
-                        navigate: HeaderMap::default(),
+                        navigate: Some(HeaderMap::default()),
                         fetch: None,
                         xhr: None,
                         form: None,
                         ws: None,
                     },
-                    settings: Http2Settings::default(),
-                },
-            }),
+                    settings: Some(Http2Settings::default()),
+                }),
+            })),
             #[cfg(feature = "tls")]
-            tls: Arc::new(crate::profile::TlsProfile {
+            tls: Some(Arc::new(crate::profile::TlsProfile {
                 client_hello: rama_tls::client::ClientHello::new(
                     rama_tls::ProtocolVersion::TLSv1_3,
                     Vec::new(),
@@ -1701,7 +1733,7 @@ mod tests {
                 ),
                 permute_extensions: false,
                 ws_client_config_overwrites: None,
-            }),
+            })),
             runtime: None,
         };
 
@@ -1732,16 +1764,18 @@ mod tests {
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         );
         let ua_profile = UserAgentProfile {
-            ua_kind: ua.ua_kind().unwrap(),
+            key: ProfileKey::new("synthetic-test"),
+            captured: None,
+            ua_kind: Some(ua.ua_kind().unwrap()),
             ua_version: ua.ua_version(),
             platform: ua.platform(),
-            http: Arc::new(HttpProfile {
-                h1: Http1Profile {
+            http: Some(Arc::new(HttpProfile {
+                h1: Some(Http1Profile {
                     headers: HttpHeadersProfile {
-                        navigate: HeaderMap::from_iter([(
+                        navigate: Some(HeaderMap::from_iter([(
                             ETAG,
                             HeaderValue::from_static("navigate"),
-                        )]),
+                        )])),
                         fetch: Some(HeaderMap::from_iter([(
                             ETAG,
                             HeaderValue::from_static("fetch"),
@@ -1753,21 +1787,21 @@ mod tests {
                         )])),
                         ws: None,
                     },
-                    settings: Http1Settings::default(),
-                },
-                h2: Http2Profile {
+                    settings: Some(Http1Settings::default()),
+                }),
+                h2: Some(Http2Profile {
                     headers: HttpHeadersProfile {
-                        navigate: HeaderMap::default(),
+                        navigate: Some(HeaderMap::default()),
                         fetch: None,
                         xhr: None,
                         form: None,
                         ws: None,
                     },
-                    settings: Http2Settings::default(),
-                },
-            }),
+                    settings: Some(Http2Settings::default()),
+                }),
+            })),
             #[cfg(feature = "tls")]
-            tls: Arc::new(crate::profile::TlsProfile {
+            tls: Some(Arc::new(crate::profile::TlsProfile {
                 client_hello: rama_tls::client::ClientHello::new(
                     rama_tls::ProtocolVersion::TLSv1_3,
                     Vec::new(),
@@ -1776,7 +1810,7 @@ mod tests {
                 ),
                 permute_extensions: false,
                 ws_client_config_overwrites: None,
-            }),
+            })),
             runtime: None,
         };
 
@@ -1811,16 +1845,18 @@ mod tests {
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         );
         let ua_profile = UserAgentProfile {
-            ua_kind: ua.ua_kind().unwrap(),
+            key: ProfileKey::new("synthetic-test"),
+            captured: None,
+            ua_kind: Some(ua.ua_kind().unwrap()),
             ua_version: ua.ua_version(),
             platform: ua.platform(),
-            http: Arc::new(HttpProfile {
-                h1: Http1Profile {
+            http: Some(Arc::new(HttpProfile {
+                h1: Some(Http1Profile {
                     headers: HttpHeadersProfile {
-                        navigate: HeaderMap::from_iter([(
+                        navigate: Some(HeaderMap::from_iter([(
                             ETAG,
                             HeaderValue::from_static("navigate"),
-                        )]),
+                        )])),
                         fetch: Some(HeaderMap::from_iter([(
                             ETAG,
                             HeaderValue::from_static("fetch"),
@@ -1838,14 +1874,14 @@ mod tests {
                             HeaderValue::from_static("ws"),
                         )])),
                     },
-                    settings: Http1Settings::default(),
-                },
-                h2: Http2Profile {
+                    settings: Some(Http1Settings::default()),
+                }),
+                h2: Some(Http2Profile {
                     headers: HttpHeadersProfile {
-                        navigate: HeaderMap::from_iter([(
+                        navigate: Some(HeaderMap::from_iter([(
                             ETAG,
                             HeaderValue::from_static("navigate2"),
-                        )]),
+                        )])),
                         fetch: Some(HeaderMap::from_iter([(
                             ETAG,
                             HeaderValue::from_static("fetch2"),
@@ -1863,11 +1899,11 @@ mod tests {
                             HeaderValue::from_static("ws2"),
                         )])),
                     },
-                    settings: Http2Settings::default(),
-                },
-            }),
+                    settings: Some(Http2Settings::default()),
+                }),
+            })),
             #[cfg(feature = "tls")]
-            tls: Arc::new(crate::profile::TlsProfile {
+            tls: Some(Arc::new(crate::profile::TlsProfile {
                 client_hello: rama_tls::client::ClientHello::new(
                     rama_tls::ProtocolVersion::TLSv1_3,
                     Vec::new(),
@@ -1876,7 +1912,7 @@ mod tests {
                 ),
                 permute_extensions: false,
                 ws_client_config_overwrites: None,
-            }),
+            })),
             runtime: None,
         };
 

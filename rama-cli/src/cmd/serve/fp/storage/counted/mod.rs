@@ -1,5 +1,8 @@
 //! Counted fingerprint writes, serialized within each authorization partition.
 
+mod export;
+pub(super) use export::next_profile;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
@@ -8,7 +11,7 @@ use std::{
 use rama::{
     error::BoxError,
     ua::profile::{
-        CanonicalValue, CaptureRunCheckpoint, CaptureRunId, CountedBucketSnapshot,
+        CanonicalDomain, CanonicalValue, CaptureRunCheckpoint, CaptureRunId, CountedBucketSnapshot,
         CountedObservationBucket, CounterSnapshot, IngestionAttempt, IngestionBatchLimits,
         JointCaptureLimits, LiteralCount, ObservationId, ObservationLosses,
         PendingBucketObservation, PreparedIngestion, PreparedProfileCapture, ProfileBucketInput,
@@ -33,15 +36,19 @@ pub(super) struct StoreLimits {
 fn invalid(message: &'static str) -> BoxError {
     ProfileDataError::Invalid(message).into()
 }
+
 fn bounded(message: &'static str) -> BoxError {
     ProfileDataError::LimitExceeded(message).into()
 }
+
 fn integer(value: usize) -> Result<i64, BoxError> {
     Ok(i64::try_from(value)?)
 }
+
 fn count(value: u64) -> Result<i64, BoxError> {
     Ok(i64::try_from(value)?)
 }
+
 fn identity(bytes: Vec<u8>) -> Result<ValueId, BoxError> {
     Ok(ValueId(
         bytes
@@ -49,6 +56,7 @@ fn identity(bytes: Vec<u8>) -> Result<ValueId, BoxError> {
             .map_err(|_error| invalid("stored identity length"))?,
     ))
 }
+
 fn bounded_rows(capacity: usize) -> Result<i64, BoxError> {
     integer(
         capacity
@@ -109,6 +117,7 @@ struct Quota {
     used: [i64; 7],
     maximum: [usize; 7],
 }
+
 impl Quota {
     fn change(&mut self, index: usize, delta: i64) -> Result<(), BoxError> {
         let next = self.used[index]
@@ -120,6 +129,7 @@ impl Quota {
         self.used[index] = next;
         Ok(())
     }
+
     fn validate(&self) -> Result<(), BoxError> {
         for (used, maximum) in self.used.iter().zip(self.maximum) {
             if *used < 0 || u64::try_from(*used)? > u64::try_from(maximum)? {
@@ -345,10 +355,41 @@ async fn load_bucket(
     let domain = input
         .value
         .validated_domain(limits.ingestion.bucket.input_bytes)?;
+    load_retained_bucket(
+        transaction,
+        authorized,
+        day,
+        StoredScope {
+            scope: &input.scope,
+            structure: &input.structure,
+            domain,
+        },
+        seed,
+        limits,
+        remaining,
+    )
+    .await
+}
+
+struct StoredScope<'a> {
+    scope: &'a CanonicalValue,
+    structure: &'a CanonicalValue,
+    domain: CanonicalDomain,
+}
+
+async fn load_retained_bucket(
+    transaction: &Transaction<'_>,
+    authorized: bool,
+    day: u32,
+    input: StoredScope<'_>,
+    seed: [u8; 32],
+    limits: StoreLimits,
+    remaining: &mut usize,
+) -> Result<StoredObservationBucket, BoxError> {
+    let domain = input.domain;
     let scope = &input.scope.id.0[..];
     let day_sql = i64::from(day);
-    let decoded =
-        ProfileObservationScope::from_canonical(&input.scope, limits.capture.value_bytes)?;
+    let decoded = ProfileObservationScope::from_canonical(input.scope, limits.capture.value_bytes)?;
     if decoded.authorized != authorized {
         return Err(invalid("stored scope access class"));
     }
@@ -813,5 +854,4 @@ pub(super) async fn prune(
 }
 
 #[cfg(all(test, unix))]
-#[path = "counted/tests.rs"]
 mod tests;

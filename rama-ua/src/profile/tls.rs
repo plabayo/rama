@@ -6,8 +6,6 @@ use rama_tls::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{PlatformKind, UserAgentKind};
-
 #[derive(Debug, Clone, Extension, Serialize, Deserialize)]
 #[extension(tags(ua, tls))]
 /// Profile of the user-agent's TLS (client) configuration.
@@ -20,8 +18,7 @@ pub struct TlsProfile {
 
     /// Whether the user-agent permutes its ClientHello extensions per connection,
     /// in which case the captured order is a single sample rather than a constant.
-    ///
-    /// See [`TlsProfile::user_agent_permutes_extensions`].
+
     #[serde(default)]
     pub permute_extensions: bool,
 
@@ -36,21 +33,6 @@ pub struct WsClientConfigOverwrites {
 }
 
 impl TlsProfile {
-    /// Whether a user-agent permutes its ClientHello extensions per connection.
-    ///
-    /// Chromium does so since version 110, except on iOS where it uses the
-    /// system TLS stack. An unknown Chromium version is assumed to be recent.
-    #[must_use]
-    pub fn user_agent_permutes_extensions(
-        ua_kind: UserAgentKind,
-        ua_version: Option<usize>,
-        platform: Option<PlatformKind>,
-    ) -> bool {
-        ua_kind == UserAgentKind::Chromium
-            && platform != Some(PlatformKind::IOS)
-            && ua_version.is_none_or(|version| version >= 110)
-    }
-
     /// Compute the [`Ja3`] (hash) based on this [`TlsProfile`].
     ///
     /// This can be useful in case you want to compare profiles

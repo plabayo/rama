@@ -168,5 +168,4 @@ where
 }
 
 #[cfg(test)]
-#[path = "collection/tests.rs"]
 mod tests;

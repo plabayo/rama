@@ -469,6 +469,7 @@ where
                         {
                             acceptor.with_per_message_deflate_overwrite_extensions()
                         }
+
                         #[cfg(not(feature = "compression"))]
                         {
                             acceptor
@@ -569,38 +570,34 @@ impl Service<Request> for EchoService {
                 if let Some(uadb) = self.uadb.as_deref()
                     && let Some(profile) =
                         ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
-                    {
-                        let matched_ja4h = match req.version() {
-                            Version::HTTP_10 | Version::HTTP_11 => profile
-                                .http
-                                .ja4h_h1_navigate(Some(req.method().clone()))
-                                .inspect_err(|err| {
-                                    tracing::trace!(
-                                        "ja4h computation of matched profile for incoming h1 req: {err:?}"
-                                    )
-                                })
-                                .ok(),
-                            Version::HTTP_2 => profile
-                                .http
-                                .ja4h_h2_navigate(Some(req.method().clone()))
-                                .inspect_err(|err| {
-                                    tracing::trace!(
-                                        "ja4h computation of matched profile for incoming h2 req: {err:?}"
-                                    )
-                                })
-                                .ok(),
+                {
+                    let matched_ja4h = profile
+                        .http
+                        .as_ref()
+                        .and_then(|http| match req.version() {
+                            Version::HTTP_10 | Version::HTTP_11 => {
+                                http.ja4h_h1_navigate(Some(req.method().clone()))
+                            }
+                            Version::HTTP_2 => http.ja4h_h2_navigate(Some(req.method().clone())),
                             _ => None,
-                        };
-                        if let Some(tgt) = matched_ja4h {
-                            let hash = format!("{tgt}");
-                            let matched = format!("{ja4h}") == hash;
-                            profile_ja4h = Some(FingerprintProfileData {
-                                hash,
-                                verbose: format!("{tgt:?}"),
-                                matched,
-                            });
-                        }
+                        })
+                        .and_then(|result| {
+                            result
+                                .inspect_err(|error| {
+                                    tracing::trace!("profile ja4h computation: {error:?}")
+                                })
+                                .ok()
+                        });
+                    if let Some(tgt) = matched_ja4h {
+                        let hash = format!("{tgt}");
+                        let matched = format!("{ja4h}") == hash;
+                        profile_ja4h = Some(FingerprintProfileData {
+                            hash,
+                            verbose: format!("{tgt:?}"),
+                            matched,
+                        });
                     }
+                }
 
                 json!({
                     "hash": format!("{ja4h}"),
@@ -652,13 +649,7 @@ impl Service<Request> for EchoService {
                     && let Some(profile) =
                         ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
                 {
-                    let matched_ja4 = profile
-                        .tls
-                        .compute_ja4()
-                        .inspect_err(|err| {
-                            tracing::trace!("ja4 computation of matched profile: {err:?}")
-                        })
-                        .ok();
+                    let matched_ja4 = profile.tls.as_ref().and_then(|tls| tls.compute_ja4().inspect_err(|error| tracing::trace!("profile ja4 computation: {error:?}")).ok());
                     if let (Some(src), Some(tgt)) = (ja4.as_ref(), matched_ja4) {
                         let hash = format!("{tgt}");
                         let matched = format!("{src}") == hash;
@@ -689,13 +680,7 @@ impl Service<Request> for EchoService {
                     && let Some(profile) =
                         ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
                 {
-                    let matched_ja3 = profile
-                        .tls
-                        .compute_ja3()
-                        .inspect_err(|err| {
-                            tracing::trace!("ja3 computation of matched profile: {err:?}")
-                        })
-                        .ok();
+                    let matched_ja3 = profile.tls.as_ref().and_then(|tls| tls.compute_ja3().inspect_err(|error| tracing::trace!("profile ja3 computation: {error:?}")).ok());
                     if let (Some(src), Some(tgt)) = (ja3.as_ref(), matched_ja3) {
                         let hash = format!("{tgt:x}");
                         let matched = format!("{src:x}") == hash;
@@ -726,13 +711,7 @@ impl Service<Request> for EchoService {
                     && let Some(profile) =
                         ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
                 {
-                    let matched_peet = profile
-                        .tls
-                        .compute_peet()
-                        .inspect_err(|err| {
-                            tracing::trace!("peetprint computation of matched profile: {err:?}")
-                        })
-                        .ok();
+                    let matched_peet = profile.tls.as_ref().and_then(|tls| tls.compute_peet().inspect_err(|error| tracing::trace!("profile peet computation: {error:?}")).ok());
                     if let (Some(src), Some(tgt)) = (peet.as_ref(), matched_peet) {
                         let hash = format!("{tgt}");
                         let matched = format!("{src}") == hash;
@@ -958,6 +937,7 @@ mod tests {
         assert!(powershell.contains("[Convert]::FromBase64String"));
         assert!(powershell.contains("--data-binary ('@' + $__ramaCurlPayload)"));
     }
+
     #[tokio::test]
     async fn observation_schema_distinguishes_absent_and_incomplete_h3() {
         for captured in [false, true] {

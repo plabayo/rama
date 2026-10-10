@@ -1,7 +1,10 @@
 use std::{fmt, sync::Arc};
 
-use rama::error::{BoxError, ErrorContext};
 use rama::net::address::ip::geo::IpGeoDb;
+use rama::{
+    error::{BoxError, ErrorContext},
+    rt::Executor,
+};
 
 use super::{data::DataSource, redacted_storage_auth, storage::Storage};
 
@@ -35,9 +38,14 @@ impl State {
     pub(super) async fn new(
         pg_url: Option<String>,
         storage_auth: Option<&str>,
+        exec: &Executor,
     ) -> Result<Self, BoxError> {
         let storage = match pg_url {
-            Some(pg_url) => Some(Storage::try_new(pg_url).await.context("create storage")?),
+            Some(pg_url) => Some(
+                Storage::try_new(pg_url, exec)
+                    .await
+                    .context("create storage")?,
+            ),
             None => None,
         };
 

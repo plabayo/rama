@@ -5,7 +5,7 @@ use std::str;
 use rama_http::{HeaderMap, Method, Version};
 use serde::{Deserialize, Serialize};
 
-use crate::{DeviceKind, PlatformKind};
+use crate::{DeviceKind, PlatformKind, UserAgent};
 
 use super::{
     CanonicalValue, ProfileDataError, RequestInitiator,
@@ -30,6 +30,23 @@ impl ProfileKey {
             platform: None,
             device: None,
             user_agent: None,
+        }
+    }
+
+    /// Derive the same identity for live, imported and offline HTTP observations.
+    /// Unrecognized clients retain their exact header as the client name.
+    pub fn from_user_agent(user_agent: &UserAgent) -> Self {
+        Self {
+            client: user_agent
+                .ua_kind()
+                .map_or(user_agent.header_str(), |kind| kind.as_str())
+                .into(),
+            version: user_agent
+                .ua_version()
+                .map(|version| version.to_string().into()),
+            platform: user_agent.platform(),
+            device: user_agent.device(),
+            user_agent: Some(user_agent.header_str().into()),
         }
     }
 
@@ -519,6 +536,7 @@ mod tests {
         headers.append("sec-fetch-mode", "cors".parse().unwrap());
         FetchContext::from_headers(&headers, kib(4)).unwrap_err();
     }
+
     #[test]
     fn identity_golden_vectors_reject_truncation_and_oversized_input() {
         let profile = ProfileKey::new("app").canonical(kib(4)).unwrap();
@@ -626,6 +644,7 @@ mod tests {
             }
         }
     }
+
     #[test]
     fn http_flow_fixed_vectors_cover_all_owned_context_tags() {
         let expected = [
