@@ -227,8 +227,7 @@ jobs:
         shell: bash
         run: |
           if [[ "$RUNNER_OS" == Linux ]]; then
-            sudo apt-get update
-            sudo apt-get install -y postgresql
+            just scripts/ci/install-postgres
             just scripts/ci/fp-test-postgres \
               cargo nextest run --profile ci --all-features \
               ${{ matrix.cargo_profile_args }} ${{ matrix.cargo_build_args }} \

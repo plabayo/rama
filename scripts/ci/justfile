@@ -40,3 +40,8 @@ test:
 [unix]
 fp-test-postgres +args:
     python3 scripts/ci/with_fp_test_postgres.py -- "$@"
+
+# Bound mirror stalls before starting the private fingerprint test database.
+[linux]
+install-postgres:
+    bash scripts/ci/install-postgres.sh

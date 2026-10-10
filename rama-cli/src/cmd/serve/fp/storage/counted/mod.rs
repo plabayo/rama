@@ -844,6 +844,14 @@ pub(super) async fn prune(
     ).await?;
     quota.change(4, -i64::try_from(expired)?)?;
     more |= usize::try_from(expired)? == rows;
+    let expired = transaction.execute(
+        "DELETE FROM fp_v2.legacy_rejections r USING
+           (SELECT authorized,source_table,source_key FROM fp_v2.legacy_rejections
+            WHERE authorized=$1 AND rejected_day<$2 ORDER BY rejected_day,source_key LIMIT $3) old
+         WHERE r.authorized=old.authorized AND r.source_table=old.source_table AND r.source_key=old.source_key",
+        &[&authorized, &first, &maximum],
+    ).await?;
+    more |= usize::try_from(expired)? == rows;
     // Each query has a bounded result and all reference lookups have owned indexes.
     for (index, query) in [
         (5, "DELETE FROM fp_v2.values v USING

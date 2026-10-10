@@ -285,9 +285,6 @@ jobs:
           persist-credentials: false
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
         if: startsWith(matrix.os, 'windows')
-      - name: Install PostgreSQL integration harness
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y postgresql
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ matrix.toolchain }}
@@ -295,6 +292,10 @@ jobs:
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just,nextest
+      - name: Install PostgreSQL integration harness
+        timeout-minutes: 15
+        if: runner.os == 'Linux'
+        run: just scripts/ci/install-postgres
       - uses: ./.github/actions/rust-cache
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-
@@ -1339,9 +1340,6 @@ jobs:
           persist-credentials: false
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
         if: startsWith(matrix.os, 'windows')
-      - name: Install PostgreSQL integration harness
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y postgresql
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ matrix.toolchain }}
@@ -1349,6 +1347,10 @@ jobs:
       - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: just,nextest
+      - name: Install PostgreSQL integration harness
+        timeout-minutes: 15
+        if: runner.os == 'Linux'
+        run: just scripts/ci/install-postgres
       - uses: ./.github/actions/rust-cache
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-release

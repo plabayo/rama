@@ -16,6 +16,10 @@ rama ua export --import-legacy --authorized --replace --output profiles.json
 The export includes the last 14 UTC day buckets, including today. Legacy import
 writes only the additive counted schema; it preserves source rows, deduplicates
 restarts and records changed rows as revisions with unknown historical counts.
+Each fp service also runs this bounded import in the background at startup.
+Invalid fields leave valid neighbouring fields intact. Rejected revisions are
+counted by category and checkpointed for 14 days, with at most 16,384 rejection
+checkpoints per partition; database or quota failures stop that partition.
 `rama ua view profiles.json` inspects the resulting archive.
 
 ### Developer instructions

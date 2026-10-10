@@ -267,33 +267,27 @@ async fn legacy_reader_pages_and_rejects_oversize_and_future_rows() {
     assert_eq!((report.read, report.imported), (33, 33));
     let before = stored_totals(&client).await;
     insert(&client, false, 101, &profile("future-client")).await;
-    backfill(&mut client, false, 100, [7; 32], limits)
-        .await
-        .unwrap_err();
-    assert_eq!(stored_totals(&client).await, before);
-    client
-        .execute(
-            "DELETE FROM public.\"public-ua-profiles\" WHERE uastr='future-client'",
-            &[],
-        )
-        .await
-        .unwrap();
     client.execute("INSERT INTO public.\"public-ua-profiles\" (uastr,updated_at,source_info) VALUES ('oversize-client',to_timestamp(100 * 86400),json_build_object('device_name',repeat('x',$1)))", &[&i32::try_from(ROW_BYTES+1).unwrap()]).await.unwrap();
-    backfill(&mut client, false, 100, [7; 32], limits)
-        .await
-        .unwrap_err();
-    assert_eq!(stored_totals(&client).await, before);
-    client
-        .execute(
-            "DELETE FROM public.\"public-ua-profiles\" WHERE uastr='oversize-client'",
-            &[],
-        )
+    insert(&client, false, 100, &profile(&"z".repeat(KEY_BYTES + 1))).await;
+    client.execute("INSERT INTO public.\"public-ua-profiles\" (uastr,updated_at) VALUES ('infinite-client','infinity')", &[]).await.unwrap();
+    client.execute("INSERT INTO public.\"public-ua-profiles\" (uastr,updated_at) VALUES ('extreme-future-client','294276-12-31 23:59:59+00')", &[]).await.unwrap();
+    let report = backfill(&mut client, false, 100, [7; 32], limits)
         .await
         .unwrap();
-    insert(&client, false, 100, &profile(&"z".repeat(KEY_BYTES + 1))).await;
-    backfill(&mut client, false, 100, [7; 32], limits)
+    assert_eq!(
+        (
+            report.rejected_invalid,
+            report.rejected_oversize,
+            report.rejected_fields
+        ),
+        (3, 2, 1)
+    );
+    assert_eq!(stored_totals(&client).await, before);
+    let report = backfill(&mut client, false, 100, [7; 32], limits)
         .await
-        .unwrap_err();
+        .unwrap();
+    assert_eq!(report.read, 33);
+    assert_eq!((report.rejected_invalid, report.rejected_oversize), (0, 0));
     assert_eq!(stored_totals(&client).await, before);
 }
 
@@ -348,7 +342,7 @@ async fn rejected_legacy_partition_does_not_hide_the_other_partition() {
         .await
         .unwrap();
     backfill_partitions(pool, [[7; 32]; 2], startup::store_limits()).await;
-    assert_eq!(stored_totals(&client).await, (4, 4, 1, 1));
+    assert_eq!(stored_totals(&client).await, (7, 7, 2, 2));
     let public: i64 = client
         .query_one(
             "SELECT count(*) FROM fp_v2.buckets WHERE NOT authorized",
@@ -357,7 +351,7 @@ async fn rejected_legacy_partition_does_not_hide_the_other_partition() {
         .await
         .unwrap()
         .get(0);
-    assert_eq!(public, 0);
+    assert_eq!(public, 3);
 }
 
 #[tokio::test]
@@ -418,4 +412,348 @@ async fn legacy_cli_export_and_view_source_share_the_counted_analysis() {
     );
     assert_eq!(legacy_snapshot(&client).await, original);
     assert_eq!(stored_totals(&client).await, (4, 4, 1, 1));
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn legacy_rejection_checkpoint_preserves_neighbours_restart_and_changed_rows() {
+    let mut client = setup().await;
+    let limits = startup::store_limits();
+    insert(&client, false, 100, &profile("a-valid")).await;
+    insert(
+        &client,
+        false,
+        100,
+        &UserAgentProfileInput::new("b-invalid"),
+    )
+    .await;
+    client.execute("UPDATE public.\"public-ua-profiles\" SET h1_settings='\"invalid\"' WHERE uastr='b-invalid'", &[]).await.unwrap();
+    insert(&client, false, 100, &profile("c-valid")).await;
+    let original = legacy_snapshot(&client).await;
+    let report = backfill(&mut client, false, 100, [7; 32], limits)
+        .await
+        .unwrap();
+    assert_eq!(
+        (report.read, report.imported, report.rejected_invalid),
+        (3, 2, 1)
+    );
+    assert_eq!(report.rejected_fields, 1);
+    assert_eq!(stored_totals(&client).await, (8, 8, 2, 2));
+    let mut restarted = connect(&env::var("RAMA_FP_TEST_PG").unwrap().parse().unwrap())
+        .await
+        .unwrap();
+    let report = backfill(&mut restarted, false, 100, [7; 32], limits)
+        .await
+        .unwrap();
+    assert_eq!(
+        (report.read, report.imported, report.rejected_invalid),
+        (2, 0, 0)
+    );
+    assert_eq!(legacy_snapshot(&client).await, original);
+    client.execute("UPDATE public.\"public-ua-profiles\" SET h1_settings='{\"title_case_headers\":true}' WHERE uastr='b-invalid'", &[]).await.unwrap();
+    let report = backfill(&mut restarted, false, 100, [7; 32], limits)
+        .await
+        .unwrap();
+    assert_eq!(
+        (report.read, report.imported, report.rejected_invalid),
+        (3, 1, 0)
+    );
+    assert_eq!(stored_totals(&client).await, (9, 9, 3, 3));
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn legacy_partial_fields_survive_invalid_and_oversize_neighbours() {
+    let mut client = setup().await;
+    let limits = startup::store_limits();
+    insert(&client, false, 100, &profile("partial")).await;
+    client.execute("UPDATE public.\"public-ua-profiles\" SET h1_settings='\"invalid\"', js_web_apis='1e400', source_info=json_build_object('device_name',repeat('x',$1)), tls_ws_client_config_overwrites='{\"alpn\":null}'", &[&i32::try_from(ROW_BYTES+1).unwrap()]).await.unwrap();
+    let original = legacy_snapshot(&client).await;
+    let report = backfill(&mut client, false, 100, [7; 32], limits)
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            report.imported,
+            report.rejected_oversize,
+            report.rejected_fields
+        ),
+        (1, 1, 4)
+    );
+    assert_eq!(stored_totals(&client).await, (3, 3, 1, 1));
+    let report = backfill(&mut client, false, 100, [7; 32], limits)
+        .await
+        .unwrap();
+    assert_eq!((report.read, report.imported), (0, 0));
+    assert_eq!(stored_totals(&client).await, (3, 3, 1, 1));
+    assert_eq!(legacy_snapshot(&client).await, original);
+    client
+        .execute(
+            "UPDATE public.\"public-ua-profiles\" SET h1_settings='\"still invalid\"'",
+            &[],
+        )
+        .await
+        .unwrap();
+    let report = backfill(&mut client, false, 100, [7; 32], limits)
+        .await
+        .unwrap();
+    assert_eq!(
+        (report.read, report.imported, report.rejected_fields),
+        (1, 0, 4)
+    );
+    let count: i64 = client
+        .query_one("SELECT count(*) FROM fp_v2.legacy_rejections", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 1);
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT legacy_rejections FROM fp_v2.quotas WHERE NOT authorized",
+                &[]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        count
+    );
+    assert_eq!(stored_totals(&client).await, (3, 3, 1, 1));
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn legacy_rejection_quota_is_fail_closed_and_maintenance_is_bounded() {
+    let mut client = setup().await;
+    let mut limits = startup::store_limits();
+    limits.retained[4] = 1;
+    for key in ["a-invalid", "b-invalid"] {
+        insert(&client, false, 100, &UserAgentProfileInput::new(key)).await;
+    }
+    client
+        .execute(
+            "UPDATE public.\"public-ua-profiles\" SET h1_settings='\"invalid\"'",
+            &[],
+        )
+        .await
+        .unwrap();
+    insert(&client, false, 100, &profile("c-valid")).await;
+    let error = backfill(&mut client, false, 100, [7; 32], limits)
+        .await
+        .unwrap_err();
+    assert_eq!(error_category(error.as_ref()), "quota");
+    assert_eq!(stored_totals(&client).await, (0, 0, 0, 0));
+    let count: i64 = client
+        .query_one("SELECT count(*) FROM fp_v2.legacy_rejections", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 1);
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT legacy_rejections FROM fp_v2.quotas WHERE NOT authorized",
+                &[]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        count
+    );
+    limits.retained[4] = 2;
+    let report = backfill(&mut client, false, 100, [7; 32], limits)
+        .await
+        .unwrap();
+    assert_eq!(
+        (report.read, report.imported, report.rejected_invalid),
+        (2, 1, 1)
+    );
+    counted::prune(&mut client, false, 114, limits, 1)
+        .await
+        .unwrap();
+    let count: i64 = client
+        .query_one("SELECT count(*) FROM fp_v2.legacy_rejections", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 1);
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT legacy_rejections FROM fp_v2.quotas WHERE NOT authorized",
+                &[]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        count
+    );
+    while counted::prune(&mut client, false, 114, limits, 1)
+        .await
+        .unwrap()
+    {}
+    let count: i64 = client
+        .query_one("SELECT count(*) FROM fp_v2.legacy_rejections", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 0);
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT legacy_rejections FROM fp_v2.quotas WHERE NOT authorized",
+                &[]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        count
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn legacy_oversize_keys_advance_across_an_entire_page() {
+    let mut client = setup().await;
+    for index in 0..PAGE_ROWS + 1 {
+        insert(
+            &client,
+            false,
+            100,
+            &profile(&format!("a-{index:02}-{}", "x".repeat(KEY_BYTES))),
+        )
+        .await;
+    }
+    insert(&client, false, 100, &profile("z-valid")).await;
+    let limits = startup::store_limits();
+    let report = backfill(&mut client, false, 100, [7; 32], limits)
+        .await
+        .unwrap();
+    assert_eq!(
+        (report.read, report.imported, report.rejected_oversize),
+        (PAGE_ROWS + 2, 1, PAGE_ROWS + 1)
+    );
+    let report = backfill(&mut client, false, 100, [7; 32], limits)
+        .await
+        .unwrap();
+    assert_eq!(
+        (report.read, report.imported, report.rejected_oversize),
+        (1, 0, 0)
+    );
+    assert_eq!(stored_totals(&client).await, (4, 4, 1, 1));
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn legacy_rejection_retirement_also_works_without_background_maintenance() {
+    let mut client = setup().await;
+    let mut limits = startup::store_limits();
+    limits.retained[4] = 1;
+    insert(
+        &client,
+        false,
+        100,
+        &UserAgentProfileInput::new("old-invalid"),
+    )
+    .await;
+    client
+        .execute(
+            "UPDATE public.\"public-ua-profiles\" SET h1_settings='\"invalid\"'",
+            &[],
+        )
+        .await
+        .unwrap();
+    let report = backfill(&mut client, false, 100, [7; 32], limits)
+        .await
+        .unwrap();
+    assert_eq!(report.rejected_invalid, 1);
+    insert(
+        &client,
+        false,
+        114,
+        &UserAgentProfileInput::new("new-invalid"),
+    )
+    .await;
+    client
+        .execute(
+            "UPDATE public.\"public-ua-profiles\" SET h1_settings='\"invalid\"'",
+            &[],
+        )
+        .await
+        .unwrap();
+    let report = backfill(&mut client, false, 114, [7; 32], limits)
+        .await
+        .unwrap();
+    assert_eq!((report.read, report.rejected_invalid), (1, 1));
+    let rows = client
+        .query("SELECT rejected_day FROM fp_v2.legacy_rejections", &[])
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get::<_, i64>(0), 114);
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn legacy_sql_bounds_each_field_key_and_aggregate_before_client_decoding() {
+    let client = setup().await;
+    client.execute("INSERT INTO public.\"public-ua-profiles\" (uastr,updated_at,h1_settings,source_info) VALUES ('field-limit',to_timestamp(100*86400),'{\"title_case_headers\":true}',json_build_object('device_name',repeat('x',$1)))", &[&i32::try_from(ROW_BYTES+1).unwrap()]).await.unwrap();
+    client.execute("INSERT INTO public.\"public-ua-profiles\" (uastr,updated_at,h1_settings,source_info) VALUES ('row-limit',to_timestamp(100*86400),to_json(repeat('x',$1)),to_json(repeat('y',$1)))", &[&i32::try_from(ROW_BYTES/2+1).unwrap()]).await.unwrap();
+    insert(&client, false, 100, &profile(&"z".repeat(KEY_BYTES + 1))).await;
+    let rows = client
+        .query(
+            &source_query(false).unwrap(),
+            &[
+                &None::<String>,
+                &87_i64,
+                &32_i64,
+                &i64::try_from(KEY_BYTES).unwrap(),
+                &i64::try_from(ROW_BYTES).unwrap(),
+                &false,
+                &"public-ua-profiles",
+                &100_i64,
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 3);
+    let fields = rows[0].get::<_, Option<Vec<Option<String>>>>(3).unwrap();
+    assert_eq!(
+        rows[0].get::<_, Option<String>>(0).as_deref(),
+        Some("field-limit")
+    );
+    assert_eq!(fields.len(), FIELDS.len());
+    assert!(fields[0].is_some());
+    assert!(fields[FIELDS.len() - 1].is_none());
+    assert_eq!(rows[0].get::<_, i32>(6), 1);
+    assert!(fields.iter().flatten().map(String::len).sum::<usize>() <= ROW_BYTES);
+    assert_eq!(
+        rows[1].get::<_, Option<String>>(0).as_deref(),
+        Some("row-limit")
+    );
+    assert!(rows[1].get::<_, Option<Vec<Option<String>>>>(3).is_none());
+    assert!(rows[2].get::<_, Option<String>>(0).is_none());
+    assert!(rows[2].get::<_, Option<Vec<Option<String>>>>(3).is_none());
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn legacy_database_failures_stop_without_rejection_checkpoints() {
+    let mut client = setup().await;
+    insert(&client, false, 100, &profile("valid-row")).await;
+    client
+        .batch_execute("ALTER TABLE public.\"public-ua-profiles\" DROP COLUMN h2_settings")
+        .await
+        .unwrap();
+    let error = backfill(&mut client, false, 100, [7; 32], startup::store_limits())
+        .await
+        .unwrap_err();
+    assert_eq!(error_category(error.as_ref()), "database");
+    assert_eq!(stored_totals(&client).await, (0, 0, 0, 0));
+    let count: i64 = client
+        .query_one("SELECT count(*) FROM fp_v2.legacy_rejections", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 0);
 }
