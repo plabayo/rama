@@ -682,7 +682,12 @@ fn a_trim_asked_for_while_one_runs_is_left_to_it() {
     let limits = IdleLimits::<TestId>::new(None, NonZeroUsize::new(1)).unwrap();
     limits.ask(Some(&TestId(0)));
     let hold = limits.hold().expect("nobody trims");
-    assert!(limits.hold().is_none(), "one trimmer at a time");
+    for _ in 0..2 {
+        assert!(
+            limits.hold().is_none(),
+            "one trimmer at a time, however many try"
+        );
+    }
     assert!(limits.take().ids.contains(&TestId(0)));
     // Asked as the trimmer finishes its last look, before it lets go.
     limits.ask(Some(&TestId(2)));
@@ -1023,4 +1028,131 @@ async fn a_listener_asks_no_admission_with_idle_limits() {
     assert_eq!(asked(&tunnels), before, "a listener asks no source");
     settle().await;
     assert_eq!(stored(&pool).len(), 1, "its task trimmed");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_commit_on_a_connection_no_longer_counted_gives_its_unit_back() {
+    let (pool, [picked, _other]) = two_counted_idle(
+        |pool| pool.with_max_idle_total(NonZeroUsize::new(1).unwrap()),
+        [0, 1],
+    )
+    .await;
+    // Taken out of the counts by someone else, its unit on its way out.
+    picked
+        .idle_count
+        .store(connection::UNCOUNTED, Ordering::Release);
+    assert!(!picked.take_excess(Excess::Total));
+    let limits = pool.idle_limits.as_ref().unwrap();
+    assert_eq!(
+        limits.idle.load(Ordering::Relaxed),
+        2,
+        "the unit it took, given back"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_commit_takes_its_unit_out_of_both_counts() {
+    let (pool, [picked, _other]) = two_counted_idle(
+        |pool| {
+            pool.with_max_idle_per_id(NonZeroUsize::new(1).unwrap())
+                .with_max_idle_total(NonZeroUsize::new(8).unwrap())
+        },
+        [0, 0],
+    )
+    .await;
+    assert!(picked.take_excess(Excess::PerId));
+    let limits = pool.idle_limits.as_ref().unwrap();
+    assert_eq!(limits.idle.load(Ordering::Relaxed), 1, "the total too");
+    assert_eq!(picked.id_idle.as_ref().unwrap().load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_per_id_commit_reads_its_ids_count() {
+    let (_pool, [picked, _other]) = two_counted_idle(
+        |pool| pool.with_max_idle_per_id(NonZeroUsize::new(1).unwrap()),
+        [0, 1],
+    )
+    .await;
+    assert!(
+        !picked.take_excess(Excess::PerId),
+        "one idle of its id: within the per-id limit"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_its_admission_retires_is_no_longer_counted() {
+    let pool = keeping_one();
+    let (conn, state) = admission_connection(&pool, 4);
+    let handout = pool
+        .create(TestId(0), conn, pool.test_slot(), &EMPTY_INPUT)
+        .await
+        .unwrap();
+    let stored = handout.inner.clone();
+    drop(handout);
+    let limits = pool.idle_limits.as_ref().unwrap();
+    assert_eq!(limits.idle.load(Ordering::Relaxed), 1);
+    state.failed.store(true, Ordering::SeqCst);
+    let lane_gen = stored.lane_gen.load(Ordering::Acquire);
+    assert!(
+        stored
+            .try_admit(lane_gen, usize::MAX, &EMPTY_INPUT)
+            .is_none()
+    );
+    assert_eq!(
+        limits.idle.load(Ordering::Relaxed),
+        0,
+        "retired: not counted"
+    );
+}
+
+#[test]
+fn a_count_a_connection_holds_is_never_forgotten() {
+    let limits = IdleLimits::<TestId>::new(NonZeroUsize::new(1), None).unwrap();
+    let held = limits.id_counter(&TestId(0)).unwrap();
+    for id in 1..100 {
+        drop(limits.id_counter(&TestId(id)));
+    }
+    assert!(Arc::ptr_eq(&held, &limits.id_counter(&TestId(0)).unwrap()));
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_idle_timeout_beyond_the_nanoseconds_of_a_u64_is_no_expiry() {
+    let pool = MultiplexPool::new().with_idle_timeout(Duration::from_secs(18_446_744_074));
+    drop(fresh(&pool, 0).await);
+    tokio::time::advance(Duration::from_secs(2)).await;
+    assert!(
+        matches!(
+            pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await.unwrap(),
+            ConnectionResult::Connection(_)
+        ),
+        "still idle, not expired"
+    );
+}
+
+#[test]
+fn a_trim_task_late_on_a_parked_runtime_is_scheduled_anew() {
+    let pool = keeping_one();
+    let parked = current_thread();
+    parked.block_on(async {
+        // Its listener schedules a trim on this runtime, which then parks.
+        outlived(&pool, 0).await.set_in_use(false);
+    });
+    std::thread::sleep(Duration::from_millis(10));
+    let live = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_time()
+        .build()
+        .unwrap();
+    live.block_on(async {
+        for id in 1..3 {
+            outlived(&pool, id).await.set_in_use(false);
+        }
+        for _ in 0..200 {
+            if stored(&pool).len() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    });
+    assert_eq!(stored(&pool).len(), 1, "trimmed on the live runtime");
 }

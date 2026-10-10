@@ -15,11 +15,11 @@ use tokio::sync::{Notify, watch};
 use {
     atomic_waker::AtomicWaker,
     parking_lot::Mutex,
-    std::sync::atomic::{AtomicBool, AtomicUsize, fence},
+    std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, fence},
 };
 
 #[cfg(all(loom, test))]
-use loom::sync::atomic::{AtomicBool, AtomicUsize, fence};
+use loom::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, fence};
 
 #[cfg(all(loom, test))]
 struct Mutex<T>(loom::sync::Mutex<T>);
@@ -257,17 +257,15 @@ impl WaitQueue {
                 .extract_if(.., |gave| gave.to == order)
                 .map(|gave| gave.giver)
                 .collect();
-            // Leaving before those it gave way to: its turn is its queue's, a
-            // wake to pass on. Taken before the wakes are read: a turn handed
-            // back meanwhile is a wake read, or still counted here.
-            let turn = waiter.counters().gave_way.swap(0, Ordering::AcqRel) > 0;
             // Under the lock: no wake of this queue reaches the waiter after.
-            (waiter.held() + usize::from(turn), gave_way)
+            // Leaving before those it gave way to, its turn is its queue's: a
+            // wake to pass on, read with its wakes, so a turn handed back
+            // meanwhile is one or the other.
+            (waiter.leave(), gave_way)
         };
         // Outside the lock, which is a leaf: each party that gave way and
         // still waits looks again, its turn handed back.
         for giver in gave_way.iter().filter_map(WeakWaiter::upgrade) {
-            giver.wake();
             giver.hand_back_turn();
         }
         held
@@ -305,7 +303,7 @@ impl WaitQueue {
                 to,
                 giver: WeakWaiter::new(giver),
             });
-            giver.counters().gave_way.fetch_add(1, Ordering::AcqRel);
+            giver.counters().state.fetch_add(TURN, Ordering::AcqRel);
         }
         // What it was left is worth a look, also if its current look began
         // before the capacity was there.
@@ -452,14 +450,27 @@ pub struct Party {
 /// Places a [`Party`] keeps inline: a lane, a keyed lane and the slot queue.
 const INLINE_PLACES: usize = 3;
 
-/// The wakes one queue sent a party, how many of them it spent, and the turns
-/// it gave way with that are not handed back yet.
+/// The wakes one queue sent a party and how many of them it spent; with them,
+/// in one word, the turns it gave way with that are not handed back yet.
 #[derive(Default)]
 struct Place {
-    wakes: AtomicUsize,
-    /// Only the waiting party writes it.
-    spent: AtomicUsize,
-    gave_way: AtomicUsize,
+    /// Turns above [`TURN`], wakes below.
+    state: AtomicU64,
+    /// Only the waiting party writes it: a count of wakes.
+    spent: AtomicU64,
+}
+
+/// One turn in a [`Place`]'s state: the wakes below it never reach it.
+const TURN: u64 = 1 << 48;
+
+/// The wakes of a [`Place`]'s state.
+const fn wakes_of(state: u64) -> u64 {
+    state & (TURN - 1)
+}
+
+/// The wakes in `wakes` not in `spent`.
+fn unspent(wakes: u64, spent: u64) -> usize {
+    wakes.wrapping_sub(spent) as usize & (TURN - 1) as usize
 }
 
 impl Party {
@@ -537,8 +548,8 @@ enum PlaceRef {
 /// The wakes a [`Waiter`] had received when a look at its capacity began.
 #[derive(Debug, Clone, Copy)]
 pub struct Wakes {
-    wakes: usize,
-    spent: usize,
+    wakes: u64,
+    spent: u64,
 }
 
 impl Wakes {
@@ -579,10 +590,18 @@ impl Waiter {
     #[must_use]
     pub fn held(&self) -> usize {
         let place = self.counters();
-        place
-            .wakes
-            .load(Ordering::Acquire)
-            .wrapping_sub(place.spent.load(Ordering::Relaxed))
+        unspent(
+            wakes_of(place.state.load(Ordering::Acquire)),
+            place.spent.load(Ordering::Relaxed),
+        )
+    }
+
+    /// It leaves its queue: the wakes it holds, and one more if a turn it gave
+    /// way with is not handed back.
+    fn leave(&self) -> usize {
+        let place = self.counters();
+        let state = place.state.fetch_and(TURN - 1, Ordering::AcqRel);
+        unspent(wakes_of(state), place.spent.load(Ordering::Relaxed)) + usize::from(state >= TURN)
     }
 
     /// The wakes so far: read before a look at the capacity waited for.
@@ -590,7 +609,7 @@ impl Waiter {
     pub fn wakes(&self) -> Wakes {
         let place = self.counters();
         Wakes {
-            wakes: place.wakes.load(Ordering::Acquire),
+            wakes: wakes_of(place.state.load(Ordering::Acquire)),
             spent: place.spent.load(Ordering::Relaxed),
         }
     }
@@ -605,21 +624,29 @@ impl Waiter {
         self.wake_by(1);
     }
 
-    /// One of the turns it gave way with is handed back.
+    /// One of the turns it gave way with is handed back, as a wake in the same
+    /// step: none left, it passed its turn on as it left.
     fn hand_back_turn(&self) {
-        let turns = &self.counters().gave_way;
-        let mut left = turns.load(Ordering::Acquire);
-        // None left: it passed its turn on as it left.
-        while left > 0 {
-            match turns.compare_exchange_weak(left, left - 1, Ordering::AcqRel, Ordering::Acquire) {
-                Ok(_) => return,
-                Err(now) => left = now,
-            }
+        let handed_back = self
+            .counters()
+            .state
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                (state >= TURN).then(|| state - TURN + 1)
+            })
+            .is_ok();
+        if handed_back {
+            self.wake_party(1);
         }
     }
 
     fn wake_by(&self, n: usize) {
-        self.counters().wakes.fetch_add(n, Ordering::AcqRel);
+        // Far more than any waiter spends, and far from the turns.
+        let n = n.min(u32::MAX as usize);
+        self.counters().state.fetch_add(n as u64, Ordering::AcqRel);
+        self.wake_party(n);
+    }
+
+    fn wake_party(&self, n: usize) {
         self.party.wakes.fetch_add(n, Ordering::AcqRel);
         self.party.waker.wake();
     }
@@ -1056,7 +1083,7 @@ mod loom_tests {
             };
             let passed = ours.remove(&giver);
             leaver.join().unwrap();
-            assert!(passed >= 1, "the turn it gave away is lost");
+            assert_eq!(passed, 1, "the turn it gave away, passed on once");
         });
     }
 

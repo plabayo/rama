@@ -191,17 +191,13 @@ impl<C, ID> StoredConnection<C, ID> {
     /// Count the connection idle if it is: whether it is counted now. Asks
     /// about outliving work: call outside pool locks and listeners.
     pub(super) fn count_if_idle(&self) -> bool {
-        if !self.is_idle() || !self.count_idle() {
+        if !self.is_idle() {
             return false;
         }
-        // Pairs with the fence of an admission: it uncounts this count, or
-        // this sees its stream.
-        fence(Ordering::SeqCst);
-        if self.active.load(Ordering::Relaxed) != 0 {
-            self.uncount_idle();
-            return false;
-        }
-        true
+        // Under the slot lock, as an admission's stream and uncount are: no
+        // count of a connection with a stream is ever seen.
+        let slot = self.pool_slot.lock();
+        !slot.retired && self.active.load(Ordering::Relaxed) == 0 && self.count_idle()
     }
 
     /// Whether the connection is counted idle.
@@ -211,13 +207,22 @@ impl<C, ID> StoredConnection<C, ID> {
 
     /// No longer count the connection idle.
     pub(super) fn uncount_idle(&self) {
-        if let Some(limits) = &self.idle_limits
-            && self
-                .idle_count
-                .compare_exchange(COUNTED, UNCOUNTED, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
+        let Some(limits) = &self.idle_limits else {
+            return;
+        };
+        if self.idle_count.load(Ordering::Acquire) != COUNTED {
+            return;
+        }
+        // The counts first: they never count more than is counted idle, so a
+        // trim's commit never takes a unit already on its way out.
+        self.add_idle(limits, -1);
+        if self
+            .idle_count
+            .compare_exchange(COUNTED, UNCOUNTED, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
         {
-            self.add_idle(limits, -1);
+            // Whoever moved it took its unit too.
+            self.add_idle(limits, 1);
         }
     }
 
@@ -229,10 +234,27 @@ impl<C, ID> StoredConnection<C, ID> {
 
     /// The connection left storage: never counted until it is stored again.
     pub(super) fn unfile_idle(&self) {
-        if self.idle_count.swap(GONE, Ordering::AcqRel) == COUNTED
-            && let Some(limits) = &self.idle_limits
-        {
-            self.add_idle(limits, -1);
+        let mut state = self.idle_count.load(Ordering::Acquire);
+        while state != GONE {
+            // The counts first, as for `uncount_idle`.
+            let counted = self.idle_limits.as_ref().filter(|_| state == COUNTED);
+            if let Some(limits) = counted {
+                self.add_idle(limits, -1);
+            }
+            match self.idle_count.compare_exchange_weak(
+                state,
+                GONE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(seen) => {
+                    if let Some(limits) = counted {
+                        self.add_idle(limits, 1);
+                    }
+                    state = seen;
+                }
+            }
         }
     }
 
@@ -388,10 +410,9 @@ impl<C, ID> StoredConnection<C, ID> {
         // Admission is serialized with retirement. Concurrent lease drops only
         // decrease the count, so no compare/exchange loop is needed here.
         self.active.fetch_add(1, Ordering::Relaxed);
-        drop(slot);
-        // Pairs with the fence of a count: of it and this stream, one sees the other.
-        fence(Ordering::SeqCst);
+        // With the stream, under the slot lock: see `count_if_idle`.
         self.uncount_idle();
+        drop(slot);
         Some(Admitted(admission))
     }
 }
@@ -511,9 +532,12 @@ pub(super) fn ask_trim<C: Send + Sync + 'static, ID: ConnID>(
     inline: bool,
 ) {
     limits.ask(id);
-    if (inline && trim_asked(storage, limits, waiting)) || !limits.schedule() {
+    if inline && trim_asked(storage, limits, waiting) {
         return;
     }
+    let Some(scheduled_at) = limits.schedule() else {
+        return;
+    };
     // The current runtime, else that of the newest connection: a source may
     // change on a thread of neither.
     let runtime = tokio::runtime::Handle::try_current()
@@ -521,11 +545,14 @@ pub(super) fn ask_trim<C: Send + Sync + 'static, ID: ConnID>(
         .or_else(|| limits.runtime.lock().clone());
     let Some(runtime) = runtime else {
         // The next asker trims what is left.
-        limits.unschedule();
+        limits.unschedule(scheduled_at);
         return;
     };
-    let (storage, waiting, scheduled) =
-        (storage.clone(), waiting.clone(), Scheduled(limits.clone()));
+    let (storage, waiting, scheduled) = (
+        storage.clone(),
+        waiting.clone(),
+        Scheduled(limits.clone(), scheduled_at),
+    );
     runtime.spawn(async move {
         let limits = scheduled.0.clone();
         // Running: an ask from now on may schedule another.
@@ -557,11 +584,11 @@ fn trim_asked<C, ID: ConnID>(
 
 /// A task scheduled to trim: if it is dropped before it runs, such as when
 /// its runtime shuts down, a later ask schedules another.
-struct Scheduled<ID>(Arc<IdleLimits<ID>>);
+struct Scheduled<ID>(Arc<IdleLimits<ID>>, u64);
 
 impl<ID> Drop for Scheduled<ID> {
     fn drop(&mut self) {
-        self.0.unschedule();
+        self.0.unschedule(self.1);
     }
 }
 
@@ -690,7 +717,7 @@ impl<C, ID> Drop for MultiplexedConnection<C, ID> {
         if last
             && let Some(limits) = &self.inner.idle_limits
             && self.inner.count_if_idle()
-            && limits.may_be_over()
+            && limits.over_for(self.inner.id_idle.as_deref())
         {
             self.inner.ask_trim(true);
         }
@@ -714,30 +741,25 @@ impl<C: ExtensionsRef, ID: ConnID> MultiplexedConnection<C, ID> {
             return;
         };
         let mut storage = storage.lock();
-        // Candidates selected under the old lane can no longer be admitted.
-        let retired = {
-            let slot = conn.pool_slot.lock();
-            conn.lane_gen.fetch_add(1, Ordering::Release);
-            slot.retired
-        };
+        // Candidates selected under the old lane can no longer be admitted;
+        // held until it is filed again, so it is not retired meanwhile.
+        let slot = conn.pool_slot.lock();
+        conn.lane_gen.fetch_add(1, Ordering::Release);
         if let Some(bucket) = storage.by_id.get_mut(&conn.id) {
             bucket.remove(conn);
             if bucket.is_empty() {
                 storage.by_id.remove(&conn.id);
             }
         }
-        let Some(lane) = lane else {
+        let Some(lane) = lane.filter(|_| !slot.retired) else {
             return;
         };
-        if retired {
-            return;
-        }
         storage
             .by_id
             .entry(conn.id.clone())
             .or_insert_with(|| IdBucket::new(now_monotonic_nanos()))
             .insert(conn, lane);
-        drop(storage);
+        drop((slot, storage));
         // Requests of the new lane may be waiting for it.
         conn.notify.notify_waiters();
     }

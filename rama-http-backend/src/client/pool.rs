@@ -1740,7 +1740,7 @@ mod tests {
         let pool = format!("{:?}", config.build_pool::<(), u8>());
         for field in [
             "max_connections_total: Some(5)",
-            "saturation: EvictIdle",
+            "saturation: EvictIdle,",
             "max_connections_per_id: Some(4)",
             "per_id: Some(2)",
             "total: Some(6)",

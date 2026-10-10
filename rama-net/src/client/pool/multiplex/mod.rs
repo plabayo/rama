@@ -41,8 +41,9 @@
 //! a burst opens the connections it needs at once, not one each. What a new connection takes
 //! is that of the newest connection of the lanes, else of the id's last one, else, for a request
 //! expecting to multiplex (see [`MultiplexPool::with_streams_hint`]), that of the pool's last
-//! multiplexed one or the hint's guess; a guess dials a few connects before one shows its own. A connect failing fails the checkouts that waited for it and saw
-//! none land, if their requests would fail alike, and has the others dial their own. A checkout
+//! multiplexed one or the hint's guess; a guess dials a few connects before one shows its own.
+//! A connect failing fails the checkouts that waited for it and saw none land, if their
+//! requests would fail alike, and has the others dial their own. A checkout
 //! waiting for connects holds no connection slot, and dials its own once
 //! [`MultiplexPool::with_max_wait_before_dial`] or its caller's deadline is up.
 
@@ -171,6 +172,11 @@ struct Storage<C, ID> {
     /// The streams a multiplexed connection of any id took last: a guess for
     /// an id the pool has not seen, if its requests expect to multiplex.
     learned_any: Option<NonZeroUsize>,
+}
+
+/// `duration` in nanoseconds, or as many as fit.
+fn nanos(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 /// What the last connections of an id were like.
@@ -536,11 +542,8 @@ where
     /// work outliving its handouts is only known once its admission is asked.
     fn expiry(&self, conn: &StoredConnection<C, ID>) -> Option<u64> {
         let timeout = self.idle_timeout?;
-        conn.maybe_idle().then(|| {
-            conn.last_idle
-                .as_nanos()
-                .saturating_add(timeout.as_nanos() as u64)
-        })
+        conn.maybe_idle()
+            .then(|| conn.last_idle.as_nanos().saturating_add(nanos(timeout)))
     }
 
     /// Whether `conn` is idle past the idle timeout. Asks its admission first:
@@ -566,7 +569,7 @@ where
 
     /// The instant the next sweep of a bucket swept now is due.
     fn next_sweep_after(&self, now: u64) -> u64 {
-        now.saturating_add(self.sweep_interval().as_nanos() as u64)
+        now.saturating_add(nanos(self.sweep_interval()))
     }
 
     /// Move broken connections, and idle ones past the idle timeout without an
@@ -1731,9 +1734,7 @@ where
                 // An idle connection frees its slots once it expires, and one
                 // going idle after this look does not expire before the timeout.
                 let now = now_monotonic_nanos();
-                let at = waiting
-                    .next_expiry
-                    .min(now.saturating_add(timeout.as_nanos() as u64));
+                let at = waiting.next_expiry.min(now.saturating_add(nanos(timeout)));
                 let deadline =
                     tokio::time::Instant::now() + Duration::from_nanos(at.saturating_sub(now));
                 match expiry.as_mut().as_pin_mut() {
@@ -1914,6 +1915,13 @@ where
             .is_some_and(|(connect, lane)| connect.serves(lane));
         let new_lane = lane.is_some_and(|lane| {
             let mut storage = self.storage.lock();
+            // Usable by the checkouts of these connects, claimed or not: they
+            // may wait for connects again.
+            for connects in storage.connects.get(&conn.id).into_iter().flatten() {
+                if connects.serves(&lane) {
+                    connects.lands_usable();
+                }
+            }
             let bucket = storage
                 .by_id
                 .entry(conn.id.clone())

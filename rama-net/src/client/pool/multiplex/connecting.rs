@@ -125,7 +125,7 @@ impl Connects {
     }
 
     /// Whether a connection filed in `lane` serves its checkouts.
-    fn serves(&self, lane: &LaneKey) -> bool {
+    pub(super) fn serves(&self, lane: &LaneKey) -> bool {
         match lane {
             LaneKey::Unrestricted => true,
             LaneKey::Keyed(keyed) => self.key.iter().any(|(classifier, key)| {
@@ -206,6 +206,11 @@ impl Connects {
     pub(super) fn lands_unusable(&self) -> bool {
         self.lands_unusable.load(Ordering::Acquire)
     }
+
+    /// A connection its waiters can use landed, through a claim or not.
+    pub(super) fn lands_usable(&self) {
+        self.lands_unusable.store(false, Ordering::Release);
+    }
 }
 
 /// A connect counted in flight: it [lands](Self::landed) or [fails](Self::failed);
@@ -230,9 +235,10 @@ impl Connect {
 
     /// The connection takes `streams`, one for its own checkout; `reached`
     /// says whether the others are woken for its waiters, through its lane or
-    /// a lane it opens, and `usable` whether they can use it. One more looks if they are not, or if what is still in
-    /// flight leaves waiters out, such as when it takes fewer than guessed: it
-    /// dials, and passes its wake on to the next one left out.
+    /// a lane it opens, and `usable` whether they can use it. One more looks
+    /// if they are not, or if what is still in flight leaves waiters out, such
+    /// as when it takes fewer than guessed: it dials, and passes its wake on to
+    /// the next one left out.
     pub(super) fn landed(self, streams: usize, reached: bool, usable: bool) {
         let Some(connects) = self.end() else {
             return;

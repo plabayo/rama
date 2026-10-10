@@ -90,8 +90,9 @@ pub(super) struct IdleLimits<ID> {
     id_idle: Mutex<HashMap<ID, Arc<AtomicIsize>>>,
     asked: Mutex<Asked<ID>>,
     trimmer: AtomicBool,
-    /// Whether a task is on its way to trim: asks of listeners schedule no other.
-    scheduled: AtomicBool,
+    /// When the task on its way to trim was scheduled, 0 if none: asks of
+    /// listeners schedule no other, unless it is late, as on a parked runtime.
+    scheduled: AtomicU64,
     /// Where a trim asked for outside a runtime runs: the runtime of the pool's
     /// newest connection.
     pub(super) runtime: Mutex<Option<tokio::runtime::Handle>>,
@@ -106,6 +107,10 @@ impl<ID> std::fmt::Debug for IdleLimits<ID> {
             .finish_non_exhaustive()
     }
 }
+
+/// How long a trim task may take to start before a listener schedules another,
+/// as one queued on a parked runtime would never.
+const SCHEDULED_LATE_NANOS: u64 = 2_000_000;
 
 /// Whether more than `max` are counted in `counter`.
 pub(super) fn over(counter: &AtomicIsize, max: NonZeroUsize) -> bool {
@@ -154,16 +159,18 @@ impl<ID> IdleLimits<ID> {
                 id_idle: Mutex::new(HashMap::new()),
                 asked: Mutex::new(Asked::default()),
                 trimmer: AtomicBool::new(false),
-                scheduled: AtomicBool::new(false),
+                scheduled: AtomicU64::new(0),
                 runtime: Mutex::new(None),
             })
         })
     }
 
-    /// Whether idle connections may be over the limits: per id they are only
-    /// counted by a trim.
-    pub(super) fn may_be_over(&self) -> bool {
-        self.per_id.is_some() || self.total.is_some_and(|max| self.idle_over(max))
+    /// Whether the total, or the count `id_idle` of an id, is over its limit.
+    pub(super) fn over_for(&self, id_idle: Option<&AtomicIsize>) -> bool {
+        self.total.is_some_and(|max| self.idle_over(max))
+            || id_idle
+                .zip(self.per_id)
+                .is_some_and(|(id_idle, max)| over(id_idle, max))
     }
 
     /// Whether more than `max` are counted idle.
@@ -195,8 +202,8 @@ impl<ID> IdleLimits<ID> {
         Some(counter)
     }
 
-    /// Ask for a trim of `id`'s idle connections, else of every id's: whether
-    /// the caller is the trimmer now, and runs it.
+    /// Ask for a trim of `id`'s idle connections, else of every id's: the
+    /// trimmer sees it, see [`Self::hold`].
     pub(super) fn ask(&self, id: Option<&ID>)
     where
         ID: Clone + Eq + std::hash::Hash,
@@ -217,7 +224,8 @@ impl<ID> IdleLimits<ID> {
     /// Hold the trimmer, unless someone else does: it sees the asks recorded
     /// before this, as it looks again after letting go.
     pub(super) fn hold(&self) -> Option<TrimmerHold<'_, ID>> {
-        (!self.trimmer.swap(true, Ordering::AcqRel)).then_some(TrimmerHold(self))
+        // Built only once held: a guard dropped here would let another's go.
+        (!self.trimmer.swap(true, Ordering::AcqRel)).then(|| TrimmerHold(self))
     }
 
     /// The trims asked for so far, for the trimmer.
@@ -230,14 +238,38 @@ impl<ID> IdleLimits<ID> {
         self.asked.lock().is_empty()
     }
 
-    /// Whether the caller schedules the task that trims: none is on its way.
-    pub(super) fn schedule(&self) -> bool {
-        !self.scheduled.swap(true, Ordering::AcqRel)
+    /// Whether the caller schedules the task that trims, as of the returned
+    /// time: none is on its way, or the one that is did not start in time.
+    pub(super) fn schedule(&self) -> Option<u64> {
+        let now = now_monotonic_nanos().max(1);
+        let mut at = self.scheduled.load(Ordering::Acquire);
+        loop {
+            if at != 0 && now.saturating_sub(at) < SCHEDULED_LATE_NANOS {
+                return None;
+            }
+            match self
+                .scheduled
+                .compare_exchange_weak(at, now, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return Some(now),
+                Err(seen) => at = seen,
+            }
+        }
     }
 
-    /// The scheduled task runs, or never will: a later ask schedules another.
-    pub(super) fn unschedule(&self) {
-        self.scheduled.store(false, Ordering::Release);
+    /// The task scheduled `at` runs, or never will: a later ask schedules
+    /// another. Nothing if a later one took over.
+    pub(super) fn unschedule(&self, at: u64) {
+        let mut current = self.scheduled.load(Ordering::Acquire);
+        while current == at {
+            match self
+                .scheduled
+                .compare_exchange_weak(at, 0, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return,
+                Err(seen) => current = seen,
+            }
+        }
     }
 }
 

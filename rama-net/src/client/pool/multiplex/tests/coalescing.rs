@@ -1202,3 +1202,29 @@ async fn a_shared_failure_is_not_masked_by_a_later_one_of_a_request() {
     let error = error.downcast::<ConnectionError>().expect("classified");
     assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_usable_landing_restores_coalescing_for_its_key() {
+    let pool = MultiplexPool::new().with_streams_hint(expect_ten);
+    let mut kept_by_none = Dialer::new(Some(10));
+    kept_by_none.kept_by_none = true;
+    let kept_by_none = dialing(pool.clone(), kept_by_none);
+    let mut keyed = Dialer::new(Some(10));
+    keyed.key = want_key;
+    let svc = dialing(pool, keyed);
+    let _seed = svc.connect(wanting(0)).await.unwrap();
+    drop(kept_by_none.connect(wanting(1)).await.unwrap());
+    // A usable one of the same key, then full.
+    let mut held = vec![svc.connect(wanting(1)).await.unwrap()];
+    for _ in 1..10 {
+        held.push(svc.connect(wanting(1)).await.unwrap());
+    }
+    let before = dials(&svc);
+    let served = join_all((0..8).map(|_| svc.connect(wanting(1)))).await;
+    assert!(served.iter().all(Result::is_ok));
+    assert_eq!(
+        dials(&svc) - before,
+        1,
+        "the burst waits for one connection again"
+    );
+}
