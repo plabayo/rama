@@ -2,6 +2,8 @@
 
 use super::*;
 
+use std::sync::mpsc::{self, RecvTimeoutError};
+
 #[tokio::test]
 async fn an_unlimited_pool_adds_connections_as_needed() {
     let pool = MultiplexPool::new();
@@ -1344,6 +1346,57 @@ async fn a_change_between_a_held_busy_answer_and_its_uncount_asks_a_trim() {
     assert!(on_ask.lock().is_none(), "the commit asked");
     assert_eq!(stored(&pool).len(), 1, "both idle: one is trimmed");
     drop(stored_conn);
+}
+
+#[test]
+fn a_change_during_an_evictions_busy_answer_asks_without_deadlock() {
+    let (done, finished) = mpsc::channel();
+    // On its own thread: a trim asked inline under the held slot lock would
+    // deadlock, which must fail the test rather than hang it.
+    std::thread::spawn(move || {
+        current_thread().block_on(async {
+            let pool = MultiplexPool::new()
+                .with_max_connections_total(NonZeroUsize::new(2).unwrap())
+                .with_max_idle_total(NonZeroUsize::new(1).unwrap());
+            let (on_ask, in_use) = (Arc::new(Mutex::new(None)), Arc::new(AtomicBool::new(false)));
+            let conn = Conn {
+                serial: 7,
+                extensions: Extensions::new(),
+            };
+            conn.extensions.insert(upgrading(&on_ask, &in_use));
+            let handout = pool
+                .create(TestId(0), conn, pool.test_slot(), &EMPTY_INPUT)
+                .await
+                .unwrap();
+            let stored_conn = handout.inner.clone();
+            drop(handout);
+            let other = fresh(&pool, 1).await;
+            in_use.store(true, Ordering::SeqCst);
+            {
+                let (stored_conn, in_use) = (stored_conn.clone(), in_use.clone());
+                // While the eviction asks: the work ends, its source notifies.
+                *on_ask.lock() = Some(Box::new(move || {
+                    in_use.store(false, Ordering::SeqCst);
+                    ChangeListener::changed(&*stored_conn, Change::Freed);
+                }) as Box<dyn FnOnce() + Send>);
+            }
+            // A newcomer of another id at the limit of two: its only pick is
+            // the connection whose work is ending.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+            let newcomer = pool
+                .get_conn(&TestId(2), &EMPTY_INPUT, Some(deadline))
+                .await;
+            assert!(on_ask.lock().is_none(), "the eviction asked");
+            drop((newcomer, other));
+            settle().await;
+            done.send(stored(&pool).len()).unwrap();
+        });
+    });
+    match finished.recv_timeout(Duration::from_secs(10)) {
+        Ok(stored) => assert_eq!(stored, 1, "both idle: one is kept"),
+        Err(RecvTimeoutError::Timeout) => panic!("the eviction's held answer deadlocked"),
+        Err(RecvTimeoutError::Disconnected) => panic!("the eviction's thread panicked"),
+    }
 }
 
 /// A connection of id 0, counted idle, then busy with work it did not announce.

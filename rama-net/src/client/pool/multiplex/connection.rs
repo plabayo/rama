@@ -522,7 +522,8 @@ impl<C: Send + Sync + 'static, ID: Send + Sync + 'static> ChangeListener
         // the connection is asked again.
         self.changes.fetch_add(1, Ordering::Release);
         // Before the reads below, not only after the change: they need not
-        // rely on the source's own fence.
+        // rely on the source's own fence, and it pairs with a held busy
+        // answer's, so one of the two asks a trim.
         fence(Ordering::SeqCst);
         if self.active.load(Ordering::Relaxed) == 0 {
             // Such as the end of work outliving the handouts: the idle clock

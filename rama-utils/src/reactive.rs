@@ -344,15 +344,15 @@ impl WaitQueue {
             .map(|front| front.party.order)
     }
 
-    /// The wakes this queue sent its waiters that they did not spend.
+    /// The wakes this queue sent its waiters that they did not spend, at most
+    /// [`usize::MAX`]: places hold up to half of it each.
     #[must_use]
     pub fn unspent(&self) -> usize {
         self.queue
             .lock()
             .waiters
             .iter()
-            .map(|waiter| waiter.held())
-            .sum()
+            .fold(0, |sum, waiter| sum.saturating_add(waiter.held()))
     }
 
     /// Whether a party may take capacity now: nobody waits ahead of it, or it
@@ -459,7 +459,7 @@ pub struct Party {
 const INLINE_PLACES: usize = 3;
 
 /// Wakes a batch fills a place to at most: far more than any waiter spends,
-/// with room above for every single wake after, and the turn of a departure.
+/// with room above for as many single wakes again, and a departure's turn.
 const MAX_HELD: usize = usize::MAX / 2;
 
 /// The wakes one queue sent a party, how many of them it spent, and the turns
@@ -1520,6 +1520,24 @@ mod tests {
         assert!(queue.wake_many(usize::MAX));
         waiter.spend(seen);
         assert!(waiter.is_woken(), "a batch after the look");
+    }
+
+    #[test]
+    fn the_unspent_wakes_of_full_places_saturate() {
+        let queue = WaitQueue::new();
+        let newer = Party::new(2).waiter();
+        let older = Party::new(1).waiter();
+        queue.push(&newer);
+        assert!(queue.wake_many(usize::MAX));
+        queue.push(&older);
+        assert!(queue.wake_many(usize::MAX));
+        assert!(queue.wake_all());
+        assert!(newer.is_woken() && older.is_woken());
+        assert_eq!(
+            queue.unspent(),
+            usize::MAX,
+            "both full places, and a wake each"
+        );
     }
 
     #[test]
