@@ -44,7 +44,8 @@ fn complete_joint_samples_preserve_correlated_orders_with_varying_reserved_value
         ..ProfileBucketLimits::default()
     };
     let mut bucket =
-        CountedObservationBucket::new(JOINT_DOMAIN, ValueId([1; 32]), [2; 32], bucket_limits);
+        CountedObservationBucket::new(JOINT_DOMAIN, ValueId([1; 32]), [2; 32], bucket_limits)
+            .unwrap();
     let mut structure = None;
     let zero = 0u64.to_be_bytes();
     let size = kib_u64(8).to_be_bytes();
@@ -89,8 +90,14 @@ fn complete_joint_samples_preserve_correlated_orders_with_varying_reserved_value
     assert_eq!(snapshot.counts.total, 10_000);
     assert_eq!(snapshot.samples.len(), 64);
     assert!(snapshot.values.len() <= 72);
-    let restored =
-        CountedObservationBucket::from_snapshot(&snapshot, [2; 32], bucket_limits).unwrap();
+    let restored = CountedObservationBucket::from_snapshot(
+        &snapshot,
+        JOINT_DOMAIN,
+        ValueId([1; 32]),
+        [2; 32],
+        bucket_limits,
+    )
+    .unwrap();
     for sample in restored.snapshot().samples {
         let canonical = snapshot
             .values
@@ -171,7 +178,8 @@ fn joint_import_revalidates_leaf_ownership_and_rejects_nested_tuples() {
             ValueId([1; 32]),
             [2; 32],
             ProfileBucketLimits::default(),
-        );
+        )
+        .unwrap();
         bucket
             .observe(
                 ObservationId {

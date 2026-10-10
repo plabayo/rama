@@ -501,6 +501,11 @@ async fn fp_counted_reservoir_reuses_full_quota_and_survives_restart() {
         .unwrap();
         let bucket = CountedObservationBucket::from_snapshot(
             &restored.bucket,
+            input
+                .value
+                .validated_domain(limits.ingestion.bucket.input_bytes)
+                .unwrap(),
+            input.scope.id,
             [3; 32],
             limits.ingestion.bucket,
         )
@@ -1444,6 +1449,11 @@ async fn fp_counted_loss_accounting_survives_retry_restart_and_old_history() {
             .unwrap();
             let bucket = CountedObservationBucket::from_snapshot(
                 &loaded.bucket,
+                input
+                    .value
+                    .validated_domain(limits.ingestion.bucket.input_bytes)
+                    .unwrap(),
+                input.scope.id,
                 [3; 32],
                 limits.ingestion.bucket,
             )

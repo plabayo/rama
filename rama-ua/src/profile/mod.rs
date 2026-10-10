@@ -36,7 +36,7 @@ mod input;
 pub use input::*;
 
 mod canonical;
-pub use canonical::{CanonicalValue, ProfileDataError, ValueId};
+pub use canonical::{CanonicalDomain, CanonicalValue, ProfileDataError, ValueId};
 
 mod capture;
 pub use capture::*;

@@ -74,7 +74,8 @@ fn protocol_bindings_do_not_retain_connection_identifiers_or_tokens() {
             ValueId([1; 32]),
             [2; 32],
             ProfileBucketLimits::default(),
-        );
+        )
+        .unwrap();
         bucket
             .observe(
                 ObservationId {
@@ -98,7 +99,8 @@ fn ten_thousand_orders_keep_one_structure_and_exact_total() {
     };
     let mut structure = None;
     let mut bucket =
-        CountedObservationBucket::new(ORDER_DOMAIN, ValueId([1; 32]), [2; 32], bucket_limits);
+        CountedObservationBucket::new(ORDER_DOMAIN, ValueId([1; 32]), [2; 32], bucket_limits)
+            .unwrap();
     for sequence in 1..=10_000u64 {
         let payload = sequence.to_be_bytes();
         let mut fields = vec![
@@ -140,8 +142,14 @@ fn ten_thousand_orders_keep_one_structure_and_exact_total() {
     assert_eq!(snapshot.counts.values.len(), 8);
     assert_eq!(snapshot.samples.len(), 32);
     assert!(snapshot.values.len() <= 40);
-    let restored =
-        CountedObservationBucket::from_snapshot(&snapshot, [2; 32], bucket_limits).unwrap();
+    let restored = CountedObservationBucket::from_snapshot(
+        &snapshot,
+        ORDER_DOMAIN,
+        ValueId([1; 32]),
+        [2; 32],
+        bucket_limits,
+    )
+    .unwrap();
     assert_eq!(
         serde_json::to_vec(&snapshot).unwrap(),
         serde_json::to_vec(&restored.snapshot()).unwrap()

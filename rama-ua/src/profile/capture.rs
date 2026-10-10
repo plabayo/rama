@@ -33,6 +33,10 @@ pub enum RequestBinding {
     Connection,
     Sensitive,
     Custom,
+    Forwarding,
+    PerRequestId,
+    Proof,
+    WebSocketProtocol,
 }
 
 impl RequestBinding {
@@ -52,6 +56,10 @@ impl RequestBinding {
             Self::Connection => 11,
             Self::Sensitive => 12,
             Self::Custom => 13,
+            Self::Forwarding => 14,
+            Self::PerRequestId => 15,
+            Self::Proof => 16,
+            Self::WebSocketProtocol => 17,
         }
     }
 
@@ -71,20 +79,30 @@ impl RequestBinding {
             11 => Self::Connection,
             12 => Self::Sensitive,
             13 => Self::Custom,
+            14 => Self::Forwarding,
+            15 => Self::PerRequestId,
+            16 => Self::Proof,
+            17 => Self::WebSocketProtocol,
             _ => return Err(ProfileDataError::Invalid("request binding")),
         })
     }
 }
 
-/// The protocol-defined binding takes precedence over importer overrides.
+/// Request-bound fields take precedence over importer overrides.
 #[must_use]
 pub fn header_request_binding(name: &HeaderName) -> Option<RequestBinding> {
     Some(match name.as_lower_str().as_ref() {
-        "host" => RequestBinding::Authority,
+        "host" | "alt-used" => RequestBinding::Authority,
+        "forwarded" | "x-real-ip" | "via" => RequestBinding::Forwarding,
+        name if name.starts_with("x-forwarded-") => RequestBinding::Forwarding,
+        "traceparent" | "tracestate" | "baggage" | "x-request-id" | "request-id"
+        | "x-correlation-id" | "correlation-id" | "idempotency-key" => RequestBinding::PerRequestId,
+        "dpop" => RequestBinding::Proof,
+        "sec-websocket-protocol" => RequestBinding::WebSocketProtocol,
         "content-length" | "transfer-encoding" => RequestBinding::Framing,
         // Multipart boundaries belong to the body; their format is not emulated.
         "content-type" | "content-encoding" | "content-range" | "content-digest"
-        | "repr-digest" | "digest" | "content-md5" => RequestBinding::BodyMetadata,
+        | "repr-digest" | "digest" | "content-md5" | "expect" => RequestBinding::BodyMetadata,
         "cookie" | "set-cookie" => RequestBinding::Cookie,
         "authorization" | "proxy-authorization" => RequestBinding::Authorization,
         "sec-websocket-key" | "sec-websocket-accept" => RequestBinding::WebSocketKey,
@@ -157,31 +175,11 @@ pub struct HeaderCapture {
 }
 
 impl HeaderCapturePolicy {
-    /// `representations` contains regular fields only, in the same order as `headers`.
-    /// Pseudo fields are captured separately from their request-owned values.
-    pub fn capture(
-        &self,
-        version: Version,
-        headers: &HeaderMap,
-        representations: Option<&[ObservedFieldRepresentation]>,
-    ) -> Result<HeaderCapture, ProfileDataError> {
-        if headers.len() > self.fields || self.overrides.len() > self.fields {
-            return Err(ProfileDataError::LimitExceeded("header fields"));
-        }
-        let mut remaining = self.bytes;
-        for (name, value) in headers.ordered_iter() {
-            remaining = remaining
-                .checked_sub(name.as_str().len())
-                .and_then(|n| n.checked_sub(value.len()))
-                .ok_or(ProfileDataError::LimitExceeded("header input bytes"))?;
-        }
-        if representations.is_some_and(|values| values.len() != headers.len()) {
-            return Err(ProfileDataError::Incomplete("header representations"));
-        }
-        if let Some(values) = representations {
-            for value in values {
-                validate_representation(version, *value)?;
-            }
+    fn validate(&self) -> Result<(), ProfileDataError> {
+        if self.overrides.len() > self.fields {
+            return Err(ProfileDataError::LimitExceeded(
+                "header ownership overrides",
+            ));
         }
         for (index, field) in self.overrides.iter().enumerate() {
             if self.overrides[..index]
@@ -200,6 +198,36 @@ impl HeaderCapturePolicy {
                 ));
             }
         }
+        Ok(())
+    }
+
+    /// `representations` contains regular fields only, in the same order as `headers`.
+    /// Pseudo fields are captured separately from their request-owned values.
+    pub fn capture(
+        &self,
+        version: Version,
+        headers: &HeaderMap,
+        representations: Option<&[ObservedFieldRepresentation]>,
+    ) -> Result<HeaderCapture, ProfileDataError> {
+        self.validate()?;
+        if headers.len() > self.fields {
+            return Err(ProfileDataError::LimitExceeded("header fields"));
+        }
+        let mut remaining = self.bytes;
+        for (name, value) in headers.ordered_iter() {
+            remaining = remaining
+                .checked_sub(name.as_str().len())
+                .and_then(|n| n.checked_sub(value.len()))
+                .ok_or(ProfileDataError::LimitExceeded("header input bytes"))?;
+        }
+        if representations.is_some_and(|values| values.len() != headers.len()) {
+            return Err(ProfileDataError::Incomplete("header representations"));
+        }
+        if let Some(values) = representations {
+            for value in values {
+                validate_representation(version, *value)?;
+            }
+        }
         validate_framing(version, headers)?;
         let connection = headers
             .typed_try_get::<Connection>()
@@ -209,7 +237,9 @@ impl HeaderCapturePolicy {
         for (index, (name, value)) in headers.ordered_iter().enumerate() {
             let occurrence = occurrences.entry(name.clone()).or_default();
             let ownership = self.overrides.iter().find(|field| field.name == *name);
-            let representation = representations.map(|values| values[index]);
+            let representation = representations
+                .and_then(|values| values.get(index))
+                .copied();
             let sensitive =
                 value.is_sensitive() || representation.is_some_and(|value| value.never_index);
             let mut binding = header_request_binding(name);
@@ -353,6 +383,7 @@ impl HeaderCapture {
         &self,
         policy: &HeaderCapturePolicy,
     ) -> Result<CanonicalValue, ProfileDataError> {
+        policy.validate()?;
         if self.fields.len() > policy.fields {
             return Err(ProfileDataError::LimitExceeded("header fields"));
         }
@@ -434,7 +465,13 @@ impl HeaderCapture {
             }
             match &field.value {
                 HeaderValueSource::Profile(value) => {
-                    if field.sensitive || header_request_binding(&field.name).is_some() {
+                    if field.sensitive
+                        || header_request_binding(&field.name).is_some()
+                        || policy.overrides.iter().any(|override_| {
+                            override_.name == field.name
+                                && override_.ownership == HeaderOwnership::Request
+                        })
+                    {
                         return Err(ProfileDataError::Invalid("captured request-bound value"));
                     }
                     HeaderValue::from_bytes(value)

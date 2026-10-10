@@ -6,8 +6,8 @@ use rama_utils::octets::mib;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CanonicalValue, CountedBucketSnapshot, CountedObservationBucket, ObservationId,
-    ProfileBucketLimits, ProfileDataError, RetentionWindow, ValueId,
+    CanonicalDomain, CanonicalValue, CountedBucketSnapshot, CountedObservationBucket,
+    ObservationId, ProfileBucketLimits, ProfileDataError, RetentionWindow, ValueId,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -36,7 +36,7 @@ pub struct DayBucketSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetainedBucketsSnapshot {
     pub format_version: u16,
-    pub domain: u16,
+    pub domain: CanonicalDomain,
     pub scope: ValueId,
     pub last_day: u32,
     pub buckets: Box<[DayBucketSnapshot]>,
@@ -45,7 +45,7 @@ pub struct RetainedBucketsSnapshot {
 /// One authorization/profile/flow/structural scope, with no duplicate day coverage.
 #[derive(Debug, Clone)]
 pub struct RetainedBucketWindow {
-    domain: u16,
+    domain: CanonicalDomain,
     scope: ValueId,
     seed: [u8; 32],
     limits: ProfileWindowLimits,
@@ -55,7 +55,7 @@ pub struct RetainedBucketWindow {
 
 impl RetainedBucketWindow {
     pub fn new(
-        domain: u16,
+        domain: CanonicalDomain,
         scope: ValueId,
         seed: [u8; 32],
         limits: ProfileWindowLimits,
@@ -106,18 +106,15 @@ impl RetainedBucketWindow {
                     .ok_or(ProfileDataError::LimitExceeded("retained window bytes"))?;
             }
         }
-        let mut bucket = self
-            .buckets
-            .get(&observation_day)
-            .cloned()
-            .unwrap_or_else(|| {
-                CountedObservationBucket::new(
-                    self.domain,
-                    self.scope,
-                    self.seed,
-                    self.limits.bucket,
-                )
-            });
+        let mut bucket = match self.buckets.get(&observation_day) {
+            Some(bucket) => bucket.clone(),
+            None => CountedObservationBucket::new(
+                self.domain,
+                self.scope,
+                self.seed,
+                self.limits.bucket,
+            )?,
+        };
         bucket.observe_with_retained_limit(observation, value, remaining)?;
         self.buckets.retain(|day, _bucket| *day >= first);
         self.buckets.insert(observation_day, bucket);
@@ -153,9 +150,15 @@ impl RetainedBucketWindow {
                 None => bucket.clone(),
             });
         }
-        Ok(selected.unwrap_or_else(|| {
-            CountedObservationBucket::new(self.domain, self.scope, self.seed, self.limits.bucket)
-        }))
+        match selected {
+            Some(bucket) => Ok(bucket),
+            None => CountedObservationBucket::new(
+                self.domain,
+                self.scope,
+                self.seed,
+                self.limits.bucket,
+            ),
+        }
     }
 
     #[must_use]
@@ -187,9 +190,16 @@ impl RetainedBucketWindow {
 
     pub fn from_snapshot(
         snapshot: &RetainedBucketsSnapshot,
+        expected_domain: CanonicalDomain,
+        expected_scope: ValueId,
         seed: [u8; 32],
         limits: ProfileWindowLimits,
     ) -> Result<Self, ProfileDataError> {
+        if snapshot.domain != expected_domain || snapshot.scope != expected_scope {
+            return Err(ProfileDataError::Invalid(
+                "restored profile domain or scope",
+            ));
+        }
         if snapshot.format_version != 1 {
             return Err(ProfileDataError::Unsupported(
                 "retained window format version",
@@ -224,7 +234,13 @@ impl RetainedBucketWindow {
                     .checked_sub(value.bytes.len())
                     .ok_or(ProfileDataError::LimitExceeded("retained window bytes"))?;
             }
-            let bucket = CountedObservationBucket::from_snapshot(&day.bucket, seed, limits.bucket)?;
+            let bucket = CountedObservationBucket::from_snapshot(
+                &day.bucket,
+                expected_domain,
+                expected_scope,
+                seed,
+                limits.bucket,
+            )?;
             window.buckets.insert(day.day, bucket);
             previous = Some(day.day);
         }
@@ -264,7 +280,9 @@ mod tests {
     #[test]
     fn fourteen_day_window_expires_weights_and_samples_together() {
         let limits = ProfileWindowLimits::default();
-        let mut window = RetainedBucketWindow::new(1, ValueId([2; 32]), [3; 32], limits).unwrap();
+        let mut window =
+            RetainedBucketWindow::new(CanonicalDomain::Headers, ValueId([2; 32]), [3; 32], limits)
+                .unwrap();
         let a = value("A");
         let b = value("B");
         for sequence in 1..=1000 {
@@ -296,8 +314,14 @@ mod tests {
         for sample in selected.snapshot().samples {
             assert_eq!(sample.value, b.id);
         }
-        let restored =
-            RetainedBucketWindow::from_snapshot(&window.snapshot(), [3; 32], limits).unwrap();
+        let restored = RetainedBucketWindow::from_snapshot(
+            &window.snapshot(),
+            CanonicalDomain::Headers,
+            ValueId([2; 32]),
+            [3; 32],
+            limits,
+        )
+        .unwrap();
         assert_eq!(encoded(&window), encoded(&restored));
         window.advance(114).unwrap();
         assert_eq!(window.snapshot().buckets.len(), 13);
@@ -319,7 +343,9 @@ mod tests {
             },
             ..ProfileWindowLimits::default()
         };
-        let mut window = RetainedBucketWindow::new(1, ValueId([2; 32]), [3; 32], limits).unwrap();
+        let mut window =
+            RetainedBucketWindow::new(CanonicalDomain::Headers, ValueId([2; 32]), [3; 32], limits)
+                .unwrap();
         let (mut a, mut b) = (value("A"), value("B"));
         if a.id < b.id {
             std::mem::swap(&mut a, &mut b);
@@ -339,14 +365,15 @@ mod tests {
         ));
         assert_eq!(selected.snapshot().counts.untracked, 0);
         let mut all = CountedObservationBucket::new(
-            1,
+            CanonicalDomain::Headers,
             ValueId([2; 32]),
             [3; 32],
             ProfileBucketLimits {
                 literal_values: 2,
                 ..limits.bucket
             },
-        );
+        )
+        .unwrap();
         for sequence in 1..=1000 {
             all.observe(observation(sequence), &a).unwrap();
         }
@@ -364,7 +391,9 @@ mod tests {
             retained_bytes: a.bytes.len(),
             ..ProfileWindowLimits::default()
         };
-        let mut window = RetainedBucketWindow::new(1, ValueId([2; 32]), [3; 32], limits).unwrap();
+        let mut window =
+            RetainedBucketWindow::new(CanonicalDomain::Headers, ValueId([2; 32]), [3; 32], limits)
+                .unwrap();
         window.observe(100, 100, observation(1), &a).unwrap();
         window.observe(101, 101, observation(2), &a).unwrap();
         let counts = window.select(101, 14).unwrap().snapshot().counts;
@@ -389,35 +418,79 @@ mod tests {
     #[test]
     fn window_restore_rejects_scope_aliases_duplicate_days_and_future_data() {
         let limits = ProfileWindowLimits::default();
-        let mut window = RetainedBucketWindow::new(1, ValueId([2; 32]), [3; 32], limits).unwrap();
+        let mut window =
+            RetainedBucketWindow::new(CanonicalDomain::Headers, ValueId([2; 32]), [3; 32], limits)
+                .unwrap();
         window
             .observe(100, 100, observation(1), &value("A"))
             .unwrap();
         let mut snapshot = window.snapshot();
-        let mut other_scope =
-            CountedObservationBucket::new(1, ValueId([9; 32]), [3; 32], limits.bucket);
+        let mut other_scope = CountedObservationBucket::new(
+            CanonicalDomain::Headers,
+            ValueId([9; 32]),
+            [3; 32],
+            limits.bucket,
+        )
+        .unwrap();
         other_scope.observe(observation(1), &value("A")).unwrap();
         snapshot.buckets[0].bucket = other_scope.snapshot();
-        RetainedBucketWindow::from_snapshot(&snapshot, [3; 32], limits).unwrap_err();
+        RetainedBucketWindow::from_snapshot(
+            &snapshot,
+            CanonicalDomain::Headers,
+            ValueId([2; 32]),
+            [3; 32],
+            limits,
+        )
+        .unwrap_err();
         let mut snapshot = window.snapshot();
         snapshot.buckets = vec![snapshot.buckets[0].clone(); 2].into();
-        RetainedBucketWindow::from_snapshot(&snapshot, [3; 32], limits).unwrap_err();
+        RetainedBucketWindow::from_snapshot(
+            &snapshot,
+            CanonicalDomain::Headers,
+            ValueId([2; 32]),
+            [3; 32],
+            limits,
+        )
+        .unwrap_err();
         let mut snapshot = window.snapshot();
         snapshot.buckets[0].day = 101;
-        RetainedBucketWindow::from_snapshot(&snapshot, [3; 32], limits).unwrap_err();
+        RetainedBucketWindow::from_snapshot(
+            &snapshot,
+            CanonicalDomain::Headers,
+            ValueId([2; 32]),
+            [3; 32],
+            limits,
+        )
+        .unwrap_err();
         snapshot.buckets[0].day = 86;
-        RetainedBucketWindow::from_snapshot(&snapshot, [3; 32], limits).unwrap_err();
+        RetainedBucketWindow::from_snapshot(
+            &snapshot,
+            CanonicalDomain::Headers,
+            ValueId([2; 32]),
+            [3; 32],
+            limits,
+        )
+        .unwrap_err();
         let limits = ProfileWindowLimits {
             retained_bytes: 0,
             ..limits
         };
-        RetainedBucketWindow::from_snapshot(&window.snapshot(), [3; 32], limits).unwrap_err();
+        RetainedBucketWindow::from_snapshot(
+            &window.snapshot(),
+            CanonicalDomain::Headers,
+            ValueId([2; 32]),
+            [3; 32],
+            limits,
+        )
+        .unwrap_err();
     }
     #[test]
     fn default_window_saturation_counts_the_next_observation_and_drop() {
         let limits = ProfileWindowLimits::default();
         let policy = HeaderCapturePolicy::default();
-        let mut window = RetainedBucketWindow::new(1, ValueId([2; 32]), [3; 32], limits).unwrap();
+        let mut window =
+            RetainedBucketWindow::new(CanonicalDomain::Headers, ValueId([2; 32]), [3; 32], limits)
+                .unwrap();
         let mut sequence = 0u64;
         let mut last = None;
         for day in 100..=113 {
@@ -451,8 +524,98 @@ mod tests {
             before.counts.losses.retention + 1
         );
         assert!(window.retained_bytes() <= limits.retained_bytes);
-        let restored =
-            RetainedBucketWindow::from_snapshot(&window.snapshot(), [3; 32], limits).unwrap();
+        let restored = RetainedBucketWindow::from_snapshot(
+            &window.snapshot(),
+            CanonicalDomain::Headers,
+            ValueId([2; 32]),
+            [3; 32],
+            limits,
+        )
+        .unwrap();
         assert_eq!(encoded(&window), encoded(&restored));
+    }
+    #[test]
+    fn window_restoration_requires_expected_identity_even_without_day_buckets() {
+        let limits = ProfileWindowLimits::default();
+        let scope = ValueId([2; 32]);
+        let mut window =
+            RetainedBucketWindow::new(CanonicalDomain::Headers, scope, [3; 32], limits).unwrap();
+        for populated in [false, true] {
+            if populated {
+                window
+                    .observe(100, 100, observation(1), &value("A"))
+                    .unwrap();
+            }
+            let snapshot = window.snapshot();
+            RetainedBucketWindow::from_snapshot(
+                &snapshot,
+                CanonicalDomain::Headers,
+                ValueId([9; 32]),
+                [3; 32],
+                limits,
+            )
+            .unwrap_err();
+            RetainedBucketWindow::from_snapshot(
+                &snapshot,
+                CanonicalDomain::Order,
+                scope,
+                [3; 32],
+                limits,
+            )
+            .unwrap_err();
+            let restored = RetainedBucketWindow::from_snapshot(
+                &snapshot,
+                CanonicalDomain::Headers,
+                scope,
+                [3; 32],
+                limits,
+            )
+            .unwrap();
+            assert_eq!(encoded(&restored), encoded(&window));
+        }
+    }
+    #[test]
+    fn version_one_snapshot_layouts_keep_numeric_domains_and_explicit_coverage() {
+        let limits = ProfileWindowLimits::default();
+        let scope = ValueId([2; 32]);
+        let window =
+            RetainedBucketWindow::new(CanonicalDomain::Headers, scope, [3; 32], limits).unwrap();
+        let bucket =
+            CountedObservationBucket::new(CanonicalDomain::Headers, scope, [3; 32], limits.bucket)
+                .unwrap();
+        let bucket_json = r#"{"format_version":1,"domain":1,"scope":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"counts":{"total":0,"untracked":0,"values":[],"losses":{"oversize":0,"retention":0,"history_known":true}},"samples":[],"values":[]}"#;
+        let window_json = r#"{"format_version":1,"domain":1,"scope":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"last_day":0,"buckets":[]}"#;
+        assert_eq!(
+            serde_json::to_string(&bucket.snapshot()).unwrap(),
+            bucket_json
+        );
+        assert_eq!(
+            serde_json::to_string(&window.snapshot()).unwrap(),
+            window_json
+        );
+        let restored = CountedObservationBucket::from_snapshot(
+            &serde_json::from_str(bucket_json).unwrap(),
+            CanonicalDomain::Headers,
+            scope,
+            [3; 32],
+            limits.bucket,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_string(&restored.snapshot()).unwrap(),
+            bucket_json
+        );
+        let restored = RetainedBucketWindow::from_snapshot(
+            &serde_json::from_str(window_json).unwrap(),
+            CanonicalDomain::Headers,
+            scope,
+            [3; 32],
+            limits,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_string(&restored.snapshot()).unwrap(),
+            window_json
+        );
     }
 }

@@ -1,3 +1,4 @@
+use crate::profile::CanonicalDomain;
 use rama_http::{HeaderMap, HeaderValue, Version};
 use rama_utils::octets::kib;
 
@@ -20,11 +21,12 @@ fn empty(scope: u8, day: u32) -> StoredObservationBucket {
         authorized: false,
         day,
         bucket: CountedObservationBucket::new(
-            1,
+            CanonicalDomain::Headers,
             ValueId([scope; 32]),
             [3; 32],
             ProfileBucketLimits::default(),
         )
+        .unwrap()
         .snapshot(),
     }
 }
@@ -60,10 +62,12 @@ fn ingestion_batch_commits_complete_tuple_once_across_retries_and_days() {
     for sequence in [3, 1, 2] {
         let pending = [
             PendingBucketObservation {
+                expected_scope: buckets[0].bucket.scope,
                 previous: &buckets[0],
                 value: &a,
             },
             PendingBucketObservation {
+                expected_scope: buckets[1].bucket.scope,
                 previous: &buckets[1],
                 value: &b,
             },
@@ -82,6 +86,7 @@ fn ingestion_batch_commits_complete_tuple_once_across_retries_and_days() {
         buckets = next_buckets.into_vec();
         let different_day = empty(9, 101);
         let retry = [PendingBucketObservation {
+            expected_scope: different_day.bucket.scope,
             previous: &different_day,
             value: &b,
         }];
@@ -100,6 +105,7 @@ fn ingestion_batch_commits_complete_tuple_once_across_retries_and_days() {
     let restored: CaptureRunCheckpoint =
         serde_json::from_slice(&serde_json::to_vec(&run).unwrap()).unwrap();
     let retry = [PendingBucketObservation {
+        expected_scope: buckets[0].bucket.scope,
         previous: &buckets[0],
         value: &a,
     }];
@@ -123,10 +129,12 @@ fn ingestion_batch_failure_does_not_consume_id_or_partially_count() {
     let before = serde_json::to_vec(&(&run, &first, &second)).unwrap();
     let pending = [
         PendingBucketObservation {
+            expected_scope: first.bucket.scope,
             previous: &first,
             value: &a,
         },
         PendingBucketObservation {
+            expected_scope: second.bucket.scope,
             previous: &second,
             value: &invalid,
         },
@@ -140,6 +148,7 @@ fn ingestion_batch_failure_does_not_consume_id_or_partially_count() {
     let pending = [
         pending[0],
         PendingBucketObservation {
+            expected_scope: second.bucket.scope,
             previous: &second,
             value: &a,
         },
@@ -158,6 +167,7 @@ fn ingestion_batch_failure_does_not_consume_id_or_partially_count() {
     let pending = [
         pending[0],
         PendingBucketObservation {
+            expected_scope: overflow.bucket.scope,
             previous: &overflow,
             value: &a,
         },
@@ -174,6 +184,7 @@ fn ingestion_batch_enforces_run_auth_day_and_bucket_ownership() {
     let a = value("A");
     let bucket = empty(1, 100);
     let pending = [PendingBucketObservation {
+        expected_scope: bucket.bucket.scope,
         previous: &bucket,
         value: &a,
     }];
@@ -195,6 +206,7 @@ fn ingestion_batch_enforces_run_auth_day_and_bucket_ownership() {
         100,
         wrong,
         &[PendingBucketObservation {
+            expected_scope: earlier.bucket.scope,
             previous: &earlier,
             value: &a,
         }],
@@ -207,6 +219,7 @@ fn ingestion_batch_enforces_run_auth_day_and_bucket_ownership() {
         100,
         attempt(&run, 1, 101),
         &[PendingBucketObservation {
+            expected_scope: future.bucket.scope,
             previous: &future,
             value: &a,
         }],
@@ -220,6 +233,7 @@ fn ingestion_batch_enforces_run_auth_day_and_bucket_ownership() {
             100,
             valid,
             &[PendingBucketObservation {
+                expected_scope: wrong_bucket.bucket.scope,
                 previous: &wrong_bucket,
                 value: &a,
             }],
@@ -234,6 +248,7 @@ fn ingestion_batch_enforces_run_auth_day_and_bucket_ownership() {
         100,
         valid,
         &[PendingBucketObservation {
+            expected_scope: wrong_bucket.bucket.scope,
             previous: &wrong_bucket,
             value: &a,
         }],
@@ -255,6 +270,7 @@ fn ingestion_expired_run_cannot_restart_after_checkpoint_pruning() {
     let a = value("A");
     let bucket = empty(1, 114);
     let pending = [PendingBucketObservation {
+        expected_scope: bucket.bucket.scope,
         previous: &bucket,
         value: &a,
     }];
@@ -265,6 +281,7 @@ fn ingestion_expired_run_cannot_restart_after_checkpoint_pruning() {
     CaptureRunCheckpoint::new(CaptureRunId::new(114, [2; 12]), false, 114, limits).unwrap();
     let valid_bucket = empty(1, 100);
     let pending = [PendingBucketObservation {
+        expected_scope: valid_bucket.bucket.scope,
         previous: &valid_bucket,
         value: &a,
     }];
@@ -293,10 +310,12 @@ fn ingestion_batch_bounds_total_payload_and_metadata_before_copying() {
     let second = empty(2, 100);
     let pending = [
         PendingBucketObservation {
+            expected_scope: first.bucket.scope,
             previous: &first,
             value: &a,
         },
         PendingBucketObservation {
+            expected_scope: second.bucket.scope,
             previous: &second,
             value: &a,
         },
@@ -329,6 +348,7 @@ fn ingestion_batch_bounds_total_payload_and_metadata_before_copying() {
         100,
         attempt(&run, 1, 100),
         &[PendingBucketObservation {
+            expected_scope: oversized.bucket.scope,
             previous: &oversized,
             value: &a,
         }],
@@ -370,10 +390,12 @@ fn ingestion_batch_ten_thousand_observations_keep_bounded_shared_checkpoint() {
     for sequence in 1..=10_000 {
         let pending = [
             PendingBucketObservation {
+                expected_scope: buckets[0].bucket.scope,
                 previous: &buckets[0],
                 value: if sequence % 2 == 0 { &a } else { &b },
             },
             PendingBucketObservation {
+                expected_scope: buckets[1].bucket.scope,
                 previous: &buckets[1],
                 value: &a,
             },
@@ -413,8 +435,14 @@ fn ingestion_reserves_existing_payloads_before_admitting_any_growth() {
     };
     let first = empty(2, 100);
     let mut second = empty(3, 100);
-    let mut existing =
-        CountedObservationBucket::from_snapshot(&second.bucket, [3; 32], limits.bucket).unwrap();
+    let mut existing = CountedObservationBucket::from_snapshot(
+        &second.bucket,
+        CanonicalDomain::Headers,
+        ValueId([3; 32]),
+        [3; 32],
+        limits.bucket,
+    )
+    .unwrap();
     existing
         .observe(
             ObservationId {
@@ -428,10 +456,12 @@ fn ingestion_reserves_existing_payloads_before_admitting_any_growth() {
     let run = run();
     let pending = [
         PendingBucketObservation {
+            expected_scope: first.bucket.scope,
             previous: &first,
             value: &a,
         },
         PendingBucketObservation {
+            expected_scope: second.bucket.scope,
             previous: &second,
             value: &a,
         },
@@ -452,4 +482,49 @@ fn ingestion_reserves_existing_payloads_before_admitting_any_growth() {
     assert_eq!(buckets[1].bucket.counts.losses.retention, 0);
     assert_eq!(buckets[1].bucket.values.len(), 1);
     assert_eq!(second.bucket.counts.total, 1);
+}
+
+#[test]
+fn version_one_checkpoint_layout_preserves_authorization_run_day_and_ranges() {
+    let limits = IngestionBatchLimits::default();
+    let mut checkpoint =
+        CaptureRunCheckpoint::new(CaptureRunId::new(100, [1; 12]), true, 100, limits).unwrap();
+    let mut cursor = IngestionCursor::new(limits.ingestion);
+    cursor.record(1).unwrap();
+    cursor.record(3).unwrap();
+    checkpoint.sequences = cursor.checkpoint();
+    let expected = r#"{"format_version":1,"run":[0,0,0,100,1,1,1,1,1,1,1,1,1,1,1,1],"authorized":true,"last_day":100,"sequences":{"prefix":1,"completed":[{"first":3,"last":3}]}}"#;
+    assert_eq!(serde_json::to_string(&checkpoint).unwrap(), expected);
+    let restored: CaptureRunCheckpoint = serde_json::from_str(expected).unwrap();
+    assert_eq!(serde_json::to_string(&restored).unwrap(), expected);
+    let mut cursor =
+        IngestionCursor::from_checkpoint(&restored.sequences, limits.ingestion).unwrap();
+    assert!(matches!(
+        cursor.record(2).unwrap(),
+        IngestionDisposition::New
+    ));
+    assert_eq!(cursor.checkpoint().prefix, 3);
+}
+
+#[test]
+fn ingestion_restores_against_capture_scope_without_consuming_a_rejected_id() {
+    let limits = IngestionBatchLimits::default();
+    let run = run();
+    let previous = empty(2, 100);
+    let value = value("A");
+    let mut pending = PendingBucketObservation {
+        expected_scope: ValueId([9; 32]),
+        previous: &previous,
+        value: &value,
+    };
+    run.prepare(100, attempt(&run, 1, 100), &[pending], [3; 32], limits)
+        .unwrap_err();
+    assert_eq!(run.sequences.prefix, 0);
+    assert_eq!(previous.bucket.counts.total, 0);
+    pending.expected_scope = ValueId([2; 32]);
+    assert!(matches!(
+        run.prepare(100, attempt(&run, 1, 100), &[pending], [3; 32], limits)
+            .unwrap(),
+        PreparedIngestion::Commit { .. }
+    ));
 }

@@ -262,6 +262,7 @@ async fn prepare_transaction<'a>(
         .iter()
         .zip(prepared.buckets.iter())
         .map(|(previous, input)| PendingBucketObservation {
+            expected_scope: input.scope.id,
             previous,
             value: &input.value,
         })
@@ -374,7 +375,7 @@ async fn load_bucket(
                 input.scope.id,
                 seed,
                 limits.ingestion.bucket,
-            )
+            )?
             .snapshot(),
         });
     };

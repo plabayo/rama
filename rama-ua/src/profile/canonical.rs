@@ -11,14 +11,58 @@ use super::{
     joint::validate_joint_structure, order_capture::validate_structure,
 };
 
-pub(super) const HEADER_DOMAIN: u16 = 1;
-pub(super) const PROFILE_DOMAIN: u16 = 2;
-pub(super) const FLOW_DOMAIN: u16 = 3;
-pub(super) const ORDER_DOMAIN: u16 = 4;
-pub(super) const ORDER_STRUCTURE_DOMAIN: u16 = 5;
-pub(super) const JOINT_DOMAIN: u16 = 6;
-pub(super) const JOINT_STRUCTURE_DOMAIN: u16 = 7;
-pub(super) const SCOPE_DOMAIN: u16 = 8;
+/// Stable canonical domains; serialized tags remain independent of Rust enum layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "u16", into = "u16")]
+#[repr(u16)]
+pub enum CanonicalDomain {
+    Headers = 1,
+    Profile = 2,
+    Flow = 3,
+    Order = 4,
+    OrderStructure = 5,
+    Joint = 6,
+    JointStructure = 7,
+    Scope = 8,
+}
+
+impl From<CanonicalDomain> for u16 {
+    fn from(value: CanonicalDomain) -> Self {
+        value as Self
+    }
+}
+
+impl From<CanonicalDomain> for i32 {
+    fn from(value: CanonicalDomain) -> Self {
+        Self::from(u16::from(value))
+    }
+}
+
+impl TryFrom<u16> for CanonicalDomain {
+    type Error = ProfileDataError;
+    fn try_from(tag: u16) -> Result<Self, Self::Error> {
+        match tag {
+            1 => Ok(Self::Headers),
+            2 => Ok(Self::Profile),
+            3 => Ok(Self::Flow),
+            4 => Ok(Self::Order),
+            5 => Ok(Self::OrderStructure),
+            6 => Ok(Self::Joint),
+            7 => Ok(Self::JointStructure),
+            8 => Ok(Self::Scope),
+            _ => Err(ProfileDataError::Unsupported("canonical content domain")),
+        }
+    }
+}
+
+pub(super) const HEADER_DOMAIN: CanonicalDomain = CanonicalDomain::Headers;
+pub(super) const PROFILE_DOMAIN: CanonicalDomain = CanonicalDomain::Profile;
+pub(super) const FLOW_DOMAIN: CanonicalDomain = CanonicalDomain::Flow;
+pub(super) const ORDER_DOMAIN: CanonicalDomain = CanonicalDomain::Order;
+pub(super) const ORDER_STRUCTURE_DOMAIN: CanonicalDomain = CanonicalDomain::OrderStructure;
+pub(super) const JOINT_DOMAIN: CanonicalDomain = CanonicalDomain::Joint;
+pub(super) const JOINT_STRUCTURE_DOMAIN: CanonicalDomain = CanonicalDomain::JointStructure;
+pub(super) const SCOPE_DOMAIN: CanonicalDomain = CanonicalDomain::Scope;
 
 const PREFIX: &[u8] = b"rama-profile\0";
 const VERSION: u16 = 1;
@@ -63,7 +107,10 @@ impl Error for ProfileDataError {}
 impl CanonicalValue {
     /// Validate the owned payload and return its persistent domain tag.
     /// Storage adapters use this instead of interpreting the canonical envelope.
-    pub fn validated_domain(&self, maximum_bytes: usize) -> Result<u16, ProfileDataError> {
+    pub fn validated_domain(
+        &self,
+        maximum_bytes: usize,
+    ) -> Result<CanonicalDomain, ProfileDataError> {
         if self.bytes.len() > maximum_bytes {
             return Err(ProfileDataError::LimitExceeded("canonical bytes"));
         }
@@ -72,7 +119,7 @@ impl CanonicalValue {
             .bytes
             .get(offset..offset + 2)
             .ok_or(ProfileDataError::Invalid("truncated canonical domain"))?;
-        let domain = u16::from_be_bytes([tag[0], tag[1]]);
+        let domain = CanonicalDomain::try_from(u16::from_be_bytes([tag[0], tag[1]]))?;
         self.validate_content(domain, maximum_bytes)?;
         Ok(domain)
     }
@@ -80,7 +127,7 @@ impl CanonicalValue {
     /// An envelope and digest do not establish the payload's ownership or semantics.
     pub(super) fn validate_content(
         &self,
-        domain: u16,
+        domain: CanonicalDomain,
         maximum_bytes: usize,
     ) -> Result<(), ProfileDataError> {
         match domain {
@@ -124,13 +171,16 @@ impl CanonicalValue {
             SCOPE_DOMAIN => {
                 ProfileObservationScope::from_canonical(self, maximum_bytes)?;
             }
-            _ => return Err(ProfileDataError::Unsupported("canonical content domain")),
         }
         Ok(())
     }
 
     /// Verify persisted identity and envelope before interpreting the domain's payload.
-    pub fn verify(&self, domain: u16, maximum_bytes: usize) -> Result<(), ProfileDataError> {
+    pub fn verify(
+        &self,
+        domain: CanonicalDomain,
+        maximum_bytes: usize,
+    ) -> Result<(), ProfileDataError> {
         if self.bytes.len() > maximum_bytes {
             return Err(ProfileDataError::LimitExceeded("canonical bytes"));
         }
@@ -148,14 +198,17 @@ pub(super) struct CanonicalWriter {
 }
 
 impl CanonicalWriter {
-    pub(super) fn new(domain: u16, maximum_bytes: usize) -> Result<Self, ProfileDataError> {
+    pub(super) fn new(
+        domain: CanonicalDomain,
+        maximum_bytes: usize,
+    ) -> Result<Self, ProfileDataError> {
         let mut this = Self {
             bytes: Vec::new(),
             maximum_bytes,
         };
         this.raw(PREFIX)?;
         this.u16(VERSION)?;
-        this.u16(domain)?;
+        this.u16(domain.into())?;
         Ok(this)
     }
 
@@ -202,12 +255,12 @@ pub(super) struct CanonicalReader<'a> {
 }
 
 impl<'a> CanonicalReader<'a> {
-    pub(super) fn new(bytes: &'a [u8], domain: u16) -> Result<Self, ProfileDataError> {
+    pub(super) fn new(bytes: &'a [u8], domain: CanonicalDomain) -> Result<Self, ProfileDataError> {
         let mut this = Self { bytes, position: 0 };
         if this.raw(PREFIX.len())? != PREFIX || this.u16()? != VERSION {
             return Err(ProfileDataError::Unsupported("canonical format version"));
         }
-        if this.u16()? != domain {
+        if this.u16()? != u16::from(domain) {
             return Err(ProfileDataError::Invalid("canonical domain"));
         }
         Ok(this)
@@ -262,5 +315,37 @@ impl<'a> CanonicalReader<'a> {
             return Err(ProfileDataError::Invalid("trailing canonical bytes"));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn domain_tags_round_trip_as_stable_numbers_and_reject_unknown_values() {
+        for (tag, domain) in [
+            (1, CanonicalDomain::Headers),
+            (2, CanonicalDomain::Profile),
+            (3, CanonicalDomain::Flow),
+            (4, CanonicalDomain::Order),
+            (5, CanonicalDomain::OrderStructure),
+            (6, CanonicalDomain::Joint),
+            (7, CanonicalDomain::JointStructure),
+            (8, CanonicalDomain::Scope),
+        ] {
+            assert_eq!(u16::from(domain), tag);
+            assert_eq!(CanonicalDomain::try_from(tag).unwrap(), domain);
+            let json = serde_json::to_string(&domain).unwrap();
+            assert_eq!(json, tag.to_string());
+            assert_eq!(
+                serde_json::from_str::<CanonicalDomain>(&json).unwrap(),
+                domain
+            );
+        }
+        for tag in [0, 9, u16::MAX] {
+            CanonicalDomain::try_from(tag).unwrap_err();
+            serde_json::from_str::<CanonicalDomain>(&tag.to_string()).unwrap_err();
+        }
     }
 }

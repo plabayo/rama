@@ -1,7 +1,8 @@
+use crate::profile::CanonicalDomain;
 use std::collections::BTreeSet;
 
 use super::*;
-use crate::profile::ValueId;
+use crate::profile::{CountedObservationBucket, ObservationId, ProfileBucketLimits, ValueId};
 use sha2::{Digest as _, Sha256};
 
 fn headers(values: &[(&str, &str)]) -> HeaderMap {
@@ -473,4 +474,177 @@ fn never_index_metadata_prevents_literal_retention_even_without_header_flag() {
     policy
         .capture(Version::HTTP_3, &input, Some(&[representation]))
         .unwrap_err();
+}
+
+#[test]
+fn forwarding_identifiers_proofs_and_body_fields_never_become_profile_values() {
+    let names = [
+        ("forwarded", RequestBinding::Forwarding),
+        ("x-forwarded-for", RequestBinding::Forwarding),
+        ("x-forwarded-host", RequestBinding::Forwarding),
+        ("x-forwarded-proto", RequestBinding::Forwarding),
+        ("x-forwarded-port", RequestBinding::Forwarding),
+        ("x-real-ip", RequestBinding::Forwarding),
+        ("via", RequestBinding::Forwarding),
+        ("alt-used", RequestBinding::Authority),
+        ("traceparent", RequestBinding::PerRequestId),
+        ("tracestate", RequestBinding::PerRequestId),
+        ("baggage", RequestBinding::PerRequestId),
+        ("x-request-id", RequestBinding::PerRequestId),
+        ("request-id", RequestBinding::PerRequestId),
+        ("x-correlation-id", RequestBinding::PerRequestId),
+        ("correlation-id", RequestBinding::PerRequestId),
+        ("idempotency-key", RequestBinding::PerRequestId),
+        ("dpop", RequestBinding::Proof),
+        ("sec-websocket-protocol", RequestBinding::WebSocketProtocol),
+        ("expect", RequestBinding::BodyMetadata),
+    ];
+    let secret = "private-binding-canary";
+    let policy = HeaderCapturePolicy::default();
+    for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+        for (name, binding) in names {
+            let captured = policy
+                .capture(version, &headers(&[(name, secret)]), None)
+                .unwrap();
+            assert!(
+                matches!(captured.fields[0].value, HeaderValueSource::Request(value) if value == binding)
+            );
+            let value = captured.canonical(&policy).unwrap();
+            assert!(
+                !value
+                    .bytes
+                    .windows(secret.len())
+                    .any(|bytes| bytes == secret.as_bytes())
+            );
+            let changed = policy
+                .capture(version, &headers(&[(name, "another-request")]), None)
+                .unwrap()
+                .canonical(&policy)
+                .unwrap();
+            assert_eq!(changed.id, value.id);
+            assert_eq!(
+                HeaderCapture::from_canonical(&value, &policy)
+                    .unwrap()
+                    .canonical(&policy)
+                    .unwrap()
+                    .id,
+                value.id
+            );
+            let mut bucket = CountedObservationBucket::new(
+                CanonicalDomain::Headers,
+                ValueId([2; 32]),
+                [3; 32],
+                ProfileBucketLimits::default(),
+            )
+            .unwrap();
+            bucket
+                .observe(
+                    ObservationId {
+                        run: [1; 16],
+                        sequence: 1,
+                    },
+                    &value,
+                )
+                .unwrap();
+            let numeric = serde_json::to_string(secret.as_bytes()).unwrap();
+            let debug_numeric = format!("{:?}", secret.as_bytes());
+            for output in [
+                serde_json::to_string(&captured).unwrap(),
+                serde_json::to_string(&bucket.snapshot()).unwrap(),
+            ] {
+                assert!(!output.contains(secret));
+                assert!(!output.contains(&numeric[1..numeric.len() - 1]));
+            }
+            for output in [format!("{captured:?}"), format!("{:?}", bucket.snapshot())] {
+                assert!(!output.contains(secret));
+                assert!(!output.contains(&debug_numeric[1..debug_numeric.len() - 1]));
+            }
+            let mut forged = captured;
+            forged.fields[0].value = HeaderValueSource::Profile(secret.as_bytes().into());
+            forged.canonical(&policy).unwrap_err();
+            let mut override_policy = policy.clone();
+            override_policy.overrides = vec![HeaderOwnershipOverride {
+                name: HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                ownership: HeaderOwnership::Profile,
+            }]
+            .into();
+            override_policy
+                .capture(version, &headers(&[(name, secret)]), None)
+                .unwrap_err();
+        }
+    }
+}
+
+#[test]
+fn canonical_and_decoded_imports_enforce_explicit_ownership_overrides() {
+    let mut policy = HeaderCapturePolicy::default();
+    let input = headers(&[("x-app", "capture-safe")]);
+    let captured = policy.capture(Version::HTTP_11, &input, None).unwrap();
+    let encoded = captured.canonical(&policy).unwrap();
+    policy.overrides = vec![HeaderOwnershipOverride {
+        name: HeaderName::from_static("x-app"),
+        ownership: HeaderOwnership::Request,
+    }]
+    .into();
+    captured.canonical(&policy).unwrap_err();
+    HeaderCapture::from_canonical(&encoded, &policy).unwrap_err();
+    let safe = policy.capture(Version::HTTP_11, &input, None).unwrap();
+    safe.canonical(&policy).unwrap();
+    policy.overrides[0].ownership = HeaderOwnership::Profile;
+    assert_eq!(captured.canonical(&policy).unwrap().id, encoded.id);
+    policy.overrides = vec![policy.overrides[0].clone(); 2].into();
+    captured.canonical(&policy).unwrap_err();
+    HeaderCapture::from_canonical(&encoded, &policy).unwrap_err();
+    policy.overrides = vec![HeaderOwnershipOverride {
+        name: HeaderName::from_static("cookie"),
+        ownership: HeaderOwnership::Profile,
+    }]
+    .into();
+    let cookies = HeaderCapturePolicy::default()
+        .capture(Version::HTTP_11, &headers(&[("cookie", "excluded")]), None)
+        .unwrap();
+    cookies.canonical(&policy).unwrap_err();
+}
+
+#[test]
+fn bound_header_qpack_and_lowercase_encoding_has_a_fixed_vector() {
+    let policy = HeaderCapturePolicy::default();
+    let representation = ObservedFieldRepresentation {
+        representation: FieldRepresentation::LiteralName,
+        index: None,
+        name_huffman: true,
+        value_huffman: true,
+        never_index: true,
+    };
+    let capture = policy
+        .capture(
+            Version::HTTP_3,
+            &headers(&[("X-Request-ID", "excluded-canary")]),
+            Some(&[representation]),
+        )
+        .unwrap();
+    let value = capture.canonical(&policy).unwrap();
+    assert_eq!(
+        value.bytes.as_ref(),
+        &[
+            114, 97, 109, 97, 45, 112, 114, 111, 102, 105, 108, 101, 0, 0, 1, 0, 1, 4, 0, 0, 0, 0,
+            0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 12, 120, 45, 114, 101, 113, 117, 101, 115, 116, 45,
+            105, 100, 0, 0, 0, 0, 1, 1, 6, 0, 1, 1, 1, 1, 15
+        ]
+    );
+    assert_eq!(
+        value.id.0,
+        [
+            173, 238, 106, 231, 61, 75, 168, 235, 166, 157, 40, 178, 115, 191, 45, 187, 163, 240,
+            181, 159, 42, 159, 149, 11, 79, 219, 56, 133, 54, 226, 33, 184
+        ]
+    );
+    assert_eq!(
+        HeaderCapture::from_canonical(&value, &policy)
+            .unwrap()
+            .canonical(&policy)
+            .unwrap()
+            .bytes,
+        value.bytes
+    );
 }

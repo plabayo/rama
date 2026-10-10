@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     CanonicalValue, CountedBucketSnapshot, CountedObservationBucket, IngestionCheckpoint,
     IngestionCursor, IngestionDisposition, IngestionLimits, ObservationId, ProfileBucketLimits,
-    ProfileDataError, RetentionWindow,
+    ProfileDataError, RetentionWindow, ValueId,
 };
 
 /// The creation day is part of the identity, so deleting an expired checkpoint
@@ -73,6 +73,8 @@ pub struct StoredObservationBucket {
 /// its count and payload preflight. A new bucket uses an empty validated snapshot.
 #[derive(Debug, Clone, Copy)]
 pub struct PendingBucketObservation<'a> {
+    /// Identity resolved from the incoming capture, independently of the stored snapshot.
+    pub expected_scope: ValueId,
     pub previous: &'a StoredObservationBucket,
     pub value: &'a CanonicalValue,
 }
@@ -184,7 +186,7 @@ impl CaptureRunCheckpoint {
             if previous.authorized != authorized || previous.day != observation_day {
                 return Err(ProfileDataError::Invalid("ingestion bucket ownership"));
             }
-            if !scopes.insert(previous.bucket.scope) {
+            if !scopes.insert(item.expected_scope) {
                 return Err(ProfileDataError::Invalid("duplicate ingestion bucket"));
             }
             if previous.bucket.values.len() > maximum_values
@@ -213,6 +215,8 @@ impl CaptureRunCheckpoint {
         for item in pending {
             let mut bucket = CountedObservationBucket::from_snapshot(
                 &item.previous.bucket,
+                item.value.validated_domain(limits.bucket.input_bytes)?,
+                item.expected_scope,
                 seed,
                 limits.bucket,
             )?;
