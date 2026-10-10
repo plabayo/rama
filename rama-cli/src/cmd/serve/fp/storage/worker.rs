@@ -1,5 +1,9 @@
 //! Bounded optional collection with retry IDs owned by the database worker.
 
+#[cfg(test)]
+use std::cell::RefCell;
+
+use parking_lot::RwLock;
 use rama::{
     error::BoxError,
     ua::profile::{CaptureLevel, IngestionAttempt, ProfileCapture, ProfileDataError},
@@ -9,7 +13,7 @@ use std::{
     iter,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -155,22 +159,41 @@ impl CollectionCounters {
 #[derive(Debug, Clone)]
 pub(super) struct CollectionQueue {
     sender: mpsc::Sender<Job>,
-    closed: Arc<AtomicBool>,
+    closed: Arc<RwLock<bool>>,
     counters: Arc<CollectionCounters>,
     limits: StoreLimits,
 }
 #[derive(Debug)]
 pub(super) struct CollectionReceiver {
     receiver: mpsc::Receiver<Job>,
-    closed: Arc<AtomicBool>,
+    closed: Arc<RwLock<bool>>,
     counters: Arc<CollectionCounters>,
+}
+
+impl CollectionReceiver {
+    fn close(&mut self) {
+        let mut closed = self.closed.write();
+        *closed = true;
+        self.receiver.close();
+    }
+}
+impl Drop for CollectionReceiver {
+    fn drop(&mut self) {
+        // Also order cancellation and never-started receivers against sends.
+        self.close();
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_SEND: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
 }
 
 #[derive(Debug)]
 pub(super) struct CollectionReservation {
     slot: Option<mpsc::OwnedPermit<Job>>,
-    submitted: bool,
-    closed: Arc<AtomicBool>,
+    finished: bool,
+    closed: Arc<RwLock<bool>>,
     counters: Arc<CollectionCounters>,
     limits: StoreLimits,
 }
@@ -182,7 +205,7 @@ impl CollectionQueue {
         config.validate(limits)?;
         let (sender, receiver) = mpsc::channel(config.capacity);
         let counters = Arc::default();
-        let closed = Arc::new(AtomicBool::new(false));
+        let closed = Arc::new(RwLock::new(false));
         Ok((
             Self {
                 sender,
@@ -199,15 +222,10 @@ impl CollectionQueue {
     }
     /// Reserve before building optional captures or waiting for connection metadata.
     pub(super) fn try_reserve(&self) -> Option<CollectionReservation> {
-        if self.closed.load(Ordering::Acquire) {
-            increment(&self.counters.dropped_jobs);
-            increment(&self.counters.queue_closed);
-            return None;
-        }
         match self.sender.clone().try_reserve_owned() {
             Ok(slot) => Some(CollectionReservation {
                 slot: Some(slot),
-                submitted: false,
+                finished: false,
                 closed: self.closed.clone(),
                 counters: self.counters.clone(),
                 limits: self.limits,
@@ -279,36 +297,27 @@ impl CollectionReservation {
         request: ProfileCapture,
         connection: Option<(ProfileCapture, ConnectionPermit)>,
     ) -> Result<(), BoxError> {
-        if self.closed.load(Ordering::Acquire) {
+        // Prepare outside the lock; only ownership transfer and send must be
+        // indivisible with receiver closure.
+        if let Err(error) = self.validate(owner, &request, connection.as_ref()) {
+            self.finished = true;
+            increment(&self.counters.dropped_jobs);
+            increment(&self.counters.invalid_capture);
+            return Err(error);
+        }
+        let closed = self.closed.read();
+        if *closed {
+            self.finished = true;
+            increment(&self.counters.dropped_jobs);
+            increment(&self.counters.queue_closed);
             return Err(ProfileDataError::Invalid("closed collection queue").into());
         }
-        if connection
-            .as_ref()
-            .is_some_and(|(_capture, permit)| permit.owner() != owner)
-        {
-            return Err(ProfileDataError::Invalid("connection collection owner").into());
-        }
-        if request.joint.level != CaptureLevel::Request {
-            return Err(ProfileDataError::Invalid("request collection level").into());
-        }
-        for capture in
-            iter::once(&request).chain(connection.as_ref().map(|(capture, _permit)| capture))
-        {
-            let prepared = capture.prepare(owner.authorized, self.limits.capture)?;
-            if prepared.profile.id != owner.profile
-                || prepared.buckets.len() > self.limits.ingestion.buckets
-            {
-                return Err(
-                    ProfileDataError::Invalid("collection owner or component budget").into(),
-                );
+        #[cfg(test)]
+        BEFORE_SEND.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().take() {
+                hook();
             }
-        }
-        if connection.as_ref().is_some_and(|(capture, _permit)| {
-            capture.joint.level != CaptureLevel::Connection
-                || capture.connection != request.connection
-        }) {
-            return Err(ProfileDataError::Invalid("connection collection context").into());
-        }
+        });
         let slot = self.slot.take().ok_or(ProfileDataError::Invalid(
             "missing reserved collection slot",
         ))?;
@@ -326,7 +335,7 @@ impl CollectionReservation {
             attempted: false,
             finished: false,
         };
-        self.submitted = true;
+        self.finished = true;
         slot.send(Job {
             authorized: owner.authorized,
             day,
@@ -335,11 +344,41 @@ impl CollectionReservation {
         });
         Ok(())
     }
+    fn validate(
+        &self,
+        owner: CollectionOwner,
+        request: &ProfileCapture,
+        connection: Option<&(ProfileCapture, ConnectionPermit)>,
+    ) -> Result<(), BoxError> {
+        if connection.is_some_and(|(_capture, permit)| permit.owner() != owner) {
+            return Err(ProfileDataError::Invalid("connection collection owner").into());
+        }
+        if request.joint.level != CaptureLevel::Request {
+            return Err(ProfileDataError::Invalid("request collection level").into());
+        }
+        for capture in iter::once(request).chain(connection.map(|(capture, _permit)| capture)) {
+            let prepared = capture.prepare(owner.authorized, self.limits.capture)?;
+            if prepared.profile.id != owner.profile
+                || prepared.buckets.len() > self.limits.ingestion.buckets
+            {
+                return Err(
+                    ProfileDataError::Invalid("collection owner or component budget").into(),
+                );
+            }
+        }
+        if connection.is_some_and(|(capture, _permit)| {
+            capture.joint.level != CaptureLevel::Connection
+                || capture.connection != request.connection
+        }) {
+            return Err(ProfileDataError::Invalid("connection collection context").into());
+        }
+        Ok(())
+    }
 }
 
 impl Drop for CollectionReservation {
     fn drop(&mut self) {
-        if !self.submitted {
+        if !self.finished {
             increment(&self.counters.dropped_jobs);
             increment(&self.counters.preparation_drops);
         }
@@ -383,7 +422,7 @@ impl CollectionSink for PostgresSink {
             .pool
             .get()
             .await
-            .map_err(|error| IngestFailure::Rejected(error.into()))?;
+            .map_err(|_error| IngestFailure::Rejected(_error.into()))?;
         counted::ingest(
             &mut client,
             current_day,
@@ -397,7 +436,7 @@ impl CollectionSink for PostgresSink {
 }
 
 pub(super) async fn run(
-    input: CollectionReceiver,
+    mut input: CollectionReceiver,
     mut sink: impl CollectionSink,
     limits: StoreLimits,
     config: QueueConfig,
@@ -406,11 +445,7 @@ pub(super) async fn run(
     mut nonce: impl FnMut() -> Result<[u8; 12], BoxError>,
 ) -> Result<(), BoxError> {
     config.validate(limits)?;
-    let CollectionReceiver {
-        mut receiver,
-        closed,
-        counters,
-    } = input;
+    let counters = input.counters.clone();
     tokio::pin!(shutdown);
     let mut closing = false;
     let mut next_maintenance = Instant::now() + config.maintenance_interval;
@@ -435,16 +470,16 @@ pub(super) async fn run(
             }
             next_maintenance = Instant::now() + config.maintenance_interval;
         }
-        // Outstanding preparation reservations cannot prolong shutdown. If one
-        // races the closed flag, dropping the receiver rejects its owned job.
-        if closing && receiver.is_empty() {
+        // Closure is ordered against every send. Outstanding preparation
+        // reservations cannot prolong shutdown or enqueue after this drain.
+        if closing && input.receiver.is_empty() {
             break;
         }
         let job = tokio::select! {
             biased;
-            () = &mut shutdown, if !closing => { closed.store(true, Ordering::Release); receiver.close(); closing = true; continue; }
+            () = &mut shutdown, if !closing => { input.close(); closing = true; continue; }
             () = sleep_until(next_maintenance) => continue,
-            job = receiver.recv() => match job { Some(job) => job, None => break },
+            job = input.receiver.recv() => match job { Some(job) => job, None => break },
         };
         for mut observation in job.connection.into_iter().chain(iter::once(job.request)) {
             let Ok(current_day) = day() else {

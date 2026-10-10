@@ -839,11 +839,12 @@ fn invalid_jobs_release_reserved_capacity_and_connection_preparation() {
         let counts = queue.counts();
         assert_eq!(
             (
+                counts.invalid_capture,
                 counts.preparation_drops,
                 counts.confirmed,
                 counts.unconfirmed
             ),
-            (1, 0, 0)
+            (1, 0, 0, 0)
         );
         assert!(queue.try_reserve().is_some());
     }
@@ -906,4 +907,54 @@ async fn preparation_crossing_midnight_does_not_drop_retained_observations() {
         vec![1, 1, 2]
     );
     assert_eq!((queue.counts().confirmed, queue.counts().rejected), (3, 0));
+}
+
+#[test]
+fn submission_and_receiver_shutdown_share_one_critical_section() {
+    let (queue, mut receiver) = CollectionQueue::new(QueueConfig::default(), limits()).unwrap();
+    let reservation = queue.try_reserve().unwrap();
+    let gate = queue.closed.clone();
+    BEFORE_SEND.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            // The exact interleaving from W-1 cannot close the receiver here.
+            assert!(gate.try_write().is_none());
+        }))
+    });
+    reservation
+        .submit(owner(false), 100, capture(false), None)
+        .unwrap();
+    receiver.close();
+    assert!(!receiver.receiver.is_empty());
+    drop(receiver);
+    assert_eq!(queue.counts().rejected, 1);
+    assert_eq!(queue.counts().preparation_drops, 0);
+}
+
+#[test]
+fn dropped_receiver_rejects_reserved_jobs_before_last_sender_drops() {
+    let (queue, receiver) = CollectionQueue::new(QueueConfig::default(), limits()).unwrap();
+    let clone = queue.clone();
+    let reservation = queue.try_reserve().unwrap();
+    let lease = Arc::new(CollectionLease::default());
+    let first = owner(false);
+    drop(receiver);
+    reservation
+        .submit(
+            first,
+            100,
+            capture(false),
+            Some((capture(true), permit(&lease, first))),
+        )
+        .unwrap_err();
+    assert!(matches!(lease.claim(first), CollectionClaim::Connection(_)));
+    let counts = clone.counts();
+    assert_eq!(
+        (
+            counts.queue_closed,
+            counts.dropped_jobs,
+            counts.preparation_drops,
+            counts.invalid_capture
+        ),
+        (1, 1, 0, 0)
+    );
 }
