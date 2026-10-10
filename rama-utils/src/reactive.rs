@@ -476,7 +476,8 @@ struct Place {
 
 impl Place {
     /// Add `n` wakes, as many as fit below [`MAX_HELD`], and at least one: a
-    /// wake after a look began stays newer than what the look spends.
+    /// wake after a look began stays newer than what the look spends. What it
+    /// holds stops at `usize::MAX - 1`, as many as a count of them tells apart.
     fn add_wakes(&self, n: usize) {
         if n == 0 {
             return;
@@ -484,10 +485,14 @@ impl Place {
         let spent = self.spent.load(Ordering::Relaxed);
         let mut wakes = self.wakes.load(Ordering::Acquire);
         loop {
-            let room = MAX_HELD.saturating_sub(wakes.wrapping_sub(spent));
+            let held = wakes.wrapping_sub(spent);
+            let add = n
+                .min(MAX_HELD.saturating_sub(held))
+                .max(1)
+                .min((usize::MAX - 1).saturating_sub(held));
             match self.wakes.compare_exchange_weak(
                 wakes,
-                wakes.wrapping_add(n.min(room).max(1)),
+                wakes.wrapping_add(add),
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
@@ -521,13 +526,18 @@ impl Party {
     /// A place for the party in one more queue, to [`WaitQueue::push`].
     #[must_use]
     pub fn waiter(self: &Arc<Self>) -> Waiter {
-        let index = self.placed.fetch_add(1, Ordering::Relaxed);
+        // Counts no further than the inline places: however many waiters a party
+        // takes, none is handed out twice.
+        let inline = self
+            .placed
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |placed| {
+                (placed < INLINE_PLACES).then_some(placed + 1)
+            });
         Waiter {
             party: self.clone(),
-            place: if index < INLINE_PLACES {
-                PlaceRef::Inline(index)
-            } else {
-                PlaceRef::Extra(Arc::default())
+            place: match inline {
+                Ok(index) => PlaceRef::Inline(index),
+                Err(_) => PlaceRef::Extra(Arc::default()),
             },
         }
     }
@@ -1538,6 +1548,35 @@ mod tests {
             usize::MAX,
             "both full places, and a wake each"
         );
+    }
+
+    #[test]
+    fn a_place_holding_all_a_count_tells_apart_stays_woken() {
+        let queue = WaitQueue::new();
+        let waiter = Party::new(0).waiter();
+        queue.push(&waiter);
+        // As after `MAX_HELD` single wakes past a full batch, none spent.
+        waiter
+            .counters()
+            .wakes
+            .store(usize::MAX - 1, Ordering::Relaxed);
+        assert_eq!(waiter.held(), usize::MAX - 1);
+        assert!(queue.wake_one());
+        assert!(queue.wake_many(usize::MAX));
+        assert_eq!(waiter.held(), usize::MAX - 1, "no wrap to a few");
+        assert!(waiter.is_woken());
+    }
+
+    #[test]
+    fn a_party_hands_each_inline_place_out_once() {
+        let party = Party::new(0);
+        let waiters: Vec<_> = (0..INLINE_PLACES + 4).map(|_| party.waiter()).collect();
+        let inline = waiters
+            .iter()
+            .filter(|waiter| matches!(waiter.place, PlaceRef::Inline(_)))
+            .count();
+        assert_eq!(inline, INLINE_PLACES);
+        assert_eq!(party.placed.load(Ordering::Relaxed), INLINE_PLACES);
     }
 
     #[test]

@@ -254,6 +254,15 @@ pub struct ConnectionReuse {
 }
 
 impl ConnectionReuse {
+    /// Whether `other` files a connection exactly as this does: the same policy
+    /// and keys, so a rekey to it changes nothing.
+    pub(crate) fn is_same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.policy, &other.policy)
+            && self.classifier == other.classifier
+            && self.key == other.key
+            && self.complete == other.complete
+    }
+
     /// Publish the complete reuse policy for the requested endpoint.
     ///
     /// This describes policy compatibility, not peer authentication. Transport

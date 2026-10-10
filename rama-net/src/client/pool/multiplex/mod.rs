@@ -51,6 +51,7 @@ mod connecting;
 mod connection;
 mod lanes;
 mod policy;
+mod reaper;
 mod waiting;
 
 use self::connecting::{Coalesce, Connect, ConnectKey, Connects, Failure, Seen, connect_key};
@@ -59,6 +60,7 @@ use self::connection::{Admitted, ConnectionSlot, GONE, StoredConnection, ask_tri
 use self::lanes::{Claimed, IdBucket, Lane, OnlyLane, RequestLanes, Snapshot, select_and_admit};
 use self::policy::{Asked, Excess, IdLimit, IdPermit, IdleLimits, over};
 pub use self::policy::{MultiplexSlot, SaturationPolicy};
+use self::reaper::{Reaped, Reaper, UNLINKED};
 use self::waiting::{Blocked, IdSlotWait, Look, SlotWait, Waiting, maybe, maybe_pinned};
 
 use super::reuse::{KeyedLane, LaneKey, ReuseClass};
@@ -149,20 +151,20 @@ struct Evicted<C, ID> {
 /// them (and stays O(connections of the lane)).
 const OPEN_CANDIDATES: usize = 4;
 
-/// Upper bound on how long an idle or broken connection can linger unnoticed
-/// in a bucket whose checkouts never come across it. Sweeping the bucket at
-/// this pace amortizes to nothing.
-const MAX_SWEEP_INTERVAL: Duration = Duration::from_secs(1);
+/// The most connections a limit allows: its slots are a semaphore's permits.
+/// A larger limit is this one.
+const MAX_LIMIT: NonZeroUsize = NonZeroUsize::new(Semaphore::MAX_PERMITS).unwrap();
 
-const MIN_SWEEP_INTERVAL: Duration = Duration::from_millis(1);
+/// The shortest wait of a checkout at a limit for a connection to expire: a
+/// tiny idle timeout must not turn the wait into polling.
+const MIN_EXPIRY_WAIT: Duration = Duration::from_millis(10);
 
-/// The longest pace of the sweeps of every id, also without an idle timeout,
-/// when they only look for broken connections.
-const MAX_FULL_SWEEP_INTERVAL: Duration = Duration::from_mins(1);
+/// The connections a checkout's step of the reaper looks at, at most: the
+/// reaping of a burst of expiries spreads over the checkouts after it.
+const REAP_BUDGET: usize = 8;
 
-/// Connections grouped by id, so a handout only touches its own bucket: the
-/// lock is held for a scan of the whole pool only by a paced sweep of every id,
-/// or at a total limit.
+/// Connections grouped by id, so a handout only touches its own bucket and
+/// the lock is never held for a scan of the whole pool: see [`Reaper`].
 struct Storage<C, ID> {
     by_id: HashMap<ID, IdBucket<C, ID>>,
     /// The connection slots of every id, if the pool limits them per id: kept
@@ -226,8 +228,8 @@ pub struct MultiplexPool<C, ID> {
     selection: MuxSelection,
     rr_cursor: Arc<AtomicUsize>,
     next_seq: Arc<AtomicU64>,
-    /// When the next checkout sweeps every id, see [`Self::claim_full_sweep`].
-    next_full_sweep: Arc<AtomicU64>,
+    /// Takes out idle and broken connections without a scan.
+    reaper: Arc<Reaper<C, ID>>,
     /// See [`StoredConnection::notify`].
     notify: Arc<Notify>,
     /// Checkouts waiting for capacity, see [`StoredConnection::waiting`].
@@ -288,7 +290,7 @@ impl<C, ID> Clone for MultiplexPool<C, ID> {
             selection: self.selection,
             rr_cursor: self.rr_cursor.clone(),
             next_seq: self.next_seq.clone(),
-            next_full_sweep: self.next_full_sweep.clone(),
+            reaper: self.reaper.clone(),
             notify: self.notify.clone(),
             waiting: self.waiting.clone(),
             slot_waiters: self.slot_waiters.clone(),
@@ -321,7 +323,7 @@ impl<C, ID> Default for MultiplexPool<C, ID> {
             selection: MuxSelection::default(),
             rr_cursor: Arc::new(AtomicUsize::new(0)),
             next_seq: Arc::new(AtomicU64::new(0)),
-            next_full_sweep: Arc::new(AtomicU64::new(0)),
+            reaper: Arc::default(),
             notify: Arc::new(Notify::new()),
             waiting: Arc::new(AtomicUsize::new(0)),
             slot_waiters: Arc::new(WaitQueue::new()),
@@ -380,7 +382,8 @@ impl<C, ID> MultiplexPool<C, ID> {
     }
 
     /// Keep at most `max` connections, stored or being established, across all
-    /// ids. At the limit, [`SaturationPolicy`] decides. Without it, no limit.
+    /// ids, at most [`Semaphore::MAX_PERMITS`]. At the limit, [`SaturationPolicy`]
+    /// decides. Without it, no limit.
     ///
     /// Configure it before the pool is used: clones share its connections, and
     /// so the slots they hold. Waiting at the limit may use tokio timers (the
@@ -393,6 +396,7 @@ impl<C, ID> MultiplexPool<C, ID> {
     /// See [`Self::with_max_connections_total`]; `None` is no limit.
     #[must_use]
     pub fn maybe_with_max_connections_total(mut self, max: Option<NonZeroUsize>) -> Self {
+        let max = max.map(|max| max.min(MAX_LIMIT));
         self.max_connections_total = max;
         self.total_slots = max.map(|max| Arc::new(Semaphore::new(max.get())));
         self
@@ -408,8 +412,9 @@ impl<C, ID> MultiplexPool<C, ID> {
         }
     }
 
-    /// Keep at most `max` connections, stored or being established, per id: at
-    /// the limit a checkout waits for its id's capacity or, as
+    /// Keep at most `max` connections, stored or being established, per id (at
+    /// most [`Semaphore::MAX_PERMITS`]): at the limit a checkout waits for its
+    /// id's capacity or, as
     /// [`SaturationPolicy`] allows, replaces one of the id's idle connections;
     /// other ids go on. Without it, no limit.
     ///
@@ -424,7 +429,7 @@ impl<C, ID> MultiplexPool<C, ID> {
     /// See [`Self::with_max_connections_per_id`]; `None` is no limit.
     #[must_use]
     pub fn maybe_with_max_connections_per_id(mut self, max: Option<NonZeroUsize>) -> Self {
-        self.max_connections_per_id = max;
+        self.max_connections_per_id = max.map(|max| max.min(MAX_LIMIT));
         self
     }
 
@@ -463,13 +468,12 @@ impl<C, ID> MultiplexPool<C, ID> {
 
     generate_set_and_with! {
         /// Drop connections that have been idle (no active streams) for longer than
-        /// the given timeout. Only checked when a connection is requested: the
-        /// connection a checkout is about to hand out is always checked, the
-        /// id's other connections are swept at least about once a second, and
-        /// every id's about every quarter of the timeout (between a second and a
-        /// minute). A
-        /// checkout waiting at a connection limit looks again once one would
-        /// expire, on a tokio timer: the runtime needs its time driver enabled.
+        /// the given timeout. Only checked when a connection is requested, never
+        /// by a scan of the pool: the connection a checkout is about to hand out
+        /// is always checked, and checkouts of any id close the others in the
+        /// order they went idle, a few each once the first is due. A checkout
+        /// waiting at a connection limit looks again once one would expire, on a
+        /// tokio timer: the runtime needs its time driver enabled.
         pub fn idle_timeout(mut self, timeout: Option<Duration>) -> Self {
             self.idle_timeout = timeout;
             self
@@ -570,42 +574,35 @@ where
         expired
     }
 
-    /// The pace of the full bucket sweeps that reap connections which checkouts
-    /// never come across, a quarter of the idle timeout within fixed bounds.
-    fn sweep_interval(&self) -> Duration {
-        self.idle_timeout
-            .map_or(MAX_SWEEP_INTERVAL, |timeout| timeout / 4)
-            .clamp(MIN_SWEEP_INTERVAL, MAX_SWEEP_INTERVAL)
-    }
-
-    /// The pace of the sweeps of every id, each a scan of the whole pool under
-    /// its lock: a quarter of the idle timeout, at least the longest pace of a
-    /// bucket's, so an id nobody asks for again still goes about in time.
-    fn full_sweep_interval(&self) -> Duration {
-        self.idle_timeout
-            .map_or(MAX_FULL_SWEEP_INTERVAL, |timeout| timeout / 4)
-            .clamp(MAX_SWEEP_INTERVAL, MAX_FULL_SWEEP_INTERVAL)
-    }
-
-    /// Whether this checkout sweeps every id: once one is due, the first to
-    /// claim it, so ids nobody asks for again are reaped too.
-    fn claim_full_sweep(&self, now: u64) -> bool {
-        let due = self.next_full_sweep.load(Ordering::Relaxed);
-        now >= due
-            && self
-                .next_full_sweep
-                .compare_exchange(
-                    due,
-                    now.saturating_add(nanos(self.full_sweep_interval())),
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-    }
-
-    /// The instant the next sweep of a bucket swept now is due.
-    fn next_sweep_after(&self, now: u64) -> u64 {
-        now.saturating_add(nanos(self.sweep_interval()))
+    /// A step of the reaper over at most `budget` connections, with the storage
+    /// lock held: broken connections, and idle ones past the idle timeout with
+    /// nothing to ask, go out into `swept`; idle ones with an admission are
+    /// asked in [`Self::settle`].
+    fn reap(
+        &self,
+        storage: &mut Storage<C, ID>,
+        now: u64,
+        budget: usize,
+        swept: &mut Swept<C, ID>,
+    ) {
+        let Reaped {
+            broken,
+            expired,
+            expiring,
+            next_expiry,
+        } = self.reaper.step(self.idle_timeout, now, budget);
+        swept.next_expiry = swept.next_expiry.min(next_expiry);
+        for conn in broken.into_iter().filter(|conn| conn.is_broken()) {
+            conn.retire();
+            swept.doomed.extend(unstore(storage, &conn));
+        }
+        for conn in expired {
+            if conn.retire_if(StoredConnection::maybe_idle).is_some() {
+                trace!(id = ?conn.id, "multiplex pool: dropping idle connection");
+                swept.doomed.extend(unstore(storage, &conn));
+            }
+        }
+        swept.expiring.extend(expiring);
     }
 
     /// Move broken connections, and idle ones past the idle timeout without an
@@ -613,7 +610,6 @@ where
     /// an admission stay: their admission is asked once the lock is released.
     fn sweep_bucket(&self, bucket: &mut IdBucket<C, ID>, swept: &mut Swept<C, ID>) {
         let now = now_monotonic_nanos();
-        bucket.next_sweep = self.next_sweep_after(now);
         bucket.retain(|conn| {
             let gone = if Self::is_broken(conn) {
                 conn.retire();
@@ -699,6 +695,9 @@ where
             storage.by_id.remove(id);
             return Snapshot::new();
         }
+        // Sorted once: the filter below is a search, not a scan per connection.
+        let mut expiring: SmallVec<[u64; 4]> = swept.expiring.iter().map(|conn| conn.seq).collect();
+        expiring.sort_unstable();
         let mut snapshot = Snapshot::new();
         let mut lanes_seen = 0;
         for lane in bucket.request_lanes_mut(lanes) {
@@ -715,7 +714,7 @@ where
             snapshot.extend(
                 lane.conns
                     .iter()
-                    .filter(|conn| !swept.expiring.iter().any(|gone| Arc::ptr_eq(gone, conn)))
+                    .filter(|conn| expiring.binary_search(&conn.seq).is_err())
                     .map(|conn| {
                         let Claimed { conn, lane_gen } = Claimed::new(conn.clone());
                         (conn, lane_gen)
@@ -727,16 +726,6 @@ where
             snapshot.sort_unstable_by_key(|(conn, _)| conn.seq);
         }
         snapshot
-    }
-
-    /// Sweep every bucket: paced, so ids nobody asks for again are reaped, and
-    /// at a total limit, to free the slots stale connections of other ids hold
-    /// before falling back to LRU eviction.
-    fn sweep_all(&self, storage: &mut Storage<C, ID>, swept: &mut Swept<C, ID>) {
-        storage.by_id.retain(|_, bucket| {
-            self.sweep_bucket(bucket, swept);
-            !bucket.is_empty()
-        });
     }
 
     /// Evict the least recently used idle connection, of `within` or of any
@@ -997,7 +986,7 @@ where
     /// A bucket with a single lane, the common case, is claimed from before
     /// the request's lanes are derived outside the lock, so the storage lock
     /// is taken once. The lock is held to pick and claim a candidate, no
-    /// longer than a map lookup and a pop but for a paced sweep of every id,
+    /// longer than a map lookup and a pop and a bounded step of the reaper,
     /// and never across a compatibility policy, a resource provider or the
     /// connection's own admission.
     fn checkout_open(
@@ -1007,11 +996,11 @@ where
         waiting: Option<&Waiting>,
     ) -> Result<MultiplexedConnection<C, ID>, Box<RequestLanes>> {
         let now = now_monotonic_nanos();
-        let full_sweep = self.claim_full_sweep(now);
+        let reap = self.reaper.is_due(now);
         if !id.is_reusable() {
-            if full_sweep {
+            if reap {
                 let mut swept = Swept::default();
-                self.sweep_all(&mut self.storage.lock(), &mut swept);
+                self.reap(&mut self.storage.lock(), now, REAP_BUDGET, &mut swept);
                 self.settle(swept);
             }
             return Err(Box::new(RequestLanes::unrestricted()));
@@ -1029,21 +1018,10 @@ where
 
         let (only_lane, mut next, mut classes) = {
             let mut storage = self.storage.lock();
-            if full_sweep {
-                self.sweep_all(&mut storage, &mut swept);
+            if reap {
+                self.reap(&mut storage, now, REAP_BUDGET, &mut swept);
             }
-            let bucket = match storage.by_id.get_mut(id) {
-                Some(bucket) if now >= bucket.next_sweep => {
-                    self.sweep_bucket(bucket, &mut swept);
-                    if bucket.is_empty() {
-                        storage.by_id.remove(id);
-                        None
-                    } else {
-                        storage.by_id.get_mut(id)
-                    }
-                }
-                bucket => bucket,
-            };
+            let bucket = storage.by_id.get_mut(id);
             let Some(bucket) = bucket else {
                 // A cold id's requests derive their keys from the classes it had.
                 let classes = storage
@@ -1488,11 +1466,16 @@ where
         if let Ok(permit) = total.clone().try_acquire_owned() {
             return Ok((Some(permit), false));
         }
-        // Stale connections of any id may hold slots: sweep them out, then let
-        // their permits flow back through the semaphore (to the oldest queued
-        // waiter, if any) first.
+        // Broken and expired connections of any id may hold slots: take out
+        // a few that are due, then let their permits flow back through the
+        // semaphore (to the oldest queued waiter, if any) first.
         let mut swept = Swept::default();
-        self.sweep_all(&mut self.storage.lock(), &mut swept);
+        self.reap(
+            &mut self.storage.lock(),
+            now_monotonic_nanos(),
+            REAP_BUDGET,
+            &mut swept,
+        );
         look.note_expiry(swept.next_expiry);
         self.settle(swept);
         if let Ok(permit) = total.clone().try_acquire_owned() {
@@ -1786,7 +1769,10 @@ where
                 // An idle connection frees its slots once it expires, and one
                 // going idle after this look does not expire before the timeout.
                 let now = now_monotonic_nanos();
-                let at = waiting.next_expiry.min(now.saturating_add(nanos(timeout)));
+                let at = waiting
+                    .next_expiry
+                    .min(now.saturating_add(nanos(timeout)))
+                    .max(now.saturating_add(nanos(MIN_EXPIRY_WAIT)));
                 let deadline =
                     tokio::time::Instant::now() + Duration::from_nanos(at.saturating_sub(now));
                 match expiry.as_mut().as_pin_mut() {
@@ -1930,6 +1916,8 @@ where
             slot_waiters: self.slot_waiters.clone(),
             id_evictors,
             last_idle: AtomicInstant::now(),
+            idle_node: AtomicUsize::new(UNLINKED),
+            reaper: self.reaper.clone(),
             pool_slot: Mutex::new(ConnectionSlot {
                 slots: slot,
                 retired: false,
@@ -1979,7 +1967,7 @@ where
             let bucket = storage
                 .by_id
                 .entry(conn.id.clone())
-                .or_insert_with(|| IdBucket::new(self.next_sweep_after(now_monotonic_nanos())));
+                .or_insert_with(IdBucket::new);
             // Checkouts only queue in lanes with connections.
             let new_lane = bucket
                 .lane_mut(&lane)
@@ -2003,8 +1991,9 @@ where
             self.notify.notify_waiters();
         } else {
             // Broken before it was stored: a tell before then reached no look
-            // that could find it, so this one does not count on it.
+            // that could find it, nor the reaper, so this one counts on neither.
             if conn.is_broken() {
+                self.reaper.doom(&conn);
                 self.notify.notify_waiters();
             }
             if let Some(waiters) = conn.lane_waiters.lock().clone() {

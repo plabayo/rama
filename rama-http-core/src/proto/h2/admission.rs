@@ -98,7 +98,10 @@ impl Reservation {
         // stream already retired meanwhile.
         if let Some(state) = self.state.upgrade() {
             let reserved = state.reserved.fetch_sub(1, Ordering::AcqRel) - 1;
-            if state.streams.live() + reserved < state.max.get() {
+            let held = state.streams.live() + reserved;
+            // Nothing held is a change too: a peer limit lowered to zero hides
+            // it from the first test, and the pool would keep its busy answer.
+            if held < state.max.get() || held == 0 {
                 state.bump();
             }
         }
@@ -193,5 +196,22 @@ mod tests {
             .await
             .expect("a raised peer limit wakes subscribers");
         assert!(admission.try_acquire(&input).unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn the_last_release_under_a_zero_limit_wakes_admission_subscribers() {
+        let max = Arc::new(MaxConcurrency::new(1));
+        let owner = AdmissionOwner::new(Arc::new(LocalStreams::new()), max.clone());
+        let admission = owner.policy();
+        let lease = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
+        // The peer lowers its limit to zero while a checkout holds its reservation.
+        max.set(0);
+        let changed = admission.changed();
+        assert!(admission.in_use());
+        drop(lease);
+        tokio::time::timeout(Duration::from_secs(1), changed)
+            .await
+            .expect("nothing in use any more is a change");
+        assert!(!admission.in_use());
     }
 }

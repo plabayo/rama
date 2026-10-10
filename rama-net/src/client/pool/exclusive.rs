@@ -59,6 +59,15 @@ impl<C: ExtensionsRef, ID: ConnID> LeasedConnection<C, ID> {
     /// requirements the connection was added with.
     pub fn rekey(&mut self, reuse: ConnectionReuse) {
         let pooled = &mut *self.pooled_conn;
+        // Each rekey appends to the connection's extensions: none for no change.
+        if pooled
+            .conn
+            .extensions()
+            .get_ref::<ConnectionReuse>()
+            .is_some_and(|filed| filed.is_same(&reuse))
+        {
+            return;
+        }
         pooled.lane = LaneKey::of_connection(Some(&reuse)).filter(|_| pooled.id.is_reusable());
         pooled.conn.extensions().insert(reuse);
     }
@@ -188,7 +197,14 @@ impl<C, ID> LruDropPool<C, ID> {
             .context_field("max_active", max_active)
             .context_field("max_total", max_total));
         }
-        let storage = Arc::new(Mutex::new(VecDeque::with_capacity(max_total)));
+        if max_total > Semaphore::MAX_PERMITS {
+            return Err(BoxError::from_static_str(
+                "max_total should be at most tokio's Semaphore::MAX_PERMITS",
+            )
+            .context_field("max_total", max_total));
+        }
+        // Grows with the connections stored, not with the limit.
+        let storage = Arc::new(Mutex::new(VecDeque::new()));
         let weak_storage = Arc::downgrade(&storage);
         let retired = Arc::new(AtomicBool::new(false));
         Ok(Self {
@@ -809,6 +825,13 @@ mod tests {
         sync::atomic::{AtomicI16, Ordering},
     };
     use tokio_test::assert_ok;
+
+    #[test]
+    fn a_limit_past_a_semaphores_permits_is_refused() {
+        // An error, not a panic.
+        LruDropPool::<(), u32>::try_new(1, Semaphore::MAX_PERMITS + 1).unwrap_err();
+        drop(LruDropPool::<(), u32>::try_new(1, Semaphore::MAX_PERMITS).unwrap());
+    }
 
     struct TestService {
         pub created_connection: AtomicI16,

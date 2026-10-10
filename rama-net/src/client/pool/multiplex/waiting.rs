@@ -249,10 +249,9 @@ impl Waiting {
         if place.chances {
             held = held.min(1);
         }
-        // The capacity these wakes stand for is there for the others.
-        for _ in 0..held {
-            place.queue.wake_one();
-        }
+        // The capacity these wakes stand for is there for the others: one pass,
+        // however many a checkout left unpolled held.
+        place.queue.wake_many(held);
         !place.chances && place.queue.is_empty()
     }
 

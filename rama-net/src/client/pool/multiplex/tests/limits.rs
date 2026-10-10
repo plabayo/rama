@@ -20,6 +20,18 @@ async fn an_unlimited_pool_adds_connections_as_needed() {
     };
 }
 
+#[tokio::test]
+async fn limits_past_a_semaphores_permits_are_capped_there() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::MAX)
+        .with_max_connections_per_id(NonZeroUsize::MAX);
+    let expected = NonZeroUsize::new(Semaphore::MAX_PERMITS);
+    assert_eq!(pool.max_connections_total, expected);
+    assert_eq!(pool.max_connections_per_id, expected);
+    // The per id limit is made on first use: no panic there either.
+    drop(fresh(&pool, 0).await);
+}
+
 fn per_id(max: usize) -> MultiplexPool<Conn, TestId> {
     MultiplexPool::new().with_max_connections_per_id(NonZeroUsize::new(max).unwrap())
 }
@@ -567,7 +579,12 @@ async fn a_connection_that_is_not_stored_is_not_counted_idle() {
         .unwrap()
         .mark_broken();
     let mut swept = Swept::default();
-    pool.sweep_all(&mut pool.storage.lock(), &mut swept);
+    pool.reap(
+        &mut pool.storage.lock(),
+        now_monotonic_nanos(),
+        usize::MAX,
+        &mut swept,
+    );
     pool.settle(swept);
     drop(broken);
     drop(fresh(&pool, 0).await);

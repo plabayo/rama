@@ -581,3 +581,39 @@ async fn a_raised_stream_limit_reaches_admission_in_units() {
     .await
     .unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn admission_without_a_free_permit_leaves_stream_credit_alone() {
+    tokio::time::timeout(LIMIT, async {
+        let mut transport = TransportConfig::default();
+        transport.set_max_concurrent_bidi_streams(2u32);
+        let pair = Pair::in_memory(None, Some(transport)).await;
+        let config = Config {
+            max_requests: 1,
+            ..Config::default()
+        };
+        let (sender, driver) =
+            client::handshake::<Body>(pair.client.clone(), config, Executor::new()).unwrap();
+        let client_driver = spawn(driver.run());
+        let (_server, driver) = server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let server_driver = spawn(driver.run());
+        let admission = sender.connection_admission();
+        let held = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
+        let mut changed = pair.client.stream_budget_watch(Dir::Bi);
+        let mut changed = pin!(changed.changed());
+        let mut cx = Context::from_waker(Waker::noop());
+        assert_matches!(changed.as_mut().poll(&mut cx), Poll::Pending);
+        for _ in 0..4 {
+            assert!(admission.try_acquire(&Extensions::new()).unwrap().is_none());
+        }
+        // No credit was reserved and handed back: its subscribers, the pool's
+        // waiters among them, are not woken for nothing.
+        assert_matches!(changed.as_mut().poll(&mut cx), Poll::Pending);
+        drop(held);
+        pair.close().await;
+        _ = client_driver.await;
+        _ = server_driver.await;
+    })
+    .await
+    .unwrap();
+}

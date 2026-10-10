@@ -102,7 +102,12 @@ async fn emptied_lanes_and_classes_leave_the_bucket() {
     };
     // Class 0 key 1 goes; its class keeps key 2.
     mark_broken(0);
-    pool.sweep_all(&mut pool.storage.lock(), &mut Swept::default());
+    pool.reap(
+        &mut pool.storage.lock(),
+        now_monotonic_nanos(),
+        usize::MAX,
+        &mut Swept::default(),
+    );
     assert_open_matches_capacity(&pool);
     assert_eq!(
         pool.storage.lock().by_id[&TestId(0)].keyed[0].lanes.len(),
@@ -110,7 +115,12 @@ async fn emptied_lanes_and_classes_leave_the_bucket() {
     );
     // Class 0 goes as a whole.
     mark_broken(1);
-    pool.sweep_all(&mut pool.storage.lock(), &mut Swept::default());
+    pool.reap(
+        &mut pool.storage.lock(),
+        now_monotonic_nanos(),
+        usize::MAX,
+        &mut Swept::default(),
+    );
     assert_open_matches_capacity(&pool);
     {
         let storage = pool.storage.lock();
@@ -122,7 +132,12 @@ async fn emptied_lanes_and_classes_leave_the_bucket() {
     for index in 2..5 {
         mark_broken(index);
     }
-    pool.sweep_all(&mut pool.storage.lock(), &mut Swept::default());
+    pool.reap(
+        &mut pool.storage.lock(),
+        now_monotonic_nanos(),
+        usize::MAX,
+        &mut Swept::default(),
+    );
     assert!(pool.storage.lock().by_id.is_empty());
     drop(held);
 }
@@ -309,7 +324,8 @@ async fn policy_check_cannot_admit_a_snapshot_retired_during_the_check() {
                         .get_ref::<ConnectionHealthWatcher>()
                         .unwrap()
                         .mark_broken();
-                    self.pool.sweep_all(&mut storage, &mut swept);
+                    self.pool
+                        .reap(&mut storage, now_monotonic_nanos(), usize::MAX, &mut swept);
                 }
                 self.pool.settle(swept);
             }
@@ -383,4 +399,25 @@ async fn retired_preferred_candidate_does_not_hide_other_stream_capacity() {
         drop(conn);
     }
     drop(transferred_slot);
+}
+
+#[tokio::test]
+async fn a_rekey_to_the_filed_reuse_adds_nothing() {
+    let pool = MultiplexPool::evicting(2, 2);
+    let held = add(&pool, 0, Some(keyed(0, 1))).await;
+    let reuse = keyed(0, 2);
+    let filed = |held: &MultiplexedConnection<Conn, TestId>| {
+        held.extensions().self_iter_arc::<ConnectionReuse>().count()
+    };
+    held.rekey(reuse.clone());
+    let after_one = filed(&held);
+    for _ in 0..8 {
+        held.rekey(reuse.clone());
+    }
+    assert_eq!(
+        filed(&held),
+        after_one,
+        "an unchanged rekey appends nothing"
+    );
+    drop(held);
 }

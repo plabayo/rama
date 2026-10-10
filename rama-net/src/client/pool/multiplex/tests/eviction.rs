@@ -685,7 +685,7 @@ async fn a_checkout_with_a_freed_slot_leaves_an_idle_connection_to_an_older_evic
 }
 
 #[tokio::test(start_paused = true)]
-async fn ids_nobody_asks_for_again_are_reaped() {
+async fn ids_nobody_asks_for_again_are_reaped_a_few_per_checkout() {
     let pool = MultiplexPool::new().with_idle_timeout(Duration::from_millis(20));
     for id in 0..64 {
         drop(fresh(&pool, id).await);
@@ -694,9 +694,13 @@ async fn ids_nobody_asks_for_again_are_reaped() {
     drop(fresh(&pool, 1000).await);
     assert_eq!(
         pool.storage.lock().by_id.len(),
-        1,
-        "only the id asked for since the timeout"
+        64 - REAP_BUDGET + 1,
+        "a checkout reaps a few, never the whole pool"
     );
+    while pool.storage.lock().by_id.len() > 1 {
+        let reused = pool.get_conn(&TestId(1000), &EMPTY_INPUT, None).await;
+        assert_matches!(reused, Ok(ConnectionResult::Connection(_)));
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -841,8 +845,10 @@ async fn a_checkout_that_reuses_nothing_reaps_too() {
         drop(fresh(&pool, id).await);
     }
     tokio::time::advance(Duration::from_secs(1)).await;
-    let not_reusable = pool.get_conn(&TestId(u32::MAX), &EMPTY_INPUT, None).await;
-    assert_matches!(not_reusable, Ok(ConnectionResult::CreatePermit(_)));
+    for _ in 0..64 / REAP_BUDGET {
+        let not_reusable = pool.get_conn(&TestId(u32::MAX), &EMPTY_INPUT, None).await;
+        assert_matches!(not_reusable, Ok(ConnectionResult::CreatePermit(_)));
+    }
     assert!(pool.storage.lock().by_id.is_empty());
 }
 
@@ -911,6 +917,10 @@ async fn expiring_connections_of_ids_nobody_asks_for_again_are_asked_and_reaped(
     }
     tokio::time::advance(Duration::from_secs(1)).await;
     drop(fresh(&pool, 1000).await);
+    for _ in 0..64 / REAP_BUDGET {
+        let reused = pool.get_conn(&TestId(1000), &EMPTY_INPUT, None).await;
+        assert_matches!(reused, Ok(ConnectionResult::Connection(_)));
+    }
     // Each admission is asked outside the storage lock, as the fake asserts.
     let asked: usize = states
         .iter()

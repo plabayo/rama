@@ -84,6 +84,7 @@ impl<C, ID> Lane<C, ID> {
         let pos = self.conns.partition_point(|stored| stored.seq < conn.seq);
         self.conns.insert(pos, conn.clone());
         conn.file_idle();
+        conn.reaper.link(conn);
         *conn.lane_waiters.lock() = Some(self.waiters.clone());
         self.list(conn);
     }
@@ -117,6 +118,7 @@ impl<C, ID> Lane<C, ID> {
                 conn.listed.store(false, Ordering::Relaxed);
             }
             conn.unfile_idle();
+            conn.reaper.unlink(conn);
             *conn.lane.lock() = None;
             *conn.lane_waiters.lock() = None;
             conn.filed.store(false, Ordering::Relaxed);
@@ -130,6 +132,7 @@ impl<C, ID> Lane<C, ID> {
         let conn = self.conns.remove(pos);
         self.unlist(conn.seq);
         conn.unfile_idle();
+        conn.reaper.unlink(&conn);
         *conn.lane_waiters.lock() = None;
         conn.filed.store(false, Ordering::Relaxed);
         conn
@@ -285,8 +288,6 @@ pub(super) struct IdBucket<C, ID> {
     pub(super) classes: Arc<[ReuseClass]>,
     /// The `seq` last chosen by [`MuxSelection::RoundRobin`], across lanes.
     pub(super) rr_after: Option<u64>,
-    /// Nanoseconds (see [`now_monotonic_nanos`]) when the next full sweep is due.
-    pub(super) next_sweep: u64,
 }
 
 /// The lanes of one classifier.
@@ -302,13 +303,12 @@ pub(super) enum OnlyLane {
 }
 
 impl<C, ID> IdBucket<C, ID> {
-    pub(super) fn new(next_sweep: u64) -> Self {
+    pub(super) fn new() -> Self {
         Self {
             unrestricted: Lane::new(),
             keyed: Vec::new(),
             classes: Arc::new([]),
             rr_after: None,
-            next_sweep,
         }
     }
 

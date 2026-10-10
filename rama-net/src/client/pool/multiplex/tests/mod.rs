@@ -32,6 +32,7 @@ mod fairness;
 mod lanes;
 mod limits;
 mod listing;
+mod reaping;
 mod waiting;
 
 static EMPTY_INPUT: LazyLock<Extensions> = LazyLock::new(Extensions::new);

@@ -35,7 +35,8 @@ use loom::{
 /// allocated on demand, each double the size of the one before, starting at
 /// `2^BIN_OFFSET` items. The directory of these bins is itself only allocated
 /// once the inline items are used up. Capacity is bounded by memory and by
-/// `INLINE + 2^BIN_OFFSET * (2^32 - 1)` items.
+/// [`Self::MAX_LEN`]: `INLINE + 2^BIN_OFFSET * (2^32 - 1)` items, or what a
+/// `usize` counts on smaller targets.
 ///
 /// Pushes are not lock-free: items are published in index order, so a push
 /// suspended between reserving and publishing its slot delays later pushes
@@ -83,6 +84,29 @@ struct Spill<T> {
 impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN_OFFSET> {
     const INITIAL_BIN_SIZE: usize = (2_usize).pow(BIN_OFFSET);
 
+    /// The most items it holds: what its bins have room for, kept where every
+    /// index, and the count past the last, still fits a `usize`.
+    pub const MAX_LEN: usize = {
+        let bins = NEAR_BINS + FAR_BINS;
+        let spill = if bins >= usize::BITS as usize {
+            usize::MAX
+        } else {
+            ((1_usize << bins) - 1).saturating_mul(Self::INITIAL_BIN_SIZE)
+        };
+        // A spill index plus the first bin's size must fit, see `spill_indices`.
+        let spill = if spill > usize::MAX - Self::INITIAL_BIN_SIZE {
+            usize::MAX - Self::INITIAL_BIN_SIZE
+        } else {
+            spill
+        };
+        let total = INLINE.saturating_add(spill);
+        if total > usize::MAX - 1 {
+            usize::MAX - 1
+        } else {
+            total
+        }
+    };
+
     /// Create a new, empty [`AppendOnlyVec`] of `T` items. Allocates nothing.
     ///
     /// ```compile_fail
@@ -126,8 +150,27 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
     }
 
     /// Pushes an element and returns its index.
+    ///
+    /// # Panics
+    ///
+    /// Once it holds [`Self::MAX_LEN`] items, as a `Vec` past its capacity,
+    /// leaving the vec as it was: see [`Self::try_push`].
     pub fn push(&self, element: T) -> usize {
+        match self.try_push(element) {
+            Ok(idx) => idx,
+            Err(_) => capacity_overflow(),
+        }
+    }
+
+    /// Pushes an element and returns its index, or gives it back once it holds
+    /// [`Self::MAX_LEN`] items.
+    pub fn try_push(&self, element: T) -> Result<usize, T> {
         let idx = self.reserved.fetch_add(1, Ordering::Relaxed);
+        if idx >= Self::MAX_LEN {
+            // Undone before anything is written: the vec is as it was.
+            self.reserved.fetch_sub(1, Ordering::Relaxed);
+            return Err(element);
+        }
         // Later pushes wait for this one to publish: it must not unwind
         // (e.g. a failed allocation) between reserving and publishing.
         let mut guard = AbortOnUnwind { armed: true };
@@ -158,7 +201,7 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
         }
         guard.armed = false;
 
-        idx
+        Ok(idx)
     }
 
     /// Pushes an element tagged with `tag`, and returns its index.
@@ -662,7 +705,7 @@ fn capacity_overflow() -> ! {
 fn spin_wait(failures: &mut usize) {
     #[cfg(not(all(test, loom)))]
     {
-        *failures += 1;
+        *failures = failures.saturating_add(1);
         if *failures <= 10 {
             core::hint::spin_loop();
         } else {
@@ -980,6 +1023,46 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> Extend<T>
 #[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
+
+    /// A vec of zero sized items made to look full, which takes no memory,
+    /// never dropped: that would visit every pretend item.
+    fn full_of_zero_sized() -> std::mem::ManuallyDrop<AppendOnlyVec<(), 0, 0>> {
+        let vec = AppendOnlyVec::<(), 0, 0>::new();
+        let full = AppendOnlyVec::<(), 0, 0>::MAX_LEN;
+        vec.reserved.store(full, Ordering::Relaxed);
+        vec.count.store(full, Ordering::Relaxed);
+        std::mem::ManuallyDrop::new(vec)
+    }
+
+    #[test]
+    fn a_full_vec_gives_the_item_back_and_stays_as_it_was() {
+        let vec = full_of_zero_sized();
+        assert_eq!(vec.try_push(()), Err(()));
+        assert_eq!(vec.len(), AppendOnlyVec::<(), 0, 0>::MAX_LEN);
+        assert_eq!(
+            vec.reserved.load(Ordering::Relaxed),
+            AppendOnlyVec::<(), 0, 0>::MAX_LEN
+        );
+    }
+
+    #[test]
+    fn a_push_past_the_limit_panics_without_aborting() {
+        let vec = full_of_zero_sized();
+        let pushed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| vec.push(())));
+        pushed.unwrap_err();
+        assert_eq!(vec.len(), AppendOnlyVec::<(), 0, 0>::MAX_LEN);
+    }
+
+    #[test]
+    fn the_limit_leaves_room_for_every_index_and_the_count() {
+        const {
+            assert!(AppendOnlyVec::<(), 0, 0>::MAX_LEN < usize::MAX);
+            assert!(AppendOnlyVec::<u8, 4, 3>::MAX_LEN <= usize::MAX - 8);
+        }
+        let (bin, _) =
+            AppendOnlyVec::<(), 0, 3>::spill_indices(AppendOnlyVec::<(), 0, 3>::MAX_LEN - 1);
+        assert!(bin < NEAR_BINS + FAR_BINS);
+    }
 
     #[test]
     fn we_can_add_items_and_iter_them() {

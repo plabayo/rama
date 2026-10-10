@@ -190,7 +190,11 @@ impl Connects {
         known
             .shared
             .as_ref()
-            .filter(|(at, _)| *at > seen.failures)
+            // After the waiter's view, as a serial number: the count wraps.
+            .filter(|(at, _)| {
+                let after = at.wrapping_sub(seen.failures);
+                after != 0 && after <= u64::MAX / 2
+            })
             .map(|(_, failure)| failure.clone())
             .or_else(|| known.last.clone())
     }
@@ -267,7 +271,10 @@ impl Connect {
         let failure = Failure::of(error);
         {
             let mut known = connects.failure.lock();
-            let at = connects.failures.fetch_add(1, Ordering::AcqRel) + 1;
+            let at = connects
+                .failures
+                .fetch_add(1, Ordering::AcqRel)
+                .wrapping_add(1);
             if failure.is_shared() {
                 known.shared = Some((at, failure.clone()));
             }

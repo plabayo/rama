@@ -302,9 +302,13 @@ impl ConnectionAdmissionPolicy for RequestAdmission {
         {
             return Err(admission_error(error));
         }
-        let Ok(permit) = lifetime.admission.clone().try_acquire_owned() else {
+        // Stream credit before the local permit, so no permit is ever held for a
+        // ticket that does not come: nobody is refused, or answered busy, for
+        // one. Without a free permit, no credit is reserved and handed back,
+        // which would wake the credit's subscribers for nothing.
+        if lifetime.admission.available_permits() == 0 {
             return Ok(None);
-        };
+        }
         let Some(stream) = lifetime.connection.try_reserve_bi().map_err(|error| {
             let kind = if matches!(error, QuicConnectionError::TimedOut) {
                 ConnectionErrorKind::Timeout
@@ -314,8 +318,10 @@ impl ConnectionAdmissionPolicy for RequestAdmission {
             ConnectionError::transport(error, kind)
         })?
         else {
-            // This tentative semaphore acquisition never became a ticket;
-            // returning it must not wake our own failed acquisition loop.
+            return Ok(None);
+        };
+        let Ok(permit) = lifetime.admission.clone().try_acquire_owned() else {
+            // Another checkout took the last permit since: the credit goes back.
             return Ok(None);
         };
         let ticket = Arc::new(ReservedRequest {

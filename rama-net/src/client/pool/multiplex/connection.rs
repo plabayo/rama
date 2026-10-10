@@ -55,6 +55,9 @@ pub(super) struct StoredConnection<C, ID> {
     /// replace it with a connection they can use.
     pub(super) id_evictors: Option<Arc<WaitQueue>>,
     pub(super) last_idle: AtomicInstant,
+    /// Its node in the pool's idle list while stored, see [`Reaper`].
+    pub(super) idle_node: AtomicUsize,
+    pub(super) reaper: Arc<Reaper<C, ID>>,
     pub(super) pool_slot: Mutex<ConnectionSlot>,
     /// Whether the lane's `open` set lists this connection. Only written with
     /// the storage lock held; released handouts read it without the lock to
@@ -541,6 +544,7 @@ impl<C: Send + Sync + 'static, ID: Send + Sync + 'static> ChangeListener
         };
         self.freed(wake, true);
         if self.is_broken() {
+            self.reaper.doom(self);
             self.tell_unusable();
         }
     }
@@ -786,6 +790,15 @@ impl<C: ExtensionsRef, ID: ConnID> MultiplexedConnection<C, ID> {
     /// admitted keep theirs, so rekey while this handout is the only one.
     pub fn rekey(&self, reuse: ConnectionReuse) {
         let conn = &self.inner;
+        // Each rekey appends to the connection's extensions: none for no change.
+        if conn
+            .conn
+            .extensions()
+            .get_ref::<ConnectionReuse>()
+            .is_some_and(|filed| filed.is_same(&reuse))
+        {
+            return;
+        }
         let lane = LaneKey::of_connection(Some(&reuse)).filter(|_| conn.id.is_reusable());
         conn.conn.extensions().insert(reuse);
         let Some(storage) = conn.storage.upgrade() else {
@@ -808,7 +821,7 @@ impl<C: ExtensionsRef, ID: ConnID> MultiplexedConnection<C, ID> {
         storage
             .by_id
             .entry(conn.id.clone())
-            .or_insert_with(|| IdBucket::new(now_monotonic_nanos()))
+            .or_insert_with(IdBucket::new)
             .insert(conn, lane);
         drop((slot, storage));
         // Requests of the new lane may be waiting for it.

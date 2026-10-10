@@ -123,7 +123,12 @@ async fn released_connection_is_found_again_after_its_bucket_was_swept_empty() {
         .unwrap()
         .mark_broken();
     let mut swept = Swept::default();
-    pool.sweep_all(&mut pool.storage.lock(), &mut swept);
+    pool.reap(
+        &mut pool.storage.lock(),
+        now_monotonic_nanos(),
+        usize::MAX,
+        &mut swept,
+    );
     pool.settle(swept);
     assert!(pool.storage.lock().by_id.is_empty());
     // Releasing a retired connection must not resurrect it.
