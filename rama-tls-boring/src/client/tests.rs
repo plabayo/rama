@@ -337,7 +337,7 @@ fn key_share_groups(data: &[u8]) -> Vec<u16> {
     let mut rest = data.get(2..).unwrap_or_default();
     while let [a, b, l1, l2, tail @ ..] = rest {
         let group = u16::from_be_bytes([*a, *b]);
-        groups.push(if group & 0x0f0f == 0x0a0a {
+        groups.push(if SupportedGroup::from(group).is_grease() {
             0x0a0a
         } else {
             group

@@ -20,7 +20,7 @@ macro_rules! impl_u16_is_grease {
 
 #[inline(always)]
 fn is_u16_grease(n: u16) -> bool {
-    n & 0x0f0f == 0x0a0a
+    n & 0x0f0f == 0x0a0a && n.to_be_bytes()[0] == n.to_be_bytes()[1]
 }
 
 fn display_unknown_u16_maybe_as_grease(
@@ -788,6 +788,43 @@ enum_builder! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grease_membership_matches_the_complete_rfc8701_namespace() {
+        let reserved = [
+            0x0a0a, 0x1a1a, 0x2a2a, 0x3a3a, 0x4a4a, 0x5a5a, 0x6a6a, 0x7a7a, 0x8a8a, 0x9a9a, 0xaaaa,
+            0xbaba, 0xcaca, 0xdada, 0xeaea, 0xfafa,
+        ];
+        for value in 0..=u16::MAX {
+            let expected = reserved.contains(&value);
+            assert_eq!(
+                ProtocolVersion::from(value).is_grease(),
+                expected,
+                "version {value:#06x}"
+            );
+            assert_eq!(
+                CipherSuite::from(value).is_grease(),
+                expected,
+                "cipher {value:#06x}"
+            );
+            assert_eq!(
+                SignatureScheme::from(value).is_grease(),
+                expected,
+                "signature {value:#06x}"
+            );
+            assert_eq!(
+                ExtensionId::from(value).is_grease(),
+                expected,
+                "extension {value:#06x}"
+            );
+            assert_eq!(
+                SupportedGroup::from(value).is_grease(),
+                expected,
+                "group {value:#06x}"
+            );
+        }
+        assert_eq!(SupportedGroup::from(0x1a2a).to_string(), "Unknown (0x1a2a)");
+    }
 
     #[test]
     fn numeric_protocol_enums_order_by_wire_value() {

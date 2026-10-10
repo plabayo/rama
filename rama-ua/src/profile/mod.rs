@@ -84,3 +84,9 @@ pub use scope::*;
 
 mod record;
 pub use record::*;
+
+#[cfg(feature = "tls")]
+mod tls_capture;
+#[cfg(feature = "tls")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
+pub use tls_capture::*;

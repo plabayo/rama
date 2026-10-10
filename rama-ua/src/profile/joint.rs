@@ -4,6 +4,11 @@ use rama_utils::octets::kib;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
+#[cfg(feature = "tls")]
+use super::{
+    TlsCapture, TlsCaptureLimits, TlsCaptureTransport, tls_capture::structure::decode_tls_structure,
+};
+
 use super::{
     CanonicalValue, HeaderCapture, HeaderCapturePolicy, OrderCaptureLimits, OrderNamespace,
     OrderedProtocolCapture, ProfileCaptureCompleteness, ProfileDataError, ValueId,
@@ -42,6 +47,8 @@ pub enum CapturedSlotKind {
     QuicParameters,
     Http3Settings,
     QuicVersions,
+    TcpTls,
+    QuicTls,
 }
 
 impl CapturedSlotKind {
@@ -51,6 +58,8 @@ impl CapturedSlotKind {
             Self::QuicParameters => 1,
             Self::Http3Settings => 2,
             Self::QuicVersions => 3,
+            Self::TcpTls => 4,
+            Self::QuicTls => 5,
         }
     }
     fn from_tag(tag: u16) -> Result<Self, ProfileDataError> {
@@ -59,6 +68,8 @@ impl CapturedSlotKind {
             1 => Ok(Self::QuicParameters),
             2 => Ok(Self::Http3Settings),
             3 => Ok(Self::QuicVersions),
+            4 => Ok(Self::TcpTls),
+            5 => Ok(Self::QuicTls),
             _ => Err(ProfileDataError::Unsupported("joint slot kind")),
         }
     }
@@ -70,7 +81,7 @@ impl CapturedSlotKind {
     }
     fn namespace(self) -> Option<OrderNamespace> {
         match self {
-            Self::Headers => None,
+            Self::Headers | Self::TcpTls | Self::QuicTls => None,
             Self::QuicParameters => Some(OrderNamespace::QuicParameter),
             Self::Http3Settings => Some(OrderNamespace::Http3Setting),
             Self::QuicVersions => Some(OrderNamespace::QuicVersion),
@@ -88,7 +99,22 @@ impl CapturedSlot {
     /// The same owned normalization is used by joint and individual buckets.
     pub fn structural(&self, maximum_bytes: usize) -> Result<CanonicalValue, ProfileDataError> {
         validate_slot(self, false, maximum_bytes)?;
-        if self.kind.namespace().is_none() {
+        if matches!(
+            self.kind,
+            CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls
+        ) {
+            #[cfg(feature = "tls")]
+            {
+                let limits = TlsCaptureLimits {
+                    elements: maximum_bytes,
+                    bytes: maximum_bytes,
+                };
+                return TlsCapture::from_canonical(&self.value, limits)?.structural(limits);
+            }
+            #[cfg(not(feature = "tls"))]
+            return Err(ProfileDataError::Unsupported("TLS profile component"));
+        }
+        if self.kind == CapturedSlotKind::Headers {
             let policy = HeaderCapturePolicy {
                 fields: maximum_bytes,
                 bytes: maximum_bytes,
@@ -134,6 +160,35 @@ fn validate_slot(
     structural: bool,
     maximum: usize,
 ) -> Result<(), ProfileDataError> {
+    if matches!(
+        slot.kind,
+        CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls
+    ) {
+        #[cfg(feature = "tls")]
+        {
+            let capture = if structural {
+                decode_tls_structure(&slot.value, maximum)?
+            } else {
+                TlsCapture::from_canonical(
+                    &slot.value,
+                    TlsCaptureLimits {
+                        elements: maximum,
+                        bytes: maximum,
+                    },
+                )?
+            };
+            if !matches!(
+                (slot.kind, capture.transport),
+                (CapturedSlotKind::TcpTls, TlsCaptureTransport::Tcp)
+                    | (CapturedSlotKind::QuicTls, TlsCaptureTransport::Quic)
+            ) {
+                return Err(ProfileDataError::Invalid("joint TLS transport"));
+            }
+            return Ok(());
+        }
+        #[cfg(not(feature = "tls"))]
+        return Err(ProfileDataError::Unsupported("TLS profile component"));
+    }
     let Some(namespace) = slot.kind.namespace() else {
         return slot.value.validate_content(
             if structural {
@@ -176,7 +231,22 @@ fn encode_joint(
     }
     // Bound the complete input before collecting references or decoding components.
     let mut remaining = limits.bytes;
+    let mut transport = None;
     for slot in &capture.slots {
+        let current = match slot.kind {
+            CapturedSlotKind::Headers => None,
+            CapturedSlotKind::TcpTls => Some(0),
+            CapturedSlotKind::QuicTls
+            | CapturedSlotKind::QuicParameters
+            | CapturedSlotKind::Http3Settings
+            | CapturedSlotKind::QuicVersions => Some(1),
+        };
+        if let Some(current) = current {
+            if transport.is_some_and(|previous| previous != current) {
+                return Err(ProfileDataError::Invalid("mixed connection transports"));
+            }
+            transport = Some(current);
+        }
         if slot.value.bytes.len() > limits.value_bytes {
             return Err(ProfileDataError::LimitExceeded("joint component bytes"));
         }

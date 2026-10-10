@@ -128,6 +128,8 @@ pub fn header_request_binding(name: &HeaderName) -> Option<RequestBinding> {
 
 /// Conservative defaults for application credentials and SDK/proxy metadata.
 /// An explicit capture-safe importer choice can override these custom names.
+/// Broad credential patterns also bind fixed metadata such as
+/// Sec-Private-State-Token-Crypto-Version until an importer marks it capture-safe.
 fn header_default_request_binding(name: &HeaderName) -> Option<RequestBinding> {
     let name = name.as_lower_str();
     Some(match name.as_ref() {
@@ -150,6 +152,12 @@ fn header_default_request_binding(name: &HeaderName) -> Option<RequestBinding> {
             "token",
             "secret",
             "api-key",
+            "apikey",
+            "auth",
+            "password",
+            "credential",
+            "bearer",
+            "jwt",
             "csrf",
             "xsrf",
             "session",

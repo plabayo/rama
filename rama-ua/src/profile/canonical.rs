@@ -5,6 +5,9 @@ use std::{error::Error, fmt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+#[cfg(feature = "tls")]
+use super::{TlsCapture, TlsCaptureLimits, tls_capture::structure::validate_tls_structure};
+
 use super::{
     FlowKey, HeaderCapture, HeaderCapturePolicy, JointCapture, JointCaptureLimits,
     OrderCaptureLimits, OrderedProtocolCapture, ProfileKey, ProfileObservationScope,
@@ -26,6 +29,8 @@ pub enum CanonicalDomain {
     JointStructure = 7,
     Scope = 8,
     HeaderStructure = 9,
+    Tls = 10,
+    TlsStructure = 11,
 }
 
 impl From<CanonicalDomain> for u16 {
@@ -53,6 +58,8 @@ impl TryFrom<u16> for CanonicalDomain {
             7 => Ok(Self::JointStructure),
             8 => Ok(Self::Scope),
             9 => Ok(Self::HeaderStructure),
+            10 => Ok(Self::Tls),
+            11 => Ok(Self::TlsStructure),
             _ => Err(ProfileDataError::Unsupported("canonical content domain")),
         }
     }
@@ -147,6 +154,24 @@ impl CanonicalValue {
         maximum_bytes: usize,
     ) -> Result<(), ProfileDataError> {
         match domain {
+            #[cfg(not(feature = "tls"))]
+            CanonicalDomain::TlsStructure | CanonicalDomain::Tls => {
+                return Err(ProfileDataError::Unsupported("TLS profile component"));
+            }
+            #[cfg(feature = "tls")]
+            CanonicalDomain::TlsStructure => {
+                validate_tls_structure(self, maximum_bytes)?;
+            }
+            #[cfg(feature = "tls")]
+            CanonicalDomain::Tls => {
+                TlsCapture::from_canonical(
+                    self,
+                    TlsCaptureLimits {
+                        elements: maximum_bytes,
+                        bytes: maximum_bytes,
+                    },
+                )?;
+            }
             HEADER_DOMAIN => {
                 // Every encoded occurrence consumes bytes; decoding remains bounded even
                 // for callers whose capture field budget exceeds the default.
@@ -351,6 +376,8 @@ mod tests {
             (7, CanonicalDomain::JointStructure),
             (8, CanonicalDomain::Scope),
             (9, CanonicalDomain::HeaderStructure),
+            (10, CanonicalDomain::Tls),
+            (11, CanonicalDomain::TlsStructure),
         ] {
             assert_eq!(u16::from(domain), tag);
             assert_eq!(CanonicalDomain::try_from(tag).unwrap(), domain);
@@ -361,9 +388,24 @@ mod tests {
                 domain
             );
         }
-        for tag in [0, 10, u16::MAX] {
+        for tag in [0, 12, u16::MAX] {
             CanonicalDomain::try_from(tag).unwrap_err();
             serde_json::from_str::<CanonicalDomain>(&tag.to_string()).unwrap_err();
+        }
+    }
+}
+
+#[cfg(all(test, not(feature = "tls")))]
+mod tls_disabled_tests {
+    use super::*;
+    #[test]
+    fn tls_domains_do_not_acquire_capability_without_the_feature() {
+        for domain in [CanonicalDomain::Tls, CanonicalDomain::TlsStructure] {
+            let value = CanonicalWriter::new(domain, 64).unwrap().finish();
+            assert!(matches!(
+                value.validated_domain(64),
+                Err(ProfileDataError::Unsupported("TLS profile component"))
+            ));
         }
     }
 }

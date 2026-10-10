@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 
-use rama_http::{Version, inspect::capture::ExchangeCapture};
+#[cfg(feature = "tls")]
+use rama_http::Version;
+use rama_http::inspect::capture::ExchangeCapture;
 
 use super::*;
 
