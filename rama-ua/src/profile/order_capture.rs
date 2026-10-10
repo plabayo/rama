@@ -4,7 +4,7 @@ use rama_utils::octets::kib;
 use serde::Serialize;
 
 use super::{
-    CanonicalValue, ProfileDataError,
+    CanonicalValue, ProfileCaptureCompleteness, ProfileDataError,
     canonical::{CanonicalReader, CanonicalWriter, ORDER_DOMAIN, ORDER_STRUCTURE_DOMAIN},
 };
 
@@ -149,18 +149,21 @@ pub struct OrderedProtocolField {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct OrderedProtocolCapture {
+    pub completeness: ProfileCaptureCompleteness,
     pub namespace: OrderNamespace,
     pub fields: Box<[OrderedProtocolField]>,
 }
 
 impl OrderedProtocolCapture {
     /// Values for SETTINGS use eight-byte big-endian integers; version values are empty.
-    /// Callers reject incomplete observations before importing their available fields.
+    /// Source completeness is required before iterating or retaining available fields.
     pub fn capture<B: AsRef<[u8]>>(
+        completeness: ProfileCaptureCompleteness,
         namespace: OrderNamespace,
         input: impl IntoIterator<Item = (u64, B)>,
         limits: OrderCaptureLimits,
     ) -> Result<Self, ProfileDataError> {
+        completeness.require_complete("protocol order observation")?;
         let mut fields = Vec::new();
         let mut remaining = limits.bytes;
         for (id, bytes) in input {
@@ -182,6 +185,7 @@ impl OrderedProtocolCapture {
             fields.push(field);
         }
         let captured = Self {
+            completeness,
             namespace,
             fields: fields.into(),
         };
@@ -193,11 +197,14 @@ impl OrderedProtocolCapture {
         &self,
         limits: OrderCaptureLimits,
     ) -> Result<CanonicalValue, ProfileDataError> {
+        self.completeness
+            .require_complete("protocol order observation")?;
         if self.fields.len() > limits.elements {
             return Err(ProfileDataError::LimitExceeded("ordered elements"));
         }
         let mut writer = CanonicalWriter::new(ORDER_DOMAIN, limits.bytes)?;
         writer.u8(self.namespace.tag())?;
+        writer.u8(self.completeness.tag())?;
         writer.u64(self.fields.len() as u64)?;
         for field in &self.fields {
             self.namespace.validate_field(field, limits)?;
@@ -214,6 +221,8 @@ impl OrderedProtocolCapture {
         value.verify(ORDER_DOMAIN, limits.bytes)?;
         let mut reader = CanonicalReader::new(&value.bytes, ORDER_DOMAIN)?;
         let namespace = OrderNamespace::from_tag(reader.u8()?)?;
+        let completeness = ProfileCaptureCompleteness::from_tag(reader.u8()?)?;
+        completeness.require_complete("protocol order observation")?;
         let count = reader.count(limits.elements)?;
         let mut fields = Vec::new();
         for _ in 0..count {
@@ -226,6 +235,7 @@ impl OrderedProtocolCapture {
         }
         reader.finish()?;
         let captured = Self {
+            completeness,
             namespace,
             fields: fields.into(),
         };

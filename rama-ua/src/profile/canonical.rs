@@ -71,6 +71,16 @@ pub(super) const SCOPE_DOMAIN: CanonicalDomain = CanonicalDomain::Scope;
 const PREFIX: &[u8] = b"rama-profile\0";
 const VERSION: u16 = 1;
 
+fn canonical_version(domain: CanonicalDomain) -> u16 {
+    match domain {
+        CanonicalDomain::Headers
+        | CanonicalDomain::Order
+        | CanonicalDomain::Joint
+        | CanonicalDomain::JointStructure => 2,
+        _ => VERSION,
+    }
+}
+
 /// SHA-256 of a versioned canonical value, including its domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ValueId(pub [u8; 32]);
@@ -214,7 +224,7 @@ impl CanonicalWriter {
             maximum_bytes,
         };
         this.raw(PREFIX)?;
-        this.u16(VERSION)?;
+        this.u16(canonical_version(domain))?;
         this.u16(domain.into())?;
         Ok(this)
     }
@@ -264,7 +274,7 @@ pub(super) struct CanonicalReader<'a> {
 impl<'a> CanonicalReader<'a> {
     pub(super) fn new(bytes: &'a [u8], domain: CanonicalDomain) -> Result<Self, ProfileDataError> {
         let mut this = Self { bytes, position: 0 };
-        if this.raw(PREFIX.len())? != PREFIX || this.u16()? != VERSION {
+        if this.raw(PREFIX.len())? != PREFIX || this.u16()? != canonical_version(domain) {
             return Err(ProfileDataError::Unsupported("canonical format version"));
         }
         if this.u16()? != u16::from(domain) {

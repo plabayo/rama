@@ -33,17 +33,25 @@ impl HeaderCapture {
                 .as_original_str()
                 .cmp(&b.name.as_original_str())
                 .then_with(|| a.sensitive.cmp(&b.sensitive))
-                .then_with(|| match (&a.value, &b.value) {
-                    (HeaderValueSource::Profile(a), HeaderValueSource::Profile(b)) => a.cmp(b),
-                    (HeaderValueSource::Request(a), HeaderValueSource::Request(b)) => {
-                        a.tag().cmp(&b.tag())
-                    }
-                    (HeaderValueSource::Profile(_), HeaderValueSource::Request(_)) => {
-                        Ordering::Less
-                    }
-                    (HeaderValueSource::Request(_), HeaderValueSource::Profile(_)) => {
-                        Ordering::Greater
-                    }
+                .then_with(|| {
+                    let key = |value: &HeaderValueSource| match value {
+                        HeaderValueSource::Profile(_) => 0,
+                        HeaderValueSource::CaptureSafeProfile(_) => 1,
+                        HeaderValueSource::Request(_) => 2,
+                    };
+                    key(&a.value)
+                        .cmp(&key(&b.value))
+                        .then_with(|| match (&a.value, &b.value) {
+                            (HeaderValueSource::Profile(a), HeaderValueSource::Profile(b))
+                            | (
+                                HeaderValueSource::CaptureSafeProfile(a),
+                                HeaderValueSource::CaptureSafeProfile(b),
+                            ) => a.cmp(b),
+                            (HeaderValueSource::Request(a), HeaderValueSource::Request(b)) => {
+                                a.tag().cmp(&b.tag())
+                            }
+                            _ => Ordering::Equal,
+                        })
                 })
         });
         let mut occurrences = HashMap::<HeaderName, u32>::default();
@@ -55,6 +63,7 @@ impl HeaderCapture {
                 .ok_or(ProfileDataError::CounterOverflow)?;
         }
         let normalized = Self {
+            completeness: self.completeness,
             version: self.version,
             fields: fields.into(),
         }
@@ -91,6 +100,7 @@ pub(super) fn validate_header_structure(
 
 #[cfg(test)]
 mod tests {
+    use crate::profile::ProfileCaptureCompleteness;
     use std::collections::BTreeSet;
 
     use rama_http::{
@@ -126,7 +136,14 @@ mod tests {
                     HeaderValue::from_static("constant"),
                 );
             }
-            let captured = policy.capture(Version::HTTP_2, &headers, None).unwrap();
+            let captured = policy
+                .capture(
+                    ProfileCaptureCompleteness::Complete,
+                    Version::HTTP_2,
+                    &headers,
+                    None,
+                )
+                .unwrap();
             let raw = captured.canonical(&policy).unwrap();
             let key = captured.structural(&policy).unwrap();
             validate_header_structure(&key, policy.bytes).unwrap();
@@ -134,6 +151,7 @@ mod tests {
             assert_eq!(*structure.get_or_insert(key.id), key.id);
             raw_ids.insert(raw.id);
             let joint = JointCapture {
+                completeness: ProfileCaptureCompleteness::Complete,
                 level: CaptureLevel::Request,
                 slots: vec![CapturedSlot {
                     kind: CapturedSlotKind::Headers,
@@ -185,7 +203,12 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("X-Mode", HeaderValue::from_static("one"));
         let original = policy
-            .capture(Version::HTTP_11, &headers, None)
+            .capture(
+                ProfileCaptureCompleteness::Complete,
+                Version::HTTP_11,
+                &headers,
+                None,
+            )
             .unwrap()
             .structural(&policy)
             .unwrap();
@@ -208,7 +231,12 @@ mod tests {
             assert_ne!(
                 original.id,
                 policy
-                    .capture(Version::HTTP_11, &headers, None)
+                    .capture(
+                        ProfileCaptureCompleteness::Complete,
+                        Version::HTTP_11,
+                        &headers,
+                        None
+                    )
                     .unwrap()
                     .structural(&policy)
                     .unwrap()
@@ -216,7 +244,14 @@ mod tests {
             );
         }
         headers.insert("cookie", HeaderValue::from_static("secret-canary"));
-        let bound = policy.capture(Version::HTTP_11, &headers, None).unwrap();
+        let bound = policy
+            .capture(
+                ProfileCaptureCompleteness::Complete,
+                Version::HTTP_11,
+                &headers,
+                None,
+            )
+            .unwrap();
         let key = bound.structural(&policy).unwrap();
         assert!(!key.bytes.windows(13).any(|v| v == b"secret-canary"));
         let mut forged = bound;
@@ -235,7 +270,14 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("z-mode", HeaderValue::from_static("one"));
         headers.insert("a-mode", HeaderValue::from_static("two"));
-        let capture = policy.capture(Version::HTTP_2, &headers, None).unwrap();
+        let capture = policy
+            .capture(
+                ProfileCaptureCompleteness::Complete,
+                Version::HTTP_2,
+                &headers,
+                None,
+            )
+            .unwrap();
         let mut writer = CanonicalWriter::new(HEADER_STRUCTURE_DOMAIN, policy.bytes).unwrap();
         writer
             .bytes(&capture.canonical(&policy).unwrap().bytes)
@@ -280,7 +322,12 @@ mod tests {
                 never_index: false,
             };
             let capture = policy
-                .capture(Version::HTTP_3, &headers, Some(&[representation]))
+                .capture(
+                    ProfileCaptureCompleteness::Complete,
+                    Version::HTTP_3,
+                    &headers,
+                    Some(&[representation]),
+                )
                 .unwrap();
             let raw = capture.canonical(&policy).unwrap();
             raw_ids.insert(raw.id);

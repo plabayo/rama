@@ -1,3 +1,4 @@
+use crate::profile::ProfileCaptureCompleteness;
 use std::cell::Cell;
 
 use super::*;
@@ -5,6 +6,7 @@ use crate::profile::{CountedObservationBucket, ObservationId, ProfileBucketLimit
 
 fn capture(namespace: OrderNamespace, fields: &[(u64, &[u8])]) -> OrderedProtocolCapture {
     OrderedProtocolCapture::capture(
+        ProfileCaptureCompleteness::Complete,
         namespace,
         fields.iter().copied(),
         OrderCaptureLimits::default(),
@@ -39,6 +41,7 @@ fn protocol_bindings_do_not_retain_connection_identifiers_or_tokens() {
         assert_eq!(*first.get_or_insert(canonical.id), canonical.id);
     }
     let malformed = OrderedProtocolCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
         namespace: OrderNamespace::QuicParameter,
         fields: vec![OrderedProtocolField {
             id: 0x0f,
@@ -48,6 +51,7 @@ fn protocol_bindings_do_not_retain_connection_identifiers_or_tokens() {
     };
     malformed.canonical(limits).unwrap_err();
     let oversized_shape = OrderedProtocolCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
         namespace: OrderNamespace::QuicParameter,
         fields: vec![OrderedProtocolField {
             id: 0x0f,
@@ -60,6 +64,9 @@ fn protocol_bindings_do_not_retain_connection_identifiers_or_tokens() {
     for domain in [ORDER_DOMAIN, ORDER_STRUCTURE_DOMAIN] {
         let mut writer = CanonicalWriter::new(domain, limits.bytes).unwrap();
         writer.u8(0).unwrap();
+        if domain == ORDER_DOMAIN {
+            writer.u8(1).unwrap();
+        }
         writer.u64(1).unwrap();
         if domain == ORDER_STRUCTURE_DOMAIN {
             writer.u8(0).unwrap();
@@ -222,6 +229,7 @@ fn order_capture_rejects_oversized_fields_invalid_values_and_forged_structure() 
     let limits = OrderCaptureLimits::default();
     let visited = Cell::new(0);
     OrderedProtocolCapture::capture(
+        ProfileCaptureCompleteness::Complete,
         OrderNamespace::QuicParameter,
         std::iter::from_fn(|| {
             visited.set(visited.get() + 1);
@@ -236,21 +244,29 @@ fn order_capture_rejects_oversized_fields_invalid_values_and_forged_structure() 
     assert_eq!(visited.get(), 3);
     let bound = vec![0; limits.bytes / 2];
     OrderedProtocolCapture::capture(
+        ProfileCaptureCompleteness::Complete,
         OrderNamespace::QuicParameter,
         [(0, bound.as_slice()), (0x0f, bound.as_slice())],
         limits,
     )
     .unwrap_err();
     OrderedProtocolCapture::capture(
+        ProfileCaptureCompleteness::Complete,
         OrderNamespace::QuicParameter,
         [(1, vec![0; limits.bytes + 1])],
         limits,
     )
     .unwrap_err();
     for id in [1 << 62, u64::MAX] {
-        OrderedProtocolCapture::capture(OrderNamespace::QuicParameter, [(id, [])], limits)
-            .unwrap_err();
         OrderedProtocolCapture::capture(
+            ProfileCaptureCompleteness::Complete,
+            OrderNamespace::QuicParameter,
+            [(id, [])],
+            limits,
+        )
+        .unwrap_err();
+        OrderedProtocolCapture::capture(
+            ProfileCaptureCompleteness::Complete,
             OrderNamespace::Http3Setting,
             [(id, 0u64.to_be_bytes())],
             limits,
@@ -258,16 +274,33 @@ fn order_capture_rejects_oversized_fields_invalid_values_and_forged_structure() 
         .unwrap_err();
     }
     OrderedProtocolCapture::capture(
+        ProfileCaptureCompleteness::Complete,
         OrderNamespace::Http3Setting,
         [(1, (1u64 << 62).to_be_bytes())],
         limits,
     )
     .unwrap_err();
-    OrderedProtocolCapture::capture(OrderNamespace::Http3Setting, [(1, [0; 7])], limits)
-        .unwrap_err();
-    OrderedProtocolCapture::capture(OrderNamespace::QuicVersion, [(1u64 << 32, [])], limits)
-        .unwrap_err();
-    OrderedProtocolCapture::capture(OrderNamespace::QuicVersion, [(1, [0])], limits).unwrap_err();
+    OrderedProtocolCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        OrderNamespace::Http3Setting,
+        [(1, [0; 7])],
+        limits,
+    )
+    .unwrap_err();
+    OrderedProtocolCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        OrderNamespace::QuicVersion,
+        [(1u64 << 32, [])],
+        limits,
+    )
+    .unwrap_err();
+    OrderedProtocolCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        OrderNamespace::QuicVersion,
+        [(1, [0])],
+        limits,
+    )
+    .unwrap_err();
     let original = capture(OrderNamespace::QuicParameter, &[(1, b"value")])
         .canonical(limits)
         .unwrap();
@@ -312,11 +345,11 @@ fn protocol_order_has_fixed_canonical_bytes_and_digest() {
     assert_eq!(
         canonical.id.0,
         [
-            106, 167, 243, 167, 165, 213, 142, 99, 21, 243, 54, 195, 114, 109, 23, 3, 65, 197, 151,
-            241, 190, 145, 101, 81, 208, 34, 114, 172, 145, 244, 207, 32
+            155, 244, 168, 134, 169, 159, 190, 119, 170, 196, 54, 189, 115, 173, 103, 59, 156, 225,
+            205, 73, 227, 106, 64, 82, 249, 67, 156, 142, 100, 120, 223, 6
         ]
     );
-    assert_eq!(canonical.bytes.as_ref(), b"rama-profile\0\0\x01\0\x04\0\0\0\0\0\0\0\0\x02\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\0\x01\x0a\0\0\0\0\0\0\0\x0f\x01\0\0\0\0\0\0\0\x05");
+    assert_eq!(canonical.bytes.as_ref(), b"\x72\x61\x6d\x61\x2d\x70\x72\x6f\x66\x69\x6c\x65\x00\x00\x02\x00\x04\x00\x01\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x0a\x00\x00\x00\x00\x00\x00\x00\x0f\x01\x00\x00\x00\x00\x00\x00\x00\x05");
     let decoded = OrderedProtocolCapture::from_canonical(&canonical, limits).unwrap();
     assert_eq!(decoded.canonical(limits).unwrap().bytes, canonical.bytes);
 }

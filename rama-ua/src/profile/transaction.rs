@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     CanonicalValue, CountedBucketSnapshot, CountedObservationBucket, IngestionCheckpoint,
     IngestionCursor, IngestionDisposition, IngestionLimits, ObservationId, ProfileBucketLimits,
-    ProfileDataError, RetentionWindow, ValueId,
+    ProfileDataError, ProfileObservationScope, RetentionWindow,
 };
 
 /// The creation day is part of the identity, so deleting an expired checkpoint
@@ -74,7 +74,7 @@ pub struct StoredObservationBucket {
 #[derive(Debug, Clone, Copy)]
 pub struct PendingBucketObservation<'a> {
     /// Identity resolved from the incoming capture, independently of the stored snapshot.
-    pub expected_scope: ValueId,
+    pub expected_scope: &'a CanonicalValue,
     pub previous: &'a StoredObservationBucket,
     pub value: &'a CanonicalValue,
 }
@@ -166,6 +166,19 @@ impl CaptureRunCheckpoint {
         if pending.is_empty() || pending.len() > limits.buckets {
             return Err(ProfileDataError::LimitExceeded("ingestion batch buckets"));
         }
+        let mut remaining_input = limits.input_bytes;
+        for item in pending {
+            remaining_input = remaining_input
+                .checked_sub(item.expected_scope.bytes.len())
+                .ok_or(ProfileDataError::LimitExceeded("ingestion scope bytes"))?;
+            let scope = ProfileObservationScope::from_canonical(
+                item.expected_scope,
+                limits.bucket.input_bytes,
+            )?;
+            if scope.authorized != authorized {
+                return Err(ProfileDataError::Invalid("ingestion scope access class"));
+            }
+        }
         let mut cursor = IngestionCursor::from_checkpoint(&self.sequences, limits.ingestion)?;
         if matches!(
             cursor.record(observation.sequence)?,
@@ -178,7 +191,6 @@ impl CaptureRunCheckpoint {
             .literal_values
             .checked_add(limits.bucket.samples)
             .ok_or(ProfileDataError::LimitExceeded("interned value count"))?;
-        let mut remaining_input = limits.input_bytes;
         let mut remaining_retained = limits.retained_bytes;
         let mut scopes = BTreeSet::new();
         for item in pending {
@@ -186,7 +198,7 @@ impl CaptureRunCheckpoint {
             if previous.authorized != authorized || previous.day != observation_day {
                 return Err(ProfileDataError::Invalid("ingestion bucket ownership"));
             }
-            if !scopes.insert(item.expected_scope) {
+            if !scopes.insert(item.expected_scope.id) {
                 return Err(ProfileDataError::Invalid("duplicate ingestion bucket"));
             }
             if previous.bucket.values.len() > maximum_values
@@ -216,7 +228,7 @@ impl CaptureRunCheckpoint {
             let mut bucket = CountedObservationBucket::from_snapshot(
                 &item.previous.bucket,
                 item.value.validated_domain(limits.bucket.input_bytes)?,
-                item.expected_scope,
+                item.expected_scope.id,
                 seed,
                 limits.bucket,
             )?;

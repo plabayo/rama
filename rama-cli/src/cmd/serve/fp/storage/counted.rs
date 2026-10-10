@@ -263,7 +263,7 @@ async fn prepare_transaction<'a>(
         .iter()
         .zip(prepared.buckets.iter())
         .map(|(previous, input)| PendingBucketObservation {
-            expected_scope: input.scope.id,
+            expected_scope: &input.scope,
             previous,
             value: &input.value,
         })
@@ -349,6 +349,9 @@ async fn load_bucket(
     let day_sql = i64::from(day);
     let decoded =
         ProfileObservationScope::from_canonical(&input.scope, limits.capture.value_bytes)?;
+    if decoded.authorized != authorized {
+        return Err(invalid("stored scope access class"));
+    }
     let flow: Option<&[u8]> = decoded.flow.as_ref().map(|id| id.0.as_slice());
     let row = transaction
         .query_opt(

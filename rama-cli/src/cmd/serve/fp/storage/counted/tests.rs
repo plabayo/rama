@@ -5,7 +5,8 @@ use rama::{
     ua::profile::{
         CanonicalDomain, CaptureLevel, CapturedSlot, CapturedSlotKind, ConnectionContext, FlowKey,
         HeaderCapture, HeaderCapturePolicy, JointCapture, ObservationWeight, OrderCaptureLimits,
-        OrderNamespace, OrderedProtocolCapture, ProfileKey, UntrackedDistinctSnapshot,
+        OrderNamespace, OrderedProtocolCapture, ProfileCaptureCompleteness, ProfileKey,
+        UntrackedDistinctSnapshot,
     },
     utils::octets::{kib, mib},
 };
@@ -48,11 +49,17 @@ fn capture(value: &'static str) -> Result<ProfileCapture, BoxError> {
         }),
         connection: ConnectionContext::default(),
         joint: JointCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
             level: CaptureLevel::Request,
             slots: vec![CapturedSlot {
                 kind: CapturedSlotKind::Headers,
                 value: policy
-                    .capture(Version::HTTP_3, &headers, None)?
+                    .capture(
+                        ProfileCaptureCompleteness::Complete,
+                        Version::HTTP_3,
+                        &headers,
+                        None,
+                    )?
                     .canonical(&policy)?,
             }]
             .into(),
@@ -446,6 +453,7 @@ async fn fp_counted_reservoir_reuses_full_quota_and_survives_restart() {
     let mut last = None;
     for sequence in 1_u64..=10_000 {
         let value = OrderedProtocolCapture::capture(
+            ProfileCaptureCompleteness::Complete,
             OrderNamespace::QuicParameter,
             [(27, sequence.to_be_bytes().as_slice())],
             OrderCaptureLimits::default(),
@@ -458,6 +466,7 @@ async fn fp_counted_reservoir_reuses_full_quota_and_survives_restart() {
             flow: None,
             connection: ConnectionContext::default(),
             joint: JointCapture {
+                completeness: ProfileCaptureCompleteness::Complete,
                 level: CaptureLevel::Connection,
                 slots: vec![CapturedSlot {
                     kind: CapturedSlotKind::QuicParameters,
@@ -1257,10 +1266,12 @@ async fn fp_counted_literal_eviction_reclaims_rows_before_the_next_load() {
         flow: None,
         connection: ConnectionContext::default(),
         joint: JointCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
             level: CaptureLevel::Connection,
             slots: vec![CapturedSlot {
                 kind: CapturedSlotKind::QuicParameters,
                 value: OrderedProtocolCapture::capture(
+                    ProfileCaptureCompleteness::Complete,
                     OrderNamespace::QuicParameter,
                     [(27, [byte])],
                     OrderCaptureLimits::default(),
@@ -1490,11 +1501,13 @@ async fn fp_default_joint_limit_counts_oversize_without_losing_its_components() 
         flow: None,
         connection: ConnectionContext::default(),
         joint: JointCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
             level: CaptureLevel::Connection,
             slots: vec![
                 CapturedSlot {
                     kind: CapturedSlotKind::QuicParameters,
                     value: OrderedProtocolCapture::capture(
+                        ProfileCaptureCompleteness::Complete,
                         OrderNamespace::QuicParameter,
                         [(27, vec![b'a'; kib(15)])],
                         orders,
@@ -1506,6 +1519,7 @@ async fn fp_default_joint_limit_counts_oversize_without_losing_its_components() 
                 CapturedSlot {
                     kind: CapturedSlotKind::Http3Settings,
                     value: OrderedProtocolCapture::capture(
+                        ProfileCaptureCompleteness::Complete,
                         OrderNamespace::Http3Setting,
                         (100..200).map(|id| (id, 1u64.to_be_bytes())),
                         orders,
@@ -1600,7 +1614,12 @@ async fn fp_counted_header_permutations_share_rows_at_full_quota() {
             );
         }
         let raw = policy
-            .capture(Version::HTTP_3, &headers, None)
+            .capture(
+                ProfileCaptureCompleteness::Complete,
+                Version::HTTP_3,
+                &headers,
+                None,
+            )
             .unwrap()
             .canonical(&policy)
             .unwrap();
@@ -1801,5 +1820,40 @@ async fn fp_counted_distinct_evidence_survives_restart_and_bounds_corrupt_rows()
         assert_eq!(evidence.values.len(), 1);
         assert!(!evidence.history_known);
         assert_eq!(row.get::<_, i64>(1), 4);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn fp_counted_scope_access_class_must_match_the_row_partition() {
+    let (_config, mut client) = migrations::tests::isolated_database().await.unwrap();
+    client
+        .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+        .await
+        .unwrap();
+    migrations::apply(&mut client).await.unwrap();
+    for authorized in [false, true] {
+        let prepared = capture("text/plain")
+            .unwrap()
+            .prepare(authorized, limits().capture)
+            .unwrap();
+        let transaction = client.transaction().await.unwrap();
+        let mut remaining = limits().ingestion.input_bytes;
+        let error = load_bucket(
+            &transaction,
+            !authorized,
+            100,
+            &prepared.buckets[0],
+            [3; 32],
+            limits(),
+            &mut remaining,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<ProfileDataError>(),
+            Some(ProfileDataError::Invalid("stored scope access class"))
+        ));
+        transaction.rollback().await.unwrap();
     }
 }

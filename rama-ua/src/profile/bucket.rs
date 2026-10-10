@@ -377,6 +377,7 @@ impl CountedObservationBucket {
 
 #[cfg(test)]
 mod tests {
+    use crate::profile::ProfileCaptureCompleteness;
     use rama_http::{HeaderMap, HeaderValue, Version};
 
     use super::*;
@@ -393,7 +394,12 @@ mod tests {
         );
         let policy = HeaderCapturePolicy::default();
         policy
-            .capture(Version::HTTP_11, &headers, None)
+            .capture(
+                ProfileCaptureCompleteness::Complete,
+                Version::HTTP_11,
+                &headers,
+                None,
+            )
             .unwrap()
             .canonical(&policy)
             .unwrap()
@@ -569,6 +575,7 @@ mod tests {
         let mut writer =
             CanonicalWriter::new(CanonicalDomain::Headers, limits.value_bytes).unwrap();
         writer.u8(2).unwrap();
+        writer.u8(1).unwrap();
         writer.u64(1).unwrap();
         writer.bytes(b"cookie").unwrap();
         writer.u32(0).unwrap();
@@ -632,7 +639,12 @@ mod tests {
             HeaderValue::from_bytes(&vec![b'a'; kib(20)]).unwrap(),
         );
         let large = policy
-            .capture(Version::HTTP_11, &headers, None)
+            .capture(
+                ProfileCaptureCompleteness::Complete,
+                Version::HTTP_11,
+                &headers,
+                None,
+            )
             .unwrap()
             .canonical(&policy)
             .unwrap();
@@ -663,6 +675,7 @@ mod tests {
         let mut writer =
             CanonicalWriter::new(CanonicalDomain::Headers, limits.input_bytes).unwrap();
         writer.u8(2).unwrap();
+        writer.u8(1).unwrap();
         writer.u64(1).unwrap();
         writer.bytes(b"cookie").unwrap();
         writer.u32(0).unwrap();

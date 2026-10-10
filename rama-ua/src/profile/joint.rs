@@ -6,7 +6,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     CanonicalValue, HeaderCapture, HeaderCapturePolicy, OrderCaptureLimits, OrderNamespace,
-    OrderedProtocolCapture, ProfileDataError, ValueId,
+    OrderedProtocolCapture, ProfileCaptureCompleteness, ProfileDataError, ValueId,
     canonical::{
         CanonicalReader, CanonicalWriter, HEADER_DOMAIN, HEADER_STRUCTURE_DOMAIN, JOINT_DOMAIN,
         JOINT_STRUCTURE_DOMAIN, ORDER_STRUCTURE_DOMAIN,
@@ -107,6 +107,7 @@ impl CapturedSlot {
 
 #[derive(Debug, Clone)]
 pub struct JointCapture {
+    pub completeness: ProfileCaptureCompleteness,
     pub level: CaptureLevel,
     pub slots: Box<[CapturedSlot]>,
 }
@@ -169,6 +170,7 @@ fn encode_joint(
     structural: bool,
     limits: JointCaptureLimits,
 ) -> Result<CanonicalValue, ProfileDataError> {
+    capture.completeness.require_complete("joint observation")?;
     if capture.slots.len() > limits.slots {
         return Err(ProfileDataError::LimitExceeded("joint slots"));
     }
@@ -198,6 +200,7 @@ fn encode_joint(
         limits.bytes,
     )?;
     writer.u8(capture.level.tag())?;
+    writer.u8(capture.completeness.tag())?;
     writer.u64(slots.len() as u64)?;
     let mut previous = None;
     for slot in slots {
@@ -225,6 +228,8 @@ fn decode_joint(
     value.verify(domain, limits.bytes)?;
     let mut reader = CanonicalReader::new(&value.bytes, domain)?;
     let level = CaptureLevel::from_tag(reader.u8()?)?;
+    let completeness = ProfileCaptureCompleteness::from_tag(reader.u8()?)?;
+    completeness.require_complete("joint observation")?;
     let count = reader.count(limits.slots)?;
     let mut slots = Vec::new();
     let mut previous = None;
@@ -254,6 +259,7 @@ fn decode_joint(
     }
     reader.finish()?;
     let capture = JointCapture {
+        completeness,
         level,
         slots: slots.into(),
     };
@@ -298,6 +304,7 @@ impl JointCapture {
             .collect::<Result<Box<[_]>, ProfileDataError>>()?;
         encode_joint(
             &Self {
+                completeness: self.completeness,
                 level: self.level,
                 slots,
             },

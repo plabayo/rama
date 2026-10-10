@@ -1,3 +1,4 @@
+use crate::profile::ProfileCaptureCompleteness;
 use rama_utils::octets::kib_u64;
 
 use super::*;
@@ -11,6 +12,7 @@ fn order_slot(kind: CapturedSlotKind, fields: &[(u64, &[u8])]) -> CapturedSlot {
     CapturedSlot {
         kind,
         value: OrderedProtocolCapture::capture(
+            ProfileCaptureCompleteness::Complete,
             kind.namespace().unwrap(),
             fields.iter().copied(),
             limits,
@@ -28,7 +30,12 @@ fn headers() -> CapturedSlot {
     CapturedSlot {
         kind: CapturedSlotKind::Headers,
         value: policy
-            .capture(Version::HTTP_11, &headers, None)
+            .capture(
+                ProfileCaptureCompleteness::Complete,
+                Version::HTTP_11,
+                &headers,
+                None,
+            )
             .unwrap()
             .canonical(&policy)
             .unwrap(),
@@ -69,6 +76,7 @@ fn complete_joint_samples_preserve_correlated_orders_with_varying_reserved_value
             slots.reverse();
         }
         let joint = JointCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
             level: CaptureLevel::Connection,
             slots: slots.into(),
         };
@@ -134,6 +142,7 @@ fn complete_joint_samples_preserve_correlated_orders_with_varying_reserved_value
 fn joint_import_revalidates_leaf_ownership_and_rejects_nested_tuples() {
     let limits = JointCaptureLimits::default();
     let request = JointCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
         level: CaptureLevel::Request,
         slots: vec![headers()].into(),
     };
@@ -147,6 +156,7 @@ fn joint_import_revalidates_leaf_ownership_and_rejects_nested_tuples() {
     JointCapture::from_canonical(&canonical, limits).unwrap();
     // A leaf slot cannot contain another tuple, even with valid nested hashes.
     let nested = JointCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
         level: CaptureLevel::Connection,
         slots: vec![CapturedSlot {
             kind: CapturedSlotKind::QuicParameters,
@@ -157,6 +167,7 @@ fn joint_import_revalidates_leaf_ownership_and_rejects_nested_tuples() {
     nested.canonical(limits).unwrap_err();
     let mut leaf = CanonicalWriter::new(HEADER_DOMAIN, limits.value_bytes).unwrap();
     leaf.u8(2).unwrap();
+    leaf.u8(1).unwrap();
     leaf.u64(1).unwrap();
     leaf.bytes(b"cookie").unwrap();
     leaf.u32(0).unwrap();
@@ -167,6 +178,7 @@ fn joint_import_revalidates_leaf_ownership_and_rejects_nested_tuples() {
     let leaf = leaf.finish();
     for domain in [JOINT_DOMAIN, JOINT_STRUCTURE_DOMAIN] {
         let mut writer = CanonicalWriter::new(domain, limits.bytes).unwrap();
+        writer.u8(1).unwrap();
         writer.u8(1).unwrap();
         writer.u64(1).unwrap();
         writer.u16(0).unwrap();
@@ -198,6 +210,7 @@ fn joint_level_namespace_duplicate_and_byte_guards_are_atomic() {
     let limits = JointCaptureLimits::default();
     let tp = order_slot(CapturedSlotKind::QuicParameters, &[(1, b"a")]);
     let mut joint = JointCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
         level: CaptureLevel::Connection,
         slots: vec![tp.clone()].into(),
     };
@@ -230,6 +243,7 @@ fn joint_level_namespace_duplicate_and_byte_guards_are_atomic() {
     joint.canonical(limits).unwrap_err();
     let mut writer = CanonicalWriter::new(JOINT_DOMAIN, limits.bytes).unwrap();
     writer.u8(0).unwrap();
+    writer.u8(1).unwrap();
     writer.u64(2).unwrap();
     for slot in [
         order_slot(CapturedSlotKind::Http3Settings, &[(1, &0u64.to_be_bytes())]),
@@ -247,6 +261,7 @@ fn joint_level_namespace_duplicate_and_byte_guards_are_atomic() {
         .unwrap();
     let mut writer = CanonicalWriter::new(JOINT_STRUCTURE_DOMAIN, limits.bytes).unwrap();
     writer.u8(0).unwrap();
+    writer.u8(1).unwrap();
     writer.u64(1).unwrap();
     writer.u16(CapturedSlotKind::QuicParameters.tag()).unwrap();
     writer.bytes(&structure.bytes).unwrap();
@@ -257,6 +272,7 @@ fn joint_level_namespace_duplicate_and_byte_guards_are_atomic() {
 fn joint_canonical_identity_is_independent_of_input_component_order() {
     let limits = JointCaptureLimits::default();
     let joint = JointCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
         level: CaptureLevel::Connection,
         slots: vec![order_slot(
             CapturedSlotKind::QuicParameters,
@@ -265,15 +281,16 @@ fn joint_canonical_identity_is_independent_of_input_component_order() {
         .into(),
     };
     let canonical = joint.canonical(limits).unwrap();
-    assert_eq!(canonical.bytes.len(), 97);
+    assert_eq!(canonical.bytes.len(), 99);
     assert_eq!(
         canonical.id.0,
         [
-            239, 122, 117, 152, 71, 200, 108, 254, 182, 209, 236, 14, 219, 48, 62, 96, 86, 118,
-            150, 25, 160, 95, 117, 231, 197, 111, 182, 22, 99, 91, 184, 147
+            191, 156, 103, 16, 234, 224, 12, 13, 61, 169, 64, 65, 220, 30, 164, 143, 164, 105, 97,
+            67, 14, 60, 216, 223, 253, 139, 56, 38, 145, 230, 132, 108
         ]
     );
     let mut joint = JointCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
         level: CaptureLevel::Connection,
         slots: vec![
             order_slot(CapturedSlotKind::QuicVersions, &[(1, b"")]),

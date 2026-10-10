@@ -1,4 +1,5 @@
 use super::*;
+use crate::profile::ProfileCaptureCompleteness;
 use crate::profile::{CapturedSlot, FetchContext, ProfileObservationScope, ResumptionContext};
 use rama_http::{HeaderMap, HeaderValue, Method, Version};
 
@@ -18,11 +19,17 @@ fn capture() -> ProfileCapture {
         }),
         connection: ConnectionContext::default(),
         joint: JointCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
             level: CaptureLevel::Request,
             slots: vec![CapturedSlot {
                 kind: CapturedSlotKind::Headers,
                 value: policy
-                    .capture(Version::HTTP_3, &headers, None)
+                    .capture(
+                        ProfileCaptureCompleteness::Complete,
+                        Version::HTTP_3,
+                        &headers,
+                        None,
+                    )
                     .unwrap()
                     .canonical(&policy)
                     .unwrap(),

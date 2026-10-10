@@ -40,6 +40,9 @@ pub use canonical::{CanonicalDomain, CanonicalValue, ProfileDataError, ValueId};
 
 mod header_structure;
 
+mod completeness;
+pub use completeness::ProfileCaptureCompleteness;
+
 mod capture;
 pub use capture::*;
 

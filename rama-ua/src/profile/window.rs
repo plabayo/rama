@@ -255,6 +255,7 @@ impl RetainedBucketWindow {
 
 #[cfg(test)]
 mod tests {
+    use crate::profile::ProfileCaptureCompleteness;
     use rama_http::{HeaderMap, HeaderValue, Version};
     use rama_utils::octets::kib;
 
@@ -266,7 +267,12 @@ mod tests {
         headers.insert("x-mode", HeaderValue::from_static(value));
         let policy = HeaderCapturePolicy::default();
         policy
-            .capture(Version::HTTP_11, &headers, None)
+            .capture(
+                ProfileCaptureCompleteness::Complete,
+                Version::HTTP_11,
+                &headers,
+                None,
+            )
             .unwrap()
             .canonical(&policy)
             .unwrap()
@@ -505,7 +511,12 @@ mod tests {
                 let mut headers = HeaderMap::new();
                 headers.insert("accept", HeaderValue::from_bytes(&bytes).unwrap());
                 let value = policy
-                    .capture(Version::HTTP_11, &headers, None)
+                    .capture(
+                        ProfileCaptureCompleteness::Complete,
+                        Version::HTTP_11,
+                        &headers,
+                        None,
+                    )
                     .unwrap()
                     .canonical(&policy)
                     .unwrap();

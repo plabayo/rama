@@ -55,6 +55,7 @@ impl ProfileObservationTime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::profile::ProfileCaptureCompleteness;
     use crate::profile::{
         CanonicalDomain, HeaderCapturePolicy, ObservationId, ProfileWindowLimits,
         RetainedBucketWindow, ValueId,
@@ -119,7 +120,12 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("accept", HeaderValue::from_static("text/plain"));
         let value = policy
-            .capture(Version::HTTP_2, &headers, None)
+            .capture(
+                ProfileCaptureCompleteness::Complete,
+                Version::HTTP_2,
+                &headers,
+                None,
+            )
             .unwrap()
             .canonical(&policy)
             .unwrap();

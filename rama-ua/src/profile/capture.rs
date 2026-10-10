@@ -12,7 +12,7 @@ use rama_utils::octets::kib;
 use serde::Serialize;
 
 use super::{
-    CanonicalValue, ProfileDataError,
+    CanonicalValue, ProfileCaptureCompleteness, ProfileDataError,
     canonical::{CanonicalReader, CanonicalWriter, HEADER_DOMAIN},
 };
 
@@ -93,21 +93,26 @@ impl RequestBinding {
 pub fn header_request_binding(name: &HeaderName) -> Option<RequestBinding> {
     Some(match name.as_lower_str().as_ref() {
         "host" | "alt-used" => RequestBinding::Authority,
-        "forwarded" | "x-real-ip" | "via" => RequestBinding::Forwarding,
+        "forwarded" | "x-real-ip" | "via" | "cdn-loop" | "max-forwards" => {
+            RequestBinding::Forwarding
+        }
         name if name.starts_with("x-forwarded-") => RequestBinding::Forwarding,
         "traceparent" | "tracestate" | "baggage" | "x-request-id" | "request-id"
-        | "x-correlation-id" | "correlation-id" | "idempotency-key" => RequestBinding::PerRequestId,
-        "dpop" => RequestBinding::Proof,
+        | "x-correlation-id" | "correlation-id" | "idempotency-key" | "last-event-id" => {
+            RequestBinding::PerRequestId
+        }
+        "dpop" | "signature" | "signature-input" => RequestBinding::Proof,
         "sec-websocket-protocol" => RequestBinding::WebSocketProtocol,
         "content-length" | "transfer-encoding" => RequestBinding::Framing,
         // Multipart boundaries belong to the body; their format is not emulated.
         "content-type" | "content-encoding" | "content-range" | "content-digest"
         | "repr-digest" | "digest" | "content-md5" | "expect" => RequestBinding::BodyMetadata,
+        name if name.starts_with("content-") => RequestBinding::BodyMetadata,
         "cookie" | "set-cookie" => RequestBinding::Cookie,
         "authorization" | "proxy-authorization" => RequestBinding::Authorization,
         "sec-websocket-key" | "sec-websocket-accept" => RequestBinding::WebSocketKey,
         "origin" => RequestBinding::Origin,
-        "referer" => RequestBinding::Referer,
+        "referer" | "ping-from" | "ping-to" => RequestBinding::Referer,
         "access-control-request-method"
         | "access-control-request-headers"
         | "access-control-request-private-network" => RequestBinding::Cors,
@@ -115,8 +120,45 @@ pub fn header_request_binding(name: &HeaderName) -> Option<RequestBinding> {
             RequestBinding::Conditional
         }
         "range" | "if-range" => RequestBinding::Range,
-        "connection" | "keep-alive" | "proxy-connection" | "te" | "trailer" | "upgrade" => {
-            RequestBinding::Connection
+        "connection" | "keep-alive" | "proxy-connection" | "te" | "trailer" | "upgrade"
+        | "early-data" | "http2-settings" => RequestBinding::Connection,
+        _ => return None,
+    })
+}
+
+/// Conservative defaults for application credentials and SDK/proxy metadata.
+/// An explicit capture-safe importer choice can override these custom names.
+fn header_default_request_binding(name: &HeaderName) -> Option<RequestBinding> {
+    let name = name.as_lower_str();
+    Some(match name.as_ref() {
+        "sentry-trace"
+        | "b3"
+        | "x-amzn-trace-id"
+        | "x-cloud-trace-context"
+        | "uber-trace-id"
+        | "newrelic" => RequestBinding::PerRequestId,
+        name if name.starts_with("x-b3-") || name.starts_with("x-datadog-") => {
+            RequestBinding::PerRequestId
+        }
+        "true-client-ip"
+        | "x-client-ip"
+        | "client-ip"
+        | "x-cluster-client-ip"
+        | "cf-connecting-ip"
+        | "fastly-client-ip" => RequestBinding::Forwarding,
+        name if [
+            "token",
+            "secret",
+            "api-key",
+            "csrf",
+            "xsrf",
+            "session",
+            "signature",
+        ]
+        .iter()
+        .any(|part| name.contains(part)) =>
+        {
+            RequestBinding::Sensitive
         }
         _ => return None,
     })
@@ -155,6 +197,9 @@ impl Default for HeaderCapturePolicy {
 #[derive(Debug, Clone, Serialize)]
 pub enum HeaderValueSource {
     Profile(Box<[u8]>),
+    /// Explicit importer assertion that a custom field is capture-safe. This does
+    /// not override protocol bindings, never-index, or the sensitivity flag.
+    CaptureSafeProfile(Box<[u8]>),
     Request(RequestBinding),
 }
 
@@ -170,6 +215,7 @@ pub struct HeaderOccurrence {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct HeaderCapture {
+    pub completeness: ProfileCaptureCompleteness,
     pub version: Version,
     pub fields: Box<[HeaderOccurrence]>,
 }
@@ -205,10 +251,12 @@ impl HeaderCapturePolicy {
     /// Pseudo fields are captured separately from their request-owned values.
     pub fn capture(
         &self,
+        completeness: ProfileCaptureCompleteness,
         version: Version,
         headers: &HeaderMap,
         representations: Option<&[ObservedFieldRepresentation]>,
     ) -> Result<HeaderCapture, ProfileDataError> {
+        completeness.require_complete("header observation")?;
         self.validate()?;
         if headers.len() > self.fields {
             return Err(ProfileDataError::LimitExceeded("header fields"));
@@ -263,6 +311,12 @@ impl HeaderCapturePolicy {
                     HeaderOwnership::Profile => {}
                 }
             }
+            let capture_safe = ownership
+                .is_some_and(|field| field.ownership == HeaderOwnership::Profile)
+                && header_default_request_binding(name).is_some();
+            if !capture_safe {
+                binding = binding.or_else(|| header_default_request_binding(name));
+            }
             fields.push(HeaderOccurrence {
                 name: name.clone(),
                 occurrence: *occurrence,
@@ -270,6 +324,9 @@ impl HeaderCapturePolicy {
                 representation,
                 value: match binding {
                     Some(binding) => HeaderValueSource::Request(binding),
+                    None if capture_safe => {
+                        HeaderValueSource::CaptureSafeProfile(value.as_bytes().into())
+                    }
                     None => HeaderValueSource::Profile(value.as_bytes().into()),
                 },
             });
@@ -278,6 +335,7 @@ impl HeaderCapturePolicy {
                 .ok_or(ProfileDataError::CounterOverflow)?;
         }
         Ok(HeaderCapture {
+            completeness,
             version,
             fields: fields.into_boxed_slice(),
         })
@@ -383,6 +441,7 @@ impl HeaderCapture {
         &self,
         policy: &HeaderCapturePolicy,
     ) -> Result<CanonicalValue, ProfileDataError> {
+        self.completeness.require_complete("header observation")?;
         policy.validate()?;
         if self.fields.len() > policy.fields {
             return Err(ProfileDataError::LimitExceeded("header fields"));
@@ -395,7 +454,8 @@ impl HeaderCapture {
             remaining = remaining
                 .checked_sub(field.name.as_str().len())
                 .and_then(|n| match &field.value {
-                    HeaderValueSource::Profile(value) => n.checked_sub(value.len()),
+                    HeaderValueSource::Profile(value)
+                    | HeaderValueSource::CaptureSafeProfile(value) => n.checked_sub(value.len()),
                     HeaderValueSource::Request(_) => Some(n),
                 })
                 .ok_or(ProfileDataError::LimitExceeded("header input bytes"))?;
@@ -428,6 +488,7 @@ impl HeaderCapture {
         }
         let mut writer = CanonicalWriter::new(HEADER_DOMAIN, policy.bytes)?;
         writer.u8(version_tag(self.version))?;
+        writer.u8(self.completeness.tag())?;
         writer.u64(self.fields.len() as u64)?;
         let mut occurrences = HashMap::<HeaderName, u32>::default();
         for field in &self.fields {
@@ -464,8 +525,12 @@ impl HeaderCapture {
                 None => writer.u8(0)?,
             }
             match &field.value {
-                HeaderValueSource::Profile(value) => {
+                HeaderValueSource::Profile(value)
+                | HeaderValueSource::CaptureSafeProfile(value) => {
+                    let capture_safe =
+                        matches!(field.value, HeaderValueSource::CaptureSafeProfile(_));
                     if field.sensitive
+                        || (!capture_safe && header_default_request_binding(&field.name).is_some())
                         || header_request_binding(&field.name).is_some()
                         || policy.overrides.iter().any(|override_| {
                             override_.name == field.name
@@ -476,18 +541,20 @@ impl HeaderCapture {
                     }
                     HeaderValue::from_bytes(value)
                         .map_err(|_error| ProfileDataError::Invalid("profile header value"))?;
-                    writer.u8(0)?;
+                    writer.u8(if capture_safe { 2 } else { 0 })?;
                     writer.bytes(value)?;
                 }
                 HeaderValueSource::Request(binding) => {
                     let valid = match header_request_binding(&field.name) {
                         Some(expected) => expected == *binding,
-                        None => matches!(
-                            binding,
-                            RequestBinding::Custom
-                                | RequestBinding::Sensitive
-                                | RequestBinding::Connection
-                        ),
+                        None => {
+                            matches!(
+                                binding,
+                                RequestBinding::Custom
+                                    | RequestBinding::Sensitive
+                                    | RequestBinding::Connection
+                            ) || header_default_request_binding(&field.name) == Some(*binding)
+                        }
                     };
                     if !valid {
                         return Err(ProfileDataError::Invalid("incorrect request binding"));
@@ -515,6 +582,8 @@ impl HeaderCapture {
             4 => Version::HTTP_3,
             _ => return Err(ProfileDataError::Unsupported("HTTP version")),
         };
+        let completeness = ProfileCaptureCompleteness::from_tag(reader.u8()?)?;
+        completeness.require_complete("header observation")?;
         let count = reader.count(policy.fields)?;
         let mut fields = Vec::new();
         for _ in 0..count {
@@ -551,6 +620,7 @@ impl HeaderCapture {
             let source = match reader.u8()? {
                 0 => HeaderValueSource::Profile(reader.bytes(policy.bytes)?.into()),
                 1 => HeaderValueSource::Request(RequestBinding::from_tag(reader.u8()?)?),
+                2 => HeaderValueSource::CaptureSafeProfile(reader.bytes(policy.bytes)?.into()),
                 _ => return Err(ProfileDataError::Invalid("header value source")),
             };
             fields.push(HeaderOccurrence {
@@ -563,6 +633,7 @@ impl HeaderCapture {
         }
         reader.finish()?;
         let capture = Self {
+            completeness,
             version,
             fields: fields.into_boxed_slice(),
         };
