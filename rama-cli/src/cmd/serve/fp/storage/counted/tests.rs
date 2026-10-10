@@ -9,8 +9,17 @@ use rama::{
     },
     utils::octets::{kib, mib},
 };
-use tokio::task::JoinSet;
-use tokio_postgres::{Error as PgError, NoTls, error::SqlState};
+use std::error::Error;
+use tokio::{
+    io::{self, AsyncReadExt, AsyncWriteExt},
+    net::UnixStream,
+    task::JoinSet,
+};
+use tokio_postgres::{
+    Error as PgError, NoTls,
+    config::{Host, SslMode},
+    error::SqlState,
+};
 
 fn limits() -> StoreLimits {
     StoreLimits {
@@ -917,7 +926,10 @@ async fn fp_counted_writer_locks_partition_before_loading_or_writing() {
     .await
     .unwrap_err();
     assert_eq!(
-        error.downcast_ref::<PgError>().and_then(PgError::code),
+        error
+            .source()
+            .and_then(|error| error.downcast_ref::<PgError>())
+            .and_then(PgError::code),
         Some(&SqlState::LOCK_NOT_AVAILABLE)
     );
     held.rollback().await.unwrap();
@@ -1005,5 +1017,213 @@ async fn fp_counted_writer_does_not_replace_a_missing_persisted_seed() {
         )
         .await
         .unwrap()
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn fp_counted_writer_retries_a_lost_commit_reply_without_double_counting() {
+    let (mut config, mut control) = migrations::tests::isolated_database().await.unwrap();
+    control
+        .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+        .await
+        .unwrap();
+    migrations::apply(&mut control).await.unwrap();
+    let limits = limits();
+    let capture = capture("text/html").unwrap();
+    let Host::Unix(path) = &config.get_hosts()[0] else {
+        panic!("private database must have a Unix socket")
+    };
+    let socket = path.join(format!(
+        ".s.PGSQL.{}",
+        config.get_ports().first().copied().unwrap_or(5432)
+    ));
+    let backend = UnixStream::connect(socket).await.unwrap();
+    let (frontend, relay) = io::duplex(kib(64));
+    config.ssl_mode(SslMode::Disable);
+    let proxy = tokio::spawn(async move {
+        let (mut from_client, mut to_client) = io::split(relay);
+        let (mut from_server, mut to_server) = backend.into_split();
+        tokio::select! {
+            result = io::copy(&mut from_client, &mut to_server) => panic!("client closed before COMMIT: {result:?}"),
+            () = async {
+                loop {
+                    let mut header = [0; 5];
+                    from_server.read_exact(&mut header).await.unwrap();
+                    let length = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
+                    assert!((4..=mib(1)).contains(&length));
+                    let mut payload = vec![0; length - 4];
+                    from_server.read_exact(&mut payload).await.unwrap();
+                    if header[0] == b'C' && payload == b"COMMIT\0" {
+                        // PostgreSQL has committed. Close only this test socket before
+                        // forwarding CommandComplete, so the client cannot know the result.
+                        break;
+                    }
+                    to_client.write_all(&header).await.unwrap();
+                    to_client.write_all(&payload).await.unwrap();
+                }
+            } => {}
+        }
+    });
+    let (mut client, connection) = config.connect_raw(frontend, NoTls).await.unwrap();
+    let connection = tokio::spawn(connection);
+    let error = ingest(
+        &mut client,
+        100,
+        attempt(false, 1),
+        &capture,
+        [3; 32],
+        limits,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, IngestFailure::Unconfirmed(_)), "{error}");
+    proxy.await.unwrap();
+    connection.await.unwrap().unwrap_err();
+    let before = state(&control).await.unwrap();
+    let totals: Vec<i64> = control
+        .query("SELECT total FROM fp_v2.buckets ORDER BY scope", &[])
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(totals, vec![1, 1]);
+    assert!(
+        !ingest(
+            &mut control,
+            100,
+            attempt(false, 1),
+            &capture,
+            [3; 32],
+            limits
+        )
+        .await
+        .unwrap()
+    );
+    assert_eq!(state(&control).await.unwrap(), before);
+    let mut capped = limits;
+    capped.retained[0] = 0;
+    let error = ingest(
+        &mut control,
+        100,
+        attempt(false, 2),
+        &capture,
+        [3; 32],
+        capped,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, IngestFailure::Rejected(_)), "{error}");
+    assert_eq!(state(&control).await.unwrap(), before);
+    assert!(
+        ingest(
+            &mut control,
+            100,
+            attempt(false, 2),
+            &capture,
+            [3; 32],
+            limits
+        )
+        .await
+        .unwrap()
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn fp_counted_sampler_seed_is_shared_across_startups_and_never_replaced() {
+    let (config, mut client) = migrations::tests::isolated_database().await.unwrap();
+    client
+        .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+        .await
+        .unwrap();
+    migrations::apply(&mut client).await.unwrap();
+    let mut jobs = JoinSet::new();
+    for candidate in 1..=8 {
+        let config = config.clone();
+        jobs.spawn(async move {
+            let (mut client, connection) = config.connect(NoTls).await.unwrap();
+            tokio::spawn(connection);
+            sampler_seeds(&mut client, [[candidate; 32], [candidate + 16; 32]])
+                .await
+                .unwrap()
+        });
+    }
+    let first = jobs.join_next().await.unwrap().unwrap();
+    while let Some(result) = jobs.join_next().await {
+        assert_eq!(result.unwrap(), first);
+    }
+    assert_ne!(first[0], first[1]);
+    assert_eq!(
+        sampler_seeds(&mut client, [[0; 32]; 2]).await.unwrap(),
+        first
+    );
+    let capture = capture("text/html").unwrap();
+    ingest(
+        &mut client,
+        100,
+        attempt(true, 1),
+        &capture,
+        first[1],
+        limits(),
+    )
+    .await
+    .unwrap();
+    // Failure in the second partition also rolls back creation in the first.
+    client
+        .batch_execute("UPDATE fp_v2.quotas SET sampler_seed=NULL")
+        .await
+        .unwrap();
+    let before = state(&client).await.unwrap();
+    let error = sampler_seeds(&mut client, [[9; 32]; 2]).await.unwrap_err();
+    assert!(
+        error.to_string().contains("missing persisted sampler seed"),
+        "{error}"
+    );
+    assert_eq!(state(&client).await.unwrap(), before);
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn fp_counted_sampler_locks_before_choosing_a_seed() {
+    let (config, mut client) = migrations::tests::isolated_database().await.unwrap();
+    client
+        .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+        .await
+        .unwrap();
+    migrations::apply(&mut client).await.unwrap();
+    client.batch_execute("CREATE FUNCTION fp_v2.seed_lock_probe() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'seed update preceded initial partition lock'; END $$;
+        CREATE TRIGGER seed_lock_probe BEFORE UPDATE ON fp_v2.quotas FOR EACH STATEMENT EXECUTE FUNCTION fp_v2.seed_lock_probe()").await.unwrap();
+    let held = client.transaction().await.unwrap();
+    held.query_one(
+        "SELECT authorized FROM fp_v2.quotas WHERE NOT authorized FOR UPDATE",
+        &[],
+    )
+    .await
+    .unwrap();
+    let (mut contender, connection) = config.connect(NoTls).await.unwrap();
+    tokio::spawn(connection);
+    contender
+        .batch_execute("SET lock_timeout='100ms'")
+        .await
+        .unwrap();
+    let error = sampler_seeds(&mut contender, [[3; 32]; 2])
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<PgError>().and_then(PgError::code),
+        Some(&SqlState::LOCK_NOT_AVAILABLE)
+    );
+    held.rollback().await.unwrap();
+    client
+        .batch_execute(
+            "DROP TRIGGER seed_lock_probe ON fp_v2.quotas; DROP FUNCTION fp_v2.seed_lock_probe()",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        sampler_seeds(&mut contender, [[3; 32]; 2]).await.unwrap(),
+        [[3; 32]; 2]
     );
 }

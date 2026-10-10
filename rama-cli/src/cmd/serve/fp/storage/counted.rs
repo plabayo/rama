@@ -1,6 +1,9 @@
 //! Counted fingerprint writes, serialized within each authorization partition.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 use rama::{
     error::BoxError,
@@ -53,6 +56,54 @@ fn bounded_rows(capacity: usize) -> Result<i64, BoxError> {
     )
 }
 
+fn stored_sampler_seed(
+    seed: Option<Vec<u8>>,
+    buckets: i64,
+    runs: i64,
+    values: i64,
+) -> Result<Option<[u8; 32]>, BoxError> {
+    if seed.is_none() && (buckets != 0 || runs != 0 || values != 0) {
+        return Err(invalid("missing persisted sampler seed"));
+    }
+    seed.map(|seed| {
+        seed.try_into()
+            .map_err(|_error| invalid("stored sampler seed length"))
+    })
+    .transpose()
+}
+
+/// All fp processes share the retained partition seeds. Candidates come from the
+/// service RNG and are used only when the corresponding partition is empty.
+pub(super) async fn sampler_seeds(
+    client: &mut Client,
+    candidates: [[u8; 32]; 2],
+) -> Result<[[u8; 32]; 2], BoxError> {
+    let transaction = client.transaction().await?;
+    let mut seeds = candidates;
+    for (index, authorized) in [false, true].into_iter().enumerate() {
+        let row = transaction.query_one(
+            "SELECT sampler_seed, buckets, runs, interned_values FROM fp_v2.quotas WHERE authorized=$1 FOR UPDATE", &[&authorized],
+        ).await?;
+        if let Some(seed) = stored_sampler_seed(
+            row.try_get(0)?,
+            row.try_get(1)?,
+            row.try_get(2)?,
+            row.try_get(3)?,
+        )? {
+            seeds[index] = seed;
+        } else {
+            transaction
+                .execute(
+                    "UPDATE fp_v2.quotas SET sampler_seed=$2 WHERE authorized=$1",
+                    &[&authorized, &&seeds[index][..]],
+                )
+                .await?;
+        }
+    }
+    transaction.commit().await?;
+    Ok(seeds)
+}
+
 struct Quota {
     used: [i64; 7],
     maximum: [usize; 7],
@@ -78,6 +129,33 @@ impl Quota {
     }
 }
 
+/// Whether an ingestion error preceded COMMIT or may have lost its reply.
+/// Only a rejected, retired job can safely release its unadmitted sequence.
+#[derive(Debug)]
+pub(super) enum IngestFailure {
+    Rejected(BoxError),
+    Unconfirmed(BoxError),
+}
+
+impl fmt::Display for IngestFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Rejected(error) => write!(formatter, "profile ingestion rejected: {error}"),
+            Self::Unconfirmed(error) => {
+                write!(formatter, "profile ingestion commit unconfirmed: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for IngestFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Rejected(error) | Self::Unconfirmed(error) => Some(error.as_ref()),
+        }
+    }
+}
+
 /// Retries reuse the same trusted writer ID. The transaction owns quota, run and
 /// bucket state until every component and the checkpoint have committed together.
 pub(super) async fn ingest(
@@ -87,7 +165,29 @@ pub(super) async fn ingest(
     capture: &ProfileCapture,
     seed: [u8; 32],
     limits: StoreLimits,
-) -> Result<bool, BoxError> {
+) -> Result<bool, IngestFailure> {
+    let Some(transaction) =
+        prepare_transaction(client, current_day, attempt, capture, seed, limits)
+            .await
+            .map_err(IngestFailure::Rejected)?
+    else {
+        return Ok(false);
+    };
+    transaction
+        .commit()
+        .await
+        .map_err(|error| IngestFailure::Unconfirmed(error.into()))?;
+    Ok(true)
+}
+
+async fn prepare_transaction<'a>(
+    client: &'a mut Client,
+    current_day: u32,
+    attempt: IngestionAttempt,
+    capture: &ProfileCapture,
+    seed: [u8; 32],
+    limits: StoreLimits,
+) -> Result<Option<Transaction<'a>>, BoxError> {
     let prepared = capture.prepare(attempt.authorized, limits.capture)?;
     if prepared.buckets.len() > limits.ingestion.buckets {
         return Err(bounded("joint plus component buckets"));
@@ -101,13 +201,6 @@ pub(super) async fn ingest(
     if i64::from(current_day) < row.try_get::<_, i64>(0)? {
         return Err(invalid("storage time watermark"));
     }
-    let previous_seed: Option<Vec<u8>> = row.try_get(8)?;
-    if previous_seed
-        .as_deref()
-        .is_some_and(|previous| previous != seed)
-    {
-        return Err(invalid("storage sampler seed"));
-    }
     let mut quota = Quota {
         used: [0; 7],
         maximum: limits.retained,
@@ -117,8 +210,10 @@ pub(super) async fn ingest(
         quota.change(index, 0)?;
     }
     quota.validate()?;
-    if previous_seed.is_none() && (quota.used[3] != 0 || quota.used[4] != 0 || quota.used[5] != 0) {
-        return Err(invalid("missing persisted sampler seed"));
+    if stored_sampler_seed(row.try_get(8)?, quota.used[3], quota.used[4], quota.used[5])?
+        .is_some_and(|previous| previous != seed)
+    {
+        return Err(invalid("storage sampler seed"));
     }
     let run_id = CaptureRunId(attempt.observation.run);
     let run_row = transaction.query_opt(
@@ -168,7 +263,7 @@ pub(super) async fn ingest(
     let PreparedIngestion::Commit { run, buckets } =
         run.prepare(current_day, attempt, &pending, seed, limits.ingestion)?
     else {
-        return Ok(false);
+        return Ok(None);
     };
     let checkpoint = serde_json::to_string(&run)?;
     // PostgreSQL JSONB adds insignificant spaces on output. Bound its representation,
@@ -227,8 +322,7 @@ pub(super) async fn ingest(
             ],
         )
         .await?;
-    transaction.commit().await?;
-    Ok(true)
+    Ok(Some(transaction))
 }
 
 async fn load_bucket(
