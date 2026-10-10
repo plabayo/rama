@@ -36,6 +36,9 @@ pub(super) struct StoredConnection<C, ID> {
     /// One past the count of changes when its admission last reported work
     /// outliving its handouts: until the next change it is not asked again.
     pub(super) busy_at: AtomicU64,
+    /// Bumped with each stream admitted, under the slot lock: a count from an
+    /// answer older than the last stream is no count.
+    pub(super) admits: AtomicU64,
     pub(super) active: AtomicUsize,
     /// The waiters of the lane the connection is filed under. A leaf lock:
     /// releases and pushed changes reach it without the storage lock.
@@ -191,13 +194,19 @@ impl<C, ID> StoredConnection<C, ID> {
     /// Count the connection idle if it is: whether it is counted now. Asks
     /// about outliving work: call outside pool locks and listeners.
     pub(super) fn count_if_idle(&self) -> bool {
+        let admits = self.admits.load(Ordering::Acquire);
         if !self.is_idle() {
             return false;
         }
         // Under the slot lock, as an admission's stream and uncount are: no
-        // count of a connection with a stream is ever seen.
+        // count of a connection with a stream is ever seen, nor one from an
+        // answer before a stream that came and went (work it left may outlive
+        // it; its own release counts it).
         let slot = self.pool_slot.lock();
-        !slot.retired && self.active.load(Ordering::Relaxed) == 0 && self.count_idle()
+        !slot.retired
+            && self.admits.load(Ordering::Relaxed) == admits
+            && self.maybe_idle()
+            && self.count_idle()
     }
 
     /// Whether the connection is counted idle.
@@ -213,8 +222,9 @@ impl<C, ID> StoredConnection<C, ID> {
         if self.idle_count.load(Ordering::Acquire) != COUNTED {
             return;
         }
-        // The counts first: they never count more than is counted idle, so a
-        // trim's commit never takes a unit already on its way out.
+        // The counts first: but for the trimmer's own commit, they never count
+        // more than is counted idle, so a commit never takes a unit already on
+        // its way out.
         self.add_idle(limits, -1);
         if self
             .idle_count
@@ -222,7 +232,16 @@ impl<C, ID> StoredConnection<C, ID> {
             .is_err()
         {
             // Whoever moved it took its unit too.
-            self.add_idle(limits, 1);
+            self.give_back(limits);
+        }
+    }
+
+    /// Give back a unit taken out of the counts for a state someone else moved:
+    /// a trim that read them meanwhile may have kept one too many, it looks again.
+    fn give_back(&self, limits: &IdleLimits<ID>) {
+        self.add_idle(limits, 1);
+        if limits.over_for(self.id_idle.as_deref()) {
+            self.ask_trim(false);
         }
     }
 
@@ -250,7 +269,7 @@ impl<C, ID> StoredConnection<C, ID> {
                 Ok(_) => return,
                 Err(seen) => {
                     if let Some(limits) = counted {
-                        self.add_idle(limits, 1);
+                        self.give_back(limits);
                     }
                     state = seen;
                 }
@@ -410,6 +429,7 @@ impl<C, ID> StoredConnection<C, ID> {
         // Admission is serialized with retirement. Concurrent lease drops only
         // decrease the count, so no compare/exchange loop is needed here.
         self.active.fetch_add(1, Ordering::Relaxed);
+        self.admits.fetch_add(1, Ordering::Release);
         // With the stream, under the slot lock: see `count_if_idle`.
         self.uncount_idle();
         drop(slot);
@@ -535,23 +555,22 @@ pub(super) fn ask_trim<C: Send + Sync + 'static, ID: ConnID>(
     if inline && trim_asked(storage, limits, waiting) {
         return;
     }
-    let Some(scheduled_at) = limits.schedule() else {
-        return;
-    };
     // The current runtime, else that of the newest connection: a source may
-    // change on a thread of neither.
-    let runtime = tokio::runtime::Handle::try_current()
+    // change on a thread of neither. Without either, the next asker trims what
+    // is left.
+    let Some(runtime) = tokio::runtime::Handle::try_current()
         .ok()
-        .or_else(|| limits.runtime.lock().clone());
-    let Some(runtime) = runtime else {
-        // The next asker trims what is left.
-        limits.unschedule(scheduled_at);
+        .or_else(|| limits.runtime.lock().clone())
+    else {
         return;
     };
+    if !limits.schedule(runtime.id()) {
+        return;
+    }
     let (storage, waiting, scheduled) = (
         storage.clone(),
         waiting.clone(),
-        Scheduled(limits.clone(), scheduled_at),
+        Scheduled(limits.clone(), runtime.id()),
     );
     runtime.spawn(async move {
         let limits = scheduled.0.clone();
@@ -584,7 +603,7 @@ fn trim_asked<C, ID: ConnID>(
 
 /// A task scheduled to trim: if it is dropped before it runs, such as when
 /// its runtime shuts down, a later ask schedules another.
-struct Scheduled<ID>(Arc<IdleLimits<ID>>, u64);
+struct Scheduled<ID>(Arc<IdleLimits<ID>>, tokio::runtime::Id);
 
 impl<ID> Drop for Scheduled<ID> {
     fn drop(&mut self) {
@@ -647,7 +666,8 @@ fn trim<C, ID: ConnID>(
         let Some((extra, excess)) = extra else {
             return;
         };
-        // Still over at the commit, whatever others closed since the pick.
+        // Still over at the commit, whatever others closed since the pick. Asks
+        // the admission under the slot lock, as `in_use` allows.
         if extra
             .retire_if(|conn| conn.is_idle() && conn.take_excess(excess))
             .is_none()

@@ -1130,14 +1130,13 @@ async fn an_idle_timeout_beyond_the_nanoseconds_of_a_u64_is_no_expiry() {
 }
 
 #[test]
-fn a_trim_task_late_on_a_parked_runtime_is_scheduled_anew() {
+fn a_trim_task_queued_on_a_parked_runtime_holds_no_ask_of_another() {
     let pool = keeping_one();
     let parked = current_thread();
     parked.block_on(async {
         // Its listener schedules a trim on this runtime, which then parks.
         outlived(&pool, 0).await.set_in_use(false);
     });
-    std::thread::sleep(Duration::from_millis(10));
     let live = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_time()
@@ -1155,4 +1154,115 @@ fn a_trim_task_late_on_a_parked_runtime_is_scheduled_anew() {
         }
     });
     assert_eq!(stored(&pool).len(), 1, "trimmed on the live runtime");
+}
+
+#[test]
+fn asks_without_a_runtime_queue_one_task_on_the_pools() {
+    let pool = keeping_one();
+    let parked = current_thread();
+    let tunnel = parked.block_on(outlived(&pool, 0));
+    let limits = pool.idle_limits.as_ref().unwrap();
+    let held = Arc::strong_count(limits);
+    // From a plain thread: the tasks go to the parked runtime of the newest connection.
+    std::thread::spawn(move || {
+        for _ in 0..200 {
+            tunnel.changed.notify(Change::Freed);
+        }
+    })
+    .join()
+    .unwrap();
+    assert!(
+        Arc::strong_count(limits) <= held + 1,
+        "one task on its way, not one per ask"
+    );
+    drop(parked);
+}
+
+/// An admission whose answer about outliving work is the one from before
+/// `on_ask` runs: a stream comes and goes while it is asked.
+struct UpgradingOnAsk {
+    on_ask: Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>,
+    in_use: Arc<AtomicBool>,
+}
+
+impl std::fmt::Debug for UpgradingOnAsk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UpgradingOnAsk")
+    }
+}
+
+impl ConnectionAdmissionPolicy for UpgradingOnAsk {
+    fn try_acquire(&self, _: &Extensions) -> Result<Option<ConnectionAdmissionLease>, BoxError> {
+        Ok(Some(ConnectionAdmissionLease::new(Arc::new(()), AskToken)))
+    }
+
+    fn subscribe(&self, _: Weak<dyn ChangeListener>) {}
+
+    fn in_use(&self) -> bool {
+        let answer = self.in_use.load(Ordering::SeqCst);
+        let on_ask = self.on_ask.lock().take();
+        if let Some(on_ask) = on_ask {
+            on_ask();
+        }
+        answer
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stream_that_came_and_went_as_its_release_asked_keeps_it_uncounted() {
+    let pool = keeping_one();
+    drop(fresh(&pool, 1).await);
+    tokio::time::advance(Duration::from_millis(1)).await;
+    let (on_ask, in_use) = (Arc::new(Mutex::new(None)), Arc::new(AtomicBool::new(false)));
+    let conn = Conn {
+        serial: 7,
+        extensions: Extensions::new(),
+    };
+    conn.extensions
+        .insert(ConnectionAdmission::new(UpgradingOnAsk {
+            on_ask: on_ask.clone(),
+            in_use: in_use.clone(),
+        }));
+    let shared = pool
+        .create(TestId(0), conn, pool.test_slot(), &EMPTY_INPUT)
+        .await
+        .unwrap();
+    {
+        let pool = pool.clone();
+        // Between the release's answer and its count: a stream whose work
+        // outlives it (an upgrade), released.
+        *on_ask.lock() = Some(Box::new(move || {
+            let mut checkout = tokio_test::task::spawn(Box::pin(async move {
+                pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await
+            }));
+            let Poll::Ready(Ok(ConnectionResult::Connection(upgraded))) = checkout.poll() else {
+                panic!("the shared connection admits it");
+            };
+            in_use.store(true, Ordering::SeqCst);
+            drop(upgraded);
+        }) as Box<dyn FnOnce() + Send>);
+    }
+    drop(shared);
+    assert_eq!(stored(&pool).len(), 2, "the busy one is not counted idle");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_rekeyed_with_a_stream_takes_no_unit_with_it() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(8).unwrap())
+        .with_max_idle_total(NonZeroUsize::new(8).unwrap());
+    let handout = add(&pool, 0, Some(keyed(0, 1))).await;
+    handout.rekey(keyed(0, 2));
+    drop(handout);
+    let limits = pool.idle_limits.as_ref().unwrap();
+    assert_eq!(limits.idle.load(Ordering::Relaxed), 1, "counted once idle");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_retired_connection_is_not_filed_again_by_a_rekey() {
+    let pool = MultiplexPool::new().with_max_connections_total(NonZeroUsize::new(8).unwrap());
+    let handout = add(&pool, 0, Some(keyed(0, 1))).await;
+    handout.inner.retire();
+    handout.rekey(keyed(0, 2));
+    assert!(stored(&pool).is_empty(), "on its way out");
 }

@@ -1867,6 +1867,7 @@ where
             stream_cap: self.max_concurrent_streams,
             changes: AtomicU64::new(0),
             busy_at: AtomicU64::new(0),
+            admits: AtomicU64::new(0),
             active: AtomicUsize::new(1),
             lane_waiters: Mutex::new(None),
             waiting: self.waiting.clone(),

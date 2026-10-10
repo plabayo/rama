@@ -90,9 +90,9 @@ pub(super) struct IdleLimits<ID> {
     id_idle: Mutex<HashMap<ID, Arc<AtomicIsize>>>,
     asked: Mutex<Asked<ID>>,
     trimmer: AtomicBool,
-    /// When the task on its way to trim was scheduled, 0 if none: asks of
-    /// listeners schedule no other, unless it is late, as on a parked runtime.
-    scheduled: AtomicU64,
+    /// The runtimes with a task on its way to trim: asks of listeners schedule
+    /// no other there. One queued on a parked runtime keeps none elsewhere.
+    scheduled: Mutex<SmallVec<[tokio::runtime::Id; 2]>>,
     /// Where a trim asked for outside a runtime runs: the runtime of the pool's
     /// newest connection.
     pub(super) runtime: Mutex<Option<tokio::runtime::Handle>>,
@@ -107,10 +107,6 @@ impl<ID> std::fmt::Debug for IdleLimits<ID> {
             .finish_non_exhaustive()
     }
 }
-
-/// How long a trim task may take to start before a listener schedules another,
-/// as one queued on a parked runtime would never.
-const SCHEDULED_LATE_NANOS: u64 = 2_000_000;
 
 /// Whether more than `max` are counted in `counter`.
 pub(super) fn over(counter: &AtomicIsize, max: NonZeroUsize) -> bool {
@@ -159,7 +155,7 @@ impl<ID> IdleLimits<ID> {
                 id_idle: Mutex::new(HashMap::new()),
                 asked: Mutex::new(Asked::default()),
                 trimmer: AtomicBool::new(false),
-                scheduled: AtomicU64::new(0),
+                scheduled: Mutex::new(SmallVec::new()),
                 runtime: Mutex::new(None),
             })
         })
@@ -238,38 +234,23 @@ impl<ID> IdleLimits<ID> {
         self.asked.lock().is_empty()
     }
 
-    /// Whether the caller schedules the task that trims, as of the returned
-    /// time: none is on its way, or the one that is did not start in time.
-    pub(super) fn schedule(&self) -> Option<u64> {
-        let now = now_monotonic_nanos().max(1);
-        let mut at = self.scheduled.load(Ordering::Acquire);
-        loop {
-            if at != 0 && now.saturating_sub(at) < SCHEDULED_LATE_NANOS {
-                return None;
-            }
-            match self
-                .scheduled
-                .compare_exchange_weak(at, now, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => return Some(now),
-                Err(seen) => at = seen,
-            }
+    /// Whether the caller schedules a task that trims on `runtime`: none is on
+    /// its way there.
+    pub(super) fn schedule(&self, runtime: tokio::runtime::Id) -> bool {
+        let mut scheduled = self.scheduled.lock();
+        if scheduled.contains(&runtime) {
+            return false;
         }
+        scheduled.push(runtime);
+        true
     }
 
-    /// The task scheduled `at` runs, or never will: a later ask schedules
-    /// another. Nothing if a later one took over.
-    pub(super) fn unschedule(&self, at: u64) {
-        let mut current = self.scheduled.load(Ordering::Acquire);
-        while current == at {
-            match self
-                .scheduled
-                .compare_exchange_weak(at, 0, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => return,
-                Err(seen) => current = seen,
-            }
-        }
+    /// The task scheduled on `runtime` runs, or never will: a later ask
+    /// schedules another there.
+    pub(super) fn unschedule(&self, runtime: tokio::runtime::Id) {
+        self.scheduled
+            .lock()
+            .retain(|scheduled| *scheduled != runtime);
     }
 }
 

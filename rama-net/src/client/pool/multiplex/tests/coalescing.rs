@@ -1228,3 +1228,25 @@ async fn a_usable_landing_restores_coalescing_for_its_key() {
         "the burst waits for one connection again"
     );
 }
+
+#[tokio::test]
+async fn a_usable_landing_leaves_groups_it_does_not_serve_flagged() {
+    let pool = MultiplexPool::new().with_streams_hint(expect_ten);
+    let slot = permit(&pool, 0, &want(0)).await;
+    let _seed = land(&pool, 0, slot, 10, Some(keyed(0, 0)), &want(0)).await;
+    let other: ConnectKey = std::iter::once((
+        ReuseKey::from_bits::<KeyPolicy>(0),
+        ReuseKey::from_bits::<Want>(2),
+    ))
+    .collect();
+    let group = MultiplexPool::connects_in(&mut pool.storage.lock(), &TestId(0), &other);
+    let Coalesce::Dial(Some(claim)) = group.coalesce(10, false, true) else {
+        panic!("a claim");
+    };
+    // Its connect landed where none of its checkouts can use it.
+    claim.landed(10, false, false);
+    assert!(group.lands_unusable());
+    let slot = permit(&pool, 0, &want(1)).await;
+    let _usable = land(&pool, 0, slot, 10, Some(keyed(0, 1)), &want(1)).await;
+    assert!(group.lands_unusable(), "usable for key 1 only");
+}
