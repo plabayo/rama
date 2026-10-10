@@ -23,3 +23,15 @@ Validate changes with [check_workflows.py](check_workflows.py),
 uv environment (`pyproject.toml`, `uv.lock`, `.python-version`); `check-features`
 also needs cargo-hack 0.6.45, and `check-format.sh` needs actionlint 1.7.12, Bash
 and jq.
+
+
+Fingerprint database tests use a private Unix-socket-only PostgreSQL cluster;
+`pg_config` must locate the installed server tools. The wrapper propagates the
+command's exit status and removes its cluster on completion or interruption:
+
+```sh
+just scripts/ci/fp-test-postgres cargo test -p rama-cli --bin rama cmd::serve::fp:: -- --ignored --skip measure_counted_profile_day_storage_and_fourteen_day_merge
+```
+
+CI runs these tests on Linux. The storage-sizing test runs separately without
+competing builds, since its timings describe the local fixture.

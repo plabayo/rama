@@ -86,6 +86,13 @@ impl LiteralCounters {
         }
     }
 
+    pub(super) fn unknown_history(capacity: usize) -> Self {
+        let mut value = Self::new(capacity);
+        value.losses.history_known = false;
+        value.distinct = UntrackedDistinct::unknown_history();
+        value
+    }
+
     /// Validate every count and the full accounting identity before retaining keys.
     pub fn from_snapshot(
         snapshot: &CounterSnapshot,
@@ -515,6 +522,7 @@ mod tests {
         duplicate.values.reverse();
         LiteralCounters::from_snapshot(&duplicate, 2).unwrap_err();
     }
+
     #[test]
     fn loss_counts_validate_merge_and_preserve_unknown_import_history() {
         let mut a = LiteralCounters::new(1);

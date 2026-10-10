@@ -40,6 +40,10 @@ impl ProfileCapture {
             return Err(ProfileDataError::Incomplete("empty profile capture"));
         }
         match (self.joint.level, &self.flow) {
+            (CaptureLevel::Legacy, None)
+                if self.joint.slots.len() == 1
+                    && self.joint.slots[0].kind == CapturedSlotKind::LegacyField
+                    && self.connection == Default::default() => {}
             (CaptureLevel::Connection, None) => {}
             (
                 CaptureLevel::Request,
@@ -103,7 +107,9 @@ impl ProfileCapture {
             })
         };
         let mut buckets = Vec::new();
-        buckets.push(bucket(value, structure)?);
+        if self.joint.level != CaptureLevel::Legacy {
+            buckets.push(bucket(value, structure)?);
+        }
         for slot in &self.joint.slots {
             buckets.push(bucket(
                 slot.value.clone(),

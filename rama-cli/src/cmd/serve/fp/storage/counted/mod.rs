@@ -1,5 +1,8 @@
 //! Counted fingerprint writes, serialized within each authorization partition.
 
+mod legacy;
+pub(super) use legacy::{LegacyRevision, ingest_legacy};
+
 mod export;
 pub(super) use export::next_profile;
 
@@ -206,6 +209,18 @@ async fn prepare_transaction<'a>(
         return Err(invalid("capture and bucket input limits"));
     }
     let prepared = capture.prepare(attempt.authorized, limits.capture)?;
+    prepare_batch_transaction(client, current_day, attempt, prepared, seed, limits, None).await
+}
+
+async fn prepare_batch_transaction<'a>(
+    client: &'a mut Client,
+    current_day: u32,
+    attempt: IngestionAttempt,
+    prepared: PreparedProfileCapture,
+    seed: [u8; 32],
+    limits: StoreLimits,
+    legacy: Option<&LegacyRevision>,
+) -> Result<Option<Transaction<'a>>, BoxError> {
     if prepared.buckets.len() > limits.ingestion.buckets {
         return Err(bounded("joint plus component buckets"));
     }
@@ -232,6 +247,11 @@ async fn prepare_transaction<'a>(
     {
         return Err(invalid("storage sampler seed"));
     }
+    if let Some(revision) = legacy
+        && revision.was_imported(&transaction, authorized).await?
+    {
+        return Ok(None);
+    }
     let run_id = CaptureRunId(attempt.observation.run);
     let run_row = transaction.query_opt(
         "SELECT created_day, CASE WHEN octet_length(checkpoint::text)::bigint <= $3 THEN checkpoint::text END
@@ -239,6 +259,9 @@ async fn prepare_transaction<'a>(
         &[&authorized, &&run_id.0[..], &integer(limits.checkpoint_bytes)?],
     ).await?;
     let new_run = run_row.is_none();
+    if legacy.is_some() && !new_run {
+        return Err(invalid("legacy import run collision"));
+    }
     let run = if let Some(row) = run_row {
         if row.try_get::<_, i64>(0)? != i64::from(run_id.created_day()) {
             return Err(invalid("stored run creation day"));
@@ -321,6 +344,11 @@ async fn prepare_transaction<'a>(
             ],
         )
         .await?;
+    if let Some(revision) = legacy {
+        revision
+            .checkpoint(&transaction, authorized, current_day, run_id)
+            .await?;
+    }
     quota.validate()?;
     transaction
         .execute(

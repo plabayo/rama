@@ -10,11 +10,11 @@ use super::{TlsCapture, TlsCaptureLimits, tls_capture::structure::validate_tls_s
 
 use super::{
     FlowKey, H2Capture, H2CaptureLimits, H3ClientSequenceCapture, H3SequenceCaptureLimits,
-    HeaderCapture, HeaderCapturePolicy, JointCapture, JointCaptureLimits, OrderCaptureLimits,
-    OrderedProtocolCapture, ProfileKey, ProfileObservationScope, PseudoHeaderCapture,
-    QuicFlightCapture, QuicFlightCaptureLimits, RuntimeProfileCapture,
-    header_structure::validate_header_structure, joint::validate_joint_structure,
-    order_capture::validate_structure,
+    HeaderCapture, HeaderCapturePolicy, JointCapture, JointCaptureLimits, LegacyFieldCapture,
+    LegacyHeaderCapture, OrderCaptureLimits, OrderedProtocolCapture, ProfileKey,
+    ProfileObservationScope, PseudoHeaderCapture, QuicFlightCapture, QuicFlightCaptureLimits,
+    RuntimeProfileCapture, header_structure::validate_header_structure,
+    joint::validate_joint_structure, order_capture::validate_structure,
 };
 
 /// Stable canonical domains; serialized tags remain independent of Rust enum layout.
@@ -43,6 +43,9 @@ pub enum CanonicalDomain {
     H3Sequence = 19,
     H3SequenceStructure = 20,
     QuicFlightStructure = 21,
+    LegacyHeaders = 22,
+    LegacyField = 23,
+    LegacyFieldStructure = 24,
 }
 
 impl From<CanonicalDomain> for u16 {
@@ -82,6 +85,9 @@ impl TryFrom<u16> for CanonicalDomain {
             19 => Ok(Self::H3Sequence),
             20 => Ok(Self::H3SequenceStructure),
             21 => Ok(Self::QuicFlightStructure),
+            22 => Ok(Self::LegacyHeaders),
+            23 => Ok(Self::LegacyField),
+            24 => Ok(Self::LegacyFieldStructure),
             _ => Err(ProfileDataError::Unsupported("canonical content domain")),
         }
     }
@@ -179,6 +185,15 @@ impl CanonicalValue {
         maximum_bytes: usize,
     ) -> Result<(), ProfileDataError> {
         match domain {
+            CanonicalDomain::LegacyHeaders => {
+                LegacyHeaderCapture::from_canonical(self, maximum_bytes)?;
+            }
+            CanonicalDomain::LegacyField => {
+                LegacyFieldCapture::from_canonical(self, maximum_bytes)?;
+            }
+            CanonicalDomain::LegacyFieldStructure => {
+                LegacyFieldCapture::validate_structure(self, maximum_bytes)?
+            }
             #[cfg(not(feature = "tls"))]
             CanonicalDomain::TlsStructure | CanonicalDomain::Tls => {
                 return Err(ProfileDataError::Unsupported("TLS profile component"));
@@ -467,6 +482,9 @@ mod tests {
             (19, CanonicalDomain::H3Sequence),
             (20, CanonicalDomain::H3SequenceStructure),
             (21, CanonicalDomain::QuicFlightStructure),
+            (22, CanonicalDomain::LegacyHeaders),
+            (23, CanonicalDomain::LegacyField),
+            (24, CanonicalDomain::LegacyFieldStructure),
         ] {
             assert_eq!(u16::from(domain), tag);
             assert_eq!(CanonicalDomain::try_from(tag).unwrap(), domain);
@@ -477,7 +495,7 @@ mod tests {
                 domain
             );
         }
-        for tag in [0, 22, u16::MAX] {
+        for tag in [0, 25, u16::MAX] {
             CanonicalDomain::try_from(tag).unwrap_err();
             serde_json::from_str::<CanonicalDomain>(&tag.to_string()).unwrap_err();
         }

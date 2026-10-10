@@ -1,3 +1,7 @@
+use crate::profile::{
+    CanonicalDomain, ProfileAnalysisLimits, ProfileArchiveLimits, ProfileArchiveWriter,
+    load_profile_archive_snapshot, profile_utc_day,
+};
 use rama_core::{Layer, Service, service::service_fn};
 use rama_http::{
     Body, Request, Response, Version,
@@ -8,7 +12,10 @@ use rama_inspect::storage::{MemoryStore, Storage, StorageLimits};
 use rama_net::Protocol;
 #[cfg(all(feature = "embed-profiles", feature = "tls"))]
 use rama_tls::{ProtocolVersion, SecureTransport, client::NegotiatedTlsParameters};
-use std::convert::Infallible;
+use std::{
+    convert::Infallible,
+    time::{Duration, SystemTime},
+};
 
 use super::*;
 
@@ -30,7 +37,7 @@ impl CaptureObserver for Observer {
     }
 }
 
-fn store(database: UserAgentDatabase) -> CaptureStore {
+pub(super) fn store(database: UserAgentDatabase) -> CaptureStore {
     CaptureStore::with_storage(
         Storage::new(MemoryStore::new(StorageLimits::default())),
         CaptureConfig {
@@ -208,6 +215,35 @@ async fn captured_tls_and_native_fingerprints_are_shared_per_connection() {
     assert!(profile.tls_client_hello.is_some());
     assert!(profile.h1_headers_navigate.is_some());
     assert!(profile.h2_settings.is_none());
+    let day = profile_utc_day(
+        SystemTime::UNIX_EPOCH
+            + Duration::from_secs(second.summary.started_at.as_second().try_into().unwrap()),
+    )
+    .unwrap();
+    let mut export = ProfileExport::new(&store, &[1, 2].into(), &BTreeSet::new());
+    let compiled = export
+        .next_evidence(day, 14, [3; 32], ProfileAnalysisLimits::default())
+        .await
+        .unwrap()
+        .unwrap()
+        .analyze(false, day, 14, ProfileAnalysisLimits::default())
+        .unwrap();
+    let connections: u64 = compiled
+        .analysis
+        .scopes
+        .iter()
+        .filter(|scope| scope.flow.is_none() && scope.observations.domain == CanonicalDomain::Joint)
+        .map(|scope| scope.observations.counts.total)
+        .sum();
+    assert_eq!(connections, 1);
+    let requests: u64 = compiled
+        .analysis
+        .scopes
+        .iter()
+        .filter(|scope| scope.flow.is_some() && scope.observations.domain == CanonicalDomain::Joint)
+        .map(|scope| scope.observations.counts.total)
+        .sum();
+    assert_eq!(requests, 2);
     let fingerprint = first
         .metadata
         .request_fingerprint(&Request::new(()).into_parts().0)
@@ -336,4 +372,99 @@ async fn h3_observation_export_keeps_tcp_tls_and_headers_empty() {
     assert!(profiles[0].tls_client_hello.is_none());
     assert!(profiles[0].h1_headers_navigate.is_none());
     assert!(profiles[0].h2_headers_navigate.is_none());
+}
+
+#[tokio::test]
+async fn selected_evidence_counts_each_request_and_keeps_retry_atomic() {
+    let store = store(UserAgentDatabase::default());
+    let connection = store
+        .begin_connection_if_enabled(None, Protocol::HTTP, None)
+        .unwrap();
+    let service =
+        CaptureHttpLayer::new(Some(store.clone())).layer(service_fn(async |request: Request| {
+            request.into_body().collect().await.unwrap();
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        }));
+    for value in ["application/json", "text/plain", "application/json"] {
+        service
+            .serve(
+                Request::builder()
+                    .uri("http://example.test/")
+                    .header("user-agent", "counted-library/1")
+                    .header("accept", value)
+                    .header("cookie", "never-export-private-cookie")
+                    .extension(ConnectionId(connection))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+    }
+    let last = store.exchange_capture(3).unwrap().snapshot();
+    let day = profile_utc_day(
+        SystemTime::UNIX_EPOCH
+            + Duration::from_secs(last.started_at.as_second().try_into().unwrap()),
+    )
+    .unwrap();
+    let mut export = ProfileExport::new(&store, &[1, 2, 3].into(), &BTreeSet::new());
+    let limits = ProfileAnalysisLimits::default();
+    export
+        .next_evidence(day - 1, 14, [3; 32], limits)
+        .await
+        .unwrap_err();
+    let entry = export
+        .next_evidence(day, 14, [3; 32], limits)
+        .await
+        .unwrap()
+        .unwrap();
+    let analysis = entry
+        .clone()
+        .analyze(false, day, 14, limits)
+        .unwrap()
+        .analysis;
+    let total: u64 = analysis
+        .scopes
+        .iter()
+        .filter(|scope| scope.flow.is_some() && scope.observations.domain == CanonicalDomain::Joint)
+        .map(|scope| scope.observations.counts.total)
+        .sum();
+    assert_eq!(total, 3);
+    assert!(analysis.scopes.iter().all(|scope| scope.flow.is_some()));
+    let archive =
+        ProfileArchiveWriter::new(Vec::new(), false, day, 14, ProfileArchiveLimits::default())
+            .unwrap()
+            .write_profile(entry)
+            .unwrap()
+            .finish()
+            .unwrap();
+    assert!(
+        !archive
+            .windows(b"never-export-private-cookie".len())
+            .any(|bytes| bytes == b"never-export-private-cookie")
+    );
+    assert_eq!(
+        load_profile_archive_snapshot(&archive, false, ProfileArchiveLimits::default())
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        export
+            .next_evidence(day, 14, [3; 32], limits)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let mut expired = ProfileExport::new(&store, &[1, 2, 3].into(), &BTreeSet::new());
+    assert!(
+        expired
+            .next_evidence(day + 14, 14, [3; 32], limits)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }

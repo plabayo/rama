@@ -4,6 +4,20 @@ The code for rama-fp lives in rama-cli:
 
 [/rama-cli/src/cmd/serve/fp](../rama-cli/src/cmd/serve/fp)
 
+### Profile export
+
+`rama ua export` replaces the Python profile generator and shares the Rust
+analyzer with proxy exports. Set `RAMA_FP_DATABASE_URL` and run:
+
+```sh
+rama ua export --import-legacy --authorized --replace --output profiles.json
+```
+
+The export includes the last 14 UTC day buckets, including today. Legacy import
+writes only the additive counted schema; it preserves source rows, deduplicates
+restarts and records changed rows as revisions with unknown historical counts.
+`rama ua view profiles.json` inspects the resulting archive.
+
 ### Developer instructions
 
 #### Browserstack

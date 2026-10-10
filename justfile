@@ -548,5 +548,5 @@ qa-quic-interop:
 # Socket-free ancillary buffer round trips under both aliasing models.
 [unix]
 miri-udp-cmsg:
-    MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test --locked -p rama-udp --lib sys::cmsg
-    MIRIFLAGS="-Zmiri-strict-provenance -Zmiri-tree-borrows" cargo +nightly miri test --locked -p rama-udp --lib sys::cmsg
+    MIRIFLAGS="-Zmiri-strict-provenance" cargo +"${MIRI_TOOLCHAIN:-nightly}" miri test --locked -p rama-udp --lib sys::cmsg
+    MIRIFLAGS="-Zmiri-strict-provenance -Zmiri-tree-borrows" cargo +"${MIRI_TOOLCHAIN:-nightly}" miri test --locked -p rama-udp --lib sys::cmsg

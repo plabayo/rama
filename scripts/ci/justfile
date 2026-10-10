@@ -9,6 +9,7 @@
 # `uv` installed; see CONTRIBUTING.md.
 
 set working-directory := '../..'
+set positional-arguments
 
 # rama's own tracing level, which the root justfile exports, is read by uv as well and would
 # bury these checks' output. Clearing it here covers both a direct call and one that inherits
@@ -33,3 +34,9 @@ check-features:
 # The policy checker's own unit tests.
 test:
     uv run --frozen --project scripts/ci python -m unittest discover -s scripts/ci -p 'test_*.py'
+
+
+# Run a test command against an owned Unix-socket-only PostgreSQL cluster.
+[unix]
+fp-test-postgres +args:
+    python3 scripts/ci/with_fp_test_postgres.py -- "$@"

@@ -60,6 +60,9 @@ impl ProfileInspector {
         // The handshake's request initiator is supplied by the WS adapter.
         let websocket =
             parts.extensions.get_ref::<RequestInitiator>() == Some(&RequestInitiator::Ws);
+        if parts.version == Version::HTTP_3 {
+            protocol::capture(parts, metadata);
+        }
         metadata.exchange.insert(UserAgentObservation {
             known_fingerprint: self.fingerprints.match_request(
                 &self.database,
@@ -79,6 +82,7 @@ impl ProfileInspector {
 }
 
 mod export;
+mod protocol;
 pub use export::{ProfileExport, export_profiles};
 
 fn fill_profile(

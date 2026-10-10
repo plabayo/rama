@@ -19,6 +19,7 @@ mod collector;
 mod counted;
 mod intent;
 mod issuer;
+mod legacy;
 mod migrations;
 mod startup;
 mod worker;

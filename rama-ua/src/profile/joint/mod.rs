@@ -11,10 +11,10 @@ use super::{
 
 use super::{
     CanonicalDomain, CanonicalValue, H2Capture, H2CaptureLimits, H3ClientSequenceCapture,
-    H3SequenceCaptureLimits, HeaderCapture, HeaderCapturePolicy, OrderCaptureLimits,
-    OrderNamespace, OrderedProtocolCapture, ProfileCaptureCompleteness, ProfileDataError,
-    PseudoHeaderCapture, QuicFlightCapture, QuicFlightCaptureLimits, RuntimeProfileCapture,
-    ValueId,
+    H3SequenceCaptureLimits, HeaderCapture, HeaderCapturePolicy, LegacyFieldCapture,
+    OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture, ProfileCaptureCompleteness,
+    ProfileDataError, PseudoHeaderCapture, QuicFlightCapture, QuicFlightCaptureLimits,
+    RuntimeProfileCapture, ValueId,
     canonical::{
         CanonicalReader, CanonicalWriter, HEADER_DOMAIN, HEADER_STRUCTURE_DOMAIN, JOINT_DOMAIN,
         JOINT_STRUCTURE_DOMAIN, ORDER_STRUCTURE_DOMAIN,
@@ -26,6 +26,7 @@ use super::{
 pub enum CaptureLevel {
     Connection,
     Request,
+    Legacy,
 }
 
 impl CaptureLevel {
@@ -33,6 +34,7 @@ impl CaptureLevel {
         match self {
             Self::Connection => 0,
             Self::Request => 1,
+            Self::Legacy => 2,
         }
     }
 
@@ -40,6 +42,7 @@ impl CaptureLevel {
         match tag {
             0 => Ok(Self::Connection),
             1 => Ok(Self::Request),
+            2 => Ok(Self::Legacy),
             _ => Err(ProfileDataError::Invalid("joint capture level")),
         }
     }
@@ -58,6 +61,7 @@ pub enum CapturedSlotKind {
     RuntimeMetadata,
     QuicFirstFlight,
     Http3Sequence,
+    LegacyField,
 }
 
 impl CapturedSlotKind {
@@ -74,6 +78,7 @@ impl CapturedSlotKind {
             Self::RuntimeMetadata => 8,
             Self::QuicFirstFlight => 9,
             Self::Http3Sequence => 10,
+            Self::LegacyField => 11,
         }
     }
 
@@ -90,12 +95,14 @@ impl CapturedSlotKind {
             8 => Ok(Self::RuntimeMetadata),
             9 => Ok(Self::QuicFirstFlight),
             10 => Ok(Self::Http3Sequence),
+            11 => Ok(Self::LegacyField),
             _ => Err(ProfileDataError::Unsupported("joint slot kind")),
         }
     }
 
     fn level(self) -> CaptureLevel {
         match self {
+            Self::LegacyField => CaptureLevel::Legacy,
             Self::Headers | Self::PseudoHeaders | Self::RuntimeMetadata => CaptureLevel::Request,
             _ => CaptureLevel::Connection,
         }
@@ -103,7 +110,8 @@ impl CapturedSlotKind {
 
     fn namespace(self) -> Option<OrderNamespace> {
         match self {
-            Self::Headers
+            Self::LegacyField
+            | Self::Headers
             | Self::Http3Sequence
             | Self::QuicFirstFlight
             | Self::RuntimeMetadata
@@ -128,6 +136,10 @@ impl CapturedSlot {
     /// The same owned normalization is used by joint and individual buckets.
     pub fn structural(&self, maximum_bytes: usize) -> Result<CanonicalValue, ProfileDataError> {
         validate_slot(self, false, maximum_bytes)?;
+        if self.kind == CapturedSlotKind::LegacyField {
+            return LegacyFieldCapture::from_canonical(&self.value, maximum_bytes)?
+                .structural(maximum_bytes);
+        }
         if self.kind == CapturedSlotKind::Http3Sequence {
             let limits = H3SequenceCaptureLimits {
                 bytes: maximum_bytes,
@@ -221,6 +233,16 @@ fn validate_slot(
     structural: bool,
     maximum: usize,
 ) -> Result<(), ProfileDataError> {
+    if slot.kind == CapturedSlotKind::LegacyField {
+        return slot.value.validate_content(
+            if structural {
+                CanonicalDomain::LegacyFieldStructure
+            } else {
+                CanonicalDomain::LegacyField
+            },
+            maximum,
+        );
+    }
     if matches!(
         slot.kind,
         CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls
@@ -348,7 +370,8 @@ fn encode_joint(
         let current = match slot.kind {
             CapturedSlotKind::Headers
             | CapturedSlotKind::PseudoHeaders
-            | CapturedSlotKind::RuntimeMetadata => None,
+            | CapturedSlotKind::RuntimeMetadata
+            | CapturedSlotKind::LegacyField => None,
             CapturedSlotKind::TcpTls | CapturedSlotKind::Http2EarlyFrames => Some(0),
             CapturedSlotKind::Http3Sequence
             | CapturedSlotKind::QuicFirstFlight

@@ -41,6 +41,13 @@ impl UntrackedDistinct {
         }
     }
 
+    pub(super) fn unknown_history() -> Self {
+        Self {
+            history_known: false,
+            ..Self::new()
+        }
+    }
+
     pub(super) fn from_snapshot(
         snapshot: &UntrackedDistinctSnapshot,
         observations: u64,

@@ -254,6 +254,7 @@ pub fn analyze_capture_bucket(
             | CanonicalDomain::RuntimeMetadata
             | CanonicalDomain::QuicFlight
             | CanonicalDomain::H3Sequence
+            | CanonicalDomain::LegacyField
     ) {
         return Err(ProfileDataError::Invalid("capture analysis domain"));
     }

@@ -58,6 +58,12 @@ last 14 UTC day buckets by default; `--days` changes the window and `--authorize
 selects the authorized partition. Export validates every profile before publishing
 the file; `--replace` permits replacing an existing destination.
 
+`rama ua export --import-legacy --authorized --output profiles.json` imports the
+retained legacy rows into the counted store before exporting. Import is additive
+and restart-safe; source tables remain unchanged. Each non-null legacy field has
+conventional weight one and unknown history. Its day comes from the row's last
+update, which cannot recover individual fields' original capture times.
+
 ### Proxy interception
 
 Start the inspector with `rama serve proxy --mitm`. Forwarding is automatic by

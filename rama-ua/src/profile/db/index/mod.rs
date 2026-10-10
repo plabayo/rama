@@ -172,6 +172,22 @@ impl UserAgentProfile {
         let connection = captured.scopes.iter().any(|scope| {
             scope.context.flow.is_none() && scope.observations.domain == CanonicalDomain::Joint
         });
+        if !captured
+            .scopes
+            .iter()
+            .any(|scope| scope.observations.domain == CanonicalDomain::Joint)
+            && let Some(observed) = captured
+                .scopes
+                .iter()
+                .filter(|scope| scope.observations.domain == CanonicalDomain::LegacyField)
+                .map(|scope| scope.observations.counts.total)
+                .max()
+        {
+            return Ok(ObservationWeight::UnknownHistory {
+                observed,
+                unassigned: 0,
+            });
+        }
         let mut total = 0_u64;
         let mut known = true;
         for scope in &captured.scopes {

@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 
+use ahash::{HashMap, HashMapExt as _};
+
 #[cfg(feature = "tls")]
 use rama_http::Version;
 use rama_http::inspect::capture::ExchangeCapture;
@@ -10,6 +12,7 @@ use super::*;
 /// sorted and retained; each call constructs one merged profile from stored heads.
 pub struct ProfileExport {
     captures: VecDeque<ExchangeCapture>,
+    connection_owners: HashMap<u64, u64>,
 }
 
 fn user_agent(capture: &ExchangeCapture) -> Option<&str> {
@@ -40,8 +43,20 @@ impl ProfileExport {
                 .cmp(&user_agent(b))
                 .then_with(|| a.id().cmp(&b.id()))
         });
+        let mut connection_owners = HashMap::new();
+        for capture in &captures {
+            let connection = capture.snapshot().connection_id;
+            if connection == 0 {
+                continue;
+            }
+            connection_owners
+                .entry(connection)
+                .and_modify(|id: &mut u64| *id = (*id).min(capture.id()))
+                .or_insert(capture.id());
+        }
         Self {
             captures: captures.into(),
+            connection_owners,
         }
     }
 
@@ -116,3 +131,5 @@ pub async fn export_profiles(
     }
     Ok(profiles)
 }
+
+mod observations;

@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 use super::{CountedCaptureAnalysis, OrderAnalysisConfig, analyze_capture_bucket};
 use crate::profile::{
     CanonicalDomain, CanonicalValue, CaptureLevel, CapturedSlot, CapturedSlotKind, FlowKey,
-    JointCapture, JointCaptureLimits, OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture,
-    ProfileCapture, ProfileCaptureCompleteness, ProfileDataError, ProfileKey,
-    ProfileObservationScope, ProfileWindowLimits, RetainedBucketWindow, RetainedBucketsSnapshot,
-    ValueId,
+    JointCapture, JointCaptureLimits, LegacyField, LegacyFieldCapture, LegacyHttpProtocol,
+    OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture, ProfileCapture,
+    ProfileCaptureCompleteness, ProfileDataError, ProfileKey, ProfileObservationScope,
+    ProfileWindowLimits, RetainedBucketWindow, RetainedBucketsSnapshot, ValueId,
 };
 #[cfg(feature = "tls")]
 use crate::profile::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport};
@@ -92,6 +92,7 @@ fn slot(
     maximum: usize,
 ) -> Result<CapturedSlotKind, ProfileDataError> {
     Ok(match domain {
+        CanonicalDomain::LegacyField => CapturedSlotKind::LegacyField,
         CanonicalDomain::Headers => CapturedSlotKind::Headers,
         CanonicalDomain::PseudoHeaders => CapturedSlotKind::PseudoHeaders,
         CanonicalDomain::RuntimeMetadata => CapturedSlotKind::RuntimeMetadata,
@@ -142,6 +143,7 @@ fn joint(
     }
     let kind = slot(value, domain, limits.value_bytes)?;
     let level = match kind {
+        CapturedSlotKind::LegacyField => CaptureLevel::Legacy,
         CapturedSlotKind::Headers
         | CapturedSlotKind::PseudoHeaders
         | CapturedSlotKind::RuntimeMetadata => CaptureLevel::Request,
@@ -289,6 +291,22 @@ pub fn analyze_profile_evidence(
                                     components[2].insert(index);
                                 }
                             }
+                        }
+                    }
+                    CapturedSlotKind::LegacyField => {
+                        let legacy =
+                            LegacyFieldCapture::from_canonical(&slot.value, limits.metadata_bytes)?;
+                        match legacy.field.protocol() {
+                            Some(LegacyHttpProtocol::Http1) => {
+                                components[0].insert(index);
+                            }
+                            Some(LegacyHttpProtocol::Http2) => {
+                                components[1].insert(index);
+                            }
+                            None if legacy.field == LegacyField::TcpTls => {
+                                components[3].insert(index);
+                            }
+                            None => (),
                         }
                     }
                     CapturedSlotKind::RuntimeMetadata => (),

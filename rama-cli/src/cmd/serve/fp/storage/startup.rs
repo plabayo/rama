@@ -13,6 +13,7 @@ use rama::{
 
 use super::{
     counted::{self, StoreLimits},
+    legacy,
     postgres::Pool,
     worker::{self, CollectionQueue, PostgresSink, QueueConfig},
 };
@@ -38,6 +39,8 @@ pub(super) async fn start(pool: Pool, exec: &Executor) -> Result<CollectionQueue
         let mut client = pool.get().await?;
         counted::sampler_seeds(&mut client, candidates).await?
     };
+    // Legacy backlog must not delay new collection or prevent serving requests.
+    exec.spawn_cancellable_task(legacy::backfill_partitions(pool.clone(), seeds, limits));
     let (queue, receiver) = CollectionQueue::new(config, limits)?;
     let guard = exec.guard().cloned();
     exec.spawn_task(async move {

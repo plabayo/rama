@@ -94,7 +94,11 @@ impl CountedObservationBucket {
             scope,
             seed,
             limits,
-            counts: LiteralCounters::new(limits.literal_values),
+            counts: if domain == CanonicalDomain::LegacyField {
+                LiteralCounters::unknown_history(limits.literal_values)
+            } else {
+                LiteralCounters::new(limits.literal_values)
+            },
             samples: ObservationReservoir::new(limits.samples, seed, scope),
             values: BTreeMap::new(),
             retained_bytes: 0,
@@ -226,6 +230,12 @@ impl CountedObservationBucket {
             .ok_or(ProfileDataError::LimitExceeded("interned value count"))?;
         if snapshot.values.len() > maximum_values {
             return Err(ProfileDataError::LimitExceeded("interned value count"));
+        }
+        if expected_domain == CanonicalDomain::LegacyField
+            && (snapshot.counts.losses.history_known
+                || snapshot.counts.untracked_distinct.history_known)
+        {
+            return Err(ProfileDataError::Invalid("legacy historical counts"));
         }
         let counts = LiteralCounters::from_snapshot(&snapshot.counts, limits.literal_values)?;
         let samples = ObservationReservoir::from_entries(
@@ -568,6 +578,7 @@ mod tests {
             );
         }
     }
+
     #[test]
     fn valid_digest_cannot_smuggle_request_values_into_retained_storage() {
         let limits = ProfileBucketLimits::default();
@@ -629,6 +640,7 @@ mod tests {
         unknown.bytes[15..17].copy_from_slice(&u16::MAX.to_be_bytes());
         unknown.validated_domain(limits.value_bytes).unwrap_err();
     }
+
     #[test]
     fn valid_oversize_values_count_without_retention_or_secret_bypass() {
         let limits = ProfileBucketLimits::default();
@@ -760,6 +772,7 @@ mod tests {
             ObservationWeight::UnknownHistory { .. }
         ));
     }
+
     #[test]
     fn restored_bucket_requires_the_expected_domain_and_authorization_scope() {
         let limits = ProfileBucketLimits::default();

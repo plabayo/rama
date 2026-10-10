@@ -1,14 +1,14 @@
 use std::{
     fmt::Write as _,
     fs::{self, File},
-    io::{self, BufWriter, Write},
+    io::BufWriter,
     path::PathBuf,
 };
 
 use rama::{
     error::{BoxError, BoxErrorExt as _},
     tls::boring::core::rand::rand_bytes,
-    ua::profile::{ProfileAnalysisLimits, ProfileArchiveEntry, ProfileEvidence},
+    ua::profile::{ProfileArchiveEntry, ProfileArchiveLimits, ProfileArchiveWriter},
     utils::{
         fs::{CreatedFilePermissions, OpenOptionsSync, TempDir},
         octets::kib,
@@ -18,41 +18,21 @@ use rama::{
 use super::CountedProfileSource;
 use crate::cmd::ua::ExportProfilesCommand;
 
-struct LimitedWriter {
-    file: File,
-    remaining: usize,
-}
-
-impl Write for LimitedWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > self.remaining {
-            return Err(io::Error::other("profile export byte limit exceeded"));
-        }
-        let written = self.file.write(bytes)?;
-        self.remaining -= written;
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
-    }
-}
-
 struct StagedExport {
-    writer: BufWriter<LimitedWriter>,
+    writer: ProfileArchiveWriter<BufWriter<File>>,
     staging: TempDir,
     output: PathBuf,
     replace: bool,
-    profiles: usize,
 }
 
 impl StagedExport {
     fn create(
         output: PathBuf,
         replace: bool,
-        maximum: usize,
+        authorized: bool,
         day: u32,
         horizon: u32,
+        limits: ProfileArchiveLimits,
     ) -> Result<Self, BoxError> {
         let parent = output
             .parent()
@@ -71,52 +51,34 @@ impl StagedExport {
             .created_file_permissions(CreatedFilePermissions::OwnerReadWrite)
             .jail(staging.path())
             .open("profiles.json")?;
-        let mut writer = BufWriter::with_capacity(
-            kib(16),
-            LimitedWriter {
-                file,
-                remaining: maximum,
-            },
-        );
-        write!(
-            writer,
-            "{{\"format_version\":1,\"generated_day\":{day},\"horizon\":{horizon},\"profiles\":["
+        let writer = ProfileArchiveWriter::new(
+            BufWriter::with_capacity(kib(16), file),
+            authorized,
+            day,
+            horizon,
+            limits,
         )?;
         Ok(Self {
             writer,
             staging,
             output,
             replace,
-            profiles: 0,
         })
     }
 
-    fn write(
-        mut self,
-        evidence: ProfileEvidence,
-        seed: [u8; 32],
-        authorized: bool,
-        day: u32,
-        horizon: u32,
-        limits: ProfileAnalysisLimits,
-    ) -> Result<Self, BoxError> {
-        let compiled = ProfileArchiveEntry {
-            evidence,
-            sampler_seed: seed,
-        }
-        .analyze(authorized, day, horizon, limits)?;
-        if self.profiles != 0 {
-            self.writer.write_all(b",")?;
-        }
-        serde_json::to_writer(&mut self.writer, &compiled)?;
-        self.profiles += 1;
+    fn write(mut self, entry: ProfileArchiveEntry) -> Result<Self, BoxError> {
+        self.writer = self.writer.write_profile(entry)?;
         Ok(self)
     }
 
-    fn finish(mut self) -> Result<(), BoxError> {
-        self.writer.write_all(b"]}\n")?;
-        self.writer.flush()?;
-        self.writer.get_ref().file.sync_all()?;
+    fn finish(self) -> Result<(), BoxError> {
+        let file = self
+            .writer
+            .finish()?
+            .into_inner()
+            .map_err(|error| error.into_error())?;
+        file.sync_all()?;
+        drop(file);
         let source = self.staging.path().join("profiles.json");
         if self.replace {
             fs::rename(source, &self.output)?;
@@ -130,46 +92,35 @@ impl StagedExport {
 pub(crate) async fn export_counted_profiles(
     command: ExportProfilesCommand,
 ) -> Result<(), BoxError> {
-    let limits = ProfileAnalysisLimits::default();
-    let mut source =
-        CountedProfileSource::open(command.authorized, command.days, command.max_profiles).await?;
-    let day = source.day();
+    let limits = ProfileArchiveLimits {
+        bytes: command.max_output_bytes,
+        profiles: command.max_profiles,
+        ..ProfileArchiveLimits::default()
+    };
     if command.max_profiles == 0 || command.max_output_bytes == 0 {
         return Err(BoxError::from_static_str(
             "profile export limits must be positive",
         ));
     }
+    let mut source =
+        CountedProfileSource::open(command.authorized, command.days, command.max_profiles).await?;
+    let day = source.day();
+    if command.import_legacy {
+        super::legacy::import_from_environment(command.authorized).await?;
+    }
     let mut staged = tokio::task::spawn_blocking(move || {
         StagedExport::create(
             command.output,
             command.replace,
-            command.max_output_bytes,
+            command.authorized,
             day,
             command.days,
+            limits,
         )
     })
     .await??;
-    while let Some(ProfileArchiveEntry {
-        evidence,
-        sampler_seed: seed,
-    }) = source.next().await?
-    {
-        if staged.profiles >= command.max_profiles {
-            return Err(BoxError::from_static_str(
-                "profile export count limit exceeded",
-            ));
-        }
-        staged = tokio::task::spawn_blocking(move || {
-            staged.write(
-                evidence,
-                seed,
-                command.authorized,
-                day,
-                command.days,
-                limits,
-            )
-        })
-        .await??;
+    while let Some(entry) = source.next().await? {
+        staged = tokio::task::spawn_blocking(move || staged.write(entry)).await??;
     }
     tokio::task::spawn_blocking(move || staged.finish()).await?
 }

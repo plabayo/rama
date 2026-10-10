@@ -273,3 +273,6 @@ pub(super) fn read_bounded_profile_rows<'de, T: Deserialize<'de>>(
 
 #[cfg(test)]
 mod tests;
+
+mod writer;
+pub use writer::ProfileArchiveWriter;

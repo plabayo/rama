@@ -47,6 +47,9 @@ pub(crate) struct ExportProfilesCommand {
     /// Export the authorized partition instead of public observations.
     #[arg(long)]
     pub authorized: bool,
+    /// Additively import retained legacy rows before export (writes fp_v2 only).
+    #[arg(long)]
+    pub import_legacy: bool,
     /// Replace an existing destination after a complete successful export.
     #[arg(long)]
     pub replace: bool,

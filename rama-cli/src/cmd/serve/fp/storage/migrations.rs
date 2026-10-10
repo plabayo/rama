@@ -12,6 +12,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0002.sql"),
     include_str!("migrations/0003.sql"),
     include_str!("migrations/0004.sql"),
+    include_str!("migrations/0005.sql"),
 ];
 
 pub(super) async fn apply(client: &mut Client) -> Result<(), BoxError> {
@@ -89,7 +90,7 @@ pub(crate) mod tests {
 
     use super::*;
 
-    async fn connect(config: &Config) -> Result<Client, BoxError> {
+    pub(crate) async fn connect(config: &Config) -> Result<Client, BoxError> {
         let (client, connection) = config.connect(NoTls).await?;
         tokio::spawn(connection);
         Ok(client)
@@ -277,6 +278,7 @@ pub(crate) mod tests {
             .unwrap_err();
         assert_eq!(error.code(), Some(&SqlState::CHECK_VIOLATION));
     }
+
     #[tokio::test]
     #[ignore = "requires the private PostgreSQL integration harness"]
     async fn fp_loss_migration_preserves_unknown_existing_history() {

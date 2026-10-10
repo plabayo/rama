@@ -15,7 +15,7 @@ use rama_utils::octets::kib;
 use serde::Serialize;
 
 use super::{
-    CanonicalValue, ProfileCaptureCompleteness, ProfileDataError,
+    CanonicalDomain, CanonicalValue, ProfileCaptureCompleteness, ProfileDataError,
     canonical::{CanonicalReader, CanonicalWriter, HEADER_DOMAIN},
 };
 
@@ -457,6 +457,15 @@ impl HeaderCapture {
         &self,
         policy: &HeaderCapturePolicy,
     ) -> Result<CanonicalValue, ProfileDataError> {
+        self.canonical_with_domain(HEADER_DOMAIN, version_tag(self.version), policy)
+    }
+
+    pub(super) fn canonical_with_domain(
+        &self,
+        domain: CanonicalDomain,
+        tag: u8,
+        policy: &HeaderCapturePolicy,
+    ) -> Result<CanonicalValue, ProfileDataError> {
         self.completeness.require_complete("header observation")?;
         policy.validate()?;
         if self.fields.len() > policy.fields {
@@ -508,8 +517,8 @@ impl HeaderCapture {
         if content_length && transfer_encoding {
             return Err(ProfileDataError::Invalid("conflicting message framing"));
         }
-        let mut writer = CanonicalWriter::new(HEADER_DOMAIN, policy.bytes)?;
-        writer.u8(version_tag(self.version))?;
+        let mut writer = CanonicalWriter::new(domain, policy.bytes)?;
+        writer.u8(tag)?;
         writer.u8(self.completeness.tag())?;
         writer.u64(self.fields.len() as u64)?;
         let mut occurrences = HashMap::<HeaderName, u32>::default();
@@ -590,33 +599,12 @@ impl HeaderCapture {
         };
         let completeness = ProfileCaptureCompleteness::from_tag(reader.u8()?)?;
         completeness.require_complete("header observation")?;
-        let count = reader.count(policy.fields)?;
-        let mut fields = Vec::new();
-        for _ in 0..count {
-            let name = HeaderName::from_bytes(reader.bytes(policy.bytes)?)
-                .map_err(|_error| ProfileDataError::Invalid("header name"))?;
-            let occurrence = reader.u32()?;
-            let sensitive = read_bool(&mut reader)?;
-            let representation = decode_representation(&mut reader)?;
-            let source = match reader.u8()? {
-                0 => HeaderValueSource::Profile(reader.bytes(policy.bytes)?.into()),
-                1 => HeaderValueSource::Request(RequestBinding::from_tag(reader.u8()?)?),
-                2 => HeaderValueSource::CaptureSafeProfile(reader.bytes(policy.bytes)?.into()),
-                _ => return Err(ProfileDataError::Invalid("header value source")),
-            };
-            fields.push(HeaderOccurrence {
-                name,
-                occurrence,
-                sensitive,
-                representation,
-                value: source,
-            });
-        }
+        let fields = decode_fields(&mut reader, policy)?;
         reader.finish()?;
         let capture = Self {
             completeness,
             version,
-            fields: fields.into_boxed_slice(),
+            fields,
         };
         if capture.canonical(policy)?.bytes != value.bytes {
             return Err(ProfileDataError::Invalid("noncanonical header encoding"));
@@ -632,9 +620,6 @@ fn read_bool(reader: &mut CanonicalReader<'_>) -> Result<bool, ProfileDataError>
         _ => Err(ProfileDataError::Invalid("canonical boolean")),
     }
 }
-
-#[cfg(test)]
-mod tests;
 
 pub(super) fn encode_representation(
     writer: &mut CanonicalWriter,
@@ -721,3 +706,35 @@ pub(super) fn validate_static_binding(
     }
     Ok(())
 }
+
+pub(super) fn decode_fields(
+    reader: &mut CanonicalReader<'_>,
+    policy: &HeaderCapturePolicy,
+) -> Result<Box<[HeaderOccurrence]>, ProfileDataError> {
+    let count = reader.count(policy.fields)?;
+    let mut fields = Vec::new();
+    for _ in 0..count {
+        let name = HeaderName::from_bytes(reader.bytes(policy.bytes)?)
+            .map_err(|_error| ProfileDataError::Invalid("header name"))?;
+        let occurrence = reader.u32()?;
+        let sensitive = read_bool(reader)?;
+        let representation = decode_representation(reader)?;
+        let source = match reader.u8()? {
+            0 => HeaderValueSource::Profile(reader.bytes(policy.bytes)?.into()),
+            1 => HeaderValueSource::Request(RequestBinding::from_tag(reader.u8()?)?),
+            2 => HeaderValueSource::CaptureSafeProfile(reader.bytes(policy.bytes)?.into()),
+            _ => return Err(ProfileDataError::Invalid("header value source")),
+        };
+        fields.push(HeaderOccurrence {
+            name,
+            occurrence,
+            sensitive,
+            representation,
+            value: source,
+        });
+    }
+    Ok(fields.into_boxed_slice())
+}
+
+#[cfg(test)]
+mod tests;

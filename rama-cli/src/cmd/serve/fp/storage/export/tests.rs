@@ -1,27 +1,57 @@
 use super::*;
-use rama::ua::profile::ProfileKey;
+use rama::ua::profile::{ProfileEvidence, ProfileKey};
 
 #[test]
 fn export_publishes_complete_json_and_does_not_clobber_without_replace() {
     let parent = TempDir::new().unwrap();
     let output = parent.path().join("profiles.json");
-    StagedExport::create(output.clone(), false, kib(4), 100, 14)
-        .unwrap()
-        .finish()
-        .unwrap();
+    StagedExport::create(
+        output.clone(),
+        false,
+        false,
+        100,
+        14,
+        ProfileArchiveLimits {
+            bytes: kib(4),
+            ..ProfileArchiveLimits::default()
+        },
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
     let value: serde_json::Value = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
     assert_eq!(value["format_version"], 1);
     assert_eq!(value["profiles"].as_array().unwrap().len(), 0);
     fs::write(&output, b"prior content").unwrap();
-    StagedExport::create(output.clone(), false, kib(4), 100, 14)
-        .unwrap()
-        .finish()
-        .unwrap_err();
+    StagedExport::create(
+        output.clone(),
+        false,
+        false,
+        100,
+        14,
+        ProfileArchiveLimits {
+            bytes: kib(4),
+            ..ProfileArchiveLimits::default()
+        },
+    )
+    .unwrap()
+    .finish()
+    .unwrap_err();
     assert_eq!(fs::read(&output).unwrap(), b"prior content");
-    StagedExport::create(output.clone(), true, kib(4), 100, 14)
-        .unwrap()
-        .finish()
-        .unwrap();
+    StagedExport::create(
+        output.clone(),
+        true,
+        false,
+        100,
+        14,
+        ProfileArchiveLimits {
+            bytes: kib(4),
+            ..ProfileArchiveLimits::default()
+        },
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
     serde_json::from_slice::<serde_json::Value>(&fs::read(&output).unwrap()).unwrap();
     assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 1);
 }
@@ -30,10 +60,20 @@ fn export_publishes_complete_json_and_does_not_clobber_without_replace() {
 fn bounded_or_invalid_exports_publish_nothing_and_remove_staging() {
     let parent = TempDir::new().unwrap();
     let output = parent.path().join("profiles.json");
-    StagedExport::create(output.clone(), false, 1, 100, 14)
-        .unwrap()
-        .finish()
-        .unwrap_err();
+    match StagedExport::create(
+        output.clone(),
+        false,
+        false,
+        100,
+        14,
+        ProfileArchiveLimits {
+            bytes: 1,
+            ..ProfileArchiveLimits::default()
+        },
+    ) {
+        Err(_error) => (),
+        Ok(_export) => panic!("archive byte bound was ignored"),
+    }
     assert!(!output.exists());
     assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 0);
     let mut profile = ProfileKey::new("library").canonical(kib(16)).unwrap();
@@ -43,16 +83,22 @@ fn bounded_or_invalid_exports_publish_nothing_and_remove_staging() {
         profile,
         scopes: Box::default(),
     };
-    let error = StagedExport::create(output.clone(), false, kib(4), 100, 14)
-        .unwrap()
-        .write(
-            evidence,
-            [0; 32],
-            false,
-            100,
-            14,
-            ProfileAnalysisLimits::default(),
-        );
+    let error = StagedExport::create(
+        output.clone(),
+        false,
+        false,
+        100,
+        14,
+        ProfileArchiveLimits {
+            bytes: kib(4),
+            ..ProfileArchiveLimits::default()
+        },
+    )
+    .unwrap()
+    .write(ProfileArchiveEntry {
+        evidence,
+        sampler_seed: [0; 32],
+    });
     match error {
         Err(_error) => (),
         Ok(_export) => panic!("invalid evidence was accepted"),
