@@ -64,3 +64,6 @@ pub use order_capture::*;
 
 mod joint;
 pub use joint::*;
+
+mod transaction;
+pub use transaction::*;
