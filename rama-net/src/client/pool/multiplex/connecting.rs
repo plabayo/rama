@@ -148,7 +148,8 @@ impl Connects {
     }
 
     /// Dial, or wait for the connects in flight: a connection brings `streams`,
-    /// one of them for its own checkout, and `cold` says that is a guess.
+    /// one of them for its own checkout, and `cold` says that is a guess. The
+    /// `kept` streams lanes hand their waiters serve as many without a connect.
     /// `impatient` dials whatever is in flight, but never past `cap`. Queue in
     /// `waiters` first.
     pub(super) fn coalesce(
@@ -157,11 +158,22 @@ impl Connects {
         cold: bool,
         impatient: bool,
         cap: Option<NonZeroUsize>,
+        kept: usize,
     ) -> Coalesce {
         let cap = cap.map_or(usize::MAX, NonZeroUsize::get);
-        let waiting = self.waiters.len().max(1);
-        let mut needed = waiting.div_ceil(streams.saturating_sub(1).max(1));
-        if cold {
+        let spare = streams.saturating_sub(1);
+        // A connect of one stream serves none of its waiters: only the cap
+        // holds them back.
+        let mut needed = match spare {
+            0 => usize::MAX,
+            spare => self
+                .waiters
+                .len()
+                .max(1)
+                .saturating_sub(kept)
+                .div_ceil(spare),
+        };
+        if cold && spare != 0 {
             needed = needed.min(COLD_CONNECTS);
         }
         let mut in_flight = self.in_flight.load(Ordering::Acquire);

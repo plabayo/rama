@@ -824,6 +824,12 @@ required-features = ["http-full", "rustls", "aws-lc", "boring", "socks5", "quic"
 harness = false
 
 [[bench]]
+name = "e2e_grpc_client_server"
+path = "benches/e2e_grpc_client_server.rs"
+required-features = ["http-full", "grpc", "unix"]
+harness = false
+
+[[bench]]
 name = "h2_tunnel"
 path = "benches/h2_tunnel.rs"
 required-features = ["http-full"]

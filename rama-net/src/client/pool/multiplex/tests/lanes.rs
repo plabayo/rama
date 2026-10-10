@@ -9,7 +9,7 @@ async fn rekey_fences_candidates_selected_under_the_old_lane() {
     let lanes = pool.request_lanes(&TestId(0), &want(1));
 
     // The exact path: a snapshot taken before the rekey.
-    let snapshot = pool.snapshot(
+    let (snapshot, _) = pool.snapshot(
         &mut pool.storage.lock(),
         &TestId(0),
         &lanes,
@@ -66,7 +66,7 @@ async fn snapshots_of_several_lanes_keep_creation_order() {
         add(&pool, 0, None).await,
     ];
     let lanes = pool.request_lanes(&TestId(0), &want(1));
-    let snapshot = pool.snapshot(
+    let (snapshot, _) = pool.snapshot(
         &mut pool.storage.lock(),
         &TestId(0),
         &lanes,
@@ -363,7 +363,7 @@ async fn retired_preferred_candidate_does_not_hide_other_stream_capacity() {
     drop((first, second));
     let mut swept = Swept::default();
     let lanes = pool.request_lanes(&TestId(0), &EMPTY_INPUT);
-    let mut snapshot = pool.snapshot(
+    let (mut snapshot, _) = pool.snapshot(
         &mut pool.storage.lock(),
         &TestId(0),
         &lanes,

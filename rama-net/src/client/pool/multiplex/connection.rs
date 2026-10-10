@@ -370,6 +370,12 @@ impl<C, ID> StoredConnection<C, ID> {
         self.active.load(Ordering::Relaxed) < self.effective_capacity(cap)
     }
 
+    /// The streams it can take on top of its handouts.
+    pub(super) fn free_streams(&self, cap: usize) -> usize {
+        self.effective_capacity(cap)
+            .saturating_sub(self.active.load(Ordering::Relaxed))
+    }
+
     /// Re-list a connection that has spare stream capacity in its lane's
     /// `open` set after a handout was released.
     ///
@@ -625,8 +631,9 @@ fn trim_asked<C, ID: ConnID>(
         return true;
     };
     let asked = limits.take();
-    trim(&storage, limits, waiting, &asked);
-    let left_for_waiters = waiting.load(Ordering::Relaxed) != 0;
+    // Its own decision, not a second look at the waiters: one leaving between
+    // them would find this trimmer still held, and its trim would be lost.
+    let left_for_waiters = trim(&storage, limits, waiting, &asked);
     if left_for_waiters {
         // Waiting checkouts take idle connections: what they leave is trimmed
         // as the last of them leaves, of these ids only, not every id's.
@@ -654,13 +661,14 @@ impl<ID> Drop for Scheduled<ID> {
 
 /// Close the least recently used idle connections beyond the limits, of the
 /// ids `asked` first, then in total. Picks from atomics under the storage lock,
-/// asks the pick's admission without it.
+/// asks the pick's admission without it. Whether it left the rest to waiting
+/// checkouts.
 fn trim<C, ID: ConnID>(
     storage: &Mutex<Storage<C, ID>>,
     limits: &IdleLimits<ID>,
     waiting: &AtomicUsize,
     asked: &Asked<ID>,
-) {
+) -> bool {
     // Count what went idle without a release that counted it, such as work
     // outliving its handouts ending: asked about here, outside the lock.
     let uncounted: SmallVec<[Arc<StoredConnection<C, ID>>; 4]> = {
@@ -683,7 +691,7 @@ fn trim<C, ID: ConnID>(
     // Waiting checkouts take idle connections: none of them is extra then.
     while waiting.load(Ordering::Relaxed) == 0 {
         let Some((extra, excess)) = pick_extra(&storage.lock(), limits, asked, &busy) else {
-            return;
+            return false;
         };
         // Still over at the commit, whatever others closed since the pick. Asks
         // the admission under the slot lock, as `in_use` allows.
@@ -698,6 +706,7 @@ fn trim<C, ID: ConnID>(
         let stored = unstore(&mut storage.lock(), &extra);
         drop((stored, extra));
     }
+    true
 }
 
 /// The idle connection a trim closes next, and the limit it is over: the

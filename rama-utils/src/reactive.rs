@@ -344,6 +344,19 @@ impl WaitQueue {
             .map(|front| front.party.order)
     }
 
+    /// Whether the first waiter holds a wake: capacity is being handed down
+    /// the queue.
+    #[must_use]
+    pub fn front_is_woken(&self) -> bool {
+        !self.is_empty()
+            && self
+                .queue
+                .lock()
+                .waiters
+                .front()
+                .is_some_and(Waiter::is_woken)
+    }
+
     /// The wakes this queue sent its waiters that they did not spend,
     /// saturating at [`usize::MAX`].
     #[must_use]
@@ -1302,11 +1315,13 @@ mod tests {
         assert!(!queue.admits(None));
         assert_eq!(queue.front_order(), Some(0));
         assert!(queue.admits(Some(&first)) && !queue.admits(Some(&second)));
+        assert!(!queue.front_is_woken());
         queue.wake_one();
-        assert!(first.is_woken() && !second.is_woken());
+        assert!(first.is_woken() && !second.is_woken() && queue.front_is_woken());
         queue.wake_one();
         assert!(second.is_woken() && queue.admits(Some(&second)));
         first.spend(first.wakes());
+        assert!(!queue.front_is_woken(), "only the front counts");
         second.spend(second.wakes());
         assert!(queue.wake_all());
         assert!(first.is_woken() && second.is_woken());
@@ -1320,6 +1335,7 @@ mod tests {
         assert_eq!(queue.remove(&second), 1);
         assert!(queue.is_empty() && queue.admits(None) && !queue.wake_one());
         assert_eq!(queue.front_order(), None);
+        assert!(!queue.front_is_woken());
     }
 
     #[test]

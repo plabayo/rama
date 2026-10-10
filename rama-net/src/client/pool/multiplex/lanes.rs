@@ -89,6 +89,18 @@ impl<C, ID> Lane<C, ID> {
         self.list(conn);
     }
 
+    /// The streams its connections listed with room can take, for its
+    /// waiters: only while they are handed capacity, else they are refused it.
+    pub(super) fn kept_streams(&self, cap: usize) -> usize {
+        if self.open.is_empty() || !self.waiters.front_is_woken() {
+            return 0;
+        }
+        self.open
+            .values()
+            .map(|conn| conn.free_streams(cap))
+            .fold(0, usize::saturating_add)
+    }
+
     /// List `conn` as having room, if it is stored, unlisted and has room.
     pub(super) fn list(&mut self, conn: &Arc<StoredConnection<C, ID>>) {
         if conn.listed.load(Ordering::Relaxed)

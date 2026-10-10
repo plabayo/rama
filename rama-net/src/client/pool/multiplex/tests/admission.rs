@@ -816,7 +816,7 @@ async fn the_exact_path_hands_out_no_connection_past_the_idle_timeout() {
     tokio::time::sleep(Duration::from_millis(30)).await;
     let lanes = pool.request_lanes(&TestId(0), &EMPTY_INPUT);
     let mut swept = Swept::default();
-    let snapshot = pool.snapshot(
+    let (snapshot, _) = pool.snapshot(
         &mut pool.storage.lock(),
         &TestId(0),
         &lanes,

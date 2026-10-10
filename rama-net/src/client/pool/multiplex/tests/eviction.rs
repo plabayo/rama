@@ -1,5 +1,7 @@
 //! Eviction of idle connections, slot waiters and fairness across ids.
 
+use std::{cell::RefCell, rc::Rc};
+
 use super::*;
 
 #[tokio::test]
@@ -964,4 +966,96 @@ async fn an_eviction_of_any_id_finds_an_idle_connection_behind_busy_ones() {
         "the first busy ones moved back: {linked:?}"
     );
     drop(busy);
+}
+
+thread_local! {
+    static IN_USE_HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+}
+
+/// An admission that runs the armed hook as the pool asks about outliving
+/// work, outside the pool's lock, as an eviction's retire does.
+#[derive(Debug)]
+struct HookOnInUse;
+
+impl ConnectionAdmissionPolicy for HookOnInUse {
+    fn try_acquire(&self, _: &Extensions) -> Result<Option<ConnectionAdmissionLease>, BoxError> {
+        Ok(Some(ConnectionAdmissionLease::new(Arc::new(()), AskToken)))
+    }
+
+    fn subscribe(&self, _: Weak<dyn ChangeListener>) {}
+
+    fn in_use(&self) -> bool {
+        if let Some(hook) = IN_USE_HOOK.with(|slot| slot.borrow_mut().take()) {
+            hook();
+        }
+        false
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_evictor_refused_during_a_sampled_eviction_is_woken_for_the_next() {
+    let busy_count = 2 * SAMPLE;
+    let pool = Arc::new(exclusive(
+        busy_count + 2,
+        SaturationPolicy::EvictIdleAfter(Duration::from_millis(100)),
+    ));
+    // Idle at the front of the list, then the busy ones, then idle at the back.
+    let slot = pool.test_slot();
+    let conn = Conn {
+        serial: 1000,
+        extensions: Extensions::new(),
+    };
+    conn.extensions.insert(ConnectionHealthWatcher::default());
+    conn.extensions.insert(MaxConcurrency::new(1));
+    conn.extensions
+        .insert(ConnectionAdmission::new(HookOnInUse));
+    drop(
+        pool.create(TestId(1000), conn, slot, &EMPTY_INPUT)
+            .await
+            .unwrap(),
+    );
+    tokio::time::advance(Duration::from_millis(1)).await;
+    let mut busy = Vec::new();
+    for id in 0..busy_count {
+        busy.push(fresh(&pool, u32::try_from(id).unwrap()).await);
+    }
+    drop(fresh(&pool, 1001).await);
+    let mut first = checkout(&pool, 0);
+    assert!(first.poll().is_pending(), "at the total limit");
+    let second = Rc::new(RefCell::new(tokio_test::task::spawn({
+        let pool = pool.clone();
+        async move { pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await }
+    })));
+    assert!(
+        second.borrow_mut().poll().is_pending(),
+        "at the total limit"
+    );
+    tokio::time::advance(Duration::from_millis(150)).await;
+    // The second looks while the first evicts the front one, outside the lock.
+    let looking = second.clone();
+    IN_USE_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(move || {
+            assert!(
+                looking.borrow_mut().poll().is_pending(),
+                "the first is ahead of it"
+            );
+        }));
+    });
+    let Poll::Ready(Ok(ConnectionResult::CreatePermit(evicted))) = first.poll() else {
+        panic!("the first evicts");
+    };
+    assert!(
+        IN_USE_HOOK.with(|slot| slot.borrow().is_none()),
+        "the second looked during the eviction"
+    );
+    assert!(
+        second.borrow().is_woken(),
+        "the sample did not cover the list: the next evictor looks"
+    );
+    assert!(matches!(
+        second.borrow_mut().poll(),
+        Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+    ));
+    assert!(!pool.storage.lock().by_id.contains_key(&TestId(1001)));
+    drop((evicted, busy));
 }

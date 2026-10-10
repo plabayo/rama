@@ -204,11 +204,82 @@ async fn a_cap_on_connecting_dials_a_cold_http1_burst_a_few_at_a_time() {
         let _burst = burst(&svc, 0, 8).await;
         assert_eq!(dials(&svc), 8, "one connection per checkout");
         assert!(
-            start.elapsed() >= HANDSHAKE * 4,
+            start.elapsed() >= HANDSHAKE * 4 && start.elapsed() < HANDSHAKE * 5,
             "two at a time, also once done waiting: {:?}",
             start.elapsed()
         );
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_http1_burst_within_the_cap_on_connecting_dials_at_once() {
+    let pool = MultiplexPool::new()
+        .with_max_connecting_per_id(NonZeroUsize::new(6).unwrap())
+        .with_idle_timeout(Duration::from_secs(1));
+    let svc = dialing(pool, Dialer::new(Some(1)));
+    let start = tokio::time::Instant::now();
+    drop(burst(&svc, 0, 6).await);
+    assert!(
+        start.elapsed() < HANDSHAKE * 2,
+        "a cold id: one handshake, {:?}",
+        start.elapsed()
+    );
+    // Gone, its one stream each learned.
+    tokio::time::advance(Duration::from_secs(2)).await;
+    drop(svc.connect(ServiceInput::new(1)).await.unwrap());
+    assert!(!svc.pool.storage.lock().by_id.contains_key(&TestId(0)));
+    let start = tokio::time::Instant::now();
+    drop(burst(&svc, 0, 6).await);
+    assert!(
+        start.elapsed() < HANDSHAKE * 2,
+        "a learned id: one handshake, {:?}",
+        start.elapsed()
+    );
+    assert_eq!(dials(&svc), 13);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cap_on_connecting_binds_connects_whose_landings_serve_nobody_else() {
+    let pool = MultiplexPool::new().with_max_connecting_per_id(NonZeroUsize::new(2).unwrap());
+    let mut dialer = Dialer::new(Some(1));
+    dialer.kept_by_none = true;
+    let svc = dialing(pool, dialer);
+    let start = tokio::time::Instant::now();
+    let _burst = burst(&svc, 0, 8).await;
+    assert_eq!(dials(&svc), 8);
+    assert!(
+        start.elapsed() >= HANDSHAKE * 4,
+        "still two at a time: {:?}",
+        start.elapsed()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_checkout_held_by_the_cap_past_its_dial_deadline_sleeps() {
+    let pool = MultiplexPool::<Conn, TestId>::new()
+        .with_max_connecting_per_id(NonZeroUsize::new(1).unwrap());
+    let ConnectionResult::CreatePermit(dialing) =
+        pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await.unwrap()
+    else {
+        panic!("the first dials");
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(1);
+    let mut capped = tokio_test::task::spawn(Box::pin(pool.get_conn(
+        &TestId(0),
+        &EMPTY_INPUT,
+        Some(deadline),
+    )));
+    assert!(capped.poll().is_pending(), "held by the cap");
+    tokio::time::advance(Duration::from_millis(5)).await;
+    for _ in 0..4 {
+        assert!(capped.poll().is_pending(), "still capped");
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !capped.is_woken(),
+        "its spent patience does not keep it looking"
+    );
+    drop((capped, dialing));
 }
 
 #[tokio::test(start_paused = true)]
@@ -977,10 +1048,86 @@ async fn admitting_one(
 }
 
 #[tokio::test]
+async fn a_checkout_behind_woken_waiters_leaves_them_the_free_streams() {
+    let pool = MultiplexPool::new();
+    let conn = Conn {
+        serial: 0,
+        extensions: Extensions::new(),
+    };
+    conn.extensions.insert(ConnectionHealthWatcher::default());
+    conn.extensions.insert(MaxConcurrency::new(4));
+    let slot = new_slot(&pool).await;
+    let mut held = vec![
+        pool.create(TestId(0), conn, slot, &EMPTY_INPUT)
+            .await
+            .unwrap(),
+    ];
+    for _ in 0..3 {
+        let Ok(ConnectionResult::Connection(handout)) =
+            pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await
+        else {
+            panic!("a stream of the connection");
+        };
+        held.push(handout);
+    }
+    let ConnectionResult::CreatePermit(dialing) =
+        pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await.unwrap()
+    else {
+        panic!("every stream is held: a connect");
+    };
+    let mut first = queue(&pool, &EMPTY_INPUT);
+    let mut second = queue(&pool, &EMPTY_INPUT);
+    held.truncate(1);
+    drop(dialing);
+    assert!(first.is_woken() && second.is_woken());
+    // Nothing in flight: what the woken ones leave serves the newcomer.
+    let mut third = checkout(&pool, 0);
+    assert!(
+        third.poll().is_pending(),
+        "three streams free for three: no connect"
+    );
+    for waiter in [&mut first, &mut second, &mut third] {
+        assert_eq!(serial_of(&handout(waiter)).await, 0);
+    }
+}
+
+#[tokio::test]
+async fn free_streams_that_refused_the_front_waiter_serve_nobody() {
+    let pool = MultiplexPool::new();
+    // Room for three streams, as far as its peer goes, but it admits one.
+    let slot = new_slot(&pool).await;
+    let (conn, _admission) = admission_connection(&pool, 1);
+    conn.extensions.insert(ConnectionHealthWatcher::default());
+    conn.extensions.insert(MaxConcurrency::new(3));
+    let _held = pool
+        .create(TestId(0), conn, slot, &EMPTY_INPUT)
+        .await
+        .unwrap();
+    let ConnectionResult::CreatePermit(_dialing) =
+        pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await.unwrap()
+    else {
+        panic!("refused: a connect");
+    };
+    let _front = queue(&pool, &EMPTY_INPUT);
+    let _second = queue(&pool, &EMPTY_INPUT);
+    // Three waiting, one connect for two of them in flight.
+    let mut third = checkout(&pool, 0);
+    assert!(
+        matches!(
+            third.poll(),
+            Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+        ),
+        "the front looked and was refused: a second connect"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_checkout_waiting_for_connects_gives_back_the_ids_slot_it_held() {
+    const PATIENCE: Duration = Duration::from_millis(10);
     let pool = MultiplexPool::new()
         .with_max_connections_per_id(NonZeroUsize::new(2).unwrap())
-        .with_max_connections_total(NonZeroUsize::new(2).unwrap());
+        .with_max_connections_total(NonZeroUsize::new(2).unwrap())
+        .with_max_wait_before_dial(PATIENCE);
     let (_only, max) = admitting_one(&pool, 0).await;
     let other = fresh(&pool, 1).await;
     let mut first = checkout(&pool, 0);
@@ -992,7 +1139,12 @@ async fn a_checkout_waiting_for_connects_gives_back_the_ids_slot_it_held() {
     let mut second = checkout(&pool, 0);
     assert!(
         second.poll().is_pending(),
-        "counts a connect, at the id's limit"
+        "leaves the free streams to the woken first"
+    );
+    tokio::time::advance(PATIENCE).await;
+    assert!(
+        second.poll().is_pending(),
+        "out of patience it counts a connect, at the id's limit"
     );
     assert!(first.poll().is_pending(), "waits for that connect");
     assert!(second.poll().is_pending(), "at the total limit");
@@ -1270,7 +1422,7 @@ async fn a_usable_landing_leaves_groups_it_does_not_serve_flagged() {
     ))
     .collect();
     let group = MultiplexPool::connects_in(&mut pool.storage.lock(), &TestId(0), &other);
-    let Coalesce::Dial(Some(claim)) = group.coalesce(10, false, true, None) else {
+    let Coalesce::Dial(Some(claim)) = group.coalesce(10, false, true, None, 0) else {
         panic!("a claim");
     };
     // Its connect landed where none of its checkouts can use it.

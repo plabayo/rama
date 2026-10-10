@@ -712,20 +712,21 @@ where
         lanes: &RequestLanes,
         swept: &mut Swept<C, ID>,
         look: &mut Look<'_>,
-    ) -> Snapshot<C, ID> {
+    ) -> (Snapshot<C, ID>, usize) {
         let Some(bucket) = storage.by_id.get_mut(id) else {
-            return Snapshot::new();
+            return (Snapshot::new(), 0);
         };
         self.sweep_bucket(bucket, swept);
         look.note_expiry(swept.next_expiry);
         if bucket.is_empty() {
             storage.by_id.remove(id);
-            return Snapshot::new();
+            return (Snapshot::new(), 0);
         }
         // Sorted once: the filter below is a search, not a scan per connection.
         let mut expiring: SmallVec<[u64; 4]> = swept.expiring.iter().map(|conn| conn.seq).collect();
         expiring.sort_unstable();
         let mut snapshot = Snapshot::new();
+        let mut kept = 0_usize;
         let mut lanes_seen = 0;
         for lane in bucket.request_lanes_mut(lanes) {
             if let Look::Register(waiting) = look {
@@ -735,6 +736,7 @@ where
                 look.waiting()
                     .and_then(|waiting| waiting.waiter_in(&lane.waiters)),
             ) {
+                kept = kept.saturating_add(lane.kept_streams(self.max_concurrent_streams));
                 continue;
             }
             lanes_seen += usize::from(!lane.conns.is_empty());
@@ -752,7 +754,7 @@ where
         if lanes_seen > 1 {
             snapshot.sort_unstable_by_key(|(conn, _)| conn.seq);
         }
-        snapshot
+        (snapshot, kept)
     }
 
     /// Evict the least recently used idle connection, of `within` or of any
@@ -852,8 +854,8 @@ where
     /// [`Self::pick_lru_idle`] of any id: among the front of the idle list, as
     /// approximate least recently used eviction samples, so a pick costs at
     /// most [`SAMPLE`] looks; the scan of the pool only if they hold none and
-    /// more are stored. Another could have gone if the sample saw one: idle
-    /// connections past it woke an evictor as they went idle.
+    /// more are stored. Another could have gone if the sample saw one or did
+    /// not cover the list.
     fn pick_lru_idle_sampled(
         &self,
         storage: &Storage<C, ID>,
@@ -884,7 +886,8 @@ where
             }
         }
         match candidate {
-            Some(conn) => Some((conn.clone(), found > 1)),
+            // Others may be idle past the sample: one more evictor looks.
+            Some(conn) => Some((conn.clone(), found > 1 || !sample.covered)),
             None if sample.covered => None,
             None => Self::pick_lru_idle_of(
                 storage.by_id.values().flat_map(IdBucket::lanes),
@@ -1215,43 +1218,45 @@ where
     /// A new checkout only takes a snapshot if some connection has room,
     /// keeping fully busy lanes, which are the reason to create a connection
     /// or wait, at a bare scan of counters. Then the snapshot is empty and the
-    /// flag says the lanes hold saturated connections.
+    /// flag says the lanes hold saturated connections. Last, the streams lanes
+    /// that do not admit it keep for their waiters, see [`Lane::kept_streams`].
     fn snapshot_exact(
         &self,
         id: &ID,
         lanes: &RequestLanes,
         look: &mut Look<'_>,
-    ) -> (Snapshot<C, ID>, bool) {
+    ) -> (Snapshot<C, ID>, bool, usize) {
         if !id.is_reusable() {
-            return (Snapshot::new(), false);
+            return (Snapshot::new(), false, 0);
         }
         let mut storage = self.storage.lock();
-        if !storage.by_id.contains_key(id) {
-            return (Snapshot::new(), false);
-        }
         if matches!(look, Look::New) {
             let Some(bucket) = storage.by_id.get_mut(id) else {
-                return (Snapshot::new(), false);
+                return (Snapshot::new(), false, 0);
             };
             let mut stored = false;
             let mut room = false;
+            let mut kept = 0_usize;
             for lane in bucket.request_lanes_mut(lanes) {
                 stored |= !lane.conns.is_empty();
-                room |= lane.waiters.admits(None)
-                    && lane
-                        .conns
-                        .iter()
-                        .any(|conn| conn.has_capacity(self.max_concurrent_streams));
+                if !lane.waiters.admits(None) {
+                    kept = kept.saturating_add(lane.kept_streams(self.max_concurrent_streams));
+                    continue;
+                }
+                room |= lane
+                    .conns
+                    .iter()
+                    .any(|conn| conn.has_capacity(self.max_concurrent_streams));
             }
             if !room {
-                return (Snapshot::new(), stored);
+                return (Snapshot::new(), stored, kept);
             }
         }
         let mut swept = Swept::default();
-        let snapshot = self.snapshot(&mut storage, id, lanes, &mut swept, look);
+        let (snapshot, kept) = self.snapshot(&mut storage, id, lanes, &mut swept, look);
         drop(storage);
         self.settle(swept);
-        (snapshot, false)
+        (snapshot, false, kept)
     }
 
     /// Turn a fairly acquired total-slot permit into a handout. Reuse a
@@ -1274,6 +1279,7 @@ where
                 &mut swept,
                 &mut Look::Waiting(waiting),
             )
+            .0
         } else {
             Snapshot::new()
         };
@@ -1317,7 +1323,8 @@ where
     /// the id's last one took, else, if the request expects to multiplex, what
     /// the pool's last multiplexed one took or the hint's guess. A claim
     /// `held` from an earlier look is used if it still counts for these lanes.
-    /// No dial goes past `cap` connects in flight.
+    /// No dial goes past `cap` connects in flight; the `kept` streams lanes
+    /// hand their waiters count against what those need.
     #[expect(clippy::too_many_arguments)]
     fn coalesce(
         &self,
@@ -1328,6 +1335,7 @@ where
         held: &mut Option<Connect>,
         impatient: bool,
         cap: Option<NonZeroUsize>,
+        kept: usize,
     ) -> Coalesce {
         let estimate = id
             .is_reusable()
@@ -1344,11 +1352,13 @@ where
             }
             drop(connect);
         }
-        if connects.lands_unusable() {
-            // Its connects bring nothing its waiters can use: each dials its own.
+        // Its connects bring nothing its waiters can use: each dials its own,
+        // counted under a cap on connects if there is one, so it still holds.
+        let unusable = connects.lands_unusable();
+        if unusable && cap.is_none() {
             return Coalesce::Dial(None);
         }
-        let mut impatient = impatient;
+        let mut impatient = impatient || unusable;
         if let Look::Register(waiting) = look {
             // Queued before it counts them: a connect ending meanwhile wakes it.
             let seen = waiting.wait_for_connects(&connects);
@@ -1361,7 +1371,7 @@ where
                 None => {}
             }
         }
-        connects.coalesce(streams, cold, impatient, cap)
+        connects.coalesce(streams, cold, impatient, cap, kept)
     }
 
     /// The streams a new connection for the request's lanes takes, whether that
@@ -1406,7 +1416,7 @@ where
         let mut held = held;
         // It dials with the slot it was handed: counted, so the others see
         // the cap, but never held back by it.
-        match self.coalesce(id, &lanes, input, &mut Look::New, &mut held, true, None) {
+        match self.coalesce(id, &lanes, input, &mut Look::New, &mut held, true, None, 0) {
             Coalesce::Dial(connect) => connect,
             Coalesce::Wait | Coalesce::Failed(_) => None,
         }
@@ -1668,7 +1678,7 @@ where
 
             // Only this id's bucket is touched under the lock; swept
             // connections close after it is released.
-            let (mut same_id, saturated_bucket) = self.snapshot_exact(id, &lanes, look);
+            let (mut same_id, saturated_bucket, kept) = self.snapshot_exact(id, &lanes, look);
             if let Look::Register(waiting) = look {
                 waiting.leave_other_lanes();
             }
@@ -1700,6 +1710,7 @@ where
                 held_connect,
                 impatient,
                 self.max_connecting_per_id,
+                kept,
             ) {
                 Coalesce::Dial(connect) => connect,
                 Coalesce::Wait => {
@@ -1850,8 +1861,11 @@ where
                         .into_iter()
                         .chain(deadline)
                         .min();
+                    // Only while patient: once its patience is up, as at a cap
+                    // on connects, it waits for a landing, failure or cancel.
                     if let Some(at) = at
                         && dial_patience.is_none()
+                        && !impatient
                     {
                         dial_patience.set(Some(tokio::time::sleep_until(at)));
                     }
