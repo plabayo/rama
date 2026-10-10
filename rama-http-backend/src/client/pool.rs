@@ -198,6 +198,11 @@ pub(crate) fn connection_version_requirement(input: &ConnectRequest) -> Option<V
 /// http/1, the peer's stream limit for http/2 and http/3), unless
 /// `max_streams_per_connection` is lower. A burst on a multiplexed origin waits
 /// for the connections it needs instead of dialing one per request.
+///
+/// By default nothing is capped: connections close once idle for
+/// `idle_timeout`. A cap below what the traffic keeps busy costs handshakes:
+/// requests queue at a connection limit, and idle connections closed over an
+/// idle limit are dialed again by the next ones.
 #[derive(Debug, Clone)]
 pub struct HttpPooledConnectorConfig {
     /// At most this many concurrent requests per connection, below what the
@@ -216,19 +221,19 @@ pub struct HttpPooledConnectorConfig {
     /// What a request that needs a new connection does at a connection limit.
     pub saturation_policy: SaturationPolicy,
     /// How long a request waits for connections being established before it
-    /// dials its own, limits permitting. `None`: it waits for them.
+    /// dials its own, limits permitting. `None`: it waits for them, until
+    /// `wait_for_pool_timeout`.
     pub max_wait_before_dial: Option<Duration>,
     /// How a connection is chosen among several that can serve a request.
     pub selection: MuxSelection,
     /// Connections idle (no active streams) for longer than this are dropped,
     /// as the pool notices: when a request asks it for a connection.
     pub idle_timeout: Option<Duration>,
-    /// How long to wait for the pool to hand out a connection before timing out.
+    /// How long to wait for the pool to hand out a connection before timing
+    /// out; a request waiting for another's new connection dials its own by
+    /// then.
     pub wait_for_pool_timeout: Option<Duration>,
 }
-
-const DEFAULT_MAX_CONNECTIONS_TOTAL: NonZeroUsize = NonZeroUsize::new(50).unwrap();
-const DEFAULT_MAX_STREAMS_PER_CONNECTION: NonZeroUsize = NonZeroUsize::new(100).unwrap();
 
 /// Streams to expect of a connection before the pool saw any multiplex: the
 /// least RFC 9113 recommends a peer to allow.
@@ -252,8 +257,8 @@ fn expected_streams(input: &Extensions) -> Option<NonZeroUsize> {
 impl Default for HttpPooledConnectorConfig {
     fn default() -> Self {
         Self {
-            max_streams_per_connection: Some(DEFAULT_MAX_STREAMS_PER_CONNECTION),
-            max_connections_total: Some(DEFAULT_MAX_CONNECTIONS_TOTAL),
+            max_streams_per_connection: None,
+            max_connections_total: None,
             max_connections_per_id: None,
             max_idle_per_id: None,
             max_idle_total: None,
@@ -1755,17 +1760,17 @@ mod tests {
     }
 
     #[test]
-    fn the_default_config() {
+    fn the_default_config_caps_nothing() {
         let config = HttpPooledConnectorConfig::default();
-        assert_eq!(config.max_streams_per_connection, NonZeroUsize::new(100));
-        assert_eq!(config.max_connections_total, NonZeroUsize::new(50));
         assert_eq!(
             (
+                config.max_streams_per_connection,
+                config.max_connections_total,
                 config.max_connections_per_id,
                 config.max_idle_per_id,
                 config.max_idle_total
             ),
-            (None, None, None)
+            (None, None, None, None, None)
         );
         assert_eq!(config.saturation_policy, SaturationPolicy::default());
         assert_eq!(config.max_wait_before_dial, None);
