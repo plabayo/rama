@@ -84,6 +84,22 @@ pub struct CapturedSlot {
     pub value: CanonicalValue,
 }
 
+impl CapturedSlot {
+    /// The same owned normalization is used by joint and individual buckets.
+    pub fn structural(&self, maximum_bytes: usize) -> Result<CanonicalValue, ProfileDataError> {
+        validate_slot(self, false, maximum_bytes)?;
+        if self.kind.namespace().is_none() {
+            Ok(self.value.clone())
+        } else {
+            let limits = OrderCaptureLimits {
+                elements: maximum_bytes,
+                bytes: maximum_bytes,
+            };
+            OrderedProtocolCapture::from_canonical(&self.value, limits)?.structural(limits)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct JointCapture {
     pub level: CaptureLevel,
@@ -261,16 +277,7 @@ impl JointCapture {
             .slots
             .iter()
             .map(|slot| {
-                let value = if slot.kind.namespace().is_none() {
-                    slot.value.clone()
-                } else {
-                    let order_limits = OrderCaptureLimits {
-                        elements: limits.value_bytes,
-                        bytes: limits.value_bytes,
-                    };
-                    OrderedProtocolCapture::from_canonical(&slot.value, order_limits)?
-                        .structural(order_limits)?
-                };
+                let value = slot.structural(limits.value_bytes)?;
                 Ok(CapturedSlot {
                     kind: slot.kind,
                     value,

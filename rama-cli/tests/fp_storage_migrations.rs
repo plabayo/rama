@@ -2,3 +2,6 @@
 
 #[path = "../src/cmd/serve/fp/storage/migrations.rs"]
 mod migrations;
+
+#[path = "../src/cmd/serve/fp/storage/counted.rs"]
+mod counted;

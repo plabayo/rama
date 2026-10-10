@@ -7,7 +7,10 @@ use rama::{
 use tokio_postgres::Client;
 
 const MIGRATION_LOCK: i64 = 0x7261_6d61_6670_7632;
-const MIGRATIONS: &[&str] = &[include_str!("migrations/0001.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("migrations/0001.sql"),
+    include_str!("migrations/0002.sql"),
+];
 
 pub(super) async fn apply(client: &mut Client) -> Result<(), BoxError> {
     apply_scripts(client, MIGRATIONS).await
@@ -76,7 +79,7 @@ async fn apply_scripts(client: &mut Client, scripts: &[&str]) -> Result<(), BoxE
 }
 
 #[cfg(all(test, unix))]
-mod tests {
+pub(crate) mod tests {
     use std::{env, time::Duration};
 
     use tokio::{task::JoinSet, time::timeout};
@@ -92,7 +95,7 @@ mod tests {
 
     /// The harness starts a private Unix-socket-only PostgreSQL cluster with this marker.
     /// No test accepts a network host or a database with an ordinary production name.
-    async fn isolated_database() -> Result<(Config, Client), BoxError> {
+    pub(crate) async fn isolated_database() -> Result<(Config, Client), BoxError> {
         let config: Config = env::var("RAMA_FP_TEST_PG")
             .context("isolated PostgreSQL harness must supply RAMA_FP_TEST_PG")?
             .parse()?;
@@ -107,6 +110,11 @@ mod tests {
             .await?
             .try_get(0)?;
         assert_eq!(marker, "isolated");
+        // This session lock serializes destructive tests, independently of the
+        // production migration lock used by each concurrent startup connection.
+        client
+            .execute("SELECT pg_advisory_lock($1)", &[&0x7261_6d61_7465_7374_i64])
+            .await?;
         Ok((config, client))
     }
 
@@ -154,7 +162,7 @@ mod tests {
             .await
             .unwrap()
             .get(0);
-        assert_eq!(count, 1);
+        assert_eq!(count, MIGRATIONS.len() as i64);
         client
             .batch_execute("DROP SCHEMA fp_v2 CASCADE")
             .await
@@ -189,26 +197,27 @@ mod tests {
             .await
             .unwrap()
             .get(0);
-        assert_eq!(count, 1);
+        assert_eq!(count, MIGRATIONS.len() as i64);
         // Altered owned SQL cannot silently reuse an applied version.
-        apply_scripts(&mut client, &["SELECT 1"]).await.unwrap_err();
+        let mut changed = MIGRATIONS.to_vec();
+        changed[0] = "SELECT 1";
+        apply_scripts(&mut client, &changed).await.unwrap_err();
         apply_scripts(&mut client, &[]).await.unwrap_err();
+        // Isolate the sequence guard from pending-script conflicts and manifest length.
         client
-            .execute(
-                "UPDATE fp_v2.migrations SET version = 2 WHERE version = 1",
-                &[],
-            )
+            .batch_execute("DROP SCHEMA fp_v2 CASCADE")
             .await
             .unwrap();
-        apply(&mut client).await.unwrap_err();
-        apply_scripts(&mut client, &[MIGRATIONS[0], "SELECT 1"])
+        apply_scripts(&mut client, &[MIGRATIONS[0]]).await.unwrap();
+        client
+            .execute("UPDATE fp_v2.migrations SET version=2 WHERE version=1", &[])
+            .await
+            .unwrap();
+        apply_scripts(&mut client, &[MIGRATIONS[0]])
             .await
             .unwrap_err();
         client
-            .execute(
-                "UPDATE fp_v2.migrations SET version = 1 WHERE version = 2",
-                &[],
-            )
+            .execute("UPDATE fp_v2.migrations SET version=1 WHERE version=2", &[])
             .await
             .unwrap();
         // An incremental failure leaves the previous committed schema and checksum intact.

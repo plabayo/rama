@@ -7,8 +7,8 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     FlowKey, HeaderCapture, HeaderCapturePolicy, JointCapture, JointCaptureLimits,
-    OrderCaptureLimits, OrderedProtocolCapture, ProfileKey, joint::validate_joint_structure,
-    order_capture::validate_structure,
+    OrderCaptureLimits, OrderedProtocolCapture, ProfileKey, ProfileObservationScope,
+    joint::validate_joint_structure, order_capture::validate_structure,
 };
 
 pub(super) const HEADER_DOMAIN: u16 = 1;
@@ -18,6 +18,7 @@ pub(super) const ORDER_DOMAIN: u16 = 4;
 pub(super) const ORDER_STRUCTURE_DOMAIN: u16 = 5;
 pub(super) const JOINT_DOMAIN: u16 = 6;
 pub(super) const JOINT_STRUCTURE_DOMAIN: u16 = 7;
+pub(super) const SCOPE_DOMAIN: u16 = 8;
 
 const PREFIX: &[u8] = b"rama-profile\0";
 const VERSION: u16 = 1;
@@ -60,6 +61,22 @@ impl fmt::Display for ProfileDataError {
 impl Error for ProfileDataError {}
 
 impl CanonicalValue {
+    /// Validate the owned payload and return its persistent domain tag.
+    /// Storage adapters use this instead of interpreting the canonical envelope.
+    pub fn validated_domain(&self, maximum_bytes: usize) -> Result<u16, ProfileDataError> {
+        if self.bytes.len() > maximum_bytes {
+            return Err(ProfileDataError::LimitExceeded("canonical bytes"));
+        }
+        let offset = PREFIX.len() + 2;
+        let tag = self
+            .bytes
+            .get(offset..offset + 2)
+            .ok_or(ProfileDataError::Invalid("truncated canonical domain"))?;
+        let domain = u16::from_be_bytes([tag[0], tag[1]]);
+        self.validate_content(domain, maximum_bytes)?;
+        Ok(domain)
+    }
+
     /// An envelope and digest do not establish the payload's ownership or semantics.
     pub(super) fn validate_content(
         &self,
@@ -104,6 +121,9 @@ impl CanonicalValue {
                 )?;
             }
             JOINT_STRUCTURE_DOMAIN => validate_joint_structure(self, maximum_bytes)?,
+            SCOPE_DOMAIN => {
+                ProfileObservationScope::from_canonical(self, maximum_bytes)?;
+            }
             _ => return Err(ProfileDataError::Unsupported("canonical content domain")),
         }
         Ok(())

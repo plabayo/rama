@@ -67,3 +67,9 @@ pub use joint::*;
 
 mod transaction;
 pub use transaction::*;
+
+mod scope;
+pub use scope::*;
+
+mod record;
+pub use record::*;

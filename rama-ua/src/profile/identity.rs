@@ -104,7 +104,7 @@ impl ProfileKey {
 }
 
 /// Unknown context is distinct from an observed fresh or resumed connection.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResumptionContext {
     #[default]
     Unknown,
@@ -112,18 +112,59 @@ pub enum ResumptionContext {
     Resumed,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConnectionIpFamily {
     V4,
     V6,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionContext {
     pub resumption: ResumptionContext,
     pub early_data: Option<bool>,
     pub token_present: Option<bool>,
     pub ip_family: Option<ConnectionIpFamily>,
+}
+
+impl ConnectionContext {
+    pub(super) fn encode(&self, writer: &mut CanonicalWriter) -> Result<(), ProfileDataError> {
+        writer.u8(match self.resumption {
+            ResumptionContext::Unknown => 0,
+            ResumptionContext::Fresh => 1,
+            ResumptionContext::Resumed => 2,
+        })?;
+        optional_bool(writer, self.early_data)?;
+        optional_bool(writer, self.token_present)?;
+        writer.u8(match self.ip_family {
+            None => 0,
+            Some(ConnectionIpFamily::V4) => 1,
+            Some(ConnectionIpFamily::V6) => 2,
+        })?;
+        Ok(())
+    }
+
+    pub(super) fn decode(reader: &mut CanonicalReader<'_>) -> Result<Self, ProfileDataError> {
+        let resumption = match reader.u8()? {
+            0 => ResumptionContext::Unknown,
+            1 => ResumptionContext::Fresh,
+            2 => ResumptionContext::Resumed,
+            _ => return Err(ProfileDataError::Invalid("resumption context tag")),
+        };
+        let early_data = read_optional_bool(reader)?;
+        let token_present = read_optional_bool(reader)?;
+        let ip_family = match reader.u8()? {
+            0 => None,
+            1 => Some(ConnectionIpFamily::V4),
+            2 => Some(ConnectionIpFamily::V6),
+            _ => return Err(ProfileDataError::Invalid("IP family tag")),
+        };
+        Ok(Self {
+            resumption,
+            early_data,
+            token_present,
+            ip_family,
+        })
+    }
 }
 
 /// Values and absence come from captures; selection does not synthesize Fetch metadata.
@@ -231,18 +272,7 @@ impl FlowKey {
                         optional_text(&mut writer, fetch.user_activation.as_deref())?;
                     }
                 }
-                writer.u8(match connection.resumption {
-                    ResumptionContext::Unknown => 0,
-                    ResumptionContext::Fresh => 1,
-                    ResumptionContext::Resumed => 2,
-                })?;
-                optional_bool(&mut writer, connection.early_data)?;
-                optional_bool(&mut writer, connection.token_present)?;
-                writer.u8(match connection.ip_family {
-                    None => 0,
-                    Some(ConnectionIpFamily::V4) => 1,
-                    Some(ConnectionIpFamily::V6) => 2,
-                })?;
+                connection.encode(&mut writer)?;
             }
             Self::Other {
                 protocol,
@@ -296,31 +326,13 @@ impl FlowKey {
                     }),
                     _ => return Err(ProfileDataError::Invalid("Fetch context tag")),
                 };
-                let resumption = match reader.u8()? {
-                    0 => ResumptionContext::Unknown,
-                    1 => ResumptionContext::Fresh,
-                    2 => ResumptionContext::Resumed,
-                    _ => return Err(ProfileDataError::Invalid("resumption context tag")),
-                };
-                let early_data = read_optional_bool(&mut reader)?;
-                let token_present = read_optional_bool(&mut reader)?;
-                let ip_family = match reader.u8()? {
-                    0 => None,
-                    1 => Some(ConnectionIpFamily::V4),
-                    2 => Some(ConnectionIpFamily::V6),
-                    _ => return Err(ProfileDataError::Invalid("IP family tag")),
-                };
+                let connection = ConnectionContext::decode(&mut reader)?;
                 Self::Http {
                     version,
                     method,
                     initiator,
                     fetch,
-                    connection: ConnectionContext {
-                        resumption,
-                        early_data,
-                        token_present,
-                        ip_family,
-                    },
+                    connection,
                 }
             }
             1 => Self::Other {
