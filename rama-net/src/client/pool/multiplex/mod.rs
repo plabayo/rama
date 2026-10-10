@@ -156,6 +156,10 @@ const MAX_SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 
 const MIN_SWEEP_INTERVAL: Duration = Duration::from_millis(1);
 
+/// The pace of the sweeps of every id without an idle timeout: they only look
+/// for broken connections then.
+const FULL_SWEEP_WITHOUT_TIMEOUT: Duration = Duration::from_mins(1);
+
 /// Connections grouped by id, so a handout only touches its own bucket and
 /// the lock is never held for a scan of the whole pool.
 struct Storage<C, ID> {
@@ -172,6 +176,9 @@ struct Storage<C, ID> {
     /// The streams a multiplexed connection of any id took last: a guess for
     /// an id the pool has not seen, if its requests expect to multiplex.
     learned_any: Option<NonZeroUsize>,
+    /// When the next checkout sweeps every id: ids nobody asks for again are
+    /// reaped too.
+    next_full_sweep: u64,
 }
 
 /// `duration` in nanoseconds, or as many as fit.
@@ -300,6 +307,7 @@ impl<C, ID> Default for MultiplexPool<C, ID> {
                 connects: HashMap::new(),
                 learned: HashMap::new(),
                 learned_any: None,
+                next_full_sweep: 0,
             })),
             max_connections_total: None,
             total_slots: None,
@@ -455,8 +463,9 @@ impl<C, ID> MultiplexPool<C, ID> {
     generate_set_and_with! {
         /// Drop connections that have been idle (no active streams) for longer than
         /// the given timeout. Only checked when a connection is requested: the
-        /// connection a checkout is about to hand out is always checked, and the
-        /// id's other connections are swept at least about once a second. A
+        /// connection a checkout is about to hand out is always checked, the
+        /// id's other connections are swept at least about once a second, and
+        /// every id's about every quarter of the timeout (at least a second). A
         /// checkout waiting at a connection limit looks again once one would
         /// expire, on a tokio timer: the runtime needs its time driver enabled.
         pub fn idle_timeout(mut self, timeout: Option<Duration>) -> Self {
@@ -565,6 +574,15 @@ where
         self.idle_timeout
             .map_or(MAX_SWEEP_INTERVAL, |timeout| timeout / 4)
             .clamp(MIN_SWEEP_INTERVAL, MAX_SWEEP_INTERVAL)
+    }
+
+    /// The pace of the sweeps of every id, each a scan of the whole pool under
+    /// its lock: a quarter of the idle timeout, at least the longest pace of a
+    /// bucket's.
+    fn full_sweep_interval(&self) -> Duration {
+        self.idle_timeout
+            .map_or(FULL_SWEEP_WITHOUT_TIMEOUT, |timeout| timeout / 4)
+            .max(MAX_SWEEP_INTERVAL)
     }
 
     /// The instant the next sweep of a bucket swept now is due.
@@ -742,6 +760,9 @@ where
                 });
             }
             busy.push(conn.seq);
+            // Maybe the last handle, if another took it out meanwhile: it closes
+            // outside the lock.
+            drop(conn);
             storage = self.storage.lock();
             // An older evictor may have queued ahead meanwhile.
             if !chances.admits(evictor.and_then(|evictor| evictor.waiter_in(chances))) {
@@ -982,6 +1003,10 @@ where
         let now = now_monotonic_nanos();
         let (only_lane, mut next, mut classes) = {
             let mut storage = self.storage.lock();
+            if now >= storage.next_full_sweep {
+                storage.next_full_sweep = now.saturating_add(nanos(self.full_sweep_interval()));
+                self.sweep_all(&mut storage, &mut swept);
+            }
             let bucket = match storage.by_id.get_mut(id) {
                 Some(bucket) if now >= bucket.next_sweep => {
                     self.sweep_bucket(bucket, &mut swept);
@@ -1855,7 +1880,7 @@ where
         let conn = Arc::new(StoredConnection {
             max_concurrency: conn.extensions().get_arc::<MaxConcurrency>(),
             health: conn.extensions().get_arc::<ConnectionHealthWatcher>(),
-            broken_told: AtomicBool::new(false),
+            unusable_told: AtomicBool::new(false),
             admission: conn
                 .extensions()
                 .self_get_ref::<ConnectionAdmission>()
@@ -1950,8 +1975,14 @@ where
         }
         if new_lane {
             self.notify.notify_waiters();
-        } else if let Some(waiters) = conn.lane_waiters.lock().clone() {
-            waiters.wake_many(streams.saturating_sub(1).min(waiters.len()));
+        } else {
+            // Broken before it was stored, so before any listener heard it.
+            if conn.is_broken() {
+                conn.tell_unusable();
+            }
+            if let Some(waiters) = conn.lane_waiters.lock().clone() {
+                waiters.wake_many(streams.saturating_sub(1).min(waiters.len()));
+            }
         }
 
         #[cfg(feature = "opentelemetry")]

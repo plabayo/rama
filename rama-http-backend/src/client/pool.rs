@@ -200,9 +200,11 @@ pub(crate) fn connection_version_requirement(input: &ConnectRequest) -> Option<V
 /// for the connections it needs instead of dialing one per request.
 ///
 /// By default nothing is capped: connections close once idle for
-/// `idle_timeout`. A cap below what the traffic keeps busy costs handshakes:
-/// requests queue at a connection limit, and idle connections closed over an
-/// idle limit are dialed again by the next ones.
+/// `idle_timeout`, found by a later request to any origin, as requests sweep
+/// every origin about every quarter of the timeout. A cap below what the
+/// traffic keeps busy costs handshakes: requests queue at a connection limit,
+/// and idle connections closed over an idle limit are dialed again by the
+/// next ones.
 #[derive(Debug, Clone)]
 pub struct HttpPooledConnectorConfig {
     /// At most this many concurrent requests per connection, below what the

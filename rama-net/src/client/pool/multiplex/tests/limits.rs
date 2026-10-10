@@ -2,6 +2,7 @@
 
 use super::*;
 
+use crate::client::pool::multiplex::connection::pick_extra;
 use std::sync::mpsc::{self, RecvTimeoutError};
 
 #[tokio::test]
@@ -1397,6 +1398,104 @@ fn a_change_during_an_evictions_busy_answer_asks_without_deadlock() {
         Err(RecvTimeoutError::Timeout) => panic!("the eviction's held answer deadlocked"),
         Err(RecvTimeoutError::Disconnected) => panic!("the eviction's thread panicked"),
     }
+}
+
+#[test]
+fn a_change_during_an_expirys_busy_answer_asks_without_deadlock() {
+    let (done, finished) = mpsc::channel();
+    // On its own thread, as the eviction's twin: an inline trim must fail it.
+    std::thread::spawn(move || {
+        current_thread().block_on(async {
+            let pool = MultiplexPool::new()
+                .with_max_connections_total(NonZeroUsize::new(8).unwrap())
+                .with_max_idle_total(NonZeroUsize::new(1).unwrap())
+                .with_idle_timeout(Duration::from_millis(50));
+            let (on_ask, in_use) = (Arc::new(Mutex::new(None)), Arc::new(AtomicBool::new(false)));
+            let conn = Conn {
+                serial: 7,
+                extensions: Extensions::new(),
+            };
+            conn.extensions.insert(upgrading(&on_ask, &in_use));
+            let handout = pool
+                .create(TestId(0), conn, pool.test_slot(), &EMPTY_INPUT)
+                .await
+                .unwrap();
+            let stored_conn = handout.inner.clone();
+            drop(handout);
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            in_use.store(true, Ordering::SeqCst);
+            {
+                let (stored_conn, in_use) = (stored_conn.clone(), in_use.clone());
+                // While the expiry asks: the work ends, its source notifies.
+                *on_ask.lock() = Some(Box::new(move || {
+                    in_use.store(false, Ordering::SeqCst);
+                    ChangeListener::changed(&*stored_conn, Change::Freed);
+                }) as Box<dyn FnOnce() + Send>);
+            }
+            let looked = tokio::time::timeout(
+                Duration::from_millis(500),
+                pool.get_conn(&TestId(0), &EMPTY_INPUT, None),
+            )
+            .await;
+            assert!(on_ask.lock().is_none(), "the expiry asked");
+            assert_matches!(
+                looked,
+                Ok(Ok(ConnectionResult::Connection(_))),
+                "found busy, it did not expire"
+            );
+            drop(looked);
+            settle().await;
+            done.send(stored_conn.is_counted_idle()).unwrap();
+        });
+    });
+    match finished.recv_timeout(Duration::from_secs(10)) {
+        Ok(counted) => assert!(counted, "idle again: counted"),
+        Err(RecvTimeoutError::Timeout) => panic!("the expiry's held answer deadlocked"),
+        Err(RecvTimeoutError::Disconnected) => panic!("the expiry's thread panicked"),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_trim_passes_over_an_id_whose_counted_connections_are_all_busy() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(64).unwrap())
+        .with_max_idle_per_id(NonZeroUsize::new(1).unwrap());
+    let mut conns = Vec::new();
+    for id in 0..16 {
+        for _ in 0..2 {
+            let (conn, state) = admission_connection(&pool, 4);
+            let handout = pool
+                .create(TestId(id), conn, pool.test_slot(), &EMPTY_INPUT)
+                .await
+                .unwrap();
+            // Work outlives the handout: its release counts nothing.
+            state.in_use.store(true, Ordering::SeqCst);
+            let inner = handout.inner.clone();
+            drop(handout);
+            // It ends: a change of its source, without the listener's trim.
+            state.in_use.store(false, Ordering::SeqCst);
+            inner.changes.fetch_add(1, Ordering::Release);
+            assert!(inner.count_if_idle());
+            conns.push(inner);
+            tokio::time::advance(Duration::from_millis(1)).await;
+        }
+    }
+    // Every id is over its limit of one, all but the last found busy.
+    let busy: Vec<u64> = conns
+        .iter()
+        .filter(|conn| conn.id != TestId(15))
+        .map(|conn| conn.seq)
+        .collect();
+    let asked = Asked {
+        ids: (0..16).map(TestId).collect(),
+        all: false,
+    };
+    let limits = pool.idle_limits.as_ref().unwrap();
+    let picked = pick_extra(&pool.storage.lock(), limits, &asked, &busy);
+    let Some((conn, Excess::PerId)) = picked else {
+        panic!("the last id's ask is served")
+    };
+    assert_eq!(conn.id, TestId(15));
 }
 
 /// A connection of id 0, counted idle, then busy with work it did not announce.

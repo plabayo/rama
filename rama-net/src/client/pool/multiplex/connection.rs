@@ -28,8 +28,8 @@ pub(super) struct StoredConnection<C, ID> {
     pub(super) max_concurrency: Option<Arc<MaxConcurrency>>,
     /// Read from its listener, which may not call into the connection itself.
     pub(super) health: Option<Arc<ConnectionHealthWatcher>>,
-    /// Whether waiting checkouts were told it broke.
-    pub(super) broken_told: AtomicBool,
+    /// Whether waiting checkouts were told it can serve no more.
+    pub(super) unusable_told: AtomicBool,
     pub(super) admission: Option<ConnectionAdmission>,
     /// Changes its sources reported: counted by its listener.
     pub(super) changes: AtomicU64,
@@ -305,6 +305,16 @@ impl<C, ID> StoredConnection<C, ID> {
         }
     }
 
+    /// Only a look takes an unusable connection out and frees its slots: let
+    /// every waiting checkout look, whatever it waits for, once.
+    pub(super) fn tell_unusable(&self) {
+        if self.waiting.load(Ordering::Relaxed) != 0
+            && !self.unusable_told.swap(true, Ordering::Relaxed)
+        {
+            self.notify.notify_waiters();
+        }
+    }
+
     /// Work outlived its handouts, such as an upgraded tunnel.
     fn in_use_unleased(&self) -> bool {
         self.admission
@@ -426,6 +436,8 @@ impl<C, ID> StoredConnection<C, ID> {
                         self.conn.extensions().insert(health);
                     }
                     self.retire();
+                    // A watcher inserted here has no subscriber to tell.
+                    self.tell_unusable();
                     trace!(%error, "multiplex pool: resource provider retired connection");
                     return None;
                 }
@@ -540,13 +552,8 @@ impl<C: Send + Sync + 'static, ID: Send + Sync + 'static> ChangeListener
             Change::Other => WaitQueue::wake_all,
         };
         self.freed(wake, true);
-        if self.waiting.load(Ordering::Relaxed) != 0
-            && self.is_broken()
-            && !self.broken_told.swap(true, Ordering::Relaxed)
-        {
-            // Only a look takes a broken connection out and frees its slots:
-            // let every waiting checkout look, whatever it waits for, once.
-            self.notify.notify_waiters();
+        if self.is_broken() {
+            self.tell_unusable();
         }
     }
 }
@@ -665,29 +672,7 @@ fn trim<C, ID: ConnID>(
     fence(Ordering::SeqCst);
     // Waiting checkouts take idle connections: none of them is extra then.
     while waiting.load(Ordering::Relaxed) == 0 {
-        let extra = {
-            let storage = storage.lock();
-            let over_id = |bucket: &&IdBucket<C, ID>| {
-                let counter = bucket
-                    .lanes()
-                    .flat_map(|lane| &lane.conns)
-                    .find_map(|conn| conn.id_idle.as_deref());
-                counter
-                    .zip(limits.per_id)
-                    .is_some_and(|(counter, max)| over(counter, max))
-            };
-            match asked_ids(&storage, asked).find(over_id) {
-                Some(bucket) => {
-                    least_recently_idle(bucket.lanes(), &busy).map(|conn| (conn, Excess::PerId))
-                }
-                None if limits.total.is_some_and(|max| limits.idle_over(max)) => {
-                    least_recently_idle(storage.by_id.values().flat_map(IdBucket::lanes), &busy)
-                        .map(|conn| (conn, Excess::Total))
-                }
-                None => None,
-            }
-        };
-        let Some((extra, excess)) = extra else {
+        let Some((extra, excess)) = pick_extra(&storage.lock(), limits, asked, &busy) else {
             return;
         };
         // Still over at the commit, whatever others closed since the pick. Asks
@@ -703,6 +688,40 @@ fn trim<C, ID: ConnID>(
         let stored = unstore(&mut storage.lock(), &extra);
         drop((stored, extra));
     }
+}
+
+/// The idle connection a trim closes next, and the limit it is over: the
+/// least recently idle of the first asked id over its limit with one not
+/// `busy`, else of every id if over the total.
+pub(super) fn pick_extra<C, ID: ConnID>(
+    storage: &Storage<C, ID>,
+    limits: &IdleLimits<ID>,
+    asked: &Asked<ID>,
+    busy: &[u64],
+) -> Option<(Arc<StoredConnection<C, ID>>, Excess)> {
+    let over_id = |bucket: &&IdBucket<C, ID>| {
+        let counter = bucket
+            .lanes()
+            .flat_map(|lane| &lane.conns)
+            .find_map(|conn| conn.id_idle.as_deref());
+        counter
+            .zip(limits.per_id)
+            .is_some_and(|(counter, max)| over(counter, max))
+    };
+    // An id whose counted connections were all found busy leaves the others'
+    // asks to be served.
+    let per_id = asked_ids(storage, asked)
+        .filter(over_id)
+        .find_map(|bucket| least_recently_idle(bucket.lanes(), busy))
+        .map(|conn| (conn, Excess::PerId));
+    per_id.or_else(|| {
+        limits
+            .total
+            .is_some_and(|max| limits.idle_over(max))
+            .then(|| least_recently_idle(storage.by_id.values().flat_map(IdBucket::lanes), busy))
+            .flatten()
+            .map(|conn| (conn, Excess::Total))
+    })
 }
 
 /// The buckets of the ids `asked` for.

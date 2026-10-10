@@ -344,8 +344,8 @@ impl WaitQueue {
             .map(|front| front.party.order)
     }
 
-    /// The wakes this queue sent its waiters that they did not spend, at most
-    /// [`usize::MAX`]: places hold up to half of it each.
+    /// The wakes this queue sent its waiters that they did not spend,
+    /// saturating at [`usize::MAX`].
     #[must_use]
     pub fn unspent(&self) -> usize {
         self.queue

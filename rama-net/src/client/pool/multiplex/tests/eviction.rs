@@ -683,3 +683,94 @@ async fn a_checkout_with_a_freed_slot_leaves_an_idle_connection_to_an_older_evic
     };
     drop((slot, evicted));
 }
+
+#[tokio::test(start_paused = true)]
+async fn ids_nobody_asks_for_again_are_reaped() {
+    let pool = MultiplexPool::new().with_idle_timeout(Duration::from_millis(20));
+    for id in 0..64 {
+        drop(fresh(&pool, id).await);
+    }
+    tokio::time::advance(Duration::from_secs(1)).await;
+    drop(fresh(&pool, 1000).await);
+    assert_eq!(
+        pool.storage.lock().by_id.len(),
+        1,
+        "only the id asked for since the timeout"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn broken_connections_of_ids_nobody_asks_for_again_are_reaped() {
+    let pool = MultiplexPool::new();
+    for id in 0..64 {
+        let handout = fresh(&pool, id).await;
+        handout
+            .extensions()
+            .get_ref::<ConnectionHealthWatcher>()
+            .unwrap()
+            .mark_broken();
+    }
+    tokio::time::advance(Duration::from_mins(1)).await;
+    drop(fresh(&pool, 1000).await);
+    assert_eq!(
+        pool.storage.lock().by_id.len(),
+        1,
+        "without an idle timeout too"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_broken_before_it_is_stored_tells_the_waiters() {
+    let pool = exclusive(2, SaturationPolicy::Wait);
+    drop(fresh(&pool, 0).await);
+    let slot = pool.test_slot();
+    let mut waiter = checkout(&pool, 1);
+    assert!(waiter.poll().is_pending(), "both slots are taken");
+    // Its peer closed between the handshake and the store, in a lane that has
+    // a connection already.
+    let conn = Conn {
+        serial: 1,
+        extensions: Extensions::new(),
+    };
+    let health = ConnectionHealthWatcher::default();
+    health.mark_broken();
+    conn.extensions.insert(health);
+    drop(
+        pool.create(TestId(0), conn, slot, &EMPTY_INPUT)
+            .await
+            .unwrap(),
+    );
+    assert!(waiter.is_woken(), "told of the broken connection");
+    assert_matches!(
+        waiter.poll(),
+        Poll::Ready(Ok(ConnectionResult::CreatePermit(_))),
+        "its slot is the waiter's"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_its_provider_retires_tells_the_waiters() {
+    let pool = exclusive(3, SaturationPolicy::Wait);
+    // Its provider fails next, and it has no health watcher of its own.
+    let (failing, state) = admission_connection(&pool, 1);
+    let held = pool
+        .create(TestId(0), failing, pool.test_slot(), &EMPTY_INPUT)
+        .await
+        .unwrap();
+    drop(fresh(&pool, 0).await);
+    drop(held);
+    let other = fresh(&pool, 2).await;
+    let mut waiter = checkout(&pool, 1);
+    assert!(waiter.poll().is_pending(), "every slot is taken");
+    state.failed.store(true, Ordering::SeqCst);
+    // A checkout of its id meets it first, then takes the healthy one.
+    let served = pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await;
+    assert_matches!(served, Ok(ConnectionResult::Connection(_)));
+    assert!(waiter.is_woken(), "told of the retired connection");
+    assert_matches!(
+        waiter.poll(),
+        Poll::Ready(Ok(ConnectionResult::CreatePermit(_))),
+        "its slot is the waiter's"
+    );
+    drop((served, other));
+}
