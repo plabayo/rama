@@ -1312,6 +1312,105 @@ async fn a_busy_answer_older_than_a_count_leaves_the_count() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_change_between_a_held_busy_answer_and_its_uncount_asks_a_trim() {
+    let pool = keeping_one();
+    let (on_ask, in_use) = (Arc::new(Mutex::new(None)), Arc::new(AtomicBool::new(false)));
+    let conn = Conn {
+        serial: 7,
+        extensions: Extensions::new(),
+    };
+    conn.extensions.insert(upgrading(&on_ask, &in_use));
+    let handout = pool
+        .create(TestId(0), conn, pool.test_slot(), &EMPTY_INPUT)
+        .await
+        .unwrap();
+    let stored_conn = handout.inner.clone();
+    drop(handout);
+    assert!(stored_conn.is_counted_idle());
+    tokio::time::advance(Duration::from_millis(1)).await;
+    // Work no handout accounts for, such as a checkout's reservation.
+    in_use.store(true, Ordering::SeqCst);
+    {
+        let (stored_conn, in_use) = (stored_conn.clone(), in_use.clone());
+        // While the commit asks: the work ends, its source notifies.
+        *on_ask.lock() = Some(Box::new(move || {
+            in_use.store(false, Ordering::SeqCst);
+            ChangeListener::changed(&*stored_conn, Change::Freed);
+        }) as Box<dyn FnOnce() + Send>);
+    }
+    // Over the limit of one: the trim commits on the least recently idle.
+    drop(fresh(&pool, 1).await);
+    settle().await;
+    assert!(on_ask.lock().is_none(), "the commit asked");
+    assert_eq!(stored(&pool).len(), 1, "both idle: one is trimmed");
+    drop(stored_conn);
+}
+
+/// A connection of id 0, counted idle, then busy with work it did not announce.
+async fn counted_then_busy(
+    pool: &MultiplexPool<Conn, TestId>,
+) -> (Arc<StoredConnection<Conn, TestId>>, Arc<AdmissionState>) {
+    let (conn, state) = admission_connection(pool, 4);
+    let handout = pool
+        .create(TestId(0), conn, pool.test_slot(), &EMPTY_INPUT)
+        .await
+        .unwrap();
+    let stored_conn = handout.inner.clone();
+    drop(handout);
+    assert!(stored_conn.is_counted_idle());
+    state.in_use.store(true, Ordering::SeqCst);
+    (stored_conn, state)
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_eviction_finding_a_counted_connection_busy_uncounts_it() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(2).unwrap())
+        .with_max_idle_total(NonZeroUsize::new(8).unwrap());
+    let (busy, _state) = counted_then_busy(&pool).await;
+    let held = fresh(&pool, 1).await;
+    // A newcomer of another id at the limit of two: the busy one is its only pick.
+    let newcomer = tokio::time::timeout(
+        Duration::from_millis(10),
+        pool.get_conn(&TestId(2), &EMPTY_INPUT, None),
+    )
+    .await;
+    assert!(
+        newcomer.is_err(),
+        "the busy one is kept: the newcomer waits"
+    );
+    assert!(!busy.is_counted_idle(), "found busy, no longer counted");
+    let limits = pool.idle_limits.as_ref().unwrap();
+    assert_eq!(limits.idle.load(Ordering::Relaxed), 0);
+    drop(held);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_expiry_finding_a_counted_connection_busy_uncounts_it() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(8).unwrap())
+        .with_max_idle_total(NonZeroUsize::new(8).unwrap())
+        .with_idle_timeout(Duration::from_secs(1));
+    let (busy, state) = counted_then_busy(&pool).await;
+    tokio::time::advance(Duration::from_secs(2)).await;
+    // No credit: the look admits nothing, so only its expiry check asks.
+    state.limit.store(0, Ordering::SeqCst);
+    let looked = tokio::time::timeout(
+        Duration::from_millis(10),
+        pool.get_conn(&TestId(0), &EMPTY_INPUT, None),
+    )
+    .await;
+    assert_matches!(
+        looked,
+        Ok(Ok(ConnectionResult::CreatePermit(_))),
+        "the busy one is kept and admits nothing: the look may create"
+    );
+    assert!(!busy.is_counted_idle(), "found busy, no longer counted");
+    let limits = pool.idle_limits.as_ref().unwrap();
+    assert_eq!(limits.idle.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_count_from_before_a_stream_is_no_count() {
     let pool = keeping_one();
     let (on_ask, in_use) = (Arc::new(Mutex::new(None)), Arc::new(AtomicBool::new(false)));

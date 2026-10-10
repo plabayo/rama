@@ -36,8 +36,8 @@ pub(super) struct StoredConnection<C, ID> {
     /// One past the count of changes when its admission last reported work
     /// outliving its handouts: until the next change it is not asked again.
     pub(super) busy_at: AtomicU64,
-    /// Bumped with each stream admitted, under the slot lock: a count from an
-    /// answer older than the last stream is no count.
+    /// With idle limits, bumped with each stream admitted, under the slot lock:
+    /// a count from an answer older than the last stream is no count.
     pub(super) admits: AtomicU64,
     pub(super) active: AtomicUsize,
     /// The waiters of the lane the connection is filed under. A leaf lock:
@@ -67,8 +67,8 @@ pub(super) struct StoredConnection<C, ID> {
     /// The pool's idle limits, if it has any.
     pub(super) idle_limits: Option<Arc<IdleLimits<ID>>>,
     /// Its standing in the idle limits' count: [`COUNTED`] as it goes idle,
-    /// [`UNCOUNTED`] again as a stream is admitted or outliving work is seen,
-    /// [`GONE`] while it is not stored, and once retired.
+    /// [`UNCOUNTED`] again as a stream is admitted or a held answer finds
+    /// outliving work, [`GONE`] while it is not stored, and once retired.
     pub(super) idle_count: AtomicU8,
     /// The idle count of its id, if the pool limits connections per id.
     pub(super) id_idle: Option<Arc<AtomicIsize>>,
@@ -123,9 +123,15 @@ impl<C, ID> StoredConnection<C, ID> {
     /// idle counts. Counts take that lock too, so this never takes away one
     /// made after its answer, as an answer read without it could.
     pub(super) fn is_idle_held(&self) -> bool {
+        let changes = self.changes.load(Ordering::Acquire);
         let idle = self.is_idle();
-        if !idle {
-            self.uncount_idle();
+        if !idle && self.uncount_idle() {
+            // Pairs with the listener's fence: a change since the answer that
+            // found it still counted asked no trim, so this asks.
+            fence(Ordering::SeqCst);
+            if self.changes.load(Ordering::Relaxed) != changes {
+                self.ask_trim(false);
+            }
         }
         idle
     }
@@ -226,26 +232,27 @@ impl<C, ID> StoredConnection<C, ID> {
         self.idle_count.load(Ordering::Acquire) == COUNTED
     }
 
-    /// No longer count the connection idle.
-    pub(super) fn uncount_idle(&self) {
+    /// No longer count the connection idle: whether this uncounted it.
+    pub(super) fn uncount_idle(&self) -> bool {
         let Some(limits) = &self.idle_limits else {
-            return;
+            return false;
         };
         if self.idle_count.load(Ordering::Acquire) != COUNTED {
-            return;
+            return false;
         }
         // The counts first: but for the trimmer's own commit, they never count
         // more than is counted idle, so a commit never takes a unit already on
         // its way out.
         self.add_idle(limits, -1);
-        if self
+        let uncounted = self
             .idle_count
             .compare_exchange(COUNTED, UNCOUNTED, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
+            .is_ok();
+        if !uncounted {
             // Whoever moved it took its unit too.
             self.give_back(limits);
         }
+        uncounted
     }
 
     /// Give back a unit taken out of the counts for a state someone else moved:

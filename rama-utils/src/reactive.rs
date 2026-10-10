@@ -458,8 +458,8 @@ pub struct Party {
 /// Places a [`Party`] keeps inline: a lane, a keyed lane and the slot queue.
 const INLINE_PLACES: usize = 3;
 
-/// Wakes a place holds at most: far more than any waiter spends, with room for
-/// the turn its departure adds.
+/// Wakes a batch fills a place to at most: far more than any waiter spends,
+/// with room above for every single wake after, and the turn of a departure.
 const MAX_HELD: usize = usize::MAX / 2;
 
 /// The wakes one queue sent a party, how many of them it spent, and the turns
@@ -475,15 +475,19 @@ struct Place {
 }
 
 impl Place {
-    /// Add `n` wakes, as many as fit below [`MAX_HELD`].
+    /// Add `n` wakes, as many as fit below [`MAX_HELD`], and at least one: a
+    /// wake after a look began stays newer than what the look spends.
     fn add_wakes(&self, n: usize) {
+        if n == 0 {
+            return;
+        }
         let spent = self.spent.load(Ordering::Relaxed);
         let mut wakes = self.wakes.load(Ordering::Acquire);
         loop {
             let room = MAX_HELD.saturating_sub(wakes.wrapping_sub(spent));
             match self.wakes.compare_exchange_weak(
                 wakes,
-                wakes.wrapping_add(n.min(room)),
+                wakes.wrapping_add(n.min(room).max(1)),
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
@@ -1500,6 +1504,54 @@ mod tests {
             "no count wraps back to the one it saw"
         );
         assert!(waiter.is_woken());
+    }
+
+    #[test]
+    fn a_wake_after_a_look_at_a_full_place_outlives_the_look() {
+        let queue = WaitQueue::new();
+        let waiter = Party::new(0).waiter();
+        queue.push(&waiter);
+        assert!(queue.wake_many(usize::MAX / 2));
+        let seen = waiter.wakes();
+        assert!(queue.wake_one());
+        waiter.spend(seen);
+        assert!(waiter.is_woken(), "the wake after the look");
+        let seen = waiter.wakes();
+        assert!(queue.wake_many(usize::MAX));
+        waiter.spend(seen);
+        assert!(waiter.is_woken(), "a batch after the look");
+    }
+
+    #[test]
+    fn a_place_that_spent_a_full_batch_takes_a_full_batch_again() {
+        let queue = WaitQueue::new();
+        let waiter = Party::new(0).waiter();
+        queue.push(&waiter);
+        assert!(queue.wake_many(usize::MAX));
+        waiter.spend(waiter.wakes());
+        assert!(!waiter.is_woken());
+        assert!(queue.wake_many(usize::MAX));
+        assert_eq!(
+            waiter.held(),
+            MAX_HELD,
+            "its room is what it holds, not what it got"
+        );
+        assert_eq!(queue.remove(&waiter), MAX_HELD);
+    }
+
+    #[test]
+    fn a_turn_handed_back_after_a_look_at_a_full_place_outlives_the_look() {
+        let [theirs, ours] = [WaitQueue::new(), WaitQueue::new()];
+        let older = Party::new(0).waiter();
+        theirs.push(&older);
+        let giver = Party::new(1).waiter();
+        ours.push(&giver);
+        assert!(ours.wake_many(usize::MAX / 2));
+        assert!(theirs.give_way(1, &giver));
+        let seen = giver.wakes();
+        theirs.remove(&older);
+        giver.spend(seen);
+        assert!(giver.is_woken(), "the turn handed back after the look");
     }
 
     #[test]
