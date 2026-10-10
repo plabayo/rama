@@ -588,46 +588,46 @@ mod tests {
         for _ in 0..10_000 {
             counts.observe(value(3)).unwrap();
         }
-        assert_eq!(
+        assert!(matches!(
             counts.untracked_distinct(),
             UntrackedDistinctCount::Exact(0)
-        );
+        ));
         counts.observe(value(1)).unwrap();
-        assert_eq!(
+        assert!(matches!(
             counts.untracked_distinct(),
             UntrackedDistinctCount::Exact(1)
-        );
+        ));
         counts.observe(value(3)).unwrap();
-        assert_eq!(
+        assert!(matches!(
             counts.untracked_distinct(),
             UntrackedDistinctCount::Exact(1)
-        );
+        ));
         counts
             .observe_unretained(value(2), ObservationLoss::Oversize)
             .unwrap();
         counts
             .observe_unretained(value(2), ObservationLoss::Retention)
             .unwrap();
-        assert_eq!(
+        assert!(matches!(
             counts.untracked_distinct(),
             UntrackedDistinctCount::Exact(2)
-        );
+        ));
         let mut lower = LiteralCounters::new(1);
         lower.observe(value(0)).unwrap();
-        assert_eq!(
+        assert!(matches!(
             counts.merge(&lower).unwrap().untracked_distinct(),
             UntrackedDistinctCount::Exact(3)
-        );
-        assert_eq!(
+        ));
+        assert!(matches!(
             counts.coarsen(&lower).unwrap().untracked_distinct(),
             UntrackedDistinctCount::Exact(2)
-        );
-        assert_eq!(
+        ));
+        assert!(matches!(
             LiteralCounters::from_snapshot(&counts.snapshot(), 1)
                 .unwrap()
                 .untracked_distinct(),
-            counts.untracked_distinct()
-        );
+            UntrackedDistinctCount::Exact(2)
+        ));
     }
 
     #[test]
@@ -638,14 +638,14 @@ mod tests {
         json.as_object_mut().unwrap().remove("untracked_distinct");
         let old =
             LiteralCounters::from_snapshot(&serde_json::from_value(json).unwrap(), 0).unwrap();
-        assert_eq!(
+        assert!(matches!(
             old.untracked_distinct(),
             UntrackedDistinctCount::UnknownHistory { at_least: 0 }
-        );
-        assert_eq!(
+        ));
+        assert!(matches!(
             old.merge(&counts).unwrap().untracked_distinct(),
             UntrackedDistinctCount::UnknownHistory { at_least: 1 }
-        );
+        ));
         let mut corrupt = counts.snapshot();
         corrupt.untracked_distinct.values = vec![value(1), value(2)].into();
         LiteralCounters::from_snapshot(&corrupt, 0).unwrap_err();

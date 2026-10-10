@@ -18,7 +18,7 @@ pub struct UntrackedDistinctSnapshot {
 
 /// A deterministic lower bound is reported after capacity, without an estimated
 /// cardinality or statistical confidence claim. Repeated values count once.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum UntrackedDistinctCount {
     Exact(u64),
     AtLeast(u64),
@@ -117,22 +117,28 @@ mod tests {
         for _ in 0..10_000 {
             distinct.observe(ValueId([1; 32]));
         }
-        assert_eq!(distinct.count(), UntrackedDistinctCount::Exact(1));
+        assert!(matches!(distinct.count(), UntrackedDistinctCount::Exact(1)));
         for index in 2..=32 {
             distinct.observe(ValueId([index; 32]));
         }
-        assert_eq!(distinct.count(), UntrackedDistinctCount::Exact(32));
+        assert!(matches!(
+            distinct.count(),
+            UntrackedDistinctCount::Exact(32)
+        ));
         for index in 33..=255 {
             distinct.observe(ValueId([index; 32]));
         }
-        assert_eq!(distinct.count(), UntrackedDistinctCount::AtLeast(33));
+        assert!(matches!(
+            distinct.count(),
+            UntrackedDistinctCount::AtLeast(33)
+        ));
         assert_eq!(distinct.snapshot().values.len(), DISTINCT_VALUES);
-        assert_eq!(
+        assert!(matches!(
             UntrackedDistinct::from_snapshot(&distinct.snapshot(), 10_255)
                 .unwrap()
                 .count(),
-            distinct.count()
-        );
+            UntrackedDistinctCount::AtLeast(33)
+        ));
     }
 
     #[test]
@@ -163,10 +169,10 @@ mod tests {
         let unknown =
             UntrackedDistinct::from_snapshot(&UntrackedDistinctSnapshot::default(), 10_000)
                 .unwrap();
-        assert_eq!(
+        assert!(matches!(
             forward.merge(&unknown).count(),
             UntrackedDistinctCount::UnknownHistory { at_least: 33 }
-        );
+        ));
     }
 
     #[test]

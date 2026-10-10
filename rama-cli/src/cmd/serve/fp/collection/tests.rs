@@ -10,7 +10,10 @@ fn owner(authorized: bool, profile: u8) -> CollectionOwner {
 }
 fn permit(lease: &Arc<CollectionLease>, owner: CollectionOwner) -> ConnectionPermit {
     match lease.claim(owner) {
-        CollectionClaim::Connection(permit) => permit,
+        CollectionClaim::Connection(permit) => {
+            assert_eq!(permit.owner(), owner);
+            permit
+        }
         claim => panic!("expected connection permit, got {claim:?}"),
     }
 }

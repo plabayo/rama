@@ -108,7 +108,7 @@ fn rejected_time_or_entropy_does_not_assign_an_observation() {
         })
         .unwrap()
         .finish(WriteDisposition::Rejected);
-    for (now, observed) in [(100, 100), (101, 102), (101, 87), (101, 99)] {
+    for (now, observed) in [(100, 100), (101, 102), (101, 87)] {
         issuer
             .begin(now, observed, RetentionWindow::default(), || {
                 panic!("invalid time requested entropy")
@@ -121,4 +121,23 @@ fn rejected_time_or_entropy_does_not_assign_an_observation() {
         CaptureRunId::new(100, [1; 12]).0
     );
     assert_eq!(next.attempt().observation.sequence, 2);
+}
+
+#[test]
+fn retained_observations_arriving_before_the_current_run_rotate_without_loss() {
+    let mut issuer = SequenceIssuer::new(false);
+    let first = begin(&mut issuer, 101, 1);
+    let original = first.attempt().observation;
+    first.finish(WriteDisposition::Confirmed);
+    let older = issuer
+        .begin(101, 100, RetentionWindow::default(), || Ok([2; 12]))
+        .unwrap();
+    assert_eq!(older.attempt().observation_day, 100);
+    assert_ne!(older.attempt().observation.run, original.run);
+    assert_eq!(older.attempt().observation.sequence, 1);
+    let rotated = older.attempt().observation.run;
+    older.finish(WriteDisposition::Confirmed);
+    let current = begin(&mut issuer, 101, 3);
+    assert_eq!(current.attempt().observation.run, rotated);
+    assert_eq!(current.attempt().observation.sequence, 2);
 }

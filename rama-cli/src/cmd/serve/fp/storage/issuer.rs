@@ -50,17 +50,16 @@ impl SequenceIssuer {
             return Err(ProfileDataError::Invalid("writer time watermark").into());
         }
         if self.run.as_ref().is_some_and(|run| {
-            retention
-                .validate_observation(current_day, run.id.created_day())
-                .is_err()
+            observed_day < run.id.created_day()
+                || retention
+                    .validate_observation(current_day, run.id.created_day())
+                    .is_err()
         }) {
             self.run = None;
         }
-        if let Some(run) = &self.run {
-            if observed_day < run.id.created_day() {
-                return Err(ProfileDataError::Invalid("observation predates writer run").into());
-            }
-        } else {
+        // Preparation can cross UTC midnight and arrive out of order. A fresh
+        // run admits an older retained observation without changing existing IDs.
+        if self.run.is_none() {
             self.run = Some(Run {
                 id: CaptureRunId::new(observed_day, nonce()?),
                 next: 1,

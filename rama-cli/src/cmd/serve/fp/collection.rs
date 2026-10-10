@@ -61,6 +61,7 @@ impl CollectionLease {
         state.phase = ConnectionPhase::Preparing;
         CollectionClaim::Connection(ConnectionPermit {
             lease: self.clone(),
+            owner,
             armed: true,
         })
     }
@@ -69,10 +70,14 @@ impl CollectionLease {
 #[derive(Debug)]
 pub(super) struct ConnectionPermit {
     lease: Arc<CollectionLease>,
+    owner: CollectionOwner,
     armed: bool,
 }
 
 impl ConnectionPermit {
+    pub(super) const fn owner(&self) -> CollectionOwner {
+        self.owner
+    }
     /// The reserved queue slot receives the returned completion handle. This
     /// transition and the send contain no await point, so cancellation cannot
     /// leave a queued observation available for a second writer ID.

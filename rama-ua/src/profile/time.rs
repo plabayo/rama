@@ -55,12 +55,12 @@ impl ProfileObservationTime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profile::ProfileCaptureCompleteness;
-    use crate::profile::{
-        CanonicalDomain, HeaderCapturePolicy, ObservationId, ProfileWindowLimits,
-        RetainedBucketWindow, ValueId,
-    };
     use rama_http::{HeaderMap, HeaderValue, Version};
+
+    use crate::profile::{
+        CanonicalDomain, HeaderCapturePolicy, ObservationId, ProfileCaptureCompleteness,
+        ProfileWindowLimits, RetainedBucketWindow, ValueId,
+    };
 
     #[test]
     fn utc_midnight_skew_offsets_and_pre_epoch_have_explicit_boundaries() {
