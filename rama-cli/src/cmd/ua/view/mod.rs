@@ -25,7 +25,7 @@ use ratatui::{
     widgets::{Block, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use crate::cmd::serve::fp::CountedProfileSource;
+use crate::{cmd::serve::fp::CountedProfileSource, utils::terminal::display_text};
 
 #[derive(Debug, Args)]
 pub(super) struct ViewCommand {
@@ -46,18 +46,6 @@ pub(super) struct ViewCommand {
 struct Row {
     label: String,
     details: String,
-}
-
-fn display_text(value: &str) -> String {
-    let mut text = String::new();
-    for ch in value.chars().take(kib(8)) {
-        if ch.is_control() {
-            text.extend(ch.escape_debug());
-        } else {
-            text.push(ch);
-        }
-    }
-    text
 }
 
 impl Row {
@@ -201,7 +189,7 @@ fn file_rows(path: PathBuf, authorized: bool) -> Result<Vec<Row>, BoxError> {
 }
 
 pub(super) async fn run(command: ViewCommand) -> Result<(), BoxError> {
-    let source = command.path.as_ref().map_or_else(
+    let mut source_label = command.path.as_ref().map_or_else(
         || {
             format!(
                 "fingerprint database / {} / {} days",
@@ -240,17 +228,29 @@ pub(super) async fn run(command: ViewCommand) -> Result<(), BoxError> {
             .await??;
             push_row(&mut rows, &mut remaining, row)?;
         }
+        if source.skipped() > 0 || source.limited() {
+            write!(
+                source_label,
+                " / {} over-limit profiles skipped{}",
+                source.skipped(),
+                if source.limited() {
+                    " / read budget reached"
+                } else {
+                    ""
+                }
+            )?;
+        }
         rows
     };
     if command.summary || !io::stdout().is_terminal() || !io::stdin().is_terminal() {
         let mut output = io::stdout().lock();
-        writeln!(output, "{} profiles — {source}", rows.len())?;
+        writeln!(output, "{} profiles — {source_label}", rows.len())?;
         for row in rows {
             writeln!(output, "{}", row.label)?;
         }
         return Ok(());
     }
-    tokio::task::spawn_blocking(move || App::new(rows, source).run()).await?
+    tokio::task::spawn_blocking(move || App::new(rows, source_label).run()).await?
 }
 
 struct App {

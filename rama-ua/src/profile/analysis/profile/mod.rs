@@ -37,7 +37,10 @@ pub struct ProfileAnalysisLimits {
     pub scopes: usize,
     pub bytes: usize,
     pub metadata_bytes: usize,
+    /// Retained evidence bytes plus normalized order-element visits.
+    pub maximum_work: usize,
     pub window: ProfileWindowLimits,
+    /// Per-day literal capacity; selection scales it by the requested horizon.
     pub order: OrderAnalysisConfig,
 }
 
@@ -47,6 +50,7 @@ impl Default for ProfileAnalysisLimits {
             scopes: 256,
             bytes: mib(64),
             metadata_bytes: kib(16),
+            maximum_work: mib(128),
             window: ProfileWindowLimits::default(),
             order: OrderAnalysisConfig::default(),
         }
@@ -76,6 +80,7 @@ pub struct AnalyzedProfileScope {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AnalyzedProfile {
+    pub work_units: usize,
     pub format_version: u16,
     pub classifier_revision: u16,
     pub id: ValueId,
@@ -177,6 +182,14 @@ pub fn analyze_profile_evidence(
         return Err(ProfileDataError::LimitExceeded("profile analysis scopes"));
     }
     limits.window.retention.first_day(current_day, horizon)?;
+    let order = OrderAnalysisConfig {
+        maximum_literals: limits
+            .order
+            .maximum_literals
+            .checked_mul(horizon as usize)
+            .ok_or(ProfileDataError::LimitExceeded("profile horizon literals"))?,
+        ..limits.order
+    };
     let mut remaining = limits.bytes;
     let mut charge = |bytes: usize| -> Result<(), ProfileDataError> {
         remaining = remaining
@@ -200,6 +213,10 @@ pub fn analyze_profile_evidence(
             }
         }
     }
+    let mut remaining_work = limits
+        .maximum_work
+        .checked_sub(limits.bytes - remaining)
+        .ok_or(ProfileDataError::LimitExceeded("profile analysis work"))?;
     let key = ProfileKey::from_canonical(&input.profile, limits.metadata_bytes)?;
     let capture_limits = JointCaptureLimits {
         value_bytes: limits.window.bucket.input_bytes,
@@ -313,7 +330,16 @@ pub fn analyze_profile_evidence(
                 }
             }
         }
-        let observations = analyze_capture_bucket(&bucket, limits.order)?;
+        let observations = analyze_capture_bucket(
+            &bucket,
+            OrderAnalysisConfig {
+                maximum_work: order.maximum_work.min(remaining_work),
+                ..order
+            },
+        )?;
+        remaining_work = remaining_work
+            .checked_sub(observations.order_work)
+            .ok_or(ProfileDataError::LimitExceeded("profile analysis work"))?;
         scopes.push(AnalyzedProfileScope {
             id: evidence.scope.id,
             context,
@@ -330,6 +356,7 @@ pub fn analyze_profile_evidence(
         }
     });
     Ok(AnalyzedProfile {
+        work_units: limits.maximum_work - remaining_work,
         format_version: 1,
         classifier_revision: 1,
         id: input.profile.id,

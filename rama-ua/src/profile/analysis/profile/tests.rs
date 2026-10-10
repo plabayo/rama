@@ -1,5 +1,10 @@
 use super::*;
-use crate::profile::{ConnectionContext, ObservationId, ResumptionContext};
+use crate::profile::{
+    AnalyzedOrderWeight, ConnectionContext, HeaderCapturePolicy, ObservationId, ObservationWeight,
+    ResumptionContext,
+};
+use rama_http::{HeaderMap, HeaderValue, Method};
+use std::collections::BTreeMap;
 
 fn setting(number: u64) -> CanonicalValue {
     OrderedProtocolCapture::capture(
@@ -280,4 +285,127 @@ fn empty_observation_set_grants_no_protocol_component() {
     assert!(analyzed.components.quic.is_none());
     assert!(analyzed.components.tls_tcp.is_none());
     assert!(analyzed.components.tls_quic.is_none());
+}
+
+#[test]
+fn multi_day_literals_retain_counts_beyond_one_day_capacity() {
+    let policy = HeaderCapturePolicy::default();
+    let limits = JointCaptureLimits::default();
+    let mut windows = BTreeMap::new();
+    let mut input = None;
+    for index in 0..17u64 {
+        let mut headers = HeaderMap::new();
+        let names = [
+            "accept",
+            "accept-language",
+            "accept-encoding",
+            "user-agent",
+            "cache-control",
+        ];
+        let mut order = [0, 1, 2, 3, 4];
+        order.rotate_left(index as usize % 5);
+        match index / 5 {
+            0 => (),
+            1 => order.swap(1, 2),
+            2 => order.swap(2, 3),
+            _ => order.swap(1, 3),
+        }
+        for slot in order {
+            headers.insert(names[slot], HeaderValue::from_static("constant"));
+        }
+        let value = policy
+            .capture(
+                ProfileCaptureCompleteness::Complete,
+                Version::HTTP_11,
+                &headers,
+                None,
+            )
+            .unwrap()
+            .canonical(&policy)
+            .unwrap();
+        let prepared = ProfileCapture {
+            profile: ProfileKey::new("multi-day"),
+            flow: Some(FlowKey::Http {
+                version: Version::HTTP_11,
+                method: Method::GET,
+                initiator: None,
+                fetch: None,
+                connection: ConnectionContext::default(),
+            }),
+            connection: ConnectionContext::default(),
+            joint: JointCapture {
+                completeness: ProfileCaptureCompleteness::Complete,
+                level: CaptureLevel::Request,
+                slots: vec![CapturedSlot {
+                    kind: CapturedSlotKind::Headers,
+                    value,
+                }]
+                .into(),
+            },
+        }
+        .prepare(false, limits)
+        .unwrap();
+        let day = if index < 9 { 100 } else { 101 };
+        input.get_or_insert_with(|| ProfileEvidence {
+            format_version: 1,
+            profile: prepared.profile.clone(),
+            scopes: Box::default(),
+        });
+        for bucket in prepared.buckets {
+            let (metadata, window) = windows.entry(bucket.scope.id).or_insert_with(|| {
+                let window = RetainedBucketWindow::new(
+                    bucket.value.validated_domain(kib(64)).unwrap(),
+                    bucket.scope.id,
+                    [3; 32],
+                    ProfileWindowLimits::default(),
+                )
+                .unwrap();
+                (
+                    ProfileScopeEvidence {
+                        scope: bucket.scope.clone(),
+                        flow: prepared.flow.clone(),
+                        structure: bucket.structure.clone(),
+                        window: window.snapshot(),
+                    },
+                    window,
+                )
+            });
+            window
+                .observe(
+                    day,
+                    day,
+                    ObservationId {
+                        run: [1; 16],
+                        sequence: index + 1,
+                    },
+                    &bucket.value,
+                )
+                .unwrap();
+            metadata.window = window.snapshot();
+        }
+    }
+    let mut input = input.unwrap();
+    input.scopes = windows
+        .into_values()
+        .map(|(metadata, _)| metadata)
+        .collect();
+    let analysis = analyze_profile_evidence(
+        &input,
+        false,
+        [3; 32],
+        101,
+        14,
+        ProfileAnalysisLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(analysis.scopes.len(), 2);
+    for scope in analysis.scopes {
+        assert_eq!(scope.observations.variants.len(), 17);
+        assert_eq!(scope.observations.counts.total, 17);
+        assert_eq!(scope.observations.counts.untracked, 0);
+        assert!(scope.observations.variants.iter().all(|variant| matches!(
+            variant.weight,
+            AnalyzedOrderWeight::Counted(ObservationWeight::Exact(1))
+        )));
+    }
 }

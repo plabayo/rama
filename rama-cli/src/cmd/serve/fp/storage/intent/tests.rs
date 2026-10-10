@@ -44,6 +44,10 @@ use rama::{
     utils::octets::{kib, mib},
 };
 use std::{convert::Infallible, env, sync::Arc, time::Duration};
+use tokio::{
+    sync::oneshot,
+    time::{advance, timeout},
+};
 
 fn store_limits() -> StoreLimits {
     StoreLimits {
@@ -936,4 +940,43 @@ async fn real_h3_connection_captures_one_complete_connection_and_each_report() {
     }
     assert_eq!(queue.counts().confirmed, 3);
     assert_eq!(queue.counts().invalid_capture, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn slow_handler_releases_capture_capacity_without_cancelling_the_response() {
+    let (queue, _receiver) = queue(1);
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let (finish_tx, finish_rx) = oneshot::channel();
+    let signals = Mutex::new(Some((ready_tx, finish_rx)));
+    let service =
+        CaptureLayer::new(queue.clone()).into_layer(service_fn(move |request: Request<()>| {
+            let (ready, finish) = signals.lock().take().unwrap();
+            async move {
+                ready.send(()).unwrap();
+                finish.await.unwrap();
+                Ok::<_, Infallible>(request)
+            }
+        }));
+    let running = tokio::spawn(async move { service.serve(request("/report")).await.unwrap() });
+    ready_rx.await.unwrap();
+    assert!(queue.try_reserve().is_none());
+    advance(PREPARATION_TIMEOUT).await;
+    timeout(Duration::from_secs(1), queue.wait_for_capacity())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!running.is_finished());
+    assert_eq!(queue.counts().preparation_drops, 1);
+    finish_tx.send(()).unwrap();
+    let output = running.await.unwrap();
+    assert!(
+        output
+            .extensions()
+            .get_ref::<CaptureIntent>()
+            .unwrap()
+            .0
+            .lock()
+            .is_none()
+    );
+    assert_eq!(queue.counts().preparation_drops, 1);
 }

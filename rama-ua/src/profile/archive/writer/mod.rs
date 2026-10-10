@@ -6,7 +6,7 @@ use ahash::{HashSet, HashSetExt as _};
 use rama_core::error::BoxError;
 
 use super::{ProfileArchiveEntry, ProfileArchiveLimits};
-use crate::profile::{ProfileDataError, ValueId};
+use crate::profile::{ProfileAnalysisLimits, ProfileDataError, ValueId};
 
 #[derive(Debug)]
 struct LimitedWriter<W> {
@@ -40,6 +40,7 @@ pub struct ProfileArchiveWriter<W> {
     horizon: u32,
     limits: ProfileArchiveLimits,
     profiles: HashSet<ValueId>,
+    remaining_work: usize,
 }
 
 impl<W: Write> ProfileArchiveWriter<W> {
@@ -66,6 +67,7 @@ impl<W: Write> ProfileArchiveWriter<W> {
             horizon,
             limits,
             profiles: HashSet::new(),
+            remaining_work: limits.maximum_work,
         })
     }
 
@@ -77,8 +79,19 @@ impl<W: Write> ProfileArchiveWriter<W> {
         if self.profiles.contains(&id) {
             return Err(ProfileDataError::Invalid("duplicate archive profile").into());
         }
-        let compiled =
-            entry.analyze(self.authorized, self.day, self.horizon, self.limits.profile)?;
+        let compiled = entry.analyze(
+            self.authorized,
+            self.day,
+            self.horizon,
+            ProfileAnalysisLimits {
+                maximum_work: self.limits.profile.maximum_work.min(self.remaining_work),
+                ..self.limits.profile
+            },
+        )?;
+        self.remaining_work = self
+            .remaining_work
+            .checked_sub(compiled.analysis.work_units)
+            .ok_or(ProfileDataError::LimitExceeded("archive analysis work"))?;
         if !self.profiles.is_empty() {
             self.writer.write_all(b",")?;
         }

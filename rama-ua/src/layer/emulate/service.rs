@@ -231,7 +231,10 @@ where
             } else {
                 if let Some(tls) = &profile.tls {
                     req.extensions().insert_arc(tls.clone());
-                } else if req.uri().scheme_str() == Some("https") {
+                } else if req
+                    .target_protocol()
+                    .is_some_and(|protocol| protocol.is_secure())
+                {
                     return Err(BoxError::from_static_str(
                         "selected profile has no compiled TLS component",
                     ));
@@ -368,9 +371,7 @@ fn emulate_http_connect_settings(
             }
         }
         Version::HTTP_3 => {
-            return Err(BoxError::from_static_str(
-                "selected profile has no compiled HTTP/3 component",
-            ));
+            tracing::debug!("legacy profile has no HTTP/3 connect settings; passing through");
         }
         // defensive forward-compat arm; native Version is currently exhaustive
         #[expect(
@@ -866,6 +867,61 @@ mod tests {
         Http1Profile, Http1Settings, Http2Profile, Http2Settings, HttpHeadersProfile, HttpProfile,
         UserAgentProfile,
     };
+
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn missing_tls_profile_is_rejected_for_secure_target_protocols() {
+        let mut profile = UserAgentProfile::new(ProfileKey::new("partial"));
+        profile.http = Some(Arc::new(HttpProfile { h1: None, h2: None }));
+        let service = UserAgentEmulateService::new(
+            service_fn(async |_: Request| Ok::<_, Infallible>(())),
+            profile,
+        );
+        for (uri, protocol, secure) in [
+            ("https://example.test/", None, true),
+            ("wss://example.test/", None, true),
+            ("/", Some(Protocol::HTTPS), true),
+            ("/", Some(Protocol::WSS), true),
+            ("http://example.test/", None, false),
+            ("ws://example.test/", None, false),
+            ("/", None, false),
+        ] {
+            let request = Request::builder().uri(uri).body(Body::empty()).unwrap();
+            if let Some(protocol) = protocol {
+                request.extensions().insert(protocol);
+            }
+            let result = service.serve(request).await;
+            if secure {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("no compiled TLS component")
+                );
+            } else {
+                result.unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_connect_modifier_passes_h3_without_applying_h1_or_h2_settings() {
+        let input = Request::new(());
+        let profile = HttpProfile { h1: None, h2: None };
+        emulate_http_connect_settings(&input, Version::HTTP_3, &profile).unwrap();
+        assert!(
+            input
+                .extensions()
+                .get_ref::<Http1ClientContextParams>()
+                .is_none()
+        );
+        assert!(
+            input
+                .extensions()
+                .get_ref::<H2ClientContextParams>()
+                .is_none()
+        );
+    }
 
     #[tokio::test]
     async fn connect_emulation_uses_established_connection_version() {

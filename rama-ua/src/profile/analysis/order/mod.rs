@@ -1,7 +1,10 @@
 //! Capture-derived order evidence. These rules do not authorize independent
 //! payload generation or factorization of correlated connection components.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use rama_utils::octets::mib;
 use serde::Serialize;
@@ -21,6 +24,10 @@ pub struct OrderAnalysisConfig {
     pub maximum_literals: usize,
     pub maximum_elements: usize,
     pub maximum_bytes: usize,
+    /// Normalized element visits, shared by all paths and recursive modes.
+    pub maximum_work: usize,
+    /// Retained element-position counters, including recursive mode evidence.
+    pub maximum_positions: usize,
 }
 
 impl Default for OrderAnalysisConfig {
@@ -33,6 +40,8 @@ impl Default for OrderAnalysisConfig {
             maximum_literals: 16,
             maximum_elements: 256,
             maximum_bytes: mib(8),
+            maximum_work: mib(4),
+            maximum_positions: 16_384,
         }
     }
 }
@@ -302,21 +311,68 @@ pub struct OrderRuleEvidence {
     pub disposition: OrderAnalysisDisposition,
 }
 
+#[derive(Debug)]
+pub(super) struct OrderWorkBudget {
+    elements: usize,
+    positions: usize,
+    initial_elements: usize,
+}
+
+impl OrderWorkBudget {
+    pub(super) fn new(config: OrderAnalysisConfig) -> Self {
+        Self {
+            elements: config.maximum_work,
+            positions: config.maximum_positions,
+            initial_elements: config.maximum_work,
+        }
+    }
+
+    pub(super) fn used(&self) -> usize {
+        self.initial_elements - self.elements
+    }
+
+    fn charge(&mut self, elements: usize) -> Result<(), ProfileDataError> {
+        self.elements = self
+            .elements
+            .checked_sub(elements)
+            .ok_or(ProfileDataError::LimitExceeded("order analysis work"))?;
+        Ok(())
+    }
+}
+
 pub(super) fn analyze_identifiers(
     samples: &[Vec<u64>],
     losses: &ObservationLosses,
     config: OrderAnalysisConfig,
     reserved_candidate: impl Fn(u64) -> bool,
 ) -> Result<OrderRuleEvidence, ProfileDataError> {
-    analyze_identifiers_at_depth(samples, losses, config, &reserved_candidate, 0)
+    let samples: Vec<_> = samples.iter().map(Vec::as_slice).collect();
+    analyze_identifiers_with_budget(
+        &samples,
+        losses,
+        config,
+        reserved_candidate,
+        &mut OrderWorkBudget::new(config),
+    )
+}
+
+pub(super) fn analyze_identifiers_with_budget(
+    samples: &[&[u64]],
+    losses: &ObservationLosses,
+    config: OrderAnalysisConfig,
+    reserved_candidate: impl Fn(u64) -> bool,
+    budget: &mut OrderWorkBudget,
+) -> Result<OrderRuleEvidence, ProfileDataError> {
+    analyze_identifiers_at_depth(samples, losses, config, &reserved_candidate, 0, budget)
 }
 
 fn analyze_identifiers_at_depth(
-    samples: &[Vec<u64>],
+    samples: &[&[u64]],
     losses: &ObservationLosses,
     config: OrderAnalysisConfig,
     reserved_candidate: &impl Fn(u64) -> bool,
     depth: usize,
+    budget: &mut OrderWorkBudget,
 ) -> Result<OrderRuleEvidence, ProfileDataError> {
     config.validate()?;
     if samples.len() > config.maximum_samples
@@ -349,11 +405,13 @@ fn analyze_identifiers_at_depth(
         .copied()
         .filter(|id| reserved_candidate(*id))
         .collect();
-    for sample in &samples[1..] {
+    let unique: BTreeSet<_> = samples.iter().copied().collect();
+    for sample in &unique {
         constant_reserved.retain(|id| sample.contains(id));
     }
-    let mut normalized = Vec::new();
-    for sample in samples {
+    let mut normalized_values = BTreeMap::new();
+    for sample in unique {
+        budget.charge(sample.len())?;
         let mut occurrences = BTreeMap::<u64, u16>::new();
         let mut reserved = 0_u16;
         let mut order = Vec::new();
@@ -376,13 +434,28 @@ fn analyze_identifiers_at_depth(
                     .ok_or(ProfileDataError::LimitExceeded("literal occurrences"))?;
             }
         }
-        normalized.push(order);
+        normalized_values.insert(sample, Arc::<[AnalyzedOrderElement]>::from(order));
     }
-    result.normalized_distinct_orders = normalized.iter().collect::<BTreeSet<_>>().len();
-    let mut positions = BTreeMap::new();
+    let normalized: Vec<_> = samples
+        .iter()
+        .map(|sample| normalized_values[*sample].clone())
+        .collect();
+    let mut frequencies = BTreeMap::new();
     for order in &normalized {
+        *frequencies.entry(order.clone()).or_insert(0usize) += 1;
+    }
+    result.normalized_distinct_orders = frequencies.len();
+    let mut positions = BTreeMap::new();
+    for (order, frequency) in &frequencies {
+        budget.charge(order.len())?;
         for (index, element) in order.iter().enumerate() {
-            *positions.entry((*element, index)).or_insert(0_usize) += 1;
+            if !positions.contains_key(&(*element, index)) {
+                budget.positions = budget
+                    .positions
+                    .checked_sub(1)
+                    .ok_or(ProfileDataError::LimitExceeded("order analysis positions"))?;
+            }
+            *positions.entry((*element, index)).or_insert(0_usize) += frequency;
         }
     }
     result.positions = positions
@@ -393,13 +466,24 @@ fn analyze_identifiers_at_depth(
             sample_count,
         })
         .collect();
-    let mut elements = normalized[0].clone();
+    let mut elements = normalized[0].to_vec();
     elements.sort_unstable();
+    let sorted: BTreeMap<_, _> = frequencies
+        .keys()
+        .map(|order| {
+            let mut key = order.to_vec();
+            key.sort_unstable();
+            (order, key)
+        })
+        .collect();
     let mut modes = BTreeMap::<Vec<AnalyzedOrderElement>, Vec<usize>>::new();
     for (index, order) in normalized.iter().enumerate() {
-        let mut key = order.clone();
-        key.sort_unstable();
-        modes.entry(key).or_default().push(index);
+        let key = &sorted[order];
+        if let Some(indices) = modes.get_mut(key) {
+            indices.push(index);
+        } else {
+            modes.insert(key.clone(), vec![index]);
+        }
     }
     if modes.len() > 1 {
         if modes.len() > config.maximum_literals || depth >= 8 {
@@ -408,16 +492,14 @@ fn analyze_identifiers_at_depth(
         }
         let mut analyzed_modes = Vec::new();
         for (elements, indices) in &modes {
-            let members: Vec<_> = indices
-                .iter()
-                .map(|index| samples[*index].clone())
-                .collect();
+            let members: Vec<_> = indices.iter().map(|index| samples[*index]).collect();
             let evidence = analyze_identifiers_at_depth(
                 &members,
                 losses,
                 config,
                 reserved_candidate,
                 depth + 1,
+                budget,
             )?;
             analyzed_modes.push(OrderModeEvidence {
                 elements: elements.clone().into(),
@@ -451,7 +533,7 @@ fn analyze_identifiers_at_depth(
             .filter(|element| matches!(element, AnalyzedOrderElement::Literal { .. }))
             .collect();
         if varying_reserved
-            && normalized.iter().all(|order| {
+            && frequencies.keys().all(|order| {
                 order
                     .iter()
                     .copied()
@@ -460,7 +542,7 @@ fn analyze_identifiers_at_depth(
             })
         {
             let mut placements = BTreeMap::<Vec<usize>, usize>::new();
-            for order in &normalized {
+            for (order, frequency) in &frequencies {
                 let indices = order
                     .iter()
                     .enumerate()
@@ -468,7 +550,7 @@ fn analyze_identifiers_at_depth(
                         matches!(element, AnalyzedOrderElement::Reserved { .. }).then_some(index)
                     })
                     .collect();
-                *placements.entry(indices).or_default() += 1;
+                *placements.entry(indices).or_default() += frequency;
             }
             result.derived = Some(DerivedOrderRule::Relative {
                 literals: literals.into(),
@@ -488,8 +570,8 @@ fn analyze_identifiers_at_depth(
                 .iter()
                 .enumerate()
                 .filter_map(|(index, element)| {
-                    normalized
-                        .iter()
+                    frequencies
+                        .keys()
                         .all(|order| order[index] == *element)
                         .then_some(PinnedOrderElement {
                             element: *element,

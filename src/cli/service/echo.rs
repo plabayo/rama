@@ -649,7 +649,11 @@ impl Service<Request> for EchoService {
                     && let Some(profile) =
                         ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
                 {
-                    let matched_ja4 = profile.tls.as_ref().and_then(|tls| tls.compute_ja4().inspect_err(|error| tracing::trace!("profile ja4 computation: {error:?}")).ok());
+                    let matched_ja4 = profile.tls.as_ref().and_then(|tls| {
+                        tls.compute_ja4()
+                            .inspect_err(|error| tracing::trace!("profile ja4 computation: {error:?}"))
+                            .ok()
+                    });
                     if let (Some(src), Some(tgt)) = (ja4.as_ref(), matched_ja4) {
                         let hash = format!("{tgt}");
                         let matched = format!("{src}") == hash;
@@ -680,7 +684,11 @@ impl Service<Request> for EchoService {
                     && let Some(profile) =
                         ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
                 {
-                    let matched_ja3 = profile.tls.as_ref().and_then(|tls| tls.compute_ja3().inspect_err(|error| tracing::trace!("profile ja3 computation: {error:?}")).ok());
+                    let matched_ja3 = profile.tls.as_ref().and_then(|tls| {
+                        tls.compute_ja3()
+                            .inspect_err(|error| tracing::trace!("profile ja3 computation: {error:?}"))
+                            .ok()
+                    });
                     if let (Some(src), Some(tgt)) = (ja3.as_ref(), matched_ja3) {
                         let hash = format!("{tgt:x}");
                         let matched = format!("{src:x}") == hash;
@@ -711,7 +719,11 @@ impl Service<Request> for EchoService {
                     && let Some(profile) =
                         ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
                 {
-                    let matched_peet = profile.tls.as_ref().and_then(|tls| tls.compute_peet().inspect_err(|error| tracing::trace!("profile peet computation: {error:?}")).ok());
+                    let matched_peet = profile.tls.as_ref().and_then(|tls| {
+                        tls.compute_peet()
+                            .inspect_err(|error| tracing::trace!("profile peet computation: {error:?}"))
+                            .ok()
+                    });
                     if let (Some(src), Some(tgt)) = (peet.as_ref(), matched_peet) {
                         let hash = format!("{tgt}");
                         let matched = format!("{src}") == hash;

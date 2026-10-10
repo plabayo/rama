@@ -1,5 +1,7 @@
 //! Group connection-owned lengths and draws without changing retained samples.
 
+use std::collections::BTreeSet;
+
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,6 +13,7 @@ struct Shape {
     token: bool,
     padding: u8,
     coalesced: bool,
+    datagrams: usize,
     frames: Vec<Vec<u64>>,
     parameters: Vec<Option<u64>>,
     chosen: Option<u32>,
@@ -20,6 +23,7 @@ struct Shape {
 fn reserved_parameter(id: u64) -> bool {
     id % 31 == 27
 }
+
 fn reserved_version(id: u32) -> bool {
     id & 0x0f0f_0f0f == 0x0a0a_0a0a
 }
@@ -54,6 +58,7 @@ impl Shape {
                 _ => return Err(ProfileDataError::Unsupported("QUIC padding placement")),
             },
             coalesced: flight.coalesced,
+            datagrams: flight.datagram_sizes.len(),
             frames: flight
                 .frames
                 .iter()
@@ -67,6 +72,8 @@ impl Shape {
                             ObservedFrame::Crypto { .. } => 6,
                             ObservedFrame::Other { ty } => *ty,
                         })
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
                         .collect()
                 })
                 .collect(),
@@ -86,6 +93,7 @@ impl Shape {
         writer.u8(u8::from(self.token))?;
         writer.u8(self.padding)?;
         writer.u8(u8::from(self.coalesced))?;
+        writer.u64(self.datagrams as u64)?;
         writer.u64(self.frames.len() as u64)?;
         for packet in &self.frames {
             writer.u64(packet.len() as u64)?;
@@ -121,10 +129,12 @@ impl Shape {
             || !(1..=4).contains(&self.pn_width)
             || self.padding > 1
             || self.frames.is_empty()
+            || self.datagrams == 0
         {
             return Err(ProfileDataError::Invalid("QUIC flight structural shape"));
         }
-        if self.frames.len() > limits.packets
+        if self.datagrams > limits.datagrams
+            || self.frames.len() > limits.packets
             || self.parameters.len() > limits.parameters
             || self.versions.len() > limits.parameters
         {
@@ -142,7 +152,7 @@ impl Shape {
                     ))?;
             if packet.is_empty()
                 || packet.iter().any(|ty| *ty >= (1 << 62) || *ty == 3)
-                || packet.windows(2).any(|pair| pair == [0, 0])
+                || packet.windows(2).any(|pair| pair[0] >= pair[1])
             {
                 return Err(ProfileDataError::Invalid("QUIC flight structural frames"));
             }
@@ -209,6 +219,7 @@ pub(super) fn validate(
     let token = flag(&mut reader)?;
     let padding = reader.u8()?;
     let coalesced = flag(&mut reader)?;
+    let datagrams = reader.count(limits.datagrams)?;
     let mut frames = Vec::new();
     let mut remaining = limits.frames;
     for _ in 0..reader.count(limits.packets)? {
@@ -250,6 +261,7 @@ pub(super) fn validate(
         token,
         padding,
         coalesced,
+        datagrams,
         frames,
         parameters,
         chosen,
@@ -261,4 +273,34 @@ pub(super) fn validate(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn structural_frame_sets_reject_duplicates_and_noncanonical_order() {
+        let limits = QuicFlightCaptureLimits::default();
+        let mut shape = Shape {
+            version: 1,
+            dcid: 8,
+            scid: 0,
+            pn_width: 1,
+            token: false,
+            padding: 0,
+            coalesced: false,
+            datagrams: 1,
+            frames: vec![vec![0, 1, 6]],
+            parameters: Vec::new(),
+            chosen: None,
+            versions: Vec::new(),
+        };
+        let valid = shape.encode(limits).unwrap();
+        validate(&valid, limits).unwrap();
+        for frames in [vec![0, 0, 6], vec![6, 1, 0], vec![0, 3, 6], vec![1 << 62]] {
+            shape.frames = vec![frames];
+            shape.encode(limits).unwrap_err();
+        }
+    }
 }

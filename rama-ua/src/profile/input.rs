@@ -220,7 +220,13 @@ impl UserAgentProfileInput {
             profile.tls = self.tls_client_hello.map(|client_hello| {
                 Arc::new(TlsProfile {
                     client_hello,
-                    permute_extensions: false,
+                    permute_extensions: profile.ua_kind.is_some_and(|kind| {
+                        TlsProfile::user_agent_permutes_extensions(
+                            kind,
+                            profile.ua_version,
+                            profile.platform,
+                        )
+                    }),
                     ws_client_config_overwrites: self.tls_ws_client_config_overwrites,
                 })
             });
@@ -369,14 +375,20 @@ mod tests {
 
     #[cfg(feature = "tls")]
     #[test]
-    fn legacy_browser_name_never_invents_extension_permutation() {
+    fn legacy_rows_preserve_the_existing_permutation_default() {
         let rows: Vec<UserAgentProfileInput> =
             serde_json::from_slice(include_bytes!("embed_profiles.json")).unwrap();
         for row in rows {
             let profile = row.try_into_profile().unwrap();
-            if let Some(tls) = profile.tls {
-                assert!(!tls.permute_extensions);
-            }
+            let tls = profile.tls.as_ref().unwrap();
+            let expected = profile.ua_kind.is_some_and(|kind| {
+                TlsProfile::user_agent_permutes_extensions(
+                    kind,
+                    profile.ua_version,
+                    profile.platform,
+                )
+            });
+            assert_eq!(tls.permute_extensions, expected);
         }
     }
 }

@@ -8,7 +8,7 @@ use serde::Serialize;
 use super::{
     AnalyzedOrderWeight, CaptureNumericDistribution, OrderAnalysisConfig, OrderRuleEvidence,
     numeric::analyze_numeric_variants,
-    order::{analyze_identifiers, sampling_population},
+    order::{OrderWorkBudget, analyze_identifiers_with_budget, sampling_population},
 };
 use crate::profile::{
     CanonicalDomain, CanonicalValue, CountedObservationBucket, CounterSnapshot, H2Capture,
@@ -77,6 +77,7 @@ pub struct AnalyzedCaptureVariant {
 #[derive(Debug, Clone, Serialize)]
 pub struct CountedCaptureAnalysis {
     pub classifier_revision: u16,
+    pub order_work: usize,
     pub domain: CanonicalDomain,
     pub scope: ValueId,
     pub counts: CounterSnapshot,
@@ -308,6 +309,7 @@ pub fn analyze_capture_bucket(
         return Err(ProfileDataError::LimitExceeded("capture analysis paths"));
     }
     let mut orders = Vec::new();
+    let mut budget = OrderWorkBudget::new(config);
     for path in paths {
         let dictionary: BTreeSet<_> = decoded
             .values()
@@ -356,13 +358,17 @@ pub fn analyze_capture_bucket(
             .map(|sample| {
                 order_samples
                     .get(&sample.value)
-                    .cloned()
+                    .map(Vec::as_slice)
                     .unwrap_or_default()
             })
             .collect::<Vec<_>>();
-        let evidence = analyze_identifiers(&samples, &snapshot.counts.losses, config, |id| {
-            path.reserved(id)
-        })?;
+        let evidence = analyze_identifiers_with_budget(
+            &samples,
+            &snapshot.counts.losses,
+            config,
+            |id| path.reserved(id),
+            &mut budget,
+        )?;
         orders.push(CaptureOrderAnalysis {
             path,
             dictionary: dictionary.into(),
@@ -374,6 +380,7 @@ pub fn analyze_capture_bucket(
     Ok(CountedCaptureAnalysis {
         numeric,
         classifier_revision: 1,
+        order_work: budget.used(),
         domain: snapshot.domain,
         scope: snapshot.scope,
         counts: snapshot.counts,

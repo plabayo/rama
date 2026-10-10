@@ -1,7 +1,7 @@
 use std::{
     fmt::Write as _,
     fs::{self, File},
-    io::BufWriter,
+    io::{self, BufWriter, Write as _},
     path::PathBuf,
 };
 
@@ -122,7 +122,20 @@ pub(crate) async fn export_counted_profiles(
     while let Some(entry) = source.next().await? {
         staged = tokio::task::spawn_blocking(move || staged.write(entry)).await??;
     }
-    tokio::task::spawn_blocking(move || staged.finish()).await?
+    tokio::task::spawn_blocking(move || staged.finish()).await??;
+    if source.skipped() > 0 || source.limited() {
+        writeln!(
+            io::stderr(),
+            "Profile export: {} over-limit profiles skipped; read budget {}.",
+            source.skipped(),
+            if source.limited() {
+                "reached"
+            } else {
+                "not reached"
+            }
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

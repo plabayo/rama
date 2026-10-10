@@ -4,7 +4,7 @@ mod legacy;
 pub(super) use legacy::{LegacyRevision, ingest_legacy};
 
 mod export;
-pub(super) use export::next_profile;
+pub(super) use export::{ProfileReadLimit, next_profile};
 
 use std::{
     collections::{BTreeMap, BTreeSet},

@@ -58,6 +58,8 @@ impl ProfileArchiveEntry {
 pub struct ProfileArchiveLimits {
     pub bytes: usize,
     pub profiles: usize,
+    /// Cumulative retained bytes and normalized order visits across entries.
+    pub maximum_work: usize,
     pub profile: ProfileAnalysisLimits,
 }
 
@@ -66,6 +68,7 @@ impl Default for ProfileArchiveLimits {
         Self {
             bytes: mib(64),
             profiles: 4096,
+            maximum_work: mib(512),
             profile: ProfileAnalysisLimits::default(),
         }
     }
@@ -136,15 +139,26 @@ fn compile_entries(
     limits: ProfileArchiveLimits,
 ) -> Result<Box<[CompiledProfileArchiveEntry]>, BoxError> {
     let mut seen = HashSet::new();
+    let mut remaining_work = limits.maximum_work;
     entries
         .into_iter()
         .map(|entry| {
             if !seen.insert(entry.evidence.profile.id) {
                 return Err(ProfileDataError::Invalid("duplicate archive profile").into());
             }
-            entry
-                .analyze(authorized, current_day, horizon, limits.profile)
-                .map_err(Into::into)
+            let entry = entry.analyze(
+                authorized,
+                current_day,
+                horizon,
+                ProfileAnalysisLimits {
+                    maximum_work: limits.profile.maximum_work.min(remaining_work),
+                    ..limits.profile
+                },
+            )?;
+            remaining_work = remaining_work
+                .checked_sub(entry.analysis.work_units)
+                .ok_or(ProfileDataError::LimitExceeded("archive analysis work"))?;
+            Ok(entry)
         })
         .collect()
 }

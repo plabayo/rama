@@ -274,6 +274,11 @@ impl CollectionQueue {
     }
 
     #[cfg(test)]
+    pub(super) async fn wait_for_capacity(&self) -> Result<(), BoxError> {
+        self.sender.reserve().await.map(drop).map_err(Into::into)
+    }
+
+    #[cfg(test)]
     pub(super) fn counts(&self) -> CollectionCounts {
         self.counters.snapshot()
     }

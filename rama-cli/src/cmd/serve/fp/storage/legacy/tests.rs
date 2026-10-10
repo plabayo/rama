@@ -368,6 +368,7 @@ async fn legacy_cli_export_and_view_source_share_the_counted_analysis() {
         .unwrap()
         .parse::<Config>()
         .unwrap();
+    assert!(env::var("RAMA_FP_DATABASE_URL").unwrap() == env::var("RAMA_FP_TEST_PG").unwrap());
     let command_database = env::var("RAMA_FP_DATABASE_URL")
         .unwrap()
         .parse::<Config>()

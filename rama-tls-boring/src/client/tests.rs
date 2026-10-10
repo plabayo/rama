@@ -11,7 +11,10 @@ use rama_tls::{
     ProtocolVersion, SignatureScheme, SupportedGroup,
     client::{ClientHello, ClientHelloExtension, TlsClientConfig, parse_client_hello_handshake},
 };
-use rama_ua::profile::UserAgentDatabase;
+use rama_ua::{
+    UserAgentKind,
+    profile::{TlsProfile, UserAgentDatabase},
+};
 
 use super::{
     BoringClientConfigExt, BoringRequestedTrustAnchors, BoringTlsConnectorConfig,
@@ -205,7 +208,7 @@ fn embedded_profiles_are_mirrored_on_the_wire() {
     let db = UserAgentDatabase::try_embedded().unwrap();
     assert!(!db.is_empty());
     for profile in db.iter() {
-        let Some(tls) = &profile.tls else { continue };
+        let tls = profile.tls.as_ref().unwrap();
         let captured = &tls.client_hello;
         let context =
             TlsConnectorContextBuilder::try_from(&TlsClientConfig::new_from_client_hello(captured))
@@ -261,13 +264,57 @@ fn embedded_profiles_are_mirrored_on_the_wire() {
 }
 
 #[test]
-fn legacy_profiles_do_not_infer_permutation_from_browser_identity() {
+fn embedded_chromium_profiles_permute_extensions() {
     let db = UserAgentDatabase::try_embedded().unwrap();
+    let mut chromium = 0;
     for profile in db.iter() {
-        if let Some(tls) = &profile.tls {
-            assert!(!tls.permute_extensions, "{:?}", profile.ua_str());
-        }
+        let tls = profile.tls.as_ref().unwrap();
+        let expected = profile.ua_kind.is_some_and(|kind| {
+            TlsProfile::user_agent_permutes_extensions(kind, profile.ua_version, profile.platform)
+        });
+        assert_eq!(tls.permute_extensions, expected, "{:?}", profile.ua_str());
+        chromium += usize::from(expected);
     }
+    assert!(chromium > 0);
+}
+
+#[test]
+fn embedded_chromium_profile_emits_per_connection_extension_orders() {
+    let db = UserAgentDatabase::try_embedded().unwrap();
+    let profile = db
+        .iter()
+        .find(|profile| {
+            profile.ua_kind == Some(UserAgentKind::Chromium)
+                && profile.tls.as_ref().unwrap().permute_extensions
+        })
+        .unwrap();
+    let tls = profile.tls.as_ref().unwrap();
+    let config = TlsClientConfig::new_from_client_hello(&tls.client_hello)
+        .with_permute_extensions(tls.permute_extensions);
+    let context = TlsConnectorContextBuilder::try_from(&config)
+        .unwrap()
+        .build();
+    let mut orders = BTreeSet::new();
+    let mut membership = None;
+    // A fixed batch exercises the native entropy source; no retry on failure.
+    for _ in 0..20 {
+        let hello = first_flight(
+            &context,
+            tls.client_hello.ext_server_name().cloned().map(Host::from),
+        );
+        let order: Vec<u16> = hello
+            .extensions()
+            .iter()
+            .map(|extension| extension.id())
+            .filter(|id| !id.is_grease())
+            .map(Into::into)
+            .collect();
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(&sorted, membership.get_or_insert_with(|| sorted.clone()));
+        orders.insert(order);
+    }
+    assert!(orders.len() > 1);
 }
 
 fn normalized_ciphers(hello: &ClientHello) -> Vec<String> {

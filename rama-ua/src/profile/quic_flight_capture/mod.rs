@@ -508,11 +508,11 @@ mod tests {
         assert_eq!(
             structure.id.0,
             [
-                247, 8, 56, 218, 217, 61, 209, 171, 225, 40, 116, 113, 134, 77, 119, 228, 7, 210,
-                160, 71, 208, 179, 116, 253, 75, 112, 85, 164, 127, 205, 104, 195
+                183, 115, 0, 156, 201, 184, 78, 200, 115, 134, 248, 59, 135, 111, 8, 72, 117, 91,
+                184, 108, 172, 227, 189, 222, 189, 255, 186, 158, 49, 21, 190, 61
             ]
         );
-        assert_eq!(structure.bytes.as_ref(), b"\x72\x61\x6d\x61\x2d\x70\x72\x6f\x66\x69\x6c\x65\x00\x00\x01\x00\x15\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00");
+        assert_eq!(structure.bytes.as_ref(), b"\x72\x61\x6d\x61\x2d\x70\x72\x6f\x66\x69\x6c\x65\x00\x00\x01\x00\x15\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x06\x00\x00\x00\x00\x00\x00\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00");
         assert_eq!(canonical.bytes.len(), 172);
         assert_eq!(
             canonical.id.0,
@@ -778,7 +778,7 @@ mod tests {
                 3 => changed.flight.packet_number_len += 1,
                 4 => changed.flight.token_len = 1,
                 5 => changed.flight.coalesced = true,
-                _ => changed.flight.frames[0].reverse(),
+                _ => changed.flight.frames[0].push(ObservedFrame::Ping),
             }
             assert_ne!(expected.id, changed.structural(limits).unwrap().id);
         }
@@ -854,5 +854,285 @@ mod tests {
         ] {
             QuicFlightCapture::validate_structure(&value, limits).unwrap_err();
         }
+    }
+
+    #[test]
+    fn chromium_chaos_layouts_share_structure_without_losing_frame_evidence() {
+        // Chrome 154.0.8037.98: six fresh loopback connections, two Initials each.
+        // Only public wire frame types, offsets and lengths are retained here.
+        const PACKETS: &[&[(u64, u64, usize)]] = &[
+            &[
+                (6, 0, 55),
+                (6, 1099, 197),
+                (1, 0, 0),
+                (1, 0, 0),
+                (1, 0, 0),
+                (1, 0, 0),
+                (6, 1011, 88),
+                (0, 0, 3),
+                (1, 0, 0),
+                (1, 0, 0),
+                (0, 0, 9),
+                (1, 0, 0),
+                (0, 0, 107),
+                (1, 0, 0),
+                (0, 0, 1),
+                (1, 0, 0),
+                (0, 0, 1),
+                (6, 55, 18),
+                (0, 0, 129),
+                (1, 0, 0),
+                (6, 1296, 576),
+            ],
+            &[
+                (0, 0, 27),
+                (1, 0, 0),
+                (0, 0, 217),
+                (6, 1009, 1),
+                (0, 0, 1),
+                (6, 897, 112),
+                (6, 73, 824),
+                (1, 0, 0),
+                (1, 0, 0),
+                (0, 0, 5),
+                (1, 0, 0),
+                (6, 1010, 1),
+                (0, 0, 4),
+            ],
+            &[
+                (0, 0, 212),
+                (1, 0, 0),
+                (1, 0, 0),
+                (1, 0, 0),
+                (6, 47, 9),
+                (0, 0, 9),
+                (1, 0, 0),
+                (1, 0, 0),
+                (1, 0, 0),
+                (6, 1015, 733),
+                (6, 0, 9),
+                (6, 9, 15),
+                (0, 0, 8),
+                (1, 0, 0),
+                (6, 24, 23),
+                (6, 1748, 166),
+                (1, 0, 0),
+                (1, 0, 0),
+            ],
+            &[
+                (6, 758, 32),
+                (0, 0, 62),
+                (6, 790, 20),
+                (1, 0, 0),
+                (0, 0, 2),
+                (6, 810, 205),
+                (1, 0, 0),
+                (0, 0, 11),
+                (6, 56, 702),
+                (0, 0, 161),
+            ],
+            &[
+                (6, 3, 11),
+                (0, 0, 30),
+                (6, 82, 1),
+                (1, 0, 0),
+                (1, 0, 0),
+                (0, 0, 162),
+                (1, 0, 0),
+                (6, 21, 39),
+                (1, 0, 0),
+                (6, 65, 16),
+                (0, 0, 5),
+                (1, 0, 0),
+                (1, 0, 0),
+                (6, 63, 1),
+                (6, 2, 1),
+                (6, 0, 2),
+                (6, 81, 1),
+                (6, 14, 7),
+                (0, 0, 16),
+                (6, 1040, 869),
+                (6, 60, 3),
+                (6, 64, 1),
+                (1, 0, 0),
+                (1, 0, 0),
+            ],
+            &[
+                (0, 0, 131),
+                (6, 313, 212),
+                (0, 0, 65),
+                (1, 0, 0),
+                (1, 0, 0),
+                (1, 0, 0),
+                (6, 843, 93),
+                (0, 0, 12),
+                (6, 525, 256),
+                (6, 781, 2),
+                (6, 783, 60),
+                (6, 83, 230),
+                (1, 0, 0),
+                (1, 0, 0),
+                (1, 0, 0),
+                (1, 0, 0),
+                (6, 936, 104),
+                (0, 0, 9),
+            ],
+            &[
+                (1, 0, 0),
+                (1, 0, 0),
+                (1, 0, 0),
+                (6, 65, 4),
+                (6, 62, 1),
+                (0, 0, 181),
+                (6, 1030, 169),
+                (1, 0, 0),
+                (1, 0, 0),
+                (0, 0, 5),
+                (6, 46, 13),
+                (6, 0, 46),
+                (1, 0, 0),
+                (6, 1199, 711),
+                (6, 63, 2),
+                (0, 0, 33),
+                (6, 59, 3),
+                (1, 0, 0),
+                (0, 0, 3),
+                (6, 69, 4),
+            ],
+            &[
+                (1, 0, 0),
+                (0, 0, 4),
+                (6, 77, 367),
+                (0, 0, 165),
+                (1, 0, 0),
+                (0, 0, 2),
+                (1, 0, 0),
+                (0, 0, 39),
+                (1, 0, 0),
+                (6, 461, 145),
+                (1, 0, 0),
+                (6, 660, 200),
+                (0, 0, 3),
+                (1, 0, 0),
+                (6, 73, 4),
+                (1, 0, 0),
+                (6, 444, 17),
+                (0, 0, 4),
+                (6, 860, 170),
+                (1, 0, 0),
+                (6, 606, 54),
+            ],
+            &[
+                (0, 0, 36),
+                (6, 1310, 429),
+                (0, 0, 8),
+                (6, 1309, 1),
+                (1, 0, 0),
+                (0, 0, 130),
+                (6, 1039, 99),
+                (0, 0, 17),
+                (1, 0, 0),
+                (6, 1739, 207),
+                (0, 0, 18),
+                (6, 1186, 123),
+                (6, 0, 64),
+                (0, 0, 1),
+                (6, 1138, 48),
+            ],
+            &[
+                (6, 629, 116),
+                (0, 0, 1),
+                (6, 745, 294),
+                (0, 0, 65),
+                (1, 0, 0),
+                (6, 219, 230),
+                (0, 0, 128),
+                (1, 0, 0),
+                (6, 64, 24),
+                (6, 88, 131),
+                (0, 0, 9),
+                (6, 539, 90),
+                (6, 449, 90),
+            ],
+            &[
+                (0, 0, 198),
+                (6, 1065, 810),
+                (0, 0, 24),
+                (6, 42, 16),
+                (1, 0, 0),
+                (1, 0, 0),
+                (6, 76, 3),
+                (6, 8, 4),
+                (1, 0, 0),
+                (0, 0, 21),
+                (6, 0, 8),
+                (1, 0, 0),
+                (6, 58, 18),
+                (6, 1019, 46),
+                (1, 0, 0),
+                (6, 12, 30),
+                (1, 0, 0),
+                (1, 0, 0),
+                (0, 0, 2),
+            ],
+            &[
+                (1, 0, 0),
+                (1, 0, 0),
+                (0, 0, 17),
+                (6, 714, 305),
+                (1, 0, 0),
+                (1, 0, 0),
+                (0, 0, 10),
+                (6, 79, 207),
+                (0, 0, 191),
+                (1, 0, 0),
+                (0, 0, 1),
+                (6, 494, 220),
+                (6, 286, 208),
+                (0, 0, 30),
+            ],
+        ];
+        let limits = QuicFlightCaptureLimits::default();
+        let mut structures = BTreeSet::new();
+        let mut literals = BTreeSet::new();
+        for packets in PACKETS.as_chunks::<2>().0 {
+            let mut captured = capture();
+            captured.flight.datagram_sizes = vec![1250, 1250];
+            captured.flight.trailing_bytes = vec![0, 0];
+            captured.flight.first_packet_number = 1;
+            captured.flight.packet_numbers = vec![1, 2];
+            captured.flight.packet_number_len = 1;
+            captured.flight.frames = packets
+                .iter()
+                .map(|packet| {
+                    packet
+                        .iter()
+                        .map(|&(ty, offset, len)| match ty {
+                            0 => ObservedFrame::Padding { len },
+                            1 => ObservedFrame::Ping,
+                            6 => ObservedFrame::Crypto { offset, len },
+                            _ => panic!("unexpected fixture frame"),
+                        })
+                        .collect()
+                })
+                .collect();
+            let value = captured.canonical(limits).unwrap();
+            let restored = QuicFlightCapture::from_canonical(&value, limits).unwrap();
+            assert_eq!(
+                serde_json::to_value(&restored.flight.frames).unwrap(),
+                serde_json::to_value(&captured.flight.frames).unwrap()
+            );
+            literals.insert(value.id);
+            let structure = captured.structural(limits).unwrap();
+            QuicFlightCapture::validate_structure(&structure, limits).unwrap();
+            structures.insert(structure.id);
+        }
+        assert_eq!(literals.len(), 6);
+        assert_eq!(structures.len(), 1);
+        let mut changed = capture();
+        let before = changed.structural(limits).unwrap();
+        changed.flight.datagram_sizes.push(1200);
+        changed.flight.trailing_bytes.push(0);
+        assert_ne!(before.id, changed.structural(limits).unwrap().id);
     }
 }

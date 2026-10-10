@@ -639,3 +639,61 @@ fn recorded_losses_are_excluded_from_the_sampling_population() {
         }
     )));
 }
+
+#[test]
+fn repeated_orders_share_work_and_keep_sample_multiplicity() {
+    let config = OrderAnalysisConfig {
+        maximum_work: 6,
+        maximum_positions: 3,
+        ..OrderAnalysisConfig::default()
+    };
+    let samples = vec![vec![1, 2, 3]; 256];
+    let mut budget = OrderWorkBudget::new(config);
+    let borrowed: Vec<_> = samples.iter().map(Vec::as_slice).collect();
+    let evidence = analyze_identifiers_with_budget(
+        &borrowed,
+        &ObservationLosses {
+            history_known: true,
+            ..ObservationLosses::default()
+        },
+        config,
+        |_| false,
+        &mut budget,
+    )
+    .unwrap();
+    assert_eq!(budget.used(), 6);
+    assert_eq!(evidence.positions.len(), 3);
+    assert!(
+        evidence
+            .positions
+            .iter()
+            .all(|position| position.sample_count == 256)
+    );
+    assert_eq!(evidence.normalized_distinct_orders, 1);
+    analyze_identifiers(
+        &samples,
+        &ObservationLosses {
+            history_known: true,
+            ..ObservationLosses::default()
+        },
+        OrderAnalysisConfig {
+            maximum_work: 5,
+            ..config
+        },
+        |_| false,
+    )
+    .unwrap_err();
+    analyze_identifiers(
+        &samples,
+        &ObservationLosses {
+            history_known: true,
+            ..ObservationLosses::default()
+        },
+        OrderAnalysisConfig {
+            maximum_positions: 2,
+            ..config
+        },
+        |_| false,
+    )
+    .unwrap_err();
+}

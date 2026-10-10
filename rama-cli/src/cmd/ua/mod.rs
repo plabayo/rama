@@ -5,6 +5,7 @@ use std::{
     path::PathBuf,
 };
 
+use crate::utils::terminal::display_text;
 use clap::{Args, Subcommand};
 mod view;
 
@@ -38,7 +39,7 @@ enum UaSubcommand {
 
 #[derive(Debug, Args)]
 pub(crate) struct ExportProfilesCommand {
-    /// Destination JSON document; published after all profiles validate.
+    /// Destination JSON document; published after exported profiles validate.
     #[arg(long)]
     pub output: PathBuf,
     /// Number of UTC day buckets, including the current partial day.
@@ -53,7 +54,7 @@ pub(crate) struct ExportProfilesCommand {
     /// Replace an existing destination after a complete successful export.
     #[arg(long)]
     pub replace: bool,
-    /// Maximum number of profiles in the document.
+    /// Maximum database profiles examined, including skipped profiles.
     #[arg(long, default_value_t = ProfileArchiveLimits::default().profiles)]
     pub max_profiles: usize,
     /// Maximum output bytes; exceeding the limit publishes no document.
@@ -78,7 +79,11 @@ pub async fn run(command: UaCommand) -> Result<(), BoxError> {
                 serde_json::to_writer_pretty(&mut output, &value)?;
                 output.write_all(b"\n")?;
             } else {
-                writeln!(output, "User-Agent: {}", user_agent.header_str())?;
+                writeln!(
+                    output,
+                    "User-Agent: {}",
+                    display_text(user_agent.header_str())
+                )?;
                 writeln!(
                     output,
                     "Family:     {}",

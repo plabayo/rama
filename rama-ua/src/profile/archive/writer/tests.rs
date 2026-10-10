@@ -63,3 +63,39 @@ fn streaming_archives_reject_duplicate_identity_and_invalid_evidence() {
         .write_profile(invalid)
         .unwrap_err();
 }
+
+#[test]
+fn archive_analysis_work_is_shared_between_profiles() {
+    let first = entry("first");
+    let second = entry("second");
+    let work = first.evidence.profile.bytes.len() + second.evidence.profile.bytes.len();
+    let limits = ProfileArchiveLimits {
+        maximum_work: work,
+        ..ProfileArchiveLimits::default()
+    };
+    let output = ProfileArchiveWriter::new(Vec::new(), false, 100, 14, limits)
+        .unwrap()
+        .write_profile(first.clone())
+        .unwrap()
+        .write_profile(second.clone())
+        .unwrap()
+        .finish()
+        .unwrap();
+    assert_eq!(
+        load_profile_archive_snapshot(&output, false, limits)
+            .unwrap()
+            .len(),
+        2
+    );
+    let limited = ProfileArchiveLimits {
+        maximum_work: work - 1,
+        ..limits
+    };
+    ProfileArchiveWriter::new(Vec::new(), false, 100, 14, limited)
+        .unwrap()
+        .write_profile(first)
+        .unwrap()
+        .write_profile(second)
+        .unwrap_err();
+    load_profile_archive_snapshot(&output, false, limited).unwrap_err();
+}

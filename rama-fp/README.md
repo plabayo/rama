@@ -35,3 +35,6 @@ However, we have [a cron job that runs this script daily at 18h](../.github/work
 It can also be triggered manually. Via [the Github Actions pane](https://github.com/plabayo/rama/actions).
 
 > Dashboard: <https://automate.browserstack.com/dashboard/v2>
+
+Collection preparation holds a queue slot for at most five seconds while a handler
+runs. Slow requests continue normally after their optional capture is discarded.

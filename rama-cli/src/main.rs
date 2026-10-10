@@ -16,7 +16,7 @@ use rama::{
     rt::OwnedRuntime,
 };
 
-use crate::utils::error::ErrorWithExitCode;
+use crate::utils::{error::ErrorWithExitCode, terminal::display_text};
 
 pub mod cmd;
 pub mod trace;
@@ -143,7 +143,7 @@ fn main() -> Result<(), BoxError> {
 
     #[allow(clippy::exit, reason = "CLI: explicit exit code propagation")]
     if let Err(err) = result {
-        eprintln!("🚩 exit with error: {err}");
+        eprintln!("🚩 exit with error: {}", display_text(&err.to_string()));
         let exit_code = err
             .downcast_ref::<ErrorWithExitCode>()
             .map(|err| err.code)

@@ -1,5 +1,7 @@
 //! Request-owned preparation, before display middleware rewrites headers.
 
+use std::{sync::Arc, time::Duration};
+
 use parking_lot::Mutex;
 use rama::{
     Service,
@@ -13,6 +15,7 @@ use rama::{
         ProfileCapture, ProfileDataError, RuntimeProfileCapture, UserAgentSourceInfo,
     },
 };
+use tokio::time::sleep;
 
 use super::{
     super::{
@@ -24,6 +27,8 @@ use super::{
     startup::current_day,
     worker::{CollectionQueue, CollectionReservation},
 };
+
+const PREPARATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub(in super::super) struct CaptureLayer {
@@ -102,6 +107,7 @@ where
     type Output = S::Output;
     type Error = S::Error;
     async fn serve(&self, request: Request<B>) -> Result<Self::Output, Self::Error> {
+        let mut pending_capture = None;
         // Ordinary routes never reserve or build a profile observation.
         if let Some(initiator) = initiator(request.method(), request.uri())
             && let Some(reservation) = self.queue.try_reserve()
@@ -116,18 +122,30 @@ where
             let result = prepare(&request, &initiator);
             match result {
                 Ok(captured) => {
-                    request
-                        .extensions()
-                        .insert(CaptureIntent(Mutex::new(Some(PreparedRequest {
-                            reservation,
-                            day,
-                            request: captured,
-                        }))));
+                    let intent = Arc::new(CaptureIntent(Mutex::new(Some(PreparedRequest {
+                        reservation,
+                        day,
+                        request: captured,
+                    }))));
+                    request.extensions().insert_arc(intent.clone());
+                    pending_capture = Some(intent);
                 }
                 Err(_error) => reservation.reject_capture(),
             }
         }
-        self.inner.serve(request).await
+        let response = self.inner.serve(request);
+        let Some(intent) = pending_capture else {
+            return response.await;
+        };
+        tokio::pin!(response);
+        tokio::select! {
+            result = &mut response => result,
+            _ = sleep(PREPARATION_TIMEOUT) => {
+                // Slow bodies and handlers release collection capacity while serving continues.
+                drop(intent.0.lock().take());
+                response.await
+            }
+        }
     }
 }
 

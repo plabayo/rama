@@ -22,6 +22,7 @@ use crate::{DeviceKind, PlatformKind, UserAgent, UserAgentKind, profile::UserAge
 /// [`UserAgentProvider`]: crate::layer::emulate::UserAgentProvider
 pub struct UserAgentDatabase {
     profiles: Vec<UserAgentProfile>,
+    emulation_profiles: Vec<usize>,
     version_index: ProfileVersionIndex,
 
     map_ua_string: HashMap<String, usize>,
@@ -44,11 +45,13 @@ impl UserAgentDatabase {
         Ok(Self::from_iter(profiles))
     }
 
-    /// Load a strict user-agent database from a JSON array of
+    /// Load a user-agent database from a JSON array of
     /// [`UserAgentProfileInput`](super::UserAgentProfileInput) rows.
     ///
     /// Complementary rows with the same User-Agent are merged, but missing
-    /// HTTP/1, HTTP/2 or TLS components are never synthesized.
+    /// HTTP/1, HTTP/2 or TLS components are never synthesized. Partial captures
+    /// remain available for inspection and capability queries; `get` and `rnd`
+    /// select only profiles with compiled legacy HTTP and TLS components.
     pub fn try_from_json_slice(bytes: &[u8]) -> Result<Self, rama_core::error::BoxError> {
         let profiles = crate::profile::try_load_profiles_json(bytes)?;
         Ok(Self::from_iter(profiles))
@@ -167,7 +170,10 @@ impl UserAgentDatabase {
             self.map_ua_string.insert(ua_header.to_owned(), index);
         }
 
-        if let Some(kind) = profile.ua_kind {
+        if Self::emulation_ready(&profile) {
+            self.emulation_profiles.push(index);
+        }
+        if let Some(kind) = profile.ua_kind.filter(|_| Self::emulation_ready(&profile)) {
             self.map_ua_kind.entry(kind).or_default().push(index);
             if let Some(platform) = profile.platform {
                 self.map_platform
@@ -194,7 +200,11 @@ impl UserAgentDatabase {
             .get(&ua_kind)
             .and_then(|v| v.choose(&mut rand::rng()))
             .and_then(|idx| self.profiles.get(*idx))
-            .or_else(|| self.profiles.choose(&mut rand::rng()))
+            .or_else(|| {
+                self.emulation_profiles
+                    .choose(&mut rand::rng())
+                    .and_then(|index| self.profiles.get(*index))
+            })
     }
 
     /// Get a [`UserAgentProfile`] from the database by an [`UserAgent`] header string
@@ -216,6 +226,7 @@ impl UserAgentDatabase {
             .map_ua_string
             .get(ua.header_str())
             .and_then(|idx| self.profiles.get(*idx))
+            .filter(|profile| Self::emulation_ready(profile))
         {
             return Some(profile);
         }
@@ -291,6 +302,28 @@ impl UserAgentDatabase {
     /// Iterate over all [`UserAgentProfile`]s in the database.
     pub fn iter(&self) -> impl Iterator<Item = &UserAgentProfile> {
         self.profiles.iter()
+    }
+
+    fn emulation_ready(profile: &UserAgentProfile) -> bool {
+        let Some(http) = &profile.http else {
+            return false;
+        };
+        if http
+            .h1
+            .as_ref()
+            .is_none_or(|h1| h1.settings.is_none() || h1.headers.navigate.is_none())
+            || http
+                .h2
+                .as_ref()
+                .is_none_or(|h2| h2.settings.is_none() || h2.headers.navigate.is_none())
+        {
+            return false;
+        }
+        #[cfg(feature = "tls")]
+        if profile.tls.is_none() {
+            return false;
+        }
+        true
     }
 
     fn market_rnd_ua_kind(&self) -> UserAgentKind {
@@ -673,5 +706,25 @@ mod tests {
     fn test_ua_db_embedded() {
         let db = UserAgentDatabase::try_embedded().unwrap();
         assert!(!db.is_empty());
+    }
+    #[test]
+    fn analysis_and_partial_profiles_are_not_implicit_emulation_candidates() {
+        let mut profile = dummy_ua_profile_from_str("Mozilla/5.0 Chrome/154.0.0.0 Safari/537.36");
+        let ua = UserAgent::new(profile.ua_str().unwrap().to_owned());
+        profile.key.user_agent = Some(ua.header_str().into());
+        profile.http = None;
+        let mut db = UserAgentDatabase::default();
+        db.insert(profile);
+        assert_eq!(db.len(), 1);
+        assert!(db.get_exact_header_str(ua.header_str()).is_some());
+        assert!(db.get(&ua).is_none());
+        assert!(db.rnd().is_none());
+        let mut profile = dummy_ua_profile_from_str("Mozilla/5.0 Chrome/155.0.0.0 Safari/537.36");
+        Arc::get_mut(profile.http.as_mut().unwrap()).unwrap().h2 = None;
+        db.insert(profile);
+        assert!(db.rnd().is_none());
+        let complete = dummy_ua_profile_from_str("Mozilla/5.0 Chrome/156.0.0.0 Safari/537.36");
+        db.insert(complete);
+        assert_eq!(db.rnd().unwrap().ua_version, Some(156));
     }
 }

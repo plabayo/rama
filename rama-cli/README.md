@@ -124,3 +124,8 @@ The queue holds at most 128 messages by default (256 configurable), 256 KiB per
 editable item, and 8 MiB of queued message data. WebSocket read-ahead during a
 hold is separately bounded to 16 messages / 256 KiB per direction; exceeding it
 closes the connection. The host inventory retains up to 4,096 recent hosts.
+
+Profile export and database viewing skip profiles that exceed the analysis limits
+and report the count. They also report when the profile or analysis-work budget is
+reached. Archive files remain strictly validated. Human-readable labels and errors
+escape terminal controls and invisible direction markers.
