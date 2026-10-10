@@ -477,19 +477,34 @@ struct Place {
 impl Place {
     /// Add `n` wakes, as many as fit below [`MAX_HELD`], and at least one: a
     /// wake after a look began stays newer than what the look spends. What it
-    /// holds stops at `usize::MAX - 1`, as many as a count of them tells apart.
+    /// holds stops below `usize::MAX - 1`, as many as a count of them tells
+    /// apart: a full place forgets its oldest wake to take the new one, so the
+    /// count still moves past every look.
     fn add_wakes(&self, n: usize) {
         if n == 0 {
             return;
         }
-        let spent = self.spent.load(Ordering::Relaxed);
+        let mut spent = self.spent.load(Ordering::Relaxed);
         let mut wakes = self.wakes.load(Ordering::Acquire);
         loop {
             let held = wakes.wrapping_sub(spent);
+            if held >= usize::MAX - 1 {
+                // A spend meanwhile moves `spent` on too: either way it holds less.
+                spent = match self.spent.compare_exchange(
+                    spent,
+                    spent.wrapping_add(1),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => spent.wrapping_add(1),
+                    Err(seen) => seen,
+                };
+                continue;
+            }
             let add = n
                 .min(MAX_HELD.saturating_sub(held))
                 .max(1)
-                .min((usize::MAX - 1).saturating_sub(held));
+                .min(usize::MAX - 1 - held);
             match self.wakes.compare_exchange_weak(
                 wakes,
                 wakes.wrapping_add(add),
@@ -1565,6 +1580,21 @@ mod tests {
         assert!(queue.wake_many(usize::MAX));
         assert_eq!(waiter.held(), usize::MAX - 1, "no wrap to a few");
         assert!(waiter.is_woken());
+    }
+
+    #[test]
+    fn a_full_place_keeps_a_wake_after_a_look() {
+        let queue = WaitQueue::new();
+        let waiter = Party::new(0).waiter();
+        queue.push(&waiter);
+        waiter
+            .counters()
+            .wakes
+            .store(usize::MAX - 1, Ordering::Relaxed);
+        let seen = waiter.wakes();
+        assert!(queue.wake_one());
+        waiter.spend(seen);
+        assert!(waiter.is_woken(), "the wake after the look");
     }
 
     #[test]

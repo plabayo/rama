@@ -84,8 +84,10 @@ struct Spill<T> {
 impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN_OFFSET> {
     const INITIAL_BIN_SIZE: usize = (2_usize).pow(BIN_OFFSET);
 
-    /// The most items it holds: what its bins have room for, kept where every
-    /// index, and the count past the last, still fits a `usize`.
+    /// The most items it holds: what its bins have room for, at most half a
+    /// `usize`, so every index and the count past the last fit, and pushes past
+    /// the limit, however many at once, undo their reservation without
+    /// wrapping it.
     pub const MAX_LEN: usize = {
         let bins = NEAR_BINS + FAR_BINS;
         let spill = if bins >= usize::BITS as usize {
@@ -100,8 +102,8 @@ impl<T, const INLINE: usize, const BIN_OFFSET: u32> AppendOnlyVec<T, INLINE, BIN
             spill
         };
         let total = INLINE.saturating_add(spill);
-        if total > usize::MAX - 1 {
-            usize::MAX - 1
+        if total > usize::MAX / 2 {
+            usize::MAX / 2
         } else {
             total
         }
@@ -1046,6 +1048,21 @@ mod tests {
     }
 
     #[test]
+    fn pushes_past_the_limit_at_once_never_wrap_the_reservation() {
+        let vec = full_of_zero_sized();
+        // As if this many pushes reserved past the limit and have yet to undo it.
+        vec.reserved.store(
+            AppendOnlyVec::<(), 0, 0>::MAX_LEN + 1_000,
+            Ordering::Relaxed,
+        );
+        assert_eq!(vec.try_push(()), Err(()));
+        assert_eq!(
+            vec.reserved.load(Ordering::Relaxed),
+            AppendOnlyVec::<(), 0, 0>::MAX_LEN + 1_000
+        );
+    }
+
+    #[test]
     fn a_push_past_the_limit_panics_without_aborting() {
         let vec = full_of_zero_sized();
         let pushed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| vec.push(())));
@@ -1056,8 +1073,9 @@ mod tests {
     #[test]
     fn the_limit_leaves_room_for_every_index_and_the_count() {
         const {
-            assert!(AppendOnlyVec::<(), 0, 0>::MAX_LEN < usize::MAX);
-            assert!(AppendOnlyVec::<u8, 4, 3>::MAX_LEN <= usize::MAX - 8);
+            assert!(AppendOnlyVec::<(), 0, 0>::MAX_LEN <= usize::MAX / 2);
+            // The spill part of the last index, plus the first bin's size.
+            assert!(AppendOnlyVec::<u8, 4, 3>::MAX_LEN - 4 <= usize::MAX - 8);
         }
         let (bin, _) =
             AppendOnlyVec::<(), 0, 3>::spill_indices(AppendOnlyVec::<(), 0, 3>::MAX_LEN - 1);

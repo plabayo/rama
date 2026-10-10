@@ -4,6 +4,7 @@ use super::*;
 
 use crate::client::pool::multiplex::connection::pick_extra;
 use std::sync::mpsc::{self, RecvTimeoutError};
+use tokio::runtime::Handle;
 
 #[tokio::test]
 async fn an_unlimited_pool_adds_connections_as_needed() {
@@ -700,7 +701,7 @@ fn a_trim_whose_runtime_went_away_leaves_trims_to_the_next() {
 #[test]
 fn a_trim_asked_for_while_one_runs_is_left_to_it() {
     let limits = IdleLimits::<TestId>::new(None, NonZeroUsize::new(1)).unwrap();
-    limits.ask(Some(&TestId(0)));
+    limits.ask(&TestId(0));
     let hold = limits.hold().expect("nobody trims");
     for _ in 0..2 {
         assert!(
@@ -710,15 +711,20 @@ fn a_trim_asked_for_while_one_runs_is_left_to_it() {
     }
     assert!(limits.take().ids.contains(&TestId(0)));
     // Asked as the trimmer finishes its last look, before it lets go.
-    limits.ask(Some(&TestId(2)));
+    limits.ask(&TestId(2));
     drop(hold);
     assert!(!limits.nothing_asked(), "it looks again");
     let hold = limits.hold().expect("let go");
     assert!(limits.take().ids.contains(&TestId(2)));
     drop(hold);
     assert!(limits.nothing_asked());
-    limits.ask(None);
-    assert!(limits.take().all);
+    // Kept for waiting checkouts: asked again, with what is asked meanwhile.
+    limits.ask(&TestId(3));
+    let mut kept = Asked::default();
+    kept.ids.insert(TestId(4));
+    limits.ask_again(kept);
+    let asked = limits.take();
+    assert!(asked.ids.contains(&TestId(3)) && asked.ids.contains(&TestId(4)));
 }
 
 #[test]
@@ -889,6 +895,35 @@ async fn outliving_work_ending_trims_over_the_per_id_limit() {
     }
     settle().await;
     assert_eq!(stored(&pool).len(), 1, "one idle connection of the id kept");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_trim_left_for_waiters_keeps_the_ids_asked_only() {
+    let pool = MultiplexPool::new()
+        .with_max_streams_per_connection(NonZeroUsize::new(1).unwrap())
+        .with_max_connections_total(NonZeroUsize::new(3).unwrap())
+        .with_saturation_policy(SaturationPolicy::Wait)
+        .with_max_idle_per_id(NonZeroUsize::new(1).unwrap());
+    let held = [fresh(&pool, 0).await, fresh(&pool, 0).await];
+    drop(fresh(&pool, 5).await);
+    let mut waiting = checkout(&pool, 1);
+    assert!(waiting.poll().is_pending());
+    drop(held);
+    settle().await;
+    assert_eq!(
+        Handle::current().metrics().num_alive_tasks(),
+        0,
+        "no trim task runs on while the waiters wait"
+    );
+    let limits = pool.idle_limits.as_ref().unwrap();
+    {
+        let asked = limits.asked.lock();
+        assert!(asked.ids.contains(&TestId(0)), "kept for after the waiters");
+        assert!(!asked.ids.contains(&TestId(5)), "an id that never asked");
+    }
+    drop(waiting);
+    assert!(limits.asked.lock().is_empty());
+    assert_eq!(stored(&pool).len(), 2, "id 0 trimmed to one, id 5 kept");
 }
 
 #[tokio::test(start_paused = true)]
@@ -1509,7 +1544,6 @@ async fn a_trim_passes_over_an_id_whose_counted_connections_are_all_busy() {
         .collect();
     let asked = Asked {
         ids: (0..16).map(TestId).collect(),
-        all: false,
     };
     let limits = pool.idle_limits.as_ref().unwrap();
     let picked = pick_extra(&pool.storage.lock(), limits, &asked, &busy);
@@ -1532,7 +1566,6 @@ async fn a_trim_over_the_total_passes_an_id_over_its_own_limit_all_busy() {
     let other = counted_idle(&pool, 1).await;
     let asked = Asked {
         ids: [TestId(0)].into_iter().collect(),
-        all: false,
     };
     let limits = pool.idle_limits.as_ref().unwrap();
     let picked = pick_extra(&pool.storage.lock(), limits, &asked, &busy);

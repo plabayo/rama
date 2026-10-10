@@ -19,6 +19,7 @@ use rama_net::client::pool::{
 };
 use rama_net::client::{ConnectRequest, ConnectorService, ProxyRoute};
 use rama_net::http::HttpRequestVersion;
+use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 use rama_net::{HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt};
 use rama_tls::client::TlsPoolId;
 
@@ -226,10 +227,15 @@ pub struct HttpPooledConnectorConfig {
     /// dials its own, limits permitting. `None`: it waits for them, until
     /// `wait_for_pool_timeout`.
     pub max_wait_before_dial: Option<Duration>,
+    /// At most this many connections being established per origin at once,
+    /// as browsers open few per host: a burst on an HTTP/1 origin then dials
+    /// this many at a time. `None`: a burst dials what it needs.
+    pub max_connecting_per_id: Option<NonZeroUsize>,
     /// How a connection is chosen among several that can serve a request.
     pub selection: MuxSelection,
     /// Connections idle (no active streams) for longer than this are dropped,
-    /// as the pool notices: when a request asks it for a connection.
+    /// as the pool notices: when a request asks it for a connection. One used
+    /// again since the pool last looked at it may go up to this much later.
     pub idle_timeout: Option<Duration>,
     /// How long to wait for the pool to hand out a connection before timing
     /// out; a request waiting for another's new connection dials its own by
@@ -241,10 +247,18 @@ pub struct HttpPooledConnectorConfig {
 /// least RFC 9113 recommends a peer to allow.
 const EXPECTED_STREAMS: NonZeroUsize = NonZeroUsize::new(100).unwrap();
 
-/// The pool's [streams hint](MultiplexPool::with_streams_hint): a request that
-/// targets or speaks HTTP/2 or HTTP/3, as gRPC does, likely shares a connection.
-/// Only a guess: the version is negotiated, and HTTP/1 does not multiplex.
-fn expected_streams(input: &Extensions) -> Option<NonZeroUsize> {
+/// The [streams hint](MultiplexPool::with_streams_hint) of a pool of any id:
+/// a request that targets or speaks HTTP/2 or HTTP/3, as gRPC does, likely
+/// shares a connection. Only a guess: HTTP/1 does not multiplex.
+fn expected_streams_by_version<ID>(_: &ID, input: &Extensions) -> Option<NonZeroUsize> {
+    multiplexing_version(input)
+        .unwrap_or(false)
+        .then_some(EXPECTED_STREAMS)
+}
+
+/// Whether the version a request targets, else speaks, multiplexes; `None`
+/// if it names none.
+fn multiplexing_version(input: &Extensions) -> Option<bool> {
     let version = input
         .get_ref::<TargetHttpVersion>()
         .map(|target| target.0)
@@ -252,8 +266,28 @@ fn expected_streams(input: &Extensions) -> Option<NonZeroUsize> {
             input
                 .get_ref::<HttpRequestVersion>()
                 .map(|version| version.0)
-        });
-    matches!(version, Some(Version::HTTP_2 | Version::HTTP_3)).then_some(EXPECTED_STREAMS)
+        })?;
+    Some(matches!(version, Version::HTTP_2 | Version::HTTP_3))
+}
+
+/// The streams hint of [`HttpConnId`]s: as [`expected_streams_by_version`],
+/// and, for a request that pins no version, a secure HTTP origin may multiplex
+/// too, as browsers find out: its TLS offers `h2` by ALPN (RFC 9113 §3.2),
+/// unless the request sets an offer without it. So a cold burst there waits
+/// for a few connects, which fan out at once if they turn out HTTP/1.
+fn expected_streams(id: &HttpConnId, input: &Extensions) -> Option<NonZeroUsize> {
+    if input.contains::<TargetHttpVersion>() {
+        return expected_streams_by_version(id, input);
+    }
+    let alpn_h2 = match input.get_ref::<TlsAlpn>() {
+        Some(alpn) => alpn.0.contains(&ApplicationProtocol::HTTP_2),
+        None => id
+            .network
+            .protocol
+            .as_ref()
+            .is_some_and(|protocol| protocol.is_http() && protocol.is_secure()),
+    };
+    (alpn_h2 || multiplexing_version(input).unwrap_or(false)).then_some(EXPECTED_STREAMS)
 }
 
 impl Default for HttpPooledConnectorConfig {
@@ -266,6 +300,7 @@ impl Default for HttpPooledConnectorConfig {
             max_idle_total: None,
             saturation_policy: SaturationPolicy::default(),
             max_wait_before_dial: None,
+            max_connecting_per_id: None,
             selection: MuxSelection::default(),
             idle_timeout: Some(Duration::from_mins(5)),
             wait_for_pool_timeout: Some(Duration::from_mins(2)),
@@ -286,8 +321,9 @@ impl HttpPooledConnectorConfig {
             .maybe_with_max_idle_total(self.max_idle_total)
             .with_saturation_policy(self.saturation_policy)
             .maybe_with_max_wait_before_dial(self.max_wait_before_dial)
+            .maybe_with_max_connecting_per_id(self.max_connecting_per_id)
             .with_selection(self.selection)
-            .with_streams_hint(expected_streams)
+            .with_streams_hint(expected_streams_by_version::<ID>)
             .maybe_with_idle_timeout(self.idle_timeout)
     }
 
@@ -331,7 +367,8 @@ impl HttpPooledConnectorConfig {
         S: ConnectorService<ConnectRequest>,
         R: ReqToConnID<ConnectRequest, ID = HttpConnId>,
     {
-        let connector = PooledConnector::new(inner, self.build_pool(), identifier)
+        let pool = self.build_pool().with_streams_hint(expected_streams);
+        let connector = PooledConnector::new(inner, pool, identifier)
             .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout);
         BindBodyToConnLayer::new().into_layer(connector)
     }
@@ -381,11 +418,13 @@ mod tests {
 
     use super::{
         FallbackHttpVersion, HttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig,
-        HttpProxyModeRequirement, connection_version_requirement, http_proxy_mode_requirement,
+        HttpProxyModeRequirement, connection_version_requirement, expected_streams,
+        http_proxy_mode_requirement,
     };
     use crate::client::proxy::layer::HttpProxyConnectorLayer;
     use crate::client::{HttpConnectRequestAdapter, HttpConnectorLayer};
     use crate::server::HttpServer;
+    use rama_net::tls::TlsAlpn;
 
     fn create_test_request(version: Version) -> Request {
         Request::builder()
@@ -403,6 +442,62 @@ mod tests {
         S: ConnectorService<ConnectRequest>,
     {
         HttpConnectRequestAdapter::new(config.build_connector(inner))
+    }
+
+    /// The hint of a request to `protocol`, after `setup` sets its extensions.
+    fn hint(protocol: Protocol, setup: impl FnOnce(&Extensions)) -> Option<NonZeroUsize> {
+        let authority = if protocol.is_secure() {
+            HostWithPort::example_domain_https()
+        } else {
+            HostWithPort::example_domain_http()
+        };
+        let input = ConnectRequest::new(authority).with_application_protocol(protocol);
+        setup(&input.extensions);
+        let id = HttpConnIdentifier::new().id(&input).unwrap();
+        expected_streams(&id, &input.extensions)
+    }
+
+    #[test]
+    fn a_secure_http_request_without_a_pin_may_multiplex() {
+        let ask = |version| move |ext: &Extensions| _ = ext.insert(HttpRequestVersion(version));
+        assert!(
+            hint(Protocol::HTTPS, ask(Version::HTTP_11)).is_some(),
+            "ALPN offers h2"
+        );
+        assert!(
+            hint(Protocol::HTTP, ask(Version::HTTP_11)).is_none(),
+            "no ALPN"
+        );
+        assert!(
+            hint(Protocol::HTTP, ask(Version::HTTP_2)).is_some(),
+            "prior knowledge"
+        );
+        assert!(
+            hint(Protocol::WSS, ask(Version::HTTP_11)).is_none(),
+            "a WebSocket offers http/1.1"
+        );
+        assert!(
+            hint(Protocol::HTTPS, |ext| {
+                ext.insert(HttpRequestVersion(Version::HTTP_11));
+                ext.insert(TargetHttpVersion(Version::HTTP_11));
+            })
+            .is_none(),
+            "pinned to HTTP/1.1"
+        );
+        assert!(
+            hint(Protocol::HTTPS, |ext| {
+                ext.insert(TlsAlpn::http_1());
+            })
+            .is_none(),
+            "an offer without h2"
+        );
+        assert!(
+            hint(Protocol::HTTPS, |ext| {
+                ext.insert(TlsAlpn::http_auto());
+            })
+            .is_some(),
+            "an offer of h2"
+        );
     }
 
     #[test]
@@ -1740,6 +1835,7 @@ mod tests {
             max_idle_total: NonZeroUsize::new(6),
             saturation_policy: SaturationPolicy::EvictIdle,
             max_wait_before_dial: Some(Duration::from_millis(7)),
+            max_connecting_per_id: NonZeroUsize::new(8),
             selection: MuxSelection::RoundRobin,
             idle_timeout: Some(Duration::from_secs(9)),
             wait_for_pool_timeout: Some(Duration::from_secs(10)),
@@ -1756,6 +1852,7 @@ mod tests {
             "selection: RoundRobin",
             "streams_hint: true",
             "max_wait_before_dial: Some(7ms)",
+            "max_connecting_per_id: Some(8)",
         ] {
             assert!(pool.contains(field), "{field} in {pool}");
         }
@@ -1776,6 +1873,7 @@ mod tests {
         );
         assert_eq!(config.saturation_policy, SaturationPolicy::default());
         assert_eq!(config.max_wait_before_dial, None);
+        assert_eq!(config.max_connecting_per_id, None);
         assert_eq!(config.idle_timeout, Some(Duration::from_mins(5)));
         assert_eq!(config.wait_for_pool_timeout, Some(Duration::from_mins(2)));
     }

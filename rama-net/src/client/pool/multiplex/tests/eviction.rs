@@ -933,3 +933,35 @@ async fn expiring_connections_of_ids_nobody_asks_for_again_are_asked_and_reaped(
         "only the id asked for since"
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn an_eviction_of_any_id_finds_an_idle_connection_behind_busy_ones() {
+    let busy_count = 2 * SAMPLE;
+    let pool = exclusive(busy_count + 1, SaturationPolicy::EvictIdle);
+    let mut busy = Vec::new();
+    for id in 0..busy_count {
+        busy.push(fresh(&pool, u32::try_from(id).unwrap()).await);
+    }
+    drop(fresh(&pool, 1000).await);
+    // At the total limit: the idle one is behind every busy one in the list.
+    let Ok(ConnectionResult::CreatePermit(slot)) =
+        pool.get_conn(&TestId(2000), &EMPTY_INPUT, None).await
+    else {
+        panic!("the idle connection makes room");
+    };
+    drop(slot);
+    assert!(!pool.storage.lock().by_id.contains_key(&TestId(1000)));
+    // The busy ones the sample passed moved to the back: the next sample
+    // starts further on.
+    let linked = pool.reaper.linked();
+    let front: Vec<u64> = busy
+        .iter()
+        .take(SAMPLE)
+        .map(|conn| conn.inner.seq)
+        .collect();
+    assert!(
+        !front.contains(&linked[0].0),
+        "the first busy ones moved back: {linked:?}"
+    );
+    drop(busy);
+}

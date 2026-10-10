@@ -88,7 +88,7 @@ pub(super) struct IdleLimits<ID> {
     /// As `idle`, of each id, for the per-id limit: shared by the id's
     /// connections, forgotten once none holds it.
     id_idle: Mutex<HashMap<ID, Arc<AtomicIsize>>>,
-    asked: Mutex<Asked<ID>>,
+    pub(super) asked: Mutex<Asked<ID>>,
     trimmer: AtomicBool,
     /// The runtimes with a task on its way to trim: asks of listeners schedule
     /// no other there. One queued on a parked runtime keeps none elsewhere.
@@ -120,24 +120,22 @@ pub(super) enum Excess {
     Total,
 }
 
-/// The trims asked for: of these ids, or of every id.
+/// The trims asked for: of these ids, the total limit with them.
 pub(super) struct Asked<ID> {
     pub(super) ids: HashSet<ID>,
-    pub(super) all: bool,
 }
 
 impl<ID> Default for Asked<ID> {
     fn default() -> Self {
         Self {
             ids: HashSet::default(),
-            all: false,
         }
     }
 }
 
 impl<ID> Asked<ID> {
     pub(super) fn is_empty(&self) -> bool {
-        !self.all && self.ids.is_empty()
+        self.ids.is_empty()
     }
 }
 
@@ -198,23 +196,21 @@ impl<ID> IdleLimits<ID> {
         Some(counter)
     }
 
-    /// Ask for a trim of `id`'s idle connections, else of every id's: the
-    /// trimmer sees it, see [`Self::hold`].
-    pub(super) fn ask(&self, id: Option<&ID>)
+    /// Ask for a trim of `id`'s idle connections: the trimmer sees it, see
+    /// [`Self::hold`].
+    pub(super) fn ask(&self, id: &ID)
     where
         ID: Clone + Eq + std::hash::Hash,
     {
-        let mut asked = self.asked.lock();
-        match id {
-            None => {
-                asked.all = true;
-                asked.ids.clear();
-            }
-            Some(id) if !asked.all => {
-                asked.ids.insert(id.clone());
-            }
-            Some(_) => {}
-        }
+        self.asked.lock().ids.insert(id.clone());
+    }
+
+    /// Ask again for the trims a trim left alone for waiting checkouts.
+    pub(super) fn ask_again(&self, asked: Asked<ID>)
+    where
+        ID: Eq + std::hash::Hash,
+    {
+        self.asked.lock().ids.extend(asked.ids);
     }
 
     /// Hold the trimmer, unless someone else does: it sees the asks recorded

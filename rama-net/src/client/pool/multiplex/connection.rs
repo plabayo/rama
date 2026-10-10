@@ -57,6 +57,8 @@ pub(super) struct StoredConnection<C, ID> {
     pub(super) last_idle: AtomicInstant,
     /// Its node in the pool's idle list while stored, see [`Reaper`].
     pub(super) idle_node: AtomicUsize,
+    /// Whether the reaper has it queued as broken: at most once.
+    pub(super) doomed: AtomicBool,
     pub(super) reaper: Arc<Reaper<C, ID>>,
     pub(super) pool_slot: Mutex<ConnectionSlot>,
     /// Whether the lane's `open` set lists this connection. Only written with
@@ -564,9 +566,10 @@ pub(super) fn relist_stored<C, ID: ConnID>(conn: &Arc<StoredConnection<C, ID>>) 
     }
 }
 
-/// [`AskTrim`]: ask for the idle connections over the limits of `id` (else of
-/// every id) to be closed. Nobody else trimming, the asker trims here if
-/// `inline`; what is asked meanwhile, or by a listener, a task trims.
+/// [`AskTrim`]: ask for the idle connections over the limits of `id` to be
+/// closed, or, without one, for what is asked already. Nobody else trimming,
+/// the asker trims here if `inline`; what is asked meanwhile, or by a
+/// listener, a task trims.
 pub(super) fn ask_trim<C: Send + Sync + 'static, ID: ConnID>(
     storage: &Weak<Mutex<Storage<C, ID>>>,
     limits: &Arc<IdleLimits<ID>>,
@@ -574,7 +577,9 @@ pub(super) fn ask_trim<C: Send + Sync + 'static, ID: ConnID>(
     id: Option<&ID>,
     inline: bool,
 ) {
-    limits.ask(id);
+    if let Some(id) = id {
+        limits.ask(id);
+    }
     if inline && trim_asked(storage, limits, waiting) {
         return;
     }
@@ -619,8 +624,21 @@ fn trim_asked<C, ID: ConnID>(
     let Some(storage) = storage.upgrade() else {
         return true;
     };
-    trim(&storage, limits, waiting, &limits.take());
+    let asked = limits.take();
+    trim(&storage, limits, waiting, &asked);
+    let left_for_waiters = waiting.load(Ordering::Relaxed) != 0;
+    if left_for_waiters {
+        // Waiting checkouts take idle connections: what they leave is trimmed
+        // as the last of them leaves, of these ids only, not every id's.
+        limits.ask_again(asked);
+    }
     drop(hold);
+    // Pairs with the fence of the last waiting checkout leaving: it sees the
+    // asks kept for it, or this sees it gone and trims them.
+    fence(Ordering::SeqCst);
+    if left_for_waiters && waiting.load(Ordering::Relaxed) != 0 {
+        return true;
+    }
     limits.nothing_asked()
 }
 
@@ -707,12 +725,31 @@ pub(super) fn pick_extra<C, ID: ConnID>(
         .find_map(|bucket| least_recently_idle(bucket.lanes(), busy))
         .map(|conn| (conn, Excess::PerId));
     per_id.or_else(|| {
-        limits
-            .total
-            .is_some_and(|max| limits.idle_over(max))
-            .then(|| least_recently_idle(storage.by_id.values().flat_map(IdBucket::lanes), busy))
-            .flatten()
-            .map(|conn| (conn, Excess::Total))
+        if !limits.total.is_some_and(|max| limits.idle_over(max)) {
+            return None;
+        }
+        let scan = || least_recently_idle(storage.by_id.values().flat_map(IdBucket::lanes), busy);
+        if storage.reaper.len() <= SCAN_UP_TO {
+            return scan().map(|conn| (conn, Excess::Total));
+        }
+        // Of every id: from the front of the idle list, the scan of the pool
+        // only if those it holds there have none.
+        let sample = storage.reaper.sample_front(SAMPLE);
+        let counted = |conn: &&Arc<StoredConnection<C, ID>>| {
+            conn.is_counted_idle() && !busy.contains(&conn.seq)
+        };
+        let picked = sample
+            .conns
+            .iter()
+            .filter(counted)
+            .min_by_key(|conn| conn.last_idle.as_nanos())
+            .cloned();
+        let picked = match picked {
+            Some(conn) => Some(conn),
+            None if sample.covered => None,
+            None => scan(),
+        };
+        picked.map(|conn| (conn, Excess::Total))
     })
 }
 
@@ -721,12 +758,7 @@ fn asked_ids<'a, C, ID: ConnID>(
     storage: &'a Storage<C, ID>,
     asked: &'a Asked<ID>,
 ) -> impl Iterator<Item = &'a IdBucket<C, ID>> {
-    let every = asked.all.then(|| storage.by_id.values());
-    let some = (!asked.all).then(|| asked.ids.iter().filter_map(|id| storage.by_id.get(id)));
-    every
-        .into_iter()
-        .flatten()
-        .chain(some.into_iter().flatten())
+    asked.ids.iter().filter_map(|id| storage.by_id.get(id))
 }
 
 /// The connection of `lanes` counted idle the longest, but not `busy`.

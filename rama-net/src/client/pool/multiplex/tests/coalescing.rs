@@ -100,7 +100,7 @@ async fn burst(svc: &Dialing, id: u32, n: usize) -> Vec<Handout> {
 }
 
 /// Any request of the pool expects connections of `STREAMS`.
-fn expect_ten(_: &Extensions) -> Option<NonZeroUsize> {
+fn expect_ten(_: &TestId, _: &Extensions) -> Option<NonZeroUsize> {
     NonZeroUsize::new(10)
 }
 
@@ -191,6 +191,36 @@ async fn a_burst_on_a_new_id_dials_per_checkout_without_a_hint() {
     let svc = dialing(MultiplexPool::new(), Dialer::new(Some(10)));
     let _burst = burst(&svc, 0, 8).await;
     assert_eq!(dials(&svc), 8, "the protocol may not multiplex");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cap_on_connecting_dials_a_cold_http1_burst_a_few_at_a_time() {
+    for patience in [None, Some(Duration::from_millis(10))] {
+        let pool = MultiplexPool::new()
+            .with_max_connecting_per_id(NonZeroUsize::new(2).unwrap())
+            .maybe_with_max_wait_before_dial(patience);
+        let svc = dialing(pool, Dialer::new(Some(1)));
+        let start = tokio::time::Instant::now();
+        let _burst = burst(&svc, 0, 8).await;
+        assert_eq!(dials(&svc), 8, "one connection per checkout");
+        assert!(
+            start.elapsed() >= HANDSHAKE * 4,
+            "two at a time, also once done waiting: {:?}",
+            start.elapsed()
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cap_on_connecting_binds_a_hinted_cold_burst() {
+    let pool = MultiplexPool::new()
+        .with_streams_hint(expect_ten)
+        .with_max_connecting_per_id(NonZeroUsize::new(1).unwrap());
+    let svc = dialing(pool, Dialer::new(Some(1)));
+    let start = tokio::time::Instant::now();
+    let _burst = burst(&svc, 0, 3).await;
+    assert_eq!(dials(&svc), 3);
+    assert!(start.elapsed() >= HANDSHAKE * 3, "one at a time");
 }
 
 #[tokio::test(start_paused = true)]
@@ -519,7 +549,7 @@ async fn connects_of_keys_no_checkout_uses_are_forgotten() {
 #[derive(Debug, Clone, Extension)]
 struct HintPool(MultiplexPool<Conn, TestId>);
 
-fn hint_using_the_pool(input: &Extensions) -> Option<NonZeroUsize> {
+fn hint_using_the_pool(_: &TestId, input: &Extensions) -> Option<NonZeroUsize> {
     if let Some(HintPool(pool)) = input.get_ref::<HintPool>() {
         assert!(
             pool.storage.try_lock_for(Duration::from_secs(1)).is_some(),
@@ -876,7 +906,7 @@ async fn churn_one(
     pool.create(TestId(id), conn, slot, input).await.ok()
 }
 
-fn hint_four(_: &Extensions) -> Option<NonZeroUsize> {
+fn hint_four(_: &TestId, _: &Extensions) -> Option<NonZeroUsize> {
     NonZeroUsize::new(4)
 }
 
@@ -1240,7 +1270,7 @@ async fn a_usable_landing_leaves_groups_it_does_not_serve_flagged() {
     ))
     .collect();
     let group = MultiplexPool::connects_in(&mut pool.storage.lock(), &TestId(0), &other);
-    let Coalesce::Dial(Some(claim)) = group.coalesce(10, false, true) else {
+    let Coalesce::Dial(Some(claim)) = group.coalesce(10, false, true, None) else {
         panic!("a claim");
     };
     // Its connect landed where none of its checkouts can use it.
@@ -1249,4 +1279,52 @@ async fn a_usable_landing_leaves_groups_it_does_not_serve_flagged() {
     let slot = permit(&pool, 0, &want(1)).await;
     let _usable = land(&pool, 0, slot, 10, Some(keyed(0, 1)), &want(1)).await;
     assert!(group.lands_unusable(), "usable for key 1 only");
+}
+
+/// A request wanting a key expects connections of four streams.
+fn four_if_keyed(_: &TestId, input: &Extensions) -> Option<NonZeroUsize> {
+    input
+        .get_ref::<Want>()
+        .map(|_| NonZeroUsize::new(4).unwrap())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_waiter_for_connects_sleeps_once_its_expiry_timer_fired() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(3).unwrap())
+        .with_saturation_policy(SaturationPolicy::Wait)
+        .with_streams_hint(four_if_keyed)
+        .with_idle_timeout(Duration::from_millis(100));
+    let other = fresh(&pool, 9).await;
+    let ConnectionResult::CreatePermit(dialing) =
+        pool.get_conn(&TestId(0), &want(7), None).await.unwrap()
+    else {
+        panic!("a connect in flight");
+    };
+    let slot = pool.test_slot();
+    let mut waiter = checkout(&pool, 0);
+    assert!(waiter.poll().is_pending(), "at the total limit");
+    let conn = Conn {
+        serial: 50,
+        extensions: Extensions::new(),
+    };
+    conn.extensions.insert(ConnectionHealthWatcher::default());
+    conn.extensions.insert(MaxConcurrency::new(2));
+    let first = pool
+        .create(TestId(0), conn, slot, &EMPTY_INPUT)
+        .await
+        .unwrap();
+    let Ok(ConnectionResult::Connection(second)) =
+        pool.get_conn(&TestId(0), &EMPTY_INPUT, None).await
+    else {
+        panic!("its second stream");
+    };
+    assert!(waiter.poll().is_pending(), "now it waits for the connect");
+    tokio::time::advance(Duration::from_millis(150)).await;
+    for _ in 0..4 {
+        assert!(waiter.poll().is_pending());
+        tokio::task::yield_now().await;
+    }
+    assert!(!waiter.is_woken(), "a fired timer does not keep it looking");
+    drop((first, second, other, dialing));
 }

@@ -149,13 +149,16 @@ impl Connects {
 
     /// Dial, or wait for the connects in flight: a connection brings `streams`,
     /// one of them for its own checkout, and `cold` says that is a guess.
-    /// `impatient` dials whatever is in flight. Queue in `waiters` first.
+    /// `impatient` dials whatever is in flight, but never past `cap`. Queue in
+    /// `waiters` first.
     pub(super) fn coalesce(
         self: &Arc<Self>,
         streams: usize,
         cold: bool,
         impatient: bool,
+        cap: Option<NonZeroUsize>,
     ) -> Coalesce {
+        let cap = cap.map_or(usize::MAX, NonZeroUsize::get);
         let waiting = self.waiters.len().max(1);
         let mut needed = waiting.div_ceil(streams.saturating_sub(1).max(1));
         if cold {
@@ -163,7 +166,7 @@ impl Connects {
         }
         let mut in_flight = self.in_flight.load(Ordering::Acquire);
         loop {
-            if in_flight >= needed && !impatient {
+            if in_flight >= cap || (in_flight >= needed && !impatient) {
                 return Coalesce::Wait;
             }
             match self.in_flight.compare_exchange_weak(

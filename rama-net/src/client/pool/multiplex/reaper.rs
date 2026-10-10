@@ -14,9 +14,38 @@ pub(super) struct Reaper<C, ID> {
     /// When the front is due, `u64::MAX` if nothing is: read by every checkout
     /// without a lock.
     due: AtomicU64,
+    /// How many connections are linked: written under the list lock.
+    linked: AtomicUsize,
     list: Mutex<IdleList<C, ID>>,
-    /// The nodes of connections their listener heard break, with their `seq`.
-    broken: Mutex<SmallVec<[(usize, u64); 2]>>,
+    /// The nodes of connections their listener heard break, with their `seq`:
+    /// each at most once (see `StoredConnection::doomed`), taken from the front.
+    broken: Mutex<VecDeque<(usize, u64)>>,
+}
+
+/// The connections a pick across ids looks at, from the front of the idle
+/// list, before it scans the pool: as approximate least recently used
+/// eviction samples a few, so a pick costs no more than this.
+pub(super) const SAMPLE: usize = 32;
+
+/// Up to this many stored connections a pick across ids scans them: as cheap
+/// as a sample there, and exact.
+pub(super) const SCAN_UP_TO: usize = 2 * SAMPLE;
+
+/// The front of the idle list, see [`Reaper::sample_front`]. Empty and not
+/// covering: none taken, the pool is scanned.
+pub(super) struct Sample<C, ID> {
+    pub(super) conns: SmallVec<[Arc<StoredConnection<C, ID>>; SAMPLE]>,
+    /// Whether these are all it holds.
+    pub(super) covered: bool,
+}
+
+impl<C, ID> Default for Sample<C, ID> {
+    fn default() -> Self {
+        Self {
+            conns: SmallVec::new(),
+            covered: false,
+        }
+    }
 }
 
 /// What a step of the reaper found, to take out under the storage lock.
@@ -52,18 +81,24 @@ impl<C, ID> Default for Reaper<C, ID> {
     fn default() -> Self {
         Self {
             due: AtomicU64::new(u64::MAX),
+            linked: AtomicUsize::new(0),
             list: Mutex::new(IdleList {
                 nodes: Vec::new(),
                 free: Vec::new(),
                 head: UNLINKED,
                 tail: UNLINKED,
             }),
-            broken: Mutex::new(SmallVec::new()),
+            broken: Mutex::new(VecDeque::new()),
         }
     }
 }
 
 impl<C, ID> Reaper<C, ID> {
+    /// How many connections are stored, as linked.
+    pub(super) fn len(&self) -> usize {
+        self.linked.load(Ordering::Relaxed)
+    }
+
     /// Whether a step is due: one relaxed load.
     pub(super) fn is_due(&self, now: u64) -> bool {
         now >= self.due.load(Ordering::Relaxed)
@@ -79,7 +114,12 @@ impl<C, ID> Reaper<C, ID> {
         let since = list.tail_since().max(now_monotonic_nanos());
         let node = list.push_back(Arc::downgrade(conn), conn.seq, since);
         conn.idle_node.store(node, Ordering::Relaxed);
-        if was_empty {
+        self.linked.fetch_add(1, Ordering::Relaxed);
+        if conn.is_broken() {
+            // Broken while it was not linked, such as before its store or as
+            // a rekey moved it: its listener's doom found no node to queue.
+            self.queue_broken(conn, node);
+        } else if was_empty {
             // The next step learns when the front is due.
             self.due.store(0, Ordering::Relaxed);
         }
@@ -91,18 +131,60 @@ impl<C, ID> Reaper<C, ID> {
         let node = conn.idle_node.swap(UNLINKED, Ordering::Relaxed);
         if node != UNLINKED {
             list.remove(node);
+            self.linked.fetch_sub(1, Ordering::Relaxed);
         }
     }
 
     /// The listener of `conn` heard it break: the next step takes it out.
     pub(super) fn doom(&self, conn: &StoredConnection<C, ID>) {
+        // Read under the list's lock: either this sees its node, or `link`,
+        // after this, sees the break.
+        let list = self.list.lock();
         let node = conn.idle_node.load(Ordering::Relaxed);
         if node == UNLINKED {
-            // Not stored yet: its store looks, see `MultiplexPool::create`.
             return;
         }
-        self.broken.lock().push((node, conn.seq));
+        self.queue_broken(conn, node);
+        drop(list);
+    }
+
+    /// Queue the broken `conn` of `node` once, due at once.
+    fn queue_broken(&self, conn: &StoredConnection<C, ID>, node: usize) {
+        if conn.doomed.swap(true, Ordering::Relaxed) {
+            // Queued already: however often it is told, once.
+            return;
+        }
+        let mut broken = self.broken.lock();
+        broken.push_back((node, conn.seq));
+        // Under the queue's lock, as a step publishes what it saw of it.
         self.due.store(0, Ordering::Relaxed);
+    }
+
+    /// The first `max` connections of the list, the least recently idle first,
+    /// with the storage lock held. Busy ones on the way move to the back, as
+    /// a step of the reaper moves them, so later samples find idle ones.
+    pub(super) fn sample_front(&self, max: usize) -> Sample<C, ID> {
+        let now = now_monotonic_nanos();
+        let mut list = self.list.lock();
+        let mut conns = SmallVec::new();
+        let mut at = list.head;
+        let mut moved = 0;
+        while conns.len() < max && at != UNLINKED {
+            let next = list.nodes[at].next;
+            match list.nodes[at].conn.upgrade() {
+                Some(conn) if !conn.maybe_idle() && moved < max => {
+                    moved += 1;
+                    list.move_back(at, now);
+                }
+                Some(conn) => conns.push(conn),
+                None => {}
+            }
+            at = next;
+        }
+        Sample {
+            covered: at == UNLINKED,
+            conns,
+        }
     }
 
     /// Look at the front, at most `budget` connections, with the storage lock
@@ -117,16 +199,18 @@ impl<C, ID> Reaper<C, ID> {
             next_expiry: u64::MAX,
         };
         let mut left = budget;
-        let (broken, more_broken) = {
+        // The list's lock, then the queue's: as long as both are held no link
+        // nor break publishes a due this step would overwrite.
+        let mut list = self.list.lock();
+        let broken: SmallVec<[(usize, u64); 2]> = {
             let mut broken = self.broken.lock();
             let taken = broken.len().min(left);
-            let taken: SmallVec<[(usize, u64); 2]> = broken.drain(..taken).collect();
-            (taken, !broken.is_empty())
+            (0..taken).filter_map(|_| broken.pop_front()).collect()
         };
         left -= broken.len();
-        let mut list = self.list.lock();
         for (node, seq) in broken {
             if let Some(conn) = list.conn(node, seq) {
+                conn.doomed.store(false, Ordering::Relaxed);
                 reaped.broken.push(conn);
             }
         }
@@ -134,9 +218,11 @@ impl<C, ID> Reaper<C, ID> {
             Some(timeout) => Self::step_idle(&mut list, timeout, now, left, &mut reaped),
             None => u64::MAX,
         };
-        // Breaks left for the next checkout keep it due.
-        let due = if more_broken { 0 } else { due };
+        let broken = self.broken.lock();
+        // Breaks left, or queued meanwhile, keep it due for the next checkout.
+        let due = if broken.is_empty() { due } else { 0 };
         self.due.store(due, Ordering::Relaxed);
+        drop((broken, list));
         reaped
     }
 
@@ -148,10 +234,20 @@ impl<C, ID> Reaper<C, ID> {
         mut left: usize,
         reaped: &mut Reaped<C, ID>,
     ) -> u64 {
+        // The first node this step moved back: met again, it went round.
+        let mut first_moved = UNLINKED;
         loop {
             let head = list.head;
             if head == UNLINKED {
                 return u64::MAX;
+            }
+            if head == first_moved {
+                // Such as with a zero idle timeout: the rest is the next one's.
+                reaped.next_expiry = now;
+                return now;
+            }
+            if first_moved == UNLINKED {
+                first_moved = head;
             }
             let due = list.nodes[head].since.saturating_add(timeout);
             if due > now {
@@ -193,6 +289,11 @@ impl<C, ID> Reaper<C, ID> {
 
 #[cfg(test)]
 impl<C, ID> Reaper<C, ID> {
+    /// How many breaks are queued.
+    pub(super) fn broken_queued(&self) -> usize {
+        self.broken.lock().len()
+    }
+
     /// The `seq` and idle start of the connections linked, front first.
     pub(super) fn linked(&self) -> Vec<(u64, u64)> {
         let list = self.list.lock();

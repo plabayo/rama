@@ -170,3 +170,95 @@ async fn a_connection_a_look_sweeps_out_leaves_the_idle_list() {
     assert_eq!(stored_ids(&pool), [1]);
     assert_linked_matches_storage(&pool);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_broken_before_it_opens_a_lane_is_reaped() {
+    let pool = MultiplexPool::new().with_max_connections_total(NonZeroUsize::new(8).unwrap());
+    let conn = Conn {
+        serial: 1,
+        extensions: Extensions::new(),
+    };
+    let health = ConnectionHealthWatcher::default();
+    health.mark_broken();
+    conn.extensions.insert(health);
+    drop(
+        pool.create(TestId(0), conn, pool.test_slot(), &EMPTY_INPUT)
+            .await
+            .unwrap(),
+    );
+    drop(fresh(&pool, 1).await);
+    assert_eq!(
+        stored_ids(&pool),
+        [1],
+        "the first of its lane, still reaped"
+    );
+    assert_linked_matches_storage(&pool);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_break_told_again_is_queued_once() {
+    let pool = MultiplexPool::new();
+    let handout = fresh(&pool, 0).await;
+    let stored_conn = handout.inner.clone();
+    handout
+        .extensions()
+        .get_ref::<ConnectionHealthWatcher>()
+        .unwrap()
+        .mark_broken();
+    for _ in 0..16 {
+        ChangeListener::changed(&*stored_conn, Change::Other);
+    }
+    assert_eq!(pool.reaper.broken_queued(), 1, "however often it is told");
+    drop((handout, stored_conn));
+    drop(fresh(&pool, 1).await);
+    assert_eq!(stored_ids(&pool), [1]);
+    assert_eq!(pool.reaper.broken_queued(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_break_while_unlinked_is_queued_as_it_is_linked_again() {
+    let pool = MultiplexPool::new();
+    let handout = fresh(&pool, 0).await;
+    let stored_conn = handout.inner.clone();
+    drop(handout);
+    // As a rekey moves it: unlinked, broken meanwhile, linked again.
+    pool.reaper.unlink(&stored_conn);
+    stored_conn
+        .conn
+        .extensions()
+        .get_ref::<ConnectionHealthWatcher>()
+        .unwrap()
+        .mark_broken();
+    assert_eq!(pool.reaper.broken_queued(), 0, "nothing to queue unlinked");
+    pool.reaper.link(&stored_conn);
+    assert_eq!(pool.reaper.broken_queued(), 1, "queued as it is linked");
+    drop(stored_conn);
+    drop(fresh(&pool, 1).await);
+    assert_eq!(stored_ids(&pool), [1]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_step_looks_at_a_connection_once() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(8).unwrap())
+        .with_idle_timeout(Duration::ZERO);
+    let mut states = Vec::new();
+    for id in 0..4 {
+        let (conn, state) = admission_connection(&pool, 4);
+        drop(
+            pool.create(TestId(id), conn, pool.test_slot(), &EMPTY_INPUT)
+                .await
+                .unwrap(),
+        );
+        states.push(state);
+    }
+    tokio::time::advance(Duration::from_millis(1)).await;
+    let reaped = pool
+        .reaper
+        .step(pool.idle_timeout, now_monotonic_nanos(), REAP_BUDGET);
+    assert_eq!(
+        reaped.expiring.len(),
+        4,
+        "each once, however soon due again"
+    );
+}
