@@ -1227,3 +1227,89 @@ async fn fp_counted_sampler_locks_before_choosing_a_seed() {
         [[3; 32]; 2]
     );
 }
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn fp_counted_literal_eviction_reclaims_rows_before_the_next_load() {
+    let (_config, mut client) = migrations::tests::isolated_database().await.unwrap();
+    client
+        .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+        .await
+        .unwrap();
+    migrations::apply(&mut client).await.unwrap();
+    let mut limits = limits();
+    limits.ingestion.bucket.literal_values = 1;
+    limits.ingestion.bucket.samples = 0;
+    let capture = |byte| ProfileCapture {
+        profile: ProfileKey::new("literal-eviction"),
+        flow: None,
+        connection: ConnectionContext::default(),
+        joint: JointCapture {
+            level: CaptureLevel::Connection,
+            slots: vec![CapturedSlot {
+                kind: CapturedSlotKind::QuicParameters,
+                value: OrderedProtocolCapture::capture(
+                    OrderNamespace::QuicParameter,
+                    [(27, [byte])],
+                    OrderCaptureLimits::default(),
+                )
+                .unwrap()
+                .canonical(OrderCaptureLimits::default())
+                .unwrap(),
+            }]
+            .into(),
+        },
+    };
+    let (mut a, mut b) = (capture(1), capture(2));
+    if a.joint.slots[0].value.id < b.joint.slots[0].value.id {
+        std::mem::swap(&mut a, &mut b);
+    }
+    for (index, capture) in [&a, &b, &b].into_iter().enumerate() {
+        assert!(
+            ingest(
+                &mut client,
+                100,
+                attempt(false, index as u64 + 1),
+                capture,
+                [3; 32],
+                limits
+            )
+            .await
+            .unwrap()
+        );
+    }
+    let prepared_a = a.prepare(false, limits.capture).unwrap();
+    let prepared_b = b.prepare(false, limits.capture).unwrap();
+    for (a, b) in prepared_a.buckets.iter().zip(&prepared_b.buckets) {
+        assert_eq!(a.scope.id, b.scope.id);
+        let expected = a.value.id.min(b.value.id);
+        let rows = client
+            .query(
+                "SELECT value_id,count FROM fp_v2.literal_counts WHERE NOT authorized AND scope=$1",
+                &[&&a.scope.id.0[..]],
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get::<_, Vec<u8>>(0), expected.0);
+        assert_eq!(
+            rows[0].get::<_, i64>(1),
+            if expected == b.value.id { 2 } else { 1 }
+        );
+    }
+    let values: i64 = client
+        .query_one("SELECT count(*) FROM fp_v2.values", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(values, 2);
+    let quota: i64 = client
+        .query_one(
+            "SELECT interned_values FROM fp_v2.quotas WHERE NOT authorized",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(quota, 2);
+}

@@ -145,12 +145,16 @@ impl RetainedBucketWindow {
     ) -> Result<CountedObservationBucket, ProfileDataError> {
         self.validate_clock(current_day)?;
         let first = self.limits.retention.first_day(current_day, horizon)?;
-        let mut selected =
-            CountedObservationBucket::new(self.domain, self.scope, self.seed, self.limits.bucket);
+        let mut selected: Option<CountedObservationBucket> = None;
         for (_day, bucket) in self.buckets.range(first..=current_day) {
-            selected = selected.merge(bucket)?;
+            selected = Some(match selected {
+                Some(previous) => previous.coarsen(bucket)?,
+                None => bucket.clone(),
+            });
         }
-        Ok(selected)
+        Ok(selected.unwrap_or_else(|| {
+            CountedObservationBucket::new(self.domain, self.scope, self.seed, self.limits.bucket)
+        }))
     }
 
     #[must_use]
@@ -301,6 +305,54 @@ mod tests {
         window.advance(127).unwrap();
         assert!(window.snapshot().buckets.is_empty());
         assert_eq!(window.retained_bytes(), 0);
+    }
+
+    #[test]
+    fn selection_preserves_exact_literals_across_disjoint_days() {
+        let limits = ProfileWindowLimits {
+            bucket: ProfileBucketLimits {
+                literal_values: 1,
+                samples: 0,
+                ..ProfileBucketLimits::default()
+            },
+            ..ProfileWindowLimits::default()
+        };
+        let mut window = RetainedBucketWindow::new(1, ValueId([2; 32]), [3; 32], limits).unwrap();
+        let (mut a, mut b) = (value("A"), value("B"));
+        if a.id < b.id {
+            std::mem::swap(&mut a, &mut b);
+        }
+        for sequence in 1..=1000 {
+            window.observe(100, 100, observation(sequence), &a).unwrap();
+        }
+        window.observe(101, 101, observation(1001), &b).unwrap();
+        let selected = window.select(101, 14).unwrap();
+        assert!(matches!(
+            selected.counts().weight(a.id),
+            ObservationWeight::Exact(1000)
+        ));
+        assert!(matches!(
+            selected.counts().weight(b.id),
+            ObservationWeight::Exact(1)
+        ));
+        assert_eq!(selected.snapshot().counts.untracked, 0);
+        let mut all = CountedObservationBucket::new(
+            1,
+            ValueId([2; 32]),
+            [3; 32],
+            ProfileBucketLimits {
+                literal_values: 2,
+                ..limits.bucket
+            },
+        );
+        for sequence in 1..=1000 {
+            all.observe(observation(sequence), &a).unwrap();
+        }
+        all.observe(observation(1001), &b).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&selected.snapshot()).unwrap(),
+            serde_json::to_vec(&all.snapshot()).unwrap()
+        );
     }
 
     #[test]

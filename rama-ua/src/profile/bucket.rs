@@ -227,13 +227,45 @@ impl CountedObservationBucket {
         })
     }
 
-    /// The owner supplies disjoint day buckets from one authorization/profile/flow scope.
-    /// Coarsening keeps exact total counts and merges the complete bottom-k observations.
+    /// Merge disjoint observations under the same retention budget.
     pub fn merge(&self, other: &Self) -> Result<Self, ProfileDataError> {
+        if self.limits != other.limits {
+            return Err(ProfileDataError::Invalid("incompatible counting buckets"));
+        }
+        self.combine(other, self.limits, false)
+    }
+
+    /// Sum exact retained counts from disjoint days, without reducing their union.
+    pub fn coarsen(&self, other: &Self) -> Result<Self, ProfileDataError> {
+        let limits = ProfileBucketLimits {
+            literal_values: self
+                .limits
+                .literal_values
+                .checked_add(other.limits.literal_values)
+                .ok_or(ProfileDataError::LimitExceeded(
+                    "coarsened literal capacity",
+                ))?,
+            retained_bytes: self
+                .limits
+                .retained_bytes
+                .checked_add(other.limits.retained_bytes)
+                .ok_or(ProfileDataError::LimitExceeded("coarsened retained bytes"))?,
+            ..self.limits
+        };
+        self.combine(other, limits, true)
+    }
+
+    fn combine(
+        &self,
+        other: &Self,
+        limits: ProfileBucketLimits,
+        coarsen: bool,
+    ) -> Result<Self, ProfileDataError> {
         if self.domain != other.domain
             || self.scope != other.scope
             || self.seed != other.seed
-            || self.limits != other.limits
+            || self.limits.samples != other.limits.samples
+            || self.limits.value_bytes != other.limits.value_bytes
         {
             return Err(ProfileDataError::Invalid("incompatible counting buckets"));
         }
@@ -244,10 +276,14 @@ impl CountedObservationBucket {
                 return Err(ProfileDataError::Invalid("canonical hash collision"));
             }
         }
-        let counts = self.counts.merge(&other.counts)?;
+        let counts = if coarsen {
+            self.counts.coarsen(&other.counts)?
+        } else {
+            self.counts.merge(&other.counts)?
+        };
         let samples = self.samples.merge(&other.samples)?;
         let retained = references(&counts, &samples);
-        let mut remaining = self.limits.retained_bytes;
+        let mut remaining = limits.retained_bytes;
         for id in &retained {
             let value = self
                 .values
@@ -274,11 +310,11 @@ impl CountedObservationBucket {
             domain: self.domain,
             scope: self.scope,
             seed: self.seed,
-            limits: self.limits,
+            limits,
             counts,
             samples,
             values,
-            retained_bytes: self.limits.retained_bytes - remaining,
+            retained_bytes: limits.retained_bytes - remaining,
         })
     }
 }

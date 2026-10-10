@@ -626,6 +626,20 @@ async fn save_bucket(
         .iter()
         .map(|entry| (entry.value, entry.count))
         .collect();
+    let retained_counts: BTreeSet<_> = bucket
+        .counts
+        .values
+        .iter()
+        .map(|entry| entry.value)
+        .collect();
+    for value in old_counts.keys() {
+        if !retained_counts.contains(value) {
+            transaction.execute(
+                "DELETE FROM fp_v2.literal_counts WHERE authorized=$1 AND scope=$2 AND day=$3 AND value_id=$4",
+                &[&authorized, &scope, &day, &&value.0[..]],
+            ).await?;
+        }
+    }
     for entry in &bucket.counts.values {
         if old_counts.get(&entry.value) == Some(&entry.count) {
             continue;

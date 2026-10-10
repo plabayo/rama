@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{ProfileDataError, ValueId};
 
-/// PostgreSQL BIGINT and the in-memory engine have the same overflow boundary.
+/// Persistent and in-memory counters share the signed 64-bit ceiling.
 const MAXIMUM_COUNT: u64 = i64::MAX as u64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,7 +117,18 @@ impl LiteralCounters {
             None if retain => {
                 self.values.insert(value, 1);
             }
-            None => self.untracked = add_count(self.untracked, 1)?,
+            None => {
+                if let Some((&largest, &evicted)) = self.values.last_key_value()
+                    && value < largest
+                {
+                    let untracked = add_count(self.untracked, evicted)?;
+                    self.values.pop_last();
+                    self.values.insert(value, 1);
+                    self.untracked = untracked;
+                } else {
+                    self.untracked = add_count(self.untracked, 1)?;
+                }
+            }
         }
         self.total = total;
         Ok(())
@@ -136,17 +147,30 @@ impl LiteralCounters {
         }
     }
 
-    /// Coarsen disjoint buckets without inventing lost literal history.
-    /// The lowest value IDs survive if their union exceeds the common capacity.
-    /// Callers enforce disjoint day coverage and scope before summing counts.
+    /// Merge disjoint observations into the same bottom-k literal budget.
     pub fn merge(&self, other: &Self) -> Result<Self, ProfileDataError> {
         if self.capacity != other.capacity {
             return Err(ProfileDataError::Invalid(
                 "incompatible literal counter capacities",
             ));
         }
+        self.merge_with_capacity(other, self.capacity)
+    }
+
+    /// Coarsening retains every known per-value count from disjoint time buckets.
+    pub fn coarsen(&self, other: &Self) -> Result<Self, ProfileDataError> {
+        let capacity =
+            self.capacity
+                .checked_add(other.capacity)
+                .ok_or(ProfileDataError::LimitExceeded(
+                    "coarsened literal capacity",
+                ))?;
+        self.merge_with_capacity(other, capacity)
+    }
+
+    fn merge_with_capacity(&self, other: &Self, capacity: usize) -> Result<Self, ProfileDataError> {
         let total = add_count(self.total, other.total)?;
-        let mut merged = Self::new(self.capacity);
+        let mut merged = Self::new(capacity);
         let mut left = self.values.iter().peekable();
         let mut right = other.values.iter().peekable();
         let mut tracked = 0;
@@ -248,22 +272,22 @@ mod tests {
         let merged = left.merge(&right).unwrap();
         assert_eq!(encoded(&merged), encoded(&right.merge(&left).unwrap()));
         assert_eq!(merged.snapshot().total, 8);
-        assert_eq!(merged.snapshot().untracked, 4);
+        assert_eq!(merged.snapshot().untracked, 3);
         assert!(matches!(
             merged.weight(value(1)),
             ObservationWeight::LowerBound {
-                observed: 2,
-                unassigned: 4
+                observed: 3,
+                unassigned: 3
             }
         ));
         assert!(matches!(
             merged.weight(value(2)),
             ObservationWeight::LowerBound {
                 observed: 2,
-                unassigned: 4
+                unassigned: 3
             }
         ));
-        // The true count of value 1 is three; its second bucket did not retain it.
+        // Untracked values remain explicitly separate from the retained counts.
         let mut a = LiteralCounters::new(4);
         let mut b = LiteralCounters::new(4);
         for number in [1, 2, 1, 3] {
@@ -286,6 +310,75 @@ mod tests {
             ObservationWeight::Exact(3)
         ));
         a.merge(&left).unwrap_err();
+    }
+
+    #[test]
+    fn literal_bottom_k_is_independent_of_delivery_and_partitioning() {
+        for capacity in [0, 1, 2, 3] {
+            let mut expected = None;
+            for order in [
+                [1, 2, 3],
+                [1, 3, 2],
+                [2, 1, 3],
+                [2, 3, 1],
+                [3, 1, 2],
+                [3, 2, 1],
+            ] {
+                let mut counts = LiteralCounters::new(capacity);
+                for number in order {
+                    for _ in 0..number {
+                        counts.observe(value(number)).unwrap();
+                    }
+                }
+                if let Some(expected) = &expected {
+                    assert_eq!(&encoded(&counts), expected);
+                } else {
+                    expected = Some(encoded(&counts));
+                }
+            }
+            let mut all = LiteralCounters::new(capacity);
+            let mut left = LiteralCounters::new(capacity);
+            let mut right = LiteralCounters::new(capacity);
+            for (index, number) in [3, 1, 2, 1, 2, 3, 1, 2].into_iter().enumerate() {
+                all.observe(value(number)).unwrap();
+                if index < 4 {
+                    left.observe(value(number)).unwrap();
+                } else {
+                    right.observe(value(number)).unwrap();
+                }
+            }
+            assert_eq!(encoded(&left.merge(&right).unwrap()), encoded(&all));
+        }
+    }
+
+    #[test]
+    fn coarsening_preserves_exact_day_counts_and_is_associative() {
+        let mut a = LiteralCounters::new(1);
+        let mut b = LiteralCounters::new(1);
+        let mut c = LiteralCounters::new(1);
+        for _ in 0..1000 {
+            a.observe(value(3)).unwrap();
+        }
+        b.observe(value(1)).unwrap();
+        c.observe(value(2)).unwrap();
+        let ab = a.coarsen(&b).unwrap();
+        assert!(matches!(
+            ab.weight(value(3)),
+            ObservationWeight::Exact(1000)
+        ));
+        assert!(matches!(ab.weight(value(1)), ObservationWeight::Exact(1)));
+        assert_eq!(
+            encoded(&ab.coarsen(&c).unwrap()),
+            encoded(&a.coarsen(&b.coarsen(&c).unwrap()).unwrap())
+        );
+        let mut all = LiteralCounters::new(3);
+        for _ in 0..1000 {
+            all.observe(value(3)).unwrap();
+        }
+        for number in [1, 2] {
+            all.observe(value(number)).unwrap();
+        }
+        assert_eq!(encoded(&ab.coarsen(&c).unwrap()), encoded(&all));
     }
 
     #[test]
