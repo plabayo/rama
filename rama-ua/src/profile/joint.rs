@@ -10,8 +10,9 @@ use super::{
 };
 
 use super::{
-    CanonicalValue, HeaderCapture, HeaderCapturePolicy, OrderCaptureLimits, OrderNamespace,
-    OrderedProtocolCapture, ProfileCaptureCompleteness, ProfileDataError, ValueId,
+    CanonicalDomain, CanonicalValue, H2Capture, H2CaptureLimits, HeaderCapture,
+    HeaderCapturePolicy, OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture,
+    ProfileCaptureCompleteness, ProfileDataError, ValueId,
     canonical::{
         CanonicalReader, CanonicalWriter, HEADER_DOMAIN, HEADER_STRUCTURE_DOMAIN, JOINT_DOMAIN,
         JOINT_STRUCTURE_DOMAIN, ORDER_STRUCTURE_DOMAIN,
@@ -49,6 +50,7 @@ pub enum CapturedSlotKind {
     QuicVersions,
     TcpTls,
     QuicTls,
+    Http2EarlyFrames,
 }
 
 impl CapturedSlotKind {
@@ -60,6 +62,7 @@ impl CapturedSlotKind {
             Self::QuicVersions => 3,
             Self::TcpTls => 4,
             Self::QuicTls => 5,
+            Self::Http2EarlyFrames => 6,
         }
     }
     fn from_tag(tag: u16) -> Result<Self, ProfileDataError> {
@@ -70,6 +73,7 @@ impl CapturedSlotKind {
             3 => Ok(Self::QuicVersions),
             4 => Ok(Self::TcpTls),
             5 => Ok(Self::QuicTls),
+            6 => Ok(Self::Http2EarlyFrames),
             _ => Err(ProfileDataError::Unsupported("joint slot kind")),
         }
     }
@@ -81,7 +85,7 @@ impl CapturedSlotKind {
     }
     fn namespace(self) -> Option<OrderNamespace> {
         match self {
-            Self::Headers | Self::TcpTls | Self::QuicTls => None,
+            Self::Headers | Self::TcpTls | Self::QuicTls | Self::Http2EarlyFrames => None,
             Self::QuicParameters => Some(OrderNamespace::QuicParameter),
             Self::Http3Settings => Some(OrderNamespace::Http3Setting),
             Self::QuicVersions => Some(OrderNamespace::QuicVersion),
@@ -99,6 +103,14 @@ impl CapturedSlot {
     /// The same owned normalization is used by joint and individual buckets.
     pub fn structural(&self, maximum_bytes: usize) -> Result<CanonicalValue, ProfileDataError> {
         validate_slot(self, false, maximum_bytes)?;
+        if self.kind == CapturedSlotKind::Http2EarlyFrames {
+            let limits = H2CaptureLimits {
+                frames: maximum_bytes,
+                settings: maximum_bytes,
+                bytes: maximum_bytes,
+            };
+            return H2Capture::from_canonical(&self.value, limits)?.structural(limits);
+        }
         if matches!(
             self.kind,
             CapturedSlotKind::TcpTls | CapturedSlotKind::QuicTls
@@ -189,6 +201,16 @@ fn validate_slot(
         #[cfg(not(feature = "tls"))]
         return Err(ProfileDataError::Unsupported("TLS profile component"));
     }
+    if slot.kind == CapturedSlotKind::Http2EarlyFrames {
+        return slot.value.validate_content(
+            if structural {
+                CanonicalDomain::H2Structure
+            } else {
+                CanonicalDomain::H2
+            },
+            maximum,
+        );
+    }
     let Some(namespace) = slot.kind.namespace() else {
         return slot.value.validate_content(
             if structural {
@@ -235,7 +257,7 @@ fn encode_joint(
     for slot in &capture.slots {
         let current = match slot.kind {
             CapturedSlotKind::Headers => None,
-            CapturedSlotKind::TcpTls => Some(0),
+            CapturedSlotKind::TcpTls | CapturedSlotKind::Http2EarlyFrames => Some(0),
             CapturedSlotKind::QuicTls
             | CapturedSlotKind::QuicParameters
             | CapturedSlotKind::Http3Settings

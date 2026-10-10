@@ -650,6 +650,7 @@ where
 
     tracing::trace!("eager h2 client handshake");
     let mut builder = rama_http_core::client::conn::http2::Builder::new(exec.clone());
+    builder.set_observe_peer_settings(true);
     apply_h2_client_extensions_to_builder(&mut builder, &extensions);
     let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
     let peer_handle = conn.peer_settings_handle();

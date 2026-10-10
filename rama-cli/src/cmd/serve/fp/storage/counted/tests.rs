@@ -4,8 +4,9 @@ use rama::{
     http::{HeaderMap, HeaderName, HeaderValue, Method, Version},
     ua::profile::{
         CanonicalDomain, CaptureLevel, CapturedSlot, CapturedSlotKind, ConnectionContext, FlowKey,
-        HeaderCapture, HeaderCapturePolicy, JointCapture, ObservationWeight, OrderCaptureLimits,
-        OrderNamespace, OrderedProtocolCapture, ProfileCaptureCompleteness, ProfileKey, TlsCapture,
+        H2Capture, H2CaptureLimits, H2CapturedFrame, H2CapturedSetting, HeaderCapture,
+        HeaderCapturePolicy, JointCapture, ObservationWeight, OrderCaptureLimits, OrderNamespace,
+        OrderedProtocolCapture, ProfileCaptureCompleteness, ProfileKey, TlsCapture,
         TlsCaptureLimits, TlsCaptureTransport, TlsCapturedExtension, TlsCapturedExtensionValue,
         UntrackedDistinctSnapshot,
     },
@@ -1991,6 +1992,157 @@ async fn fp_counted_tls_permutations_share_rows_at_full_quota() {
         if input.value.validated_domain(limits.capture.bytes).unwrap() == CanonicalDomain::Tls {
             let decoded = TlsCapture::from_canonical(raw, tls_limits).unwrap();
             assert_eq!(decoded.extensions.len(), 13);
+            assert!(identities.contains(&raw.id));
+        } else {
+            JointCapture::from_canonical(raw, limits.capture).unwrap();
+        }
+    }
+    transaction.rollback().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn fp_counted_h2_permutations_share_rows_at_full_quota() {
+    let (_config, mut client) = migrations::tests::isolated_database().await.unwrap();
+    client
+        .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+        .await
+        .unwrap();
+    migrations::apply(&mut client).await.unwrap();
+    let mut limits = limits();
+    limits.ingestion.bucket.literal_values = 0;
+    limits.ingestion.bucket.samples = 1;
+    limits.retained[..6].copy_from_slice(&[1, 0, 2, 2, 1, 2]);
+    let h2_limits = H2CaptureLimits::default();
+    let mut state = 1_u64;
+    let mut last = None;
+    let mut identities = BTreeSet::new();
+    for sequence in 1..=10_000 {
+        let mut order: Vec<_> = (0..12).collect();
+        for index in (1..order.len()).rev() {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            order.swap(index, (state % (index as u64 + 1)) as usize);
+        }
+        let entries: Vec<_> = order
+            .into_iter()
+            .map(|index| H2CapturedSetting {
+                id: 100 + index,
+                value: 32,
+            })
+            .chain([
+                H2CapturedSetting { id: 1, value: 1024 },
+                H2CapturedSetting { id: 1, value: 4096 },
+            ])
+            .collect();
+        let raw = H2Capture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            frames: Box::new([
+                H2CapturedFrame::Settings {
+                    ack: false,
+                    entries: entries.into(),
+                },
+                H2CapturedFrame::WindowUpdate {
+                    stream: 0,
+                    increment: 65_535,
+                },
+            ]),
+        }
+        .canonical(h2_limits)
+        .unwrap();
+        identities.insert(raw.id);
+        let mut captured = capture("unused").unwrap();
+        captured.flow = None;
+        captured.joint.level = CaptureLevel::Connection;
+        captured.joint.slots = Box::new([CapturedSlot {
+            kind: CapturedSlotKind::Http2EarlyFrames,
+            value: raw,
+        }]);
+        assert!(
+            ingest(
+                &mut client,
+                100,
+                attempt(false, sequence),
+                &captured,
+                [3; 32],
+                limits
+            )
+            .await
+            .unwrap()
+        );
+        if sequence == 1 {
+            let bytes: i64 = client
+                .query_one(
+                    "SELECT canonical_bytes FROM fp_v2.quotas WHERE authorized=FALSE",
+                    &[],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            limits.retained[6] = usize::try_from(bytes).unwrap();
+        }
+        last = Some(captured);
+    }
+    assert!(identities.len() > 9_000);
+    let row = client.query_one("SELECT profiles,flows,structures,buckets,runs,interned_values,canonical_bytes FROM fp_v2.quotas WHERE authorized=FALSE", &[]).await.unwrap();
+    for (index, expected) in [
+        1_i64,
+        0,
+        2,
+        2,
+        1,
+        2,
+        i64::try_from(limits.retained[6]).unwrap(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(row.get::<_, i64>(index), expected);
+    }
+    let captured = last.unwrap();
+    assert!(
+        !ingest(
+            &mut client,
+            100,
+            attempt(false, 10_000),
+            &captured,
+            [3; 32],
+            limits
+        )
+        .await
+        .unwrap()
+    );
+    let prepared = captured.prepare(false, limits.capture).unwrap();
+    let transaction = client.transaction().await.unwrap();
+    let mut remaining = limits.ingestion.input_bytes;
+    for input in &prepared.buckets {
+        let restored = load_bucket(
+            &transaction,
+            false,
+            100,
+            input,
+            [3; 32],
+            limits,
+            &mut remaining,
+        )
+        .await
+        .unwrap();
+        assert_eq!(restored.bucket.counts.total, 10_000);
+        assert_eq!(restored.bucket.counts.untracked, 10_000);
+        assert_eq!(restored.bucket.samples.len(), 1);
+        assert_eq!(restored.bucket.values.len(), 1);
+        let raw = &restored.bucket.values[0];
+        if input.value.validated_domain(limits.capture.bytes).unwrap() == CanonicalDomain::H2 {
+            let decoded = H2Capture::from_canonical(raw, h2_limits).unwrap();
+            assert_eq!(decoded.frames.len(), 2);
+            let H2CapturedFrame::Settings { entries, .. } = &decoded.frames[0] else {
+                panic!("first frame must retain SETTINGS");
+            };
+            let repeated: Vec<_> = entries
+                .iter()
+                .filter(|entry| entry.id == 1)
+                .map(|entry| entry.value)
+                .collect();
+            assert_eq!(repeated, [1024, 4096]);
             assert!(identities.contains(&raw.id));
         } else {
             JointCapture::from_canonical(raw, limits.capture).unwrap();

@@ -185,6 +185,7 @@ impl HttpMitmRelay {
         // Request EOF must not discard a response still being produced by the origin.
         http_server.http1_mut().set_half_close(true);
         http_server.h2_mut().set_enable_connect_protocol();
+        http_server.h2_mut().set_observe_early_frames(true);
         Self {
             http_server,
             middleware: (

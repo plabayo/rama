@@ -13,6 +13,15 @@ use serde::{Deserialize, Serialize};
 pub struct Settings {
     pub flags: SettingsFlags,
     pub config: SettingsConfig,
+    /// Optional bounded wire observation. Semantic configuration is independent.
+    #[serde(skip)]
+    pub observation: Option<Box<SettingsObservation>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsObservation {
+    pub entries: Box<[Setting]>,
+    pub complete: bool,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Default, Serialize, Deserialize)]
@@ -59,6 +68,33 @@ impl Settings {
     }
 
     pub fn load(head: Head, payload: &[u8]) -> Result<Self, Error> {
+        Self::load_inner(head, payload, Some(usize::MAX))
+    }
+
+    /// Decode semantic settings without allocating optional observation data.
+    /// When enabled, at most 256 ordered occurrences are retained. Exceeding the
+    /// observation limit does not reject otherwise valid peer settings.
+    pub fn load_observed(head: Head, payload: &[u8], observe: bool) -> Result<Self, Error> {
+        let mut settings = Self::load_inner(head, payload, observe.then_some(256))?;
+        if observe {
+            const MAXIMUM: usize = 256;
+            let count = payload.len() / 6;
+            let entries = payload
+                .as_chunks::<6>()
+                .0
+                .iter()
+                .take(MAXIMUM)
+                .map(|entry| Setting::load(entry))
+                .collect::<Result<Vec<_>, _>>()?;
+            settings.observation = Some(Box::new(SettingsObservation {
+                entries: entries.into_boxed_slice(),
+                complete: count <= MAXIMUM,
+            }));
+        }
+        Ok(settings)
+    }
+
+    fn load_inner(head: Head, payload: &[u8], order_limit: Option<usize>) -> Result<Self, Error> {
         debug_assert_eq!(head.kind(), super::Kind::Settings);
 
         if !head.stream_id().is_zero() {
@@ -91,7 +127,9 @@ impl Settings {
 
         for raw in payload.chunks(6) {
             let setting = Setting::load(raw)?;
-            setting_order.push(setting.id);
+            if order_limit.is_some_and(|limit| setting_order.len() < limit) {
+                setting_order.push(setting.id);
+            }
             match setting.id {
                 SettingId::HeaderTableSize => {
                     settings.config.header_table_size = Some(setting.value);
@@ -134,9 +172,10 @@ impl Settings {
                         return Err(Error::InvalidSettingValue);
                     }
                 },
-                SettingId::NoRfc7540Priorities => {
-                    settings.config.no_rfc7540_priorities = Some(setting.value);
-                }
+                SettingId::NoRfc7540Priorities => match setting.value {
+                    0 | 1 => settings.config.no_rfc7540_priorities = Some(setting.value),
+                    _ => return Err(Error::InvalidSettingValue),
+                },
                 SettingId::Unknown(id) => {
                     tracing::trace!(
                         "ignore unknown h2 frame setting w/ id {id}: value = {}",
@@ -314,5 +353,102 @@ mod tests {
 
         let settings = Settings::load(head, &payload).expect("must accept boundary");
         assert_eq!(settings.config.initial_window_size, Some((1 << 31) - 1));
+    }
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use crate::proto::h2::frame::Kind;
+
+    #[test]
+    fn settings_observation_retains_unknowns_and_repeated_values_only_when_enabled() {
+        let entries = [(1_u16, 100_u32), (0x42, 99), (1, 200), (0x42, 7)];
+        let mut payload = Vec::new();
+        for (id, value) in entries {
+            payload.extend_from_slice(&id.to_be_bytes());
+            payload.extend_from_slice(&value.to_be_bytes());
+        }
+        let head = Head::new(Kind::Settings, 0, StreamId::zero());
+        let observed = Settings::load_observed(head, &payload, true).unwrap();
+        assert_eq!(observed.config.header_table_size, Some(200));
+        let wire = observed.observation.unwrap();
+        assert!(wire.complete);
+        assert_eq!(
+            wire.entries
+                .iter()
+                .map(|entry| (u16::from(entry.id), entry.value))
+                .collect::<Vec<_>>(),
+            entries
+        );
+        let ordinary = Settings::load_observed(head, &payload, false).unwrap();
+        assert_eq!(ordinary.config.header_table_size, Some(200));
+        assert!(ordinary.observation.is_none());
+        assert!(ordinary.config.setting_order.is_none());
+        let legacy = Settings::load(head, &payload).unwrap();
+        assert!(legacy.observation.is_none());
+        assert!(legacy.config.setting_order.is_some());
+    }
+
+    #[test]
+    fn settings_observation_caps_never_change_protocol_admission() {
+        for count in [0, 1, 255, 256, 257, 1024] {
+            let mut payload = Vec::new();
+            for value in 0..count {
+                payload.extend_from_slice(&0x42_u16.to_be_bytes());
+                payload.extend_from_slice(&(value as u32).to_be_bytes());
+            }
+            let head = Head::new(Kind::Settings, 0, StreamId::zero());
+            let observed = Settings::load_observed(head, &payload, true).unwrap();
+            let wire = observed.observation.unwrap();
+            assert_eq!(wire.entries.len(), count.min(256));
+            assert_eq!(wire.complete, count <= 256);
+            assert!(
+                Settings::load_observed(head, &payload, false)
+                    .unwrap()
+                    .observation
+                    .is_none()
+            );
+        }
+        let head = Head::new(Kind::Settings, 0, StreamId::zero());
+        for observe in [false, true] {
+            Settings::load_observed(head, &[0, 2, 0, 0, 0, 2], observe).unwrap_err();
+            Settings::load_observed(head, &[0], observe).unwrap_err();
+            let ack = Head::new(Kind::Settings, 1, StreamId::zero());
+            Settings::load_observed(ack, &[0; 6], observe).unwrap_err();
+        }
+    }
+}
+
+#[cfg(test)]
+mod boolean_setting_tests {
+    use super::*;
+
+    #[test]
+    fn all_boolean_settings_reject_non_boolean_values_on_every_decode_path() {
+        let head = Head::new(Kind::Settings, 0, StreamId::zero());
+        for id in [2u16, 8, 9] {
+            for value in [0u32, 1, 2, 255, u32::MAX] {
+                let payload: Vec<_> = id
+                    .to_be_bytes()
+                    .into_iter()
+                    .chain(value.to_be_bytes())
+                    .collect();
+                for observe in [None, Some(false), Some(true)] {
+                    let result = match observe {
+                        None => Settings::load(head, &payload),
+                        Some(observe) => Settings::load_observed(head, &payload, observe),
+                    };
+                    if value <= 1 {
+                        result.unwrap();
+                    } else {
+                        assert!(
+                            matches!(result, Err(Error::InvalidSettingValue)),
+                            "id={id}, value={value}, observe={observe:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

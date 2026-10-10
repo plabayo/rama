@@ -263,6 +263,8 @@ pub struct Builder {
     /// Whether application handlers can emit ALTSVC frames.
     send_alt_svc: bool,
 
+    observe_early_frames: bool,
+
     /// Maximum number of locally reset streams to keep at a time.
     reset_stream_max: usize,
 
@@ -426,6 +428,7 @@ where
         let mut codec = Codec::new(io);
         // ALTSVC is a server-to-client extension, never input to a server.
         codec.set_recv_alt_svc(false);
+        codec.set_observe_early_frames(builder.observe_early_frames);
 
         if let Some(max) = builder.settings.config.max_frame_size {
             codec.set_max_recv_frame_size(max as usize);
@@ -714,6 +717,7 @@ impl Builder {
         Self {
             reset_stream_duration: Duration::from_secs(proto::DEFAULT_RESET_STREAM_SECS),
             send_alt_svc: false,
+            observe_early_frames: false,
             reset_stream_max: proto::DEFAULT_RESET_STREAM_MAX,
             pending_accept_reset_stream_max: proto::DEFAULT_REMOTE_RESET_STREAM_MAX,
             settings: Settings::default(),
@@ -721,6 +725,15 @@ impl Builder {
             max_send_buffer_size: proto::DEFAULT_MAX_SEND_BUFFER_SIZE,
 
             local_max_error_reset_streams: Some(proto::DEFAULT_LOCAL_RESET_COUNT_MAX),
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Retain bounded early-frame observations for fingerprinting or preservation.
+        /// Disabled by default; ordinary servers retain no optional capture data.
+        pub fn observe_early_frames(mut self, enabled: bool) -> Self {
+            self.observe_early_frames = enabled;
+            self
         }
     }
 
@@ -1639,7 +1652,11 @@ where
                             settings: self.builder.settings.clone(),
                             send_alt_svc: self.builder.send_alt_svc,
                             headers_pseudo_order: None,
-                            early_frame_ctx: EarlyFrameStreamContext::new_recorder(),
+                            early_frame_ctx: if self.builder.observe_early_frames {
+                                EarlyFrameStreamContext::new_recorder()
+                            } else {
+                                EarlyFrameStreamContext::new_nop()
+                            },
                         },
                     )?;
 
@@ -2212,5 +2229,54 @@ mod path_form_tests {
             request.headers()[rama_http_types::header::HOST],
             "real.example"
         );
+    }
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use rama_core::ServiceInput;
+    use rama_http_types::proto::h2::frame::{EarlyFrame, EarlyFrameCapture};
+    use rama_utils::octets::kib;
+
+    #[tokio::test]
+    async fn server_observation_requires_explicit_opt_in() {
+        for enabled in [false, true] {
+            let (client_io, server_io) = tokio::io::duplex(kib(16));
+            let client = async move {
+                let (mut sender, connection) =
+                    crate::h2::client::handshake(ServiceInput::new(client_io))
+                        .await
+                        .unwrap();
+                let request = Request::builder()
+                    .uri("https://example.com/")
+                    .body(())
+                    .unwrap();
+                let (_response, _stream) = sender.send_request(request, true).unwrap();
+                let _result = connection.await;
+            };
+            let server = async move {
+                let mut builder = Builder::new();
+                if enabled {
+                    builder.set_observe_early_frames(true);
+                }
+                let mut connection = builder
+                    .handshake::<_, Bytes>(ServiceInput::new(server_io))
+                    .await
+                    .unwrap();
+                let (request, _response) = connection.accept().await.unwrap().unwrap();
+                let capture = request.extensions().get_ref::<EarlyFrameCapture>();
+                assert_eq!(capture.is_some(), enabled);
+                if let Some(capture) = capture {
+                    assert!(capture.is_complete());
+                    assert!(capture.iter().any(|frame| matches!(frame, EarlyFrame::Settings(settings) if settings.observation.as_ref().is_some_and(|wire| wire.complete))));
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::join!(client, server);
+            })
+            .await
+            .unwrap();
+        }
     }
 }

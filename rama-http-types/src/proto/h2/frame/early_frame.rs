@@ -53,6 +53,7 @@ impl EarlyFrameStreamContext {
             kind: EarlyFrameKind::Recorder(EarlyFrameRecorder {
                 recording: Some(Vec::with_capacity(8)),
                 frozen: None,
+                truncated: false,
             }),
         }
     }
@@ -187,20 +188,32 @@ enum EarlyFrameKind {
 struct EarlyFrameRecorder {
     recording: Option<Vec<EarlyFrame>>,
     frozen: Option<Arc<[EarlyFrame]>>,
+    truncated: bool,
 }
 
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(http))]
-pub struct EarlyFrameCapture(Arc<[EarlyFrame]>);
+pub struct EarlyFrameCapture {
+    frames: Arc<[EarlyFrame]>,
+    complete: bool,
+}
 
 impl EarlyFrameCapture {
+    /// Whether recording reached the first request without dropping a frame.
+    /// The legacy serialized frame array does not carry this evidence; importing
+    /// that array never establishes completeness for profile analysis.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.complete
+    }
+
     #[must_use]
     pub fn as_slice(&self) -> &[EarlyFrame] {
-        &self.0
+        &self.frames
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &EarlyFrame> {
-        self.0.iter()
+        self.frames.iter()
     }
 }
 
@@ -219,7 +232,10 @@ impl<'de> serde::Deserialize<'de> for EarlyFrameCapture {
         D: serde::Deserializer<'de>,
     {
         let v = <Vec<EarlyFrame>>::deserialize(deserializer)?;
-        Ok(Self(v.into()))
+        Ok(Self {
+            frames: v.into(),
+            complete: false,
+        })
     }
 }
 
@@ -228,12 +244,11 @@ impl EarlyFrameRecorder {
 
     fn record_frame_internal<F: Clone>(&mut self, frame: F, map: impl FnOnce(F) -> EarlyFrame) {
         if let Some(mut recording) = self.recording.take() {
-            recording.push(map(frame));
-            if recording.len() >= Self::MAX_FRAMES {
-                // done recording
+            if recording.len() == Self::MAX_FRAMES {
+                self.truncated = true;
                 self.frozen = Some(recording.into());
             } else {
-                // more to record
+                recording.push(map(frame));
                 self.recording = Some(recording);
             }
         }
@@ -255,7 +270,10 @@ impl EarlyFrameRecorder {
 
     fn freeze(&mut self) -> Option<EarlyFrameCapture> {
         if let Some(fc) = self.frozen.clone() {
-            return Some(EarlyFrameCapture(fc));
+            return Some(EarlyFrameCapture {
+                frames: fc,
+                complete: !self.truncated,
+            });
         }
 
         let c = std::mem::take(&mut self.recording)?;
@@ -265,6 +283,64 @@ impl EarlyFrameRecorder {
 
         let fc: Arc<[EarlyFrame]> = c.into();
         self.frozen = Some(fc.clone());
-        Some(EarlyFrameCapture(fc))
+        Some(EarlyFrameCapture {
+            frames: fc,
+            complete: !self.truncated,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn early_capture_distinguishes_exact_capacity_from_dropped_frames() {
+        for count in [0, 1, 15, 16, 17, 64] {
+            let mut context = EarlyFrameStreamContext::new_recorder();
+            for _ in 0..count {
+                context.record_settings_frame(&Settings::default());
+            }
+            let captured = context.freeze_recorder();
+            if count == 0 {
+                assert!(captured.is_none());
+                continue;
+            }
+            let captured = captured.unwrap();
+            assert_eq!(
+                captured.as_slice().len(),
+                count.min(EarlyFrameRecorder::MAX_FRAMES)
+            );
+            assert_eq!(
+                captured.is_complete(),
+                count <= EarlyFrameRecorder::MAX_FRAMES
+            );
+            let frozen = context.freeze_recorder().unwrap();
+            assert!(Arc::ptr_eq(&captured.frames, &frozen.frames));
+            for _ in 0..64 {
+                context.record_settings_frame(&Settings::default());
+            }
+            let after_request = context.freeze_recorder().unwrap();
+            assert!(Arc::ptr_eq(&captured.frames, &after_request.frames));
+            assert_eq!(captured.is_complete(), after_request.is_complete());
+        }
+    }
+
+    #[test]
+    fn legacy_early_frame_arrays_do_not_invent_completeness() {
+        let mut context = EarlyFrameStreamContext::new_recorder();
+        context.record_settings_frame(&Settings::default());
+        let captured = context.freeze_recorder().unwrap();
+        assert!(captured.is_complete());
+        let json = serde_json::to_vec(&captured).unwrap();
+        assert_eq!(json[0], b'[');
+        let restored: EarlyFrameCapture = serde_json::from_slice(&json).unwrap();
+        assert!(!restored.is_complete());
+        assert_eq!(restored.as_slice(), captured.as_slice());
+        let mut disabled = EarlyFrameStreamContext::new_nop();
+        for _ in 0..64 {
+            disabled.record_settings_frame(&Settings::default());
+        }
+        assert!(disabled.freeze_recorder().is_none());
     }
 }

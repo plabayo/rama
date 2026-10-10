@@ -97,6 +97,7 @@ pub struct EchoServiceBuilder<H> {
     tls_server_config: Option<TlsServerConfig>,
 
     http_version: Option<Version>,
+    http2_observation: bool,
     http3_observation: Option<ObservationLimits>,
 
     ws_support: bool,
@@ -124,6 +125,7 @@ impl Default for EchoServiceBuilder<()> {
             tls_server_config: None,
 
             http_version: None,
+            http2_observation: false,
             http3_observation: None,
 
             ws_support: false,
@@ -246,6 +248,14 @@ impl<H> EchoServiceBuilder<H> {
         }
     }
 
+    crate::utils::macros::generate_set_and_with! {
+        /// Retain bounded HTTP/2 early frames for echo responses. Disabled by default.
+        pub fn http2_observation(mut self, enabled: bool) -> Self {
+            self.http2_observation = enabled;
+            self
+        }
+    }
+
     /// add a custom http layer which will be applied to the existing http layers
     pub fn with_http_layer<H2>(self, layer: H2) -> EchoServiceBuilder<(H, H2)> {
         EchoServiceBuilder {
@@ -260,6 +270,7 @@ impl<H> EchoServiceBuilder<H> {
             tls_server_config: self.tls_server_config,
 
             http_version: self.http_version,
+            http2_observation: self.http2_observation,
             http3_observation: self.http3_observation,
 
             ws_support: self.ws_support,
@@ -372,6 +383,8 @@ where
         let http_transport_service = match self.http_version {
             Some(Version::HTTP_2) => Either3::A({
                 let mut http = HttpServer::new_h2(exec.clone());
+                http.h2_mut()
+                    .set_observe_early_frames(self.http2_observation);
                 if self.ws_support {
                     http.h2_mut().set_enable_connect_protocol();
                 }
@@ -386,6 +399,8 @@ where
             }
             None => Either3::C({
                 let mut http = HttpServer::auto(exec.clone());
+                http.h2_mut()
+                    .set_observe_early_frames(self.http2_observation);
                 if self.ws_support {
                     http.h2_mut().set_enable_connect_protocol();
                 }

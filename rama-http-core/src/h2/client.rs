@@ -321,6 +321,7 @@ pub struct PushPromises {
 /// ```
 #[derive(Clone, Debug)]
 pub struct Builder {
+    observe_peer_settings: bool,
     /// Time to keep locally reset streams around before reaping.
     reset_stream_duration: Duration,
 
@@ -756,6 +757,15 @@ impl Builder {
             local_max_error_reset_streams: Some(proto::DEFAULT_LOCAL_RESET_COUNT_MAX),
             headers_pseudo_order: None,
             early_frames: None,
+            observe_peer_settings: false,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Retain bounded peer SETTINGS occurrences and wire order. Disabled by default.
+        pub fn observe_peer_settings(mut self, enabled: bool) -> Self {
+            self.observe_peer_settings = enabled;
+            self
         }
     }
 
@@ -1507,6 +1517,7 @@ where
 
         // Create the codec
         let mut codec = Codec::new(io);
+        codec.set_observe_early_frames(builder.observe_peer_settings);
 
         let (initial_settings, early_frame_ctx) = if let Some(frames) = builder.early_frames {
             let (ctx, settings) = EarlyFrameStreamContext::new_replayer(frames);
@@ -2139,5 +2150,51 @@ mod pseudo_sensitivity_tests {
                 .sensitivity
                 .is_sensitive(PseudoHeader::Status)
         );
+    }
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use rama_core::ServiceInput;
+    use rama_utils::octets::kib;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn peer_settings_wire_order_requires_explicit_client_opt_in() {
+        for enabled in [false, true] {
+            let (client_io, mut server_io) = tokio::io::duplex(kib(16));
+            let mut builder = Builder::new();
+            builder.set_observe_peer_settings(enabled);
+            let (sender, connection) = builder
+                .handshake::<_, Bytes>(ServiceInput::new(client_io))
+                .await
+                .unwrap();
+            // Unknown, known, duplicate unknown: all three occurrences are observable.
+            let frame = [
+                0, 0, 18, 4, 0, 0, 0, 0, 0, 0xfe, 0xfe, 0, 0, 0, 7, 0, 1, 0, 0, 16, 0, 0xfe, 0xfe,
+                0, 0, 0, 8,
+            ];
+            server_io.write_all(&frame).await.unwrap();
+            let peer = tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::select! {
+                    peer = sender.await_peer_initial_settings() => peer.unwrap(),
+                    result = connection => panic!("connection ended before peer settings: {result:?}"),
+                }
+            }).await.unwrap();
+            assert_eq!(peer.0.config.header_table_size, Some(4096));
+            assert_eq!(peer.0.config.setting_order.is_some(), enabled);
+            assert_eq!(peer.0.observation.is_some(), enabled);
+            if let Some(wire) = &peer.0.observation {
+                assert!(wire.complete);
+                assert_eq!(
+                    wire.entries
+                        .iter()
+                        .map(|entry| (u16::from(entry.id), entry.value))
+                        .collect::<Vec<_>>(),
+                    [(0xfefe, 7), (1, 4096), (0xfefe, 8)]
+                );
+            }
+        }
     }
 }

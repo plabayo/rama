@@ -90,3 +90,6 @@ mod tls_capture;
 #[cfg(feature = "tls")]
 #[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
 pub use tls_capture::*;
+
+mod h2_capture;
+pub use h2_capture::*;

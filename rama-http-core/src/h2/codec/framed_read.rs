@@ -37,6 +37,7 @@ pub(super) struct FramedRead<T> {
     partial: Option<Partial>,
 
     recv_alt_svc: bool,
+    observe_early_frames: bool,
 }
 
 /// Partially loaded headers frame
@@ -69,7 +70,12 @@ impl<T> FramedRead<T> {
             max_continuation_frames,
             partial: None,
             recv_alt_svc: true,
+            observe_early_frames: false,
         }
+    }
+
+    pub(super) fn set_observe_early_frames(&mut self, enabled: bool) {
+        self.observe_early_frames = enabled;
     }
 
     pub(super) fn set_recv_alt_svc(&mut self, enabled: bool) {
@@ -140,6 +146,7 @@ fn decode_frame(
     max_continuation_frames: usize,
     partial_inout: &mut Option<Partial>,
     recv_alt_svc: bool,
+    observe_early_frames: bool,
     mut bytes: BytesMut,
 ) -> Result<Option<Frame>, Error> {
     let span = tracing::trace_span!("FramedRead::decode_frame", offset = bytes.len());
@@ -225,7 +232,11 @@ fn decode_frame(
 
     let frame = match kind {
         Kind::Settings => {
-            let res = frame::Settings::load(head, &bytes[frame::HEADER_LEN..]);
+            let res = frame::Settings::load_observed(
+                head,
+                &bytes[frame::HEADER_LEN..],
+                observe_early_frames,
+            );
 
             res.map_err(|e| {
                 proto_err!(conn: "failed to load SETTINGS frame; err={:?}", e);
@@ -454,6 +465,7 @@ where
                 ref mut partial,
                 max_continuation_frames,
                 recv_alt_svc,
+                observe_early_frames,
                 ..
             } = *self;
             if let Some(frame) = decode_frame(
@@ -462,6 +474,7 @@ where
                 max_continuation_frames,
                 partial,
                 recv_alt_svc,
+                observe_early_frames,
                 bytes,
             )? {
                 tracing::trace!("frame received: {frame:?}");

@@ -59,6 +59,7 @@ pub(crate) struct Config {
     pub(crate) max_frame_size: u32,
     pub(crate) enable_connect_protocol: bool,
     pub(crate) send_alt_svc: bool,
+    pub(crate) observe_early_frames: bool,
     pub(crate) max_concurrent_streams: Option<u32>,
     pub(crate) max_pending_accept_reset_streams: Option<usize>,
     pub(crate) max_local_error_reset_streams: Option<usize>,
@@ -79,6 +80,7 @@ impl Default for Config {
             max_frame_size: DEFAULT_MAX_FRAME_SIZE,
             enable_connect_protocol: false,
             send_alt_svc: false,
+            observe_early_frames: false,
             max_concurrent_streams: Some(200),
             max_pending_accept_reset_streams: None,
             max_local_error_reset_streams: Some(DEFAULT_MAX_LOCAL_ERROR_RESET_STREAMS),
@@ -148,6 +150,7 @@ where
         }
 
         builder.set_alt_svc(config.send_alt_svc);
+        builder.set_observe_early_frames(config.observe_early_frames);
         let handshake = builder.handshake(io);
 
         let bdp = config

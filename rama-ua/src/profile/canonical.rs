@@ -9,10 +9,10 @@ use sha2::{Digest as _, Sha256};
 use super::{TlsCapture, TlsCaptureLimits, tls_capture::structure::validate_tls_structure};
 
 use super::{
-    FlowKey, HeaderCapture, HeaderCapturePolicy, JointCapture, JointCaptureLimits,
-    OrderCaptureLimits, OrderedProtocolCapture, ProfileKey, ProfileObservationScope,
-    header_structure::validate_header_structure, joint::validate_joint_structure,
-    order_capture::validate_structure,
+    FlowKey, H2Capture, H2CaptureLimits, HeaderCapture, HeaderCapturePolicy, JointCapture,
+    JointCaptureLimits, OrderCaptureLimits, OrderedProtocolCapture, ProfileKey,
+    ProfileObservationScope, header_structure::validate_header_structure,
+    joint::validate_joint_structure, order_capture::validate_structure,
 };
 
 /// Stable canonical domains; serialized tags remain independent of Rust enum layout.
@@ -31,6 +31,8 @@ pub enum CanonicalDomain {
     HeaderStructure = 9,
     Tls = 10,
     TlsStructure = 11,
+    H2 = 12,
+    H2Structure = 13,
 }
 
 impl From<CanonicalDomain> for u16 {
@@ -60,6 +62,8 @@ impl TryFrom<u16> for CanonicalDomain {
             9 => Ok(Self::HeaderStructure),
             10 => Ok(Self::Tls),
             11 => Ok(Self::TlsStructure),
+            12 => Ok(Self::H2),
+            13 => Ok(Self::H2Structure),
             _ => Err(ProfileDataError::Unsupported("canonical content domain")),
         }
     }
@@ -170,6 +174,17 @@ impl CanonicalValue {
                         elements: maximum_bytes,
                         bytes: maximum_bytes,
                     },
+                )?;
+            }
+            CanonicalDomain::H2 | CanonicalDomain::H2Structure => {
+                H2Capture::decode(
+                    self,
+                    H2CaptureLimits {
+                        frames: maximum_bytes,
+                        settings: maximum_bytes,
+                        bytes: maximum_bytes,
+                    },
+                    domain == CanonicalDomain::H2Structure,
                 )?;
             }
             HEADER_DOMAIN => {
@@ -378,6 +393,8 @@ mod tests {
             (9, CanonicalDomain::HeaderStructure),
             (10, CanonicalDomain::Tls),
             (11, CanonicalDomain::TlsStructure),
+            (12, CanonicalDomain::H2),
+            (13, CanonicalDomain::H2Structure),
         ] {
             assert_eq!(u16::from(domain), tag);
             assert_eq!(CanonicalDomain::try_from(tag).unwrap(), domain);
@@ -388,7 +405,7 @@ mod tests {
                 domain
             );
         }
-        for tag in [0, 12, u16::MAX] {
+        for tag in [0, 14, u16::MAX] {
             CanonicalDomain::try_from(tag).unwrap_err();
             serde_json::from_str::<CanonicalDomain>(&tag.to_string()).unwrap_err();
         }

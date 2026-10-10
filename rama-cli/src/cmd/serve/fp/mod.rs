@@ -427,6 +427,7 @@ where
                 // Advertise RFC 8441 so h2 clients can open WebSockets
                 // (Extended CONNECT) — see the `/api/ws` route.
                 http_server.h2_mut().set_enable_connect_protocol();
+                http_server.h2_mut().set_observe_early_frames(true);
                 tcp_listener
                     .serve(tcp_service_builder.into_layer(http_server.service(http_service)))
                     .await;
@@ -454,6 +455,7 @@ where
                 // Advertise RFC 8441 so h2 clients can open WebSockets
                 // (Extended CONNECT) — see the `/api/ws` route.
                 http_server.h2_mut().set_enable_connect_protocol();
+                http_server.h2_mut().set_observe_early_frames(true);
                 tcp_listener
                     .serve(tcp_service_builder.into_layer(http_server.service(http_service)))
                     .await;

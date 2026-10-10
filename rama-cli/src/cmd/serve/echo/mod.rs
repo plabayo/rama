@@ -218,6 +218,7 @@ async fn bind_echo_http_service(
     .context("bind http(s) echo service")?;
 
     let (tcp_service, http3_service) = EchoServiceBuilder::new()
+        .with_http2_observation(true)
         .with_http3_observation(OBSERVATION_LIMITS)
         .with_concurrent(cfg.concurrent.unwrap_or_default())
         .maybe_with_rate_limit(opt_per_sec(cfg.rate))

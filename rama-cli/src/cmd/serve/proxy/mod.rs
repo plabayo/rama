@@ -1694,11 +1694,19 @@ async fn run_with_dashboard_token(
             http_enabled,
             capture.clone(),
         );
-        let plain_http = HttpServer::auto(exec.clone()).service(Arc::new(plain_http_service));
+        let mut plain_server = HttpServer::auto(exec.clone());
+        plain_server
+            .h2_mut()
+            .set_observe_early_frames(capture.is_some());
+        let plain_http = plain_server.service(Arc::new(plain_http_service));
         let tls_http_service = (TraceLayer::new_for_http(), make_upgrade()).into_layer(tls_handler);
         let tls_http_service =
             classify_http_connection(tls_http_service, None, https_enabled, capture.clone());
-        let tls_http = HttpServer::auto(exec.clone()).service(Arc::new(tls_http_service));
+        let mut tls_server = HttpServer::auto(exec.clone());
+        tls_server
+            .h2_mut()
+            .set_observe_early_frames(capture.is_some());
+        let tls_http = tls_server.service(Arc::new(tls_http_service));
         let tls_acceptor = TlsAcceptorService::new(
             https_config.clone().unwrap_or_else(TlsServerConfig::new),
             tls_http,

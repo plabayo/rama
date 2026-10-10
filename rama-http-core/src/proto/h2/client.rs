@@ -82,6 +82,7 @@ const DEFAULT_INITIAL_MAX_SEND_STREAMS: usize = 100;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Config {
+    pub(crate) observe_peer_settings: bool,
     pub(crate) adaptive_window: bool,
     pub(crate) initial_conn_window_size: u32,
     pub(crate) initial_stream_window_size: u32, // alias for initial_window_size
@@ -107,6 +108,7 @@ pub(crate) struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            observe_peer_settings: false,
             adaptive_window: false,
             initial_conn_window_size: DEFAULT_CONN_WINDOW,
             initial_stream_window_size: DEFAULT_STREAM_WINDOW,
@@ -147,6 +149,7 @@ pub(crate) fn new_builder(config: &Config) -> Builder {
     if let Some(max) = config.max_concurrent_reset_streams {
         builder.set_max_concurrent_reset_streams(max);
     }
+    builder.set_observe_peer_settings(config.observe_peer_settings);
     if let Some(max) = config.max_pending_accept_reset_streams {
         builder.set_max_pending_accept_reset_streams(max);
     }

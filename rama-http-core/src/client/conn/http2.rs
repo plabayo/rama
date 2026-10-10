@@ -417,6 +417,14 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Retain bounded peer SETTINGS occurrences and wire order. Disabled by default.
+        pub fn observe_peer_settings(mut self, enabled: bool) -> Self {
+            self.h2_builder.observe_peer_settings = enabled;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         pub fn setting_config(mut self, config: &SettingsConfig) -> Self {
             self.set_header_table_size(config.header_table_size)
                 .set_max_concurrent_streams(config.max_concurrent_streams)

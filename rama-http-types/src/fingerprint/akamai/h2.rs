@@ -45,6 +45,9 @@ impl AkamaiH2 {
         let early_frames = ext
             .get_ref::<EarlyFrameCapture>()
             .ok_or(AkamaiH2ComputeError::MissingEarlyFrames)?;
+        if !early_frames.is_complete() {
+            return Err(AkamaiH2ComputeError::IncompleteCapture);
+        }
 
         let pseudo_header_order = ext
             .get_ref::<PseudoHeaderOrder>()
@@ -58,6 +61,18 @@ impl AkamaiH2 {
             match frame {
                 EarlyFrame::Settings(s) => {
                     if !s.flags.is_ack() {
+                        if let Some(observed) = &s.observation {
+                            if !observed.complete {
+                                return Err(AkamaiH2ComputeError::IncompleteCapture);
+                            }
+                            settings.extend(
+                                observed
+                                    .entries
+                                    .iter()
+                                    .map(|entry| (entry.id.into(), entry.value)),
+                            );
+                            continue;
+                        }
                         let order = s
                             .config
                             .setting_order
@@ -213,6 +228,7 @@ impl fmt::Debug for AkamaiH2 {
 #[derive(Debug, Clone)]
 pub enum AkamaiH2ComputeError {
     MissingEarlyFrames,
+    IncompleteCapture,
     MissingPseudoHeaders,
     MissingSettingOrder,
     NoSettings,
@@ -224,6 +240,7 @@ impl fmt::Display for AkamaiH2ComputeError {
             Self::MissingEarlyFrames => {
                 write!(f, "AkamaiH2 Compute Error: missing early frame capture")
             }
+            Self::IncompleteCapture => f.write_str("AkamaiH2 Compute Error: incomplete capture"),
             Self::MissingPseudoHeaders => {
                 write!(f, "AkamaiH2 Compute Error: missing pseudo-header order")
             }
@@ -248,7 +265,8 @@ rama_utils::macros::serde_str::impl_serde_str!(serialize display AkamaiH2);
 mod tests {
     use super::*;
     use crate::proto::h2::frame::{
-        Priority, SettingOrder, Settings, SettingsConfig, StreamDependency, WindowUpdate,
+        EarlyFrameStreamContext, Head, Kind, Priority, SettingOrder, Settings, SettingsConfig,
+        StreamDependency, WindowUpdate,
     };
 
     // Common pseudo-header orders
@@ -274,7 +292,15 @@ mod tests {
     ];
 
     fn create_early_frame_capture(frames: &[EarlyFrame]) -> EarlyFrameCapture {
-        serde_json::from_str(&serde_json::to_string(frames).unwrap()).unwrap()
+        let mut recorder = EarlyFrameStreamContext::new_recorder();
+        for frame in frames {
+            match frame {
+                EarlyFrame::Settings(settings) => recorder.record_settings_frame(settings),
+                EarlyFrame::Priority(priority) => recorder.record_priority_frame(priority),
+                EarlyFrame::WindowUpdate(window) => recorder.record_windows_update_frame(*window),
+            }
+        }
+        recorder.freeze_recorder().unwrap()
     }
 
     fn add_priority_frame(
@@ -333,6 +359,7 @@ mod tests {
             ..Default::default()
         };
         frames.push(EarlyFrame::Settings(Settings {
+            observation: None,
             config: settings_config,
             flags: Default::default(),
         }));
@@ -367,6 +394,7 @@ mod tests {
             ..Default::default()
         };
         frames.push(EarlyFrame::Settings(Settings {
+            observation: None,
             config: settings_config,
             flags: Default::default(),
         }));
@@ -395,6 +423,7 @@ mod tests {
             ..Default::default()
         };
         frames.push(EarlyFrame::Settings(Settings {
+            observation: None,
             config: settings_config,
             flags: Default::default(),
         }));
@@ -423,6 +452,7 @@ mod tests {
             ..Default::default()
         };
         frames.push(EarlyFrame::Settings(Settings {
+            observation: None,
             config: settings_config,
             flags: Default::default(),
         }));
@@ -467,6 +497,7 @@ mod tests {
             ..Default::default()
         };
         frames.push(EarlyFrame::Settings(Settings {
+            observation: None,
             config: settings_config,
             flags: Default::default(),
         }));
@@ -507,6 +538,7 @@ mod tests {
             ..Default::default()
         };
         frames.push(EarlyFrame::Settings(Settings {
+            observation: None,
             config: settings_config,
             flags: Default::default(),
         }));
@@ -552,6 +584,7 @@ mod tests {
             ..Default::default()
         };
         frames.push(EarlyFrame::Settings(Settings {
+            observation: None,
             config: settings_config,
             flags: Default::default(),
         }));
@@ -589,6 +622,7 @@ mod tests {
             ..Default::default()
         };
         frames.push(EarlyFrame::Settings(Settings {
+            observation: None,
             config: settings_config,
             flags: Default::default(),
         }));
@@ -628,6 +662,7 @@ mod tests {
             ..Default::default()
         };
         frames.push(EarlyFrame::Settings(Settings {
+            observation: None,
             config: settings_config,
             flags: Default::default(),
         }));
@@ -670,6 +705,7 @@ mod tests {
             ..Default::default()
         };
         frames.push(EarlyFrame::Settings(Settings {
+            observation: None,
             config: settings_config,
             flags: Default::default(),
         }));
@@ -686,5 +722,54 @@ mod tests {
             debug_str,
             "3:100;4:65535|00|3:0:0:201,5:0:0:101,7:0:0:1,9:0:7:1,11:0:3:1|m,p,s,a"
         );
+    }
+    fn observed_settings(entries: &[(u16, u32)]) -> EarlyFrame {
+        let payload: Vec<_> = entries
+            .iter()
+            .flat_map(|(id, value)| id.to_be_bytes().into_iter().chain(value.to_be_bytes()))
+            .collect();
+        EarlyFrame::Settings(
+            Settings::load_observed(
+                Head::new(Kind::Settings, 0, StreamId::zero()),
+                &payload,
+                true,
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn akamai_uses_wire_settings_without_collapsing_unknowns_or_duplicates() {
+        let ext = Extensions::new();
+        ext.insert(create_pseudo_header_order(CURL_ORDER));
+        ext.insert(create_early_frame_capture(&[observed_settings(&[
+            (1, 1024),
+            (0xfefe, 7),
+            (1, 4096),
+        ])]));
+        assert_eq!(
+            format!("{:?}", AkamaiH2::compute(&ext).unwrap()),
+            "1:1024;65278:7;1:4096|00|0|m,p,s,a"
+        );
+    }
+
+    #[test]
+    fn akamai_does_not_fingerprint_incomplete_or_legacy_capture() {
+        let complete = create_early_frame_capture(&[observed_settings(&[(1, 4096)])]);
+        let legacy: EarlyFrameCapture =
+            serde_json::from_slice(&serde_json::to_vec(&complete).unwrap()).unwrap();
+        let truncated_settings =
+            create_early_frame_capture(&[observed_settings(&vec![(0xffff, 1); 257])]);
+        let truncated_prefix =
+            create_early_frame_capture(&vec![observed_settings(&[(1, 4096)]); 17]);
+        for capture in [legacy, truncated_settings, truncated_prefix] {
+            let ext = Extensions::new();
+            ext.insert(create_pseudo_header_order(CURL_ORDER));
+            ext.insert(capture);
+            assert!(matches!(
+                AkamaiH2::compute(&ext).unwrap_err(),
+                AkamaiH2ComputeError::IncompleteCapture
+            ));
+        }
     }
 }

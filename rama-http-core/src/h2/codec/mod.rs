@@ -61,6 +61,10 @@ where
 }
 
 impl<T, B> Codec<T, B> {
+    pub fn set_observe_early_frames(&mut self, enabled: bool) {
+        self.inner.set_observe_early_frames(enabled);
+    }
+
     /// Enable decoding ALTSVC advertisements. Servers must disable this:
     /// RFC 7838 §4 requires them to ignore client advertisements entirely.
     /// Header-block continuity and the receive frame-size limit still apply.
@@ -406,5 +410,52 @@ mod tests {
             codec.next().await.unwrap(),
             Err(Error::GoAway(_, Reason::FRAME_SIZE_ERROR, _)),
         );
+    }
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use rama_core::{
+        bytes::{Bytes, BytesMut},
+        futures::StreamExt as _,
+    };
+    use rama_http_types::proto::h2::frame::{Head, Kind, Ping, StreamId};
+
+    #[tokio::test]
+    async fn settings_wire_observation_is_opt_in_and_preserves_occurrences() {
+        for enabled in [false, true] {
+            let entries = [(1_u16, 100_u32), (0x42, 99), (1, 200), (0x42, 7)];
+            let mut wire = BytesMut::new();
+            Head::new(Kind::Settings, 0, StreamId::zero()).encode(entries.len() * 6, &mut wire);
+            for (id, value) in entries {
+                wire.extend_from_slice(&id.to_be_bytes());
+                wire.extend_from_slice(&value.to_be_bytes());
+            }
+            let ping = Ping::new(*b"abcdefgh");
+            ping.encode(&mut wire);
+            let mut codec = Codec::<_, Bytes>::new(io::Cursor::new(wire.to_vec()));
+            if enabled {
+                codec.set_observe_early_frames(true);
+            }
+            let Frame::Settings(settings) = codec.next().await.unwrap().unwrap() else {
+                panic!("expected settings")
+            };
+            assert_eq!(settings.config.header_table_size, Some(200));
+            assert_eq!(settings.observation.is_some(), enabled);
+            assert_eq!(settings.config.setting_order.is_some(), enabled);
+            if let Some(observation) = settings.observation {
+                assert!(observation.complete);
+                assert_eq!(
+                    observation
+                        .entries
+                        .iter()
+                        .map(|entry| (u16::from(entry.id), entry.value))
+                        .collect::<Vec<_>>(),
+                    entries
+                );
+            }
+            assert_eq!(codec.next().await.unwrap().unwrap(), Frame::Ping(ping));
+        }
     }
 }
