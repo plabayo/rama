@@ -1266,3 +1266,99 @@ async fn a_retired_connection_is_not_filed_again_by_a_rekey() {
     handout.rekey(keyed(0, 2));
     assert!(stored(&pool).is_empty(), "on its way out");
 }
+
+/// An admission busy until `on_ask` runs, answering as it was before.
+fn upgrading(
+    on_ask: &Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>,
+    in_use: &Arc<AtomicBool>,
+) -> ConnectionAdmission {
+    ConnectionAdmission::new(UpgradingOnAsk {
+        on_ask: on_ask.clone(),
+        in_use: in_use.clone(),
+    })
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_busy_answer_older_than_a_count_leaves_the_count() {
+    let pool = keeping_one();
+    let (on_ask, in_use) = (Arc::new(Mutex::new(None)), Arc::new(AtomicBool::new(true)));
+    let conn = Conn {
+        serial: 7,
+        extensions: Extensions::new(),
+    };
+    conn.extensions.insert(upgrading(&on_ask, &in_use));
+    let handout = pool
+        .create(TestId(0), conn, pool.test_slot(), &EMPTY_INPUT)
+        .await
+        .unwrap();
+    let stored = handout.inner.clone();
+    {
+        let stored = stored.clone();
+        // While its release asks: the work ends, and a trim counts it idle.
+        *on_ask.lock() = Some(Box::new(move || {
+            in_use.store(false, Ordering::SeqCst);
+            stored.changes.fetch_add(1, Ordering::Release);
+            assert!(stored.count_if_idle());
+        }) as Box<dyn FnOnce() + Send>);
+    }
+    drop(handout);
+    let limits = pool.idle_limits.as_ref().unwrap();
+    assert_eq!(
+        limits.idle.load(Ordering::Relaxed),
+        1,
+        "the release's busy answer takes nothing away"
+    );
+    drop(stored);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_count_from_before_a_stream_is_no_count() {
+    let pool = keeping_one();
+    let (on_ask, in_use) = (Arc::new(Mutex::new(None)), Arc::new(AtomicBool::new(false)));
+    let conn = Conn {
+        serial: 7,
+        extensions: Extensions::new(),
+    };
+    conn.extensions.insert(upgrading(&on_ask, &in_use));
+    let handout = pool
+        .create(TestId(0), conn, pool.test_slot(), &EMPTY_INPUT)
+        .await
+        .unwrap();
+    let stored = handout.inner.clone();
+    {
+        let stored = stored.clone();
+        // While its release asks: a stream comes and ends, its own release
+        // not yet seen.
+        *on_ask.lock() = Some(Box::new(move || {
+            let lane_gen = stored.lane_gen.load(Ordering::Acquire);
+            let admitted = stored.try_admit(lane_gen, usize::MAX, &EMPTY_INPUT);
+            assert!(admitted.is_some());
+            stored.active.fetch_sub(1, Ordering::Release);
+            drop(admitted);
+        }) as Box<dyn FnOnce() + Send>);
+    }
+    drop(handout);
+    let limits = pool.idle_limits.as_ref().unwrap();
+    assert_eq!(
+        limits.idle.load(Ordering::Relaxed),
+        0,
+        "that stream's release counts it"
+    );
+    drop(stored);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_unit_given_back_over_the_limits_asks_a_trim() {
+    let (pool, [given_back, _other]) = two_counted_idle(
+        |pool| pool.with_max_idle_total(NonZeroUsize::new(1).unwrap()),
+        [0, 1],
+    )
+    .await;
+    let limits = pool.idle_limits.as_ref().unwrap();
+    // A unit taken out for a state someone else moved, given back: a trim
+    // that read the counts meanwhile may have kept one too many.
+    limits.idle.fetch_sub(1, Ordering::Relaxed);
+    given_back.give_back(limits);
+    settle().await;
+    assert_eq!(stored(&pool).len(), 1, "trimmed to the limit");
+}

@@ -446,7 +446,7 @@ impl fmt::Debug for WaitQueue {
 /// and any of them wakes it: see [`Self::woken`].
 pub struct Party {
     order: u64,
-    /// Wakes of all its waiters.
+    /// How often its waiters were woken.
     wakes: AtomicUsize,
     waker: AtomicWaker,
     /// The counters of its first places, in the same allocation.
@@ -458,6 +458,10 @@ pub struct Party {
 /// Places a [`Party`] keeps inline: a lane, a keyed lane and the slot queue.
 const INLINE_PLACES: usize = 3;
 
+/// Wakes a place holds at most: far more than any waiter spends, with room for
+/// the turn its departure adds.
+const MAX_HELD: usize = usize::MAX / 2;
+
 /// The wakes one queue sent a party, how many of them it spent, and the turns
 /// it gave way with that are not handed back yet.
 #[derive(Default)]
@@ -468,6 +472,26 @@ struct Place {
     /// Under it, a turn handed back becomes a wake, and a departure takes the
     /// turns and reads the wakes: each in one step. A leaf lock.
     turns: Mutex<usize>,
+}
+
+impl Place {
+    /// Add `n` wakes, as many as fit below [`MAX_HELD`].
+    fn add_wakes(&self, n: usize) {
+        let spent = self.spent.load(Ordering::Relaxed);
+        let mut wakes = self.wakes.load(Ordering::Acquire);
+        loop {
+            let room = MAX_HELD.saturating_sub(wakes.wrapping_sub(spent));
+            match self.wakes.compare_exchange_weak(
+                wakes,
+                wakes.wrapping_add(n.min(room)),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(seen) => wakes = seen,
+            }
+        }
+    }
 }
 
 impl Party {
@@ -504,7 +528,7 @@ impl Party {
         }
     }
 
-    /// The wakes of all its waiters so far: read before a look.
+    /// How often its waiters were woken so far: read before a look.
     #[must_use]
     pub fn wakes(&self) -> usize {
         self.wakes.load(Ordering::Acquire)
@@ -598,7 +622,7 @@ impl Waiter {
     fn leave(&self) -> usize {
         let mut turns = self.counters().turns.lock();
         let turn = std::mem::take(&mut *turns) > 0;
-        self.held() + usize::from(turn)
+        self.held().saturating_add(usize::from(turn))
     }
 
     /// The wakes so far: read before a look at the capacity waited for.
@@ -631,19 +655,21 @@ impl Waiter {
                 return;
             };
             *turns = left;
-            place.wakes.fetch_add(1, Ordering::AcqRel);
+            place.add_wakes(1);
         }
         // Outside the leaf lock: a waker may run anything.
-        self.wake_party(1);
+        self.wake_party();
     }
 
     fn wake_by(&self, n: usize) {
-        self.counters().wakes.fetch_add(n, Ordering::AcqRel);
-        self.wake_party(n);
+        self.counters().add_wakes(n);
+        self.wake_party();
     }
 
-    fn wake_party(&self, n: usize) {
-        self.party.wakes.fetch_add(n, Ordering::AcqRel);
+    /// One more wake of the party, however many its place took: a look waits
+    /// for any, and a count of calls cannot wrap back to one it saw.
+    fn wake_party(&self) {
+        self.party.wakes.fetch_add(1, Ordering::AcqRel);
         self.party.waker.wake();
     }
 }
@@ -1393,6 +1419,11 @@ mod tests {
         assert_eq!(ours.remove(&giver), 1, "its turn, to pass on");
         assert_eq!(theirs.remove(&older), 1, "its own look's wake");
         assert!(!behind.is_woken(), "the leaver passes the turn on, once");
+        assert_eq!(
+            giver.held(),
+            0,
+            "its turn went with it: nothing handed back"
+        );
     }
 
     #[test]
@@ -1412,7 +1443,8 @@ mod tests {
         let ours = WaitQueue::new();
         let giver = Party::new(u64::MAX).waiter();
         ours.push(&giver);
-        let rivals: Vec<_> = (0..70_000)
+        // As many as a 16-bit count of turns wraps to none.
+        let rivals: Vec<_> = (0..65_536)
             .map(|order| {
                 let queue = WaitQueue::new();
                 let older = Party::new(order).waiter();
@@ -1423,6 +1455,51 @@ mod tests {
             .collect();
         assert_eq!(ours.remove(&giver), 1, "its turn, once");
         drop(rivals);
+    }
+
+    #[test]
+    fn a_place_holding_all_the_wakes_it_can_leaves_with_its_turn() {
+        let [theirs, ours] = [WaitQueue::new(), WaitQueue::new()];
+        let older = Party::new(0).waiter();
+        theirs.push(&older);
+        let giver = Party::new(1).waiter();
+        ours.push(&giver);
+        assert!(ours.wake_many(usize::MAX));
+        assert!(theirs.give_way(1, &giver));
+        assert_eq!(
+            ours.remove(&giver),
+            giver.held() + 1,
+            "its wakes, and its turn"
+        );
+    }
+
+    #[test]
+    fn a_turn_handed_back_to_a_place_holding_all_it_can_keeps_it_woken() {
+        let [theirs, ours] = [WaitQueue::new(), WaitQueue::new()];
+        let older = Party::new(0).waiter();
+        theirs.push(&older);
+        let giver = Party::new(1).waiter();
+        ours.push(&giver);
+        assert!(ours.wake_many(usize::MAX));
+        assert!(theirs.give_way(1, &giver));
+        theirs.remove(&older);
+        assert!(giver.is_woken(), "no wake it holds is lost");
+    }
+
+    #[test]
+    fn a_party_woken_by_a_full_batch_and_one_more_is_woken() {
+        let queue = WaitQueue::new();
+        let waiter = Party::new(0).waiter();
+        queue.push(&waiter);
+        let seen = waiter.party().wakes();
+        assert!(queue.wake_many(usize::MAX));
+        assert!(queue.wake_one());
+        assert_ne!(
+            waiter.party().wakes(),
+            seen,
+            "no count wraps back to the one it saw"
+        );
+        assert!(waiter.is_woken());
     }
 
     #[test]

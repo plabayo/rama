@@ -549,7 +549,7 @@ where
     /// Whether `conn` is idle past the idle timeout. Asks its admission first:
     /// seeing work that outlived its handouts restarts the idle clock.
     fn has_expired(&self, conn: &StoredConnection<C, ID>) -> bool {
-        let expired = conn.is_idle()
+        let expired = conn.is_idle_held()
             && self
                 .idle_timeout
                 .is_some_and(|timeout| conn.last_idle.elapsed() >= timeout);
@@ -721,16 +721,18 @@ where
         loop {
             let (conn, more) = self.pick_lru_idle(&storage, evictor, chances, within, &busy)?;
             drop(storage);
-            let retired = conn.retire_if(StoredConnection::is_idle).map(|mut slot| {
-                std::mem::replace(
-                    &mut slot.slots,
-                    MultiplexSlot {
-                        total: None,
-                        id: None,
-                        connect: None,
-                    },
-                )
-            });
+            let retired = conn
+                .retire_if(StoredConnection::is_idle_held)
+                .map(|mut slot| {
+                    std::mem::replace(
+                        &mut slot.slots,
+                        MultiplexSlot {
+                            total: None,
+                            id: None,
+                            connect: None,
+                        },
+                    )
+                });
             if let Some(slots) = retired {
                 let stored = unstore(&mut self.storage.lock(), &conn);
                 return Some(Evicted {

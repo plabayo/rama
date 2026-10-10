@@ -114,17 +114,29 @@ impl<C, ID> StoredConnection<C, ID> {
             // idle clock.
             self.busy_at
                 .store(changes.wrapping_add(1), Ordering::Relaxed);
-            self.uncount_idle();
             return false;
         }
         true
+    }
+
+    /// As [`Self::is_idle`], with its slot lock held: one found busy leaves the
+    /// idle counts. Counts take that lock too, so this never takes away one
+    /// made after its answer, as an answer read without it could.
+    pub(super) fn is_idle_held(&self) -> bool {
+        let idle = self.is_idle();
+        if !idle {
+            self.uncount_idle();
+        }
+        idle
     }
 
     /// Whether the connection can be idle, from atomics only: none of its
     /// handouts are in flight, and its admission did not report work outliving
     /// them since its last change, which it reports once such work ends.
     pub(super) fn maybe_idle(&self) -> bool {
-        self.active.load(Ordering::Relaxed) == 0
+        // Pairs with a handout's release: what its stream did, such as work
+        // outliving it, happens before what is asked after this.
+        self.active.load(Ordering::Acquire) == 0
             && self.busy_at.load(Ordering::Relaxed)
                 != self.changes.load(Ordering::Acquire).wrapping_add(1)
     }
@@ -238,7 +250,7 @@ impl<C, ID> StoredConnection<C, ID> {
 
     /// Give back a unit taken out of the counts for a state someone else moved:
     /// a trim that read them meanwhile may have kept one too many, it looks again.
-    fn give_back(&self, limits: &IdleLimits<ID>) {
+    pub(super) fn give_back(&self, limits: &IdleLimits<ID>) {
         self.add_idle(limits, 1);
         if limits.over_for(self.id_idle.as_deref()) {
             self.ask_trim(false);
@@ -429,7 +441,9 @@ impl<C, ID> StoredConnection<C, ID> {
         // Admission is serialized with retirement. Concurrent lease drops only
         // decrease the count, so no compare/exchange loop is needed here.
         self.active.fetch_add(1, Ordering::Relaxed);
-        self.admits.fetch_add(1, Ordering::Release);
+        if self.idle_limits.is_some() {
+            self.admits.fetch_add(1, Ordering::Release);
+        }
         // With the stream, under the slot lock: see `count_if_idle`.
         self.uncount_idle();
         drop(slot);
@@ -500,6 +514,9 @@ impl<C: Send + Sync + 'static, ID: Send + Sync + 'static> ChangeListener
         // Pairs with the read before asking about outliving work: once it ends,
         // the connection is asked again.
         self.changes.fetch_add(1, Ordering::Release);
+        // Before the reads below, not only after the change: they need not
+        // rely on the source's own fence.
+        fence(Ordering::SeqCst);
         if self.active.load(Ordering::Relaxed) == 0 {
             // Such as the end of work outliving the handouts: the idle clock
             // starts now. A trim asks.
@@ -509,7 +526,6 @@ impl<C: Send + Sync + 'static, ID: Send + Sync + 'static> ChangeListener
                 self.ask_trim(false);
             }
         }
-        fence(Ordering::SeqCst);
         let wake = match change {
             Change::Freed => WaitQueue::wake_one,
             // How much capacity changed is unknown: every waiter of the lane looks.
@@ -669,7 +685,7 @@ fn trim<C, ID: ConnID>(
         // Still over at the commit, whatever others closed since the pick. Asks
         // the admission under the slot lock, as `in_use` allows.
         if extra
-            .retire_if(|conn| conn.is_idle() && conn.take_excess(excess))
+            .retire_if(|conn| conn.is_idle_held() && conn.take_excess(excess))
             .is_none()
         {
             busy.push(extra.seq);
