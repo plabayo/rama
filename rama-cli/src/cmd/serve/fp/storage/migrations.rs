@@ -10,6 +10,7 @@ const MIGRATION_LOCK: i64 = 0x7261_6d61_6670_7632;
 const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0001.sql"),
     include_str!("migrations/0002.sql"),
+    include_str!("migrations/0003.sql"),
 ];
 
 pub(super) async fn apply(client: &mut Client) -> Result<(), BoxError> {
@@ -274,5 +275,26 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.code(), Some(&SqlState::CHECK_VIOLATION));
+    }
+    #[tokio::test]
+    #[ignore = "requires the private PostgreSQL integration harness"]
+    async fn fp_loss_migration_preserves_unknown_existing_history() {
+        let (_config, mut client) = isolated_database().await.unwrap();
+        client
+            .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+            .await
+            .unwrap();
+        apply_scripts(&mut client, &MIGRATIONS[..2]).await.unwrap();
+        client.batch_execute("INSERT INTO fp_v2.profiles VALUES (FALSE, decode(repeat('01', 32), 'hex'), 'profile');
+            INSERT INTO fp_v2.structures VALUES (FALSE, decode(repeat('03', 32), 'hex'), 1, 0, 'structure');
+            INSERT INTO fp_v2.buckets VALUES (FALSE, decode(repeat('05', 32), 'hex'), 100, decode(repeat('01', 32), 'hex'), NULL, decode(repeat('03', 32), 'hex'), 'scope', 1, 1, 7, 7, 0);").await.unwrap();
+        apply(&mut client).await.unwrap();
+        let row = client.query_one("SELECT total,untracked,dropped_oversize,dropped_retention,history_known FROM fp_v2.buckets", &[]).await.unwrap();
+        assert_eq!(row.get::<_, i64>(0), 7);
+        assert_eq!(row.get::<_, i64>(1), 7);
+        assert_eq!(row.get::<_, i64>(2), 0);
+        assert_eq!(row.get::<_, i64>(3), 0);
+        assert!(!row.get::<_, bool>(4));
+        apply(&mut client).await.unwrap();
     }
 }

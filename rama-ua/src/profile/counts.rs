@@ -15,6 +15,21 @@ pub struct LiteralCount {
     pub count: u64,
 }
 
+/// Losses count admitted observations whose complete value could not be retained.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct ObservationLosses {
+    pub oversize: u64,
+    pub retention: u64,
+    /// False for imports that predate explicit loss accounting.
+    pub history_known: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ObservationLoss {
+    Oversize,
+    Retention,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CounterSnapshot {
     pub total: u64,
@@ -22,12 +37,15 @@ pub struct CounterSnapshot {
     /// This is not an exact count of distinct unretained values.
     pub untracked: u64,
     pub values: Box<[LiteralCount]>,
+    #[serde(default)]
+    pub losses: ObservationLosses,
 }
 
 /// Partial literal coverage never masquerades as an exact full-history weight.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ObservationWeight {
     Exact(u64),
+    UnknownHistory { observed: u64, unassigned: u64 },
     LowerBound { observed: u64, unassigned: u64 },
 }
 
@@ -37,6 +55,7 @@ pub struct LiteralCounters {
     total: u64,
     untracked: u64,
     values: BTreeMap<ValueId, u64>,
+    losses: ObservationLosses,
 }
 
 fn add_count(left: u64, right: u64) -> Result<u64, ProfileDataError> {
@@ -53,6 +72,10 @@ impl LiteralCounters {
             total: 0,
             untracked: 0,
             values: BTreeMap::new(),
+            losses: ObservationLosses {
+                history_known: true,
+                ..ObservationLosses::default()
+            },
         }
     }
 
@@ -63,6 +86,9 @@ impl LiteralCounters {
     ) -> Result<Self, ProfileDataError> {
         if snapshot.values.len() > capacity {
             return Err(ProfileDataError::LimitExceeded("literal counters"));
+        }
+        if add_count(snapshot.losses.oversize, snapshot.losses.retention)? > snapshot.untracked {
+            return Err(ProfileDataError::Invalid("observation loss accounting"));
         }
         let mut total = add_count(0, snapshot.untracked)?;
         let mut previous = None;
@@ -82,6 +108,7 @@ impl LiteralCounters {
             capacity,
             total,
             untracked: snapshot.untracked,
+            losses: snapshot.losses,
             values: snapshot
                 .values
                 .iter()
@@ -95,6 +122,7 @@ impl LiteralCounters {
         CounterSnapshot {
             total: self.total,
             untracked: self.untracked,
+            losses: self.losses,
             values: self
                 .values
                 .iter()
@@ -134,10 +162,29 @@ impl LiteralCounters {
         Ok(())
     }
 
+    /// Record a validated observation without retaining its literal or sample.
+    pub fn observe_unretained(&mut self, reason: ObservationLoss) -> Result<(), ProfileDataError> {
+        let total = add_count(self.total, 1)?;
+        let untracked = add_count(self.untracked, 1)?;
+        let count = match reason {
+            ObservationLoss::Oversize => &mut self.losses.oversize,
+            ObservationLoss::Retention => &mut self.losses.retention,
+        };
+        *count = add_count(*count, 1)?;
+        self.total = total;
+        self.untracked = untracked;
+        Ok(())
+    }
+
     #[must_use]
     pub fn weight(&self, value: ValueId) -> ObservationWeight {
         let observed = self.values.get(&value).copied().unwrap_or(0);
-        if self.untracked == 0 {
+        if !self.losses.history_known {
+            ObservationWeight::UnknownHistory {
+                observed,
+                unassigned: self.untracked,
+            }
+        } else if self.untracked == 0 {
             ObservationWeight::Exact(observed)
         } else {
             ObservationWeight::LowerBound {
@@ -197,6 +244,11 @@ impl LiteralCounters {
                 merged.values.insert(value, count);
             }
         }
+        merged.losses = ObservationLosses {
+            oversize: add_count(self.losses.oversize, other.losses.oversize)?,
+            retention: add_count(self.losses.retention, other.losses.retention)?,
+            history_known: self.losses.history_known && other.losses.history_known,
+        };
         merged.total = total;
         merged.untracked = total
             .checked_sub(tracked)
@@ -384,6 +436,10 @@ mod tests {
     #[test]
     fn counters_reject_corrupt_snapshots_and_bigint_overflow_without_mutation() {
         let snapshot = CounterSnapshot {
+            losses: ObservationLosses {
+                history_known: true,
+                ..ObservationLosses::default()
+            },
             total: MAXIMUM_COUNT,
             untracked: 0,
             values: vec![LiteralCount {
@@ -409,6 +465,10 @@ mod tests {
         invalid.total = u64::MAX;
         LiteralCounters::from_snapshot(&invalid, 2).unwrap_err();
         let mut duplicate = CounterSnapshot {
+            losses: ObservationLosses {
+                history_known: true,
+                ..ObservationLosses::default()
+            },
             total: 2,
             untracked: 0,
             values: vec![
@@ -425,5 +485,68 @@ mod tests {
         LiteralCounters::from_snapshot(&duplicate, 1).unwrap_err();
         duplicate.values.reverse();
         LiteralCounters::from_snapshot(&duplicate, 2).unwrap_err();
+    }
+    #[test]
+    fn loss_counts_validate_merge_and_preserve_unknown_import_history() {
+        let mut a = LiteralCounters::new(1);
+        a.observe(value(1)).unwrap();
+        a.observe_unretained(ObservationLoss::Oversize).unwrap();
+        let mut b = LiteralCounters::new(1);
+        b.observe_unretained(ObservationLoss::Retention).unwrap();
+        let merged = a.coarsen(&b).unwrap();
+        let snapshot = merged.snapshot();
+        assert_eq!(snapshot.total, 3);
+        assert_eq!(snapshot.untracked, 2);
+        assert_eq!(snapshot.losses.oversize, 1);
+        assert_eq!(snapshot.losses.retention, 1);
+        assert!(snapshot.losses.history_known);
+        assert!(matches!(
+            merged.weight(value(1)),
+            ObservationWeight::LowerBound {
+                observed: 1,
+                unassigned: 2
+            }
+        ));
+        let mut corrupt = snapshot.clone();
+        corrupt.losses.retention = 2;
+        LiteralCounters::from_snapshot(&corrupt, 2).unwrap_err();
+        corrupt.losses.oversize = u64::MAX;
+        LiteralCounters::from_snapshot(&corrupt, 2).unwrap_err();
+        let mut old = serde_json::to_value(snapshot).unwrap();
+        old.as_object_mut().unwrap().remove("losses");
+        let imported =
+            LiteralCounters::from_snapshot(&serde_json::from_value(old).unwrap(), 2).unwrap();
+        assert!(matches!(
+            imported.weight(value(1)),
+            ObservationWeight::UnknownHistory {
+                observed: 1,
+                unassigned: 2
+            }
+        ));
+        assert!(
+            !imported
+                .coarsen(&b)
+                .unwrap()
+                .snapshot()
+                .losses
+                .history_known
+        );
+        let full = CounterSnapshot {
+            total: MAXIMUM_COUNT,
+            untracked: MAXIMUM_COUNT,
+            values: Box::default(),
+            losses: ObservationLosses {
+                retention: MAXIMUM_COUNT,
+                history_known: true,
+                ..ObservationLosses::default()
+            },
+        };
+        let mut full = LiteralCounters::from_snapshot(&full, 1).unwrap();
+        let before = encoded(&full);
+        full.observe_unretained(ObservationLoss::Retention)
+            .unwrap_err();
+        full.observe_unretained(ObservationLoss::Oversize)
+            .unwrap_err();
+        assert_eq!(before, encoded(&full));
     }
 }

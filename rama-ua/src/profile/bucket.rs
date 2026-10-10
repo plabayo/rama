@@ -9,8 +9,8 @@ use rama_utils::octets::{kib, mib};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CanonicalValue, CounterSnapshot, LiteralCounters, ObservationId, ObservationReservoir,
-    ProfileDataError, ReservoirEntry, ValueId,
+    CanonicalValue, CounterSnapshot, LiteralCounters, ObservationId, ObservationLoss,
+    ObservationReservoir, ProfileDataError, ReservoirEntry, ValueId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +18,8 @@ pub struct ProfileBucketLimits {
     pub literal_values: usize,
     pub samples: usize,
     pub value_bytes: usize,
+    /// Maximum validated input; larger retained values are counted as oversize losses.
+    pub input_bytes: usize,
     /// Retained canonical payload bytes; entry counts bound collection overhead separately.
     pub retained_bytes: usize,
 }
@@ -28,8 +30,23 @@ impl Default for ProfileBucketLimits {
             literal_values: 16,
             samples: 256,
             value_bytes: kib(16),
+            input_bytes: kib(64),
             retained_bytes: mib(8),
         }
+    }
+}
+
+impl ProfileBucketLimits {
+    pub fn validate(self) -> Result<(), ProfileDataError> {
+        if self.input_bytes < self.value_bytes {
+            return Err(ProfileDataError::Invalid(
+                "bucket input and retained value limits",
+            ));
+        }
+        self.literal_values
+            .checked_add(self.samples)
+            .ok_or(ProfileDataError::LimitExceeded("interned value count"))?;
+        Ok(())
     }
 }
 
@@ -80,7 +97,7 @@ impl CountedObservationBucket {
     }
 
     /// The enclosing transaction first admits the observation ID once for all its slots.
-    /// Invalid input, overflow and byte-budget failure leave every field unchanged.
+    /// Invalid input and overflow leave every field unchanged; retention losses still count.
     pub fn observe(
         &mut self,
         observation: ObservationId,
@@ -95,7 +112,20 @@ impl CountedObservationBucket {
         value: &CanonicalValue,
         maximum_retained_bytes: usize,
     ) -> Result<(), ProfileDataError> {
-        value.validate_content(self.domain, self.limits.value_bytes)?;
+        self.limits.validate()?;
+        value.validate_content(self.domain, self.limits.input_bytes)?;
+        if observation.sequence == 0 {
+            return Err(ProfileDataError::Invalid("zero ingestion sequence"));
+        }
+        let budget = self.limits.retained_bytes.min(maximum_retained_bytes);
+        if self.retained_bytes > budget {
+            return Err(ProfileDataError::LimitExceeded(
+                "existing retained canonical bytes",
+            ));
+        }
+        if value.bytes.len() > self.limits.value_bytes {
+            return self.counts.observe_unretained(ObservationLoss::Oversize);
+        }
         if let Some(previous) = self.values.get(&value.id)
             && previous.bytes != value.bytes
         {
@@ -106,7 +136,6 @@ impl CountedObservationBucket {
         counts.observe(value.id)?;
         samples.observe(observation, value.id)?;
         let retained = references(&counts, &samples);
-        let budget = self.limits.retained_bytes.min(maximum_retained_bytes);
         let mut remaining = budget;
         for id in &retained {
             let bytes = if *id == value.id {
@@ -118,9 +147,10 @@ impl CountedObservationBucket {
                     .bytes
                     .len()
             };
-            remaining = remaining
-                .checked_sub(bytes)
-                .ok_or(ProfileDataError::LimitExceeded("retained canonical bytes"))?;
+            let Some(next) = remaining.checked_sub(bytes) else {
+                return self.counts.observe_unretained(ObservationLoss::Retention);
+            };
+            remaining = next;
         }
         let added = if retained.contains(&value.id) && !self.values.contains_key(&value.id) {
             Some(Arc::new(value.clone()))
@@ -169,6 +199,7 @@ impl CountedObservationBucket {
         seed: [u8; 32],
         limits: ProfileBucketLimits,
     ) -> Result<Self, ProfileDataError> {
+        limits.validate()?;
         if snapshot.format_version != 1 {
             return Err(ProfileDataError::Unsupported(
                 "counting bucket format version",
@@ -188,9 +219,18 @@ impl CountedObservationBucket {
             snapshot.scope,
             &snapshot.samples,
         )?;
-        if snapshot.counts.total < snapshot.samples.len() as u64 {
+        let eligible = snapshot
+            .counts
+            .total
+            .checked_sub(snapshot.counts.losses.oversize)
+            .and_then(|total| total.checked_sub(snapshot.counts.losses.retention))
+            .ok_or(ProfileDataError::Invalid("sample loss accounting"))?;
+        let expected = eligible.min(limits.samples as u64);
+        if snapshot.samples.len() as u64 > expected
+            || (snapshot.counts.losses.history_known && snapshot.samples.len() as u64 != expected)
+        {
             return Err(ProfileDataError::Invalid(
-                "sample count exceeds observations",
+                "sample count does not match eligible observations",
             ));
         }
         let retained = references(&counts, &samples);
@@ -266,6 +306,7 @@ impl CountedObservationBucket {
             || self.seed != other.seed
             || self.limits.samples != other.limits.samples
             || self.limits.value_bytes != other.limits.value_bytes
+            || self.limits.input_bytes != other.limits.input_bytes
         {
             return Err(ProfileDataError::Invalid("incompatible counting buckets"));
         }
@@ -325,7 +366,8 @@ mod tests {
 
     use super::*;
     use crate::profile::{
-        HeaderCapturePolicy, LiteralCount, ObservationWeight, canonical::CanonicalWriter,
+        HeaderCapturePolicy, LiteralCount, ObservationLosses, ObservationWeight,
+        canonical::CanonicalWriter,
     };
 
     fn canonical(value: u64) -> CanonicalValue {
@@ -386,7 +428,7 @@ mod tests {
         let mut bucket = CountedObservationBucket::new(1, ValueId([2; 32]), [3; 32], limits);
         bucket.observe(observation(1), &value).unwrap();
         let before = encoded(&bucket);
-        bucket.observe(observation(2), &canonical(2)).unwrap_err();
+
         bucket.observe(observation(0), &value).unwrap_err();
         let mut corrupt = value.clone();
         corrupt.id.0[0] ^= 1;
@@ -476,6 +518,10 @@ mod tests {
             domain: 1,
             scope,
             counts: CounterSnapshot {
+                losses: ObservationLosses {
+                    history_known: true,
+                    ..ObservationLosses::default()
+                },
                 total: 1,
                 untracked: 0,
                 values: vec![LiteralCount {
@@ -493,5 +539,90 @@ mod tests {
             .finish();
         let mut bucket = CountedObservationBucket::new(u16::MAX, scope, [3; 32], limits);
         bucket.observe(observation(1), &unknown).unwrap_err();
+    }
+    #[test]
+    fn valid_oversize_values_count_without_retention_or_secret_bypass() {
+        let limits = ProfileBucketLimits::default();
+        let policy = HeaderCapturePolicy::default();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "accept",
+            HeaderValue::from_bytes(&vec![b'a'; kib(20)]).unwrap(),
+        );
+        let large = policy
+            .capture(Version::HTTP_11, &headers, None)
+            .unwrap()
+            .canonical(&policy)
+            .unwrap();
+        assert!(large.bytes.len() > limits.value_bytes && large.bytes.len() <= limits.input_bytes);
+        let mut bucket = CountedObservationBucket::new(1, ValueId([2; 32]), [3; 32], limits);
+        bucket.observe(observation(1), &large).unwrap();
+        let snapshot = bucket.snapshot();
+        assert_eq!(snapshot.counts.total, 1);
+        assert_eq!(snapshot.counts.untracked, 1);
+        assert_eq!(snapshot.counts.losses.oversize, 1);
+        assert!(snapshot.samples.is_empty() && snapshot.values.is_empty());
+        assert_eq!(bucket.retained_bytes(), 0);
+        CountedObservationBucket::from_snapshot(&snapshot, [3; 32], limits).unwrap();
+        let before = encoded(&bucket);
+        let mut writer = CanonicalWriter::new(1, limits.input_bytes).unwrap();
+        writer.u8(2).unwrap();
+        writer.u64(1).unwrap();
+        writer.bytes(b"cookie").unwrap();
+        writer.u32(0).unwrap();
+        writer.u8(0).unwrap();
+        writer.u8(0).unwrap();
+        writer.u8(0).unwrap();
+        writer.bytes(&vec![b's'; kib(20)]).unwrap();
+        let secret = writer.finish();
+        secret.verify(1, limits.input_bytes).unwrap();
+        bucket.observe(observation(2), &secret).unwrap_err();
+        bucket.observe(observation(0), &large).unwrap_err();
+        let mut forged = large;
+        forged.id.0[0] ^= 1;
+        bucket.observe(observation(2), &forged).unwrap_err();
+        assert_eq!(before, encoded(&bucket));
+        let invalid = ProfileBucketLimits {
+            input_bytes: 1,
+            ..limits
+        };
+        invalid.validate().unwrap_err();
+        let mut bucket = CountedObservationBucket::new(1, ValueId([2; 32]), [3; 32], invalid);
+        bucket.observe(observation(1), &canonical(1)).unwrap_err();
+        assert_eq!(bucket.snapshot().counts.total, 0);
+    }
+
+    #[test]
+    fn retention_losses_preserve_payloads_and_restore_requires_full_eligible_samples() {
+        let a = canonical(1);
+        let limits = ProfileBucketLimits {
+            retained_bytes: a.bytes.len(),
+            ..ProfileBucketLimits::default()
+        };
+        let mut bucket = CountedObservationBucket::new(1, ValueId([2; 32]), [3; 32], limits);
+        bucket.observe(observation(1), &a).unwrap();
+        bucket.observe(observation(2), &canonical(2)).unwrap();
+        let snapshot = bucket.snapshot();
+        assert_eq!(snapshot.counts.total, 2);
+        assert_eq!(snapshot.counts.untracked, 1);
+        assert_eq!(snapshot.counts.losses.retention, 1);
+        assert_eq!(snapshot.samples.len(), 1);
+        assert_eq!(snapshot.values.len(), 1);
+        assert_eq!(snapshot.values[0].id, a.id);
+        let mut restored =
+            CountedObservationBucket::from_snapshot(&snapshot, [3; 32], limits).unwrap();
+        restored.observe(observation(3), &a).unwrap();
+        assert_eq!(restored.snapshot().counts.total, 3);
+        assert_eq!(restored.snapshot().samples.len(), 2);
+        let mut incomplete = snapshot;
+        incomplete.samples = Box::default();
+        CountedObservationBucket::from_snapshot(&incomplete, [3; 32], limits).unwrap_err();
+        incomplete.counts.losses.history_known = false;
+        let imported =
+            CountedObservationBucket::from_snapshot(&incomplete, [3; 32], limits).unwrap();
+        assert!(matches!(
+            imported.counts().weight(a.id),
+            ObservationWeight::UnknownHistory { .. }
+        ));
     }
 }

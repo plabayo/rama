@@ -10,10 +10,10 @@ use rama::{
     ua::profile::{
         CanonicalValue, CaptureRunCheckpoint, CaptureRunId, CountedBucketSnapshot,
         CountedObservationBucket, CounterSnapshot, IngestionAttempt, IngestionBatchLimits,
-        JointCaptureLimits, LiteralCount, ObservationId, PendingBucketObservation,
-        PreparedIngestion, PreparedProfileCapture, ProfileBucketInput, ProfileCapture,
-        ProfileDataError, ProfileObservationScope, ReservoirEntry, StoredObservationBucket,
-        ValueId,
+        JointCaptureLimits, LiteralCount, ObservationId, ObservationLosses,
+        PendingBucketObservation, PreparedIngestion, PreparedProfileCapture, ProfileBucketInput,
+        ProfileCapture, ProfileDataError, ProfileObservationScope, ReservoirEntry,
+        StoredObservationBucket, ValueId,
     },
 };
 use tokio_postgres::{Client, Transaction};
@@ -188,6 +188,12 @@ async fn prepare_transaction<'a>(
     seed: [u8; 32],
     limits: StoreLimits,
 ) -> Result<Option<Transaction<'a>>, BoxError> {
+    limits.ingestion.bucket.validate()?;
+    if limits.capture.bytes > limits.ingestion.bucket.input_bytes
+        || limits.capture.value_bytes > limits.capture.bytes
+    {
+        return Err(invalid("capture and bucket input limits"));
+    }
     let prepared = capture.prepare(attempt.authorized, limits.capture)?;
     if prepared.buckets.len() > limits.ingestion.buckets {
         return Err(bounded("joint plus component buckets"));
@@ -336,7 +342,7 @@ async fn load_bucket(
 ) -> Result<StoredObservationBucket, BoxError> {
     let domain = input
         .value
-        .validated_domain(limits.ingestion.bucket.value_bytes)?;
+        .validated_domain(limits.ingestion.bucket.input_bytes)?;
     let scope = &input.scope.id.0[..];
     let day_sql = i64::from(day);
     let decoded =
@@ -345,7 +351,8 @@ async fn load_bucket(
     let row = transaction
         .query_opt(
             "SELECT scope_canonical = $4, domain, format_version, total, untracked, retained_bytes,
-          structure_id = $5 AND profile_id = $6 AND flow_id IS NOT DISTINCT FROM $7
+          structure_id = $5 AND profile_id = $6 AND flow_id IS NOT DISTINCT FROM $7,
+          dropped_oversize, dropped_retention, history_known
          FROM fp_v2.buckets WHERE authorized=$1 AND scope=$2 AND day=$3",
             &[
                 &authorized,
@@ -482,6 +489,11 @@ async fn load_bucket(
                 total: u64::try_from(row.try_get::<_, i64>(3)?)?,
                 untracked: u64::try_from(row.try_get::<_, i64>(4)?)?,
                 values: counts.into(),
+                losses: ObservationLosses {
+                    oversize: u64::try_from(row.try_get::<_, i64>(7)?)?,
+                    retention: u64::try_from(row.try_get::<_, i64>(8)?)?,
+                    history_known: row.try_get(9)?,
+                },
             },
             samples: samples.into(),
             values: values.into(),
@@ -616,8 +628,9 @@ async fn save_bucket(
         quota.change(6, integer(input.scope.bytes.len())?)?;
     }
     transaction.execute(
-        "UPDATE fp_v2.buckets SET total=$4,untracked=$5,retained_bytes=$6 WHERE authorized=$1 AND scope=$2 AND day=$3",
-        &[&authorized, &scope, &day, &count(bucket.counts.total)?, &count(bucket.counts.untracked)?, &integer(retained)?],
+        "UPDATE fp_v2.buckets SET total=$4,untracked=$5,retained_bytes=$6,dropped_oversize=$7,dropped_retention=$8,history_known=$9 WHERE authorized=$1 AND scope=$2 AND day=$3",
+        &[&authorized, &scope, &day, &count(bucket.counts.total)?, &count(bucket.counts.untracked)?, &integer(retained)?,
+          &count(bucket.counts.losses.oversize)?, &count(bucket.counts.losses.retention)?, &bucket.counts.losses.history_known],
     ).await?;
     let old_counts: BTreeMap<_, _> = previous
         .bucket

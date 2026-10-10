@@ -4,7 +4,7 @@ use rama::{
     http::{HeaderMap, HeaderValue, Method, Version},
     ua::profile::{
         CaptureLevel, CapturedSlot, CapturedSlotKind, ConnectionContext, FlowKey,
-        HeaderCapturePolicy, JointCapture, OrderCaptureLimits, OrderNamespace,
+        HeaderCapturePolicy, JointCapture, ObservationWeight, OrderCaptureLimits, OrderNamespace,
         OrderedProtocolCapture, ProfileKey,
     },
     utils::octets::{kib, mib},
@@ -1312,4 +1312,242 @@ async fn fp_counted_literal_eviction_reclaims_rows_before_the_next_load() {
         .unwrap()
         .get(0);
     assert_eq!(quota, 2);
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn fp_counted_loss_accounting_survives_retry_restart_and_old_history() {
+    let (config, mut client) = migrations::tests::isolated_database().await.unwrap();
+    for oversize in [true, false] {
+        client
+            .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+            .await
+            .unwrap();
+        migrations::apply(&mut client).await.unwrap();
+        let mut limits = limits();
+        if oversize {
+            limits.ingestion.bucket.value_bytes = 1;
+        } else {
+            limits.ingestion.retained_bytes = 0;
+        }
+        let capture = capture("text/html").unwrap();
+        assert!(
+            ingest(
+                &mut client,
+                100,
+                attempt(false, 1),
+                &capture,
+                [3; 32],
+                limits
+            )
+            .await
+            .unwrap()
+        );
+        let before = state(&client).await.unwrap();
+        assert!(
+            !ingest(
+                &mut client,
+                100,
+                attempt(false, 1),
+                &capture,
+                [3; 32],
+                limits
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(state(&client).await.unwrap(), before);
+        let (mut restarted, connection) = config.connect(NoTls).await.unwrap();
+        tokio::spawn(connection);
+        assert!(
+            !ingest(
+                &mut restarted,
+                100,
+                attempt(false, 1),
+                &capture,
+                [3; 32],
+                limits
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            ingest(
+                &mut restarted,
+                100,
+                attempt(false, 2),
+                &capture,
+                [3; 32],
+                limits
+            )
+            .await
+            .unwrap()
+        );
+        let rows = client.query("SELECT total,untracked,dropped_oversize,dropped_retention,history_known FROM fp_v2.buckets ORDER BY scope", &[]).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        for row in rows {
+            assert_eq!(row.get::<_, i64>(0), 2);
+            assert_eq!(row.get::<_, i64>(1), 2);
+            assert_eq!(row.get::<_, i64>(2), if oversize { 2 } else { 0 });
+            assert_eq!(row.get::<_, i64>(3), if oversize { 0 } else { 2 });
+            assert!(row.get::<_, bool>(4));
+        }
+        for table in ["values", "samples", "literal_counts"] {
+            let count: i64 = client
+                .query_one(&format!("SELECT count(*) FROM fp_v2.{table}"), &[])
+                .await
+                .unwrap()
+                .get(0);
+            assert_eq!(count, 0);
+        }
+        let error = client
+            .execute("UPDATE fp_v2.buckets SET dropped_retention=3", &[])
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), Some(&SqlState::CHECK_VIOLATION));
+        client
+            .execute("UPDATE fp_v2.buckets SET history_known=FALSE", &[])
+            .await
+            .unwrap();
+        assert!(
+            ingest(
+                &mut restarted,
+                100,
+                attempt(false, 3),
+                &capture,
+                [3; 32],
+                limits
+            )
+            .await
+            .unwrap()
+        );
+        let unknown: bool = client
+            .query_one("SELECT bool_and(NOT history_known) FROM fp_v2.buckets", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert!(unknown);
+        let prepared = capture.prepare(false, limits.capture).unwrap();
+        let transaction = restarted.transaction().await.unwrap();
+        let mut remaining = limits.ingestion.input_bytes;
+        for input in &prepared.buckets {
+            let loaded = load_bucket(
+                &transaction,
+                false,
+                100,
+                input,
+                [3; 32],
+                limits,
+                &mut remaining,
+            )
+            .await
+            .unwrap();
+            let bucket = CountedObservationBucket::from_snapshot(
+                &loaded.bucket,
+                [3; 32],
+                limits.ingestion.bucket,
+            )
+            .unwrap();
+            assert!(matches!(
+                bucket.counts().weight(input.value.id),
+                ObservationWeight::UnknownHistory { .. }
+            ));
+        }
+        transaction.rollback().await.unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn fp_default_joint_limit_counts_oversize_without_losing_its_components() {
+    let (_config, mut client) = migrations::tests::isolated_database().await.unwrap();
+    client
+        .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+        .await
+        .unwrap();
+    migrations::apply(&mut client).await.unwrap();
+    let limits = limits();
+    let orders = OrderCaptureLimits::default();
+    let capture = ProfileCapture {
+        profile: ProfileKey::new("large-joint"),
+        flow: None,
+        connection: ConnectionContext::default(),
+        joint: JointCapture {
+            level: CaptureLevel::Connection,
+            slots: vec![
+                CapturedSlot {
+                    kind: CapturedSlotKind::QuicParameters,
+                    value: OrderedProtocolCapture::capture(
+                        OrderNamespace::QuicParameter,
+                        [(27, vec![b'a'; kib(15)])],
+                        orders,
+                    )
+                    .unwrap()
+                    .canonical(orders)
+                    .unwrap(),
+                },
+                CapturedSlot {
+                    kind: CapturedSlotKind::Http3Settings,
+                    value: OrderedProtocolCapture::capture(
+                        OrderNamespace::Http3Setting,
+                        (100..200).map(|id| (id, 1u64.to_be_bytes())),
+                        orders,
+                    )
+                    .unwrap()
+                    .canonical(orders)
+                    .unwrap(),
+                },
+            ]
+            .into(),
+        },
+    };
+    let prepared = capture.prepare(false, limits.capture).unwrap();
+    assert_eq!(
+        prepared
+            .buckets
+            .iter()
+            .filter(|input| input.value.bytes.len() > limits.ingestion.bucket.value_bytes)
+            .count(),
+        1
+    );
+    for sequence in 1..=2 {
+        assert!(
+            ingest(
+                &mut client,
+                100,
+                attempt(false, sequence),
+                &capture,
+                [3; 32],
+                limits
+            )
+            .await
+            .unwrap()
+        );
+    }
+    for input in &prepared.buckets {
+        let row = client.query_one("SELECT total,dropped_oversize FROM fp_v2.buckets WHERE authorized=FALSE AND scope=$1", &[&&input.scope.id.0[..]]).await.unwrap();
+        assert_eq!(row.get::<_, i64>(0), 2);
+        assert_eq!(
+            row.get::<_, i64>(1),
+            if input.value.bytes.len() > limits.ingestion.bucket.value_bytes {
+                2
+            } else {
+                0
+            }
+        );
+    }
+    let before = state(&client).await.unwrap();
+    let mut invalid = limits;
+    invalid.ingestion.bucket.input_bytes = invalid.capture.bytes - 1;
+    ingest(
+        &mut client,
+        100,
+        attempt(false, 3),
+        &capture,
+        [3; 32],
+        invalid,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(before, state(&client).await.unwrap());
 }

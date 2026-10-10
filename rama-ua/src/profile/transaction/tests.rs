@@ -311,12 +311,9 @@ fn ingestion_batch_bounds_total_payload_and_metadata_before_copying() {
             ..limits
         },
         IngestionBatchLimits {
-            retained_bytes: a.bytes.len(),
-            ..limits
-        },
-        IngestionBatchLimits {
             bucket: ProfileBucketLimits {
                 value_bytes: 1,
+                input_bytes: 1,
                 ..limits.bucket
             },
             ..limits
@@ -405,4 +402,54 @@ fn ingestion_batch_ten_thousand_observations_keep_bounded_shared_checkpoint() {
     for value in &buckets[0].bucket.counts.values {
         assert_eq!(value.count, 5_000);
     }
+}
+
+#[test]
+fn ingestion_reserves_existing_payloads_before_admitting_any_growth() {
+    let a = value("A");
+    let limits = IngestionBatchLimits {
+        retained_bytes: a.bytes.len(),
+        ..IngestionBatchLimits::default()
+    };
+    let first = empty(2, 100);
+    let mut second = empty(3, 100);
+    let mut existing =
+        CountedObservationBucket::from_snapshot(&second.bucket, [3; 32], limits.bucket).unwrap();
+    existing
+        .observe(
+            ObservationId {
+                run: [9; 16],
+                sequence: 1,
+            },
+            &a,
+        )
+        .unwrap();
+    second.bucket = existing.snapshot();
+    let run = run();
+    let pending = [
+        PendingBucketObservation {
+            previous: &first,
+            value: &a,
+        },
+        PendingBucketObservation {
+            previous: &second,
+            value: &a,
+        },
+    ];
+    let (run, buckets) = match run
+        .prepare(100, attempt(&run, 1, 100), &pending, [3; 32], limits)
+        .unwrap()
+    {
+        PreparedIngestion::Commit { run, buckets } => Some((run, buckets)),
+        PreparedIngestion::Duplicate => None,
+    }
+    .unwrap();
+    assert_eq!(run.sequences.prefix, 1);
+    assert_eq!(buckets[0].bucket.counts.total, 1);
+    assert_eq!(buckets[0].bucket.counts.losses.retention, 1);
+    assert!(buckets[0].bucket.values.is_empty());
+    assert_eq!(buckets[1].bucket.counts.total, 2);
+    assert_eq!(buckets[1].bucket.counts.losses.retention, 0);
+    assert_eq!(buckets[1].bucket.values.len(), 1);
+    assert_eq!(second.bucket.counts.total, 1);
 }

@@ -48,6 +48,7 @@ impl CaptureRunCheckpoint {
         current_day: u32,
         limits: IngestionBatchLimits,
     ) -> Result<Self, ProfileDataError> {
+        limits.bucket.validate()?;
         limits
             .retention
             .validate_observation(current_day, run.created_day())?;
@@ -132,6 +133,7 @@ impl CaptureRunCheckpoint {
         seed: [u8; 32],
         limits: IngestionBatchLimits,
     ) -> Result<PreparedIngestion, ProfileDataError> {
+        limits.bucket.validate()?;
         let IngestionAttempt {
             authorized,
             observation_day,
@@ -175,6 +177,7 @@ impl CaptureRunCheckpoint {
             .checked_add(limits.bucket.samples)
             .ok_or(ProfileDataError::LimitExceeded("interned value count"))?;
         let mut remaining_input = limits.input_bytes;
+        let mut remaining_retained = limits.retained_bytes;
         let mut scopes = BTreeSet::new();
         for item in pending {
             let previous = item.previous;
@@ -191,7 +194,7 @@ impl CaptureRunCheckpoint {
                 return Err(ProfileDataError::LimitExceeded("ingestion bucket entries"));
             }
             for value in previous.bucket.values.iter().chain(iter::once(item.value)) {
-                if value.bytes.len() > limits.bucket.value_bytes {
+                if value.bytes.len() > limits.bucket.input_bytes {
                     return Err(ProfileDataError::LimitExceeded("ingestion value bytes"));
                 }
                 remaining_input = remaining_input.checked_sub(value.bytes.len()).ok_or(
@@ -199,20 +202,29 @@ impl CaptureRunCheckpoint {
                 )?;
             }
         }
+        for item in pending {
+            for value in &item.previous.bucket.values {
+                remaining_retained = remaining_retained.checked_sub(value.bytes.len()).ok_or(
+                    ProfileDataError::LimitExceeded("existing ingestion retained bytes"),
+                )?;
+            }
+        }
         let mut buckets = Vec::new();
-        let mut remaining_retained = limits.retained_bytes;
         for item in pending {
             let mut bucket = CountedObservationBucket::from_snapshot(
                 &item.previous.bucket,
                 seed,
                 limits.bucket,
             )?;
-            bucket.observe_with_retained_limit(observation, item.value, remaining_retained)?;
-            remaining_retained = remaining_retained
-                .checked_sub(bucket.retained_bytes())
+            let available = remaining_retained
+                .checked_add(bucket.retained_bytes())
                 .ok_or(ProfileDataError::LimitExceeded(
                     "ingestion batch retained bytes",
                 ))?;
+            bucket.observe_with_retained_limit(observation, item.value, available)?;
+            remaining_retained = available.checked_sub(bucket.retained_bytes()).ok_or(
+                ProfileDataError::LimitExceeded("ingestion batch retained bytes"),
+            )?;
             buckets.push(StoredObservationBucket {
                 authorized,
                 day: observation_day,

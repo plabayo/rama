@@ -60,6 +60,7 @@ impl RetainedBucketWindow {
         seed: [u8; 32],
         limits: ProfileWindowLimits,
     ) -> Result<Self, ProfileDataError> {
+        limits.bucket.validate()?;
         limits.retention.first_day(0, limits.retention.days)?;
         Ok(Self {
             domain,
@@ -235,6 +236,7 @@ impl RetainedBucketWindow {
 #[cfg(test)]
 mod tests {
     use rama_http::{HeaderMap, HeaderValue, Version};
+    use rama_utils::octets::kib;
 
     use super::*;
     use crate::profile::{HeaderCapturePolicy, ObservationWeight};
@@ -356,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn window_byte_limit_rejects_atomically_and_expiration_frees_capacity() {
+    fn window_byte_limit_counts_losses_and_expiration_frees_capacity() {
         let a = value("A");
         let limits = ProfileWindowLimits {
             retained_bytes: a.bytes.len(),
@@ -364,14 +366,22 @@ mod tests {
         };
         let mut window = RetainedBucketWindow::new(1, ValueId([2; 32]), [3; 32], limits).unwrap();
         window.observe(100, 100, observation(1), &a).unwrap();
-        let before = encoded(&window);
-        window.observe(101, 101, observation(2), &a).unwrap_err();
-        assert_eq!(encoded(&window), before);
-        window.observe(114, 114, observation(2), &a).unwrap();
+        window.observe(101, 101, observation(2), &a).unwrap();
+        let counts = window.select(101, 14).unwrap().snapshot().counts;
+        assert_eq!(counts.total, 2);
+        assert_eq!(counts.untracked, 1);
+        assert_eq!(counts.losses.retention, 1);
+        assert_eq!(window.retained_bytes(), a.bytes.len());
+        window.observe(114, 114, observation(3), &a).unwrap();
+        assert_eq!(window.snapshot().buckets.len(), 2);
+        let retained = window.select(114, 14).unwrap().snapshot();
+        assert_eq!(retained.counts.total, 2);
+        assert_eq!(retained.counts.losses.retention, 1);
+        window.advance(115).unwrap();
         assert_eq!(window.snapshot().buckets.len(), 1);
         assert_eq!(window.retained_bytes(), a.bytes.len());
         assert!(matches!(
-            window.select(114, 14).unwrap().counts().weight(a.id),
+            window.select(115, 14).unwrap().counts().weight(a.id),
             ObservationWeight::Exact(1)
         ));
     }
@@ -402,5 +412,47 @@ mod tests {
             ..limits
         };
         RetainedBucketWindow::from_snapshot(&window.snapshot(), [3; 32], limits).unwrap_err();
+    }
+    #[test]
+    fn default_window_saturation_counts_the_next_observation_and_drop() {
+        let limits = ProfileWindowLimits::default();
+        let policy = HeaderCapturePolicy::default();
+        let mut window = RetainedBucketWindow::new(1, ValueId([2; 32]), [3; 32], limits).unwrap();
+        let mut sequence = 0u64;
+        let mut last = None;
+        for day in 100..=113 {
+            for _ in 0..200 {
+                sequence += 1;
+                let mut bytes = vec![b'a'; kib(15)];
+                bytes[..16].copy_from_slice(format!("{sequence:016x}").as_bytes());
+                let mut headers = HeaderMap::new();
+                headers.insert("accept", HeaderValue::from_bytes(&bytes).unwrap());
+                let value = policy
+                    .capture(Version::HTTP_11, &headers, None)
+                    .unwrap()
+                    .canonical(&policy)
+                    .unwrap();
+                window
+                    .observe(day, day, observation(sequence), &value)
+                    .unwrap();
+                last = Some(value);
+            }
+        }
+        let before = window.select(113, 14).unwrap().snapshot();
+        assert_eq!(before.counts.total, sequence);
+        assert!(before.counts.losses.retention > 0);
+        window
+            .observe(113, 113, observation(sequence + 1), &last.unwrap())
+            .unwrap();
+        let after = window.select(113, 14).unwrap().snapshot();
+        assert_eq!(after.counts.total, sequence + 1);
+        assert_eq!(
+            after.counts.losses.retention,
+            before.counts.losses.retention + 1
+        );
+        assert!(window.retained_bytes() <= limits.retained_bytes);
+        let restored =
+            RetainedBucketWindow::from_snapshot(&window.snapshot(), [3; 32], limits).unwrap();
+        assert_eq!(encoded(&window), encoded(&restored));
     }
 }
