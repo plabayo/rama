@@ -110,12 +110,18 @@ async fn consecutive_refusals_survive_write_backpressure() {
             .await;
     }
 
-    // Processing the requests fills the codec and stalls on the blocked writer.
-    poll_fn(|cx| {
-        assert!(srv.poll_accept(cx).is_pending());
-        std::task::Poll::Ready(())
-    })
-    .await;
+    // Processing the requests fills the codec; a refusal it cannot buffer
+    // stalls the reads behind it for as long as the writer stays blocked.
+    for _ in 0..64 {
+        poll_fn(|cx| {
+            assert!(srv.poll_accept(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        tokio::task::yield_now().await;
+    }
+    assert!(client.peer_write_blocked());
+    assert_ne!(client.unread_by_peer(), 0, "read past a refusal it holds");
 
     client.unbounded_bytes().await;
     join(

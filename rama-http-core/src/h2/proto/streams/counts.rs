@@ -544,6 +544,16 @@ mod tests {
     }
 
     #[test]
+    fn released_empty_data_frames_give_no_budget_back() {
+        let mut counts = counts();
+        while counts.record_data_frame(1).is_ok() {}
+
+        counts.record_data_frame(0).unwrap();
+        counts.release_data_frame(0);
+        assert!(counts.record_data_frame(1).is_err());
+    }
+
+    #[test]
     fn empty_data_frames_do_not_consume_data_frame_budget() {
         let mut counts = counts();
         counts.data_frame_budget = Budget::new(0);

@@ -168,14 +168,7 @@ where
         &mut self,
         size: WindowSize,
     ) -> Result<(), Reason> {
-        let mut me = self.inner.lock();
-        let me = &mut *me;
-
-        me.actions
-            .recv
-            .set_target_connection_window(size, &mut me.actions.task)?;
-        me.counts.set_target_connection_window_size(size);
-        Ok(())
+        self.inner.lock().set_target_connection_window(size)
     }
 
     pub(crate) fn next_incoming(&mut self) -> Option<StreamRef<B>> {
@@ -261,12 +254,12 @@ where
                             "replay: increment h2 window update size w/ {}",
                             window_update.size_increment
                         );
-                        if let Err(reason) = me.actions.recv.replay_connection_window_update(
-                            window_update.size_increment,
-                            &mut me.actions.task,
-                        ) {
+                        if let Err(reason) =
+                            Recv::replayed_connection_window(window_update.size_increment)
+                                .and_then(|target| me.set_target_connection_window(target))
+                        {
                             tracing::debug!(
-                                "h2 streams: failed to replay window update (replay_connection_window_update): reason = {reason}; go away"
+                                "h2 streams: failed to replay window update: reason = {reason}; go away"
                             );
                             return Poll::Ready(Err(Error::library_go_away(reason)));
                         }
@@ -672,6 +665,15 @@ impl Inner {
             headers_pseudo_order: config.headers_pseudo_order,
             early_frame_ctx: config.early_frame_ctx,
         })))
+    }
+
+    /// Sets the target connection window and the DATA frame budget following it.
+    fn set_target_connection_window(&mut self, size: WindowSize) -> Result<(), Reason> {
+        self.actions
+            .recv
+            .set_target_connection_window(size, &mut self.actions.task)?;
+        self.counts.set_target_connection_window_size(size);
+        Ok(())
     }
 
     fn recv_headers<B>(

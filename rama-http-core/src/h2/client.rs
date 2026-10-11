@@ -1638,6 +1638,8 @@ where
         ///
         /// The default value is 65,535.
         ///
+        /// The automatic small DATA frame budget follows this target.
+        ///
         /// See [`FlowControl`] documentation for more details.
         ///
         /// [`FlowControl`]: ../struct.FlowControl.html

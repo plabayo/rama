@@ -2618,3 +2618,47 @@ async fn frame_on_pending_open_stream_is_conn_error() {
         join(srv, client).await;
     }
 }
+
+/// A captured early PRIORITY frame, as some browsers send, is replayed on the
+/// wire as captured when the stream it is for exists at the first poll.
+#[tokio::test]
+async fn early_priority_frame_is_replayed() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+    let priority = frame::Priority::new(
+        StreamId::from(1),
+        frame::StreamDependency::new(StreamId::zero(), 200, false),
+    );
+    let expected = priority.clone();
+
+    let srv = async move {
+        srv.send_frame(frame::Settings::default()).await;
+        srv.read_preface().await.unwrap();
+        let settings = assert_settings!(srv.next().await.unwrap().unwrap());
+        assert_default_settings!(settings);
+        srv.send_frame(frame::Settings::ack()).await;
+        srv.recv_frame(expected).await;
+        srv.recv_frame(frame::Settings::ack()).await;
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://example.com/")
+                .eos(),
+        )
+        .await;
+        srv.send_frame(frames::headers(1).response(200).eos()).await;
+    };
+
+    let client = async move {
+        let (mut client, mut conn) = client::Builder::new()
+            .with_early_frames(vec![frame::EarlyFrame::Priority(priority)])
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+        let request = Request::get("https://example.com/").body(()).unwrap();
+        let (response, _) = client.send_request(request, true).unwrap();
+        let response = conn.drive(response).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    };
+
+    join(srv, client).await;
+}

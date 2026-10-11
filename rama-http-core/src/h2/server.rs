@@ -508,6 +508,8 @@ where
         ///
         /// The default value is 65,535.
         ///
+        /// The automatic small DATA frame budget follows this target.
+        ///
         /// # Errors
         ///
         /// Returns an error if the given size is invalid.

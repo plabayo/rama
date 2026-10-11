@@ -12,8 +12,8 @@
 //!
 //! These are decoded by walking the generated `DECODE_TABLE` one input byte at a time.
 //!
-//! Every write checks the output bound first, so a decode never writes or
-//! allocates past it.
+//! Every write checks the output bound first: the fast path may fill one slack
+//! byte past it, which is truncated, so nothing past the bound is kept.
 
 use super::table::{DECODE_TABLE, ENCODE_CODE_LENGTHS, ENCODE_CODES};
 use crate::proto::h2::hpack::DecoderError;

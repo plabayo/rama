@@ -3228,19 +3228,74 @@ async fn early_connection_window_update_overrides_configured_target() {
 #[tokio::test]
 async fn small_data_frames_buffered_on_many_streams_fit_a_large_connection_window() {
     h2_support::trace_init!();
-    const STREAMS: u32 = 300;
     let window = mib_u32(5);
+    buffer_small_replies_on_many_streams(
+        client::Builder::new().with_initial_connection_window_size(window),
+        window - frame::DEFAULT_INITIAL_WINDOW_SIZE,
+    )
+    .await;
+}
+
+/// The automatic budget follows a connection window set by a replayed early
+/// WINDOW_UPDATE as it follows a configured one.
+#[tokio::test]
+async fn small_data_frames_buffered_on_many_streams_fit_a_replayed_connection_window() {
+    h2_support::trace_init!();
+    let increment = mib_u32(5) - frame::DEFAULT_INITIAL_WINDOW_SIZE;
+    buffer_small_replies_on_many_streams(
+        client::Builder::new().with_early_frames(vec![frame::EarlyFrame::WindowUpdate(
+            frames::window_update(0, increment),
+        )]),
+        increment,
+    )
+    .await;
+}
+
+/// A replayed window overrides a configured target too small for the replies,
+/// and the budget follows the replayed one.
+#[tokio::test]
+async fn small_data_frames_follow_a_replayed_window_over_a_configured_target() {
+    h2_support::trace_init!();
+    let increment = mib_u32(5) - frame::DEFAULT_INITIAL_WINDOW_SIZE;
+    buffer_small_replies_on_many_streams(
+        client::Builder::new()
+            .with_initial_connection_window_size(128 * 1024)
+            .with_early_frames(vec![frame::EarlyFrame::WindowUpdate(
+                frames::window_update(0, increment),
+            )]),
+        increment,
+    )
+    .await;
+}
+
+/// A replayed window leaves a configured DATA frame budget as it is: the
+/// window here would give an automatic budget too small for the replies.
+#[tokio::test]
+async fn a_replayed_window_keeps_a_configured_data_frame_budget() {
+    h2_support::trace_init!();
+    let increment = frame::DEFAULT_INITIAL_WINDOW_SIZE;
+    buffer_small_replies_on_many_streams(
+        client::Builder::new()
+            .with_data_frame_budget(128 * 1024)
+            .with_early_frames(vec![frame::EarlyFrame::WindowUpdate(
+                frames::window_update(0, increment),
+            )]),
+        increment,
+    )
+    .await;
+}
+
+/// Buffers a small non-final DATA reply on each of 300 streams before the
+/// client reads any, after the one connection WINDOW_UPDATE of `increment`.
+async fn buffer_small_replies_on_many_streams(builder: client::Builder, increment: u32) {
+    const STREAMS: u32 = 300;
     let (io, mut srv) = mock::new();
     let (buffered_tx, buffered_rx) = oneshot::channel();
 
     let srv = async move {
         let settings = srv.assert_client_handshake().await;
         assert_default_settings!(settings);
-        srv.recv_frame(frames::window_update(
-            0,
-            window - frame::DEFAULT_INITIAL_WINDOW_SIZE,
-        ))
-        .await;
+        srv.recv_frame(frames::window_update(0, increment)).await;
         for n in 0..STREAMS {
             srv.recv_frame(
                 frames::headers(2 * n + 1)
@@ -3264,11 +3319,7 @@ async fn small_data_frames_buffered_on_many_streams_fit_a_large_connection_windo
     };
 
     let client = async move {
-        let (mut client, mut conn) = client::Builder::new()
-            .with_initial_connection_window_size(window)
-            .handshake::<_, Bytes>(io)
-            .await
-            .unwrap();
+        let (mut client, mut conn) = builder.handshake::<_, Bytes>(io).await.unwrap();
         let mut responses = Vec::new();
         for _ in 0..STREAMS {
             let request = Request::get("https://example.com/").body(()).unwrap();
