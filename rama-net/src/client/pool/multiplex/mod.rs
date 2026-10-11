@@ -87,6 +87,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
+use std::ptr;
 use std::sync::atomic::{
     AtomicBool, AtomicIsize, AtomicU8, AtomicU64, AtomicUsize, Ordering, fence,
 };
@@ -244,6 +245,9 @@ pub struct MultiplexPool<C, ID> {
     slot_waiters: Arc<WaitQueue>,
     /// Arrival order of waiting checkouts, across ids.
     next_order: Arc<AtomicU64>,
+    /// Whether a checkout ever waited for streams kept for others, see
+    /// [`Self::pass_room_on`].
+    kept_counted: Arc<AtomicBool>,
     #[cfg(feature = "opentelemetry")]
     metrics: Option<Arc<metrics::PoolMetrics>>,
 }
@@ -303,6 +307,7 @@ impl<C, ID> Clone for MultiplexPool<C, ID> {
             waiting: self.waiting.clone(),
             slot_waiters: self.slot_waiters.clone(),
             next_order: self.next_order.clone(),
+            kept_counted: self.kept_counted.clone(),
             #[cfg(feature = "opentelemetry")]
             metrics: self.metrics.clone(),
         }
@@ -339,6 +344,7 @@ impl<C, ID> Default for MultiplexPool<C, ID> {
             waiting: Arc::new(AtomicUsize::new(0)),
             slot_waiters: Arc::new(WaitQueue::new()),
             next_order: Arc::new(AtomicU64::new(0)),
+            kept_counted: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "opentelemetry")]
             metrics: None,
         }
@@ -712,21 +718,22 @@ where
         lanes: &RequestLanes,
         swept: &mut Swept<C, ID>,
         look: &mut Look<'_>,
-    ) -> (Snapshot<C, ID>, usize) {
+    ) -> (Snapshot<C, ID>, bool) {
         let Some(bucket) = storage.by_id.get_mut(id) else {
-            return (Snapshot::new(), 0);
+            return (Snapshot::new(), false);
         };
         self.sweep_bucket(bucket, swept);
         look.note_expiry(swept.next_expiry);
         if bucket.is_empty() {
             storage.by_id.remove(id);
-            return (Snapshot::new(), 0);
+            return (Snapshot::new(), false);
         }
         // Sorted once: the filter below is a search, not a scan per connection.
         let mut expiring: SmallVec<[u64; 4]> = swept.expiring.iter().map(|conn| conn.seq).collect();
         expiring.sort_unstable();
         let mut snapshot = Snapshot::new();
-        let mut kept = 0_usize;
+        let group = bucket.group_lane(lanes).map(ptr::from_ref);
+        let mut left = false;
         let mut lanes_seen = 0;
         for lane in bucket.request_lanes_mut(lanes) {
             if let Look::Register(waiting) = look {
@@ -736,7 +743,7 @@ where
                 look.waiting()
                     .and_then(|waiting| waiting.waiter_in(&lane.waiters)),
             ) {
-                kept = kept.saturating_add(lane.kept_streams(self.max_concurrent_streams));
+                left |= group.is_some_and(|group| ptr::eq(group, &*lane));
                 continue;
             }
             lanes_seen += usize::from(!lane.conns.is_empty());
@@ -754,7 +761,7 @@ where
         if lanes_seen > 1 {
             snapshot.sort_unstable_by_key(|(conn, _)| conn.seq);
         }
-        (snapshot, kept)
+        (snapshot, left)
     }
 
     /// Evict the least recently used idle connection, of `within` or of any
@@ -1218,29 +1225,33 @@ where
     /// A new checkout only takes a snapshot if some connection has room,
     /// keeping fully busy lanes, which are the reason to create a connection
     /// or wait, at a bare scan of counters. Then the snapshot is empty and the
-    /// flag says the lanes hold saturated connections. Last, the streams lanes
-    /// that do not admit it keep for their waiters, see [`Lane::kept_streams`].
+    /// flag says the lanes hold saturated connections. Last, whether it left
+    /// its group lane to the waiters ahead, see [`IdBucket::kept_streams`].
     fn snapshot_exact(
         &self,
         id: &ID,
         lanes: &RequestLanes,
         look: &mut Look<'_>,
-    ) -> (Snapshot<C, ID>, bool, usize) {
+    ) -> (Snapshot<C, ID>, bool, bool) {
         if !id.is_reusable() {
-            return (Snapshot::new(), false, 0);
+            return (Snapshot::new(), false, false);
         }
         let mut storage = self.storage.lock();
+        if !storage.by_id.contains_key(id) {
+            return (Snapshot::new(), false, false);
+        }
         if matches!(look, Look::New) {
             let Some(bucket) = storage.by_id.get_mut(id) else {
-                return (Snapshot::new(), false, 0);
+                return (Snapshot::new(), false, false);
             };
+            let group = bucket.group_lane(lanes).map(ptr::from_ref);
+            let mut left = false;
             let mut stored = false;
             let mut room = false;
-            let mut kept = 0_usize;
             for lane in bucket.request_lanes_mut(lanes) {
                 stored |= !lane.conns.is_empty();
                 if !lane.waiters.admits(None) {
-                    kept = kept.saturating_add(lane.kept_streams(self.max_concurrent_streams));
+                    left |= group.is_some_and(|group| ptr::eq(group, &*lane));
                     continue;
                 }
                 room |= lane
@@ -1249,14 +1260,14 @@ where
                     .any(|conn| conn.has_capacity(self.max_concurrent_streams));
             }
             if !room {
-                return (Snapshot::new(), stored, kept);
+                return (Snapshot::new(), stored, left);
             }
         }
         let mut swept = Swept::default();
-        let (snapshot, kept) = self.snapshot(&mut storage, id, lanes, &mut swept, look);
+        let (snapshot, left) = self.snapshot(&mut storage, id, lanes, &mut swept, look);
         drop(storage);
         self.settle(swept);
-        (snapshot, false, kept)
+        (snapshot, false, left)
     }
 
     /// Turn a fairly acquired total-slot permit into a handout. Reuse a
@@ -1323,8 +1334,9 @@ where
     /// the id's last one took, else, if the request expects to multiplex, what
     /// the pool's last multiplexed one took or the hint's guess. A claim
     /// `held` from an earlier look is used if it still counts for these lanes.
-    /// No dial goes past `cap` connects in flight; the `kept` streams lanes
-    /// hand their waiters count against what those need.
+    /// No dial goes past `cap` connects in flight; if the look `left` its
+    /// group lane to the waiters ahead, the streams kept there for them count
+    /// against what the waiters need.
     #[expect(clippy::too_many_arguments)]
     fn coalesce(
         &self,
@@ -1335,7 +1347,7 @@ where
         held: &mut Option<Connect>,
         impatient: bool,
         cap: Option<NonZeroUsize>,
-        kept: usize,
+        left: bool,
     ) -> Coalesce {
         let estimate = id
             .is_reusable()
@@ -1371,7 +1383,19 @@ where
                 None => {}
             }
         }
-        connects.coalesce(streams, cold, impatient, cap, kept)
+        connects.coalesce(streams, cold, impatient, cap, || {
+            if !left {
+                return 0;
+            }
+            let storage = self.storage.lock();
+            let kept = storage.by_id.get(id).map_or(0, |bucket| {
+                bucket.kept_streams(lanes, self.max_concurrent_streams)
+            });
+            if kept != 0 && !self.kept_counted.load(Ordering::Relaxed) {
+                self.kept_counted.store(true, Ordering::Release);
+            }
+            kept
+        })
     }
 
     /// The streams a new connection for the request's lanes takes, whether that
@@ -1416,7 +1440,16 @@ where
         let mut held = held;
         // It dials with the slot it was handed: counted, so the others see
         // the cap, but never held back by it.
-        match self.coalesce(id, &lanes, input, &mut Look::New, &mut held, true, None, 0) {
+        match self.coalesce(
+            id,
+            &lanes,
+            input,
+            &mut Look::New,
+            &mut held,
+            true,
+            None,
+            false,
+        ) {
             Coalesce::Dial(connect) => connect,
             Coalesce::Wait | Coalesce::Failed(_) => None,
         }
@@ -1609,6 +1642,33 @@ where
         Some((slots.id.take()?, slots.total.take()))
     }
 
+    /// A waiter served by `conn` left its lane's `waiters`, its wake spent on
+    /// one stream: room left there wakes the front if it holds no wake, so
+    /// the streams kept for the waiters reach them. An exclusive connection
+    /// does so once the pool kept any, as its lane may hold multiplexed ones:
+    /// a pool of exclusive connections skips it.
+    fn pass_room_on(&self, conn: &StoredConnection<C, ID>, waiters: Option<Arc<WaitQueue>>) {
+        let cap = self.max_concurrent_streams;
+        let Some(waiters) = waiters.filter(|_| {
+            conn.effective_capacity(cap) > 1 || self.kept_counted.load(Ordering::Acquire)
+        }) else {
+            return;
+        };
+        if waiters.is_empty() || waiters.front_is_woken() {
+            return;
+        }
+        let room = conn.has_capacity(cap) || {
+            let mut storage = self.storage.lock();
+            let lane = conn.lane.lock();
+            lane.as_ref()
+                .and_then(|lane| storage.by_id.get_mut(&conn.id)?.lane_mut(lane))
+                .is_some_and(|lane| !lane.open.is_empty())
+        };
+        if room {
+            waiters.wake_one();
+        }
+    }
+
     /// Whether the saturation policy lets a checkout of `lanes` evict: `cold`
     /// says none of its lanes holds a connection, `patient` that it has not
     /// waited past [`SaturationPolicy::EvictIdleAfter`].
@@ -1678,7 +1738,7 @@ where
 
             // Only this id's bucket is touched under the lock; swept
             // connections close after it is released.
-            let (mut same_id, saturated_bucket, kept) = self.snapshot_exact(id, &lanes, look);
+            let (mut same_id, saturated_bucket, left) = self.snapshot_exact(id, &lanes, look);
             if let Look::Register(waiting) = look {
                 waiting.leave_other_lanes();
             }
@@ -1710,7 +1770,7 @@ where
                 held_connect,
                 impatient,
                 self.max_connecting_per_id,
-                kept,
+                left,
             ) {
                 Coalesce::Dial(connect) => connect,
                 Coalesce::Wait => {
@@ -1817,8 +1877,10 @@ where
                 impatient,
             ) {
                 Ok(result) => {
+                    let mut served_in = None;
                     if let ConnectionResult::Connection(conn) = &result {
-                        waiting.served(conn.inner.lane_waiters.lock().clone());
+                        served_in = conn.inner.lane_waiters.lock().clone();
+                        waiting.served(served_in.clone());
                         #[cfg(feature = "opentelemetry")]
                         if waiting.connects_seen.is_some()
                             && let Some((metrics, attrs)) = &metrics
@@ -1828,6 +1890,10 @@ where
                     }
                     // A create permit leaves the capacity a wake stood for unused:
                     // dropping `waiting` passes the wake on.
+                    drop(waiting);
+                    if let ConnectionResult::Connection(conn) = &result {
+                        self.pass_room_on(&conn.inner, served_in);
+                    }
                     return Ok(result);
                 }
                 Err(blocked) => blocked,
@@ -1935,9 +2001,11 @@ where
                         connect: self.count_connect(id, input, held_connect.take()),
                     };
                     let result = self.admit_with_permit(id, slot, input, &waiting);
+                    let mut served_in = None;
                     match &result {
                         ConnectionResult::Connection(conn) => {
-                            waiting.served(conn.inner.lane_waiters.lock().clone());
+                            served_in = conn.inner.lane_waiters.lock().clone();
+                            waiting.served(served_in.clone());
                             #[cfg(feature = "opentelemetry")]
                             if let Some((metrics, attrs)) = &metrics {
                                 metrics.reused_connections.add(1, attrs);
@@ -1960,6 +2028,10 @@ where
                                     .record(start.elapsed().as_nanos() as f64, attrs);
                             }
                         }
+                    }
+                    drop(waiting);
+                    if let ConnectionResult::Connection(conn) = &result {
+                        self.pass_room_on(&conn.inner, served_in);
                     }
                     return Ok(result);
                 }

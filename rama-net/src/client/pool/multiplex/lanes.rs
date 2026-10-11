@@ -89,18 +89,6 @@ impl<C, ID> Lane<C, ID> {
         self.list(conn);
     }
 
-    /// The streams its connections listed with room can take, for its
-    /// waiters: only while they are handed capacity, else they are refused it.
-    pub(super) fn kept_streams(&self, cap: usize) -> usize {
-        if self.open.is_empty() || !self.waiters.front_is_woken() {
-            return 0;
-        }
-        self.open
-            .values()
-            .map(|conn| conn.free_streams(cap))
-            .fold(0, usize::saturating_add)
-    }
-
     /// List `conn` as having room, if it is stored, unlisted and has room.
     pub(super) fn list(&mut self, conn: &Arc<StoredConnection<C, ID>>) {
         if conn.listed.load(Ordering::Relaxed)
@@ -431,6 +419,36 @@ impl<C, ID> IdBucket<C, ID> {
                 .lanes
                 .get_mut(&keyed.key),
         }
+    }
+
+    /// The request's lane whose waiters all share its connects: the
+    /// unrestricted lane of an id without classes, the lane of its key in an
+    /// id's only class. Other lanes are shared by the connects of other keys.
+    pub(super) fn group_lane(&self, request: &RequestLanes) -> Option<&Lane<C, ID>> {
+        match self.keyed.as_slice() {
+            [] => Some(&self.unrestricted),
+            [class] => request
+                .classes
+                .iter()
+                .flat_map(|classes| classes.iter())
+                .position(|derived| derived.classifier() == &class.classifier)
+                .and_then(|derived| request.keys.get(derived))
+                .and_then(Option::as_ref)
+                .and_then(|key| class.lanes.get(key)),
+            _ => None,
+        }
+    }
+
+    /// The streams the request's [group lane](Self::group_lane) keeps for its
+    /// waiters, as its connections listed with room. Room their admission
+    /// refuses costs the waiters behind a round: the refused dial for all.
+    pub(super) fn kept_streams(&self, request: &RequestLanes, cap: usize) -> usize {
+        self.group_lane(request).map_or(0, |lane| {
+            lane.open
+                .values()
+                .map(|conn| conn.free_streams(cap))
+                .fold(0, usize::saturating_add)
+        })
     }
 
     /// The request's lanes the bucket has connections in: the lane of its key

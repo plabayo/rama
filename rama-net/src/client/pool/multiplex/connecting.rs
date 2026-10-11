@@ -149,34 +149,42 @@ impl Connects {
 
     /// Dial, or wait for the connects in flight: a connection brings `streams`,
     /// one of them for its own checkout, and `cold` says that is a guess. The
-    /// `kept` streams lanes hand their waiters serve as many without a connect.
-    /// `impatient` dials whatever is in flight, but never past `cap`. Queue in
-    /// `waiters` first.
+    /// `kept` streams lanes hand their waiters serve as many without a connect,
+    /// read only if the checkout would dial without them. `impatient` dials
+    /// whatever is in flight, but never past `cap`. Queue in `waiters` first.
     pub(super) fn coalesce(
         self: &Arc<Self>,
         streams: usize,
         cold: bool,
         impatient: bool,
         cap: Option<NonZeroUsize>,
-        kept: usize,
+        kept: impl FnOnce() -> usize,
     ) -> Coalesce {
         let cap = cap.map_or(usize::MAX, NonZeroUsize::get);
         let spare = streams.saturating_sub(1);
         // A connect of one stream serves none of its waiters: only the cap
         // holds them back.
-        let mut needed = match spare {
+        let needed_for = |kept: usize| match spare {
             0 => usize::MAX,
-            spare => self
-                .waiters
-                .len()
-                .max(1)
-                .saturating_sub(kept)
-                .div_ceil(spare),
+            spare => {
+                let needed = self
+                    .waiters
+                    .len()
+                    .max(1)
+                    .saturating_sub(kept)
+                    .div_ceil(spare);
+                if cold {
+                    needed.min(COLD_CONNECTS)
+                } else {
+                    needed
+                }
+            }
         };
-        if cold && spare != 0 {
-            needed = needed.min(COLD_CONNECTS);
-        }
+        let mut needed = needed_for(0);
         let mut in_flight = self.in_flight.load(Ordering::Acquire);
+        if spare != 0 && !impatient && in_flight < needed.min(cap) {
+            needed = needed_for(kept());
+        }
         loop {
             if in_flight >= cap || (in_flight >= needed && !impatient) {
                 return Coalesce::Wait;

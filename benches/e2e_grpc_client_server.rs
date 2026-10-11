@@ -26,6 +26,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         mpsc,
     },
+    thread::JoinHandle,
     time::Duration,
 };
 
@@ -176,12 +177,29 @@ fn main() {
     }
 }
 
-/// An origin on its own runtime, counting the connections it accepts.
-fn spawn_origin(accepted: Arc<AtomicUsize>) -> SocketAddress {
+/// An origin on its own runtime, counting the connections it accepts. Shut
+/// down as it is dropped, so a row's origins do not run into the next row.
+struct Origin {
+    addr: SocketAddress,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Drop for Origin {
+    fn drop(&mut self) {
+        drop(self.stop.take());
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+    }
+}
+
+fn spawn_origin(accepted: Arc<AtomicUsize>) -> Origin {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-    std::thread::spawn(move || {
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let thread = std::thread::spawn(move || {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(4)
             .enable_all()
@@ -195,25 +213,31 @@ fn spawn_origin(accepted: Arc<AtomicUsize>) -> SocketAddress {
                     HttpServer::auto(Executor::default())
                         .service(echo_server::EchoServer::new(EchoService)),
                 );
-                listener
-                    .serve(service_fn(move |stream| {
-                        accepted.fetch_add(1, Ordering::Relaxed);
-                        let http = http.clone();
-                        async move { http.serve(stream).await }
-                    }))
-                    .await;
+                let serve = listener.serve(service_fn(move |stream| {
+                    accepted.fetch_add(1, Ordering::Relaxed);
+                    let http = http.clone();
+                    async move { http.serve(stream).await }
+                }));
+                tokio::select! {
+                    () = serve => {}
+                    _ = stopped => {}
+                }
             });
     });
     ready_rx
         .recv_timeout(STARTUP_TIMEOUT)
         .expect("origin start");
-    addr.into()
+    Origin {
+        addr: addr.into(),
+        stop: Some(stop),
+        thread: Some(thread),
+    }
 }
 
 #[divan::bench(args = LOAD_MATRIX, sample_count = 20)]
 fn bench_grpc_load(bencher: divan::Bencher, params: LoadParameters) {
     let accepted = Arc::new(AtomicUsize::new(0));
-    let origins: Vec<SocketAddress> = (0..params.origins)
+    let origins: Vec<Origin> = (0..params.origins)
         .map(|_| spawn_origin(accepted.clone()))
         .collect();
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -229,7 +253,7 @@ fn bench_grpc_load(bencher: divan::Bencher, params: LoadParameters) {
             .map(|origin| {
                 echo_client::EchoClient::new(
                     http.clone(),
-                    Uri::try_from(format!("http://{origin}")).unwrap(),
+                    Uri::try_from(format!("http://{}", origin.addr)).unwrap(),
                 )
             })
             .collect(),
@@ -243,19 +267,21 @@ fn bench_grpc_load(bencher: divan::Bencher, params: LoadParameters) {
                 let mut tasks = Vec::with_capacity(params.callers);
                 for caller in 0..params.callers {
                     let clients = clients.clone();
-                    let payload = payload.clone();
+                    let mut payload = payload.clone();
                     tasks.push(tokio::spawn(async move {
                         let client = &clients[caller % clients.len()];
-                        let len = payload.len();
-                        // Checked: a lost or short reply fails the run.
-                        for _ in 0..ROUNDS {
+                        // Checked: a lost, short or foreign reply fails the run,
+                        // each request marked with its caller and round.
+                        payload[..8].copy_from_slice(&(caller as u64).to_le_bytes());
+                        for round in 0..ROUNDS {
+                            payload[8..16].copy_from_slice(&(round as u64).to_le_bytes());
                             let request = Request::new(EchoRequest {
                                 payload: payload.clone(),
                                 replies: STREAMED,
                             });
                             if params.workload != Workload::Stream {
                                 let reply = client.unary(request).await.expect("unary call");
-                                assert_eq!(reply.into_inner().payload.len(), len, "a full echo");
+                                assert!(reply.into_inner().payload == payload, "its own echo");
                                 continue;
                             }
                             let mut stream = client
@@ -265,7 +291,7 @@ fn bench_grpc_load(bencher: divan::Bencher, params: LoadParameters) {
                                 .into_inner();
                             let mut replies = 0;
                             while let Some(reply) = stream.message().await.expect("a reply") {
-                                assert_eq!(reply.payload.len(), len, "a full reply");
+                                assert!(reply.payload == payload, "its own reply");
                                 replies += 1;
                             }
                             assert_eq!(replies, STREAMED, "every reply");
