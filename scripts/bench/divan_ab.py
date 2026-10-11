@@ -11,6 +11,9 @@ and the min-max of the per-round ratios: a range that spans 1.00 is noise.
 
     scripts/bench/divan_ab.py --bench extensions_lookup --features boring
     scripts/bench/divan_ab.py --base origin/main --bench pool_contention --features http-full -- multiplex
+
+On Windows run it as `python scripts/bench/divan_ab.py ...`: `python3` there may
+be the store's installer stub.
 """
 
 from __future__ import annotations
@@ -58,7 +61,8 @@ def parse(output: str) -> dict[str, float]:
 
 
 def run(cmd: list[str], cwd: Path) -> str:
-    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    # divan draws its table with UTF-8 box characters and `µs`, whatever the locale.
+    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         sys.stderr.write(proc.stdout + proc.stderr)
         raise SystemExit(f"command failed ({proc.returncode}): {' '.join(cmd)}")
@@ -70,7 +74,7 @@ def build(src: Path, target_dir: Path, bench: str, features: str) -> Path:
     cmd = ["cargo", "bench", "--bench", bench, "--no-run", "--message-format=json"]
     if features:
         cmd += ["--features", features]
-    out = subprocess.run(cmd, cwd=src, env=env, capture_output=True, text=True)
+    out = subprocess.run(cmd, cwd=src, env=env, capture_output=True, encoding="utf-8", errors="replace")
     if out.returncode != 0:
         sys.stderr.write(out.stderr)
         raise SystemExit(f"build failed in {src}")
@@ -88,14 +92,17 @@ def build(src: Path, target_dir: Path, bench: str, features: str) -> Path:
 def sync(source: Path, files: list[str], dest: Path) -> None:
     """Mirror `files` of `source` into `dest`, and remove anything else there.
 
-    Compares by content and gives changed files a fresh mtime (no `-t`), so
-    cargo rebuilds exactly what differs from the previous side.
+    Compares by content and gives changed files a fresh mtime, so cargo
+    rebuilds exactly what differs from the previous side.
     """
-    subprocess.run(
-        ["rsync", "-rlp", "--checksum", "--from0", "--files-from=-", f"{source}/", f"{dest}/"],
-        input="\0".join(files).encode(),
-        check=True,
-    )
+    for name in files:
+        source_file, dest_file = source / name, dest / name
+        content = source_file.read_bytes()
+        if dest_file.is_file() and dest_file.read_bytes() == content:
+            continue
+        dest_file.parent.mkdir(parents=True, exist_ok=True)
+        dest_file.write_bytes(content)
+        shutil.copymode(source_file, dest_file)
     keep = set(files)
     for path in dest.rglob("*"):
         if path.is_file() and path.relative_to(dest).as_posix() not in keep:
