@@ -10,8 +10,11 @@ use tokio::time::Instant;
 const RESYNC_EVERY_MS: u64 = 60 * 60 * 1000;
 
 /// How far before its first read the epoch lies, as far as the platform's clock
-/// goes back: a clock that began earlier, such as a test runtime's paused one,
-/// reads the time elapsed since, not zero.
+/// goes back (on Windows, to boot): a clock that began earlier, such as a test
+/// runtime's paused one, reads the time elapsed since, not zero. A first read
+/// from a paused clock already advanced past it puts the epoch ahead of real
+/// time, so real-time reads stay 0 until they catch up: tests only, as
+/// production clocks are not paused.
 const EPOCH_SLACK: [Duration; 3] = [
     Duration::from_hours(1),
     Duration::from_mins(1),

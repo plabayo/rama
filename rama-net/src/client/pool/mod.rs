@@ -225,6 +225,8 @@ impl<S, P, R> PooledConnector<S, P, R> {
         ///
         /// The transport handshake is separate: a checkout waiting for another's
         /// connect dials its own by then. `None` leaves these waits unbounded.
+        /// A caller's own timeout applies by dropping the request, which leaves
+        /// nothing behind in the pool.
         pub fn wait_for_pool_timeout(mut self, timeout: Option<Duration>) -> Self {
             self.wait_for_pool_timeout = timeout;
             self

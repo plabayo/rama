@@ -184,8 +184,10 @@ impl fmt::Debug for ChangeSignal {
 /// unit, or [`Self::wake_all`] for a change of unknown size, after freeing it.
 /// Both sides fence, so of a waiter queuing and capacity freeing at once, one
 /// sees the other. Every unit reaches a waiter, which spends it on a look or, as
-/// it leaves, passes it on in this queue. A leaf lock: nothing else is taken
-/// while it is held.
+/// it leaves, passes it on in this queue. Nothing else is locked while its lock
+/// is held, but the wakers of the parties it wakes run under it, so a wake and
+/// a leave never interleave: a waker must not call back into the queue, and an
+/// async runtime's does not.
 ///
 /// Capacity several queues contend for goes to the oldest of their fronts: a
 /// party leaving it to an older waiter of another queue [gives way](Self::give_way)
@@ -270,8 +272,8 @@ impl WaitQueue {
             // meanwhile is one or the other.
             (waiter.leave(), gave_way)
         };
-        // Outside the lock, which is a leaf: each party that gave way and
-        // still waits looks again, its turn handed back.
+        // Outside the lock: each party that gave way and still waits looks
+        // again, its turn handed back.
         for giver in gave_way.iter().filter_map(WeakWaiter::upgrade) {
             giver.hand_back_turn();
         }
@@ -688,7 +690,9 @@ impl Waiter {
     }
 
     /// It leaves its queue: the wakes it holds, and one more if a turn it gave
-    /// way with is not handed back.
+    /// way with is not handed back. One for all of them: turns handed back
+    /// before it leaves are a wake each, so who leaves first decides between
+    /// one wake and several, never fewer than the capacity needs.
     fn leave(&self) -> usize {
         let mut turns = self.counters().turns.lock();
         let turn = std::mem::take(&mut *turns) > 0;
