@@ -8,7 +8,7 @@ use rama_tls::KeyLogIntent;
 use rama_tls::client::{
     ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsClientConfigProvider,
     TlsComponentIdentity, TlsPoolComponent, TlsPoolId, TlsServerCertPins, TlsServerName,
-    TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
+    TlsServerTrust, TlsServerVerify, TlsSessionProfileScope, TlsStoreServerCertChain,
 };
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, ProtocolVersion, SignatureScheme,
@@ -20,12 +20,14 @@ use std::sync::Arc;
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
 
-use super::BoringRequestedTrustAnchors;
+use super::{BoringRequestedTrustAnchors, TlsClientSessionDomain};
 use crate::RamaTlsBoringCrateMarker;
 
 /// Gather all the TLS extensions supported by boringssl
-#[derive(FromExtensions)]
+#[derive(Clone, FromExtensions)]
 pub struct BoringTlsConnectorConfig<'a> {
+    pub session_domain: Option<&'a TlsClientSessionDomain>,
+    pub session_profile_scope: Option<&'a TlsSessionProfileScope>,
     pub alpn: Option<&'a TlsAlpn>,
     pub versions: Option<&'a TlsSupportedVersions>,
     pub verify: Option<&'a TlsServerVerify>,
@@ -70,6 +72,8 @@ impl BoringTlsConnectorConfig<'_> {
             return None;
         }
         let Self {
+            session_domain,
+            session_profile_scope,
             alpn,
             versions,
             verify,
@@ -127,6 +131,12 @@ impl BoringTlsConnectorConfig<'_> {
             .maybe_with_tls12_session_tickets(tls12_session_tickets.map(|value| value.0))
             .maybe_with_min_version(min_version.map(|value| value.0))
             .maybe_with_max_version(max_version.map(|value| value.0));
+        if let Some(domain) = session_domain {
+            builder.set_component(*domain);
+        }
+        if let Some(scope) = session_profile_scope {
+            builder.set_component(*scope);
+        }
         if let Some(store) = verify_cert_store {
             builder.set_component(store.as_ref());
         }
@@ -143,10 +153,30 @@ impl BoringTlsConnectorConfig<'_> {
         builder.build()
     }
 
+    /// Identity of compatible client sessions, independent of the drawn extension order.
+    ///
+    /// Security settings and the optional profile scope remain in this identity.
+    /// Diagnostic sinks, chain retention and the separately keyed server name do not.
+    pub fn session_scope(&self) -> Option<TlsPoolId> {
+        let default_verify = TlsServerVerify(rama_tls::client::ServerVerifyMode::Auto);
+        let mut policy = self.clone();
+        policy.verify = Some(self.verify.unwrap_or(&default_verify));
+        policy.extension_order = None;
+        policy.permute_extensions = None;
+        policy.keylog = None;
+        policy.store_chain = None;
+        policy.server_name = None;
+        // The mandatory verification policy makes normal configurations nonempty.
+        // A missing or non-reusable identity must get an isolated native domain.
+        policy.pool_id()
+    }
+
     /// Whether a successful handshake establishes the configured server identity.
     pub fn authenticates_server(&self) -> bool {
         // New fields must also be reviewed for their effect on authentication.
         let Self {
+            session_domain: _,
+            session_profile_scope: _,
             alpn: _,
             versions: _,
             verify,
@@ -878,6 +908,13 @@ mod pool_tests {
     fn every_comparable_override_preserves_presence_and_value() {
         type Insert = fn(&Extensions, u8);
         let cases: &[(&str, Insert)] = &[
+            ("session_profile_scope", |ext, value| {
+                ext.insert(TlsSessionProfileScope(if value == 0 {
+                    "first".into()
+                } else {
+                    "second".into()
+                }));
+            }),
             ("empty_alpn", |ext, value| {
                 ext.insert(if value == 0 {
                     TlsAlpn::empty()
@@ -1050,6 +1087,31 @@ mod pool_tests {
                 BoringTlsConnectorConfig::from_extensions(&changed).pool_id(),
                 "{name}"
             );
+            if matches!(
+                *name,
+                "session_profile_scope"
+                    | "alpn"
+                    | "versions"
+                    | "verify"
+                    | "pins"
+                    | "trust"
+                    | "min_version"
+                    | "max_version"
+                    | "cipher_suites"
+                    | "supported_groups"
+                    | "signature_schemes"
+            ) {
+                assert_eq!(
+                    view.session_scope(),
+                    BoringTlsConnectorConfig::from_extensions(&equal).session_scope(),
+                    "{name}"
+                );
+                assert_ne!(
+                    view.session_scope(),
+                    BoringTlsConnectorConfig::from_extensions(&changed).session_scope(),
+                    "{name}"
+                );
+            }
             // Newest request settings replace older values of the same type.
             insert(&first, 1);
             assert_eq!(
@@ -1199,5 +1261,37 @@ mod pool_tests {
             X509StoreBuilder::new().unwrap().build(),
         )));
         assert_ne!(identity, BoringTlsClientConfigProvider.pool_id(&same));
+    }
+    #[test]
+    fn session_scope_normalizes_default_verification_and_ignores_drawn_order() {
+        let empty = Extensions::new();
+        let explicit = Extensions::new();
+        explicit.insert(TlsServerVerify(ServerVerifyMode::Auto));
+        explicit.insert(BoringExtensionOrder(vec![
+            ExtensionId::SERVER_NAME,
+            ExtensionId::SUPPORTED_VERSIONS,
+        ]));
+        explicit.insert(BoringPermuteExtensions(false));
+        assert_eq!(
+            BoringTlsConnectorConfig::from_extensions(&empty).session_scope(),
+            BoringTlsConnectorConfig::from_extensions(&explicit).session_scope()
+        );
+        assert_ne!(
+            BoringTlsConnectorConfig::from_extensions(&empty).pool_id(),
+            BoringTlsConnectorConfig::from_extensions(&explicit).pool_id()
+        );
+        let domain = TlsClientSessionDomain::new();
+        let other_domain = TlsClientSessionDomain::new();
+        empty.insert(domain);
+        explicit.insert(domain);
+        assert_eq!(
+            BoringTlsConnectorConfig::from_extensions(&empty).session_scope(),
+            BoringTlsConnectorConfig::from_extensions(&explicit).session_scope()
+        );
+        explicit.insert(other_domain);
+        assert_ne!(
+            BoringTlsConnectorConfig::from_extensions(&empty).session_scope(),
+            BoringTlsConnectorConfig::from_extensions(&explicit).session_scope()
+        );
     }
 }

@@ -1,4 +1,4 @@
-//! Client session resumption, bound to the native context that issued each session.
+//! Client session resumption scoped to server identity and effective TLS policy.
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -22,20 +22,56 @@ use rama_boring::{
         SslVersion,
     },
 };
-use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _};
+use rama_core::{
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
+    extensions::Extension,
+};
 use rama_net::address::Host;
-use rama_tls::client::TlsPoolId;
+use rama_tls::client::{TlsPoolComponent, TlsPoolId};
 
 use super::{
     BoringTlsConnectorConfig, TlsConnectorContext, TlsConnectorContextBuilder, TlsConnectorData,
 };
 
-/// Process-unique identity of one native client context.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct ContextId(u64);
+/// Process-unique owner of a set of compatible client session configurations.
+///
+/// Clones share tickets across native contexts. The derived TLS security policy
+/// and server identity are still included in every session key. Keep the native
+/// policy fixed after constructing a context from Rama configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(tls))]
+pub struct TlsClientSessionDomain(u64);
+
+impl TlsClientSessionDomain {
+    /// Create an isolated session domain; cloning it retains the same domain.
+    pub fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+impl Default for TlsClientSessionDomain {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TlsPoolComponent for TlsClientSessionDomain {
+    type Identity = u64;
+    fn pool_component_identity(&self) -> Self::Identity {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SessionScope {
+    owner: TlsClientSessionDomain,
+    policy: TlsPoolId,
+    credential_identity: Option<[u8; 32]>,
+}
 
 // Index slots live for the process lifetime; their values belong to one context or connection.
-static CONTEXT_ID: LazyLock<Result<Index<SslContext, ContextId>, ErrorStack>> =
+static CONTEXT_SCOPE: LazyLock<Result<Index<SslContext, SessionScope>, ErrorStack>> =
     LazyLock::new(SslContext::new_ex_index);
 static SESSION_KEY: LazyLock<Result<Index<Ssl, TlsClientSessionKey>, ErrorStack>> =
     LazyLock::new(Ssl::new_ex_index);
@@ -47,40 +83,55 @@ fn slot<T: Copy>(index: &LazyLock<Result<T, ErrorStack>>) -> Result<T, BoxError>
         .map_err(|error| error.clone().context("register session ex-data slot"))
 }
 
-fn context_id(context: &SslContextRef) -> Option<ContextId> {
-    context.ex_data(slot(&CONTEXT_ID).ok()?).copied()
+fn context_scope(context: &SslContextRef) -> Option<SessionScope> {
+    context.ex_data(slot(&CONTEXT_SCOPE).ok()?).cloned()
 }
 
-/// Give the context `builder` builds a process-unique identity for its sessions.
-pub(super) fn identify_context(builder: &mut SslContextBuilder) -> Result<(), BoxError> {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
+/// Install the security-derived policy and an isolated or explicitly shared owner.
+pub(super) fn identify_context(
+    builder: &mut SslContextBuilder,
+    domain: Option<TlsClientSessionDomain>,
+    policy: Option<TlsPoolId>,
+    credential_identity: Option<[u8; 32]>,
+) -> Result<(), BoxError> {
+    let (owner, policy) = match policy {
+        Some(policy) if policy.is_reusable() => (domain.unwrap_or_default(), policy),
+        _ => (TlsClientSessionDomain::new(), TlsPoolId::non_reusable()),
+    };
     builder.set_ex_data(
-        slot(&CONTEXT_ID)?,
-        ContextId(NEXT.fetch_add(1, Ordering::Relaxed)),
+        slot(&CONTEXT_SCOPE)?,
+        SessionScope {
+            owner,
+            policy,
+            credential_identity,
+        },
     );
     Ok(())
 }
 
-/// Bind `ssl` to `server` before its handshake: the key its sessions are kept and resumed under.
+pub(super) fn context_key(context: &SslContextRef, server: &Host) -> Option<TlsClientSessionKey> {
+    Some(TlsClientSessionKey {
+        scope: context_scope(context)?,
+        server: server.clone(),
+    })
+}
+
+/// Bind a connection before its handshake, using both server identity and policy.
 pub(super) fn bind_session_key(
     ssl: &mut SslRef,
     server: &Host,
 ) -> Result<Option<TlsClientSessionKey>, BoxError> {
-    let Some(context) = context_id(ssl.ssl_context()) else {
+    let Some(key) = context_key(ssl.ssl_context(), server) else {
         return Ok(None);
-    };
-    let key = TlsClientSessionKey {
-        context,
-        server: server.clone(),
     };
     ssl.set_ex_data(slot(&SESSION_KEY)?, key.clone());
     Ok(Some(key))
 }
 
-/// Where a client session may resume: the context that issued it and the server it authenticated.
+/// Server identity, effective security policy and session domain required for resumption.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TlsClientSessionKey {
-    context: ContextId,
+    scope: SessionScope,
     server: Host,
 }
 
@@ -92,7 +143,7 @@ impl TlsClientSessionKey {
     }
 }
 
-/// A resumable session, bound to the context and server it was established with.
+/// A resumable client session bound to the policy and server it was established with.
 #[derive(Clone)]
 pub struct TlsClientSession {
     key: TlsClientSessionKey,
@@ -103,13 +154,13 @@ impl TlsClientSession {
     /// Tag a session `ssl` established, under the key bound before its handshake.
     pub(super) fn established(ssl: &SslRef, session: SslSession) -> Option<Self> {
         let key = ssl.ex_data(slot(&SESSION_KEY).ok()?)?;
-        (context_id(ssl.ssl_context()) == Some(key.context)).then(|| Self {
+        (context_scope(ssl.ssl_context()).as_ref() == Some(&key.scope)).then(|| Self {
             key: key.clone(),
             session,
         })
     }
 
-    /// The context and server this session resumes with.
+    /// The policy and server this session resumes with.
     #[must_use]
     pub fn key(&self) -> &TlsClientSessionKey {
         &self.key
@@ -127,16 +178,21 @@ impl TlsClientSession {
         self.session.protocol_version() == SslVersion::TLS1_3
     }
 
-    /// Offer this session on `ssl`, which must be bound to the same context and server.
+    /// Offer a client session on a connection bound to the same policy, domain and server.
     pub fn resume_on(&self, ssl: &mut SslRef) -> Result<(), BoxError> {
         let bound = ssl.ex_data(slot(&SESSION_KEY)?);
-        if bound != Some(&self.key) || context_id(ssl.ssl_context()) != Some(self.key.context) {
+        if bound != Some(&self.key)
+            || context_scope(ssl.ssl_context()).as_ref() != Some(&self.key.scope)
+        {
             return Err(BoxError::from_static_str(
-                "session belongs to another context or server",
+                "session belongs to another TLS policy, domain or server",
             ));
         }
-        // SAFETY: the native context of `ssl` issued this session: context ids are unique,
-        // and `established` tagged the session with the id of its issuing context.
+        // SAFETY: this is a client session from the same Rama client construction path.
+        // The bound server, security-derived policy and session domain match. Sibling
+        // contexts differ only in compatible wire settings; native contexts remain immutable.
+        // BoringSSL retains the session's x509_method and checks version, QUIC flag and
+        // expiry before offering it; client sessions are not tied to their issuing CTX.
         unsafe { ssl.set_session(&self.session) }.context("offer session for resumption")
     }
 }
@@ -153,8 +209,9 @@ impl fmt::Debug for TlsClientSession {
 /// Keeps client sessions for later resumption.
 ///
 /// A session only resumes on a connection with the same [`TlsClientSessionKey`]: the
-/// connection checks this itself, so a store cannot leak sessions across connectors,
-/// configurations or servers. Implementations should bound their memory.
+/// connection checks this itself, so a store cannot transfer sessions across servers,
+/// security policies, profile scopes or session domains. Implementations should bound
+/// their memory.
 pub trait TlsClientSessionStore: Send + Sync + 'static {
     /// Keep `session` under its [`TlsClientSession::key`].
     fn put(&self, session: TlsClientSession);
@@ -308,10 +365,11 @@ impl TlsClientSessionStore for TlsClientSessionCache {
     }
 }
 
-/// A connector's sessions, with one native context per effective configuration to resume them in.
+/// One connector-local session domain and bounded native contexts for its wire configurations.
 pub(super) struct ConnectorSessions {
     store: Arc<dyn TlsClientSessionStore>,
     contexts: Cache<Option<TlsPoolId>, TlsConnectorContext>,
+    domain: TlsClientSessionDomain,
 }
 
 impl ConnectorSessions {
@@ -321,18 +379,21 @@ impl ConnectorSessions {
         Self {
             store,
             contexts: Cache::new(Self::MAX_CONTEXTS),
+            domain: TlsClientSessionDomain::new(),
         }
     }
 
-    /// Connection state from the context kept for `config`, which only an identical
-    /// configuration shares. Configurations without a reusable identity get a fresh
-    /// context, so their sessions never resume.
-    pub(super) fn connector_data(
-        &self,
-        config: BoringTlsConnectorConfig<'_>,
+    /// Retain one native context per effective wire configuration. Compatible
+    /// contexts share this connector's security-derived session scope. Non-reusable
+    /// configurations get an isolated native context and session domain.
+    pub(super) fn connector_data<'a>(
+        &'a self,
+        mut config: BoringTlsConnectorConfig<'a>,
     ) -> Result<TlsConnectorData, BoxError> {
+        config.session_domain = Some(&self.domain);
         let identity = config.pool_id();
         if identity.as_ref().is_some_and(|id| !id.is_reusable()) {
+            config.session_domain = None;
             return TlsConnectorData::try_from(config);
         }
         if let Some(context) = self.contexts.get(&identity) {

@@ -1,5 +1,11 @@
+use rama_core::extensions::Extensions;
 use std::{fmt, sync::Arc};
 
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
+use rama_tls::client::TlsPoolId;
 use rama_tls::{
     client::{TlsClientConfig, TlsClientConfigProvider},
     server::TlsServerConfig,
@@ -19,11 +25,6 @@ use {
     },
     rama_tls_rustls::{client::RustlsTlsConnectorConfig, dep::rustls::crypto::CryptoProvider},
 };
-#[cfg(any(
-    feature = "boring",
-    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
-))]
-use {rama_core::extensions::Extensions, rama_tls::client::TlsPoolId};
 
 use crate::{
     ClientConfig, ServerConfig,
@@ -41,6 +42,13 @@ use crate::{
 /// authentication claims and pool identity describe the settings actually applied.
 /// Different connectors can therefore use different TLS policies.
 pub trait QuicClientConfigProvider: TlsClientConfigProvider {
+    /// Optional connector-local backend session state shared by sibling configurations.
+    /// These extensions hold cache metadata; they must not replace TLS security settings.
+    /// The default retains each native configuration's own session state.
+    fn session_defaults(&self) -> Option<Extensions> {
+        None
+    }
+
     fn client_config(
         &self,
         config: &TlsClientConfig,
@@ -177,6 +185,10 @@ impl TlsClientConfigProvider for BoringTlsProvider {
 
 #[cfg(feature = "boring")]
 impl QuicClientConfigProvider for BoringTlsProvider {
+    fn session_defaults(&self) -> Option<Extensions> {
+        Some(boring_crypto::SharedClientSessions::defaults())
+    }
+
     fn client_config(
         &self,
         config: &TlsClientConfig,

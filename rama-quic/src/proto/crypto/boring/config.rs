@@ -4,7 +4,10 @@ use std::{
 };
 
 use parking_lot::Mutex;
-use rama_core::error::{ArcError, BoxError};
+use rama_core::{
+    error::{ArcError, BoxError},
+    extensions::{Extension, Extensions},
+};
 use rama_crypto::dep::boring::{
     error::ErrorStack,
     ex_data::Index,
@@ -22,8 +25,8 @@ use rama_tls::{
 };
 use rama_tls_boring::{
     client::{
-        BoringTlsConnectorConfig, TlsClientSession, TlsClientSessionCache, TlsConnectorContext,
-        TlsConnectorContextBuilder,
+        BoringTlsConnectorConfig, TlsClientSession, TlsClientSessionCache, TlsClientSessionDomain,
+        TlsClientSessionKey, TlsConnectorContext, TlsConnectorContextBuilder,
     },
     server::{BoringTlsAcceptorConfig, IssuedCertificate, TlsAcceptorData},
 };
@@ -45,15 +48,36 @@ struct Ticket {
     params: TransportParameters,
 }
 
-/// Tickets by server and the negotiated version of the connection that issued them,
-/// which is the only version they resume (RFC 9369 §5).
-type Tickets = TlsClientSessionCache<(Host, Version), Ticket>;
+/// Tickets by server, security-derived session scope and negotiated QUIC version.
+/// A connector cache retains at most 64 such keys, with two tickets per key;
+/// native configuration eviction does not change its session domain (RFC 9369 §5).
+type Tickets = TlsClientSessionCache<(TlsClientSessionKey, Version), Ticket>;
 
 const MAX_TICKET_HOSTS: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 const TICKETS_PER_HOST: NonZeroUsize = NonZeroUsize::new(2).unwrap();
 
+/// One bounded ticket store for a connector cache's sibling native configurations.
+#[derive(Clone, Debug, Extension)]
+#[extension(tags(tls))]
+pub(crate) struct SharedClientSessions {
+    tickets: Arc<Tickets>,
+    domain: TlsClientSessionDomain,
+}
+
+impl SharedClientSessions {
+    pub(crate) fn defaults() -> Extensions {
+        let shared = Self {
+            tickets: Arc::new(Tickets::new(MAX_TICKET_HOSTS, TICKETS_PER_HOST)),
+            domain: TlsClientSessionDomain::new(),
+        };
+        let extensions = Extensions::new();
+        extensions.insert(shared.domain);
+        extensions.insert(shared);
+        extensions
+    }
+}
+
 struct TicketState {
-    host: Host,
     /// The connection's version, which compatible negotiation may still change.
     version: Arc<Mutex<Version>>,
     params: Arc<Mutex<Option<TransportParameters>>>,
@@ -120,7 +144,11 @@ impl QuicClientConfig {
             .config
             .set_max_proto_version(Some(SslVersion::TLS1_3))
             .map_err(|error| TlsConfigError::InvalidConfiguration(error.into()))?;
-        let tickets = Arc::new(Tickets::new(MAX_TICKET_HOSTS, TICKETS_PER_HOST));
+        let tickets = config
+            .as_extensions()
+            .get_ref::<SharedClientSessions>()
+            .map(|shared| shared.tickets.clone())
+            .unwrap_or_else(|| Arc::new(Tickets::new(MAX_TICKET_HOSTS, TICKETS_PER_HOST)));
         let callback_tickets = tickets.clone();
         let ticket_index = *TICKET_INDEX
             .as_ref()
@@ -130,7 +158,7 @@ impl QuicClientConfig {
                 && let Some(params) = state.params.lock().clone()
             {
                 callback_tickets.insert(
-                    (state.host.clone(), *state.version.lock()),
+                    (session.key().clone(), *state.version.lock()),
                     Ticket { session, params },
                 );
             }
@@ -167,12 +195,13 @@ impl crypto::ClientConfig for QuicClientConfig {
         ssl.set_ex_data(
             self.ticket_index,
             TicketState {
-                host: host.clone(),
                 version: negotiated.clone(),
                 params: peer_params.clone(),
             },
         );
-        let remembered = if let Some(ticket) = self.tickets.pop(&(host, version)) {
+        let remembered = if let Some(key) = self.context.session_key(&host)
+            && let Some(ticket) = self.tickets.pop(&(key, version))
+        {
             ticket
                 .session
                 .resume_on(&mut ssl)
@@ -200,7 +229,8 @@ impl crypto::ClientConfig for QuicClientConfig {
     }
     fn resumable_version(&self, server_name: &str) -> Option<Version> {
         let host = Host::try_from(server_name).ok()?;
-        let keys = [Version::V1, Version::V2].map(|version| (host.clone(), version));
+        let key = self.context.session_key(&host)?;
+        let keys = [Version::V1, Version::V2].map(|version| (key.clone(), version));
         self.tickets.most_recent(&keys).map(|(_, version)| *version)
     }
 }
@@ -211,12 +241,13 @@ impl QuicClientConfig {
     #[cfg(test)]
     pub(super) fn relabel_tickets(&self, server_name: &str, from: Version, to: Version) {
         let host = Host::try_from(server_name).unwrap();
+        let key = self.context.session_key(&host).unwrap();
         let mut tickets = Vec::new();
-        while let Some(ticket) = self.tickets.pop(&(host.clone(), from)) {
+        while let Some(ticket) = self.tickets.pop(&(key.clone(), from)) {
             tickets.push(ticket);
         }
         for ticket in tickets.into_iter().rev() {
-            self.tickets.insert((host.clone(), to), ticket);
+            self.tickets.insert((key.clone(), to), ticket);
         }
     }
 }

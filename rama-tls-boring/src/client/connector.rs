@@ -197,9 +197,10 @@ impl<S, K> TlsConnector<S, K> {
         /// keeping them in `store`. Off by default.
         ///
         /// A session only resumes with the server identity it was established with,
-        /// under the exact same effective TLS configuration, and never in another
-        /// connector, also when they share a store. Clones of this connector share
-        /// its sessions.
+        /// under the same security policy and optional emulation profile scope.
+        /// Compatible drawn extension orders can use sibling native contexts.
+        /// Separate connectors stay isolated even when they share a store; clones
+        /// of this connector share its session domain.
         pub fn session_store(mut self, store: Option<Arc<dyn TlsClientSessionStore>>) -> Self {
             self.sessions = connector_sessions(store.map(SessionStore));
             self

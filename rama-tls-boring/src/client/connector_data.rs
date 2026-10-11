@@ -1,6 +1,8 @@
 use crate::certificate_compression::add_certificate_compressors;
 use crate::client::config::BoringTlsConnectorConfig;
-use crate::client::session::{self, SessionStore, TlsClientSession, TlsClientSessionStore};
+use crate::client::session::{
+    self, SessionStore, TlsClientSession, TlsClientSessionKey, TlsClientSessionStore,
+};
 use crate::type_conversion::native_unique;
 use ahash::{HashSet, HashSetExt as _};
 use moka::sync::Cache;
@@ -10,6 +12,7 @@ use rama_boring::{
     hash::MessageDigest,
     pkey::{PKey, Private},
     rsa::Rsa,
+    sha::sha256,
     ssl::{
         ConnectConfiguration, SslCredential, SslCurve, SslOptions, SslRef, SslSessionCacheMode,
         SslSignatureAlgorithm, SslVerifyMode, SslVersion,
@@ -92,8 +95,8 @@ struct ConnectorOptions {
 
 impl TlsConnectorContextBuilder {
     generate_set_and_with!(
-        /// Pass each session this context establishes to `remember`, which only
-        /// connections from this context, to the same server identity, can resume.
+        /// Pass each established client session to `remember`. Resumption requires
+        /// the same server, security policy and session domain.
         pub fn new_session_callback(
             mut self,
             remember: impl Fn(&mut SslRef, TlsClientSession) + Send + Sync + 'static,
@@ -130,6 +133,15 @@ impl TlsConnectorContextBuilder {
 }
 
 impl TlsConnectorContext {
+    /// Expected key for sessions established with `server` by this context.
+    /// Security policy and domain are captured when the native context is built.
+    pub fn session_key(&self, server: &Host) -> Option<TlsClientSessionKey> {
+        session::context_key(
+            self.connector.context(),
+            self.options.server_name.as_ref().unwrap_or(server),
+        )
+    }
+
     /// Create independent connection state while retaining the shared native context.
     pub fn configure(&self) -> Result<TlsConnectorData, BoxError> {
         let mut cfg = self
@@ -269,6 +281,8 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
     type Error = BoxError;
 
     fn try_from(value: BoringTlsConnectorConfig<'_>) -> Result<Self, Self::Error> {
+        let session_policy = value.session_scope();
+        let session_domain = value.session_domain.copied();
         let server_verify_mode = value.verify.map(|v| v.0).unwrap_or_default();
         let server_cert_pins = value.server_cert_pins.cloned();
         let store_server_certificate_chain = value.store_chain.map(|p| p.0).unwrap_or_default();
@@ -575,7 +589,12 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             "boring connector: return SSL connector config for server"
         );
 
-        session::identify_context(&mut cfg_builder)?;
+        session::identify_context(
+            &mut cfg_builder,
+            session_domain,
+            session_policy,
+            client_credential_scope(client_auth.as_ref())?,
+        )?;
 
         Ok(Self {
             config: cfg_builder,
@@ -594,6 +613,20 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             },
         })
     }
+}
+
+// SelfSigned resolves to a new certificate when a native context is built. Keep
+// that actual credential separate even when the symbolic input policy is equal.
+fn client_credential_scope(
+    auth: Option<&ConnectorConfigClientAuth>,
+) -> Result<Option<[u8; 32]>, BoxError> {
+    let Some(cert) = auth.and_then(|auth| auth.cert_chain.first()) else {
+        return Ok(None);
+    };
+    let encoded = cert
+        .to_der()
+        .context("encode TLS client credential identity")?;
+    Ok(Some(sha256(&encoded)))
 }
 
 fn ordered_subset<T: PartialEq>(values: impl Iterator<Item = T>, superset: &[T]) -> Vec<T> {

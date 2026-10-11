@@ -9,7 +9,7 @@ use rama_tls::client::{TlsClientConfig, TlsPoolId};
 use super::{QuicClientConfigProvider, TlsConfigError, TlsOptions};
 use crate::ClientConfig;
 
-// Keep uncommon policies bounded without letting them evict default session state.
+// Keep native override configurations bounded alongside the protected default context.
 const MAX_CACHED_OVERRIDES: usize = 64;
 
 /// Reuse native TLS configuration and session state when opening QUIC connections.
@@ -23,7 +23,8 @@ const MAX_CACHED_OVERRIDES: usize = 64;
 /// This does not pool connections or apply request overrides. Supply the final
 /// TLS configuration to [`Self::client_config`], then customize transport settings
 /// on the returned [`ClientConfig`] as needed; each result is an independent clone
-/// sharing the native TLS configuration and its session state.
+/// sharing the native TLS configuration and its session state. Providers can also
+/// share a bounded, policy-keyed ticket store across sibling native configurations.
 #[derive(Clone)]
 pub struct ClientConfigCache {
     provider: Arc<dyn QuicClientConfigProvider>,
@@ -43,10 +44,14 @@ impl fmt::Debug for ClientConfigCache {
 impl ClientConfigCache {
     /// Bind cached configurations to one provider and its QUIC TLS options.
     pub fn new(provider: Arc<dyn QuicClientConfigProvider>, options: TlsOptions) -> Self {
+        let session_defaults = provider.session_defaults();
         Self {
             provider,
             options,
-            configs: Arc::default(),
+            configs: Arc::new(Mutex::new(Configs {
+                session_defaults,
+                ..Configs::default()
+            })),
         }
     }
 
@@ -82,10 +87,21 @@ impl ClientConfigCache {
         // Keep comparable request overrides distinct even if the effective ID is opaque.
         let is_default = request_policy.is_none();
         let policy = (request_policy, effective_policy);
-        if let Some(config) = self.configs.lock().get(&policy, is_default) {
-            return Ok(config);
-        }
-
+        let session_defaults = {
+            let mut configs = self.configs.lock();
+            if let Some(config) = configs.get(&policy, is_default) {
+                return Ok(config);
+            }
+            configs.session_defaults.clone()
+        };
+        let scoped;
+        let config = if let Some(defaults) = session_defaults {
+            scoped = config.clone();
+            scoped.as_extensions().extend(&defaults);
+            &scoped
+        } else {
+            config
+        };
         let config = self.provider.client_config(config, self.options)?;
         let mut configs = self.configs.lock();
         if let Some(existing) = configs.get(&policy, is_default) {
@@ -105,6 +121,7 @@ struct Entry {
 
 #[derive(Default)]
 struct Configs {
+    session_defaults: Option<Extensions>,
     default: Option<Entry>,
     overrides: VecDeque<Entry>,
 }

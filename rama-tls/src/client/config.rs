@@ -28,6 +28,15 @@ use rama_net::{
 pub struct TlsClientConfig(Extensions);
 
 impl TlsClientConfig {
+    generate_set_and_with! {
+        /// Add a stable emulation profile identity to TLS session and connection reuse.
+        /// Server identity and the effective security policy remain mandatory.
+        pub fn session_profile_scope(mut self, scope: super::TlsSessionProfileScope) -> Self {
+            self.0.insert(scope);
+            self
+        }
+    }
+
     /// Create an empty config.
     #[must_use]
     pub fn new() -> Self {

@@ -33,7 +33,8 @@ pub use trust_anchors::BoringRequestedTrustAnchors;
 mod session;
 #[doc(inline)]
 pub use session::{
-    TlsClientSession, TlsClientSessionCache, TlsClientSessionKey, TlsClientSessionStore,
+    TlsClientSession, TlsClientSessionCache, TlsClientSessionDomain, TlsClientSessionKey,
+    TlsClientSessionStore,
 };
 
 mod connector_data;

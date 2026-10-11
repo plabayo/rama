@@ -3,7 +3,11 @@ use std::{assert_matches, sync::Arc};
 use rama_core::bytes::BytesMut;
 use rama_quic_proto::{ConnectionId, Side, Version, transport_parameters::TransportParameters};
 use rama_tls::{
-    client::{TlsClientConfig, TlsServerCertPins},
+    ExtensionId,
+    client::{
+        ClientHelloHandshakePrefix, ServerVerifyMode, TlsClientConfig, TlsServerCertPins,
+        TlsSessionProfileScope, parse_client_hello_message_prefix,
+    },
     server::{
         CertificateIdentity, GeneratedServerAuthConfig, LeafCertConfig, LeafCertRequest,
         SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
@@ -17,8 +21,11 @@ use crate::{
     proto::crypto::{
         self, ClientConfig as _, HandshakeEvent, ServerConfig as _, Session, config::TlsOptions,
     },
-    tls::{BoringTlsProvider, QuicClientConfigProvider, QuicServerConfigProvider},
+    tls::{
+        BoringTlsProvider, ClientConfigCache, QuicClientConfigProvider, QuicServerConfigProvider,
+    },
 };
+use rama_tls_boring::client::{BoringExtensionOrder, BoringPermuteExtensions};
 
 trait TestTlsProvider: QuicClientConfigProvider + QuicServerConfigProvider {}
 impl<T: QuicClientConfigProvider + QuicServerConfigProvider> TestTlsProvider for T {}
@@ -922,4 +929,87 @@ fn transport_parameters_are_parsed_once_however_the_handshake_is_split() {
         super::session::PEER_PARAMETER_PARSES.with(|parses| parses.get()),
         2
     );
+}
+
+#[test]
+fn cached_quic_draws_resume_without_crossing_profile_policy_or_version() {
+    let (base, server_tls) = configs();
+    let options = TlsOptions::default().with_early_data(true);
+    let cache = ClientConfigCache::new(Arc::new(BoringTlsProvider), options);
+    let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
+    for version in [Version::V1, Version::V2] {
+        for (index, (profile, verify, resumed)) in [
+            ("first", ServerVerifyMode::Auto, false),
+            ("first", ServerVerifyMode::Auto, true),
+            ("second", ServerVerifyMode::Auto, false),
+            ("first", ServerVerifyMode::Disable, false),
+            ("first", ServerVerifyMode::Auto, true),
+            ("second", ServerVerifyMode::Auto, true),
+            ("first", ServerVerifyMode::Disable, true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let tls = base
+                .clone()
+                .with_server_verify(verify)
+                .with_session_profile_scope(TlsSessionProfileScope(profile.into()));
+            let mut order = vec![
+                ExtensionId::SERVER_NAME,
+                ExtensionId::SUPPORTED_VERSIONS,
+                ExtensionId::SIGNATURE_ALGORITHMS,
+                ExtensionId::KEY_SHARE,
+                ExtensionId::SUPPORTED_GROUPS,
+            ];
+            if index % 2 == 1 {
+                order.reverse();
+            }
+            tls.insert(BoringExtensionOrder(order.clone()));
+            tls.insert(BoringPermuteExtensions(false));
+            let client = cache.client_config(&tls, tls.as_extensions()).unwrap();
+            let mut c = client
+                .crypto
+                .start_session(version, "localhost", &params(Side::Client))
+                .unwrap();
+            let mut s = server
+                .clone()
+                .start_session(version, &params(Side::Server))
+                .unwrap();
+            assert_eq!(c.early_crypto().is_some(), resumed);
+            let mut hello = Vec::new();
+            while let Some(event) = c.poll_handshake().unwrap() {
+                let HandshakeEvent::Data(level, bytes) = event else {
+                    panic!("unexpected client first-flight event");
+                };
+                hello.extend_from_slice(&bytes);
+                for fragment in bytes.chunks(17) {
+                    s.read_handshake(level, fragment).unwrap();
+                }
+            }
+            let ClientHelloHandshakePrefix::Complete(hello) =
+                parse_client_hello_message_prefix(&hello)
+            else {
+                panic!("generated QUIC ClientHello is not complete");
+            };
+            let observed: Vec<_> = hello
+                .extensions()
+                .iter()
+                .map(|ext| ext.id())
+                .filter(|id| order.contains(id))
+                .collect();
+            assert_eq!(observed, order);
+            let offered = hello
+                .extensions()
+                .iter()
+                .any(|ext| ext.id() == ExtensionId::PRE_SHARED_KEY);
+            assert_eq!(offered, resumed, "{version:?} {profile} {verify:?}");
+            if resumed {
+                assert_eq!(
+                    hello.extensions().last().map(|ext| ext.id()),
+                    Some(ExtensionId::PRE_SHARED_KEY)
+                );
+            }
+            check_session(&mut *c, &mut *s, resumed);
+        }
+    }
 }

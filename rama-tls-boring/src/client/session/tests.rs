@@ -24,7 +24,8 @@ use rama_net::{
 use rama_tls::{
     ExtensionId,
     client::{
-        ClientHello, NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerVerify,
+        ClientAuth, ClientHello, NegotiatedTlsParameters, ServerVerifyMode, TlsClientAuth,
+        TlsClientConfig, TlsServerVerify, TlsSessionProfileScope,
     },
     server::{
         CertificateIdentity, GeneratedServerAuthConfig, LeafCertRequest, ServerAuthData,
@@ -37,7 +38,10 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
 use super::*;
 use crate::{
     TlsStream,
-    client::{BoringClientConfigExt as _, ConnectorKindSecure, TlsConnector},
+    client::{
+        BoringClientConfigExt as _, BoringExtensionOrder, BoringPermuteExtensions,
+        ConnectorKindSecure, TlsConnector,
+    },
     server::TlsAcceptorData,
 };
 
@@ -543,4 +547,101 @@ fn the_cache_keeps_the_newest_values_of_the_most_recent_keys() {
         cache.insert(key, 0);
     }
     assert_eq!(cache.len(), 2);
+}
+
+#[tokio::test]
+async fn different_drawn_orders_resume_within_one_profile_scope() {
+    let server = Server::new(SslVersion::TLS1_3);
+    let connector = connector(&server, Some(cache()));
+    let first_order = vec![
+        ExtensionId::SERVER_NAME,
+        ExtensionId::SUPPORTED_VERSIONS,
+        ExtensionId::SIGNATURE_ALGORITHMS,
+        ExtensionId::KEY_SHARE,
+        ExtensionId::SUPPORTED_GROUPS,
+    ];
+    let mut second_order = first_order.clone();
+    second_order.reverse();
+    for (index, order) in [first_order, second_order].into_iter().enumerate() {
+        let hello = connect_hello(&connector, &server, |extensions| {
+            extensions.insert(TlsSessionProfileScope("one profile".into()));
+            extensions.insert(BoringPermuteExtensions(false));
+            extensions.insert(BoringExtensionOrder(order.clone()));
+        })
+        .await;
+        assert_eq!(offers_session(&hello), index != 0);
+        let observed: Vec<_> = hello
+            .extensions()
+            .iter()
+            .map(|ext| ext.id())
+            .filter(|id| order.contains(id))
+            .collect();
+        assert_eq!(observed, order);
+        if index != 0 {
+            assert_eq!(
+                hello.extensions().last().map(|ext| ext.id()),
+                Some(ExtensionId::PRE_SHARED_KEY)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn profile_scopes_and_security_policies_remain_isolated_across_draws() {
+    let server = Server::new(SslVersion::TLS1_3);
+    let connector = connector(&server, Some(cache()));
+    for (profile, verify, expected) in [
+        ("first", ServerVerifyMode::Disable, FULL),
+        ("first", ServerVerifyMode::Auto, FULL),
+        ("second", ServerVerifyMode::Auto, FULL),
+        ("first", ServerVerifyMode::Auto, RESUMED),
+        ("second", ServerVerifyMode::Auto, RESUMED),
+        ("first", ServerVerifyMode::Disable, RESUMED),
+    ] {
+        let actual = connect(&connector, &server, "a.test", |extensions| {
+            extensions.insert(TlsSessionProfileScope(profile.into()));
+            extensions.insert(TlsServerVerify(verify));
+            extensions.insert(BoringPermuteExtensions(false));
+            extensions.insert(BoringExtensionOrder(vec![
+                ExtensionId::SIGNATURE_ALGORITHMS,
+                ExtensionId::SERVER_NAME,
+                ExtensionId::KEY_SHARE,
+                ExtensionId::SUPPORTED_GROUPS,
+                ExtensionId::SUPPORTED_VERSIONS,
+            ]));
+        })
+        .await;
+        assert_eq!(actual, expected, "{profile}, {verify:?}");
+    }
+}
+
+#[tokio::test]
+async fn newly_generated_client_credentials_do_not_resume_another_draw() {
+    let server = Server::new(SslVersion::TLS1_3);
+    let connector = connector(&server, Some(cache()));
+    for (reversed, expected) in [
+        (false, FULL),
+        (true, FULL),
+        (false, RESUMED),
+        (true, RESUMED),
+    ] {
+        let actual = connect(&connector, &server, "a.test", |extensions| {
+            extensions.insert(TlsClientAuth(ClientAuth::SelfSigned));
+            let mut order = vec![
+                ExtensionId::SERVER_NAME,
+                ExtensionId::SUPPORTED_VERSIONS,
+                ExtensionId::SIGNATURE_ALGORITHMS,
+                ExtensionId::KEY_SHARE,
+                ExtensionId::SUPPORTED_GROUPS,
+            ];
+            if reversed {
+                order.reverse();
+            }
+            extensions.insert(BoringExtensionOrder(order));
+        })
+        .await;
+        // Each order constructs a different certificate; reusing that exact context
+        // retains its credential and may resume on subsequent connections.
+        assert_eq!(actual, expected);
+    }
 }

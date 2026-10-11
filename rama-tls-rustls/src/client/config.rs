@@ -8,15 +8,16 @@ use rama_tls::KeyLogIntent;
 use rama_tls::client::{
     TlsClientAuth, TlsClientConfig, TlsClientConfigProvider, TlsComponentIdentity,
     TlsPoolComponent, TlsPoolId, TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
-    TlsStoreServerCertChain,
+    TlsSessionProfileScope, TlsStoreServerCertChain,
 };
 use rama_tls::{TlsKeyLog, TlsSupportedVersions};
 use rama_utils::macros::generate_set_and_with;
 use std::sync::Arc;
 
 /// Gather all the TLS extensions supported by rustls
-#[derive(FromExtensions)]
+#[derive(Clone, FromExtensions)]
 pub struct RustlsTlsConnectorConfig<'a> {
+    pub session_profile_scope: Option<&'a TlsSessionProfileScope>,
     pub alpn: Option<&'a TlsAlpn>,
     pub versions: Option<&'a TlsSupportedVersions>,
     pub verify: Option<&'a TlsServerVerify>,
@@ -43,6 +44,7 @@ impl RustlsTlsConnectorConfig<'_> {
             return None;
         }
         let Self {
+            session_profile_scope,
             alpn,
             versions,
             verify,
@@ -65,6 +67,9 @@ impl RustlsTlsConnectorConfig<'_> {
             .maybe_with_client_auth(*client_auth)
             .maybe_with_server_cert_pins(*server_cert_pins)
             .maybe_with_server_trust(*server_trust);
+        if let Some(scope) = session_profile_scope {
+            builder.set_component(*scope);
+        }
         if let Some(verifier) = verifier {
             builder.set_component(verifier.as_ref());
         }
@@ -78,6 +83,7 @@ impl RustlsTlsConnectorConfig<'_> {
     pub fn authenticates_server(&self) -> bool {
         // New fields must also be reviewed for their effect on authentication.
         let Self {
+            session_profile_scope: _,
             alpn: _,
             versions: _,
             verify,
@@ -227,6 +233,13 @@ mod pool_tests {
     fn every_comparable_override_preserves_presence_and_value() {
         type Insert = fn(&Extensions, u8);
         let cases: &[(&str, Insert)] = &[
+            ("session_profile_scope", |ext, value| {
+                ext.insert(TlsSessionProfileScope(if value == 0 {
+                    "first".into()
+                } else {
+                    "second".into()
+                }));
+            }),
             ("empty_alpn", |ext, value| {
                 ext.insert(if value == 0 {
                     TlsAlpn::empty()

@@ -8,6 +8,9 @@
 //! easily between different implementations. Making it possible to run for example
 //! a Rustls proxy service but establish connections using BoringSSL.
 
+mod session;
+pub use session::TlsSessionProfileScope;
+
 mod hello;
 #[doc(inline)]
 pub use hello::{ClientHello, ClientHelloExtension, ECHClientHello};
