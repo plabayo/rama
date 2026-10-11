@@ -19,7 +19,7 @@ use super::encode::{
     extend_encoded_query, hash_encoded_query, write_encoded_query,
 };
 
-use rama_core::bytes::{Bytes, BytesMut};
+use rama_core::bytes::{BufMut, Bytes, BytesMut};
 
 use percent_encoding::percent_decode;
 
@@ -223,7 +223,7 @@ impl<'a> QueryRef<'a> {
         self.bytes.is_empty()
     }
 
-    pub(super) fn write_encoded_to(self, buf: &mut BytesMut) {
+    pub(super) fn write_encoded_to(self, buf: &mut impl BufMut) {
         extend_encoded_query(buf, self.bytes);
     }
 

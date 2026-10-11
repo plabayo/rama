@@ -17,7 +17,7 @@ use crate::uri::{
     },
 };
 
-use rama_core::bytes::BytesMut;
+use rama_core::bytes::BufMut;
 
 use itertools::Itertools;
 use percent_encoding::percent_decode;
@@ -57,7 +57,7 @@ impl<'a> PathRef<'a> {
         encoded_path(self.bytes)
     }
 
-    pub(super) fn write_encoded_to(self, buf: &mut BytesMut) {
+    pub(super) fn write_encoded_to(self, buf: &mut impl BufMut) {
         extend_encoded_path(buf, self.bytes);
     }
 
@@ -432,7 +432,7 @@ impl<'a> PathSegment<'a> {
     }
 
     #[inline]
-    pub(super) fn write_encoded_to(self, buf: &mut BytesMut) {
+    pub(super) fn write_encoded_to(self, buf: &mut impl BufMut) {
         super::encode::extend_encoded_segment_bytes(buf, self.raw);
     }
 

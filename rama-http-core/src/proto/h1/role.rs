@@ -1585,16 +1585,20 @@ fn encode_request_target(
     extensions: &Extensions,
     dst: &mut Vec<u8>,
 ) {
-    let mut buf = BytesMut::new();
+    let start = dst.len();
     let written =
-        rama_http_types::proto::h1::head::encode_request_target(method, uri, extensions, &mut buf);
+        rama_http_types::proto::h1::head::encode_request_target(method, uri, extensions, dst);
 
-    match written {
-        Ok(()) => extend(dst, &buf),
+    if written.is_err() {
         // defensive: a form mismatch (e.g. authority-form on an URI without authority)
-        // falls back to the faithful full form rather than emitting a broken target.
-        Err(_) if uri.is_asterisk() => extend(dst, b"/"),
-        Err(_) => uri.encode_to(dst),
+        // falls back to the faithful full form rather than emitting a broken target,
+        // dropping anything the failed form wrote first.
+        dst.truncate(start);
+        if uri.is_asterisk() {
+            extend(dst, b"/");
+        } else {
+            uri.encode_to(dst);
+        }
     }
 }
 
@@ -1675,6 +1679,11 @@ mod tests {
                 &http_proxy_ext()
             ),
             "http://example.com/p",
+        );
+        // ...and a server-wide OPTIONS stays path-less
+        assert_eq!(
+            target(&Method::OPTIONS, "http://example.com", &http_proxy_ext()),
+            "http://example.com",
         );
 
         // Route intent alone cannot prove which connection was established.

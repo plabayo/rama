@@ -28,7 +28,7 @@ pub(super) fn normalize_request_authority<B>(request: &mut HttpRequest<B>) -> Re
         port: authority.port(),
     }
     .to_string();
-    let value = HeaderValue::from_str(&host).context("encode HTTP Host header")?;
+    let value = HeaderValue::try_from(host).context("encode HTTP Host header")?;
     request.headers_mut().insert(http_header::HOST, value);
     Ok(())
 }

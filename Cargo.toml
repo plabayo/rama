@@ -752,6 +752,11 @@ required-features = ["net"]
 harness = false
 
 [[bench]]
+name = "h1_request_target"
+required-features = ["http", "net"]
+harness = false
+
+[[bench]]
 name = "pool_contention"
 required-features = ["net"]
 harness = false

@@ -11,7 +11,7 @@ use crate::std::{borrow::Cow, string::String};
 use super::component_input::IntoUriComponent;
 use crate::byte_sets::{is_path_byte, is_query_fragment_byte};
 
-use rama_core::bytes::BytesMut;
+use rama_core::bytes::{BufMut, BytesMut};
 
 use percent_encoding::{AsciiSet, CONTROLS, percent_encode};
 
@@ -235,9 +235,9 @@ fn push_pct_encoded(out: &mut String, b: u8) {
     out.push(char::from(low));
 }
 
-fn extend_pct_encoded(out: &mut BytesMut, b: u8) {
+fn extend_pct_encoded(out: &mut impl BufMut, b: u8) {
     let [high, low] = rama_utils::hex::encode_byte_upper(b);
-    out.extend_from_slice(&[b'%', high, low]);
+    out.put_slice(&[b'%', high, low]);
 }
 
 #[derive(Debug, Clone)]
@@ -426,7 +426,7 @@ fn hash_pct_encoded<H: Hasher>(state: &mut H, b: u8) {
 }
 
 fn extend_encoded_preserving_pct(
-    out: &mut BytesMut,
+    out: &mut impl BufMut,
     input: &[u8],
     is_allowed: impl Fn(u8) -> bool,
 ) {
@@ -448,7 +448,7 @@ fn extend_encoded_preserving_pct(
     }
 
     if !needs_encoding {
-        out.extend_from_slice(input);
+        out.put_slice(input);
         return;
     }
 
@@ -456,13 +456,13 @@ fn extend_encoded_preserving_pct(
     while i < input.len() {
         let b = input[i];
         if b == b'%' && is_pct_triplet(input, i) {
-            out.extend_from_slice(&input[i..i + 3]);
+            out.put_slice(&input[i..i + 3]);
             i += 3;
         } else if b == b'%' {
             extend_pct_encoded(out, b);
             i += 1;
         } else if is_allowed(b) {
-            out.extend_from_slice(&[b]);
+            out.put_u8(b);
             i += 1;
         } else {
             extend_pct_encoded(out, b);
@@ -482,7 +482,7 @@ pub(super) fn write_encoded_path(f: &mut fmt::Formatter<'_>, input: &[u8]) -> fm
 }
 
 #[inline]
-pub(super) fn extend_encoded_path(out: &mut BytesMut, input: &[u8]) {
+pub(super) fn extend_encoded_path(out: &mut impl BufMut, input: &[u8]) {
     extend_encoded_preserving_pct(out, input, is_path_byte);
 }
 
@@ -492,7 +492,7 @@ pub(super) fn encoded_segment(input: &[u8]) -> Cow<'_, str> {
 }
 
 #[inline]
-pub(super) fn extend_encoded_segment_bytes(out: &mut BytesMut, input: &[u8]) {
+pub(super) fn extend_encoded_segment_bytes(out: &mut impl BufMut, input: &[u8]) {
     extend_encoded_preserving_pct(out, input, is_segment_byte);
 }
 
@@ -527,7 +527,7 @@ pub(super) fn write_encoded_query(f: &mut fmt::Formatter<'_>, input: &[u8]) -> f
 }
 
 #[inline]
-pub(super) fn extend_encoded_query(out: &mut BytesMut, input: &[u8]) {
+pub(super) fn extend_encoded_query(out: &mut impl BufMut, input: &[u8]) {
     extend_encoded_preserving_pct(out, input, is_query_fragment_byte);
 }
 
