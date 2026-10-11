@@ -575,18 +575,26 @@ impl Party {
     #[must_use]
     pub fn waiter(self: &Arc<Self>) -> Waiter {
         // Counts no further than the inline places: however many waiters a party
-        // takes, none is handed out twice.
-        let inline = self
-            .placed
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |placed| {
-                (placed < INLINE_PLACES).then_some(placed + 1)
-            });
+        // takes, none is handed out twice. A CAS loop, as loom's atomics have no
+        // `try_update` and `fetch_update` is deprecated.
+        let mut placed = self.placed.load(Ordering::Relaxed);
+        let place = loop {
+            if placed >= INLINE_PLACES {
+                break PlaceRef::Extra(Arc::default());
+            }
+            match self.placed.compare_exchange_weak(
+                placed,
+                placed + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(index) => break PlaceRef::Inline(index),
+                Err(observed) => placed = observed,
+            }
+        };
         Waiter {
             party: self.clone(),
-            place: match inline {
-                Ok(index) => PlaceRef::Inline(index),
-                Err(_) => PlaceRef::Extra(Arc::default()),
-            },
+            place,
         }
     }
 
