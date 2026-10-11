@@ -430,13 +430,6 @@ where
             return Err(UserError::UnexpectedFrameType.into());
         }
 
-        // TODO: with a bit of trickery we can perhaps in future
-        // do better than just cloning here...
-
-        request
-            .extensions()
-            .insert(RequestHeaders::from(request.headers().clone()));
-
         let stream_id = me.actions.send.open()?;
 
         // Convert the message
@@ -453,7 +446,7 @@ where
             })
             .flatten();
         let request_method = request.method().clone();
-        let (headers, req_ext) = client::Peer::convert_send_message(
+        let (mut headers, req_ext) = client::Peer::convert_send_message(
             stream_id,
             request,
             protocol,
@@ -461,6 +454,8 @@ where
             me.headers_pseudo_order.clone(),
             None,
         )?;
+        // The fields the frame sends, shared rather than copied.
+        req_ext.insert(RequestHeaders::from(headers.share_fields()));
 
         let mut stream = Stream::try_new(
             stream_id,

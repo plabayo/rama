@@ -290,6 +290,70 @@ async fn streaming_round_trip_reuses_connection_and_dynamic_qpack() {
     .unwrap();
 }
 
+/// The response carries its request's fields as sent: all of them, or without the
+/// connection-specific ones HTTP/3 leaves out and with `TE` as the `trailers` it sends.
+#[tokio::test]
+async fn request_headers_record_the_fields_as_sent() {
+    use rama_http_types::{HeaderMap, proto::RequestHeaders};
+
+    fn fields(headers: &HeaderMap) -> Vec<(String, Vec<u8>)> {
+        headers
+            .ordered_iter()
+            .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
+            .collect()
+    }
+
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::new(None, None).await;
+        let (mut client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let (received_tx, mut received_rx) = tokio::sync::mpsc::unbounded_channel();
+        let serve = spawn(async move {
+            for _ in 0..2 {
+                let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+                received_tx.send(fields(request.headers())).unwrap();
+                response
+                    .send_response(Response::new(Body::empty()))
+                    .await
+                    .unwrap();
+            }
+        });
+        for extra in [
+            &[][..],
+            &[
+                ("connection", "keep-alive"),
+                ("keep-alive", "timeout=5"),
+                ("te", "trailers, gzip"),
+            ][..],
+        ] {
+            let mut request = Request::builder()
+                .uri("https://localhost/")
+                .header("x-a", "1");
+            for (name, value) in extra {
+                request = request.header(*name, *value);
+            }
+            let response = client
+                .send_request(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let recorded = fields(response.extensions().get_ref::<RequestHeaders>().unwrap());
+            assert_eq!(recorded, received_rx.recv().await.unwrap());
+        }
+        serve.await.unwrap();
+        pair.client.close(0u32, b"test complete");
+        _ = client_driver.await.unwrap();
+        _ = server_driver.await.unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn header_order_survives_transport_and_message_forwarding() {
     use rama_http_types::{

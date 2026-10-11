@@ -2956,6 +2956,51 @@ mod tests {
         assert_eq!(vec, b"GET / HTTP/1.1\r\nContent-Length: 10\r\nContent-Type: application/json\r\n*-*: o_o\r\n\r\n".to_vec());
     }
 
+    /// `RequestHeaders` holds the head as written: here with the repaired `Host`
+    /// and the `content-length` the encoder added.
+    #[test]
+    fn request_headers_record_the_head_as_sent() {
+        use crate::proto::BodyLength;
+
+        let mut head: MessageHead<RequestLine> = MessageHead::default();
+        head.subject.1 = "http://example.com/p".parse().unwrap();
+        head.headers
+            .insert("host", HeaderValue::from_static("not a host"));
+        head.headers.insert("x-a", HeaderValue::from_static("1"));
+        let mut wire = Vec::new();
+        Client::encode(
+            Encode {
+                head: EncodeHead {
+                    version: head.version,
+                    subject: head.subject,
+                    headers: head.headers,
+                    extensions: &mut head.extensions,
+                },
+                body: Some(BodyLength::Known(5)),
+                keep_alive: true,
+                req_method: &mut None,
+                title_case_headers: false,
+                date_header: false,
+            },
+            &mut wire,
+        )
+        .unwrap();
+
+        let recorded = head.extensions.get_ref::<RequestHeaders>().unwrap();
+        let mut fields = Vec::new();
+        for (name, value) in recorded.ordered_iter() {
+            fields.extend_from_slice(name.as_str().as_bytes());
+            fields.extend_from_slice(b": ");
+            fields.extend_from_slice(value.as_bytes());
+            fields.extend_from_slice(b"\r\n");
+        }
+        let head_end = wire.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 2;
+        let line_end = wire.windows(2).position(|w| w == b"\r\n").unwrap() + 2;
+        assert_eq!(fields, &wire[line_end..head_end]);
+        assert_eq!(recorded.get("host").unwrap(), "example.com");
+        assert_eq!(recorded.get("content-length").unwrap(), "5");
+    }
+
     #[test]
     fn test_client_request_encode_orig_case() {
         use rama_http_types::header::HeaderValue;

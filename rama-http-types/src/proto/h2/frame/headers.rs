@@ -16,6 +16,7 @@ use rama_core::telemetry::tracing;
 use std::fmt;
 use std::io::Cursor;
 use std::ops::ControlFlow;
+use std::sync::Arc;
 
 type EncodeBuf<'a> = rama_core::bytes::buf::Limit<&'a mut BytesMut>;
 
@@ -144,10 +145,43 @@ struct Iter {
     fields: IntoOrderedIter<HeaderValue>,
 }
 
+/// A header block's fields: its own, or shared with the [`RequestHeaders`] of the
+/// request they are sent for.
+///
+/// [`RequestHeaders`]: crate::proto::RequestHeaders
+#[derive(Debug)]
+enum Fields {
+    Owned(HeaderMap),
+    Shared(Arc<HeaderMap>),
+}
+
+impl Fields {
+    fn get(&self) -> &HeaderMap {
+        match self {
+            Self::Owned(fields) => fields,
+            Self::Shared(fields) => fields,
+        }
+    }
+
+    fn get_mut(&mut self) -> &mut HeaderMap {
+        match self {
+            Self::Owned(fields) => fields,
+            Self::Shared(fields) => Arc::make_mut(fields),
+        }
+    }
+
+    fn into_owned(self) -> HeaderMap {
+        match self {
+            Self::Owned(fields) => fields,
+            Self::Shared(fields) => Arc::unwrap_or_clone(fields),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct HeaderBlock {
     /// The decoded header fields
-    fields: HeaderMap,
+    fields: Fields,
 
     /// Precomputed size of all of our header fields, for perf reasons
     field_size: usize,
@@ -174,9 +208,9 @@ impl PartialEq for HeaderBlock {
             is_over_size: other_is_over_size,
             pseudo: other_pseudo,
         } = other;
-        (fields, field_size, is_over_size, pseudo)
+        (fields.get(), field_size, is_over_size, pseudo)
             == (
-                other_fields,
+                other_fields.get(),
                 other_field_size,
                 other_is_over_size,
                 other_pseudo,
@@ -212,7 +246,7 @@ impl Headers {
             stream_dep,
             header_block: HeaderBlock {
                 field_size: calculate_headermap_size(&fields),
-                fields,
+                fields: Fields::Owned(fields),
                 is_over_size: false,
                 pseudo,
             },
@@ -230,7 +264,7 @@ impl Headers {
             stream_dep: None,
             header_block: HeaderBlock {
                 field_size: calculate_headermap_size(&fields),
-                fields,
+                fields: Fields::Owned(fields),
                 is_over_size: false,
                 pseudo: Pseudo::default(),
             },
@@ -294,7 +328,7 @@ impl Headers {
             stream_id: head.stream_id(),
             stream_dep,
             header_block: HeaderBlock {
-                fields: HeaderMap::new(),
+                fields: Fields::Owned(HeaderMap::new()),
                 field_size: 0,
                 is_over_size: false,
                 pseudo: Pseudo::default(),
@@ -343,7 +377,23 @@ impl Headers {
     }
 
     pub fn into_parts(self) -> (Pseudo, HeaderMap) {
-        (self.header_block.pseudo, self.header_block.fields)
+        (
+            self.header_block.pseudo,
+            self.header_block.fields.into_owned(),
+        )
+    }
+
+    /// Shares the fields of this frame, as they will be sent, with the caller.
+    pub fn share_fields(&mut self) -> Arc<HeaderMap> {
+        let fields = match std::mem::replace(
+            &mut self.header_block.fields,
+            Fields::Owned(HeaderMap::new()),
+        ) {
+            Fields::Owned(fields) => Arc::new(fields),
+            Fields::Shared(fields) => fields,
+        };
+        self.header_block.fields = Fields::Shared(fields.clone());
+        fields
     }
 
     pub fn pseudo_mut(&mut self) -> &mut Pseudo {
@@ -360,11 +410,11 @@ impl Headers {
     }
 
     pub fn fields(&self) -> &HeaderMap {
-        &self.header_block.fields
+        self.header_block.fields.get()
     }
 
     pub fn into_fields(self) -> HeaderMap {
-        self.header_block.fields
+        self.header_block.fields.into_owned()
     }
 
     pub fn encode(
@@ -458,7 +508,7 @@ impl PushPromise {
             flags: PushPromiseFlag::default(),
             header_block: HeaderBlock {
                 field_size: calculate_headermap_size(&fields),
-                fields,
+                fields: Fields::Owned(fields),
                 is_over_size: false,
                 pseudo,
             },
@@ -500,11 +550,11 @@ impl PushPromise {
     }
 
     pub fn fields(&self) -> &HeaderMap {
-        &self.header_block.fields
+        self.header_block.fields.get()
     }
 
     pub fn into_fields(self) -> HeaderMap {
-        self.header_block.fields
+        self.header_block.fields.into_owned()
     }
 
     /// Loads the push promise frame but doesn't actually do HPACK decoding.
@@ -551,7 +601,7 @@ impl PushPromise {
         let frame = Self {
             flags,
             header_block: HeaderBlock {
-                fields: HeaderMap::new(),
+                fields: Fields::Owned(HeaderMap::new()),
                 field_size: 0,
                 is_over_size: false,
                 pseudo: Pseudo::default(),
@@ -619,7 +669,10 @@ impl PushPromise {
 
     /// Consume `self`, returning the parts of the frame
     pub fn into_parts(self) -> (Pseudo, HeaderMap) {
-        (self.header_block.pseudo, self.header_block.fields)
+        (
+            self.header_block.pseudo,
+            self.header_block.fields.into_owned(),
+        )
     }
 }
 
@@ -1023,7 +1076,7 @@ impl HeaderBlock {
         max_header_list_size: usize,
         decoder: &mut hpack::Decoder,
     ) -> Result<(), Error> {
-        let mut reg = !self.fields.is_empty();
+        let mut reg = !self.fields.get().is_empty();
         let mut malformed = false;
         let mut header_list_way_too_large = false;
         let mut headers_size = self.calculate_header_list_size();
@@ -1104,7 +1157,7 @@ impl HeaderBlock {
                         }
                         if !self.is_over_size {
                             self.field_size += header_size;
-                            if self.fields.try_append(name, value).is_err() {
+                            if self.fields.get_mut().try_append(name, value).is_err() {
                                 // HeaderMap capacity exceeded — treat as over-size
                                 // so the stream is rejected downstream (RST_STREAM / 431)
                                 // instead of panicking on the 24,577th unique header.
@@ -1171,13 +1224,32 @@ impl HeaderBlock {
     fn into_encoding(self, encoder: &mut hpack::Encoder) -> EncodingHeaderBlock {
         let mut hpack = encoder.take_scratch();
         hpack.clear();
-        let headers = Iter {
-            pseudo_order: self.pseudo.order.iter(),
-            pseudo: Some(self.pseudo),
-            fields: self.fields.into_ordered_iter(),
-        };
-
-        encoder.encode(headers, &mut hpack);
+        let pseudo_order = self.pseudo.order.iter();
+        match self.fields {
+            Fields::Owned(fields) => encoder.encode(
+                Iter {
+                    pseudo_order,
+                    pseudo: Some(self.pseudo),
+                    fields: fields.into_ordered_iter(),
+                },
+                &mut hpack,
+            ),
+            // Values are reference counted, so encoding from the shared map copies none.
+            Fields::Shared(fields) => encoder.encode(
+                Iter {
+                    pseudo_order,
+                    pseudo: Some(self.pseudo),
+                    fields: HeaderMap::new().into_ordered_iter(),
+                }
+                .chain(fields.ordered_iter().map(|(name, value)| {
+                    hpack::Header::Field {
+                        name: Some(name.clone()),
+                        value: value.clone(),
+                    }
+                })),
+                &mut hpack,
+            ),
+        }
 
         EncodingHeaderBlock { hpack }
     }

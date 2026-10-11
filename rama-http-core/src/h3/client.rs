@@ -18,6 +18,7 @@ use rama_http_types::{
     body::StreamingBody,
     header::trailer::ForbiddenTrailers,
     proto::{
+        RequestHeaders,
         ext::{HttpDatagrams, Protocol},
         h1::ext::informational::OnInformational,
         h3::{Code, FrameType},
@@ -481,8 +482,13 @@ where
         if method == Method::CONNECT || request.body().is_end_stream() {
             drop_undeliverable_content_length(request.headers_mut());
         }
-        let encoded = headers::encode_request(&self.shared, id, &request)?;
+        let (encoded, sent) = headers::encode_request_fields(&self.shared, id, &request)?;
         writer.queue(FrameType::HEADERS, encoded)?;
+        let remaining = headers::content_length(request.headers())?;
+        // The response records the fields its request sent.
+        request_extensions.insert(RequestHeaders::from(
+            sent.of(std::mem::take(request.headers_mut())),
+        ));
         if method == Method::CONNECT {
             tokio::select! {
                 biased;
@@ -546,7 +552,6 @@ where
         let shared = self.shared.clone();
         let upload_permit = permit.clone();
         let upload_lifetime = self.lifetime.clone();
-        let remaining = headers::content_length(request.headers())?;
         let allowed_trailers = request.extensions().get_arc::<ForbiddenTrailers>();
         let (_, request_body) = request.into_parts();
         let task = self.executor.spawn_task(async move {

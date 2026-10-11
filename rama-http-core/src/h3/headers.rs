@@ -426,6 +426,46 @@ pub(crate) fn encode_request<B>(
     id: u64,
     request: &Request<B>,
 ) -> Result<Bytes, Error> {
+    encode_request_fields(shared, id, request).map(|(block, _)| block)
+}
+
+/// Which of a request's fields an encoded request block sent.
+pub(crate) struct SentFields {
+    drop_host: bool,
+    unchanged: bool,
+}
+
+impl SentFields {
+    /// The fields sent of the request's `headers`: those themselves, unless some
+    /// were left out or rewritten.
+    pub(crate) fn of(self, headers: HeaderMap) -> HeaderMap {
+        if self.unchanged {
+            return headers;
+        }
+        let mut sent = HeaderMap::new();
+        for (name, value) in sent_request_fields(&headers, self.drop_host) {
+            sent.append(name.clone(), value.clone());
+        }
+        sent
+    }
+}
+
+/// The request fields that go on the wire: not the connection-specific ones, nor
+/// an unusable `Host` next to an authority.
+fn sent_request_fields(
+    headers: &HeaderMap,
+    drop_host: bool,
+) -> impl Iterator<Item = (&HeaderName, &HeaderValue)> {
+    outgoing_fields(headers, Outgoing::Request)
+        .filter(move |(name, _)| !drop_host || *name != header::HOST)
+}
+
+/// [`encode_request`], also telling which of the request's fields it sent.
+pub(crate) fn encode_request_fields<B>(
+    shared: &super::connection::Shared,
+    id: u64,
+    request: &Request<B>,
+) -> Result<(Bytes, SentFields), Error> {
     validate_outgoing(request.headers(), Outgoing::Request)?;
     let protocol = request.extensions().get_ref::<ext::Protocol>();
     if protocol.is_some() && request.method() != Method::CONNECT {
@@ -567,14 +607,29 @@ pub(crate) fn encode_request<B>(
                     || (name == PseudoHeader::Authority && value.contains(&b'@')),
             })
     });
-    shared.encode(
+    let sent = std::cell::Cell::new(0);
+    let block = shared.encode(
         id,
         pseudo.chain(
-            outgoing_fields(request.headers(), Outgoing::Request)
-                .filter(|(name, _)| !drop_host || *name != header::HOST)
+            sent_request_fields(request.headers(), drop_host)
+                .inspect(|_| sent.set(sent.get() + 1))
                 .map(|(name, value)| EncodeField::from_header(name, value)),
         ),
-    )
+    )?;
+    // Every field went out, and `TE` only as the `trailers` it is rewritten to.
+    let unchanged = sent.get() == request.headers().len()
+        && request
+            .headers()
+            .get_all(header::TE)
+            .iter()
+            .all(|value| *value == TE_TRAILERS);
+    Ok((
+        block,
+        SentFields {
+            drop_host,
+            unchanged,
+        },
+    ))
 }
 
 pub(crate) fn encode_response<B>(
