@@ -741,7 +741,7 @@ async fn maybe_serve_directory(
                     Ok(uri) => uri,
                     Err(err) => return Ok(Some(err)),
                 };
-                let location = HeaderValue::from_str(&uri.to_string())
+                let location = HeaderValue::try_from(uri.to_string())
                     .inspect_err(|err| {
                         tracing::debug!("failed to parse uri as header value for loc: {err}");
                     })

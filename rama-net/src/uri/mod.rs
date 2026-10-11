@@ -788,7 +788,12 @@ impl Uri {
         match &self.inner {
             UriInner::Asterisk => buf.push(b'*'),
             UriInner::Lazy(lazy) => buf.extend_from_slice(&lazy.bytes),
-            UriInner::Owned(_) => buf.extend_from_slice(self.to_string().as_bytes()),
+            UriInner::Owned(_) => {
+                use core::fmt::Write as _;
+
+                let result = write!(wire::BufMutWriter(buf), "{self}");
+                debug_assert!(result.is_ok(), "BufMutWriter is infallible");
+            }
         }
     }
 

@@ -334,7 +334,7 @@ pub fn encode_request_target(
     method: &Method,
     uri: &Uri,
     extensions: &Extensions,
-    output: &mut BytesMut,
+    output: &mut impl BufMut,
 ) -> Result<(), HeadError> {
     let result = if *method == Method::CONNECT {
         if !is_http1_connect_target(uri, extensions) {
@@ -342,7 +342,7 @@ pub fn encode_request_target(
         }
         uri.write_http_authority_form(output)
     } else if uri.is_asterisk() && *method == Method::OPTIONS {
-        output.extend_from_slice(b"*");
+        output.put_slice(b"*");
         Ok(())
     } else if uri.is_asterisk() {
         Err(rama_net::uri::WireError::AsteriskMismatch)
@@ -356,7 +356,7 @@ pub fn encode_request_target(
         if via_http_proxy && is_insecure {
             write_absolute_form(method, uri, output)
         } else if is_server_wide(method, uri) {
-            output.extend_from_slice(b"*");
+            output.put_slice(b"*");
             Ok(())
         } else {
             uri.write_http_origin_form(output)
@@ -374,13 +374,17 @@ fn is_server_wide(method: &Method, uri: &Uri) -> bool {
 fn write_absolute_form(
     method: &Method,
     uri: &Uri,
-    output: &mut BytesMut,
+    output: &mut impl BufMut,
 ) -> Result<(), rama_net::uri::WireError> {
-    let result = uri.write_http_absolute_form(output);
-    if result.is_ok() && is_server_wide(method, uri) && output.ends_with(b"/") {
-        output.truncate(output.len() - 1);
+    if !is_server_wide(method, uri) {
+        return uri.write_http_absolute_form(output);
     }
-    result
+    // Rare path: render into scratch space to drop the `/` the writer
+    // normalises an empty path to, as `output` can only be appended to.
+    let mut target = BytesMut::new();
+    uri.write_http_absolute_form(&mut target)?;
+    output.put_slice(target.strip_suffix(b"/").unwrap_or(&target));
+    Ok(())
 }
 
 /// Append HTTP header fields in their insertion order and original casing.

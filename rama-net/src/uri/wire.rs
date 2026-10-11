@@ -19,7 +19,7 @@ use crate::{
     address::{AuthorityRef, OptPort},
 };
 
-use rama_core::bytes::BytesMut;
+use rama_core::bytes::BufMut;
 
 /// Error returned when a wire-form contract can't be honoured.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,7 +62,7 @@ impl Uri {
     /// Errors with [`WireError::AsteriskMismatch`] if the URI is `*` —
     /// asterisk-form is its own request-target form (write `*` directly,
     /// it's a one-byte literal).
-    pub fn write_http_origin_form(&self, buf: &mut BytesMut) -> Result<(), WireError> {
+    pub fn write_http_origin_form(&self, buf: &mut impl BufMut) -> Result<(), WireError> {
         if matches!(self.inner, UriInner::Asterisk) {
             return Err(WireError::AsteriskMismatch);
         }
@@ -76,20 +76,20 @@ impl Uri {
     /// Used by clients sending through a forward proxy. The fragment is stripped
     /// (RFC 9110 §7.1); userinfo is stripped for HTTP-family schemes (RFC 9110 §4.2.4)
     /// and kept for others, which that rule does not cover.
-    pub fn write_http_absolute_form(&self, buf: &mut BytesMut) -> Result<(), WireError> {
+    pub fn write_http_absolute_form(&self, buf: &mut impl BufMut) -> Result<(), WireError> {
         if matches!(self.inner, UriInner::Asterisk) {
             return Err(WireError::AsteriskMismatch);
         }
         let Some(scheme) = self.scheme() else {
             return Err(WireError::NoScheme);
         };
-        buf.extend_from_slice(scheme.as_str().as_bytes());
-        buf.extend_from_slice(b":");
+        buf.put_slice(scheme.as_str().as_bytes());
+        buf.put_slice(b":");
         if let Some(authority) = self.authority() {
-            buf.extend_from_slice(b"//");
+            buf.put_slice(b"//");
             write_userinfo_outside_http(scheme, authority, buf);
-            let result = authority.write_address_with_port(&mut BytesMutWriter(buf), self.port());
-            debug_assert!(result.is_ok(), "BytesMutWriter is infallible");
+            let result = authority.write_address_with_port(&mut BufMutWriter(buf), self.port());
+            debug_assert!(result.is_ok(), "BufMutWriter is infallible");
         }
         write_path_query(self, buf);
         Ok(())
@@ -127,7 +127,7 @@ impl Uri {
     /// the parser. RFC 3986 §3.2.3 grammar permits this; some peers
     /// may reject. Call [`Uri::canonicalize`](Self::canonicalize)
     /// first if you want the empty marker normalized away.
-    pub fn write_http_authority_form(&self, buf: &mut BytesMut) -> Result<(), WireError> {
+    pub fn write_http_authority_form(&self, buf: &mut impl BufMut) -> Result<(), WireError> {
         if matches!(self.inner, UriInner::Asterisk) {
             return Err(WireError::AsteriskMismatch);
         }
@@ -144,9 +144,9 @@ impl Uri {
     /// asterisk-form requests carry `*` in `:path` per RFC 9113 §8.3.1,
     /// so this method writes `*` for an asterisk URI rather than
     /// erroring.
-    pub fn write_h2_path(&self, buf: &mut BytesMut) {
+    pub fn write_h2_path(&self, buf: &mut impl BufMut) {
         if matches!(self.inner, UriInner::Asterisk) {
-            buf.extend_from_slice(b"*");
+            buf.put_slice(b"*");
             return;
         }
         write_path_query(self, buf);
@@ -159,7 +159,7 @@ impl Uri {
     ///
     /// **Wire fidelity**: see [`write_http_authority_form`](Self::write_http_authority_form)
     /// for the `OptPort::Empty` round-trip behavior.
-    pub fn write_h2_authority(&self, buf: &mut BytesMut) -> Result<(), WireError> {
+    pub fn write_h2_authority(&self, buf: &mut impl BufMut) -> Result<(), WireError> {
         if matches!(self.inner, UriInner::Asterisk) {
             return Err(WireError::AsteriskMismatch);
         }
@@ -172,14 +172,14 @@ impl Uri {
     }
 
     /// HTTP/2 / HTTP/3 `:scheme` pseudo-header content (e.g. `https`).
-    pub fn write_h2_scheme(&self, buf: &mut BytesMut) -> Result<(), WireError> {
+    pub fn write_h2_scheme(&self, buf: &mut impl BufMut) -> Result<(), WireError> {
         if matches!(self.inner, UriInner::Asterisk) {
             return Err(WireError::AsteriskMismatch);
         }
         let Some(scheme) = self.scheme() else {
             return Err(WireError::NoScheme);
         };
-        buf.extend_from_slice(scheme.as_str().as_bytes());
+        buf.put_slice(scheme.as_str().as_bytes());
         Ok(())
     }
 }
@@ -191,12 +191,16 @@ impl Uri {
 /// Write `userinfo@` for schemes outside the HTTP family. RFC 9110 §4.2.4,
 /// RFC 9113 §8.3.1 and RFC 9114 §4.3.1 forbid it only for http(s) targets;
 /// WebSocket targets map onto those (RFC 8441 §5, RFC 9220 §3).
-fn write_userinfo_outside_http(scheme: &Protocol, authority: AuthorityRef<'_>, buf: &mut BytesMut) {
+fn write_userinfo_outside_http(
+    scheme: &Protocol,
+    authority: AuthorityRef<'_>,
+    buf: &mut impl BufMut,
+) {
     if let Some(userinfo) = authority.userinfo()
         && !scheme.is_http_based()
     {
-        buf.extend_from_slice(userinfo.as_str().as_bytes());
-        buf.extend_from_slice(b"@");
+        buf.put_slice(userinfo.as_str().as_bytes());
+        buf.put_slice(b"@");
     }
 }
 
@@ -206,10 +210,10 @@ fn write_userinfo_outside_http(scheme: &Protocol, authority: AuthorityRef<'_>, b
 ///
 /// IP-address rendering streams through a `fmt::Write` adapter into
 /// `buf` — no `to_string()` allocation per request.
-fn write_host_port(uri: &Uri, buf: &mut BytesMut) -> Result<(), WireError> {
+fn write_host_port(uri: &Uri, buf: &mut impl BufMut) -> Result<(), WireError> {
     let authority = uri.authority().ok_or(WireError::NoAuthority)?;
-    let result = authority.write_address(&mut BytesMutWriter(buf));
-    debug_assert!(result.is_ok(), "BytesMutWriter is infallible");
+    let result = authority.write_address(&mut BufMutWriter(buf));
+    debug_assert!(result.is_ok(), "BufMutWriter is infallible");
     Ok(())
 }
 
@@ -233,28 +237,28 @@ fn write_absolute_form(
 }
 
 /// [`fmt::Write`] adapter that pushes formatted bytes straight into a
-/// [`BytesMut`]. Used by [`write_host_port`] to stream `Ipv4Addr` /
+/// [`BufMut`]. Used by [`write_host_port`] to stream `Ipv4Addr` /
 /// `Ipv6Addr` Display output into the request buffer with no
 /// intermediate `String`.
-struct BytesMutWriter<'a>(&'a mut BytesMut);
+pub(super) struct BufMutWriter<'a, B>(pub(super) &'a mut B);
 
-impl core::fmt::Write for BytesMutWriter<'_> {
+impl<B: BufMut> core::fmt::Write for BufMutWriter<'_, B> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        self.0.extend_from_slice(s.as_bytes());
+        self.0.put_slice(s.as_bytes());
         Ok(())
     }
 }
 
 /// Write `path[?query]` to `buf`. Empty path is normalised to `/`.
 /// Fragment is intentionally skipped (HTTP forbids it in request-targets).
-fn write_path_query(uri: &Uri, buf: &mut BytesMut) {
+fn write_path_query(uri: &Uri, buf: &mut impl BufMut) {
     if let Some(path) = uri.path().filter(|p| !p.is_empty()) {
         path.write_encoded_to(buf);
     } else {
-        buf.extend_from_slice(b"/");
+        buf.put_slice(b"/");
     }
     if let Some(q) = uri.query() {
-        buf.extend_from_slice(b"?");
+        buf.put_slice(b"?");
         q.write_encoded_to(buf);
     }
 }
