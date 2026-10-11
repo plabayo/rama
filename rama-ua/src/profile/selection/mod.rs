@@ -15,6 +15,9 @@ use super::ValueId;
 mod order;
 pub use order::OrderDrawError;
 
+mod ticket;
+pub use ticket::*;
+
 const DRAW_PREFIX: &[u8] = b"rama-profile-draw\0";
 
 /// Canonical encoding and ChaCha20 stream revision.
