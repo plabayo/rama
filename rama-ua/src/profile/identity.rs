@@ -2,6 +2,7 @@
 
 use std::str;
 
+use rama_core::extensions::Extension;
 use rama_http::{HeaderMap, Method, Version};
 use serde::{Deserialize, Serialize};
 
@@ -135,7 +136,8 @@ pub enum ConnectionIpFamily {
     V6,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Extension)]
+#[extension(tags(ua))]
 pub struct ConnectionContext {
     pub resumption: ResumptionContext,
     pub early_data: Option<bool>,

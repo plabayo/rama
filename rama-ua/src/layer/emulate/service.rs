@@ -16,7 +16,7 @@ use rama_http::{
 use rama_net::{
     AuthorityInputExt, HttpVersionInputExt, Protocol, ProtocolInputExt, TargetHttpVersionInputExt,
     address::{Host, HostWithOptPort},
-    client::{ConnectionError, ConnectorService, EstablishedClientConnection},
+    client::{ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection},
     uri::Uri,
 };
 use rama_utils::str::{starts_with_ignore_ascii_case, submatch_ignore_ascii_case};
@@ -24,8 +24,8 @@ use rama_utils::str::{starts_with_ignore_ascii_case, submatch_ignore_ascii_case}
 use crate::{
     HttpAgent, UserAgent,
     profile::{
-        CUSTOM_HEADER_MARKER, HttpHeadersProfile, HttpProfile, PreserveHeaderUserAgent,
-        RequestClientHints, RequestInitiator,
+        CUSTOM_HEADER_MARKER, ConnectionContext, EmulationContext, HttpHeadersProfile, HttpProfile,
+        PreserveHeaderUserAgent, ProfileConnectionReuse, RequestClientHints, RequestInitiator,
     },
 };
 
@@ -283,7 +283,58 @@ where
     type Output = EstablishedClientConnection<S::Connection, Input>;
 
     async fn serve(&self, req: Input) -> Result<Self::Output, Self::Error> {
+        let connection_selection = req
+            .extensions()
+            .get_ref::<EmulationContext>()
+            .map(|context| {
+                let connection = req
+                    .extensions()
+                    .get_ref::<ConnectionContext>()
+                    .cloned()
+                    .unwrap_or_default();
+                context
+                    .selected
+                    .connection(&connection, context.seed, context.connection_key)
+            })
+            .transpose()
+            .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
+        if let Some(selection) = &connection_selection {
+            req.extensions().insert(selection.clone());
+        }
+
         let EstablishedClientConnection { conn, input: req } = self.inner.connect(req).await?;
+
+        if let Some(selection) = connection_selection {
+            let version = conn
+                .extensions()
+                .get_ref::<TargetHttpVersion>()
+                .map(|target| target.0)
+                .or_else(|| req.target_http_version())
+                .or_else(|| req.http_version())
+                .ok_or_else(|| {
+                    ConnectionError::local(
+                        BoxError::from_static_str(
+                            "captured profile connection has no negotiated HTTP version",
+                        ),
+                        ConnectionErrorKind::Protocol,
+                    )
+                })?;
+            req.extensions()
+                .get_ref::<EmulationContext>()
+                .ok_or_else(|| {
+                    ConnectionError::local(
+                        BoxError::from_static_str("captured profile emulation context is missing"),
+                        ConnectionErrorKind::Internal,
+                    )
+                })?
+                .selected
+                .validate_negotiated_protocol(version)
+                .map_err(|error| {
+                    ConnectionError::application(error, ConnectionErrorKind::Protocol)
+                })?;
+            conn.extensions().insert(selection.clone());
+            ProfileConnectionReuse::new(&selection, version).publish(conn.extensions());
+        }
 
         match req
             .extensions()

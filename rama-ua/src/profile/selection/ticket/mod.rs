@@ -23,6 +23,7 @@ const MAXIMUM_IDENTITY_BYTES: usize = kib(16);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SelectionTransport {
+    TcpPlain,
     TcpTls,
     Quic,
 }
@@ -60,6 +61,11 @@ impl CapabilitySet {
             return Err(SelectionError::MissingHttpAlpn);
         }
         match transport {
+            SelectionTransport::TcpPlain => {
+                if required.h3 {
+                    return Err(SelectionError::IncompatibleTransport);
+                }
+            }
             SelectionTransport::TcpTls => {
                 if required.h3 {
                     return Err(SelectionError::IncompatibleTransport);
@@ -355,6 +361,14 @@ impl SelectedProfile {
     #[must_use]
     pub fn flow(&self) -> &FlowKey {
         &self.flow
+    }
+
+    pub fn validate_negotiated_protocol(&self, version: Version) -> Result<(), SelectionError> {
+        if protocol_supported(self.required, version) {
+            Ok(())
+        } else {
+            Err(SelectionError::IncompatibleNegotiatedProtocol(version))
+        }
     }
 
     #[must_use]

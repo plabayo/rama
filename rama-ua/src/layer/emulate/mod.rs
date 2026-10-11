@@ -23,6 +23,12 @@ pub use provider::{SelectedUserAgentProfile, UserAgentProvider, UserAgentSelectF
 mod layer;
 pub use layer::UserAgentEmulateLayer;
 
+mod profile;
+pub use profile::{
+    ProfileEmulateHttpRequestModifier, ProfileEmulateHttpRequestModifierLayer, ProfileEmulateLayer,
+    ProfileEmulateService,
+};
+
 mod service;
 pub use service::{
     UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpConnectModifierLayer,
