@@ -276,6 +276,7 @@ impl UserAgentDatabase {
             return Err(SelectionError::IncompatibleNegotiatedProtocol(protocol));
         }
         let flow = request.flow.canonical(MAXIMUM_IDENTITY_BYTES)?;
+        let selection_flow = selection_flow(&request.flow)?;
         let candidates = self.candidates(ProfileCandidateFilter {
             client: request.client.client.as_deref(),
             platform: request.client.platform,
@@ -296,7 +297,7 @@ impl UserAgentDatabase {
         if matching.is_empty() {
             return Err(SelectionError::MissingProfile);
         }
-        matching.retain(|(_profile, analysis)| has_flow(analysis, flow.id));
+        matching.retain(|(_profile, analysis)| has_flow(analysis, &request.flow, flow.id));
         if matching.is_empty() {
             return Err(SelectionError::MissingFlow);
         }
@@ -307,7 +308,7 @@ impl UserAgentDatabase {
             return Err(SelectionError::MissingCapabilities(request.required));
         }
         matching.sort_unstable_by_key(|(_profile, analysis)| analysis.id);
-        let scope = selection_scope(&matching, flow.id, request.required);
+        let scope = selection_scope(&matching, selection_flow.id, request.required);
         let mut draw = ProfileDraw::new(
             seed,
             ProfileDrawContext {
@@ -405,7 +406,7 @@ impl SelectedProfile {
             .enumerate()
             .filter(|(index, scope)| {
                 scope.context.flow.is_none()
-                    && scope.context.connection == *context
+                    && connection_context_matches(&scope.context.connection, context)
                     && scope.observations.domain == CanonicalDomain::Joint
                     && connection_scope_supports(analysis, *index, self.required)
             })
@@ -517,8 +518,11 @@ impl SelectedProfile {
             .iter()
             .enumerate()
             .filter(|(index, scope)| {
-                scope.context.flow == Some(canonical.id)
-                    && scope.context.connection == connection.effective.context.connection
+                scope_flow_matches(scope, flow, canonical.id)
+                    && connection_context_matches(
+                        &scope.context.connection,
+                        &connection.effective.context.connection,
+                    )
                     && scope.observations.domain == CanonicalDomain::Joint
                     && request_scope_supports(analysis, *index, protocol)
             })
@@ -639,11 +643,15 @@ impl ConnectionReusePolicy for ProfileConnectionReuse {
     }
 }
 
-fn has_flow(analysis: &crate::profile::AnalyzedProfile, flow: ValueId) -> bool {
+fn has_flow(
+    analysis: &crate::profile::AnalyzedProfile,
+    flow: &FlowKey,
+    canonical: ValueId,
+) -> bool {
     analysis
         .scopes
         .iter()
-        .any(|scope| scope.context.flow == Some(flow))
+        .any(|scope| scope_flow_matches(scope, flow, canonical))
 }
 
 fn connection_scope_supports(
@@ -651,10 +659,90 @@ fn connection_scope_supports(
     index: usize,
     required: CapabilitySet,
 ) -> bool {
-    (!required.tls_tcp || contains(analysis.components.tls_tcp.as_deref(), index))
+    (!required.h2 || contains(analysis.components.h2.as_deref(), index))
+        && (!required.tls_tcp || contains(analysis.components.tls_tcp.as_deref(), index))
         && (!required.tls_quic || contains(analysis.components.tls_quic.as_deref(), index))
         && (!required.quic || contains(analysis.components.quic.as_deref(), index))
         && (!required.h3 || contains(analysis.components.h3.as_deref(), index))
+}
+
+fn connection_context_matches(left: &ConnectionContext, right: &ConnectionContext) -> bool {
+    left.resumption == right.resumption
+        && left.early_data == right.early_data
+        && left.token_present == right.token_present
+}
+
+fn scope_flow_matches(
+    scope: &crate::profile::AnalyzedProfileScope,
+    requested: &FlowKey,
+    canonical: ValueId,
+) -> bool {
+    scope.flow.as_ref().map_or_else(
+        || scope.context.flow == Some(canonical),
+        |observed| flow_matches(observed, requested),
+    )
+}
+
+fn flow_matches(observed: &FlowKey, requested: &FlowKey) -> bool {
+    match (observed, requested) {
+        (
+            FlowKey::Http {
+                version: observed_version,
+                method: observed_method,
+                initiator: observed_initiator,
+                fetch: observed_fetch,
+                connection: observed_connection,
+            },
+            FlowKey::Http {
+                version: requested_version,
+                method: requested_method,
+                initiator: requested_initiator,
+                fetch: requested_fetch,
+                connection: requested_connection,
+            },
+        ) => {
+            observed_version == requested_version
+                && observed_method == requested_method
+                && observed_initiator == requested_initiator
+                && fetch_context_matches(observed_fetch.as_ref(), requested_fetch.as_ref())
+                && connection_context_matches(observed_connection, requested_connection)
+        }
+        (
+            FlowKey::Other {
+                protocol: observed_protocol,
+                operation: observed_operation,
+            },
+            FlowKey::Other {
+                protocol: requested_protocol,
+                operation: requested_operation,
+            },
+        ) => observed_protocol == requested_protocol && observed_operation == requested_operation,
+        _ => false,
+    }
+}
+
+fn fetch_context_matches(
+    observed: Option<&crate::profile::FetchContext>,
+    requested: Option<&crate::profile::FetchContext>,
+) -> bool {
+    match (observed, requested) {
+        (Some(observed), Some(requested)) => {
+            observed.mode == requested.mode
+                && observed.site == requested.site
+                && observed.destination == requested.destination
+                && observed.user_activation == requested.user_activation
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn selection_flow(flow: &FlowKey) -> Result<CanonicalValue, ProfileDataError> {
+    let mut flow = flow.clone();
+    if let FlowKey::Http { connection, .. } = &mut flow {
+        connection.ip_family = None;
+    }
+    flow.canonical(MAXIMUM_IDENTITY_BYTES)
 }
 
 fn request_scope_supports(

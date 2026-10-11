@@ -17,8 +17,8 @@ use crate::{
     UserAgent,
     profile::{
         CapabilitySet, ConnectionContext, ConnectionSelection, DrawKey, EmulationContext,
-        FetchContext, FlowKey, ProfileSeed, ProfileSelector, RequestInitiator, SelectionRequest,
-        SelectionTransport, UserAgentDatabase, VariantPins,
+        FetchContext, FlowKey, ProfilePreservationMode, ProfileSeed, ProfileSelector,
+        RequestInitiator, SelectionRequest, SelectionTransport, UserAgentDatabase, VariantPins,
     },
 };
 
@@ -35,6 +35,7 @@ pub struct ProfileEmulateLayer {
     connection_key: Option<DrawKey>,
     request_key: Option<DrawKey>,
     pins: VariantPins,
+    preservation: ProfilePreservationMode,
 }
 
 impl ProfileEmulateLayer {
@@ -47,6 +48,7 @@ impl ProfileEmulateLayer {
             connection_key: None,
             request_key: None,
             pins: VariantPins::default(),
+            preservation: ProfilePreservationMode::Strict,
         }
     }
 
@@ -89,6 +91,14 @@ impl ProfileEmulateLayer {
             self
         }
     }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Select strict or reported best-effort replay.
+        pub fn preservation(mut self, preservation: ProfilePreservationMode) -> Self {
+            self.preservation = preservation;
+            self
+        }
+    }
 }
 
 impl<S> Layer<S> for ProfileEmulateLayer {
@@ -103,6 +113,7 @@ impl<S> Layer<S> for ProfileEmulateLayer {
             connection_key: self.connection_key,
             request_key: self.request_key,
             pins: self.pins,
+            preservation: self.preservation,
         }
     }
 
@@ -115,6 +126,7 @@ impl<S> Layer<S> for ProfileEmulateLayer {
             connection_key: self.connection_key,
             request_key: self.request_key,
             pins: self.pins,
+            preservation: self.preservation,
         }
     }
 }
@@ -129,6 +141,7 @@ pub struct ProfileEmulateService<S> {
     connection_key: Option<DrawKey>,
     request_key: Option<DrawKey>,
     pins: VariantPins,
+    preservation: ProfilePreservationMode,
 }
 
 impl<S> ProfileEmulateService<S> {
@@ -173,6 +186,7 @@ where
             .insert(SelectedUserAgentProfile::from(selected.profile()));
         req.extensions()
             .insert(selected.emulation_context(seed, connection_key, request_key));
+        req.extensions().insert(self.preservation);
         self.inner.serve(req).await.into_box_error()
     }
 }
@@ -200,7 +214,7 @@ where
     type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
         if let Some(context) = req.extensions().get_ref::<EmulationContext>() {
             let connection = self
                 .inner
@@ -225,6 +239,20 @@ where
                 context
                     .selected
                     .request(connection, &flow, context.seed, context.request_key)?;
+            let replayed = selected.replay_request(
+                req.headers(),
+                req.extensions()
+                    .get_ref::<ProfilePreservationMode>()
+                    .copied()
+                    .unwrap_or_default(),
+            )?;
+            if let Some(headers) = replayed.headers {
+                *req.headers_mut() = headers;
+            }
+            if let Some(pseudo_headers) = replayed.pseudo_headers {
+                req.extensions().insert(pseudo_headers);
+            }
+            req.extensions().insert(replayed.report);
             req.extensions().insert(selected);
         }
         self.inner.serve(req).await.into_box_error()

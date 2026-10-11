@@ -15,6 +15,9 @@ use super::ValueId;
 mod order;
 pub use order::OrderDrawError;
 
+mod replay;
+pub use replay::*;
+
 mod ticket;
 pub use ticket::*;
 

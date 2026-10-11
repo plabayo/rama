@@ -3,10 +3,10 @@ use rama_http::{Method, Version};
 use super::*;
 use crate::profile::{
     AnalyzedCaptureVariant, AnalyzedProfile, AnalyzedProfileComponents, AnalyzedProfileScope,
-    CaptureLevel, CapturedSlot, CapturedSlotKind, CountedCaptureAnalysis, CounterSnapshot,
-    JointCapture, JointCaptureLimits, ObservationLosses, OrderCaptureLimits, OrderNamespace,
-    OrderedProtocolCapture, ProfileCaptureCompleteness, ProfileKey, ResumptionContext,
-    UntrackedDistinctSnapshot,
+    CaptureLevel, CapturedSlot, CapturedSlotKind, ConnectionIpFamily, CountedCaptureAnalysis,
+    CounterSnapshot, JointCapture, JointCaptureLimits, ObservationLosses, OrderCaptureLimits,
+    OrderNamespace, OrderedProtocolCapture, ProfileCaptureCompleteness, ProfileKey,
+    ResumptionContext, UntrackedDistinctSnapshot,
 };
 
 fn flow(context: ConnectionContext, version: Version) -> FlowKey {
@@ -124,9 +124,8 @@ fn profile(
     } else {
         Version::HTTP_11
     };
-    let request_flow = flow(context.clone(), version)
-        .canonical(MAXIMUM_IDENTITY_BYTES)
-        .unwrap();
+    let request_flow = flow(context.clone(), version);
+    let canonical_request_flow = request_flow.canonical(MAXIMUM_IDENTITY_BYTES).unwrap();
     let connection = scope(
         1,
         canonical.id,
@@ -134,13 +133,14 @@ fn profile(
         context.clone(),
         vec![(connection_variant(1), 1), (connection_variant(2), 3)],
     );
-    let request = scope(
+    let mut request = scope(
         2,
         canonical.id,
-        Some(request_flow.id),
+        Some(canonical_request_flow.id),
         context,
         vec![(request_variant(), 4)],
     );
+    request.flow = Some(request_flow);
     let indexes = |enabled: bool| enabled.then(|| vec![0, 1].into_boxed_slice());
     UserAgentProfile::from_captured(AnalyzedProfile {
         work_units: 0,
@@ -284,6 +284,112 @@ fn h1_h2_offer_does_not_admit_an_h2_only_profile() {
             DrawKey([42; 32]),
         ),
         Err(SelectionError::MissingCapabilities(required)) if required == tcp
+    ));
+}
+
+#[test]
+fn h1_h2_offer_draws_only_a_connection_scope_with_h2_state() {
+    let context = ConnectionContext::default();
+    let tcp = CapabilitySet {
+        h1: true,
+        h2: true,
+        tls_tcp: true,
+        ..CapabilitySet::default()
+    };
+    let mut profile = profile("complete", tcp, context.clone());
+    let analysis = Arc::make_mut(profile.captured.as_mut().unwrap());
+    let h1_connection = analysis.scopes[0].clone();
+    let mut h2_connection = h1_connection.clone();
+    h2_connection.id = ValueId([3; 32]);
+    let request_scope = analysis.scopes[1].clone();
+    analysis.scopes = vec![h1_connection, h2_connection, request_scope].into();
+    analysis.components.h1 = Some(vec![0].into());
+    analysis.components.h2 = Some(vec![1, 2].into());
+    analysis.components.tls_tcp = Some(vec![0, 1, 2].into());
+
+    let database: UserAgentDatabase = [profile].into_iter().collect();
+    let selected = database
+        .select(
+            &SelectionRequest {
+                client: ProfileSelector::default(),
+                required: tcp,
+                flow: flow(context.clone(), Version::HTTP_2),
+                pins: VariantPins::default(),
+            },
+            ProfileSeed([43; 32]),
+            DrawKey([44; 32]),
+        )
+        .unwrap();
+    let connection = selected
+        .connection(&context, ProfileSeed([43; 32]), DrawKey([45; 32]))
+        .unwrap();
+    assert_eq!(connection.effective.scope, ValueId([3; 32]));
+}
+
+#[test]
+fn ip_family_does_not_fragment_a_wire_equivalent_selection() {
+    let captured = ConnectionContext {
+        ip_family: Some(ConnectionIpFamily::V4),
+        ..ConnectionContext::default()
+    };
+    let requested = ConnectionContext {
+        ip_family: Some(ConnectionIpFamily::V6),
+        ..ConnectionContext::default()
+    };
+    let database: UserAgentDatabase = [profile("complete", h3_capabilities(), captured.clone())]
+        .into_iter()
+        .collect();
+    let captured_selection = database
+        .select(
+            &request(captured.clone()),
+            ProfileSeed([46; 32]),
+            DrawKey([47; 32]),
+        )
+        .unwrap();
+    let selected = database
+        .select(
+            &request(requested.clone()),
+            ProfileSeed([46; 32]),
+            DrawKey([47; 32]),
+        )
+        .unwrap();
+    let captured_connection = captured_selection
+        .connection(&captured, ProfileSeed([46; 32]), DrawKey([48; 32]))
+        .unwrap();
+    let connection = selected
+        .connection(&requested, ProfileSeed([46; 32]), DrawKey([48; 32]))
+        .unwrap();
+    assert_eq!(connection.variant, captured_connection.variant);
+    assert_eq!(connection.effective.context.connection, captured);
+    let request = selected
+        .request(
+            &connection,
+            &flow(requested.clone(), Version::HTTP_3),
+            ProfileSeed([46; 32]),
+            DrawKey([49; 32]),
+        )
+        .unwrap();
+    assert_eq!(
+        request
+            .effective
+            .flow
+            .canonical(MAXIMUM_IDENTITY_BYTES)
+            .unwrap()
+            .id,
+        flow(requested, Version::HTTP_3)
+            .canonical(MAXIMUM_IDENTITY_BYTES)
+            .unwrap()
+            .id
+    );
+
+    let incompatible = ConnectionContext {
+        resumption: ResumptionContext::Fresh,
+        ip_family: Some(ConnectionIpFamily::V6),
+        ..ConnectionContext::default()
+    };
+    assert!(matches!(
+        selected.connection(&incompatible, ProfileSeed([46; 32]), DrawKey([48; 32]),),
+        Err(SelectionError::IncompatibleConnectionContext)
     ));
 }
 

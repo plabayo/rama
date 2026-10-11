@@ -5,7 +5,7 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     service::service_fn,
 };
-use rama_http::{Method, Request, Version, conn::TargetHttpVersion};
+use rama_http::{HeaderName, Method, Request, Version, conn::TargetHttpVersion};
 use rama_net::{
     Protocol,
     client::{ConnectRequest, EstablishedClientConnection, pool::ConnectionReuse},
@@ -18,10 +18,11 @@ use crate::{
     profile::{
         AnalyzedCaptureVariant, AnalyzedOrderWeight, AnalyzedProfile, AnalyzedProfileComponents,
         AnalyzedProfileScope, CanonicalDomain, CanonicalValue, CaptureLevel, CapturedSlot,
-        CapturedSlotKind, CountedCaptureAnalysis, CounterSnapshot, JointCapture,
-        JointCaptureLimits, ObservationLosses, ObservationWeight, OrderCaptureLimits,
-        OrderNamespace, OrderedProtocolCapture, ProfileCaptureCompleteness, ProfileKey,
-        ProfileObservationScope, RequestSelection, UntrackedDistinctSnapshot, ValueId,
+        CapturedSlotKind, CountedCaptureAnalysis, CounterSnapshot, HeaderCapture,
+        HeaderCapturePolicy, HeaderOccurrence, HeaderValueSource, JointCapture, JointCaptureLimits,
+        ObservationLosses, ObservationWeight, OrderCaptureLimits, OrderNamespace,
+        OrderedProtocolCapture, ProfileCaptureCompleteness, ProfileKey, ProfileObservationScope,
+        ProfilePreservationReport, RequestSelection, UntrackedDistinctSnapshot, ValueId,
     },
 };
 
@@ -43,10 +44,28 @@ fn counts(total: u64) -> CounterSnapshot {
 
 fn variant(level: CaptureLevel, value: u64) -> CanonicalValue {
     if level == CaptureLevel::Request {
+        let headers = HeaderCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            version: Version::HTTP_2,
+            fields: vec![HeaderOccurrence {
+                name: HeaderName::from_static("user-agent"),
+                occurrence: 0,
+                sensitive: false,
+                representation: None,
+                value: HeaderValueSource::Profile(b"captured-browser".to_vec().into()),
+            }]
+            .into(),
+        }
+        .canonical(&HeaderCapturePolicy::default())
+        .unwrap();
         return JointCapture {
             completeness: ProfileCaptureCompleteness::Complete,
             level,
-            slots: Box::default(),
+            slots: vec![CapturedSlot {
+                kind: CapturedSlotKind::Headers,
+                value: headers,
+            }]
+            .into(),
         }
         .canonical(JointCaptureLimits::default())
         .unwrap();
@@ -248,6 +267,12 @@ async fn profile_layer_selects_once_and_publishes_the_immutable_context() {
         assert_eq!(context.connection_key, DrawKey([2; 32]));
         assert_eq!(context.request_key, DrawKey([3; 32]));
         assert!(req.extensions().contains::<SelectedUserAgentProfile>());
+        assert_eq!(
+            req.extensions()
+                .get_ref::<ProfilePreservationMode>()
+                .copied(),
+            Some(ProfilePreservationMode::BestEffort)
+        );
         Ok::<_, Infallible>(req)
     });
     let service = ProfileEmulateLayer::new(database())
@@ -258,6 +283,7 @@ async fn profile_layer_selects_once_and_publishes_the_immutable_context() {
         .with_seed(ProfileSeed([1; 32]))
         .with_connection_key(DrawKey([2; 32]))
         .with_request_key(DrawKey([3; 32]))
+        .with_preservation(ProfilePreservationMode::BestEffort)
         .into_layer(inner);
 
     service.serve(h2_request()).await.unwrap();
@@ -379,6 +405,13 @@ impl rama_core::Service<Request<()>> for RequestSink {
                 .unwrap()
                 .id,
             flow().canonical(MAXIMUM_FETCH_CONTEXT_BYTES).unwrap().id
+        );
+        assert_eq!(req.headers()["user-agent"], "captured-browser");
+        assert!(
+            req.extensions()
+                .get_ref::<ProfilePreservationReport>()
+                .unwrap()
+                .is_exact()
         );
         Ok(req)
     }
