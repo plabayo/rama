@@ -190,7 +190,7 @@ impl<C, ID> StoredConnection<C, ID> {
             return false;
         };
         if counter
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |idle| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |idle| {
                 usize::try_from(idle)
                     .is_ok_and(|idle| idle > max.get())
                     .then(|| idle - 1)

@@ -578,7 +578,7 @@ impl Party {
         // takes, none is handed out twice.
         let inline = self
             .placed
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |placed| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |placed| {
                 (placed < INLINE_PLACES).then_some(placed + 1)
             });
         Waiter {
