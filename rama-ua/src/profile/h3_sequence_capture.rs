@@ -6,6 +6,7 @@ use super::{
     canonical::{CanonicalReader, CanonicalWriter},
 };
 use rama_http::proto::h3::{
+    FrameType, SettingId, StreamType,
     observation::{H3ObservationSnapshot, ObservedControlFrame, ObservedEncoderInstruction},
     qpack::static_table,
 };
@@ -86,7 +87,12 @@ impl H3ClientSequenceCapture {
         {
             return Err(ProfileDataError::LimitExceeded("H3 sequence elements"));
         }
-        if source.settings_received != source.control.iter().any(|frame| frame.frame_type == 4) {
+        if source.settings_received
+            != source
+                .control
+                .iter()
+                .any(|frame| frame.frame_type == FrameType::SETTINGS.value())
+        {
             return Err(ProfileDataError::Invalid("H3 SETTINGS receipt context"));
         }
         let mut remaining = limits.bytes;
@@ -296,10 +302,6 @@ fn flag(reader: &mut CanonicalReader<'_>) -> Result<bool, ProfileDataError> {
     }
 }
 
-fn reserved(id: u64) -> bool {
-    id >= 0x21 && (id - 0x21).is_multiple_of(31)
-}
-
 fn varint(value: u64) -> Result<(), ProfileDataError> {
     if value >= (1 << 62) {
         Err(ProfileDataError::Invalid("H3 sequence varint"))
@@ -335,8 +337,9 @@ fn settings_bytes(
                     .try_into()
                     .map_err(|_error| ProfileDataError::Invalid("H3 local SETTINGS value"))?,
             );
-            Ok(if structural && reserved(field.id) {
-                (0x21, 0)
+            let id = SettingId::new(field.id);
+            Ok(if structural && id.is_reserved() {
+                (SettingId::FIRST_RESERVED.value(), 0)
             } else {
                 (field.id, value)
             })
@@ -413,7 +416,7 @@ fn encode(
         // Control arrival relative to independent unidirectional streams and
         // request-owned priority/QPACK traffic do not identify a client.
         events.push(H3CapturedEvent::Control {
-            frame_type: 4,
+            frame_type: FrameType::SETTINGS.value(),
             length: 0,
             element_id: None,
             value: Box::default(),
@@ -437,6 +440,11 @@ fn encode(
     let mut critical = 0u8;
     let mut settings = false;
     let mut control_seen = false;
+
+    const CONTROL_STREAM_BIT: u8 = 1;
+    const QPACK_ENCODER_STREAM_BIT: u8 = 2;
+    const QPACK_DECODER_STREAM_BIT: u8 = 4;
+
     for event in &capture.events {
         match event {
             H3CapturedEvent::Stream {
@@ -448,15 +456,18 @@ fn encode(
                 if stream_id % 4 != 2 || stream_ids.contains(stream_id) {
                     return Err(ProfileDataError::Invalid("H3 client stream identity"));
                 }
+
+                let stream_type = StreamType::new(*stream_type);
                 let bit = match stream_type {
-                    0 => 1,
-                    2 => 2,
-                    3 => 4,
+                    StreamType::CONTROL => CONTROL_STREAM_BIT,
+                    StreamType::QPACK_ENCODER => QPACK_ENCODER_STREAM_BIT,
+                    StreamType::QPACK_DECODER => QPACK_DECODER_STREAM_BIT,
                     _ => 0,
                 };
-                if critical & bit != 0 || *stream_type == 1 {
+                if critical & bit != 0 || stream_type == StreamType::PUSH {
                     return Err(ProfileDataError::Invalid("H3 client critical stream"));
                 }
+
                 critical |= bit;
                 let id = if structural {
                     2 + 4 * stream_ids.len() as u64
@@ -466,10 +477,10 @@ fn encode(
                 stream_ids.push(*stream_id);
                 writer.u8(0)?;
                 writer.u64(id)?;
-                writer.u64(if structural && reserved(*stream_type) {
-                    0x21
+                writer.u64(if structural && stream_type.is_reserved() {
+                    StreamType::FIRST_RESERVED.value()
                 } else {
-                    *stream_type
+                    stream_type.value()
                 })?;
             }
             H3CapturedEvent::Control {
@@ -483,17 +494,24 @@ fn encode(
                 if let Some(id) = element_id {
                     varint(*id)?;
                 }
-                if critical & 1 == 0
-                    || (!control_seen && *frame_type != 4)
-                    || (*frame_type == 4 && settings)
-                    || matches!(frame_type, 0 | 1 | 2 | 5 | 6 | 8 | 9)
+
+                let frame_type = FrameType::new(*frame_type);
+                if critical & CONTROL_STREAM_BIT == 0
+                    || (!control_seen && frame_type != FrameType::SETTINGS)
+                    || (frame_type == FrameType::SETTINGS && settings)
+                    || frame_type.is_h2_reserved()
+                    || matches!(
+                        frame_type,
+                        FrameType::DATA | FrameType::HEADERS | FrameType::PUSH_PROMISE
+                    )
                 {
                     return Err(ProfileDataError::Invalid("H3 control stream order"));
                 }
+
                 control_seen = true;
-                settings |= *frame_type == 4;
-                let priority = matches!(*frame_type, 0xf0700 | 0xf0701);
-                let has_id = matches!(*frame_type, 3 | 7 | 13 | 0xf0700 | 0xf0701);
+                settings |= frame_type == FrameType::SETTINGS;
+                let priority = frame_type.is_priority_update();
+                let has_id = frame_type.carries_element_id();
                 if element_id.is_some() != has_id
                     || (!priority && !value.is_empty())
                     || value.len() > limits.bytes
@@ -502,10 +520,10 @@ fn encode(
                     return Err(ProfileDataError::Invalid("H3 control payload shape"));
                 }
                 writer.u8(1)?;
-                writer.u64(if structural && reserved(*frame_type) {
-                    0x21
+                writer.u64(if structural && frame_type.is_reserved() {
+                    FrameType::FIRST_RESERVED.value()
                 } else {
-                    *frame_type
+                    frame_type.value()
                 })?;
                 writer.u64(if structural { 0 } else { *length })?;
                 writer.u8(u8::from(element_id.is_some()))?;
@@ -519,14 +537,14 @@ fn encode(
     if !settings {
         return Err(ProfileDataError::Incomplete("H3 SETTINGS"));
     }
-    if !capture.encoder_instructions.is_empty() && critical & 2 == 0 {
+    if !capture.encoder_instructions.is_empty() && critical & QPACK_ENCODER_STREAM_BIT == 0 {
         return Err(ProfileDataError::Invalid("missing H3 QPACK encoder stream"));
     }
     let maximum_capacity = match capture
         .local_settings
         .fields
         .iter()
-        .find(|field| field.id == 1)
+        .find(|field| field.id == SettingId::QPACK_MAX_TABLE_CAPACITY.value())
     {
         None => 0,
         Some(field) => {

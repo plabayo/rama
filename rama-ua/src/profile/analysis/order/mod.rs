@@ -16,6 +16,7 @@ use crate::profile::{
 };
 
 #[derive(Debug, Clone, Copy)]
+/// Resource limits and heuristic thresholds for protocol-order analysis.
 pub struct OrderAnalysisConfig {
     pub minimum_samples: usize,
     pub distinct_numerator: usize,
@@ -64,6 +65,7 @@ pub enum AnalyzedOrderWeight {
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// One retained literal order with its observation or reservoir weight.
 pub struct AnalyzedLiteralOrder {
     pub value: ValueId,
     /// Indices into the canonical element dictionary, never database identifiers.
@@ -79,12 +81,14 @@ pub enum AnalyzedOrderElement {
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// An element that stayed at the same index in every retained order.
 pub struct PinnedOrderElement {
     pub element: AnalyzedOrderElement,
     pub index: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// One jointly observed placement of all generated reserved identifiers.
 pub struct ObservedReservedPlacement {
     /// Final indices of all reserved occurrences in one observed joint placement.
     pub indices: Box<[usize]>,
@@ -92,6 +96,7 @@ pub struct ObservedReservedPlacement {
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// A replay rule supported by complete retained order evidence.
 pub enum DerivedOrderRule {
     /// Disjoint sample groups retain their frequency and their own rule.
     Mixture { modes: Box<[OrderModeEvidence]> },
@@ -111,6 +116,7 @@ pub enum DerivedOrderRule {
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
+/// Why analysis retained literals or accepted a derived rule.
 pub enum OrderAnalysisDisposition {
     Literal,
     InsufficientSamples,
@@ -122,6 +128,7 @@ pub enum OrderAnalysisDisposition {
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// Complete result for one protocol order namespace.
 pub struct OrderAnalysis {
     pub classifier_revision: u16,
     pub namespace: OrderNamespace,
@@ -165,6 +172,7 @@ pub fn analyze_protocol_order(
     config: OrderAnalysisConfig,
 ) -> Result<OrderAnalysis, ProfileDataError> {
     config.validate()?;
+
     if bucket.retained_bytes() > config.maximum_bytes {
         return Err(ProfileDataError::LimitExceeded("order analysis bytes"));
     }
@@ -172,6 +180,7 @@ pub fn analyze_protocol_order(
     if snapshot.domain != CanonicalDomain::Order {
         return Err(ProfileDataError::Invalid("order analysis domain"));
     }
+
     if snapshot.counts.values.len() > config.maximum_literals
         || snapshot.samples.len() > config.maximum_samples
         || snapshot.values.len()
@@ -181,6 +190,9 @@ pub fn analyze_protocol_order(
     {
         return Err(ProfileDataError::LimitExceeded("order analysis samples"));
     }
+
+    // Decode every retained value before assigning weights so namespace and
+    // dictionary validation cannot depend on reservoir membership.
     let mut values = BTreeMap::new();
     let mut dictionary = BTreeSet::new();
     let mut namespace: Option<OrderNamespace> = None;
@@ -204,6 +216,7 @@ pub fn analyze_protocol_order(
         }
         values.insert(value.id, capture);
     }
+
     let namespace = namespace.ok_or(ProfileDataError::Incomplete("order analysis evidence"))?;
     if dictionary.len() > usize::from(u16::MAX) {
         return Err(ProfileDataError::LimitExceeded("order element dictionary"));
@@ -212,6 +225,7 @@ pub fn analyze_protocol_order(
         .into_iter()
         .map(|(id, value)| OrderedProtocolField { id, value })
         .collect();
+
     let mut frequencies = BTreeMap::<ValueId, usize>::new();
     let mut samples = Vec::new();
     for sample in &snapshot.samples {
@@ -221,6 +235,7 @@ pub fn analyze_protocol_order(
         samples.push(value);
         *frequencies.entry(sample.value).or_default() += 1;
     }
+
     let mut observed = Vec::new();
     for (id, capture) in &values {
         let count = snapshot
@@ -266,6 +281,7 @@ pub fn analyze_protocol_order(
             weight,
         });
     }
+
     let mut result = OrderAnalysis {
         classifier_revision: 2,
         namespace,
@@ -279,6 +295,7 @@ pub fn analyze_protocol_order(
         derived: None,
         disposition: OrderAnalysisDisposition::Literal,
     };
+
     let identifiers: Vec<Vec<u64>> = samples
         .iter()
         .map(|sample| sample.fields.iter().map(|field| field.id).collect())
@@ -290,10 +307,12 @@ pub fn analyze_protocol_order(
     result.derived = evidence.derived;
     result.disposition = evidence.disposition;
     result.positions = evidence.positions;
+
     Ok(result)
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// Number of retained samples that placed an element at one index.
 pub struct OrderPositionCount {
     pub element: AnalyzedOrderElement,
     pub index: usize,
@@ -301,6 +320,7 @@ pub struct OrderPositionCount {
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// Evidence for one group of samples with the same element multiset.
 pub struct OrderModeEvidence {
     pub elements: Box<[AnalyzedOrderElement]>,
     /// Indices into the parent evidence sample axis, preserving mode membership.
@@ -311,6 +331,7 @@ pub struct OrderModeEvidence {
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// Literal position evidence and any rule derived from it.
 pub struct OrderRuleEvidence {
     pub normalized_distinct_orders: usize,
     pub positions: Box<[OrderPositionCount]>,
@@ -382,6 +403,7 @@ fn analyze_identifiers_at_depth(
     budget: &mut OrderWorkBudget,
 ) -> Result<OrderRuleEvidence, ProfileDataError> {
     config.validate()?;
+
     if samples.len() > config.maximum_samples
         || samples
             .iter()
@@ -389,12 +411,16 @@ fn analyze_identifiers_at_depth(
     {
         return Err(ProfileDataError::LimitExceeded("order evidence elements"));
     }
+
     let mut result = OrderRuleEvidence {
         normalized_distinct_orders: 0,
         positions: Box::default(),
         derived: None,
         disposition: OrderAnalysisDisposition::Literal,
     };
+
+    // Derived rules require complete observation history. The literal evidence
+    // remains useful when history or retention is incomplete.
     if !losses.history_known {
         result.disposition = OrderAnalysisDisposition::UnknownHistory;
         return Ok(result);
@@ -403,10 +429,14 @@ fn analyze_identifiers_at_depth(
         result.disposition = OrderAnalysisDisposition::IncompleteRetention;
         return Ok(result);
     }
+
     if samples.len() < config.minimum_samples {
         result.disposition = OrderAnalysisDisposition::InsufficientSamples;
         return Ok(result);
     }
+
+    // A reserved identifier present in every distinct order is a stable literal.
+    // Only changing reserved values represent GREASE-style generated positions.
     let mut constant_reserved: BTreeSet<_> = samples[0]
         .iter()
         .copied()
@@ -416,6 +446,9 @@ fn analyze_identifiers_at_depth(
     for sample in &unique {
         constant_reserved.retain(|id| sample.contains(id));
     }
+
+    // Normalize each distinct wire order once. Occurrence indices keep repeated
+    // literal identifiers and multiple reserved slots distinguishable.
     let mut normalized_values = BTreeMap::new();
     for sample in unique {
         budget.charge(sample.len())?;
@@ -443,15 +476,20 @@ fn analyze_identifiers_at_depth(
         }
         normalized_values.insert(sample, Arc::<[AnalyzedOrderElement]>::from(order));
     }
+
     let normalized: Vec<_> = samples
         .iter()
         .map(|sample| normalized_values[*sample].clone())
         .collect();
+
     let mut frequencies = BTreeMap::new();
     for order in &normalized {
         *frequencies.entry(order.clone()).or_insert(0usize) += 1;
     }
     result.normalized_distinct_orders = frequencies.len();
+
+    // Position counts describe retained evidence and share the global work and
+    // allocation budgets with recursive mode analysis.
     let mut positions = BTreeMap::new();
     for (order, frequency) in &frequencies {
         budget.charge(order.len())?;
@@ -473,6 +511,9 @@ fn analyze_identifiers_at_depth(
             sample_count,
         })
         .collect();
+
+    // Partition orders by their element multiset before classifying movement.
+    // Different multisets are separate modes rather than one shuffle rule.
     let mut elements = normalized[0].to_vec();
     elements.sort_unstable();
     let sorted: BTreeMap<_, _> = frequencies
@@ -492,11 +533,13 @@ fn analyze_identifiers_at_depth(
             modes.insert(key.clone(), vec![index]);
         }
     }
+
     if modes.len() > 1 {
         if modes.len() > config.maximum_modes || depth >= 8 {
             result.disposition = OrderAnalysisDisposition::UnstableElements;
             return Ok(result);
         }
+
         let mut analyzed_modes = Vec::new();
         for (elements, indices) in &modes {
             let members: Vec<_> = indices.iter().map(|index| samples[*index]).collect();
@@ -516,6 +559,7 @@ fn analyze_identifiers_at_depth(
                 evidence: Box::new(evidence),
             });
         }
+
         result.disposition = if analyzed_modes.iter().any(|mode| {
             matches!(
                 mode.evidence.disposition,
@@ -531,6 +575,7 @@ fn analyze_identifiers_at_depth(
         });
         return Ok(result);
     }
+
     let varying_reserved = elements
         .iter()
         .any(|element| matches!(element, AnalyzedOrderElement::Reserved { .. }));
@@ -544,6 +589,7 @@ fn analyze_identifiers_at_depth(
             .collect();
         literal_values.insert(order, literals);
     }
+
     let mut literal_modes = BTreeMap::<Arc<[AnalyzedOrderElement]>, Vec<usize>>::new();
     for (index, order) in normalized.iter().enumerate() {
         literal_modes
@@ -551,6 +597,7 @@ fn analyze_identifiers_at_depth(
             .or_default()
             .push(index);
     }
+
     if varying_reserved
         // Numeric sorting needs observed movement across literal boundaries.
         && frequencies.len() > 1
@@ -562,6 +609,8 @@ fn analyze_identifiers_at_depth(
             elements: elements.into(),
         });
     } else {
+        // The remaining rules distinguish joint reserved placement from
+        // literal movement. Neither path factorizes correlations seen on wire.
         let literals: Vec<_> = normalized[0]
             .iter()
             .copied()
@@ -614,6 +663,7 @@ fn analyze_identifiers_at_depth(
                         })
                 })
                 .collect();
+
             // A moving literal can shift otherwise ordered neighbours without
             // providing evidence that those neighbours may exchange positions.
             let floating: BTreeSet<_> = elements
@@ -621,6 +671,7 @@ fn analyze_identifiers_at_depth(
                 .copied()
                 .filter(|element| !pinned.iter().any(|pin| pin.element == *element))
                 .collect();
+
             let mut pair_orders = BTreeMap::new();
             for order in frequencies.keys() {
                 for (left, first) in order.iter().enumerate() {
@@ -680,6 +731,7 @@ fn analyze_identifiers_at_depth(
             });
         }
     }
+
     if let Some(derived) = &result.derived {
         result.disposition = if matches!(derived, DerivedOrderRule::Mixture { modes }
             if modes.iter().all(|mode| !matches!(mode.evidence.disposition, OrderAnalysisDisposition::DerivedHeuristic)))
@@ -689,6 +741,7 @@ fn analyze_identifiers_at_depth(
             OrderAnalysisDisposition::DerivedHeuristic
         };
     }
+
     Ok(result)
 }
 

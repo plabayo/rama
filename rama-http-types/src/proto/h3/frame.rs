@@ -34,6 +34,8 @@ impl FrameType {
     pub const PRIORITY_UPDATE_REQUEST: Self = Self(0xf0700);
     /// Push PRIORITY_UPDATE (RFC 9218 §7.2).
     pub const PRIORITY_UPDATE_PUSH: Self = Self(0xf0701);
+    /// First frame type reserved for greasing (RFC 9114 §7.2.8).
+    pub const FIRST_RESERVED: Self = Self(0x21);
 
     /// Construct a frame type from its raw value.
     #[must_use]
@@ -51,7 +53,23 @@ impl FrameType {
     /// greasing.
     #[must_use]
     pub const fn is_reserved(self) -> bool {
-        self.0 >= 0x21 && (self.0 - 0x21).is_multiple_of(0x1f)
+        self.0 >= Self::FIRST_RESERVED.0 && (self.0 - Self::FIRST_RESERVED.0).is_multiple_of(0x1f)
+    }
+
+    /// Whether this is either PRIORITY_UPDATE frame type from RFC 9218.
+    #[must_use]
+    pub const fn is_priority_update(self) -> bool {
+        matches!(
+            self,
+            Self::PRIORITY_UPDATE_REQUEST | Self::PRIORITY_UPDATE_PUSH
+        )
+    }
+
+    /// Whether the frame payload starts with a push, stream, or element identifier.
+    #[must_use]
+    pub const fn carries_element_id(self) -> bool {
+        matches!(self, Self::CANCEL_PUSH | Self::GOAWAY | Self::MAX_PUSH_ID)
+            || self.is_priority_update()
     }
 
     /// Whether this frame type was assigned by HTTP/2 and has no HTTP/3 counterpart, so its receipt

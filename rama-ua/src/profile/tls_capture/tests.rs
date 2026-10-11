@@ -341,10 +341,36 @@ fn tls_structure_preserves_multiplicity_semantics_and_unknown_values() {
                 id: 45,
                 value: TlsCapturedExtensionValue::U8List(Box::new([1, 0x2a])),
             },
+            TlsCapturedExtension {
+                id: u16::from(ExtensionId::SUPPORTED_GROUPS),
+                value: TlsCapturedExtensionValue::U16List(Box::new([29, 0x3a3a])),
+            },
+            TlsCapturedExtension {
+                id: u16::from(ExtensionId::SIGNATURE_ALGORITHMS),
+                value: TlsCapturedExtensionValue::U16List(Box::new([0x0804, 0x4a4a])),
+            },
+            TlsCapturedExtension {
+                id: u16::from(ExtensionId::SUPPORTED_VERSIONS),
+                value: TlsCapturedExtensionValue::U16List(Box::new([0x0304, 0x5a5a])),
+            },
         ]
         .into(),
     };
     let original = capture.structural(limits).unwrap();
+
+    let mut equivalent = capture.clone();
+    equivalent.ciphers[0] = 0xfafa;
+    equivalent.extensions[0].id = 0x3a3a;
+    equivalent.extensions[1].id = 0x4a4a;
+    equivalent.extensions[2].value = TlsCapturedExtensionValue::Protocols(
+        vec![Box::from(b"h2".as_slice()), Box::from([0xfa, 0xfa])].into(),
+    );
+    equivalent.extensions[3].value = TlsCapturedExtensionValue::U8List(Box::new([1, 0xe4]));
+    equivalent.extensions[4].value = TlsCapturedExtensionValue::U16List(Box::new([29, 0x6a6a]));
+    equivalent.extensions[5].value = TlsCapturedExtensionValue::U16List(Box::new([0x0804, 0x7a7a]));
+    equivalent.extensions[6].value = TlsCapturedExtensionValue::U16List(Box::new([0x0304, 0x8a8a]));
+    assert_eq!(original.id, equivalent.structural(limits).unwrap().id);
+
     capture.extensions.swap(0, 1);
     assert_eq!(original.id, capture.structural(limits).unwrap().id);
     let mut changed = capture.clone();

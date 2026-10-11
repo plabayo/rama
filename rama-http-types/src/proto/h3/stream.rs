@@ -20,6 +20,8 @@ impl StreamType {
     pub const QPACK_ENCODER: Self = Self(0x02);
     /// The QPACK decoder stream (RFC 9204 §4.2).
     pub const QPACK_DECODER: Self = Self(0x03);
+    /// First stream type reserved for greasing (RFC 9114 §6.2).
+    pub const FIRST_RESERVED: Self = Self(0x21);
 
     /// Construct a stream type from its raw value.
     #[must_use]
@@ -36,7 +38,7 @@ impl StreamType {
     /// Whether this is a reserved type of the form `0x1f * N + 0x21` (RFC 9114 §6.2).
     #[must_use]
     pub const fn is_reserved(self) -> bool {
-        self.0 >= 0x21 && (self.0 - 0x21).is_multiple_of(0x1f)
+        self.0 >= Self::FIRST_RESERVED.0 && (self.0 - Self::FIRST_RESERVED.0).is_multiple_of(0x1f)
     }
 
     /// A human-readable name for a known stream type, if any.

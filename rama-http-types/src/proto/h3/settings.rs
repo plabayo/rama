@@ -25,6 +25,8 @@ impl SettingId {
     pub const ENABLE_CONNECT_PROTOCOL: Self = Self(0x08);
     /// `SETTINGS_H3_DATAGRAM` (RFC 9297 §2.1.1): willingness to receive HTTP/3 datagrams.
     pub const H3_DATAGRAM: Self = Self(0x33);
+    /// First setting identifier reserved for greasing (RFC 9114 §11.2.2).
+    pub const FIRST_RESERVED: Self = Self(0x21);
 
     /// Construct a setting identifier from its raw value.
     #[must_use]
@@ -42,7 +44,7 @@ impl SettingId {
     /// for greasing. Reserved identifiers are legal on the wire and ignored on receipt.
     #[must_use]
     pub const fn is_reserved(self) -> bool {
-        self.0 >= 0x21 && (self.0 - 0x21).is_multiple_of(0x1f)
+        self.0 >= Self::FIRST_RESERVED.0 && (self.0 - Self::FIRST_RESERVED.0).is_multiple_of(0x1f)
     }
 
     /// Whether this known setting only permits the values 0 and 1 (RFC 8441 §3, RFC 9297 §2.1.1).

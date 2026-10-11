@@ -3,6 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rama_http::proto::h2::PseudoHeader;
+#[cfg(feature = "tls")]
+use rama_tls::is_grease_u16;
 use serde::Serialize;
 
 use super::{
@@ -21,15 +23,25 @@ use crate::profile::{
 use crate::profile::{TlsCapture, TlsCaptureLimits, TlsCapturedExtensionValue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+/// An ordered field extracted from a complete protocol capture.
 pub enum CaptureOrderPath {
+    /// HTTP header names in their captured wire order.
     Headers,
+    /// HTTP/2 or HTTP/3 pseudo-header names in their captured wire order.
     PseudoHeaders,
+    /// TLS ClientHello extension identifiers.
     TlsExtensions,
+    /// TLS ClientHello cipher suite identifiers.
     TlsCiphers,
+    /// Ordered values within the identified TLS extension.
     TlsExtensionValues { extension: u16 },
+    /// SETTINGS entries in the identified HTTP/2 frame.
     Http2Settings { frame: usize },
+    /// QUIC transport parameter identifiers.
     QuicParameters,
+    /// HTTP/3 setting identifiers.
     Http3Settings,
+    /// QUIC versions in their advertised order.
     QuicVersions,
 }
 
@@ -37,7 +49,7 @@ impl CaptureOrderPath {
     fn reserved(self, id: u64) -> bool {
         match self {
             Self::TlsExtensions | Self::TlsCiphers | Self::TlsExtensionValues { .. } => {
-                id <= u64::from(u16::MAX) && id & 0x0f0f == 0x0a0a && (id >> 8) == (id & 0xff)
+                tls_reserved_candidate(id)
             }
             Self::QuicParameters => OrderNamespace::QuicParameter.reserved_candidate(id),
             Self::Http3Settings => OrderNamespace::Http3Setting.reserved_candidate(id),
@@ -47,13 +59,27 @@ impl CaptureOrderPath {
     }
 }
 
+fn tls_reserved_candidate(id: u64) -> bool {
+    #[cfg(feature = "tls")]
+    {
+        u16::try_from(id).is_ok_and(is_grease_u16)
+    }
+    #[cfg(not(feature = "tls"))]
+    {
+        let _ = id;
+        false
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+/// A numeric protocol identifier or textual header name in an order dictionary.
 pub enum CaptureOrderElement {
     Number(u64),
     Name(Box<str>),
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// One complete capture variant projected onto an order dictionary.
 pub struct CaptureOrderVariant {
     /// References the complete capture variant and its weight.
     pub value: ValueId,
@@ -61,6 +87,7 @@ pub struct CaptureOrderVariant {
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// Order evidence for one path across correlated complete capture variants.
 pub struct CaptureOrderAnalysis {
     pub path: CaptureOrderPath,
     pub dictionary: Box<[CaptureOrderElement]>,
@@ -72,6 +99,7 @@ pub struct CaptureOrderAnalysis {
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// A complete canonical capture and its observation or reservoir weight.
 pub struct AnalyzedCaptureVariant {
     pub value: CanonicalValue,
     pub weight: AnalyzedOrderWeight,

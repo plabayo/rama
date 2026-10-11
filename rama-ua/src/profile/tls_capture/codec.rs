@@ -3,45 +3,7 @@ use crate::profile::{
     CanonicalDomain, CanonicalValue,
     canonical::{CanonicalReader, CanonicalWriter},
 };
-
-pub(super) fn connection_owned(id: u16) -> bool {
-    matches!(
-        id,
-        2 | 3
-            | 5
-            | 6
-            | 7
-            | 8
-            | 12
-            | 17
-            | 21
-            | 25
-            | 29
-            | 30
-            | 31
-            | 32
-            | 33
-            | 35
-            | 36
-            | 37
-            | 38
-            | 40
-            | 44
-            | 47
-            | 48
-            | 53
-            | 54
-            | 55
-            | 56
-            | 57
-            | 59
-            | 51764
-            | 65281
-            | 0xffce
-            | 0xffa5
-            | 0xfe08..=0xfe0c
-    )
-}
+use rama_tls::{ExtensionId, client::client_hello_extension_is_connection_bound};
 
 impl TlsCapturedExtension {
     fn wire_length(&self) -> Result<usize, ProfileDataError> {
@@ -49,9 +11,9 @@ impl TlsCapturedExtension {
             TlsCapturedExtensionValue::Literal(value) => value.len(),
             TlsCapturedExtensionValue::U16List(value) => {
                 value.len() * 2
-                    + match self.id {
-                        28 => 0,
-                        27 | 43 => 1,
+                    + match ExtensionId::from(self.id) {
+                        ExtensionId::RECORD_SIZE_LIMIT => 0,
+                        ExtensionId::COMPRESS_CERTIFICATE | ExtensionId::SUPPORTED_VERSIONS => 1,
                         _ => 2,
                     }
             }
@@ -103,36 +65,53 @@ impl TlsCapturedExtension {
             TlsCapturedExtensionValue::Literal(bytes) => {
                 budget.take(0, bytes.len())?;
                 length(bytes.len())?;
-                if matches!(self.id, 18 | 22 | 23 | 42 | 49) && !bytes.is_empty() {
+                let id = ExtensionId::from(self.id);
+                if matches!(
+                    id,
+                    ExtensionId::SIGNED_CERTIFICATE_TIMESTAMP
+                        | ExtensionId::ENCRYPT_THEN_MAC
+                        | ExtensionId::EXTENDED_MASTER_SECRET
+                        | ExtensionId::EARLY_DATA
+                        | ExtensionId::POST_HANDSHAKE_AUTH
+                ) && !bytes.is_empty()
+                {
                     return Err(ProfileDataError::Invalid("nonempty TLS empty extension"));
                 }
-                !connection_owned(self.id)
+                !client_hello_extension_is_connection_bound(id)
                     && !matches!(
-                        self.id,
-                        0 | 10
-                            | 11
-                            | 13
-                            | 16
-                            | 27
-                            | 28
-                            | 34
-                            | 41
-                            | 43
-                            | 45
-                            | 50
-                            | 51
-                            | 17513
-                            | 17613
-                            | 65037
+                        id,
+                        ExtensionId::SERVER_NAME
+                            | ExtensionId::SUPPORTED_GROUPS
+                            | ExtensionId::EC_POINT_FORMATS
+                            | ExtensionId::SIGNATURE_ALGORITHMS
+                            | ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION
+                            | ExtensionId::COMPRESS_CERTIFICATE
+                            | ExtensionId::RECORD_SIZE_LIMIT
+                            | ExtensionId::DELEGATED_CREDENTIAL
+                            | ExtensionId::PRE_SHARED_KEY
+                            | ExtensionId::SUPPORTED_VERSIONS
+                            | ExtensionId::PSK_KEY_EXCHANGE_MODES
+                            | ExtensionId::SIGNATURE_ALGORITHMS_CERT
+                            | ExtensionId::KEY_SHARE
+                            | ExtensionId::OLD_APPLICATION_SETTINGS
+                            | ExtensionId::APPLICATION_SETTINGS
+                            | ExtensionId::ENCRYPTED_CLIENT_HELLO
                     )
             }
             TlsCapturedExtensionValue::U16List(values) => {
                 budget.list(values.len(), 2)?;
                 !values.is_empty()
-                    && match self.id {
-                        10 | 13 | 34 | 50 => values.len() <= usize::from(u16::MAX) / 2,
-                        27 | 43 => values.len() <= usize::from(u8::MAX) / 2,
-                        28 => values.len() == 1,
+                    && match ExtensionId::from(self.id) {
+                        ExtensionId::SUPPORTED_GROUPS
+                        | ExtensionId::SIGNATURE_ALGORITHMS
+                        | ExtensionId::DELEGATED_CREDENTIAL
+                        | ExtensionId::SIGNATURE_ALGORITHMS_CERT => {
+                            values.len() <= usize::from(u16::MAX) / 2
+                        }
+                        ExtensionId::COMPRESS_CERTIFICATE | ExtensionId::SUPPORTED_VERSIONS => {
+                            values.len() <= usize::from(u8::MAX) / 2
+                        }
+                        ExtensionId::RECORD_SIZE_LIMIT => values.len() == 1,
                         _ => false,
                     }
             }
@@ -140,7 +119,10 @@ impl TlsCapturedExtension {
                 budget.list(values.len(), 1)?;
                 !values.is_empty()
                     && values.len() <= usize::from(u8::MAX)
-                    && matches!(self.id, 11 | 45)
+                    && matches!(
+                        ExtensionId::from(self.id),
+                        ExtensionId::EC_POINT_FORMATS | ExtensionId::PSK_KEY_EXCHANGE_MODES
+                    )
             }
             TlsCapturedExtensionValue::Protocols(values) => {
                 budget.take(values.len(), 0)?;
@@ -156,9 +138,16 @@ impl TlsCapturedExtension {
                 }
                 !values.is_empty()
                     && bytes <= usize::from(u16::MAX)
-                    && matches!(self.id, 16 | 17513 | 17613)
+                    && matches!(
+                        ExtensionId::from(self.id),
+                        ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION
+                            | ExtensionId::OLD_APPLICATION_SETTINGS
+                            | ExtensionId::APPLICATION_SETTINGS
+                    )
             }
-            TlsCapturedExtensionValue::ServerName { .. } => self.id == 0,
+            TlsCapturedExtensionValue::ServerName { .. } => {
+                ExtensionId::from(self.id) == ExtensionId::SERVER_NAME
+            }
             TlsCapturedExtensionValue::KeyShares(shapes) => {
                 budget.take(shapes.len(), 2)?;
                 let mut bytes = 0usize;
@@ -175,7 +164,8 @@ impl TlsCapturedExtension {
                         return Err(ProfileDataError::Invalid("TLS key share shape"));
                     }
                 }
-                self.id == 51 && bytes <= usize::from(u16::MAX)
+                ExtensionId::from(self.id) == ExtensionId::KEY_SHARE
+                    && bytes <= usize::from(u16::MAX)
             }
             TlsCapturedExtensionValue::PreSharedKeys {
                 identities,
@@ -203,7 +193,7 @@ impl TlsCapturedExtension {
                         .checked_add(usize::from(*size) + 1)
                         .ok_or(ProfileDataError::LimitExceeded("TLS PSK binder vector"))?;
                 }
-                self.id == 41
+                ExtensionId::from(self.id) == ExtensionId::PRE_SHARED_KEY
                     && !identities.is_empty()
                     && identities.len() == binders.len()
                     && identity_bytes <= usize::from(u16::MAX)
@@ -211,12 +201,16 @@ impl TlsCapturedExtension {
             }
             TlsCapturedExtensionValue::EchOuter { .. } => {
                 budget.take(0, 8)?;
-                self.id == 65037
+                ExtensionId::from(self.id) == ExtensionId::ENCRYPTED_CLIENT_HELLO
             }
-            TlsCapturedExtensionValue::EchInner => self.id == 65037,
+            TlsCapturedExtensionValue::EchInner => {
+                ExtensionId::from(self.id) == ExtensionId::ENCRYPTED_CLIENT_HELLO
+            }
             TlsCapturedExtensionValue::ConnectionLength(size) => {
                 budget.take(0, 2)?;
-                connection_owned(self.id) && (self.id != 21 || *size == 0)
+                let id = ExtensionId::from(self.id);
+                client_hello_extension_is_connection_bound(id)
+                    && (id != ExtensionId::PADDING || *size == 0)
             }
         };
         if !valid {
@@ -252,7 +246,9 @@ impl TlsCapture {
             {
                 return Err(ProfileDataError::Invalid("duplicate TLS extension"));
             }
-            if extension.id == 41 && index + 1 != self.extensions.len() {
+            if ExtensionId::from(extension.id) == ExtensionId::PRE_SHARED_KEY
+                && index + 1 != self.extensions.len()
+            {
                 return Err(ProfileDataError::Invalid("TLS PSK extension order"));
             }
             extension.validate(&mut budget)?;

@@ -3,6 +3,11 @@
 
 use rama_utils::macros::enums::enum_builder;
 
+/// First value in the 16-bit GREASE namespace from RFC 8701.
+pub const GREASE_U16_FIRST: u16 = 0x0a0a;
+/// First GREASE value in the RFC 8701 `PskKeyExchangeMode` namespace.
+pub const GREASE_PSK_KEY_EXCHANGE_MODE_FIRST: u8 = 0x0b;
+
 macro_rules! impl_u16_is_grease {
     ($enum_name:ident) => {
         impl $enum_name {
@@ -10,7 +15,7 @@ macro_rules! impl_u16_is_grease {
             #[must_use]
             pub fn is_grease(&self) -> bool {
                 match self {
-                    $enum_name::Unknown(x) if is_u16_grease(*x) => true,
+                    $enum_name::Unknown(x) if is_grease_u16(*x) => true,
                     _ => false,
                 }
             }
@@ -19,15 +24,51 @@ macro_rules! impl_u16_is_grease {
 }
 
 #[inline(always)]
-fn is_u16_grease(n: u16) -> bool {
-    n & 0x0f0f == 0x0a0a && n.to_be_bytes()[0] == n.to_be_bytes()[1]
+/// Returns whether `value` belongs to the 16-bit GREASE namespace from RFC 8701.
+///
+/// TLS uses this namespace for cipher suites, extensions, supported groups,
+/// signature algorithms, and protocol versions.
+#[must_use]
+pub const fn is_grease_u16(value: u16) -> bool {
+    value & 0x0f0f == 0x0a0a && value.to_be_bytes()[0] == value.to_be_bytes()[1]
+}
+
+/// Returns the `index`th 16-bit GREASE value from RFC 8701.
+///
+/// The namespace contains exactly 16 values, in wire order.
+#[must_use]
+pub const fn grease_u16(index: usize) -> Option<u16> {
+    if index < 16 {
+        Some(GREASE_U16_FIRST + 0x1010 * index as u16)
+    } else {
+        None
+    }
+}
+
+/// Returns whether `value` is an RFC 8701 GREASE `PskKeyExchangeMode`.
+#[must_use]
+pub const fn is_grease_psk_key_exchange_mode(value: u8) -> bool {
+    value >= GREASE_PSK_KEY_EXCHANGE_MODE_FIRST
+        && (value - GREASE_PSK_KEY_EXCHANGE_MODE_FIRST).is_multiple_of(0x1f)
+}
+
+/// Returns the `index`th RFC 8701 GREASE `PskKeyExchangeMode`.
+///
+/// This one-byte namespace contains exactly eight values, in wire order.
+#[must_use]
+pub const fn grease_psk_key_exchange_mode(index: usize) -> Option<u8> {
+    if index < 8 {
+        Some(GREASE_PSK_KEY_EXCHANGE_MODE_FIRST + 0x1f * index as u8)
+    } else {
+        None
+    }
 }
 
 fn display_unknown_u16_maybe_as_grease(
     f: &mut std::fmt::Formatter<'_>,
     n: u16,
 ) -> Option<std::fmt::Result> {
-    if is_u16_grease(n) {
+    if is_grease_u16(n) {
         Some(write!(f, "GREASE ({n:#06x})"))
     } else {
         None
@@ -643,6 +684,7 @@ enum_builder! {
         SIGNATURE_ALGORITHMS_CERT => 50,
         KEY_SHARE => 51,
         TRANSPARENCY_INFO => 52,
+        CONNECTION_ID_DEPRECATED => 53,
         CONNECTION_ID => 54,
         EXTERNAL_ID_HASH => 55,
         EXTERNAL_SESSION_ID => 56,
@@ -824,6 +866,37 @@ mod tests {
             );
         }
         assert_eq!(SupportedGroup::from(0x1a2a).to_string(), "Unknown (0x1a2a)");
+    }
+
+    #[test]
+    fn grease_generators_cover_their_complete_namespaces() {
+        let u16_values = [
+            0x0a0a, 0x1a1a, 0x2a2a, 0x3a3a, 0x4a4a, 0x5a5a, 0x6a6a, 0x7a7a, 0x8a8a, 0x9a9a, 0xaaaa,
+            0xbaba, 0xcaca, 0xdada, 0xeaea, 0xfafa,
+        ];
+        assert_eq!(
+            (0..u16_values.len())
+                .map(|index| grease_u16(index).unwrap())
+                .collect::<Vec<_>>(),
+            u16_values
+        );
+        assert_eq!(grease_u16(u16_values.len()), None);
+
+        let psk_modes = [0x0b, 0x2a, 0x49, 0x68, 0x87, 0xa6, 0xc5, 0xe4];
+        assert_eq!(
+            (0..psk_modes.len())
+                .map(|index| grease_psk_key_exchange_mode(index).unwrap())
+                .collect::<Vec<_>>(),
+            psk_modes
+        );
+        assert_eq!(grease_psk_key_exchange_mode(psk_modes.len()), None);
+        for value in 0..=u8::MAX {
+            assert_eq!(
+                is_grease_psk_key_exchange_mode(value),
+                psk_modes.contains(&value),
+                "PSK mode {value:#04x}"
+            );
+        }
     }
 
     #[test]

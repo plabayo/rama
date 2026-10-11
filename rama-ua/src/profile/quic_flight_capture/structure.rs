@@ -20,20 +20,12 @@ struct Shape {
     versions: Vec<Option<u32>>,
 }
 
-fn reserved_parameter(id: u64) -> bool {
-    id % 31 == 27
-}
-
-fn reserved_version(id: u32) -> bool {
-    id & 0x0f0f_0f0f == 0x0a0a_0a0a
-}
-
 impl Shape {
     fn capture(flight: &FirstFlight) -> Result<Self, ProfileDataError> {
         let mut parameters: Vec<_> = flight
             .parameters
             .iter()
-            .map(|id| (!reserved_parameter(id.0)).then_some(id.0))
+            .map(|id| (!id.is_reserved()).then_some(id.0))
             .collect();
         parameters.sort_unstable();
         let mut versions: Vec<_> = flight
@@ -41,7 +33,7 @@ impl Shape {
             .iter()
             .map(|version| {
                 let id = version.as_u32();
-                (Some(*version) == flight.chosen_version || !reserved_version(id)).then_some(id)
+                (Some(*version) == flight.chosen_version || !version.is_reserved()).then_some(id)
             })
             .collect();
         // Reserved placement is generated; known-version preference remains literal.
@@ -168,7 +160,7 @@ impl Shape {
                 .parameters
                 .iter()
                 .flatten()
-                .any(|id| *id >= (1 << 62) || reserved_parameter(*id))
+                .any(|id| *id >= (1 << 62) || ParameterId(*id).is_reserved())
         {
             return Err(ProfileDataError::Invalid("QUIC structural parameters"));
         }
@@ -177,7 +169,7 @@ impl Shape {
             if let Some(version) = version {
                 if reserved
                     || *version == 0
-                    || (Some(*version) != self.chosen && reserved_version(*version))
+                    || (Some(*version) != self.chosen && Version::from_u32(*version).is_reserved())
                 {
                     return Err(ProfileDataError::Invalid("QUIC structural versions"));
                 }

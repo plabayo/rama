@@ -9,20 +9,33 @@ use crate::profile::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+/// A scalar field extracted from a complete captured protocol variant.
+///
+/// Paths identify diagnostics only. Replay selects a complete variant and does
+/// not draw these scalar values independently.
 pub enum CaptureNumericPath {
+    /// Byte length of the destination connection ID in the first QUIC packet.
     QuicDestinationIdLength,
+    /// Byte length of the source connection ID in the first QUIC packet.
     QuicSourceIdLength,
+    /// Byte length of the token in the first QUIC Initial packet.
     QuicTokenLength,
+    /// Decoded packet number of the first observed QUIC packet.
     QuicFirstPacketNumber,
+    /// Number of bytes used to encode the first QUIC packet number.
     QuicPacketNumberWidth,
+    /// UDP payload length of the datagram at `index` in the first flight.
     QuicDatagramLength { index: usize },
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// One observed value and the complete variants in which it occurred.
 pub struct NumericDistributionValue {
     /// Absence is a distinct observation, not a zero-valued sample.
     pub value: Option<u64>,
+    /// Count or reservoir weight inherited from the complete variants.
     pub weight: AnalyzedOrderWeight,
+    /// Complete capture variants that contain this value at the selected path.
     pub variants: Box<[ValueId]>,
 }
 
@@ -30,7 +43,9 @@ pub struct NumericDistributionValue {
 /// distributions are not authorized: `variants` retains their joint membership.
 #[derive(Debug, Clone, Serialize)]
 pub struct CaptureNumericDistribution {
+    /// Scalar field summarized by this diagnostic.
     pub path: CaptureNumericPath,
+    /// Observed values with their weights and correlated complete variants.
     pub values: Box<[NumericDistributionValue]>,
 }
 

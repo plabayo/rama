@@ -1,7 +1,13 @@
 //! Capture-safe TLS observations derived from the existing parsed ClientHello.
 
 use rama_net::tls::ApplicationProtocol;
-use rama_tls::client::{ClientHello, ClientHelloExtension, ECHClientHello};
+use rama_tls::{
+    ExtensionId,
+    client::{
+        ClientHello, ClientHelloExtension, ECHClientHello,
+        client_hello_extension_is_connection_bound,
+    },
+};
 use rama_utils::octets::kib;
 use serde::Serialize;
 
@@ -82,6 +88,7 @@ struct InputBudget {
     elements: usize,
     bytes: usize,
 }
+
 impl InputBudget {
     fn take(&mut self, elements: usize, bytes: usize) -> Result<(), ProfileDataError> {
         self.elements = self
@@ -103,9 +110,11 @@ impl InputBudget {
         )
     }
 }
+
 fn length(value: usize) -> Result<u16, ProfileDataError> {
     u16::try_from(value).map_err(|_error| ProfileDataError::Invalid("TLS extension length"))
 }
+
 fn protocols(
     input: &[ApplicationProtocol],
     budget: &mut InputBudget,
@@ -134,6 +143,7 @@ fn vector16<'a>(input: &mut &'a [u8]) -> Result<&'a [u8], ProfileDataError> {
     *input = rest;
     Ok(value)
 }
+
 fn key_shares(
     data: &[u8],
     budget: &mut InputBudget,
@@ -168,6 +178,7 @@ fn key_shares(
     }
     Ok(shapes.into())
 }
+
 fn pre_shared_keys(
     data: &[u8],
     budget: &mut InputBudget,
@@ -230,8 +241,10 @@ impl TlsCapture {
         budget.list(hello.extensions().len(), 4)?;
         let mut extensions = Vec::with_capacity(hello.extensions().len());
         for (index, extension) in hello.extensions().iter().enumerate() {
-            let id = u16::from(extension.id());
-            if id == 41 && index + 1 != hello.extensions().len() {
+            let extension_id = extension.id();
+            let id = u16::from(extension_id);
+            if extension_id == ExtensionId::PRE_SHARED_KEY && index + 1 != hello.extensions().len()
+            {
                 return Err(ProfileDataError::Invalid("TLS PSK extension order"));
             }
             if extensions
@@ -306,14 +319,27 @@ impl TlsCapture {
                 ClientHelloExtension::Opaque { data, .. } => {
                     budget.take(0, data.len())?;
                     let size = length(data.len())?;
-                    match id {
+                    match extension_id {
                         // Typed extensions cannot bypass their capture policy through Opaque.
-                        0 | 10 | 11 | 13 | 16 | 27 | 28 | 34 | 43 | 17513 | 17613 | 65037 => {
+                        ExtensionId::SERVER_NAME
+                        | ExtensionId::SUPPORTED_GROUPS
+                        | ExtensionId::EC_POINT_FORMATS
+                        | ExtensionId::SIGNATURE_ALGORITHMS
+                        | ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION
+                        | ExtensionId::COMPRESS_CERTIFICATE
+                        | ExtensionId::RECORD_SIZE_LIMIT
+                        | ExtensionId::DELEGATED_CREDENTIAL
+                        | ExtensionId::SUPPORTED_VERSIONS
+                        | ExtensionId::OLD_APPLICATION_SETTINGS
+                        | ExtensionId::APPLICATION_SETTINGS
+                        | ExtensionId::ENCRYPTED_CLIENT_HELLO => {
                             return Err(ProfileDataError::Invalid("opaque typed TLS extension"));
                         }
-                        51 => TlsCapturedExtensionValue::KeyShares(key_shares(data, &mut budget)?),
-                        41 => pre_shared_keys(data, &mut budget)?,
-                        45 => {
+                        ExtensionId::KEY_SHARE => {
+                            TlsCapturedExtensionValue::KeyShares(key_shares(data, &mut budget)?)
+                        }
+                        ExtensionId::PRE_SHARED_KEY => pre_shared_keys(data, &mut budget)?,
+                        ExtensionId::PSK_KEY_EXCHANGE_MODES => {
                             let (&count, values) = data
                                 .split_first()
                                 .ok_or(ProfileDataError::Invalid("TLS PSK modes"))?;
@@ -323,7 +349,7 @@ impl TlsCapture {
                             budget.take(values.len(), 0)?;
                             TlsCapturedExtensionValue::U8List(values.into())
                         }
-                        50 => {
+                        ExtensionId::SIGNATURE_ALGORITHMS_CERT => {
                             let mut rest = data.as_slice();
                             let values = vector16(&mut rest)?;
                             if !rest.is_empty()
@@ -345,7 +371,7 @@ impl TlsCapture {
                                     .collect(),
                             )
                         }
-                        21 => {
+                        ExtensionId::PADDING => {
                             if data.iter().any(|byte| *byte != 0) {
                                 return Err(ProfileDataError::Invalid("TLS padding bytes"));
                             }
@@ -353,7 +379,7 @@ impl TlsCapture {
                             TlsCapturedExtensionValue::ConnectionLength(0)
                         }
                         // Identities, certificates, cookies, tickets and connection metadata.
-                        id if codec::connection_owned(id) => {
+                        id if client_hello_extension_is_connection_bound(id) => {
                             TlsCapturedExtensionValue::ConnectionLength(size)
                         }
                         _ => TlsCapturedExtensionValue::Literal(data.as_slice().into()),

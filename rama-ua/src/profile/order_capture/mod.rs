@@ -1,6 +1,7 @@
 //! Protocol-owned order normalization precedes statistical classification.
 
-use rama_quic_proto::{Version, version::VersionInformation};
+use rama_http::proto::h3::SettingId;
+use rama_quic_proto::{Version, profile::ParameterId, version::VersionInformation};
 use rama_utils::octets::kib;
 use serde::Serialize;
 
@@ -38,11 +39,11 @@ impl OrderNamespace {
     #[must_use]
     pub fn reserved_candidate(self, id: u64) -> bool {
         match self {
-            Self::QuicParameter => id < (1 << 62) && id % 31 == 27,
-            Self::Http3Setting => {
-                (0x21..(1 << 62)).contains(&id) && (id - 0x21).is_multiple_of(0x1f)
+            Self::QuicParameter => id < (1 << 62) && ParameterId(id).is_reserved(),
+            Self::Http3Setting => id < (1 << 62) && SettingId::new(id).is_reserved(),
+            Self::QuicVersion => {
+                u32::try_from(id).is_ok_and(|id| Version::from_u32(id).is_reserved())
             }
-            Self::QuicVersion => id <= u64::from(u32::MAX) && id & 0x0f0f_0f0f == 0x0a0a_0a0a,
         }
     }
 
