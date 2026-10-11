@@ -13,7 +13,7 @@
 //! gateways can use [`Uri::write_absolute_form_with_overrides`] to translate
 //! a scheme or port without reconstructing the URI themselves.
 
-use super::{Uri, UriInner};
+use super::{Uri, UriInner, path_prefix};
 use crate::{
     Protocol,
     address::{AuthorityRef, OptPort},
@@ -239,8 +239,7 @@ fn write_http_absolute_form(uri: &Uri, scheme: &Protocol, buf: &mut Vec<u8>) {
         let result = authority.write_address_with_port(&mut VecWriter(buf), uri.port());
         debug_assert!(result.is_ok(), "VecWriter is infallible");
     }
-    // RFC 3986 §3.3: after an authority the path is empty or rooted.
-    write_path_query(uri, buf, uri.authority().is_some());
+    write_path_query(uri, buf, false);
 }
 
 fn write_absolute_form(
@@ -277,13 +276,19 @@ impl core::fmt::Write for VecWriter<'_> {
 
 /// Write `path[?query]` to `buf`. An empty path is written as `/`, and a rootless
 /// one gets a leading `/` when `rooted`: origin-form and `:path` carry an absolute
-/// path (RFC 9112 §3.2.1, RFC 9113 §8.3.1), as does a path after an authority
-/// (RFC 3986 §3.3). The fragment is skipped: HTTP forbids it in request-targets.
+/// path (RFC 9112 §3.2.1, RFC 9113 §8.3.1). Otherwise, as after a scheme, it is
+/// prefixed to read back as a path (see `path_prefix`). The fragment is skipped:
+/// HTTP forbids it in request-targets.
 fn write_path_query(uri: &Uri, buf: &mut Vec<u8>, rooted: bool) {
     match uri.path().filter(|path| !path.is_empty()) {
         Some(path) => {
-            if rooted && path.bytes.first() != Some(&b'/') {
-                buf.push(b'/');
+            if rooted {
+                if path.bytes.first() != Some(&b'/') {
+                    buf.push(b'/');
+                }
+            } else {
+                let prefix = path_prefix(path.bytes, uri.authority().is_some());
+                buf.extend_from_slice(prefix.as_bytes());
             }
             path.write_encoded_to(buf);
         }
@@ -297,9 +302,7 @@ fn write_path_query(uri: &Uri, buf: &mut Vec<u8>, rooted: bool) {
 
 fn write_path_query_fmt(uri: &Uri, writer: &mut impl core::fmt::Write) -> core::fmt::Result {
     if let Some(path) = uri.path().filter(|path| !path.is_empty()) {
-        if uri.authority().is_some() && path.bytes.first() != Some(&b'/') {
-            writer.write_str("/")?;
-        }
+        writer.write_str(path_prefix(path.bytes, uri.authority().is_some()))?;
         writer.write_fmt(format_args!("{path}"))?;
     }
     if let Some(query) = uri.query() {

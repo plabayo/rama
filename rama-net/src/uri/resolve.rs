@@ -6,7 +6,7 @@ use crate::std::sync::Arc;
 
 use super::owned::OwnedUriRef;
 use super::parser::MAX_URI_LEN;
-use super::{Uri, UriInner};
+use super::{Uri, UriInner, path_prefix};
 
 use rama_core::bytes::BytesMut;
 
@@ -326,9 +326,7 @@ fn serialized_len(owned: &OwnedUriRef) -> usize {
         }
     }
     n += owned.path.len();
-    if owned.authority.is_some() && owned.path.first().is_some_and(|b| *b != b'/') {
-        n += 1; // `Display` roots a path after an authority
-    }
+    n += path_prefix(&owned.path, owned.authority.is_some()).len();
     if let Some(q) = &owned.query {
         n += 1 + q.bytes.len(); // "?" + bytes
     }

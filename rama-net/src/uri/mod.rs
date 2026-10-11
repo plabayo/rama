@@ -1897,10 +1897,7 @@ impl Uri {
                     write!(f, "{}", auth.address)?;
                 }
 
-                // RFC 3986 §3.3: after an authority the path is empty or rooted.
-                if arc.authority.is_some() && arc.path.first().is_some_and(|b| *b != b'/') {
-                    f.write_str("/")?;
-                }
+                f.write_str(path_prefix(&arc.path, arc.authority.is_some()))?;
                 write!(f, "{}", PathRef::new(&arc.path))?;
 
                 if let Some(query) = &arc.query {
@@ -1914,6 +1911,17 @@ impl Uri {
                 Ok(())
             }
         }
+    }
+}
+
+/// What goes in front of `path` so it reads back as a path (RFC 3986 §3.3):
+/// `/` before a rootless one after an authority, `/.` before one starting with
+/// `//` without an authority, which would read as one.
+fn path_prefix(path: &[u8], authority: bool) -> &'static str {
+    match path {
+        [b'/', b'/', ..] if !authority => "/.",
+        [first, ..] if authority && *first != b'/' => "/",
+        _ => "",
     }
 }
 

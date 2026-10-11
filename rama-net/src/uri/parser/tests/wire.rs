@@ -191,6 +191,36 @@ fn a_rootless_path_after_an_authority_is_rooted_in_every_form() {
 }
 
 #[test]
+fn a_double_slash_path_without_an_authority_never_reads_as_one() {
+    let uri = parse_graceful("http://good.example//evil.example/p")
+        .unwrap()
+        .without_authority();
+    assert_eq!(write_absolute(&uri).unwrap(), "http:/.//evil.example/p");
+    assert_eq!(
+        write_absolute_with_overrides(&uri, &Protocol::HTTPS, OptPort::Unset).unwrap(),
+        "https:/.//evil.example/p"
+    );
+    let shown = uri.to_string();
+    assert_eq!(shown, "http:/.//evil.example/p");
+    assert!(parse_graceful(&shown).unwrap().authority().is_none());
+    // Origin-form and `:path` are absolute paths, which may start with `//`.
+    assert_eq!(write_origin(&uri).unwrap(), "//evil.example/p");
+    assert_eq!(write_h2_path(&uri), "//evil.example/p");
+
+    let reference = Uri::parse_reference("/p")
+        .unwrap()
+        .with_path("//evil.example/p");
+    let shown = reference.to_string();
+    assert_eq!(shown, "/.//evil.example/p");
+    assert!(
+        Uri::parse_reference(shown.as_str())
+            .unwrap()
+            .authority()
+            .is_none()
+    );
+}
+
+#[test]
 fn writers_write_nothing_on_error() {
     let asterisk = Uri::parse_http_request_target("*", false).unwrap();
     let no_scheme = Uri::parse_reference("/p").unwrap();
