@@ -330,7 +330,7 @@ where
         combined.extend_from_slice(b", ");
         combined.extend_from_slice(value.as_bytes());
     }
-    HeaderValue::from_bytes(&combined).map_err(|_error| Error::invalid())
+    HeaderValue::try_from(combined).map_err(|_error| Error::invalid())
 }
 
 /// A helper trait for use when deriving `Header`.
