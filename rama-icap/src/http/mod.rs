@@ -2413,12 +2413,15 @@ fn upgrade_token<T>(request: &HttpRequest<T>) -> Option<HeaderValue> {
 fn upgrade_lines(headers: &HeaderMap) -> Option<HeaderValue> {
     let mut lines = headers.get_all(header::UPGRADE).iter();
     let first = lines.next()?;
+    let Some(second) = lines.next() else {
+        return Some(first.clone());
+    };
     let mut combined = first.as_bytes().to_vec();
-    for line in lines {
+    for line in std::iter::once(second).chain(lines) {
         combined.extend_from_slice(b", ");
         combined.extend_from_slice(line.as_bytes());
     }
-    HeaderValue::from_bytes(&combined).ok()
+    HeaderValue::try_from(combined).ok()
 }
 
 /// Whether `response` accepts the Extended CONNECT `request`: its HTTP/1.1 form is a

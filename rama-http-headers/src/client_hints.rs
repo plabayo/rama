@@ -261,7 +261,7 @@ fn encode_client_hint_names(hints: &NonEmptySmallVec<16, ClientHint>) -> Option<
         }
         buf.extend_from_slice(name.as_bytes());
     }
-    HeaderValue::from_bytes(&buf).ok()
+    HeaderValue::try_from(buf).ok()
 }
 
 macro_rules! client_hint_advert_header {

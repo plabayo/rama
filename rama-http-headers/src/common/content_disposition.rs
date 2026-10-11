@@ -123,7 +123,7 @@ impl ContentDisposition {
             }
         }
 
-        HeaderValue::from_maybe_shared(value)
+        HeaderValue::try_from(value.into_bytes())
             .map(Self)
             .map_err(|_err| InvalidContentDispositionFilename { _private: () })
     }
