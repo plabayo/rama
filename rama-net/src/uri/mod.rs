@@ -1892,6 +1892,10 @@ impl Uri {
                     write!(f, "{}", auth.address)?;
                 }
 
+                // RFC 3986 §3.3: after an authority the path is empty or rooted.
+                if arc.authority.is_some() && arc.path.first().is_some_and(|b| *b != b'/') {
+                    f.write_str("/")?;
+                }
                 write!(f, "{}", PathRef::new(&arc.path))?;
 
                 if let Some(query) = &arc.query {

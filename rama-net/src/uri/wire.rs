@@ -239,7 +239,8 @@ fn write_http_absolute_form(uri: &Uri, scheme: &Protocol, buf: &mut Vec<u8>) {
         let result = authority.write_address_with_port(&mut VecWriter(buf), uri.port());
         debug_assert!(result.is_ok(), "VecWriter is infallible");
     }
-    write_path_query(uri, buf, false);
+    // RFC 3986 §3.3: after an authority the path is empty or rooted.
+    write_path_query(uri, buf, uri.authority().is_some());
 }
 
 fn write_absolute_form(
@@ -276,8 +277,8 @@ impl core::fmt::Write for VecWriter<'_> {
 
 /// Write `path[?query]` to `buf`. An empty path is written as `/`, and a rootless
 /// one gets a leading `/` when `rooted`: origin-form and `:path` carry an absolute
-/// path (RFC 9112 §3.2.1, RFC 9113 §8.3.1). The fragment is skipped: HTTP
-/// forbids it in request-targets.
+/// path (RFC 9112 §3.2.1, RFC 9113 §8.3.1), as does a path after an authority
+/// (RFC 3986 §3.3). The fragment is skipped: HTTP forbids it in request-targets.
 fn write_path_query(uri: &Uri, buf: &mut Vec<u8>, rooted: bool) {
     match uri.path().filter(|path| !path.is_empty()) {
         Some(path) => {
@@ -296,6 +297,9 @@ fn write_path_query(uri: &Uri, buf: &mut Vec<u8>, rooted: bool) {
 
 fn write_path_query_fmt(uri: &Uri, writer: &mut impl core::fmt::Write) -> core::fmt::Result {
     if let Some(path) = uri.path().filter(|path| !path.is_empty()) {
+        if uri.authority().is_some() && path.bytes.first() != Some(&b'/') {
+            writer.write_str("/")?;
+        }
         writer.write_fmt(format_args!("{path}"))?;
     }
     if let Some(query) = uri.query() {

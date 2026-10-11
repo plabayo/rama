@@ -336,8 +336,9 @@ pub fn is_http1_connect_target(uri: &Uri, extensions: &Extensions) -> bool {
 /// Direct requests use origin-form, `CONNECT` uses authority-form, `OPTIONS
 /// *` uses asterisk-form, and insecure requests on an established HTTP forward
 /// proxy connection use absolute-form, with the resolved protocol as scheme for a
-/// URI without one; a URI without an authority cannot name its origin there and
-/// stays in origin-form, leaving that to the `Host` header. Fragments are never
+/// URI without one; a URI without an authority cannot name its origin there and is
+/// sent as it would be directly (origin-form, or `*` for a server-wide OPTIONS),
+/// leaving the origin to the `Host` header. Fragments are never
 /// emitted, nor is userinfo for HTTP-family schemes (see
 /// [`Uri::write_http_absolute_form`]), and a rootless path is sent rooted. Route
 /// intent is deliberately ignored: the established connection route is the only
@@ -415,6 +416,7 @@ pub fn encode_header_block(headers: &HeaderMap) -> Bytes {
     let mut output = Vec::with_capacity(header_fields_len(headers) + 2);
     encode_header_fields(headers, &mut output);
     output.extend_from_slice(b"\r\n");
+    debug_assert_eq!(output.len(), output.capacity(), "sized exactly");
     Bytes::from(output)
 }
 

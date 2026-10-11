@@ -1691,7 +1691,42 @@ mod tests {
                 proxied,
                 "{reference:?}"
             );
+            // The connection encoder's fallback is not what makes these valid.
+            let mut checked = Vec::new();
+            rama_http_types::proto::h1::head::encode_request_target(
+                &Method::GET,
+                &uri,
+                &http_proxy_ext(),
+                &mut checked,
+            )
+            .unwrap();
+            assert_eq!(checked, proxied.as_bytes(), "{reference:?}");
         }
+
+        // A rootless path after an authority stays on that authority's host.
+        for uri in [
+            Uri::parse("http://example.com").unwrap().with_path("p"),
+            Uri::parse_reference("//example.com")
+                .unwrap()
+                .with_path("p"),
+        ] {
+            assert_eq!(target_of(&Method::GET, &uri, &none), "/p", "{uri}");
+            assert_eq!(
+                target_of(&Method::GET, &uri, &http_proxy_ext()),
+                "http://example.com/p",
+                "{uri}"
+            );
+        }
+
+        // Without an authority a server-wide OPTIONS is sent as it would be directly.
+        assert_eq!(
+            target_of(
+                &Method::OPTIONS,
+                &Uri::parse_reference("").unwrap(),
+                &http_proxy_ext()
+            ),
+            "*"
+        );
 
         // Route intent alone cannot prove which connection was established.
         assert_eq!(

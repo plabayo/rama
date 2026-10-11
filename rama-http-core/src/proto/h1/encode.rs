@@ -213,6 +213,7 @@ impl Encoder {
                     }
                 }
 
+                debug_assert_eq!(buf.len(), buf.capacity(), "sized exactly");
                 Some(EncodedBuf {
                     kind: BufKind::Trailers(b"0\r\n".chain(Bytes::from(buf)).chain(b"\r\n")),
                 })

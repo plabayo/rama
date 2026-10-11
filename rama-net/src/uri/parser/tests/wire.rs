@@ -162,6 +162,51 @@ fn origin_form_and_h2_path_root_a_rootless_path() {
 }
 
 #[test]
+fn a_rootless_path_after_an_authority_is_rooted_in_every_form() {
+    let uri = parse_graceful("http://example.com").unwrap().with_path("p");
+    assert_eq!(write_origin(&uri).unwrap(), "/p");
+    assert_eq!(write_h2_path(&uri), "/p");
+    assert_eq!(write_absolute(&uri).unwrap(), "http://example.com/p");
+    assert_eq!(
+        write_absolute_with_overrides(&uri, &Protocol::HTTPS, OptPort::Unset).unwrap(),
+        "https://example.com/p"
+    );
+    assert_eq!(uri.to_string(), "http://example.com/p");
+
+    let reference = Uri::parse_reference("//example.com")
+        .unwrap()
+        .with_path("p");
+    let mut b = buf();
+    reference
+        .write_http_absolute_form_with_default_scheme(&Protocol::HTTP, &mut b)
+        .unwrap();
+    assert_eq!(String::from_utf8(b).unwrap(), "http://example.com/p");
+}
+
+#[test]
+fn writers_write_nothing_on_error() {
+    let asterisk = Uri::parse_http_request_target("*", false).unwrap();
+    let no_scheme = Uri::parse_reference("/p").unwrap();
+    let mut b = b"x".to_vec();
+    for uri in [&asterisk, &no_scheme] {
+        if !uri.is_asterisk() {
+            assert!(uri.write_http_absolute_form(&mut b).is_err());
+        } else {
+            assert!(uri.write_http_origin_form(&mut b).is_err());
+            assert!(uri.write_http_absolute_form(&mut b).is_err());
+        }
+        assert!(uri.write_http_authority_form(&mut b).is_err());
+        assert!(uri.write_h2_authority(&mut b).is_err());
+        assert!(uri.write_h2_scheme(&mut b).is_err());
+        assert!(
+            uri.write_http_absolute_form_with_default_scheme(&Protocol::HTTP, &mut b)
+                .is_err()
+        );
+    }
+    assert_eq!(b, b"x");
+}
+
+#[test]
 fn absolute_form_with_default_scheme() {
     let write = |uri: &str| {
         let mut b = buf();

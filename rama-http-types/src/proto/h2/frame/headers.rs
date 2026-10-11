@@ -15,7 +15,7 @@ use rama_core::telemetry::tracing;
 
 use std::fmt;
 use std::io::Cursor;
-use std::ops::ControlFlow;
+use std::ops::{ControlFlow, Range};
 use std::sync::Arc;
 
 type EncodeBuf<'a> = rama_core::bytes::buf::Limit<&'a mut BytesMut>;
@@ -766,7 +766,7 @@ impl Pseudo {
         };
 
         let target = Bytes::from(target);
-        let rendered = |range: core::ops::Range<usize>| {
+        let rendered = |range: Range<usize>| {
             BytesStr::try_from(target.slice(range)).unwrap_or_else(|_| BytesStr::from_static(""))
         };
         let path = path.map(|path| match path {
@@ -836,12 +836,7 @@ impl Pseudo {
     }
 
     pub fn set_scheme(&mut self, scheme: &rama_net::Protocol) {
-        let bytes_str = match scheme.as_str() {
-            "http" => BytesStr::from_static("http"),
-            "https" => BytesStr::from_static("https"),
-            s => BytesStr::from(s),
-        };
-        self.scheme = Some(bytes_str);
+        self.scheme = Some(pseudo_scheme(scheme));
     }
 
     pub fn set_protocol(&mut self, protocol: Protocol) {
