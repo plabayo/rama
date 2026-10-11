@@ -14,6 +14,7 @@ use rama_utils::octets::kib;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy)]
+/// Resource limits for one retained HTTP/3 connection prefix.
 pub struct H3SequenceCaptureLimits {
     pub events: usize,
     pub instructions: usize,
@@ -36,6 +37,7 @@ impl Default for H3SequenceCaptureLimits {
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// A stream creation or control frame in the observed connection order.
 pub enum H3CapturedEvent {
     Stream {
         stream_id: u64,
@@ -51,8 +53,9 @@ pub enum H3CapturedEvent {
 
 /// A prefix at one immutable connection boundary. Fingerprint collection freezes
 /// it once both the first request and peer SETTINGS have arrived. Recorder
-/// revision gaps have no wire meaning. Stream and control events share relative order; QPACK has
-/// only its own instruction order. No order between those sequences is invented.
+/// revision gaps have no wire meaning. Stream and control events share relative
+/// order; QPACK has only its own instruction order. No order between those
+/// sequences is invented.
 /// Inserted names/values and ignored frame payloads are absent, so this model
 /// alone does not grant exact dynamic-table or unknown-frame replay capability.
 #[derive(Debug, Clone, Serialize)]

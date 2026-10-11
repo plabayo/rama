@@ -36,7 +36,7 @@ use rama_http_types::{
     Body, Request, Response, StatusCode, Version,
     conn::{H2ClientContextParams, PeerH2Settings, TargetHttpVersion},
     proto::h1::ext::ConnectionClose,
-    proto::h2::frame::{EarlyFrame, Setting, Settings},
+    proto::h2::frame::{EarlyFrame, EarlyFrameStreamContext, Setting, Settings},
 };
 use rama_net::{
     TargetHttpVersionInputExt,
@@ -1447,8 +1447,13 @@ async fn h2_client_exact_replay_reaches_the_wire() {
         payload
     });
 
+    let mut legacy = EarlyFrameStreamContext::new_recorder();
+    legacy.record_settings_frame(&Settings::default());
+    let legacy = legacy.freeze_recorder().unwrap();
+
     let request = create_test_request(Version::HTTP_2);
     request.extensions().insert(H2ClientContextParams {
+        early_frames: Some(legacy),
         replay_early_frames: Some(
             vec![EarlyFrame::Settings(
                 Settings::from_ordered_entries(

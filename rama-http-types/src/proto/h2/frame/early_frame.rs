@@ -60,16 +60,6 @@ impl EarlyFrameStreamContext {
 
     #[must_use]
     pub fn new_replayer(mut frames: Vec<EarlyFrame>) -> (Self, Option<Settings>) {
-        let mut seen_connection_window_update = false;
-        frames.retain(|frame| match frame {
-            EarlyFrame::WindowUpdate(window_update) if window_update.stream_id.is_zero() => {
-                let keep = !seen_connection_window_update;
-                seen_connection_window_update = true;
-                keep
-            }
-            _ => true,
-        });
-
         frames.reverse();
         let settings = match frames.pop() {
             Some(frame) => match frame {
@@ -342,5 +332,24 @@ mod tests {
             disabled.record_settings_frame(&Settings::default());
         }
         assert!(disabled.freeze_recorder().is_none());
+    }
+
+    #[test]
+    fn replay_preserves_repeated_connection_window_updates() {
+        let frames = vec![
+            EarlyFrame::Settings(Settings::default()),
+            EarlyFrame::WindowUpdate(WindowUpdate::new(StreamId::zero(), 100)),
+            EarlyFrame::WindowUpdate(WindowUpdate::new(StreamId::zero(), 200)),
+        ];
+        let (mut replay, settings) = EarlyFrameStreamContext::new_replayer(frames);
+        assert!(settings.is_some());
+
+        for expected in [100, 200] {
+            let Some(EarlyFrame::WindowUpdate(frame)) = replay.replay_next_frame(None) else {
+                panic!("missing captured connection WINDOW_UPDATE");
+            };
+            assert_eq!(frame.size_increment, expected);
+        }
+        assert!(replay.replay_next_frame(None).is_none());
     }
 }

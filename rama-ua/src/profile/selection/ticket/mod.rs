@@ -1,7 +1,7 @@
 use std::{error::Error, fmt, sync::Arc};
 
 use rama_core::extensions::{Extension, Extensions};
-use rama_http::Version;
+use rama_http::{HeaderMap, HeaderName, Version};
 use rama_net::{
     client::pool::{ConnectionReuse, ConnectionReusePolicy},
     tls::{ApplicationProtocol, TlsAlpn},
@@ -10,11 +10,17 @@ use rama_utils::octets::kib;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::{DrawDomain, DrawKey, ProfileDraw, ProfileDrawContext, ProfileDrawError, ProfileSeed};
+use super::{
+    DrawDomain, DrawKey, ProfileDraw, ProfileDrawContext, ProfileDrawError,
+    ProfilePreservationMode, ProfileSeed,
+};
 use crate::profile::{
-    AnalyzedOrderWeight, CanonicalDomain, CanonicalValue, ConnectionContext, FlowKey,
-    ObservationWeight, ProfileCandidateFilter, ProfileCapabilities, ProfileDataError,
-    ProfileObservationScope, UserAgentDatabase, UserAgentProfile, ValueId,
+    AnalyzedCaptureVariant, AnalyzedOrderWeight, CanonicalDomain, CanonicalValue, CaptureLevel,
+    CapturedSlotKind, ConnectionContext, FlowKey, HeaderCapture, HeaderCapturePolicy,
+    HeaderValueSource, JointCapture, JointCaptureLimits, ObservationWeight, ProfileCandidateFilter,
+    ProfileCapabilities, ProfileCaptureCompleteness, ProfileDataError, ProfileObservationScope,
+    RequestBinding, RequestInitiator, ResumptionContext, UserAgentDatabase, UserAgentProfile,
+    ValueId,
 };
 use crate::{DeviceKind, PlatformKind};
 
@@ -22,6 +28,7 @@ const SELECTION_PREFIX: &[u8] = b"rama-profile-selection\0";
 const MAXIMUM_IDENTITY_BYTES: usize = kib(16);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Transport used to validate an advertised HTTP ALPN set.
 pub enum SelectionTransport {
     TcpPlain,
     TcpTls,
@@ -29,6 +36,7 @@ pub enum SelectionTransport {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Protocol components a selected profile must provide together.
 pub struct CapabilitySet {
     pub h1: bool,
     pub h2: bool,
@@ -118,6 +126,7 @@ impl From<crate::profile::ProfileCapabilities> for CapabilitySet {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Identity filters applied before a captured profile is drawn.
 pub struct ProfileSelector {
     pub client: Option<Box<str>>,
     pub platform: Option<PlatformKind>,
@@ -126,12 +135,14 @@ pub struct ProfileSelector {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Optional exact connection and request variant identifiers.
 pub struct VariantPins {
     pub connection: Option<ValueId>,
     pub request: Option<ValueId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Inputs that define one deterministic profile-selection domain.
 pub struct SelectionRequest {
     pub client: ProfileSelector,
     pub required: CapabilitySet,
@@ -140,6 +151,7 @@ pub struct SelectionRequest {
 }
 
 #[derive(Debug, Clone)]
+/// A profile selected for one required capability set and flow.
 pub struct SelectedProfile {
     id: ValueId,
     profile: Arc<UserAgentProfile>,
@@ -150,6 +162,7 @@ pub struct SelectedProfile {
 
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(ua))]
+/// Immutable selection and draw coordinates shared by connection and request layers.
 pub struct EmulationContext {
     pub selected: Arc<SelectedProfile>,
     pub seed: ProfileSeed,
@@ -160,6 +173,7 @@ pub struct EmulationContext {
 
 #[derive(Debug, Clone, Serialize, Extension)]
 #[extension(tags(ua))]
+/// Canonical connection variant and its observation scope.
 pub struct PreparedConnectionProfile {
     pub scope: ValueId,
     pub capture: CanonicalValue,
@@ -168,6 +182,7 @@ pub struct PreparedConnectionProfile {
 
 #[derive(Debug, Clone, Serialize, Extension)]
 #[extension(tags(ua))]
+/// Deterministic connection draw consumed by protocol connectors.
 pub struct ConnectionSelection {
     pub profile: ValueId,
     pub variant: ValueId,
@@ -178,6 +193,7 @@ pub struct ConnectionSelection {
 
 #[derive(Debug, Clone, Serialize, Extension)]
 #[extension(tags(ua))]
+/// Canonical request variant and the flow it must replay.
 pub struct PreparedRequestProfile {
     pub scope: ValueId,
     pub capture: CanonicalValue,
@@ -186,6 +202,7 @@ pub struct PreparedRequestProfile {
 
 #[derive(Debug, Clone, Serialize, Extension)]
 #[extension(tags(ua))]
+/// Deterministic request draw bound to a selected connection variant.
 pub struct RequestSelection {
     pub profile: ValueId,
     pub connection_variant: ValueId,
@@ -196,6 +213,7 @@ pub struct RequestSelection {
 }
 
 #[derive(Debug, Clone)]
+/// Pool reuse policy binding a connection to its selected profile variant.
 pub struct ProfileConnectionReuse {
     profile: ValueId,
     variant: ValueId,
@@ -203,6 +221,7 @@ pub struct ProfileConnectionReuse {
 }
 
 #[derive(Debug, Clone)]
+/// Failure to select or validate a captured profile variant.
 pub enum SelectionError {
     Data(ProfileDataError),
     Draw(ProfileDrawError),
@@ -210,6 +229,7 @@ pub enum SelectionError {
     MissingFlow,
     MissingCapabilities(CapabilitySet),
     IncompatibleConnectionContext,
+    IncompatibleRequestShape,
     IncompatibleNegotiatedProtocol(Version),
     IncompatiblePin(ValueId),
     UnsupportedAlpn(Box<[u8]>),
@@ -229,6 +249,9 @@ impl fmt::Display for SelectionError {
             }
             Self::IncompatibleConnectionContext => {
                 f.write_str("profile has no connection variant for the observed context")
+            }
+            Self::IncompatibleRequestShape => {
+                f.write_str("profile has no request variant for the request-owned header shape")
             }
             Self::IncompatibleNegotiatedProtocol(version) => {
                 write!(
@@ -497,6 +520,8 @@ impl SelectedProfile {
         &self,
         connection: &ConnectionSelection,
         flow: &FlowKey,
+        headers: &HeaderMap,
+        preservation: ProfilePreservationMode,
         seed: ProfileSeed,
         key: DrawKey,
     ) -> Result<RequestSelection, SelectionError> {
@@ -541,7 +566,31 @@ impl SelectedProfile {
         } else if scopes.is_empty() {
             return Err(SelectionError::MissingFlow);
         }
-        scopes.sort_unstable_by_key(|(_index, scope)| scope.id);
+
+        let mut candidates = Vec::new();
+        for (index, scope) in scopes {
+            let available: Vec<_> = scope
+                .observations
+                .variants
+                .iter()
+                .filter(|variant| self.pins.request.is_none_or(|pin| variant.value.id == pin))
+                .collect();
+            let compatible = request_variants_for_headers(&available, protocol, headers)?;
+            let variants =
+                if compatible.is_empty() && preservation == ProfilePreservationMode::BestEffort {
+                    available
+                } else {
+                    compatible
+                };
+            if !variants.is_empty() {
+                candidates.push((index, scope, variants));
+            }
+        }
+        if candidates.is_empty() {
+            return Err(SelectionError::IncompatibleRequestShape);
+        }
+        candidates.sort_unstable_by_key(|(_index, scope, _variants)| scope.id);
+
         let mut scope_draw = ProfileDraw::new(
             seed,
             ProfileDrawContext {
@@ -553,19 +602,18 @@ impl SelectedProfile {
                 slot: 0,
             },
         );
-        let weights = scopes
+        let weights = candidates
             .iter()
-            .map(|(_index, scope)| scope.observations.counts.total)
-            .collect::<Vec<_>>();
-        let scope = scopes
+            .map(|(_index, _scope, variants)| variant_weight(variants))
+            .collect::<Result<Vec<_>, _>>()?;
+        let (_index, scope, variants) = candidates
             .get(scope_draw.weighted_index(&weights)?)
-            .map(|(_index, scope)| *scope)
             .ok_or(SelectionError::MissingFlow)?;
+
         let variant = if let Some(pin) = self.pins.request {
-            scope
-                .observations
-                .variants
+            variants
                 .iter()
+                .copied()
                 .find(|variant| variant.value.id == pin)
         } else {
             let mut variant_draw = ProfileDraw::new(
@@ -579,16 +627,13 @@ impl SelectedProfile {
                     slot: 1,
                 },
             );
-            let weights = scope
-                .observations
-                .variants
+            let weights = variants
                 .iter()
                 .map(|variant| analyzed_weight(&variant.weight))
                 .collect::<Result<Vec<_>, _>>()?;
-            scope
-                .observations
-                .variants
+            variants
                 .get(variant_draw.weighted_index(&weights)?)
+                .copied()
         }
         .ok_or_else(|| {
             self.pins
@@ -608,6 +653,120 @@ impl SelectedProfile {
             },
         })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RequestHeaderShape {
+    name: HeaderName,
+    occurrence: u32,
+    binding: RequestBinding,
+}
+
+fn request_variants_for_headers<'a>(
+    variants: &[&'a AnalyzedCaptureVariant],
+    version: Version,
+    headers: &HeaderMap,
+) -> Result<Vec<&'a AnalyzedCaptureVariant>, SelectionError> {
+    let mut decoded = Vec::with_capacity(variants.len());
+    let mut observed = Vec::<RequestHeaderShape>::new();
+    for variant in variants {
+        let shape = request_header_shape(&variant.value, version)?;
+        for field in &shape {
+            if !observed.contains(field) {
+                observed.push(field.clone());
+            }
+        }
+        decoded.push((*variant, shape));
+    }
+
+    let requested = HeaderCapturePolicy::default().capture(
+        ProfileCaptureCompleteness::Complete,
+        version,
+        headers,
+        None,
+    )?;
+    let mut requested: Vec<_> = requested
+        .fields
+        .iter()
+        .filter_map(|field| {
+            let HeaderValueSource::Request(binding) = &field.value else {
+                return None;
+            };
+            let shape = RequestHeaderShape {
+                name: field.name.clone(),
+                occurrence: field.occurrence,
+                binding: *binding,
+            };
+            observed.contains(&shape).then_some(shape)
+        })
+        .collect();
+    sort_request_shape(&mut requested);
+
+    Ok(decoded
+        .into_iter()
+        .filter_map(|(variant, shape)| (shape == requested).then_some(variant))
+        .collect())
+}
+
+fn request_header_shape(
+    value: &CanonicalValue,
+    version: Version,
+) -> Result<Vec<RequestHeaderShape>, SelectionError> {
+    let limits = JointCaptureLimits::default();
+    let joint = JointCapture::from_canonical(value, limits)?;
+    if joint.level != CaptureLevel::Request {
+        return Err(ProfileDataError::Invalid("request selection capture level").into());
+    }
+
+    let mut shape = Vec::new();
+    for slot in &joint.slots {
+        match slot.kind {
+            CapturedSlotKind::Headers => {
+                let captured =
+                    HeaderCapture::from_canonical(&slot.value, &HeaderCapturePolicy::default())?;
+                if captured.version != version {
+                    return Err(
+                        ProfileDataError::Invalid("request selection header version").into(),
+                    );
+                }
+                shape.extend(captured.fields.iter().filter_map(|field| {
+                    let HeaderValueSource::Request(binding) = &field.value else {
+                        return None;
+                    };
+                    Some(RequestHeaderShape {
+                        name: field.name.clone(),
+                        occurrence: field.occurrence,
+                        binding: *binding,
+                    })
+                }));
+            }
+            CapturedSlotKind::PseudoHeaders | CapturedSlotKind::RuntimeMetadata => {}
+            _ => {
+                return Err(
+                    ProfileDataError::Invalid("connection slot in request selection").into(),
+                );
+            }
+        }
+    }
+    sort_request_shape(&mut shape);
+    Ok(shape)
+}
+
+fn sort_request_shape(shape: &mut [RequestHeaderShape]) {
+    shape.sort_unstable_by(|left, right| {
+        left.name
+            .as_str()
+            .cmp(right.name.as_str())
+            .then_with(|| left.occurrence.cmp(&right.occurrence))
+    });
+}
+
+fn variant_weight(variants: &[&AnalyzedCaptureVariant]) -> Result<u64, SelectionError> {
+    variants.iter().try_fold(0_u64, |total, variant| {
+        total
+            .checked_add(analyzed_weight(&variant.weight)?)
+            .ok_or(SelectionError::Data(ProfileDataError::CounterOverflow))
+    })
 }
 
 impl ProfileConnectionReuse {
@@ -667,9 +826,19 @@ fn connection_scope_supports(
 }
 
 fn connection_context_matches(left: &ConnectionContext, right: &ConnectionContext) -> bool {
-    left.resumption == right.resumption
-        && left.early_data == right.early_data
-        && left.token_present == right.token_present
+    let resumption = match right.resumption {
+        ResumptionContext::Unknown => !matches!(left.resumption, ResumptionContext::Resumed),
+        requested => left.resumption == requested,
+    };
+    let early_data = match right.early_data {
+        None => left.early_data != Some(true),
+        requested => left.early_data == requested,
+    };
+    let token = right
+        .token_present
+        .is_none_or(|requested| left.token_present == Some(requested));
+
+    resumption && early_data && token
 }
 
 fn scope_flow_matches(
@@ -703,7 +872,7 @@ fn flow_matches(observed: &FlowKey, requested: &FlowKey) -> bool {
         ) => {
             observed_version == requested_version
                 && observed_method == requested_method
-                && observed_initiator == requested_initiator
+                && initiator_matches(*observed_initiator, *requested_initiator)
                 && fetch_context_matches(observed_fetch.as_ref(), requested_fetch.as_ref())
                 && connection_context_matches(observed_connection, requested_connection)
         }
@@ -721,6 +890,16 @@ fn flow_matches(observed: &FlowKey, requested: &FlowKey) -> bool {
     }
 }
 
+fn initiator_matches(
+    observed: Option<RequestInitiator>,
+    requested: Option<RequestInitiator>,
+) -> bool {
+    match requested {
+        Some(requested) => observed == Some(requested),
+        None => observed.is_none_or(|observed| observed == RequestInitiator::Navigate),
+    }
+}
+
 fn fetch_context_matches(
     observed: Option<&crate::profile::FetchContext>,
     requested: Option<&crate::profile::FetchContext>,
@@ -732,8 +911,8 @@ fn fetch_context_matches(
                 && observed.destination == requested.destination
                 && observed.user_activation == requested.user_activation
         }
-        (None, None) => true,
-        _ => false,
+        (_, None) => true,
+        (None, Some(_)) => false,
     }
 }
 

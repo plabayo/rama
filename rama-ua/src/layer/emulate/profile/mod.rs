@@ -17,8 +17,9 @@ use crate::{
     UserAgent,
     profile::{
         CapabilitySet, ConnectionContext, ConnectionSelection, DrawKey, EmulationContext,
-        FetchContext, FlowKey, ProfilePreservationMode, ProfileSeed, ProfileSelector,
-        RequestInitiator, SelectionRequest, SelectionTransport, UserAgentDatabase, VariantPins,
+        FetchContext, FlowKey, ProfilePreservationMode, ProfilePreservationReport, ProfileSeed,
+        ProfileSelector, RequestInitiator, SelectionRequest, SelectionTransport, UserAgentDatabase,
+        VariantPins,
     },
 };
 
@@ -27,6 +28,10 @@ use super::SelectedUserAgentProfile;
 const MAXIMUM_FETCH_CONTEXT_BYTES: usize = rama_utils::octets::kib(16);
 
 /// Select a captured profile and publish its immutable emulation context.
+///
+/// Requests without an explicit [`RequestInitiator`] select a top-level
+/// navigation flow. Missing `Sec-Fetch-*` headers do not constrain selection;
+/// the chosen captured navigation supplies its profile-owned Fetch metadata.
 #[derive(Debug, Clone)]
 pub struct ProfileEmulateLayer {
     database: Arc<UserAgentDatabase>,
@@ -235,24 +240,33 @@ where
                 version,
                 connection.effective.context.connection.clone(),
             )?;
-            let selected =
-                context
-                    .selected
-                    .request(connection, &flow, context.seed, context.request_key)?;
-            let replayed = selected.replay_request(
+            let preservation = req
+                .extensions()
+                .get_ref::<ProfilePreservationMode>()
+                .copied()
+                .unwrap_or_default();
+            let selected = context.selected.request(
+                connection,
+                &flow,
                 req.headers(),
-                req.extensions()
-                    .get_ref::<ProfilePreservationMode>()
-                    .copied()
-                    .unwrap_or_default(),
+                preservation,
+                context.seed,
+                context.request_key,
             )?;
+            let replayed = selected.replay_request(req.headers(), preservation)?;
+            let report = req
+                .extensions()
+                .get_ref::<ProfilePreservationReport>()
+                .cloned()
+                .unwrap_or_default()
+                .followed_by(replayed.report);
             if let Some(headers) = replayed.headers {
                 *req.headers_mut() = headers;
             }
             if let Some(pseudo_headers) = replayed.pseudo_headers {
                 req.extensions().insert(pseudo_headers);
             }
-            req.extensions().insert(replayed.report);
+            req.extensions().insert(report);
             req.extensions().insert(selected);
         }
         self.inner.serve(req).await.into_box_error()

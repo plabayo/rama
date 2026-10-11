@@ -1,11 +1,12 @@
-use rama_http::{Method, Version};
+use rama_http::{HeaderMap, HeaderName, HeaderValue, Method, Version};
 
 use super::*;
 use crate::profile::{
     AnalyzedCaptureVariant, AnalyzedProfile, AnalyzedProfileComponents, AnalyzedProfileScope,
     CaptureLevel, CapturedSlot, CapturedSlotKind, ConnectionIpFamily, CountedCaptureAnalysis,
-    CounterSnapshot, JointCapture, JointCaptureLimits, ObservationLosses, OrderCaptureLimits,
-    OrderNamespace, OrderedProtocolCapture, ProfileCaptureCompleteness, ProfileKey,
+    CounterSnapshot, FetchContext, HeaderCapture, HeaderCapturePolicy, HeaderOccurrence,
+    HeaderValueSource, JointCapture, JointCaptureLimits, ObservationLosses, OrderCaptureLimits,
+    OrderNamespace, OrderedProtocolCapture, ProfileCaptureCompleteness, ProfileKey, RequestBinding,
     ResumptionContext, UntrackedDistinctSnapshot,
 };
 
@@ -63,6 +64,28 @@ fn request_variant() -> CanonicalValue {
         completeness: ProfileCaptureCompleteness::Complete,
         level: CaptureLevel::Request,
         slots: Box::default(),
+    }
+    .canonical(JointCaptureLimits::default())
+    .unwrap()
+}
+
+fn request_variant_with_headers(version: Version, fields: Vec<HeaderOccurrence>) -> CanonicalValue {
+    let headers = HeaderCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        version,
+        fields: fields.into(),
+    }
+    .canonical(&HeaderCapturePolicy::default())
+    .unwrap();
+
+    JointCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        level: CaptureLevel::Request,
+        slots: vec![CapturedSlot {
+            kind: CapturedSlotKind::Headers,
+            value: headers,
+        }]
+        .into(),
     }
     .canonical(JointCaptureLimits::default())
     .unwrap()
@@ -160,6 +183,18 @@ fn profile(
         },
         scopes: vec![connection, request].into(),
     })
+}
+
+fn set_request_flow(profile: &mut UserAgentProfile, flow: FlowKey) {
+    let canonical = flow.canonical(MAXIMUM_IDENTITY_BYTES).unwrap();
+    let analysis = Arc::make_mut(profile.captured.as_mut().unwrap());
+    let scope = analysis
+        .scopes
+        .iter_mut()
+        .find(|scope| scope.context.flow.is_some())
+        .unwrap();
+    scope.context.flow = Some(canonical.id);
+    scope.flow = Some(flow);
 }
 
 fn h3_capabilities() -> CapabilitySet {
@@ -288,6 +323,156 @@ fn h1_h2_offer_does_not_admit_an_h2_only_profile() {
 }
 
 #[test]
+fn default_request_selects_fresh_navigation_across_quic_token_states() {
+    for token_present in [false, true] {
+        let observed_context = ConnectionContext {
+            resumption: ResumptionContext::Fresh,
+            early_data: Some(false),
+            token_present: Some(token_present),
+            ip_family: Some(ConnectionIpFamily::V6),
+        };
+        let mut captured = profile("browser", h3_capabilities(), observed_context.clone());
+        set_request_flow(
+            &mut captured,
+            FlowKey::Http {
+                version: Version::HTTP_3,
+                method: Method::GET,
+                initiator: Some(RequestInitiator::Navigate),
+                fetch: Some(FetchContext {
+                    mode: Some("navigate".into()),
+                    site: Some("none".into()),
+                    destination: Some("document".into()),
+                    user_activation: Some("?1".into()),
+                }),
+                connection: observed_context,
+            },
+        );
+        let database: UserAgentDatabase = [captured].into_iter().collect();
+        let request = request(ConnectionContext::default());
+
+        let selected = database
+            .select(&request, ProfileSeed([50; 32]), DrawKey([51; 32]))
+            .unwrap();
+        selected
+            .connection(
+                &ConnectionContext::default(),
+                ProfileSeed([50; 32]),
+                DrawKey([52; 32]),
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn request_shape_selects_cookie_variant_and_ignores_unobserved_caller_fields() {
+    let context = ConnectionContext::default();
+    let empty = request_variant();
+    let cookie = request_variant_with_headers(
+        Version::HTTP_3,
+        vec![HeaderOccurrence {
+            name: HeaderName::from_static("cookie"),
+            occurrence: 0,
+            sensitive: true,
+            representation: None,
+            value: HeaderValueSource::Request(RequestBinding::Cookie),
+        }],
+    );
+    let mut captured = profile("browser", h3_capabilities(), context.clone());
+    let analysis = Arc::make_mut(captured.captured.as_mut().unwrap());
+    let scope = analysis
+        .scopes
+        .iter_mut()
+        .find(|scope| scope.context.flow.is_some())
+        .unwrap();
+    scope.observations.counts = counts(2);
+    scope.observations.retained_samples = 2;
+    scope.observations.sample_values = Box::new([empty.id, cookie.id]);
+    scope.observations.variants = Box::new([
+        AnalyzedCaptureVariant {
+            value: empty.clone(),
+            weight: AnalyzedOrderWeight::Counted(ObservationWeight::Exact(1)),
+        },
+        AnalyzedCaptureVariant {
+            value: cookie.clone(),
+            weight: AnalyzedOrderWeight::Counted(ObservationWeight::Exact(1)),
+        },
+    ]);
+
+    let database: UserAgentDatabase = [captured].into_iter().collect();
+    let selected = database
+        .select(
+            &request(context.clone()),
+            ProfileSeed([53; 32]),
+            DrawKey([54; 32]),
+        )
+        .unwrap();
+    let connection = selected
+        .connection(&context, ProfileSeed([53; 32]), DrawKey([55; 32]))
+        .unwrap();
+    let flow = flow(context.clone(), Version::HTTP_3);
+
+    let selected_empty = selected
+        .request(
+            &connection,
+            &flow,
+            &HeaderMap::new(),
+            ProfilePreservationMode::Strict,
+            ProfileSeed([53; 32]),
+            DrawKey([56; 32]),
+        )
+        .unwrap();
+    assert_eq!(selected_empty.variant, empty.id);
+
+    let mut cookie_headers = HeaderMap::new();
+    cookie_headers.insert("cookie", HeaderValue::from_static("session=secret"));
+    let selected_cookie = selected
+        .request(
+            &connection,
+            &flow,
+            &cookie_headers,
+            ProfilePreservationMode::Strict,
+            ProfileSeed([53; 32]),
+            DrawKey([57; 32]),
+        )
+        .unwrap();
+    assert_eq!(selected_cookie.variant, cookie.id);
+
+    let mut caller_headers = HeaderMap::new();
+    caller_headers.insert("authorization", HeaderValue::from_static("Bearer secret"));
+    let selected_caller = selected
+        .request(
+            &connection,
+            &flow,
+            &caller_headers,
+            ProfilePreservationMode::Strict,
+            ProfileSeed([53; 32]),
+            DrawKey([58; 32]),
+        )
+        .unwrap();
+    assert_eq!(selected_caller.variant, empty.id);
+
+    let mut pinned_request = request(context.clone());
+    pinned_request.pins.request = Some(cookie.id);
+    let pinned = database
+        .select(&pinned_request, ProfileSeed([53; 32]), DrawKey([59; 32]))
+        .unwrap();
+    let pinned_connection = pinned
+        .connection(&context, ProfileSeed([53; 32]), DrawKey([60; 32]))
+        .unwrap();
+    assert!(matches!(
+        pinned.request(
+            &pinned_connection,
+            &flow,
+            &HeaderMap::new(),
+            ProfilePreservationMode::Strict,
+            ProfileSeed([53; 32]),
+            DrawKey([61; 32]),
+        ),
+        Err(SelectionError::IncompatibleRequestShape)
+    ));
+}
+
+#[test]
 fn h1_h2_offer_draws_only_a_connection_scope_with_h2_state() {
     let context = ConnectionContext::default();
     let tcp = CapabilitySet {
@@ -365,6 +550,8 @@ fn ip_family_does_not_fragment_a_wire_equivalent_selection() {
         .request(
             &connection,
             &flow(requested.clone(), Version::HTTP_3),
+            &HeaderMap::new(),
+            ProfilePreservationMode::Strict,
             ProfileSeed([46; 32]),
             DrawKey([49; 32]),
         )
@@ -425,6 +612,8 @@ fn connection_ticket_matches_exact_context_and_literal_pin() {
         .request(
             &first,
             &request_flow,
+            &HeaderMap::new(),
+            ProfilePreservationMode::Strict,
             ProfileSeed([5; 32]),
             DrawKey([21; 32]),
         )
@@ -436,6 +625,8 @@ fn connection_ticket_matches_exact_context_and_literal_pin() {
         selected.request(
             &first,
             &flow(context.clone(), Version::HTTP_2),
+            &HeaderMap::new(),
+            ProfilePreservationMode::Strict,
             ProfileSeed([5; 32]),
             DrawKey([21; 32]),
         ),

@@ -12,13 +12,31 @@ use crate::profile::{
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Extension)]
 #[extension(tags(ua))]
+/// Whether replay rejects or reports deviations from the selected capture.
 pub enum ProfilePreservationMode {
     #[default]
     Strict,
     BestEffort,
 }
 
+/// A caller-provided H2 option that can add or change connection wire output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum H2ClientParameter {
+    EarlyFrames,
+    ReplayEarlyFrames,
+    InitialStreamWindowSize,
+    InitialConnectionWindowSize,
+    KeepAliveInterval,
+    KeepAliveTimeout,
+    KeepAliveWhileIdle,
+    MaximumHeaderListSize,
+    MaximumFrameSize,
+    MaximumConcurrentStreams,
+    AdaptiveWindow,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// One observable difference between the selected capture and emitted request.
 pub enum ProfilePreservationDifference {
     CallerValueOverride {
         name: HeaderName,
@@ -33,10 +51,19 @@ pub enum ProfilePreservationDifference {
         name: HeaderName,
         occurrence: u32,
     },
+    /// Best-effort replay retained a caller option that can alter H2 wire output.
+    RetainedH2ClientParameter {
+        parameter: H2ClientParameter,
+    },
+    /// A SETTINGS acknowledgement cannot be emitted until peer SETTINGS arrives.
+    DroppedH2SettingsAcknowledgement {
+        index: usize,
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Extension)]
 #[extension(tags(ua, http))]
+/// Ordered differences accumulated while compiling and replaying a profile.
 pub struct ProfilePreservationReport {
     pub differences: Box<[ProfilePreservationDifference]>,
 }
@@ -46,9 +73,32 @@ impl ProfilePreservationReport {
     pub fn is_exact(&self) -> bool {
         self.differences.is_empty()
     }
+
+    /// Append later-stage differences while preserving their execution order.
+    #[must_use]
+    pub fn followed_by(mut self, later: Self) -> Self {
+        if self.differences.is_empty() {
+            return later;
+        }
+        if later.differences.is_empty() {
+            return self;
+        }
+
+        let mut differences = self.differences.into_vec();
+        differences.extend(later.differences);
+        self.differences = differences.into();
+        self
+    }
+
+    pub(crate) fn push(&mut self, difference: ProfilePreservationDifference) {
+        let mut differences = std::mem::take(&mut self.differences).into_vec();
+        differences.push(difference);
+        self.differences = differences.into();
+    }
 }
 
 #[derive(Debug, Clone)]
+/// Request metadata rebuilt from a selected captured variant.
 pub struct ReplayedRequestProfile {
     pub headers: Option<HeaderMap>,
     pub pseudo_headers: Option<PseudoHeaderOrder>,
@@ -56,6 +106,7 @@ pub struct ReplayedRequestProfile {
 }
 
 #[derive(Debug)]
+/// Failure to replay a selected profile under the requested preservation mode.
 pub enum ProfileReplayError {
     Data(ProfileDataError),
     IncompatibleHeaderVersion {
@@ -66,6 +117,7 @@ pub enum ProfileReplayError {
         name: HeaderName,
         occurrence: u32,
     },
+    IncompatibleH2ClientParameter(H2ClientParameter),
 }
 
 impl fmt::Display for ProfileReplayError {
@@ -83,6 +135,10 @@ impl fmt::Display for ProfileReplayError {
                 f,
                 "request header {name} occurrence {occurrence} is incompatible with the captured shape"
             ),
+            Self::IncompatibleH2ClientParameter(parameter) => write!(
+                f,
+                "caller H2 parameter {parameter:?} changes strict captured-profile replay"
+            ),
         }
     }
 }
@@ -96,6 +152,12 @@ impl From<ProfileDataError> for ProfileReplayError {
 }
 
 impl RequestSelection {
+    /// Rebuild request headers in captured order.
+    ///
+    /// Caller fields absent from the capture are request-owned and are appended
+    /// after the captured sequence in their original relative order. Strict
+    /// mode still rejects a selected variant whose captured request binding is
+    /// missing from the actual request.
     pub fn replay_request(
         &self,
         original: &HeaderMap,
@@ -229,12 +291,6 @@ fn replay_headers(
         *occurrence += 1;
         if field.used {
             continue;
-        }
-        if mode == ProfilePreservationMode::Strict {
-            return Err(ProfileReplayError::IncompatibleHeaderShape {
-                name: field.name,
-                occurrence: current,
-            });
         }
         differences.push(ProfilePreservationDifference::AppendedCallerField {
             name: field.name.clone(),

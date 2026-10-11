@@ -5,9 +5,10 @@ use rama_http::proto::h2::frame::EarlyFrame;
 
 use crate::profile::{
     CaptureLevel, CapturedSlotKind, ConnectionSelection, H2Capture, H2CaptureLimits,
-    H3ClientSequenceCapture, H3SequenceCaptureLimits, JointCapture, JointCaptureLimits,
-    OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture, ProfileDataError,
-    QuicFlightCapture, QuicFlightCaptureLimits,
+    H2CapturedFrame, H3ClientSequenceCapture, H3SequenceCaptureLimits, JointCapture,
+    JointCaptureLimits, OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture,
+    ProfileDataError, ProfilePreservationDifference, ProfilePreservationMode,
+    ProfilePreservationReport, QuicFlightCapture, QuicFlightCaptureLimits,
 };
 #[cfg(feature = "tls")]
 use crate::profile::{TlsCapture, TlsCaptureLimits};
@@ -24,11 +25,16 @@ pub struct PreparedConnectionComponents {
     pub h2_early_frames: Option<Arc<[EarlyFrame]>>,
     pub quic_first_flight: Option<QuicFlightCapture>,
     pub h3_sequence: Option<H3ClientSequenceCapture>,
+    /// Differences introduced while compiling the selected connection capture.
+    pub preservation_report: ProfilePreservationReport,
 }
 
 impl ConnectionSelection {
     /// Decode the selected connection tuple once, before a connector consumes it.
-    pub fn prepare_components(&self) -> Result<PreparedConnectionComponents, ProfileDataError> {
+    pub fn prepare_components(
+        &self,
+        preservation: ProfilePreservationMode,
+    ) -> Result<PreparedConnectionComponents, ProfileDataError> {
         let limits = JointCaptureLimits::default();
         let joint = JointCapture::from_canonical(&self.effective.capture, limits)?;
         if joint.level != CaptureLevel::Connection {
@@ -49,6 +55,7 @@ impl ConnectionSelection {
             h2_early_frames: None,
             quic_first_flight: None,
             h3_sequence: None,
+            preservation_report: ProfilePreservationReport::default(),
         };
         for slot in &joint.slots {
             match slot.kind {
@@ -88,13 +95,33 @@ impl ConnectionSelection {
                             bytes: limits.value_bytes,
                         },
                     )?;
+                    let mut replay = h2.clone();
+                    let mut frames = Vec::with_capacity(h2.frames.len());
+                    for (index, frame) in h2.frames.iter().enumerate() {
+                        if matches!(frame, H2CapturedFrame::Settings { ack: true, .. }) {
+                            if preservation == ProfilePreservationMode::Strict {
+                                return Err(ProfileDataError::Unsupported(
+                                    "H2 SETTINGS acknowledgement replay",
+                                ));
+                            }
+                            prepared.preservation_report.push(
+                                ProfilePreservationDifference::DroppedH2SettingsAcknowledgement {
+                                    index,
+                                },
+                            );
+                        } else {
+                            frames.push(frame.clone());
+                        }
+                    }
+                    replay.frames = frames.into();
                     prepared.h2_early_frames = Some(
-                        h2.replay_frames(H2CaptureLimits {
-                            frames: limits.value_bytes,
-                            settings: limits.value_bytes,
-                            bytes: limits.value_bytes,
-                        })?
-                        .into(),
+                        replay
+                            .replay_frames(H2CaptureLimits {
+                                frames: limits.value_bytes,
+                                settings: limits.value_bytes,
+                                bytes: limits.value_bytes,
+                            })?
+                            .into(),
                     );
                 }
                 CapturedSlotKind::QuicFirstFlight => {

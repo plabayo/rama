@@ -1,8 +1,8 @@
 //! Bounded H2 settings and early frames, captured before semantic collapse.
 
 use rama_http::proto::h2::frame::{
-    EarlyFrame, EarlyFrameCapture, Priority, Setting, Settings, StreamDependency, StreamId,
-    WindowUpdate,
+    DEFAULT_MAX_FRAME_SIZE, EarlyFrame, EarlyFrameCapture, MAX_MAX_FRAME_SIZE, Priority, Setting,
+    SettingId, Settings, StreamDependency, StreamId, WindowUpdate,
 };
 use rama_utils::octets::kib;
 use serde::Serialize;
@@ -13,6 +13,7 @@ use super::{
 };
 
 #[derive(Debug, Clone, Copy)]
+/// Resource limits for one retained H2 connection prefix.
 pub struct H2CaptureLimits {
     pub frames: usize,
     pub settings: usize,
@@ -29,12 +30,14 @@ impl Default for H2CaptureLimits {
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
+/// One raw SETTINGS identifier/value pair in observed wire order.
 pub struct H2CapturedSetting {
     pub id: u16,
     pub value: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// An H2 connection frame observed before the first request boundary.
 pub enum H2CapturedFrame {
     Settings {
         ack: bool,
@@ -53,6 +56,7 @@ pub enum H2CapturedFrame {
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// A complete bounded H2 client connection prefix.
 pub struct H2Capture {
     pub completeness: ProfileCaptureCompleteness,
     pub frames: Box<[H2CapturedFrame]>,
@@ -61,6 +65,7 @@ pub struct H2Capture {
 fn invalid() -> ProfileDataError {
     ProfileDataError::Invalid("H2 early frame")
 }
+
 fn bounded() -> ProfileDataError {
     ProfileDataError::LimitExceeded("H2 early capture")
 }
@@ -228,10 +233,23 @@ impl H2Capture {
                     }
                     remaining = remaining.checked_sub(entries.len()).ok_or_else(bounded)?;
                     for entry in entries {
-                        match entry.id {
-                            2 | 8 | 9 if entry.value > 1 => return Err(invalid()),
-                            4 if entry.value >= 1 << 31 => return Err(invalid()),
-                            5 if !(1 << 14..1 << 24).contains(&entry.value) => {
+                        match SettingId::from(entry.id) {
+                            SettingId::EnablePush
+                            | SettingId::EnableConnectProtocol
+                            | SettingId::NoRfc7540Priorities
+                                if entry.value > 1 =>
+                            {
+                                return Err(invalid());
+                            }
+                            SettingId::InitialWindowSize
+                                if entry.value > u32::from(StreamId::MAX) =>
+                            {
+                                return Err(invalid());
+                            }
+                            SettingId::MaxFrameSize
+                                if !(DEFAULT_MAX_FRAME_SIZE..=MAX_MAX_FRAME_SIZE)
+                                    .contains(&entry.value) =>
+                            {
                                 return Err(invalid());
                             }
                             _ => (),
@@ -244,7 +262,10 @@ impl H2Capture {
                         .ok_or_else(bounded)?
                 }
                 H2CapturedFrame::WindowUpdate { stream, increment } => {
-                    if *stream >= 1 << 31 || *increment == 0 || *increment >= 1 << 31 {
+                    if StreamId::checked(*stream).is_err()
+                        || *increment == 0
+                        || *increment > u32::from(StreamId::MAX)
+                    {
                         return Err(invalid());
                     }
                     9
@@ -253,8 +274,8 @@ impl H2Capture {
                     stream, dependency, ..
                 } => {
                     if *stream == 0
-                        || *stream >= 1 << 31
-                        || *dependency >= 1 << 31
+                        || StreamId::checked(*stream).is_err()
+                        || StreamId::checked(*dependency).is_err()
                         || stream == dependency
                     {
                         return Err(invalid());

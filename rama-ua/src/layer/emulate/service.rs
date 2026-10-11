@@ -1,5 +1,5 @@
 use rama_core::error::BoxErrorExt as _;
-use std::borrow::Cow;
+use std::{borrow::Cow, sync::Arc};
 
 use rama_core::{
     Layer, Service,
@@ -12,6 +12,7 @@ use rama_http::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Version,
     conn::{H2ClientContextParams, Http1ClientContextParams, TargetHttpVersion},
     header::{CONTENT_TYPE, REFERER, SEC_WEBSOCKET_VERSION, USER_AGENT},
+    proto::h2::frame::EarlyFrame,
 };
 use rama_net::{
     AuthorityInputExt, HttpVersionInputExt, Protocol, ProtocolInputExt, TargetHttpVersionInputExt,
@@ -24,8 +25,10 @@ use rama_utils::str::{starts_with_ignore_ascii_case, submatch_ignore_ascii_case}
 use crate::{
     HttpAgent, UserAgent,
     profile::{
-        CUSTOM_HEADER_MARKER, ConnectionContext, EmulationContext, HttpHeadersProfile, HttpProfile,
-        PreserveHeaderUserAgent, ProfileConnectionReuse, RequestClientHints, RequestInitiator,
+        CUSTOM_HEADER_MARKER, ConnectionContext, EmulationContext, H2ClientParameter,
+        HttpHeadersProfile, HttpProfile, PreserveHeaderUserAgent, ProfileConnectionReuse,
+        ProfilePreservationDifference, ProfilePreservationMode, ProfilePreservationReport,
+        ProfileReplayError, RequestClientHints, RequestInitiator,
     },
 };
 
@@ -283,6 +286,11 @@ where
     type Output = EstablishedClientConnection<S::Connection, Input>;
 
     async fn serve(&self, req: Input) -> Result<Self::Output, Self::Error> {
+        let preservation = req
+            .extensions()
+            .get_ref::<ProfilePreservationMode>()
+            .copied()
+            .unwrap_or_default();
         let connection_selection = req
             .extensions()
             .get_ref::<EmulationContext>()
@@ -299,15 +307,24 @@ where
             .transpose()
             .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
         if let Some(selection) = &connection_selection {
-            let prepared = selection.prepare_components().map_err(|error| {
-                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
-            })?;
+            let mut prepared = selection
+                .prepare_components(preservation)
+                .map_err(|error| {
+                    ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                })?;
             if let Some(h2_early_frames) = &prepared.h2_early_frames {
-                req.extensions().insert(H2ClientContextParams {
-                    replay_early_frames: Some(h2_early_frames.clone()),
-                    ..Default::default()
-                });
+                apply_profile_h2_replay(
+                    &req,
+                    h2_early_frames.clone(),
+                    preservation,
+                    &mut prepared.preservation_report,
+                )
+                .map_err(|error| {
+                    ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                })?;
             }
+            req.extensions()
+                .insert(prepared.preservation_report.clone());
             req.extensions().insert(prepared);
             req.extensions().insert(selection.clone());
         }
@@ -417,9 +434,12 @@ fn emulate_http_connect_settings(
                 .ok_or_else(|| BoxError::from_static_str("missing HTTP/2 settings"))?;
             let pseudo_headers = settings.http_pseudo_headers.clone();
             let early_frames = settings.early_frames.clone();
-            let replay_early_frames = input
+            let existing = input
                 .extensions()
                 .get_ref::<H2ClientContextParams>()
+                .cloned();
+            let replay_early_frames = existing
+                .as_ref()
                 .and_then(|params| params.replay_early_frames.clone());
 
             if pseudo_headers.is_some() || early_frames.is_some() || replay_early_frames.is_some() {
@@ -428,12 +448,14 @@ fn emulate_http_connect_settings(
                     pseudo_headers,
                     early_frames,
                 );
-                input.extensions().insert(H2ClientContextParams {
-                    headers_pseudo_order: pseudo_headers,
-                    early_frames,
-                    replay_early_frames,
-                    ..Default::default()
-                });
+                let mut params = existing.unwrap_or_default();
+                if let Some(pseudo_headers) = pseudo_headers {
+                    params.headers_pseudo_order = Some(pseudo_headers);
+                }
+                if let Some(early_frames) = early_frames {
+                    params.early_frames = Some(early_frames);
+                }
+                input.extensions().insert(params);
             }
         }
         Version::HTTP_3 => {
@@ -450,6 +472,81 @@ fn emulate_http_connect_settings(
         ),
     }
     Ok(())
+}
+
+fn apply_profile_h2_replay(
+    input: &impl ExtensionsRef,
+    replay: Arc<[EarlyFrame]>,
+    preservation: ProfilePreservationMode,
+    report: &mut ProfilePreservationReport,
+) -> Result<(), ProfileReplayError> {
+    let mut params = input
+        .extensions()
+        .get_ref::<H2ClientContextParams>()
+        .cloned()
+        .unwrap_or_default();
+
+    for parameter in h2_wire_parameters(&params) {
+        if preservation == ProfilePreservationMode::Strict {
+            return Err(ProfileReplayError::IncompatibleH2ClientParameter(parameter));
+        }
+        report.push(ProfilePreservationDifference::RetainedH2ClientParameter { parameter });
+    }
+
+    params.replay_early_frames = Some(replay);
+    input.extensions().insert(params);
+    Ok(())
+}
+
+fn h2_wire_parameters(params: &H2ClientContextParams) -> impl Iterator<Item = H2ClientParameter> {
+    [
+        params
+            .early_frames
+            .is_some()
+            .then_some(H2ClientParameter::EarlyFrames),
+        params
+            .replay_early_frames
+            .is_some()
+            .then_some(H2ClientParameter::ReplayEarlyFrames),
+        params
+            .init_stream_window_size
+            .is_some()
+            .then_some(H2ClientParameter::InitialStreamWindowSize),
+        params
+            .init_connection_window_size
+            .is_some()
+            .then_some(H2ClientParameter::InitialConnectionWindowSize),
+        params
+            .keep_alive_interval
+            .is_some()
+            .then_some(H2ClientParameter::KeepAliveInterval),
+        params
+            .keep_alive_timeout
+            .is_some()
+            .then_some(H2ClientParameter::KeepAliveTimeout),
+        params
+            .keep_alive_while_idle
+            .is_some()
+            .then_some(H2ClientParameter::KeepAliveWhileIdle),
+        params
+            .max_header_list_size
+            .is_some()
+            .then_some(H2ClientParameter::MaximumHeaderListSize),
+        params
+            .max_frame_size
+            .is_some()
+            .then_some(H2ClientParameter::MaximumFrameSize),
+        params
+            .max_concurrent_streams
+            .is_some()
+            .then_some(H2ClientParameter::MaximumConcurrentStreams),
+        params
+            .adaptive_window
+            .is_some()
+            .then_some(H2ClientParameter::AdaptiveWindow),
+    ]
+    .into_iter()
+    .flatten()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -927,6 +1024,7 @@ mod tests {
     use rama_core::{Layer, ServiceInput, service::service_fn};
     use rama_http::{Body, HeaderMap, HeaderName, HeaderValue, header::ETAG};
     use rama_net::address::{Domain, Host};
+    use rama_utils::octets::kib;
 
     use crate::layer::emulate::UserAgentEmulateLayer;
     use crate::profile::{
@@ -987,6 +1085,46 @@ mod tests {
                 .get_ref::<H2ClientContextParams>()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn legacy_h2_settings_keep_existing_connection_parameters() {
+        use rama_http::proto::h2::{PseudoHeaderOrder, frame::Settings};
+
+        let input = Request::new(());
+        let pseudo_order = PseudoHeaderOrder::new();
+        input.extensions().insert(H2ClientContextParams {
+            headers_pseudo_order: Some(pseudo_order.clone()),
+            replay_early_frames: Some(vec![EarlyFrame::Settings(Settings::default())].into()),
+            max_send_buf_size: Some(kib(128) as u32),
+            ..H2ClientContextParams::default()
+        });
+        let profile = HttpProfile {
+            h1: None,
+            h2: Some(Http2Profile {
+                headers: HttpHeadersProfile {
+                    navigate: None,
+                    fetch: None,
+                    xhr: None,
+                    form: None,
+                    ws: None,
+                },
+                settings: Some(Http2Settings {
+                    http_pseudo_headers: None,
+                    early_frames: None,
+                }),
+            }),
+        };
+
+        emulate_http_connect_settings(&input, Version::HTTP_2, &profile).unwrap();
+
+        let params = input
+            .extensions()
+            .get_ref::<H2ClientContextParams>()
+            .unwrap();
+        assert_eq!(params.headers_pseudo_order, Some(pseudo_order));
+        assert!(params.replay_early_frames.is_some());
+        assert_eq!(params.max_send_buf_size, Some(kib(128) as u32));
     }
 
     #[tokio::test]

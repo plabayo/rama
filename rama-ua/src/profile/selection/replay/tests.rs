@@ -107,7 +107,7 @@ fn best_effort_keeps_explicit_overrides_and_reports_every_difference() {
 }
 
 #[test]
-fn strict_replay_rejects_missing_or_uncaptured_request_fields() {
+fn strict_replay_rejects_missing_request_bindings() {
     let missing_binding = selection(vec![field(
         "cookie",
         0,
@@ -117,15 +117,43 @@ fn strict_replay_rejects_missing_or_uncaptured_request_fields() {
         missing_binding.replay_request(&HeaderMap::new(), ProfilePreservationMode::Strict),
         Err(ProfileReplayError::IncompatibleHeaderShape { .. })
     ));
+}
 
+#[test]
+fn strict_replay_appends_caller_owned_fields_in_caller_order() {
     let selection = selection(vec![field("accept", 0, profile(b"*/*"))]);
     let mut original = HeaderMap::new();
     original.insert("accept", HeaderValue::from_static("*/*"));
-    original.insert("x-extra", HeaderValue::from_static("value"));
-    assert!(matches!(
-        selection.replay_request(&original, ProfilePreservationMode::Strict),
-        Err(ProfileReplayError::IncompatibleHeaderShape { .. })
-    ));
+    original.insert("authorization", HeaderValue::from_static("Bearer secret"));
+    original.insert("x-api-key", HeaderValue::from_static("secret"));
+
+    let replayed = selection
+        .replay_request(&original, ProfilePreservationMode::Strict)
+        .unwrap();
+    let headers = replayed.headers.unwrap();
+    let ordered: Vec<_> = headers
+        .ordered_iter()
+        .map(|(name, value)| (name.as_str(), value.to_str().unwrap()))
+        .collect();
+    assert_eq!(
+        ordered,
+        [
+            ("accept", "*/*"),
+            ("authorization", "Bearer secret"),
+            ("x-api-key", "secret"),
+        ]
+    );
+    assert_eq!(replayed.report.differences.len(), 2);
+    assert!(
+        replayed
+            .report
+            .differences
+            .iter()
+            .all(|difference| matches!(
+                difference,
+                ProfilePreservationDifference::AppendedCallerField { .. }
+            ))
+    );
 }
 
 #[test]

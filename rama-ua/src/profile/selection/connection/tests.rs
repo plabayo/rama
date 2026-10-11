@@ -66,12 +66,61 @@ fn tcp_connection_components_decode_h2_frames() {
     .canonical(JointCaptureLimits::default())
     .unwrap();
 
-    let prepared = selection(capture).prepare_components().unwrap();
+    let prepared = selection(capture)
+        .prepare_components(ProfilePreservationMode::Strict)
+        .unwrap();
     let replay = prepared.h2_early_frames.unwrap();
     let EarlyFrame::Settings(settings) = &replay[0] else {
         panic!("initial replay frame must be SETTINGS");
     };
     assert_eq!(settings.config.header_table_size, Some(4_096));
+}
+
+#[test]
+fn h2_settings_ack_requires_best_effort_and_is_reported() {
+    let h2 = H2Capture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        frames: vec![
+            H2CapturedFrame::Settings {
+                ack: false,
+                entries: Box::default(),
+            },
+            H2CapturedFrame::Settings {
+                ack: true,
+                entries: Box::default(),
+            },
+        ]
+        .into(),
+    }
+    .canonical(H2CaptureLimits::default())
+    .unwrap();
+    let capture = JointCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        level: CaptureLevel::Connection,
+        slots: vec![CapturedSlot {
+            kind: CapturedSlotKind::Http2EarlyFrames,
+            value: h2,
+        }]
+        .into(),
+    }
+    .canonical(JointCaptureLimits::default())
+    .unwrap();
+
+    assert!(matches!(
+        selection(capture.clone()).prepare_components(ProfilePreservationMode::Strict),
+        Err(ProfileDataError::Unsupported(
+            "H2 SETTINGS acknowledgement replay"
+        ))
+    ));
+
+    let prepared = selection(capture)
+        .prepare_components(ProfilePreservationMode::BestEffort)
+        .unwrap();
+    assert_eq!(prepared.h2_early_frames.unwrap().len(), 1);
+    assert!(matches!(
+        prepared.preservation_report.differences.as_ref(),
+        [ProfilePreservationDifference::DroppedH2SettingsAcknowledgement { index: 1 }]
+    ));
 }
 
 #[test]
@@ -101,7 +150,9 @@ fn quic_connection_components_keep_each_order_namespace_separate() {
     .canonical(JointCaptureLimits::default())
     .unwrap();
 
-    let prepared = selection(capture).prepare_components().unwrap();
+    let prepared = selection(capture)
+        .prepare_components(ProfilePreservationMode::Strict)
+        .unwrap();
     assert_eq!(prepared.quic_parameters.unwrap().fields[0].id, 0x04);
     assert_eq!(prepared.h3_peer_settings.unwrap().fields[0].id, 0x06);
     assert_eq!(prepared.quic_versions.unwrap().fields[0].id, 1);
@@ -119,7 +170,7 @@ fn request_capture_cannot_be_prepared_as_connection_components() {
     .unwrap();
 
     assert!(matches!(
-        selection(capture).prepare_components(),
+        selection(capture).prepare_components(ProfilePreservationMode::Strict),
         Err(ProfileDataError::Invalid(
             "connection profile capture level"
         ))

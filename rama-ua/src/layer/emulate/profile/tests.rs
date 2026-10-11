@@ -1,4 +1,4 @@
-use std::{convert::Infallible, sync::Arc};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use rama_core::{
     ServiceInput,
@@ -14,6 +14,7 @@ use rama_net::{
     client::{ConnectRequest, EstablishedClientConnection, pool::ConnectionReuse},
     tls::TlsAlpn,
 };
+use rama_utils::octets::kib;
 
 use super::*;
 use crate::{
@@ -22,11 +23,11 @@ use crate::{
         AnalyzedCaptureVariant, AnalyzedOrderWeight, AnalyzedProfile, AnalyzedProfileComponents,
         AnalyzedProfileScope, CanonicalDomain, CanonicalValue, CaptureLevel, CapturedSlot,
         CapturedSlotKind, CountedCaptureAnalysis, CounterSnapshot, H2Capture, H2CaptureLimits,
-        H2CapturedFrame, H2CapturedSetting, HeaderCapture, HeaderCapturePolicy, HeaderOccurrence,
-        HeaderValueSource, JointCapture, JointCaptureLimits, ObservationLosses, ObservationWeight,
-        PreparedConnectionComponents, ProfileCaptureCompleteness, ProfileKey,
-        ProfileObservationScope, ProfilePreservationReport, RequestSelection,
-        UntrackedDistinctSnapshot, ValueId,
+        H2CapturedFrame, H2CapturedSetting, H2ClientParameter, HeaderCapture, HeaderCapturePolicy,
+        HeaderOccurrence, HeaderValueSource, JointCapture, JointCaptureLimits, ObservationLosses,
+        ObservationWeight, PreparedConnectionComponents, ProfileCaptureCompleteness, ProfileKey,
+        ProfileObservationScope, ProfilePreservationDifference, ProfilePreservationReport,
+        RequestSelection, UntrackedDistinctSnapshot, ValueId,
     },
 };
 
@@ -323,6 +324,23 @@ async fn connect_modifier_prepares_before_connect_and_publishes_reuse() {
                 .get_ref::<H2ClientContextParams>()
                 .is_some_and(|params| params.replay_early_frames.is_some())
         );
+        let params = input
+            .extensions()
+            .get_ref::<H2ClientContextParams>()
+            .unwrap();
+        assert_eq!(params.keep_alive_interval, Some(Duration::from_secs(30)));
+        assert_eq!(params.max_send_buf_size, Some(kib(128) as u32));
+        assert!(matches!(
+            input
+                .extensions()
+                .get_ref::<ProfilePreservationReport>()
+                .unwrap()
+                .differences
+                .as_ref(),
+            [ProfilePreservationDifference::RetainedH2ClientParameter {
+                parameter: H2ClientParameter::KeepAliveInterval
+            }]
+        ));
         let conn = ServiceInput::new(());
         conn.extensions().insert(TargetHttpVersion(Version::HTTP_2));
         Ok::<_, rama_net::client::ConnectionError>(EstablishedClientConnection { input, conn })
@@ -333,6 +351,14 @@ async fn connect_modifier_prepares_before_connect_and_publishes_reuse() {
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
     input.extensions().insert(emulation_context());
+    input
+        .extensions()
+        .insert(ProfilePreservationMode::BestEffort);
+    input.extensions().insert(H2ClientContextParams {
+        keep_alive_interval: Some(Duration::from_secs(30)),
+        max_send_buf_size: Some(kib(128) as u32),
+        ..H2ClientContextParams::default()
+    });
 
     let established = UserAgentEmulateHttpConnectModifier::new(inner)
         .serve(input)
@@ -350,6 +376,36 @@ async fn connect_modifier_prepares_before_connect_and_publishes_reuse() {
         .get_ref::<ConnectionReuse>()
         .unwrap();
     assert!(reuse.matches(established.input.extensions()));
+}
+
+#[tokio::test]
+async fn strict_connect_rejects_caller_h2_connection_window_override() {
+    let inner = service_fn(|input: ConnectRequest| async move {
+        Ok::<_, rama_net::client::ConnectionError>(EstablishedClientConnection {
+            input,
+            conn: ServiceInput::new(()),
+        })
+    });
+    let input = ConnectRequest::new("example.com:443".parse().unwrap())
+        .with_application_protocol(Protocol::HTTPS);
+    input
+        .extensions()
+        .insert(TargetHttpVersion(Version::HTTP_2));
+    input.extensions().insert(emulation_context());
+    input.extensions().insert(H2ClientContextParams {
+        init_connection_window_size: Some(1_000_000),
+        ..H2ClientContextParams::default()
+    });
+
+    let error = UserAgentEmulateHttpConnectModifier::new(inner)
+        .serve(input)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.kind(),
+        rama_net::client::ConnectionErrorKind::InvalidInput
+    );
+    assert!(error.to_string().contains("InitialConnectionWindowSize"));
 }
 
 #[tokio::test]

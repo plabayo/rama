@@ -15,6 +15,7 @@ use rama_utils::octets::kib;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy)]
+/// Resource limits for one retained QUIC first flight.
 pub struct QuicFlightCaptureLimits {
     pub datagrams: usize,
     pub packets: usize,
