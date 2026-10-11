@@ -21,8 +21,7 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 
-#[global_allocator]
-static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
+mod bench_alloc;
 
 fn main() {
     divan::main();

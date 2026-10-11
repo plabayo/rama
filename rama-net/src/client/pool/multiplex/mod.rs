@@ -1,0 +1,2268 @@
+//! Multiplexing connection pool.
+//!
+//! [`MultiplexPool`] keeps every connection in storage and hands out a cheap
+//! [`MultiplexedConnection`] that shares a connection through `&self`. A single connection
+//! serves up to `min(max_streams_per_connection, MaxConcurrency)` concurrent users, where
+//! [`MaxConcurrency`] is the connection's advertised capacity ([`usize::MAX`] when unset) and
+//! the pool's own cap is unset by default, so the peer decides. The exclusive
+//! [`super::LruDropPool`] is the special case of capacity 1 for owned connections.
+//!
+//! Because the connector stack runs for every request, a [`MultiplexedConnection`] is
+//! established, serves its single request, and is dropped, so a [`MultiplexedConnection`]
+//! is bound to exactly one connection (its [`super::ExtensionsRef`] forwards to that
+//! connection, which is required for extension propagation such as
+//! the negotiated http version) and concurrency is metered by counting live
+//! handouts. A [`MultiplexedConnection`] is not meant to outlive a single logical request and
+//! when it does it should only be used for one input/request at a time.
+//!
+//! Checking out a connection does not look at every connection of the ID. Each ID keeps an
+//! index of its connections that have a free stream slot, in creation order, and the selection
+//! strategy picks from it: the cost of a checkout does not grow with the number of idle
+//! connections an ID has accumulated. Selection prefers earlier connections, so a burst that
+//! opened many connections leaves the later ones untouched and idle, where the idle timeout
+//! reaps them (see [`MultiplexPool::with_idle_timeout`]).
+//!
+//! Connections are not limited by default. With a limit per ID or in total (see
+//! [`MultiplexPool::with_max_connections_per_id`] and
+//! [`MultiplexPool::with_max_connections_total`]), a checkout that needs a new connection at
+//! the limit waits for a slot or, as the [`SaturationPolicy`] allows, replaces an idle
+//! connection: of its own ID at the ID's limit, of any ID at the total one.
+//!
+//! A checkout that finds no room waits, first come first served, in every lane it can be
+//! served from: a released stream wakes the first waiter of its lane, a capacity change of a
+//! connection wakes all of them, and newcomers never take capacity ahead of them. A waiter
+//! that leaves without using a wake passes it on. An idle connection goes to the checkout
+//! that arrived first among its lane's front and the fronts of those waiting to evict it, for
+//! the total limit or for its id's: whoever runs first, the others give way to it, and it is
+//! told; once it leaves, they are.
+//!
+//! A checkout that finds no free stream on a multiplexed lane waits for the connects already
+//! in flight for its lanes while they bring streams for everyone waiting, and dials otherwise:
+//! a burst opens the connections it needs at once, not one each. What a new connection takes
+//! is that of the newest connection of the lanes, else of the id's last one, else, for a request
+//! expecting to multiplex (see [`MultiplexPool::with_streams_hint`]), that of the pool's last
+//! multiplexed one or the hint's guess; a guess dials a few connects before one shows its own.
+//! A connect failing fails the checkouts that waited for it and saw none land, if their
+//! requests would fail alike, and has the others dial their own. A checkout
+//! waiting for connects holds no connection slot, and dials its own once
+//! [`MultiplexPool::with_max_wait_before_dial`] or its caller's deadline is up, unless
+//! [`MultiplexPool::with_max_connecting_per_id`] caps the connects in flight.
+
+mod connecting;
+mod connection;
+mod lanes;
+mod policy;
+mod reaper;
+mod waiting;
+
+use self::connecting::{Coalesce, Connect, ConnectKey, Connects, Failure, Seen, connect_key};
+pub use self::connection::MultiplexedConnection;
+use self::connection::{Admitted, ConnectionSlot, GONE, StoredConnection, ask_trim, relist_stored};
+use self::lanes::{Claimed, IdBucket, Lane, OnlyLane, RequestLanes, Snapshot, select_and_admit};
+use self::policy::{Asked, Excess, IdLimit, IdPermit, IdleLimits, over};
+pub use self::policy::{MultiplexSlot, SaturationPolicy};
+use self::reaper::{Reaped, Reaper, SAMPLE, SCAN_UP_TO, Sample, UNLINKED};
+use self::waiting::{Blocked, IdSlotWait, Look, SlotWait, Waiting, maybe, maybe_pinned};
+
+use super::reuse::{KeyedLane, LaneKey, ReuseClass};
+use super::{
+    ConnID, ConnectionAdmission, ConnectionAdmissionLease, ConnectionResult, ConnectionReuse, Pool,
+    ReuseKey,
+};
+use crate::client::{
+    ConnectionError, ConnectionErrorDomain, ConnectionErrorKind, ConnectionPolicyScope,
+};
+use crate::conn::{ConnectionHealth, ConnectionHealthWatcher, MaxConcurrency};
+use ahash::{HashMap, HashMapExt as _, HashSet};
+use parking_lot::Mutex;
+use rama_core::Service;
+use rama_core::error::BoxError;
+use rama_core::extensions::{Extension, Extensions, ExtensionsMut, ExtensionsRef, NetExtension};
+use rama_core::telemetry::tracing::trace;
+use rama_utils::collections::smallvec::SmallVec;
+use rama_utils::macros::generate_set_and_with;
+use rama_utils::reactive::{Change, ChangeListener, Party, WaitQueue, Waiter, Wakes};
+use rama_utils::time::{AtomicInstant, now_monotonic_nanos};
+use std::collections::{BTreeMap, VecDeque};
+use std::fmt::Debug;
+use std::num::NonZeroUsize;
+use std::pin::Pin;
+use std::ptr;
+use std::sync::atomic::{
+    AtomicBool, AtomicIsize, AtomicU8, AtomicU64, AtomicUsize, Ordering, fence,
+};
+use std::sync::{Arc, Weak};
+use std::time::Duration;
+use tokio::sync::{AcquireError, Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::time::Sleep;
+
+#[cfg(feature = "opentelemetry")]
+use super::metrics;
+#[cfg(feature = "opentelemetry")]
+use std::time::Instant;
+
+/// Strategy used to pick a connection among several that share the same
+/// [`ConnID`] and still have stream capacity.
+#[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
+pub enum MuxSelection {
+    /// Pick the connection with the most free stream slots (best spread).
+    #[default]
+    LeastLoaded,
+    /// Pick the first connection with a free stream slot.
+    FirstAvailable,
+    /// Cycle through the eligible connections.
+    RoundRobin,
+}
+
+/// Connections taken out of storage, dropped only after the storage lock is
+/// released so their sockets close outside it.
+type Doomed<C, ID> = Vec<Arc<StoredConnection<C, ID>>>;
+
+/// What a sweep found under the storage lock, settled once it is released:
+/// see [`MultiplexPool::settle`].
+struct Swept<C, ID> {
+    doomed: Doomed<C, ID>,
+    /// Idle connections past the idle timeout whose admission is asked, outside
+    /// the lock, whether work outlives their handouts.
+    expiring: Doomed<C, ID>,
+    /// When the first idle connection the sweep kept expires.
+    next_expiry: u64,
+}
+
+impl<C, ID> Default for Swept<C, ID> {
+    fn default() -> Self {
+        Self {
+            doomed: Vec::new(),
+            expiring: Vec::new(),
+            next_expiry: u64::MAX,
+        }
+    }
+}
+
+/// A connection taken out of storage to make room, with its slots.
+struct Evicted<C, ID> {
+    conn: Arc<StoredConnection<C, ID>>,
+    slots: MultiplexSlot,
+    /// Whether another connection could have gone instead.
+    more: bool,
+}
+
+/// How many `open` candidates one checkout tries before it falls back to the
+/// exact path. Refusing candidates are the exception; the exact path handles
+/// them (and stays O(connections of the lane)).
+const OPEN_CANDIDATES: usize = 4;
+
+/// The most connections a limit allows: its slots are a semaphore's permits.
+/// A larger limit is this one.
+const MAX_LIMIT: NonZeroUsize = NonZeroUsize::new(Semaphore::MAX_PERMITS).unwrap();
+
+/// The shortest wait of a checkout at a limit for a connection to expire: a
+/// tiny idle timeout must not turn the wait into polling.
+const MIN_EXPIRY_WAIT: Duration = Duration::from_millis(10);
+
+/// The connections a checkout's step of the reaper looks at, at most: the
+/// reaping of a burst of expiries spreads over the checkouts after it.
+const REAP_BUDGET: usize = 8;
+
+/// Connections grouped by id, so a handout only touches its own bucket and
+/// the lock is never held for a scan of the whole pool: see [`Reaper`].
+struct Storage<C, ID> {
+    by_id: HashMap<ID, IdBucket<C, ID>>,
+    /// The connection slots of every id, if the pool limits them per id: kept
+    /// while a connection, create permit or waiter holds one of them.
+    id_slots: HashMap<ID, Arc<IdLimit>>,
+    /// The connects in flight per id and keyed lanes, while counted or waited
+    /// for.
+    connects: HashMap<ID, SmallVec<[Arc<Connects>; 1]>>,
+    /// What the connections of each id were like: a guess for the next ones
+    /// once they are gone.
+    learned: HashMap<ID, Learned>,
+    /// The streams a multiplexed connection of any id took last: a guess for
+    /// an id the pool has not seen, if its requests expect to multiplex.
+    learned_any: Option<NonZeroUsize>,
+    /// The pool's, for picks across ids under this lock: see
+    /// [`Reaper::sample_front`].
+    reaper: Arc<Reaper<C, ID>>,
+}
+
+/// `duration` in nanoseconds, or as many as fit.
+fn nanos(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// What the last connections of an id were like.
+struct Learned {
+    /// The streams the last one took.
+    streams: NonZeroUsize,
+    /// The reuse classes they had: a cold id's requests still derive their
+    /// keys, so a burst of each key waits for its own connects.
+    classes: Option<Arc<[ReuseClass]>>,
+}
+
+/// Take `conn` out of storage, if it is still stored.
+fn unstore<C, ID: ConnID>(
+    storage: &mut Storage<C, ID>,
+    conn: &StoredConnection<C, ID>,
+) -> Option<Arc<StoredConnection<C, ID>>> {
+    let bucket = storage.by_id.get_mut(&conn.id)?;
+    let removed = bucket.remove(conn);
+    if bucket.is_empty() {
+        storage.by_id.remove(&conn.id);
+    }
+    removed
+}
+
+/// Whether a request of an id expects a new connection to multiplex, with a
+/// guess of its streams for a pool that knows none: see
+/// [`MultiplexPool::with_streams_hint`].
+pub type StreamsHint<ID> = fn(&ID, &Extensions) -> Option<NonZeroUsize>;
+
+/// Connection pool that multiplexes concurrent users over shared
+/// connections.
+pub struct MultiplexPool<C, ID> {
+    storage: Arc<Mutex<Storage<C, ID>>>,
+    max_connections_total: Option<NonZeroUsize>,
+    total_slots: Option<Arc<Semaphore>>,
+    saturation: SaturationPolicy,
+    max_connections_per_id: Option<NonZeroUsize>,
+    idle_limits: Option<Arc<IdleLimits<ID>>>,
+    idle_timeout: Option<Duration>,
+    max_concurrent_streams: usize,
+    streams_hint: Option<StreamsHint<ID>>,
+    max_wait_before_dial: Option<Duration>,
+    max_connecting_per_id: Option<NonZeroUsize>,
+    selection: MuxSelection,
+    rr_cursor: Arc<AtomicUsize>,
+    next_seq: Arc<AtomicU64>,
+    /// Takes out idle and broken connections without a scan.
+    reaper: Arc<Reaper<C, ID>>,
+    /// See [`StoredConnection::notify`].
+    notify: Arc<Notify>,
+    /// Checkouts waiting for capacity, see [`StoredConnection::waiting`].
+    waiting: Arc<AtomicUsize>,
+    /// See [`StoredConnection::slot_waiters`].
+    slot_waiters: Arc<WaitQueue>,
+    /// Arrival order of waiting checkouts, across ids.
+    next_order: Arc<AtomicU64>,
+    /// Whether a checkout ever waited for streams kept for others, see
+    /// [`Self::pass_room_on`].
+    kept_counted: Arc<AtomicBool>,
+    #[cfg(feature = "opentelemetry")]
+    metrics: Option<Arc<metrics::PoolMetrics>>,
+}
+
+// We need a manual impl, derive(Extension) adds a Debug bound on all generics otherwise
+
+impl<C: Send, ID> Extension for MultiplexPool<C, ID>
+where
+    C: Send + Sync + 'static,
+    ID: Send + Sync + Debug + 'static,
+{
+}
+
+impl<C, ID> NetExtension for MultiplexPool<C, ID>
+where
+    C: Send + Sync + 'static,
+    ID: Send + Sync + Debug + 'static,
+{
+}
+
+impl<C, ID> Debug for MultiplexPool<C, ID> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MultiplexPool")
+            .field("max_connections_total", &self.max_connections_total)
+            .field("saturation", &self.saturation)
+            .field("max_connections_per_id", &self.max_connections_per_id)
+            .field("idle_limits", &self.idle_limits)
+            .field("idle_timeout", &self.idle_timeout)
+            .field("max_concurrent_streams", &self.max_concurrent_streams)
+            .field("selection", &self.selection)
+            .field("streams_hint", &self.streams_hint.is_some())
+            .field("max_wait_before_dial", &self.max_wait_before_dial)
+            .field("max_connecting_per_id", &self.max_connecting_per_id)
+            .finish()
+    }
+}
+
+impl<C, ID> Clone for MultiplexPool<C, ID> {
+    fn clone(&self) -> Self {
+        Self {
+            storage: self.storage.clone(),
+            max_connections_total: self.max_connections_total,
+            total_slots: self.total_slots.clone(),
+            saturation: self.saturation,
+            max_connections_per_id: self.max_connections_per_id,
+            idle_limits: self.idle_limits.clone(),
+            idle_timeout: self.idle_timeout,
+            max_concurrent_streams: self.max_concurrent_streams,
+            streams_hint: self.streams_hint,
+            max_wait_before_dial: self.max_wait_before_dial,
+            max_connecting_per_id: self.max_connecting_per_id,
+            selection: self.selection,
+            rr_cursor: self.rr_cursor.clone(),
+            next_seq: self.next_seq.clone(),
+            reaper: self.reaper.clone(),
+            notify: self.notify.clone(),
+            waiting: self.waiting.clone(),
+            slot_waiters: self.slot_waiters.clone(),
+            next_order: self.next_order.clone(),
+            kept_counted: self.kept_counted.clone(),
+            #[cfg(feature = "opentelemetry")]
+            metrics: self.metrics.clone(),
+        }
+    }
+}
+
+impl<C, ID> Default for MultiplexPool<C, ID> {
+    fn default() -> Self {
+        let reaper = Arc::<Reaper<C, ID>>::default();
+        Self {
+            storage: Arc::new(Mutex::new(Storage {
+                by_id: HashMap::new(),
+                id_slots: HashMap::new(),
+                connects: HashMap::new(),
+                learned: HashMap::new(),
+                learned_any: None,
+                reaper: reaper.clone(),
+            })),
+            max_connections_total: None,
+            total_slots: None,
+            saturation: SaturationPolicy::default(),
+            max_connections_per_id: None,
+            idle_limits: None,
+            idle_timeout: None,
+            max_concurrent_streams: usize::MAX,
+            streams_hint: None,
+            max_wait_before_dial: None,
+            max_connecting_per_id: None,
+            selection: MuxSelection::default(),
+            rr_cursor: Arc::new(AtomicUsize::new(0)),
+            next_seq: Arc::new(AtomicU64::new(0)),
+            reaper,
+            notify: Arc::new(Notify::new()),
+            waiting: Arc::new(AtomicUsize::new(0)),
+            slot_waiters: Arc::new(WaitQueue::new()),
+            next_order: Arc::new(AtomicU64::new(0)),
+            kept_counted: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "opentelemetry")]
+            metrics: None,
+        }
+    }
+}
+
+impl<C, ID> MultiplexPool<C, ID> {
+    /// Create a [`MultiplexPool`] without limits: each connection serves as many
+    /// concurrent users as its peer allows, and connections are added as needed.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The pool most tests use: at most `streams` per connection and `total`
+    /// connections, evicting an idle one whenever a checkout needs a slot.
+    #[cfg(test)]
+    pub(crate) fn evicting(streams: usize, total: usize) -> Self {
+        Self::new()
+            .with_max_streams_per_connection(NonZeroUsize::new(streams).unwrap())
+            .with_max_connections_total(NonZeroUsize::new(total).unwrap())
+            .with_saturation_policy(SaturationPolicy::EvictIdle)
+    }
+
+    /// The total limit's free slots.
+    #[cfg(test)]
+    pub(crate) fn free_slots(&self) -> usize {
+        self.total_slots
+            .as_ref()
+            .expect("a total limit")
+            .available_permits()
+    }
+
+    /// A create permit taken from the total limit directly.
+    #[cfg(test)]
+    pub(crate) fn test_slot(&self) -> MultiplexSlot {
+        let total = self.total_slots.as_ref().expect("a total limit");
+        MultiplexSlot {
+            total: Some(total.clone().try_acquire_owned().expect("a free slot")),
+            id: None,
+            connect: None,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Serve at most this many concurrent users per connection, below what the
+        /// connection's [`MaxConcurrency`] allows. Unset, the peer decides.
+        pub fn max_streams_per_connection(mut self, max: Option<NonZeroUsize>) -> Self {
+            self.max_concurrent_streams = max.map_or(usize::MAX, NonZeroUsize::get);
+            self
+        }
+    }
+
+    /// Keep at most `max` connections, stored or being established, across all
+    /// ids, at most [`Semaphore::MAX_PERMITS`]. At the limit, [`SaturationPolicy`]
+    /// decides. Without it, no limit.
+    ///
+    /// Configure it before the pool is used: clones share its connections, and
+    /// so the slots they hold. Waiting at the limit may use tokio timers (the
+    /// default policy's, the idle timeout's): the runtime needs its time driver.
+    #[must_use]
+    pub fn with_max_connections_total(self, max: NonZeroUsize) -> Self {
+        self.maybe_with_max_connections_total(Some(max))
+    }
+
+    /// See [`Self::with_max_connections_total`]; `None` is no limit.
+    #[must_use]
+    pub fn maybe_with_max_connections_total(mut self, max: Option<NonZeroUsize>) -> Self {
+        let max = max.map(|max| max.min(MAX_LIMIT));
+        self.max_connections_total = max;
+        self.total_slots = max.map(|max| Arc::new(Semaphore::new(max.get())));
+        self
+    }
+
+    generate_set_and_with! {
+        /// What a checkout that needs a connection does at a limit, see
+        /// [`Self::with_max_connections_total`] and
+        /// [`Self::with_max_connections_per_id`].
+        pub fn saturation_policy(mut self, policy: SaturationPolicy) -> Self {
+            self.saturation = policy;
+            self
+        }
+    }
+
+    /// Keep at most `max` connections, stored or being established, per id (at
+    /// most [`Semaphore::MAX_PERMITS`]): at the limit a checkout waits for its
+    /// id's capacity or, as
+    /// [`SaturationPolicy`] allows, replaces one of the id's idle connections;
+    /// other ids go on. Without it, no limit.
+    ///
+    /// Configure it before the pool is used: clones share the slots of each id.
+    /// Waiting at the limit may use tokio timers (the default policy's, the idle
+    /// timeout's): the runtime needs its time driver.
+    #[must_use]
+    pub fn with_max_connections_per_id(self, max: NonZeroUsize) -> Self {
+        self.maybe_with_max_connections_per_id(Some(max))
+    }
+
+    /// See [`Self::with_max_connections_per_id`]; `None` is no limit.
+    #[must_use]
+    pub fn maybe_with_max_connections_per_id(mut self, max: Option<NonZeroUsize>) -> Self {
+        self.max_connections_per_id = max.map(|max| max.min(MAX_LIMIT));
+        self
+    }
+
+    /// Keep at most `max` idle connections per id: once more go idle, the least
+    /// recently used ones close. It never holds back a checkout, and nothing
+    /// closes while checkouts wait. Without it, no limit.
+    ///
+    /// Configure it before the pool is used: clones share their count.
+    #[must_use]
+    pub fn with_max_idle_per_id(self, max: NonZeroUsize) -> Self {
+        self.maybe_with_max_idle_per_id(Some(max))
+    }
+
+    /// See [`Self::with_max_idle_per_id`]; `None` is no limit.
+    #[must_use]
+    pub fn maybe_with_max_idle_per_id(mut self, max: Option<NonZeroUsize>) -> Self {
+        let total = self.idle_limits.as_ref().and_then(|limits| limits.total);
+        self.idle_limits = IdleLimits::new(max, total);
+        self
+    }
+
+    /// Keep at most `max` idle connections across all ids, as
+    /// [`Self::with_max_idle_per_id`] does per id.
+    #[must_use]
+    pub fn with_max_idle_total(self, max: NonZeroUsize) -> Self {
+        self.maybe_with_max_idle_total(Some(max))
+    }
+
+    /// See [`Self::with_max_idle_total`]; `None` is no limit.
+    #[must_use]
+    pub fn maybe_with_max_idle_total(mut self, max: Option<NonZeroUsize>) -> Self {
+        let per_id = self.idle_limits.as_ref().and_then(|limits| limits.per_id);
+        self.idle_limits = IdleLimits::new(per_id, max);
+        self
+    }
+
+    generate_set_and_with! {
+        /// Drop connections that have been idle (no active streams) for longer than
+        /// the given timeout. Only checked when a connection is requested, never
+        /// by a scan of the pool: the connection a checkout is about to hand out
+        /// is always checked, and checkouts of any id close the others about in
+        /// the order they went idle, a few each once the first is due: one used
+        /// again since it was last looked at may close up to a timeout late. A
+        /// checkout waiting at a connection limit looks again once one would
+        /// expire, on a tokio timer: the runtime needs its time driver enabled.
+        /// Configure it before the pool is used: clones share their connections.
+        pub fn idle_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.idle_timeout = timeout;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Whether a request expects a connection to multiplex before the pool
+        /// knows, so a burst on a new id waits for a few connects instead of
+        /// each request dialing its own: the protocol is negotiated, so only a
+        /// request can tell, such as one requiring a multiplexing protocol.
+        /// The streams such a connection takes are what the pool's multiplexed
+        /// connections took last, the hint's guess only if it saw none; once an
+        /// id had a connection, what it took. It runs outside the pool's locks.
+        pub fn streams_hint(mut self, hint: Option<StreamsHint<ID>>) -> Self {
+            self.streams_hint = hint;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// How long a checkout waits for connects in flight before it dials its
+        /// own, if its limits let it. Unset, it waits for them until its
+        /// caller's deadline, if any (see [`Pool::get_conn`]).
+        pub fn max_wait_before_dial(mut self, wait: Option<Duration>) -> Self {
+            self.max_wait_before_dial = wait;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// At most this many connects in flight per id and reuse key: further
+        /// checkouts that need a connection wait for one to land, as browsers
+        /// open few connections per host at once. It also binds a checkout
+        /// done waiting (see [`Self::with_max_wait_before_dial`]), and connects
+        /// that turn out not to multiplex, so a cold burst on an HTTP/1 origin
+        /// dials this many at a time, but not a checkout a total limit hands
+        /// a slot: it dials with it. Unset, a burst dials what it needs.
+        pub fn max_connecting_per_id(mut self, max: Option<NonZeroUsize>) -> Self {
+            self.max_connecting_per_id = max;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the [`MuxSelection`] strategy used to pick among same-id connections.
+        pub fn selection(mut self, selection: MuxSelection) -> Self {
+            self.selection = selection;
+            self
+        }
+    }
+
+    #[cfg(feature = "opentelemetry")]
+    generate_set_and_with! {
+        #[cfg_attr(docsrs, doc(cfg(feature = "opentelemetry")))]
+        pub fn metrics(mut self, metrics: Option<Arc<metrics::PoolMetrics>>) -> Self {
+            self.metrics = metrics;
+            self
+        }
+    }
+}
+
+impl<C, ID> MultiplexPool<C, ID>
+where
+    C: Send + Sync + ExtensionsRef + 'static,
+    ID: ConnID,
+{
+    /// Whether a stored connection may still be handed out: not marked broken
+    /// (in-flight streams keep a broken connection alive via the outstanding
+    /// handles, but it is no longer handed out) and not idle past the idle
+    /// timeout, which retires it. Asks its admission: call without the storage
+    /// lock.
+    fn is_eligible(&self, conn: &StoredConnection<C, ID>, now: u64) -> bool {
+        if Self::is_broken(conn) {
+            return false;
+        }
+        !(self.expiry(conn).is_some_and(|at| at <= now)
+            && conn.retire_if(|conn| self.has_expired(conn)).is_some())
+    }
+
+    /// Whether the health watcher of `conn` marks it broken.
+    fn is_broken(conn: &StoredConnection<C, ID>) -> bool {
+        let broken = conn
+            .conn
+            .extensions()
+            .get_ref::<ConnectionHealthWatcher>()
+            .is_some_and(|watcher| watcher.health() == ConnectionHealth::Broken);
+        if broken {
+            trace!(id = ?conn.id, "multiplex pool: dropping broken connection");
+        }
+        broken
+    }
+
+    /// When `conn` passes the idle timeout, if it can be idle: from atomics, so
+    /// work outliving its handouts is only known once its admission is asked.
+    fn expiry(&self, conn: &StoredConnection<C, ID>) -> Option<u64> {
+        let timeout = self.idle_timeout?;
+        conn.maybe_idle()
+            .then(|| conn.last_idle.as_nanos().saturating_add(nanos(timeout)))
+    }
+
+    /// Whether `conn` is idle past the idle timeout. Asks its admission first:
+    /// seeing work that outlived its handouts restarts the idle clock.
+    fn has_expired(&self, conn: &StoredConnection<C, ID>) -> bool {
+        let expired = conn.is_idle_held()
+            && self
+                .idle_timeout
+                .is_some_and(|timeout| conn.last_idle.elapsed() >= timeout);
+        if expired {
+            trace!(id = ?conn.id, "multiplex pool: dropping idle connection");
+        }
+        expired
+    }
+
+    /// A step of the reaper over at most `budget` connections, with the storage
+    /// lock held: broken connections, and idle ones past the idle timeout with
+    /// nothing to ask, go out into `swept`; idle ones with an admission are
+    /// asked in [`Self::settle`].
+    fn reap(
+        &self,
+        storage: &mut Storage<C, ID>,
+        now: u64,
+        budget: usize,
+        swept: &mut Swept<C, ID>,
+    ) {
+        let Reaped {
+            broken,
+            expired,
+            expiring,
+            next_expiry,
+        } = self.reaper.step(self.idle_timeout, now, budget);
+        swept.next_expiry = swept.next_expiry.min(next_expiry);
+        for conn in broken.into_iter().filter(|conn| conn.is_broken()) {
+            conn.retire();
+            swept.doomed.extend(unstore(storage, &conn));
+        }
+        for conn in expired {
+            if conn.retire_if(StoredConnection::maybe_idle).is_some() {
+                trace!(id = ?conn.id, "multiplex pool: dropping idle connection");
+                swept.doomed.extend(unstore(storage, &conn));
+            }
+        }
+        swept.expiring.extend(expiring);
+    }
+
+    /// Move broken connections, and idle ones past the idle timeout without an
+    /// admission to ask, out of `bucket` into `swept`. Idle ones past it with
+    /// an admission stay: their admission is asked once the lock is released.
+    fn sweep_bucket(&self, bucket: &mut IdBucket<C, ID>, swept: &mut Swept<C, ID>) {
+        let now = now_monotonic_nanos();
+        bucket.retain(|conn| {
+            let gone = if Self::is_broken(conn) {
+                conn.retire();
+                true
+            } else {
+                match self.expiry(conn) {
+                    Some(at) if at > now => {
+                        swept.next_expiry = swept.next_expiry.min(at);
+                        false
+                    }
+                    Some(_) if conn.admission.is_some() => {
+                        swept.expiring.push(conn.clone());
+                        false
+                    }
+                    // Nothing outlives its handouts unannounced: it is idle.
+                    Some(_) => conn.retire_if(StoredConnection::maybe_idle).is_some(),
+                    None => false,
+                }
+            };
+            if gone {
+                swept.doomed.push(conn.clone());
+            }
+            !gone
+        });
+    }
+
+    /// Finish a sweep without the storage lock: retire the expiring connections
+    /// their admission reports idle, take them out of storage, and close
+    /// everything the sweep took out.
+    fn settle(&self, swept: Swept<C, ID>) {
+        let Swept {
+            doomed, expiring, ..
+        } = swept;
+        let expired: Doomed<C, ID> = expiring
+            .into_iter()
+            .filter(|conn| conn.retire_if(|conn| self.has_expired(conn)).is_some())
+            .collect();
+        if !expired.is_empty() {
+            let mut storage = self.storage.lock();
+            for conn in &expired {
+                drop(unstore(&mut storage, conn));
+            }
+        }
+        drop((expired, doomed));
+    }
+
+    /// The lanes able to serve `input`: its key's lane in each class of the
+    /// id's bucket, and the unrestricted lane.
+    ///
+    /// Derives request keys through the connectors' policies, outside the
+    /// storage lock. A lane can be missing from storage by the time it is
+    /// used, which only means it has no connections.
+    fn request_lanes(&self, id: &ID, input: &Extensions) -> RequestLanes {
+        let classes = {
+            let storage = self.storage.lock();
+            match storage.by_id.get(id) {
+                Some(bucket) => bucket.classes(),
+                None => storage
+                    .learned
+                    .get(id)
+                    .and_then(|learned| learned.classes.clone()),
+            }
+        };
+        RequestLanes::derive(classes, input)
+    }
+
+    /// Sweep the bucket for `id` and copy out what is left in `lanes`. Every
+    /// exact handout path must go through this before selecting.
+    fn snapshot(
+        &self,
+        storage: &mut Storage<C, ID>,
+        id: &ID,
+        lanes: &RequestLanes,
+        swept: &mut Swept<C, ID>,
+        look: &mut Look<'_>,
+    ) -> (Snapshot<C, ID>, bool) {
+        let Some(bucket) = storage.by_id.get_mut(id) else {
+            return (Snapshot::new(), false);
+        };
+        self.sweep_bucket(bucket, swept);
+        look.note_expiry(swept.next_expiry);
+        if bucket.is_empty() {
+            storage.by_id.remove(id);
+            return (Snapshot::new(), false);
+        }
+        // Sorted once: the filter below is a search, not a scan per connection.
+        let mut expiring: SmallVec<[u64; 4]> = swept.expiring.iter().map(|conn| conn.seq).collect();
+        expiring.sort_unstable();
+        let mut snapshot = Snapshot::new();
+        let group = bucket.group_of();
+        let mut left = false;
+        let mut lanes_seen = 0;
+        for lane in bucket.request_lanes_mut(lanes) {
+            if let Look::Register(waiting) = look {
+                waiting.register(&lane.waiters);
+            }
+            if !lane.waiters.admits(
+                look.waiting()
+                    .and_then(|waiting| waiting.waiter_in(&lane.waiters)),
+            ) {
+                left |= group.is(lane);
+                continue;
+            }
+            lanes_seen += usize::from(!lane.conns.is_empty());
+            snapshot.extend(
+                lane.conns
+                    .iter()
+                    .filter(|conn| expiring.binary_search(&conn.seq).is_err())
+                    .map(|conn| {
+                        let Claimed { conn, lane_gen } = Claimed::new(conn.clone());
+                        (conn, lane_gen)
+                    }),
+            );
+        }
+        // Selection treats the lanes as one index in creation order.
+        if lanes_seen > 1 {
+            snapshot.sort_unstable_by_key(|(conn, _)| conn.seq);
+        }
+        (snapshot, left)
+    }
+
+    /// Evict the least recently used idle connection, of `within` or of any
+    /// id, for `evictor` (none: a newcomer) of `chances`, returning it with its
+    /// slots, so the caller can take them over, and whether another one could
+    /// have gone.
+    ///
+    /// Picks from atomics under `storage`, then retires the pick with the lock
+    /// released: its admission is asked about work outliving its handouts and
+    /// may take the source's own locks. A pick that turns out busy is skipped.
+    fn evict_lru_idle<'a>(
+        &'a self,
+        mut storage: parking_lot::MutexGuard<'a, Storage<C, ID>>,
+        evictor: Option<&Waiting>,
+        chances: &Arc<WaitQueue>,
+        within: Option<&ID>,
+    ) -> Option<Evicted<C, ID>> {
+        let mut busy: SmallVec<[u64; 2]> = SmallVec::new();
+        loop {
+            let (conn, more) = self.pick_lru_idle(&storage, evictor, chances, within, &busy)?;
+            drop(storage);
+            let retired = conn
+                .retire_if(StoredConnection::is_idle_held)
+                .map(|mut slot| {
+                    std::mem::replace(
+                        &mut slot.slots,
+                        MultiplexSlot {
+                            total: None,
+                            id: None,
+                            connect: None,
+                        },
+                    )
+                });
+            if let Some(slots) = retired {
+                let stored = unstore(&mut self.storage.lock(), &conn);
+                return Some(Evicted {
+                    conn: stored.unwrap_or(conn),
+                    slots,
+                    more,
+                });
+            }
+            busy.push(conn.seq);
+            // Maybe the last handle, if another took it out meanwhile: it closes
+            // outside the lock.
+            drop(conn);
+            storage = self.storage.lock();
+            // An older evictor may have queued ahead meanwhile.
+            if !chances.admits(evictor.and_then(|evictor| evictor.waiter_in(chances))) {
+                return None;
+            }
+        }
+    }
+
+    /// The least recently used connection that can be idle, of `within`, else
+    /// one of the least recently used of any id (see
+    /// [`Self::pick_lru_idle_sampled`]), but not `busy`, and whether another
+    /// one could have gone instead.
+    ///
+    /// An idle connection that can take a stream is its lane's waiters', unless
+    /// the evictor arrived before them or is their front (its own look just
+    /// found nothing it could use there). Its slots are the other limit's
+    /// evictors' if one of them arrived first: the evictor gives way to them,
+    /// queued in `chances`.
+    fn pick_lru_idle(
+        &self,
+        storage: &Storage<C, ID>,
+        evictor: Option<&Waiting>,
+        chances: &Arc<WaitQueue>,
+        within: Option<&ID>,
+        busy: &[u64],
+    ) -> Option<(Arc<StoredConnection<C, ID>>, bool)> {
+        let order = evictor.map_or(u64::MAX, |evictor| evictor.party.order());
+        loop {
+            let mut gave_way = SmallVec::new();
+            let picked = match within {
+                Some(id) => Self::pick_lru_idle_of(
+                    storage.by_id.get(id).into_iter().flat_map(IdBucket::lanes),
+                    order,
+                    Some(&self.slot_waiters),
+                    busy,
+                    &mut gave_way,
+                ),
+                None => self.pick_lru_idle_sampled(storage, order, busy, &mut gave_way),
+            };
+            if let Some((conn, more)) = picked {
+                return Some((conn, more));
+            }
+            // Woken once they leave. One that left meanwhile left its
+            // connection to this evictor: look again.
+            let giver = evictor.and_then(|evictor| evictor.waiter_in(chances))?;
+            if gave_way.iter().all(|rivals| rivals.give_way(order, giver)) {
+                return None;
+            }
+        }
+    }
+
+    /// [`Self::pick_lru_idle`] of any id: among the front of the idle list, as
+    /// approximate least recently used eviction samples, so a pick costs at
+    /// most [`SAMPLE`] looks; the scan of the pool only if they hold none and
+    /// more are stored. Another could have gone if the sample saw one or did
+    /// not cover the list.
+    fn pick_lru_idle_sampled(
+        &self,
+        storage: &Storage<C, ID>,
+        order: u64,
+        busy: &[u64],
+        gave_way: &mut SmallVec<[Arc<WaitQueue>; 2]>,
+    ) -> Option<(Arc<StoredConnection<C, ID>>, bool)> {
+        let sample = if self.reaper.len() > SCAN_UP_TO {
+            self.reaper.sample_front(SAMPLE)
+        } else {
+            Sample::default()
+        };
+        let mut candidate: Option<&Arc<StoredConnection<C, ID>>> = None;
+        let mut found = 0_usize;
+        for conn in &sample.conns {
+            let spoken_for = conn
+                .lane_waiters
+                .lock()
+                .as_ref()
+                .and_then(|waiters| waiters.front_order())
+                .is_some_and(|front| front < order);
+            if !Self::evictable(conn, spoken_for, order, None, busy, gave_way) {
+                continue;
+            }
+            found += 1;
+            if candidate.is_none_or(|best| conn.last_idle.as_nanos() < best.last_idle.as_nanos()) {
+                candidate = Some(conn);
+            }
+        }
+        match candidate {
+            // Others may be idle past the sample: one more evictor looks.
+            Some(conn) => Some((conn.clone(), found > 1 || !sample.covered)),
+            None if sample.covered => None,
+            None => Self::pick_lru_idle_of(
+                storage.by_id.values().flat_map(IdBucket::lanes),
+                order,
+                None,
+                busy,
+                gave_way,
+            ),
+        }
+    }
+
+    /// Whether `conn` can go for an evictor of `order`, `spoken_for` if the
+    /// waiters of its lane arrived first: one whose slots the other limit's
+    /// older evictors contend for, `rivals` or else its id's, is left to them,
+    /// their queue collected in `gave_way`.
+    fn evictable(
+        conn: &StoredConnection<C, ID>,
+        spoken_for: bool,
+        order: u64,
+        rivals: Option<&Arc<WaitQueue>>,
+        busy: &[u64],
+        gave_way: &mut SmallVec<[Arc<WaitQueue>; 2]>,
+    ) -> bool {
+        if spoken_for && conn.has_capacity(conn.stream_cap) {
+            return false;
+        }
+        if !conn.maybe_idle() || busy.contains(&conn.seq) {
+            return false;
+        }
+        if let Some(rivals) = rivals.or(conn.id_evictors.as_ref())
+            && rivals.front_order().is_some_and(|front| front < order)
+        {
+            if !gave_way.iter().any(|queue| Arc::ptr_eq(queue, rivals)) {
+                gave_way.push(rivals.clone());
+            }
+            return false;
+        }
+        true
+    }
+
+    /// [`Self::pick_lru_idle`] among `lanes` for an evictor of `order`.
+    /// Connections whose slots the other limit's older evictors contend for,
+    /// `rivals` or else their id's, are left to them: their queues are
+    /// collected in `gave_way`.
+    fn pick_lru_idle_of<'a>(
+        lanes: impl Iterator<Item = &'a Lane<C, ID>>,
+        order: u64,
+        rivals: Option<&'a Arc<WaitQueue>>,
+        busy: &[u64],
+        gave_way: &mut SmallVec<[Arc<WaitQueue>; 2]>,
+    ) -> Option<(Arc<StoredConnection<C, ID>>, bool)>
+    where
+        C: 'a,
+        ID: 'a,
+    {
+        let mut candidate = None;
+        let mut oldest = u64::MAX;
+        let mut found = 0_usize;
+        // Plain loops: this scans every connection of the lanes.
+        for lane in lanes {
+            let spoken_for = lane
+                .waiters
+                .front_order()
+                .is_some_and(|front| front < order);
+            for conn in &lane.conns {
+                if !Self::evictable(conn, spoken_for, order, rivals, busy, gave_way) {
+                    continue;
+                }
+                found += 1;
+                let last_idle = conn.last_idle.as_nanos();
+                if last_idle < oldest {
+                    oldest = last_idle;
+                    candidate = Some(conn);
+                }
+            }
+        }
+        Some((candidate?.clone(), found > 1))
+    }
+
+    /// Evict an idle connection, of `within` or of any id, for a checkout of
+    /// `id` the saturation policy lets evict: it queues for the chances of
+    /// `chances` first, and the older ones there go first. Returns the slots of
+    /// the evicted connection.
+    fn evict_for(
+        &self,
+        id: &ID,
+        lanes: &RequestLanes,
+        look: &mut Look<'_>,
+        patient: bool,
+        chances: &Arc<WaitQueue>,
+        within: Option<&ID>,
+    ) -> Option<MultiplexSlot> {
+        let evicted = {
+            let mut storage = self.storage.lock();
+            // Connections that cannot take a stream do not count.
+            let cold = storage.by_id.get_mut(id).is_none_or(|bucket| {
+                bucket.request_lanes_mut(lanes).into_iter().all(|lane| {
+                    !lane
+                        .conns
+                        .iter()
+                        .any(|conn| conn.effective_capacity(conn.stream_cap) > 0)
+                })
+            });
+            if !self.may_evict(cold, patient) {
+                return None;
+            }
+            // Queued before looking for a connection to evict: see
+            // `StoredConnection::freed`.
+            if let Look::Register(waiting) = look {
+                waiting.register_for_chances(chances);
+            }
+            let waiting = look.waiting();
+            if !chances.admits(waiting.and_then(|waiting| waiting.waiter_in(chances))) {
+                return None;
+            }
+            self.evict_lru_idle(storage, waiting, chances, within)?
+        };
+        drop(evicted.conn);
+        if let Look::Register(waiting) = look {
+            waiting.served(Some(chances.clone()));
+        }
+        if evicted.more {
+            // Another idle connection could go too: the next one may look.
+            chances.wake_one();
+        }
+        Some(evicted.slots)
+    }
+
+    /// Whether `conn` is idle and kept for a checkout waiting to evict it that
+    /// arrived before this one (`waiting`, or a newcomer) and before its lane's
+    /// front: a waiting checkout gives way to it, which looks then, and its
+    /// lane is woken once it leaves. Asks its admission whether work outlives
+    /// its handouts: call without the storage lock.
+    fn kept_for_evictor(&self, conn: &StoredConnection<C, ID>, waiting: Option<&Waiting>) -> bool {
+        // Mostly nobody waits to evict: a claim costs no lock then.
+        if self.slot_waiters.is_empty()
+            && conn.id_evictors.as_deref().is_none_or(WaitQueue::is_empty)
+        {
+            return false;
+        }
+        let lane = conn.lane_waiters.lock().clone();
+        // The lane's own front goes first: its FIFO serves this checkout in turn.
+        let than = waiting
+            .map_or(u64::MAX, |waiting| waiting.party.order())
+            .min(
+                lane.as_ref()
+                    .and_then(|lane| lane.front_order())
+                    .unwrap_or(u64::MAX),
+            );
+        let older = |evictors: &WaitQueue| evictors.front_order().is_some_and(|front| front < than);
+        if !(older(&self.slot_waiters) || conn.id_evictors.as_deref().is_some_and(older))
+            || !conn.is_idle()
+        {
+            return false;
+        }
+        // A newcomer looks again once it waits, and a checkout that does not
+        // queue in the lane yet once it does.
+        let Some(giver) = waiting
+            .zip(lane)
+            .and_then(|(waiting, lane)| waiting.waiter_in(&lane).cloned())
+        else {
+            return true;
+        };
+        let total = self.slot_waiters.give_way(than, &giver);
+        let id = conn
+            .id_evictors
+            .as_ref()
+            .is_some_and(|evictors| evictors.give_way(than, &giver));
+        total || id
+    }
+
+    /// Leave the connections of `snapshot` kept for an older evictor out: see
+    /// [`Self::kept_for_evictor`].
+    fn leave_kept(&self, snapshot: &mut Snapshot<C, ID>, waiting: Option<&Waiting>) {
+        snapshot.retain(|(conn, _)| !self.kept_for_evictor(conn, waiting));
+    }
+
+    /// Fast checkout: hand out the connection the selection strategy prefers
+    /// among those the request's lanes list as having room, without looking at
+    /// any other connection. Without a handout it returns the request's lanes:
+    /// nothing listed can take the request, which does not mean no connection
+    /// can, see [`Self::snapshot_exact`].
+    ///
+    /// A bucket with a single lane, the common case, is claimed from before
+    /// the request's lanes are derived outside the lock, so the storage lock
+    /// is taken once. The lock is held to pick and claim a candidate, no
+    /// longer than a map lookup and a pop and a bounded step of the reaper,
+    /// and never across a compatibility policy, a resource provider or the
+    /// connection's own admission.
+    fn checkout_open(
+        &self,
+        id: &ID,
+        input: &Extensions,
+        waiting: Option<&Waiting>,
+    ) -> Result<MultiplexedConnection<C, ID>, Box<RequestLanes>> {
+        let now = now_monotonic_nanos();
+        let reap = self.reaper.is_due(now);
+        if !id.is_reusable() {
+            if reap {
+                let mut swept = Swept::default();
+                self.reap(&mut self.storage.lock(), now, REAP_BUDGET, &mut swept);
+                self.settle(swept);
+            }
+            return Err(Box::new(RequestLanes::unrestricted()));
+        }
+        let cap = self.max_concurrent_streams;
+        // Candidates claimed but not used, tried in this order of trouble:
+        // `rejected` ones are alive but refused the stream or serve other
+        // requests, and go back to `open`, `retired` ones are gone. Settled
+        // under one lock once the checkout is done.
+        let mut rejected: SmallVec<[Arc<StoredConnection<C, ID>>; 2]> = SmallVec::new();
+        let mut retired: SmallVec<[Arc<StoredConnection<C, ID>>; 2]> = SmallVec::new();
+        let mut skip: SmallVec<[u64; 4]> = SmallVec::new();
+        let mut swept = Swept::default();
+        let mut handout = None;
+
+        let (only_lane, mut next, mut classes) = {
+            let mut storage = self.storage.lock();
+            if reap {
+                self.reap(&mut storage, now, REAP_BUDGET, &mut swept);
+            }
+            let bucket = storage.by_id.get_mut(id);
+            let Some(bucket) = bucket else {
+                // A cold id's requests derive their keys from the classes it had.
+                let classes = storage
+                    .learned
+                    .get(id)
+                    .and_then(|learned| learned.classes.clone());
+                drop(storage);
+                self.settle(swept);
+                return Err(Box::new(RequestLanes::derive(classes, input)));
+            };
+            let classes = bucket.classes();
+            match bucket.claim_only(self.selection, cap, waiting) {
+                Some((only, claimed)) => (Some(only), claimed, classes),
+                None => (None, None, classes),
+            }
+        };
+        // Derived once needed: a hit in an unrestricted lane needs no lanes.
+        let mut lanes = None;
+        // With a single lane the first look saw every connection listed.
+        let mut exhausted = only_lane.is_some();
+        // A keyed only lane has the only class: its one key decides.
+        if let Some(OnlyLane::Keyed(key)) = &only_lane {
+            let derived = lanes.insert(RequestLanes::derive(classes.take(), input));
+            if derived.keys.first().and_then(Option::as_ref) != Some(key)
+                && let Some(claimed) = next.take()
+            {
+                rejected.push(claimed.conn);
+            }
+        }
+
+        for _ in 0..OPEN_CANDIDATES {
+            let Claimed { conn, lane_gen } = match next.take() {
+                Some(claimed) => claimed,
+                None if exhausted => break,
+                None => {
+                    let lanes =
+                        lanes.get_or_insert_with(|| RequestLanes::derive(classes.take(), input));
+                    let mut storage = self.storage.lock();
+                    let Some(bucket) = storage.by_id.get_mut(id) else {
+                        break;
+                    };
+                    let Some(claimed) = bucket.claim(lanes, self.selection, cap, &skip, waiting)
+                    else {
+                        break;
+                    };
+                    claimed
+                }
+            };
+            exhausted = false;
+            skip.push(conn.seq);
+            if !self.is_eligible(&conn, now) {
+                retired.push(conn);
+                continue;
+            }
+            if self.kept_for_evictor(&conn, waiting) {
+                rejected.push(conn);
+                continue;
+            }
+            match conn.try_admit(lane_gen, cap, input) {
+                Some(Admitted(admission)) => {
+                    handout = Some(MultiplexedConnection {
+                        inner: conn,
+                        admission,
+                    });
+                    break;
+                }
+                None => rejected.push(conn),
+            }
+        }
+
+        if !rejected.is_empty() || !retired.is_empty() {
+            {
+                let mut storage = self.storage.lock();
+                let mut empty = false;
+                if let Some(bucket) = storage.by_id.get_mut(id) {
+                    for conn in &retired {
+                        if let Some(removed) = bucket.remove(conn) {
+                            removed.retire();
+                            swept.doomed.push(removed);
+                        }
+                    }
+                    for conn in &rejected {
+                        bucket.list(conn);
+                    }
+                    empty = bucket.is_empty();
+                }
+                if empty {
+                    storage.by_id.remove(id);
+                }
+            }
+            // Connections that were retired, and so may be the last handle to a
+            // socket, close outside the lock.
+            drop((retired, rejected));
+        }
+        self.settle(swept);
+        handout
+            .ok_or_else(|| Box::new(lanes.unwrap_or_else(|| RequestLanes::derive(classes, input))))
+    }
+
+    /// Exact checkout: sweep the bucket, then select among every connection of
+    /// the request's lanes with room. Where [`Self::checkout_open`] trusts the
+    /// lanes' index, this reads every connection's live capacity, so it also
+    /// finds room the index does not show, and lists it.
+    ///
+    /// A waiting checkout queues in the lanes it reads, before it reads them.
+    /// A new checkout only takes a snapshot if some connection has room,
+    /// keeping fully busy lanes, which are the reason to create a connection
+    /// or wait, at a bare scan of counters. Then the snapshot is empty and the
+    /// flag says the lanes hold saturated connections. Last, whether it left
+    /// its group lane to the waiters ahead, see [`IdBucket::kept_streams`].
+    fn snapshot_exact(
+        &self,
+        id: &ID,
+        lanes: &RequestLanes,
+        look: &mut Look<'_>,
+    ) -> (Snapshot<C, ID>, bool, bool) {
+        if !id.is_reusable() {
+            return (Snapshot::new(), false, false);
+        }
+        let mut storage = self.storage.lock();
+        if !storage.by_id.contains_key(id) {
+            return (Snapshot::new(), false, false);
+        }
+        if matches!(look, Look::New) {
+            let Some(bucket) = storage.by_id.get_mut(id) else {
+                return (Snapshot::new(), false, false);
+            };
+            let group = bucket.group_of();
+            let mut left = false;
+            let mut stored = false;
+            let mut room = false;
+            for lane in bucket.request_lanes_mut(lanes) {
+                stored |= !lane.conns.is_empty();
+                if !lane.waiters.admits(None) {
+                    left |= group.is(lane);
+                    continue;
+                }
+                room |= lane
+                    .conns
+                    .iter()
+                    .any(|conn| conn.has_capacity(self.max_concurrent_streams));
+            }
+            if !room {
+                return (Snapshot::new(), stored, left);
+            }
+        }
+        let mut swept = Swept::default();
+        let (snapshot, left) = self.snapshot(&mut storage, id, lanes, &mut swept, look);
+        drop(storage);
+        self.settle(swept);
+        (snapshot, false, left)
+    }
+
+    /// Turn a fairly acquired total-slot permit into a handout. Reuse a
+    /// connection of the request's lanes if capacity became available while
+    /// waiting; otherwise return the permit for creating a connection.
+    fn admit_with_permit(
+        &self,
+        id: &ID,
+        slot: MultiplexSlot,
+        input: &Extensions,
+        waiting: &Waiting,
+    ) -> ConnectionResult<MultiplexedConnection<C, ID>, MultiplexSlot> {
+        let lanes = self.request_lanes(id, input);
+        let mut swept = Swept::default();
+        let mut same_lane = if id.is_reusable() {
+            self.snapshot(
+                &mut self.storage.lock(),
+                id,
+                &lanes,
+                &mut swept,
+                &mut Look::Waiting(waiting),
+            )
+            .0
+        } else {
+            Snapshot::new()
+        };
+        self.settle(swept);
+        self.leave_kept(&mut same_lane, Some(waiting));
+        if let Some(conn) = select_and_admit(
+            &same_lane,
+            id,
+            self.selection,
+            &self.rr_cursor,
+            self.max_concurrent_streams,
+            input,
+        ) {
+            trace!(
+                ?id,
+                "multiplex pool: reusing connection (woken by freed slot)"
+            );
+            conn.inner.relist();
+            return ConnectionResult::Connection(conn);
+        }
+        trace!(
+            ?id,
+            "multiplex pool: freed slot acquired, returning create permit"
+        );
+        ConnectionResult::CreatePermit(slot)
+    }
+
+    /// Trims the idle connections over the limits once the last waiting
+    /// checkout leaves: the ids asked meanwhile, which trims left alone.
+    fn idle_trim(&self) -> Option<Box<dyn Fn() + Send + Sync>> {
+        let limits = self.idle_limits.clone()?;
+        let (storage, waiting) = (Arc::downgrade(&self.storage), self.waiting.clone());
+        Some(Box::new(move || {
+            ask_trim(&storage, &limits, &waiting, None, true)
+        }))
+    }
+
+    /// Dial, or wait for the connects in flight for the request's lanes, as
+    /// many as the checkouts waiting for them need: see [`Connects::coalesce`].
+    /// A new connection takes what the newest one of the lanes took, else what
+    /// the id's last one took, else, if the request expects to multiplex, what
+    /// the pool's last multiplexed one took or the hint's guess. A claim
+    /// `held` from an earlier look is used if it still counts for these lanes.
+    /// No dial goes past `cap` connects in flight; if the look `left` its
+    /// group lane to the waiters ahead, the streams kept there for them count
+    /// against what the waiters need.
+    #[expect(clippy::too_many_arguments)]
+    fn coalesce(
+        &self,
+        id: &ID,
+        lanes: &RequestLanes,
+        input: &Extensions,
+        look: &mut Look<'_>,
+        held: &mut Option<Connect>,
+        impatient: bool,
+        cap: Option<NonZeroUsize>,
+        left: bool,
+    ) -> Coalesce {
+        let estimate = id
+            .is_reusable()
+            .then(|| self.estimate(id, lanes, input))
+            .flatten();
+        let Some((streams, cold, connects)) = estimate else {
+            // Counted for lanes that no longer multiplex: one of their waiters looks.
+            drop(held.take());
+            return Coalesce::Dial(None);
+        };
+        if let Some(connect) = held.take() {
+            if connect.is_in(&connects) {
+                return Coalesce::Dial(Some(connect));
+            }
+            drop(connect);
+        }
+        // Its connects bring nothing its waiters can use: each dials its own,
+        // counted under a cap on connects if there is one, so it still holds.
+        let unusable = connects.lands_unusable();
+        if unusable && cap.is_none() {
+            return Coalesce::Dial(None);
+        }
+        let mut impatient = impatient || unusable;
+        if let Look::Register(waiting) = look {
+            // Queued before it counts them: a connect ending meanwhile wakes it.
+            let seen = waiting.wait_for_connects(&connects);
+            match connects.failed_since(seen) {
+                Some(failure) if failure.is_shared() => return Coalesce::Failed(failure),
+                // Its own policy may fare better, or the endpoint was up and
+                // may be no longer: it dials its own.
+                Some(_) => impatient = true,
+                None if connects.failed_after_landing(seen) => impatient = true,
+                None => {}
+            }
+        }
+        let mut kept_in = None;
+        let coalesced = connects.coalesce(streams, cold, impatient, cap, || {
+            if !left {
+                return 0;
+            }
+            let kept = self
+                .storage
+                .lock()
+                .by_id
+                .get(id)
+                .and_then(|bucket| bucket.kept_streams(lanes, self.max_concurrent_streams));
+            match kept {
+                Some((kept, waiters)) if kept != 0 => {
+                    kept_in = Some(waiters);
+                    kept
+                }
+                _ => 0,
+            }
+        });
+        // A waiting checkout the kept streams hold back counts on them.
+        if let (Coalesce::Wait, Some(waiters), Look::Register(_)) = (&coalesced, &kept_in, &*look) {
+            self.relies_on_kept(waiters);
+        }
+        coalesced
+    }
+
+    /// A waiting checkout waits for the streams kept for the waiters ahead in
+    /// `waiters`, which would dial otherwise: from now on room is passed on,
+    /// and the front looks after this, so it takes the room or, refused, dials
+    /// for every waiter, this one too. Pairs with the fence of
+    /// [`Self::pass_room_on`]: a waiter leaving sees the flag, or this sees it
+    /// gone.
+    fn relies_on_kept(&self, waiters: &WaitQueue) {
+        if !self.kept_counted.load(Ordering::Relaxed) {
+            self.kept_counted.store(true, Ordering::Relaxed);
+        }
+        fence(Ordering::SeqCst);
+        waiters.wake_front();
+    }
+
+    /// The streams a new connection for the request's lanes takes, whether that
+    /// is a guess, and their connects; `None` if it takes one. The streams hint
+    /// runs outside the lock, only for an id without connections.
+    fn estimate(
+        &self,
+        id: &ID,
+        lanes: &RequestLanes,
+        input: &Extensions,
+    ) -> Option<(usize, bool, Arc<Connects>)> {
+        let key = connect_key(lanes);
+        let mut hint = self.streams_hint.is_none().then_some(None);
+        loop {
+            let mut storage = self.storage.lock();
+            let (streams, cold) = match Self::newest_streams(&mut storage, id, lanes) {
+                Some(streams) => (streams, false),
+                None => match (storage.learned.get(id), hint) {
+                    (Some(learned), _) => (learned.streams.get(), true),
+                    (None, Some(Some(guess))) => (storage.learned_any.unwrap_or(guess).get(), true),
+                    // No multiplex expected: one stream each, coalesced only
+                    // to hold a cap on connects.
+                    (None, Some(None)) if self.max_connecting_per_id.is_some() => (1, false),
+                    (None, Some(None)) => return None,
+                    (None, None) => {
+                        drop(storage);
+                        hint = Some(self.streams_hint.and_then(|hint| hint(id, input)));
+                        continue;
+                    }
+                },
+            };
+            return (streams > 1 || self.max_connecting_per_id.is_some())
+                .then(|| (streams, cold, Self::connects_in(&mut storage, id, &key)));
+        }
+    }
+
+    /// Count a connect in flight for the request's lanes whatever is in flight,
+    /// if they multiplex, or keep `held` if it counts for them: a checkout
+    /// dials with a slot it waited for.
+    fn count_connect(&self, id: &ID, input: &Extensions, held: Option<Connect>) -> Option<Connect> {
+        let lanes = self.request_lanes(id, input);
+        let mut held = held;
+        // It dials with the slot it was handed: counted, so the others see
+        // the cap, but never held back by it.
+        match self.coalesce(
+            id,
+            &lanes,
+            input,
+            &mut Look::New,
+            &mut held,
+            true,
+            None,
+            false,
+        ) {
+            Coalesce::Dial(connect) => connect,
+            Coalesce::Wait | Coalesce::Failed(_) => None,
+        }
+    }
+
+    /// The streams the newest connection of the request's lanes takes, also
+    /// learned for the id.
+    fn newest_streams(
+        storage: &mut Storage<C, ID>,
+        id: &ID,
+        lanes: &RequestLanes,
+    ) -> Option<usize> {
+        let bucket = storage.by_id.get_mut(id)?;
+        let newest = bucket
+            .request_lanes_mut(lanes)
+            .into_iter()
+            .filter_map(|lane| lane.conns.last())
+            .max_by_key(|conn| conn.seq)?;
+        let streams = newest.effective_capacity(newest.stream_cap);
+        if let Some(streams) =
+            NonZeroUsize::new(streams).filter(|streams| streams.get() < usize::MAX)
+        {
+            Self::learn(storage, id, streams);
+        }
+        Some(streams)
+    }
+
+    /// Keep what a connection of `id` took, for after its connections are gone.
+    fn learn(storage: &mut Storage<C, ID>, id: &ID, streams: NonZeroUsize) {
+        if streams.get() > 1 {
+            storage.learned_any = Some(streams);
+        }
+        let classes = storage.by_id.get(id).and_then(IdBucket::classes);
+        if let Some(learned) = storage.learned.get_mut(id) {
+            learned.streams = streams;
+            if classes.is_some() {
+                learned.classes = classes;
+            }
+            return;
+        }
+        // Forget ids without connections once the map is full, then leave it
+        // room for as many again, so this amortizes to O(1).
+        let capacity = storage.learned.capacity();
+        if storage.learned.len() >= capacity {
+            let Storage { by_id, learned, .. } = storage;
+            learned.retain(|id, _| by_id.contains_key(id));
+            if learned.len() * 2 > capacity {
+                learned.reserve(capacity);
+            }
+        }
+        storage
+            .learned
+            .insert(id.clone(), Learned { streams, classes });
+    }
+
+    /// The connects of `id` for `key`.
+    fn connects_in(storage: &mut Storage<C, ID>, id: &ID, key: &ConnectKey) -> Arc<Connects> {
+        if let Some(connects) = storage
+            .connects
+            .get(id)
+            .and_then(|all| all.iter().find(|connects| connects.is_for(key)))
+        {
+            return connects.clone();
+        }
+        // Forget the unused ones once the map is full, as for the id limits.
+        let capacity = storage.connects.capacity();
+        if storage.connects.len() >= capacity {
+            storage.connects.retain(|_, all| {
+                all.retain(|connects| !connects.is_unused());
+                !all.is_empty()
+            });
+            if storage.connects.len() * 2 > capacity {
+                storage.connects.reserve(capacity);
+            }
+        }
+        let all = storage.connects.entry(id.clone()).or_default();
+        // And of the id's own, once they fill theirs: a churn of keys is bounded
+        // by those in use.
+        let capacity = all.capacity();
+        if all.len() >= capacity {
+            all.retain(|connects| !connects.is_unused());
+            if all.len() * 2 > capacity {
+                all.reserve(capacity);
+            }
+        }
+        let connects = Arc::new(Connects::new(key.clone()));
+        all.push(connects.clone());
+        connects
+    }
+
+    /// A slot of `id`'s connection limit, if the pool has one per id.
+    fn try_id_slot(&self, id: &ID) -> Result<Option<IdPermit>, Blocked> {
+        let Some(limit) = self.id_limit(id) else {
+            return Ok(None);
+        };
+        match limit.slots.clone().try_acquire_owned() {
+            Ok(permit) => Ok(Some(IdPermit { permit, limit })),
+            Err(_at_limit) => Err(Blocked::Id),
+        }
+    }
+
+    /// Queue for a slot of `id`'s connection limit, if the pool has one per id.
+    fn id_slot_wait(&self, id: &ID) -> Option<IdSlotWait> {
+        let limit = self.id_limit(id)?;
+        Some(Box::pin(async move {
+            let permit = limit.slots.clone().acquire_owned().await?;
+            Ok(IdPermit { permit, limit })
+        }))
+    }
+
+    /// The connection limit of `id`, if the pool has one per id.
+    fn id_limit(&self, id: &ID) -> Option<Arc<IdLimit>> {
+        let max = self.max_connections_per_id?;
+        Some(Self::id_limit_in(&mut self.storage.lock(), id, max))
+    }
+
+    fn id_limit_in(storage: &mut Storage<C, ID>, id: &ID, max: NonZeroUsize) -> Arc<IdLimit> {
+        if let Some(limit) = storage.id_slots.get(id) {
+            return limit.clone();
+        }
+        // Forget the limits of ids that use none, once the map is full; then
+        // leave it room for as many again, so this amortizes to O(1).
+        let capacity = storage.id_slots.capacity();
+        if storage.id_slots.len() >= capacity {
+            storage.id_slots.retain(|_, limit| !limit.is_unused());
+            if storage.id_slots.len() * 2 > capacity {
+                storage.id_slots.reserve(capacity);
+            }
+        }
+        storage
+            .id_slots
+            .entry(id.clone())
+            .or_insert_with(|| Arc::new(IdLimit::new(max)))
+            .clone()
+    }
+
+    /// A slot of the total limit for a new connection of `id`, if the pool has
+    /// one: a free one, one freed by sweeping stale connections, or one evicted
+    /// as the saturation policy allows. Also says whether it was evicted.
+    fn take_total_slot(
+        &self,
+        id: &ID,
+        lanes: &RequestLanes,
+        look: &mut Look<'_>,
+        patient: bool,
+    ) -> Result<(Option<OwnedSemaphorePermit>, bool), Blocked> {
+        let Some(total) = &self.total_slots else {
+            return Ok((None, false));
+        };
+        if let Ok(permit) = total.clone().try_acquire_owned() {
+            return Ok((Some(permit), false));
+        }
+        // Broken and expired connections of any id may hold slots: take out
+        // a few that are due, then let their permits flow back through the
+        // semaphore (to the oldest queued waiter, if any) first.
+        let mut swept = Swept::default();
+        self.reap(
+            &mut self.storage.lock(),
+            now_monotonic_nanos(),
+            REAP_BUDGET,
+            &mut swept,
+        );
+        look.note_expiry(swept.next_expiry);
+        self.settle(swept);
+        if let Ok(permit) = total.clone().try_acquire_owned() {
+            return Ok((Some(permit), false));
+        }
+        let slots = self
+            .evict_for(id, lanes, look, patient, &self.slot_waiters, None)
+            .ok_or(Blocked::Total)?;
+        // The evicted connection's total slot moves to this checkout without
+        // passing the semaphore, where it would go to the oldest queued waiter.
+        slots
+            .total
+            .map(|permit| (Some(permit), true))
+            .ok_or(Blocked::Total)
+    }
+
+    /// A slot of `id`'s limit taken over from one of its idle connections, as
+    /// the saturation policy allows, with that connection's total slot.
+    fn replace_within_id(
+        &self,
+        id: &ID,
+        lanes: &RequestLanes,
+        look: &mut Look<'_>,
+        patient: bool,
+    ) -> Option<(IdPermit, Option<OwnedSemaphorePermit>)> {
+        let limit = self.id_limit(id)?;
+        let mut slots = self.evict_for(id, lanes, look, patient, &limit.evictors, Some(id))?;
+        Some((slots.id.take()?, slots.total.take()))
+    }
+
+    /// A waiter served by `conn` left the lane it was `served_in` and the
+    /// `others` it waited in, its wake spent on one stream: room left in each
+    /// wakes its front if that holds no wake, so the streams kept for the
+    /// waiters there reach them. The serving connection's own room is read off
+    /// it; any other under the storage lock, once the pool kept any: a pool of
+    /// exclusive connections never does. Call once it left the queues: see
+    /// [`Self::relies_on_kept`].
+    fn pass_room_on(
+        &self,
+        id: &ID,
+        input: &Extensions,
+        conn: &StoredConnection<C, ID>,
+        served_in: Option<&Arc<WaitQueue>>,
+        others: &[Arc<WaitQueue>],
+    ) {
+        let cap = self.max_concurrent_streams;
+        let kept = self.kept_counted.load(Ordering::Relaxed) || {
+            fence(Ordering::SeqCst);
+            self.kept_counted.load(Ordering::Relaxed)
+        };
+        let unwoken = |waiters: &WaitQueue| !waiters.is_empty() && !waiters.front_is_woken();
+        if let Some(served) = served_in {
+            let multiplexed = conn.effective_capacity(cap) > 1;
+            if (multiplexed || kept) && unwoken(served) {
+                let room = (multiplexed && conn.has_capacity(cap))
+                    || (kept && {
+                        let mut storage = self.storage.lock();
+                        let lane = conn.lane.lock();
+                        lane.as_ref()
+                            .and_then(|lane| storage.by_id.get_mut(id)?.lane_mut(lane))
+                            .is_some_and(|lane| !lane.open.is_empty())
+                    });
+                if room {
+                    served.wake_one();
+                }
+            }
+        }
+        if !kept || !others.iter().any(|other| unwoken(other)) {
+            return;
+        }
+        let lanes = self.request_lanes(id, input);
+        let with_room: SmallVec<[Arc<WaitQueue>; 2]> = {
+            let mut storage = self.storage.lock();
+            let Some(bucket) = storage.by_id.get_mut(id) else {
+                return;
+            };
+            bucket
+                .request_lanes_mut(&lanes)
+                .into_iter()
+                .filter(|lane| !lane.open.is_empty())
+                .map(|lane| lane.waiters.clone())
+                .collect()
+        };
+        for other in others {
+            if with_room.iter().any(|lane| Arc::ptr_eq(lane, other)) && unwoken(other) {
+                other.wake_one();
+            }
+        }
+    }
+
+    /// Whether the saturation policy lets a checkout of `lanes` evict: `cold`
+    /// says none of its lanes holds a connection, `patient` that it has not
+    /// waited past [`SaturationPolicy::EvictIdleAfter`].
+    fn may_evict(&self, cold: bool, patient: bool) -> bool {
+        match self.saturation {
+            SaturationPolicy::Wait => false,
+            SaturationPolicy::EvictIdleWhenCold => cold,
+            SaturationPolicy::EvictIdleAfter(after) => cold || !patient || after.is_zero(),
+            SaturationPolicy::EvictIdle => true,
+        }
+    }
+}
+
+impl<C, ID> Pool<C, ID> for MultiplexPool<C, ID>
+where
+    C: Send + Sync + ExtensionsRef + 'static,
+    ID: ConnID,
+{
+    type Connection = MultiplexedConnection<C, ID>;
+    type CreatePermit = MultiplexSlot;
+
+    async fn get_conn(
+        &self,
+        id: &ID,
+        input: &Extensions,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<ConnectionResult<Self::Connection, Self::CreatePermit>, BoxError> {
+        #[cfg(feature = "opentelemetry")]
+        let metrics = self
+            .metrics
+            .as_ref()
+            .map(|metrics| (metrics, metrics.attributes(id)));
+        #[cfg(feature = "opentelemetry")]
+        let start = Instant::now();
+
+        let reused = |conn: MultiplexedConnection<C, ID>| {
+            trace!(?id, "multiplex pool: reusing connection");
+            #[cfg(feature = "opentelemetry")]
+            if let Some((metrics, attrs)) = &metrics {
+                metrics.reused_connections.add(1, attrs);
+                metrics.streams.add(1, attrs);
+                metrics
+                    .concurrent_streams
+                    .record(conn.inner.active.load(Ordering::Relaxed) as f64, attrs);
+                metrics
+                    .active_connection_delay_nanoseconds
+                    .record(start.elapsed().as_nanos() as f64, attrs);
+            }
+            ConnectionResult::Connection(conn)
+        };
+
+        // One look for a connection with room or a create permit. A waiting
+        // checkout queues in the lanes it looks at before it looks. A slot of
+        // the id's limit taken by an earlier look is used, or kept.
+        let attempt = |look: &mut Look<'_>,
+                       held_id: &mut Option<IdPermit>,
+                       held_connect: &mut Option<Connect>,
+                       patient: bool,
+                       impatient: bool|
+         -> Result<ConnectionResult<_, _>, Blocked> {
+            // Common case: an idle or shareable connection is listed in one of
+            // the request's lanes.
+            let lanes = match self.checkout_open(id, input, look.waiting()) {
+                Ok(conn) => return Ok(reused(conn)),
+                Err(lanes) => *lanes,
+            };
+
+            // Only this id's bucket is touched under the lock; swept
+            // connections close after it is released.
+            let (mut same_id, saturated_bucket, left) = self.snapshot_exact(id, &lanes, look);
+            if let Look::Register(waiting) = look {
+                waiting.leave_other_lanes();
+            }
+            self.leave_kept(&mut same_id, look.waiting());
+
+            if let Some(conn) = select_and_admit(
+                &same_id,
+                id,
+                self.selection,
+                &self.rr_cursor,
+                self.max_concurrent_streams,
+                input,
+            ) {
+                // Room the bucket's index did not show is listed from now on.
+                conn.inner.relist();
+                return Ok(reused(conn));
+            }
+
+            let saturation = !same_id.is_empty() || saturated_bucket;
+            drop(same_id);
+
+            // A burst on a multiplexed lane waits for the connects in flight
+            // instead of each dialing its own. Kept across looks, like the slot.
+            let connect = match self.coalesce(
+                id,
+                &lanes,
+                input,
+                look,
+                held_connect,
+                impatient,
+                self.max_connecting_per_id,
+                left,
+            ) {
+                Coalesce::Dial(connect) => connect,
+                Coalesce::Wait => {
+                    // Its id's slot is for the connects it waits for.
+                    drop(held_id.take());
+                    return Err(Blocked::Connecting);
+                }
+                Coalesce::Failed(failure) => return Err(Blocked::Failed(failure)),
+            };
+
+            // A new connection takes a slot of its id's limit, then one of the
+            // total; replacing one of the id's idle connections takes both.
+            let (id_slot, replaced) = match held_id.take() {
+                Some(slot) => (Some(slot), None),
+                None => match self.try_id_slot(id) {
+                    Ok(slot) => (slot, None),
+                    Err(blocked) => {
+                        let Some((slot, total)) = self.replace_within_id(id, &lanes, look, patient)
+                        else {
+                            *held_connect = connect;
+                            return Err(blocked);
+                        };
+                        (Some(slot), Some(total))
+                    }
+                },
+            };
+            let (total, evicted) = match replaced {
+                Some(total) => (total, true),
+                None => match self.take_total_slot(id, &lanes, look, patient) {
+                    Ok(taken) => taken,
+                    Err(blocked) => {
+                        *held_id = id_slot;
+                        *held_connect = connect;
+                        return Err(blocked);
+                    }
+                },
+            };
+            #[cfg(feature = "opentelemetry")]
+            if evicted && let Some((metrics, attrs)) = &metrics {
+                metrics.evicted_connections.add(1, attrs);
+            }
+            #[cfg(not(feature = "opentelemetry"))]
+            let _ = evicted;
+
+            trace!(
+                ?id,
+                "multiplex pool: no connection with capacity, returning create permit"
+            );
+            #[cfg(feature = "opentelemetry")]
+            if let Some((metrics, attrs)) = &metrics {
+                if saturation {
+                    metrics.saturation_created_connections.add(1, attrs);
+                }
+                metrics
+                    .active_connection_delay_nanoseconds
+                    .record(start.elapsed().as_nanos() as f64, attrs);
+            }
+            #[cfg(not(feature = "opentelemetry"))]
+            let _ = saturation;
+            Ok(ConnectionResult::CreatePermit(MultiplexSlot {
+                total,
+                id: id_slot,
+                connect,
+            }))
+        };
+
+        // Fast path: a look without waiting.
+        let mut held_id = None;
+        let mut held_connect = None;
+        match attempt(&mut Look::New, &mut held_id, &mut held_connect, true, false) {
+            Ok(result) => return Ok(result),
+            Err(Blocked::Failed(failure)) => return Err(failure.into_error()),
+            Err(_) => {}
+        }
+
+        // Saturated: queue in the request's lanes, FIFO, and look again on
+        // every wake. Slot acquisitions start once a look is blocked on them.
+        let mut waiting = Waiting::new(
+            &self.waiting,
+            &self.slot_waiters,
+            self.id_limit(id).map(|limit| limit.evictors.clone()),
+            self.next_order.fetch_add(1, Ordering::Relaxed),
+            self.idle_trim(),
+        );
+        let party = waiting.party.clone();
+        let mut id_slot_wait: Option<IdSlotWait> = None;
+        let mut total_slot_wait: Option<SlotWait> = None;
+        // Armed once a look is blocked on a limit, in place.
+        let mut patience: Pin<&mut Option<Sleep>> = std::pin::pin!(None);
+        let mut expiry: Pin<&mut Option<Sleep>> = std::pin::pin!(None);
+        let mut dial_patience: Pin<&mut Option<Sleep>> = std::pin::pin!(None);
+        let mut patient = true;
+        let mut impatient = false;
+        loop {
+            // Enabled before the look, so no wake between both is lost.
+            let mut notified = std::pin::pin!(self.notify.notified());
+            notified.as_mut().enable();
+            let seen = waiting.begin_look();
+            let blocked = match attempt(
+                &mut Look::Register(&mut waiting),
+                &mut held_id,
+                &mut held_connect,
+                patient,
+                impatient,
+            ) {
+                Ok(result) => {
+                    let mut served_in = None;
+                    if let ConnectionResult::Connection(conn) = &result {
+                        served_in = conn.inner.lane_waiters.lock().clone();
+                        waiting.served(served_in.clone());
+                        #[cfg(feature = "opentelemetry")]
+                        if waiting.connects_seen.is_some()
+                            && let Some((metrics, attrs)) = &metrics
+                        {
+                            metrics.coalesced_checkouts.add(1, attrs);
+                        }
+                    }
+                    // A create permit leaves the capacity a wake stood for unused:
+                    // dropping `waiting` passes the wake on.
+                    let others = waiting.lanes_but(served_in.as_ref());
+                    drop(waiting);
+                    if let ConnectionResult::Connection(conn) = &result {
+                        self.pass_room_on(id, input, &conn.inner, served_in.as_ref(), &others);
+                    }
+                    return Ok(result);
+                }
+                Err(blocked) => blocked,
+            };
+            // Nothing for the wakes this look answered: wait for the next one,
+            // keeping the place.
+            waiting.end_fruitless_look();
+            match blocked {
+                Blocked::Id => {
+                    if id_slot_wait.is_none() {
+                        id_slot_wait = self.id_slot_wait(id);
+                    }
+                }
+                Blocked::Total => {
+                    if total_slot_wait.is_none() {
+                        total_slot_wait = self
+                            .total_slots
+                            .clone()
+                            .map(|total| Box::pin(total.acquire_owned()) as SlotWait);
+                    }
+                }
+                Blocked::Connecting => {
+                    // It neither holds nor queues for a slot the connects it
+                    // waits for may need.
+                    id_slot_wait = None;
+                    total_slot_wait = None;
+                    // Dials its own before its caller stops waiting.
+                    let at = self
+                        .max_wait_before_dial
+                        .and_then(|wait| tokio::time::Instant::now().checked_add(wait))
+                        .into_iter()
+                        .chain(deadline)
+                        .min();
+                    // Only while patient: once its patience is up, as at a cap
+                    // on connects, it waits for a landing, failure or cancel.
+                    if let Some(at) = at
+                        && dial_patience.is_none()
+                        && !impatient
+                    {
+                        dial_patience.set(Some(tokio::time::sleep_until(at)));
+                    }
+                }
+                Blocked::Failed(failure) => return Err(failure.into_error()),
+            }
+            let at_limit = matches!(blocked, Blocked::Id | Blocked::Total);
+            if let SaturationPolicy::EvictIdleAfter(after) = self.saturation
+                && at_limit
+                && patient
+                && patience.is_none()
+            {
+                patience.set(Some(tokio::time::sleep(after)));
+            }
+            if let Some(timeout) = self.idle_timeout.filter(|_| at_limit) {
+                // An idle connection frees its slots once it expires, and one
+                // going idle after this look does not expire before the timeout.
+                let now = now_monotonic_nanos();
+                let at = waiting
+                    .next_expiry
+                    .min(now.saturating_add(nanos(timeout)))
+                    .max(now.saturating_add(nanos(MIN_EXPIRY_WAIT)));
+                let deadline =
+                    tokio::time::Instant::now() + Duration::from_nanos(at.saturating_sub(now));
+                match expiry.as_mut().as_pin_mut() {
+                    Some(sleep) => sleep.reset(deadline),
+                    None => expiry.set(Some(tokio::time::sleep_until(deadline))),
+                }
+            }
+
+            trace!(
+                ?id,
+                ?blocked,
+                "multiplex pool: saturated, waiting for capacity"
+            );
+            tokio::select! {
+                _ = notified => {}
+                () = party.woken(seen) => {}
+                permit = maybe(&mut id_slot_wait) => {
+                    id_slot_wait = None;
+                    // The pool never closes its semaphores.
+                    held_id = permit.ok();
+                }
+                () = maybe_pinned(patience.as_mut()) => {
+                    patience.set(None);
+                    patient = false;
+                }
+                // Looks again: its sweep takes out what expired. Cleared, so a
+                // look that waits for something else does not spin on it.
+                () = maybe_pinned(expiry.as_mut()) => {
+                    expiry.set(None);
+                }
+                () = maybe_pinned(dial_patience.as_mut()) => {
+                    dial_patience.set(None);
+                    impatient = true;
+                }
+                permit = maybe(&mut total_slot_wait) => {
+                    total_slot_wait = None;
+                    let Ok(permit) = permit else {
+                        // The pool never closes its semaphores; treat as spurious.
+                        continue;
+                    };
+                    waiting.begin_look();
+                    let slot = MultiplexSlot {
+                        total: Some(permit),
+                        id: held_id.take(),
+                        connect: self.count_connect(id, input, held_connect.take()),
+                    };
+                    let result = self.admit_with_permit(id, slot, input, &waiting);
+                    let mut served_in = None;
+                    match &result {
+                        ConnectionResult::Connection(conn) => {
+                            served_in = conn.inner.lane_waiters.lock().clone();
+                            waiting.served(served_in.clone());
+                            #[cfg(feature = "opentelemetry")]
+                            if let Some((metrics, attrs)) = &metrics {
+                                metrics.reused_connections.add(1, attrs);
+                                metrics.streams.add(1, attrs);
+                                metrics
+                                    .concurrent_streams
+                                    .record(conn.inner.active.load(Ordering::Relaxed) as f64, attrs);
+                                metrics
+                                    .active_connection_delay_nanoseconds
+                                    .record(start.elapsed().as_nanos() as f64, attrs);
+                            }
+                            #[cfg(not(feature = "opentelemetry"))]
+                            let _ = conn;
+                        }
+                        ConnectionResult::CreatePermit(_) => {
+                            #[cfg(feature = "opentelemetry")]
+                            if let Some((metrics, attrs)) = &metrics {
+                                metrics
+                                    .active_connection_delay_nanoseconds
+                                    .record(start.elapsed().as_nanos() as f64, attrs);
+                            }
+                        }
+                    }
+                    let others = waiting.lanes_but(served_in.as_ref());
+                    drop(waiting);
+                    if let ConnectionResult::Connection(conn) = &result {
+                        self.pass_room_on(id, input, &conn.inner, served_in.as_ref(), &others);
+                    }
+                    return Ok(result);
+                }
+            }
+        }
+    }
+
+    fn abandon(&self, create_permit: MultiplexSlot, error: &ConnectionError) {
+        let MultiplexSlot { connect, .. } = create_permit;
+        if let Some(connect) = connect {
+            connect.failed(error);
+        }
+    }
+
+    async fn create(
+        &self,
+        id: ID,
+        conn: C,
+        mut slot: MultiplexSlot,
+        input: &Extensions,
+    ) -> Result<Self::Connection, BoxError> {
+        let connect = slot.connect.take();
+        // The establishing request owns the first reservation before concurrent
+        // checkouts can see this connection in storage.
+        let admission = match conn.extensions().self_get_ref::<ConnectionAdmission>() {
+            Some(provider) => match provider.acquire(input).await {
+                Ok(admission) => Some(admission),
+                Err(error) => {
+                    // Its waiters fail, or dial, as if the connect failed.
+                    let error = ConnectionError::from(error);
+                    if let Some(connect) = connect {
+                        connect.failed(&error);
+                    }
+                    return Err(error.into_box_error());
+                }
+            },
+            None => None,
+        };
+        // Reuse requirements are read once: the connection keeps its lane.
+        let reuse = conn.extensions().get_ref::<ConnectionReuse>();
+        let lane = LaneKey::of_connection(reuse).filter(|_| id.is_reusable());
+        let id_evictors = slot.id.as_ref().map(|id| id.limit.evictors.clone());
+        let id_idle = self
+            .idle_limits
+            .as_ref()
+            .and_then(|limits| limits.id_counter(&id));
+        let conn = Arc::new(StoredConnection {
+            max_concurrency: conn.extensions().get_arc::<MaxConcurrency>(),
+            // Installed if missing, so a break marked later reaches its listener.
+            health: conn
+                .extensions()
+                .get_arc_or_insert(|| Arc::new(ConnectionHealthWatcher::default())),
+            unusable_told: AtomicBool::new(false),
+            admission: conn
+                .extensions()
+                .self_get_ref::<ConnectionAdmission>()
+                .cloned(),
+            conn,
+            id,
+            lane: Mutex::new(None),
+            filed: AtomicBool::new(false),
+            lane_gen: AtomicU64::new(0),
+            seq: self.next_seq.fetch_add(1, Ordering::Relaxed),
+            stream_cap: self.max_concurrent_streams,
+            changes: AtomicU64::new(0),
+            busy_at: AtomicU64::new(0),
+            admits: AtomicU64::new(0),
+            active: AtomicUsize::new(1),
+            lane_waiters: Mutex::new(None),
+            waiting: self.waiting.clone(),
+            notify: self.notify.clone(),
+            slot_waiters: self.slot_waiters.clone(),
+            id_evictors,
+            last_idle: AtomicInstant::now(),
+            idle_node: AtomicUsize::new(UNLINKED),
+            doomed: AtomicBool::new(false),
+            reaper: self.reaper.clone(),
+            pool_slot: Mutex::new(ConnectionSlot {
+                slots: slot,
+                retired: false,
+            }),
+            listed: AtomicBool::new(false),
+            storage: Arc::downgrade(&self.storage),
+            relist_fn: relist_stored,
+            idle_limits: self.idle_limits.clone(),
+            idle_count: AtomicU8::new(GONE),
+            id_idle,
+            ask_trim_fn: ask_trim,
+        });
+
+        // The connection is its sources' listener: a change wakes its lane's
+        // waiters, without a task or an allocation per change.
+        let listener: Weak<dyn ChangeListener> =
+            Arc::downgrade(&conn) as Weak<StoredConnection<C, ID>>;
+        if let Some(max_concurrency) = &conn.max_concurrency {
+            max_concurrency.subscribe(listener.clone());
+        }
+        conn.health.subscribe(listener.clone());
+        if let Some(admission) = &conn.admission {
+            admission.subscribe(listener);
+        }
+
+        if let Some(limits) = &self.idle_limits
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            // Trims asked for outside a runtime run on the newest connection's.
+            *limits.runtime.lock() = Some(runtime);
+        }
+        trace!(id = ?conn.id, "multiplex pool: adding new connection");
+        let streams = conn.effective_capacity(conn.stream_cap);
+        let serves = connect
+            .as_ref()
+            .zip(lane.as_ref())
+            .is_some_and(|(connect, lane)| connect.serves(lane));
+        let new_lane = lane.is_some_and(|lane| {
+            let mut storage = self.storage.lock();
+            // Usable by the checkouts of these connects, claimed or not: they
+            // may wait for connects again.
+            for connects in storage.connects.get(&conn.id).into_iter().flatten() {
+                if connects.serves(&lane) {
+                    connects.lands_usable();
+                }
+            }
+            let bucket = storage
+                .by_id
+                .entry(conn.id.clone())
+                .or_insert_with(IdBucket::new);
+            // Checkouts only queue in lanes with connections.
+            let new_lane = bucket
+                .lane_mut(&lane)
+                .is_none_or(|lane| lane.conns.is_empty());
+            bucket.insert(&conn, lane);
+            if let Some(streams) =
+                NonZeroUsize::new(streams).filter(|streams| streams.get() < usize::MAX)
+            {
+                Self::learn(&mut storage, &conn.id, streams);
+            }
+            new_lane
+        });
+
+        // Its spare streams are for the checkouts waiting for its connect and
+        // in its lane; a lane it opens has none queued, those waiting for it
+        // look again.
+        if let Some(connect) = connect {
+            connect.landed(streams, serves || new_lane, serves);
+        }
+        // Broken before it was stored, in a new lane or not: a tell before
+        // then reached no look that could find it (the reaper queued it as it
+        // was linked), so this one does not count on it.
+        let broken = conn.is_broken();
+        if new_lane || broken {
+            self.notify.notify_waiters();
+        } else if let Some(waiters) = conn.lane_waiters.lock().clone() {
+            waiters.wake_many(streams.saturating_sub(1).min(waiters.len()));
+        }
+
+        #[cfg(feature = "opentelemetry")]
+        if let Some(metrics) = self.metrics.as_ref() {
+            let attrs = metrics.attributes(&conn.id);
+            metrics.total_connections.add(1, &attrs);
+            metrics.created_connections.add(1, &attrs);
+            metrics.streams.add(1, &attrs);
+            metrics.concurrent_streams.record(1.0, &attrs);
+        }
+
+        Ok(MultiplexedConnection {
+            inner: conn,
+            admission,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests;

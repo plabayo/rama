@@ -789,28 +789,13 @@ where
 fn finish_with_connection_pool<T, Stage, D>(
     builder: EasyHttpConnectorBuilder<T, Stage, D>,
     config: HttpPooledConnectorConfig,
-) -> Result<ConfiguredConnectionPoolBuilder<T>, BoxError>
-where
-    T: ConnectorService<ConnectRequest>,
-{
-    let connector = config.try_build_connector(builder.connector)?;
-    Ok(EasyHttpConnectorBuilder {
-        dns: (),
-        connector: finalize_http_connector(connector),
-        stage: Default::default(),
-    })
-}
-
-fn finish_with_default_connection_pool<T, Stage, D>(
-    builder: EasyHttpConnectorBuilder<T, Stage, D>,
 ) -> ConfiguredConnectionPoolBuilder<T>
 where
     T: ConnectorService<ConnectRequest>,
 {
-    let connector = HttpPooledConnectorConfig::build_default_connector(builder.connector);
     EasyHttpConnectorBuilder {
         dns: (),
-        connector: finalize_http_connector(connector),
+        connector: finalize_http_connector(config.build_connector(builder.connector)),
         stage: Default::default(),
     }
 }
@@ -903,10 +888,10 @@ impl<T, D> EasyHttpConnectorBuilder<T, HttpStage<true>, D> {
     /// This also applies a [`RequestVersionAdapter`] layer to make sure that request versions
     /// are adapted when pooled connections are used, which you almost always need, but in case
     /// that is unwanted, you can use [`Self::with_custom_connection_pool`] instead.
-    pub fn try_with_connection_pool(
+    pub fn with_connection_pool(
         self,
         config: HttpPooledConnectorConfig,
-    ) -> Result<DefaultConnectionPoolBuilder<T::Connection>, BoxError>
+    ) -> DefaultConnectionPoolBuilder<T::Connection>
     where
         T: ConnectorService<ConnectRequest>,
     {
@@ -918,16 +903,11 @@ impl<T, D> EasyHttpConnectorBuilder<T, HttpStage<true>, D> {
 
     /// Use Rama's default connection pool and default proxy-route failure
     /// cache.
-    ///
-    /// This operation is infallible because Rama's built-in pool limits are
-    /// known to be valid and non-zero.
     pub fn with_default_connection_pool(self) -> DefaultConnectionPoolBuilder<T::Connection>
     where
         T: ConnectorService<ConnectRequest>,
     {
-        finish_with_default_connection_pool(
-            self.with_proxy_route_failure_cache(ProxyRouteFailureCache::default()),
-        )
+        self.with_connection_pool(HttpPooledConnectorConfig::default())
     }
 
     /// Configure this client to use the provided [`Pool`] and [`ReqToConnId`]
@@ -937,7 +917,7 @@ impl<T, D> EasyHttpConnectorBuilder<T, HttpStage<true>, D> {
     /// Warning: this does not apply a [`RequestVersionAdapter`] layer to make sure that request versions
     /// are adapted when pooled connections are used, which you almost always. This should be manually added
     /// by using [`Self::with_custom_connector`] after configuring this pool and providing a [`RequestVersionAdapter`] there.
-    /// Unlike [`Self::try_with_connection_pool`], this fully generic method also does not install the HTTP
+    /// Unlike [`Self::with_connection_pool`], this fully generic method also does not install the HTTP
     /// connect-request adapter or proxy-route connector. It installs the default proxy-route failure cache behind
     /// the custom pool. Callers that want route-aware fallback around a custom pool can compose those layers
     /// explicitly around their [`PooledConnector`].
@@ -989,24 +969,24 @@ impl<T, D> EasyHttpConnectorBuilder<T, HttpStage<false>, D> {
         finish_without_connection_pool(self)
     }
 
-    /// Use the default connection pool without a proxy-route failure cache.
-    pub fn try_with_connection_pool(
+    /// Use a connection pool of `config` without a proxy-route failure cache.
+    pub fn with_connection_pool(
         self,
         config: HttpPooledConnectorConfig,
-    ) -> Result<ConfiguredConnectionPoolBuilder<T>, BoxError>
+    ) -> ConfiguredConnectionPoolBuilder<T>
     where
         T: ConnectorService<ConnectRequest>,
     {
         finish_with_connection_pool(self, config)
     }
 
-    /// Use Rama's known-valid default connection pool configuration without a
+    /// Use Rama's default connection pool without a
     /// proxy-route failure cache.
     pub fn with_default_connection_pool(self) -> ConfiguredConnectionPoolBuilder<T>
     where
         T: ConnectorService<ConnectRequest>,
     {
-        finish_with_default_connection_pool(self)
+        finish_with_connection_pool(self, HttpPooledConnectorConfig::default())
     }
 
     /// Use a custom connection pool without a proxy-route failure cache.
@@ -1034,24 +1014,24 @@ impl<T, D> EasyHttpConnectorBuilder<T, ProxyRouteFailureCacheStage, D> {
         finish_without_connection_pool(self)
     }
 
-    /// Use the default connection pool with the selected failure-cache policy.
-    pub fn try_with_connection_pool(
+    /// Use a connection pool of `config` with the selected failure-cache policy.
+    pub fn with_connection_pool(
         self,
         config: HttpPooledConnectorConfig,
-    ) -> Result<ConfiguredConnectionPoolBuilder<T>, BoxError>
+    ) -> ConfiguredConnectionPoolBuilder<T>
     where
         T: ConnectorService<ConnectRequest>,
     {
         finish_with_connection_pool(self, config)
     }
 
-    /// Use Rama's known-valid default connection pool configuration with the
+    /// Use Rama's default connection pool with the
     /// selected failure-cache policy.
     pub fn with_default_connection_pool(self) -> ConfiguredConnectionPoolBuilder<T>
     where
         T: ConnectorService<ConnectRequest>,
     {
-        finish_with_default_connection_pool(self)
+        finish_with_connection_pool(self, HttpPooledConnectorConfig::default())
     }
 
     /// Use a custom connection pool with the selected failure-cache policy.

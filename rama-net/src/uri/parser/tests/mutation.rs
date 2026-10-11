@@ -319,7 +319,7 @@ fn scheme_set_unset_with_without_and_maybe() {
     uri.unset_scheme();
     assert_eq!(uri.to_string(), "//example.com/");
 
-    let uri = parse_graceful("//example.com/p")
+    let uri = Uri::parse_reference("//example.com/p")
         .unwrap()
         .with_scheme(Protocol::HTTPS);
     assert_eq!(uri.to_string(), "https://example.com/p");

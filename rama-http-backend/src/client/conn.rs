@@ -20,7 +20,7 @@ use rama_http_types::{
 };
 use rama_net::client::{
     ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
-    pool::{ConnectionReuse, ConnectionReusePolicy},
+    pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
 };
 use rama_net::conn::is_connection_error;
 use rama_net::{
@@ -388,12 +388,16 @@ impl<S, Body> HttpConnector<S, Body> {
 struct UnclassifiedSecureTransport;
 
 impl ConnectionReusePolicy for UnclassifiedSecureTransport {
-    fn is_reusable(&self) -> bool {
-        false
+    fn classifier(&self) -> ReuseKey {
+        ReuseKey::of::<Self>()
     }
 
-    fn matches(&self, _: &Extensions) -> bool {
-        false
+    fn connection_key(&self) -> Option<ReuseKey> {
+        None
+    }
+
+    fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
+        None
     }
 }
 
@@ -869,8 +873,16 @@ mod http3_dispatch_tests {
     struct FixedTransportPolicy;
 
     impl ConnectionReusePolicy for FixedTransportPolicy {
-        fn matches(&self, _: &Extensions) -> bool {
-            true
+        fn classifier(&self) -> ReuseKey {
+            ReuseKey::of::<Self>()
+        }
+
+        fn connection_key(&self) -> Option<ReuseKey> {
+            Some(ReuseKey::of::<Self>())
+        }
+
+        fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
+            Some(ReuseKey::of::<Self>())
         }
     }
 

@@ -18,8 +18,7 @@ use rama::rt::Executor;
 use rama::utils::octets::mib;
 use tokio::sync::Mutex;
 
-#[global_allocator]
-static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
+mod bench_alloc;
 
 fn main() {
     // Run registered benchmarks.

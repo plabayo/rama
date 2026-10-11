@@ -138,4 +138,25 @@ mod tests {
         assert_eq!(priority.dependency.weight, 201);
         assert!(!priority.dependency.is_exclusive);
     }
+
+    #[test]
+    fn priority_wire_bytes() {
+        use crate::proto::h2::frame::{Priority, StreamDependency, StreamId};
+
+        let mut buf = Vec::new();
+        Priority::new(
+            StreamId::from(1),
+            StreamDependency::new(StreamId::zero(), 200, false),
+        )
+        .encode(&mut buf);
+        assert_eq!(buf, [0, 0, 5, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 200]);
+
+        let mut buf = Vec::new();
+        Priority::new(
+            StreamId::from(5),
+            StreamDependency::new(StreamId::from(3), 0, true),
+        )
+        .encode(&mut buf);
+        assert_eq!(buf, [0, 0, 5, 2, 0, 0, 0, 0, 5, 0x80, 0, 0, 3, 0]);
+    }
 }

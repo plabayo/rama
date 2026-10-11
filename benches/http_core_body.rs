@@ -14,8 +14,7 @@ use rama::http::body::{
     util::{BodyExt, StreamBody},
 };
 
-#[global_allocator]
-static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
+mod bench_alloc;
 
 fn main() {
     // Run registered benchmarks.

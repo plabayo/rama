@@ -37,8 +37,7 @@ use std::assert_matches;
 use std::{sync::Arc, time::Duration};
 use tokio::runtime::Runtime;
 
-#[global_allocator]
-static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
+mod bench_alloc;
 
 fn main() {
     divan::main();

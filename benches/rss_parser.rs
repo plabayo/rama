@@ -3,13 +3,12 @@
     reason = "bench: panic-on-error is the standard pattern for harnesses"
 )]
 
-use divan::{AllocProfiler, black_box, counter::BytesCount};
+use divan::{black_box, counter::BytesCount};
 use rama::{http::protocols::rss::Rss2FeedStream, io::LossyUtf8Reader};
 use std::{future::Future, sync::OnceLock};
 use tokio::io::{AsyncReadExt as _, BufReader};
 
-#[global_allocator]
-static ALLOC: AllocProfiler = AllocProfiler::system();
+mod bench_alloc;
 
 const FEED: &[u8] = include_bytes!("../rama-http/tests/rss-corpus/podcast-v2.rss.xml");
 const EXPECTED_ITEMS: usize = 512;

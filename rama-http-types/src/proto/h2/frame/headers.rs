@@ -10,12 +10,14 @@ use crate::{
     HeaderMap, HeaderName, HeaderValue, IntoOrderedIter, Method, Request, StatusCode, Uri, header,
 };
 
-use rama_core::bytes::{Buf, BufMut, BytesMut};
+use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
 use rama_core::telemetry::tracing;
 
 use std::fmt;
 use std::io::Cursor;
-use std::ops::ControlFlow;
+use std::mem;
+use std::ops::{ControlFlow, Range};
+use std::sync::Arc;
 
 type EncodeBuf<'a> = rama_core::bytes::buf::Limit<&'a mut BytesMut>;
 
@@ -144,10 +146,43 @@ struct Iter {
     fields: IntoOrderedIter<HeaderValue>,
 }
 
+/// A header block's fields: its own, or shared with the [`RequestHeaders`] of the
+/// request they are sent for.
+///
+/// [`RequestHeaders`]: crate::proto::RequestHeaders
+#[derive(Debug)]
+enum Fields {
+    Owned(HeaderMap),
+    Shared(Arc<HeaderMap>),
+}
+
+impl Fields {
+    fn get(&self) -> &HeaderMap {
+        match self {
+            Self::Owned(fields) => fields,
+            Self::Shared(fields) => fields,
+        }
+    }
+
+    fn get_mut(&mut self) -> &mut HeaderMap {
+        match self {
+            Self::Owned(fields) => fields,
+            Self::Shared(fields) => Arc::make_mut(fields),
+        }
+    }
+
+    fn into_owned(self) -> HeaderMap {
+        match self {
+            Self::Owned(fields) => fields,
+            Self::Shared(fields) => Arc::unwrap_or_clone(fields),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct HeaderBlock {
     /// The decoded header fields
-    fields: HeaderMap,
+    fields: Fields,
 
     /// Precomputed size of all of our header fields, for perf reasons
     field_size: usize,
@@ -174,9 +209,9 @@ impl PartialEq for HeaderBlock {
             is_over_size: other_is_over_size,
             pseudo: other_pseudo,
         } = other;
-        (fields, field_size, is_over_size, pseudo)
+        (fields.get(), field_size, is_over_size, pseudo)
             == (
-                other_fields,
+                other_fields.get(),
                 other_field_size,
                 other_is_over_size,
                 other_pseudo,
@@ -212,7 +247,7 @@ impl Headers {
             stream_dep,
             header_block: HeaderBlock {
                 field_size: calculate_headermap_size(&fields),
-                fields,
+                fields: Fields::Owned(fields),
                 is_over_size: false,
                 pseudo,
             },
@@ -230,7 +265,7 @@ impl Headers {
             stream_dep: None,
             header_block: HeaderBlock {
                 field_size: calculate_headermap_size(&fields),
-                fields,
+                fields: Fields::Owned(fields),
                 is_over_size: false,
                 pseudo: Pseudo::default(),
             },
@@ -294,7 +329,7 @@ impl Headers {
             stream_id: head.stream_id(),
             stream_dep,
             header_block: HeaderBlock {
-                fields: HeaderMap::new(),
+                fields: Fields::Owned(HeaderMap::new()),
                 field_size: 0,
                 is_over_size: false,
                 pseudo: Pseudo::default(),
@@ -343,7 +378,23 @@ impl Headers {
     }
 
     pub fn into_parts(self) -> (Pseudo, HeaderMap) {
-        (self.header_block.pseudo, self.header_block.fields)
+        (
+            self.header_block.pseudo,
+            self.header_block.fields.into_owned(),
+        )
+    }
+
+    /// Shares the fields of this frame, as they will be sent, with the caller.
+    pub fn share_fields(&mut self) -> Arc<HeaderMap> {
+        let fields = match mem::replace(
+            &mut self.header_block.fields,
+            Fields::Owned(HeaderMap::new()),
+        ) {
+            Fields::Owned(fields) => Arc::new(fields),
+            Fields::Shared(fields) => fields,
+        };
+        self.header_block.fields = Fields::Shared(fields.clone());
+        fields
     }
 
     pub fn pseudo_mut(&mut self) -> &mut Pseudo {
@@ -360,11 +411,11 @@ impl Headers {
     }
 
     pub fn fields(&self) -> &HeaderMap {
-        &self.header_block.fields
+        self.header_block.fields.get()
     }
 
     pub fn into_fields(self) -> HeaderMap {
-        self.header_block.fields
+        self.header_block.fields.into_owned()
     }
 
     pub fn encode(
@@ -458,7 +509,7 @@ impl PushPromise {
             flags: PushPromiseFlag::default(),
             header_block: HeaderBlock {
                 field_size: calculate_headermap_size(&fields),
-                fields,
+                fields: Fields::Owned(fields),
                 is_over_size: false,
                 pseudo,
             },
@@ -500,11 +551,11 @@ impl PushPromise {
     }
 
     pub fn fields(&self) -> &HeaderMap {
-        &self.header_block.fields
+        self.header_block.fields.get()
     }
 
     pub fn into_fields(self) -> HeaderMap {
-        self.header_block.fields
+        self.header_block.fields.into_owned()
     }
 
     /// Loads the push promise frame but doesn't actually do HPACK decoding.
@@ -551,7 +602,7 @@ impl PushPromise {
         let frame = Self {
             flags,
             header_block: HeaderBlock {
-                fields: HeaderMap::new(),
+                fields: Fields::Owned(HeaderMap::new()),
                 field_size: 0,
                 is_over_size: false,
                 pseudo: Pseudo::default(),
@@ -619,7 +670,10 @@ impl PushPromise {
 
     /// Consume `self`, returning the parts of the frame
     pub fn into_parts(self) -> (Pseudo, HeaderMap) {
-        (self.header_block.pseudo, self.header_block.fields)
+        (
+            self.header_block.pseudo,
+            self.header_block.fields.into_owned(),
+        )
     }
 }
 
@@ -672,23 +726,24 @@ impl Pseudo {
     }
 
     pub fn request(method: Method, uri: &Uri, protocol: Option<Protocol>) -> Self {
-        // Helper: serialize a `BytesMut` writer closure into a `BytesStr`.
-        // Native `Uri` wire writers stream into a `BytesMut`; the pseudo
-        // fields hold `BytesStr`.
-        fn bytes_str_from(buf: BytesMut) -> BytesStr {
-            BytesStr::try_from(buf.freeze()).unwrap_or_else(|_| BytesStr::from_static(""))
-        }
+        // `:authority` and `:path` are rendered into one buffer, shared once frozen.
+        let mut target = Vec::with_capacity(128);
+        let authority_len = uri
+            .write_h2_authority(&mut target)
+            .is_ok()
+            .then_some(target.len());
 
         let (scheme, path) = if method == Method::CONNECT && protocol.is_none() {
             // CONNECT (non-extended): no `:scheme`/`:path`.
             (None, None)
         } else {
-            // `:path` mirrors origin-form (empty path → `/`), except
-            // asterisk-form carries `*` (handled by `write_h2_path`).
-            let mut path_buf = BytesMut::new();
-            uri.write_h2_path(&mut path_buf);
-            let path = bytes_str_from(path_buf);
-
+            let wire_scheme = uri.scheme().map(|scheme| {
+                if protocol.is_some() {
+                    crate::proto::ext::extended_connect_pseudo_scheme(scheme)
+                } else {
+                    scheme
+                }
+            });
             // RFC 9113 §8.3.1: an OPTIONS request without a path is the "OPTIONS *"
             // form and carries `:path = *`, required for http(s) and how a received
             // `*` reads back for every scheme. The origin-form writer normalises an
@@ -698,34 +753,27 @@ impl Pseudo {
                 && uri.is_path_empty()
                 && uri.query().is_none()
             {
-                BytesStr::from_static("*")
-            } else if uri.scheme().is_some_and(|scheme| {
-                let wire_scheme = if protocol.is_some() {
-                    crate::proto::ext::extended_connect_pseudo_scheme(scheme)
-                } else {
-                    scheme
-                };
-                crate::proto::ext::sends_empty_path(uri, wire_scheme)
-            }) {
-                BytesStr::from_static("")
+                PathSource::Static("*")
+            } else if wire_scheme
+                .is_some_and(|scheme| crate::proto::ext::sends_empty_path(uri, scheme))
+            {
+                PathSource::Static("")
             } else {
-                path
+                // `:path` mirrors origin-form, except that asterisk-form carries `*`.
+                uri.write_h2_path(&mut target);
+                PathSource::Rendered
             };
-
-            // `:scheme` is only present when the URI carries one.
-            let scheme = if let (Some(_), Some(scheme)) = (&protocol, uri.scheme()) {
-                Some(BytesStr::from(
-                    crate::proto::ext::extended_connect_pseudo_scheme(scheme).as_str(),
-                ))
-            } else {
-                let mut scheme_buf = BytesMut::new();
-                uri.write_h2_scheme(&mut scheme_buf)
-                    .ok()
-                    .map(|()| bytes_str_from(scheme_buf))
-            };
-
-            (scheme, Some(path))
+            (wire_scheme.map(pseudo_scheme), Some(path))
         };
+
+        let target = Bytes::from(target);
+        let rendered = |range: Range<usize>| {
+            BytesStr::try_from(target.slice(range)).unwrap_or_else(|_| BytesStr::from_static(""))
+        };
+        let path = path.map(|path| match path {
+            PathSource::Static(value) => BytesStr::from_static(value),
+            PathSource::Rendered => rendered(authority_len.unwrap_or(0)..target.len()),
+        });
 
         let mut pseudo = Self {
             method: Some(method),
@@ -737,14 +785,9 @@ impl Pseudo {
             order: PseudoHeaderOrder::default(),
             sensitivity: PseudoHeaderSensitivity::default(),
         };
-
-        // If the URI includes an authority component, add it to the pseudo
-        // headers.
-        let mut authority_buf = BytesMut::new();
-        if uri.write_h2_authority(&mut authority_buf).is_ok() {
-            pseudo.set_authority(bytes_str_from(authority_buf));
+        if let Some(authority_len) = authority_len {
+            pseudo.set_authority(rendered(0..authority_len));
         }
-
         pseudo
     }
 
@@ -794,12 +837,7 @@ impl Pseudo {
     }
 
     pub fn set_scheme(&mut self, scheme: &rama_net::Protocol) {
-        let bytes_str = match scheme.as_str() {
-            "http" => BytesStr::from_static("http"),
-            "https" => BytesStr::from_static("https"),
-            s => BytesStr::from(s),
-        };
-        self.scheme = Some(bytes_str);
+        self.scheme = Some(pseudo_scheme(scheme));
     }
 
     pub fn set_protocol(&mut self, protocol: Protocol) {
@@ -1034,7 +1072,7 @@ impl HeaderBlock {
         max_header_list_size: usize,
         decoder: &mut hpack::Decoder,
     ) -> Result<(), Error> {
-        let mut reg = !self.fields.is_empty();
+        let mut reg = !self.fields.get().is_empty();
         let mut malformed = false;
         let mut header_list_way_too_large = false;
         let mut headers_size = self.calculate_header_list_size();
@@ -1115,7 +1153,7 @@ impl HeaderBlock {
                         }
                         if !self.is_over_size {
                             self.field_size += header_size;
-                            if self.fields.try_append(name, value).is_err() {
+                            if self.fields.get_mut().try_append(name, value).is_err() {
                                 // HeaderMap capacity exceeded — treat as over-size
                                 // so the stream is rejected downstream (RST_STREAM / 431)
                                 // instead of panicking on the 24,577th unique header.
@@ -1182,13 +1220,32 @@ impl HeaderBlock {
     fn into_encoding(self, encoder: &mut hpack::Encoder) -> EncodingHeaderBlock {
         let mut hpack = encoder.take_scratch();
         hpack.clear();
-        let headers = Iter {
-            pseudo_order: self.pseudo.order.iter(),
-            pseudo: Some(self.pseudo),
-            fields: self.fields.into_ordered_iter(),
-        };
-
-        encoder.encode(headers, &mut hpack);
+        let pseudo_order = self.pseudo.order.iter();
+        match self.fields {
+            Fields::Owned(fields) => encoder.encode(
+                Iter {
+                    pseudo_order,
+                    pseudo: Some(self.pseudo),
+                    fields: fields.into_ordered_iter(),
+                },
+                &mut hpack,
+            ),
+            // Values are reference counted, so encoding from the shared map copies none.
+            Fields::Shared(fields) => encoder.encode(
+                Iter {
+                    pseudo_order,
+                    pseudo: Some(self.pseudo),
+                    fields: HeaderMap::new().into_ordered_iter(),
+                }
+                .chain(fields.ordered_iter().map(|(name, value)| {
+                    hpack::Header::Field {
+                        name: Some(name.clone()),
+                        value: value.clone(),
+                    }
+                })),
+                &mut hpack,
+            ),
+        }
 
         EncodingHeaderBlock { hpack }
     }
@@ -1230,9 +1287,89 @@ fn decoded_header_size(name: usize, value: usize) -> usize {
     name + value + 32
 }
 
+/// Where a request's `:path` comes from.
+enum PathSource {
+    Static(&'static str),
+    Rendered,
+}
+
+/// `:scheme` for `scheme`, without a copy for http(s).
+fn pseudo_scheme(scheme: &rama_net::Protocol) -> BytesStr {
+    match scheme.as_str() {
+        "https" => BytesStr::from_static("https"),
+        "http" => BytesStr::from_static("http"),
+        other => BytesStr::from(other),
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// A shared block encodes byte for byte as an owned one: order, duplicates,
+    /// casing, never-index, empty values, removed fields and CONTINUATION, also
+    /// against a dynamic table an earlier block filled.
+    #[test]
+    fn shared_fields_encode_like_owned_fields() {
+        fn fields() -> HeaderMap {
+            let mut fields = HeaderMap::new();
+            fields.append(
+                HeaderName::from_static("x-a"),
+                HeaderValue::from_static("1"),
+            );
+            fields.append(header::COOKIE, HeaderValue::from_static("a=1"));
+            let mut secret = HeaderValue::from_static("token");
+            secret.set_sensitive(true);
+            fields.append(header::AUTHORIZATION, secret);
+            fields.append(
+                HeaderName::from_bytes(b"X-Mixed-Case").unwrap(),
+                HeaderValue::from_static("v"),
+            );
+            fields.append(
+                HeaderName::from_static("x-a"),
+                HeaderValue::from_static("2"),
+            );
+            fields.append(
+                HeaderName::from_static("x-gone"),
+                HeaderValue::from_static("g"),
+            );
+            fields.append(
+                HeaderName::from_static("x-empty"),
+                HeaderValue::from_static(""),
+            );
+            fields.append(
+                HeaderName::from_static("x-big"),
+                HeaderValue::from_str(&"b".repeat(40_000)).unwrap(),
+            );
+            fields.remove("x-gone");
+            fields
+        }
+
+        fn encode(share: bool) -> Vec<u8> {
+            let mut encoder = hpack::Encoder::default();
+            let mut wire = Vec::new();
+            for id in [1u32, 3] {
+                let pseudo =
+                    Pseudo::request(Method::GET, &"https://example.com/p".parse().unwrap(), None);
+                let mut frame = Headers::new(StreamId::from(id), pseudo, fields(), None);
+                if share {
+                    let shared = frame.share_fields();
+                    assert_eq!(Arc::strong_count(&shared), 2);
+                }
+                let mut buf = BytesMut::new();
+                let mut next = frame.encode(&mut encoder, &mut (&mut buf).limit(16_384 + 9));
+                while let Some(continuation) = next {
+                    next = continuation.encode(&mut (&mut buf).limit(16_384 + 9));
+                }
+                wire.extend_from_slice(&buf);
+            }
+            wire
+        }
+
+        let owned = encode(false);
+        assert!(owned.len() > 40_000);
+        assert_eq!(encode(true), owned);
+    }
 
     #[test]
     fn every_promised_content_length_line_counts() {
@@ -1456,6 +1593,26 @@ mod test {
             ("foo://example.com/", "/"),
         ] {
             let pseudo = Pseudo::request(Method::OPTIONS, &Uri::parse(uri).unwrap(), None);
+            assert_eq!(pseudo.path.as_deref(), Some(path), "{uri}");
+        }
+    }
+
+    #[test]
+    fn request_pseudo_fields_share_one_rendered_target() {
+        for (uri, scheme, authority, path) in [
+            (
+                "https://example.com/a?b",
+                Some("https"),
+                Some("example.com"),
+                "/a?b",
+            ),
+            ("http://[::1]:8080", Some("http"), Some("[::1]:8080"), "/"),
+            ("file:///etc/hosts", Some("file"), Some(""), "/etc/hosts"),
+            ("urn:isbn:123", Some("urn"), None, "/isbn:123"),
+        ] {
+            let pseudo = Pseudo::request(Method::GET, &Uri::parse(uri).unwrap(), None);
+            assert_eq!(pseudo.scheme.as_deref(), scheme, "{uri}");
+            assert_eq!(pseudo.authority.as_deref(), authority, "{uri}");
             assert_eq!(pseudo.path.as_deref(), Some(path), "{uri}");
         }
     }

@@ -28,6 +28,7 @@ use rama::{
 };
 use std::{
     convert::Infallible,
+    num::NonZeroUsize,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -128,11 +129,10 @@ macro_rules! client {
         let builder = builder.with_tls_support_using_rustls(tls);
         builder
             .with_default_http_connector(Executor::new())
-            .try_with_connection_pool(HttpPooledConnectorConfig {
-                max_total: 2,
+            .with_connection_pool(HttpPooledConnectorConfig {
+                max_connections_total: NonZeroUsize::new(2),
                 ..Default::default()
             })
-            .unwrap()
             .build_client()
     }};
 }

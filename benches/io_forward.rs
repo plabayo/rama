@@ -15,6 +15,8 @@ use rama::{Service as _, ServiceInput, io::BridgeIo, net::proxy::IoForwardServic
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream, duplex};
 
+mod bench_alloc;
+
 fn main() {
     divan::main();
 }

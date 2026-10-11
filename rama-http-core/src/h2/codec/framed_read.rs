@@ -27,6 +27,11 @@ const DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: usize = 16 << 20;
 pub(super) struct FramedRead<T> {
     inner: InnerFramedRead<T, LengthDelimitedCodec>,
 
+    decoder: FrameDecoder,
+}
+
+#[derive(Debug)]
+struct FrameDecoder {
     // hpack decoder state
     hpack: hpack::Decoder,
 
@@ -59,21 +64,12 @@ enum Continuable {
 
 impl<T> FramedRead<T> {
     pub(super) fn new(inner: InnerFramedRead<T, LengthDelimitedCodec>) -> Self {
-        let max_header_list_size = DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE;
-        let max_continuation_frames =
-            calc_max_continuation_frames(max_header_list_size, inner.decoder().max_frame_length());
-        Self {
-            inner,
-            hpack: hpack::Decoder::new(DEFAULT_SETTINGS_HEADER_TABLE_SIZE),
-            max_header_list_size,
-            max_continuation_frames,
-            partial: None,
-            recv_alt_svc: true,
-        }
+        let decoder = FrameDecoder::new(inner.decoder().max_frame_length());
+        Self { inner, decoder }
     }
 
     pub(super) fn set_recv_alt_svc(&mut self, enabled: bool) {
-        self.recv_alt_svc = enabled;
+        self.decoder.recv_alt_svc = enabled;
     }
 
     pub(super) fn get_ref(&self) -> &T {
@@ -98,21 +94,20 @@ impl<T> FramedRead<T> {
         assert!(DEFAULT_MAX_FRAME_SIZE as usize <= val && val <= MAX_MAX_FRAME_SIZE as usize);
         self.inner.decoder_mut().set_max_frame_length(val);
         // Update max CONTINUATION frames too, since its based on this
-        self.max_continuation_frames = calc_max_continuation_frames(self.max_header_list_size, val);
+        self.decoder.set_max_frame_size(val);
     }
 
     /// Update the max header list size setting.
     #[inline]
     pub(super) fn set_max_header_list_size(&mut self, val: usize) {
-        self.max_header_list_size = val;
-        // Update max CONTINUATION frames too, since its based on this
-        self.max_continuation_frames = calc_max_continuation_frames(val, self.max_frame_size());
+        self.decoder
+            .set_max_header_list_size(val, self.max_frame_size());
     }
 
     /// Update the header table size setting.
     #[inline]
     pub(super) fn set_header_table_size(&mut self, val: usize) {
-        self.hpack.queue_size_update(val);
+        self.decoder.set_header_table_size(val);
     }
 }
 
@@ -131,17 +126,44 @@ fn calc_max_continuation_frames(header_max: usize, frame_max: usize) -> usize {
     min_frames_for_list.saturating_add(padding).max(5)
 }
 
+impl FrameDecoder {
+    fn new(max_frame_size: usize) -> Self {
+        let max_header_list_size = DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE;
+        Self {
+            hpack: hpack::Decoder::new(DEFAULT_SETTINGS_HEADER_TABLE_SIZE),
+            max_header_list_size,
+            max_continuation_frames: calc_max_continuation_frames(
+                max_header_list_size,
+                max_frame_size,
+            ),
+            partial: None,
+            recv_alt_svc: true,
+        }
+    }
+
+    fn set_max_frame_size(&mut self, val: usize) {
+        self.max_continuation_frames = calc_max_continuation_frames(self.max_header_list_size, val);
+    }
+
+    fn set_max_header_list_size(&mut self, val: usize, max_frame_size: usize) {
+        self.max_header_list_size = val;
+        // Update max CONTINUATION frames too, since its based on this
+        self.max_continuation_frames = calc_max_continuation_frames(val, max_frame_size);
+    }
+
+    fn set_header_table_size(&mut self, val: usize) {
+        self.hpack.queue_size_update(val);
+    }
+
+    fn decode(&mut self, bytes: BytesMut) -> Result<Option<Frame>, Error> {
+        decode_frame(self, bytes)
+    }
+}
+
 /// Decodes a frame.
 ///
-/// This method is intentionally de-generified and outlined because it is very large.
-fn decode_frame(
-    hpack: &mut hpack::Decoder,
-    max_header_list_size: usize,
-    max_continuation_frames: usize,
-    partial_inout: &mut Option<Partial>,
-    recv_alt_svc: bool,
-    mut bytes: BytesMut,
-) -> Result<Option<Frame>, Error> {
+/// This function is intentionally de-generified and outlined because it is very large.
+fn decode_frame(decoder: &mut FrameDecoder, mut bytes: BytesMut) -> Result<Option<Frame>, Error> {
     let span = tracing::trace_span!("FramedRead::decode_frame", offset = bytes.len());
     let _e = span.enter();
 
@@ -153,7 +175,7 @@ fn decode_frame(
         Error::library_go_away(Reason::PROTOCOL_ERROR)
     })?;
 
-    if partial_inout.is_some() && head.kind() != Kind::Continuation {
+    if decoder.partial.is_some() && head.kind() != Kind::Continuation {
         proto_err!(conn: "expected CONTINUATION, got {:?}", head.kind());
         return Err(Error::library_go_away(Reason::PROTOCOL_ERROR));
     }
@@ -186,7 +208,7 @@ fn decode_frame(
             let is_end_headers = frame.is_end_headers();
 
             // Load the HPACK encoded headers
-            match frame.load_hpack(&mut payload, max_header_list_size, hpack) {
+            match frame.load_hpack(&mut payload, decoder.max_header_list_size, &mut decoder.hpack) {
                 Ok(_) => {},
                 Err(frame::Error::Hpack(hpack::DecoderError::NeedMore(_))) if !is_end_headers => {},
                 Err(frame::Error::MalformedMessage) => {
@@ -212,7 +234,7 @@ fn decode_frame(
             } else {
                 tracing::trace!("loaded partial header block");
                 // Defer returning the frame
-                *partial_inout = Some(Partial {
+                decoder.partial = Some(Partial {
                     frame: Continuable::$frame(frame),
                     buf: payload,
                     continuation_frames_count: 0,
@@ -258,7 +280,7 @@ fn decode_frame(
             .into()
         }
         Kind::AltSvc => {
-            if !recv_alt_svc {
+            if !decoder.recv_alt_svc {
                 return Ok(None);
             }
             bytes.advance(frame::HEADER_LEN);
@@ -298,7 +320,7 @@ fn decode_frame(
             .into()
         }
         Kind::GoAway => {
-            let res = frame::GoAway::load(&bytes[frame::HEADER_LEN..]);
+            let res = frame::GoAway::load(head, &bytes[frame::HEADER_LEN..]);
             res.map_err(|e| {
                 proto_err!(conn: "failed to load GO_AWAY frame; err={:?}", e);
                 Error::library_go_away(Reason::PROTOCOL_ERROR)
@@ -332,7 +354,7 @@ fn decode_frame(
         Kind::Continuation => {
             let is_end_headers = (head.flag() & 0x4) == 0x4;
 
-            let Some(mut partial) = partial_inout.take() else {
+            let Some(mut partial) = decoder.partial.take() else {
                 proto_err!(conn: "received unexpected CONTINUATION frame");
                 return Err(Error::library_go_away(Reason::PROTOCOL_ERROR));
             };
@@ -348,8 +370,11 @@ fn decode_frame(
                 partial.continuation_frames_count = 0;
             } else {
                 let cnt = partial.continuation_frames_count + 1;
-                if cnt > max_continuation_frames {
-                    tracing::debug!("too_many_continuations, max = {}", max_continuation_frames);
+                if cnt > decoder.max_continuation_frames {
+                    tracing::debug!(
+                        "too_many_continuations, max = {}",
+                        decoder.max_continuation_frames
+                    );
                     return Err(Error::library_go_away_data(
                         Reason::ENHANCE_YOUR_CALM,
                         "too_many_continuations",
@@ -377,7 +402,7 @@ fn decode_frame(
                     // Instead, we use a simple heuristic to determine if
                     // we should continue to ignore decoding, or to tell
                     // the attacker to go away.
-                    if partial.buf.len() + bytes.len() > max_header_list_size {
+                    if partial.buf.len() + bytes.len() > decoder.max_header_list_size {
                         proto_err!(conn: "CONTINUATION frame header block size over ignorable limit");
                         return Err(Error::library_go_away(Reason::COMPRESSION_ERROR));
                     }
@@ -385,10 +410,11 @@ fn decode_frame(
                 partial.buf.extend_from_slice(&bytes[frame::HEADER_LEN..]);
             }
 
-            match partial
-                .frame
-                .load_hpack(&mut partial.buf, max_header_list_size, hpack)
-            {
+            match partial.frame.load_hpack(
+                &mut partial.buf,
+                decoder.max_header_list_size,
+                &mut decoder.hpack,
+            ) {
                 Ok(_) => {}
                 Err(frame::Error::Hpack(hpack::DecoderError::NeedMore(_))) if !is_end_headers => {}
                 Err(frame::Error::MalformedMessage) => {
@@ -412,7 +438,7 @@ fn decode_frame(
             if is_end_headers {
                 partial.frame.into()
             } else {
-                *partial_inout = Some(partial);
+                decoder.partial = Some(partial);
                 return Ok(None);
             }
         }
@@ -448,22 +474,7 @@ where
 
             budget.made_progress();
             tracing::trace!("bytes read = {}", bytes.len());
-            let Self {
-                ref mut hpack,
-                max_header_list_size,
-                ref mut partial,
-                max_continuation_frames,
-                recv_alt_svc,
-                ..
-            } = *self;
-            if let Some(frame) = decode_frame(
-                hpack,
-                max_header_list_size,
-                max_continuation_frames,
-                partial,
-                recv_alt_svc,
-                bytes,
-            )? {
+            if let Some(frame) = self.decoder.decode(bytes)? {
                 tracing::trace!("frame received: {frame:?}");
                 return Poll::Ready(Some(Ok(frame)));
             }

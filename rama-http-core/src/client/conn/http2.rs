@@ -701,6 +701,20 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Configures the connection-level budget for the memory overhead of
+        /// received small DATA frames, exhausting it closes the connection.
+        ///
+        /// See the documentation of [`crate::h2::client::Builder::with_data_frame_budget`] for more
+        /// details.
+        ///
+        /// The default, `None`, is half the target connection window, at least 25,600 bytes.
+        pub fn data_frame_budget(mut self, budget: impl Into<Option<usize>>) -> Self {
+            self.h2_builder.data_frame_budget = budget.into();
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Sets the duration to remember locally reset streams.
         ///
         /// When a stream is explicitly reset by either the client or the server,
@@ -1015,7 +1029,7 @@ mod tests {
     async fn admits_again(sender: &crate::client::conn::http2::SendRequest<Body>) {
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                let changed = sender.connection_admission().watch();
+                let changed = sender.connection_admission().changed();
                 if admits(sender) {
                     return;
                 }
@@ -1145,19 +1159,19 @@ mod tests {
         assert!(admits(&sender));
     }
 
-    /// Subscribers wake as the connection ends; after that its watch never fires again, so
+    /// Subscribers wake as the connection ends; after that nothing signals any more, so
     /// pool waiters cannot spin on it.
     #[tokio::test]
-    async fn an_ended_connection_watch_stays_pending() {
+    async fn an_ended_connection_stays_quiet() {
         let (sender, task) = one_stream_connection(65_535, answer_at_once()).await;
         let admission = sender.connection_admission();
-        let before = admission.watch();
+        let before = admission.changed();
         task.abort();
         _ = task.await;
         tokio::time::timeout(Duration::from_secs(5), before)
             .await
             .expect("subscribers wake as the connection ends");
-        let mut after = pin!(admission.watch());
+        let mut after = pin!(admission.changed());
         let cx = &mut Context::from_waker(Waker::noop());
         assert!(after.as_mut().poll(cx).is_pending());
         tokio::task::yield_now().await;
@@ -1173,7 +1187,7 @@ mod tests {
         let admission = sender.connection_admission();
         // An unused checkout returns its slot, which wakes waiters.
         let unused = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
-        let mut changed = pin!(admission.watch());
+        let mut changed = pin!(admission.changed());
         let cx = &mut Context::from_waker(Waker::noop());
         assert!(changed.as_mut().poll(cx).is_pending());
         drop(unused);
@@ -1187,7 +1201,7 @@ mod tests {
             .uri("https://example.com/upload")
             .body(upload.into_body())
             .unwrap();
-        let mut changed = pin!(admission.watch());
+        let mut changed = pin!(admission.changed());
         assert!(changed.as_mut().poll(cx).is_pending());
         let response = sender.clone().send_request(request).await.unwrap();
         drop(checkout);

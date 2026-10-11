@@ -655,6 +655,12 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-test = { workspace = true }
 turmoil = { workspace = true }
 
+[target.'cfg(target_family = "unix")'.dev-dependencies]
+jemallocator = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+mimalloc = { workspace = true }
+
 [lints]
 workspace = true
 
@@ -752,6 +758,11 @@ required-features = ["net"]
 harness = false
 
 [[bench]]
+name = "http_head_encode"
+required-features = ["http", "net"]
+harness = false
+
+[[bench]]
 name = "pool_contention"
 required-features = ["net"]
 harness = false
@@ -764,6 +775,11 @@ harness = false
 [[bench]]
 name = "dns_resolver"
 required-features = ["dns"]
+harness = false
+
+[[bench]]
+name = "extensions_lookup"
+required-features = ["boring"]
 harness = false
 
 [[bench]]
@@ -809,7 +825,13 @@ harness = false
 [[bench]]
 name = "e2e_http_client_server"
 path = "benches/e2e_http_client_server.rs"
-required-features = ["http-full", "rustls", "aws-lc", "boring", "socks5"]
+required-features = ["http-full", "rustls", "aws-lc", "boring", "socks5", "quic", "unix"]
+harness = false
+
+[[bench]]
+name = "e2e_grpc_client_server"
+path = "benches/e2e_grpc_client_server.rs"
+required-features = ["http-full", "grpc", "unix"]
 harness = false
 
 [[bench]]

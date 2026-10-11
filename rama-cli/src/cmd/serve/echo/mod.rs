@@ -405,10 +405,11 @@ async fn bind_echo_udp_service(
         let shared_udp_socket = Arc::new(udp_socket);
 
         let concurrent = cfg.concurrent.unwrap_or_default();
+        // Unset, or above what a semaphore holds: as many as it holds.
         let semaphore = tokio::sync::Semaphore::new(if concurrent == 0 {
             tokio::sync::Semaphore::MAX_PERMITS
         } else {
-            concurrent
+            concurrent.min(tokio::sync::Semaphore::MAX_PERMITS)
         });
 
         async move {

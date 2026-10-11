@@ -25,12 +25,14 @@ use rama_net::{
 };
 use rama_quic::{Connection, TransportConfig};
 use rama_quic_proto::{Dir, Side, StreamId, coding::Codec as _};
+use rama_utils::reactive::{Change, ChangeListener};
 use std::assert_matches;
 use std::{
     future::Future,
+    num::NonZeroUsize,
     pin::pin,
     sync::{
-        Arc,
+        Arc, Weak,
         atomic::{AtomicU64, Ordering},
     },
     task::{Context, Poll, Wake, Waker},
@@ -307,7 +309,7 @@ async fn draining_connection_wakes_admission_waiters_without_stream_credit() {
         let admission = sender.connection_admission();
         let first = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
         assert!(admission.in_use());
-        let changed = admission.watch();
+        let changed = admission.changed();
         assert!(admission.try_acquire(&Extensions::new()).unwrap().is_none());
         server.shutdown().unwrap();
         changed.await;
@@ -315,7 +317,7 @@ async fn draining_connection_wakes_admission_waiters_without_stream_credit() {
         // Its work goes on, but a draining connection is left for the pool to retire.
         assert!(!admission.in_use());
         // Nothing changes any more, so its watch cannot spin pool waiters.
-        let mut watch = pin!(admission.watch());
+        let mut watch = pin!(admission.changed());
         assert!(
             watch
                 .as_mut()
@@ -436,6 +438,47 @@ async fn closed_transports_are_never_busy() {
     pair.close().await;
 }
 
+/// Records what a signal tells its listeners.
+#[derive(Default)]
+struct Told(parking_lot::Mutex<Vec<Change>>);
+
+impl ChangeListener for Told {
+    fn changed(&self, change: Change) {
+        self.0.lock().push(change);
+    }
+}
+
+/// Pool admission subscribers learn of a QUIC close pushed by the transport, before the
+/// HTTP/3 driver noticed it.
+#[tokio::test(start_paused = true)]
+async fn closing_the_transport_wakes_admission_subscribers() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (sender, driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let admission = sender.connection_admission();
+        let held = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
+        let told = Arc::new(Told::default());
+        admission.subscribe(Arc::downgrade(&told) as Weak<dyn ChangeListener>);
+        let changed = admission.changed();
+        pair.client.close(0u32, b"closed");
+        changed.await;
+        assert!(!admission.in_use());
+        // The driver notices the close too, and ends admission.
+        let _ended = driver.run().await;
+        let told = told.0.lock().clone();
+        assert!(
+            !told.is_empty() && told.iter().all(|change| *change == Change::Other),
+            "a close is no freed unit: {told:?}"
+        );
+        drop((held, sender));
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 /// A full pool whose only connection still holds work on a QUIC transport that closed lets a
 /// waiter for another connection proceed, before the HTTP/3 driver noticed the closure.
 #[tokio::test(start_paused = true)]
@@ -457,8 +500,10 @@ async fn pool_waiters_for_other_ids_pass_a_closed_connection() {
     let input = Extensions::new();
     // Work that outlives its pool handout, as an upgraded tunnel does.
     let held = admission.try_acquire(&input).unwrap().unwrap();
-    let pool = MultiplexPool::try_new(32, 1).unwrap();
-    let ConnectionResult::CreatePermit(permit) = pool.get_conn(&Id(0), &input).await.unwrap()
+    let pool = MultiplexPool::new()
+        .with_max_streams_per_connection(NonZeroUsize::new(32).unwrap())
+        .with_max_connections_total(NonZeroUsize::new(1).unwrap());
+    let ConnectionResult::CreatePermit(permit) = pool.get_conn(&Id(0), &input, None).await.unwrap()
     else {
         panic!("a fresh pool creates");
     };
@@ -472,7 +517,7 @@ async fn pool_waiters_for_other_ids_pass_a_closed_connection() {
     drop(handout);
 
     pair.client.close(0u32, b"closed");
-    let waiting = tokio::time::timeout(LIMIT, pool.get_conn(&Id(1), &input))
+    let waiting = tokio::time::timeout(LIMIT, pool.get_conn(&Id(1), &input, None))
         .await
         .expect("a waiter for another id is not parked behind a closed connection")
         .unwrap();
@@ -481,4 +526,94 @@ async fn pool_waiters_for_other_ids_pass_a_closed_connection() {
     drop(driver);
     drop(sender);
     pair.close().await;
+}
+
+/// Credit a returned reservation frees reaches admission as one unit; a close
+/// as a change of any size.
+#[tokio::test(start_paused = true)]
+async fn returned_stream_credit_reaches_admission_in_units() {
+    tokio::time::timeout(LIMIT, async {
+        let mut transport = TransportConfig::default();
+        transport.set_max_concurrent_bidi_streams(4u32);
+        let pair = Pair::in_memory(None, Some(transport)).await;
+        let told = Arc::new(Told::default());
+        pair.client
+            .stream_budget_subscribe(Dir::Bi, Arc::downgrade(&told) as Weak<dyn ChangeListener>);
+        let first = pair.client.try_reserve_bi().unwrap().unwrap();
+        let second = pair.client.try_reserve_bi().unwrap().unwrap();
+        assert!(told.0.lock().is_empty(), "reserving frees nothing");
+        drop(first);
+        assert_eq!(std::mem::take(&mut *told.0.lock()), [Change::Freed]);
+        let (send, recv) = second.open().unwrap();
+        assert!(
+            told.0.lock().is_empty(),
+            "opening a reserved stream frees nothing"
+        );
+        pair.client.close(0u32, b"done");
+        assert_eq!(std::mem::take(&mut *told.0.lock()), [Change::Other]);
+        drop((send, recv));
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_raised_stream_limit_reaches_admission_in_units() {
+    tokio::time::timeout(LIMIT, async {
+        let mut transport = TransportConfig::default();
+        transport.set_max_concurrent_bidi_streams(1u32);
+        let pair = Pair::in_memory(None, Some(transport)).await;
+        let told = Arc::new(Told::default());
+        pair.client
+            .stream_budget_subscribe(Dir::Bi, Arc::downgrade(&told) as Weak<dyn ChangeListener>);
+        let mut changed = pair.client.stream_budget_watch(Dir::Bi);
+        pair.server.set_max_concurrent_bi_streams(4u32);
+        changed.changed().await.unwrap();
+        assert_eq!(pair.client.available_streams(Dir::Bi), 4);
+        assert_eq!(
+            std::mem::take(&mut *told.0.lock()),
+            [Change::Freed; 3],
+            "one per stream"
+        );
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn admission_without_a_free_permit_leaves_stream_credit_alone() {
+    tokio::time::timeout(LIMIT, async {
+        let mut transport = TransportConfig::default();
+        transport.set_max_concurrent_bidi_streams(2u32);
+        let pair = Pair::in_memory(None, Some(transport)).await;
+        let config = Config {
+            max_requests: 1,
+            ..Config::default()
+        };
+        let (sender, driver) =
+            client::handshake::<Body>(pair.client.clone(), config, Executor::new()).unwrap();
+        let client_driver = spawn(driver.run());
+        let (_server, driver) = server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let server_driver = spawn(driver.run());
+        let admission = sender.connection_admission();
+        let held = admission.try_acquire(&Extensions::new()).unwrap().unwrap();
+        let mut changed = pair.client.stream_budget_watch(Dir::Bi);
+        let mut changed = pin!(changed.changed());
+        let mut cx = Context::from_waker(Waker::noop());
+        assert_matches!(changed.as_mut().poll(&mut cx), Poll::Pending);
+        for _ in 0..4 {
+            assert!(admission.try_acquire(&Extensions::new()).unwrap().is_none());
+        }
+        // No credit was reserved and handed back: its subscribers, the pool's
+        // waiters among them, are not woken for nothing.
+        assert_matches!(changed.as_mut().poll(&mut cx), Poll::Pending);
+        drop(held);
+        pair.close().await;
+        _ = client_driver.await;
+        _ = server_driver.await;
+    })
+    .await
+    .unwrap();
 }

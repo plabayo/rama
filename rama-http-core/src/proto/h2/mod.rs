@@ -214,19 +214,17 @@ where
                             trace!("send body chunk: {} bytes, eos={}", len, is_eos);
 
                             if len == 0 {
-                                // Zero-length data frames need no capacity; send
-                                // them straight through so trailing empty frames
-                                // (e.g. an explicit end-of-stream marker) are
-                                // delivered.
-                                let buf = SendBuf::Buf(chunk);
-                                me.body_tx
-                                    .send_data(buf, is_eos)
-                                    .map_err(crate::Error::new_body_write)?;
-
-                                if is_eos {
-                                    return Poll::Ready(Ok(()));
+                                if !is_eos {
+                                    // Carries nothing, and peers count empty DATA
+                                    // frames against a connection's lifetime limit.
+                                    continue;
                                 }
-                                continue;
+                                // Needs no capacity: the end of stream goes
+                                // straight through.
+                                me.body_tx
+                                    .send_data(SendBuf::Buf(chunk), true)
+                                    .map_err(crate::Error::new_body_write)?;
+                                return Poll::Ready(Ok(()));
                             }
 
                             // Reserve a minimal claim on the connection-level

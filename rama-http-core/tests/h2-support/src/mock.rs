@@ -286,6 +286,17 @@ impl Handle {
         .await;
     }
 
+    /// Whether the peer's last write waits on the write capacity.
+    pub fn peer_write_blocked(&self) -> bool {
+        let me = self.codec.get_ref().inner.lock();
+        me.tx_rem == 0 && me.tx_rem_task.is_some()
+    }
+
+    /// Bytes sent to the peer that it has not read yet.
+    pub fn unread_by_peer(&self) -> usize {
+        self.codec.get_ref().inner.lock().rx.len()
+    }
+
     pub async fn unbounded_bytes(&mut self) {
         let mut i = self.codec.get_mut().inner.lock();
         i.tx_rem = usize::MAX;

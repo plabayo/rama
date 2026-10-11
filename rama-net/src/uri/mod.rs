@@ -58,6 +58,8 @@
 //! [`Authority`](crate::address::Authority); host is
 //! [`Host`](crate::address::Host) — `Uri` doesn't re-export these.
 
+use core::fmt::Write as _;
+
 use rama_core::bytes::BytesMut;
 
 use crate::std::{
@@ -571,8 +573,6 @@ impl Uri {
     /// through `Authority::to_string()` + `parse_authority_form`.
     #[must_use]
     pub fn from_authority_form(authority: crate::address::Authority) -> Self {
-        use core::fmt::Write as _;
-
         let crate::address::Authority { user_info, address } = authority;
 
         // Render the canonical authority bytes once, tracking the userinfo span
@@ -709,8 +709,6 @@ impl Uri {
         scheme: crate::Protocol,
         authority: crate::address::Authority,
     ) -> Self {
-        use core::fmt::Write as _;
-
         let crate::address::Authority { user_info, address } = authority;
 
         // Render the canonical `scheme://[userinfo@]host[:port]` bytes once,
@@ -788,7 +786,10 @@ impl Uri {
         match &self.inner {
             UriInner::Asterisk => buf.push(b'*'),
             UriInner::Lazy(lazy) => buf.extend_from_slice(&lazy.bytes),
-            UriInner::Owned(_) => buf.extend_from_slice(self.to_string().as_bytes()),
+            UriInner::Owned(_) => {
+                let result = write!(wire::VecWriter(buf), "{self}");
+                debug_assert!(result.is_ok(), "VecWriter is infallible");
+            }
         }
     }
 
@@ -982,20 +983,25 @@ impl Uri {
     }
 
     /// The percent-encoded path as a string, defaulting to `"/"` when the
-    /// path is absent or empty (the effective origin-form path). Shortcut for
-    /// `uri.path().map(PathRef::as_encoded_str).filter(|p| !p.is_empty()).unwrap_or("/")`.
+    /// path is absent or empty, and with a leading `/` for a rootless one: the
+    /// effective origin-form path.
     #[must_use]
     pub fn path_or_root(&self) -> Cow<'_, str> {
-        self.path()
-            .and_then(|p| {
-                let s = p.as_encoded_str();
-                (!s.is_empty()).then_some(s)
-            })
-            .unwrap_or(Cow::Borrowed("/"))
+        match self.path().map(PathRef::as_encoded_str) {
+            Some(path) if path.starts_with('/') => path,
+            Some(path) if !path.is_empty() => {
+                let mut rooted = String::with_capacity(path.len() + 1);
+                rooted.push('/');
+                rooted.push_str(&path);
+                Cow::Owned(rooted)
+            }
+            _ => Cow::Borrowed("/"),
+        }
     }
 
     /// The path as a typed borrowed view, defaulting to `"/"` when the path is
-    /// absent or empty (the effective origin-form path).
+    /// absent or empty. Unlike [`path_or_root`](Self::path_or_root) a rootless
+    /// path stays as it is.
     #[must_use]
     pub fn path_ref_or_root(&self) -> PathRef<'_> {
         self.path()
@@ -1047,10 +1053,8 @@ impl Uri {
         }
         match self.query() {
             Some(q) => {
-                use core::fmt::Write as _;
-
                 let mut target = String::new();
-                _ = write!(&mut target, "{}?{q}", self.path_ref_or_root());
+                _ = write!(&mut target, "{}?{q}", self.path_or_root());
                 Cow::Owned(target)
             }
             None => self.path_or_root(),
@@ -1893,6 +1897,7 @@ impl Uri {
                     write!(f, "{}", auth.address)?;
                 }
 
+                f.write_str(path_prefix(&arc.path, arc.authority.is_some()))?;
                 write!(f, "{}", PathRef::new(&arc.path))?;
 
                 if let Some(query) = &arc.query {
@@ -1906,6 +1911,17 @@ impl Uri {
                 Ok(())
             }
         }
+    }
+}
+
+/// What goes in front of `path` so it reads back as a path (RFC 3986 §3.3):
+/// `/` before a rootless one after an authority, `/.` before one starting with
+/// `//` without an authority, which would read as one.
+fn path_prefix(path: &[u8], authority: bool) -> &'static str {
+    match path {
+        [b'/', b'/', ..] if !authority => "/.",
+        [first, ..] if authority && *first != b'/' => "/",
+        _ => "",
     }
 }
 

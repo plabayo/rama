@@ -16,6 +16,8 @@ use std::sync::{
 use std::task::{Context, Poll, Waker};
 use tokio::sync::oneshot;
 
+mod bench_alloc;
+
 const WAITER_COUNTS: &[usize] = &[1, 64, 1_024];
 const THREAD_COUNTS: &[usize] = &[1, 4, 16];
 const WAITERS_PER_THREAD: usize = 64;

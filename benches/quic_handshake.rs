@@ -17,7 +17,6 @@ use std::{
     time::Duration,
 };
 
-use divan::AllocProfiler;
 use rama::{
     crypto::cert::CertificateAuthorityData,
     error::BoxError,
@@ -45,8 +44,7 @@ use tokio::{
     time::timeout,
 };
 
-#[global_allocator]
-static ALLOC: AllocProfiler = AllocProfiler::system();
+mod bench_alloc;
 
 const ALPN: &[u8] = b"rama-quic/handshake-bench";
 const DEADLINE: Duration = Duration::from_secs(30);

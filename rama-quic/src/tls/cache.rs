@@ -152,7 +152,7 @@ mod tests {
     };
 
     use rama_core::extensions::Extension;
-    use rama_net::{address::Host, tls::TlsAlpn};
+    use rama_net::{address::Host, client::pool::ReuseKey, tls::TlsAlpn};
     use rama_quic_proto::{Version, transport_parameters::TransportParameters};
     use rama_tls::{
         KeyLogIntent, TlsKeyLog,
@@ -214,6 +214,10 @@ mod tests {
                 .maybe_with_alpn(extensions.get_ref::<TlsAlpn>())
                 .maybe_with_keylog(extensions.get_ref::<TlsKeyLog>())
                 .build()
+        }
+
+        fn pool_classifier(&self) -> ReuseKey {
+            ReuseKey::of::<Self>()
         }
 
         fn authenticates_server(&self, _: &Extensions) -> bool {

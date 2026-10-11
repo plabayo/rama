@@ -284,6 +284,11 @@ pub struct Builder {
     ///
     /// When this gets exceeded, we issue GOAWAYs.
     local_max_error_reset_streams: Option<usize>,
+
+    /// connection-level budget for DATA framing overhead.
+    ///
+    /// When this gets exhausted, we issue a GOAWAY with `ENHANCE_YOUR_CALM`.
+    data_frame_budget: proto::DataFrameBudget,
 }
 
 /// Send a response back to the client
@@ -503,6 +508,8 @@ where
         ///
         /// The default value is 65,535.
         ///
+        /// The automatic small DATA frame budget follows this target.
+        ///
         /// # Errors
         ///
         /// Returns an error if the given size is invalid.
@@ -719,8 +726,8 @@ impl Builder {
             settings: Settings::default(),
             initial_target_connection_window_size: None,
             max_send_buffer_size: proto::DEFAULT_MAX_SEND_BUFFER_SIZE,
-
             local_max_error_reset_streams: Some(proto::DEFAULT_LOCAL_RESET_COUNT_MAX),
+            data_frame_budget: proto::DataFrameBudget::Auto,
         }
     }
 
@@ -1012,6 +1019,34 @@ impl Builder {
         /// The default value is currently 1024, but could change.
         pub fn max_local_error_reset_streams(mut self, max: Option<usize>) -> Self {
             self.local_max_error_reset_streams = max;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets a connection-level budget for limiting memory overhead from
+        /// received small DATA frames.
+        ///
+        /// HTTP/2 flow control accounts for DATA payload bytes, but not the
+        /// additional memory required to buffer each DATA frame. An excessive
+        /// number of small frames may therefore consume disproportionate memory.
+        ///
+        /// Small DATA frames consume this budget. The budget is restored when
+        /// buffered frames are consumed by the application, while sufficiently
+        /// large frames may also restore budget. Empty DATA frames are limited
+        /// separately and do not consume this budget.
+        ///
+        /// When this budget is exhausted, the connection is closed with
+        /// `ENHANCE_YOUR_CALM`.
+        ///
+        /// With [`Option::None`], the default, the budget is half the target
+        /// connection window, with a minimum of 25,600 bytes. Changing the target
+        /// window at runtime also updates the permitted framing overhead.
+        pub fn data_frame_budget(mut self, budget: Option<usize>) -> Self {
+            self.data_frame_budget = budget.map_or(
+                proto::DataFrameBudget::Auto,
+                proto::DataFrameBudget::Configured,
+            );
             self
         }
     }
@@ -1640,6 +1675,7 @@ where
                             send_alt_svc: self.builder.send_alt_svc,
                             headers_pseudo_order: None,
                             early_frame_ctx: EarlyFrameStreamContext::new_recorder(),
+                            data_frame_budget: self.builder.data_frame_budget,
                         },
                     )?;
 

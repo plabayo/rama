@@ -52,7 +52,7 @@ pub struct TlsKeyLog(pub KeyLogIntent);
 #[extension(tags(tls))]
 pub struct TlsSupportedVersions(pub Vec<ProtocolVersion>);
 
-#[derive(Debug, Clone, PartialEq, Eq, Extension)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls))]
 /// Requests TLS from a tunnel connector with proxy-scoped identity and ALPN.
 ///

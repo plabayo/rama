@@ -9,11 +9,10 @@
 //! creation and joining; allocator reporting is the measured coordinator thread, not all workers.
 //! These are layer costs, not end-to-end QUIC throughput or connection-level loss recovery.
 
-use divan::{AllocProfiler, black_box, counter::ItemsCount};
+use divan::{black_box, counter::ItemsCount};
 use rama::quic::benchmarks::{Assembly, ConcurrentQueues, Queues, SendRecovery};
 
-#[global_allocator]
-static ALLOC: AllocProfiler = AllocProfiler::system();
+mod bench_alloc;
 
 fn main() {
     divan::main();

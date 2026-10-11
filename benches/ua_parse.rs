@@ -1,8 +1,6 @@
-use divan::AllocProfiler;
 use rama::ua::UserAgent;
 
-#[global_allocator]
-static ALLOC: AllocProfiler = AllocProfiler::system();
+mod bench_alloc;
 
 fn main() {
     // Run registered benchmarks.

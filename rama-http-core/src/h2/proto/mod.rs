@@ -7,7 +7,7 @@ mod ping_pong;
 mod settings;
 mod streams;
 
-pub(crate) use self::connection::{Config, Connection};
+pub(crate) use self::connection::{Config, Connection, DataFrameBudget};
 pub use self::error::{Error, Initiator};
 pub(crate) use self::peer::{Dyn as DynPeer, Peer};
 pub(crate) use self::peer_settings::PeerSettingsState;
@@ -39,6 +39,9 @@ pub const DEFAULT_LOCAL_RESET_COUNT_MAX: usize = 1024;
 // smaller than this consume more internal bookkeeping than useful data.
 pub const DEFAULT_DATA_FRAME_OVERHEAD_THRESHOLD: usize = 256;
 pub const DEFAULT_DATA_FRAME_BUDGET: usize = DEFAULT_DATA_FRAME_OVERHEAD_THRESHOLD * 100;
+// Empty DATA frames without END_STREAM a peer may send over a connection's whole
+// life: they carry nothing, so more is taken as abuse (ENHANCE_YOUR_CALM).
+pub const MAX_RECV_EMPTY_DATA_FRAMES: usize = 100;
 // RFC 9113 suggests allowing at minimum 100 streams, it seems reasonable to
 // by default allow a portion of that to be remembered as reset for some time.
 pub const DEFAULT_RESET_STREAM_MAX: usize = 50;
