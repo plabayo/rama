@@ -66,7 +66,7 @@ impl FromRequestBody for Text {
             }
 
             match body.collect().await {
-                Ok(c) => match String::from_utf8(c.to_bytes().to_vec()) {
+                Ok(c) => match String::from_utf8(Vec::from(c.to_bytes())) {
                     Ok(s) => Ok(Self(s)),
                     Err(err) => Err(InvalidUtf8Text::from_err(err).into()),
                 },
