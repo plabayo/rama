@@ -109,6 +109,11 @@ impl Settings {
         }
     }
 
+    /// Returns whether no local SETTINGS are queued or awaiting acknowledgment.
+    pub(crate) fn is_synced(&self) -> bool {
+        matches!(self.local, Local::Synced)
+    }
+
     /// Sets `true` to `self.has_received_remote_initial_settings`.
     /// Returns `true` if this method is called for the first time.
     /// (i.e. it is the initial SETTINGS frame from the remote peer)

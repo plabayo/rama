@@ -3342,3 +3342,151 @@ async fn buffer_small_replies_on_many_streams(builder: client::Builder, incremen
 
     join(srv, client).await;
 }
+
+/// Profiles capture a connection WINDOW_UPDATE followed by a stream update
+/// reacting to that stream's data. The latter must not replace the captured
+/// connection increment when both requests already exist.
+#[tokio::test]
+async fn stream_window_updates_are_not_replayed_as_the_connection_window() {
+    h2_support::trace_init!();
+    const CONNECTION_INCREMENT: u32 = 12_517_377;
+    const STREAM_INCREMENT: u32 = 12_451_840;
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+        srv.recv_frame(frames::window_update(0, CONNECTION_INCREMENT))
+            .await;
+    };
+
+    let client = async move {
+        let (mut client, conn) = client::Builder::new()
+            .with_early_frames(vec![
+                frame::EarlyFrame::WindowUpdate(frames::window_update(0, CONNECTION_INCREMENT)),
+                frame::EarlyFrame::WindowUpdate(frames::window_update(3, STREAM_INCREMENT)),
+            ])
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+
+        let mut responses = Vec::new();
+        for _ in 0..2 {
+            let request = Request::get("https://example.com/").body(()).unwrap();
+            let (response, _) = client.send_request(request, true).unwrap();
+            responses.push(response);
+        }
+
+        drop(conn.await);
+        drop(responses);
+    };
+
+    join(srv, client).await;
+}
+
+/// A stream-level WINDOW_UPDATE larger than the connection increment is sent
+/// on its captured stream and never becomes a second connection update.
+#[tokio::test]
+async fn a_replayed_stream_window_update_sends_no_connection_window_update() {
+    h2_support::trace_init!();
+    const CONNECTION_INCREMENT: u32 = 1_000_000;
+    const STREAM_INCREMENT: u32 = 5_000_000;
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        srv.read_preface().await.unwrap();
+        let settings = assert_settings!(srv.next().await.unwrap().unwrap());
+        assert_default_settings!(settings);
+        srv.recv_frame(frames::window_update(0, CONNECTION_INCREMENT))
+            .await;
+        for id in [1, 3] {
+            srv.recv_frame(
+                frames::headers(id)
+                    .request("GET", "https://example.com/")
+                    .eos(),
+            )
+            .await;
+        }
+        srv.recv_frame(frames::window_update(3, STREAM_INCREMENT))
+            .await;
+        srv.send_frame(frame::Settings::default()).await;
+        srv.recv_frame(frame::Settings::ack()).await;
+        srv.send_frame(frame::Settings::ack()).await;
+        srv.send_frame(frames::headers(1).response(200).eos()).await;
+        srv.send_frame(frames::headers(3).response(200).eos()).await;
+
+        while let Some(Ok(frame)) = srv.next().await {
+            assert!(
+                !matches!(frame, frame::Frame::WindowUpdate(_)),
+                "uncaptured WINDOW_UPDATE: {frame:?}"
+            );
+        }
+    };
+
+    let client = async move {
+        let (mut client, mut conn) = client::Builder::new()
+            .with_early_frames(vec![
+                frame::EarlyFrame::WindowUpdate(frames::window_update(0, CONNECTION_INCREMENT)),
+                frame::EarlyFrame::WindowUpdate(frames::window_update(3, STREAM_INCREMENT)),
+            ])
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+
+        let mut responses = Vec::new();
+        for _ in 0..2 {
+            let request = Request::get("https://example.com/").body(()).unwrap();
+            let (response, _) = client.send_request(request, true).unwrap();
+            responses.push(response);
+        }
+        for response in responses {
+            let response = conn.drive(response).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        drop(client);
+        conn.await.unwrap();
+    };
+
+    join(srv, client).await;
+}
+
+/// A captured second SETTINGS frame waits for acknowledgment of the handshake
+/// SETTINGS because HTTP/2 permits only one outstanding local SETTINGS frame.
+#[tokio::test]
+async fn a_replayed_settings_waits_for_the_ack_of_the_one_in_flight() {
+    h2_support::trace_init!();
+    const CONNECTION_INCREMENT: u32 = 1_000_000;
+    let (io, mut srv) = mock::new();
+    let mut second = frame::Settings::default();
+    second.config.initial_window_size = Some(1_000_000);
+    let expected = second.clone();
+
+    let srv = async move {
+        srv.read_preface().await.unwrap();
+        let settings = assert_settings!(srv.next().await.unwrap().unwrap());
+        assert_default_settings!(settings);
+        srv.recv_frame(frames::window_update(0, CONNECTION_INCREMENT))
+            .await;
+        srv.send_frame(frame::Settings::default()).await;
+        srv.recv_frame(frame::Settings::ack()).await;
+        srv.send_frame(frame::Settings::ack()).await;
+        srv.recv_frame(expected).await;
+        srv.send_frame(frame::Settings::ack()).await;
+    };
+
+    let client = async move {
+        let (_client, conn) = client::Builder::new()
+            .with_early_frames(vec![
+                frame::EarlyFrame::Settings(frame::Settings::default()),
+                frame::EarlyFrame::WindowUpdate(frames::window_update(0, CONNECTION_INCREMENT)),
+                frame::EarlyFrame::Settings(second),
+            ])
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+        conn.await.unwrap();
+    };
+
+    join(srv, client).await;
+}

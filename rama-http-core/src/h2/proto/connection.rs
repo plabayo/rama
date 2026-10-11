@@ -299,11 +299,19 @@ where
             self.inner.pending_refusal = None;
         }
 
-        if let Some(settings) = ready!(self.inner.streams.send_pending(cx, &mut self.codec))? {
+        let settings_synced = self.inner.settings.is_synced();
+        if let Some(settings) = ready!(self.inner.streams.send_pending(
+            cx,
+            &mut self.codec,
+            settings_synced,
+        ))? {
             tracing::trace!("send replayed early settings frame: {settings:?}");
             if let Err(err) = self.inner.settings.send_settings(settings) {
                 return Poll::Ready(Err(err.into()));
             }
+            // `send_settings` only queues the frame; schedule the next poll to
+            // pass it to the codec even when the connection is otherwise idle.
+            cx.waker().wake_by_ref();
         }
 
         Poll::Ready(Ok(()))

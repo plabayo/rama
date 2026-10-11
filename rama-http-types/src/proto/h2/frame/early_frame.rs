@@ -107,6 +107,40 @@ impl EarlyFrameStreamContext {
         next_stream_id.is_none_or(|next_stream_id| frame.stream_created(next_stream_id))
     }
 
+    /// Returns whether the next replay frame is a non-ACK SETTINGS frame.
+    #[must_use]
+    pub fn next_frame_is_settings(&self) -> bool {
+        matches!(
+            &self.kind,
+            EarlyFrameKind::Replayer(frames)
+                if matches!(
+                    frames.last(),
+                    Some(EarlyFrame::Settings(settings)) if !settings.flags.is_ack()
+                )
+        )
+    }
+
+    /// Returns the stream ID when the next replay frame is a stream-level
+    /// WINDOW_UPDATE.
+    #[must_use]
+    pub fn next_stream_window_update(&self) -> Option<StreamId> {
+        match &self.kind {
+            EarlyFrameKind::Replayer(frames) => match frames.last() {
+                Some(EarlyFrame::WindowUpdate(frame)) if !frame.stream_id.is_zero() => {
+                    Some(frame.stream_id)
+                }
+                _ => None,
+            },
+            EarlyFrameKind::Recorder(_) | EarlyFrameKind::Nop => None,
+        }
+    }
+
+    /// Returns whether another captured frame remains to be replayed.
+    #[must_use]
+    pub fn has_replay_frame(&self) -> bool {
+        matches!(&self.kind, EarlyFrameKind::Replayer(frames) if !frames.is_empty())
+    }
+
     pub fn record_priority_frame(&mut self, frame: &Priority) {
         tracing::trace!("record priority frame: {frame:?}");
         if let EarlyFrameKind::Recorder(ref mut recorder) = self.kind {
