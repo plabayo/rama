@@ -347,12 +347,12 @@ impl Decoder {
             // Read the name as a literal
             let name = name_marker.consume(buf);
             let value = value_marker.consume(buf);
-            Header::try_new(&name, value)
+            Header::try_new_with(&name, value, index)
         } else {
             let e = self.table.get(table_idx)?;
             let value = self.decode_string(buf)?;
 
-            e.name().into_entry(value)
+            e.name().into_entry_with(value, index)
         }
     }
 
@@ -938,6 +938,43 @@ mod test {
             Header::Field { name, value }
                 if name == "x-api-key" && value.as_bytes() == b"secret",
         );
+    }
+
+    #[test]
+    fn test_decode_literal_value_shares_buffer_unless_indexed() {
+        for (case, input, shared) in [
+            ("without indexing", &b"\x00\x05x-key\x05value"[..], true),
+            ("never indexed", &b"\x10\x05x-key\x05value"[..], true),
+            ("with indexing", &b"\x40\x05x-key\x05value"[..], false),
+            (
+                "static name without indexing",
+                &b"\x0f\x2b\x05value"[..],
+                true,
+            ),
+            ("static name never indexed", &b"\x1f\x2b\x05value"[..], true),
+            ("static name with indexing", &b"\x7a\x05value"[..], false),
+        ] {
+            let mut decoder = Decoder::new(4096);
+            let mut buffer = BytesMut::from(input);
+            let source = buffer.as_ptr_range();
+            let mut decoded = None;
+            decoder
+                .decode(&mut Cursor::new(&mut buffer), |header| {
+                    decoded = Some(header);
+                    ControlFlow::Continue(())
+                })
+                .unwrap();
+
+            let Some(Header::Field { value, .. }) = decoded else {
+                panic!("{case}: expected a field");
+            };
+            assert_eq!(value.as_bytes(), b"value", "{case}");
+            assert_eq!(
+                source.contains(&value.as_bytes().as_ptr()),
+                shared,
+                "{case}"
+            );
+        }
     }
 
     #[test]
