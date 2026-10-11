@@ -192,6 +192,20 @@ impl Waiting {
         }
     }
 
+    /// The lanes it waits in but `served`.
+    pub(super) fn lanes_but(
+        &self,
+        served: Option<&Arc<WaitQueue>>,
+    ) -> SmallVec<[Arc<WaitQueue>; 1]> {
+        self.places
+            .iter()
+            .filter(|place| {
+                !place.chances && served.is_none_or(|served| !Arc::ptr_eq(served, &place.queue))
+            })
+            .map(|place| place.queue.clone())
+            .collect()
+    }
+
     /// The checkout's place in `queue`, if it queues there.
     pub(super) fn waiter_in(&self, queue: &Arc<WaitQueue>) -> Option<&Waiter> {
         self.places

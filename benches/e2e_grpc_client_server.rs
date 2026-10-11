@@ -162,8 +162,8 @@ const STREAMED: u32 = 16;
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Per row: the connections the origins accepted, printed after the run so it
-/// does not interleave with divan's table.
+/// Per row: the connections the origins accepted, printed again after the run
+/// so they read together, apart from divan's table.
 static LOAD_STATS: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
 
 fn main() {
@@ -304,11 +304,14 @@ fn bench_grpc_load(bencher: divan::Bencher, params: LoadParameters) {
             });
         });
 
-    LOAD_STATS.lock().push(format!(
-        "grpc load {:?} callers={} origins={}: {} connections accepted",
+    let line = format!(
+        "grpc load {:?} callers={} origins={}: {} connections accepted, warm-up included",
         params.workload,
         params.callers,
         params.origins,
         accepted.load(Ordering::Relaxed)
-    ));
+    );
+    // Now too: a later row failing aborts the run before the summary.
+    eprintln!("{line}");
+    LOAD_STATS.lock().push(line);
 }

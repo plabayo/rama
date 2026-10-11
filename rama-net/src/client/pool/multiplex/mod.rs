@@ -732,7 +732,7 @@ where
         let mut expiring: SmallVec<[u64; 4]> = swept.expiring.iter().map(|conn| conn.seq).collect();
         expiring.sort_unstable();
         let mut snapshot = Snapshot::new();
-        let group = bucket.group_lane(lanes).map(ptr::from_ref);
+        let group = bucket.group_of();
         let mut left = false;
         let mut lanes_seen = 0;
         for lane in bucket.request_lanes_mut(lanes) {
@@ -743,7 +743,7 @@ where
                 look.waiting()
                     .and_then(|waiting| waiting.waiter_in(&lane.waiters)),
             ) {
-                left |= group.is_some_and(|group| ptr::eq(group, &*lane));
+                left |= group.is(lane);
                 continue;
             }
             lanes_seen += usize::from(!lane.conns.is_empty());
@@ -1244,14 +1244,14 @@ where
             let Some(bucket) = storage.by_id.get_mut(id) else {
                 return (Snapshot::new(), false, false);
             };
-            let group = bucket.group_lane(lanes).map(ptr::from_ref);
+            let group = bucket.group_of();
             let mut left = false;
             let mut stored = false;
             let mut room = false;
             for lane in bucket.request_lanes_mut(lanes) {
                 stored |= !lane.conns.is_empty();
                 if !lane.waiters.admits(None) {
-                    left |= group.is_some_and(|group| ptr::eq(group, &*lane));
+                    left |= group.is(lane);
                     continue;
                 }
                 room |= lane
@@ -1387,15 +1387,34 @@ where
             if !left {
                 return 0;
             }
-            let storage = self.storage.lock();
-            let kept = storage.by_id.get(id).map_or(0, |bucket| {
-                bucket.kept_streams(lanes, self.max_concurrent_streams)
-            });
-            if kept != 0 && !self.kept_counted.load(Ordering::Relaxed) {
-                self.kept_counted.store(true, Ordering::Release);
+            let kept = self
+                .storage
+                .lock()
+                .by_id
+                .get(id)
+                .and_then(|bucket| bucket.kept_streams(lanes, self.max_concurrent_streams));
+            match kept {
+                Some((kept, waiters)) if kept != 0 => {
+                    self.relies_on_kept(&waiters);
+                    kept
+                }
+                _ => 0,
             }
-            kept
         })
+    }
+
+    /// A look counts on streams kept for the waiters ahead in `waiters`: pass
+    /// it on from now on, and wake the front if it holds no wake. Pairs with
+    /// the fence of [`Self::pass_room_on`]: a waiter leaving sees the flag and
+    /// passes room on, or this sees it gone.
+    fn relies_on_kept(&self, waiters: &WaitQueue) {
+        if !self.kept_counted.load(Ordering::Relaxed) {
+            self.kept_counted.store(true, Ordering::Relaxed);
+        }
+        fence(Ordering::SeqCst);
+        if !waiters.front_is_woken() {
+            waiters.wake_one();
+        }
     }
 
     /// The streams a new connection for the request's lanes takes, whether that
@@ -1642,30 +1661,44 @@ where
         Some((slots.id.take()?, slots.total.take()))
     }
 
-    /// A waiter served by `conn` left its lane's `waiters`, its wake spent on
-    /// one stream: room left there wakes the front if it holds no wake, so
-    /// the streams kept for the waiters reach them. An exclusive connection
-    /// does so once the pool kept any, as its lane may hold multiplexed ones:
-    /// a pool of exclusive connections skips it.
-    fn pass_room_on(&self, conn: &StoredConnection<C, ID>, waiters: Option<Arc<WaitQueue>>) {
+    /// A waiter served by `conn` left the lane it was `served_in` and the
+    /// `others` it waited in, its wake spent on one stream: room left in each
+    /// wakes its front if that holds no wake, so the streams kept for the
+    /// waiters there reach them. The serving connection's own room is read off
+    /// it; any other under the storage lock, once the pool kept any: a pool of
+    /// exclusive connections never does. Call once it left the queues: see
+    /// [`Self::relies_on_kept`].
+    fn pass_room_on(
+        &self,
+        id: &ID,
+        conn: &StoredConnection<C, ID>,
+        served_in: Option<&Arc<WaitQueue>>,
+        others: &[Arc<WaitQueue>],
+    ) {
         let cap = self.max_concurrent_streams;
-        let Some(waiters) = waiters.filter(|_| {
-            conn.effective_capacity(cap) > 1 || self.kept_counted.load(Ordering::Acquire)
-        }) else {
-            return;
+        let kept = self.kept_counted.load(Ordering::Relaxed) || {
+            fence(Ordering::SeqCst);
+            self.kept_counted.load(Ordering::Relaxed)
         };
-        if waiters.is_empty() || waiters.front_is_woken() {
-            return;
-        }
-        let room = conn.has_capacity(cap) || {
-            let mut storage = self.storage.lock();
-            let lane = conn.lane.lock();
-            lane.as_ref()
-                .and_then(|lane| storage.by_id.get_mut(&conn.id)?.lane_mut(lane))
-                .is_some_and(|lane| !lane.open.is_empty())
-        };
-        if room {
-            waiters.wake_one();
+        let multiplexed = conn.effective_capacity(cap) > 1;
+        let lanes = served_in
+            .map(|served| (served, multiplexed))
+            .into_iter()
+            .chain(others.iter().map(|other| (other, false)));
+        for (waiters, serving) in lanes {
+            if !(serving || kept) || waiters.is_empty() || waiters.front_is_woken() {
+                continue;
+            }
+            let room = (serving && conn.has_capacity(cap))
+                || (kept
+                    && self.storage.lock().by_id.get(id).is_some_and(|bucket| {
+                        bucket.lanes().any(|lane| {
+                            Arc::ptr_eq(&lane.waiters, waiters) && !lane.open.is_empty()
+                        })
+                    }));
+            if room {
+                waiters.wake_one();
+            }
         }
     }
 
@@ -1890,9 +1923,10 @@ where
                     }
                     // A create permit leaves the capacity a wake stood for unused:
                     // dropping `waiting` passes the wake on.
+                    let others = waiting.lanes_but(served_in.as_ref());
                     drop(waiting);
                     if let ConnectionResult::Connection(conn) = &result {
-                        self.pass_room_on(&conn.inner, served_in);
+                        self.pass_room_on(id, &conn.inner, served_in.as_ref(), &others);
                     }
                     return Ok(result);
                 }
@@ -2029,9 +2063,10 @@ where
                             }
                         }
                     }
+                    let others = waiting.lanes_but(served_in.as_ref());
                     drop(waiting);
                     if let ConnectionResult::Connection(conn) = &result {
-                        self.pass_room_on(&conn.inner, served_in);
+                        self.pass_room_on(id, &conn.inner, served_in.as_ref(), &others);
                     }
                     return Ok(result);
                 }

@@ -290,6 +290,24 @@ pub(super) struct IdBucket<C, ID> {
     pub(super) rr_after: Option<u64>,
 }
 
+/// See [`IdBucket::group_of`].
+pub(super) struct GroupOf<C, ID> {
+    unrestricted: *const Lane<C, ID>,
+    classes: usize,
+}
+
+impl<C, ID> GroupOf<C, ID> {
+    /// Whether `lane`, of the request's lanes, is its group lane: the only one
+    /// of an id without classes, the keyed one of an id with one class.
+    pub(super) fn is(&self, lane: &Lane<C, ID>) -> bool {
+        match self.classes {
+            0 => true,
+            1 => !ptr::eq(lane, self.unrestricted),
+            _ => false,
+        }
+    }
+}
+
 /// The lanes of one classifier.
 pub(super) struct ClassLanes<C, ID> {
     pub(super) classifier: ReuseKey,
@@ -439,16 +457,31 @@ impl<C, ID> IdBucket<C, ID> {
         }
     }
 
+    /// Tells the request's [group lane](Self::group_lane) among those
+    /// [`Self::request_lanes_mut`] yields, by its place, without a lookup.
+    pub(super) fn group_of(&self) -> GroupOf<C, ID> {
+        GroupOf {
+            unrestricted: ptr::from_ref(&self.unrestricted),
+            classes: self.keyed.len(),
+        }
+    }
+
     /// The streams the request's [group lane](Self::group_lane) keeps for its
-    /// waiters, as its connections listed with room. Room their admission
-    /// refuses costs the waiters behind a round: the refused dial for all.
-    pub(super) fn kept_streams(&self, request: &RequestLanes, cap: usize) -> usize {
-        self.group_lane(request).map_or(0, |lane| {
-            lane.open
-                .values()
-                .map(|conn| conn.free_streams(cap))
-                .fold(0, usize::saturating_add)
-        })
+    /// waiters, as its connections listed with room, and its waiters. Room
+    /// their admission refuses costs the waiters behind a round: the refused
+    /// dial for all.
+    pub(super) fn kept_streams(
+        &self,
+        request: &RequestLanes,
+        cap: usize,
+    ) -> Option<(usize, Arc<WaitQueue>)> {
+        let lane = self.group_lane(request)?;
+        let kept = lane
+            .open
+            .values()
+            .map(|conn| conn.free_streams(cap))
+            .fold(0, usize::saturating_add);
+        Some((kept, lane.waiters.clone()))
     }
 
     /// The request's lanes the bucket has connections in: the lane of its key

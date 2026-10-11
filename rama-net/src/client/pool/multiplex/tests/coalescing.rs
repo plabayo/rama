@@ -1240,6 +1240,129 @@ async fn room_a_change_shows_reaches_the_waiters_arriving_after_it() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn kept_streams_count_free_streams_not_capacity() {
+    let pool = MultiplexPool::new();
+    let mut held = Vec::new();
+    let mut front = landing_for_a_waiter(&pool, &mut held).await;
+    // Two streams free past the woken front's: the third newcomer dials.
+    let mut newcomers: Vec<_> = (0..3).map(|_| checkout(&pool, 0)).collect();
+    assert!(newcomers[0].poll().is_pending());
+    assert!(newcomers[1].poll().is_pending());
+    assert!(matches!(
+        newcomers[2].poll(),
+        Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+    ));
+    held.push(handout(&mut front));
+    held.push(handout(&mut newcomers[0]));
+    held.push(handout(&mut newcomers[1]));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_waiter_served_in_another_lane_passes_its_wake_in_the_group_lane_on() {
+    let pool = MultiplexPool::new();
+    let one = want(1);
+    // The unrestricted lane: the oldest connection, one stream, held.
+    let slot = permit(&pool, 0, &one).await;
+    let unrestricted = land(&pool, 0, slot, 1, None, &one).await;
+    let unrestricted_seq = unrestricted.inner.seq;
+    // A keyed connection gives the id its only class.
+    let nine = want(9);
+    let slot = permit(&pool, 0, &nine).await;
+    let _keyed = land(&pool, 0, slot, 1, Some(keyed(0, 9)), &nine).await;
+    // Key 1's lane, full, and a connect for it landing with two to spare.
+    let slot = permit(&pool, 0, &one).await;
+    let mut held = vec![land(&pool, 0, slot, 2, Some(keyed(0, 1)), &one).await];
+    held.extend(hold_more(&pool, &one, 1).await);
+    let dialing = permit(&pool, 0, &one).await;
+    let mut waiter = queue_keyed(&pool, 0, &one);
+    held.push(land(&pool, 0, dialing, 3, Some(keyed(0, 1)), &one).await);
+    assert!(waiter.is_woken(), "the landing wakes it in key 1's lane");
+    let mut newcomer = tokio_test::task::spawn(Box::pin(pool.get_conn(&TestId(0), &one, None)));
+    assert!(newcomer.poll().is_pending(), "leaves it the free streams");
+    drop(unrestricted);
+    let served = handout(&mut waiter);
+    assert_eq!(
+        served.inner.seq, unrestricted_seq,
+        "served in the other lane"
+    );
+    assert!(newcomer.is_woken(), "its wake in key 1's lane is passed on");
+    assert!(matches!(
+        newcomer.poll(),
+        Poll::Ready(Ok(ConnectionResult::Connection(_)))
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_skipped_lane_of_other_connect_groups_keeps_nothing() {
+    let pool = MultiplexPool::new();
+    let (one, two, nine) = (want(1), want(2), want(9));
+    let slot = permit(&pool, 0, &two).await;
+    let mut held = vec![land(&pool, 0, slot, 2, None, &two).await];
+    held.extend(hold_more(&pool, &two, 1).await);
+    let slot = permit(&pool, 0, &nine).await;
+    held.push(land(&pool, 0, slot, 1, Some(keyed(0, 9)), &nine).await);
+    // A waiter of key 2 ahead in the unrestricted lane, its connect in flight.
+    let _dialing_two = permit(&pool, 0, &two).await;
+    let _two_waits = queue_keyed(&pool, 0, &two);
+    // Key 1's lane: room for three streams as far as its peer goes, admits one.
+    let slot = permit(&pool, 0, &one).await;
+    let (conn, _admission) = admission_connection(&pool, 1);
+    conn.extensions.insert(ConnectionHealthWatcher::default());
+    conn.extensions.insert(MaxConcurrency::new(3));
+    conn.extensions.insert(keyed(0, 1));
+    held.push(pool.create(TestId(0), conn, slot, &one).await.unwrap());
+    let mut front = tokio_test::task::spawn(Box::pin(pool.get_conn(&TestId(0), &one, None)));
+    assert!(
+        matches!(
+            front.poll(),
+            Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+        ),
+        "refused in its own lane, nothing in flight for key 1: it dials"
+    );
+}
+
+#[tokio::test]
+async fn a_look_counting_on_kept_streams_wakes_a_front_left_unwoken() {
+    let pool = MultiplexPool::new();
+    // One lane: an exclusive connection, older, and one with room for four
+    // streams as far as its peer goes that admits one; both held.
+    let slot = new_slot(&pool).await;
+    let exclusive = land(&pool, 0, slot, 1, None, &EMPTY_INPUT).await;
+    let slot = new_slot(&pool).await;
+    let (conn, _admission) = admission_connection(&pool, 1);
+    conn.extensions.insert(ConnectionHealthWatcher::default());
+    conn.extensions.insert(MaxConcurrency::new(4));
+    let _refusing = pool
+        .create(TestId(0), conn, slot, &EMPTY_INPUT)
+        .await
+        .unwrap();
+    // A connect in flight brings three spare streams: three wait for it, none
+    // counting on kept streams.
+    let _slow = permit(&pool, 0, &EMPTY_INPUT).await;
+    let mut waiters: Vec<_> = (0..3).map(|_| queue(&pool, &EMPTY_INPUT)).collect();
+    drop(exclusive);
+    // Served by the exclusive connection before the pool kept any streams: it
+    // passes nothing on.
+    let _served = handout(&mut waiters[0]);
+    assert!(!waiters[1].is_woken());
+    let mut newcomers: Vec<_> = (0..2).map(|_| checkout(&pool, 0)).collect();
+    for newcomer in &mut newcomers {
+        assert!(newcomer.poll().is_pending());
+    }
+    assert!(
+        waiters[1].is_woken(),
+        "the look counting on the refused room wakes the front to try it"
+    );
+    assert!(
+        matches!(
+            waiters[1].poll(),
+            Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+        ),
+        "refused, more waiting than the connect in flight serves: it dials"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_cancelled_woken_front_passes_its_wake_on() {
     let pool = MultiplexPool::new();
     let mut held = Vec::new();
