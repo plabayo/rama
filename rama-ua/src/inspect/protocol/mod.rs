@@ -29,9 +29,17 @@ pub(super) struct ConnectionFacts {
 pub(super) struct H3ProfileRequest(pub Result<Box<[CapturedSlot]>, ProfileDataError>);
 
 pub(super) fn capture(parts: &Parts, metadata: &CaptureMetadata) {
-    metadata
-        .connection
-        .get_or_insert(|| H3ProfileConnection(connection(parts)));
+    // A later request may complete a boundary pending peer SETTINGS. Preserve
+    // the first actual boundary, without caching a temporary missing-data error.
+    if parts
+        .extensions
+        .get_ref::<H3RequestObservation>()
+        .is_none_or(|observed| observed.first_request.get().is_some())
+    {
+        metadata
+            .connection
+            .get_or_insert(|| H3ProfileConnection(connection(parts)));
+    }
     metadata
         .exchange
         .get_or_insert(|| H3ProfileRequest(request(parts)));
@@ -82,8 +90,14 @@ fn connection(parts: &Parts) -> Result<ConnectionFacts, ProfileDataError> {
         bytes: bounds.value_bytes,
         ..H3SequenceCaptureLimits::default()
     };
+    let first_request = observed
+        .first_request
+        .get()
+        .ok_or(ProfileDataError::Incomplete(
+            "H3 first request and SETTINGS boundary",
+        ))?;
     let sequence =
-        H3ClientSequenceCapture::capture_at_request_head(&observed.connection, sequence_limits)?;
+        H3ClientSequenceCapture::capture_at_request_head(first_request, sequence_limits)?;
     let mut slots = vec![
         CapturedSlot {
             kind: CapturedSlotKind::QuicFirstFlight,
@@ -98,11 +112,9 @@ fn connection(parts: &Parts) -> Result<ConnectionFacts, ProfileDataError> {
             value: sequence.canonical(sequence_limits)?,
         },
     ];
-    // A request can precede peer SETTINGS. Keep the observed prefix without
-    // inventing settings or replacing it with a later connection snapshot.
-    if observed.connection.settings_received {
-        let settings = observed
-            .connection
+    // The frozen connection boundary contains SETTINGS before it is complete.
+    if first_request.settings_received {
+        let settings = first_request
             .settings
             .as_ref()
             .ok_or(ProfileDataError::Incomplete("H3 SETTINGS"))?;

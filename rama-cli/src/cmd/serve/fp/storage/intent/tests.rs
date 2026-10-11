@@ -33,6 +33,7 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tls::{
+        SecureTransport,
         boring::server::TlsAcceptorLayer,
         client::{ServerVerifyMode, TlsClientConfig},
         server::{GeneratedServerAuthConfig, TlsServerConfig},
@@ -979,4 +980,105 @@ async fn slow_handler_releases_capture_capacity_without_cancelling_the_response(
             .is_none()
     );
     assert_eq!(queue.counts().preparation_drops, 1);
+}
+
+#[tokio::test]
+async fn missing_tls_client_hello_rejects_and_counts_the_connection_capture() {
+    for version in [Version::HTTP_11, Version::HTTP_2] {
+        let (queue, receiver) = queue(1);
+        let service =
+            CaptureLayer::new(queue.clone()).into_layer(service_fn(|request: Request<()>| async {
+                Ok::<_, Infallible>(request)
+            }));
+        let connection = Extensions::new();
+        connection.insert(CollectionLease::default());
+        connection.insert(SecureTransport::default());
+        let input = if version == Version::HTTP_2 {
+            h2_request(&connection)
+        } else {
+            let input = request("/report");
+            input.extensions().insert(Ingress(connection));
+            input
+        };
+        let output = service.serve(input).await.unwrap();
+        let day = output
+            .extensions()
+            .get_ref::<CaptureIntent>()
+            .unwrap()
+            .0
+            .lock()
+            .as_ref()
+            .unwrap()
+            .day;
+        submit(output.extensions(), None);
+        assert_eq!(queue.counts().invalid_capture, 1);
+        assert!(queue.try_reserve().is_some());
+        let records = Arc::new(Mutex::new(Vec::new()));
+        worker::run(
+            receiver,
+            MemorySink(records.clone()),
+            store_limits(),
+            QueueConfig {
+                capacity: 1,
+                ..QueueConfig::default()
+            },
+            async {},
+            || Ok(day),
+            || Ok([1; 12]),
+        )
+        .await
+        .unwrap();
+        assert!(records.lock().is_empty());
+        assert_eq!(queue.counts().confirmed, 0);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn upgraded_request_cannot_keep_a_capture_reservation_after_the_deadline() {
+    let (queue, _receiver) = queue(1);
+    let service =
+        CaptureLayer::new(queue.clone()).into_layer(service_fn(|request: Request<()>| async {
+            Ok::<_, Infallible>(request)
+        }));
+    // The upgrade response finishes while its detached WebSocket task retains
+    // the request extensions and has not reached collection submission yet.
+    let output = service.serve(request("/api/ws")).await.unwrap();
+    assert!(queue.try_reserve().is_none());
+    advance(PREPARATION_TIMEOUT).await;
+    timeout(Duration::from_secs(1), queue.wait_for_capacity())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(queue.counts().preparation_drops, 1);
+    submit(output.extensions(), None);
+    assert_eq!(queue.counts().invalid_capture, 0);
+}
+
+#[tokio::test]
+async fn storage_auth_rejects_empty_or_incorrect_cookies() {
+    for (configured, supplied, authorized) in [
+        (Some(""), "", false),
+        (None, "", false),
+        (Some("secret"), "secret", true),
+        (Some("secret"), "secreu", false),
+        (Some("secret"), "secret-longer", false),
+        (Some("secret"), "short", false),
+    ] {
+        let service = StorageAuthLayer {
+            storage_auth: configured.map(str::to_owned),
+        }
+        .into_layer(service_fn(|request: Request<()>| async {
+            Ok::<_, Infallible>(request)
+        }));
+        let mut input = request("/report");
+        input.headers_mut().insert(
+            COOKIE,
+            HeaderValue::try_from(format!("rama-storage-auth={supplied}")).unwrap(),
+        );
+        let output = service.serve(input).await.unwrap();
+        assert_eq!(
+            output.extensions().contains::<StorageAuthorized>(),
+            authorized
+        );
+    }
 }

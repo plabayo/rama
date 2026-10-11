@@ -466,8 +466,21 @@ pub(super) struct PostgresSink {
 impl CollectionSink for PostgresSink {
     async fn maintain(&mut self, current_day: u32, rows: usize) -> Result<(), BoxError> {
         let mut client = self.pool.get().await?;
-        for authorized in [false, true] {
-            counted::prune(&mut client, authorized, current_day, self.limits, rows).await?;
+        let started = Instant::now();
+        let mut pending = [true; 2];
+        // Alternate partitions and commit each bounded pass. A full backlog
+        // makes durable progress even when the outer attempt budget expires.
+        while pending.iter().any(|more| *more) {
+            for (index, authorized) in [false, true].into_iter().enumerate() {
+                if pending[index] {
+                    pending[index] =
+                        counted::prune(&mut client, authorized, current_day, self.limits, rows)
+                            .await?;
+                }
+            }
+            if started.elapsed() >= Duration::from_secs(1) {
+                break;
+            }
         }
         Ok(())
     }

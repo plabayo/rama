@@ -256,6 +256,7 @@ fn sampled_weights_do_not_double_count_the_tracked_head() {
             observed,
             sample_size,
             population,
+            history_known: true,
         } = observed.weight
         else {
             panic!("mixed counter and sample weights")
@@ -283,6 +284,10 @@ fn intermittent_presence_retains_disjoint_weighted_modes() {
         panic!("presence modes missing")
     };
     assert_eq!(modes.len(), 2);
+    assert!(matches!(
+        result.disposition,
+        OrderAnalysisDisposition::Literal
+    ));
     for mode in &modes {
         assert_eq!(mode.sample_count, 32);
         assert_eq!(mode.sample_size, 64);
@@ -643,7 +648,7 @@ fn recorded_losses_are_excluded_from_the_sampling_population() {
 #[test]
 fn repeated_orders_share_work_and_keep_sample_multiplicity() {
     let config = OrderAnalysisConfig {
-        maximum_work: 6,
+        maximum_work: 9,
         maximum_positions: 3,
         ..OrderAnalysisConfig::default()
     };
@@ -661,7 +666,7 @@ fn repeated_orders_share_work_and_keep_sample_multiplicity() {
         &mut budget,
     )
     .unwrap();
-    assert_eq!(budget.used(), 6);
+    assert_eq!(budget.used(), 9);
     assert_eq!(evidence.positions.len(), 3);
     assert!(
         evidence
@@ -677,7 +682,7 @@ fn repeated_orders_share_work_and_keep_sample_multiplicity() {
             ..ObservationLosses::default()
         },
         OrderAnalysisConfig {
-            maximum_work: 5,
+            maximum_work: 8,
             ..config
         },
         |_| false,
@@ -696,4 +701,76 @@ fn repeated_orders_share_work_and_keep_sample_multiplicity() {
         |_| false,
     )
     .unwrap_err();
+}
+
+#[test]
+fn reserved_placements_do_not_turn_two_literal_modes_into_a_shuffle() {
+    let orders: Vec<_> = (0..32)
+        .map(|sample| {
+            let mut literals = vec![1, 2, 3, 4, 5, 6, 7, 8];
+            if sample % 2 != 0 {
+                literals.swap(0, 1);
+            }
+            let placement = sample / 2;
+            literals.insert(placement / 4, 33 + sample as u64 * 62);
+            literals.insert(5 + placement % 4, 64 + sample as u64 * 62);
+            literals
+        })
+        .collect();
+    let result = analyze(&orders);
+    assert_eq!(result.normalized_distinct_orders, 32);
+    let Some(DerivedOrderRule::Mixture { modes }) = result.derived else {
+        panic!("two literal modes must retain their observed samples")
+    };
+    assert_eq!(modes.len(), 2);
+    assert!(modes.iter().all(|mode| mode.sample_count == 16));
+    assert!(modes.iter().all(|mode| mode.elements.len() == 10));
+}
+
+#[test]
+fn numeric_order_without_reserved_interleaving_is_only_relative() {
+    let orders: Vec<_> = (0..64).map(|index| vec![1, 2, 33 + index * 31]).collect();
+    assert!(matches!(
+        analyze(&orders).derived,
+        Some(DerivedOrderRule::Relative { .. })
+    ));
+}
+
+#[test]
+fn floating_literals_do_not_shuffle_their_ordered_neighbours() {
+    let orders: Vec<_> = (0..32)
+        .map(|index| {
+            let mut order = vec![1, 2, 3, 4, 5, 6, 7, 8];
+            order.insert(index / 8, 100);
+            order.insert(index % 8, 101);
+            order
+        })
+        .collect();
+    let result = analyze(&orders);
+    assert!(result.normalized_distinct_orders >= 28);
+    assert!(!matches!(
+        result.derived,
+        Some(DerivedOrderRule::Shuffled { .. })
+    ));
+}
+
+#[test]
+fn expanding_the_literal_horizon_does_not_expand_inferred_modes() {
+    let orders: Vec<_> = (0..64).map(|index| vec![100 + index, 1]).collect();
+    let original = bucket(&orders, ProfileBucketLimits::default());
+    for maximum_literals in [16, 224] {
+        let result = analyze_protocol_order(
+            &original,
+            OrderAnalysisConfig {
+                maximum_literals,
+                ..OrderAnalysisConfig::default()
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            result.disposition,
+            OrderAnalysisDisposition::UnstableElements
+        ));
+        assert!(result.derived.is_none());
+    }
 }

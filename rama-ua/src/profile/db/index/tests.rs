@@ -2,8 +2,9 @@ use super::*;
 use crate::profile::{
     CaptureLevel, CapturedSlot, CapturedSlotKind, ConnectionContext, JointCapture,
     JointCaptureLimits, ObservationId, OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture,
-    ProfileArchiveEntry, ProfileArchiveLimits, ProfileCapture, ProfileCaptureCompleteness,
-    ProfileEvidence, ProfileScopeEvidence, ProfileWindowLimits, RetainedBucketWindow,
+    ProfileAnalysisLimits, ProfileArchiveEntry, ProfileArchiveLimits, ProfileCapture,
+    ProfileCaptureCompleteness, ProfileEvidence, ProfileScopeEvidence, ProfileWindowLimits,
+    RetainedBucketWindow,
 };
 use crate::profile::{Http1Settings, UserAgentDatabase, UserAgentProfileInput};
 use rama_utils::octets::kib;
@@ -165,6 +166,17 @@ fn h3_only_archives_keep_joint_weights_and_no_synthetic_layers() {
         },
         sampler_seed: [3; 32],
     };
+    let mut entry = entry;
+    entry
+        .evidence
+        .scopes
+        .sort_unstable_by_key(|scope| scope.scope.id);
+    let mut unsorted = entry.clone();
+    unsorted.evidence.scopes.reverse();
+    assert!(unsorted.evidence.scopes.len() > 1);
+    unsorted
+        .analyze(false, 100, 14, ProfileAnalysisLimits::default())
+        .unwrap_err();
     let bytes = serde_json::to_vec(&serde_json::json!({"format_version":1,"generated_day":100,"horizon":14,"profiles":[entry]})).unwrap();
     let database = UserAgentDatabase::try_from_archive(
         &bytes,
@@ -185,6 +197,19 @@ fn h3_only_archives_keep_joint_weights_and_no_synthetic_layers() {
     assert!(matches!(
         profile.observation_weight().unwrap(),
         ObservationWeight::Exact(2)
+    ));
+    let mut incomplete = profile.clone();
+    let mut analysis = (**incomplete.captured.as_ref().unwrap()).clone();
+    analysis.scopes = analysis
+        .scopes
+        .into_vec()
+        .into_iter()
+        .filter(|scope| scope.observations.domain != CanonicalDomain::Joint)
+        .collect();
+    incomplete.captured = Some(analysis.into());
+    assert!(matches!(
+        incomplete.observation_weight().unwrap(),
+        ObservationWeight::UnknownHistory { observed: 2, .. }
     ));
     let h3 = database
         .candidates(ProfileCandidateFilter {
@@ -219,4 +244,27 @@ fn h3_only_archives_keep_joint_weights_and_no_synthetic_layers() {
     assert!(!expired.iter().next().unwrap().capabilities().h3);
     let offline = UserAgentDatabase::try_from_json_slice(&bytes).unwrap();
     assert!(offline.iter().next().unwrap().capabilities().h3);
+}
+
+#[test]
+fn latest_versions_preserve_each_device_group_without_an_explicit_filter() {
+    let database: UserAgentDatabase = [
+        profile("1", DeviceKind::Desktop, true),
+        profile("2", DeviceKind::Desktop, true),
+        profile("99", DeviceKind::Mobile, true),
+        profile("100", DeviceKind::Mobile, true),
+    ]
+    .into_iter()
+    .collect();
+    let candidates = database
+        .candidates(ProfileCandidateFilter {
+            latest_versions: Some(1),
+            ..ProfileCandidateFilter::default()
+        })
+        .unwrap();
+    let versions: BTreeSet<_> = candidates
+        .iter()
+        .map(|candidate| candidate.profile.key.version.as_deref().unwrap())
+        .collect();
+    assert_eq!(versions, ["2", "100"].into_iter().collect());
 }

@@ -2,3 +2,5 @@
 # 0x1e/LF): never let a checkout rewrite their line endings.
 rama-cli/tests/fixtures/*.har -text
 rama-cli/tests/fixtures/*.qlog -text
+
+rama-cli/src/cmd/serve/fp/storage/migrations/*.sql -text

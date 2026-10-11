@@ -158,6 +158,13 @@ pub(super) fn connection_capture(
     ext: &Extensions,
     h3: Option<&Http3Info>,
 ) -> Result<Option<ProfileCapture>, BoxError> {
+    // Negotiated TLS with unavailable capture is not a cleartext observation.
+    if ext
+        .get_ref::<SecureTransport>()
+        .is_some_and(|transport| transport.client_hello().is_none())
+    {
+        return Err(ProfileDataError::Incomplete("TLS ClientHello").into());
+    }
     let mut slots = Vec::new();
     let quic = ext.get_ref::<QuicObservation>();
     let orders = OrderCaptureLimits::default();
@@ -185,7 +192,12 @@ pub(super) fn connection_capture(
         let h3 = h3.ok_or(ProfileDataError::Incomplete("H3 connection observation"))?;
         let sequence_limits = H3SequenceCaptureLimits::default();
         let sequence = H3ClientSequenceCapture::capture_at_request_head(
-            &h3.request.connection,
+            h3.request
+                .first_request
+                .get()
+                .ok_or(ProfileDataError::Incomplete(
+                    "H3 first request and SETTINGS boundary",
+                ))?,
             sequence_limits,
         )?;
         slots.push(CapturedSlot {
@@ -283,7 +295,7 @@ mod tests {
             profile::{PaddingPlacement, ParameterId},
         },
     };
-    use std::sync::Arc;
+    use std::sync::{Arc, OnceLock};
 
     fn observed() -> QuicObservation {
         QuicObservation {
@@ -367,6 +379,7 @@ mod tests {
         Http3Info {
             request: Arc::new(H3RequestObservation {
                 connection: connection.clone(),
+                first_request: Arc::new(OnceLock::from(connection.clone())),
                 fields: vec![],
                 fields_complete: true,
                 priority: None,
@@ -485,5 +498,26 @@ mod tests {
         assert_eq!(sequence.events.len(), 2);
         assert!(sequence.encoder_instructions.is_empty());
         assert_eq!(info.connection.encoder_instructions.len(), 1);
+    }
+
+    #[test]
+    fn secure_connections_require_the_client_hello_for_every_http_version() {
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            let ext = Extensions::new();
+            ext.insert(SecureTransport::default());
+            ext.insert(observed());
+            let error = connection_capture(
+                profile_key("synthetic/1").unwrap(),
+                connection_context(&ext),
+                version,
+                &ext,
+                Some(&h3()),
+            )
+            .unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<ProfileDataError>(),
+                Some(ProfileDataError::Incomplete("TLS ClientHello"))
+            ));
+        }
     }
 }

@@ -154,7 +154,9 @@ fn source_query(authorized: bool) -> Result<String, BoxError> {
         )?;
     }
     payload.push(']');
-    // Names are fixed literals. The exclusion also advances past oversized keys,
+    // Use the source key's native collation so its primary-key index serves
+    // both the cursor and ordering. Names are fixed literals.
+    // The exclusion also advances past oversized keys,
     // whose unbounded text is deliberately unavailable as a client-side cursor.
     let query = format!("SELECT CASE WHEN octet_length(uastr)::bigint <= $4 THEN uastr END,
         CASE WHEN isfinite(updated_at) THEN floor(extract(epoch FROM updated_at)/86400)::bigint END,
@@ -163,12 +165,12 @@ fn source_query(authorized: bool) -> Result<String, BoxError> {
         FROM (SELECT uastr,updated_at,source_key,source_revision,({discarded}) AS discarded,
           CASE WHEN ({size}) <= $5 AND octet_length(uastr)::bigint <= $4 THEN {payload} END AS payload
           FROM (SELECT *,sha256(convert_to(uastr,'UTF8')) AS source_key,sha256({revision}) AS source_revision
-            FROM public.\"{table}\" WHERE ($1::text IS NULL OR uastr COLLATE \"C\" > $1 COLLATE \"C\")
+            FROM public.\"{table}\" WHERE ($1::text IS NULL OR uastr > $1)
             AND updated_at >= to_timestamp($2::bigint * 86400)) keyed
           WHERE NOT EXISTS (SELECT 1 FROM fp_v2.legacy_rejections r
             WHERE r.authorized=$6 AND r.source_table=$7 AND r.source_key=keyed.source_key
             AND r.row_digest=keyed.source_revision AND r.rejected_day >= $2)
-          ORDER BY uastr COLLATE \"C\" LIMIT $3) bounded ORDER BY uastr COLLATE \"C\"");
+          ORDER BY uastr LIMIT $3) bounded ORDER BY uastr");
     Ok(query)
 }
 

@@ -42,3 +42,22 @@ It can also be triggered manually. Via [the Github Actions pane](https://github.
 
 Collection preparation holds a queue slot for at most five seconds while a handler
 runs. Slow requests continue normally after their optional capture is discarded.
+
+Each authorization partition has independent limits of 16,384 live runs, 16,384
+legacy-import runs and 16,384 rejected legacy revisions. Legacy imports cannot
+consume live run capacity. The default 1,048,576 bucket limit permits at most
+285,212,672 counter and sample rows (16 counters and 256 samples per bucket);
+canonical byte limits do not bound PostgreSQL row and index overhead.
+
+Fingerprint collection terminates TLS and HTTP directly. An HTTP-terminating
+proxy changes the observed client protocol and can add client-IP headers that
+must not become browser profile fields.
+
+QPACK samples retain instruction kinds and compression flags, but omit inserted
+value lengths. Full-match static-table indices remain bounded protocol metadata,
+including entries such as `:path: /` and `content-length: 0`; they are excluded
+from request-owned header structures.
+
+Startup import scans the retained legacy window to detect changed revisions;
+checkpoints prevent duplicate counts. The keyset cursor uses the source column's
+collation and primary-key index. Reads and writes have server-side timeouts.

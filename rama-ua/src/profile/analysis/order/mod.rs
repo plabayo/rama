@@ -22,6 +22,8 @@ pub struct OrderAnalysisConfig {
     pub distinct_denominator: usize,
     pub maximum_samples: usize,
     pub maximum_literals: usize,
+    /// Maximum inferred modes, independent of the retained literal horizon.
+    pub maximum_modes: usize,
     pub maximum_elements: usize,
     pub maximum_bytes: usize,
     /// Normalized element visits, shared by all paths and recursive modes.
@@ -38,6 +40,7 @@ impl Default for OrderAnalysisConfig {
             distinct_denominator: 8,
             maximum_samples: 256,
             maximum_literals: 16,
+            maximum_modes: 16,
             maximum_elements: 256,
             maximum_bytes: mib(8),
             maximum_work: mib(4),
@@ -55,6 +58,8 @@ pub enum AnalyzedOrderWeight {
         sample_size: usize,
         /// Observations eligible for the retained reservoir, excluding recorded losses.
         population: u64,
+        /// Whether the population covers the complete observation history.
+        history_known: bool,
     },
 }
 
@@ -88,7 +93,7 @@ pub struct ObservedReservedPlacement {
 
 #[derive(Debug, Clone, Serialize)]
 pub enum DerivedOrderRule {
-    /// Disjoint observed element sets retain their frequency and their own rule.
+    /// Disjoint sample groups retain their frequency and their own rule.
     Mixture { modes: Box<[OrderModeEvidence]> },
     /// Reserved identifiers participate in numeric sorting after they are chosen.
     Sorted {
@@ -112,6 +117,7 @@ pub enum OrderAnalysisDisposition {
     UnknownHistory,
     IncompleteRetention,
     UnstableElements,
+    MissingPath,
     DerivedHeuristic,
 }
 
@@ -237,6 +243,7 @@ pub fn analyze_protocol_order(
                 observed: *count,
                 sample_size: samples.len(),
                 population: sampling_population(&snapshot.counts)?,
+                history_known: snapshot.counts.losses.history_known,
             }
         } else {
             // A tracked literal outside this reservoir cannot be mixed into its
@@ -260,7 +267,7 @@ pub fn analyze_protocol_order(
         });
     }
     let mut result = OrderAnalysis {
-        classifier_revision: 1,
+        classifier_revision: 2,
         namespace,
         total: snapshot.counts.total,
         retained_samples: samples.len(),
@@ -486,7 +493,7 @@ fn analyze_identifiers_at_depth(
         }
     }
     if modes.len() > 1 {
-        if modes.len() > config.maximum_literals || depth >= 8 {
+        if modes.len() > config.maximum_modes || depth >= 8 {
             result.disposition = OrderAnalysisDisposition::UnstableElements;
             return Ok(result);
         }
@@ -509,16 +516,44 @@ fn analyze_identifiers_at_depth(
                 evidence: Box::new(evidence),
             });
         }
+        result.disposition = if analyzed_modes.iter().any(|mode| {
+            matches!(
+                mode.evidence.disposition,
+                OrderAnalysisDisposition::DerivedHeuristic
+            )
+        }) {
+            OrderAnalysisDisposition::DerivedHeuristic
+        } else {
+            OrderAnalysisDisposition::Literal
+        };
         result.derived = Some(DerivedOrderRule::Mixture {
             modes: analyzed_modes.into(),
         });
-        result.disposition = OrderAnalysisDisposition::DerivedHeuristic;
         return Ok(result);
     }
     let varying_reserved = elements
         .iter()
         .any(|element| matches!(element, AnalyzedOrderElement::Reserved { .. }));
+    let mut literal_values = BTreeMap::new();
+    for order in frequencies.keys() {
+        budget.charge(order.len())?;
+        let literals: Arc<[AnalyzedOrderElement]> = order
+            .iter()
+            .copied()
+            .filter(|element| matches!(element, AnalyzedOrderElement::Literal { .. }))
+            .collect();
+        literal_values.insert(order, literals);
+    }
+    let mut literal_modes = BTreeMap::<Arc<[AnalyzedOrderElement]>, Vec<usize>>::new();
+    for (index, order) in normalized.iter().enumerate() {
+        literal_modes
+            .entry(literal_values[order].clone())
+            .or_default()
+            .push(index);
+    }
     if varying_reserved
+        // Numeric sorting needs observed movement across literal boundaries.
+        && frequencies.len() > 1
         && samples
             .iter()
             .all(|sample| sample.windows(2).all(|pair| pair[0] <= pair[1]))
@@ -562,11 +597,11 @@ fn analyze_identifiers_at_depth(
                     })
                     .collect(),
             });
-        } else if (result.normalized_distinct_orders as u128)
-            * (config.distinct_denominator as u128)
-            >= (samples.len() as u128) * (config.distinct_numerator as u128)
+        } else if !varying_reserved
+            && (literal_modes.len() as u128) * (config.distinct_denominator as u128)
+                >= (samples.len() as u128) * (config.distinct_numerator as u128)
         {
-            let pinned = normalized[0]
+            let pinned: Box<[PinnedOrderElement]> = normalized[0]
                 .iter()
                 .enumerate()
                 .filter_map(|(index, element)| {
@@ -579,14 +614,80 @@ fn analyze_identifiers_at_depth(
                         })
                 })
                 .collect();
-            result.derived = Some(DerivedOrderRule::Shuffled {
-                elements: elements.into(),
-                pinned,
+            // A moving literal can shift otherwise ordered neighbours without
+            // providing evidence that those neighbours may exchange positions.
+            let floating: BTreeSet<_> = elements
+                .iter()
+                .copied()
+                .filter(|element| !pinned.iter().any(|pin| pin.element == *element))
+                .collect();
+            let mut pair_orders = BTreeMap::new();
+            for order in frequencies.keys() {
+                for (left, first) in order.iter().enumerate() {
+                    if !floating.contains(first) {
+                        continue;
+                    }
+                    for second in &order[left + 1..] {
+                        budget.charge(1)?;
+                        if !floating.contains(second) {
+                            continue;
+                        }
+                        let (pair, direction) = if first < second {
+                            ((*first, *second), 1_u8)
+                        } else {
+                            ((*second, *first), 2_u8)
+                        };
+                        if !pair_orders.contains_key(&pair) {
+                            budget.positions = budget
+                                .positions
+                                .checked_sub(1)
+                                .ok_or(ProfileDataError::LimitExceeded("order analysis pairs"))?;
+                        }
+                        *pair_orders.entry(pair).or_insert(0_u8) |= direction;
+                    }
+                }
+            }
+            if pair_orders.values().all(|directions| *directions == 3) {
+                result.derived = Some(DerivedOrderRule::Shuffled {
+                    elements: elements.into(),
+                    pinned,
+                });
+            }
+        } else if varying_reserved && literal_modes.len() <= config.maximum_modes && depth < 8 {
+            // Preserve the observed correlation between literal modes and joint
+            // reserved placements; never form their independent cross product.
+            let mut analyzed_modes = Vec::new();
+            for indices in literal_modes.into_values() {
+                let members: Vec<_> = indices.iter().map(|index| samples[*index]).collect();
+                let evidence = analyze_identifiers_at_depth(
+                    &members,
+                    losses,
+                    config,
+                    reserved_candidate,
+                    depth + 1,
+                    budget,
+                )?;
+                analyzed_modes.push(OrderModeEvidence {
+                    elements: elements.clone().into(),
+                    sample_indices: indices.clone().into(),
+                    sample_count: members.len(),
+                    sample_size: samples.len(),
+                    evidence: Box::new(evidence),
+                });
+            }
+            result.derived = Some(DerivedOrderRule::Mixture {
+                modes: analyzed_modes.into(),
             });
         }
     }
-    if result.derived.is_some() {
-        result.disposition = OrderAnalysisDisposition::DerivedHeuristic;
+    if let Some(derived) = &result.derived {
+        result.disposition = if matches!(derived, DerivedOrderRule::Mixture { modes }
+            if modes.iter().all(|mode| !matches!(mode.evidence.disposition, OrderAnalysisDisposition::DerivedHeuristic)))
+        {
+            OrderAnalysisDisposition::Literal
+        } else {
+            OrderAnalysisDisposition::DerivedHeuristic
+        };
     }
     Ok(result)
 }

@@ -22,7 +22,11 @@ use rama_quic_proto::{
     capture::{CaptureCompleteness, FirstFlight, ObservedFrame, RawParameter},
     profile::{PaddingPlacement, ParameterId},
 };
-use std::{collections::BTreeSet, convert::Infallible, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    convert::Infallible,
+    sync::{Arc, OnceLock},
+};
 
 fn literal() -> ObservedFieldRepresentation {
     ObservedFieldRepresentation {
@@ -114,6 +118,7 @@ fn h3() -> H3RequestObservation {
         ..H3ObservationSnapshot::default()
     });
     H3RequestObservation {
+        first_request: Arc::new(OnceLock::from(connection.clone())),
         connection,
         fields: vec![literal(); 7],
         fields_complete: true,
@@ -237,6 +242,7 @@ fn incomplete_h3_capture_cannot_become_complete_during_export() {
                 let mut snapshot = (*request.connection).clone();
                 snapshot.completeness.settings = false;
                 request.connection = Arc::new(snapshot);
+                request.first_request = Arc::new(OnceLock::from(request.connection.clone()));
                 parts.extensions.insert(request);
             }
             2 => {
@@ -277,15 +283,9 @@ fn incomplete_h3_capture_cannot_become_complete_during_export() {
     snapshot.settings = None;
     snapshot.control.clear();
     request.connection = Arc::new(snapshot);
+    request.first_request = Arc::new(OnceLock::from(request.connection.clone()));
     parts.extensions.insert(request);
-    let facts = connection(&parts).unwrap();
-    assert_eq!(facts.slots.len(), 3);
-    assert!(
-        !facts
-            .slots
-            .iter()
-            .any(|slot| slot.kind == CapturedSlotKind::Http3Settings)
-    );
+    connection(&parts).unwrap_err();
 }
 
 #[tokio::test]
@@ -343,4 +343,34 @@ async fn h3_selected_export_counts_one_connection_and_each_request() {
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn pending_settings_do_not_cache_an_incomplete_connection_forever() {
+    let parts = parts();
+    let mut request = h3();
+    let ready = request.connection.clone();
+    let pending = Arc::new(OnceLock::new());
+    request.first_request = pending.clone();
+    let mut before = (*ready).clone();
+    before.settings_received = false;
+    before.settings = None;
+    before.control.clear();
+    request.connection = Arc::new(before);
+    parts.extensions.insert(request);
+    let metadata = CaptureMetadata::default();
+    capture(&parts, &metadata);
+    assert!(
+        metadata
+            .connection
+            .get_ref::<H3ProfileConnection>()
+            .is_none()
+    );
+    pending.set(ready).unwrap();
+    capture(&parts, &metadata);
+    let facts = metadata
+        .connection
+        .get_ref::<H3ProfileConnection>()
+        .unwrap();
+    assert_eq!(facts.0.as_ref().unwrap().slots.len(), 4);
 }

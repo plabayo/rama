@@ -358,7 +358,7 @@ pub fn analyze_profile_evidence(
     Ok(AnalyzedProfile {
         work_units: limits.maximum_work - remaining_work,
         format_version: 1,
-        classifier_revision: 1,
+        classifier_revision: 2,
         id: input.profile.id,
         key,
         current_day,

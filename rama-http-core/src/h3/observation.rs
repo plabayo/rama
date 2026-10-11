@@ -11,7 +11,7 @@ use rama_http_types::proto::h3::{
 };
 use std::{
     fmt,
-    sync::{Arc, Weak},
+    sync::{Arc, OnceLock, Weak},
 };
 use tokio::time::Instant;
 
@@ -78,6 +78,8 @@ pub(super) struct Recorder {
     value: H3ObservationSnapshot,
     pending: Option<FrameHeader>,
     current: Option<Arc<H3ObservationSnapshot>>,
+    pub(super) first_request: Arc<OnceLock<Arc<H3ObservationSnapshot>>>,
+    pub(super) first_request_seen: bool,
     live: Vec<Weak<H3ObservationSnapshot>>,
     pub(super) unavailable: Arc<H3ObservationSnapshot>,
 }
@@ -101,6 +103,8 @@ impl Recorder {
             },
             pending: None,
             current: None,
+            first_request: Arc::new(OnceLock::new()),
+            first_request_seen: false,
             live: Vec::new(),
             unavailable: Arc::new(H3ObservationSnapshot::default()),
         };

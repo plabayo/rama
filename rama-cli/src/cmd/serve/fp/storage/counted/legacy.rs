@@ -2,6 +2,8 @@
 
 use super::*;
 use rama::ua::profile::{LegacyFieldCapture, UserAgentProfileInput};
+use std::time::Duration;
+use tokio::time::{Instant, timeout_at};
 
 pub(in super::super) struct LegacyRevision {
     pub source_table: &'static str,
@@ -55,6 +57,7 @@ pub(in super::super) async fn ingest_legacy(
     seed: [u8; 32],
     limits: StoreLimits,
 ) -> Result<bool, IngestFailure> {
+    let deadline = Instant::now() + Duration::from_secs(5);
     let prepare = async {
         limits.ingestion.bucket.validate()?;
         limits
@@ -96,12 +99,16 @@ pub(in super::super) async fn ingest_legacy(
         )
         .await
     };
-    let Some(transaction) = prepare.await.map_err(IngestFailure::Rejected)? else {
+    let Some(transaction) = timeout_at(deadline, prepare)
+        .await
+        .map_err(|error| IngestFailure::Rejected(error.into()))?
+        .map_err(IngestFailure::Rejected)?
+    else {
         return Ok(false);
     };
-    transaction
-        .commit()
+    timeout_at(deadline, transaction.commit())
         .await
+        .map_err(|error| IngestFailure::Unconfirmed(error.into()))?
         .map_err(|error| IngestFailure::Unconfirmed(error.into()))?;
     Ok(true)
 }

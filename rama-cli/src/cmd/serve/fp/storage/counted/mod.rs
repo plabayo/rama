@@ -25,6 +25,8 @@ use rama::{
 };
 use tokio_postgres::{Client, Transaction};
 
+use super::postgres::bound_transaction;
+
 /// Entry counts bound row/index overhead separately from canonical payload bytes.
 /// These are service configuration, not peer-controlled limits.
 #[derive(Debug, Clone, Copy)]
@@ -91,6 +93,7 @@ pub(super) async fn sampler_seeds(
     candidates: [[u8; 32]; 2],
 ) -> Result<[[u8; 32]; 2], BoxError> {
     let transaction = client.transaction().await?;
+    bound_transaction(&transaction).await?;
     let mut seeds = candidates;
     for (index, authorized) in [false, true].into_iter().enumerate() {
         let row = transaction.query_one(
@@ -225,9 +228,10 @@ async fn prepare_batch_transaction<'a>(
         return Err(bounded("joint plus component buckets"));
     }
     let transaction = client.transaction().await?;
+    bound_transaction(&transaction).await?;
     let authorized = attempt.authorized;
     let row = transaction.query_one(
-        "SELECT watermark, profiles, flows, structures, buckets, runs, interned_values, canonical_bytes, sampler_seed
+        "SELECT watermark, profiles, flows, structures, buckets, runs, interned_values, canonical_bytes, sampler_seed, legacy_runs
          FROM fp_v2.quotas WHERE authorized = $1 FOR UPDATE", &[&authorized],
     ).await?;
     if i64::from(current_day) < row.try_get::<_, i64>(0)? {
@@ -252,9 +256,13 @@ async fn prepare_batch_transaction<'a>(
     {
         return Ok(None);
     }
+    let legacy_runs: i64 = row.try_get(9)?;
+    if legacy.is_some() && (legacy_runs < 0 || legacy_runs >= integer(limits.retained[4])?) {
+        return Err(bounded("legacy import run quota"));
+    }
     let run_id = CaptureRunId(attempt.observation.run);
     let run_row = transaction.query_opt(
-        "SELECT created_day, CASE WHEN octet_length(checkpoint::text)::bigint <= $3 THEN checkpoint::text END
+        "SELECT created_day, CASE WHEN octet_length(checkpoint::text)::bigint <= $3 THEN checkpoint::text END, legacy
          FROM fp_v2.runs WHERE authorized = $1 AND id = $2",
         &[&authorized, &&run_id.0[..], &integer(limits.checkpoint_bytes)?],
     ).await?;
@@ -263,6 +271,9 @@ async fn prepare_batch_transaction<'a>(
         return Err(invalid("legacy import run collision"));
     }
     let run = if let Some(row) = run_row {
+        if row.try_get::<_, bool>(2)? {
+            return Err(invalid("live ingestion cannot reuse a legacy run"));
+        }
         if row.try_get::<_, i64>(0)? != i64::from(run_id.created_day()) {
             return Err(invalid("stored run creation day"));
         }
@@ -329,18 +340,28 @@ async fn prepare_batch_transaction<'a>(
         .await?;
     }
     if new_run {
-        quota.change(4, 1)?;
+        if legacy.is_some() {
+            transaction
+                .execute(
+                    "UPDATE fp_v2.quotas SET legacy_runs=legacy_runs+1 WHERE authorized=$1",
+                    &[&authorized],
+                )
+                .await?;
+        } else {
+            quota.change(4, 1)?;
+        }
     }
     transaction
         .execute(
-            "INSERT INTO fp_v2.runs (authorized, id, created_day, checkpoint)
-         VALUES ($1, $2, $3, $4::text::jsonb)
+            "INSERT INTO fp_v2.runs (authorized, id, created_day, checkpoint, legacy)
+         VALUES ($1, $2, $3, $4::text::jsonb, $5)
          ON CONFLICT (authorized, id) DO UPDATE SET checkpoint = EXCLUDED.checkpoint",
             &[
                 &authorized,
                 &&run_id.0[..],
                 &i64::from(run_id.created_day()),
                 &checkpoint,
+                &legacy.is_some(),
             ],
         )
         .await?;
@@ -788,8 +809,8 @@ async fn save_bucket(
     Ok(())
 }
 
-/// Delete at most `rows` entries from each owned table. Counts and samples expire
-/// with their day bucket. Shared values remain until their last retained reference.
+/// Delete at most `rows` expired buckets, runs and rejection checkpoints, plus
+/// their bounded references. Shared values remain until their last reference ends.
 /// Returns whether another bounded pass may have work; no legacy table is touched.
 pub(super) async fn prune(
     client: &mut Client,
@@ -808,6 +829,7 @@ pub(super) async fn prune(
             .first_day(current_day, limits.ingestion.retention.days)?,
     );
     let transaction = client.transaction().await?;
+    bound_transaction(&transaction).await?;
     let stored = transaction.query_one(
         "SELECT watermark,profiles,flows,structures,buckets,runs,interned_values,canonical_bytes FROM fp_v2.quotas WHERE authorized=$1 FOR UPDATE",
         &[&authorized],
@@ -825,25 +847,61 @@ pub(super) async fn prune(
     }
     let maximum = integer(rows)?;
     let mut more = false;
+    // Read only references belonging to the bounded expiration batch. No scan
+    // over the live value/profile/flow/structure key ranges is needed.
+    let values = transaction.query(
+        "WITH expired AS MATERIALIZED (
+           SELECT scope,day FROM fp_v2.buckets WHERE authorized=$1 AND day<$2 ORDER BY day,scope LIMIT $3
+         ) SELECT DISTINCT value_id FROM (
+           SELECT c.value_id FROM expired e JOIN fp_v2.literal_counts c
+             ON c.authorized=$1 AND c.scope=e.scope AND c.day=e.day
+           UNION ALL
+           SELECT s.value_id FROM expired e JOIN fp_v2.samples s
+             ON s.authorized=$1 AND s.scope=e.scope AND s.day=e.day
+         ) referenced",
+        &[&authorized, &first, &maximum],
+    ).await?.into_iter().map(|row| row.try_get::<_, Vec<u8>>(0)).collect::<Result<Vec<_>, _>>()?;
+    let mut profiles = BTreeSet::new();
+    let mut flows = BTreeSet::new();
+    let mut structures = BTreeSet::new();
     let expired = transaction.query(
         "DELETE FROM fp_v2.buckets b USING
            (SELECT authorized,scope,day FROM fp_v2.buckets WHERE authorized=$1 AND day<$2 ORDER BY day,scope LIMIT $3) old
-         WHERE b.authorized=old.authorized AND b.scope=old.scope AND b.day=old.day RETURNING octet_length(b.scope_canonical)",
+         WHERE b.authorized=old.authorized AND b.scope=old.scope AND b.day=old.day RETURNING octet_length(b.scope_canonical), b.profile_id, b.flow_id, b.structure_id",
         &[&authorized, &first, &maximum],
     ).await?;
     more |= expired.len() == rows;
     for row in expired {
         quota.change(3, -1)?;
         quota.change(6, -i64::from(row.try_get::<_, i32>(0)?))?;
+        let profile = row.try_get::<_, Vec<u8>>(1)?;
+        if let Some(flow) = row.try_get::<_, Option<Vec<u8>>>(2)? {
+            flows.insert((profile.clone(), flow));
+        }
+        profiles.insert(profile);
+        structures.insert(row.try_get::<_, Vec<u8>>(3)?);
     }
-    let expired = transaction.execute(
+    let profiles: Vec<_> = profiles.into_iter().collect();
+    let (flow_profiles, flows): (Vec<_>, Vec<_>) = flows.into_iter().unzip();
+    let structures: Vec<_> = structures.into_iter().collect();
+    let expired = transaction.query(
         "DELETE FROM fp_v2.runs r USING
            (SELECT authorized,id FROM fp_v2.runs WHERE authorized=$1 AND created_day<$2 ORDER BY created_day,id LIMIT $3) old
-         WHERE r.authorized=old.authorized AND r.id=old.id",
+         WHERE r.authorized=old.authorized AND r.id=old.id RETURNING r.legacy",
         &[&authorized, &first, &maximum],
     ).await?;
-    quota.change(4, -i64::try_from(expired)?)?;
-    more |= usize::try_from(expired)? == rows;
+    let legacy_runs = expired.iter().try_fold(0_i64, |count, row| {
+        row.try_get::<_, bool>(0)
+            .map(|legacy| count + i64::from(legacy))
+    })?;
+    quota.change(4, -(i64::try_from(expired.len())? - legacy_runs))?;
+    transaction
+        .execute(
+            "UPDATE fp_v2.quotas SET legacy_runs=legacy_runs-$2 WHERE authorized=$1",
+            &[&authorized, &legacy_runs],
+        )
+        .await?;
+    more |= expired.len() == rows;
     let expired = transaction.execute(
         "DELETE FROM fp_v2.legacy_rejections r USING
            (SELECT authorized,source_table,source_key FROM fp_v2.legacy_rejections
@@ -852,34 +910,37 @@ pub(super) async fn prune(
         &[&authorized, &first, &maximum],
     ).await?;
     more |= usize::try_from(expired)? == rows;
-    // Each query has a bounded result and all reference lookups have owned indexes.
-    for (index, query) in [
-        (5, "DELETE FROM fp_v2.values v USING
-             (SELECT v.authorized,v.id FROM fp_v2.values v WHERE v.authorized=$1
+    for (index, candidates, query) in [
+        (5, &values, "DELETE FROM fp_v2.values v WHERE v.authorized=$1 AND v.id=ANY($2::bytea[])
               AND NOT EXISTS (SELECT 1 FROM fp_v2.literal_counts c WHERE c.authorized=v.authorized AND c.value_id=v.id)
               AND NOT EXISTS (SELECT 1 FROM fp_v2.samples s WHERE s.authorized=v.authorized AND s.value_id=v.id)
-              ORDER BY v.id LIMIT $2) old
-             WHERE v.authorized=old.authorized AND v.id=old.id RETURNING octet_length(v.canonical)"),
-        (2, "DELETE FROM fp_v2.structures s USING
-             (SELECT s.authorized,s.id FROM fp_v2.structures s WHERE s.authorized=$1
+              RETURNING octet_length(v.canonical)"),
+        (2, &structures, "DELETE FROM fp_v2.structures s WHERE s.authorized=$1 AND s.id=ANY($2::bytea[])
               AND NOT EXISTS (SELECT 1 FROM fp_v2.buckets b WHERE b.authorized=s.authorized AND b.structure_id=s.id)
-              ORDER BY s.id LIMIT $2) old
-             WHERE s.authorized=old.authorized AND s.id=old.id RETURNING octet_length(s.canonical)"),
-        (1, "DELETE FROM fp_v2.flows f USING
-             (SELECT f.authorized,f.profile_id,f.id FROM fp_v2.flows f WHERE f.authorized=$1
-              AND NOT EXISTS (SELECT 1 FROM fp_v2.buckets b WHERE b.authorized=f.authorized AND b.profile_id=f.profile_id AND b.flow_id=f.id)
-              ORDER BY f.profile_id,f.id LIMIT $2) old
-             WHERE f.authorized=old.authorized AND f.profile_id=old.profile_id AND f.id=old.id RETURNING octet_length(f.canonical)"),
-        (0, "DELETE FROM fp_v2.profiles p USING
-             (SELECT p.authorized,p.id FROM fp_v2.profiles p WHERE p.authorized=$1
-              AND NOT EXISTS (SELECT 1 FROM fp_v2.buckets b WHERE b.authorized=p.authorized AND b.profile_id=p.id)
-              AND NOT EXISTS (SELECT 1 FROM fp_v2.flows f WHERE f.authorized=p.authorized AND f.profile_id=p.id)
-              ORDER BY p.id LIMIT $2) old
-             WHERE p.authorized=old.authorized AND p.id=old.id RETURNING octet_length(p.canonical)"),
+              RETURNING octet_length(s.canonical)"),
     ] {
-        let deleted = transaction.query(query, &[&authorized, &maximum]).await?;
-        more |= deleted.len() == rows;
+        let deleted = transaction.query(query, &[&authorized, candidates]).await?;
         for row in deleted { quota.change(index, -1)?; quota.change(6, -i64::from(row.try_get::<_, i32>(0)?))?; }
+    }
+    let deleted = transaction.query(
+        "DELETE FROM fp_v2.flows f USING unnest($2::bytea[],$3::bytea[]) AS expired(profile_id,id)
+          WHERE f.authorized=$1 AND f.profile_id=expired.profile_id AND f.id=expired.id
+          AND NOT EXISTS (SELECT 1 FROM fp_v2.buckets b WHERE b.authorized=f.authorized AND b.profile_id=f.profile_id AND b.flow_id=f.id)
+          RETURNING octet_length(f.canonical)", &[&authorized, &flow_profiles, &flows],
+    ).await?;
+    for row in deleted {
+        quota.change(1, -1)?;
+        quota.change(6, -i64::from(row.try_get::<_, i32>(0)?))?;
+    }
+    let deleted = transaction.query(
+        "DELETE FROM fp_v2.profiles p WHERE p.authorized=$1 AND p.id=ANY($2::bytea[])
+          AND NOT EXISTS (SELECT 1 FROM fp_v2.buckets b WHERE b.authorized=p.authorized AND b.profile_id=p.id)
+          AND NOT EXISTS (SELECT 1 FROM fp_v2.flows f WHERE f.authorized=p.authorized AND f.profile_id=p.id)
+          RETURNING octet_length(p.canonical)", &[&authorized, &profiles],
+    ).await?;
+    for row in deleted {
+        quota.change(0, -1)?;
+        quota.change(6, -i64::from(row.try_get::<_, i32>(0)?))?;
     }
     transaction.execute(
         "UPDATE fp_v2.quotas SET watermark=$2,profiles=$3,flows=$4,structures=$5,buckets=$6,runs=$7,interned_values=$8,canonical_bytes=$9 WHERE authorized=$1",

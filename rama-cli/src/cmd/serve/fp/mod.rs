@@ -47,7 +47,10 @@ use rama::{
     rt::Executor,
     service::service_fn,
     telemetry::tracing,
-    tls::{boring::server::TlsAcceptorLayer, server::TlsServerConfig},
+    tls::{
+        boring::{core::memcmp, server::TlsAcceptorLayer},
+        server::TlsServerConfig,
+    },
     ua::layer::classifier::UserAgentClassifierLayer,
     utils::{
         backoff::ExponentialBackoff,
@@ -555,7 +558,11 @@ where
                 .iter()
                 .filter_map(|(k, v)| {
                     if k.eq_ignore_ascii_case("rama-storage-auth") {
-                        if Some(v) == self.storage_auth.as_deref() {
+                        if self.storage_auth.as_deref().is_some_and(|expected| {
+                            !expected.is_empty()
+                                && expected.len() == v.len()
+                                && memcmp::eq(expected.as_bytes(), v.as_bytes())
+                        }) {
                             req.extensions().insert(StorageAuthorized);
                         }
                         Some("rama-storage-auth=xxx".to_owned())

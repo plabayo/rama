@@ -229,6 +229,23 @@ pub(crate) struct Shared {
 }
 
 impl State {
+    fn freeze_first_request_observation(&mut self) {
+        if self.control.settings().is_none()
+            || self.observation.as_ref().is_none_or(|record| {
+                !record.first_request_seen || record.first_request.get().is_some()
+            })
+        {
+            return;
+        }
+        if let Some(snapshot) = self.observation_snapshot()
+            && let Some(record) = &self.observation
+        {
+            // Budget exhaustion is frozen too; later traffic cannot replace
+            // an incomplete boundary with a different, apparently complete one.
+            let _already_published = record.first_request.set(snapshot);
+        }
+    }
+
     fn observation_snapshot(&mut self) -> Option<Arc<H3ObservationSnapshot>> {
         let Self {
             observation,
@@ -288,8 +305,12 @@ impl Shared {
     ) -> Option<(H3Observer, H3RequestObservation)> {
         let limits = self.config.observation.as_deref()?;
         let mut state = self.state.lock();
-        let unavailable = state.observation.as_ref()?.unavailable.clone();
+        let record = state.observation.as_mut()?;
+        let unavailable = record.unavailable.clone();
+        record.first_request_seen = true;
+        let first_request = record.first_request.clone();
         let snapshot = state.observation_snapshot()?;
+        state.freeze_first_request_observation();
         let captured = state.decoder.take_field_observation(stream_id);
         let captured_complete = captured.is_some();
         let retained = captured.unwrap_or_default();
@@ -310,12 +331,14 @@ impl Shared {
             H3Observer::new(self, unavailable),
             H3RequestObservation {
                 connection: snapshot,
+                first_request,
                 fields: retained,
                 fields_complete,
                 priority,
             },
         ))
     }
+
     pub(crate) fn from_connection(
         config: Config,
         role: Role,
@@ -1144,6 +1167,7 @@ pub(crate) async fn receive_uni(
                         .encoder
                         .apply_peer_settings(settings)
                         .map_err(compression_error)?;
+                    state.freeze_first_request_observation();
                     drop(state);
                     shared
                         .peer_datagrams
@@ -1735,8 +1759,41 @@ mod observation_tests {
             state.control.receive(&event).unwrap();
             state.observation.as_mut().unwrap().control(&event);
         }
+        state.freeze_first_request_observation();
         drop(state);
         shared.settings_ready.notify_waiters();
+    }
+
+    #[test]
+    fn observation_first_request_boundary_does_not_follow_eligible_routes() {
+        for settings_first in [false, true] {
+            let shared = shared(ObservationLimits::default());
+            if settings_first {
+                settings(&shared);
+            }
+            let (_, first) = shared.request_observation(0, &[]).unwrap();
+            assert_eq!(first.first_request.get().is_some(), settings_first);
+            let request_snapshot = first.connection.clone();
+            if !settings_first {
+                settings(&shared);
+                assert!(!request_snapshot.settings_received);
+            }
+            let boundary = first.first_request.get().unwrap().clone();
+            assert!(boundary.settings_received);
+            {
+                let mut state = shared.state.lock();
+                state
+                    .observation
+                    .as_mut()
+                    .unwrap()
+                    .stream(6, StreamType::QPACK_ENCODER);
+            }
+            let (_, request) = shared.request_observation(4, &[]).unwrap();
+            assert!(Arc::ptr_eq(&boundary, request.first_request.get().unwrap()));
+            assert!(request.connection.revision > boundary.revision);
+            assert!(boundary.settings_received);
+            assert_eq!(boundary.streams.len(), 0);
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -1819,7 +1876,7 @@ mod observation_tests {
             retained_snapshots: 1,
             ..ObservationLimits::default()
         });
-        let observer = observer(&shared);
+        let observer = H3Observer::new(&shared, Arc::new(Default::default()));
         let first = observer.snapshot();
         assert!(first.completeness.snapshot);
         settings(&shared);
@@ -1831,6 +1888,50 @@ mod observation_tests {
         let current = observer.snapshot();
         assert!(current.completeness.snapshot);
         assert!(current.settings.is_some());
+    }
+
+    #[test]
+    fn observation_first_request_pin_counts_toward_snapshot_capacity() {
+        let shared = shared(ObservationLimits {
+            retained_snapshots: 2,
+            ..ObservationLimits::default()
+        });
+        let observer = observer(&shared);
+        settings(&shared);
+        shared.state.lock().observation.as_mut().unwrap().changed();
+        let retained = observer.snapshot();
+        assert!(retained.completeness.snapshot);
+        shared.state.lock().observation.as_mut().unwrap().changed();
+        assert!(!observer.snapshot().completeness.snapshot);
+        drop(retained);
+        assert!(observer.snapshot().completeness.snapshot);
+        let state = shared.state.lock();
+        assert!(
+            state
+                .observation
+                .as_ref()
+                .unwrap()
+                .first_request
+                .get()
+                .unwrap()
+                .settings_received
+        );
+    }
+
+    #[test]
+    fn observation_first_request_budget_failure_cannot_move_the_boundary() {
+        let shared = shared(ObservationLimits {
+            retained_snapshots: 1,
+            ..ObservationLimits::default()
+        });
+        let (observer, first) = shared.request_observation(0, &[]).unwrap();
+        let boundary = first.first_request.clone();
+        assert!(boundary.get().is_none());
+        settings(&shared);
+        assert!(!boundary.get().unwrap().completeness.snapshot);
+        drop(first);
+        assert!(observer.snapshot().completeness.snapshot);
+        assert!(!boundary.get().unwrap().completeness.snapshot);
     }
 
     #[test]

@@ -62,13 +62,18 @@ fn add_weight(
                 observed: left,
                 sample_size: left_size,
                 population: left_population,
+                history_known: left_history,
             },
             AnalyzedOrderWeight::Sample {
                 observed: right,
                 sample_size: right_size,
                 population: right_population,
+                history_known: right_history,
             },
-        ) if left_size == right_size && left_population == right_population => {
+        ) if left_size == right_size
+            && left_population == right_population
+            && left_history == right_history =>
+        {
             *left = left
                 .checked_add(*right)
                 .ok_or(ProfileDataError::CounterOverflow)?
@@ -265,6 +270,7 @@ mod tests {
                 observed: 1,
                 sample_size: 2,
                 population: 3,
+                history_known: true,
             },
         )
         .unwrap_err();
@@ -272,6 +278,7 @@ mod tests {
             observed: 1,
             sample_size: 2,
             population: 3,
+            history_known: true,
         };
         add_weight(
             &mut count,
@@ -279,6 +286,7 @@ mod tests {
                 observed: 1,
                 sample_size: 2,
                 population: 4,
+                history_known: true,
             },
         )
         .unwrap_err();

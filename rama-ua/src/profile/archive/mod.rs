@@ -38,6 +38,14 @@ impl ProfileArchiveEntry {
         horizon: u32,
         limits: ProfileAnalysisLimits,
     ) -> Result<CompiledProfileArchiveEntry, ProfileDataError> {
+        if self
+            .evidence
+            .scopes
+            .windows(2)
+            .any(|pair| pair[0].scope.id >= pair[1].scope.id)
+        {
+            return Err(ProfileDataError::Invalid("archive scope order"));
+        }
         let analysis = analyze_profile_evidence(
             &self.evidence,
             authorized,

@@ -283,6 +283,7 @@ fn sampled_capture_weights_cover_only_the_reservoir_once() {
                 observed,
                 sample_size: 256,
                 population: 1000,
+                history_known: true,
             } => observed,
             _ => panic!("wrong weight domain"),
         })
@@ -291,7 +292,7 @@ fn sampled_capture_weights_cover_only_the_reservoir_once() {
     assert_eq!(analysis.counts.total, 1000);
     assert!(matches!(
         analysis.orders[0].evidence.derived,
-        Some(DerivedOrderRule::Sorted { .. })
+        Some(DerivedOrderRule::Relative { .. })
     ));
 }
 
@@ -304,4 +305,77 @@ fn tls_reserved_range_is_exact_and_does_not_include_lookalikes() {
         assert!(!CaptureOrderPath::TlsExtensions.reserved(id));
     }
     assert!(!CaptureOrderPath::Headers.reserved(0x0a0a));
+}
+
+#[test]
+fn sampled_capture_weights_preserve_unknown_history() {
+    let values: Vec<_> = (0..80)
+        .map(|index| headers(&["accept"], 33 + index))
+        .collect();
+    let original = bucket(&values, CanonicalDomain::Headers);
+    let mut snapshot = original.snapshot();
+    assert!(snapshot.counts.untracked > 0);
+    snapshot.counts.losses.history_known = false;
+    let restored = CountedObservationBucket::from_snapshot(
+        &snapshot,
+        CanonicalDomain::Headers,
+        ValueId([7; 32]),
+        [8; 32],
+        ProfileBucketLimits::default(),
+    )
+    .unwrap();
+    let analysis = analyze_capture_bucket(&restored, OrderAnalysisConfig::default()).unwrap();
+    assert!(!analysis.variants.is_empty());
+    assert!(analysis.variants.iter().all(|variant| matches!(
+        variant.weight,
+        AnalyzedOrderWeight::Sample {
+            history_known: false,
+            ..
+        }
+    )));
+}
+
+#[cfg(feature = "tls")]
+#[test]
+fn absent_tls_extension_path_is_not_an_observed_empty_list() {
+    let values: Vec<_> = (0..64)
+        .map(|index| {
+            let extensions = if index % 2 == 0 {
+                vec![TlsCapturedExtension {
+                    id: 10,
+                    value: TlsCapturedExtensionValue::U16List(vec![29, 23].into()),
+                }]
+            } else {
+                Vec::new()
+            };
+            TlsCapture {
+                completeness: ProfileCaptureCompleteness::Complete,
+                transport: TlsCaptureTransport::Tcp,
+                protocol_version: 0x0303,
+                ciphers: vec![0x1301].into(),
+                compression: vec![0].into(),
+                extensions: extensions.into(),
+            }
+            .canonical(TlsCaptureLimits::default())
+            .unwrap()
+        })
+        .collect();
+    let analysis = analyze_capture_bucket(
+        &bucket(&values, CanonicalDomain::Tls),
+        OrderAnalysisConfig::default(),
+    )
+    .unwrap();
+    let path = analysis
+        .orders
+        .iter()
+        .find(|path| path.path == CaptureOrderPath::TlsExtensionValues { extension: 10 })
+        .unwrap();
+    assert_eq!(path.missing_samples.len(), 32);
+    assert!(path.evidence.derived.is_none());
+    assert!(matches!(
+        path.evidence.disposition,
+        OrderAnalysisDisposition::MissingPath
+    ));
+    assert_eq!(path.variants.len(), 1);
+    assert_eq!(path.variants[0].elements.len(), 2);
 }

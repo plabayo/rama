@@ -48,8 +48,9 @@ pub enum H3CapturedEvent {
     },
 }
 
-/// A prefix at one immutable request-head boundary. Recorder revision gaps have
-/// no wire meaning. Stream and control events share relative order; QPACK has
+/// A prefix at one immutable connection boundary. Fingerprint collection freezes
+/// it once both the first request and peer SETTINGS have arrived. Recorder
+/// revision gaps have no wire meaning. Stream and control events share relative order; QPACK has
 /// only its own instruction order. No order between those sequences is invented.
 /// Inserted names/values and ignored frame payloads are absent, so this model
 /// alone does not grant exact dynamic-table or unknown-frame replay capability.
@@ -69,6 +70,9 @@ impl H3ClientSequenceCapture {
         let complete = source.completeness;
         if !(complete.snapshot
             && complete.local_settings
+            && complete.settings
+            && source.settings_received
+            && source.settings.is_some()
             && complete.streams
             && complete.control
             && complete.qpack)
@@ -159,13 +163,22 @@ impl H3ClientSequenceCapture {
             }
             previous = *sequence;
         }
-        let result = Self {
+        let mut result = Self {
             completeness: ProfileCaptureCompleteness::Complete,
             local_settings,
             events: events.into_iter().map(|(_, event)| event).collect(),
             encoder_instructions: source.encoder_instructions.clone().into(),
         };
         result.canonical(limits)?;
+        // Names are not available for literal/dynamic references. Conservatively
+        // omit every inserted value length, including cookie/auth/body fields.
+        for instruction in &mut result.encoder_instructions {
+            match instruction {
+                ObservedEncoderInstruction::InsertNameReference { value_bytes, .. }
+                | ObservedEncoderInstruction::InsertLiteral { value_bytes, .. } => *value_bytes = 0,
+                _ => (),
+            }
+        }
         Ok(result)
     }
 
@@ -387,6 +400,34 @@ fn encode(
     {
         return Err(ProfileDataError::LimitExceeded("H3 sequence elements"));
     }
+    let normalized;
+    let capture = if structural {
+        let mut events: Vec<_> = capture
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                H3CapturedEvent::Stream { .. } => Some(event.clone()),
+                H3CapturedEvent::Control { .. } => None,
+            })
+            .collect();
+        // Control arrival relative to independent unidirectional streams and
+        // request-owned priority/QPACK traffic do not identify a client.
+        events.push(H3CapturedEvent::Control {
+            frame_type: 4,
+            length: 0,
+            element_id: None,
+            value: Box::default(),
+        });
+        normalized = H3ClientSequenceCapture {
+            completeness: capture.completeness,
+            local_settings: capture.local_settings.clone(),
+            events: events.into(),
+            encoder_instructions: Box::default(),
+        };
+        &normalized
+    } else {
+        capture
+    };
     let local = settings_bytes(&capture.local_settings, limits, structural)?;
     let mut writer = CanonicalWriter::new(domain(structural), limits.bytes)?;
     writer.u8(capture.completeness.tag())?;
@@ -475,6 +516,9 @@ fn encode(
             }
         }
     }
+    if !settings {
+        return Err(ProfileDataError::Incomplete("H3 SETTINGS"));
+    }
     if !capture.encoder_instructions.is_empty() && critical & 2 == 0 {
         return Err(ProfileDataError::Invalid("missing H3 QPACK encoder stream"));
     }
@@ -527,7 +571,7 @@ fn encode(
                 writer.u8(1)?;
                 writer.u8(u8::from(*is_static))?;
                 writer.u64(if structural && !*is_static { 0 } else { *index })?;
-                writer.u64(if structural { 0 } else { *value_bytes as u64 })?;
+                writer.u64(0)?;
                 writer.u8(u8::from(*value_huffman))?;
             }
             ObservedEncoderInstruction::InsertLiteral {
@@ -541,7 +585,7 @@ fn encode(
                 }
                 writer.u8(2)?;
                 writer.u64(if structural { 0 } else { *name_bytes as u64 })?;
-                writer.u64(if structural { 0 } else { *value_bytes as u64 })?;
+                writer.u64(0)?;
                 writer.u8(u8::from(*name_huffman))?;
                 writer.u8(u8::from(*value_huffman))?;
             }
@@ -567,13 +611,11 @@ mod tests {
     use sha2::{Digest as _, Sha256};
 
     #[test]
-    fn compact_local_settings_accept_exact_budget_before_peer_streams() {
+    fn compact_local_settings_accept_exact_budget_with_settings_prefix() {
         for count in [0, 1, 2, 3, 16, 256] {
             let mut source = source();
-            source.settings_received = false;
-            source.settings = None;
-            source.streams.clear();
-            source.control.clear();
+            source.streams.retain(|stream| stream.stream_type == 0);
+            source.control.retain(|frame| frame.frame_type == 4);
             source.encoder_instructions.clear();
             source.local_settings = (0..count)
                 .map(|index| ObservedSetting {
@@ -595,7 +637,9 @@ mod tests {
                 };
                 value.validated_domain(exact.bytes).unwrap();
                 value.validated_domain(exact.bytes - 1).unwrap_err();
-                H3ClientSequenceCapture::capture_at_request_head(&source, exact).unwrap();
+                // Structural encoding omits per-request details; its budget
+                // does not substitute for the raw capture's input budget.
+                value.validated_domain(exact.bytes).unwrap();
             }
         }
     }
@@ -767,7 +811,7 @@ mod tests {
         source.streams.clear();
         source.control.clear();
         source.encoder_instructions.clear();
-        H3ClientSequenceCapture::capture_at_request_head(&source, limits).unwrap();
+        H3ClientSequenceCapture::capture_at_request_head(&source, limits).unwrap_err();
     }
 
     #[test]
@@ -906,7 +950,7 @@ mod tests {
         }
         let mut value = capture();
         value.encoder_instructions[0] = ObservedEncoderInstruction::Capacity { capacity: 1024 };
-        assert_ne!(key.unwrap(), value.structural(limits).unwrap().id);
+        assert_eq!(key.unwrap(), value.structural(limits).unwrap().id);
     }
 
     #[test]
@@ -987,14 +1031,22 @@ mod tests {
                     ..limits
                 })
                 .unwrap_err();
-            H3ClientSequenceCapture::from_canonical(
+            let decoded = H3ClientSequenceCapture::from_canonical(
                 &value,
                 H3SequenceCaptureLimits {
                     observed_field_bytes: 511,
                     ..limits
                 },
-            )
-            .unwrap_err();
+            );
+            if matches!(
+                capture.encoder_instructions[0],
+                ObservedEncoderInstruction::InsertLiteral { .. }
+            ) {
+                decoded.unwrap_err();
+            } else {
+                // The inserted value length is deliberately not retained.
+                decoded.unwrap();
+            }
             capture
                 .canonical(H3SequenceCaptureLimits {
                     bytes: value.bytes.len() - 1,
@@ -1005,19 +1057,58 @@ mod tests {
     }
 
     #[test]
+    fn h3_structure_ignores_request_qpack_priority_and_control_arrival() {
+        let limits = H3SequenceCaptureLimits::default();
+        let original = capture();
+        let structure = original.structural(limits).unwrap();
+        let sample = original.canonical(limits).unwrap();
+        for static_index in [5, 84] {
+            // cookie and authorization
+            let mut different = capture();
+            different.encoder_instructions = Box::new([
+                ObservedEncoderInstruction::Capacity { capacity: 1024 },
+                ObservedEncoderInstruction::InsertNameReference {
+                    is_static: true,
+                    index: static_index,
+                    value_bytes: 37,
+                    value_huffman: false,
+                },
+                ObservedEncoderInstruction::Duplicate { index: 0 },
+            ]);
+            different.events[4] = H3CapturedEvent::Control {
+                frame_type: 0xf0700,
+                length: 9,
+                element_id: Some(12),
+                value: b"u=7, i".as_slice().into(),
+            };
+            // SETTINGS arrives before the independent encoder stream.
+            different.events.swap(1, 2);
+            assert_eq!(different.structural(limits).unwrap().id, structure.id);
+            assert_ne!(different.canonical(limits).unwrap().id, sample.id);
+            different.encoder_instructions = Box::default();
+            assert_eq!(different.structural(limits).unwrap().id, structure.id);
+        }
+        let mut before_settings = source();
+        before_settings.settings_received = false;
+        before_settings.settings = None;
+        before_settings.control.clear();
+        H3ClientSequenceCapture::capture_at_request_head(&before_settings, limits).unwrap_err();
+    }
+
+    #[test]
     fn h3_sequence_has_independent_canonical_goldens() {
         let capture = capture();
         let limits = H3SequenceCaptureLimits::default();
         for (value, expected, digest) in [
             (
                 capture.canonical(limits).unwrap(),
-                "72616d612d70726f66696c65000001001301000000000000001000000000000000010000000000001000000000000000000600000000000000000200000000000000000000000000000000120000000000000002010000000000000004000000000000000000000000000000000000000000000000000a00000000000000210100000000000f070000000000000000040100000000000000000000000000000003753d31010000000000000021000000000000000d0000000000000000000000000000000002000000000000001000020000000000000004000000000000000c0001",
-                "572c43cfb0df432885ede95b85088d1fa254b5ed6117bdd6a4c608872b875060",
+                "72616d612d70726f66696c65000001001301000000000000001000000000000000010000000000001000000000000000000600000000000000000200000000000000000000000000000000120000000000000002010000000000000004000000000000000000000000000000000000000000000000000a00000000000000210100000000000f070000000000000000040100000000000000000000000000000003753d31010000000000000021000000000000000d000000000000000000000000000000000200000000000000100002000000000000000400000000000000000001",
+                "17dafb08287c4f1b63cef92932102914dd0d2363ef485fac1410a047b8fce619",
             ),
             (
                 capture.structural(limits).unwrap(),
-                "72616d612d70726f66696c65000001001401000000000000001000000000000000010000000000001000000000000000000600000000000000000200000000000000000000000000000000060000000000000002010000000000000004000000000000000000000000000000000000000000000000000a00000000000000210100000000000f070000000000000000000100000000000000000000000000000003753d310100000000000000210000000000000000000000000000000000000000000000000200000000000000100002000000000000000000000000000000000001",
-                "a20e4ac5859b944a16409f3e86c3d35fc200b084ca8116a0ba1c2c77b2d9bf0e",
+                "72616d612d70726f66696c6500000100140100000000000000100000000000000001000000000000100000000000000000040000000000000000020000000000000000000000000000000006000000000000000200000000000000000a000000000000002101000000000000000400000000000000000000000000000000000000000000000000",
+                "7a3a2c785c879a0190c797ec5552ede85cfa5c54a28969960966ec4a13067974",
             ),
         ] {
             let bytes = value
@@ -1091,5 +1182,40 @@ mod tests {
             index: (1_u64 << 62) - 1,
         };
         capture.canonical(limits).unwrap();
+    }
+
+    #[test]
+    fn qpack_samples_do_not_retain_request_value_lengths() {
+        let limits = H3SequenceCaptureLimits::default();
+        for reference in [false, true] {
+            let mut sample_id = None;
+            for length in [1, 8, 128, kib(8)] {
+                let mut source = source();
+                source.encoder_instructions = vec![if reference {
+                    ObservedEncoderInstruction::InsertNameReference {
+                        is_static: true,
+                        index: 5,
+                        value_bytes: length,
+                        value_huffman: true,
+                    }
+                } else {
+                    ObservedEncoderInstruction::InsertLiteral {
+                        name_bytes: 6,
+                        value_bytes: length,
+                        name_huffman: false,
+                        value_huffman: true,
+                    }
+                }];
+                let captured =
+                    H3ClientSequenceCapture::capture_at_request_head(&source, limits).unwrap();
+                assert!(matches!(
+                    captured.encoder_instructions[0],
+                    ObservedEncoderInstruction::InsertNameReference { value_bytes: 0, .. }
+                        | ObservedEncoderInstruction::InsertLiteral { value_bytes: 0, .. }
+                ));
+                let encoded = captured.canonical(limits).unwrap();
+                assert_eq!(*sample_id.get_or_insert(encoded.id), encoded.id);
+            }
+        }
     }
 }

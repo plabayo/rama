@@ -6,7 +6,8 @@ use rama_http::proto::h2::PseudoHeader;
 use serde::Serialize;
 
 use super::{
-    AnalyzedOrderWeight, CaptureNumericDistribution, OrderAnalysisConfig, OrderRuleEvidence,
+    AnalyzedOrderWeight, CaptureNumericDistribution, OrderAnalysisConfig, OrderAnalysisDisposition,
+    OrderRuleEvidence,
     numeric::analyze_numeric_variants,
     order::{OrderWorkBudget, analyze_identifiers_with_budget, sampling_population},
 };
@@ -64,6 +65,8 @@ pub struct CaptureOrderAnalysis {
     pub path: CaptureOrderPath,
     pub dictionary: Box<[CaptureOrderElement]>,
     pub variants: Box<[CaptureOrderVariant]>,
+    /// Indices on the shared reservoir axis whose capture lacks this path.
+    pub missing_samples: Box<[usize]>,
     /// Rules for named elements use dictionary offsets; numeric elements use wire IDs.
     pub evidence: OrderRuleEvidence,
 }
@@ -294,6 +297,7 @@ pub fn analyze_capture_bucket(
                 observed: *count,
                 sample_size: snapshot.samples.len(),
                 population: sampling_population(&snapshot.counts)?,
+                history_known: snapshot.counts.losses.history_known,
             }
         } else {
             continue;
@@ -338,7 +342,7 @@ pub fn analyze_capture_bucket(
                         .map_err(|_error| ProfileDataError::Invalid("missing capture element"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let ids = sequence
+            let ids: Vec<_> = sequence
                 .iter()
                 .zip(&indices)
                 .map(|(element, index)| match element {
@@ -352,34 +356,45 @@ pub fn analyze_capture_bucket(
                 elements: indices.into(),
             });
         }
+        let mut missing_samples = Vec::new();
         let samples = snapshot
             .samples
             .iter()
-            .map(|sample| {
-                order_samples
-                    .get(&sample.value)
-                    .map(Vec::as_slice)
-                    .unwrap_or_default()
+            .enumerate()
+            .filter_map(|(index, sample)| {
+                if let Some(order) = order_samples.get(&sample.value) {
+                    Some(order.as_slice())
+                } else {
+                    missing_samples.push(index);
+                    None
+                }
             })
             .collect::<Vec<_>>();
-        let evidence = analyze_identifiers_with_budget(
+        let mut evidence = analyze_identifiers_with_budget(
             &samples,
             &snapshot.counts.losses,
             config,
             |id| path.reserved(id),
             &mut budget,
         )?;
+        if !missing_samples.is_empty() {
+            // Absence is not an observed empty order. No rule may use a
+            // filtered sample axis to synthesize missing protocol content.
+            evidence.derived = None;
+            evidence.disposition = OrderAnalysisDisposition::MissingPath;
+        }
         orders.push(CaptureOrderAnalysis {
             path,
             dictionary: dictionary.into(),
             variants: order_variants.into(),
+            missing_samples: missing_samples.into(),
             evidence,
         });
     }
     let numeric = analyze_numeric_variants(&variants, snapshot.domain, config)?;
     Ok(CountedCaptureAnalysis {
         numeric,
-        classifier_revision: 1,
+        classifier_revision: 2,
         order_work: budget.used(),
         domain: snapshot.domain,
         scope: snapshot.scope,

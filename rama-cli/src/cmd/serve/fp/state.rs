@@ -2,7 +2,7 @@ use std::{fmt, sync::Arc};
 
 use rama::net::address::ip::geo::IpGeoDb;
 use rama::{
-    error::{BoxError, ErrorContext},
+    error::{BoxError, BoxErrorExt, ErrorContext},
     rt::Executor,
 };
 
@@ -40,6 +40,11 @@ impl State {
         storage_auth: Option<&str>,
         exec: &Executor,
     ) -> Result<Self, BoxError> {
+        if storage_auth.is_some_and(str::is_empty) {
+            return Err(BoxError::from_static_str(
+                "RAMA_FP_STORAGE_COOKIE must not be empty",
+            ));
+        }
         let storage = match pg_url {
             Some(pg_url) => Some(
                 Storage::try_new(pg_url, exec)
@@ -85,5 +90,12 @@ mod tests {
             formatted.contains("<redacted>"),
             "debug missing storage auth redaction marker: {formatted}"
         );
+    }
+
+    #[tokio::test]
+    async fn empty_storage_secret_is_rejected_before_starting_storage() {
+        State::new(None, Some(""), &Executor::default())
+            .await
+            .unwrap_err();
     }
 }

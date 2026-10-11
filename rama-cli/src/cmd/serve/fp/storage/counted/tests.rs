@@ -6,23 +6,24 @@ use rama::{
     ua::profile::{
         CanonicalDomain, CaptureLevel, CapturedSlot, CapturedSlotKind, ConnectionContext, FlowKey,
         H2Capture, H2CaptureLimits, H2CapturedFrame, H2CapturedSetting, HeaderCapture,
-        HeaderCapturePolicy, JointCapture, ObservationWeight, OrderCaptureLimits, OrderNamespace,
-        OrderedProtocolCapture, ProfileAnalysisLimits, ProfileCaptureCompleteness, ProfileKey,
-        ProtocolValue, RequestInitiator, TlsCapture, TlsCaptureLimits, TlsCaptureTransport,
-        TlsCapturedExtension, TlsCapturedExtensionValue, UntrackedDistinctSnapshot,
-        analyze_profile_evidence,
+        HeaderCapturePolicy, Http1Settings, JointCapture, ObservationWeight, OrderCaptureLimits,
+        OrderNamespace, OrderedProtocolCapture, ProfileAnalysisLimits, ProfileCaptureCompleteness,
+        ProfileKey, ProtocolValue, RequestInitiator, TlsCapture, TlsCaptureLimits,
+        TlsCaptureTransport, TlsCapturedExtension, TlsCapturedExtensionValue,
+        UntrackedDistinctSnapshot, UserAgentProfileInput, analyze_profile_evidence,
     },
     utils::octets::{kib, mib},
 };
 use std::{
     error::Error,
     io::{Write as _, stdout},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt},
     net::UnixStream,
     task::JoinSet,
+    time::timeout,
 };
 use tokio_postgres::{
     Error as PgError, NoTls,
@@ -2665,4 +2666,338 @@ async fn measure_counted_profile_day_storage_and_fourteen_day_merge() {
             "timing_assertions":false
         })
     ).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn fp_quota_lock_timeout_leaves_no_server_statement_running() {
+    let (config, mut client) = migrations::tests::isolated_database().await.unwrap();
+    client
+        .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+        .await
+        .unwrap();
+    migrations::apply(&mut client).await.unwrap();
+    for legacy in [false, true] {
+        let held = client.transaction().await.unwrap();
+        held.query_one(
+            "SELECT runs FROM fp_v2.quotas WHERE authorized=FALSE FOR UPDATE",
+            &[],
+        )
+        .await
+        .unwrap();
+        let mut contender = migrations::tests::connect(&config).await.unwrap();
+        let pid: i32 = contender
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let input = capture("text/html").unwrap();
+        let result = timeout(Duration::from_secs(2), async {
+            if legacy {
+                let mut input = UserAgentProfileInput::new("locked-legacy-test");
+                input.h1_settings = Some(Http1Settings {
+                    title_case_headers: true,
+                });
+                let revision = LegacyRevision {
+                    source_table: "public-ua-profiles",
+                    source_key: [1; 32],
+                    row_digest: [2; 32],
+                    observation_day: 100,
+                    nonce: [3; 12],
+                };
+                ingest_legacy(
+                    &mut contender,
+                    100,
+                    false,
+                    &input,
+                    &revision,
+                    [7; 32],
+                    limits(),
+                )
+                .await
+            } else {
+                ingest(
+                    &mut contender,
+                    100,
+                    attempt(false, 1),
+                    &input,
+                    [7; 32],
+                    limits(),
+                )
+                .await
+            }
+        })
+        .await;
+        // Release the fixture even if the guard was reverted and the client timed out.
+        held.rollback().await.unwrap();
+        let error = result
+            .expect("server must enforce its lock budget")
+            .unwrap_err();
+        let IngestFailure::Rejected(error) = error else {
+            panic!("failure preceded COMMIT")
+        };
+        assert_eq!(
+            error.downcast_ref::<PgError>().unwrap().code(),
+            Some(&SqlState::LOCK_NOT_AVAILABLE)
+        );
+        contender.simple_query("SELECT 1").await.unwrap();
+        let row = client
+            .query_one(
+                "SELECT state,xact_start IS NULL FROM pg_stat_activity WHERE pid=$1",
+                &[&pid],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.get::<_, String>(0), "idle");
+        assert!(row.get::<_, bool>(1));
+        assert_eq!(
+            client
+                .query_one("SELECT count(*) FROM fp_v2.runs", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            0
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn fp_legacy_imports_cannot_exhaust_live_run_capacity() {
+    let (_config, mut client) = migrations::tests::isolated_database().await.unwrap();
+    client
+        .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+        .await
+        .unwrap();
+    migrations::apply(&mut client).await.unwrap();
+    let mut limits = limits();
+    limits.retained[4] = 4;
+    let input = capture("text/html").unwrap();
+    for index in 1..=3 {
+        let mut next = attempt(false, 1);
+        next.observation.run = CaptureRunId::new(100, [index; 12]).0;
+        ingest(&mut client, 100, next, &input, [7; 32], limits)
+            .await
+            .unwrap();
+    }
+    let mut legacy = UserAgentProfileInput::new("legacy-quota-test");
+    legacy.h1_settings = Some(Http1Settings {
+        title_case_headers: true,
+    });
+    for index in 1..=5 {
+        let revision = LegacyRevision {
+            source_table: "public-ua-profiles",
+            source_key: [index; 32],
+            row_digest: [index; 32],
+            observation_day: 100,
+            nonce: [index + 10; 12],
+        };
+        let result =
+            ingest_legacy(&mut client, 100, false, &legacy, &revision, [7; 32], limits).await;
+        if index <= 4 {
+            assert!(result.unwrap());
+        } else {
+            result.unwrap_err();
+        }
+    }
+    let mut next = attempt(false, 1);
+    next.observation.run = CaptureRunId::new(100, [11; 12]).0;
+    ingest(&mut client, 100, next, &input, [7; 32], limits)
+        .await
+        .unwrap_err();
+    next.observation.run = CaptureRunId::new(100, [4; 12]).0;
+    assert!(
+        ingest(&mut client, 100, next, &input, [7; 32], limits)
+            .await
+            .unwrap()
+    );
+    let row = client
+        .query_one(
+            "SELECT runs,legacy_runs FROM fp_v2.quotas WHERE authorized=FALSE",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!((row.get::<_, i64>(0), row.get::<_, i64>(1)), (4, 4));
+    for pass in 0..16 {
+        if !prune(&mut client, false, 114, limits, 1).await.unwrap() {
+            break;
+        }
+        assert!(pass < 15);
+    }
+    let row = client
+        .query_one(
+            "SELECT runs,legacy_runs,interned_values FROM fp_v2.quotas WHERE authorized=FALSE",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            row.get::<_, i64>(0),
+            row.get::<_, i64>(1),
+            row.get::<_, i64>(2)
+        ),
+        (0, 0, 0)
+    );
+}
+
+#[tokio::test]
+#[ignore = "measures default key quotas in the private PostgreSQL fixture; run without competing builds"]
+async fn measure_fp_prune_at_default_key_quotas() {
+    let (_config, mut client) = migrations::tests::isolated_database().await.unwrap();
+    client
+        .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+        .await
+        .unwrap();
+    migrations::apply(&mut client).await.unwrap();
+    // Synthetic canonical payloads exercise table/index cardinalities and TOAST
+    // behaviour; this measures retention, not parsing or fingerprint analysis.
+    client.batch_execute("SET statement_timeout='180s';
+        INSERT INTO fp_v2.profiles SELECT FALSE,sha256(('p'||n)::bytea),'p'::bytea FROM generate_series(0,16383) n;
+        INSERT INTO fp_v2.flows SELECT FALSE,sha256(('p'||(n%16384))::bytea),sha256(('f'||n)::bytea),'f'::bytea FROM generate_series(0,131071) n;
+        INSERT INTO fp_v2.structures SELECT FALSE,sha256(('s'||n)::bytea),1,0,'s'::bytea FROM generate_series(0,262143) n;
+        INSERT INTO fp_v2.values SELECT FALSE,sha256(('v'||n)::bytea),1,repeat('v',800)::bytea FROM generate_series(0,1048575) n;
+        INSERT INTO fp_v2.buckets (authorized,scope,day,profile_id,flow_id,structure_id,scope_canonical,domain,format_version,total,untracked,retained_bytes)
+          SELECT FALSE,sha256(('b'||n)::bytea),CASE WHEN n<1024 THEN 86 ELSE 100 END,
+            sha256(('p'||(n%16384))::bytea),sha256(('f'||(n%131072))::bytea),sha256(('s'||(n%262144))::bytea),repeat('b',64)::bytea,1,1,1,0,800
+          FROM generate_series(0,1048575) n;
+        INSERT INTO fp_v2.literal_counts SELECT FALSE,sha256(('b'||n)::bytea),CASE WHEN n<1024 THEN 86 ELSE 100 END,sha256(('v'||n)::bytea),1 FROM generate_series(0,1048575) n;
+        INSERT INTO fp_v2.samples SELECT FALSE,sha256(('b'||n)::bytea),CASE WHEN n<1024 THEN 86 ELSE 100 END,substring(sha256(('r'||(n%16384))::bytea) FROM 1 FOR 16),1,sha256(('priority'||n)::bytea),sha256(('v'||n)::bytea) FROM generate_series(0,1048575) n;
+        INSERT INTO fp_v2.runs (authorized,id,created_day,checkpoint) SELECT FALSE,substring(sha256(('r'||n)::bytea) FROM 1 FOR 16),100,'{}' FROM generate_series(0,16383) n;
+        UPDATE fp_v2.quotas SET watermark=100,profiles=16384,flows=131072,structures=262144,buckets=1048576,runs=16384,interned_values=1048576,canonical_bytes=16384+131072+262144+1048576::bigint*(800+64),sampler_seed=decode(repeat('07',32),'hex') WHERE authorized=FALSE;
+        ANALYZE fp_v2.profiles; ANALYZE fp_v2.flows; ANALYZE fp_v2.structures; ANALYZE fp_v2.values; ANALYZE fp_v2.buckets; ANALYZE fp_v2.literal_counts; ANALYZE fp_v2.samples; ANALYZE fp_v2.runs;").await.unwrap();
+    let limits = super::super::startup::store_limits();
+    for pass in 0..5 {
+        let started = Instant::now();
+        let more = prune(&mut client, false, 100, limits, 256).await.unwrap();
+        let elapsed = started.elapsed();
+        let row = client.query_one("SELECT buckets,interned_values,canonical_bytes FROM fp_v2.quotas WHERE authorized=FALSE", &[]).await.unwrap();
+        writeln!(
+            stdout().lock(),
+            "prune_default_key_quotas pass={pass} elapsed_us={} buckets={} values={} canonical_bytes={} more={more}",
+            elapsed.as_micros(),
+            row.get::<_, i64>(0),
+            row.get::<_, i64>(1),
+            row.get::<_, i64>(2)
+        ).unwrap();
+        assert_eq!(row.get::<_, i64>(0), 1_048_576 - 256 * (pass + 1).min(4));
+        assert_eq!(row.get::<_, i64>(1), row.get::<_, i64>(0));
+        assert_eq!(more, pass < 4);
+    }
+    for table in [
+        "profiles",
+        "flows",
+        "structures",
+        "values",
+        "buckets",
+        "literal_counts",
+        "samples",
+        "runs",
+    ] {
+        let row = client.query_one(&format!("SELECT count(*)::bigint,pg_total_relation_size('fp_v2.{table}') FROM fp_v2.{table}"), &[]).await.unwrap();
+        writeln!(
+            stdout().lock(),
+            "prune_default_key_quotas table={table} rows={} physical_bytes={}",
+            row.get::<_, i64>(0),
+            row.get::<_, i64>(1)
+        )
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn fp_prune_only_checks_keys_referenced_by_its_expiration_batch() {
+    let (_config, mut client) = migrations::tests::isolated_database().await.unwrap();
+    client
+        .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+        .await
+        .unwrap();
+    migrations::apply(&mut client).await.unwrap();
+    let limits = limits();
+    let input = capture("text/html").unwrap();
+    ingest(&mut client, 100, attempt(false, 1), &input, [7; 32], limits)
+        .await
+        .unwrap();
+    // A sentinel outside the expired batch detects an unbounded orphan sweep.
+    // Production writers reclaim their own evicted references transactionally.
+    client.batch_execute("INSERT INTO fp_v2.values VALUES (FALSE,decode(repeat('99',32),'hex'),1,'sentinel');
+        UPDATE fp_v2.quotas SET interned_values=interned_values+1,canonical_bytes=canonical_bytes+8 WHERE authorized=FALSE;").await.unwrap();
+    for pass in 0..8 {
+        if !prune(&mut client, false, 114, limits, 1).await.unwrap() {
+            break;
+        }
+        assert!(pass < 7);
+    }
+    let row = client.query_one("SELECT buckets,interned_values,canonical_bytes FROM fp_v2.quotas WHERE authorized=FALSE", &[]).await.unwrap();
+    assert_eq!(
+        (
+            row.get::<_, i64>(0),
+            row.get::<_, i64>(1),
+            row.get::<_, i64>(2)
+        ),
+        (0, 1, 8)
+    );
+    let remaining: Vec<u8> = client
+        .query_one("SELECT id FROM fp_v2.values WHERE authorized=FALSE", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(remaining, [0x99; 32]);
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn fp_prune_preserves_the_pairing_of_profile_and_flow_candidates() {
+    let (_config, mut client) = migrations::tests::isolated_database().await.unwrap();
+    client
+        .batch_execute("DROP SCHEMA IF EXISTS fp_v2 CASCADE")
+        .await
+        .unwrap();
+    migrations::apply(&mut client).await.unwrap();
+    let limits = limits();
+    let a = capture("text/html").unwrap();
+    let mut other = a.clone();
+    other.profile = ProfileKey::new("other-counted-test");
+    let Some(FlowKey::Http { ref mut method, .. }) = other.flow else {
+        panic!("HTTP flow")
+    };
+    *method = Method::POST;
+    let profile = a.profile.canonical(limits.capture.value_bytes).unwrap();
+    let flow = other
+        .flow
+        .as_ref()
+        .unwrap()
+        .canonical(limits.capture.value_bytes)
+        .unwrap();
+    ingest(&mut client, 100, attempt(false, 1), &a, [7; 32], limits)
+        .await
+        .unwrap();
+    ingest(&mut client, 100, attempt(false, 2), &other, [7; 32], limits)
+        .await
+        .unwrap();
+    // Neither expired bucket refers to this cross-pair. Independent ANY lists
+    // would turn two candidates into four and sweep this unrelated sentinel.
+    client
+        .execute(
+            "INSERT INTO fp_v2.flows VALUES (FALSE,$1,$2,'sentinel')",
+            &[&&profile.id.0[..], &&flow.id.0[..]],
+        )
+        .await
+        .unwrap();
+    client.batch_execute("UPDATE fp_v2.quotas SET flows=flows+1,canonical_bytes=canonical_bytes+8 WHERE authorized=FALSE").await.unwrap();
+    assert!(!prune(&mut client, false, 114, limits, 128).await.unwrap());
+    let row = client
+        .query_one("SELECT count(*) FROM fp_v2.flows", &[])
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, i64>(0), 1);
+    let row = client
+        .query_one("SELECT profile_id,id,canonical FROM fp_v2.flows", &[])
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, Vec<u8>>(0), profile.id.0);
+    assert_eq!(row.get::<_, Vec<u8>>(1), flow.id.0);
+    assert_eq!(row.get::<_, Vec<u8>>(2), b"sentinel");
 }

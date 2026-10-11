@@ -13,7 +13,11 @@ use rama::{
     },
     utils::fs::TempDir,
 };
-use std::{fs, time::Duration};
+use std::{
+    fs,
+    io::{Write as _, stdout},
+    time::Duration,
+};
 use tokio::{sync::oneshot, time::timeout};
 use tokio_postgres::Config;
 
@@ -756,4 +760,41 @@ async fn legacy_database_failures_stop_without_rejection_checkpoints() {
         .unwrap()
         .get(0);
     assert_eq!(count, 0);
+}
+
+#[tokio::test]
+#[ignore = "requires the private PostgreSQL integration harness"]
+async fn legacy_page_cursor_uses_the_sources_own_collation_index() {
+    let client = setup().await;
+    client.batch_execute("CREATE COLLATION IF NOT EXISTS fp_v2.source_order (provider=libc,locale='C');
+        ALTER TABLE public.\"public-ua-profiles\" ALTER COLUMN uastr TYPE text COLLATE fp_v2.source_order;
+        INSERT INTO public.\"public-ua-profiles\" (uastr,updated_at) SELECT 'cursor/'||lpad(n::text,4,'0'),to_timestamp(100*86400) FROM generate_series(0,1023) n;
+        ANALYZE public.\"public-ua-profiles\";
+        SET enable_seqscan=off;").await.unwrap();
+    let explain = format!("EXPLAIN {}", source_query(false).unwrap());
+    let rows = client
+        .query(
+            &explain,
+            &[
+                &Some("cursor/0500"),
+                &87_i64,
+                &32_i64,
+                &i64::try_from(KEY_BYTES).unwrap(),
+                &i64::try_from(ROW_BYTES).unwrap(),
+                &false,
+                &"public-ua-profiles",
+                &100_i64,
+            ],
+        )
+        .await
+        .unwrap();
+    let plan = rows
+        .iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect::<Vec<_>>()
+        .join("\n");
+    writeln!(stdout().lock(), "legacy cursor plan: {plan}").unwrap();
+    assert!(plan.contains("Index Scan"), "{plan}");
+    assert!(plan.contains("Index Cond:"), "{plan}");
+    assert!(!plan.contains("COLLATE \"C\""), "{plan}");
 }

@@ -5,7 +5,7 @@ use crate::proto::h2::PseudoHeaderOrder;
 use rama_core::extensions::Extension;
 use rama_utils::octets;
 use serde::Serialize;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ObservationLimits {
@@ -16,7 +16,7 @@ pub struct ObservationLimits {
     pub events: usize,
     pub fields: usize,
     pub streams: usize,
-    /// Maximum live connection snapshots.
+    /// Maximum live connection snapshots, including the pinned first request.
     pub retained_snapshots: usize,
     /// Maximum decoded request heads awaiting delivery.
     pub pending_fields: usize,
@@ -236,6 +236,10 @@ pub struct H3ObservationSnapshot {
 #[derive(Debug, Clone)]
 pub struct H3RequestObservation {
     pub connection: Arc<H3ObservationSnapshot>,
+    /// Published once both the first request and peer SETTINGS have arrived,
+    /// independent of which request an optional collector selects. Pending or
+    /// unavailable observations never imply a complete connection prefix.
+    pub first_request: Arc<OnceLock<Arc<H3ObservationSnapshot>>>,
     pub fields: Vec<ObservedFieldRepresentation>,
     pub fields_complete: bool,
     pub priority: Option<Box<[u8]>>,

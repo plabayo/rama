@@ -60,8 +60,8 @@ pub struct ProfileCandidateFilter<'a> {
     pub client: Option<&'a str>,
     pub platform: Option<PlatformKind>,
     pub device: Option<DeviceKind>,
-    /// Latest observed numeric versions per client after platform/device filtering.
-    /// Missing components never cause older versions to be substituted.
+    /// Latest observed numeric versions per client/platform/device group.
+    /// Unknown versions are excluded; missing components never select older versions.
     pub latest_versions: Option<usize>,
     pub capabilities: ProfileCapabilities,
 }
@@ -102,7 +102,7 @@ impl ProfileVersionIndex {
         filter: ProfileCandidateFilter<'_>,
         maximum: usize,
     ) -> BTreeSet<usize> {
-        let mut clients = BTreeMap::<&str, BTreeMap<&ProfileVersion, Vec<usize>>>::new();
+        let mut selected = BTreeSet::new();
         for ((client, platform, device), versions) in &self.groups {
             if filter
                 .client
@@ -116,21 +116,15 @@ impl ProfileVersionIndex {
             {
                 continue;
             }
-            let selected = clients.entry(client).or_default();
-            for (version, indices) in versions {
-                selected.entry(version).or_default().extend(indices);
-            }
-        }
-        clients
-            .into_values()
-            .flat_map(|versions| {
+            selected.extend(
                 versions
-                    .into_iter()
+                    .iter()
                     .rev()
                     .take(maximum)
-                    .flat_map(|(_version, indices)| indices)
-            })
-            .collect()
+                    .flat_map(|(_version, indices)| indices.iter().copied()),
+            );
+        }
+        selected
     }
 }
 
@@ -189,7 +183,21 @@ impl UserAgentProfile {
             });
         }
         let mut total = 0_u64;
-        let mut known = true;
+        let mut known = captured
+            .scopes
+            .iter()
+            .any(|scope| scope.observations.domain == CanonicalDomain::Joint);
+        if !known {
+            return Ok(ObservationWeight::UnknownHistory {
+                observed: captured
+                    .scopes
+                    .iter()
+                    .map(|scope| scope.observations.counts.total)
+                    .max()
+                    .unwrap_or(0),
+                unassigned: 0,
+            });
+        }
         for scope in &captured.scopes {
             if scope.observations.domain != CanonicalDomain::Joint
                 || scope.context.flow.is_none() != connection

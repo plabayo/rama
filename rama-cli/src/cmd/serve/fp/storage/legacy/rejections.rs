@@ -41,8 +41,7 @@ impl RejectedRevision {
         }
         let table = source_table(authorized);
         let tx = client.transaction().await?;
-        tx.batch_execute("SET LOCAL statement_timeout = '5s'")
-            .await?;
+        postgres::bound_transaction(&tx).await?;
         let watermark: i64 = tx
             .query_one(
                 "SELECT watermark FROM fp_v2.quotas WHERE authorized=$1 FOR UPDATE",
