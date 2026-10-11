@@ -206,6 +206,15 @@ pub(crate) fn connection_version_requirement(input: &ConnectRequest) -> Option<V
 /// traffic keeps busy costs handshakes: requests queue at a connection limit,
 /// and idle connections closed over an idle limit are dialed again by the
 /// next ones.
+///
+/// Uncapped, a burst on an HTTP/1 origin dials a connection per request, each
+/// holding a local port until it idles out. On a host short of ephemeral ports,
+/// such as a busy proxy on Windows (16,384 by default), cap
+/// `max_connections_per_id` or `max_connections_total`: a burst then waits for
+/// connections, as `saturation_policy` decides, instead of dialing.
+///
+/// A connect failing fails the requests that waited for it, if theirs would
+/// fail alike, instead of each dialing again.
 #[derive(Debug, Clone)]
 pub struct HttpPooledConnectorConfig {
     /// At most this many concurrent requests per connection, below what the
@@ -236,10 +245,14 @@ pub struct HttpPooledConnectorConfig {
     /// Connections idle (no active streams) for longer than this are dropped,
     /// as the pool notices: when a request asks it for a connection. One used
     /// again since the pool last looked at it may go up to this much later.
+    /// 90 s by default, as established clients do: peers tend to close idle
+    /// connections sooner than that.
     pub idle_timeout: Option<Duration>,
-    /// How long to wait for the pool to hand out a connection before timing
-    /// out; a request waiting for another's new connection dials its own by
-    /// then.
+    /// How long a request waits for the pool to hand out a connection, and
+    /// again for a new connection to admit it; a request waiting for another's
+    /// new connection dials its own by then. The handshake is not bounded by
+    /// it. A request's own timeout applies by dropping the request, which
+    /// leaves nothing behind in the pool.
     pub wait_for_pool_timeout: Option<Duration>,
 }
 
@@ -302,7 +315,7 @@ impl Default for HttpPooledConnectorConfig {
             max_wait_before_dial: None,
             max_connecting_per_id: None,
             selection: MuxSelection::default(),
-            idle_timeout: Some(Duration::from_mins(5)),
+            idle_timeout: Some(Duration::from_secs(90)),
             wait_for_pool_timeout: Some(Duration::from_mins(2)),
         }
     }
@@ -310,7 +323,10 @@ impl Default for HttpPooledConnectorConfig {
 
 impl HttpPooledConnectorConfig {
     /// The pool this config describes, for a [`PooledConnector`] of one's own:
-    /// `wait_for_pool_timeout` is the connector's, not the pool's.
+    /// `wait_for_pool_timeout` is the connector's, not the pool's. With `ID`
+    /// opaque, its streams hint goes only by the version a request targets or
+    /// speaks; [`Self::build_connector`] also expects a secure HTTP origin to
+    /// multiplex, as its TLS offers `h2`.
     #[must_use]
     pub fn build_pool<C, ID>(&self) -> MultiplexPool<C, ID> {
         MultiplexPool::new()
@@ -1874,7 +1890,7 @@ mod tests {
         assert_eq!(config.saturation_policy, SaturationPolicy::default());
         assert_eq!(config.max_wait_before_dial, None);
         assert_eq!(config.max_connecting_per_id, None);
-        assert_eq!(config.idle_timeout, Some(Duration::from_mins(5)));
+        assert_eq!(config.idle_timeout, Some(Duration::from_secs(90)));
         assert_eq!(config.wait_for_pool_timeout, Some(Duration::from_mins(2)));
     }
 }
