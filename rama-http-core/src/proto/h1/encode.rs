@@ -12,10 +12,7 @@ use rama_http_types::{
     header::trailer::{ForbiddenTrailers, is_sent_in_trailers},
 };
 
-use super::{
-    io::WriteBuf,
-    role::{write_headers, write_headers_title_case},
-};
+use super::{io::WriteBuf, role::write_header_field};
 use crate::headers::ConnectionHeaderNames;
 
 type StaticBuf = &'static [u8];
@@ -190,40 +187,30 @@ impl Encoder {
 
     pub(crate) fn encode_trailers<B>(
         &self,
-        trailers: HeaderMap,
+        trailers: &HeaderMap,
         title_case_headers: bool,
     ) -> Option<EncodedBuf<B>> {
         trace!("encoding trailers");
         match &self.kind {
             Kind::Chunked(policy) => {
-                let mut cur_name = None;
-                let mut sent = HeaderMap::new();
-
-                for (opt_name, value) in trailers {
-                    if let Some(n) = opt_name {
-                        cur_name = Some(n);
-                    }
-                    let Some(name) = cur_name.as_ref() else {
-                        debug!("trailer value without header name: ignore...");
-                        continue;
-                    };
-
-                    if policy.sends(name) {
-                        sent.append(name, value);
-                    } else {
-                        debug!("trailer field not sent: {}", &name);
-                    }
-                }
-
-                let mut buf = Vec::new();
-                if title_case_headers {
-                    write_headers_title_case(&sent, &mut buf);
-                } else {
-                    write_headers(&sent, &mut buf);
-                }
-
-                if buf.is_empty() {
+                // Sized exactly, so the buffer converts to `Bytes` without another allocation.
+                let len: usize = trailers
+                    .iter()
+                    .filter(|(name, _)| policy.sends(name))
+                    .map(|(name, value)| name.as_str().len() + value.len() + 4)
+                    .sum();
+                if len == 0 {
+                    debug!("no trailer field sent");
                     return None;
+                }
+
+                let mut buf = Vec::with_capacity(len);
+                for (name, value) in trailers {
+                    if policy.sends(name) {
+                        write_header_field(name, value, title_case_headers, &mut buf);
+                    } else {
+                        debug!("trailer field not sent: {}", name);
+                    }
                 }
 
                 Some(EncodedBuf {
@@ -531,7 +518,7 @@ mod tests {
             );
         }
         let mut dst = Vec::new();
-        dst.put(encoder.encode_trailers::<&[u8]>(headers, false)?);
+        dst.put(encoder.encode_trailers::<&[u8]>(&headers, false)?);
         Some(dst)
     }
 
@@ -622,7 +609,7 @@ mod tests {
             HeaderValue::from_static("header data"),
         )]);
         let buf1 = Encoder::chunked()
-            .encode_trailers::<&[u8]>(headers, true)
+            .encode_trailers::<&[u8]>(&headers, true)
             .unwrap();
 
         let mut dst = Vec::new();

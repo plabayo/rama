@@ -631,10 +631,7 @@ mod tests {
 
     #[tokio::test]
     async fn jit_request_metadata_cannot_change_proxy_credentials_target_or_challenge_isolation() {
-        use rama_core::{
-            bytes::BytesMut,
-            layer::{MapInputLayer, MapOutputLayer},
-        };
+        use rama_core::layer::{MapInputLayer, MapOutputLayer};
         use rama_http::{HeaderValue, StatusCode, header::PROXY_AUTHORIZATION};
 
         #[derive(Debug, Clone)]
@@ -673,7 +670,7 @@ mod tests {
                     )),
                     "forward policy must preserve the caller's requested route",
                 );
-                let mut target = BytesMut::new();
+                let mut target = Vec::new();
                 rama_http::proto::h1::head::encode_request_target(
                     request.method(),
                     request.uri(),

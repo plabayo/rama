@@ -8,7 +8,7 @@
 use core::fmt;
 
 use rama_core::{
-    bytes::{BufMut, Bytes, BytesMut},
+    bytes::{BufMut, Bytes},
     extensions::{Extensions, ExtensionsRef as _},
 };
 use rama_net::{client::EstablishedProxyRoute, uri::Uri};
@@ -230,7 +230,10 @@ fn parse_headers(input: &Bytes, fields: &[httparse::Header<'_>]) -> Result<Heade
 
 /// Encode one standalone HTTP/1 request head.
 pub fn encode_request<T>(request: &Request<T>) -> Result<Bytes, HeadError> {
-    let mut output = BytesMut::with_capacity(32 + request.headers().len().saturating_mul(32));
+    // The request line rarely needs more than 128 bytes beside its method.
+    let mut output = Vec::with_capacity(
+        request.method().as_str().len() + 128 + header_fields_len(request.headers()),
+    );
     output.extend_from_slice(request.method().as_str().as_bytes());
     output.extend_from_slice(b" ");
     encode_request_target_preserving_form(
@@ -244,12 +247,13 @@ pub fn encode_request<T>(request: &Request<T>) -> Result<Bytes, HeadError> {
     output.extend_from_slice(b"\r\n");
     encode_header_fields(request.headers(), &mut output);
     output.extend_from_slice(b"\r\n");
-    Ok(output.freeze())
+    Ok(Bytes::from(output))
 }
 
 /// Encode one standalone HTTP/1 response head.
 pub fn encode_response<T>(response: &Response<T>) -> Result<Bytes, HeadError> {
-    let mut output = BytesMut::with_capacity(32 + response.headers().len().saturating_mul(32));
+    // The status line rarely needs more than 64 bytes.
+    let mut output = Vec::with_capacity(64 + header_fields_len(response.headers()));
     encode_version(response.version(), &mut output)?;
     output.extend_from_slice(b" ");
     output.extend_from_slice(response.status().as_str().as_bytes());
@@ -268,10 +272,18 @@ pub fn encode_response<T>(response: &Response<T>) -> Result<Bytes, HeadError> {
     output.extend_from_slice(b"\r\n");
     encode_header_fields(response.headers(), &mut output);
     output.extend_from_slice(b"\r\n");
-    Ok(output.freeze())
+    Ok(Bytes::from(output))
 }
 
-fn encode_version(version: Version, output: &mut BytesMut) -> Result<(), HeadError> {
+/// The encoded size of `headers`, each field with its `: ` and CRLF.
+fn header_fields_len(headers: &HeaderMap) -> usize {
+    headers
+        .ordered_iter()
+        .map(|(name, value)| name.as_str().len() + value.len() + 4)
+        .sum()
+}
+
+fn encode_version(version: Version, output: &mut Vec<u8>) -> Result<(), HeadError> {
     match version {
         Version::HTTP_10 => output.extend_from_slice(b"HTTP/1.0"),
         Version::HTTP_11 | Version::HTTP_2 | Version::HTTP_3 => {
@@ -286,7 +298,7 @@ fn encode_request_target_preserving_form(
     method: &Method,
     uri: &Uri,
     extensions: &Extensions,
-    output: &mut BytesMut,
+    output: &mut Vec<u8>,
 ) -> Result<(), HeadError> {
     if let Some(form) = extensions.get_ref::<RequestTargetForm>() {
         let result = match form {
@@ -294,7 +306,7 @@ fn encode_request_target_preserving_form(
                 uri.write_http_origin_form(output)
             }
             RequestTargetForm::Absolute if *method != Method::CONNECT && !uri.is_asterisk() => {
-                write_absolute_form(method, uri, output)
+                write_absolute_form(method, uri, None, output)
             }
             RequestTargetForm::Authority
                 if *method == Method::CONNECT && is_http1_connect_target(uri, extensions) =>
@@ -302,7 +314,7 @@ fn encode_request_target_preserving_form(
                 uri.write_http_authority_form(output)
             }
             RequestTargetForm::Asterisk if *method == Method::OPTIONS && uri.is_asterisk() => {
-                output.extend_from_slice(b"*");
+                output.push(b'*');
                 Ok(())
             }
             _ => Err(rama_net::uri::WireError::AsteriskMismatch),
@@ -323,18 +335,24 @@ pub fn is_http1_connect_target(uri: &Uri, extensions: &Extensions) -> bool {
 ///
 /// Direct requests use origin-form, `CONNECT` uses authority-form, `OPTIONS
 /// *` uses asterisk-form, and insecure requests on an established HTTP forward
-/// proxy connection use absolute-form. Fragments are never emitted, nor is
-/// userinfo for HTTP-family schemes (see [`Uri::write_http_absolute_form`]). Route intent is deliberately ignored: the established connection
-/// route is the only authoritative signal after fallback and pool selection.
-/// When an [`Egress`](rama_core::extensions::Egress) connection snapshot is
-/// present, its route (including absence) takes precedence over request-local
-/// metadata. Low-level callers without a connection snapshot must insert
+/// proxy connection use absolute-form, with the resolved protocol as scheme for a
+/// URI without one; a URI without an authority cannot name its origin there and
+/// stays in origin-form, leaving that to the `Host` header. Fragments are never
+/// emitted, nor is userinfo for HTTP-family schemes (see
+/// [`Uri::write_http_absolute_form`]), and a rootless path is sent rooted. Route
+/// intent is deliberately ignored: the established connection route is the only
+/// authoritative signal after fallback and pool selection. When an
+/// [`Egress`](rama_core::extensions::Egress) connection snapshot is present, its
+/// route (including absence) takes precedence over request-local metadata.
+/// Low-level callers without a connection snapshot must insert
 /// [`EstablishedProxyRoute::Forward`] themselves.
+///
+/// On error nothing is written to `output`.
 pub fn encode_request_target(
     method: &Method,
     uri: &Uri,
     extensions: &Extensions,
-    output: &mut BytesMut,
+    output: &mut Vec<u8>,
 ) -> Result<(), HeadError> {
     let result = if *method == Method::CONNECT {
         if !is_http1_connect_target(uri, extensions) {
@@ -342,21 +360,23 @@ pub fn encode_request_target(
         }
         uri.write_http_authority_form(output)
     } else if uri.is_asterisk() && *method == Method::OPTIONS {
-        output.extend_from_slice(b"*");
+        output.push(b'*');
         Ok(())
     } else if uri.is_asterisk() {
         Err(rama_net::uri::WireError::AsteriskMismatch)
     } else {
-        let established_extensions = extensions.egress().map_or(extensions, |egress| &egress.0);
-        let via_http_proxy = established_extensions
-            .get_ref::<EstablishedProxyRoute>()
-            .is_some_and(EstablishedProxyRoute::is_http_forward);
-        let is_insecure =
-            !crate::target_protocol_from_uri_or_extensions(extensions, uri).is_secure();
-        if via_http_proxy && is_insecure {
-            write_absolute_form(method, uri, output)
+        let protocol = crate::target_protocol_from_uri_or_extensions(extensions, uri);
+        // Secure targets are tunnelled, so only insecure ones look up the route.
+        let via_http_proxy = !protocol.is_secure() && {
+            let established_extensions = extensions.egress().map_or(extensions, |egress| &egress.0);
+            established_extensions
+                .get_ref::<EstablishedProxyRoute>()
+                .is_some_and(EstablishedProxyRoute::is_http_forward)
+        };
+        if via_http_proxy && (uri.scheme().is_some() || uri.authority().is_some()) {
+            write_absolute_form(method, uri, Some(protocol), output)
         } else if is_server_wide(method, uri) {
-            output.extend_from_slice(b"*");
+            output.push(b'*');
             Ok(())
         } else {
             uri.write_http_origin_form(output)
@@ -374,13 +394,28 @@ fn is_server_wide(method: &Method, uri: &Uri) -> bool {
 fn write_absolute_form(
     method: &Method,
     uri: &Uri,
-    output: &mut BytesMut,
+    default_scheme: Option<&rama_net::Protocol>,
+    output: &mut Vec<u8>,
 ) -> Result<(), rama_net::uri::WireError> {
-    let result = uri.write_http_absolute_form(output);
-    if result.is_ok() && is_server_wide(method, uri) && output.ends_with(b"/") {
-        output.truncate(output.len() - 1);
+    let start = output.len();
+    match default_scheme {
+        Some(scheme) => uri.write_http_absolute_form_with_default_scheme(scheme, output)?,
+        None => uri.write_http_absolute_form(output)?,
     }
-    result
+    if is_server_wide(method, uri) && output[start..].ends_with(b"/") {
+        output.pop();
+    }
+    Ok(())
+}
+
+/// Encode HTTP header fields and the empty line ending them, as a trailer
+/// section carries them, into an exactly sized buffer.
+#[must_use]
+pub fn encode_header_block(headers: &HeaderMap) -> Bytes {
+    let mut output = Vec::with_capacity(header_fields_len(headers) + 2);
+    encode_header_fields(headers, &mut output);
+    output.extend_from_slice(b"\r\n");
+    Bytes::from(output)
 }
 
 /// Append HTTP header fields in their insertion order and original casing.

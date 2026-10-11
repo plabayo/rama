@@ -4,13 +4,13 @@
 )]
 
 use divan::black_box;
-use rama::{bytes::BytesMut, net::uri::Uri};
+use rama::net::uri::Uri;
 
 mod bench_alloc;
 
-struct BytesMutWriter<'a>(&'a mut BytesMut);
+struct VecWriter<'a>(&'a mut Vec<u8>);
 
-impl core::fmt::Write for BytesMutWriter<'_> {
+impl core::fmt::Write for VecWriter<'_> {
     fn write_str(&mut self, value: &str) -> core::fmt::Result {
         self.0.extend_from_slice(value.as_bytes());
         Ok(())
@@ -32,7 +32,7 @@ fn uri(shape: usize) -> Uri {
     URI_SHAPES[shape].parse().unwrap()
 }
 
-fn write_previous_http_absolute_form(
+fn write_fmt_http_absolute_form(
     uri: &Uri,
     writer: &mut impl core::fmt::Write,
 ) -> core::fmt::Result {
@@ -57,29 +57,28 @@ fn write_previous_http_absolute_form(
 #[divan::bench(args = [0_usize, 1, 2, 3], sample_count = 100)]
 fn http_absolute_direct(bencher: divan::Bencher, shape: usize) {
     let uri = uri(shape);
-    let mut output = BytesMut::with_capacity(128);
+    let mut output = Vec::with_capacity(128);
     bencher.bench_local(|| {
         output.clear();
         black_box(&uri)
             .write_http_absolute_form(&mut output)
             .unwrap();
-        black_box(output.as_ref());
+        black_box(output.as_slice());
         output.len()
     });
 }
 
-/// The formatter-based implementation used before the HTTP-specific writer
-/// gained a direct encoded-byte path. It intentionally produces identical
+/// A formatter-based projection as baseline for the direct writer: identical
 /// bytes, including stripping userinfo and normalizing an empty path to `/`.
 #[divan::bench(args = [0_usize, 1, 2, 3], sample_count = 100)]
 fn absolute_fmt_projection(bencher: divan::Bencher, shape: usize) {
     let uri = uri(shape);
-    let mut output = BytesMut::with_capacity(128);
+    let mut output = Vec::with_capacity(128);
     bencher.bench_local(|| {
         output.clear();
-        let mut writer = BytesMutWriter(&mut output);
-        write_previous_http_absolute_form(black_box(&uri), &mut writer).unwrap();
-        black_box(output.as_ref());
+        let mut writer = VecWriter(&mut output);
+        write_fmt_http_absolute_form(black_box(&uri), &mut writer).unwrap();
+        black_box(output.as_slice());
         output.len()
     });
 }

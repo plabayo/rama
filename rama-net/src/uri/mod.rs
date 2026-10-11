@@ -58,6 +58,8 @@
 //! [`Authority`](crate::address::Authority); host is
 //! [`Host`](crate::address::Host) — `Uri` doesn't re-export these.
 
+use core::fmt::Write as _;
+
 use rama_core::bytes::BytesMut;
 
 use crate::std::{
@@ -571,8 +573,6 @@ impl Uri {
     /// through `Authority::to_string()` + `parse_authority_form`.
     #[must_use]
     pub fn from_authority_form(authority: crate::address::Authority) -> Self {
-        use core::fmt::Write as _;
-
         let crate::address::Authority { user_info, address } = authority;
 
         // Render the canonical authority bytes once, tracking the userinfo span
@@ -709,8 +709,6 @@ impl Uri {
         scheme: crate::Protocol,
         authority: crate::address::Authority,
     ) -> Self {
-        use core::fmt::Write as _;
-
         let crate::address::Authority { user_info, address } = authority;
 
         // Render the canonical `scheme://[userinfo@]host[:port]` bytes once,
@@ -788,7 +786,10 @@ impl Uri {
         match &self.inner {
             UriInner::Asterisk => buf.push(b'*'),
             UriInner::Lazy(lazy) => buf.extend_from_slice(&lazy.bytes),
-            UriInner::Owned(_) => buf.extend_from_slice(self.to_string().as_bytes()),
+            UriInner::Owned(_) => {
+                let result = write!(wire::VecWriter(buf), "{self}");
+                debug_assert!(result.is_ok(), "VecWriter is infallible");
+            }
         }
     }
 
@@ -1047,8 +1048,6 @@ impl Uri {
         }
         match self.query() {
             Some(q) => {
-                use core::fmt::Write as _;
-
                 let mut target = String::new();
                 _ = write!(&mut target, "{}?{q}", self.path_ref_or_root());
                 Cow::Owned(target)

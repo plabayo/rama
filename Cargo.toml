@@ -758,6 +758,11 @@ required-features = ["net"]
 harness = false
 
 [[bench]]
+name = "http_head_encode"
+required-features = ["http", "net"]
+harness = false
+
+[[bench]]
 name = "pool_contention"
 required-features = ["net"]
 harness = false

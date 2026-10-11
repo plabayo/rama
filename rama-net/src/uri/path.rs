@@ -12,12 +12,10 @@ use super::component_input::IntoUriComponent;
 use crate::uri::{
     PathCaptures, PathPattern,
     encode::{
-        encoded_path, encoded_segment, encoded_segment_cmp, encoded_segment_eq,
+        AppendBytes, encoded_path, encoded_segment, encoded_segment_cmp, encoded_segment_eq,
         extend_encoded_path, hash_encoded_segment, write_encoded_path, write_encoded_segment,
     },
 };
-
-use rama_core::bytes::BytesMut;
 
 use itertools::Itertools;
 use percent_encoding::percent_decode;
@@ -57,7 +55,7 @@ impl<'a> PathRef<'a> {
         encoded_path(self.bytes)
     }
 
-    pub(super) fn write_encoded_to(self, buf: &mut BytesMut) {
+    pub(super) fn write_encoded_to(self, buf: &mut impl AppendBytes) {
         extend_encoded_path(buf, self.bytes);
     }
 
@@ -432,7 +430,7 @@ impl<'a> PathSegment<'a> {
     }
 
     #[inline]
-    pub(super) fn write_encoded_to(self, buf: &mut BytesMut) {
+    pub(super) fn write_encoded_to(self, buf: &mut impl AppendBytes) {
         super::encode::extend_encoded_segment_bytes(buf, self.raw);
     }
 

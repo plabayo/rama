@@ -57,7 +57,7 @@ impl TryIntoRamaHttp for http::Uri {
         {
             return Ok(Uri::parse_authority_form(self.to_string())?);
         }
-        Ok(Uri::parse(self.to_string().as_str())?)
+        Ok(Uri::parse(self.to_string())?)
     }
 }
 

@@ -1171,16 +1171,11 @@ impl Http1Transaction for Client {
         }
         extend(dst, b"\r\n");
 
-        let orig_headers = write_h1_headers(
-            msg.head.headers,
-            msg.title_case_headers,
-            msg.head.extensions,
-            dst,
-        );
+        write_h1_headers(&msg.head.headers, msg.title_case_headers, dst);
 
         msg.head
             .extensions
-            .insert(RequestHeaders::from(orig_headers));
+            .insert(RequestHeaders::from(msg.head.headers));
 
         extend(dst, b"\r\n");
 
@@ -1517,30 +1512,25 @@ fn title_case_in_place(name: &mut [u8]) {
     }
 }
 
-pub(crate) fn write_headers_title_case(headers: &HeaderMap, dst: &mut Vec<u8>) {
-    for (name, value) in headers.ordered_iter() {
-        let start = dst.len();
-        name.write_original(dst);
-        title_case_in_place(&mut dst[start..]);
-        extend(dst, b": ");
-        extend(dst, value.as_bytes());
-        extend(dst, b"\r\n");
-    }
-}
-
-pub(crate) fn write_headers(headers: &HeaderMap, dst: &mut Vec<u8>) {
-    rama_http_types::proto::h1::head::encode_header_fields(headers, dst);
-}
-
-fn write_h1_headers(
-    headers: HeaderMap,
-    title_case_headers: bool,
-    ext: &Extensions,
+/// Write one header field in its original spelling, or title-cased.
+pub(crate) fn write_header_field(
+    name: &HeaderName,
+    value: &HeaderValue,
+    title_case: bool,
     dst: &mut Vec<u8>,
-) -> HeaderMap {
-    let _ = ext;
-    let mut out_headers = HeaderMap::with_capacity(headers.len());
-    for (name, value) in headers.into_ordered_iter() {
+) {
+    let start = dst.len();
+    name.write_original(dst);
+    if title_case {
+        title_case_in_place(&mut dst[start..]);
+    }
+    extend(dst, b": ");
+    extend(dst, value.as_bytes());
+    extend(dst, b"\r\n");
+}
+
+fn write_h1_headers(headers: &HeaderMap, title_case_headers: bool, dst: &mut Vec<u8>) {
+    for (name, value) in headers.ordered_iter() {
         if title_case_headers {
             let start = dst.len();
             name.write_original(dst);
@@ -1557,9 +1547,7 @@ fn write_h1_headers(
             extend(dst, value.as_bytes());
             extend(dst, b"\r\n");
         }
-        out_headers.append(name, value);
     }
-    out_headers
 }
 
 #[inline]
@@ -1585,16 +1573,12 @@ fn encode_request_target(
     extensions: &Extensions,
     dst: &mut Vec<u8>,
 ) {
-    let mut buf = BytesMut::new();
     let written =
-        rama_http_types::proto::h1::head::encode_request_target(method, uri, extensions, &mut buf);
-
-    match written {
-        Ok(()) => extend(dst, &buf),
-        // defensive: a form mismatch (e.g. authority-form on an URI without authority)
-        // falls back to the faithful full form rather than emitting a broken target.
-        Err(_) if uri.is_asterisk() => extend(dst, b"/"),
-        Err(_) => uri.encode_to(dst),
+        rama_http_types::proto::h1::head::encode_request_target(method, uri, extensions, dst);
+    // defensive: a form mismatch (e.g. `*` for another method than OPTIONS) still
+    // sends a valid target, never the raw URI.
+    if written.is_err() && uri.write_http_origin_form(dst).is_err() {
+        extend(dst, b"/");
     }
 }
 
@@ -1621,9 +1605,13 @@ mod tests {
         };
 
         fn target(method: &Method, uri: &str, ext: &Extensions) -> String {
-            let mut dst = Vec::new();
-            encode_request_target(method, &Uri::parse(uri).unwrap(), ext, &mut dst);
-            String::from_utf8(dst).unwrap()
+            target_of(method, &Uri::parse(uri).unwrap(), ext)
+        }
+
+        fn target_of(method: &Method, uri: &Uri, ext: &Extensions) -> String {
+            let mut dst = b"GET ".to_vec();
+            encode_request_target(method, uri, ext, &mut dst);
+            String::from_utf8(dst.split_off(4)).unwrap()
         }
 
         fn http_proxy_ext() -> Extensions {
@@ -1676,6 +1664,34 @@ mod tests {
             ),
             "http://example.com/p",
         );
+        // ...and a server-wide OPTIONS stays path-less up to the last hop
+        assert_eq!(
+            target(&Method::OPTIONS, "http://example.com", &http_proxy_ext()),
+            "http://example.com",
+        );
+
+        // A reference without a scheme: through a forward proxy a network-path
+        // reference takes the resolved protocol, one without authority stays in
+        // origin-form; either way the target is valid.
+        for (reference, direct, proxied) in [
+            ("//example.com/p?q#frag", "/p?q", "http://example.com/p?q"),
+            ("/p#frag", "/p", "/p"),
+            ("?q=only", "/?q=only", "/?q=only"),
+            ("", "/", "/"),
+            ("rel/path", "/rel/path", "/rel/path"),
+        ] {
+            let uri = Uri::parse_reference(reference).unwrap();
+            assert_eq!(
+                target_of(&Method::GET, &uri, &none),
+                direct,
+                "{reference:?}"
+            );
+            assert_eq!(
+                target_of(&Method::GET, &uri, &http_proxy_ext()),
+                proxied,
+                "{reference:?}"
+            );
+        }
 
         // Route intent alone cannot prove which connection was established.
         assert_eq!(
@@ -1719,7 +1735,7 @@ mod tests {
         // Check the fallible encoder too: the wrapper's defensive fallback
         // would otherwise hide a NoScheme error behind the same relative URI.
         let uri = Uri::parse("/p?q=1").unwrap();
-        let mut checked = BytesMut::new();
+        let mut checked = Vec::new();
         rama_http_types::proto::h1::head::encode_request_target(
             &Method::GET,
             &uri,
@@ -1759,7 +1775,7 @@ mod tests {
         ext.insert(SecureTransport::default());
 
         let uri = Uri::parse("/p?q=1").unwrap();
-        let mut checked = BytesMut::new();
+        let mut checked = Vec::new();
         rama_http_types::proto::h1::head::encode_request_target(
             &Method::GET,
             &uri,
@@ -3057,7 +3073,7 @@ mod tests {
         .unwrap();
         assert!(
             client_encoder
-                .encode_trailers::<&[u8]>(trailers(), false)
+                .encode_trailers::<&[u8]>(&trailers(), false)
                 .is_none()
         );
 
@@ -3085,7 +3101,7 @@ mod tests {
         .unwrap();
         assert!(
             server_encoder
-                .encode_trailers::<&[u8]>(trailers(), false)
+                .encode_trailers::<&[u8]>(&trailers(), false)
                 .is_none()
         );
     }
@@ -3915,12 +3931,8 @@ mod tests {
         let name = rama_http_types::header::HeaderName::from_static("X-EmptY");
         headers.insert(&name, "".parse().expect("parse empty"));
 
-        let ext = Extensions::new();
-
         let mut dst = Vec::new();
-
-        let headers = super::write_h1_headers(headers, false, &ext, &mut dst);
-        assert!(headers.get("x-empty").unwrap().is_empty());
+        super::write_h1_headers(&headers, false, &mut dst);
 
         assert_eq!(
             dst, b"X-EmptY:\r\n",
@@ -3934,17 +3946,8 @@ mod tests {
         headers.insert("X-Empty", "a".parse().unwrap());
         headers.append("X-EMPTY", "b".parse().unwrap());
 
-        let ext = Extensions::new();
-
         let mut dst = Vec::new();
-
-        let headers = super::write_h1_headers(headers, false, &ext, &mut dst);
-
-        assert_eq!("a", headers.get("x-empty").unwrap().to_str().unwrap());
-        let mut values = headers.get_all("x-empty").iter();
-        assert_eq!("a", values.next().unwrap().to_str().unwrap());
-        assert_eq!("b", values.next().unwrap().to_str().unwrap());
-        assert!(values.next().is_none());
+        super::write_h1_headers(&headers, false, &mut dst);
 
         assert_eq!(dst, b"X-Empty: a\r\nX-EMPTY: b\r\n");
     }

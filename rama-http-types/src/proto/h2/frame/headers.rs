@@ -10,7 +10,7 @@ use crate::{
     HeaderMap, HeaderName, HeaderValue, IntoOrderedIter, Method, Request, StatusCode, Uri, header,
 };
 
-use rama_core::bytes::{Buf, BufMut, BytesMut};
+use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
 use rama_core::telemetry::tracing;
 
 use std::fmt;
@@ -672,23 +672,24 @@ impl Pseudo {
     }
 
     pub fn request(method: Method, uri: &Uri, protocol: Option<Protocol>) -> Self {
-        // Helper: serialize a `BytesMut` writer closure into a `BytesStr`.
-        // Native `Uri` wire writers stream into a `BytesMut`; the pseudo
-        // fields hold `BytesStr`.
-        fn bytes_str_from(buf: BytesMut) -> BytesStr {
-            BytesStr::try_from(buf.freeze()).unwrap_or_else(|_| BytesStr::from_static(""))
-        }
+        // `:authority` and `:path` are rendered into one buffer, shared once frozen.
+        let mut target = Vec::with_capacity(128);
+        let authority_len = uri
+            .write_h2_authority(&mut target)
+            .is_ok()
+            .then_some(target.len());
 
         let (scheme, path) = if method == Method::CONNECT && protocol.is_none() {
             // CONNECT (non-extended): no `:scheme`/`:path`.
             (None, None)
         } else {
-            // `:path` mirrors origin-form (empty path → `/`), except
-            // asterisk-form carries `*` (handled by `write_h2_path`).
-            let mut path_buf = BytesMut::new();
-            uri.write_h2_path(&mut path_buf);
-            let path = bytes_str_from(path_buf);
-
+            let wire_scheme = uri.scheme().map(|scheme| {
+                if protocol.is_some() {
+                    crate::proto::ext::extended_connect_pseudo_scheme(scheme)
+                } else {
+                    scheme
+                }
+            });
             // RFC 9113 §8.3.1: an OPTIONS request without a path is the "OPTIONS *"
             // form and carries `:path = *`, required for http(s) and how a received
             // `*` reads back for every scheme. The origin-form writer normalises an
@@ -698,34 +699,27 @@ impl Pseudo {
                 && uri.is_path_empty()
                 && uri.query().is_none()
             {
-                BytesStr::from_static("*")
-            } else if uri.scheme().is_some_and(|scheme| {
-                let wire_scheme = if protocol.is_some() {
-                    crate::proto::ext::extended_connect_pseudo_scheme(scheme)
-                } else {
-                    scheme
-                };
-                crate::proto::ext::sends_empty_path(uri, wire_scheme)
-            }) {
-                BytesStr::from_static("")
+                PathSource::Static("*")
+            } else if wire_scheme
+                .is_some_and(|scheme| crate::proto::ext::sends_empty_path(uri, scheme))
+            {
+                PathSource::Static("")
             } else {
-                path
+                // `:path` mirrors origin-form, except that asterisk-form carries `*`.
+                uri.write_h2_path(&mut target);
+                PathSource::Rendered
             };
-
-            // `:scheme` is only present when the URI carries one.
-            let scheme = if let (Some(_), Some(scheme)) = (&protocol, uri.scheme()) {
-                Some(BytesStr::from(
-                    crate::proto::ext::extended_connect_pseudo_scheme(scheme).as_str(),
-                ))
-            } else {
-                let mut scheme_buf = BytesMut::new();
-                uri.write_h2_scheme(&mut scheme_buf)
-                    .ok()
-                    .map(|()| bytes_str_from(scheme_buf))
-            };
-
-            (scheme, Some(path))
+            (wire_scheme.map(pseudo_scheme), Some(path))
         };
+
+        let target = Bytes::from(target);
+        let rendered = |range: core::ops::Range<usize>| {
+            BytesStr::try_from(target.slice(range)).unwrap_or_else(|_| BytesStr::from_static(""))
+        };
+        let path = path.map(|path| match path {
+            PathSource::Static(value) => BytesStr::from_static(value),
+            PathSource::Rendered => rendered(authority_len.unwrap_or(0)..target.len()),
+        });
 
         let mut pseudo = Self {
             method: Some(method),
@@ -737,14 +731,9 @@ impl Pseudo {
             order: PseudoHeaderOrder::default(),
             sensitivity: PseudoHeaderSensitivity::default(),
         };
-
-        // If the URI includes an authority component, add it to the pseudo
-        // headers.
-        let mut authority_buf = BytesMut::new();
-        if uri.write_h2_authority(&mut authority_buf).is_ok() {
-            pseudo.set_authority(bytes_str_from(authority_buf));
+        if let Some(authority_len) = authority_len {
+            pseudo.set_authority(rendered(0..authority_len));
         }
-
         pseudo
     }
 
@@ -1230,6 +1219,21 @@ fn decoded_header_size(name: usize, value: usize) -> usize {
     name + value + 32
 }
 
+/// Where a request's `:path` comes from.
+enum PathSource {
+    Static(&'static str),
+    Rendered,
+}
+
+/// `:scheme` for `scheme`, without a copy for http(s).
+fn pseudo_scheme(scheme: &rama_net::Protocol) -> BytesStr {
+    match scheme.as_str() {
+        "https" => BytesStr::from_static("https"),
+        "http" => BytesStr::from_static("http"),
+        other => BytesStr::from(other),
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -1456,6 +1460,26 @@ mod test {
             ("foo://example.com/", "/"),
         ] {
             let pseudo = Pseudo::request(Method::OPTIONS, &Uri::parse(uri).unwrap(), None);
+            assert_eq!(pseudo.path.as_deref(), Some(path), "{uri}");
+        }
+    }
+
+    #[test]
+    fn request_pseudo_fields_share_one_rendered_target() {
+        for (uri, scheme, authority, path) in [
+            (
+                "https://example.com/a?b",
+                Some("https"),
+                Some("example.com"),
+                "/a?b",
+            ),
+            ("http://[::1]:8080", Some("http"), Some("[::1]:8080"), "/"),
+            ("file:///etc/hosts", Some("file"), Some(""), "/etc/hosts"),
+            ("urn:isbn:123", Some("urn"), None, "/isbn:123"),
+        ] {
+            let pseudo = Pseudo::request(Method::GET, &Uri::parse(uri).unwrap(), None);
+            assert_eq!(pseudo.scheme.as_deref(), scheme, "{uri}");
+            assert_eq!(pseudo.authority.as_deref(), authority, "{uri}");
             assert_eq!(pseudo.path.as_deref(), Some(path), "{uri}");
         }
     }

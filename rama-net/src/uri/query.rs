@@ -15,7 +15,7 @@ use crate::std::vec::Vec;
 
 use super::component_input::IntoUriComponent;
 use super::encode::{
-    encoded_pair_component, encoded_query, encoded_query_cmp, encoded_query_eq,
+    AppendBytes, encoded_pair_component, encoded_query, encoded_query_cmp, encoded_query_eq,
     extend_encoded_query, hash_encoded_query, write_encoded_query,
 };
 
@@ -223,7 +223,7 @@ impl<'a> QueryRef<'a> {
         self.bytes.is_empty()
     }
 
-    pub(super) fn write_encoded_to(self, buf: &mut BytesMut) {
+    pub(super) fn write_encoded_to(self, buf: &mut impl AppendBytes) {
         extend_encoded_query(buf, self.bytes);
     }
 

@@ -1,7 +1,7 @@
 //! Validate decoded HTTP fields before normalization can hide malformed input.
 
 use rama_core::{
-    bytes::{Bytes, BytesMut},
+    bytes::Bytes,
     extensions::{Extensions, ExtensionsRef},
     telemetry::tracing::debug,
 };
@@ -438,7 +438,7 @@ pub(crate) fn encode_request<B>(
     }
     // Serialize only components that need wire normalization into one buffer.
     // The scheme and header values can remain borrowed from the request.
-    let mut target = BytesMut::new();
+    let mut target = Vec::with_capacity(128);
     if request.uri().authority().is_some() {
         request
             .uri()
@@ -608,7 +608,11 @@ pub(crate) fn encode_response<B>(
 
 #[cfg(test)]
 mod tests {
-    use rama_core::{Service as _, bytes::BufMut, service::service_fn};
+    use rama_core::{
+        Service as _,
+        bytes::{BufMut, BytesMut},
+        service::service_fn,
+    };
     use rama_http::layer::required_header::AddRequiredRequestHeaders;
     use rama_http_types::proto::h2::{
         frame::{self, StreamId},
@@ -1587,7 +1591,7 @@ mod tests {
             assert_eq!(path.value, &b"*"[..], "h3 {uri}");
             let h2 = frame::Pseudo::request(Method::OPTIONS, &uri, None);
             assert_eq!(h2.path.as_deref(), Some("*"), "h2 {uri}");
-            let mut h1 = BytesMut::new();
+            let mut h1 = Vec::new();
             rama_http_types::proto::h1::head::encode_request_target(
                 &Method::OPTIONS,
                 &uri,
@@ -1602,7 +1606,7 @@ mod tests {
             ("https://real.example/", "/"),
             ("https://real.example?q", "/?q"),
         ] {
-            let mut h1 = BytesMut::new();
+            let mut h1 = Vec::new();
             rama_http_types::proto::h1::head::encode_request_target(
                 &Method::OPTIONS,
                 &Uri::parse(uri).unwrap(),
