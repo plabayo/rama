@@ -337,7 +337,7 @@ impl HeaderValue {
     /// assert!(!val.is_sensitive());
     /// ```
     #[inline]
-    pub fn set_sensitive(&mut self, val: bool) {
+    pub const fn set_sensitive(&mut self, val: bool) {
         self.is_sensitive = val;
     }
 

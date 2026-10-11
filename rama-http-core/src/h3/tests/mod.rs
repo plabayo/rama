@@ -307,11 +307,13 @@ fn field_lines(headers: &HeaderMap) -> Vec<(String, Vec<u8>, bool)> {
 
 /// The response carries its request's fields as sent, line for line what the server
 /// received: all of them, or without the connection-specific ones and an unusable
-/// `Host`, with `TE` as the `trailers` it sends and a sensitive `trailers` kept so.
+/// `Host`, with `TE` as the `trailers` it sends and a sensitive `TE` kept so.
 #[tokio::test]
 async fn request_headers_record_the_fields_as_sent() {
     let mut sensitive_te = HeaderValue::from_static("trailers");
     sensitive_te.set_sensitive(true);
+    let mut sensitive_te_gzip = HeaderValue::from_static("trailers, gzip");
+    sensitive_te_gzip.set_sensitive(true);
     let cases: Vec<Vec<(HeaderName, HeaderValue)>> = vec![
         vec![],
         vec![
@@ -326,6 +328,7 @@ async fn request_headers_record_the_fields_as_sent() {
         vec![(header::TE, HeaderValue::from_static("trailers, gzip"))],
         vec![(header::HOST, HeaderValue::from_static("not a host"))],
         vec![(header::TE, sensitive_te)],
+        vec![(header::TE, sensitive_te_gzip)],
     ];
 
     tokio::time::timeout(LIMIT, async {

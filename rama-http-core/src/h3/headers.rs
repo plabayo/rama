@@ -118,6 +118,13 @@ enum Outgoing {
 /// `TE` as HTTP/2 and HTTP/3 peers compare it, exactly.
 static TE_TRAILERS: HeaderValue = HeaderValue::from_static("trailers");
 
+/// [`TE_TRAILERS`], never indexed.
+static TE_TRAILERS_SENSITIVE: HeaderValue = {
+    let mut value = HeaderValue::from_static("trailers");
+    value.set_sensitive(true);
+    value
+};
+
 /// The fields of an outgoing message that go on the wire.
 ///
 /// HTTP/3, like HTTP/2, carries no connection-specific fields: they are dropped with the
@@ -131,16 +138,20 @@ fn outgoing_fields(
     let nominated: Vec<HeaderName> = header::hop_by_hop::connection_header_names(headers).collect();
     let mut te_trailers = kind == Outgoing::Request
         && header::hop_by_hop::te_names_trailers(headers.get_all(header::TE));
+    // Never indexed when any of the caller's `TE` lines is sensitive.
+    let te_value = if headers
+        .get_all(header::TE)
+        .iter()
+        .any(HeaderValue::is_sensitive)
+    {
+        &TE_TRAILERS_SENSITIVE
+    } else {
+        &TE_TRAILERS
+    };
     headers.ordered_iter().filter_map(move |(name, value)| {
         if *name == header::TE {
             if core::mem::take(&mut te_trailers) {
-                // The caller's own `trailers` keeps its sensitivity.
-                let value = if value.as_bytes() == b"trailers" {
-                    value
-                } else {
-                    &TE_TRAILERS
-                };
-                return Some((name, value));
+                return Some((name, te_value));
             }
         } else if !header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS.contains(&name)
             && !nominated.contains(name)
@@ -995,6 +1006,36 @@ mod tests {
             let sent = names(&decode(encode_request(&shared(), 0, &request).unwrap()));
             assert_eq!(sent.iter().any(|name| name == "te"), kept, "{te}");
             assert!(!sent.iter().any(|name| name == "connection"));
+        }
+    }
+
+    /// The `trailers` a request's `TE` is sent as is never indexed when any of its lines is
+    /// sensitive.
+    #[test]
+    fn outgoing_te_keeps_the_callers_sensitivity() {
+        for (lines, sensitive) in [
+            (&[("trailers", true)][..], true),
+            (&[("Trailers", true)], true),
+            (&[("trailers, gzip", true)], true),
+            (&[("trailers", false), ("gzip", true)], true),
+            (&[("gzip", true), ("trailers", false)], true),
+            (&[("trailers", false)], false),
+            (&[("trailers, gzip", false)], false),
+        ] {
+            let mut request = Request::builder()
+                .uri("https://example.com/")
+                .body(())
+                .unwrap();
+            for &(line, line_sensitive) in lines {
+                let mut value = HeaderValue::from_static(line);
+                value.set_sensitive(line_sensitive);
+                request.headers_mut().append(header::TE, value);
+            }
+            let sent = decode(encode_request(&shared(), 0, &request).unwrap());
+            let te: Vec<_> = sent.iter().filter(|field| field.name == "te").collect();
+            assert_eq!(te.len(), 1, "{lines:?}");
+            assert_eq!(te[0].value, "trailers", "{lines:?}");
+            assert_eq!(te[0].never_index, sensitive, "{lines:?}");
         }
     }
 
