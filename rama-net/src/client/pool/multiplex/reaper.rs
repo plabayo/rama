@@ -242,9 +242,11 @@ impl<C, ID> Reaper<C, ID> {
                 return u64::MAX;
             }
             if head == first_moved {
-                // Such as with a zero idle timeout: the rest is the next one's.
-                reaped.next_expiry = now;
-                return now;
+                // Went round, such as with every connection busy: the rest is
+                // the next one's, due as the front is.
+                let due = list.nodes[head].since.saturating_add(timeout);
+                reaped.next_expiry = due;
+                return due;
             }
             if first_moved == UNLINKED {
                 first_moved = head;

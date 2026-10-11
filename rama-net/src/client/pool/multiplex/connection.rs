@@ -529,6 +529,12 @@ impl<C: Send + Sync + 'static, ID: Send + Sync + 'static> ChangeListener
     for StoredConnection<C, ID>
 {
     fn changed(&self, change: Change) {
+        if self.active.load(Ordering::Relaxed) == 0 {
+            // Such as the end of work outliving the handouts: the idle clock
+            // starts before the change is published, so whoever sees the
+            // connection idle by it sees the clock restarted.
+            self.last_idle.set_now();
+        }
         // Pairs with the read before asking about outliving work: once it ends,
         // the connection is asked again.
         self.changes.fetch_add(1, Ordering::Release);
@@ -536,14 +542,11 @@ impl<C: Send + Sync + 'static, ID: Send + Sync + 'static> ChangeListener
         // rely on the source's own fence, and it pairs with a held busy
         // answer's, so one of the two asks a trim.
         fence(Ordering::SeqCst);
-        if self.active.load(Ordering::Relaxed) == 0 {
-            // Such as the end of work outliving the handouts: the idle clock
-            // starts now. A trim asks.
-            self.last_idle.set_now();
-            // Counted by a trim, which may ask about outliving work.
-            if self.idle_count.load(Ordering::Relaxed) == UNCOUNTED {
-                self.ask_trim(false);
-            }
+        // Counted by a trim, which may ask about outliving work.
+        if self.active.load(Ordering::Relaxed) == 0
+            && self.idle_count.load(Ordering::Relaxed) == UNCOUNTED
+        {
+            self.ask_trim(false);
         }
         let wake = match change {
             Change::Freed => WaitQueue::wake_one,
@@ -796,10 +799,23 @@ impl<C, ID> Drop for MultiplexedConnection<C, ID> {
     fn drop(&mut self) {
         // Return unused transport credit before waking pool-capacity waiters.
         self.admission.take();
-        let last = self.inner.active.fetch_sub(1, Ordering::Release) == 1;
-        if last {
-            self.inner.last_idle.set_now();
-        }
+        // The last release starts the idle clock before it is published, so
+        // whoever sees the connection idle sees the clock restarted.
+        let mut active = self.inner.active.load(Ordering::Relaxed);
+        let last = loop {
+            if active == 1 {
+                self.inner.last_idle.set_now();
+            }
+            match self.inner.active.compare_exchange_weak(
+                active,
+                active - 1,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break active == 1,
+                Err(observed) => active = observed,
+            }
+        };
         // Pairs with the fences of a checkout unlisting a full connection and
         // of a waiter queuing: of either and this release, one sees the other.
         fence(Ordering::SeqCst);

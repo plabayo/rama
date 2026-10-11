@@ -238,6 +238,23 @@ async fn a_break_while_unlinked_is_queued_as_it_is_linked_again() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_step_finding_every_connection_busy_is_due_as_the_front_is() {
+    let pool = MultiplexPool::new().with_idle_timeout(TIMEOUT);
+    let busy = [fresh(&pool, 0).await, fresh(&pool, 1).await];
+    tokio::time::advance(Duration::from_millis(150)).await;
+    let now = now_monotonic_nanos();
+    let reaped = pool.reaper.step(pool.idle_timeout, now, REAP_BUDGET);
+    assert!(reaped.expired.is_empty() && reaped.expiring.is_empty());
+    assert_eq!(
+        reaped.next_expiry,
+        now + nanos(TIMEOUT),
+        "the front moved back now, due a timeout later"
+    );
+    assert!(!pool.reaper.is_due(now));
+    drop(busy);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_step_looks_at_a_connection_once() {
     let pool = MultiplexPool::new()
         .with_max_connections_total(NonZeroUsize::new(8).unwrap())
