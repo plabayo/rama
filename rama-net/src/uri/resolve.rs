@@ -326,6 +326,9 @@ fn serialized_len(owned: &OwnedUriRef) -> usize {
         }
     }
     n += owned.path.len();
+    if owned.authority.is_some() && owned.path.first().is_some_and(|b| *b != b'/') {
+        n += 1; // `Display` roots a path after an authority
+    }
     if let Some(q) = &owned.query {
         n += 1 + q.bytes.len(); // "?" + bytes
     }

@@ -22,14 +22,15 @@ pub struct HeaderByteLength(pub usize);
 
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(http))]
-/// The headers of a request as the client sent them, in their original order and
-/// casing.
+/// The headers of a request as the client sent them, in their original order.
 ///
 /// The HTTP/1.1, HTTP/2 and HTTP/3 clients record it on the request after writing
 /// its head, so its response, whose extensions fork the request's, carries it too.
-/// "As sent" means after the client's own adjustments: a repaired `Host` and the
-/// framing headers it added on HTTP/1.1, a `Host` left out for an unusable value on
-/// HTTP/2 and HTTP/3, and the connection-specific fields HTTP/3 leaves out.
+/// "As sent" means the field lines the client put on the wire, after its own
+/// adjustments: a repaired or omitted `Host`, framing headers it added or removed,
+/// and the fields a version leaves out or rewrites (connection-specific fields,
+/// `TE`). Names keep the casing they were given, while HTTP/2 and HTTP/3 send them
+/// lowercase and HTTP/1.1 may title-case them.
 pub struct RequestHeaders(Arc<HeaderMap>);
 
 impl From<HeaderMap> for RequestHeaders {

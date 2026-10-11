@@ -15,6 +15,7 @@ use rama_core::telemetry::tracing;
 
 use std::fmt;
 use std::io::Cursor;
+use std::mem;
 use std::ops::{ControlFlow, Range};
 use std::sync::Arc;
 
@@ -385,7 +386,7 @@ impl Headers {
 
     /// Shares the fields of this frame, as they will be sent, with the caller.
     pub fn share_fields(&mut self) -> Arc<HeaderMap> {
-        let fields = match std::mem::replace(
+        let fields = match mem::replace(
             &mut self.header_block.fields,
             Fields::Owned(HeaderMap::new()),
         ) {
@@ -1304,6 +1305,71 @@ fn pseudo_scheme(scheme: &rama_net::Protocol) -> BytesStr {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// A shared block encodes byte for byte as an owned one: order, duplicates,
+    /// casing, never-index, empty values, removed fields and CONTINUATION, also
+    /// against a dynamic table an earlier block filled.
+    #[test]
+    fn shared_fields_encode_like_owned_fields() {
+        fn fields() -> HeaderMap {
+            let mut fields = HeaderMap::new();
+            fields.append(
+                HeaderName::from_static("x-a"),
+                HeaderValue::from_static("1"),
+            );
+            fields.append(header::COOKIE, HeaderValue::from_static("a=1"));
+            let mut secret = HeaderValue::from_static("token");
+            secret.set_sensitive(true);
+            fields.append(header::AUTHORIZATION, secret);
+            fields.append(
+                HeaderName::from_bytes(b"X-Mixed-Case").unwrap(),
+                HeaderValue::from_static("v"),
+            );
+            fields.append(
+                HeaderName::from_static("x-a"),
+                HeaderValue::from_static("2"),
+            );
+            fields.append(
+                HeaderName::from_static("x-gone"),
+                HeaderValue::from_static("g"),
+            );
+            fields.append(
+                HeaderName::from_static("x-empty"),
+                HeaderValue::from_static(""),
+            );
+            fields.append(
+                HeaderName::from_static("x-big"),
+                HeaderValue::from_str(&"b".repeat(40_000)).unwrap(),
+            );
+            fields.remove("x-gone");
+            fields
+        }
+
+        fn encode(share: bool) -> Vec<u8> {
+            let mut encoder = hpack::Encoder::default();
+            let mut wire = Vec::new();
+            for id in [1u32, 3] {
+                let pseudo =
+                    Pseudo::request(Method::GET, &"https://example.com/p".parse().unwrap(), None);
+                let mut frame = Headers::new(StreamId::from(id), pseudo, fields(), None);
+                if share {
+                    let shared = frame.share_fields();
+                    assert_eq!(Arc::strong_count(&shared), 2);
+                }
+                let mut buf = BytesMut::new();
+                let mut next = frame.encode(&mut encoder, &mut (&mut buf).limit(16_384 + 9));
+                while let Some(continuation) = next {
+                    next = continuation.encode(&mut (&mut buf).limit(16_384 + 9));
+                }
+                wire.extend_from_slice(&buf);
+            }
+            wire
+        }
+
+        let owned = encode(false);
+        assert!(owned.len() > 40_000);
+        assert_eq!(encode(true), owned);
+    }
 
     #[test]
     fn every_promised_content_length_line_counts() {

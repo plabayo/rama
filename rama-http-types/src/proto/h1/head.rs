@@ -336,8 +336,9 @@ pub fn is_http1_connect_target(uri: &Uri, extensions: &Extensions) -> bool {
 /// Direct requests use origin-form, `CONNECT` uses authority-form, `OPTIONS
 /// *` uses asterisk-form, and insecure requests on an established HTTP forward
 /// proxy connection use absolute-form, with the resolved protocol as scheme for a
-/// URI without one; a URI without an authority cannot name its origin there and is
-/// sent as it would be directly (origin-form, or `*` for a server-wide OPTIONS),
+/// URI without one; a URI with neither a scheme nor an authority cannot name its
+/// origin there and is sent as it would be directly (origin-form, or `*` for a
+/// server-wide OPTIONS),
 /// leaving the origin to the `Host` header. Fragments are never
 /// emitted, nor is userinfo for HTTP-family schemes (see
 /// [`Uri::write_http_absolute_form`]), and a rootless path is sent rooted. Route

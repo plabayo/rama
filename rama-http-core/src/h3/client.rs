@@ -2,6 +2,7 @@
 
 use std::{
     marker::PhantomData,
+    mem,
     pin::pin,
     sync::{Arc, Weak},
 };
@@ -487,7 +488,7 @@ where
         let remaining = headers::content_length(request.headers())?;
         // The response records the fields its request sent.
         request_extensions.insert(RequestHeaders::from(
-            sent.of(std::mem::take(request.headers_mut())),
+            sent.of(mem::take(request.headers_mut())),
         ));
         if method == Method::CONNECT {
             tokio::select! {

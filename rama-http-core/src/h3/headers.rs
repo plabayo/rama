@@ -1,5 +1,7 @@
 //! Validate decoded HTTP fields before normalization can hide malformed input.
 
+use std::cell::Cell;
+
 use rama_core::{
     bytes::Bytes,
     extensions::{Extensions, ExtensionsRef},
@@ -132,7 +134,13 @@ fn outgoing_fields(
     headers.ordered_iter().filter_map(move |(name, value)| {
         if *name == header::TE {
             if core::mem::take(&mut te_trailers) {
-                return Some((name, &TE_TRAILERS));
+                // The caller's own `trailers` keeps its sensitivity.
+                let value = if value.as_bytes() == b"trailers" {
+                    value
+                } else {
+                    &TE_TRAILERS
+                };
+                return Some((name, value));
             }
         } else if !header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS.contains(&name)
             && !nominated.contains(name)
@@ -607,7 +615,7 @@ pub(crate) fn encode_request_fields<B>(
                     || (name == PseudoHeader::Authority && value.contains(&b'@')),
             })
     });
-    let sent = std::cell::Cell::new(0);
+    let sent = Cell::new(0);
     let block = shared.encode(
         id,
         pseudo.chain(

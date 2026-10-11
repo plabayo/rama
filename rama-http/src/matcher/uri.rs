@@ -132,6 +132,15 @@ mod test {
     }
 
     #[test]
+    fn a_rootless_path_after_an_authority_keeps_the_host() {
+        let uri = Uri::parse("http://example.com").unwrap().with_path("p");
+        let same_host = UriMatcher::regex(Regex::new(r"^http://example\.com/p$").unwrap());
+        assert!(same_host.matches_uri(&uri), "{uri}");
+        let other_host = UriMatcher::regex(Regex::new(r"^http://example\.comp").unwrap());
+        assert!(!other_host.matches_uri(&uri), "{uri}");
+    }
+
+    #[test]
     fn matchest_uri_wildcard_match() {
         for (matcher, uri) in [
             (r"*www.example.com", "http://www.example.com"),

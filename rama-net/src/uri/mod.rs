@@ -983,20 +983,25 @@ impl Uri {
     }
 
     /// The percent-encoded path as a string, defaulting to `"/"` when the
-    /// path is absent or empty (the effective origin-form path). Shortcut for
-    /// `uri.path().map(PathRef::as_encoded_str).filter(|p| !p.is_empty()).unwrap_or("/")`.
+    /// path is absent or empty, and with a leading `/` for a rootless one: the
+    /// effective origin-form path.
     #[must_use]
     pub fn path_or_root(&self) -> Cow<'_, str> {
-        self.path()
-            .and_then(|p| {
-                let s = p.as_encoded_str();
-                (!s.is_empty()).then_some(s)
-            })
-            .unwrap_or(Cow::Borrowed("/"))
+        match self.path().map(PathRef::as_encoded_str) {
+            Some(path) if path.starts_with('/') => path,
+            Some(path) if !path.is_empty() => {
+                let mut rooted = String::with_capacity(path.len() + 1);
+                rooted.push('/');
+                rooted.push_str(&path);
+                Cow::Owned(rooted)
+            }
+            _ => Cow::Borrowed("/"),
+        }
     }
 
     /// The path as a typed borrowed view, defaulting to `"/"` when the path is
-    /// absent or empty (the effective origin-form path).
+    /// absent or empty. Unlike [`path_or_root`](Self::path_or_root) a rootless
+    /// path stays as it is.
     #[must_use]
     pub fn path_ref_or_root(&self) -> PathRef<'_> {
         self.path()
@@ -1049,7 +1054,7 @@ impl Uri {
         match self.query() {
             Some(q) => {
                 let mut target = String::new();
-                _ = write!(&mut target, "{}?{q}", self.path_ref_or_root());
+                _ = write!(&mut target, "{}?{q}", self.path_or_root());
                 Cow::Owned(target)
             }
             None => self.path_or_root(),

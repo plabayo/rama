@@ -172,6 +172,13 @@ fn a_rootless_path_after_an_authority_is_rooted_in_every_form() {
         "https://example.com/p"
     );
     assert_eq!(uri.to_string(), "http://example.com/p");
+    assert_eq!(uri.path_or_root(), "/p");
+    assert_eq!(uri.request_target(), "/p");
+    let with_query = parse_graceful("http://example.com/?q=1")
+        .unwrap()
+        .with_path("p");
+    assert_eq!(with_query.request_target(), "/p?q=1");
+    assert_eq!(Uri::parse_reference("rel").unwrap().path_or_root(), "/rel");
 
     let reference = Uri::parse_reference("//example.com")
         .unwrap()
