@@ -2800,6 +2800,55 @@ mod conn {
         assert!(trailers.is_none());
     }
 
+    /// Empty chunks of a body carry nothing: they are not sent as empty DATA frames,
+    /// which peers count against the connection's lifetime limit.
+    #[tokio::test]
+    async fn http2_bodies_send_no_empty_chunks() {
+        use rama::service::service_fn;
+
+        // More per connection than a peer takes empty DATA frames, both ways.
+        fn body_with_empty_chunks(data: &'static [u8]) -> rama::http::Body {
+            let chunks = (0..150)
+                .map(|_| Ok::<_, Infallible>(Frame::data(Bytes::new())))
+                .chain(std::iter::once(Ok(Frame::data(Bytes::from_static(data)))));
+            rama::http::Body::new(StreamBody::new(rama::futures::stream::iter(chunks)))
+        }
+
+        let (listener, addr) = setup_tk_test_server().await;
+        tokio::spawn(async move {
+            let sock = ServiceInput::new(listener.accept().await.unwrap().0);
+            rama::http::core::server::conn::http2::Builder::new(Executor::new())
+                .serve_connection(
+                    sock,
+                    RamaHttpService::new(service_fn(async |req: Request| {
+                        let body = req.into_body().collect().await.unwrap().to_bytes();
+                        assert_eq!(body.as_ref(), b"ping");
+                        Ok::<_, Infallible>(Response::new(body_with_empty_chunks(b"pong")))
+                    })),
+                )
+                .await
+                .expect("serve_connection");
+        });
+
+        let io = ServiceInput::new(tcp_connect(&addr).await.expect("tcp connect"));
+        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+            .handshake(io)
+            .await
+            .expect("http handshake");
+        tokio::spawn(async move {
+            conn.await.expect("client conn shouldn't error");
+        });
+
+        for _ in 0..2 {
+            let req = Request::post("/")
+                .body(body_with_empty_chunks(b"ping"))
+                .unwrap();
+            let resp = client.send_request(req).await.expect("send_request");
+            let body = resp.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(body.as_ref(), b"pong");
+        }
+    }
+
     #[tokio::test]
     async fn http2_responds_before_consuming_request_body_with_trailers() {
         // Test that a early-response from server works correctly (request body wasn't fully consumed).
