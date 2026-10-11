@@ -78,11 +78,14 @@ async fn server_builder_set_max_concurrent_streams() {
 
 #[tokio::test]
 async fn consecutive_refusals_survive_write_backpressure() {
+    // Enough RST_STREAM frames to fill the codec's 16 KiB write buffer.
+    const STREAMS: u32 = 2000;
     // Allow only the initial SETTINGS (15 bytes) and its ACK (9 bytes).
     let (io, mut client) = mock::new_with_write_capacity(24);
+    // Exactly one local reset per refused stream fits the limit.
     let builder = server::Builder::new()
         .with_max_concurrent_streams(0)
-        .without_max_local_error_reset_streams();
+        .with_max_local_error_reset_streams(STREAMS as usize);
 
     client.write_preface().await;
     client.send_frame(frame::Settings::default()).await;
@@ -98,8 +101,6 @@ async fn consecutive_refusals_survive_write_backpressure() {
     client.recv_frame(frame::Settings::ack()).await;
     client.send_frame(frame::Settings::ack()).await;
 
-    // Enough RST_STREAM frames to fill the codec's 16 KiB write buffer.
-    const STREAMS: u32 = 2000;
     for n in 0..STREAMS {
         client
             .send_frame(
@@ -112,6 +113,7 @@ async fn consecutive_refusals_survive_write_backpressure() {
 
     // Processing the requests fills the codec; a refusal it cannot buffer
     // stalls the reads behind it for as long as the writer stays blocked.
+    // The yields refill the reader's cooperative budget between polls.
     for _ in 0..64 {
         poll_fn(|cx| {
             assert!(srv.poll_accept(cx).is_pending());
