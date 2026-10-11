@@ -309,115 +309,86 @@ where
         .boxed()
 }
 
-fn spawn_http_proxy(params: TestParameters) -> SocketAddress {
+fn spawn_http_proxy(params: TestParameters) -> (SocketAddress, ServerRuntime) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
-    let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
+    let ((), runtime) = spawn_server_runtime(2, move |ready| async move {
+        let async_listener =
+            TcpListener::try_from_std_tcp_listener(listener, Executor::default()).unwrap();
+        ready.send(()).unwrap();
 
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(async move {
-            let async_listener =
-                TcpListener::try_from_std_tcp_listener(listener, Executor::default()).unwrap();
-            ready_tx.send(Ok(())).unwrap();
-
-            match params.proxy {
-                Proxy::Http => {
-                    let service = get_http_proxy_service_boxed(params);
-                    async_listener.serve(service).await
-                }
-                Proxy::Socks5 => {
-                    let socks5_acceptor = Socks5Acceptor::new(Executor::default())
-                        .with_authorizer(basic!("john", "secret").into_authorizer())
-                        .with_default_connector();
-                    async_listener.serve(socks5_acceptor).await
-                }
-                #[expect(clippy::unreachable, reason = "proxy listener only spawned for non-None Proxy variants — see the filter above")]
-                Proxy::None => unreachable!("proxy listener only spawned for proxy rows"),
+        match params.proxy {
+            Proxy::Http => {
+                let service = get_http_proxy_service_boxed(params);
+                async_listener.serve(service).await
             }
-        });
-    });
-
-    match ready_rx.recv_timeout(STARTUP_TIMEOUT) {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => panic!("proxy failed to start: {err}"),
-        Err(mpsc::RecvTimeoutError::Timeout) => panic!("proxy startup timed out"),
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            panic!("proxy thread exited before signaling readiness")
+            Proxy::Socks5 => {
+                let socks5_acceptor = Socks5Acceptor::new(Executor::default())
+                    .with_authorizer(basic!("john", "secret").into_authorizer())
+                    .with_default_connector();
+                async_listener.serve(socks5_acceptor).await
+            }
+            #[expect(
+                clippy::unreachable,
+                reason = "proxy listener only spawned for non-None Proxy variants — see the filter above"
+            )]
+            Proxy::None => unreachable!("proxy listener only spawned for proxy rows"),
         }
-    }
-    addr.into()
+    });
+    (addr.into(), runtime)
 }
 
-fn spawn_http_server(params: TestParameters, body_content: Bytes) -> SocketAddress {
+fn spawn_http_server(
+    params: TestParameters,
+    body_content: Bytes,
+) -> (SocketAddress, ServerRuntime) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
-    let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
+    let ((), runtime) = spawn_server_runtime(2, move |ready| async move {
+        let async_listener =
+            TcpListener::try_from_std_tcp_listener(listener, Executor::default()).unwrap();
 
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(async move {
-            let async_listener =
-                TcpListener::try_from_std_tcp_listener(listener, Executor::default()).unwrap();
+        match params.tls {
+            Tls::None => {
+                let service = get_http_service_boxed(params, body_content);
 
-            match params.tls {
-                Tls::None => {
-                    let service = get_http_service_boxed(params, body_content);
+                ready.send(()).unwrap();
 
-                    ready_tx.send(Ok(())).unwrap();
-
-                    async_listener.serve(service).await
-                }
-                Tls::Rustls => {
-                    let service = get_http_service_boxed(params, body_content);
-
-                    let config = get_config_tls_data(params);
-
-                    ready_tx.send(Ok(())).unwrap();
-
-                    async_listener
-                        .serve(rustls::server::TlsAcceptorLayer::new(config).into_layer(service))
-                        .await
-                }
-                Tls::Boring => {
-                    let service = get_http_service_boxed(params, body_content);
-
-                    let config = get_config_tls_data(params);
-
-                    ready_tx.send(Ok(())).unwrap();
-
-                    async_listener
-                        .serve(boring::server::TlsAcceptorLayer::new(config).into_layer(service))
-                        .await
-                }
+                async_listener.serve(service).await
             }
-        });
-    });
+            Tls::Rustls => {
+                let service = get_http_service_boxed(params, body_content);
 
-    match ready_rx.recv_timeout(STARTUP_TIMEOUT) {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => panic!("server failed to start: {err}"),
-        Err(mpsc::RecvTimeoutError::Timeout) => panic!("server startup timed out"),
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            panic!("server thread exited before signaling readiness")
+                let config = get_config_tls_data(params);
+
+                ready.send(()).unwrap();
+
+                async_listener
+                    .serve(rustls::server::TlsAcceptorLayer::new(config).into_layer(service))
+                    .await
+            }
+            Tls::Boring => {
+                let service = get_http_service_boxed(params, body_content);
+
+                let config = get_config_tls_data(params);
+
+                ready.send(()).unwrap();
+
+                async_listener
+                    .serve(boring::server::TlsAcceptorLayer::new(config).into_layer(service))
+                    .await
+            }
         }
-    }
-    addr.into()
+    });
+    (addr.into(), runtime)
 }
 
 fn get_inner_client(
     http: HttpVersion,
     tls: Tls,
 ) -> impl Service<Request, Output = Response, Error = OpaqueError> {
-    let b = EasyHttpWebClient::connector_builder().with_default_transport_connector();
+    let b = EasyHttpWebClient::connector_builder()
+        .with_custom_transport_connector(TcpConnector::new().with_connector(transport_socket()));
 
     let proto = match http {
         HttpVersion::Http1 => ApplicationProtocol::HTTP_11,
@@ -488,13 +459,15 @@ fn bench_http_transport(bencher: divan::Bencher, params: TestParameters) {
         "large"
     };
 
-    let address = spawn_http_server(params, server_bytes);
+    let (address, _server) = spawn_http_server(params, server_bytes);
     let url = format!("{scheme}://{address}/{endpoint}");
 
-    let mut address_proxy = SocketAddress::default_ipv4(0);
-    if params.proxy != Proxy::None {
-        address_proxy = spawn_http_proxy(params);
-    }
+    let (address_proxy, _proxy) = if params.proxy == Proxy::None {
+        (SocketAddress::default_ipv4(0), None)
+    } else {
+        let (address, runtime) = spawn_http_proxy(params);
+        (address, Some(runtime))
+    };
 
     bencher
         .with_inputs(|| {
@@ -662,6 +635,15 @@ fn client_socket() -> Arc<SocketOptions> {
     })
 }
 
+/// Sockets of the unpooled transport rows' clients: closed with a reset (linger 0),
+/// as a connection per request would exhaust the ephemeral ports through `TIME_WAIT`.
+fn transport_socket() -> Arc<SocketOptions> {
+    Arc::new(SocketOptions {
+        linger: Some(Duration::ZERO),
+        ..Default::default()
+    })
+}
+
 /// Accepted sockets: `TCP_NODELAY`.
 fn server_socket() -> Arc<SocketOptions> {
     Arc::new(SocketOptions {
@@ -774,40 +756,62 @@ fn load_h3_client() -> impl Service<Request, Output = Response, Error = OpaqueEr
         .build_client()
 }
 
-/// Run `serve` on its own 4 thread runtime, returning what it reports once ready.
-fn spawn_load_runtime<T, F, Fut>(serve: F) -> T
-where
-    T: Send + 'static,
-    F: FnOnce(mpsc::SyncSender<T>) -> Fut + Send + 'static,
-    Fut: Future<Output = ()>,
-{
-    let (ready_tx, ready_rx) = mpsc::sync_channel::<T>(1);
-    std::thread::spawn(move || {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(4)
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(serve(ready_tx));
-    });
-    ready_rx
-        .recv_timeout(STARTUP_TIMEOUT)
-        .expect("server start")
+/// A bench server's runtime: shut down with its tasks and sockets on drop, so
+/// a row leaves no threads or sockets to the rows after it.
+struct ServerRuntime(Option<tokio::runtime::Runtime>);
+
+impl Drop for ServerRuntime {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.0.take() {
+            runtime.shutdown_timeout(Duration::from_secs(1));
+        }
+    }
 }
 
-fn spawn_load_server<F>(serve: F) -> SocketAddress
+/// Run `serve` on its own runtime of `workers` threads, returning what it
+/// reports once ready.
+fn spawn_server_runtime<T, F, Fut>(workers: usize, serve: F) -> (T, ServerRuntime)
+where
+    T: Send + 'static,
+    F: FnOnce(mpsc::SyncSender<T>) -> Fut,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    let (ready_tx, ready_rx) = mpsc::sync_channel::<T>(1);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.spawn(serve(ready_tx));
+    let ready = ready_rx
+        .recv_timeout(STARTUP_TIMEOUT)
+        .expect("server start");
+    (ready, ServerRuntime(Some(runtime)))
+}
+
+/// A load server's runtime: 4 threads.
+fn spawn_load_runtime<T, F, Fut>(serve: F) -> (T, ServerRuntime)
+where
+    T: Send + 'static,
+    F: FnOnce(mpsc::SyncSender<T>) -> Fut,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    spawn_server_runtime(4, serve)
+}
+
+fn spawn_load_server<F>(serve: F) -> (SocketAddress, ServerRuntime)
 where
     F: FnOnce(TcpListener) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + 'static,
 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
-    spawn_load_runtime(move |ready| async move {
+    let ((), runtime) = spawn_load_runtime(move |ready| async move {
         let listener =
             TcpListener::try_from_std_tcp_listener(listener, Executor::default()).unwrap();
         ready.send(()).unwrap();
         serve(listener).await;
     });
-    addr.into()
+    (addr.into(), runtime)
 }
 
 /// What the origins serve: a payload for POST `/payload` and a WebSocket echo
@@ -837,7 +841,11 @@ fn load_origin_service(
 
 /// An origin on TCP (TLS or not, h1 and h2 with WebSockets over both) that
 /// counts the connections it accepts.
-fn spawn_load_origin(tls: bool, body: Bytes, accepted: Arc<AtomicUsize>) -> SocketAddress {
+fn spawn_load_origin(
+    tls: bool,
+    body: Bytes,
+    accepted: Arc<AtomicUsize>,
+) -> (SocketAddress, ServerRuntime) {
     spawn_load_server(move |listener| {
         Box::pin(async move {
             let mut http = HttpServer::auto(Executor::default());
@@ -872,7 +880,7 @@ fn spawn_load_origin(tls: bool, body: Bytes, accepted: Arc<AtomicUsize>) -> Sock
 }
 
 /// An HTTP/3 origin that counts the connections it accepts.
-fn spawn_h3_origin(body: Bytes, accepted: Arc<AtomicUsize>) -> SocketAddress {
+fn spawn_h3_origin(body: Bytes, accepted: Arc<AtomicUsize>) -> (SocketAddress, ServerRuntime) {
     spawn_load_runtime(move |ready| async move {
         let tls = TlsServerConfig::new()
             .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
@@ -904,7 +912,10 @@ fn spawn_h3_origin(body: Bytes, accepted: Arc<AtomicUsize>) -> SocketAddress {
     })
 }
 
-fn spawn_load_proxy(params: LoadParameters, origins: Arc<Vec<SocketAddress>>) -> SocketAddress {
+fn spawn_load_proxy(
+    params: LoadParameters,
+    origins: Arc<Vec<SocketAddress>>,
+) -> (SocketAddress, ServerRuntime) {
     spawn_load_server(move |listener| {
         Box::pin(async move {
             let options = TcpStreamOptionsLayer::new(server_socket());
@@ -1042,16 +1053,23 @@ fn bench_http_proxy_load(bencher: divan::Bencher, params: LoadParameters) {
     let body = size.rnd_bytes();
     let accepted = Arc::new(AtomicUsize::new(0));
     let rounds_done = Arc::new(AtomicUsize::new(0));
+    // Declared before the clients, so dropped after them: the servers stop last.
+    let mut runtimes = Vec::with_capacity(params.origins + 1);
     let origins: Arc<Vec<SocketAddress>> = Arc::new(
         (0..params.origins)
-            .map(|_| match params.mode {
-                LoadMode::ReverseH3 => spawn_h3_origin(body.clone(), accepted.clone()),
-                LoadMode::Forward => spawn_load_origin(false, body.clone(), accepted.clone()),
-                _ => spawn_load_origin(true, body.clone(), accepted.clone()),
+            .map(|_| {
+                let (addr, runtime) = match params.mode {
+                    LoadMode::ReverseH3 => spawn_h3_origin(body.clone(), accepted.clone()),
+                    LoadMode::Forward => spawn_load_origin(false, body.clone(), accepted.clone()),
+                    _ => spawn_load_origin(true, body.clone(), accepted.clone()),
+                };
+                runtimes.push(runtime);
+                addr
             })
             .collect(),
     );
-    let proxy = spawn_load_proxy(params, origins.clone());
+    let (proxy, runtime) = spawn_load_proxy(params, origins.clone());
+    runtimes.push(runtime);
     let proxy_route = ProxyRoute::Proxy(ProxyAddress::try_from(format!("http://{proxy}")).unwrap());
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -1175,9 +1193,12 @@ fn bench_http_proxy_load(bencher: divan::Bencher, params: LoadParameters) {
             });
         });
     // How often the origins saw a new connection: pool reuse (or the lack of it).
-    LOAD_STATS.lock().push(format!(
+    let line = format!(
         "{params:?}: origins accepted {} connections for {} rounds",
         accepted.load(Ordering::Relaxed),
         rounds_done.load(Ordering::Relaxed),
-    ));
+    );
+    // Now too: a later row failing aborts the run before the summary.
+    eprintln!("{line}");
+    LOAD_STATS.lock().push(line);
 }

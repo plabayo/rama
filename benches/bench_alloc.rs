@@ -1,6 +1,7 @@
 //! Benches run on the allocator rama binaries ship (see `rama-cli`), wrapped
 //! so divan reports allocations: measuring on the system allocator would
-//! misjudge allocation-heavy paths.
+//! misjudge allocation-heavy paths. That is jemalloc on Unix and mimalloc on
+//! Windows, so compare numbers within one OS only.
 
 #[cfg(target_family = "unix")]
 #[global_allocator]
