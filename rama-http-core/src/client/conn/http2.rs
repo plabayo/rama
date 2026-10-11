@@ -701,6 +701,20 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Configures the connection-level budget for the memory overhead of
+        /// received small DATA frames, exhausting it closes the connection.
+        ///
+        /// See the documentation of [`crate::h2::client::Builder::with_data_frame_budget`] for more
+        /// details.
+        ///
+        /// The default, `None`, is half the target connection window, at least 25,600 bytes.
+        pub fn data_frame_budget(mut self, budget: impl Into<Option<usize>>) -> Self {
+            self.h2_builder.data_frame_budget = budget.into();
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Sets the duration to remember locally reset streams.
         ///
         /// When a stream is explicitly reset by either the client or the server,
