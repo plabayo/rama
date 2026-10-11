@@ -1231,6 +1231,9 @@ impl StandardName {
     }
 
     fn fmt_original(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.case == CaseMask::LOWER {
+            return f.write_str(self.as_str());
+        }
         for (i, b) in self.as_str().bytes().enumerate() {
             let b = if self.case.is_upper(i) {
                 b.to_ascii_uppercase()
@@ -1243,6 +1246,10 @@ impl StandardName {
     }
 
     fn write_original<B: bytes::BufMut>(&self, dst: &mut B) {
+        if self.case == CaseMask::LOWER {
+            dst.put_slice(self.as_str().as_bytes());
+            return;
+        }
         for (i, b) in self.as_str().bytes().enumerate() {
             let b = if self.case.is_upper(i) {
                 b.to_ascii_uppercase()

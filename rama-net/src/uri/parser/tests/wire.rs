@@ -7,22 +7,20 @@ use crate::{
     uri::{PathRef, QueryRef, Uri, WireError},
 };
 
-use rama_core::bytes::BytesMut;
-
-fn buf() -> BytesMut {
-    BytesMut::new()
+fn buf() -> Vec<u8> {
+    Vec::new()
 }
 
 fn write_origin(uri: &Uri) -> Result<String, WireError> {
     let mut b = buf();
     uri.write_http_origin_form(&mut b)?;
-    Ok(String::from_utf8(b.to_vec()).unwrap())
+    Ok(String::from_utf8(b).unwrap())
 }
 
 fn write_absolute(uri: &Uri) -> Result<String, WireError> {
     let mut b = buf();
     uri.write_http_absolute_form(&mut b)?;
-    Ok(String::from_utf8(b.to_vec()).unwrap())
+    Ok(String::from_utf8(b).unwrap())
 }
 
 fn write_absolute_with_overrides(
@@ -38,25 +36,25 @@ fn write_absolute_with_overrides(
 fn write_authority(uri: &Uri) -> Result<String, WireError> {
     let mut b = buf();
     uri.write_http_authority_form(&mut b)?;
-    Ok(String::from_utf8(b.to_vec()).unwrap())
+    Ok(String::from_utf8(b).unwrap())
 }
 
 fn write_h2_path(uri: &Uri) -> String {
     let mut b = buf();
     uri.write_h2_path(&mut b);
-    String::from_utf8(b.to_vec()).unwrap()
+    String::from_utf8(b).unwrap()
 }
 
 fn write_h2_authority(uri: &Uri) -> Result<String, WireError> {
     let mut b = buf();
     uri.write_h2_authority(&mut b)?;
-    Ok(String::from_utf8(b.to_vec()).unwrap())
+    Ok(String::from_utf8(b).unwrap())
 }
 
 fn write_h2_scheme(uri: &Uri) -> Result<String, WireError> {
     let mut b = buf();
     uri.write_h2_scheme(&mut b)?;
-    Ok(String::from_utf8(b.to_vec()).unwrap())
+    Ok(String::from_utf8(b).unwrap())
 }
 
 // ----------------------------------------------------------------------
@@ -145,6 +143,129 @@ fn absolute_form_no_authority_keeps_scheme_path() {
     // Opaque URI: scheme + path, no authority.
     let uri: Uri = parse_graceful("urn:isbn:0451450523").unwrap();
     assert_eq!(write_absolute(&uri).unwrap(), "urn:isbn:0451450523");
+}
+
+#[test]
+fn origin_form_and_h2_path_root_a_rootless_path() {
+    for (uri, target) in [
+        (
+            parse_graceful("urn:isbn:0451450523").unwrap(),
+            "/isbn:0451450523",
+        ),
+        (Uri::parse_reference("rel/path?q").unwrap(), "/rel/path?q"),
+        (Uri::parse_reference("rel").unwrap(), "/rel"),
+        (Uri::parse_reference("/rooted").unwrap(), "/rooted"),
+    ] {
+        assert_eq!(write_origin(&uri).unwrap(), target, "{uri}");
+        assert_eq!(write_h2_path(&uri), target, "{uri}");
+    }
+}
+
+#[test]
+fn a_rootless_path_after_an_authority_is_rooted_in_every_form() {
+    let uri = parse_graceful("http://example.com").unwrap().with_path("p");
+    assert_eq!(write_origin(&uri).unwrap(), "/p");
+    assert_eq!(write_h2_path(&uri), "/p");
+    assert_eq!(write_absolute(&uri).unwrap(), "http://example.com/p");
+    assert_eq!(
+        write_absolute_with_overrides(&uri, &Protocol::HTTPS, OptPort::Unset).unwrap(),
+        "https://example.com/p"
+    );
+    assert_eq!(uri.to_string(), "http://example.com/p");
+    assert_eq!(uri.path_or_root(), "/p");
+    assert_eq!(uri.request_target(), "/p");
+    let with_query = parse_graceful("http://example.com/?q=1")
+        .unwrap()
+        .with_path("p");
+    assert_eq!(with_query.request_target(), "/p?q=1");
+    assert_eq!(Uri::parse_reference("rel").unwrap().path_or_root(), "/rel");
+
+    let reference = Uri::parse_reference("//example.com")
+        .unwrap()
+        .with_path("p");
+    let mut b = buf();
+    reference
+        .write_http_absolute_form_with_default_scheme(&Protocol::HTTP, &mut b)
+        .unwrap();
+    assert_eq!(String::from_utf8(b).unwrap(), "http://example.com/p");
+}
+
+#[test]
+fn a_double_slash_path_without_an_authority_never_reads_as_one() {
+    let uri = parse_graceful("http://good.example//evil.example/p")
+        .unwrap()
+        .without_authority();
+    assert_eq!(write_absolute(&uri).unwrap(), "http:/.//evil.example/p");
+    assert_eq!(
+        write_absolute_with_overrides(&uri, &Protocol::HTTPS, OptPort::Unset).unwrap(),
+        "https:/.//evil.example/p"
+    );
+    let shown = uri.to_string();
+    assert_eq!(shown, "http:/.//evil.example/p");
+    assert!(parse_graceful(&shown).unwrap().authority().is_none());
+    // Origin-form and `:path` are absolute paths, which may start with `//`.
+    assert_eq!(write_origin(&uri).unwrap(), "//evil.example/p");
+    assert_eq!(write_h2_path(&uri), "//evil.example/p");
+
+    let reference = Uri::parse_reference("/p")
+        .unwrap()
+        .with_path("//evil.example/p");
+    let shown = reference.to_string();
+    assert_eq!(shown, "/.//evil.example/p");
+    assert!(
+        Uri::parse_reference(shown.as_str())
+            .unwrap()
+            .authority()
+            .is_none()
+    );
+}
+
+#[test]
+fn writers_write_nothing_on_error() {
+    let asterisk = Uri::parse_http_request_target("*", false).unwrap();
+    let no_scheme = Uri::parse_reference("/p").unwrap();
+    let mut b = b"x".to_vec();
+    for uri in [&asterisk, &no_scheme] {
+        if !uri.is_asterisk() {
+            assert!(uri.write_http_absolute_form(&mut b).is_err());
+        } else {
+            assert!(uri.write_http_origin_form(&mut b).is_err());
+            assert!(uri.write_http_absolute_form(&mut b).is_err());
+        }
+        assert!(uri.write_http_authority_form(&mut b).is_err());
+        assert!(uri.write_h2_authority(&mut b).is_err());
+        assert!(uri.write_h2_scheme(&mut b).is_err());
+        assert!(
+            uri.write_http_absolute_form_with_default_scheme(&Protocol::HTTP, &mut b)
+                .is_err()
+        );
+    }
+    assert_eq!(b, b"x");
+}
+
+#[test]
+fn absolute_form_with_default_scheme() {
+    let write = |uri: &str| {
+        let mut b = buf();
+        Uri::parse_reference(uri)
+            .unwrap()
+            .write_http_absolute_form_with_default_scheme(&Protocol::HTTP, &mut b)
+            .map(|()| String::from_utf8(b).unwrap())
+    };
+    // The URI's own scheme wins.
+    assert_eq!(
+        write("ws://example.com/chat").unwrap(),
+        "ws://example.com/chat"
+    );
+    // A network-path reference takes the default scheme.
+    assert_eq!(
+        write("//user@example.com:8080/p?q#f").unwrap(),
+        "http://example.com:8080/p?q"
+    );
+    assert_eq!(write("//example.com").unwrap(), "http://example.com/");
+    // Without an authority absolute-form cannot name the origin.
+    assert_eq!(write("/p").unwrap_err(), WireError::NoAuthority);
+    assert_eq!(write("").unwrap_err(), WireError::NoAuthority);
 }
 
 #[test]
@@ -406,7 +527,7 @@ fn h2_scheme_asterisk_errors() {
 #[test]
 fn writers_append_not_overwrite() {
     let uri: Uri = parse_graceful("https://example.com/p").unwrap();
-    let mut b = BytesMut::from(&b"prefix:"[..]);
+    let mut b = b"prefix:".to_vec();
     uri.write_http_origin_form(&mut b).unwrap();
     assert_eq!(&b[..], b"prefix:/p");
 }

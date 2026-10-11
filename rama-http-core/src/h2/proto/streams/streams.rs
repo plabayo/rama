@@ -65,6 +65,16 @@ pub(crate) struct DynStreams<'a, B> {
     peer: peer::Dyn,
 }
 
+/// Outcome of receiving a frame that can open a stream.
+#[derive(Debug)]
+#[must_use = "a refused stream must be reset by the connection"]
+pub(crate) enum RecvOutcome {
+    /// The frame was handled, including any intentional ignoring of it.
+    Processed,
+    /// The connection must send REFUSED_STREAM for this stream ID.
+    Refused(StreamId),
+}
+
 /// Reference to the stream state
 #[derive(Debug)]
 pub(crate) struct StreamRef<B> {
@@ -158,12 +168,7 @@ where
         &mut self,
         size: WindowSize,
     ) -> Result<(), Reason> {
-        let mut me = self.inner.lock();
-        let me = &mut *me;
-
-        me.actions
-            .recv
-            .set_target_connection_window(size, &mut me.actions.task)
+        self.inner.lock().set_target_connection_window(size)
     }
 
     pub(crate) fn next_incoming(&mut self) -> Option<StreamRef<B>> {
@@ -192,6 +197,19 @@ where
         })
     }
 
+    /// Count a refused stream toward the local error reset limit.
+    pub(crate) fn count_pending_refusal(&mut self) -> Result<(), Error> {
+        let mut me = self.inner.lock();
+        if !me.counts.can_inc_num_local_error_resets() {
+            return Err(Error::library_go_away_data(
+                Reason::ENHANCE_YOUR_CALM,
+                "too_many_internal_resets",
+            ));
+        }
+        me.counts.inc_num_local_error_resets();
+        Ok(())
+    }
+
     pub(crate) fn send_pending<T>(
         &mut self,
         cx: &mut Context,
@@ -200,18 +218,6 @@ where
     where
         T: AsyncWrite + Unpin,
     {
-        loop {
-            let status = {
-                let mut me = self.inner.lock();
-                me.actions.recv.send_pending_refusal(dst)?
-            };
-
-            match status {
-                BufferStatus::Complete => break,
-                BufferStatus::CodecFull => ready!(dst.poll_ready(cx))?,
-            }
-        }
-
         // Ensure an early frame can be buffered before consuming it from the
         // replay context. Do not wait on write readiness when there is no
         // replay frame: doing so can starve reads while an unrelated DATA
@@ -248,12 +254,12 @@ where
                             "replay: increment h2 window update size w/ {}",
                             window_update.size_increment
                         );
-                        if let Err(reason) = me.actions.recv.replay_connection_window_update(
-                            window_update.size_increment,
-                            &mut me.actions.task,
-                        ) {
+                        if let Err(reason) =
+                            Recv::replayed_connection_window(window_update.size_increment)
+                                .and_then(|target| me.set_target_connection_window(target))
+                        {
                             tracing::debug!(
-                                "h2 streams: failed to replay window update (replay_connection_window_update): reason = {reason}; go away"
+                                "h2 streams: failed to replay window update: reason = {reason}; go away"
                             );
                             return Poll::Ready(Err(Error::library_go_away(reason)));
                         }
@@ -424,13 +430,6 @@ where
             return Err(UserError::UnexpectedFrameType.into());
         }
 
-        // TODO: with a bit of trickery we can perhaps in future
-        // do better than just cloning here...
-
-        request
-            .extensions()
-            .insert(RequestHeaders::from(request.headers().clone()));
-
         let stream_id = me.actions.send.open()?;
 
         // Convert the message
@@ -447,7 +446,7 @@ where
             })
             .flatten();
         let request_method = request.method().clone();
-        let (headers, req_ext) = client::Peer::convert_send_message(
+        let (mut headers, req_ext) = client::Peer::convert_send_message(
             stream_id,
             request,
             protocol,
@@ -455,6 +454,8 @@ where
             me.headers_pseudo_order.clone(),
             None,
         )?;
+        // The fields the frame sends, shared rather than copied.
+        req_ext.insert(RequestHeaders::from(headers.share_fields()));
 
         let mut stream = Stream::try_new(
             stream_id,
@@ -556,7 +557,8 @@ impl<B> DynStreams<'_, B> {
         self.peer.is_server()
     }
 
-    pub(crate) fn recv_headers(&mut self, frame: frame::Headers) -> Result<(), Error> {
+    /// Reports whether the connection must refuse the stream opened by the peer.
+    pub(crate) fn recv_headers(&mut self, frame: frame::Headers) -> Result<RecvOutcome, Error> {
         let mut me = self.inner.lock();
         me.recv_headers(self.peer, self.send_buffer, frame)
     }
@@ -608,7 +610,11 @@ impl<B> DynStreams<'_, B> {
         Ok(())
     }
 
-    pub(crate) fn recv_push_promise(&mut self, frame: frame::PushPromise) -> Result<(), Error> {
+    /// Reports whether the connection must refuse the promised stream.
+    pub(crate) fn recv_push_promise(
+        &mut self,
+        frame: frame::PushPromise,
+    ) -> Result<RecvOutcome, Error> {
         let mut me = self.inner.lock();
         me.recv_push_promise(self.send_buffer, frame)
     }
@@ -656,12 +662,21 @@ impl Inner {
         })))
     }
 
+    /// Sets the target connection window and the DATA frame budget following it.
+    fn set_target_connection_window(&mut self, size: WindowSize) -> Result<(), Reason> {
+        self.actions
+            .recv
+            .set_target_connection_window(size, &mut self.actions.task)?;
+        self.counts.set_target_connection_window_size(size);
+        Ok(())
+    }
+
     fn recv_headers<B>(
         &mut self,
         peer: peer::Dyn,
         send_buffer: &SendBuffer<B>,
         frame: frame::Headers,
-    ) -> Result<(), Error> {
+    ) -> Result<RecvOutcome, Error> {
         let id = frame.stream_id();
 
         // The GOAWAY process has begun. All streams with a greater ID than
@@ -672,7 +687,7 @@ impl Inner {
                 id,
                 self.actions.recv.max_stream_id()
             );
-            return Ok(());
+            return Ok(RecvOutcome::Processed);
         }
 
         let key = match self.store.find_entry(id) {
@@ -710,7 +725,7 @@ impl Inner {
 
                         e.insert(stream)
                     }
-                    None => return Ok(()),
+                    None => return Ok(RecvOutcome::Refused(id)),
                 }
             }
         };
@@ -727,12 +742,10 @@ impl Inner {
             // This is because the remote may have sent trailers before
             // receiving the RST_STREAM frame.
             tracing::trace!("recv_headers; ignoring trailers on {:?}", stream.id);
-            return Ok(());
+            return Ok(RecvOutcome::Processed);
         }
 
         let actions = &mut self.actions;
-        let mut send_buffer = send_buffer.inner.lock();
-        let send_buffer = &mut *send_buffer;
 
         self.counts.transition(stream, |counts, stream| {
             tracing::trace!(
@@ -746,8 +759,9 @@ impl Inner {
                     Ok(()) => Ok(()),
                     Err(RecvHeaderBlockError::Oversize(resp)) => {
                         if let Some(resp) = resp {
+                            let mut send_buffer = send_buffer.inner.lock();
                             let sent = actions.send.send_headers(
-                                resp, send_buffer, stream, counts, &mut actions.task);
+                                resp, &mut send_buffer, stream, counts, &mut actions.task);
                             debug_assert!(sent.is_ok(), "oversize response should not fail");
 
                             actions.send.schedule_implicit_reset(
@@ -776,8 +790,10 @@ impl Inner {
                 actions.recv.recv_trailers(frame, stream)
             };
 
-            actions.reset_on_recv_stream_err(send_buffer, stream, counts, res)
-        })
+            actions.reset_on_recv_stream_err_deferred(send_buffer, stream, counts, res)
+        })?;
+
+        Ok(RecvOutcome::Processed)
     }
 
     fn recv_data<B>(
@@ -826,8 +842,6 @@ impl Inner {
         };
 
         let actions = &mut self.actions;
-        let mut send_buffer = send_buffer.inner.lock();
-        let send_buffer = &mut *send_buffer;
 
         self.counts.transition(stream, |counts, stream| {
             let sz = frame.flow_controlled_len();
@@ -856,7 +870,7 @@ impl Inner {
                     .recv
                     .release_connection_capacity(sz as WindowSize, &mut None);
             }
-            actions.reset_on_recv_stream_err(send_buffer, stream, counts, res)
+            actions.reset_on_recv_stream_err_deferred(send_buffer, stream, counts, res)
         })
     }
 
@@ -1025,7 +1039,7 @@ impl Inner {
         &mut self,
         send_buffer: &SendBuffer<B>,
         frame: frame::PushPromise,
-    ) -> Result<(), Error> {
+    ) -> Result<RecvOutcome, Error> {
         let id = frame.stream_id();
         let promised_id = frame.promised_id();
 
@@ -1039,7 +1053,7 @@ impl Inner {
                     id,
                     self.actions.recv.max_stream_id()
                 );
-                return Ok(());
+                return Ok(RecvOutcome::Processed);
             }
 
             // The stream must be receive open
@@ -1054,10 +1068,6 @@ impl Inner {
             return Err(Error::library_go_away(Reason::PROTOCOL_ERROR));
         };
 
-        // TODO: Streams in the reserved states do not count towards the concurrency
-        // limit. However, it seems like there should be a cap otherwise this
-        // could grow in memory indefinitely.
-
         // Ensure that we can reserve streams
         self.actions.recv.ensure_can_reserve()?;
 
@@ -1071,7 +1081,7 @@ impl Inner {
             .open(promised_id, Open::PushPromise, &self.counts)?
             .is_none()
         {
-            return Ok(());
+            return Ok(RecvOutcome::Refused(promised_id));
         }
 
         // Try to handle the frame and create a corresponding key for the pushed stream
@@ -1093,6 +1103,12 @@ impl Inner {
             let actions = &mut self.actions;
 
             self.counts.transition(stream, |counts, stream| {
+                // RFC 9113 excludes reserved streams from the concurrent stream
+                // count. Still, account reserved remote streams against the local
+                // receive limit so a peer cannot create an unbounded number of
+                // them by withholding the response HEADERS. `recv_headers` will
+                // see `is_counted` and avoid counting the stream a second time.
+                counts.inc_num_recv_streams(stream);
                 let stream_valid = actions.recv.recv_push_promise(frame, stream);
 
                 if matches!(stream_valid, Ok(())) {
@@ -1115,7 +1131,7 @@ impl Inner {
             parent.notify_push();
         };
 
-        Ok(())
+        Ok(RecvOutcome::Processed)
     }
 
     fn recv_eof<B>(&mut self, send_buffer: &SendBuffer<B>, clear_pending_accept: bool) {
@@ -1996,6 +2012,21 @@ impl Actions {
 
             Ok(())
         })
+    }
+
+    fn reset_on_recv_stream_err_deferred<B>(
+        &mut self,
+        send_buffer: &SendBuffer<B>,
+        stream: &mut store::Ptr,
+        counts: &mut Counts,
+        res: Result<(), Error>,
+    ) -> Result<(), Error> {
+        if matches!(res, Err(Error::Reset(..))) {
+            let mut send_buffer = send_buffer.inner.lock();
+            self.reset_on_recv_stream_err(&mut send_buffer, stream, counts, res)
+        } else {
+            res
+        }
     }
 
     fn reset_on_recv_stream_err<B>(

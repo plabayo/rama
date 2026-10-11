@@ -55,9 +55,6 @@ pub(super) struct Recv {
     /// Holds frames that are waiting to be read
     buffer: Buffer<Event>,
 
-    /// Refused StreamId, this represents a frame that must be sent out.
-    refused: Option<StreamId>,
-
     /// If push promises are allowed to be received.
     is_push_enabled: bool,
 
@@ -123,7 +120,6 @@ impl Recv {
             pending_reset_expired: store::Queue::new(),
             reset_duration: config.local_reset_duration,
             buffer: Buffer::new(),
-            refused: None,
             is_push_enabled: config.local_push_enabled,
             is_extended_connect_protocol_enabled: config.extended_connect_protocol_enabled,
         })
@@ -148,8 +144,6 @@ impl Recv {
         mode: Open,
         counts: &Counts,
     ) -> Result<Option<StreamId>, Error> {
-        debug_assert!(self.refused.is_none());
-
         counts.peer().ensure_can_open(id, mode)?;
 
         let next_id = self.next_stream_id()?;
@@ -161,7 +155,6 @@ impl Recv {
         self.next_stream_id = id.next_id();
 
         if !counts.can_inc_num_recv_streams() {
-            self.refused = Some(id);
             return Ok(None);
         }
 
@@ -185,20 +178,31 @@ impl Recv {
         // Informational responses do not transition a remotely reserved stream
         // out of `ReservedRemote`. As a result, `recv_open` reports each of them
         // as initial. Only account for the stream once.
-        if is_initial && !stream.is_counted {
-            // TODO: be smarter about this logic
+        if is_initial {
             if frame.stream_id() > self.last_processed_id {
                 self.last_processed_id = frame.stream_id();
             }
 
-            // Increment the number of concurrent streams
-            counts.inc_num_recv_streams(stream);
+            if !stream.is_counted {
+                // Increment the number of concurrent streams
+                counts.inc_num_recv_streams(stream);
+            }
         }
 
         use super::stream::ContentLength;
 
         let ignore_content_length = match stream.content_length {
-            ContentLength::Head => true,
+            ContentLength::Head => {
+                // Not counted, as a HEAD response has no content, but its lines
+                // must still agree.
+                if frame.fields().contains_key(header::CONTENT_LENGTH)
+                    && crate::headers::content_length_parse_all(frame.fields()).is_none()
+                {
+                    proto_err!(stream: "conflicting content-length headers; stream={:?}", stream.id);
+                    return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR).into());
+                }
+                true
+            }
             ContentLength::Connect => match frame.pseudo().status {
                 Some(status) if status.is_success() => {
                     // A successful CONNECT switches this stream to tunnel
@@ -219,38 +223,34 @@ impl Recv {
             ContentLength::Omitted | ContentLength::Remaining(_) => false,
         };
 
-        if !ignore_content_length {
-            use rama_http_types::header;
+        if !ignore_content_length && frame.fields().contains_key(header::CONTENT_LENGTH) {
+            // Every line counts and must agree (RFC 9110 §8.6), as on HTTP/1 and HTTP/3.
+            let Some(content_length) = crate::headers::content_length_parse_all(frame.fields())
+            else {
+                proto_err!(stream: "could not parse content-length; stream={:?}", stream.id);
+                return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR).into());
+            };
 
-            if frame.fields().contains_key(header::CONTENT_LENGTH) {
-                // Every line counts and must agree (RFC 9110 §8.6), as on HTTP/1 and HTTP/3.
-                let Some(content_length) = crate::headers::content_length_parse_all(frame.fields())
-                else {
-                    proto_err!(stream: "could not parse content-length; stream={:?}", stream.id);
-                    return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR).into());
-                };
-
-                // CONNECT requests have no HTTP content: subsequent DATA is
-                // tunnel traffic (RFC 9110 section 9.3.6 / RFC 9113 section 8.5).
-                // Validate the field syntax, but do not count tunnel bytes
-                // against it, including when a client sends Content-Length: 0.
-                let is_connect = frame.pseudo().method == Some(rama_http_types::Method::CONNECT);
-                if !is_connect {
-                    stream.content_length = ContentLength::Remaining(content_length);
-                }
-                // END_STREAM on headers frame with non-zero content-length is malformed.
-                // https://datatracker.ietf.org/doc/html/rfc9113#section-8.1.1
-                if !is_connect
-                    && frame.is_end_stream()
-                    && content_length > 0
-                    && frame
-                        .pseudo()
-                        .status
-                        .is_none_or(|status| status != 204 && status != 304)
-                {
-                    proto_err!(stream: "recv_headers with END_STREAM: content-length is not zero; stream={:?};", stream.id);
-                    return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR).into());
-                }
+            // CONNECT requests have no HTTP content: subsequent DATA is
+            // tunnel traffic (RFC 9110 section 9.3.6 / RFC 9113 section 8.5).
+            // Validate the field syntax, but do not count tunnel bytes
+            // against it, including when a client sends Content-Length: 0.
+            let is_connect = frame.pseudo().method == Some(rama_http_types::Method::CONNECT);
+            if !is_connect {
+                stream.content_length = ContentLength::Remaining(content_length);
+            }
+            // END_STREAM on headers frame with non-zero content-length is malformed.
+            // https://datatracker.ietf.org/doc/html/rfc9113#section-8.1.1
+            if !is_connect
+                && frame.is_end_stream()
+                && content_length > 0
+                && frame
+                    .pseudo()
+                    .status
+                    .is_none_or(|status| status != 204 && status != 304)
+            {
+                proto_err!(stream: "recv_headers with END_STREAM: content-length is not zero; stream={:?};", stream.id);
+                return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR).into());
             }
         }
 
@@ -679,28 +679,21 @@ impl Recv {
         Ok(())
     }
 
-    /// Replay a captured early connection-level (`stream_id = 0`)
-    /// `WINDOW_UPDATE`, emitting `increment` on the wire verbatim.
+    /// The target connection window that replays a captured early
+    /// connection-level (`stream_id = 0`) `WINDOW_UPDATE`, emitting
+    /// `increment` on the wire verbatim.
     ///
     /// The connection window always starts at `DEFAULT_INITIAL_WINDOW_SIZE`
     /// (unlike streams, it is not governed by `SETTINGS_INITIAL_WINDOW_SIZE`),
-    /// so we set the target to `DEFAULT_INITIAL_WINDOW_SIZE + increment`.
-    /// Setting it absolutely overrides any default target rather than stacking
-    /// on it, so a single `WINDOW_UPDATE` of `increment` is sent. Fails with
+    /// so the target is `DEFAULT_INITIAL_WINDOW_SIZE + increment`. Setting it
+    /// absolutely overrides any default target rather than stacking on it, so
+    /// a single `WINDOW_UPDATE` of `increment` is sent. Fails with
     /// `FLOW_CONTROL_ERROR` if that target exceeds `MAX_WINDOW_SIZE`.
-    ///
-    /// The `task` is an optional parked task for the `Connection` that might
-    /// be blocked on needing more window capacity.
-    pub(super) fn replay_connection_window_update(
-        &mut self,
-        increment: WindowSize,
-        task: &mut Option<Waker>,
-    ) -> Result<(), Reason> {
-        let target = DEFAULT_INITIAL_WINDOW_SIZE
+    pub(super) fn replayed_connection_window(increment: WindowSize) -> Result<WindowSize, Reason> {
+        DEFAULT_INITIAL_WINDOW_SIZE
             .checked_add(increment)
             .filter(|target| *target <= proto::MAX_WINDOW_SIZE)
-            .ok_or(Reason::FLOW_CONTROL_ERROR)?;
-        self.set_target_connection_window(target, task)
+            .ok_or(Reason::FLOW_CONTROL_ERROR)
     }
 
     pub(super) fn apply_local_settings(
@@ -1206,32 +1199,6 @@ impl Recv {
         }
     }
 
-    /// Send any pending refusals.
-    pub(super) fn send_pending_refusal<T, B>(
-        &mut self,
-        dst: &mut Codec<T, Prioritized<B>>,
-    ) -> Result<BufferStatus, crate::h2::proto::Error>
-    where
-        T: AsyncWrite + Unpin,
-        B: Buf,
-    {
-        if let Some(stream_id) = self.refused {
-            if !dst.has_send_capacity() {
-                return Ok(BufferStatus::CodecFull);
-            }
-
-            // Create the RST_STREAM frame
-            let frame = frame::Reset::new(stream_id, Reason::REFUSED_STREAM);
-
-            // Buffer the frame
-            dst.buffer(frame.into())?;
-        }
-
-        self.refused = None;
-
-        Ok(BufferStatus::Complete)
-    }
-
     pub(super) fn clear_expired_reset_streams(&mut self, store: &mut Store, counts: &mut Counts) {
         if !self.pending_reset_expired.is_empty() {
             let now = Instant::now();
@@ -1503,6 +1470,7 @@ mod tests {
             local_max_error_reset_streams: None,
             headers_pseudo_order: None,
             early_frame_ctx: frame::EarlyFrameStreamContext::new_nop(),
+            data_frame_budget: DataFrameBudget::Configured(DEFAULT_DATA_FRAME_BUDGET),
         };
         let mut recv = Recv::try_new(peer::Dyn::Server, &config).unwrap();
         let mut store = Store::new();

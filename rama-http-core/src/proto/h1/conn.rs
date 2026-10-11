@@ -780,7 +780,7 @@ where
         self.state.writing = state;
     }
 
-    pub(crate) fn write_trailers(&mut self, trailers: HeaderMap) {
+    pub(crate) fn write_trailers(&mut self, trailers: &HeaderMap) {
         if T::is_server() && !self.state.allow_trailer_fields {
             debug!("trailers not allowed to be sent");
             return;

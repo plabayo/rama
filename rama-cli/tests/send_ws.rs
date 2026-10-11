@@ -104,7 +104,7 @@ impl Fixture {
         let mut stdin = child.stdin.take().expect("piped stdin");
         exited_first(stdin.write_all(input).await)?;
         drop(stdin);
-        Ok(timeout(DEADLINE, child.wait_with_output()).await??)
+        Ok(within("the executable to exit", child.wait_with_output()).await??)
     }
 
     /// Run `rama send` fed with `input` by a writer that never closes stdin.
@@ -115,7 +115,7 @@ impl Fixture {
         input: Vec<u8>,
     ) -> TestResult<Output> {
         let (child, writer) = self.spawn_feeding(url, args, input)?;
-        let output = timeout(DEADLINE, child.wait_with_output()).await??;
+        let output = within("the executable to exit", child.wait_with_output()).await??;
         // The process exited while its stdin was still open, maybe before reading all of it.
         exited_first(writer.await?.map(drop))?;
         Ok(output)
@@ -274,7 +274,7 @@ impl WsServer {
         self.stop.send(()).unwrap_or_default();
         if let Some(endpoint) = self.endpoint {
             endpoint.close(0u32, b"test complete");
-            timeout(DEADLINE, endpoint.shutdown()).await?;
+            within("the QUIC endpoint to shut down", endpoint.shutdown()).await?;
         }
         self.shutdown.shutdown_with_limit(DEADLINE).await?;
         Ok(())
@@ -564,9 +564,22 @@ impl Service<Request> for RawPeer {
 }
 
 async fn outcome(version: Version, outcome: oneshot::Receiver<TestResult>) -> TestResult {
-    timeout(DEADLINE, outcome)
+    within("the peer to finish its scenario", outcome)
         .await??
         .map_err(|error| format!("{version:?} peer: {error}").into())
+}
+
+/// Wait at most [`DEADLINE`] for `future`, naming what it waited for when it gives up: an
+/// elapsed deadline alone does not say which step of a scenario stopped making progress.
+async fn within<T>(what: &str, future: impl Future<Output = T>) -> TestResult<T> {
+    timeout(DEADLINE, future)
+        .await
+        .map_err(|_elapsed| format!("no progress within {DEADLINE:?}: {what}").into())
+}
+
+/// Name the HTTP version and scenario step a failure belongs to.
+fn during<T>(version: Version, step: &str, result: TestResult<T>) -> TestResult<T> {
+    result.map_err(|error| format!("{version:?} {step}: {error}").into())
 }
 
 const VERSIONS: [(Version, &str); 3] = [
@@ -810,31 +823,43 @@ async fn the_executable_keeps_receiving_while_a_send_is_blocked() -> TestResult 
         let url = server.url();
 
         let duplex = peer.expect(Scenario::Duplex);
-        let output = fixture
-            .send_keeping_stdin_open(&url, &[flag], large_input())
-            .await?;
+        let output = during(
+            version,
+            "duplex",
+            fixture
+                .send_keeping_stdin_open(&url, &[flag], large_input())
+                .await,
+        )?;
         assert!(output.status.success(), "{version:?}\n{}", report(&output));
         assert!(
             output.stdout.len() == LARGE && output.stdout.iter().all(|byte| *byte == b'b'),
             "{version:?}: {} bytes received",
             output.stdout.len()
         );
-        outcome(version, duplex).await?;
+        during(version, "duplex", outcome(version, duplex).await)?;
 
         let closed = peer.expect(Scenario::CloseDuringSend);
-        let output = fixture
-            .send_keeping_stdin_open(&url, &[flag], large_input())
-            .await?;
+        let output = during(
+            version,
+            "close during send",
+            fixture
+                .send_keeping_stdin_open(&url, &[flag], large_input())
+                .await,
+        )?;
         assert!(output.status.success(), "{version:?}\n{}", report(&output));
         assert!(output.stdout.is_empty(), "{version:?}\n{}", report(&output));
-        outcome(version, closed).await?;
+        during(version, "close during send", outcome(version, closed).await)?;
 
         // Killed while its send is blocked.
         let (stall, stalled) = oneshot::channel();
         let (release, released) = oneshot::channel();
         let aborted = peer.expect(Scenario::Stall(stall, released));
         let (mut child, writer) = fixture.spawn_feeding(&url, &[flag], large_input())?;
-        timeout(DEADLINE, stalled).await??;
+        during(
+            version,
+            "stall",
+            within("the peer to stall mid-frame", stalled).await,
+        )??;
         // The peer reads nothing more until released: the send is still stuck mid-frame.
         assert!(
             child.try_wait()?.is_none(),
@@ -845,12 +870,16 @@ async fn the_executable_keeps_receiving_while_a_send_is_blocked() -> TestResult 
         _ = release.send(());
         // A killed process sends no QUIC CONNECTION_CLOSE: only the idle timeout would tell.
         if version != Version::HTTP_3 {
-            outcome(version, aborted).await?;
+            during(version, "stall", outcome(version, aborted).await)?;
         }
 
         // The server serves the next client as before.
         let recovered = peer.expect(Scenario::CloseSecond);
-        let output = fixture.send(&url, &[flag], b"hello\n").await?;
+        let output = during(
+            version,
+            "recovery",
+            fixture.send(&url, &[flag], b"hello\n").await,
+        )?;
         assert!(output.status.success(), "{version:?}\n{}", report(&output));
         assert_eq!(
             output.stdout,
@@ -858,7 +887,7 @@ async fn the_executable_keeps_receiving_while_a_send_is_blocked() -> TestResult 
             "{version:?}\n{}",
             report(&output)
         );
-        outcome(version, recovered).await?;
+        during(version, "recovery", outcome(version, recovered).await)?;
         server.close().await?;
     }
     Ok(())

@@ -6,11 +6,13 @@
 
 #[cfg(feature = "opentelemetry")]
 use super::metrics;
+use super::reuse::LaneKey;
 use super::{
     ActiveSlot, ConnID, ConnectionAdmission, ConnectionAdmissionLease, ConnectionResult,
-    ConnectionReuse, Pool, PoolSlot,
+    ConnectionReuse, Pool, PoolSlot, ReuseKey,
 };
 use crate::address::SocketAddress;
+use crate::client::ConnectionError;
 use crate::conn::{ConnectionHealth, ConnectionHealthWatcher};
 use crate::stream::Socket;
 use parking_lot::Mutex;
@@ -19,6 +21,7 @@ use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_core::extensions::{Extension, Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing::trace;
+use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::{guard::DropGuard, macros::generate_set_and_with};
 use std::collections::VecDeque;
 use std::fmt::Debug;
@@ -48,6 +51,28 @@ pub struct LeasedConnection<C: ExtensionsRef, ID> {
     drop_connection_if_no_response: bool,
 }
 
+impl<C: ExtensionsRef, ID: ConnID> LeasedConnection<C, ID> {
+    /// File this connection under new reuse requirements once it returns to
+    /// the pool, such as an identity it authenticated after it was established.
+    ///
+    /// Also publishes `reuse` on the connection. Pools otherwise keep the
+    /// requirements the connection was added with.
+    pub fn rekey(&mut self, reuse: ConnectionReuse) {
+        let pooled = &mut *self.pooled_conn;
+        // Each rekey appends to the connection's extensions: none for no change.
+        if pooled
+            .conn
+            .extensions()
+            .get_ref::<ConnectionReuse>()
+            .is_some_and(|filed| filed.is_same(&reuse))
+        {
+            return;
+        }
+        pooled.lane = LaneKey::of_connection(Some(&reuse)).filter(|_| pooled.id.is_reusable());
+        pooled.conn.extensions().insert(reuse);
+    }
+}
+
 impl<C: ExtensionsRef, ID> LeasedConnection<C, ID> {
     pub fn into_connection(mut self) -> C {
         // We cannot use ::into_inner as we still require a Drop impl as well, so
@@ -74,8 +99,9 @@ struct PooledConnection<C, ID> {
     id: ID,
     pool_slot: PoolSlot,
     last_used: Instant,
-    reusable: bool,
-    reuse_policy: Option<Arc<ConnectionReuse>>,
+    /// Which requests may use the connection, `None` if it is dropped once
+    /// returned. Read from [`ConnectionReuse`] once, when it is added.
+    lane: Option<LaneKey>,
 }
 
 impl<C: ExtensionsRef, ID> ExtensionsRef for PooledConnection<C, ID> {
@@ -122,7 +148,7 @@ impl<C, ID> Clone for ConnReturner<C, ID> {
 
 impl<C, ID> ConnReturner<C, ID> {
     fn return_conn(&self, mut conn: PooledConnection<C, ID>) {
-        if !conn.reusable || self.retired.load(Ordering::Acquire) {
+        if conn.lane.is_none() || self.retired.load(Ordering::Acquire) {
             return;
         }
         if let Some(storage) = self.weak_storage.upgrade() {
@@ -171,7 +197,14 @@ impl<C, ID> LruDropPool<C, ID> {
             .context_field("max_active", max_active)
             .context_field("max_total", max_total));
         }
-        let storage = Arc::new(Mutex::new(VecDeque::with_capacity(max_total)));
+        if max_total > Semaphore::MAX_PERMITS {
+            return Err(BoxError::from_static_str(
+                "max_total should be at most tokio's Semaphore::MAX_PERMITS",
+            )
+            .context_field("max_total", max_total));
+        }
+        // Grows with the connections stored, not with the limit.
+        let storage = Arc::new(Mutex::new(VecDeque::new()));
         let weak_storage = Arc::downgrade(&storage);
         let retired = Arc::new(AtomicBool::new(false));
         Ok(Self {
@@ -244,11 +277,14 @@ impl<C, ID> LruDropPool<C, ID> {
 }
 
 impl<C: ExtensionsRef, ID: ConnID> LruDropPool<C, ID> {
-    /// Inspect one candidate at a time so the common first hit needs no snapshot
-    /// allocation or scan of the remaining idle connections. The cursor advances
-    /// on rejection. Bound inspection by the initial idle count: concurrent
-    /// changes may skip a candidate, but cannot admit an unchecked policy or
-    /// keep this synchronous search running indefinitely.
+    /// Take the most preferred stored connection of `id` whose lane serves
+    /// `input`.
+    ///
+    /// Request keys are derived outside the storage lock, once per classifier
+    /// the scan meets. Connections stay in storage meanwhile, in their place
+    /// in the LRU order and visible to concurrent checkouts. Each rescan
+    /// follows a newly derived classifier or a removed broken connection,
+    /// which bounds the loop.
     fn take_compatible(
         &self,
         id: &ID,
@@ -258,79 +294,59 @@ impl<C: ExtensionsRef, ID: ConnID> LruDropPool<C, ID> {
         if !id.is_reusable() {
             return None;
         }
-        let mut cursor = 0;
-        let mut inspections_left = None;
+        let mut wanted: SmallVec<[(ReuseKey, Option<ReuseKey>); 2]> = SmallVec::new();
         loop {
             let mut storage = self.storage.lock();
-            let left = inspections_left.get_or_insert(storage.len());
-            if *left == 0 {
-                return None;
-            }
-            *left -= 1;
             if self.retired.load(Ordering::Acquire) {
                 return None;
             }
-            let index = match self.reuse_strategy {
-                ReuseStrategy::FiFo => storage
-                    .iter()
-                    .enumerate()
-                    .skip(cursor)
-                    .find(|(_, conn)| &conn.id == id)
-                    .map(|(index, _)| index)?,
-                ReuseStrategy::RoundRobin => storage
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .skip(cursor)
-                    .find(|(_, conn)| &conn.id == id)
-                    .map(|(index, _)| index)?,
-            };
-            cursor = match self.reuse_strategy {
-                ReuseStrategy::FiFo => index + 1,
-                ReuseStrategy::RoundRobin => storage.len() - index,
-            };
-            let policy = storage[index].reuse_policy.clone();
-            let (index, conn) = if let Some(policy) = policy {
-                drop(storage);
-                if !policy.matches(input) {
-                    continue;
-                }
-                let mut storage = self.storage.lock();
-                if self.retired.load(Ordering::Acquire) {
+            // The scan stops at the most preferred connection that fits, or
+            // whose classifier has no derived key yet: the class to derive.
+            let decide = |(index, conn): (usize, &PooledConnection<C, ID>)| {
+                if &conn.id != id {
                     return None;
                 }
-                // A concurrent checkout may have removed the candidate while
-                // its policy was evaluated. Recheck the same shared policy.
-                let matches = |conn: &PooledConnection<C, ID>| {
-                    &conn.id == id
-                        && conn
-                            .reuse_policy
-                            .as_ref()
-                            .is_some_and(|stored| Arc::ptr_eq(stored, &policy))
+                let keyed = match &conn.lane {
+                    None => return None,
+                    Some(LaneKey::Unrestricted) => return Some((index, None)),
+                    Some(LaneKey::Keyed(keyed)) => keyed,
                 };
-                let index = match self.reuse_strategy {
-                    ReuseStrategy::FiFo => storage.iter().position(matches),
-                    ReuseStrategy::RoundRobin => storage.iter().rposition(matches),
-                };
-                let Some(index) = index else {
-                    continue;
-                };
-                (index, storage.remove(index)?)
-            } else {
-                (index, storage.remove(index)?)
+                match wanted
+                    .iter()
+                    .find(|(derived, _)| derived == keyed.class.classifier())
+                {
+                    Some((_, wanted)) => {
+                        (wanted.as_ref() == Some(&keyed.key)).then_some((index, None))
+                    }
+                    None => Some((index, Some(keyed.class.clone()))),
+                }
             };
-            if conn
-                .extensions()
-                .get_ref::<ConnectionHealthWatcher>()
-                .is_some_and(|watcher| watcher.health() == ConnectionHealth::Broken)
-            {
-                park(conn, doomed);
-                cursor = 0;
-                continue;
-            }
-            return Some((index, conn));
+            let found = match self.reuse_strategy {
+                ReuseStrategy::FiFo => storage.iter().enumerate().find_map(decide),
+                ReuseStrategy::RoundRobin => storage.iter().enumerate().rev().find_map(decide),
+            };
+            let class = match found? {
+                (index, None) => {
+                    let conn = storage.remove(index)?;
+                    drop(storage);
+                    if is_broken(&conn) {
+                        park(conn, doomed);
+                        continue;
+                    }
+                    return Some((index, conn));
+                }
+                (_, Some(class)) => class,
+            };
+            drop(storage);
+            wanted.push(class.derive(input));
         }
     }
+}
+
+fn is_broken<C: ExtensionsRef, ID>(conn: &PooledConnection<C, ID>) -> bool {
+    conn.extensions()
+        .get_ref::<ConnectionHealthWatcher>()
+        .is_some_and(|watcher| watcher.health() == ConnectionHealth::Broken)
 }
 
 impl<C, ID> Pool<C, ID> for LruDropPool<C, ID>
@@ -345,6 +361,7 @@ where
         &self,
         id: &ID,
         input: &Extensions,
+        _deadline: Option<tokio::time::Instant>,
     ) -> Result<ConnectionResult<Self::Connection, Self::CreatePermit>, BoxError> {
         if self.retired.load(Ordering::Acquire) {
             return Err(BoxError::from_static_str(
@@ -425,6 +442,12 @@ where
                 },
                 None => None,
             };
+            // Last look before the handout: the connection may have closed
+            // while the policy or the resource provider ran.
+            if is_broken(&conn) {
+                park(conn, &mut doomed);
+                continue;
+            }
             break Some((idx, conn, admission));
         };
         let result = if let Some((idx, pooled_conn, admission)) = reused {
@@ -491,6 +514,8 @@ where
         result
     }
 
+    fn abandon(&self, _create_permit: Self::CreatePermit, _error: &ConnectionError) {}
+
     async fn create(
         &self,
         id: ID,
@@ -512,19 +537,15 @@ where
             metrics.created_connections.add(1, &metric_attrs);
         }
 
-        let reuse_policy = conn.extensions().get_arc::<ConnectionReuse>();
-        let reusable = id.is_reusable()
-            && reuse_policy
-                .as_ref()
-                .is_none_or(|policy| policy.is_reusable());
+        let reuse = conn.extensions().get_ref::<ConnectionReuse>();
+        let lane = LaneKey::of_connection(reuse).filter(|_| id.is_reusable());
 
         Ok(LeasedConnection {
             admission,
             active_slot,
             returner: self.returner.clone(),
             pooled_conn: ManuallyDrop::new(PooledConnection {
-                reusable,
-                reuse_policy,
+                lane,
                 id,
                 conn,
                 pool_slot,
@@ -790,19 +811,27 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::pool::ConnectionReusePolicy;
+    use crate::client::pool::{ConnectionAdmissionPolicy, ConnectionReusePolicy};
     use crate::client::pool::{PooledConnector, ReqToConnID};
     use crate::client::{ConnectorService, EstablishedClientConnection};
     use rama_core::ServiceInput;
     use rama_core::extensions::ExtensionsRef;
     use rama_core::{Service, extensions::Extensions};
+    use rama_utils::reactive::ChangeListener;
     use std::assert_matches;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::{Barrier, Weak, atomic::AtomicBool};
     use std::{
         convert::Infallible,
         sync::atomic::{AtomicI16, Ordering},
     };
     use tokio_test::assert_ok;
+
+    #[test]
+    fn a_limit_past_a_semaphores_permits_is_refused() {
+        // An error, not a panic.
+        LruDropPool::<(), u32>::try_new(1, Semaphore::MAX_PERMITS + 1).unwrap_err();
+        drop(LruDropPool::<(), u32>::try_new(1, Semaphore::MAX_PERMITS).unwrap());
+    }
 
     struct TestService {
         pub created_connection: AtomicI16,
@@ -912,8 +941,10 @@ mod tests {
             }
         }
         let pool: LruDropPool<InnerService, Fresh> = LruDropPool::try_new(1, 1).unwrap();
-        let ConnectionResult::CreatePermit(permit) =
-            pool.get_conn(&Fresh, &Extensions::new()).await.unwrap()
+        let ConnectionResult::CreatePermit(permit) = pool
+            .get_conn(&Fresh, &Extensions::new(), None)
+            .await
+            .unwrap()
         else {
             panic!("non-reusable policy must acquire a fresh connection");
         };
@@ -927,19 +958,238 @@ mod tests {
         assert_eq!(pool.total_slots.available_permits(), 1);
     }
 
+    /// Keyed by `key`; while armed, a derivation waits twice at `gate`, so
+    /// another thread acts while the checkout derives its key.
+    #[derive(Debug)]
+    struct GatedPolicy {
+        key: u8,
+        armed: Arc<AtomicBool>,
+        gate: Arc<Barrier>,
+    }
+
+    #[derive(Debug, Clone, Copy, Extension)]
+    struct Want(u8);
+
+    impl ConnectionReusePolicy for GatedPolicy {
+        fn classifier(&self) -> ReuseKey {
+            ReuseKey::of::<Self>()
+        }
+
+        fn connection_key(&self) -> Option<ReuseKey> {
+            Some(ReuseKey::from_bits::<Want>(self.key.into()))
+        }
+
+        fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
+            if self.armed.swap(false, Ordering::SeqCst) {
+                self.gate.wait();
+                self.gate.wait();
+            }
+            Some(ReuseKey::from_bits::<Want>(
+                input.get_ref::<Want>()?.0.into(),
+            ))
+        }
+    }
+
+    struct Gate {
+        armed: Arc<AtomicBool>,
+        gate: Arc<Barrier>,
+    }
+
+    impl Gate {
+        fn new() -> Self {
+            Self {
+                armed: Arc::new(AtomicBool::new(false)),
+                gate: Arc::new(Barrier::new(2)),
+            }
+        }
+
+        fn conn(&self, key: u8) -> Conn {
+            let conn = Conn::new();
+            conn.extensions.insert(ConnectionHealthWatcher::default());
+            conn.extensions.insert(ConnectionReuse::new(GatedPolicy {
+                key,
+                armed: self.armed.clone(),
+                gate: self.gate.clone(),
+            }));
+            conn
+        }
+
+        /// Run `during` on another thread while the next derivation waits.
+        fn during(&self, during: impl FnOnce() + Send + 'static) -> std::thread::JoinHandle<()> {
+            self.armed.store(true, Ordering::SeqCst);
+            let gate = self.gate.clone();
+            std::thread::spawn(move || {
+                gate.wait();
+                during();
+                gate.wait();
+            })
+        }
+    }
+
+    fn want(key: u8) -> Extensions {
+        let input = Extensions::new();
+        input.insert(Want(key));
+        input
+    }
+
+    async fn add(pool: &LruDropPool<Conn, usize>, conn: Conn) -> LeasedConnection<Conn, usize> {
+        let ConnectionResult::CreatePermit(permit) =
+            pool.get_conn(&0, &Extensions::new(), None).await.unwrap()
+        else {
+            panic!("all previous connections are leased");
+        };
+        pool.create(0, conn, permit, &Extensions::new())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn storage_keeps_its_lru_order_while_a_checkout_derives() {
+        let gate = Gate::new();
+        let pool = LruDropPool::try_new(3, 3)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
+        let x = add(&pool, gate.conn(1)).await;
+        let y = add(&pool, gate.conn(3)).await;
+        drop(x);
+        // Y returns while a checkout for key 2 derives its key against X.
+        let returner = gate.during(move || drop(y));
+        assert_matches!(
+            pool.get_conn(&0, &want(2), None).await.unwrap(),
+            ConnectionResult::CreatePermit(_),
+        );
+        returner.join().unwrap();
+        let storage = pool.storage.lock();
+        assert_eq!(storage.len(), 2);
+        assert!(
+            storage
+                .iter()
+                .zip(storage.iter().skip(1))
+                .all(|(newer, older)| newer.last_used >= older.last_used),
+            "storage stays most recently used first"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connection_closed_while_its_key_is_derived_is_not_handed_out() {
+        let gate = Gate::new();
+        let pool = LruDropPool::try_new(1, 1)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
+        let conn = gate.conn(1);
+        let health = conn
+            .extensions
+            .get_arc::<ConnectionHealthWatcher>()
+            .unwrap();
+        drop(add(&pool, conn).await);
+        let closer = gate.during(move || health.mark_broken());
+        let result = pool.get_conn(&0, &want(1), None).await.unwrap();
+        closer.join().unwrap();
+        assert_matches!(result, ConnectionResult::CreatePermit(_));
+    }
+
+    #[tokio::test]
+    async fn a_connection_closed_during_admission_is_not_handed_out() {
+        #[derive(Debug, Extension)]
+        struct Binding;
+
+        #[derive(Debug)]
+        struct CloseOnAdmission {
+            armed: Arc<AtomicBool>,
+            health: Arc<ConnectionHealthWatcher>,
+        }
+
+        impl ConnectionAdmissionPolicy for CloseOnAdmission {
+            fn try_acquire(
+                &self,
+                _: &Extensions,
+            ) -> Result<Option<ConnectionAdmissionLease>, BoxError> {
+                if self.armed.load(Ordering::SeqCst) {
+                    self.health.mark_broken();
+                }
+                Ok(Some(ConnectionAdmissionLease::new(Arc::new(()), Binding)))
+            }
+
+            fn subscribe(&self, _: Weak<dyn ChangeListener>) {}
+
+            fn in_use(&self) -> bool {
+                false
+            }
+        }
+
+        let pool = LruDropPool::try_new(1, 1)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
+        let conn = Conn::new();
+        let health = Arc::new(ConnectionHealthWatcher::default());
+        let armed = Arc::new(AtomicBool::new(false));
+        conn.extensions.insert_arc(health.clone());
+        conn.extensions
+            .insert(ConnectionAdmission::new(CloseOnAdmission {
+                armed: armed.clone(),
+                health,
+            }));
+        drop(add(&pool, conn).await);
+        armed.store(true, Ordering::SeqCst);
+        assert_matches!(
+            pool.get_conn(&0, &Extensions::new(), None).await.unwrap(),
+            ConnectionResult::CreatePermit(_),
+        );
+    }
+
+    #[tokio::test]
+    async fn rekey_never_files_a_connection_of_a_non_reusable_id() {
+        #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+        struct Fresh;
+        impl ConnID for Fresh {
+            fn is_reusable(&self) -> bool {
+                false
+            }
+        }
+        let pool = LruDropPool::try_new(1, 1)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
+        let ConnectionResult::CreatePermit(permit) = pool
+            .get_conn(&Fresh, &Extensions::new(), None)
+            .await
+            .unwrap()
+        else {
+            panic!("a non-reusable id always establishes");
+        };
+        let mut conn = pool
+            .create(Fresh, Conn::new(), permit, &Extensions::new())
+            .await
+            .unwrap();
+        conn.rekey(ConnectionReuse::new(GatedPolicy {
+            key: 1,
+            armed: Arc::new(AtomicBool::new(false)),
+            gate: Arc::new(Barrier::new(1)),
+        }));
+        drop(conn);
+        assert!(pool.storage.lock().is_empty());
+    }
+
     #[tokio::test]
     async fn reuse_policy_runs_outside_exclusive_storage_lock() {
         #[derive(Debug)]
         struct LockProbe(Weak<Mutex<VecDeque<PooledConnection<Conn, usize>>>>);
 
         impl ConnectionReusePolicy for LockProbe {
-            fn matches(&self, _: &Extensions) -> bool {
+            fn classifier(&self) -> ReuseKey {
+                ReuseKey::of::<Self>()
+            }
+
+            fn connection_key(&self) -> Option<ReuseKey> {
+                Some(ReuseKey::of::<Self>())
+            }
+
+            fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
                 let storage = self.0.upgrade().unwrap();
                 assert!(
-                    storage.try_lock().is_some(),
+                    storage.try_lock_for(Duration::from_secs(1)).is_some(),
                     "connector policy must not run under the pool lock"
                 );
-                true
+                Some(ReuseKey::of::<Self>())
             }
         }
 
@@ -947,7 +1197,7 @@ mod tests {
             .unwrap()
             .with_drop_connection_if_no_response(false);
         let input = Extensions::new();
-        let ConnectionResult::CreatePermit(permit) = pool.get_conn(&0, &input).await.unwrap()
+        let ConnectionResult::CreatePermit(permit) = pool.get_conn(&0, &input, None).await.unwrap()
         else {
             panic!("empty pool must allow creation");
         };
@@ -962,7 +1212,7 @@ mod tests {
                 .unwrap(),
         );
         assert_matches!(
-            pool.get_conn(&0, &input).await.unwrap(),
+            pool.get_conn(&0, &input, None).await.unwrap(),
             ConnectionResult::Connection(_),
         );
     }
@@ -973,9 +1223,17 @@ mod tests {
         struct RetireOnMatch(LruDropPool<Conn, usize>);
 
         impl ConnectionReusePolicy for RetireOnMatch {
-            fn matches(&self, _: &Extensions) -> bool {
+            fn classifier(&self) -> ReuseKey {
+                ReuseKey::of::<Self>()
+            }
+
+            fn connection_key(&self) -> Option<ReuseKey> {
+                Some(ReuseKey::of::<Self>())
+            }
+
+            fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
                 self.0.retire();
-                true
+                Some(ReuseKey::of::<Self>())
             }
         }
 
@@ -983,7 +1241,7 @@ mod tests {
             .unwrap()
             .with_drop_connection_if_no_response(false);
         let input = Extensions::new();
-        let ConnectionResult::CreatePermit(permit) = pool.get_conn(&0, &input).await.unwrap()
+        let ConnectionResult::CreatePermit(permit) = pool.get_conn(&0, &input, None).await.unwrap()
         else {
             panic!("empty pool must allow creation");
         };
@@ -995,7 +1253,7 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        pool.get_conn(&0, &input).await.unwrap_err();
+        pool.get_conn(&0, &input, None).await.unwrap_err();
         assert_eq!(pool.total_slots.available_permits(), 1);
         assert_eq!(pool.active_slots.available_permits(), 1);
     }

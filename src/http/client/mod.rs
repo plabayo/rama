@@ -447,6 +447,7 @@ where
 mod tests {
     use std::{
         convert::Infallible,
+        num::NonZeroUsize,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
@@ -630,10 +631,7 @@ mod tests {
 
     #[tokio::test]
     async fn jit_request_metadata_cannot_change_proxy_credentials_target_or_challenge_isolation() {
-        use rama_core::{
-            bytes::BytesMut,
-            layer::{MapInputLayer, MapOutputLayer},
-        };
+        use rama_core::layer::{MapInputLayer, MapOutputLayer};
         use rama_http::{HeaderValue, StatusCode, header::PROXY_AUTHORIZATION};
 
         #[derive(Debug, Clone)]
@@ -672,7 +670,7 @@ mod tests {
                     )),
                     "forward policy must preserve the caller's requested route",
                 );
-                let mut target = BytesMut::new();
+                let mut target = Vec::new();
                 rama_http::proto::h1::head::encode_request_target(
                     request.method(),
                     request.uri(),
@@ -1622,12 +1620,11 @@ mod tests {
             .without_proxy_support()
             .without_tls_support()
             .with_default_http_connector(Executor::default())
-            .try_with_connection_pool(HttpPooledConnectorConfig {
-                max_concurrent_streams: 1,
-                max_total: 4,
+            .with_connection_pool(HttpPooledConnectorConfig {
+                max_streams_per_connection: NonZeroUsize::new(1),
+                max_connections_total: NonZeroUsize::new(4),
                 ..Default::default()
             })
-            .unwrap()
             .build_client();
 
         let req = || {
@@ -1736,11 +1733,10 @@ mod tests {
             .without_proxy_support()
             .without_tls_support()
             .with_default_http_connector(Executor::default())
-            .try_with_connection_pool(HttpPooledConnectorConfig {
-                max_concurrent_streams: 2,
+            .with_connection_pool(HttpPooledConnectorConfig {
+                max_streams_per_connection: NonZeroUsize::new(2),
                 ..Default::default()
             })
-            .unwrap()
             .build_client();
 
         let req = || {

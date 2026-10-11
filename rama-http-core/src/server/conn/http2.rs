@@ -145,6 +145,20 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Configures the connection-level budget for the memory overhead of
+        /// received small DATA frames, exhausting it closes the connection.
+        ///
+        /// See the documentation of [`crate::h2::server::Builder::with_data_frame_budget`] for more
+        /// details.
+        ///
+        /// The default, `None`, is half the target connection window, at least 25,600 bytes.
+        pub fn data_frame_budget(mut self, budget: Option<usize>) -> Self {
+            self.h2_builder.data_frame_budget = budget;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Sets the [`SETTINGS_INITIAL_WINDOW_SIZE`][spec] option for HTTP2
         /// stream-level flow control.
         ///

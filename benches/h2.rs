@@ -31,6 +31,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod bench_alloc;
+
 const NUM_REQUESTS_TO_SEND: usize = 100_000;
 const WRITE_CONTENTION_STREAMS: usize = 512;
 const WRITE_CONTENTION_CHUNKS_PER_STREAM: usize = 128;

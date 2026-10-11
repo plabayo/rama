@@ -14,7 +14,7 @@ pub(crate) use self::counts::LocalStreams;
 pub(crate) use self::prioritize::Prioritized;
 pub(crate) use self::recv::Open;
 pub(crate) use self::send::PollReset;
-pub(crate) use self::streams::{DynStreams, OpaqueStreamRef, StreamRef, Streams};
+pub(crate) use self::streams::{DynStreams, OpaqueStreamRef, RecvOutcome, StreamRef, Streams};
 
 use self::buffer::Buffer;
 use self::counts::Counts;
@@ -86,6 +86,9 @@ pub(crate) struct Config {
     pub headers_pseudo_order: Option<PseudoHeaderOrder>,
 
     pub early_frame_ctx: EarlyFrameStreamContext,
+
+    /// Connection-level budget policy for DATA framing overhead.
+    pub(crate) data_frame_budget: DataFrameBudget,
 }
 
 trait DebugStructExt<'a, 'b> {

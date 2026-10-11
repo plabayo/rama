@@ -2,7 +2,8 @@
 
 use std::{
     marker::PhantomData,
-    pin::{Pin, pin},
+    mem,
+    pin::pin,
     sync::{Arc, Weak},
 };
 
@@ -18,6 +19,7 @@ use rama_http_types::{
     body::StreamingBody,
     header::trailer::ForbiddenTrailers,
     proto::{
+        RequestHeaders,
         ext::{HttpDatagrams, Protocol},
         h1::ext::informational::OnInformational,
         h3::{Code, FrameType},
@@ -34,7 +36,7 @@ use rama_quic::{
     BiStreamReservation, Connection as QuicConnection, ConnectionError as QuicConnectionError,
 };
 use rama_quic_proto::{Dir, Side};
-use rama_utils::reactive::Reactive;
+use rama_utils::reactive::{Change, ChangeListener, ChangeSignal};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::{
@@ -64,7 +66,7 @@ pub(crate) struct ConnectionLifetime {
     shared: Arc<Shared>,
     admission: Arc<Semaphore>,
     max_requests: usize,
-    admission_changed: Reactive<usize>,
+    admission_changed: ChangeSignal,
 }
 
 impl Drop for ConnectionLifetime {
@@ -121,7 +123,7 @@ pub fn handshake<B>(
                 shared: shared.clone(),
                 admission,
                 max_requests,
-                admission_changed: Reactive::new(0),
+                admission_changed: ChangeSignal::new(),
             }),
             connection,
             shared,
@@ -252,8 +254,7 @@ impl Drop for RequestPermit {
         // the returned local admission permit.
         self.permit.take();
         if let Some(lifetime) = self.lifetime.upgrade() {
-            let changed = &lifetime.admission_changed;
-            changed.set(changed.get().wrapping_add(1));
+            lifetime.admission_changed.notify(Change::Freed);
         }
     }
 }
@@ -303,9 +304,13 @@ impl ConnectionAdmissionPolicy for RequestAdmission {
         {
             return Err(admission_error(error));
         }
-        let Ok(permit) = lifetime.admission.clone().try_acquire_owned() else {
+        // Stream credit before the local permit, so no permit is ever held for a
+        // ticket that does not come: nobody is refused, or answered busy, for
+        // one. Without a free permit, no credit is reserved and handed back,
+        // which would wake the credit's subscribers for nothing.
+        if lifetime.admission.available_permits() == 0 {
             return Ok(None);
-        };
+        }
         let Some(stream) = lifetime.connection.try_reserve_bi().map_err(|error| {
             let kind = if matches!(error, QuicConnectionError::TimedOut) {
                 ConnectionErrorKind::Timeout
@@ -315,8 +320,10 @@ impl ConnectionAdmissionPolicy for RequestAdmission {
             ConnectionError::transport(error, kind)
         })?
         else {
-            // This tentative semaphore acquisition never became a ticket;
-            // returning it must not wake our own failed acquisition loop.
+            return Ok(None);
+        };
+        let Ok(permit) = lifetime.admission.clone().try_acquire_owned() else {
+            // Another checkout took the last permit since: the credit goes back.
             return Ok(None);
         };
         let ticket = Arc::new(ReservedRequest {
@@ -328,32 +335,27 @@ impl ConnectionAdmissionPolicy for RequestAdmission {
         Ok(Some(ConnectionAdmissionLease::new(ticket, binding)))
     }
 
-    fn watch(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+    fn subscribe(&self, listener: Weak<dyn ChangeListener>) {
         // Once ended or draining nothing changes any more, and its broken marking frees the
-        // waiters; an at once ready future would only spin them.
+        // waiters.
         let Some(lifetime) = self.lifetime.upgrade().filter(|lifetime| {
             lifetime.connection.close_reason().is_none()
                 && lifetime.shared.rejection(None).is_none()
         }) else {
-            return Box::pin(std::future::pending());
+            return;
         };
-        // Capture subscriptions before the pool tries to acquire, including
-        // local-permit releases that do not alter the transport's stream limit.
-        let mut local = lifetime.admission_changed.watch();
-        let mut transport = lifetime.connection.stream_budget_watch(Dir::Bi);
-        Box::pin(async move {
-            tokio::select! {
-                _ = local.changed() => (),
-                _ = transport.changed() => (),
-                _ = lifetime.connection.closed() => (),
-                _ = lifetime.shared.rejected(None) => (),
-            }
-        })
+        // Local-permit releases, which do not alter the transport's stream limit, peer
+        // credit and the close of the transport, and a GOAWAY or failure all push.
+        lifetime.admission_changed.subscribe(listener.clone());
+        lifetime
+            .connection
+            .stream_budget_subscribe(Dir::Bi, listener.clone());
+        lifetime.shared.subscribe_admission_end(listener);
     }
 
     // Requests, their bodies and upgraded tunnels hold a permit until they end. A closed,
     // draining or failed connection admits nothing more, so it is left for the pool to
-    // retire: busy only while `watch` can still report its work ending.
+    // retire: busy only while its subscribers can still learn of its work ending.
     fn in_use(&self) -> bool {
         self.lifetime.upgrade().is_some_and(|lifetime| {
             lifetime.admission.available_permits() < lifetime.max_requests
@@ -481,8 +483,13 @@ where
         if method == Method::CONNECT || request.body().is_end_stream() {
             drop_undeliverable_content_length(request.headers_mut());
         }
-        let encoded = headers::encode_request(&self.shared, id, &request)?;
+        let (encoded, sent) = headers::encode_request_fields(&self.shared, id, &request)?;
         writer.queue(FrameType::HEADERS, encoded)?;
+        let remaining = headers::content_length(request.headers())?;
+        // The response records the fields its request sent.
+        request_extensions.insert(RequestHeaders::from(
+            sent.of(mem::take(request.headers_mut())),
+        ));
         if method == Method::CONNECT {
             tokio::select! {
                 biased;
@@ -546,7 +553,6 @@ where
         let shared = self.shared.clone();
         let upload_permit = permit.clone();
         let upload_lifetime = self.lifetime.clone();
-        let remaining = headers::content_length(request.headers())?;
         let allowed_trailers = request.extensions().get_arc::<ForbiddenTrailers>();
         let (_, request_body) = request.into_parts();
         let task = self.executor.spawn_task(async move {

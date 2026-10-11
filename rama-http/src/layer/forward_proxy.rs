@@ -227,7 +227,6 @@ mod tests {
     use core::convert::Infallible;
     use std::assert_matches;
 
-    use rama_core::bytes::BytesMut;
     use rama_http_types::{Body, HeaderValue, header::PROXY_AUTHORIZATION};
     use rama_net::{
         address::ProxyAddress,
@@ -307,7 +306,7 @@ mod tests {
                     .headers_mut()
                     .insert("x-observed-auth", value.clone());
             }
-            let mut target = BytesMut::new();
+            let mut target = Vec::new();
             rama_http_types::proto::h1::head::encode_request_target(
                 request.method(),
                 request.uri(),

@@ -278,7 +278,7 @@ fn declare_trailers<B>(response: &mut HttpResponse<B>, trailers: &HeaderMap) -> 
     }
     response.headers_mut().insert(
         rama_http_types::header::TRAILER,
-        HeaderValue::from_str(&names).map_err(|error| Error::http_head(error.into()))?,
+        HeaderValue::try_from(names).map_err(|error| Error::http_head(error.into()))?,
     );
     Ok(())
 }

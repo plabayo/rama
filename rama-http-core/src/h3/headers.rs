@@ -1,7 +1,9 @@
 //! Validate decoded HTTP fields before normalization can hide malformed input.
 
+use std::cell::Cell;
+
 use rama_core::{
-    bytes::{Bytes, BytesMut},
+    bytes::Bytes,
     extensions::{Extensions, ExtensionsRef},
     telemetry::tracing::debug,
 };
@@ -116,6 +118,13 @@ enum Outgoing {
 /// `TE` as HTTP/2 and HTTP/3 peers compare it, exactly.
 static TE_TRAILERS: HeaderValue = HeaderValue::from_static("trailers");
 
+/// [`TE_TRAILERS`], never indexed.
+static TE_TRAILERS_SENSITIVE: HeaderValue = {
+    let mut value = HeaderValue::from_static("trailers");
+    value.set_sensitive(true);
+    value
+};
+
 /// The fields of an outgoing message that go on the wire.
 ///
 /// HTTP/3, like HTTP/2, carries no connection-specific fields: they are dropped with the
@@ -129,10 +138,20 @@ fn outgoing_fields(
     let nominated: Vec<HeaderName> = header::hop_by_hop::connection_header_names(headers).collect();
     let mut te_trailers = kind == Outgoing::Request
         && header::hop_by_hop::te_names_trailers(headers.get_all(header::TE));
+    // Never indexed when any of the caller's `TE` lines is sensitive.
+    let te_value = if headers
+        .get_all(header::TE)
+        .iter()
+        .any(HeaderValue::is_sensitive)
+    {
+        &TE_TRAILERS_SENSITIVE
+    } else {
+        &TE_TRAILERS
+    };
     headers.ordered_iter().filter_map(move |(name, value)| {
         if *name == header::TE {
             if core::mem::take(&mut te_trailers) {
-                return Some((name, &TE_TRAILERS));
+                return Some((name, te_value));
             }
         } else if !header::hop_by_hop::CONNECTION_SPECIFIC_HEADERS.contains(&name)
             && !nominated.contains(name)
@@ -426,6 +445,46 @@ pub(crate) fn encode_request<B>(
     id: u64,
     request: &Request<B>,
 ) -> Result<Bytes, Error> {
+    encode_request_fields(shared, id, request).map(|(block, _)| block)
+}
+
+/// Which of a request's fields an encoded request block sent.
+pub(crate) struct SentFields {
+    drop_host: bool,
+    unchanged: bool,
+}
+
+impl SentFields {
+    /// The fields sent of the request's `headers`: those themselves, unless some
+    /// were left out or rewritten.
+    pub(crate) fn of(self, headers: HeaderMap) -> HeaderMap {
+        if self.unchanged {
+            return headers;
+        }
+        let mut sent = HeaderMap::new();
+        for (name, value) in sent_request_fields(&headers, self.drop_host) {
+            sent.append(name.clone(), value.clone());
+        }
+        sent
+    }
+}
+
+/// The request fields that go on the wire: not the connection-specific ones, nor
+/// an unusable `Host` next to an authority.
+fn sent_request_fields(
+    headers: &HeaderMap,
+    drop_host: bool,
+) -> impl Iterator<Item = (&HeaderName, &HeaderValue)> {
+    outgoing_fields(headers, Outgoing::Request)
+        .filter(move |(name, _)| !drop_host || *name != header::HOST)
+}
+
+/// [`encode_request`], also telling which of the request's fields it sent.
+pub(crate) fn encode_request_fields<B>(
+    shared: &super::connection::Shared,
+    id: u64,
+    request: &Request<B>,
+) -> Result<(Bytes, SentFields), Error> {
     validate_outgoing(request.headers(), Outgoing::Request)?;
     let protocol = request.extensions().get_ref::<ext::Protocol>();
     if protocol.is_some() && request.method() != Method::CONNECT {
@@ -438,7 +497,7 @@ pub(crate) fn encode_request<B>(
     }
     // Serialize only components that need wire normalization into one buffer.
     // The scheme and header values can remain borrowed from the request.
-    let mut target = BytesMut::new();
+    let mut target = Vec::with_capacity(128);
     if request.uri().authority().is_some() {
         request
             .uri()
@@ -567,14 +626,29 @@ pub(crate) fn encode_request<B>(
                     || (name == PseudoHeader::Authority && value.contains(&b'@')),
             })
     });
-    shared.encode(
+    let sent = Cell::new(0);
+    let block = shared.encode(
         id,
         pseudo.chain(
-            outgoing_fields(request.headers(), Outgoing::Request)
-                .filter(|(name, _)| !drop_host || *name != header::HOST)
+            sent_request_fields(request.headers(), drop_host)
+                .inspect(|_| sent.set(sent.get() + 1))
                 .map(|(name, value)| EncodeField::from_header(name, value)),
         ),
-    )
+    )?;
+    // Every field went out, and `TE` only as the `trailers` it is rewritten to.
+    let unchanged = sent.get() == request.headers().len()
+        && request
+            .headers()
+            .get_all(header::TE)
+            .iter()
+            .all(|value| *value == TE_TRAILERS);
+    Ok((
+        block,
+        SentFields {
+            drop_host,
+            unchanged,
+        },
+    ))
 }
 
 pub(crate) fn encode_response<B>(
@@ -608,7 +682,11 @@ pub(crate) fn encode_response<B>(
 
 #[cfg(test)]
 mod tests {
-    use rama_core::{Service as _, bytes::BufMut, service::service_fn};
+    use rama_core::{
+        Service as _,
+        bytes::{BufMut, BytesMut},
+        service::service_fn,
+    };
     use rama_http::layer::required_header::AddRequiredRequestHeaders;
     use rama_http_types::proto::h2::{
         frame::{self, StreamId},
@@ -928,6 +1006,36 @@ mod tests {
             let sent = names(&decode(encode_request(&shared(), 0, &request).unwrap()));
             assert_eq!(sent.iter().any(|name| name == "te"), kept, "{te}");
             assert!(!sent.iter().any(|name| name == "connection"));
+        }
+    }
+
+    /// The `trailers` a request's `TE` is sent as is never indexed when any of its lines is
+    /// sensitive.
+    #[test]
+    fn outgoing_te_keeps_the_callers_sensitivity() {
+        for (lines, sensitive) in [
+            (&[("trailers", true)][..], true),
+            (&[("Trailers", true)], true),
+            (&[("trailers, gzip", true)], true),
+            (&[("trailers", false), ("gzip", true)], true),
+            (&[("gzip", true), ("trailers", false)], true),
+            (&[("trailers", false)], false),
+            (&[("trailers, gzip", false)], false),
+        ] {
+            let mut request = Request::builder()
+                .uri("https://example.com/")
+                .body(())
+                .unwrap();
+            for &(line, line_sensitive) in lines {
+                let mut value = HeaderValue::from_static(line);
+                value.set_sensitive(line_sensitive);
+                request.headers_mut().append(header::TE, value);
+            }
+            let sent = decode(encode_request(&shared(), 0, &request).unwrap());
+            let te: Vec<_> = sent.iter().filter(|field| field.name == "te").collect();
+            assert_eq!(te.len(), 1, "{lines:?}");
+            assert_eq!(te[0].value, "trailers", "{lines:?}");
+            assert_eq!(te[0].never_index, sensitive, "{lines:?}");
         }
     }
 
@@ -1587,7 +1695,7 @@ mod tests {
             assert_eq!(path.value, &b"*"[..], "h3 {uri}");
             let h2 = frame::Pseudo::request(Method::OPTIONS, &uri, None);
             assert_eq!(h2.path.as_deref(), Some("*"), "h2 {uri}");
-            let mut h1 = BytesMut::new();
+            let mut h1 = Vec::new();
             rama_http_types::proto::h1::head::encode_request_target(
                 &Method::OPTIONS,
                 &uri,
@@ -1602,7 +1710,7 @@ mod tests {
             ("https://real.example/", "/"),
             ("https://real.example?q", "/?q"),
         ] {
-            let mut h1 = BytesMut::new();
+            let mut h1 = Vec::new();
             rama_http_types::proto::h1::head::encode_request_target(
                 &Method::OPTIONS,
                 &Uri::parse(uri).unwrap(),

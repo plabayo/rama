@@ -1,6 +1,15 @@
 use rama_core::extensions::Extensions;
 use std::{fmt, sync::Arc};
 
+use crate::{
+    ClientConfig, ServerConfig,
+    tls::{TlsConfigError, TlsOptions},
+};
+#[cfg(any(
+    feature = "boring",
+    all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
+))]
+use rama_net::client::pool::ReuseKey;
 #[cfg(any(
     feature = "boring",
     all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
@@ -24,11 +33,6 @@ use {
         crypto::{HeaderKey, PacketKey},
     },
     rama_tls_rustls::{client::RustlsTlsConnectorConfig, dep::rustls::crypto::CryptoProvider},
-};
-
-use crate::{
-    ClientConfig, ServerConfig,
-    tls::{TlsConfigError, TlsOptions},
 };
 
 /// Build QUIC TLS configurations from Rama settings using a fixed provider.
@@ -113,6 +117,10 @@ impl TlsClientConfigProvider for RustlsTlsProvider {
         RustlsTlsConnectorConfig::from_extensions(extensions).pool_id()
     }
 
+    fn pool_classifier(&self) -> ReuseKey {
+        ReuseKey::of::<RustlsTlsConnectorConfig>()
+    }
+
     fn authenticates_server(&self, extensions: &Extensions) -> bool {
         RustlsTlsConnectorConfig::from_extensions(extensions).authenticates_server()
     }
@@ -176,6 +184,10 @@ pub struct BoringTlsProvider;
 impl TlsClientConfigProvider for BoringTlsProvider {
     fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
         BoringTlsConnectorConfig::from_extensions(extensions).pool_id()
+    }
+
+    fn pool_classifier(&self) -> ReuseKey {
+        ReuseKey::of::<BoringTlsConnectorConfig>()
     }
 
     fn authenticates_server(&self, extensions: &Extensions) -> bool {

@@ -18,9 +18,10 @@ use rama_core::{
     rt::{Executor, spawn},
 };
 use rama_http_types::{
-    Body, Method, Request, Response, Version,
+    Body, HeaderMap, HeaderName, HeaderValue, Method, Request, Response, Version,
     body::{Frame, util::BodyExt},
-    proto::h3::Code,
+    header,
+    proto::{RequestHeaders, h3::Code},
 };
 use rama_net::{address::SocketAddress, stream::SocketInfo};
 use rama_quic::{Endpoint, NegotiatedTlsParameters, TransportConfig, tls::TlsOptions};
@@ -291,6 +292,90 @@ async fn streaming_round_trip_reuses_connection_and_dynamic_qpack() {
             assert_eq!(collected.to_bytes(), "streaming request payload");
         }
         assert!(client.dynamic_insert_count() > 0);
+        serve.await.unwrap();
+        pair.client.close(0u32, b"test complete");
+        _ = client_driver.await.unwrap();
+        _ = server_driver.await.unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// Name, bytes and sensitivity of each field, in order.
+fn field_lines(headers: &HeaderMap) -> Vec<(String, Vec<u8>, bool)> {
+    headers
+        .ordered_iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_owned(),
+                value.as_bytes().to_vec(),
+                value.is_sensitive(),
+            )
+        })
+        .collect()
+}
+
+/// The response carries its request's fields as sent, line for line what the server
+/// received: all of them, or without the connection-specific ones and an unusable
+/// `Host`, with `TE` as the `trailers` it sends and a sensitive `TE` kept so.
+#[tokio::test]
+async fn request_headers_record_the_fields_as_sent() {
+    let mut sensitive_te = HeaderValue::from_static("trailers");
+    sensitive_te.set_sensitive(true);
+    let mut sensitive_te_gzip = HeaderValue::from_static("trailers, gzip");
+    sensitive_te_gzip.set_sensitive(true);
+    let cases: Vec<Vec<(HeaderName, HeaderValue)>> = vec![
+        vec![],
+        vec![
+            (header::CONNECTION, HeaderValue::from_static("keep-alive")),
+            (
+                HeaderName::from_static("keep-alive"),
+                HeaderValue::from_static("timeout=5"),
+            ),
+            (header::TE, HeaderValue::from_static("trailers, gzip")),
+        ],
+        // One field each way, so only the rewritten `TE` value tells them apart.
+        vec![(header::TE, HeaderValue::from_static("trailers, gzip"))],
+        vec![(header::HOST, HeaderValue::from_static("not a host"))],
+        vec![(header::TE, sensitive_te)],
+        vec![(header::TE, sensitive_te_gzip)],
+    ];
+
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::new(None, None).await;
+        let (mut client, client_driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let (mut server, server_driver) =
+            server::handshake(pair.server.clone(), Config::default()).unwrap();
+        let client_driver = spawn(client_driver.run());
+        let server_driver = spawn(server_driver.run());
+        let (received_tx, mut received_rx) = tokio::sync::mpsc::unbounded_channel();
+        let requests = cases.len();
+        let serve = spawn(async move {
+            for _ in 0..requests {
+                let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+                received_tx.send(field_lines(request.headers())).unwrap();
+                response
+                    .send_response(Response::new(Body::empty()))
+                    .await
+                    .unwrap();
+            }
+        });
+        for case in cases {
+            let mut request = Request::builder()
+                .uri("https://localhost/")
+                .header("x-a", "1")
+                .body(Body::empty())
+                .unwrap();
+            for (name, value) in case {
+                request.headers_mut().append(name, value);
+            }
+            let response = client.send_request(request).await.unwrap();
+            let recorded = field_lines(response.extensions().get_ref::<RequestHeaders>().unwrap());
+            assert_eq!(recorded, received_rx.recv().await.unwrap());
+        }
         serve.await.unwrap();
         pair.client.close(0u32, b"test complete");
         _ = client_driver.await.unwrap();

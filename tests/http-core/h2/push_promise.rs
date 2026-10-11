@@ -2,6 +2,163 @@ use h2_support::prelude::*;
 use rama_core::futures::{StreamExt, TryStreamExt};
 
 #[tokio::test]
+async fn refused_push_promises_count_toward_local_reset_limit() {
+    h2_support::trace_init!();
+
+    for limit in [0, 2] {
+        let (io, mut srv) = mock::new();
+        let mock = async move {
+            let settings = srv.assert_client_handshake().await;
+            assert_frame_eq(settings, frames::settings().with_max_concurrent_streams(0));
+            srv.recv_frame(
+                frames::headers(1)
+                    .request("GET", "https://example.com/")
+                    .eos(),
+            )
+            .await;
+
+            for n in 0..=limit {
+                let id = 2 * (n + 1) as u32;
+                srv.send_frame(
+                    frames::push_promise(1, id).request("GET", "https://example.com/pushed"),
+                )
+                .await;
+                if n < limit {
+                    srv.recv_frame(frames::reset(id).refused()).await;
+                } else {
+                    srv.recv_frame(frames::go_away(0).calm().data("too_many_internal_resets"))
+                        .await;
+                }
+            }
+        };
+        let client = async move {
+            let (mut client, conn) = client::Builder::new()
+                .with_max_concurrent_streams(0)
+                .with_max_local_error_reset_streams(limit)
+                .handshake::<_, Bytes>(io)
+                .await
+                .unwrap();
+            let request = Request::get("https://example.com/").body(()).unwrap();
+            let (_response, _) = client.send_request(request, true).unwrap();
+            let err = conn.await.unwrap_err();
+            assert!(err.is_go_away());
+            assert!(err.is_library());
+            assert_eq!(err.reason(), Some(Reason::ENHANCE_YOUR_CALM));
+        };
+
+        join(mock, client).await;
+    }
+}
+
+#[tokio::test]
+async fn recv_push_over_concurrency_limit_refuses_promised_streams() {
+    let (io, mut srv) = mock::new();
+    let peer = async move {
+        srv.assert_client_handshake().await;
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://example.com/")
+                .eos(),
+        )
+        .await;
+        for id in [2, 4] {
+            srv.send_frame(frames::push_promise(1, id).request("GET", "https://example.com/push"))
+                .await;
+        }
+        for id in [2, 4] {
+            srv.recv_frame(frames::reset(id).refused()).await;
+        }
+        srv.send_frame(frames::headers(1).response(200).eos()).await;
+    };
+    let h2 = async move {
+        let (mut client, mut conn) = client::Builder::new()
+            .with_max_concurrent_streams(0)
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+        let request = Request::builder()
+            .uri("https://example.com/")
+            .body(())
+            .unwrap();
+        let (response, _) = client.send_request(request, true).unwrap();
+        let response = conn.drive(response).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    };
+    join(peer, h2).await;
+}
+
+#[tokio::test]
+async fn reserved_push_promises_respect_max_concurrent_streams() {
+    h2_support::trace_init!();
+
+    let (io, mut srv) = mock::new();
+    let srv = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_frame_eq(settings, frames::settings().with_max_concurrent_streams(1));
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://example.com/")
+                .eos(),
+        )
+        .await;
+
+        srv.send_frame(frames::headers(1).response(200)).await;
+        srv.send_frame(frames::push_promise(1, 2).request("GET", "https://example.com/one"))
+            .await;
+        srv.send_frame(frames::push_promise(1, 4).request("GET", "https://example.com/two"))
+            .await;
+        srv.recv_frame(frames::reset(4).refused()).await;
+
+        // Closing the first reserved stream releases its receive budget, so a
+        // later promise can be accepted.
+        srv.send_frame(frames::reset(2).cancel()).await;
+        srv.send_frame(frames::push_promise(1, 6).request("GET", "https://example.com/three"))
+            .await;
+        srv.send_frame(frames::data(1, "").eos()).await;
+    };
+
+    let client = async move {
+        let (mut client, mut conn) = client::Builder::new()
+            .with_max_concurrent_streams(1)
+            .handshake::<_, Bytes>(io)
+            .await
+            .expect("handshake");
+        let request = Request::builder()
+            .uri("https://example.com/")
+            .body(())
+            .unwrap();
+        let (mut response, _) = client.send_request(request, true).unwrap();
+        let mut pushed = response.push_promises();
+
+        let check = async move {
+            let first = pushed.next().await.unwrap().unwrap();
+            assert!(
+                first
+                    .request()
+                    .uri()
+                    .path()
+                    .is_some_and(|path| path == "/one")
+            );
+            assert!(first.into_parts().1.await.is_err());
+
+            let second = pushed.next().await.unwrap().unwrap();
+            assert!(
+                second
+                    .request()
+                    .uri()
+                    .path()
+                    .is_some_and(|path| path == "/three")
+            );
+            assert_eq!(response.await.unwrap().status(), StatusCode::OK);
+        };
+
+        conn.drive(check).await;
+    };
+
+    join(srv, client).await;
+}
+
+#[tokio::test]
 #[ignore]
 async fn recv_push_works() {
     h2_support::trace_init!();
@@ -366,9 +523,19 @@ async fn recv_invalid_push_promise_headers_is_stream_protocol_error() {
                 .field(http::header::CONTENT_LENGTH, 0),
         )
         .await;
+        let mut fields = HeaderMap::new();
+        fields.append("content-length", "0".parse().unwrap());
+        fields.append("content-length", "1".parse().unwrap());
+        srv.send_frame(
+            frames::push_promise(1, 8)
+                .request("GET", "https://http2.akamai.com/style.css")
+                .fields(fields),
+        )
+        .await;
         srv.send_frame(frames::data(1, "").eos()).await;
         srv.recv_frame(frames::reset(2).protocol_error()).await;
         srv.recv_frame(frames::reset(4).protocol_error()).await;
+        srv.recv_frame(frames::reset(8).protocol_error()).await;
         srv.send_frame(frames::headers(6).response(200).eos()).await;
     };
 

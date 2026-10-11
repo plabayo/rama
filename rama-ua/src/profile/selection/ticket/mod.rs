@@ -3,7 +3,7 @@ use std::{error::Error, fmt, sync::Arc};
 use rama_core::extensions::{Extension, Extensions};
 use rama_http::{HeaderMap, HeaderName, Version};
 use rama_net::{
-    client::pool::{ConnectionReuse, ConnectionReusePolicy},
+    client::pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
     tls::{ApplicationProtocol, TlsAlpn},
 };
 use rama_utils::octets::kib;
@@ -218,6 +218,12 @@ pub struct ProfileConnectionReuse {
     profile: ValueId,
     variant: ValueId,
     negotiated: Version,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ProfileReuseKey {
+    profile: ValueId,
+    variant: ValueId,
 }
 
 #[derive(Debug, Clone)]
@@ -790,15 +796,44 @@ impl ProfileConnectionReuse {
 }
 
 impl ConnectionReusePolicy for ProfileConnectionReuse {
-    fn matches(&self, input: &Extensions) -> bool {
-        input.get_ref::<EmulationContext>().is_some_and(|context| {
-            context.selected.profile_id() == self.profile
-                && protocol_supported(context.selected.required, self.negotiated)
-                && context
-                    .pins
-                    .connection
-                    .is_none_or(|pin| pin == self.variant)
-        })
+    fn classifier(&self) -> ReuseKey {
+        ReuseKey::from_bits::<Self>(u128::from(protocol_reuse_class(self.negotiated)))
+    }
+
+    fn connection_key(&self) -> Option<ReuseKey> {
+        Some(ReuseKey::new(ProfileReuseKey {
+            profile: self.profile,
+            variant: self.variant,
+        }))
+    }
+
+    fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
+        let context = input.get_ref::<EmulationContext>()?;
+        let ticket = input.get_ref::<ConnectionSelection>()?;
+        if ticket.profile != context.selected.profile_id()
+            || !protocol_supported(context.selected.required, self.negotiated)
+            || context
+                .pins
+                .connection
+                .is_some_and(|pin| pin != ticket.variant)
+        {
+            return None;
+        }
+
+        Some(ReuseKey::new(ProfileReuseKey {
+            profile: ticket.profile,
+            variant: ticket.variant,
+        }))
+    }
+}
+
+fn protocol_reuse_class(version: Version) -> u8 {
+    match version {
+        Version::HTTP_09 => 0,
+        Version::HTTP_10 => 1,
+        Version::HTTP_11 => 2,
+        Version::HTTP_2 => 3,
+        Version::HTTP_3 => 4,
     }
 }
 

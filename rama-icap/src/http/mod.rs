@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 
 use rama_core::{
     Service as RamaService,
-    bytes::{Bytes, BytesMut},
+    bytes::Bytes,
     error::{BoxError, BoxErrorExt as _},
     extensions::{Extensions, ExtensionsRef},
     futures::{StreamExt as _, stream},
@@ -1460,10 +1460,7 @@ where
 }
 
 fn encode_http_trailers(fields: &HeaderMap) -> Result<TrailerBlock, Error> {
-    let mut encoded = BytesMut::with_capacity(fields.len().saturating_mul(32).saturating_add(2));
-    head::encode_header_fields(fields, &mut encoded);
-    encoded.extend_from_slice(b"\r\n");
-    Ok(TrailerBlock::from_bytes(encoded.freeze())?)
+    Ok(TrailerBlock::from_bytes(head::encode_header_block(fields))?)
 }
 
 /// A typed, streaming response to an HTTP adaptation request.
@@ -2590,11 +2587,7 @@ fn http_frame_to_icap(
                 .into_trailers()
                 .map_err(|_frame| BoxError::from_static_str("unsupported HTTP body frame"))?;
             validate_http_trailers(&trailers, head_nominated).map_err(BoxError::from_static_str)?;
-            let mut encoded =
-                BytesMut::with_capacity(trailers.len().saturating_mul(32).saturating_add(2));
-            head::encode_header_fields(&trailers, &mut encoded);
-            encoded.extend_from_slice(b"\r\n");
-            let trailers = TrailerBlock::from_bytes(encoded.freeze())?;
+            let trailers = TrailerBlock::from_bytes(head::encode_header_block(&trailers))?;
             Ok(crate::server::BodyFrame::trailers(trailers))
         }
     }

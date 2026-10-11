@@ -1,8 +1,8 @@
 use super::*;
 use rama_core::telemetry::tracing;
-use rama_utils::reactive::{Changed, Reactive};
+use rama_utils::reactive::{Change, ChangeListener, ChangeSignal};
 use std::sync::{
-    Arc,
+    Arc, Weak,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -11,14 +11,14 @@ use std::sync::{
 #[derive(Debug)]
 pub(crate) struct LocalStreams {
     live: AtomicUsize,
-    retired: Reactive<usize>,
+    retired: ChangeSignal,
 }
 
 impl LocalStreams {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             live: AtomicUsize::new(0),
-            retired: Reactive::new(0),
+            retired: ChangeSignal::new(),
         }
     }
 
@@ -26,9 +26,9 @@ impl LocalStreams {
         self.live.load(Ordering::Acquire)
     }
 
-    /// Subscribe to retirements.
-    pub(crate) fn watch(&self) -> Changed<usize> {
-        self.retired.watch()
+    /// Wake `listener` after every later retirement.
+    pub(crate) fn subscribe(&self, listener: Weak<dyn ChangeListener>) {
+        self.retired.subscribe(listener);
     }
 
     fn opened(&self) {
@@ -37,13 +37,14 @@ impl LocalStreams {
 
     fn retired(&self) {
         self.live.fetch_sub(1, Ordering::AcqRel);
-        self.retired.set(self.retired.get().wrapping_add(1));
+        // One stream slot came free.
+        self.retired.notify(Change::Freed);
     }
 }
 
 #[derive(Debug)]
 struct Budget {
-    available: usize,
+    spent: usize,
     max: usize,
 }
 
@@ -52,19 +53,29 @@ pub(super) struct BudgetExhausted;
 
 impl Budget {
     fn new(max: usize) -> Self {
-        Self {
-            available: max,
-            max,
-        }
+        Self { spent: 0, max }
     }
 
     fn consume(&mut self, amount: usize) -> Result<(), BudgetExhausted> {
-        self.available = self.available.checked_sub(amount).ok_or(BudgetExhausted)?;
+        let spent = self.spent.checked_add(amount).ok_or(BudgetExhausted)?;
+        if spent > self.max {
+            return Err(BudgetExhausted);
+        }
+        self.spent = spent;
         Ok(())
     }
 
     fn replenish(&mut self, amount: usize) {
-        self.available = self.available.saturating_add(amount).min(self.max);
+        self.spent = self.spent.saturating_sub(amount);
+    }
+
+    fn set_max(&mut self, max: usize) {
+        self.max = max;
+    }
+
+    #[cfg(test)]
+    fn available(&self) -> usize {
+        self.max.saturating_sub(self.spent)
     }
 }
 
@@ -108,8 +119,15 @@ pub(super) struct Counts {
     /// lifetime of the connection.
     num_local_error_reset_streams: usize,
 
-    /// Credit for receiving DATA frames without excessive framing overhead.
+    /// connection-level budget for DATA framing overhead.
     data_frame_budget: Budget,
+
+    /// Whether the DATA frame budget follows the target connection window.
+    data_frame_budget_is_auto: bool,
+
+    /// Number of empty, non-final DATA frames received over the lifetime of
+    /// the connection.
+    num_recv_empty_data_frames: usize,
 
     /// Local streams not yet closed, shared with pool admission.
     local_streams: Arc<LocalStreams>,
@@ -130,8 +148,17 @@ impl Counts {
             num_remote_reset_streams: 0,
             max_local_error_reset_streams: config.local_max_error_reset_streams,
             num_local_error_reset_streams: 0,
-            data_frame_budget: Budget::new(DEFAULT_DATA_FRAME_BUDGET),
+            data_frame_budget: Budget::new(config.data_frame_budget.resolve(None)),
+            data_frame_budget_is_auto: config.data_frame_budget.is_auto(),
+            num_recv_empty_data_frames: 0,
             local_streams: Arc::new(LocalStreams::new()),
+        }
+    }
+
+    pub fn set_target_connection_window_size(&mut self, size: WindowSize) {
+        if self.data_frame_budget_is_auto {
+            self.data_frame_budget
+                .set_max(DataFrameBudget::Auto.resolve(Some(size)));
         }
     }
 
@@ -148,7 +175,16 @@ impl Counts {
 
     /// Records the framing overhead of a DATA frame.
     pub fn record_data_frame(&mut self, payload_len: usize) -> Result<(), BudgetExhausted> {
-        if payload_len < DEFAULT_DATA_FRAME_OVERHEAD_THRESHOLD {
+        if payload_len == 0 {
+            self.num_recv_empty_data_frames = self
+                .num_recv_empty_data_frames
+                .checked_add(1)
+                .ok_or(BudgetExhausted)?;
+            if self.num_recv_empty_data_frames > MAX_RECV_EMPTY_DATA_FRAMES {
+                return Err(BudgetExhausted);
+            }
+            Ok(())
+        } else if payload_len < DEFAULT_DATA_FRAME_OVERHEAD_THRESHOLD {
             self.data_frame_budget
                 .consume(DEFAULT_DATA_FRAME_OVERHEAD_THRESHOLD - payload_len)
         } else {
@@ -161,7 +197,7 @@ impl Counts {
     /// Releases the framing overhead of a DATA frame that is no longer
     /// buffered internally.
     pub fn release_data_frame(&mut self, payload_len: usize) {
-        if payload_len < DEFAULT_DATA_FRAME_OVERHEAD_THRESHOLD {
+        if payload_len != 0 && payload_len < DEFAULT_DATA_FRAME_OVERHEAD_THRESHOLD {
             self.data_frame_budget
                 .replenish(DEFAULT_DATA_FRAME_OVERHEAD_THRESHOLD - payload_len);
         }
@@ -403,26 +439,27 @@ mod tests {
     use super::*;
     use rama_http_types::proto::h2::frame::DEFAULT_INITIAL_WINDOW_SIZE;
 
+    fn counts_config() -> Config {
+        Config {
+            initial_max_send_streams: 0,
+            local_max_buffer_size: 0,
+            local_next_stream_id: 2.into(),
+            local_push_enabled: false,
+            extended_connect_protocol_enabled: false,
+            local_reset_duration: Duration::ZERO,
+            local_reset_max: 0,
+            remote_reset_max: 0,
+            remote_init_window_sz: DEFAULT_INITIAL_WINDOW_SIZE,
+            remote_max_initiated: None,
+            local_max_error_reset_streams: None,
+            headers_pseudo_order: None,
+            early_frame_ctx: rama_http_types::proto::h2::frame::EarlyFrameStreamContext::new_nop(),
+            data_frame_budget: DataFrameBudget::Configured(DEFAULT_DATA_FRAME_BUDGET),
+        }
+    }
+
     fn counts() -> Counts {
-        Counts::new(
-            peer::Dyn::Server,
-            &Config {
-                initial_max_send_streams: 0,
-                local_max_buffer_size: 0,
-                local_next_stream_id: 2.into(),
-                local_push_enabled: false,
-                extended_connect_protocol_enabled: false,
-                local_reset_duration: Duration::ZERO,
-                local_reset_max: 0,
-                remote_reset_max: 0,
-                remote_init_window_sz: DEFAULT_INITIAL_WINDOW_SIZE,
-                remote_max_initiated: None,
-                local_max_error_reset_streams: None,
-                headers_pseudo_order: None,
-                early_frame_ctx:
-                    rama_http_types::proto::h2::frame::EarlyFrameStreamContext::new_nop(),
-            },
-        )
+        Counts::new(peer::Dyn::Server, &counts_config())
     }
 
     #[test]
@@ -431,7 +468,7 @@ mod tests {
 
         budget.consume(4).unwrap();
         budget.replenish(20);
-        assert_eq!(budget.available, 10);
+        assert_eq!(budget.available(), 10);
     }
 
     #[test]
@@ -440,7 +477,49 @@ mod tests {
 
         budget.consume(10).unwrap();
         assert!(budget.consume(1).is_err());
-        assert_eq!(budget.available, 0);
+        assert_eq!(budget.available(), 0);
+    }
+
+    #[test]
+    fn resizing_budget_preserves_outstanding_charges() {
+        let mut budget = Budget::new(100);
+        budget.consume(60).unwrap();
+
+        budget.set_max(200);
+        assert_eq!(budget.available(), 140);
+
+        budget.set_max(40);
+        assert_eq!(budget.available(), 0);
+        assert!(budget.consume(1).is_err());
+
+        budget.replenish(30);
+        assert_eq!(budget.available(), 10);
+    }
+
+    #[test]
+    fn auto_budget_tracks_target_window_and_configured_budget_does_not() {
+        let mut auto = Counts::new(
+            peer::Dyn::Server,
+            &Config {
+                data_frame_budget: DataFrameBudget::Auto,
+                ..counts_config()
+            },
+        );
+        auto.set_target_connection_window_size(1024 * 1024);
+        assert_eq!(auto.data_frame_budget.max, 512 * 1024);
+        for _ in 0..1_000 {
+            auto.record_data_frame(171).unwrap();
+        }
+
+        let mut configured = Counts::new(
+            peer::Dyn::Server,
+            &Config {
+                data_frame_budget: DataFrameBudget::Configured(123),
+                ..counts_config()
+            },
+        );
+        configured.set_target_connection_window_size(1024 * 1024);
+        assert_eq!(configured.data_frame_budget.max, 123);
     }
 
     #[test]
@@ -462,5 +541,43 @@ mod tests {
             counts.record_data_frame(1).unwrap();
             counts.release_data_frame(1);
         }
+    }
+
+    #[test]
+    fn released_empty_data_frames_give_no_budget_back() {
+        let mut counts = counts();
+        while counts.record_data_frame(1).is_ok() {}
+
+        counts.record_data_frame(0).unwrap();
+        counts.release_data_frame(0);
+        assert!(counts.record_data_frame(1).is_err());
+    }
+
+    #[test]
+    fn empty_data_frames_do_not_consume_data_frame_budget() {
+        let mut counts = counts();
+        counts.data_frame_budget = Budget::new(0);
+
+        for _ in 0..MAX_RECV_EMPTY_DATA_FRAMES {
+            counts.record_data_frame(0).unwrap();
+        }
+
+        // Empty frames have their own limit, while a non-empty small frame
+        // still consumes the independently configured DATA frame budget.
+        assert!(counts.record_data_frame(0).is_err());
+        assert!(counts.record_data_frame(1).is_err());
+    }
+
+    #[test]
+    fn large_data_frames_do_not_replenish_empty_data_frame_limit() {
+        let mut counts = counts();
+
+        for _ in 0..MAX_RECV_EMPTY_DATA_FRAMES {
+            counts.record_data_frame(0).unwrap();
+            counts
+                .record_data_frame(DEFAULT_DATA_FRAME_OVERHEAD_THRESHOLD * 2)
+                .unwrap();
+        }
+        assert!(counts.record_data_frame(0).is_err());
     }
 }

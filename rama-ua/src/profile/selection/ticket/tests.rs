@@ -718,6 +718,7 @@ fn reuse_matches_profile_protocol_and_optional_connection_pin() {
         DrawKey([34; 32]),
         DrawKey([35; 32]),
     ));
+    input.insert(ticket.clone());
     assert!(
         established
             .get_ref::<ConnectionReuse>()
@@ -733,6 +734,7 @@ fn reuse_matches_profile_protocol_and_optional_connection_pin() {
         DrawKey([34; 32]),
         DrawKey([35; 32]),
     ));
+    input.insert(ticket.clone());
     assert!(
         !established
             .get_ref::<ConnectionReuse>()
@@ -748,6 +750,23 @@ fn reuse_matches_profile_protocol_and_optional_connection_pin() {
         DrawKey([34; 32]),
         DrawKey([35; 32]),
     ));
+    input.insert(ticket.clone());
+    assert!(
+        !established
+            .get_ref::<ConnectionReuse>()
+            .unwrap()
+            .matches(&input)
+    );
+
+    let input = Extensions::new();
+    input.insert(selected.emulation_context(
+        ProfileSeed([31; 32]),
+        DrawKey([34; 32]),
+        DrawKey([35; 32]),
+    ));
+    let mut other_variant = ticket;
+    other_variant.variant = ValueId([55; 32]);
+    input.insert(other_variant);
     assert!(
         !established
             .get_ref::<ConnectionReuse>()

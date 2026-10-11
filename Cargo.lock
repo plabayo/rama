@@ -3961,6 +3961,7 @@ dependencies = [
  "flate2",
  "futures-channel",
  "h2-support",
+ "mimalloc",
  "parking_lot",
  "pin-project-lite",
  "rama-core",
@@ -4001,6 +4002,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spmc",
+ "tikv-jemallocator",
  "tokio",
  "tokio-test",
  "tokio-util",
@@ -4086,6 +4088,7 @@ dependencies = [
  "opentelemetry_sdk",
  "parking_lot",
  "pin-project-lite",
+ "quickcheck",
  "rama-error",
  "rama-macros",
  "rama-utils",
@@ -4946,6 +4949,7 @@ name = "rama-utils"
 version = "0.5.0"
 dependencies = [
  "ahash",
+ "atomic-waker",
  "base64 0.23.1",
  "const_format",
  "loom",

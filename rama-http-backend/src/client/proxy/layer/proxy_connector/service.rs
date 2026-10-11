@@ -765,7 +765,7 @@ mod tests {
         client::{
             AddressCandidates, ConnectRequest, ConnectionErrorDomain, ConnectionErrorKind,
             ConnectorService, ConnectorTargetStream, ProxyRoute, ProxyRoutes, ProxyRoutesConnector,
-            pool::ConnectionReusePolicy,
+            pool::{ConnectionReusePolicy, ReuseKey},
         },
         http::HttpRequestVersion,
         test_utils::client::{MockConnectorService, MockSocket},
@@ -788,8 +788,16 @@ mod tests {
     struct FixedProxyPolicy;
 
     impl ConnectionReusePolicy for FixedProxyPolicy {
-        fn matches(&self, _: &Extensions) -> bool {
-            true
+        fn classifier(&self) -> ReuseKey {
+            ReuseKey::of::<Self>()
+        }
+
+        fn connection_key(&self) -> Option<ReuseKey> {
+            Some(ReuseKey::of::<Self>())
+        }
+
+        fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
+            Some(ReuseKey::of::<Self>())
         }
     }
 

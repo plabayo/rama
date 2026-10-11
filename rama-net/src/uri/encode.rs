@@ -6,7 +6,7 @@
 
 use core::{cmp::Ordering, fmt, hash::Hasher};
 
-use crate::std::{borrow::Cow, string::String};
+use crate::std::{borrow::Cow, string::String, vec::Vec};
 
 use super::component_input::IntoUriComponent;
 use crate::byte_sets::{is_path_byte, is_query_fragment_byte};
@@ -235,9 +235,30 @@ fn push_pct_encoded(out: &mut String, b: u8) {
     out.push(char::from(low));
 }
 
-fn extend_pct_encoded(out: &mut BytesMut, b: u8) {
+/// A buffer the encoders append to through its own inlined `extend_from_slice`:
+/// the URI's owned storage or a wire buffer.
+pub(super) trait AppendBytes {
+    fn append(&mut self, bytes: &[u8]);
+}
+
+impl AppendBytes for BytesMut {
+    #[inline]
+    fn append(&mut self, bytes: &[u8]) {
+        self.extend_from_slice(bytes);
+    }
+}
+
+impl AppendBytes for Vec<u8> {
+    #[inline]
+    fn append(&mut self, bytes: &[u8]) {
+        self.extend_from_slice(bytes);
+    }
+}
+
+#[inline]
+fn extend_pct_encoded(out: &mut impl AppendBytes, b: u8) {
     let [high, low] = rama_utils::hex::encode_byte_upper(b);
-    out.extend_from_slice(&[b'%', high, low]);
+    out.append(&[b'%', high, low]);
 }
 
 #[derive(Debug, Clone)]
@@ -299,7 +320,7 @@ impl Iterator for EncodedBytes<'_> {
 
 fn encode_preserving_pct<'a>(input: &'a [u8], is_allowed: impl Fn(u8) -> bool) -> Cow<'a, str> {
     let mut i = 0;
-    let mut needs_encoding = core::str::from_utf8(input).is_err();
+    let mut needs_encoding = false;
     while i < input.len() {
         match input[i] {
             b'%' if is_pct_triplet(input, i) => i += 3,
@@ -316,7 +337,7 @@ fn encode_preserving_pct<'a>(input: &'a [u8], is_allowed: impl Fn(u8) -> bool) -
     }
 
     if !needs_encoding {
-        // Safety: checked above.
+        // Safety: allowed bytes and pct triplets are ASCII.
         return Cow::Borrowed(unsafe { core::str::from_utf8_unchecked(input) });
     }
 
@@ -426,49 +447,27 @@ fn hash_pct_encoded<H: Hasher>(state: &mut H, b: u8) {
 }
 
 fn extend_encoded_preserving_pct(
-    out: &mut BytesMut,
+    out: &mut impl AppendBytes,
     input: &[u8],
     is_allowed: impl Fn(u8) -> bool,
 ) {
-    let mut i = 0;
-    let mut needs_encoding = core::str::from_utf8(input).is_err();
-    while i < input.len() {
-        match input[i] {
-            b'%' if is_pct_triplet(input, i) => i += 3,
-            b'%' => {
-                needs_encoding = true;
-                break;
-            }
-            b if is_allowed(b) => i += 1,
-            _ => {
-                needs_encoding = true;
-                break;
-            }
-        }
-    }
-
-    if !needs_encoding {
-        out.extend_from_slice(input);
-        return;
-    }
-
+    // Runs of allowed bytes and pct triplets are copied whole.
+    let mut run = 0;
     let mut i = 0;
     while i < input.len() {
         let b = input[i];
         if b == b'%' && is_pct_triplet(input, i) {
-            out.extend_from_slice(&input[i..i + 3]);
             i += 3;
-        } else if b == b'%' {
-            extend_pct_encoded(out, b);
-            i += 1;
-        } else if is_allowed(b) {
-            out.extend_from_slice(&[b]);
+        } else if b != b'%' && is_allowed(b) {
             i += 1;
         } else {
+            out.append(&input[run..i]);
             extend_pct_encoded(out, b);
             i += 1;
+            run = i;
         }
     }
+    out.append(&input[run..]);
 }
 
 #[inline]
@@ -482,7 +481,7 @@ pub(super) fn write_encoded_path(f: &mut fmt::Formatter<'_>, input: &[u8]) -> fm
 }
 
 #[inline]
-pub(super) fn extend_encoded_path(out: &mut BytesMut, input: &[u8]) {
+pub(super) fn extend_encoded_path(out: &mut impl AppendBytes, input: &[u8]) {
     extend_encoded_preserving_pct(out, input, is_path_byte);
 }
 
@@ -492,7 +491,7 @@ pub(super) fn encoded_segment(input: &[u8]) -> Cow<'_, str> {
 }
 
 #[inline]
-pub(super) fn extend_encoded_segment_bytes(out: &mut BytesMut, input: &[u8]) {
+pub(super) fn extend_encoded_segment_bytes(out: &mut impl AppendBytes, input: &[u8]) {
     extend_encoded_preserving_pct(out, input, is_segment_byte);
 }
 
@@ -527,7 +526,7 @@ pub(super) fn write_encoded_query(f: &mut fmt::Formatter<'_>, input: &[u8]) -> f
 }
 
 #[inline]
-pub(super) fn extend_encoded_query(out: &mut BytesMut, input: &[u8]) {
+pub(super) fn extend_encoded_query(out: &mut impl AppendBytes, input: &[u8]) {
     extend_encoded_preserving_pct(out, input, is_query_fragment_byte);
 }
 

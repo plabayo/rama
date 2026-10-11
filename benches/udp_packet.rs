@@ -5,7 +5,7 @@
     reason = "benchmark setup and packet delivery must succeed"
 )]
 
-use divan::{AllocProfiler, black_box, counter::ItemsCount};
+use divan::{black_box, counter::ItemsCount};
 use rama::{
     net::{socket::SocketOptions, stream::Socket as _},
     udp::{
@@ -21,8 +21,7 @@ use std::{
     time::Duration,
 };
 
-#[global_allocator]
-static ALLOC: AllocProfiler = AllocProfiler::system();
+mod bench_alloc;
 
 fn main() {
     divan::main();

@@ -163,7 +163,7 @@ async fn an_upgraded_tunnel_keeps_the_connection_in_use_until_it_ends() {
         tunnel.read_to_end(&mut rest).await.unwrap();
         drop(tunnel);
         loop {
-            let changed = admission.watch();
+            let changed = admission.changed();
             if !admission.in_use() {
                 break;
             }

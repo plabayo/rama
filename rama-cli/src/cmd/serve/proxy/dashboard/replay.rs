@@ -13,7 +13,7 @@ use rama::{
         Protocol,
         client::{
             ConnectRequest, ProxyRoutesConnector,
-            pool::{ConnID, MultiplexPool, ReqToConnID},
+            pool::{ConnID, ReqToConnID},
         },
     },
     tcp::client::service::TcpConnector,
@@ -58,9 +58,7 @@ pub(super) fn replay_client(
     let tls_config = TlsClientConfig::default_http();
     let transport = TcpConnector::new().with_connector(tcp_options);
     let config = HttpPooledConnectorConfig::default();
-    let pool = MultiplexPool::try_new(config.max_concurrent_streams, config.max_total)?
-        .with_selection(config.selection)
-        .maybe_with_idle_timeout(config.idle_timeout);
+    let pool = config.build_pool();
     let client = EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(transport)
         .with_default_dns_connector()

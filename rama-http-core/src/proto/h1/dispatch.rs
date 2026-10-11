@@ -658,7 +658,7 @@ where
                         } else if frame.is_trailers() {
                             *clear_body = true;
                             self.conn.write_trailers(
-                                frame.into_trailers().unwrap_or_else(|_| unreachable!()),
+                                &frame.into_trailers().unwrap_or_else(|_| unreachable!()),
                             );
                         } else {
                             trace!("discarding unknown frame");

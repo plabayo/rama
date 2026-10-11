@@ -9,8 +9,8 @@
 //! fed at various body-chunk sizes, measuring decoding plus full payload
 //! materialization as `String`.
 
+use divan::black_box;
 use divan::counter::BytesCount;
-use divan::{AllocProfiler, black_box};
 use rama::bytes::Bytes;
 use rama::futures::StreamExt as _;
 use rama::futures::stream;
@@ -18,8 +18,7 @@ use rama::http::sse::EventStream;
 use std::convert::Infallible;
 use std::sync::OnceLock;
 
-#[global_allocator]
-static ALLOC: AllocProfiler = AllocProfiler::system();
+mod bench_alloc;
 
 const EVENTS: usize = 100;
 const LINES: usize = 3_000;

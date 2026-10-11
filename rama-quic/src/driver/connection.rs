@@ -21,7 +21,7 @@ use rama_core::{
 use rama_net::gate::{GateDirection, StreamGates};
 use rama_quic_proto::{ConnectionId, Dir, Side, StreamId, VarInt};
 use rama_udp::SendFailure;
-use rama_utils::reactive::{Changed, Reactive};
+use rama_utils::reactive::{Change, ChangeListener, Changed, Reactive};
 use rustc_hash::FxHashMap;
 use tokio::sync::{Notify, futures::Notified, oneshot};
 
@@ -826,7 +826,7 @@ impl Future for ConnectionDriver {
 
 impl Drop for ConnectionDriver {
     fn drop(&mut self) {
-        let (link, events, released) = {
+        let (link, events, released, budget_changed) = {
             let conn = &mut *self.conn.state.lock();
             // Discarding queued packets releases their budget charges.
             conn.packets.close();
@@ -849,8 +849,11 @@ impl Drop for ConnectionDriver {
                 conn.endpoint.clone(),
                 conn.take_endpoint_events_with_drained(),
                 released,
+                // Never polled again: deliver what terminating queued here.
+                std::mem::take(&mut conn.stream_budget_changed),
             )
         };
+        self.conn.shared.notify_stream_budget(budget_changed);
         link.deliver(events);
         link.release_senders(released);
     }
@@ -946,10 +949,17 @@ impl Connection {
     /// Subscribe before trying admission to observe newly available stream credit.
     ///
     /// Values are change revisions, not capacities. A signal means credit was
-    /// returned or increased, or the handshake finished; retry reservation or
-    /// inspect [`Self::available_streams`]. Acquisitions do not wake subscribers.
+    /// returned or increased, the handshake finished, or the connection closed;
+    /// retry reservation or inspect [`Self::available_streams`]. Acquisitions do
+    /// not wake subscribers.
     pub fn stream_budget_watch(&self, dir: Dir) -> Changed<usize> {
         self.0.shared.stream_budget_changes[dir as usize].watch()
+    }
+
+    /// Wake `listener` on every later signal of [`Self::stream_budget_watch`],
+    /// until it is dropped.
+    pub fn stream_budget_subscribe(&self, dir: Dir, listener: Weak<dyn ChangeListener>) {
+        self.0.shared.stream_budget_changes[dir as usize].subscribe(listener);
     }
 
     /// Accept the next incoming uni-directional stream
@@ -1042,12 +1052,17 @@ impl Connection {
     /// [`Endpoint::wait_idle()`]: crate::Endpoint::wait_idle
     /// [`close()`]: Connection::close
     pub fn close(&self, error_code: impl Into<VarInt>, reason: &[u8]) {
-        let conn = &mut *self.0.state.lock();
-        conn.close(
-            error_code.into(),
-            Bytes::copy_from_slice(reason),
-            &self.0.shared,
-        );
+        let budget_changed = {
+            let conn = &mut *self.0.state.lock();
+            conn.close(
+                error_code.into(),
+                Bytes::copy_from_slice(reason),
+                &self.0.shared,
+            );
+            std::mem::take(&mut conn.stream_budget_changed)
+        };
+        // Whether or not a driver still polls, subscribers learn of the close.
+        self.0.shared.notify_stream_budget(budget_changed);
     }
 
     /// Send a transport CONNECTION_CLOSE for protocol interoperability tests.
@@ -1056,10 +1071,14 @@ impl Connection {
     /// peers which finish with transport `NO_ERROR`, rather than an application code.
     #[cfg(feature = "test-utils")]
     pub fn close_transport(&self, error: rama_quic_proto::TransportError) {
-        let conn = &mut *self.0.state.lock();
-        conn.inner.close_transport(now(), error);
-        conn.terminate(ConnectionError::LocallyClosed, &self.0.shared);
-        conn.wake();
+        let budget_changed = {
+            let conn = &mut *self.0.state.lock();
+            conn.inner.close_transport(now(), error);
+            conn.terminate(ConnectionError::LocallyClosed, &self.0.shared);
+            conn.wake();
+            std::mem::take(&mut conn.stream_budget_changed)
+        };
+        self.0.shared.notify_stream_budget(budget_changed);
     }
 
     /// Wait for the handshake to be confirmed.
@@ -2161,7 +2180,7 @@ impl ConnectionRef {
                 on_connected: Some(on_connected),
                 connected: false,
                 available_streams: [0; 2],
-                stream_budget_changed: [false; 2],
+                stream_budget_changed: [BudgetChange::default(); 2],
                 reserved_streams: [0; 2],
                 handshake_confirmed: false,
                 timer: DeadlineTimer::default(),
@@ -2231,15 +2250,19 @@ impl Drop for ConnectionRef {
             return;
         }
 
-        let conn = &mut *self.state.lock();
+        let budget_changed = {
+            let conn = &mut *self.state.lock();
 
-        if !conn.inner.is_closed() {
-            // If the driver is alive, it's just it and us, so we'd better shut it down. If it's
-            // not, we can't do any harm. If there were any streams being opened, then either
-            // the connection will be closed for an unrelated reason or a fresh reference will
-            // be constructed for the newly opened stream.
-            conn.implicit_close(&self.shared);
-        }
+            if !conn.inner.is_closed() {
+                // If the driver is alive, it's just it and us, so we'd better shut it down. If
+                // it's not, we can't do any harm. If there were any streams being opened, then
+                // either the connection will be closed for an unrelated reason or a fresh
+                // reference will be constructed for the newly opened stream.
+                conn.implicit_close(&self.shared);
+            }
+            std::mem::take(&mut conn.stream_budget_changed)
+        };
+        self.shared.notify_stream_budget(budget_changed);
     }
 }
 
@@ -2260,7 +2283,9 @@ pub(crate) struct ConnectionInner {
 impl ConnectionInner {
     /// Apply endpoint control; the caller holds the endpoint lock (see [`EndpointLink`]).
     pub(crate) fn control(&self, message: Control) {
-        let conn = &mut *self.state.lock();
+        let mut budget_changed = [BudgetChange::default(); 2];
+        let mut state = self.state.lock();
+        let conn = &mut *state;
         match message {
             Control::Proto(event) => conn.inner.handle_event(event),
             Control::Close {
@@ -2270,6 +2295,7 @@ impl ConnectionInner {
             } => {
                 conn.abandon_close |= abandon;
                 conn.close(error_code, reason, &self.shared);
+                budget_changed = std::mem::take(&mut conn.stream_budget_changed);
             }
             Control::Rebind(socket) => {
                 // A connection that may never send from the new address (a server, or a client
@@ -2285,6 +2311,9 @@ impl ConnectionInner {
             }
         }
         conn.wake();
+        drop(state);
+        // Outside the state lock; endpoint-then-connection order allows the wakers.
+        self.shared.notify_stream_budget(budget_changed);
     }
 
     /// The endpoint marked socket `failed` unusable: leave it now. A transmit still pending on
@@ -2476,12 +2505,41 @@ pub(crate) struct Shared {
 
 impl Shared {
     /// Admission wakers may re-enter the connection; call outside its state lock.
-    fn notify_stream_budget(&self, changed: [bool; 2]) {
+    fn notify_stream_budget(&self, changed: [BudgetChange; 2]) {
         for (revision, changed) in self.stream_budget_changes.iter().zip(changed) {
-            if changed {
+            if changed.other || changed.freed > FREED_STREAMS_MAX {
                 revision.set(revision.get().wrapping_add(1));
+            } else {
+                // One request more for each: one waiter each.
+                for _ in 0..changed.freed {
+                    revision.set_change(revision.get().wrapping_add(1), Change::Freed);
+                }
             }
         }
+    }
+}
+
+/// Beyond this many streams of credit at once, a raise wakes every waiter.
+const FREED_STREAMS_MAX: u64 = 64;
+
+/// What happened to one direction's stream credit since admission last heard.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct BudgetChange {
+    /// Streams of unreserved credit that came free.
+    freed: u64,
+    /// Anything else: the handshake finished, the connection closed.
+    other: bool,
+}
+
+impl BudgetChange {
+    const OTHER: Self = Self {
+        freed: 0,
+        other: true,
+    };
+
+    fn merge(&mut self, change: Self) {
+        self.freed = self.freed.saturating_add(change.freed);
+        self.other |= change.other;
     }
 }
 
@@ -2493,7 +2551,7 @@ pub(crate) struct State {
     on_connected: Option<oneshot::Sender<Result<bool, ConnectionError>>>,
     connected: bool,
     available_streams: [u64; 2],
-    stream_budget_changed: [bool; 2],
+    stream_budget_changed: [BudgetChange; 2],
     reserved_streams: [u64; 2],
     handshake_confirmed: bool,
     timer: DeadlineTimer,
@@ -3324,7 +3382,9 @@ impl State {
                     self.connected = true;
                     // Reservations are disabled before this event, even when
                     // provisional transport parameters already exposed credit.
-                    self.stream_budget_changed = [true; 2];
+                    for pending in &mut self.stream_budget_changed {
+                        pending.merge(BudgetChange::OTHER);
+                    }
                     if let Some(x) = self.on_connected.take() {
                         // Nobody waiting for it is not an error: the receiver may be gone.
                         drop(x.send(Ok(
@@ -3379,14 +3439,15 @@ impl State {
         }
         let changed = self.refresh_stream_budget();
         for (pending, changed) in self.stream_budget_changed.iter_mut().zip(changed) {
-            *pending |= changed;
+            pending.merge(changed);
         }
     }
 
-    /// Wake admission only when unreserved stream credit increases.
-    /// Acquiring or consuming a reservation cannot help another waiter.
-    fn refresh_stream_budget(&mut self) -> [bool; 2] {
-        let mut changed = [false; 2];
+    /// Wake admission only when unreserved stream credit increases, by how
+    /// much it did. Acquiring or consuming a reservation cannot help another
+    /// waiter.
+    fn refresh_stream_budget(&mut self) -> [BudgetChange; 2] {
+        let mut changed = [BudgetChange::default(); 2];
         for dir in Dir::iter() {
             let index = dir as usize;
             let available = self
@@ -3394,7 +3455,7 @@ impl State {
                 .streams()
                 .available_local_streams(dir)
                 .saturating_sub(self.reserved_streams[index]);
-            changed[index] = available > self.available_streams[index];
+            changed[index].freed = available.saturating_sub(self.available_streams[index]);
             self.available_streams[index] = available;
         }
         changed
@@ -3494,6 +3555,11 @@ impl State {
         shared.handshake_confirmed.notify_waiters();
         wake_all_notify(&mut self.stopped);
         shared.closed.notify_waiters();
+        // Admission learns of the close with the next budget signal, sent
+        // outside the state lock.
+        for pending in &mut self.stream_budget_changed {
+            pending.merge(BudgetChange::OTHER);
+        }
     }
 
     fn close(&mut self, error_code: VarInt, reason: Bytes, shared: &Shared) {
@@ -3705,7 +3771,7 @@ mod tests {
     use rama_udp::{
         DatagramCapabilities, DatagramError, DatagramMetadata, DatagramSender, DatagramSocket,
     };
-    use rama_utils::octets;
+    use rama_utils::{octets, reactive::ChangeWaiter};
 
     #[derive(Debug, Clone, Copy)]
     enum Failure {
@@ -3789,6 +3855,82 @@ mod tests {
     }
 
     /// Keep the real engine and its endpoint available without scheduling the connection driver.
+    fn unpolled_connection() -> (Connection, ConnectionDriver) {
+        let (connecting, driver, _alive, _packets, _endpoint) = unspawned_connection(
+            Failure::Datagram,
+            4,
+            PacketBudget::new(ReceiveQueueLimits::new(4, octets::kib(64)).unwrap()),
+            None,
+        );
+        (
+            Connection(connecting.conn.as_ref().unwrap().clone()),
+            driver,
+        )
+    }
+
+    /// Records what a signal tells its listeners.
+    #[derive(Default)]
+    struct Changes(Mutex<Vec<Change>>);
+
+    impl ChangeListener for Changes {
+        fn changed(&self, change: Change) {
+            self.0.lock().push(change);
+        }
+    }
+
+    #[test]
+    fn returned_stream_credit_is_reported_in_units() {
+        let shared = Shared::default();
+        let listener = Arc::new(Changes::default());
+        shared.stream_budget_changes[Dir::Bi as usize]
+            .subscribe(Arc::downgrade(&listener) as Weak<dyn ChangeListener>);
+        let told = |changed: BudgetChange| {
+            shared.notify_stream_budget([changed, BudgetChange::default()]);
+            std::mem::take(&mut *listener.0.lock())
+        };
+        let freed = |freed| BudgetChange {
+            freed,
+            other: false,
+        };
+        assert_eq!(
+            told(freed(2)),
+            [Change::Freed, Change::Freed],
+            "one per stream"
+        );
+        assert_eq!(
+            told(BudgetChange {
+                freed: 3,
+                other: true
+            }),
+            [Change::Other]
+        );
+        assert_eq!(
+            told(freed(FREED_STREAMS_MAX + 1)),
+            [Change::Other],
+            "too many to count out"
+        );
+        assert!(told(BudgetChange::default()).is_empty());
+    }
+
+    /// Budget subscribers learn of a close that no driver poll follows.
+    #[tokio::test]
+    async fn closing_without_a_driver_poll_wakes_budget_subscribers() {
+        for drop_driver in [true, false] {
+            let (connection, driver) = unpolled_connection();
+            let waiter = ChangeWaiter::new();
+            connection.stream_budget_subscribe(Dir::Bi, waiter.listener());
+            if drop_driver {
+                drop(driver);
+            } else {
+                connection.close(0u32, b"closed");
+            }
+            assert!(connection.close_reason().is_some());
+            tokio::time::timeout(Duration::from_secs(5), waiter.wait())
+                .await
+                .expect("the close is signalled to budget subscribers");
+        }
+    }
+
     fn unspawned_connection(
         failure: Failure,
         packet_limit: usize,
