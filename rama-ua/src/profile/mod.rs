@@ -115,6 +115,9 @@ pub use archive::*;
 mod evidence;
 pub use evidence::ProfileEvidenceCollector;
 
+mod selection;
+pub use selection::*;
+
 mod legacy;
 pub use legacy::{
     LegacyField, LegacyFieldCapture, LegacyFieldValue, LegacyHeaderCapture, LegacyHttpProtocol,

@@ -1545,6 +1545,7 @@ name = "rama-ua"
 version = "0.5.0"
 dependencies = [
  "ahash",
+ "chacha20",
  "itertools",
  "rama-core",
  "rama-http",
