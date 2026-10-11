@@ -35,6 +35,13 @@ fn chacha20_draw_has_a_versioned_golden_vector() {
 }
 
 #[test]
+fn profile_seed_debug_is_redacted() {
+    let formatted = format!("{:?}", ProfileSeed([0x5a; 32]));
+    assert_eq!(formatted, "ProfileSeed(<redacted>)");
+    assert!(!formatted.contains("90"));
+}
+
+#[test]
 fn every_coordinate_domain_separates_the_stream() {
     let baseline = ProfileDraw::new(ProfileSeed([1; 32]), context()).next_u64();
     let variants = [

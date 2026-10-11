@@ -23,9 +23,15 @@ const DRAW_PREFIX: &[u8] = b"rama-profile-draw\0";
 /// Canonical encoding and ChaCha20 stream revision.
 pub const PROFILE_DRAW_REVISION: u16 = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Extension)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Extension)]
 #[extension(tags(ua))]
 pub struct ProfileSeed(pub [u8; 32]);
+
+impl fmt::Debug for ProfileSeed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ProfileSeed(<redacted>)")
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Extension)]
 #[extension(tags(ua))]

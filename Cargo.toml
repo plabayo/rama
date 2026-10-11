@@ -117,7 +117,7 @@ brotli = "9"
 byteorder = "1.5"
 bytes = { version = "1", default-features = false, features = ["serde"] }
 cc = "1"
-chacha20 = { version = "=0.10.2", default-features = false }
+chacha20 = { version = "0.10", default-features = false }
 clap = { version = "4.6", features = ["derive", "unstable-v5", "wrap_help"] }
 compression-codecs = "0.4"
 compression-core = "0.4"
