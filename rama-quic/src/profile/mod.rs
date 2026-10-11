@@ -4,7 +4,6 @@
 //! turns one into this engine's [`EndpointConfig`], [`ClientConfig`] and [`ServerConfig`], and
 //! reads a first flight back through [`capture`].
 
-use rama_core::telemetry::tracing::debug;
 use rama_quic_proto::{VarInt, profile::*};
 
 pub mod capture;
@@ -35,6 +34,10 @@ use crate::proto::{
     cid_queue::CidQueue,
 };
 
+/// Largest `active_connection_id_limit` this engine can advertise without
+/// discarding a connection ID the peer is entitled to keep active.
+pub const MAX_ACTIVE_CONNECTION_ID_LIMIT: u64 = CidQueue::LIMIT;
+
 /// The parts of a profile a connection consults as it forms packets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WireProfile {
@@ -62,52 +65,49 @@ impl WireProfile {
 
 impl TransportConfig {
     /// A transport configuration advertising this profile's limits and carrying its layout.
-    /// Everything else keeps [`TransportConfig::default`]. An `active_connection_id_limit` above
-    /// what this engine can store is clamped to that capacity.
-    #[must_use]
-    pub fn from_quic_profile(profile: &QuicProfile) -> Self {
+    /// Everything else keeps [`TransportConfig::default`]. A profile requiring more active
+    /// remote connection IDs than the engine retains is rejected.
+    pub fn from_quic_profile(profile: &QuicProfile) -> Result<Self, ConfigError> {
         let limits = profile.limits();
-        // A validated profile's limits all fit a varint; only a profile assembled through unchecked
-        // setters can reach here out of range, so clamp rather than panic and leave a breadcrumb.
-        let var = |value: u64| {
-            VarInt::from_u64(value).unwrap_or_else(|error| {
-                debug!(value, %error, "profile limit exceeds a varint; clamping to the maximum");
-                VarInt::MAX
-            })
-        };
+        if limits
+            .active_connection_id_limit
+            .is_some_and(|limit| limit > MAX_ACTIVE_CONNECTION_ID_LIMIT)
+        {
+            return Err(ConfigError::OutOfBounds);
+        }
+        let initial_max_streams_bidi = VarInt::from_u64(limits.initial_max_streams_bidi)?;
+        let initial_max_streams_uni = VarInt::from_u64(limits.initial_max_streams_uni)?;
+        let initial_max_data = VarInt::from_u64(limits.initial_max_data)?;
+        let initial_max_stream_data_bidi_local =
+            VarInt::from_u64(limits.initial_max_stream_data_bidi_local)?;
+        let initial_max_stream_data_bidi_remote =
+            VarInt::from_u64(limits.initial_max_stream_data_bidi_remote)?;
+        let initial_max_stream_data_uni = VarInt::from_u64(limits.initial_max_stream_data_uni)?;
         let mut config = Self::default()
-            .with_max_concurrent_bidi_streams(var(limits.initial_max_streams_bidi))
-            .with_max_concurrent_uni_streams(var(limits.initial_max_streams_uni))
-            .with_receive_window(var(limits.initial_max_data))
-            .with_stream_receive_window(var(limits.initial_max_stream_data_bidi_local))
-            .with_stream_receive_window_bidi_remote(var(limits.initial_max_stream_data_bidi_remote))
-            .with_stream_receive_window_uni(var(limits.initial_max_stream_data_uni))
+            .with_max_concurrent_bidi_streams(initial_max_streams_bidi)
+            .with_max_concurrent_uni_streams(initial_max_streams_uni)
+            .with_receive_window(initial_max_data)
+            .with_stream_receive_window(initial_max_stream_data_bidi_local)
+            .with_stream_receive_window_bidi_remote(initial_max_stream_data_bidi_remote)
+            .with_stream_receive_window_uni(initial_max_stream_data_uni)
             .maybe_with_datagram_receive_buffer_size(limits.datagram_receive_buffer_size)
             .with_wire(WireProfile::of(profile));
         // Initial datagrams cannot exceed the path's current MTU, so a profile that pads them
         // larger raises the starting MTU to match.
         config = config.with_initial_mtu(profile.packetization().initial_datagram_size());
-        // A profile from the builder or from deserialization has a checked delay; this method is
-        // also public and infallible, so an out-of-range one from an unchecked profile is left at
-        // the default rather than made to panic.
-        if let Err(error) = config.try_set_max_ack_delay(limits.max_ack_delay) {
-            debug!(
-                max_ack_delay = ?limits.max_ack_delay,
-                %error,
-                "profile max_ack_delay is out of range; keeping the default"
-            );
-        }
-        let idle = u64::try_from(limits.max_idle_timeout.as_millis()).unwrap_or(u64::MAX);
+        config.try_set_max_ack_delay(limits.max_ack_delay)?;
+        let idle = u64::try_from(limits.max_idle_timeout.as_millis())?;
         config.maybe_set_max_idle_timeout(if idle == 0 {
             None
         } else {
-            Some(var(idle).into())
+            Some(VarInt::from_u64(idle)?.into())
         });
         let cid_limit = limits
             .active_connection_id_limit
-            .map(|limit| var(limit.min(CidQueue::LEN as u64)));
+            .map(VarInt::from_u64)
+            .transpose()?;
         config.maybe_set_active_connection_id_limit(cid_limit);
-        config
+        Ok(config)
     }
 }
 
@@ -146,7 +146,7 @@ impl ClientConfig {
                 .expect("a valid connection ID length")
                 .generate_cid()
         }));
-        self.set_transport_config(Arc::new(TransportConfig::from_quic_profile(profile)));
+        self.set_transport_config(Arc::new(TransportConfig::from_quic_profile(profile)?));
         Ok(())
     }
 }
@@ -154,7 +154,8 @@ impl ClientConfig {
 impl ServerConfig {
     /// Apply the server parts of a profile: a transport configuration with this profile's limits
     /// and layout.
-    pub fn apply_quic_profile(&mut self, profile: &QuicProfile) {
-        self.set_transport_config(Arc::new(TransportConfig::from_quic_profile(profile)));
+    pub fn apply_quic_profile(&mut self, profile: &QuicProfile) -> Result<(), ConfigError> {
+        self.set_transport_config(Arc::new(TransportConfig::from_quic_profile(profile)?));
+        Ok(())
     }
 }

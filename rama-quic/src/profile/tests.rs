@@ -404,6 +404,42 @@ fn invalid_profiles_are_refused() {
         .unwrap_err();
 }
 
+#[test]
+fn active_connection_id_capacity_is_exact_and_never_clamped() {
+    const FIREFOX_ACTIVE_CONNECTION_ID_LIMIT: u64 = 8;
+
+    assert_eq!(
+        MAX_ACTIVE_CONNECTION_ID_LIMIT,
+        FIREFOX_ACTIVE_CONNECTION_ID_LIMIT
+    );
+    let profile = QuicProfile::standard()
+        .try_with_limits(TransportLimits {
+            active_connection_id_limit: Some(FIREFOX_ACTIVE_CONNECTION_ID_LIMIT),
+            ..TransportLimits::standard()
+        })
+        .unwrap();
+    let transport = TransportConfig::from_quic_profile(&profile).unwrap();
+    assert_eq!(
+        transport.active_connection_id_limit,
+        Some(FIREFOX_ACTIVE_CONNECTION_ID_LIMIT.try_into().unwrap())
+    );
+    assert_eq!(
+        crate::proto::cid_queue::CidQueue::LEN as u64,
+        MAX_ACTIVE_CONNECTION_ID_LIMIT
+    );
+
+    let unsupported = QuicProfile::standard()
+        .try_with_limits(TransportLimits {
+            active_connection_id_limit: Some(MAX_ACTIVE_CONNECTION_ID_LIMIT + 1),
+            ..TransportLimits::standard()
+        })
+        .unwrap();
+    assert!(matches!(
+        TransportConfig::from_quic_profile(&unsupported),
+        Err(crate::ConfigError::OutOfBounds)
+    ));
+}
+
 /// A Rustls client cannot offer a compatible version, so the Firefox profile, which offers v2,
 /// is refused when applied to a Rustls client. On Boring it is accepted.
 #[cfg(feature = "boring")]

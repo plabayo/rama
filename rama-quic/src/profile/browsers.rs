@@ -11,9 +11,9 @@ use std::time::Duration;
 use rama_quic_proto::version::{ClientVersionPolicy, ReservedVersionGrease, Version};
 
 use super::{
-    ConnectionIdProfile, GreaseParameter, InitialFlightLayout, OpaqueParameter, PacketNumberLength,
-    PacketizationProfile, PaddingPlacement, ParameterId, ParameterOrder, QuicProfile,
-    TransportLimits, TransportParameterProfile,
+    ConnectionIdProfile, GreaseParameter, InitialFlightLayout, MAX_ACTIVE_CONNECTION_ID_LIMIT,
+    OpaqueParameter, PacketNumberLength, PacketizationProfile, PaddingPlacement, ParameterId,
+    ParameterOrder, QuicProfile, TransportLimits, TransportParameterProfile,
 };
 
 /// Google Chrome 153 (Chromium's QUIC stack), as captured over IPv6.
@@ -86,10 +86,8 @@ pub(crate) fn chrome_153() -> QuicProfile {
 /// after the packet, one-byte packet numbers, CRYPTO frames in order, Handshake packets
 /// coalesced with Initials; no QUIC bit greasing.
 ///
-/// Two values differ from the capture on purpose: Firefox advertises an
-/// `active_connection_id_limit` of 8 and this crate stores five, so five is advertised;
-/// and the capture's first packet numbers were not zero, which this profile does not
-/// reproduce because the capture does not show what they follow from. Offering v2 as a
+/// The capture's first packet numbers are not reproduced because the capture does not show
+/// what they follow from. Offering v2 as a
 /// compatible version needs a TLS backend that changes version mid-handshake, which only
 /// BoringSSL does; applying this profile to a Rustls client fails for that reason.
 #[must_use]
@@ -152,7 +150,7 @@ pub(crate) fn firefox_156() -> QuicProfile {
             initial_max_streams_bidi: 100,
             initial_max_streams_uni: 100,
             max_ack_delay: Duration::from_millis(20),
-            active_connection_id_limit: Some(5),
+            active_connection_id_limit: Some(MAX_ACTIVE_CONNECTION_ID_LIMIT),
             max_udp_payload_size: 65527,
             datagram_receive_buffer_size: Some(65535),
         };

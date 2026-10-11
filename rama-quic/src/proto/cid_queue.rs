@@ -909,7 +909,12 @@ impl CidQueue {
         self.active.seq
     }
 
-    pub(crate) const LEN: usize = 5;
+    /// Maximum number of active remote connection IDs retained at once.
+    ///
+    /// Eight matches the local issuance limit and covers the browser profiles
+    /// whose peers are expected to keep that many identifiers available.
+    pub(crate) const LIMIT: u64 = 8;
+    pub(crate) const LEN: usize = Self::LIMIT as usize;
 
     /// Identifiers that can be present at once: the active one, one kept for a previous path, one
     /// reserved for a candidate, the ones bound to a path of their own, and the unused ones.
@@ -2075,18 +2080,19 @@ mod tests {
     #[test]
     fn a_released_top_reservation_leaves_earlier_ids_insertable() {
         let mut q = CidQueue::new(initial_cid());
-        for i in 1..5 {
+        for i in 1..CidQueue::LEN as u64 {
             q.insert(cid(i, 0)).unwrap();
         }
-        let reserved = q.reserve_seq(4).expect("4 is unused");
-        assert_eq!(reserved.seq, 4);
-        assert_eq!(q.release_reserved(), Some(4));
+        let highest = CidQueue::LEN as u64 - 1;
+        let reserved = q.reserve_seq(highest).expect("the highest id is unused");
+        assert_eq!(reserved.seq, highest);
+        assert_eq!(q.release_reserved(), Some(highest));
         // A retransmitted NEW_CONNECTION_ID for an identifier we still hold.
         assert_eq!(q.insert(cid(1, 0)), Ok(Inserted::default()));
         assert_eq!(q.active_seq(), 0);
         assert!(q.has_unused());
         // And one we let go of stays gone.
-        assert_eq!(q.insert(cid(4, 0)), Err(InsertError::Retired));
+        assert_eq!(q.insert(cid(highest, 0)), Err(InsertError::Retired));
     }
 
     /// The same shape with the highest identifier held rather than reserved, and with the active
@@ -2094,7 +2100,7 @@ mod tests {
     #[test]
     fn a_restored_hold_leaves_the_window_pinned_by_what_we_hold() {
         let mut q = CidQueue::new(initial_cid());
-        for i in 1..5 {
+        for i in 1..CidQueue::LEN as u64 {
             q.insert(cid(i, 0)).unwrap();
         }
         q.next_holding().unwrap(); // held 0, active 1
@@ -2106,7 +2112,7 @@ mod tests {
             "2 is still ours"
         );
         assert_eq!(q.insert(cid(1, 0)), Err(InsertError::Retired));
-        // We hold 0, 2, 3 and 4: one more fits, a second does not.
+        // We hold every slot except the retired 1: one more fits, a second does not.
         assert_eq!(
             q.insert(cid(CidQueue::LEN as u64, 0)),
             Ok(Inserted::default())

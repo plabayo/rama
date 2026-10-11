@@ -26,27 +26,60 @@ use crate::{MAX_CID_SIZE, VarInt, version::ClientVersionPolicy};
 pub struct ParameterId(pub u64);
 
 impl ParameterId {
+    /// `original_destination_connection_id` (RFC 9000 section 18.2).
     pub const ORIGINAL_DESTINATION_CONNECTION_ID: Self = Self(0x00);
+    /// `max_idle_timeout` (RFC 9000 section 18.2).
     pub const MAX_IDLE_TIMEOUT: Self = Self(0x01);
+    /// `stateless_reset_token` (RFC 9000 section 18.2).
     pub const STATELESS_RESET_TOKEN: Self = Self(0x02);
+    /// `max_udp_payload_size` (RFC 9000 section 18.2).
     pub const MAX_UDP_PAYLOAD_SIZE: Self = Self(0x03);
+    /// `initial_max_data` (RFC 9000 section 18.2).
     pub const INITIAL_MAX_DATA: Self = Self(0x04);
+    /// `initial_max_stream_data_bidi_local` (RFC 9000 section 18.2).
     pub const INITIAL_MAX_STREAM_DATA_BIDI_LOCAL: Self = Self(0x05);
+    /// `initial_max_stream_data_bidi_remote` (RFC 9000 section 18.2).
     pub const INITIAL_MAX_STREAM_DATA_BIDI_REMOTE: Self = Self(0x06);
+    /// `initial_max_stream_data_uni` (RFC 9000 section 18.2).
     pub const INITIAL_MAX_STREAM_DATA_UNI: Self = Self(0x07);
+    /// `initial_max_streams_bidi` (RFC 9000 section 18.2).
     pub const INITIAL_MAX_STREAMS_BIDI: Self = Self(0x08);
+    /// `initial_max_streams_uni` (RFC 9000 section 18.2).
     pub const INITIAL_MAX_STREAMS_UNI: Self = Self(0x09);
+    /// `ack_delay_exponent` (RFC 9000 section 18.2).
     pub const ACK_DELAY_EXPONENT: Self = Self(0x0a);
+    /// `max_ack_delay` (RFC 9000 section 18.2).
     pub const MAX_ACK_DELAY: Self = Self(0x0b);
+    /// `disable_active_migration` (RFC 9000 section 18.2).
     pub const DISABLE_ACTIVE_MIGRATION: Self = Self(0x0c);
+    /// `preferred_address` (RFC 9000 section 18.2).
     pub const PREFERRED_ADDRESS: Self = Self(0x0d);
+    /// `active_connection_id_limit` (RFC 9000 section 18.2).
     pub const ACTIVE_CONNECTION_ID_LIMIT: Self = Self(0x0e);
+    /// `initial_source_connection_id` (RFC 9000 section 18.2).
     pub const INITIAL_SOURCE_CONNECTION_ID: Self = Self(0x0f);
+    /// `retry_source_connection_id` (RFC 9000 section 18.2).
     pub const RETRY_SOURCE_CONNECTION_ID: Self = Self(0x10);
     /// RFC 9368.
     pub const VERSION_INFORMATION: Self = Self(0x11);
+    /// Reliable stream reset.
+    pub const RELIABLE_STREAM_RESET: Self = Self(0x1b);
     /// RFC 9221.
     pub const MAX_DATAGRAM_FRAME_SIZE: Self = Self(0x20);
+    /// QUICHE's discard parameter for quantum-readiness tests.
+    pub const DISCARD: Self = Self(0x173e);
+    /// SCONE protocol support.
+    pub const SCONE_SUPPORTED: Self = Self(0x219e);
+    /// QUICHE's opaque handshake message.
+    pub const GOOGLE_HANDSHAKE_MESSAGE: Self = Self(0x26ab);
+    /// QUICHE's cached initial round-trip-time measurement.
+    pub const INITIAL_ROUND_TRIP_TIME: Self = Self(0x3127);
+    /// QUICHE's connection-option tags.
+    pub const GOOGLE_CONNECTION_OPTIONS: Self = Self(0x3128);
+    /// QUICHE's debugging server name.
+    pub const DEBUGGING_SNI: Self = Self(0x219b_bcd0);
+    /// Legacy QUICHE custom parameters encoded as a Google QUIC_CRYPTO CHLO.
+    pub const GOOGLE_LEGACY_CUSTOM_PARAMETERS: Self = Self(0x4751);
     /// RFC 9287.
     pub const GREASE_QUIC_BIT: Self = Self(0x2ab2);
     /// draft-ietf-quic-ack-frequency-07.
@@ -60,11 +93,41 @@ impl ParameterId {
         self.0 % 31 == 27
     }
 
+    /// Whether the value identifies this connection or contains connection-specific material.
+    /// Capture may retain its length, but it must not copy the value into a reusable profile.
+    #[must_use]
+    pub const fn has_connection_specific_value(self) -> bool {
+        matches!(
+            self,
+            Self::ORIGINAL_DESTINATION_CONNECTION_ID
+                | Self::STATELESS_RESET_TOKEN
+                | Self::PREFERRED_ADDRESS
+                | Self::INITIAL_SOURCE_CONNECTION_ID
+                | Self::RETRY_SOURCE_CONNECTION_ID
+                | Self::GOOGLE_HANDSHAKE_MESSAGE
+                | Self::GOOGLE_LEGACY_CUSTOM_PARAMETERS
+                | Self::DEBUGGING_SNI
+        )
+    }
+
+    /// Whether the value describes a measured path or padding rather than reusable configuration.
+    #[must_use]
+    pub const fn is_observation_only(self) -> bool {
+        matches!(self, Self::INITIAL_ROUND_TRIP_TIME | Self::DISCARD)
+    }
+
     /// Whether this crate writes this parameter itself: the RFC 9000 §18.2 registry entries plus
     /// the extensions rama supports. Mirrors the engine's transport-parameter table.
     #[must_use]
     pub fn is_known(self) -> bool {
-        matches!(self.0, 0x00..=0x11 | 0x1b | 0x20 | 0x2ab2 | 0xff04_de1b)
+        self.0 <= Self::VERSION_INFORMATION.0
+            || matches!(
+                self,
+                Self::RELIABLE_STREAM_RESET
+                    | Self::MAX_DATAGRAM_FRAME_SIZE
+                    | Self::GREASE_QUIC_BIT
+                    | Self::MIN_ACK_DELAY
+            )
     }
 }
 
@@ -821,6 +884,31 @@ impl QuicProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parameter_value_classification_is_protocol_owned() {
+        for id in [
+            ParameterId::ORIGINAL_DESTINATION_CONNECTION_ID,
+            ParameterId::STATELESS_RESET_TOKEN,
+            ParameterId::PREFERRED_ADDRESS,
+            ParameterId::INITIAL_SOURCE_CONNECTION_ID,
+            ParameterId::RETRY_SOURCE_CONNECTION_ID,
+            ParameterId::GOOGLE_HANDSHAKE_MESSAGE,
+            ParameterId::GOOGLE_LEGACY_CUSTOM_PARAMETERS,
+            ParameterId::DEBUGGING_SNI,
+        ] {
+            assert!(id.has_connection_specific_value(), "{id}");
+            assert!(!id.is_observation_only(), "{id}");
+        }
+
+        for id in [ParameterId::INITIAL_ROUND_TRIP_TIME, ParameterId::DISCARD] {
+            assert!(id.is_observation_only(), "{id}");
+            assert!(!id.has_connection_specific_value(), "{id}");
+        }
+
+        assert!(!ParameterId::GOOGLE_CONNECTION_OPTIONS.has_connection_specific_value());
+        assert!(!ParameterId::GOOGLE_CONNECTION_OPTIONS.is_observation_only());
+    }
 
     /// The first packet number stays below what the initial packet's truncated number can encode
     /// (twice its value, four bytes), so a profile can never make packet building panic.

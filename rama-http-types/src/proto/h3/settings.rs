@@ -27,6 +27,8 @@ impl SettingId {
     pub const H3_DATAGRAM: Self = Self(0x33);
     /// First setting identifier reserved for greasing (RFC 9114 §11.2.2).
     pub const FIRST_RESERVED: Self = Self(0x21);
+    /// Distance between consecutive setting identifiers reserved for greasing.
+    pub const RESERVED_INTERVAL: u64 = 0x1f;
 
     /// Construct a setting identifier from its raw value.
     #[must_use]
@@ -44,7 +46,8 @@ impl SettingId {
     /// for greasing. Reserved identifiers are legal on the wire and ignored on receipt.
     #[must_use]
     pub const fn is_reserved(self) -> bool {
-        self.0 >= Self::FIRST_RESERVED.0 && (self.0 - Self::FIRST_RESERVED.0).is_multiple_of(0x1f)
+        self.0 >= Self::FIRST_RESERVED.0
+            && (self.0 - Self::FIRST_RESERVED.0).is_multiple_of(Self::RESERVED_INTERVAL)
     }
 
     /// Whether this known setting only permits the values 0 and 1 (RFC 8441 §3, RFC 9297 §2.1.1).

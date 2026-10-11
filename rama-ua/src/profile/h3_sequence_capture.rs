@@ -375,8 +375,8 @@ fn decode_settings(
                 .try_into()
                 .map_err(|_error| ProfileDataError::Invalid("H3 setting id"))?,
         );
-        if structural && id == 0x21 {
-            id += 31 * candidates;
+        if structural && id == SettingId::FIRST_RESERVED.value() {
+            id += SettingId::RESERVED_INTERVAL * candidates;
             candidates += 1;
         }
         fields.push(OrderedProtocolField {

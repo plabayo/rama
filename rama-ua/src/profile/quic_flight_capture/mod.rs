@@ -8,6 +8,7 @@ use super::{
 use rama_quic_proto::{
     Version,
     capture::{FirstFlight, ObservedFrame, QuicObservation},
+    frame::FrameType,
     profile::{PaddingPlacement, ParameterId},
     version::VersionInformation,
 };
@@ -17,11 +18,17 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy)]
 /// Resource limits for one retained QUIC first flight.
 pub struct QuicFlightCaptureLimits {
+    /// Maximum UDP datagrams in the captured first flight.
     pub datagrams: usize,
+    /// Maximum Initial packets across those datagrams.
     pub packets: usize,
+    /// Maximum observed frame shapes across those packets.
     pub frames: usize,
+    /// Maximum transport parameter identifiers.
     pub parameters: usize,
+    /// Maximum bytes represented by one retained shape value.
     pub observed_bytes: usize,
+    /// Maximum bytes in the canonical capture.
     pub bytes: usize,
 }
 
@@ -43,7 +50,9 @@ impl Default for QuicFlightCaptureLimits {
 /// alone do not establish exact wire replay capability.
 #[derive(Debug, Clone, Serialize)]
 pub struct QuicFlightCapture {
+    /// Whether every source component required by the capture was complete.
     pub completeness: ProfileCaptureCompleteness,
+    /// Capture-safe first-flight layout and ordering facts.
     pub flight: FirstFlight,
 }
 
@@ -290,7 +299,16 @@ fn validate(flight: &FirstFlight, limits: QuicFlightCaptureLimits) -> Result<(),
                     return Err(ProfileDataError::Invalid("QUIC CRYPTO shape"));
                 }
                 ObservedFrame::Other { ty }
-                    if *ty >= (1 << 62) || matches!(*ty, 0 | 1 | 2 | 3 | 6) =>
+                    if *ty >= (1 << 62)
+                        || [
+                            FrameType::PADDING,
+                            FrameType::PING,
+                            FrameType::ACK,
+                            FrameType::ACK_ECN,
+                            FrameType::CRYPTO,
+                        ]
+                        .iter()
+                        .any(|known| known.as_u64() == *ty) =>
                 {
                     return Err(ProfileDataError::Invalid("QUIC frame type"));
                 }

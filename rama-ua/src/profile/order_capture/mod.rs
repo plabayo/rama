@@ -11,9 +11,13 @@ use super::{
 };
 
 #[derive(Debug, Clone, Copy, Serialize)]
+/// The protocol registry whose ordered identifiers were observed.
 pub enum OrderNamespace {
+    /// QUIC transport parameters.
     QuicParameter,
+    /// HTTP/3 settings.
     Http3Setting,
+    /// QUIC versions.
     QuicVersion,
 }
 
@@ -48,21 +52,11 @@ impl OrderNamespace {
     }
 
     fn connection_owned(self, id: u64) -> bool {
-        // Transport bindings, opaque handshake messages (0x26ab/0x4751), and debugging
-        // SNI (0x219bbcd0) belong to the connection, not a reusable profile.
-        matches!(self, Self::QuicParameter)
-            && matches!(
-                id,
-                0 | 2 | 0x0d | 0x0f | 0x10 | 0x26ab | 0x4751 | 0x219bbcd0
-            )
+        matches!(self, Self::QuicParameter) && ParameterId(id).has_connection_specific_value()
     }
 
     fn connection_value(self, id: u64) -> bool {
-        // Cached RTT (0x3127) is a path measurement; discard padding (0x173e)
-        // has no transport semantics. Keep their literal samples for analysis,
-        // but only their presence in a structure. Capability/configuration
-        // values, including Google's connection options (0x3128), stay literal.
-        matches!(self, Self::QuicParameter) && matches!(id, 0x3127 | 0x173e)
+        matches!(self, Self::QuicParameter) && ParameterId(id).is_observation_only()
     }
 
     fn validate_field(
@@ -98,7 +92,9 @@ impl OrderNamespace {
                     return Err(ProfileDataError::Invalid("SETTINGS value range"));
                 }
             }
-            (Self::QuicParameter, ProtocolValue::Literal(bytes)) if field.id == 0x11 => {
+            (Self::QuicParameter, ProtocolValue::Literal(bytes))
+                if ParameterId(field.id) == ParameterId::VERSION_INFORMATION =>
+            {
                 version_information(bytes, limits)?;
             }
             (Self::QuicVersion, ProtocolValue::Literal(bytes)) if !bytes.is_empty() => {
@@ -111,8 +107,11 @@ impl OrderNamespace {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Resource limits for one retained ordered protocol capture.
 pub struct OrderCaptureLimits {
+    /// Maximum number of ordered fields.
     pub elements: usize,
+    /// Maximum encoded bytes, including the canonical envelope.
     pub bytes: usize,
 }
 
@@ -129,7 +128,9 @@ impl Default for OrderCaptureLimits {
 /// Literal ordering is also used to canonicalize structural multisets.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum ProtocolValue {
+    /// A reusable protocol value retained exactly.
     Literal(Box<[u8]>),
+    /// Length of connection-specific material whose contents were discarded.
     ConnectionLength(usize),
 }
 
@@ -160,15 +161,22 @@ impl ProtocolValue {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+/// One identifier and capture-safe value in an observed protocol order.
 pub struct OrderedProtocolField {
+    /// Raw identifier in the namespace's protocol registry.
     pub id: u64,
+    /// Literal reusable value or redacted connection-specific shape.
     pub value: ProtocolValue,
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// A complete ordered list from one protocol namespace.
 pub struct OrderedProtocolCapture {
+    /// Whether the source observation was complete enough to retain.
     pub completeness: ProfileCaptureCompleteness,
+    /// Registry used to interpret the field identifiers.
     pub namespace: OrderNamespace,
+    /// Fields in their observed wire order.
     pub fields: Box<[OrderedProtocolField]>,
 }
 
@@ -396,7 +404,8 @@ fn normalized_field(
             ProtocolValue::Literal(Box::default())
         }
         ProtocolValue::Literal(bytes)
-            if matches!(namespace, OrderNamespace::QuicParameter) && field.id == 0x11 =>
+            if matches!(namespace, OrderNamespace::QuicParameter)
+                && ParameterId(field.id) == ParameterId::VERSION_INFORMATION =>
         {
             let versions = version_information(bytes, limits)?;
             let chosen = versions.chosen();
