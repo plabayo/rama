@@ -15,6 +15,9 @@ use super::ValueId;
 mod order;
 pub use order::OrderDrawError;
 
+mod connection;
+pub use connection::*;
+
 mod replay;
 pub use replay::*;
 

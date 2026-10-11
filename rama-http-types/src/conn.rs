@@ -6,9 +6,12 @@ pub use http_service::{
     HttpServiceSelection, HttpServiceSource, SelectedHttpService,
 };
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use crate::proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture, frame::Settings};
+use crate::proto::h2::{
+    PseudoHeaderOrder,
+    frame::{EarlyFrame, EarlyFrameCapture, Settings},
+};
 use rama_core::extensions::Extension;
 
 #[derive(Debug, Clone, Default, Extension)]
@@ -43,6 +46,10 @@ pub struct H2ClientContextParams {
 
     /// Early frames to be applied first
     pub early_frames: Option<EarlyFrameCapture>,
+
+    /// Exact ordered early frames prepared for replay on this connection.
+    /// These take precedence over [`Self::early_frames`].
+    pub replay_early_frames: Option<Arc<[EarlyFrame]>>,
 
     /// The `SETTINGS_INITIAL_WINDOW_SIZE` option for HTTP2
     /// stream-level flow control.

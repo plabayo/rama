@@ -9,7 +9,7 @@ use std::{
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    time::sleep,
+    time::{sleep, timeout},
 };
 
 use rama_core::{
@@ -36,6 +36,7 @@ use rama_http_types::{
     Body, Request, Response, StatusCode, Version,
     conn::{H2ClientContextParams, PeerH2Settings, TargetHttpVersion},
     proto::h1::ext::ConnectionClose,
+    proto::h2::frame::{EarlyFrame, Setting, Settings},
 };
 use rama_net::{
     TargetHttpVersionInputExt,
@@ -1428,6 +1429,58 @@ async fn test_h2_mitm_relay_eager_honors_egress_h2_client_params() {
     drop(conn);
     cancel_drop_guard.disarm().cancel();
     graceful.shutdown().await;
+}
+
+#[tokio::test]
+async fn h2_client_exact_replay_reaches_the_wire() {
+    let (client_stream, mut peer_stream) = tokio::io::duplex(kib(16));
+    let peer = tokio::spawn(async move {
+        let mut preface = [0; 24];
+        peer_stream.read_exact(&mut preface).await.unwrap();
+        assert_eq!(&preface, b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+
+        let mut head = [0; 9];
+        peer_stream.read_exact(&mut head).await.unwrap();
+        assert_eq!(&head, &[0, 0, 18, 4, 0, 0, 0, 0, 0]);
+        let mut payload = [0; 18];
+        peer_stream.read_exact(&mut payload).await.unwrap();
+        payload
+    });
+
+    let request = create_test_request(Version::HTTP_2);
+    request.extensions().insert(H2ClientContextParams {
+        replay_early_frames: Some(
+            vec![EarlyFrame::Settings(
+                Settings::from_ordered_entries(
+                    [
+                        Setting::new(1_u16, 4_096),
+                        Setting::new(0xfefe_u16, 99),
+                        Setting::new(1_u16, 8_192),
+                    ]
+                    .into(),
+                )
+                .unwrap(),
+            )]
+            .into(),
+        ),
+        ..Default::default()
+    });
+
+    let established =
+        http_connect::<_, _, Body>(MockSocket::new(client_stream), request, Executor::default())
+            .await
+            .unwrap();
+    let payload = timeout(Duration::from_secs(1), peer)
+        .await
+        .expect("client SETTINGS timeout")
+        .unwrap();
+    assert_eq!(
+        payload,
+        [
+            0, 1, 0, 0, 16, 0, 0xfe, 0xfe, 0, 0, 0, 99, 0, 1, 0, 0, 32, 0,
+        ]
+    );
+    drop(established);
 }
 
 /// Negative test: confirms the four fields we intentionally do NOT

@@ -1,6 +1,9 @@
 //! Bounded H2 settings and early frames, captured before semantic collapse.
 
-use rama_http::proto::h2::frame::{EarlyFrame, EarlyFrameCapture};
+use rama_http::proto::h2::frame::{
+    EarlyFrame, EarlyFrameCapture, Priority, Setting, Settings, StreamDependency, StreamId,
+    WindowUpdate,
+};
 use rama_utils::octets::kib;
 use serde::Serialize;
 
@@ -142,6 +145,51 @@ impl H2Capture {
         };
         capture.canonical(limits)?;
         Ok(capture)
+    }
+
+    /// Compile this bounded capture into the H2 client's early-frame replay input.
+    pub fn replay_frames(
+        &self,
+        limits: H2CaptureLimits,
+    ) -> Result<Vec<EarlyFrame>, ProfileDataError> {
+        self.canonical(limits)?;
+        self.frames
+            .iter()
+            .map(|frame| {
+                Ok(match frame {
+                    H2CapturedFrame::Settings { ack: true, .. } => {
+                        EarlyFrame::Settings(Settings::ack())
+                    }
+                    H2CapturedFrame::Settings {
+                        ack: false,
+                        entries,
+                    } => EarlyFrame::Settings(
+                        Settings::from_ordered_entries(
+                            entries
+                                .iter()
+                                .map(|entry| Setting::new(entry.id, entry.value))
+                                .collect(),
+                        )
+                        .map_err(|_error| invalid())?,
+                    ),
+                    H2CapturedFrame::WindowUpdate { stream, increment } => {
+                        EarlyFrame::WindowUpdate(WindowUpdate::new(
+                            StreamId::from(*stream),
+                            *increment,
+                        ))
+                    }
+                    H2CapturedFrame::Priority {
+                        stream,
+                        dependency,
+                        weight,
+                        exclusive,
+                    } => EarlyFrame::Priority(Priority::new(
+                        StreamId::from(*stream),
+                        StreamDependency::new(StreamId::from(*dependency), *weight, *exclusive),
+                    )),
+                })
+            })
+            .collect()
     }
 
     pub fn canonical(&self, limits: H2CaptureLimits) -> Result<CanonicalValue, ProfileDataError> {
@@ -353,6 +401,7 @@ mod tests {
         CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits,
         OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture,
     };
+    use rama_core::bytes::BytesMut;
     use rama_http::proto::h2::frame::{
         EarlyFrameStreamContext, Head, Kind, Settings, StreamId, WindowUpdate,
     };
@@ -426,6 +475,25 @@ mod tests {
         ordered.frames.swap(1, 2);
         assert_ne!(first.id, ordered.canonical(limits).unwrap().id);
         assert_ne!(structure.id, ordered.structural(limits).unwrap().id);
+    }
+
+    #[test]
+    fn h2_replay_compiles_exact_settings_and_early_frame_order() {
+        let capture = captured(&[(1, 4_096), (0xfefe, 99), (1, 8_192)]);
+        let frames = capture.replay_frames(H2CaptureLimits::default()).unwrap();
+        assert_eq!(frames.len(), 2);
+        let EarlyFrame::Settings(settings) = &frames[0] else {
+            panic!("initial frame must remain SETTINGS");
+        };
+        let mut encoded = BytesMut::new();
+        settings.encode(&mut encoded);
+        assert_eq!(
+            &encoded[9..],
+            &[
+                0, 1, 0, 0, 16, 0, 0xfe, 0xfe, 0, 0, 0, 99, 0, 1, 0, 0, 32, 0,
+            ]
+        );
+        assert!(matches!(frames[1], EarlyFrame::WindowUpdate(_)));
     }
 
     #[test]

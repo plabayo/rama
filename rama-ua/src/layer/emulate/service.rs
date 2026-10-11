@@ -299,6 +299,16 @@ where
             .transpose()
             .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
         if let Some(selection) = &connection_selection {
+            let prepared = selection.prepare_components().map_err(|error| {
+                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+            })?;
+            if let Some(h2_early_frames) = &prepared.h2_early_frames {
+                req.extensions().insert(H2ClientContextParams {
+                    replay_early_frames: Some(h2_early_frames.clone()),
+                    ..Default::default()
+                });
+            }
+            req.extensions().insert(prepared);
             req.extensions().insert(selection.clone());
         }
 
@@ -407,8 +417,12 @@ fn emulate_http_connect_settings(
                 .ok_or_else(|| BoxError::from_static_str("missing HTTP/2 settings"))?;
             let pseudo_headers = settings.http_pseudo_headers.clone();
             let early_frames = settings.early_frames.clone();
+            let replay_early_frames = input
+                .extensions()
+                .get_ref::<H2ClientContextParams>()
+                .and_then(|params| params.replay_early_frames.clone());
 
-            if pseudo_headers.is_some() || early_frames.is_some() {
+            if pseudo_headers.is_some() || early_frames.is_some() || replay_early_frames.is_some() {
                 tracing::trace!(
                     "user agent emulation: insert h2 settings into extensions: (pseudo headers = {:?} ; early frames: {:?})",
                     pseudo_headers,
@@ -417,6 +431,7 @@ fn emulate_http_connect_settings(
                 input.extensions().insert(H2ClientContextParams {
                     headers_pseudo_order: pseudo_headers,
                     early_frames,
+                    replay_early_frames,
                     ..Default::default()
                 });
             }

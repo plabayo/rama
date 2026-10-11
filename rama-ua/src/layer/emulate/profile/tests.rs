@@ -5,7 +5,10 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     service::service_fn,
 };
-use rama_http::{HeaderName, Method, Request, Version, conn::TargetHttpVersion};
+use rama_http::{
+    HeaderName, Method, Request, Version,
+    conn::{H2ClientContextParams, TargetHttpVersion},
+};
 use rama_net::{
     Protocol,
     client::{ConnectRequest, EstablishedClientConnection, pool::ConnectionReuse},
@@ -18,11 +21,12 @@ use crate::{
     profile::{
         AnalyzedCaptureVariant, AnalyzedOrderWeight, AnalyzedProfile, AnalyzedProfileComponents,
         AnalyzedProfileScope, CanonicalDomain, CanonicalValue, CaptureLevel, CapturedSlot,
-        CapturedSlotKind, CountedCaptureAnalysis, CounterSnapshot, HeaderCapture,
-        HeaderCapturePolicy, HeaderOccurrence, HeaderValueSource, JointCapture, JointCaptureLimits,
-        ObservationLosses, ObservationWeight, OrderCaptureLimits, OrderNamespace,
-        OrderedProtocolCapture, ProfileCaptureCompleteness, ProfileKey, ProfileObservationScope,
-        ProfilePreservationReport, RequestSelection, UntrackedDistinctSnapshot, ValueId,
+        CapturedSlotKind, CountedCaptureAnalysis, CounterSnapshot, H2Capture, H2CaptureLimits,
+        H2CapturedFrame, H2CapturedSetting, HeaderCapture, HeaderCapturePolicy, HeaderOccurrence,
+        HeaderValueSource, JointCapture, JointCaptureLimits, ObservationLosses, ObservationWeight,
+        PreparedConnectionComponents, ProfileCaptureCompleteness, ProfileKey,
+        ProfileObservationScope, ProfilePreservationReport, RequestSelection,
+        UntrackedDistinctSnapshot, ValueId,
     },
 };
 
@@ -70,20 +74,35 @@ fn variant(level: CaptureLevel, value: u64) -> CanonicalValue {
         .canonical(JointCaptureLimits::default())
         .unwrap();
     }
-    let value = OrderedProtocolCapture::capture(
-        ProfileCaptureCompleteness::Complete,
-        OrderNamespace::QuicVersion,
-        [(value, [])],
-        OrderCaptureLimits::default(),
-    )
-    .unwrap()
-    .canonical(OrderCaptureLimits::default())
+    let value = H2Capture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        frames: vec![H2CapturedFrame::Settings {
+            ack: false,
+            entries: vec![
+                H2CapturedSetting {
+                    id: 1,
+                    value: 4_096,
+                },
+                H2CapturedSetting {
+                    id: 0xf000 | value as u16,
+                    value: value as u32,
+                },
+                H2CapturedSetting {
+                    id: 1,
+                    value: 8_192,
+                },
+            ]
+            .into(),
+        }]
+        .into(),
+    }
+    .canonical(H2CaptureLimits::default())
     .unwrap();
     JointCapture {
         completeness: ProfileCaptureCompleteness::Complete,
         level,
         slots: vec![CapturedSlot {
-            kind: CapturedSlotKind::QuicVersions,
+            kind: CapturedSlotKind::Http2EarlyFrames,
             value,
         }]
         .into(),
@@ -293,6 +312,17 @@ async fn profile_layer_selects_once_and_publishes_the_immutable_context() {
 async fn connect_modifier_prepares_before_connect_and_publishes_reuse() {
     let inner = service_fn(|input: ConnectRequest| async move {
         assert!(input.extensions().contains::<ConnectionSelection>());
+        assert!(
+            input
+                .extensions()
+                .contains::<PreparedConnectionComponents>()
+        );
+        assert!(
+            input
+                .extensions()
+                .get_ref::<H2ClientContextParams>()
+                .is_some_and(|params| params.replay_early_frames.is_some())
+        );
         let conn = ServiceInput::new(());
         conn.extensions().insert(TargetHttpVersion(Version::HTTP_2));
         Ok::<_, rama_net::client::ConnectionError>(EstablishedClientConnection { input, conn })

@@ -291,7 +291,9 @@ fn apply_h2_client_extensions_to_builder(
             builder.set_headers_pseudo_order(pseudo_order);
         }
 
-        if let Some(ref frames) = params.early_frames {
+        if let Some(frames) = &params.replay_early_frames {
+            builder.set_early_frames(frames.as_ref().to_vec());
+        } else if let Some(ref frames) = params.early_frames {
             let v = frames.as_slice().to_vec();
             builder.set_early_frames(v);
         }

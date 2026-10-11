@@ -22,6 +22,8 @@ pub struct Settings {
 pub struct SettingsObservation {
     pub entries: Box<[Setting]>,
     pub complete: bool,
+    exact_replay: bool,
+    replay_config: Option<SettingsConfig>,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Default, Serialize, Deserialize)]
@@ -59,12 +61,34 @@ impl Settings {
     rama_utils::macros::generate_set_and_with! {
         pub fn config(mut self, config: SettingsConfig) -> Self {
             self.config = config;
+            self.observation = None;
             self
         }
     }
 
     pub fn merge(&mut self, other: Self) {
         self.config.merge(other.config);
+        self.observation = None;
+    }
+
+    /// Build a SETTINGS frame from validated entries in their original wire order.
+    ///
+    /// Unlike [`SettingsConfig`], this retains unknown identifiers and repeated
+    /// occurrences. Any later semantic configuration change discards the exact
+    /// sequence so stale wire values cannot override the new configuration.
+    pub fn from_ordered_entries(entries: Box<[Setting]>) -> Result<Self, Error> {
+        let mut payload = BytesMut::with_capacity(entries.len().saturating_mul(6));
+        for entry in &entries {
+            entry.encode(&mut payload);
+        }
+        let mut settings = Self::load(Head::new(Kind::Settings, 0, StreamId::zero()), &payload)?;
+        settings.observation = Some(Box::new(SettingsObservation {
+            entries,
+            complete: true,
+            exact_replay: true,
+            replay_config: Some(settings.config.clone()),
+        }));
+        Ok(settings)
     }
 
     pub fn load(head: Head, payload: &[u8]) -> Result<Self, Error> {
@@ -89,6 +113,8 @@ impl Settings {
             settings.observation = Some(Box::new(SettingsObservation {
                 entries: entries.into_boxed_slice(),
                 complete: count <= MAXIMUM,
+                exact_replay: false,
+                replay_config: None,
             }));
         }
         Ok(settings)
@@ -215,6 +241,20 @@ impl Settings {
     }
 
     fn for_each<F: FnMut(Setting)>(&self, mut f: F) {
+        if let Some(observation) = &self.observation
+            && !self.flags.is_ack()
+            && observation.complete
+            && observation.exact_replay
+            && observation.replay_config.as_ref().is_some_and(|config| {
+                config == &self.config && config.setting_order == self.config.setting_order
+            })
+        {
+            for entry in &observation.entries {
+                f(*entry);
+            }
+            return;
+        }
+
         let mut settings_order = self.config.setting_order.clone().unwrap_or_default();
         settings_order.extend_with_default();
 
@@ -417,6 +457,76 @@ mod observation_tests {
             let ack = Head::new(Kind::Settings, 1, StreamId::zero());
             Settings::load_observed(ack, &[0; 6], observe).unwrap_err();
         }
+    }
+
+    #[test]
+    fn exact_replay_preserves_unknown_and_repeated_settings() {
+        let entries: Box<[_]> = [
+            Setting::new(1_u16, 4_096),
+            Setting::new(0xfefe_u16, 99),
+            Setting::new(1_u16, 8_192),
+        ]
+        .into();
+        let settings = Settings::from_ordered_entries(entries.clone()).unwrap();
+        assert_eq!(settings.config.header_table_size, Some(8_192));
+
+        let mut encoded = BytesMut::new();
+        settings.encode(&mut encoded);
+        assert_eq!(encoded.len(), 9 + entries.len() * 6);
+        assert_eq!(
+            &encoded[9..],
+            &[
+                0, 1, 0, 0, 16, 0, 0xfe, 0xfe, 0, 0, 0, 99, 0, 1, 0, 0, 32, 0,
+            ]
+        );
+    }
+
+    #[test]
+    fn semantic_changes_discard_exact_replay_entries() {
+        let exact = Settings::from_ordered_entries(
+            [Setting::new(0xfefe_u16, 99), Setting::new(1_u16, 8_192)].into(),
+        )
+        .unwrap();
+
+        let mut configured = exact.clone();
+        configured.set_config(SettingsConfig {
+            header_table_size: Some(1_024),
+            ..Default::default()
+        });
+        assert!(configured.observation.is_none());
+        let mut encoded = BytesMut::new();
+        configured.encode(&mut encoded);
+        assert_eq!(&encoded[9..], &[0, 1, 0, 0, 4, 0]);
+
+        let mut merged = exact;
+        merged.merge(Settings {
+            config: SettingsConfig {
+                header_table_size: Some(2_048),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert!(merged.observation.is_none());
+        let mut encoded = BytesMut::new();
+        merged.encode(&mut encoded);
+        assert_eq!(&encoded[9..], &[0, 1, 0, 0, 8, 0]);
+
+        let mut directly_changed = Settings::from_ordered_entries(
+            [Setting::new(0xfefe_u16, 99), Setting::new(1_u16, 8_192)].into(),
+        )
+        .unwrap();
+        directly_changed.config.header_table_size = Some(1_024);
+        let mut encoded = BytesMut::new();
+        directly_changed.encode(&mut encoded);
+        assert_eq!(&encoded[9..], &[0, 1, 0, 0, 4, 0]);
+    }
+
+    #[test]
+    fn exact_replay_rejects_invalid_setting_values() {
+        assert!(matches!(
+            Settings::from_ordered_entries([Setting::new(2_u16, 2)].into()),
+            Err(Error::InvalidSettingValue),
+        ));
     }
 }
 
