@@ -1362,6 +1362,84 @@ async fn a_look_counting_on_kept_streams_wakes_a_front_left_unwoken() {
     );
 }
 
+/// A connection that admits one of its two streams, held, a connect in flight
+/// with one spare stream, and a waiter for it that a change woke and that
+/// looked: refused, it waits. The pool may have kept streams before.
+async fn refused_front<'a>(
+    pool: &'a MultiplexPool<Conn, TestId>,
+    input: &'a Extensions,
+    reuse: Option<ConnectionReuse>,
+) -> (
+    Checkout<'a>,
+    [MultiplexSlot; 2],
+    MultiplexedConnection<Conn, TestId>,
+) {
+    let slot = permit(pool, 0, input).await;
+    let (conn, admission) = admission_connection(pool, 1);
+    conn.extensions.insert(ConnectionHealthWatcher::default());
+    conn.extensions.insert(MaxConcurrency::new(2));
+    if let Some(reuse) = reuse {
+        conn.extensions.insert(reuse);
+    }
+    let held = pool.create(TestId(0), conn, slot, input).await.unwrap();
+    let slow = permit(pool, 0, input).await;
+    let mut front = tokio_test::task::spawn(Box::pin(pool.get_conn(&TestId(0), input, None))
+        as Pin<Box<dyn Future<Output = _> + Send + 'a>>);
+    assert!(front.poll().is_pending());
+    admission.set_limit(1);
+    assert!(front.is_woken(), "a change wakes it");
+    assert!(
+        front.poll().is_pending(),
+        "refused, the connect in flight covers it"
+    );
+    let spare = permit(pool, 1, input).await;
+    (front, [slow, spare], held)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_count_on_kept_streams_wakes_the_front_whenever_it_holds_no_wake() {
+    for kept_before in [false, true] {
+        let pool = MultiplexPool::new();
+        if kept_before {
+            pool.kept_counted.store(true, Ordering::Relaxed);
+        }
+        let (mut front, _slow, _held) = refused_front(&pool, &EMPTY_INPUT, None).await;
+        let mut newcomer = checkout(&pool, 0);
+        assert!(
+            newcomer.poll().is_pending(),
+            "counts the refused stream as kept"
+        );
+        assert!(
+            front.is_woken(),
+            "the count wakes the front to try it again"
+        );
+        assert!(
+            matches!(
+                front.poll(),
+                Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+            ),
+            "refused, two waiting for one spare stream: it dials"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_count_on_kept_streams_wakes_the_front_of_its_keyed_group_lane() {
+    let pool = MultiplexPool::new();
+    let (one, nine) = (want(1), want(9));
+    // The id's only class, from a keyed connection; no unrestricted lane.
+    let slot = permit(&pool, 0, &nine).await;
+    let _keyed = land(&pool, 0, slot, 1, Some(keyed(0, 9)), &nine).await;
+    let (mut front, _slow, _held) = refused_front(&pool, &one, Some(keyed(0, 1))).await;
+    let mut newcomer = tokio_test::task::spawn(Box::pin(pool.get_conn(&TestId(0), &one, None)));
+    assert!(newcomer.poll().is_pending());
+    assert!(front.is_woken(), "the front of key 1's lane");
+    assert!(matches!(
+        front.poll(),
+        Poll::Ready(Ok(ConnectionResult::CreatePermit(_)))
+    ));
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_cancelled_woken_front_passes_its_wake_on() {
     let pool = MultiplexPool::new();

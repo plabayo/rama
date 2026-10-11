@@ -387,6 +387,26 @@ impl WaitQueue {
                 .is_some_and(|front| front.is(waiter))
     }
 
+    /// Make the first waiter look after this: a wake if it holds none, else a
+    /// look more without a unit of capacity, so a look of it that began before
+    /// runs once more. False if nobody waits.
+    pub fn wake_front(&self) -> bool {
+        fence(Ordering::SeqCst);
+        if self.is_empty() {
+            return false;
+        }
+        let queue = self.queue.lock();
+        let Some(front) = queue.waiters.front() else {
+            return false;
+        };
+        if front.is_woken() {
+            front.wake_party();
+        } else {
+            front.wake();
+        }
+        true
+    }
+
     /// One unit of capacity: wake the first waiter without a wake of this queue
     /// or, if all of them hold one, the first again, since its look may have
     /// begun before the unit. False if nobody waits: the capacity is nobody's.
@@ -1336,6 +1356,25 @@ mod tests {
         assert!(queue.is_empty() && queue.admits(None) && !queue.wake_one());
         assert_eq!(queue.front_order(), None);
         assert!(!queue.front_is_woken());
+    }
+
+    #[test]
+    fn waking_the_front_adds_a_unit_only_if_it_holds_none() {
+        let queue = WaitQueue::new();
+        let [first, second] = [Party::new(0).waiter(), Party::new(1).waiter()];
+        assert!(!queue.wake_front(), "nobody waits");
+        queue.push(&first);
+        queue.push(&second);
+        assert!(queue.wake_front());
+        assert!(first.is_woken() && !second.is_woken());
+        assert_eq!(first.held(), 1);
+        let looks = first.party().wakes();
+        assert!(queue.wake_front());
+        assert_eq!(first.held(), 1, "a woken front gets no second unit");
+        assert!(first.party().wakes() > looks, "but looks once more");
+        assert!(!second.is_woken());
+        assert_eq!(queue.remove(&first), 1, "it leaves with its one unit");
+        assert_eq!(queue.remove(&second), 0);
     }
 
     #[test]

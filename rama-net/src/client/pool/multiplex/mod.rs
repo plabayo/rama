@@ -1383,7 +1383,8 @@ where
                 None => {}
             }
         }
-        connects.coalesce(streams, cold, impatient, cap, || {
+        let mut kept_in = None;
+        let coalesced = connects.coalesce(streams, cold, impatient, cap, || {
             if !left {
                 return 0;
             }
@@ -1395,26 +1396,31 @@ where
                 .and_then(|bucket| bucket.kept_streams(lanes, self.max_concurrent_streams));
             match kept {
                 Some((kept, waiters)) if kept != 0 => {
-                    self.relies_on_kept(&waiters);
+                    kept_in = Some(waiters);
                     kept
                 }
                 _ => 0,
             }
-        })
+        });
+        // A waiting checkout the kept streams hold back counts on them.
+        if let (Coalesce::Wait, Some(waiters), Look::Register(_)) = (&coalesced, &kept_in, &*look) {
+            self.relies_on_kept(waiters);
+        }
+        coalesced
     }
 
-    /// A look counts on streams kept for the waiters ahead in `waiters`: pass
-    /// it on from now on, and wake the front if it holds no wake. Pairs with
-    /// the fence of [`Self::pass_room_on`]: a waiter leaving sees the flag and
-    /// passes room on, or this sees it gone.
+    /// A waiting checkout waits for the streams kept for the waiters ahead in
+    /// `waiters`, which would dial otherwise: from now on room is passed on,
+    /// and the front looks after this, so it takes the room or, refused, dials
+    /// for every waiter, this one too. Pairs with the fence of
+    /// [`Self::pass_room_on`]: a waiter leaving sees the flag, or this sees it
+    /// gone.
     fn relies_on_kept(&self, waiters: &WaitQueue) {
         if !self.kept_counted.load(Ordering::Relaxed) {
             self.kept_counted.store(true, Ordering::Relaxed);
         }
         fence(Ordering::SeqCst);
-        if !waiters.front_is_woken() {
-            waiters.wake_one();
-        }
+        waiters.wake_front();
     }
 
     /// The streams a new connection for the request's lanes takes, whether that
@@ -1671,6 +1677,7 @@ where
     fn pass_room_on(
         &self,
         id: &ID,
+        input: &Extensions,
         conn: &StoredConnection<C, ID>,
         served_in: Option<&Arc<WaitQueue>>,
         others: &[Arc<WaitQueue>],
@@ -1680,24 +1687,42 @@ where
             fence(Ordering::SeqCst);
             self.kept_counted.load(Ordering::Relaxed)
         };
-        let multiplexed = conn.effective_capacity(cap) > 1;
-        let lanes = served_in
-            .map(|served| (served, multiplexed))
-            .into_iter()
-            .chain(others.iter().map(|other| (other, false)));
-        for (waiters, serving) in lanes {
-            if !(serving || kept) || waiters.is_empty() || waiters.front_is_woken() {
-                continue;
+        let unwoken = |waiters: &WaitQueue| !waiters.is_empty() && !waiters.front_is_woken();
+        if let Some(served) = served_in {
+            let multiplexed = conn.effective_capacity(cap) > 1;
+            if (multiplexed || kept) && unwoken(served) {
+                let room = (multiplexed && conn.has_capacity(cap))
+                    || (kept && {
+                        let mut storage = self.storage.lock();
+                        let lane = conn.lane.lock();
+                        lane.as_ref()
+                            .and_then(|lane| storage.by_id.get_mut(id)?.lane_mut(lane))
+                            .is_some_and(|lane| !lane.open.is_empty())
+                    });
+                if room {
+                    served.wake_one();
+                }
             }
-            let room = (serving && conn.has_capacity(cap))
-                || (kept
-                    && self.storage.lock().by_id.get(id).is_some_and(|bucket| {
-                        bucket.lanes().any(|lane| {
-                            Arc::ptr_eq(&lane.waiters, waiters) && !lane.open.is_empty()
-                        })
-                    }));
-            if room {
-                waiters.wake_one();
+        }
+        if !kept || !others.iter().any(|other| unwoken(other)) {
+            return;
+        }
+        let lanes = self.request_lanes(id, input);
+        let with_room: SmallVec<[Arc<WaitQueue>; 2]> = {
+            let mut storage = self.storage.lock();
+            let Some(bucket) = storage.by_id.get_mut(id) else {
+                return;
+            };
+            bucket
+                .request_lanes_mut(&lanes)
+                .into_iter()
+                .filter(|lane| !lane.open.is_empty())
+                .map(|lane| lane.waiters.clone())
+                .collect()
+        };
+        for other in others {
+            if with_room.iter().any(|lane| Arc::ptr_eq(lane, other)) && unwoken(other) {
+                other.wake_one();
             }
         }
     }
@@ -1926,7 +1951,7 @@ where
                     let others = waiting.lanes_but(served_in.as_ref());
                     drop(waiting);
                     if let ConnectionResult::Connection(conn) = &result {
-                        self.pass_room_on(id, &conn.inner, served_in.as_ref(), &others);
+                        self.pass_room_on(id, input, &conn.inner, served_in.as_ref(), &others);
                     }
                     return Ok(result);
                 }
@@ -2066,7 +2091,7 @@ where
                     let others = waiting.lanes_but(served_in.as_ref());
                     drop(waiting);
                     if let ConnectionResult::Connection(conn) = &result {
-                        self.pass_room_on(id, &conn.inner, served_in.as_ref(), &others);
+                        self.pass_room_on(id, input, &conn.inner, served_in.as_ref(), &others);
                     }
                     return Ok(result);
                 }
