@@ -1,3 +1,5 @@
+#![cfg(not(loom))]
+
 #[test]
 fn include_dir_no_compile() {
     // paths are normalized on windows

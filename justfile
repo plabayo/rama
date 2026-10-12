@@ -429,7 +429,7 @@ qa-full: qa qa-quic-stress qa-quic-interop qa-dial9 qa-dial9-tokio-unstable hack
 bench-e2e-http-client-server *ARGS:
     ./scripts/bench/e2e_http_client_server.py {{ARGS}}
 
-clean: clean-rust clean-ffi-apple clean-js
+clean: clean-rust clean-ffi-apple clean-quic clean-python clean-js
 
 clean-rust:
     cargo clean
@@ -437,6 +437,18 @@ clean-rust:
 
 clean-ffi-apple:
     just ./ffi/apple/examples/transparent_proxy/clean
+
+clean-quic:
+    just rama-quic/clean
+
+clean-python:
+    @just _clean-python-{{os_family()}}
+
+_clean-python-unix:
+    rm -rf -- scripts/ci/.venv
+
+_clean-python-windows:
+    if (Test-Path scripts/ci/.venv) { Remove-Item -Recurse -Force scripts/ci/.venv }
 
 clean-js:
     @just _clean-js-{{os_family()}}

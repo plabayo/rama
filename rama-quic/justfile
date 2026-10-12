@@ -64,6 +64,24 @@ qa-boring-isolation:
 interop-peer-dirs := "e2e/interop-common e2e/quinn-interop e2e/quiche-interop e2e/aioquic-interop"
 interop-dirs := interop-peer-dirs + " e2e/interop-runner e2e/gnutls-interop"
 
+clean: (_clean-interop "e2e/interop-common") (_clean-interop "e2e/quinn-interop") (_clean-interop "e2e/quiche-interop") (_clean-interop "e2e/aioquic-interop") (_clean-interop "e2e/interop-runner") (_clean-interop "e2e/gnutls-interop") _clean-aioquic-env
+
+[private]
+_clean-interop DIR:
+    cargo clean --manifest-path {{DIR}}/Cargo.toml
+
+[private]
+_clean-aioquic-env:
+    @just _clean-aioquic-env-{{os_family()}}
+
+[private]
+_clean-aioquic-env-unix:
+    rm -rf -- e2e/aioquic-interop/.venv
+
+[private]
+_clean-aioquic-env-windows:
+    if (Test-Path e2e/aioquic-interop/.venv) { Remove-Item -Recurse -Force e2e/aioquic-interop/.venv }
+
 qq: _qq-features _qq-release (_qq-check "e2e/interop-common" "boring") (_qq-check "e2e/interop-common" "rustls-aws-lc") (_qq-check "e2e/quinn-interop" "boring") (_qq-check "e2e/quinn-interop" "rustls-aws-lc") (_qq-check "e2e/quiche-interop" "boring") (_qq-check "e2e/quiche-interop" "rustls-aws-lc") (_qq-check "e2e/aioquic-interop" "boring") (_qq-check "e2e/aioquic-interop" "rustls-aws-lc") (_qq-check "e2e/interop-runner" "boring") (_qq-check "e2e/interop-runner" "rustls-aws-lc")
 
 # Each feature in isolation, tests included, warnings denied like CI. The workspace `check`/`clippy`
