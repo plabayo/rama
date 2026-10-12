@@ -189,11 +189,6 @@ impl FrameCodec {
                             max_size,
                         });
                     }
-                    let len = *len as usize;
-
-                    // Reserve full message length only once, even for multiple
-                    // loops or if WouldBlock errors cause multiple fn calls.
-                    self.in_buffer.reserve(len);
                 } else {
                     self.in_buffer.reserve(FrameHeader::MAX_SIZE);
                 }
@@ -242,6 +237,10 @@ impl FrameCodec {
     /// Read into available `in_buffer` capacity.
     fn read_in(&mut self, stream: &mut impl Read) -> io::Result<usize> {
         let len = self.in_buffer.len();
+        if self.in_buffer.capacity() == len {
+            // Doubles with what arrived: a declared frame length alone never sizes the buffer.
+            self.in_buffer.reserve(len.max(self.in_buf_max_read));
+        }
         debug_assert!(self.in_buffer.capacity() > len);
         self.in_buffer
             .resize(self.in_buffer.capacity().min(len + self.in_buf_max_read), 0);
@@ -373,6 +372,31 @@ mod tests {
 
         let (buf, _) = sock.into_inner();
         assert_eq!(buf, vec![0x89, 0x02, 0x04, 0x05, 0x8a, 0x01, 0x01]);
+    }
+
+    #[test]
+    fn declared_length_does_not_size_the_read_buffer() {
+        // A header announcing 8 MiB, one payload byte, then the peer goes quiet.
+        let raw = Cursor::new(vec![
+            0x82, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x01,
+        ]);
+        let mut sock = FrameSocket::new(raw);
+        assert!(sock.read(None).unwrap().is_none());
+        let capacity = sock.codec.in_buffer.capacity();
+        assert!(capacity < 1 << 20, "{capacity}");
+    }
+
+    #[test]
+    fn frames_larger_than_the_read_buffer_still_assemble() {
+        let payload = vec![0x5a; 3 * super::READ_BUF_LEN + 7];
+        let mut raw = vec![0x82, 0x7f];
+        raw.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+        raw.extend_from_slice(&payload);
+        let mut sock = FrameSocket::new(Cursor::new(raw));
+        assert_eq!(
+            sock.read(None).unwrap().unwrap().into_payload(),
+            &payload[..]
+        );
     }
 
     #[test]

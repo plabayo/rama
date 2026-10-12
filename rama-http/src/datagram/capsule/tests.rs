@@ -352,3 +352,32 @@ fn skipped_input_is_released_once_consumed() {
         assert_eq!(dropped.load(Ordering::Acquire), 1);
     }
 }
+
+#[test]
+fn fragmented_value_storage_follows_arrival() {
+    const LEN: usize = 60_000;
+    let mut decoder = CapsuleDecoder::new(CapsuleConfig {
+        max_datagram_size: LEN,
+        ..config(UnknownCapsules::Skip)
+    });
+    let wire = capsule(CapsuleType::DATAGRAM, &[7; LEN]);
+    let (head, rest) = wire.split_at(wire.len() - (LEN - 1));
+    decoder.feed(Bytes::copy_from_slice(head)).unwrap();
+    assert_matches!(decoder.poll(), Ok(None));
+    // A declared length alone must not size the buffer.
+    assert!(
+        decoder.value.capacity() < 1024,
+        "{}",
+        decoder.value.capacity()
+    );
+
+    let mut datagram = None;
+    for chunk in rest.chunks(700) {
+        decoder.feed(Bytes::copy_from_slice(chunk)).unwrap();
+        while let Some(event) = decoder.poll().unwrap() {
+            datagram = Some(event);
+        }
+        assert!(decoder.value.capacity() <= 2 * LEN);
+    }
+    assert_matches!(datagram, Some(CapsuleEvent::Datagram(value)) if value.len() == LEN);
+}

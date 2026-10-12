@@ -2,7 +2,7 @@ use std::{
     cmp,
     collections::{BTreeMap, VecDeque},
     mem,
-    ops::{Bound, Index, IndexMut, Range},
+    ops::{Index, IndexMut, Range},
 };
 
 use rama_core::telemetry::tracing::trace;
@@ -35,10 +35,9 @@ pub(super) struct PacketSpace {
     /// The largest packet number the remote peer acknowledged in an ACK frame.
     pub(super) largest_acked_packet: Option<u64>,
     pub(super) largest_acked_packet_sent: Instant,
-    /// The highest-numbered ACK-eliciting packet we've sent
-    pub(super) largest_ack_eliciting_sent: u64,
-    /// Number of packets in `sent_packets` with numbers above `largest_ack_eliciting_sent`
-    pub(super) unacked_non_ack_eliciting_tail: u64,
+    /// Numbers of the non-ACK-eliciting packets sent, oldest first; acknowledged or lost ones
+    /// leave only when they reach the front.
+    pub(super) non_ack_eliciting_sent: VecDeque<u64>,
     /// Transmitted but not acked
     // We use a BTreeMap here so we can efficiently query by range on ACK and for loss detection
     pub(super) sent_packets: BTreeMap<u64, SentPacket>,
@@ -84,8 +83,7 @@ impl PacketSpace {
             next_packet_number: 0,
             largest_acked_packet: None,
             largest_acked_packet_sent: now,
-            largest_ack_eliciting_sent: 0,
-            unacked_non_ack_eliciting_tail: 0,
+            non_ack_eliciting_sent: VecDeque::new(),
             sent_packets: BTreeMap::new(),
             ecn_counters: frame::EcnCounts::ZERO,
             ecn_feedback: frame::EcnCounts::ZERO,
@@ -217,63 +215,32 @@ impl PacketSpace {
     }
 
     /// Stop tracking sent packet `number`, and return what we knew about it
-    #[expect(
-        clippy::unwrap_used,
-        reason = "the tail counter is incremented in `sent` for every non-ack-eliciting packet after the last ack-eliciting one and decremented only here, when such a packet is removed"
-    )]
     pub(super) fn take(&mut self, number: u64) -> Option<SentPacket> {
-        let packet = self.sent_packets.remove(&number)?;
-        if !packet.ack_eliciting && number > self.largest_ack_eliciting_sent {
-            self.unacked_non_ack_eliciting_tail =
-                self.unacked_non_ack_eliciting_tail.checked_sub(1).unwrap();
-        }
-        Some(packet)
+        self.sent_packets.remove(&number)
     }
 
     /// May return a packet that should be forgotten
     pub(super) fn sent(&mut self, number: u64, packet: SentPacket) -> Option<SentPacket> {
-        // Retain state for at most this many non-ACK-eliciting packets sent after the most recently
-        // sent ACK-eliciting packet. We're never guaranteed to receive an ACK for those, and we
-        // can't judge them as lost without an ACK, so to limit memory in applications which receive
-        // packets but don't send ACK-eliciting data for long periods use we must eventually start
-        // forgetting about them, although it might also be reasonable to just kill the connection
-        // due to weird peer behavior.
-        const MAX_UNACKED_NON_ACK_ELICTING_TAIL: u64 = 1_000;
+        // Only a later acknowledgement retires these, so a peer that acknowledges nothing would
+        // otherwise pin every ACK-only packet, however many ack-eliciting ones go out between.
+        const MAX_UNACKED_NON_ACK_ELICITING: usize = 1_000;
 
         let mut forgotten = None;
-        if packet.ack_eliciting {
-            self.unacked_non_ack_eliciting_tail = 0;
-            self.largest_ack_eliciting_sent = number;
-        } else if self.unacked_non_ack_eliciting_tail > MAX_UNACKED_NON_ACK_ELICTING_TAIL {
-            #[expect(
-                clippy::unwrap_used,
-                reason = "the tail counter exceeds MAX_UNACKED_NON_ACK_ELICTING_TAIL only while that many non-ack-eliciting packets remain in `sent_packets` above `largest_ack_eliciting_sent`"
-            )]
-            let oldest_after_ack_eliciting = *self
-                .sent_packets
-                .range((
-                    Bound::Excluded(self.largest_ack_eliciting_sent),
-                    Bound::Unbounded,
-                ))
-                .next()
-                .unwrap()
-                .0;
-            // Per https://www.rfc-editor.org/rfc/rfc9000.html#name-frames-and-frame-types,
-            // non-ACK-eliciting packets must only contain PADDING, ACK, and CONNECTION_CLOSE
-            // frames, which require no special handling on ACK or loss beyond removal from
-            // in-flight counters if padded.
-            #[expect(
-                clippy::unwrap_used,
-                reason = "the key was just read from `sent_packets`"
-            )]
-            let packet = self
-                .sent_packets
-                .remove(&oldest_after_ack_eliciting)
-                .unwrap();
-            debug_assert!(!packet.ack_eliciting);
-            forgotten = Some(packet);
-        } else {
-            self.unacked_non_ack_eliciting_tail += 1;
+        if !packet.ack_eliciting {
+            if self.non_ack_eliciting_sent.len() >= MAX_UNACKED_NON_ACK_ELICITING
+                && let Some(oldest) = self.non_ack_eliciting_sent.pop_front()
+                && self
+                    .sent_packets
+                    .get(&oldest)
+                    .is_some_and(|sent| !sent.ack_eliciting)
+            {
+                // Per https://www.rfc-editor.org/rfc/rfc9000.html#name-frames-and-frame-types,
+                // non-ACK-eliciting packets must only contain PADDING, ACK, and CONNECTION_CLOSE
+                // frames, which require no special handling on ACK or loss beyond removal from
+                // in-flight counters if padded.
+                forgotten = self.sent_packets.remove(&oldest);
+            }
+            self.non_ack_eliciting_sent.push_back(number);
         }
 
         self.sent_packets.insert(number, packet);
@@ -984,6 +951,71 @@ const MAX_ACK_BLOCKS: usize = 64;
 #[cfg(test)]
 mod test {
     use super::*;
+
+    fn sent_packet(now: Instant, ack_eliciting: bool) -> SentPacket {
+        SentPacket {
+            path_generation: 0,
+            time_sent: now,
+            size: 0,
+            ack_eliciting,
+            is_0rtt: false,
+            is_mtu_probe_packet: false,
+            largest_acked: None,
+            retransmits: ThinRetransmits::default(),
+            stream_frames: frame::StreamMetaVec::new(),
+        }
+    }
+
+    #[test]
+    fn unacked_non_ack_eliciting_packets_stay_bounded() {
+        // A peer that acknowledges nothing, prompting ACK-only packets with the odd ack-eliciting
+        // packet in between: each gap is short, the total is not.
+        let now = Instant::now();
+        let mut space = PacketSpace::new(now);
+        let mut number = 0;
+        for _ in 0..50 {
+            space.sent(number, sent_packet(now, true));
+            number += 1;
+            for _ in 0..500 {
+                space.sent(number, sent_packet(now, false));
+                number += 1;
+            }
+        }
+        let retained = |space: &PacketSpace, ack_eliciting: bool| {
+            space
+                .sent_packets
+                .values()
+                .filter(|sent| sent.ack_eliciting == ack_eliciting)
+                .count()
+        };
+        assert_eq!(retained(&space, false), 1_000);
+        assert_eq!(
+            retained(&space, true),
+            50,
+            "ack-eliciting packets are never forgotten"
+        );
+        assert!(space.non_ack_eliciting_sent.len() <= 1_000);
+
+        // Packets acknowledged meanwhile free their slot without anything else being forgotten.
+        let acked: Vec<u64> = space
+            .sent_packets
+            .iter()
+            .filter(|(_, sent)| !sent.ack_eliciting)
+            .map(|(&pn, _)| pn)
+            .take(10)
+            .collect();
+        for pn in acked {
+            assert!(space.take(pn).is_some());
+        }
+        for _ in 0..10 {
+            assert!(space.sent(number, sent_packet(now, false)).is_none());
+            number += 1;
+        }
+        assert_eq!(retained(&space, false), 1_000);
+        assert!(space.sent(number, sent_packet(now, false)).is_some());
+        assert_eq!(retained(&space, false), 1_000);
+        assert_eq!(retained(&space, true), 50);
+    }
 
     #[test]
     fn sanity() {
