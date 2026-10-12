@@ -196,10 +196,14 @@ not be kept in sync with upstream — they are now part of `rama`.
 
 ## Relative Forks
 
-- <https://github.com/quinn-rs/quinn/tree/d9c8c4c695fc64292d9b117844ea6924ca0d0815/quinn-udp>
+- <https://github.com/quinn-rs/quinn/tree/48854d48635875d259a95973cc0575db8c1792a4/quinn-udp>
   - Generic UDP socket code adapted for Rama.
+  - reviewed against upstream `main` (`48854d4`, 2026-10-12): not carried over are the opt-in
+    Linux transport-error queue (`IP_RECVERR` stays off), the WASI backend, and building the
+    Windows socket state before `bind`; truncated control data marks the datagram truncated
+    (so it is dropped) instead of failing the socket.
   - License:
-    - Original: <https://github.com/quinn-rs/quinn/blob/d9c8c4c695fc64292d9b117844ea6924ca0d0815/LICENSE-MIT>
+    - Original: <https://github.com/quinn-rs/quinn/blob/48854d48635875d259a95973cc0575db8c1792a4/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/quinn-udp](./licenses/quinn-udp)
 - <https://github.com/tokio-rs/axum/tree/e57b547eb95de74b73b34719dd5926254a085634>

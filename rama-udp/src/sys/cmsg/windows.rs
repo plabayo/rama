@@ -25,19 +25,24 @@ impl MsgHdr for WinSock::WSAMSG {
         }
     }
 
-    fn cmsg_nxt_hdr(&self, cmsg: &Self::ControlMessage) -> *mut Self::ControlMessage {
-        let Some(next) = (cmsg as *const _ as usize).checked_add(cmsghdr_align(cmsg.cmsg_len))
+    unsafe fn cmsg_nxt_hdr(&self, cmsg: *const Self::ControlMessage) -> *mut Self::ControlMessage {
+        // SAFETY: the caller guarantees that `cmsg` points to an initialized header.
+        let len = unsafe { (*cmsg).cmsg_len };
+        let offset = cmsghdr_align(len);
+        let Some(next_end) = cmsg
+            .addr()
+            .checked_add(offset)
+            .and_then(|next| next.checked_add(size_of::<WinSock::CMSGHDR>()))
         else {
             return ptr::null_mut();
         };
-        let Some(next_end) = next.checked_add(size_of::<WinSock::CMSGHDR>()) else {
-            return ptr::null_mut();
-        };
-        let max = self.Control.buf as usize + self.Control.len as usize;
+        let max = self.Control.buf.addr() + self.Control.len as usize;
         if next_end > max {
             ptr::null_mut()
         } else {
-            next as *mut WinSock::CMSGHDR
+            // Pointer arithmetic keeps the control buffer's provenance, which an
+            // integer round-trip would lose.
+            cmsg.wrapping_byte_add(offset).cast_mut()
         }
     }
 
@@ -67,8 +72,10 @@ impl CMsgHdr for WinSock::CMSGHDR {
         cmsgdata_align(size_of::<Self>() + cmsghdr_align(length))
     }
 
-    fn cmsg_data(&self) -> *mut c_uchar {
-        (self as *const _ as usize + cmsgdata_align(size_of::<Self>())) as *mut c_uchar
+    unsafe fn cmsg_data(this: *const Self) -> *mut c_uchar {
+        this.wrapping_byte_add(cmsgdata_align(size_of::<Self>()))
+            .cast::<c_uchar>()
+            .cast_mut()
     }
 
     fn set(&mut self, level: c_int, ty: c_int, len: usize) {

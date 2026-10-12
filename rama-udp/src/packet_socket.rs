@@ -665,9 +665,12 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
+    /// The segmentation probe sets a socket-wide segment size before undoing
+    /// it. A datagram larger than that probe size must still leave as one
+    /// datagram: a receive that coalesces would otherwise reassemble the
+    /// pieces and only the missing segment size would tell.
     #[tokio::test]
-    async fn windows_gso_probe_preserves_ordinary_datagrams() {
+    async fn gso_probe_preserves_ordinary_datagrams() {
         let (mut receiver, sender_socket) = bind_pair(false).await;
         let destination = receiver.local_addr().unwrap();
         let payload = vec![0x5a; 2_000];
@@ -680,6 +683,8 @@ mod tests {
         let mut buffer = vec![0; payload.len()];
         let metadata = receiver.recv(&mut buffer).await.unwrap();
         assert_eq!(metadata.len, payload.len());
+        assert_eq!(metadata.segment_size, None);
+        assert!(!metadata.truncated);
         assert_eq!(buffer, payload);
     }
 
