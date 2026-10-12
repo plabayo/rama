@@ -47,10 +47,10 @@ as a distant relative.
     - Original: <https://github.com/hyperium/http/blob/c6af28bfd8ef171a7f8c61e551d3ee68db4ca577/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/http](./licenses/http)
-- http-body: <https://github.com/hyperium/http-body/tree/768504721c1e27c598cf1d4e06e8cd5730f97d60>
+- http-body: <https://github.com/hyperium/http-body/tree/929ff1c456c6cfe7a984e8d4bd70f506cbd9c78c>
   - forked into `rama-http-types` (`http_body`) so `Frame` trailers use rama's `HeaderMap`
   - License:
-    - Original: <https://github.com/hyperium/http-body/blob/768504721c1e27c598cf1d4e06e8cd5730f97d60/LICENSE>
+    - Original: <https://github.com/hyperium/http-body/blob/929ff1c456c6cfe7a984e8d4bd70f506cbd9c78c/LICENSE>
     - Type: MIT
     - Copy: [./licenses/http-body](./licenses/http-body)
 - http-body-util: <https://github.com/hyperium/http-body/tree/07838bd97b714b95bd783cd695ebf211b67545c4>
