@@ -241,17 +241,13 @@ fn build_response(output: FileOpened) -> Response {
 }
 
 pub(super) fn should_return_not_found(err: &io::Error) -> bool {
-    #[cfg(target_family = "unix")]
-    // 20 = libc::ENOTDIR => "not a directory".
-    // When `io_error_more` lands, this can be changed
-    // to checking for `io::ErrorKind::NotADirectory`.
-    // https://github.com/rust-lang/rust/issues/86442
-    let error_is_not_a_directory = err.raw_os_error() == Some(20);
-    #[cfg(not(target_family = "unix"))]
-    let error_is_not_a_directory = false;
-
+    // a file component used as a directory, or a name the filesystem cannot hold
+    // (e.g. too long), can never refer to a servable resource
     matches!(
         err.kind(),
-        io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
-    ) || error_is_not_a_directory
+        io::ErrorKind::NotFound
+            | io::ErrorKind::PermissionDenied
+            | io::ErrorKind::NotADirectory
+            | io::ErrorKind::InvalidFilename
+    )
 }
