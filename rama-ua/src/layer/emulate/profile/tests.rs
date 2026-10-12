@@ -1,4 +1,11 @@
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{
+    convert::Infallible,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use rama_core::{
     ServiceInput,
@@ -11,7 +18,10 @@ use rama_http::{
 };
 use rama_net::{
     Protocol,
-    client::{ConnectRequest, EstablishedClientConnection, pool::ConnectionReuse},
+    client::{
+        ConnectRequest, EstablishedClientConnection,
+        pool::{BasicConnIdentifier, ConnectionReuse, MultiplexPool, PooledConnector},
+    },
     tls::TlsAlpn,
 };
 use rama_utils::octets::kib;
@@ -376,6 +386,73 @@ async fn connect_modifier_prepares_before_connect_and_publishes_reuse() {
         .get_ref::<ConnectionReuse>()
         .unwrap();
     assert!(reuse.matches(established.input.extensions()));
+}
+
+#[tokio::test]
+async fn profile_layer_reuses_the_connection_selected_on_the_first_pool_miss() {
+    let connector_calls = Arc::new(AtomicUsize::new(0));
+    let transport = service_fn({
+        let connector_calls = Arc::clone(&connector_calls);
+        move |input: ConnectRequest| {
+            let connector_calls = Arc::clone(&connector_calls);
+            async move {
+                connector_calls.fetch_add(1, Ordering::Relaxed);
+                let conn = ServiceInput::new(());
+                conn.extensions().insert(TargetHttpVersion(Version::HTTP_2));
+                Ok::<_, rama_net::client::ConnectionError>(EstablishedClientConnection {
+                    input,
+                    conn,
+                })
+            }
+        }
+    });
+    let connector = Arc::new(PooledConnector::new(
+        UserAgentEmulateHttpConnectModifier::new(transport),
+        MultiplexPool::new(),
+        BasicConnIdentifier::new(),
+    ));
+    let connect = service_fn(move |request: Request<()>| {
+        let connector = Arc::clone(&connector);
+        async move {
+            let input = ConnectRequest::new("example.com:443".parse().unwrap())
+                .with_application_protocol(Protocol::HTTPS);
+            input
+                .extensions()
+                .insert(TargetHttpVersion(Version::HTTP_2));
+            input.extensions().insert(
+                request
+                    .extensions()
+                    .get_ref::<EmulationContext>()
+                    .unwrap()
+                    .clone(),
+            );
+
+            let established = connector.serve(input).await.unwrap();
+            let selection = established
+                .conn
+                .extensions()
+                .get_ref::<ConnectionSelection>()
+                .unwrap()
+                .clone();
+            Ok::<_, Infallible>(selection)
+        }
+    });
+    let service = ProfileEmulateLayer::new(database())
+        .with_selector(ProfileSelector {
+            client: Some("test-browser".into()),
+            ..ProfileSelector::default()
+        })
+        .with_seed(ProfileSeed([1; 32]))
+        .with_connection_key(DrawKey([2; 32]))
+        .with_request_key(DrawKey([3; 32]))
+        .into_layer(connect);
+
+    let first = service.serve(h2_request()).await.unwrap();
+    let second = service.serve(h2_request()).await.unwrap();
+
+    assert_eq!(connector_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(second.variant, first.variant);
+    assert_eq!(second.draw, first.draw);
 }
 
 #[tokio::test]

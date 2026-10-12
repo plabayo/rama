@@ -213,17 +213,17 @@ pub struct RequestSelection {
 }
 
 #[derive(Debug, Clone)]
-/// Pool reuse policy binding a connection to its selected profile variant.
+/// Pool reuse policy binding a connection to its profile admission scope.
 pub struct ProfileConnectionReuse {
     profile: ValueId,
-    variant: ValueId,
+    connection_pin: Option<ValueId>,
     negotiated: Version,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct ProfileReuseKey {
     profile: ValueId,
-    variant: ValueId,
+    connection_pin: Option<ValueId>,
 }
 
 #[derive(Debug, Clone)]
@@ -777,10 +777,10 @@ fn variant_weight(variants: &[&AnalyzedCaptureVariant]) -> Result<u64, Selection
 
 impl ProfileConnectionReuse {
     #[must_use]
-    pub fn new(ticket: &ConnectionSelection, negotiated: Version) -> Self {
+    pub fn new(context: &EmulationContext, negotiated: Version) -> Self {
         Self {
-            profile: ticket.profile,
-            variant: ticket.variant,
+            profile: context.selected.profile_id(),
+            connection_pin: context.pins.connection,
             negotiated,
         }
     }
@@ -803,26 +803,21 @@ impl ConnectionReusePolicy for ProfileConnectionReuse {
     fn connection_key(&self) -> Option<ReuseKey> {
         Some(ReuseKey::new(ProfileReuseKey {
             profile: self.profile,
-            variant: self.variant,
+            connection_pin: self.connection_pin,
         }))
     }
 
     fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
         let context = input.get_ref::<EmulationContext>()?;
-        let ticket = input.get_ref::<ConnectionSelection>()?;
-        if ticket.profile != context.selected.profile_id()
+        if self.profile != context.selected.profile_id()
             || !protocol_supported(context.selected.required, self.negotiated)
-            || context
-                .pins
-                .connection
-                .is_some_and(|pin| pin != ticket.variant)
         {
             return None;
         }
 
         Some(ReuseKey::new(ProfileReuseKey {
-            profile: ticket.profile,
-            variant: ticket.variant,
+            profile: context.selected.profile_id(),
+            connection_pin: context.pins.connection,
         }))
     }
 }

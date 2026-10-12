@@ -709,16 +709,16 @@ fn reuse_matches_profile_protocol_and_optional_connection_pin() {
     let ticket = selected
         .connection(&context, ProfileSeed([31; 32]), DrawKey([33; 32]))
         .unwrap();
-    let established = Extensions::new();
-    ProfileConnectionReuse::new(&ticket, Version::HTTP_3).publish(&established);
-
-    let input = Extensions::new();
-    input.insert(selected.clone().emulation_context(
+    let emulation = selected.clone().emulation_context(
         ProfileSeed([31; 32]),
         DrawKey([34; 32]),
         DrawKey([35; 32]),
-    ));
-    input.insert(ticket.clone());
+    );
+    let established = Extensions::new();
+    ProfileConnectionReuse::new(&emulation, Version::HTTP_3).publish(&established);
+
+    let input = Extensions::new();
+    input.insert(emulation);
     assert!(
         established
             .get_ref::<ConnectionReuse>()
@@ -734,7 +734,6 @@ fn reuse_matches_profile_protocol_and_optional_connection_pin() {
         DrawKey([34; 32]),
         DrawKey([35; 32]),
     ));
-    input.insert(ticket.clone());
     assert!(
         !established
             .get_ref::<ConnectionReuse>()
@@ -750,7 +749,6 @@ fn reuse_matches_profile_protocol_and_optional_connection_pin() {
         DrawKey([34; 32]),
         DrawKey([35; 32]),
     ));
-    input.insert(ticket.clone());
     assert!(
         !established
             .get_ref::<ConnectionReuse>()
@@ -758,15 +756,34 @@ fn reuse_matches_profile_protocol_and_optional_connection_pin() {
             .matches(&input)
     );
 
+    let mut pinned = (*selected).clone();
+    pinned.pins.connection = Some(ticket.variant);
+    let pinned = Arc::new(pinned);
+    let pinned_context = pinned.clone().emulation_context(
+        ProfileSeed([31; 32]),
+        DrawKey([34; 32]),
+        DrawKey([35; 32]),
+    );
+    let established = Extensions::new();
+    ProfileConnectionReuse::new(&pinned_context, Version::HTTP_3).publish(&established);
+
     let input = Extensions::new();
-    input.insert(selected.emulation_context(
+    input.insert(pinned_context);
+    assert!(
+        established
+            .get_ref::<ConnectionReuse>()
+            .unwrap()
+            .matches(&input)
+    );
+
+    let mut different_pin = (*pinned).clone();
+    different_pin.pins.connection = Some(ValueId([55; 32]));
+    let input = Extensions::new();
+    input.insert(Arc::new(different_pin).emulation_context(
         ProfileSeed([31; 32]),
         DrawKey([34; 32]),
         DrawKey([35; 32]),
     ));
-    let mut other_variant = ticket;
-    other_variant.variant = ValueId([55; 32]);
-    input.insert(other_variant);
     assert!(
         !established
             .get_ref::<ConnectionReuse>()

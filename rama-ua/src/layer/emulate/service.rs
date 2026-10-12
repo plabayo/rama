@@ -346,21 +346,23 @@ where
                         ConnectionErrorKind::Protocol,
                     )
                 })?;
-            req.extensions()
+            let context = req
+                .extensions()
                 .get_ref::<EmulationContext>()
                 .ok_or_else(|| {
                     ConnectionError::local(
                         BoxError::from_static_str("captured profile emulation context is missing"),
                         ConnectionErrorKind::Internal,
                     )
-                })?
+                })?;
+            context
                 .selected
                 .validate_negotiated_protocol(version)
                 .map_err(|error| {
                     ConnectionError::application(error, ConnectionErrorKind::Protocol)
                 })?;
-            conn.extensions().insert(selection.clone());
-            ProfileConnectionReuse::new(&selection, version).publish(conn.extensions());
+            conn.extensions().insert(selection);
+            ProfileConnectionReuse::new(context, version).publish(conn.extensions());
         }
 
         match req
