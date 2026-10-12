@@ -30,7 +30,7 @@ use rama_quic::{
 };
 use rama_quic_proto::{Dir, coding::Codec};
 use rama_utils::{
-    octets::{kib, mib},
+    octets::{kib, kib_u64, mib},
     reactive::{Change, ChangeListener, ChangeSignal},
 };
 use std::{
@@ -110,6 +110,23 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Opt into receive limits used by captured Chrome HTTP/3 profiles:
+    /// a 64 KiB QPACK table, 100 blocked streams and 256 KiB decoded sections.
+    ///
+    /// This sets these three budgets; other resource and capability limits remain
+    /// configurable independently. Applying a profile still checks its values
+    /// against the budgets. Ordinary clients keep the smaller default limits.
+    /// Pass this configuration to `Http3ConnectorBuilder::with_config` before
+    /// selecting browser profiles; profiles above these limits need explicit
+    /// application-specific budgets.
+    #[must_use]
+    pub fn with_browser_emulation_limits(mut self) -> Self {
+        self.decoder.max_table_capacity = kib_u64(64);
+        self.decoder.max_blocked_streams = 100;
+        self.decoder.max_field_section_size = kib(256);
+        self
+    }
+
     /// Apply literal client SETTINGS within this configuration's receive budgets.
     ///
     /// Omitted QPACK values mean zero. The profile can lower configured limits,
@@ -875,6 +892,17 @@ impl Shared {
 
     /// Wait for the peer's SETTINGS, which arrive once at the start of its control stream.
     pub(crate) async fn peer_settings(&self) -> Result<PeerSettings, Error> {
+        self.read_peer_settings(|settings| PeerSettings {
+            extended_connect: settings.enable_connect_protocol(),
+        })
+        .await
+    }
+
+    pub(crate) async fn peer_settings_snapshot(&self) -> Result<Settings, Error> {
+        self.read_peer_settings(Clone::clone).await
+    }
+
+    async fn read_peer_settings<T>(&self, read: impl FnOnce(&Settings) -> T) -> Result<T, Error> {
         loop {
             let ready = self.settings_ready.notified();
             let mut ready = pin!(ready);
@@ -882,9 +910,7 @@ impl Shared {
             {
                 let state = self.state.lock();
                 if let Some(settings) = state.control.settings() {
-                    return Ok(PeerSettings {
-                        extended_connect: settings.enable_connect_protocol(),
-                    });
+                    return Ok(read(settings));
                 }
                 if let Some(error) = state.error {
                     return Err(error);
@@ -937,6 +963,33 @@ impl Shared {
             self.state.lock().decoder.take_field_observation(id);
         }
         result
+    }
+
+    pub(crate) async fn wait_priority(
+        &self,
+        id: u64,
+        last: Option<Priority>,
+    ) -> Result<Priority, Error> {
+        loop {
+            let progress = self.progress.notified();
+            let mut progress = pin!(progress);
+            progress.as_mut().enable();
+            if let Some(error) = self.error() {
+                return Err(error);
+            }
+            let current = self.schedule.current_priority(id).ok_or_else(|| {
+                Error::stream(Code::H3_REQUEST_CANCELLED, "priority request completed")
+            })?;
+            if Some(current) != last {
+                return Ok(current);
+            }
+            progress.await;
+        }
+    }
+
+    pub(crate) fn override_priority(&self, id: u64, priority: Priority) {
+        self.schedule.override_priority(id, priority);
+        self.progress.notify_waiters();
     }
 
     pub(crate) async fn decode_request(&self, id: u64, bytes: Bytes) -> Decoded {

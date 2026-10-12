@@ -13,7 +13,7 @@ use rama_http_types::{
     header::trailer::ForbiddenTrailers,
     proto::{
         ext::{HttpDatagrams, Protocol},
-        h3::{Code, FrameType, StreamType},
+        h3::{Code, FrameType, Settings, StreamType},
     },
 };
 use rama_net::uri::Uri;
@@ -21,7 +21,7 @@ use rama_quic_proto::{VarInt, coding::Codec as _};
 use tokio::sync::Semaphore;
 
 use super::{
-    Error, body,
+    Error, PriorityObserver, body,
     connection::{Config, Driver, Shared},
     control::Role,
     datagram::{Association, DatagramDrops, Semantics},
@@ -67,6 +67,16 @@ pub fn handshake(
 }
 
 impl Connection {
+    /// Wait for the peer's complete SETTINGS, preserving entry order and unknown IDs.
+    ///
+    /// Run the driver concurrently and apply the caller's handshake deadline.
+    /// Cancelling this wait leaves the connection and other waiters intact. A
+    /// connection failure before SETTINGS returns an error. The snapshot is
+    /// cloned only when requested; observation need not be enabled.
+    pub async fn peer_settings(&self) -> Result<Settings, Error> {
+        self.shared.peer_settings_snapshot().await
+    }
+
     #[cfg(test)]
     pub(crate) fn shared(&self) -> &Arc<Shared> {
         &self.shared
@@ -236,6 +246,24 @@ pub struct SendResponse {
 }
 
 impl SendResponse {
+    /// Reset the response and stop the request upload with the same application code.
+    ///
+    /// The upload is stopped even while another owner retains its request body.
+    /// Unknown HTTP/3 codes are preserved when they fit QUIC's integer range.
+    /// Use `H3_REQUEST_REJECTED` only when the application has not processed the
+    /// request, since that code allows the peer to retry it.
+    pub fn reset(mut self, code: Code) -> Result<(), Error> {
+        let wire_code = VarInt::from_u64(code.value()).map_err(|_error| {
+            Error::stream(
+                Code::H3_INTERNAL_ERROR,
+                "reset code exceeds QUIC integer range",
+            )
+        })?;
+        self.writer.abort_handle().abort(wire_code);
+        self.writer.reset(code);
+        Ok(())
+    }
+
     async fn flush(&mut self, finish: bool) -> Result<(), Error> {
         let push = self.outgoing_push.as_ref().map(super::push::Lease::id);
         let shared = self.shared.clone();
@@ -363,9 +391,16 @@ impl SendResponse {
         })
     }
 
+    /// Observe current and future effective priorities while relaying this response.
+    /// Cancel the observer's pending wait when this response completes.
+    #[must_use]
+    pub fn peer_priority(&self) -> PriorityObserver {
+        PriorityObserver::new(&self.shared, self.id)
+    }
+
     /// Override peer priority using application knowledge.
     pub fn set_priority(&mut self, priority: Priority) {
-        self.shared.schedule.override_priority(self.id, priority);
+        self.shared.override_priority(self.id, priority);
     }
 
     /// Send a non-101 informational response before the final response.

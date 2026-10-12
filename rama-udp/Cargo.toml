@@ -48,7 +48,7 @@ windows-sys = { workspace = true, features = [
 
 [dev-dependencies]
 parking_lot = { workspace = true }
-tokio = { workspace = true, features = ["macros", "net", "rt"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "test-util"] }
 
 [lints]
 workspace = true

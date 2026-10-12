@@ -49,6 +49,11 @@ pub enum ProfilePreservationDifference {
     /// No capture proves how to lay out several caller cookie pairs; retain
     /// the caller's fields without claiming an exact captured layout.
     UnknownCookieLayout,
+    /// The selected capture has no wire compiler in this connector. Its presence
+    /// in connection extensions does not establish that it was applied.
+    UnsupportedConnectionComponent {
+        component: CapturedSlotKind,
+    },
     CallerValueOverride {
         name: HeaderName,
         occurrence: u32,
@@ -125,6 +130,8 @@ pub enum ProfileReplayError {
         occurrence: u32,
     },
     IncompatibleH2ClientParameter(H2ClientParameter),
+    /// Strict replay cannot continue without applying this selected component.
+    UnsupportedConnectionComponent(CapturedSlotKind),
     /// Strict replay needs layout evidence before changing cookie field boundaries.
     UnknownCookieLayout,
 }
@@ -133,6 +140,10 @@ impl fmt::Display for ProfileReplayError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Data(error) => error.fmt(f),
+            Self::UnsupportedConnectionComponent(component) => write!(
+                f,
+                "selected connection component {component:?} has no supported wire replay"
+            ),
             Self::UnknownCookieLayout => {
                 f.write_str("captured profile has no cookie layout evidence")
             }

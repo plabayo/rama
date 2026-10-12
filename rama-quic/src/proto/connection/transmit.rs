@@ -277,7 +277,7 @@ impl Connection {
                 // Finish current packet
                 if let Some(mut builder) = builder_storage.take() {
                     if pad_datagram {
-                        builder.pad_to(MIN_INITIAL_SIZE);
+                        builder.pad_to(self.config.min_mtu);
                     }
 
                     if num_datagrams > 1 || pad_datagram_to_mtu {
@@ -557,13 +557,14 @@ impl Connection {
                     .wire
                     .packetization
                     .initial_datagram_size()
+                    .max(self.config.min_mtu)
                     .max(MIN_INITIAL_SIZE);
                 match self.config.wire.packetization.padding() {
                     // Zero bytes after the last packet bring the datagram up to size; a
                     // receiver drops them as not being a packet (RFC 9000 §12.2). The
-                    // protocol minimum stays inside the packet.
+                    // configured minimum stays inside the packet.
                     PaddingPlacement::DatagramTail => {
-                        builder.pad_to(MIN_INITIAL_SIZE);
+                        builder.pad_to(self.config.min_mtu);
                         tail_to = Some((datagram_start + usize::from(size)).min(buf_capacity));
                     }
                     // `Frames`, and any future placement, pad inside the packet.

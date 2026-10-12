@@ -84,6 +84,17 @@ Rama includes a database of pre-configured profiles for common browsers and plat
 
 The emulation can be applied selectively based on the given input, allowing for sophisticated emulation strategies that can adapt to different scenarios or rotate between multiple profiles to avoid detection.
 
+### HTTP/3 profile budgets
+
+Browser profiles can advertise larger receive limits than ordinary clients.
+Configure the HTTP/3 connector with
+`Config::default().with_browser_emulation_limits()` to accept captured Chrome
+SETTINGS: a 64 KiB QPACK table, 100 blocked streams and 256 KiB decoded field
+sections. The connector rejects profiles above its configured budgets before
+connecting; larger profiles require explicit application budgets. Observation
+remains disabled unless requested. Reserved SETTINGS entries are generated for
+each connection draw while their captured positions are retained.
+
 ### Embedded Profile Data
 
 Rama includes an `embed-profiles` feature flag that, when enabled, embeds a collection of pre-configured user agent profiles directly into the binary. This eliminates the need for external profile files and ensures that Rama has immediate access to a variety of emulation profiles.

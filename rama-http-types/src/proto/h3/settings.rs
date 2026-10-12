@@ -39,6 +39,13 @@ impl SettingId {
         Self(value)
     }
 
+    /// A reserved setting identifier from a 32-bit ordinal (RFC 9114 §11.2.2).
+    /// Every ordinal fits the QUIC integer range; callers choose its distribution.
+    #[must_use]
+    pub const fn reserved(ordinal: u32) -> Self {
+        Self(Self::FIRST_RESERVED.0 + Self::RESERVED_INTERVAL * ordinal as u64)
+    }
+
     /// The raw identifier value.
     #[must_use]
     pub const fn value(self) -> u64 {

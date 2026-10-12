@@ -44,6 +44,8 @@ mod proto;
 pub mod qlog;
 pub mod relay;
 
+pub mod route;
+
 // Engine types that are part of the public transport API. The runtime facade
 // (endpoints, connections, streams) is Rama-owned and lives in `driver`.
 #[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]

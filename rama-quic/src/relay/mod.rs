@@ -13,71 +13,100 @@ use std::{
 };
 
 use rama_core::{
+    Service,
     error::{BoxError, BoxErrorExt as _},
     futures::{StreamExt as _, stream::FuturesUnordered},
+    io::BridgeIo,
 };
 use rama_quic_proto::{Side, VarInt};
+use rama_utils::{macros::generate_set_and_with, octets::kib};
 
 use crate::{Connection, ConnectionError, ReadError, RecvStream, SendStream, WriteError};
 
-/// Resource and cancellation policy for one pair of dedicated connections.
+/// Relay dedicated QUIC connections through Rama's ordinary service boundary.
+///
+/// The input is [`BridgeIo<Connection, Connection>`]: ingress is the server
+/// connection and egress is the client connection. This service forwards streams
+/// and optional connection datagrams after both handshakes complete; interception
+/// and certificate negotiation belong to the preceding handshake service.
+/// Ordinary QUIC clients and servers do not construct this opt-in relay.
 #[derive(Debug, Clone, Copy)]
-pub struct RelayConfig {
+pub struct QuicRelay {
     /// Maximum active or opening streams in each initiator/direction class.
     /// There are four classes, so the total is at most four times this value.
-    pub streams_per_class: NonZeroUsize,
+    streams_per_class: NonZeroUsize,
     /// Maximum bytes retained by each copy direction outside the QUIC engine.
-    pub chunk_bytes: NonZeroUsize,
+    chunk_bytes: NonZeroUsize,
     /// Forward connection datagrams in both directions. Both hops must negotiate
     /// reception; an oversized datagram fails explicitly rather than truncating.
-    pub datagrams: bool,
+    datagrams: bool,
     /// Application error used when the relay itself fails or is cancelled.
     /// A peer's application close is forwarded with its original code and reason.
-    pub failure_code: VarInt,
+    failure_code: VarInt,
 }
 
-impl RelayConfig {
-    /// Relay dedicated, established connections until either connection ends.
-    ///
-    /// `downstream` is a server connection and `upstream` a client connection.
-    /// Both hops must negotiate the same nonempty ALPN. Do not consume their
-    /// streams or datagrams concurrently elsewhere. Configure receive datagram
-    /// advertisements to match this policy before establishing either hop. Neither
-    /// hop may have enabled early-data keys: this generic relay does not decide
-    /// application replay safety. Configure TLS early data off on both hops.
-    ///
-    /// Dropping this future closes both connections, including streams waiting
-    /// for remote credit. Connection-level transport errors are returned locally
-    /// and mapped to `failure_code` on the other hop; they are not fabricated as
-    /// transport errors belonging to that independent connection.
-    pub fn relay(
-        self,
-        downstream: Connection,
-        upstream: Connection,
-    ) -> impl Future<Output = Result<(), BoxError>> + Send {
-        let guard = CloseOnDrop {
-            downstream,
-            upstream,
-            code: self.failure_code,
-        };
-        // Own cancellation before the returned future is polled for the first time.
-        async move { self.run(guard).await }
+impl QuicRelay {
+    /// Create a relay with 32 streams per class, 16 KiB copy buffers and no
+    /// datagram forwarding. `failure_code` belongs to the carried application
+    /// protocol; QUIC has no universal application error code for relay failure.
+    #[must_use]
+    #[expect(clippy::expect_used, reason = "nonzero compile-time defaults")]
+    pub const fn new(failure_code: VarInt) -> Self {
+        Self {
+            streams_per_class: NonZeroUsize::new(32).expect("nonzero stream limit"),
+            chunk_bytes: NonZeroUsize::new(kib(16)).expect("nonzero copy buffer"),
+            datagrams: false,
+            failure_code,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Maximum active or opening streams in each of the four classes:
+        /// ingress/egress initiation, each uni/bidirectional. Credit-blocked
+        /// openings count toward this limit. At most four times this many stream
+        /// pairs are retained; accepting one class never starves another.
+        pub fn streams_per_class(mut self, limit: NonZeroUsize) -> Self {
+            self.streams_per_class = limit;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Maximum bytes in each copy buffer outside the QUIC engines. A uni
+        /// stream needs one buffer; a bidirectional stream needs two. All four
+        /// full stream classes therefore retain at most `6 * streams_per_class`
+        /// buffers. Engine flow-control budgets remain independently configured.
+        pub fn chunk_bytes(mut self, bytes: NonZeroUsize) -> Self {
+            self.chunk_bytes = bytes;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Forward native QUIC datagrams in both directions. Configure both
+        /// connections' receive advertisements consistently before handshaking.
+        /// Each forwarding direction retains at most one datagram; oversized
+        /// datagrams fail explicitly and are never truncated.
+        pub fn datagrams(mut self, enabled: bool) -> Self {
+            self.datagrams = enabled;
+            self
+        }
     }
 
     async fn run(self, guard: CloseOnDrop) -> Result<(), BoxError> {
-        let down = &guard.downstream;
-        let up = &guard.upstream;
-        if down.side() != Side::Server || up.side() != Side::Client {
+        let ingress = &guard.ingress;
+        let egress = &guard.egress;
+        if ingress.side() != Side::Server || egress.side() != Side::Client {
             return Err(BoxError::from_static_str(
                 "QUIC relay needs a server and a client connection",
             ));
         }
-        tokio::try_join!(down.handshake_confirmed(), up.handshake_confirmed())?;
-        let down_alpn = down
+        tokio::try_join!(ingress.handshake_confirmed(), egress.handshake_confirmed())?;
+        let down_alpn = ingress
             .handshake_data()
             .and_then(|tls| tls.application_layer_protocol)
             .filter(|protocol| !protocol.as_bytes().is_empty());
-        let up_alpn = up
+        let up_alpn = egress
             .handshake_data()
             .and_then(|tls| tls.application_layer_protocol)
             .filter(|protocol| !protocol.as_bytes().is_empty());
@@ -86,13 +115,13 @@ impl RelayConfig {
                 "QUIC relay negotiated application protocols differ or are absent",
             ));
         }
-        if down.early_data_keys_enabled() || up.early_data_keys_enabled() {
+        if ingress.early_data_keys_enabled() || egress.early_data_keys_enabled() {
             return Err(BoxError::from_static_str(
                 "QUIC relay requires early data disabled",
             ));
         }
         if self.datagrams
-            && [down, up]
+            && [ingress, egress]
                 .iter()
                 .any(|conn| !conn.datagram_receive_enabled() || conn.max_datagram_size().is_none())
         {
@@ -102,7 +131,7 @@ impl RelayConfig {
         }
 
         if !self.datagrams
-            && [down, up]
+            && [ingress, egress]
                 .iter()
                 .any(|conn| conn.datagram_receive_enabled())
         {
@@ -116,27 +145,27 @@ impl RelayConfig {
         tokio::select! {
             result = async {
                 tokio::try_join!(
-                    self.unidirectional(down, up),
-                    self.unidirectional(up, down),
-                    self.bidirectional(down, up),
-                    self.bidirectional(up, down),
-                    self.forward_datagrams(down, up),
-                    self.forward_datagrams(up, down),
+                    self.unidirectional(ingress, egress),
+                    self.unidirectional(egress, ingress),
+                    self.bidirectional(ingress, egress),
+                    self.bidirectional(egress, ingress),
+                    self.forward_datagrams(ingress, egress),
+                    self.forward_datagrams(egress, ingress),
                 )?;
                 Ok(())
             } => {
                 // A stream can observe the same peer close before closed() is
                 // polled. Preserve its application code in either scheduling order.
-                if let Some(reason) = down.close_reason() {
-                    propagate_close(up, reason, self.failure_code)
-                } else if let Some(reason) = up.close_reason() {
-                    propagate_close(down, reason, self.failure_code)
+                if let Some(reason) = ingress.close_reason() {
+                    propagate_close(egress, reason, self.failure_code)
+                } else if let Some(reason) = egress.close_reason() {
+                    propagate_close(ingress, reason, self.failure_code)
                 } else {
                     result
                 }
             },
-            reason = down.closed() => propagate_close(up, reason, self.failure_code),
-            reason = up.closed() => propagate_close(down, reason, self.failure_code),
+            reason = ingress.closed() => propagate_close(egress, reason, self.failure_code),
+            reason = egress.closed() => propagate_close(ingress, reason, self.failure_code),
         }
     }
 
@@ -190,16 +219,48 @@ impl RelayConfig {
     }
 }
 
+impl Service<BridgeIo<Connection, Connection>> for QuicRelay {
+    type Output = ();
+    type Error = BoxError;
+
+    /// Relay dedicated, established connections until either connection ends.
+    ///
+    /// `ingress` is a server connection and `egress` a client connection.
+    /// Both hops must negotiate the same nonempty ALPN. Do not consume their
+    /// streams or datagrams concurrently elsewhere. Configure receive datagram
+    /// advertisements to match this policy before establishing either hop. Neither
+    /// hop may have enabled early-data keys: this generic relay does not decide
+    /// application replay safety. Configure TLS early data off on both hops.
+    ///
+    /// Dropping this future closes both connections, including streams waiting
+    /// for remote credit. Connection-level transport errors are returned locally
+    /// and mapped to `failure_code` on the other hop; they are not fabricated as
+    /// transport errors belonging to that independent connection.
+    fn serve(
+        &self,
+        BridgeIo(ingress, egress): BridgeIo<Connection, Connection>,
+    ) -> impl Future<Output = Result<(), BoxError>> + Send + '_ {
+        let guard = CloseOnDrop {
+            ingress,
+            egress,
+            code: self.failure_code,
+        };
+        let relay = *self;
+        // Acquire cancellation ownership at invocation, before the first poll.
+        async move { relay.run(guard).await }
+    }
+}
+
 struct CloseOnDrop {
-    downstream: Connection,
-    upstream: Connection,
+    ingress: Connection,
+    egress: Connection,
     code: VarInt,
 }
 
 impl Drop for CloseOnDrop {
     fn drop(&mut self) {
-        self.downstream.close(self.code, b"QUIC relay ended");
-        self.upstream.close(self.code, b"QUIC relay ended");
+        self.ingress.close(self.code, b"QUIC relay ended");
+        self.egress.close(self.code, b"QUIC relay ended");
     }
 }
 

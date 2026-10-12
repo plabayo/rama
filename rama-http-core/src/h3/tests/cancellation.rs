@@ -20,7 +20,7 @@ use rama_http_types::{
     body::{Frame, util::BodyExt},
     proto::h3::{Code, FrameHeader, FrameType},
 };
-use rama_quic_proto::{TransportError, TransportErrorCode};
+use rama_quic_proto::{TransportError, TransportErrorCode, VarInt};
 use rama_utils::octets::kib;
 use std::{convert::Infallible, future::poll_fn, sync::Arc, task::Poll, time::Duration};
 use tokio::sync::{Semaphore, oneshot};
@@ -440,4 +440,51 @@ async fn bodyless_responses_retain_admission_until_fin_is_acknowledged() {
         .await
         .unwrap();
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn explicit_response_reset_stops_upload_while_application_holds_body() {
+    tokio::time::timeout(LIMIT, async {
+        for code in [
+            Code::H3_REQUEST_REJECTED,
+            Code::H3_REQUEST_CANCELLED,
+            Code::new(VarInt::MAX.into_inner()),
+        ] {
+            let pair = Pair::in_memory(None, None).await;
+            let (mut server, driver) =
+                server::handshake(pair.server.clone(), Config::default()).unwrap();
+            spawn(driver.run());
+            // Keep both upload and body open: dropping either must not be what
+            // eventually delivers STOP_SENDING to the client.
+            let (mut send, mut recv) = pair.client.open_bi().await.unwrap();
+            let mut encoder = Encoder::before_peer_settings(EncoderConfig::default());
+            let fields = encoder
+                .encode(
+                    u64::from(send.id()),
+                    [
+                        (":method", "POST"),
+                        (":scheme", "https"),
+                        (":authority", "localhost"),
+                        (":path", "/reset"),
+                    ],
+                )
+                .unwrap();
+            send.write_chunk(headers_frame(&fields)).await.unwrap();
+            let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+            response.reset(code).unwrap();
+            assert_eq!(
+                send.stopped().await.unwrap().map(u64::from),
+                Some(code.value())
+            );
+            assert_eq!(
+                recv.received_reset().await.unwrap().map(u64::from),
+                Some(code.value())
+            );
+            assert!(pair.client.close_reason().is_none());
+            drop(request);
+            pair.close().await;
+        }
+    })
+    .await
+    .unwrap();
 }

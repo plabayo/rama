@@ -32,3 +32,12 @@ mod posted_recv_tls;
     feature = "http-full"
 ))]
 mod apple_http_linger;
+
+#[cfg(all(
+    feature = "http-full",
+    feature = "boring",
+    feature = "ua",
+    feature = "quic",
+    feature = "test-utils"
+))]
+mod ua_h3_settings;

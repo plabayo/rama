@@ -7,11 +7,12 @@ use rama_http::proto::{
 };
 
 use crate::profile::{
-    CanonicalValue, CaptureLevel, CapturedSlotKind, ConnectionSelection, H2Capture,
+    CanonicalValue, CaptureLevel, CapturedSlotKind, ConnectionSelection, DrawDomain, H2Capture,
     H2CaptureLimits, H3ClientSequenceCapture, H3SequenceCaptureLimits, JointCapture,
     JointCaptureLimits, OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture,
-    ProfileDataError, ProfilePreservationReport, ProtocolValue, QuicFlightCapture,
-    QuicFlightCaptureLimits,
+    ProfileDataError, ProfileDraw, ProfileDrawContext, ProfilePreservationDifference,
+    ProfilePreservationMode, ProfilePreservationReport, ProfileReplayError, ProfileSeed,
+    ProtocolValue, QuicFlightCapture, QuicFlightCaptureLimits,
 };
 #[cfg(feature = "tls")]
 use crate::profile::{TlsCapture, TlsCaptureLimits};
@@ -33,9 +34,13 @@ pub struct PreparedConnectionComponents {
 }
 
 impl PreparedConnectionComponents {
-    /// Compile the captured client's SETTINGS in their original wire order.
-    /// Runtime resource and capability checks belong to the HTTP/3 connector.
-    pub fn h3_client_settings(&self) -> Result<Option<ClientSettingsProfile>, ProfileDataError> {
+    /// Compile client SETTINGS, regenerating reserved entries at their captured
+    /// positions. Literal samples remain available in the capture for analysis.
+    /// The caller supplies an independently keyed connection draw.
+    pub fn h3_client_settings(
+        &self,
+        draw: &mut ProfileDraw,
+    ) -> Result<Option<ClientSettingsProfile>, ProfileDataError> {
         let Some(capture) = &self.h3_peer_settings else {
             return Ok(None);
         };
@@ -52,8 +57,27 @@ impl PreparedConnectionComponents {
                 .as_ref()
                 .try_into()
                 .map_err(|_error| ProfileDataError::Invalid("HTTP/3 SETTINGS value encoding"))?;
+            let mut id = SettingId::new(field.id);
+            let mut value = u64::from_be_bytes(encoded);
+            if id.is_reserved() {
+                // QUICHE's control stream uses independent 32-bit draws for
+                // the reserved ordinal and value. Do not freeze a sampled pair.
+                let mut ordinal = draw.next_u64() as u32;
+                loop {
+                    id = SettingId::reserved(ordinal);
+                    if settings.get(id).is_none()
+                        && !capture.fields.iter().any(|field| field.id == id.value())
+                    {
+                        break;
+                    }
+                    // At most the bounded captured and emitted entries collide;
+                    // advancing avoids an unbounded random-retry loop.
+                    ordinal = ordinal.wrapping_add(1);
+                }
+                value = u64::from(draw.next_u64() as u32);
+            }
             settings
-                .set(SettingId::new(field.id), u64::from_be_bytes(encoded))
+                .set(id, value)
                 .map_err(|_error| ProfileDataError::Invalid("HTTP/3 SETTINGS value"))?;
         }
         Ok(Some(ClientSettingsProfile(Arc::new(settings))))
@@ -61,10 +85,53 @@ impl PreparedConnectionComponents {
 }
 
 impl ConnectionSelection {
+    /// Prepare input for the built-in HTTP connector's implemented wire compilers.
+    /// Strict replay rejects unsupported components before connecting; best-effort
+    /// replay retains their evidence and explicitly reports their omission.
+    pub fn prepare_for_replay(
+        &self,
+        mode: ProfilePreservationMode,
+    ) -> Result<PreparedConnectionComponents, ProfileReplayError> {
+        let joint =
+            JointCapture::from_canonical(&self.effective.capture, JointCaptureLimits::default())?;
+        let mut report = ProfilePreservationReport::default();
+        for slot in &joint.slots {
+            check_connection_component(slot.kind, mode, &mut report)?;
+        }
+
+        let mut prepared = Self::prepare_joint(&joint)?;
+        prepared.preservation_report = report.followed_by(prepared.preservation_report);
+        Ok(prepared)
+    }
+
+    /// Reproduce this connection's SETTINGS generation independently of request
+    /// draws and other layout decisions. A different connection key gives a new draw.
+    #[must_use]
+    pub fn h3_settings_draw(&self, seed: ProfileSeed) -> ProfileDraw {
+        ProfileDraw::new(
+            seed,
+            ProfileDrawContext {
+                profile: self.profile,
+                analysis_revision: self.analysis_revision,
+                scope: self.effective.scope,
+                key: self.draw,
+                domain: DrawDomain::Http3Settings,
+                slot: 0,
+            },
+        )
+    }
+
     /// Decode the selected connection tuple once, before a connector consumes it.
     pub fn prepare_components(&self) -> Result<PreparedConnectionComponents, ProfileDataError> {
         let limits = JointCaptureLimits::default();
         let joint = JointCapture::from_canonical(&self.effective.capture, limits)?;
+        Self::prepare_joint(&joint)
+    }
+
+    fn prepare_joint(
+        joint: &JointCapture,
+    ) -> Result<PreparedConnectionComponents, ProfileDataError> {
+        let limits = JointCaptureLimits::default();
         if joint.level != CaptureLevel::Connection {
             return Err(ProfileDataError::Invalid(
                 "connection profile capture level",
@@ -162,6 +229,32 @@ impl ConnectionSelection {
         }
         Ok(prepared)
     }
+}
+
+fn check_connection_component(
+    component: CapturedSlotKind,
+    mode: ProfilePreservationMode,
+    report: &mut ProfilePreservationReport,
+) -> Result<(), ProfileReplayError> {
+    // These captures contain observations, but no built-in compiler consumes
+    // them yet. Never let carrying decoded evidence masquerade as exact replay.
+    if matches!(
+        component,
+        CapturedSlotKind::TcpTls
+            | CapturedSlotKind::QuicTls
+            | CapturedSlotKind::QuicParameters
+            | CapturedSlotKind::QuicVersions
+            | CapturedSlotKind::QuicFirstFlight
+            | CapturedSlotKind::Http3Sequence
+    ) {
+        if mode == ProfilePreservationMode::Strict {
+            return Err(ProfileReplayError::UnsupportedConnectionComponent(
+                component,
+            ));
+        }
+        report.push(ProfilePreservationDifference::UnsupportedConnectionComponent { component });
+    }
+    Ok(())
 }
 
 fn order(

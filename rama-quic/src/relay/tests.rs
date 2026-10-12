@@ -1,13 +1,13 @@
 use std::{net::SocketAddr, num::NonZeroUsize, sync::Arc, time::Duration};
 
-use rama_core::{bytes::Bytes, error::BoxError, rt::Executor};
+use rama_core::{Service, bytes::Bytes, error::BoxError, io::BridgeIo, rt::Executor};
 use rama_quic_proto::{Dir, VarInt};
 use rama_tls::{client::TlsClientConfig, server::TlsServerConfig};
 use rama_udp::test_utils::MemoryDatagramSocket;
 use rama_utils::octets;
 use tokio::{task::JoinHandle, time::timeout};
 
-use super::{RelayConfig, relay_bidi};
+use super::{QuicRelay, relay_bidi};
 use crate::{
     ClientConfig, Connection, ConnectionError, Endpoint, ReadError, ServerConfig, TransportConfig,
     test_helpers, tls::TlsOptions,
@@ -98,20 +98,18 @@ async fn hop_with_early_data(
 }
 
 #[expect(clippy::unwrap_used, reason = "test fixture construction")]
-fn config() -> RelayConfig {
-    RelayConfig {
-        streams_per_class: NonZeroUsize::new(1).unwrap(),
-        chunk_bytes: NonZeroUsize::new(octets::kib(8)).unwrap(),
-        datagrams: true,
-        failure_code: VarInt::from_u32(500),
-    }
+fn config() -> QuicRelay {
+    QuicRelay::new(VarInt::from_u32(500))
+        .with_streams_per_class(NonZeroUsize::new(1).unwrap())
+        .with_chunk_bytes(NonZeroUsize::new(octets::kib(8)).unwrap())
+        .with_datagrams(true)
 }
 
 async fn fixture(small_window: bool) -> Fixture {
-    let (a, b, client, downstream) = hop(24100, false, b"rama-quic-relay-test", 128).await;
-    let (c, d, upstream, origin) = hop(24200, small_window, b"rama-quic-relay-test", 128).await;
+    let (a, b, client, ingress) = hop(24100, false, b"rama-quic-relay-test", 128).await;
+    let (c, d, egress, origin) = hop(24200, small_window, b"rama-quic-relay-test", 128).await;
     let config = config();
-    let relay = tokio::spawn(config.relay(downstream, upstream));
+    let relay = tokio::spawn(async move { config.serve(BridgeIo(ingress, egress)).await });
     Fixture {
         endpoints: vec![a, b, c, d],
         client,
@@ -214,9 +212,9 @@ async fn relay_reset_interrupts_a_flow_control_blocked_write() {
 #[tokio::test(start_paused = true)]
 async fn relay_forwards_application_close_and_cancellation() {
     timeout(Duration::from_secs(10), async {
-        for upstream in [false, true] {
+        for egress in [false, true] {
             let fixture = fixture(false).await;
-            let (from, to) = if upstream { (&fixture.origin, &fixture.client) } else { (&fixture.client, &fixture.origin) };
+            let (from, to) = if egress { (&fixture.origin, &fixture.client) } else { (&fixture.client, &fixture.origin) };
             // A completed exchange establishes that the relay passed its gates.
             from.send_datagram_wait(Bytes::from_static(b"ready")).await.unwrap();
             assert_eq!(to.read_datagram().await.unwrap(), b"ready".as_slice());
@@ -238,8 +236,8 @@ async fn relay_forwards_application_close_and_cancellation() {
 async fn relay_rejects_protocol_and_advertisement_mismatch() {
     timeout(Duration::from_secs(10), async {
         for mismatched_protocol in [false, true] {
-            let (a, b, client, downstream) = hop(24300, false, b"first", 128).await;
-            let (c, d, upstream, origin) = hop(
+            let (a, b, client, ingress) = hop(24300, false, b"first", 128).await;
+            let (c, d, egress, origin) = hop(
                 24400,
                 false,
                 if mismatched_protocol {
@@ -252,7 +250,7 @@ async fn relay_rejects_protocol_and_advertisement_mismatch() {
             .await;
             let mut config = config();
             config.datagrams = mismatched_protocol;
-            let error = config.relay(downstream, upstream).await.unwrap_err();
+            let error = config.serve(BridgeIo(ingress, egress)).await.unwrap_err();
             let expected = if mismatched_protocol {
                 "application protocols differ"
             } else {
@@ -329,16 +327,16 @@ async fn relay_stream_budget_waits_without_blocking_the_other_class() {
 #[tokio::test(start_paused = true)]
 async fn relay_both_cancelled_halves_release_pending_credit_wait() {
     timeout(Duration::from_secs(10), async {
-        let (a, b, client, downstream) = hop(24500, false, b"relay", 128).await;
-        let (c, d, upstream, origin) = hop(24600, false, b"relay", 0).await;
+        let (a, b, client, ingress) = hop(24500, false, b"relay", 128).await;
+        let (c, d, egress, origin) = hop(24600, false, b"relay", 0).await;
         let (mut send, mut recv) = client.open_bi().await.unwrap();
         send.write_all(b"request").await.unwrap();
-        let (relay_send, relay_recv) = downstream.accept_bi().await.unwrap();
+        let (relay_send, relay_recv) = ingress.accept_bi().await.unwrap();
         let task = tokio::spawn(async move {
             relay_bidi(
                 relay_recv,
                 relay_send,
-                &upstream,
+                &egress,
                 NonZeroUsize::new(128).unwrap(),
             )
             .await
@@ -401,9 +399,9 @@ async fn relay_bidi_cancellation_keeps_the_other_direction_alive() {
 #[tokio::test(start_paused = true)]
 async fn relay_cancellation_before_first_poll_closes_both_hops() {
     timeout(Duration::from_secs(10), async {
-        let (a, b, client, downstream) = hop(24700, false, b"relay", 128).await;
-        let (c, d, upstream, origin) = hop(24800, false, b"relay", 128).await;
-        drop(config().relay(downstream, upstream));
+        let (a, b, client, ingress) = hop(24700, false, b"relay", 128).await;
+        let (c, d, egress, origin) = hop(24800, false, b"relay", 128).await;
+        drop(config().serve(BridgeIo(ingress, egress)));
         for peer in [client, origin] {
             assert!(matches!(peer.closed().await, ConnectionError::ApplicationClosed(close) if close.error_code == VarInt::from_u32(500)));
         }
@@ -414,9 +412,9 @@ async fn relay_cancellation_before_first_poll_closes_both_hops() {
 #[tokio::test(start_paused = true)]
 async fn relay_rejects_reversed_connection_roles() {
     timeout(Duration::from_secs(10), async {
-        let (a, b, client, downstream) = hop(24900, false, b"relay", 128).await;
-        let (c, d, upstream, origin) = hop(25000, false, b"relay", 128).await;
-        let error = config().relay(upstream, downstream).await.unwrap_err();
+        let (a, b, client, ingress) = hop(24900, false, b"relay", 128).await;
+        let (c, d, egress, origin) = hop(25000, false, b"relay", 128).await;
+        let error = config().serve(BridgeIo(egress, ingress)).await.unwrap_err();
         assert!(error.to_string().contains("server and a client"), "{error}");
         for peer in [client, origin] {
             assert!(
@@ -472,18 +470,18 @@ async fn resumed_hop(port: u16) -> (Endpoint, Endpoint, Connection, Connection) 
 #[tokio::test(start_paused = true)]
 async fn relay_rejects_resumed_early_data_on_either_hop() {
     timeout(Duration::from_secs(10), async {
-        for early_downstream in [false, true] {
-            let (a, b, client, downstream) = if early_downstream {
+        for early_ingress in [false, true] {
+            let (a, b, client, ingress) = if early_ingress {
                 resumed_hop(25100).await
             } else {
                 hop(25100, false, b"relay", 128).await
             };
-            let (c, d, upstream, origin) = if early_downstream {
+            let (c, d, egress, origin) = if early_ingress {
                 hop(25200, false, b"relay", 128).await
             } else {
                 resumed_hop(25200).await
             };
-            let error = config().relay(downstream, upstream).await.unwrap_err();
+            let error = config().serve(BridgeIo(ingress, egress)).await.unwrap_err();
             assert!(error.to_string().contains("early data disabled"), "{error}");
             for peer in [client, origin] {
                 assert!(

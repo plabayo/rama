@@ -49,6 +49,8 @@ pub enum DrawDomain {
     Connection = 1,
     Request = 2,
     Layout = 3,
+    /// Independent connection-scoped HTTP/3 SETTINGS generation.
+    Http3Settings = 4,
 }
 
 /// Every logical draw is independent of scheduling and other draw consumption.

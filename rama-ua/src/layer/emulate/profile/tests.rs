@@ -801,6 +801,10 @@ fn profile_pool_partition_preserves_application_boundaries_and_is_idempotent() {
 }
 
 fn h3_emulation_context() -> EmulationContext {
+    h3_emulation_context_with_extra_slot(None)
+}
+
+fn h3_emulation_context_with_extra_slot(mut extra: Option<CapturedSlot>) -> EmulationContext {
     let original = emulation_context();
     let mut analyzed = original
         .selected
@@ -849,7 +853,13 @@ fn h3_emulation_context() -> EmulationContext {
         let value = JointCapture {
             completeness: ProfileCaptureCompleteness::Complete,
             level,
-            slots: vec![CapturedSlot { kind, value }].into(),
+            slots: {
+                let mut slots = vec![CapturedSlot { kind, value }];
+                if level == CaptureLevel::Connection {
+                    slots.extend(extra.take());
+                }
+                slots.into()
+            },
         }
         .canonical(JointCaptureLimits::default())
         .unwrap();
@@ -891,7 +901,9 @@ async fn connect_modifier_applies_selected_h3_settings_before_connect() {
                 .get_ref::<ClientSettingsProfile>()
                 .unwrap();
             assert_eq!(settings.0.entries().len(), 1);
-            assert_eq!(settings.0.get(SettingId::FIRST_RESERVED), Some(17));
+            assert!(settings.0.entries()[0].id.is_reserved());
+            assert_ne!(settings.0.entries()[0].id, SettingId::FIRST_RESERVED);
+            assert_ne!(settings.0.entries()[0].value, 17);
             let conn = ServiceInput::new(());
             conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
             Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
@@ -903,11 +915,22 @@ async fn connect_modifier_applies_selected_h3_settings_before_connect() {
             .insert(TargetHttpVersion(Version::HTTP_3));
         input.extensions().insert(h3_emulation_context());
         if caller_profile {
-            let mut settings = Settings::new();
-            settings.set(SettingId::FIRST_RESERVED, 17).unwrap();
-            input
-                .extensions()
-                .insert(ClientSettingsProfile(Arc::new(settings)));
+            let context = h3_emulation_context();
+            let selection = context
+                .selected
+                .connection(
+                    &ConnectionContext::default(),
+                    context.seed,
+                    context.connection_key,
+                )
+                .unwrap();
+            let settings = selection
+                .prepare_components()
+                .unwrap()
+                .h3_client_settings(&mut selection.h3_settings_draw(context.seed))
+                .unwrap()
+                .unwrap();
+            input.extensions().insert(settings);
         }
         UserAgentEmulateHttpConnectModifier::new(inner)
             .serve(input)
@@ -950,5 +973,79 @@ async fn connect_modifier_rejects_conflicting_h3_settings_before_connect() {
             .unwrap_err();
         assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
         assert_eq!(attempts.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[tokio::test]
+async fn connect_modifier_enforces_selected_component_support_before_dial() {
+    let capture = OrderedProtocolCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        OrderNamespace::QuicVersion,
+        [(1, Vec::<u8>::new())],
+        OrderCaptureLimits::default(),
+    )
+    .unwrap()
+    .canonical(OrderCaptureLimits::default())
+    .unwrap();
+    for mode in [
+        ProfilePreservationMode::Strict,
+        ProfilePreservationMode::BestEffort,
+    ] {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let inner_calls = calls.clone();
+        let inner = service_fn(move |input: ConnectRequest| {
+            inner_calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                assert!(matches!(
+                    input
+                        .extensions()
+                        .get_ref::<ProfilePreservationReport>()
+                        .unwrap()
+                        .differences
+                        .as_ref(),
+                    [
+                        ProfilePreservationDifference::UnsupportedConnectionComponent {
+                            component: CapturedSlotKind::QuicVersions
+                        }
+                    ]
+                ));
+                let conn = ServiceInput::new(());
+                conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
+                Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
+            }
+        });
+        let input = ConnectRequest::new("example.com:443".parse().unwrap())
+            .with_application_protocol(Protocol::HTTPS);
+        input
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_3));
+        input.extensions().insert(mode);
+        input
+            .extensions()
+            .insert(h3_emulation_context_with_extra_slot(Some(CapturedSlot {
+                kind: CapturedSlotKind::QuicVersions,
+                value: capture.clone(),
+            })));
+        let result = UserAgentEmulateHttpConnectModifier::new(inner)
+            .serve(input)
+            .await;
+        if mode == ProfilePreservationMode::Strict {
+            assert_eq!(
+                result.unwrap_err().kind(),
+                ConnectionErrorKind::InvalidInput
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+        } else {
+            let established = result.unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert!(
+                !established
+                    .conn
+                    .extensions()
+                    .get_ref::<ProfilePreservationReport>()
+                    .unwrap()
+                    .is_exact()
+            );
+        }
     }
 }

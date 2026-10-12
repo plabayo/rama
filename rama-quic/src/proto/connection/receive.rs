@@ -10,7 +10,7 @@ use rama_quic_proto::{
         SpaceId,
     },
 };
-use std::{mem, net::SocketAddr};
+use std::net::SocketAddr;
 
 use rama_core::{
     bytes::{Bytes, BytesMut},
@@ -587,7 +587,7 @@ impl Connection {
                     });
 
                 // Retransmit all 0-RTT data
-                let zero_rtt = mem::take(&mut self.spaces[SpaceId::Data].sent_packets);
+                let zero_rtt = self.spaces[SpaceId::Data].take_sent_packets();
                 for info in zero_rtt.into_values() {
                     self.remove_in_flight(&info);
                     self.spaces[SpaceId::Data].pending |= info.retransmits;
@@ -660,8 +660,7 @@ impl Connection {
                             self.spaces[SpaceId::Data].pending = Retransmits::default();
 
                             // Discard 0-RTT packets
-                            let sent_packets =
-                                mem::take(&mut self.spaces[SpaceId::Data].sent_packets);
+                            let sent_packets = self.spaces[SpaceId::Data].take_sent_packets();
                             for packet in sent_packets.into_values() {
                                 self.remove_in_flight(&packet);
                             }

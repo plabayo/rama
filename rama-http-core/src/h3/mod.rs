@@ -75,7 +75,7 @@ pub mod server;
 mod tests;
 
 mod priority;
-pub use priority::PriorityHandle;
+pub use priority::{PriorityHandle, PriorityObserver};
 
 mod upgrade;
 

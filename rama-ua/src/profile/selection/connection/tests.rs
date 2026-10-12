@@ -162,7 +162,7 @@ fn request_capture_cannot_be_prepared_as_connection_components() {
 }
 
 #[test]
-fn selected_h3_settings_compile_in_literal_order() {
+fn selected_h3_settings_regenerate_reserved_entries_in_captured_order() {
     let fields = [
         (SettingId::FIRST_RESERVED.value(), 17u64),
         (SettingId::QPACK_BLOCKED_STREAMS.value(), 0),
@@ -188,14 +188,134 @@ fn selected_h3_settings_compile_in_literal_order() {
     }
     .canonical(JointCaptureLimits::default())
     .unwrap();
-    let prepared = selection(joint).prepare_components().unwrap();
-    let settings = prepared.h3_client_settings().unwrap().unwrap();
+    let mut selection = selection(joint);
+    let prepared = selection.prepare_components().unwrap();
+    let source = prepared
+        .h3_peer_settings
+        .as_ref()
+        .unwrap()
+        .canonical(OrderCaptureLimits::default())
+        .unwrap();
+    let seed = ProfileSeed([7; 32]);
+    let settings = prepared
+        .h3_client_settings(&mut selection.h3_settings_draw(seed))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        settings,
+        prepared
+            .h3_client_settings(&mut selection.h3_settings_draw(seed))
+            .unwrap()
+            .unwrap()
+    );
+    selection.draw = DrawKey([9; 32]);
+    let second = prepared
+        .h3_client_settings(&mut selection.h3_settings_draw(seed))
+        .unwrap()
+        .unwrap();
+    assert_ne!(settings.0.entries()[0].id, second.0.entries()[0].id);
+    assert_ne!(settings.0.entries()[0].value, second.0.entries()[0].value);
+    assert_eq!(settings.0.entries()[1..], second.0.entries()[1..]);
+    let unchanged = prepared
+        .h3_peer_settings
+        .as_ref()
+        .unwrap()
+        .canonical(OrderCaptureLimits::default())
+        .unwrap();
+    assert_eq!(source.id, unchanged.id);
+    assert_eq!(source.bytes, unchanged.bytes);
     let actual: Vec<_> = settings
         .0
         .entries()
         .iter()
         .map(|s| (s.id.value(), s.value))
         .collect();
-    assert_eq!(actual, fields);
+    assert!(SettingId::new(actual[0].0).is_reserved());
+    assert_ne!(actual[0], fields[0]);
+    assert_eq!(&actual[1..], &fields[1..]);
     assert_eq!(settings.0.qpack_max_table_capacity(), 0);
+}
+
+#[test]
+fn unsupported_connection_components_never_certify_exact_replay() {
+    for component in [
+        CapturedSlotKind::TcpTls,
+        CapturedSlotKind::QuicTls,
+        CapturedSlotKind::QuicParameters,
+        CapturedSlotKind::QuicVersions,
+        CapturedSlotKind::QuicFirstFlight,
+        CapturedSlotKind::Http3Sequence,
+    ] {
+        let mut strict = ProfilePreservationReport::default();
+        assert!(matches!(
+            check_connection_component(component, ProfilePreservationMode::Strict, &mut strict),
+            Err(ProfileReplayError::UnsupportedConnectionComponent(actual)) if actual == component
+        ));
+        let mut best_effort = ProfilePreservationReport::default();
+        check_connection_component(
+            component,
+            ProfilePreservationMode::BestEffort,
+            &mut best_effort,
+        )
+        .unwrap();
+        assert_eq!(
+            best_effort.differences.as_ref(),
+            &[ProfilePreservationDifference::UnsupportedConnectionComponent { component }]
+        );
+        assert!(!best_effort.is_exact());
+    }
+}
+
+#[test]
+fn replay_preparation_reports_every_unconsumed_selected_component() {
+    let capture = JointCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        level: CaptureLevel::Connection,
+        slots: vec![
+            order_slot(
+                CapturedSlotKind::QuicParameters,
+                OrderNamespace::QuicParameter,
+                4,
+            ),
+            order_slot(
+                CapturedSlotKind::QuicVersions,
+                OrderNamespace::QuicVersion,
+                1,
+            ),
+        ]
+        .into(),
+    }
+    .canonical(JointCaptureLimits::default())
+    .unwrap();
+    let selected = selection(capture);
+    // Inspection remains available without making a runtime replay claim.
+    assert!(
+        selected
+            .prepare_components()
+            .unwrap()
+            .quic_parameters
+            .is_some()
+    );
+    assert!(matches!(
+        selected.prepare_for_replay(ProfilePreservationMode::Strict),
+        Err(ProfileReplayError::UnsupportedConnectionComponent(
+            CapturedSlotKind::QuicParameters
+        ))
+    ));
+    let prepared = selected
+        .prepare_for_replay(ProfilePreservationMode::BestEffort)
+        .unwrap();
+    assert!(prepared.quic_parameters.is_some());
+    assert!(prepared.quic_versions.is_some());
+    assert_eq!(
+        prepared.preservation_report.differences.as_ref(),
+        &[
+            ProfilePreservationDifference::UnsupportedConnectionComponent {
+                component: CapturedSlotKind::QuicParameters
+            },
+            ProfilePreservationDifference::UnsupportedConnectionComponent {
+                component: CapturedSlotKind::QuicVersions
+            },
+        ]
+    );
 }

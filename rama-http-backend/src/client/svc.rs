@@ -139,6 +139,13 @@ where
                 match Box::pin(sender.send_request(req)).await {
                     Ok(response) => response,
                     Err(error) => {
+                        // Only a stream rejection proves the peer did not process
+                        // this request. Connection failures can follow processing.
+                        if error.is_rejected()
+                            && let Some(attempts) = &attempts
+                        {
+                            attempts.unprocessed.fetch_add(1, Ordering::AcqRel);
+                        }
                         mark_broken_if_closed(
                             sender.is_closed() || sender.is_draining(),
                             &self.extensions,
@@ -360,19 +367,28 @@ impl<Body> HttpClientService<Body> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::{ServiceInput, bytes::Bytes, futures::stream};
-    use rama_http_core::h2::server as http2_server;
+    use rama_core::{ServiceInput, bytes::Bytes, futures::stream, rt::spawn};
+    use rama_http_core::{h2::server as http2_server, h3::server as http3_server};
+    use rama_http_types::proto::h3::Code;
     use rama_http_types::{
         Body,
         body::{Frame, util::StreamBody},
     };
+    use rama_net::address::SocketAddress;
     use rama_net::{
         address::ProxyAddress,
         client::{ConnectionErrorDomain, EstablishedProxyRoute, ProxyRoute},
         conn::ConnectionHealth,
     };
+    use rama_quic::{ClientConfig, Endpoint, ServerConfig, tls::TlsOptions};
+    use rama_quic_proto::VarInt;
+    use rama_tls::{
+        client::TlsClientConfig,
+        server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+    };
+    use rama_udp::test_utils::MemoryDatagramSocket;
     use rama_utils::octets::kib;
-    use std::time::Duration;
+    use std::{num::NonZeroUsize, sync::Arc, time::Duration};
     use tokio::{
         io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream, copy, duplex, sink},
         sync::oneshot,
@@ -755,5 +771,134 @@ mod tests {
         req.extensions().insert(SecureTransport::default());
 
         assert_eq!(req.protocol(), Some(&Protocol::HTTPS));
+    }
+
+    async fn h3_replay_pair() -> (Endpoint, Endpoint, QuicConnection, QuicConnection) {
+        let identity = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
+        let server_tls = TlsServerConfig::new()
+            .with_alpn([b"h3".as_slice().into()].into_iter().collect())
+            .with_server_auth(identity.clone());
+        let client_tls = TlsClientConfig::new()
+            .with_alpn([b"h3".as_slice().into()].into_iter().collect())
+            .try_with_server_trust_anchors([identity.cert_chain.last().unwrap().clone()])
+            .unwrap();
+        let server_config =
+            ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default()).unwrap();
+        let client_config =
+            ClientConfig::try_from_rama_tls(&client_tls, TlsOptions::default()).unwrap();
+        let (server_socket, client_socket) = MemoryDatagramSocket::pair(
+            SocketAddress::local_ipv4(443),
+            SocketAddress::local_ipv4(444),
+            NonZeroUsize::MIN,
+        );
+        let server_endpoint = Endpoint::build(Executor::new())
+            .with_server_config(server_config)
+            .with_datagram_socket(server_socket)
+            .unwrap();
+        let client_endpoint = Endpoint::build(Executor::new())
+            .with_datagram_socket(client_socket)
+            .unwrap();
+        let (client, server) = tokio::join!(
+            client_endpoint
+                .connect_with(
+                    client_config,
+                    server_endpoint.local_addr().unwrap(),
+                    "localhost"
+                )
+                .unwrap(),
+            async { server_endpoint.accept().await.unwrap().await },
+        );
+        (
+            client_endpoint,
+            server_endpoint,
+            client.unwrap(),
+            server.unwrap(),
+        )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn h3_replay_attempts_require_explicit_stream_rejection_for_every_attempt() {
+        timeout(Duration::from_secs(20), async {
+            // A connection close carrying the same number has no request-level
+            // guarantee. A successful earlier middleware attempt also prevents
+            // replay of the logical request, even if its final attempt is refused.
+            for (code, connection_close, processed_first, expected) in [
+                (Code::H3_REQUEST_REJECTED, false, false, true),
+                (Code::H3_REQUEST_CANCELLED, false, false, false),
+                (Code::H3_NO_ERROR, false, false, false),
+                (Code::H3_REQUEST_REJECTED, true, false, false),
+                (Code::H3_REQUEST_REJECTED, false, true, false),
+            ] {
+                let (client_endpoint, server_endpoint, client, server_connection) =
+                    h3_replay_pair().await;
+                let (mut server, driver) =
+                    http3_server::handshake(server_connection.clone(), Http3Config::default())
+                        .unwrap();
+                let driver = spawn(driver.run());
+                let service = HttpClientService::<Body>::http3(
+                    client,
+                    Http3Config::default(),
+                    Executor::new(),
+                )
+                .unwrap();
+                let attempts = Arc::new(SendAttempts::default());
+                assert!(!attempts.none_processed());
+
+                for successful in (0..usize::from(processed_first))
+                    .map(|_| true)
+                    .chain([false])
+                {
+                    let request = Request::builder()
+                        .method(Method::POST)
+                        .version(Version::HTTP_3)
+                        .uri("https://localhost/change")
+                        .body(Body::from("one change"))
+                        .unwrap();
+                    request.extensions().insert_arc(attempts.clone());
+                    let (result, ()) = tokio::join!(service.serve(request), async {
+                        let (request, response) =
+                            server.accept().await.unwrap().resolve().await.unwrap();
+                        if successful {
+                            assert_eq!(
+                                request.into_body().collect().await.unwrap().to_bytes(),
+                                "one change"
+                            );
+                            response
+                                .send_response(Response::new(Body::empty()))
+                                .await
+                                .unwrap();
+                        } else if connection_close {
+                            server_connection.close(
+                                VarInt::from_u64(code.value()).unwrap(),
+                                b"connection close",
+                            );
+                            // Neither the body nor response drop may manufacture
+                            // a request rejection before the connection close.
+                            drop((request, response));
+                        } else {
+                            response.reset(code).unwrap();
+                            drop(request);
+                        }
+                    });
+                    if successful {
+                        result.unwrap().into_body().collect().await.unwrap();
+                        assert!(!attempts.none_processed());
+                    } else {
+                        result.unwrap_err();
+                    }
+                }
+                assert_eq!(
+                    attempts.none_processed(),
+                    expected,
+                    "{code:?}, connection={connection_close}, earlier={processed_first}"
+                );
+                client_endpoint.close(0u32, b"test complete");
+                server_endpoint.close(0u32, b"test complete");
+                tokio::join!(client_endpoint.shutdown(), server_endpoint.shutdown());
+                let _driver_result = driver.await;
+            }
+        })
+        .await
+        .unwrap();
     }
 }

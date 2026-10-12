@@ -307,11 +307,22 @@ where
             .transpose()
             .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
         if let Some(selection) = &connection_selection {
-            let mut prepared = selection.prepare_components().map_err(|error| {
-                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
-            })?;
+            let mut prepared = selection
+                .prepare_for_replay(preservation)
+                .map_err(|error| {
+                    ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                })?;
+            let context = req
+                .extensions()
+                .get_ref::<EmulationContext>()
+                .ok_or_else(|| {
+                    ConnectionError::local(
+                        BoxError::from_static_str("captured profile context is missing"),
+                        ConnectionErrorKind::Internal,
+                    )
+                })?;
             if let Some(settings) = prepared
-                .h3_client_settings()
+                .h3_client_settings(&mut selection.h3_settings_draw(context.seed))
                 .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?
             {
                 if req

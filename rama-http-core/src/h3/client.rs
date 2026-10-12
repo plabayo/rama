@@ -22,7 +22,7 @@ use rama_http_types::{
         RequestHeaders,
         ext::{HttpDatagrams, Protocol},
         h1::ext::informational::OnInformational,
-        h3::{Code, FrameType},
+        h3::{Code, FrameType, Settings},
     },
 };
 use rama_net::{
@@ -40,7 +40,7 @@ use rama_utils::reactive::{Change, ChangeListener, ChangeSignal};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::{
-    Error, body,
+    Error, PriorityHandle, body,
     connection::{Config, Driver, Shared},
     control::Role,
     datagram::{Association, DatagramDrops, Semantics},
@@ -135,6 +135,16 @@ pub fn handshake<B>(
 }
 
 impl<B> SendRequest<B> {
+    /// Wait for the peer's complete SETTINGS, preserving entry order and unknown IDs.
+    ///
+    /// Run the driver concurrently and apply the caller's handshake deadline.
+    /// Cancelling this wait leaves the connection and other waiters intact. A
+    /// connection failure before SETTINGS returns an error. The snapshot is
+    /// cloned only when requested; observation need not be enabled.
+    pub async fn peer_settings(&self) -> Result<Settings, Error> {
+        self.shared.peer_settings_snapshot().await
+    }
+
     /// Publish exact request admission for a multiplexing connection pool.
     ///
     /// A checkout reserves local request capacity and peer QUIC stream credit.
@@ -377,10 +387,36 @@ where
     /// A request carrying a [`Protocol`] is sent as Extended CONNECT (RFC 9220) once the
     /// server's SETTINGS enable it; otherwise it fails locally before a stream is opened.
     /// A successful (2xx) response exposes the tunnel through the upgrade API.
-    pub async fn send_request(
+    pub fn send_request(
+        &mut self,
+        request: Request<B>,
+    ) -> impl Future<Output = Result<Response<crate::body::Incoming>, Error>> + Send + '_ {
+        self.send_request_inner::<false, _>(request, |_| {})
+    }
+
+    /// Publish this request's priority handle after opening its stream and
+    /// before sending HEADERS or awaiting the response. Relays can translate
+    /// downstream priority changes while the origin is still working.
+    /// The callback runs once; cancellation before stream admission never calls it.
+    pub fn send_request_with_priority<F>(
+        &mut self,
+        request: Request<B>,
+        on_stream: F,
+    ) -> impl Future<Output = Result<Response<crate::body::Incoming>, Error>> + Send + '_
+    where
+        F: FnOnce(PriorityHandle) + Send + 'static,
+    {
+        self.send_request_inner::<true, _>(request, on_stream)
+    }
+
+    async fn send_request_inner<const OBSERVE: bool, F>(
         &mut self,
         mut request: Request<B>,
-    ) -> Result<Response<crate::body::Incoming>, Error> {
+        on_stream: F,
+    ) -> Result<Response<crate::body::Incoming>, Error>
+    where
+        F: FnOnce(PriorityHandle) + Send,
+    {
         self.ready().await?;
         if request.extensions().contains::<Protocol>() {
             if request.method() != Method::CONNECT {
@@ -444,6 +480,11 @@ where
                 Code::H3_REQUEST_REJECTED,
                 "connection draining",
             ));
+        }
+        // The default path uses a zero-sized callback and removes this branch
+        // at monomorphization: no priority handle or observer is created for it.
+        if OBSERVE {
+            on_stream(PriorityHandle::new(&self.shared, id, false));
         }
         reader.origin = Some(request.uri().clone());
         // Responses fork their request's extensions, as on HTTP/1.1 and h2.
