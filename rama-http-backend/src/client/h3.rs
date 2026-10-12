@@ -64,7 +64,7 @@ pub struct Http3Connector {
     tls: TlsClientConfig,
     tls_configs: ClientConfigCache,
     transport: Arc<TransportConfig>,
-    config: Config,
+    config: Arc<Config>,
     executor: Executor,
 }
 
@@ -209,7 +209,7 @@ impl Http3ConnectorBuilder {
             tls: self.tls,
             tls_configs: ClientConfigCache::new(provider, TlsOptions::default()),
             transport: Arc::new(transport),
-            config: self.config,
+            config: Arc::new(self.config),
             executor: self.executor,
         })
     }
@@ -836,7 +836,7 @@ mod concrete_transport_tests {
                 TlsOptions::default(),
             ),
             transport: Arc::new(TransportConfig::default()),
-            config: Config::default(),
+            config: Arc::new(Config::default()),
             executor,
         };
         let cache = ProxyRouteFailureCache::default();

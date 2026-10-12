@@ -189,8 +189,9 @@ where
         )?);
         req.extensions()
             .insert(SelectedUserAgentProfile::from(selected.profile()));
-        req.extensions()
-            .insert(selected.emulation_context(seed, connection_key, request_key));
+        selected
+            .emulation_context(seed, connection_key, request_key)
+            .publish(req.extensions());
         req.extensions().insert(self.preservation);
         self.inner.serve(req).await.into_box_error()
     }

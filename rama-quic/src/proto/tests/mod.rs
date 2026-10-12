@@ -44,6 +44,7 @@ mod grease;
 mod loss_config;
 mod observation;
 mod packet_vectors;
+mod profile_endpoint;
 mod qlog;
 mod qlog_drops;
 mod qlog_lifecycle;

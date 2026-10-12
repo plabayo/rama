@@ -87,6 +87,13 @@ impl ParameterId {
     /// Not a parameter: where the greased parameter goes in a fixed order.
     pub const GREASE: Self = Self(u64::MAX);
 
+    fn check_wire_range(self) -> Result<(), ProfileError> {
+        if self.0 > VarInt::MAX.into_inner() {
+            return Err(ProfileError::ParameterIdOutOfRange(self));
+        }
+        Ok(())
+    }
+
     /// Whether this identifier is one reserved for greasing (RFC 9000 §18.1): `31 * N + 27`.
     #[must_use]
     pub const fn is_reserved(self) -> bool {
@@ -210,6 +217,8 @@ impl TryFrom<TransportParameterProfileRepr> for TransportParameterProfile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ProfileError {
+    /// A literal parameter identifier does not fit a QUIC variable-length integer.
+    ParameterIdOutOfRange(ParameterId),
     /// A parameter identifier appears twice.
     DuplicateParameter(ParameterId),
     /// An extra parameter uses an identifier this crate writes itself.
@@ -239,6 +248,9 @@ impl From<crate::version::VersionPolicyError> for ProfileError {
 impl fmt::Display for ProfileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ParameterIdOutOfRange(id) => {
+                write!(f, "transport parameter {id} exceeds the QUIC integer range")
+            }
             Self::DuplicateParameter(id) => write!(f, "transport parameter {id} is listed twice"),
             Self::KnownParameter(id) => {
                 write!(
@@ -324,6 +336,10 @@ impl TransportParameterProfile {
     pub fn try_with_order(mut self, order: ParameterOrder) -> Result<Self, ProfileError> {
         if let ParameterOrder::Fixed(ids) = &order {
             for (index, id) in ids.iter().enumerate() {
+                // GREASE is a layout marker here, never a literal wire identifier.
+                if *id != ParameterId::GREASE {
+                    id.check_wire_range()?;
+                }
                 if ids[..index].contains(id) {
                     return Err(ProfileError::DuplicateParameter(*id));
                 }
@@ -337,6 +353,7 @@ impl TransportParameterProfile {
     pub fn try_with_grease(mut self, grease: GreaseParameter) -> Result<Self, ProfileError> {
         match &grease {
             GreaseParameter::Fixed { id, value } => {
+                id.check_wire_range()?;
                 if !id.is_reserved() {
                     return Err(ProfileError::NotReserved(*id));
                 }
@@ -359,6 +376,7 @@ impl TransportParameterProfile {
     /// identifier appears once.
     pub fn try_with_extra(mut self, extra: Vec<OpaqueParameter>) -> Result<Self, ProfileError> {
         for (index, parameter) in extra.iter().enumerate() {
+            parameter.id.check_wire_range()?;
             if parameter.id.is_known() || parameter.id == ParameterId::GREASE {
                 return Err(ProfileError::KnownParameter(parameter.id));
             }
@@ -663,7 +681,8 @@ pub struct TransportLimits {
     pub initial_max_streams_bidi: u64,
     pub initial_max_streams_uni: u64,
     pub max_ack_delay: Duration,
-    /// Advertised as-is when set; the crate stores at most five, so more is refused.
+    /// Advertised as-is when set. The engine rejects values above its supported
+    /// CID storage limit when applying the profile; it never silently clamps them.
     pub active_connection_id_limit: Option<u64>,
     pub max_udp_payload_size: u64,
     /// The datagram receive buffer, from which `max_datagram_frame_size` follows; `None`
@@ -758,8 +777,8 @@ impl TransportLimits {
         if self.max_ack_delay.as_millis() >= 1 << 14 {
             return Err(ProfileError::Limit("max_ack_delay"));
         }
-        // The RFC 9000 §18.2 floor; an engine clamps the ceiling to what it can store when it
-        // applies the profile.
+        // The RFC 9000 §18.2 floor. Each engine rejects profiles above its own
+        // storage ceiling when applying this protocol-level descriptor.
         if let Some(limit) = self.active_connection_id_limit
             && (limit < 2 || VarInt::from_u64(limit).is_err())
         {
@@ -1016,5 +1035,95 @@ mod tests {
         };
         let json = serde_json::to_string(&bad).unwrap();
         serde_json::from_str::<QuicProfile>(&json).unwrap_err();
+    }
+    #[test]
+    fn profile_parameter_ids_order_stays_within_wire_range() {
+        let invalid = ParameterId(VarInt::MAX.into_inner() + 1);
+        assert_eq!(
+            TransportParameterProfile::standard()
+                .try_with_order(ParameterOrder::Fixed(vec![invalid]))
+                .unwrap_err(),
+            ProfileError::ParameterIdOutOfRange(invalid),
+        );
+        let invalid_profile = TransportParameterProfile {
+            order: ParameterOrder::Fixed(vec![invalid]),
+            ..TransportParameterProfile::standard()
+        };
+        serde_json::from_str::<TransportParameterProfile>(
+            &serde_json::to_string(&invalid_profile).unwrap(),
+        )
+        .unwrap_err();
+        TransportParameterProfile::standard()
+            .try_with_order(ParameterOrder::Fixed(vec![
+                ParameterId(VarInt::MAX.into_inner()),
+                ParameterId::GREASE,
+            ]))
+            .unwrap();
+    }
+
+    #[test]
+    fn profile_parameter_ids_extra_stays_within_wire_range() {
+        for id in [
+            ParameterId(VarInt::MAX.into_inner() + 1),
+            ParameterId(u64::MAX),
+        ] {
+            let extra = vec![OpaqueParameter {
+                id,
+                value: Vec::new(),
+            }];
+            assert_eq!(
+                TransportParameterProfile::standard()
+                    .try_with_extra(extra.clone())
+                    .unwrap_err(),
+                ProfileError::ParameterIdOutOfRange(id),
+            );
+            let invalid_profile = TransportParameterProfile {
+                extra,
+                ..TransportParameterProfile::standard()
+            };
+            serde_json::from_str::<TransportParameterProfile>(
+                &serde_json::to_string(&invalid_profile).unwrap(),
+            )
+            .unwrap_err();
+        }
+        TransportParameterProfile::standard()
+            .try_with_extra(vec![OpaqueParameter {
+                id: ParameterId(VarInt::MAX.into_inner()),
+                value: Vec::new(),
+            }])
+            .unwrap();
+    }
+
+    #[test]
+    fn profile_parameter_ids_grease_stays_within_wire_range() {
+        // The first reserved (31*N+27) identifier above the wire limit.
+        let last_reserved = ParameterId((VarInt::MAX.into_inner() - 27) / 31 * 31 + 27);
+        let id = ParameterId(last_reserved.0 + 31);
+        assert!(id.is_reserved());
+        let grease = GreaseParameter::Fixed {
+            id,
+            value: Vec::new(),
+        };
+        assert_eq!(
+            TransportParameterProfile::standard()
+                .try_with_grease(grease.clone())
+                .unwrap_err(),
+            ProfileError::ParameterIdOutOfRange(id),
+        );
+        let invalid_profile = TransportParameterProfile {
+            grease,
+            ..TransportParameterProfile::standard()
+        };
+        serde_json::from_str::<TransportParameterProfile>(
+            &serde_json::to_string(&invalid_profile).unwrap(),
+        )
+        .unwrap_err();
+        assert!(last_reserved.0 <= VarInt::MAX.into_inner());
+        TransportParameterProfile::standard()
+            .try_with_grease(GreaseParameter::Fixed {
+                id: last_reserved,
+                value: Vec::new(),
+            })
+            .unwrap();
     }
 }

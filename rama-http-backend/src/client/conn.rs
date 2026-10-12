@@ -32,7 +32,7 @@ use tokio::sync::Mutex;
 
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_utils::macros::define_inner_service_accessors;
-use std::{error::Error as StdError, marker::PhantomData};
+use std::{error::Error as StdError, marker::PhantomData, sync::Arc};
 
 pub(super) fn resolve_input_target_http_version<Input>(input: &Input) -> Option<Version>
 where
@@ -503,7 +503,8 @@ where
                 .extensions()
                 .insert(TargetHttpVersion(Version::HTTP_3));
             let conn =
-                HttpClientService::http3(quic.connection, quic.config, exec).into_opaque_error()?;
+                HttpClientService::http3(quic.connection, Arc::unwrap_or_clone(quic.config), exec)
+                    .into_opaque_error()?;
             Ok(EstablishedClientConnection { input, conn })
         }
     }

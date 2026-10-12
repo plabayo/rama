@@ -9,6 +9,7 @@ mod fairness;
 mod loss;
 mod observation;
 mod robustness;
+mod settings_profile;
 
 use std::{assert_matches, num::NonZeroUsize, sync::Arc, time::Duration};
 

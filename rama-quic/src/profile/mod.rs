@@ -43,6 +43,37 @@ pub const MAX_ACTIVE_CONNECTION_ID_LIMIT: u64 = CidQueue::LIMIT;
 pub(crate) struct WireProfile {
     pub(crate) parameters: TransportParameterProfile,
     pub(crate) packetization: PacketizationProfile,
+    endpoint: Option<EndpointProfile>,
+}
+
+/// An endpoint-wide setting that contradicts a connection's QUIC profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileEndpointMismatch {
+    /// The endpoint generates local connection IDs of a different length.
+    ConnectionIdLength,
+    /// The endpoint advertises a different QUIC fixed-bit greasing policy.
+    QuicBitGreasing,
+    /// The endpoint advertises a different maximum received UDP payload.
+    MaximumUdpPayload,
+}
+
+impl std::fmt::Display for ProfileEndpointMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::ConnectionIdLength => "QUIC profile disagrees with endpoint connection ID length",
+            Self::QuicBitGreasing => "QUIC profile disagrees with endpoint fixed-bit greasing",
+            Self::MaximumUdpPayload => "QUIC profile disagrees with endpoint maximum UDP payload",
+        })
+    }
+}
+
+impl std::error::Error for ProfileEndpointMismatch {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EndpointProfile {
+    cid_len: usize,
+    grease_quic_bit: bool,
+    max_udp_payload_size: u64,
 }
 
 impl Default for WireProfile {
@@ -50,15 +81,42 @@ impl Default for WireProfile {
         Self {
             parameters: TransportParameterProfile::standard(),
             packetization: PacketizationProfile::standard(),
+            endpoint: None,
         }
     }
 }
 
 impl WireProfile {
+    pub(crate) fn validate_endpoint(
+        &self,
+        config: &EndpointConfig,
+        cid_len: usize,
+    ) -> Result<(), ProfileEndpointMismatch> {
+        let Some(expected) = self.endpoint else {
+            return Ok(());
+        };
+
+        if expected.cid_len != cid_len {
+            return Err(ProfileEndpointMismatch::ConnectionIdLength);
+        }
+        if expected.grease_quic_bit != config.grease_quic_bit {
+            return Err(ProfileEndpointMismatch::QuicBitGreasing);
+        }
+        if expected.max_udp_payload_size != config.get_max_udp_payload_size() {
+            return Err(ProfileEndpointMismatch::MaximumUdpPayload);
+        }
+        Ok(())
+    }
+
     fn of(profile: &QuicProfile) -> Self {
         Self {
             parameters: profile.transport_parameters().clone(),
             packetization: profile.packetization().clone(),
+            endpoint: Some(EndpointProfile {
+                cid_len: usize::from(profile.connection_ids().local_len()),
+                grease_quic_bit: profile.greases_quic_bit(),
+                max_udp_payload_size: profile.limits().max_udp_payload_size,
+            }),
         }
     }
 }
@@ -66,7 +124,8 @@ impl WireProfile {
 impl TransportConfig {
     /// A transport configuration advertising this profile's limits and carrying its layout.
     /// Everything else keeps [`TransportConfig::default`]. A profile requiring more active
-    /// remote connection IDs than the engine retains is rejected.
+    /// remote connection IDs than the engine retains is rejected. Connection creation
+    /// also checks that the endpoint-wide settings match this profile.
     pub fn from_quic_profile(profile: &QuicProfile) -> Result<Self, ConfigError> {
         let limits = profile.limits();
         if limits
@@ -135,6 +194,9 @@ impl ClientConfig {
     /// Apply the client parts of a profile: the version policy, the first destination connection
     /// ID length and a transport configuration with this profile's limits and layout.
     pub fn apply_quic_profile(&mut self, profile: &QuicProfile) -> Result<(), ConfigError> {
+        // Validate every fallible component before changing the live configuration.
+        // A rejected profile must leave a caller's reusable defaults intact.
+        let transport = Arc::new(TransportConfig::from_quic_profile(profile)?);
         self.set_versions(profile.versions().clone())?;
         let len = usize::from(profile.connection_ids().initial_destination_len());
         self.set_initial_dst_cid_provider(Arc::new(move || {
@@ -146,7 +208,7 @@ impl ClientConfig {
                 .expect("a valid connection ID length")
                 .generate_cid()
         }));
-        self.set_transport_config(Arc::new(TransportConfig::from_quic_profile(profile)?));
+        self.set_transport_config(transport);
         Ok(())
     }
 }

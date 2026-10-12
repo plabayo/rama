@@ -12,6 +12,7 @@ use rama_net::{
     HttpVersionInputExt, TargetHttpVersionInputExt,
     client::{ConnectionError, ConnectorService, EstablishedClientConnection},
 };
+use std::sync::Arc;
 
 /// An established QUIC transport and the HTTP/3 settings to apply during handshake.
 ///
@@ -20,7 +21,8 @@ use rama_net::{
 #[derive(Debug)]
 pub struct Http3Transport {
     pub connection: rama_quic::Connection,
-    pub config: Config,
+    /// Shared connector defaults; cloned into the connection engine at handshake.
+    pub config: Arc<Config>,
 }
 
 impl ExtensionsRef for Http3Transport {

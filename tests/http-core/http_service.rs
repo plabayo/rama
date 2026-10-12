@@ -1931,11 +1931,11 @@ async fn custom_quic_transport_validates_negotiation_and_concurrency() {
         input.extensions.insert(TargetHttpVersion(required));
         let transport = Http3Transport {
             connection,
-            config: Http3Config {
+            config: Arc::new(Http3Config {
                 max_requests: 1,
                 max_pushes: 0,
                 ..Default::default()
-            },
+            }),
         };
         let result = timeout(
             TEST_TIMEOUT,

@@ -52,6 +52,14 @@ use tokio::{
 pub struct Config {
     /// Optional independent budgets for wire observation; disabled by default.
     pub observation: Option<Box<ObservationLimits>>,
+    /// Optional literal SETTINGS order, including unknown and reserved identifiers.
+    ///
+    /// QPACK values must match `decoder`; an omitted QPACK setting means zero.
+    /// An explicit field-section limit must match the decoder's local limit.
+    /// Extended CONNECT and datagram advertisements must match the connection's
+    /// role and negotiated capabilities. Incompatible profiles fail before any
+    /// HTTP/3 control bytes are emitted. Ordinary connections allocate no profile.
+    pub settings_profile: Option<Arc<Settings>>,
     /// Local QPACK decoder limits, advertised where the protocol defines settings.
     pub decoder: DecoderConfig,
     /// Local encoder budgets. Peer capacity/blocked-stream settings override those fields.
@@ -87,6 +95,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             observation: None,
+            settings_profile: None,
             decoder: DecoderConfig::default(),
             encoder: EncoderConfig::default(),
             max_requests: 128,
@@ -125,6 +134,20 @@ impl Config {
     pub(crate) fn local_settings(&self, role: Role, datagrams: bool) -> Result<Settings, Error> {
         let mut settings = self.settings()?;
         let extended_connect = role == Role::Server && self.extended_connect;
+        if self.settings_profile.is_some() {
+            // Do not silently add, remove or rewrite captured capability settings.
+            // Their presence is part of the wire image; their meaning is a runtime contract.
+            if settings.enable_connect_protocol() != extended_connect
+                || settings.h3_datagram() != datagrams
+            {
+                return Err(Error::connection(
+                    Code::H3_INTERNAL_ERROR,
+                    "HTTP/3 SETTINGS profile contradicts negotiated capabilities",
+                ));
+            }
+            return Ok(settings);
+        }
+
         for (enabled, id) in [
             (extended_connect, SettingId::ENABLE_CONNECT_PROTOCOL),
             (datagrams, SettingId::H3_DATAGRAM),
@@ -152,6 +175,28 @@ impl Config {
                 "invalid HTTP/3 resource budgets",
             ));
         }
+        if let Some(profile) = &self.settings_profile {
+            // Settings omitted from a capture retain their protocol defaults. In
+            // particular, absence must not advertise a zero QPACK capacity while
+            // the decoder accepts a larger table (or decodes modulo that capacity).
+            if profile.qpack_max_table_capacity() != self.decoder.max_table_capacity
+                || profile.qpack_blocked_streams() != self.decoder.max_blocked_streams
+                || profile
+                    .max_field_section_size()
+                    .is_some_and(|limit| limit != self.decoder.max_field_section_size as u64)
+                || profile.entries().iter().any(|setting| {
+                    VarInt::from_u64(setting.id.value()).is_err()
+                        || VarInt::from_u64(setting.value).is_err()
+                })
+            {
+                return Err(Error::connection(
+                    Code::H3_INTERNAL_ERROR,
+                    "HTTP/3 SETTINGS profile contradicts decoder limits or wire bounds",
+                ));
+            }
+            return Ok(profile.as_ref().clone());
+        }
+
         let mut settings = Settings::new();
         for (id, value) in [
             (
@@ -349,6 +394,11 @@ impl Shared {
         role: Role,
         connection: &QuicConnection,
     ) -> Result<Arc<Self>, Error> {
+        if config.settings_profile.is_some() {
+            let datagrams = config.datagrams.is_some() && connection.datagram_receive_enabled();
+            config.local_settings(role, datagrams)?;
+        }
+
         let extensions = connection.extensions().clone();
         // Preserve connector-provided certificate chains and local addresses.
         // CONNECT streams fork this store, keeping stream metadata isolated.
@@ -1630,6 +1680,106 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
         task::{Context, Wake, Waker},
     };
+
+    fn settings_profile_config() -> Config {
+        let mut config = Config::default();
+        let mut settings = Settings::new();
+        for (id, value) in [
+            (SettingId::FIRST_RESERVED, 7),
+            (
+                SettingId::QPACK_BLOCKED_STREAMS,
+                config.decoder.max_blocked_streams,
+            ),
+            (SettingId::new(0xface), 42),
+            (
+                SettingId::QPACK_MAX_TABLE_CAPACITY,
+                config.decoder.max_table_capacity,
+            ),
+        ] {
+            settings.set(id, value).unwrap();
+        }
+        config.settings_profile = Some(Arc::new(settings));
+        config
+    }
+
+    #[test]
+    fn settings_profile_preserves_literal_control_bytes() {
+        let config = settings_profile_config();
+        let expected = config.settings_profile.as_ref().unwrap();
+        let actual = config.local_settings(Role::Client, false).unwrap();
+        assert_eq!(&actual, expected.as_ref());
+
+        let mut payload = BytesMut::new();
+        expected.encode_payload(&mut payload).unwrap();
+        let mut wire = BytesMut::new();
+        VarInt::from_u32(StreamType::CONTROL.value() as u32).encode(&mut wire);
+        FrameHeader::new(FrameType::SETTINGS, payload.len() as u64)
+            .encode(&mut wire)
+            .unwrap();
+        wire.extend_from_slice(&payload);
+        assert_eq!(
+            initial_control(&config, Role::Client, false).unwrap(),
+            wire.freeze()
+        );
+    }
+
+    #[test]
+    fn settings_profile_rejects_decoder_and_capability_mismatches() {
+        let config = settings_profile_config();
+        let mut bad = config.clone();
+        bad.decoder.max_table_capacity += 1;
+        bad.settings().unwrap_err();
+        let mut bad = config.clone();
+        bad.decoder.max_blocked_streams += 1;
+        bad.settings().unwrap_err();
+        let mut bad = config.clone();
+        Arc::make_mut(bad.settings_profile.as_mut().unwrap())
+            .set(SettingId::MAX_FIELD_SECTION_SIZE, 1)
+            .unwrap();
+        bad.settings().unwrap_err();
+        let mut bad = config.clone();
+        Arc::make_mut(bad.settings_profile.as_mut().unwrap())
+            .set(SettingId::new(1 << 62), 0)
+            .unwrap();
+        bad.settings().unwrap_err();
+        let mut bad = config.clone();
+        Arc::make_mut(bad.settings_profile.as_mut().unwrap())
+            .set(
+                SettingId::new(SettingId::FIRST_RESERVED.value() + SettingId::RESERVED_INTERVAL),
+                1 << 62,
+            )
+            .unwrap();
+        bad.settings().unwrap_err();
+
+        // An omitted capability cannot be enabled implicitly during serialization.
+        config.local_settings(Role::Client, true).unwrap_err();
+        let mut bad = config.clone();
+        bad.extended_connect = true;
+        bad.local_settings(Role::Server, false).unwrap_err();
+        let mut bad = config;
+        Arc::make_mut(bad.settings_profile.as_mut().unwrap())
+            .set(SettingId::ENABLE_CONNECT_PROTOCOL, 1)
+            .unwrap();
+        bad.local_settings(Role::Client, false).unwrap_err();
+    }
+
+    #[test]
+    fn settings_profile_omitted_qpack_values_require_zero_runtime_limits() {
+        let mut config = Config {
+            settings_profile: Some(Arc::new(Settings::new())),
+            ..Config::default()
+        };
+        config.settings().unwrap_err();
+        config.decoder.max_table_capacity = 0;
+        config.settings().unwrap_err();
+        config.decoder.max_blocked_streams = 0;
+        assert!(
+            config
+                .local_settings(Role::Client, false)
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn ordinary_compression_progress_does_not_wake_request_rejection_waiters() {

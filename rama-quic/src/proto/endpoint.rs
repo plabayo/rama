@@ -478,6 +478,14 @@ impl Endpoint {
         remote: SocketAddr,
         server_name: &str,
     ) -> Result<(ConnectionHandle, Connection), ConnectError> {
+        // Validate before allocating a CID or starting TLS. A transport-only
+        // profile must not silently inherit incompatible endpoint wire settings.
+        config
+            .transport
+            .wire
+            .validate_endpoint(&self.config, self.local_cid_generator.cid_len())
+            .map_err(ConnectError::ProfileEndpointMismatch)?;
+
         if self.cids_exhausted() {
             return Err(ConnectError::CidsExhausted);
         }
@@ -778,6 +786,24 @@ impl Endpoint {
                 response: None,
             });
         };
+        // The application may supply a different server configuration at accept.
+        // Validate that configuration too, and release all pending routing state
+        // on rejection without sending a response for a local setup error.
+        if let Err(error) = server_config
+            .transport
+            .wire
+            .validate_endpoint(&self.config, self.local_cid_generator.cid_len())
+        {
+            self.clean_up_incoming(&incoming);
+            incoming.improper_drop_warner.dismiss();
+            return Err(AcceptError {
+                cause: ConnectionError::TransportError(TransportError::INTERNAL_ERROR(
+                    error.to_string(),
+                )),
+                response: None,
+            });
+        }
+
         // Keep initial routing until accept succeeds or its existing error paths remove it.
         let incoming_buffer = self.take_incoming_buffer(&incoming);
         incoming.improper_drop_warner.dismiss();
@@ -2278,6 +2304,8 @@ pub enum ConnectError {
     Crypto(TransportError),
     /// The local endpoint does not support the QUIC version specified in the client configuration
     UnsupportedVersion,
+    /// A connection profile requires different endpoint-wide wire settings.
+    ProfileEndpointMismatch(crate::profile::ProfileEndpointMismatch),
 }
 
 impl core::fmt::Display for ConnectError {
@@ -2290,6 +2318,7 @@ impl core::fmt::Display for ConnectError {
             Self::NoDefaultClientConfig => f.write_str("no default client config"),
             Self::Crypto(error) => write!(f, "initialize cryptographic session: {error}"),
             Self::UnsupportedVersion => f.write_str("unsupported QUIC version"),
+            Self::ProfileEndpointMismatch(error) => error.fmt(f),
         }
     }
 }
@@ -2298,6 +2327,7 @@ impl std::error::Error for ConnectError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Crypto(error) => Some(error),
+            Self::ProfileEndpointMismatch(error) => Some(error),
             _ => None,
         }
     }

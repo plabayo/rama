@@ -20,11 +20,14 @@ use rama_quic_proto::{
         first_flight_with_limits, observe,
     },
     crypto::{HeaderKey as _, PacketKey as _},
-    version::Version,
+    version::{ClientVersionPolicy, Version},
 };
 use rama_tls::client::TlsClientConfig;
 use rand::{SeedableRng, rngs::StdRng};
-use std::net::{Ipv4Addr, SocketAddr};
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
 
 use super::{
     browsers::{chrome_153, firefox_156},
@@ -734,5 +737,78 @@ fn default_and_profile_connection_id_limits_have_independent_wire_values() {
         let parameters =
             transport_parameters::new(&config, &endpoint, &generator, source, None, &mut rng);
         assert_eq!(parameters.active_connection_id_limit.into_inner(), expected);
+    }
+}
+
+#[test]
+fn rejected_profile_keeps_client_configuration_unchanged() {
+    let identity = crate::test_helpers::identity();
+    let mut client = crate::test_helpers::client(&identity);
+    let original_versions = client.versions.clone();
+    let original_transport = client.transport.clone();
+    let original_cid_provider = client.initial_dst_cid_provider.clone();
+    let profile = QuicProfile::standard()
+        .with_versions(ClientVersionPolicy::new(Version::V2).unwrap())
+        .with_connection_ids(
+            ConnectionIdProfile::standard()
+                .try_with_initial_destination_len(12)
+                .unwrap(),
+        )
+        .try_with_limits(TransportLimits {
+            active_connection_id_limit: Some(MAX_ACTIVE_CONNECTION_ID_LIMIT + 1),
+            ..TransportLimits::standard()
+        })
+        .unwrap();
+
+    // This is a valid protocol profile but exceeds this engine's CID storage.
+    client.apply_quic_profile(&profile).unwrap_err();
+    assert_eq!(client.versions, original_versions);
+    assert!(Arc::ptr_eq(&client.transport, &original_transport));
+    assert!(Arc::ptr_eq(
+        &client.initial_dst_cid_provider,
+        &original_cid_provider
+    ));
+}
+
+#[test]
+fn profile_endpoint_mismatches_fail_before_allocating_a_connection() {
+    // Endpoint compatibility is independent of the TLS provider's version-switch support.
+    let profile =
+        QuicProfile::standard().with_versions(ClientVersionPolicy::new(Version::V1).unwrap());
+    let identity = crate::test_helpers::identity();
+    let mut client = crate::test_helpers::client(&identity);
+    client.apply_quic_profile(&profile).unwrap();
+    for mismatch in [
+        ProfileEndpointMismatch::ConnectionIdLength,
+        ProfileEndpointMismatch::QuicBitGreasing,
+        ProfileEndpointMismatch::MaximumUdpPayload,
+    ] {
+        let mut config = EndpointConfig::try_with_rand_key().unwrap();
+        config.apply_quic_profile(&profile).unwrap();
+        match mismatch {
+            ProfileEndpointMismatch::ConnectionIdLength => {
+                config.set_connection_id_generator_factory(Arc::new(|| {
+                    Box::new(RandomConnectionIdGenerator::new(3).unwrap())
+                }));
+            }
+            ProfileEndpointMismatch::QuicBitGreasing => {
+                config.set_grease_quic_bit(!profile.greases_quic_bit());
+            }
+            ProfileEndpointMismatch::MaximumUdpPayload => {
+                config.max_udp_payload_size(1400).unwrap();
+            }
+        }
+        let mut endpoint =
+            crate::proto::Endpoint::new(Arc::new(config), None, false, Some([1; 32]));
+        let result = endpoint.connect(
+            crate::proto::Instant::now(),
+            client.clone(),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 443)),
+            "localhost",
+        );
+        assert!(
+            matches!(result, Err(crate::ConnectError::ProfileEndpointMismatch(actual)) if actual == mismatch)
+        );
+        assert_eq!(endpoint.open_connections(), 0);
     }
 }

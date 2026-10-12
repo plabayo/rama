@@ -7,7 +7,7 @@ use std::{
 use rama_core::extensions::{Extension, Extensions};
 use rama_http::{HeaderMap, HeaderName, Version, header::COOKIE};
 use rama_net::{
-    client::pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
+    client::pool::{ConnectionReuse, ConnectionReusePolicy, PoolPartition, ReuseKey},
     tls::{ApplicationProtocol, TlsAlpn},
 };
 use rama_utils::octets::kib;
@@ -168,12 +168,27 @@ pub struct SelectedProfile {
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(ua))]
 /// Immutable selection and draw coordinates shared by connection and request layers.
+/// Install with [`Self::publish`] so pool lookup also separates ordinary connections.
 pub struct EmulationContext {
     pub selected: Arc<SelectedProfile>,
     pub seed: ProfileSeed,
     pub connection_key: DrawKey,
     pub request_key: DrawKey,
     pub pins: VariantPins,
+}
+
+impl EmulationContext {
+    /// Publish the selection and its pool partition before looking up a connection.
+    /// Existing application partitions are retained, including tenant boundaries.
+    pub fn publish(self, extensions: &Extensions) {
+        let profile_partition = PoolPartition::of::<Self>();
+        let partition = match extensions.get_ref::<PoolPartition>() {
+            Some(existing) => existing.and(&profile_partition),
+            None => profile_partition,
+        };
+        extensions.insert(partition);
+        extensions.insert(self);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Extension)]

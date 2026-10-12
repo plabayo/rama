@@ -9,7 +9,7 @@ use std::{
 
 use rama_core::{
     ServiceInput,
-    extensions::{Extensions, ExtensionsRef},
+    extensions::{Extension, Extensions, ExtensionsRef},
     service::service_fn,
 };
 use rama_http::{
@@ -20,7 +20,10 @@ use rama_net::{
     Protocol,
     client::{
         ConnectRequest, ConnectionError, ConnectionErrorKind, EstablishedClientConnection,
-        pool::{BasicConnIdentifier, ConnectionReuse, MultiplexPool, PooledConnector},
+        pool::{
+            BasicConnId, BasicConnIdentifier, ConnectionReuse, ConnectionReusePolicy, LruDropPool,
+            MultiplexPool, Pool, PoolPartition, PooledConnector, ReuseKey,
+        },
     },
     tls::TlsAlpn,
 };
@@ -303,6 +306,7 @@ async fn profile_layer_selects_once_and_publishes_the_immutable_context() {
         assert_eq!(context.connection_key, DrawKey([2; 32]));
         assert_eq!(context.request_key, DrawKey([3; 32]));
         assert!(req.extensions().contains::<SelectedUserAgentProfile>());
+        assert!(req.extensions().contains::<PoolPartition>());
         assert_eq!(
             req.extensions()
                 .get_ref::<ProfilePreservationMode>()
@@ -442,13 +446,12 @@ async fn pooled_profile_reuse(clients: &[&str], best_effort: bool) {
             input
                 .extensions()
                 .insert(TargetHttpVersion(Version::HTTP_2));
-            input.extensions().insert(
-                request
-                    .extensions()
-                    .get_ref::<EmulationContext>()
-                    .unwrap()
-                    .clone(),
-            );
+            request
+                .extensions()
+                .get_ref::<EmulationContext>()
+                .unwrap()
+                .clone()
+                .publish(input.extensions());
 
             if best_effort {
                 input
@@ -689,4 +692,108 @@ async fn repeated_connect_keeps_its_own_replay_but_rejects_caller_replacement() 
     let error = modifier.serve(input).await.unwrap_err();
     assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
     assert!(error.to_string().contains("ReplayEarlyFrames"));
+}
+
+#[derive(Debug)]
+struct OrdinaryTransportReuse;
+
+impl ConnectionReusePolicy for OrdinaryTransportReuse {
+    fn classifier(&self) -> ReuseKey {
+        ReuseKey::of::<Self>()
+    }
+    fn connection_key(&self) -> Option<ReuseKey> {
+        Some(ReuseKey::of::<Self>())
+    }
+    fn request_key(&self, _: &Extensions) -> Option<ReuseKey> {
+        Some(ReuseKey::of::<Self>())
+    }
+}
+
+#[tokio::test]
+async fn profile_pool_partition_separates_multiplex_connections_in_both_orders() {
+    for profile_first in [false, true] {
+        for transport_policy in [false, true] {
+            mixed_profile_pool(MultiplexPool::new(), profile_first, transport_policy).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn profile_pool_partition_separates_exclusive_connections_in_both_orders() {
+    for profile_first in [false, true] {
+        for transport_policy in [false, true] {
+            // This connector-only test does not send a request through the lease.
+            let pool = LruDropPool::try_new(4, 4)
+                .unwrap()
+                .with_drop_connection_if_no_response(false);
+            mixed_profile_pool(pool, profile_first, transport_policy).await;
+        }
+    }
+}
+
+async fn mixed_profile_pool<P>(pool: P, profile_first: bool, transport_policy: bool)
+where
+    P: Pool<ServiceInput<()>, BasicConnId> + Extension,
+{
+    let calls = Arc::new(AtomicUsize::new(0));
+    let transport = service_fn({
+        let calls = calls.clone();
+        move |input: ConnectRequest| {
+            let calls = calls.clone();
+            async move {
+                calls.fetch_add(1, Ordering::Relaxed);
+                let conn = ServiceInput::new(());
+                conn.extensions().insert(TargetHttpVersion(Version::HTTP_2));
+                if transport_policy {
+                    // A transport policy can accept both requests while knowing
+                    // nothing about application-level profile requirements.
+                    conn.extensions()
+                        .insert(ConnectionReuse::new(OrdinaryTransportReuse));
+                }
+                Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
+            }
+        }
+    });
+    let connector = PooledConnector::new(
+        UserAgentEmulateHttpConnectModifier::new(transport),
+        pool,
+        BasicConnIdentifier::new(),
+    );
+    for profile in [profile_first, !profile_first, profile_first, !profile_first] {
+        let input = ConnectRequest::new("example.com:443".parse().unwrap())
+            .with_application_protocol(Protocol::HTTPS);
+        input
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_2));
+        if profile {
+            emulation_context().publish(input.extensions());
+        }
+        let established = connector.serve(input).await.unwrap();
+        assert_eq!(
+            established
+                .conn
+                .extensions()
+                .contains::<ConnectionSelection>(),
+            profile
+        );
+    }
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn profile_pool_partition_preserves_application_boundaries_and_is_idempotent() {
+    struct FirstTenant;
+    struct SecondTenant;
+    let first = Extensions::new();
+    let second = Extensions::new();
+    first.insert(PoolPartition::of::<FirstTenant>());
+    second.insert(PoolPartition::of::<SecondTenant>());
+    let first_tenant = first.get_ref::<PoolPartition>().unwrap().clone();
+    emulation_context().publish(&first);
+    emulation_context().publish(&second);
+    let published = first.get_ref::<PoolPartition>().unwrap().clone();
+    assert_ne!(published, first_tenant);
+    assert_ne!(&published, second.get_ref::<PoolPartition>().unwrap());
+    emulation_context().publish(&first);
+    assert_eq!(&published, first.get_ref::<PoolPartition>().unwrap());
 }

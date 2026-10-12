@@ -1,6 +1,6 @@
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
-    extensions::ExtensionsRef,
+    extensions::{Extension, ExtensionsRef},
 };
 
 use crate::{
@@ -10,7 +10,46 @@ use crate::{
     transport::TransportProtocol,
 };
 
-use super::{ConnID, ReqToConnID};
+use super::{ConnID, ReqToConnID, ReuseKey};
+use std::sync::Arc;
+
+/// An optional application partition of a connection pool's normal route identity.
+///
+/// Install this on connection input before pool lookup when connections created
+/// without an application capability must remain separate from those carrying it.
+/// The default network and HTTP identifiers include it. Custom identifiers must
+/// include it as well when they serve partitioned requests.
+///
+/// Connection reuse policies still choose compatible connections within a
+/// partition. No partition is allocated for ordinary, unpartitioned input.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(net))]
+pub struct PoolPartition(ReuseKey);
+
+impl PoolPartition {
+    /// Partition by an exact key in the application's chosen namespace.
+    #[must_use]
+    pub fn new(key: ReuseKey) -> Self {
+        Self(key)
+    }
+
+    /// Partition by a type, without allocating a key.
+    #[must_use]
+    pub fn of<T: ?Sized + 'static>() -> Self {
+        Self(ReuseKey::of::<T>())
+    }
+
+    /// Preserve this partition and add another application requirement.
+    /// Adding a requirement already present is idempotent.
+    #[must_use]
+    pub fn and(&self, other: &Self) -> Self {
+        if self.0.contains_part(&other.0) {
+            self.clone()
+        } else {
+            Self(self.0.clone().and(other.0.clone()))
+        }
+    }
+}
 
 /// Basic connection-pool identifier derived from connection input.
 ///
@@ -35,6 +74,8 @@ impl BasicConnIdentifier {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct BasicConnId {
+    /// Optional application partition; distinct partitions never share connections.
+    pub partition: Option<Arc<PoolPartition>>,
     pub protocol: Option<Protocol>,
     pub authority: HostWithOptPort,
     /// Whether the input selected a route, including an explicitly direct route.
@@ -76,6 +117,7 @@ where
         let proxy_route = input.extensions().get_ref::<ProxyRoute>();
 
         Ok(BasicConnId {
+            partition: input.extensions().get_arc::<PoolPartition>(),
             protocol: input.target_protocol().cloned(),
             authority,
             proxy_route_requested: proxy_route.is_some(),

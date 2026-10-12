@@ -250,7 +250,7 @@ impl Hop {
             });
             let transport = Http3Transport {
                 connection: quic.client.clone(),
-                config: Config::default(),
+                config: Arc::new(Config::default()),
             };
             let client = http_connect(transport, handshake_request(version), executor)
                 .await
