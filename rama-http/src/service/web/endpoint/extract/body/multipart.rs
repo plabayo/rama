@@ -20,10 +20,12 @@ use crate::service::web::extract::{FromRequest, FromRequestBody};
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use ahash::HashMap;
 use rama_core::bytes::Bytes;
+use rama_core::error::error_chain;
 use rama_core::extensions::Extension;
 use rama_core::futures::{Stream, TryStream};
 use rama_http_types::{
     HeaderMap, StatusCode,
+    body::util::LengthLimitError,
     header::{CONTENT_TYPE, content_type::parse_mime_type},
 };
 use rama_utils::macros::generate_set_and_with;
@@ -292,15 +294,10 @@ impl MultipartError {
     /// HTTP status used when this error is converted into a response.
     #[must_use]
     pub fn status(&self) -> StatusCode {
+        if is_size_limit_error(&self.source) {
+            return StatusCode::PAYLOAD_TOO_LARGE;
+        }
         match &self.source {
-            multer::Error::FieldSizeExceeded { .. } | multer::Error::StreamSizeExceeded { .. } => {
-                StatusCode::PAYLOAD_TOO_LARGE
-            }
-            multer::Error::StreamReadFailed(error)
-                if super::is_length_limit_error(error.as_ref()) =>
-            {
-                StatusCode::PAYLOAD_TOO_LARGE
-            }
             multer::Error::StreamReadFailed(_) | multer::Error::LockFailure => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -325,6 +322,20 @@ impl From<multer::Error> for MultipartError {
     fn from(source: multer::Error) -> Self {
         Self { source }
     }
+}
+
+// Size errors can arrive wrapped, e.g. from a nested multipart stream or a limited body.
+fn is_size_limit_error(error: &multer::Error) -> bool {
+    error_chain(error).any(|cause| {
+        cause.is::<LengthLimitError>()
+            || matches!(
+                cause.downcast_ref::<multer::Error>(),
+                Some(
+                    multer::Error::FieldSizeExceeded { .. }
+                        | multer::Error::StreamSizeExceeded { .. }
+                )
+            )
+    })
 }
 
 impl std::fmt::Display for MultipartError {
@@ -888,6 +899,68 @@ mod test {
             .unwrap();
         let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_size_limit_anywhere_in_error_chain_returns_payload_too_large() {
+        fn nested(source: multer::Error) -> multer::Error {
+            multer::Error::StreamReadFailed(Box::new(MultipartError::from(source)))
+        }
+
+        for (source, expected) in [
+            (
+                multer::Error::FieldSizeExceeded {
+                    limit: 8,
+                    field_name: None,
+                },
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+            (
+                multer::Error::StreamSizeExceeded { limit: 8 },
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+            (
+                nested(multer::Error::FieldSizeExceeded {
+                    limit: 8,
+                    field_name: Some("inner".to_owned()),
+                }),
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+            (
+                nested(nested(multer::Error::StreamSizeExceeded { limit: 8 })),
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+            (
+                multer::Error::StreamReadFailed(Box::new(std::io::Error::other("read failed"))),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                nested(multer::Error::IncompleteStream),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (multer::Error::IncompleteStream, StatusCode::BAD_REQUEST),
+        ] {
+            let error = MultipartError::from(source);
+            assert_eq!(error.status(), expected, "{error:?}");
+            if expected == StatusCode::PAYLOAD_TOO_LARGE {
+                assert_eq!(error.body_text(), "Request payload is too large");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_nested_multipart_size_limit_returns_payload_too_large() {
+        let inner = rama_core::futures::stream::once(async {
+            Err::<Bytes, _>(MultipartError::from(multer::Error::FieldSizeExceeded {
+                limit: 8,
+                field_name: Some("outer".to_owned()),
+            }))
+        });
+        let mut mp = Multipart::from_stream_with_config(inner, BOUNDARY, None);
+
+        let error = mp.next_field().await.unwrap_err();
+        assert_eq!(error.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(error.body_text(), "Request payload is too large");
     }
 
     #[tokio::test]
