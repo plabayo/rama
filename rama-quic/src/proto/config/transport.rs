@@ -79,6 +79,26 @@ pub struct TransportConfig {
 }
 
 impl TransportConfig {
+    /// The encoded DATAGRAM frame limit advertised to the peer.
+    ///
+    /// A profile can separate this wire limit from the local retention budget.
+    /// Disabling reception removes the parameter, including any profile override.
+    pub(crate) fn max_datagram_frame_size(&self) -> Option<VarInt> {
+        let window = self.datagram_receive_buffer_size?;
+        Some(self.wire.parameters.max_datagram_frame_size().map_or_else(
+            || VarInt::from_u32(window.min(usize::from(u16::MAX)) as u32),
+            |size| VarInt::from_u64(size).unwrap_or(VarInt::MAX),
+        ))
+    }
+
+    /// Whether this configuration advertises a nonzero QUIC DATAGRAM receive limit.
+    /// Queue capacity remains a separate local retention budget.
+    #[must_use]
+    pub fn datagram_receive_enabled(&self) -> bool {
+        self.max_datagram_frame_size()
+            .is_some_and(|size| size.into_inner() > 0)
+    }
+
     rama_utils::macros::generate_set_and_with! {
         /// Maximum number of incoming bidirectional streams that may be open concurrently
         ///
@@ -399,7 +419,9 @@ impl TransportConfig {
         /// Maximum number of incoming application datagram bytes to buffer, or None to disable
         /// incoming datagrams
         ///
-        /// The peer is forbidden to send single datagrams larger than this size. If the aggregate size
+        /// Without a profile override, this also bounds the encoded frame size advertised
+        /// to the peer (capped at 65535). A profile can advertise a different frame limit;
+        /// this budget then controls retention only. If the aggregate size
         /// of all datagrams that have been received from the peer but not consumed by the application
         /// exceeds this value, old datagrams are dropped until it is no longer exceeded.
         ///

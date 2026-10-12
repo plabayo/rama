@@ -1063,3 +1063,66 @@ fn initial_peek_retains_reordered_early_data_as_opaque_metadata() {
     assert_eq!(hello.version, Version::V1);
     assert_eq!(keys.calls.get(), 2);
 }
+
+#[test]
+fn profile_datagram_capability_matches_its_transport_parameter() {
+    let endpoint = EndpointConfig::new(HmacSha2::new_256(&[37; 32]));
+    let generator = RandomConnectionIdGenerator::new(8).unwrap();
+    let source = ConnectionId::try_from_bytes(&[1; 8]).unwrap();
+    let mut rng = StdRng::seed_from_u64(41);
+    for (window, advertised, expected) in [
+        (None, None, None),
+        (Some(0), None, Some(0)),
+        (Some(4096), Some(0), Some(0)),
+        (Some(4096), Some(8), Some(8)),
+        (Some(8), Some(128), Some(128)),
+        (Some(65536), None, Some(65535)),
+        (Some(8), Some(65536), Some(65536)),
+    ] {
+        let profile = QuicProfile::standard()
+            .with_transport_parameters(
+                TransportParameterProfile::standard()
+                    .try_with_max_datagram_frame_size(advertised)
+                    .unwrap(),
+            )
+            .try_with_limits(TransportLimits {
+                datagram_receive_buffer_size: window,
+                ..TransportLimits::standard()
+            })
+            .unwrap();
+        let config = TransportConfig::from_quic_profile(&profile).unwrap();
+        let parameters =
+            transport_parameters::new(&config, &endpoint, &generator, source, None, &mut rng);
+        assert_eq!(
+            parameters.max_datagram_frame_size.map(VarInt::into_inner),
+            expected
+        );
+        assert_eq!(
+            config.datagram_receive_enabled(),
+            expected.is_some_and(|size| size > 0)
+        );
+    }
+}
+
+#[test]
+fn profile_cannot_advertise_datagrams_with_reception_disabled() {
+    for advertised in [0, 128] {
+        let profile = QuicProfile::standard()
+            .with_transport_parameters(
+                TransportParameterProfile::standard()
+                    .try_with_max_datagram_frame_size(Some(advertised))
+                    .unwrap(),
+            )
+            .try_with_limits(TransportLimits {
+                datagram_receive_buffer_size: None,
+                ..TransportLimits::standard()
+            })
+            .unwrap();
+        TransportConfig::from_quic_profile(&profile).unwrap_err();
+        let identity = crate::test_helpers::identity();
+        let mut client = crate::test_helpers::client(&identity);
+        let previous = client.transport.clone();
+        assert!(client.apply_quic_profile(&profile).is_err());
+        assert!(Arc::ptr_eq(&client.transport, &previous));
+    }
+}

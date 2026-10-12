@@ -51,12 +51,7 @@ pub(crate) fn new(
             .unwrap_or(VarInt::from_u32(25)),
         disable_active_migration: server_config.is_some_and(|c| !c.migration),
         active_connection_id_limit: active_connection_id_limit(config, cid_gen),
-        max_datagram_frame_size: match wire.parameters.max_datagram_frame_size() {
-            Some(size) => Some(VarInt::from_u64(size).unwrap_or(VarInt::MAX)),
-            None => config
-                .datagram_receive_buffer_size
-                .map(|x| (x.min(u16::MAX.into()) as u16).into()),
-        },
+        max_datagram_frame_size: config.max_datagram_frame_size(),
         grease_quic_bit: endpoint_config.grease_quic_bit,
         min_ack_delay: wire.parameters.sends_min_ack_delay().then(|| {
             VarInt::from_u64(u64::try_from(TIMER_GRANULARITY.as_micros()).unwrap()).unwrap()

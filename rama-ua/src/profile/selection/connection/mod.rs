@@ -1,13 +1,17 @@
 use std::sync::Arc;
 
 use rama_core::extensions::Extension;
-use rama_http::proto::h2::frame::EarlyFrame;
+use rama_http::proto::{
+    h2::frame::EarlyFrame,
+    h3::{ClientSettingsProfile, SettingId, Settings},
+};
 
 use crate::profile::{
     CanonicalValue, CaptureLevel, CapturedSlotKind, ConnectionSelection, H2Capture,
     H2CaptureLimits, H3ClientSequenceCapture, H3SequenceCaptureLimits, JointCapture,
     JointCaptureLimits, OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture,
-    ProfileDataError, ProfilePreservationReport, QuicFlightCapture, QuicFlightCaptureLimits,
+    ProfileDataError, ProfilePreservationReport, ProtocolValue, QuicFlightCapture,
+    QuicFlightCaptureLimits,
 };
 #[cfg(feature = "tls")]
 use crate::profile::{TlsCapture, TlsCaptureLimits};
@@ -26,6 +30,34 @@ pub struct PreparedConnectionComponents {
     pub h3_sequence: Option<H3ClientSequenceCapture>,
     /// Differences introduced while compiling the selected connection capture.
     pub preservation_report: ProfilePreservationReport,
+}
+
+impl PreparedConnectionComponents {
+    /// Compile the captured client's SETTINGS in their original wire order.
+    /// Runtime resource and capability checks belong to the HTTP/3 connector.
+    pub fn h3_client_settings(&self) -> Result<Option<ClientSettingsProfile>, ProfileDataError> {
+        let Some(capture) = &self.h3_peer_settings else {
+            return Ok(None);
+        };
+        if !matches!(capture.namespace, OrderNamespace::Http3Setting) {
+            return Err(ProfileDataError::Invalid("HTTP/3 SETTINGS namespace"));
+        }
+        capture.validate_fields(OrderCaptureLimits::default())?;
+        let mut settings = Settings::new();
+        for field in &capture.fields {
+            let ProtocolValue::Literal(bytes) = &field.value else {
+                return Err(ProfileDataError::Invalid("HTTP/3 SETTINGS value ownership"));
+            };
+            let encoded = bytes
+                .as_ref()
+                .try_into()
+                .map_err(|_error| ProfileDataError::Invalid("HTTP/3 SETTINGS value encoding"))?;
+            settings
+                .set(SettingId::new(field.id), u64::from_be_bytes(encoded))
+                .map_err(|_error| ProfileDataError::Invalid("HTTP/3 SETTINGS value"))?;
+        }
+        Ok(Some(ClientSettingsProfile(Arc::new(settings))))
+    }
 }
 
 impl ConnectionSelection {

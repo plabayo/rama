@@ -10,6 +10,7 @@ use rama_core::{
         ArcLayer, ConsumeErrLayer,
         consume_err::{StaticOutput, Trace},
     },
+    matcher::Matcher,
     rt::Executor,
     service::service_fn,
     telemetry::tracing,
@@ -19,7 +20,10 @@ use rama_http::{
     conn::{H2ServerContextParams, TargetHttpVersion},
     header::{self, trailer::ForbiddenTrailers},
     io::upgrade::OnUpgrade,
-    layer::remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
+    layer::{
+        remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
+        validate_request::{BoundAuthority, ValidateRequest, ValidateRequestHeaderLayer},
+    },
     service::web::response::IntoResponse,
 };
 use rama_http_core::server::conn::{
@@ -164,9 +168,10 @@ pub type DefaultMiddleware = (
 /// intermediary may be forwarding them to the proxy that owns the exchange.
 /// A proxy that owns that exchange should explicitly apply the `proxy_auth`
 /// request and response removal layers in its middleware.
-pub struct HttpMitmRelay<M = DefaultMiddleware> {
+pub struct HttpMitmRelay<M = DefaultMiddleware, P = bool> {
     http_server: HttpServer<AutoConnBuilder>,
     middleware: M,
+    authority: Option<BoundAuthority<P>>,
     exec: Executor,
     eager_peer_settings_timeout: Duration,
     forbidden_trailers: ForbiddenTrailers,
@@ -193,8 +198,28 @@ impl HttpMitmRelay {
                 ArcLayer::new(),
             ),
             exec,
+            authority: None,
             eager_peer_settings_timeout: DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT,
             forbidden_trailers: ForbiddenTrailers::AllowAll,
+        }
+    }
+}
+
+impl<M, P> HttpMitmRelay<M, P> {
+    /// Bind this intercepted connection to its trusted logical origin and policy.
+    ///
+    /// Every request is checked before dispatch and again after HTTP middleware.
+    /// Authority mismatches and revoked policy return 421 without allocating an
+    /// upstream request stream. The origin comes from the interception decision,
+    /// not the first request, SNI alone, or a physical connector override.
+    pub fn with_bound_authority<Q>(self, authority: BoundAuthority<Q>) -> HttpMitmRelay<M, Q> {
+        HttpMitmRelay {
+            http_server: self.http_server,
+            middleware: self.middleware,
+            authority: Some(authority),
+            exec: self.exec,
+            eager_peer_settings_timeout: self.eager_peer_settings_timeout,
+            forbidden_trailers: self.forbidden_trailers,
         }
     }
 
@@ -204,18 +229,17 @@ impl HttpMitmRelay {
     /// Fields received from each connection are consumed before this
     /// middleware handles the message. Transport intent added by the
     /// middleware is therefore originated for the next connection.
-    pub fn with_http_middleware<M>(self, middleware: M) -> HttpMitmRelay<M> {
+    pub fn with_http_middleware<N>(self, middleware: N) -> HttpMitmRelay<N, P> {
         HttpMitmRelay {
             http_server: self.http_server,
             middleware,
+            authority: self.authority,
             exec: self.exec,
             eager_peer_settings_timeout: self.eager_peer_settings_timeout,
             forbidden_trailers: self.forbidden_trailers,
         }
     }
-}
 
-impl<M> HttpMitmRelay<M> {
     #[inline(always)]
     /// Http1 builder.
     pub fn http1(&self) -> &Http1ConnBuilder {
@@ -263,15 +287,21 @@ impl<M> HttpMitmRelay<M> {
     }
 }
 
-impl<Ingress, Egress, M> Service<BridgeIo<Ingress, Egress>> for HttpMitmRelay<M>
+impl<Ingress, Egress, M, P> Service<BridgeIo<Ingress, Egress>> for HttpMitmRelay<M, P>
 where
     Ingress: Io + Unpin + ExtensionsRef,
     Egress: Io + Unpin + ExtensionsRef,
-    (RemoveRequestHeaderLayer, M, RemoveResponseHeaderLayer): Layer<
+    (
+        RemoveRequestHeaderLayer,
+        M,
+        RemoveResponseHeaderLayer,
+        ValidateRequestHeaderLayer<Option<BoundAuthority<P>>>,
+    ): Layer<
             HttpClientService<Body>,
             Service: Service<Request, Output = Response, Error: Into<BoxError>> + Clone,
         > + Clone,
     M: Send + Sync + 'static + Clone,
+    P: Matcher<Request> + Clone,
 {
     type Output = ();
     type Error = BoxError;
@@ -340,6 +370,7 @@ where
                         RemoveRequestHeaderLayer::hop_by_hop(),
                         self.middleware.clone(),
                         RemoveResponseHeaderLayer::hop_by_hop(),
+                        ValidateRequestHeaderLayer::custom(self.authority.clone()),
                     )
                         .layer(conn);
                     Arc::new(Mutex::new(RelayState::Http2 { client, health }))
@@ -356,11 +387,13 @@ where
                     RemoveRequestHeaderLayer::hop_by_hop(),
                     self.middleware.clone(),
                     RemoveResponseHeaderLayer::hop_by_hop(),
+                    ValidateRequestHeaderLayer::custom(self.authority.clone()),
                 ),
             )))
         };
 
         let forbidden_trailers = self.forbidden_trailers.clone();
+        let authority = self.authority.clone();
         let result = self
             .http_server
             .serve_with_graceful_shutdown(
@@ -369,10 +402,15 @@ where
                     // Inherited by the forwarded request and the upstream's response.
                     req.extensions().insert(forbidden_trailers.clone());
                     let relay_state = relay_state.clone();
+                    let authority = authority.clone();
                     let close_ingress = token.clone();
                     let guard = request_guard.clone();
                     let egress_health = egress_health.clone();
                     async move {
+                        let req = match authority.validate(req).await {
+                            Ok(req) => req,
+                            Err(response) => return Ok(response),
+                        };
                         let version = req.version();
                         let resp = handle_relay_request(
                             &relay_state,

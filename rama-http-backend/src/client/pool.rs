@@ -10,7 +10,7 @@ use rama_core::{
 use rama_http_types::{
     Version,
     conn::{FallbackHttpVersion, TargetHttpVersion},
-    proto::ext::extended_connect_pseudo_scheme,
+    proto::{ext::extended_connect_pseudo_scheme, h3::ClientSettingsProfile},
     proxy::PlaintextHttpProxyMode,
 };
 use rama_net::client::pool::{
@@ -71,6 +71,7 @@ pub struct HttpConnId {
     reusable: bool,
     tls: Option<TlsPoolId>,
     quic_profile: Option<Arc<QuicProfile>>,
+    h3_settings: Option<Arc<ClientSettingsProfile>>,
     network: BasicConnId,
     required_version: Option<Version>,
     http_proxy_mode: Option<HttpProxyModeRequirement>,
@@ -114,6 +115,7 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
             reusable: tls.as_ref().is_none_or(TlsPoolId::is_reusable),
             tls,
             quic_profile: input.extensions().get_arc::<QuicProfile>(),
+            h3_settings: input.extensions().get_arc::<ClientSettingsProfile>(),
             network,
             required_version: connection_version_requirement(input),
             http_proxy_mode: http_proxy_mode_requirement(input),
@@ -410,6 +412,7 @@ mod tests {
     use rama_core::service::service_fn;
     use rama_core::{Layer, Service, ServiceInput};
     use rama_http_types::body::util::BodyExt as _;
+    use rama_http_types::proto::h3::{ClientSettingsProfile, SettingId, Settings};
     use rama_http_types::proxy::PlaintextHttpProxyMode;
     use rama_http_types::{Body, HeaderValue, Method, Request, Response, StatusCode, Version};
     use rama_net::address::{HostWithPort, ProxyAddress};
@@ -1926,6 +1929,40 @@ mod tests {
                 input
                     .extensions()
                     .insert(QuicProfile::standard().with_grease_quic_bit(kind == 1));
+            }
+            let _connection = connector.serve(input).await.unwrap();
+            assert_eq!(attempts.load(Ordering::Relaxed), expected);
+        }
+    }
+    #[tokio::test]
+    async fn explicit_h3_settings_partition_http_pool_connections_by_value() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner = service_fn({
+            let attempts = attempts.clone();
+            move |input: ConnectRequest| {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    Ok::<_, ConnectionError>(EstablishedClientConnection {
+                        input,
+                        conn: ServiceInput::new(()),
+                    })
+                }
+            }
+        });
+        let connector =
+            PooledConnector::new(inner, MultiplexPool::new(), HttpConnIdentifier::new());
+        for (kind, expected) in [(0, 1), (1, 2), (1, 2), (2, 3), (1, 3), (0, 3)] {
+            let input = ConnectRequest::new("example.com:443".parse().unwrap())
+                .with_application_protocol(Protocol::HTTPS);
+            input
+                .extensions()
+                .insert(TargetHttpVersion(Version::HTTP_3));
+            if kind != 0 {
+                let mut settings = Settings::new();
+                settings.set(SettingId::FIRST_RESERVED, kind).unwrap();
+                input
+                    .extensions()
+                    .insert(ClientSettingsProfile(Arc::new(settings)));
             }
             let _connection = connector.serve(input).await.unwrap();
             assert_eq!(attempts.load(Ordering::Relaxed), expected);

@@ -11,7 +11,7 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_http_core::h3::connection::Config;
-use rama_http_types::{Version, conn::TargetHttpVersion};
+use rama_http_types::{Version, conn::TargetHttpVersion, proto::h3::ClientSettingsProfile};
 use rama_net::{
     ConnectorTargetInputExt, ProtocolInputExt,
     address::{Host, SocketAddress},
@@ -631,6 +631,32 @@ impl Service<ConnectRequest> for Http3Connector {
         }
         validate_version(&input)?;
 
+        let h3_config = match input.extensions().get_ref::<ClientSettingsProfile>() {
+            Some(profile) => Arc::new(
+                self.config
+                    .try_with_client_settings(profile.0.clone())
+                    .map_err(|error| ConnectionError::local(error, InvalidInput))?,
+            ),
+            None => self.config.clone(),
+        };
+        // A captured H3 DATAGRAM promise requires a nonzero local QUIC receive
+        // limit. Check known configuration before TLS setup, socket binding or
+        // dialing; the HTTP/3 handshake still validates the resulting transport.
+        if h3_config
+            .settings_profile
+            .as_ref()
+            .is_some_and(|settings| settings.h3_datagram())
+        {
+            let datagrams = match input.extensions().get_ref::<QuicProfile>() {
+                Some(profile) => TransportConfig::from_quic_profile(profile)
+                    .map_err(|error| ConnectionError::local(error, InvalidInput))?
+                    .datagram_receive_enabled(),
+                None => self.transport.datagram_receive_enabled(),
+            };
+            if !datagrams {
+                return Err(invalid("HTTP/3 SETTINGS require QUIC DATAGRAM reception"));
+            }
+        }
         let prepared = self.prepare_tls(&input)?;
         // Keep QUIC address-race and handshake state out of enclosing pool and
         // service-selection futures. Allocate only when opening a connection;
@@ -643,7 +669,7 @@ impl Service<ConnectRequest> for Http3Connector {
 
         let conn = Http3Transport {
             connection,
-            config: self.config.clone(),
+            config: h3_config,
         };
         Ok(EstablishedClientConnection { input, conn })
     }
@@ -795,14 +821,24 @@ mod concrete_transport_tests {
 
     use rama_core::rt::spawn;
     use rama_core::{extensions::Extensions, graceful::Shutdown};
-    use rama_http_core::h3::{client as h3_client, server as h3_server};
-    use rama_http_types::{Body, Request, Response};
+    use rama_http_core::h3::{
+        client as h3_client,
+        observation::{H3Observer, SettingsObservation},
+        server as h3_server,
+    };
+    use rama_http_types::{
+        Body, Request, Response,
+        proto::h3::{SettingId, Settings},
+    };
     use rama_net::client::ConnectorTarget;
     use rama_quic::{ServerConfig, tls::TlsConfigError};
     use rama_quic_proto::{
         TransportError,
         frame::ApplicationClose,
-        profile::{ConnectionIdProfile, ParameterId, ParameterOrder, TransportLimits},
+        profile::{
+            ConnectionIdProfile, ParameterId, ParameterOrder, TransportLimits,
+            TransportParameterProfile,
+        },
     };
     use rama_quic_proto::{
         VarInt,
@@ -814,7 +850,7 @@ mod concrete_transport_tests {
     use rama_tls::server::{LeafCertRequest, ServerAuthData, TlsServerConfig};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
-    use tokio::{runtime::Runtime, sync::oneshot};
+    use tokio::{runtime::Runtime, sync::oneshot, time::Instant};
 
     #[derive(Debug, Default)]
     struct CustomProvider {
@@ -873,6 +909,85 @@ mod concrete_transport_tests {
                 BoxError::from_static_str("custom factory invoked"),
             ))
         }
+    }
+
+    #[tokio::test]
+    async fn captured_h3_datagrams_require_quic_reception_before_tls_setup() {
+        for (window, advertised) in [(None, None), (Some(0), None), (Some(4096), Some(0))] {
+            for request_settings in [false, true] {
+                let provider = Arc::new(CustomProvider::default());
+                let mut settings = Settings::default();
+                settings.set(SettingId::H3_DATAGRAM, 1).unwrap();
+                let settings = Arc::new(settings);
+                let config = if request_settings {
+                    Config::default()
+                } else {
+                    Config::default()
+                        .try_with_client_settings(settings.clone())
+                        .unwrap()
+                };
+                let connector = Http3Connector::builder(Executor::new())
+                    .with_tls_provider(provider.clone())
+                    .with_config(config)
+                    .build_lazy()
+                    .unwrap();
+                let input = ConnectRequest::new(HostWithPort::local_ipv4(443))
+                    .with_application_protocol(Protocol::HTTPS);
+                input
+                    .extensions
+                    .insert(TlsServerVerify(ServerVerifyMode::Disable));
+                let profile = QuicProfile::standard()
+                    .with_transport_parameters(
+                        TransportParameterProfile::standard()
+                            .try_with_max_datagram_frame_size(advertised)
+                            .unwrap(),
+                    )
+                    .try_with_limits(TransportLimits {
+                        datagram_receive_buffer_size: window,
+                        ..TransportLimits::standard()
+                    })
+                    .unwrap();
+                input.extensions.insert(profile);
+                if request_settings {
+                    input.extensions.insert(ClientSettingsProfile(settings));
+                }
+                let error = connector.serve(input).await.err().unwrap();
+                assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
+                assert_eq!(provider.calls.load(Ordering::Relaxed), 0);
+                assert_matches!(connector.endpoint.as_ref(), ConnectorEndpoint::Managed(endpoint)
+                    if endpoint.try_lock().unwrap().default.is_none());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn captured_h3_without_datagrams_allows_quic_reception_disabled() {
+        let provider = Arc::new(CustomProvider::default());
+        let connector = Http3Connector::builder(Executor::new())
+            .with_tls_provider(provider.clone())
+            .build_lazy()
+            .unwrap();
+        let input = ConnectRequest::new(HostWithPort::local_ipv4(443))
+            .with_application_protocol(Protocol::HTTPS);
+        input
+            .extensions
+            .insert(TlsServerVerify(ServerVerifyMode::Disable));
+        input
+            .extensions
+            .insert(ClientSettingsProfile(Arc::new(Settings::default())));
+        input.extensions.insert(
+            QuicProfile::standard()
+                .try_with_limits(TransportLimits {
+                    datagram_receive_buffer_size: None,
+                    ..TransportLimits::standard()
+                })
+                .unwrap(),
+        );
+        // This fixture provider deliberately fails once reached. Its call count
+        // proves the compatible profile passes the cross-protocol preflight.
+        let error = connector.serve(input).await.err().unwrap();
+        assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
+        assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -1312,12 +1427,40 @@ mod concrete_transport_tests {
                         .get_ref::<QuicObservation>()
                         .unwrap()
                         .clone();
-                    let (mut http, driver) =
-                        h3_server::handshake(connection.clone(), Config::default()).unwrap();
+                    let (mut http, driver) = h3_server::handshake(
+                        connection.clone(),
+                        Config {
+                            observation: Some(Default::default()),
+                            ..Config::default()
+                        },
+                    )
+                    .unwrap();
                     spawn(driver.run());
                     handlers.push(spawn(async move {
-                        let (_request, response) =
+                        let (request, response) =
                             http.accept().await.unwrap().resolve().await.unwrap();
+                        let observer = request
+                            .extensions()
+                            .get_ref::<H3Observer>()
+                            .unwrap()
+                            .clone();
+                        let SettingsObservation::Received(settings) = observer
+                            .settings(Instant::now() + Duration::from_secs(1))
+                            .await
+                        else {
+                            panic!("client settings were not observed");
+                        };
+                        let actual: Vec<_> = settings
+                            .settings
+                            .as_ref()
+                            .unwrap()
+                            .iter()
+                            .map(|setting| (setting.id, setting.value))
+                            .collect();
+                        assert_eq!(
+                            actual,
+                            [(SettingId::FIRST_RESERVED.value(), 17), (0xface, 29)]
+                        );
                         response
                             .send_response(Response::new(Body::empty()))
                             .await
@@ -1370,6 +1513,12 @@ mod concrete_transport_tests {
                     .extensions()
                     .insert(ConnectorTarget(HostWithPort::local_ipv4(address.port())));
                 input.extensions().insert(profile.clone());
+                let mut settings = Settings::new();
+                settings.set(SettingId::FIRST_RESERVED, 17).unwrap();
+                settings.set(SettingId::new(0xface), 29).unwrap();
+                input
+                    .extensions()
+                    .insert(ClientSettingsProfile(Arc::new(settings)));
                 transports.push(connector.serve(input).await.unwrap().conn);
             }
             // Each established connection retains its socket through the driver;

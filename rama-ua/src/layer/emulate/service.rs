@@ -12,7 +12,7 @@ use rama_http::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Version,
     conn::{H2ClientContextParams, Http1ClientContextParams, TargetHttpVersion},
     header::{CONTENT_TYPE, REFERER, SEC_WEBSOCKET_VERSION, USER_AGENT},
-    proto::h2::frame::EarlyFrame,
+    proto::{h2::frame::EarlyFrame, h3::ClientSettingsProfile},
 };
 use rama_net::{
     AuthorityInputExt, HttpVersionInputExt, Protocol, ProtocolInputExt, TargetHttpVersionInputExt,
@@ -310,6 +310,24 @@ where
             let mut prepared = selection.prepare_components().map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
             })?;
+            if let Some(settings) = prepared
+                .h3_client_settings()
+                .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?
+            {
+                if req
+                    .extensions()
+                    .get_ref::<ClientSettingsProfile>()
+                    .is_some_and(|caller| caller != &settings)
+                {
+                    return Err(ConnectionError::local(
+                        BoxError::from_static_str(
+                            "caller and selected HTTP/3 SETTINGS profiles conflict",
+                        ),
+                        ConnectionErrorKind::InvalidInput,
+                    ));
+                }
+                req.extensions().insert(settings);
+            }
             if let Some(h2_early_frames) = &prepared.h2_early_frames {
                 apply_profile_h2_replay(
                     &req,

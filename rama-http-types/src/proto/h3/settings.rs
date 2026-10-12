@@ -1,8 +1,11 @@
 //! HTTP/3 SETTINGS (RFC 9114 §7.2.4) and the QPACK settings (RFC 9204 §5).
 
-use std::fmt;
+use std::{fmt, sync::Arc};
 
-use rama_core::bytes::{Buf, BufMut};
+use rama_core::{
+    bytes::{Buf, BufMut},
+    extensions::Extension,
+};
 use rama_quic_proto::{VarInt, coding::Codec};
 
 /// The identifier of an HTTP/3 setting (RFC 9114 §7.2.4, §11.2.2).
@@ -95,7 +98,7 @@ impl fmt::Debug for SettingId {
 }
 
 /// One HTTP/3 setting: an identifier and its value.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Setting {
     /// The setting identifier.
     pub id: SettingId,
@@ -120,10 +123,18 @@ pub const DEFAULT_MAX_SETTINGS_ENTRIES: usize = 32;
 /// Order is preserved so that a caller reproducing a specific wire image (a fingerprint profile,
 /// for example) can control it. Duplicate identifiers — known, unknown or reserved — are rejected,
 /// and the HTTP/2-forbidden identifiers are rejected, both as required by RFC 9114 §7.2.4.1.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq, Hash)]
 pub struct Settings {
     entries: Vec<Setting>,
 }
+
+/// Literal client SETTINGS selected before opening an HTTP/3 connection.
+///
+/// Order and omitted entries are part of the profile. The connector checks these
+/// values against its resource budgets and transport capabilities before dialing.
+/// Equal profiles may share a connection; different wire images do not.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Extension)]
+pub struct ClientSettingsProfile(pub Arc<Settings>);
 
 impl Settings {
     /// An empty settings set.

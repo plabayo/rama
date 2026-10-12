@@ -31,7 +31,10 @@ mod datagram;
 pub use datagram::{InvalidQuarterStreamId, QuarterStreamId};
 
 mod settings;
-pub use settings::{DEFAULT_MAX_SETTINGS_ENTRIES, Setting, SettingId, Settings, SettingsError};
+pub use settings::{
+    ClientSettingsProfile, DEFAULT_MAX_SETTINGS_ENTRIES, Setting, SettingId, Settings,
+    SettingsError,
+};
 
 pub mod qpack;
 

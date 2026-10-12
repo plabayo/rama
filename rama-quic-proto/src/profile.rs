@@ -403,7 +403,8 @@ impl TransportParameterProfile {
     }
 
     /// Advertise this `max_datagram_frame_size` instead of the receive buffer size; the buffer
-    /// still bounds what is accepted. Must fit a variable-length integer.
+    /// still bounds local retention. Valid frames that do not fit are dropped without a
+    /// protocol error. Must fit a variable-length integer.
     pub fn try_with_max_datagram_frame_size(
         mut self,
         size: Option<u64>,

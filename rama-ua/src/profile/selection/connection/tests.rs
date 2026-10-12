@@ -160,3 +160,42 @@ fn request_capture_cannot_be_prepared_as_connection_components() {
         ))
     ));
 }
+
+#[test]
+fn selected_h3_settings_compile_in_literal_order() {
+    let fields = [
+        (SettingId::FIRST_RESERVED.value(), 17u64),
+        (SettingId::QPACK_BLOCKED_STREAMS.value(), 0),
+        (0xface, 29),
+    ];
+    let capture = OrderedProtocolCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        OrderNamespace::Http3Setting,
+        fields.map(|(id, value)| (id, value.to_be_bytes())),
+        OrderCaptureLimits::default(),
+    )
+    .unwrap()
+    .canonical(OrderCaptureLimits::default())
+    .unwrap();
+    let joint = JointCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        level: CaptureLevel::Connection,
+        slots: vec![CapturedSlot {
+            kind: CapturedSlotKind::Http3Settings,
+            value: capture,
+        }]
+        .into(),
+    }
+    .canonical(JointCaptureLimits::default())
+    .unwrap();
+    let prepared = selection(joint).prepare_components().unwrap();
+    let settings = prepared.h3_client_settings().unwrap().unwrap();
+    let actual: Vec<_> = settings
+        .0
+        .entries()
+        .iter()
+        .map(|s| (s.id.value(), s.value))
+        .collect();
+    assert_eq!(actual, fields);
+    assert_eq!(settings.0.qpack_max_table_capacity(), 0);
+}

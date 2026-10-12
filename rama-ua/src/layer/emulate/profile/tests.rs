@@ -15,6 +15,7 @@ use rama_core::{
 use rama_http::{
     HeaderName, Method, Request, Version,
     conn::{H2ClientContextParams, TargetHttpVersion},
+    proto::h3::{ClientSettingsProfile, SettingId, Settings},
 };
 use rama_net::{
     Protocol,
@@ -38,9 +39,10 @@ use crate::{
         CapturedSlotKind, CountedCaptureAnalysis, CounterSnapshot, H2Capture, H2CaptureLimits,
         H2CapturedFrame, H2CapturedSetting, H2ClientParameter, HeaderCapture, HeaderCapturePolicy,
         HeaderOccurrence, HeaderValueSource, JointCapture, JointCaptureLimits, ObservationLosses,
-        ObservationWeight, PreparedConnectionComponents, ProfileCaptureCompleteness, ProfileKey,
+        ObservationWeight, OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture,
+        PreparedConnectionComponents, ProfileCaptureCompleteness, ProfileKey,
         ProfileObservationScope, ProfilePreservationDifference, ProfilePreservationReport,
-        RequestSelection, UntrackedDistinctSnapshot, ValueId,
+        RequestSelection, UntrackedDistinctSnapshot, UserAgentProfile, ValueId,
     },
 };
 
@@ -796,4 +798,157 @@ fn profile_pool_partition_preserves_application_boundaries_and_is_idempotent() {
     assert_ne!(&published, second.get_ref::<PoolPartition>().unwrap());
     emulation_context().publish(&first);
     assert_eq!(&published, first.get_ref::<PoolPartition>().unwrap());
+}
+
+fn h3_emulation_context() -> EmulationContext {
+    let original = emulation_context();
+    let mut analyzed = original
+        .selected
+        .profile()
+        .captured
+        .as_ref()
+        .unwrap()
+        .as_ref()
+        .clone();
+    analyzed.components = AnalyzedProfileComponents {
+        h3: Some(vec![0, 1].into()),
+        ..AnalyzedProfileComponents::default()
+    };
+    let flow = FlowKey::Http {
+        version: Version::HTTP_3,
+        method: Method::GET,
+        initiator: None,
+        fetch: None,
+        connection: ConnectionContext::default(),
+    };
+    let settings = OrderedProtocolCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        OrderNamespace::Http3Setting,
+        [(SettingId::FIRST_RESERVED.value(), 17u64.to_be_bytes())],
+        OrderCaptureLimits::default(),
+    )
+    .unwrap()
+    .canonical(OrderCaptureLimits::default())
+    .unwrap();
+    let headers = HeaderCapture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        version: Version::HTTP_3,
+        fields: Box::default(),
+    }
+    .canonical(&HeaderCapturePolicy::default())
+    .unwrap();
+    for (index, level, kind, value) in [
+        (
+            0,
+            CaptureLevel::Connection,
+            CapturedSlotKind::Http3Settings,
+            settings,
+        ),
+        (1, CaptureLevel::Request, CapturedSlotKind::Headers, headers),
+    ] {
+        let value = JointCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            level,
+            slots: vec![CapturedSlot { kind, value }].into(),
+        }
+        .canonical(JointCaptureLimits::default())
+        .unwrap();
+        let scope = &mut analyzed.scopes[index];
+        scope.structure = value.clone();
+        scope.observations.sample_values = vec![value.id].into();
+        scope.observations.variants[0].value = value;
+        if level == CaptureLevel::Request {
+            scope.context.flow = Some(flow.canonical(MAXIMUM_FETCH_CONTEXT_BYTES).unwrap().id);
+        }
+    }
+    let db: UserAgentDatabase = [UserAgentProfile::from_captured(analyzed)]
+        .into_iter()
+        .collect();
+    let selected = db
+        .select(
+            &SelectionRequest {
+                client: ProfileSelector::default(),
+                required: CapabilitySet {
+                    h3: true,
+                    ..CapabilitySet::default()
+                },
+                flow,
+                pins: VariantPins::default(),
+            },
+            ProfileSeed([1; 32]),
+            DrawKey([2; 32]),
+        )
+        .unwrap();
+    Arc::new(selected).emulation_context(ProfileSeed([1; 32]), DrawKey([2; 32]), DrawKey([3; 32]))
+}
+
+#[tokio::test]
+async fn connect_modifier_applies_selected_h3_settings_before_connect() {
+    for caller_profile in [false, true] {
+        let inner = service_fn(|input: ConnectRequest| async move {
+            let settings = input
+                .extensions()
+                .get_ref::<ClientSettingsProfile>()
+                .unwrap();
+            assert_eq!(settings.0.entries().len(), 1);
+            assert_eq!(settings.0.get(SettingId::FIRST_RESERVED), Some(17));
+            let conn = ServiceInput::new(());
+            conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
+            Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
+        });
+        let input = ConnectRequest::new("example.com:443".parse().unwrap())
+            .with_application_protocol(Protocol::HTTPS);
+        input
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_3));
+        input.extensions().insert(h3_emulation_context());
+        if caller_profile {
+            let mut settings = Settings::new();
+            settings.set(SettingId::FIRST_RESERVED, 17).unwrap();
+            input
+                .extensions()
+                .insert(ClientSettingsProfile(Arc::new(settings)));
+        }
+        UserAgentEmulateHttpConnectModifier::new(inner)
+            .serve(input)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn connect_modifier_rejects_conflicting_h3_settings_before_connect() {
+    for mode in [
+        ProfilePreservationMode::Strict,
+        ProfilePreservationMode::BestEffort,
+    ] {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner = service_fn({
+            let attempts = attempts.clone();
+            move |input: ConnectRequest| {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    let conn = ServiceInput::new(());
+                    conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
+                    Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
+                }
+            }
+        });
+        let input = ConnectRequest::new("example.com:443".parse().unwrap())
+            .with_application_protocol(Protocol::HTTPS);
+        input
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_3));
+        input.extensions().insert(h3_emulation_context());
+        input.extensions().insert(mode);
+        input
+            .extensions()
+            .insert(ClientSettingsProfile(Arc::new(Settings::new())));
+        let error = UserAgentEmulateHttpConnectModifier::new(inner)
+            .serve(input)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
+        assert_eq!(attempts.load(Ordering::Relaxed), 0);
+    }
 }

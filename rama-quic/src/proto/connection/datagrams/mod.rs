@@ -7,6 +7,8 @@ use rama_quic_proto::{
     frame::{ArrivedDatagram, Datagram, FrameStruct},
 };
 
+use crate::proto::config::TransportConfig;
+
 use super::{
     Connection,
     retained::{Retained, retain},
@@ -102,7 +104,7 @@ impl Datagrams<'_> {
 
     /// Whether this endpoint accepts DATAGRAM frames, as its `max_datagram_frame_size` says.
     pub(crate) fn receive_enabled(&self) -> bool {
-        self.conn.config.datagram_receive_buffer_size.is_some()
+        self.conn.config.datagram_receive_enabled()
     }
 
     /// Receive an unreliable, unordered datagram
@@ -138,25 +140,24 @@ impl DatagramState {
         &mut self,
         arrived: ArrivedDatagram,
         allocated: usize,
-        window: Option<usize>,
+        config: &TransportConfig,
     ) -> Result<bool, TransportError> {
         let ArrivedDatagram { datagram, encoded } = arrived;
-        let Some(window) = window else {
+        let Some(advertised) = config.max_datagram_frame_size() else {
             return Err(TransportError::PROTOCOL_VIOLATION(
                 "unexpected DATAGRAM frame",
             ));
         };
 
-        // What the peer was told it may send is the encoded frame, not what holding it costs
-        // here (RFC 9221 §3), and it is the value this side advertised: the receive budget
-        // capped to what the transport parameter can carry.
-        let advertised = window.min(usize::from(u16::MAX));
-        if encoded > advertised {
+        // RFC 9221 §3 bounds the encoded frame by the value actually advertised.
+        // Profile overrides can be either smaller or larger than the retention budget.
+        if encoded as u64 > advertised.into_inner() {
             return Err(TransportError::PROTOCOL_VIOLATION("oversized datagram"));
         }
 
         // Storage is a separate matter. A frame that is valid on the wire but will not fit
         // is dropped, which RFC 9221 §5.3 allows; it is not the peer's protocol error.
+        let window = config.datagram_receive_buffer_size.unwrap_or(0);
         let Retained { bytes, charge } = retain(datagram.data, allocated);
         let stored = charge + size_of::<Datagram>();
         // Nothing is given up for a frame that would not fit an empty queue: discarding

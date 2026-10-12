@@ -344,11 +344,7 @@ impl Connection {
                     token_store.insert(server_name, self.version(), stored);
                 }
                 Frame::Datagram(datagram) => {
-                    if self.datagrams.received(
-                        datagram,
-                        allocated,
-                        self.config.datagram_receive_buffer_size,
-                    )? {
+                    if self.datagrams.received(datagram, allocated, &self.config)? {
                         self.events.push_back(Event::DatagramReceived);
                     }
                 }

@@ -8,6 +8,7 @@ use super::*;
 use rama_quic_proto::{
     TransportErrorCode,
     frame::{Frame, Iter},
+    profile::{QuicProfile, TransportLimits, TransportParameterProfile},
 };
 
 /// How a built frame carries its payload length.
@@ -94,7 +95,11 @@ impl ReceivedAlone for DatagramState {
         window: Option<usize>,
     ) -> Result<bool, TransportError> {
         let allocated = arrived.datagram.data.len();
-        self.received(arrived, allocated, window)
+        self.received(
+            arrived,
+            allocated,
+            &TransportConfig::default().maybe_with_datagram_receive_buffer_size(window),
+        )
     }
 }
 
@@ -261,7 +266,11 @@ fn a_queued_datagram_is_charged_what_it_keeps_allocated() {
     ] {
         let mut state = DatagramState::default();
         state
-            .received(parse(payload, Length::Of(2)), WIRE_LEN, Some(65_536))
+            .received(
+                parse(payload, Length::Of(2)),
+                WIRE_LEN,
+                &TransportConfig::default().with_datagram_receive_buffer_size(65_536),
+            )
             .expect("the datagram is taken");
         assert_eq!(
             state.incoming.memory_used(),
@@ -280,7 +289,11 @@ fn a_queued_datagram_is_charged_what_it_keeps_allocated() {
     let mut state = DatagramState::default();
     for _ in 0..3 {
         state
-            .received(parse(700, Length::Of(2)), WIRE_LEN, Some(3 * WIRE_LEN))
+            .received(
+                parse(700, Length::Of(2)),
+                WIRE_LEN,
+                &TransportConfig::default().with_datagram_receive_buffer_size(3 * WIRE_LEN),
+            )
             .expect("the datagram is taken");
     }
     assert_eq!(
@@ -288,4 +301,64 @@ fn a_queued_datagram_is_charged_what_it_keeps_allocated() {
         2,
         "the oldest gave way to the third"
     );
+}
+
+fn profile_config(window: Option<usize>, advertised: Option<u64>) -> TransportConfig {
+    let profile = QuicProfile::standard()
+        .with_transport_parameters(
+            TransportParameterProfile::standard()
+                .try_with_max_datagram_frame_size(advertised)
+                .unwrap(),
+        )
+        .try_with_limits(TransportLimits {
+            datagram_receive_buffer_size: window,
+            ..TransportLimits::standard()
+        })
+        .unwrap();
+    TransportConfig::from_quic_profile(&profile).unwrap()
+}
+
+#[test]
+fn profile_datagram_frame_limit_is_independent_of_retention() {
+    // A narrower profile rejects even an empty payload whose wide LEN encoding
+    // crosses the advertised limit. Payload size alone cannot enforce this.
+    let config = profile_config(Some(4096), Some(8));
+    let mut state = DatagramState::default();
+    let error = state
+        .received(parse(0, Length::Of(8)), 9, &config)
+        .unwrap_err();
+    assert_eq!(error.code, TransportErrorCode::PROTOCOL_VIOLATION);
+    assert!(state.recv().is_none());
+    assert!(state.received(parse(6, Length::Of(1)), 8, &config).unwrap());
+    assert_eq!(state.recv().unwrap().len(), 6);
+
+    // A larger wire limit permits frames that cannot be retained. Dropping them
+    // is allowed; reporting a peer protocol violation is not.
+    let config = profile_config(Some(8), Some(128));
+    assert!(
+        !state
+            .received(parse(64, Length::Of(2)), 67, &config)
+            .unwrap()
+    );
+    assert!(state.recv().is_none());
+    let config = profile_config(Some(0), Some(128));
+    assert!(
+        !state
+            .received(parse(0, Length::Absent), 1, &config)
+            .unwrap()
+    );
+}
+
+#[test]
+fn disabled_profile_datagrams_match_the_advertised_capability() {
+    for (window, advertised) in [(None, None), (Some(0), None), (Some(4096), Some(0))] {
+        let config = profile_config(window, advertised);
+        assert!(!config.datagram_receive_enabled());
+        let mut state = DatagramState::default();
+        let error = state
+            .received(parse(0, Length::Absent), 1, &config)
+            .unwrap_err();
+        assert_eq!(error.code, TransportErrorCode::PROTOCOL_VIOLATION);
+    }
+    assert!(profile_config(Some(4096), Some(1)).datagram_receive_enabled());
 }

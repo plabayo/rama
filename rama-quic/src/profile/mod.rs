@@ -139,6 +139,17 @@ impl TransportConfig {
         {
             return Err(ConfigError::OutOfBounds);
         }
+        // An explicit wire value cannot coexist with disabled reception: the
+        // receive option would suppress the parameter, losing the requested value.
+        // A small (even zero) retention budget may still drop valid datagrams locally.
+        if limits.datagram_receive_buffer_size.is_none()
+            && profile
+                .transport_parameters()
+                .max_datagram_frame_size()
+                .is_some()
+        {
+            return Err(ConfigError::OutOfBounds);
+        }
         let initial_max_streams_bidi = VarInt::from_u64(limits.initial_max_streams_bidi)?;
         let initial_max_streams_uni = VarInt::from_u64(limits.initial_max_streams_uni)?;
         let initial_max_data = VarInt::from_u64(limits.initial_max_data)?;

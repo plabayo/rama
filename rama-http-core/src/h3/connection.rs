@@ -110,6 +110,47 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Apply literal client SETTINGS within this configuration's receive budgets.
+    ///
+    /// Omitted QPACK values mean zero. The profile can lower configured limits,
+    /// but cannot increase them or enable a disabled datagram capability. An
+    /// omitted field-section limit keeps the local finite resource budget.
+    /// The original configuration is unchanged when validation fails.
+    pub fn try_with_client_settings(&self, settings: Arc<Settings>) -> Result<Self, Error> {
+        if settings.qpack_max_table_capacity() > self.decoder.max_table_capacity
+            || settings.qpack_blocked_streams() > self.decoder.max_blocked_streams
+            || settings
+                .max_field_section_size()
+                .is_some_and(|limit| limit > self.decoder.max_field_section_size as u64)
+            || settings.enable_connect_protocol()
+            || (settings.h3_datagram() && self.datagrams.is_none())
+        {
+            return Err(Error::connection(
+                Code::H3_INTERNAL_ERROR,
+                "client SETTINGS profile exceeds configured budgets or capabilities",
+            ));
+        }
+
+        let mut configured = self.clone();
+        configured.decoder.max_table_capacity = settings.qpack_max_table_capacity();
+        configured.decoder.max_blocked_streams = settings.qpack_blocked_streams();
+        if let Some(limit) = settings.max_field_section_size() {
+            configured.decoder.max_field_section_size =
+                usize::try_from(limit).map_err(|_error| {
+                    Error::connection(
+                        Code::H3_INTERNAL_ERROR,
+                        "field section limit exceeds platform range",
+                    )
+                })?;
+        }
+        if !settings.h3_datagram() {
+            configured.datagrams = None;
+        }
+        configured.settings_profile = Some(settings);
+        configured.settings()?;
+        Ok(configured)
+    }
+
     /// Apply finite HTTP/3 receive budgets to a QUIC transport configuration.
     /// Configure the endpoint before establishing connections.
     pub fn configure_transport(&self, transport: &mut TransportConfig) -> Result<(), Error> {
@@ -1680,6 +1721,67 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
         task::{Context, Wake, Waker},
     };
+
+    #[test]
+    fn client_settings_application_preserves_order_and_omitted_defaults() {
+        let original = Config::default();
+        let mut wire = Settings::new();
+        wire.set(SettingId::FIRST_RESERVED, 17).unwrap();
+        wire.set(SettingId::QPACK_BLOCKED_STREAMS, 0).unwrap();
+        wire.set(SettingId::new(0xface), 29).unwrap();
+        let wire = Arc::new(wire);
+        let configured = original.try_with_client_settings(wire.clone()).unwrap();
+        assert_eq!(configured.decoder.max_table_capacity, 0);
+        assert_eq!(configured.decoder.max_blocked_streams, 0);
+        assert_eq!(
+            configured.decoder.max_field_section_size,
+            original.decoder.max_field_section_size
+        );
+        assert!(configured.datagrams.is_none());
+        assert_eq!(
+            configured.local_settings(Role::Client, false).unwrap(),
+            *wire
+        );
+        assert!(original.settings_profile.is_none());
+        assert!(original.datagrams.is_some());
+    }
+
+    #[test]
+    fn client_settings_application_rejects_budget_and_capability_escalation() {
+        let config = Config::default();
+        for (id, value) in [
+            (
+                SettingId::QPACK_MAX_TABLE_CAPACITY,
+                config.decoder.max_table_capacity + 1,
+            ),
+            (
+                SettingId::QPACK_BLOCKED_STREAMS,
+                config.decoder.max_blocked_streams + 1,
+            ),
+            (
+                SettingId::MAX_FIELD_SECTION_SIZE,
+                config.decoder.max_field_section_size as u64 + 1,
+            ),
+            (SettingId::ENABLE_CONNECT_PROTOCOL, 1),
+            (SettingId::new(1 << 62), 0),
+            (SettingId::FIRST_RESERVED, 1 << 62),
+        ] {
+            let mut wire = Settings::new();
+            wire.set(id, value).unwrap();
+            config.try_with_client_settings(Arc::new(wire)).unwrap_err();
+            assert!(config.settings_profile.is_none());
+        }
+        let mut wire = Settings::new();
+        wire.set(SettingId::H3_DATAGRAM, 1).unwrap();
+        let wire = Arc::new(wire);
+        let configured = config.try_with_client_settings(wire.clone()).unwrap();
+        assert!(configured.datagrams.is_some());
+        let disabled = Config {
+            datagrams: None,
+            ..config
+        };
+        disabled.try_with_client_settings(wire).unwrap_err();
+    }
 
     fn settings_profile_config() -> Config {
         let mut config = Config::default();
