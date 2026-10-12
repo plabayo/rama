@@ -1564,6 +1564,12 @@ impl Connection {
         self.0.state.lock().inner.datagrams().send_buffer_space()
     }
 
+    // Persisted by the engine after 0-RTT keys are discarded. Inspecting only
+    // whether a stream was accepted during the handshake misses buffered early data.
+    pub(crate) fn early_data_keys_enabled(&self) -> bool {
+        self.0.state.lock().inner.has_0rtt()
+    }
+
     /// Which side of the connection this is: the one that opened it, or the one that accepted
     /// it.
     #[must_use]

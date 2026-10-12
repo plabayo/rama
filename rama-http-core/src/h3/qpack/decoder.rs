@@ -761,6 +761,10 @@ impl Decoder {
         }
     }
 
+    // RFC 9204 section 2.2.1 requires rejecting an understated RIC but permits
+    // accepting an overstated one. Keep that permissive policy: the declared
+    // count still passes through normal blocked-stream and byte budgets, and
+    // every actual reference must stay below it and resolve to a retained entry.
     fn dynamic_get(&self, abs: u64, ric: u64) -> Result<(Bytes, Bytes), QpackError> {
         if abs >= ric {
             return Err(QpackError::DecompressionFailed(
@@ -1599,5 +1603,98 @@ mod regression_tests {
             .unwrap();
         assert!(decoder.take_field_observation(0).unwrap().is_empty());
         assert_eq!(fields[0].value, b"GET"[..]);
+    }
+    #[test]
+    fn required_insert_count_policy_covers_all_dynamic_reference_forms() {
+        let value = Bytes::from_static(b"value");
+        for (base, line) in [
+            (
+                2,
+                FieldLine::Indexed {
+                    is_static: false,
+                    index: 0,
+                },
+            ),
+            (0, FieldLine::IndexedPostBase { index: 1 }),
+            (
+                2,
+                FieldLine::LiteralWithNameRef {
+                    is_static: false,
+                    name_index: 0,
+                    value: value.clone(),
+                    value_huffman: false,
+                    never_index: false,
+                },
+            ),
+            (
+                0,
+                FieldLine::LiteralWithPostBaseNameRef {
+                    name_index: 1,
+                    value,
+                    value_huffman: false,
+                    never_index: false,
+                },
+            ),
+        ] {
+            // Every form references absolute index 1: exactly two insertions
+            // are required, regardless of whether the whole entry or its name
+            // is referenced. Table contents alone must not authorize a lower RIC.
+            for ric in [1, 2, 3] {
+                let mut decoder = Decoder::new(DecoderConfig::default());
+                for _ in 0..3 {
+                    decoder.feed_encoder_stream(&insertion()).unwrap();
+                }
+                decoder.take_decoder_stream();
+                let decoded = decoder.decode_field_section(0, section(ric, base, &line));
+                if ric == 1 {
+                    assert_matches!(decoded, Err(QpackError::DecompressionFailed(_)));
+                    assert!(decoder.take_decoder_stream().is_empty());
+                } else {
+                    assert_eq!(decoded.unwrap().unwrap().len(), 1);
+                    assert!(!decoder.take_decoder_stream().is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn required_insert_count_overstatement_obeys_blocking_and_release_limits() {
+        for resume_one in [false, true] {
+            let mut decoder = Decoder::new(DecoderConfig {
+                max_blocked_streams: 1,
+                ..DecoderConfig::default()
+            });
+            // This static entry needs no dynamic state, but its declared RIC
+            // still consumes the same blocked-stream budget as any other section.
+            let bytes = section(
+                1,
+                0,
+                &FieldLine::Indexed {
+                    is_static: true,
+                    index: 0,
+                },
+            );
+            assert!(
+                decoder
+                    .decode_field_section(0, bytes.clone())
+                    .unwrap()
+                    .is_none()
+            );
+            decoder.decode_field_section(4, bytes).unwrap_err();
+            assert_eq!(decoder.blocked_stream_count(), 1);
+            decoder.feed_encoder_stream(&insertion()).unwrap();
+            let (stream, result) = if resume_one {
+                decoder.resume_next().unwrap()
+            } else {
+                let mut results = decoder.resume_blocked();
+                assert_eq!(results.len(), 1);
+                results.remove(0)
+            };
+            assert_eq!(stream, 0);
+            assert_eq!(result.unwrap().len(), 1);
+            assert_eq!(decoder.blocked_stream_count(), 0);
+            assert_eq!(decoder.blocked_bytes, 0);
+            assert!(decoder.resume_next().is_none());
+        }
     }
 }

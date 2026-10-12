@@ -10,7 +10,7 @@ use rama::{
         request::Parts,
         service::web::{
             extract::{Body, Path, State as StateParam},
-            response::{self, ErrorResponse, IntoResponse, Json},
+            response::{self, AppendHeaders, ErrorResponse, IntoResponse, Json},
         },
         ws::{
             Utf8Bytes,
@@ -41,7 +41,16 @@ use super::{
 
 pub(super) async fn get_consent() -> impl IntoResponse {
     (
-        [("Set-Cookie", "rama-fp=ready; Max-Age=60; path=/")],
+        // Two fixed, short-lived values let the next navigation reveal cookie
+        // field splitting. Profile capture records ownership and field counts,
+        // never these cookie values or a per-visitor identifier.
+        AppendHeaders([
+            ("Set-Cookie", "rama-fp=ready; Max-Age=60; path=/"),
+            (
+                "Set-Cookie",
+                "rama-fp-layout=1; Max-Age=60; path=/; SameSite=Lax",
+            ),
+        ]),
         page("🕵️ Fingerprint Consent", (), consent_body()),
     )
 }
@@ -1068,10 +1077,28 @@ struct Table {
 mod tests {
     use rama::{
         Service,
-        http::{Request, service::web::Router},
+        http::{Request, header::SET_COOKIE, service::web::Router},
     };
 
     use super::*;
+
+    #[tokio::test]
+    async fn consent_sets_two_distinct_short_lived_cookie_layout_probes() {
+        let response = get_consent().await.into_response();
+        let cookies: Vec<_> = response
+            .headers()
+            .get_all(SET_COOKIE)
+            .iter()
+            .map(|value| value.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            cookies,
+            [
+                "rama-fp=ready; Max-Age=60; path=/",
+                "rama-fp-layout=1; Max-Age=60; path=/; SameSite=Lax",
+            ]
+        );
+    }
 
     #[tokio::test]
     async fn fetch_endpoint_extracts_parts_and_body_without_json_content_type() {

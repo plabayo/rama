@@ -651,7 +651,10 @@ impl Connection {
                             debug_assert!(self.side.is_client());
                             debug!("0-RTT rejected");
                             self.accepted_0rtt = false;
-                            self.streams.zero_rtt_rejected();
+                            self.streams.zero_rtt_rejected([
+                                self.config.max_concurrent_bidi_streams,
+                                self.config.max_concurrent_uni_streams,
+                            ]);
 
                             // Discard already-queued frames
                             self.spaces[SpaceId::Data].pending = Retransmits::default();

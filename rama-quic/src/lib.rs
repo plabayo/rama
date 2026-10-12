@@ -42,6 +42,7 @@ mod test_helpers;
 pub mod profile;
 mod proto;
 pub mod qlog;
+pub mod relay;
 
 // Engine types that are part of the public transport API. The runtime facade
 // (endpoints, connections, streams) is Rama-owned and lives in `driver`.

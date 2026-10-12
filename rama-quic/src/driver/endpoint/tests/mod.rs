@@ -166,8 +166,16 @@ impl DatagramSocket for TestSocket {
             .min(buffers.len())
             .min(self.batch_limit.unwrap_or(usize::MAX));
         for (i, (data, meta)) in self.entries.drain(..count).enumerate() {
-            buffers[i][..data.len()].copy_from_slice(&data);
+            let copied = data.len().min(buffers[i].len());
+            buffers[i][..copied].copy_from_slice(&data[..copied]);
             metadata[i] = meta;
+            if copied < data.len() {
+                // Model the actual socket contract when the receive buffer is
+                // too short, without panicking inside the test fixture.
+                metadata[i].len = copied;
+                metadata[i].original_len = data.len();
+                metadata[i].truncated = true;
+            }
         }
         Poll::Ready(Ok(self.report_count.take().unwrap_or(count)))
     }
@@ -1847,3 +1855,66 @@ mod lifecycle;
     all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
 ))]
 mod preferred;
+
+#[test]
+fn receive_grows_for_a_later_socket_gro_capability() {
+    let mut config = EndpointConfig::try_with_rand_key().unwrap();
+    config.max_udp_payload_size(1200).unwrap();
+    let mut endpoint = proto::Endpoint::new(Arc::new(config), None, false, None);
+    // The endpoint's first socket accepted one segment; the next accepts four.
+    let mut recv = RecvState::new(1, &endpoint);
+    let original_capacity = recv.recv_buf.len();
+    let mut socket = Socket::new(TestSocket {
+        entries: [(vec![0; 4 * 1200], metadata(4 * 1200, Some(1200)))].into(),
+        ..TestSocket::default()
+    })
+    .unwrap();
+    let budget = PacketBudget::new(endpoint.config().endpoint_receive_queue);
+    let mut cycle = recv.start_recv_cycle();
+    recv.poll_socket(
+        &mut Context::from_waker(Waker::noop()),
+        &mut endpoint,
+        &mut socket,
+        Instant::now(),
+        &budget,
+        &mut cycle,
+    )
+    .into_result()
+    .unwrap();
+    assert_eq!(recv.received_datagrams, 4);
+    assert_eq!(recv.truncated_receive_entries, 0);
+    assert_eq!(recv.recv_buf.len(), original_capacity * 4);
+
+    // Ordinary polls reuse the allocation; this is not a per-packet resize.
+    let allocation = recv.recv_buf.as_ptr();
+    let mut cycle = recv.start_recv_cycle();
+    recv.poll_socket(
+        &mut Context::from_waker(Waker::noop()),
+        &mut endpoint,
+        &mut socket,
+        Instant::now(),
+        &budget,
+        &mut cycle,
+    )
+    .into_result()
+    .unwrap();
+    assert_eq!(recv.recv_buf.as_ptr(), allocation);
+}
+
+#[test]
+fn receive_gro_capacity_bounds_socket_capability_claims() {
+    let mut config = EndpointConfig::try_with_rand_key().unwrap();
+    config.max_udp_payload_size(1200).unwrap();
+    let endpoint = proto::Endpoint::new(Arc::new(config), None, false, None);
+    for (segments, expected) in [
+        (0, 1),
+        (1, 1),
+        (63, 63),
+        (64, 64),
+        (65, 64),
+        (usize::MAX, 64),
+    ] {
+        let recv = RecvState::new(segments, &endpoint);
+        assert_eq!(recv.recv_buf.len(), 1200 * expected * BATCH_SIZE);
+    }
+}

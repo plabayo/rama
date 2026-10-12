@@ -17,8 +17,13 @@ use crate::profile::{
 #[extension(tags(ua))]
 /// Whether replay rejects or reports deviations from the selected capture.
 pub enum ProfilePreservationMode {
+    /// Reject unsupported replay. Two or more caller cookie pairs require a
+    /// captured split-field variant of the same HTTP version; without that
+    /// evidence the layout is unknown and strict replay fails.
     #[default]
     Strict,
+    /// Retain caller cookie boundaries when their captured layout is unknown,
+    /// and report that difference alongside other unsupported replay behavior.
     BestEffort,
 }
 
