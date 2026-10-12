@@ -53,8 +53,13 @@ use crate::Error;
 ///
 /// # Limitations
 ///
-/// A `HeaderMap` can store at most 32,768 entries \(header name/value pairs\).
-/// Attempting to exceed this limit will result in a panic.
+/// A `HeaderMap` can hold at most 24,576 distinct header names; values appended
+/// under an existing name do not count toward that limit. Once it is reached,
+/// methods that grow the map, such as [`insert`](Self::insert),
+/// [`append`](Self::append), [`entry`](Self::entry) and [`reserve`](Self::reserve),
+/// panic. Their fallible counterparts [`try_insert`](Self::try_insert),
+/// [`try_append`](Self::try_append), [`try_entry`](Self::try_entry) and
+/// [`try_reserve`](Self::try_reserve) return an error instead.
 ///
 /// [`HeaderName`]: struct.HeaderName.html
 /// [`HeaderMap`]: struct.HeaderMap.html
@@ -750,7 +755,10 @@ impl<T> HeaderMap<T> {
     ///
     /// # Panics
     ///
-    /// Panics if the new allocation size overflows `HeaderMap` `MAX_SIZE`.
+    /// Panics if reserving the additional capacity would grow the map beyond
+    /// its maximum capacity. See the [`HeaderMap`] documentation for the limit,
+    /// or use [`try_reserve`](Self::try_reserve) to handle the failure without
+    /// panicking.
     ///
     /// # Examples
     ///
@@ -2519,7 +2527,11 @@ impl<'a, T> Iterator for Iter<'a, T> {
         let map = self.map;
         debug_assert!(map.entries.len() >= self.entry);
 
-        let lower = map.entries.len() - self.entry;
+        let mut lower = map.entries.len() - self.entry;
+        if self.cursor.is_none() {
+            // The current entry is exhausted. Saturate for an empty map.
+            lower = lower.saturating_sub(1);
+        }
         // We could pessimistically guess at the upper bound, saying
         // that its lower + map.extra_values.len(). That could be
         // way over though, such as if we're near the end, and have
@@ -2645,7 +2657,11 @@ impl<'a, T> Iterator for IterMut<'a, T> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         debug_assert!(self.entries_len >= self.entry);
 
-        let lower = self.entries_len - self.entry;
+        let mut lower = self.entries_len - self.entry;
+        if self.cursor.is_none() {
+            // The current entry is exhausted. Saturate for an empty map.
+            lower = lower.saturating_sub(1);
+        }
         // We could pessimistically guess at the upper bound, saying
         // that its lower + map.extra_values.len(). That could be
         // way over though, such as if we're near the end, and have
@@ -4299,11 +4315,14 @@ mod as_header_name {
 
 #[test]
 fn test_bounds() {
-    fn check_bounds<T: Send + Send>() {}
+    fn check_bounds<T: Send + Sync>() {}
 
     check_bounds::<HeaderMap<()>>();
     check_bounds::<Iter<'static, ()>>();
+    check_bounds::<OrderedIter<'static, ()>>();
     check_bounds::<IterMut<'static, ()>>();
+    check_bounds::<IntoIter<()>>();
+    check_bounds::<IntoOrderedIter<()>>();
     check_bounds::<Keys<'static, ()>>();
     check_bounds::<Values<'static, ()>>();
     check_bounds::<ValuesMut<'static, ()>>();
@@ -4315,6 +4334,72 @@ fn test_bounds() {
     check_bounds::<ValueIter<'static, ()>>();
     check_bounds::<ValueIterMut<'static, ()>>();
     check_bounds::<ValueDrain<'static, ()>>();
+}
+
+#[test]
+fn iter_size_hint_bounds_the_remaining_values() {
+    fn check(mut iter: impl Iterator, len: usize) {
+        for remaining in (0..=len).rev() {
+            let (lower, upper) = iter.size_hint();
+            assert!(lower <= remaining, "lower {lower} > remaining {remaining}");
+            if let Some(upper) = upper {
+                assert!(upper >= remaining, "upper {upper} < remaining {remaining}");
+            }
+            assert_eq!(iter.next().is_some(), remaining > 0);
+        }
+        assert_eq!(iter.size_hint().0, 0);
+        assert!(iter.next().is_none());
+    }
+
+    for counts in [vec![], vec![1], vec![3], vec![1, 1], vec![3, 1, 2]] {
+        let mut headers = HeaderMap::new();
+        for (i, count) in counts.into_iter().enumerate() {
+            let name = HeaderName::from_bytes(format!("header-{i}").as_bytes()).unwrap();
+            for _ in 0..count {
+                headers.append(name.clone(), HeaderValue::from_static("x"));
+            }
+        }
+        let len = headers.len();
+        check(headers.iter(), len);
+        check(headers.ordered_iter(), len);
+        check(headers.values(), len);
+        check(headers.iter_mut(), len);
+        check(headers.values_mut(), len);
+        check(headers.clone().into_iter(), len);
+        check(headers.clone().into_ordered_iter(), len);
+        check(headers.drain(), len);
+    }
+}
+
+#[test]
+fn invalid_long_names_never_become_keys() {
+    // Past the 64-byte scratch buffer, so the long-name parse path is taken.
+    let invalid = format!("x-{}\r\nx-injected: 1", "a".repeat(64));
+    let mut map = HeaderMap::new();
+    assert!(map.try_entry(invalid.as_str()).is_err());
+    assert!(map.try_entry(invalid.clone()).is_err());
+    assert!(map.get(invalid.as_str()).is_none());
+    assert!(map.is_empty());
+
+    let valid = format!("X-{}", "a".repeat(64));
+    map.try_entry(valid.as_str())
+        .unwrap()
+        .or_insert(HeaderValue::from_static("v"));
+    assert_eq!(
+        map.get(valid.to_ascii_lowercase().as_str()),
+        Some(&HeaderValue::from_static("v"))
+    );
+    assert_eq!(map.keys().next().unwrap().as_str(), valid);
+}
+
+#[test]
+#[should_panic(expected = "static str is invalid name")]
+fn invalid_long_static_name_panics_like_a_short_one() {
+    let mut map = HeaderMap::new();
+    map.insert(
+        "x-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa invalid",
+        HeaderValue::from_static("v"),
+    );
 }
 
 #[test]
