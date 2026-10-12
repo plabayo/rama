@@ -14,12 +14,12 @@ as a distant relative.
     - Original: <https://github.com/hyperium/h2/blob/e64c1662ebb14794fc19cbcbb5b5dd0f67925f27/LICENSE>
     - Type: MIT
     - Copy: [./licenses/h2](./licenses/h2)
-- h3: <https://github.com/hyperium/h3/tree/102dcd540a8b2eb1c58ecf97fbdfad6751d3ea11>
+- h3: <https://github.com/hyperium/h3/tree/43745ad87e95b0c035ac9c547aad467303213425>
   - reviewed as the starting donor for HTTP/3 wire types and QPACK.
   - the shipped code in `rama-http-types` (`proto::h3`) and `rama-http-core` (`h3`) is
     Rama-original, using Rama types throughout rather than the `http` crate.
   - License:
-    - Original: <https://github.com/hyperium/h3/blob/102dcd540a8b2eb1c58ecf97fbdfad6751d3ea11/LICENSE>
+    - Original: <https://github.com/hyperium/h3/blob/43745ad87e95b0c035ac9c547aad467303213425/LICENSE>
     - Type: MIT
     - Copy: [./licenses/h3](./licenses/h3)
 - hyper: <https://github.com/hyperium/hyper/tree/8fcaf1a62787b824fdd7b95a3e7c9ea81acd3449>
