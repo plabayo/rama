@@ -53,9 +53,8 @@ use crate::Error;
 ///
 /// # Limitations
 ///
-/// A `HeaderMap` can hold at most 24,576 distinct header names; values appended
-/// under an existing name do not count toward that limit. Once it is reached,
-/// methods that grow the map, such as [`insert`](Self::insert),
+/// A `HeaderMap` can hold at most 24,576 distinct header names. Once it does,
+/// methods that add to the map, even a value under a name it already holds, such as [`insert`](Self::insert),
 /// [`append`](Self::append), [`entry`](Self::entry) and [`reserve`](Self::reserve),
 /// panic. Their fallible counterparts [`try_insert`](Self::try_insert),
 /// [`try_append`](Self::try_append), [`try_entry`](Self::try_entry) and
@@ -87,13 +86,10 @@ use crate::Error;
 /// ```
 #[derive(Clone)]
 pub struct HeaderMap<T = HeaderValue> {
-    // Used to mask values to get an index
-    mask: Size,
     indices: Box<[Pos]>,
     entries: Vec<Bucket<T>>,
     extra_values: Vec<ExtraValue<T>>,
     order: Vec<Option<Link>>,
-    order_holes: usize,
     danger: Danger,
 }
 
@@ -398,7 +394,7 @@ enum Link {
 enum Danger {
     Green,
     Yellow,
-    Red(RandomState),
+    Red(Box<RandomState>),
 }
 
 // Constants related to detecting DOS attacks.
@@ -468,7 +464,7 @@ macro_rules! insert_phase_one {
      $robinhood:expr) =>
     {{
         let $hash = hash_elem_using(&$map.danger, &$key);
-        let mut $probe = desired_pos($map.mask, $hash);
+        let mut $probe = desired_pos($map.mask(), $hash);
         let mut dist = 0;
         let ret;
 
@@ -477,7 +473,7 @@ macro_rules! insert_phase_one {
             if let Some(($pos, entry_hash)) = $map.indices[$probe].resolve() {
                 // The slot is already occupied, but check if it has a lower
                 // displacement.
-                let their_dist = probe_distance($map.mask, entry_hash, $probe);
+                let their_dist = probe_distance($map.mask(), entry_hash, $probe);
 
                 if their_dist < dist {
                     // The new key's distance is larger, so claim this spot and
@@ -536,12 +532,10 @@ impl HeaderMap {
 impl<T> Default for HeaderMap<T> {
     fn default() -> Self {
         HeaderMap {
-            mask: 0,
             indices: Box::new([]), // as a ZST, this doesn't actually allocate anything
             entries: Vec::new(),
             extra_values: Vec::new(),
             order: Vec::new(),
-            order_holes: 0,
             danger: Danger::Green,
         }
     }
@@ -611,12 +605,10 @@ impl<T> HeaderMap<T> {
             debug_assert!(raw_cap > 0);
 
             Ok(HeaderMap {
-                mask: (raw_cap - 1) as Size,
                 indices: vec![Pos::none(); raw_cap].into_boxed_slice(),
                 entries: Vec::with_capacity(usable_capacity(raw_cap)),
                 extra_values: Vec::new(),
                 order: Vec::with_capacity(capacity),
-                order_holes: 0,
                 danger: Danger::Green,
             })
         }
@@ -715,7 +707,7 @@ impl<T> HeaderMap<T> {
         self.entries.clear();
         self.extra_values.clear();
         self.order.clear();
-        self.order_holes = 0;
+
         self.danger = Danger::Green;
 
         for e in self.indices.iter_mut() {
@@ -817,7 +809,6 @@ impl<T> HeaderMap<T> {
             }
 
             if self.entries.is_empty() {
-                self.mask = raw_cap as Size - 1;
                 self.indices = vec![Pos::none(); raw_cap].into_boxed_slice();
                 let cap = usable_capacity(raw_cap);
                 self.entries = Vec::with_capacity(cap);
@@ -1156,7 +1147,6 @@ impl<T> HeaderMap<T> {
             self.entries.set_len(0);
         }
         self.order.clear();
-        self.order_holes = 0;
 
         Drain {
             idx: 0,
@@ -1407,7 +1397,9 @@ impl<T> HeaderMap<T> {
             danger,
             // Vacant
             {
-                let _ = danger; // Make lint happy
+                if danger {
+                    self.danger.set_yellow();
+                }
                 let index = self.entries.len();
                 self.try_insert_entry(hash, key.into(), value)?;
                 self.indices[probe] = Pos::new(index, hash);
@@ -1575,7 +1567,9 @@ impl<T> HeaderMap<T> {
             danger,
             // Vacant
             {
-                let _ = danger;
+                if danger {
+                    self.danger.set_yellow();
+                }
                 let index = self.entries.len();
                 self.try_insert_entry(hash, key.into(), value)?;
                 self.indices[probe] = Pos::new(index, hash);
@@ -1606,7 +1600,7 @@ impl<T> HeaderMap<T> {
         }
 
         let hash = hash_elem_using(&self.danger, key);
-        let mask = self.mask;
+        let mask = self.mask();
         let mut probe = desired_pos(mask, hash);
         let mut dist = 0;
 
@@ -1711,7 +1705,7 @@ impl<T> HeaderMap<T> {
             let entry = &self.entries[found];
             // was not last element
             // examine new element in `found` and find it in indices
-            let mut probe = desired_pos(self.mask, entry.hash);
+            let mut probe = desired_pos(self.mask(), entry.hash);
 
             probe_loop!(probe < self.indices.len(), {
                 if let Some((i, _)) = self.indices[probe].resolve() {
@@ -1738,7 +1732,7 @@ impl<T> HeaderMap<T> {
 
             probe_loop!(probe < self.indices.len(), {
                 if let Some((_, entry_hash)) = self.indices[probe].resolve() {
-                    if probe_distance(self.mask, entry_hash, probe) > 0 {
+                    if probe_distance(self.mask(), entry_hash, probe) > 0 {
                         self.indices[last_probe] = self.indices[probe];
                         self.indices[probe] = Pos::none();
                     } else {
@@ -1824,10 +1818,11 @@ impl<T> HeaderMap<T> {
     }
 
     fn rebuild(&mut self) {
+        let mask = self.mask();
         // Loop over all entries and re-insert them into the map
         'outer: for (index, entry) in self.entries.iter_mut().enumerate() {
             let hash = hash_elem_using(&self.danger, &entry.key);
-            let mut probe = desired_pos(self.mask, hash);
+            let mut probe = desired_pos(mask, hash);
             let mut dist = 0;
 
             // Update the entry's hash code
@@ -1836,7 +1831,7 @@ impl<T> HeaderMap<T> {
             probe_loop!(probe < self.indices.len(), {
                 if let Some((_, entry_hash)) = self.indices[probe].resolve() {
                     // if existing element probed less than us, swap
-                    let their_dist = probe_distance(self.mask, entry_hash, probe);
+                    let their_dist = probe_distance(mask, entry_hash, probe);
 
                     if their_dist < dist {
                         // Robinhood
@@ -1858,7 +1853,7 @@ impl<T> HeaderMap<T> {
     fn reinsert_entry_in_order(&mut self, pos: Pos) {
         if let Some((_, entry_hash)) = pos.resolve() {
             // Find first empty bucket and insert there
-            let mut probe = desired_pos(self.mask, entry_hash);
+            let mut probe = desired_pos(self.mask(), entry_hash);
 
             probe_loop!(probe < self.indices.len(), {
                 if self.indices[probe].resolve().is_none() {
@@ -1876,7 +1871,9 @@ impl<T> HeaderMap<T> {
         if self.danger.is_yellow() {
             // MAX_SIZE (2^15) and LOAD_FACTOR_THRESHOLD is 5, so the product
             // cannot overflow.
-            if self.entries.len() * LOAD_FACTOR_THRESHOLD >= self.indices.len() {
+            if self.indices.len() < MAX_SIZE
+                && self.entries.len() * LOAD_FACTOR_THRESHOLD >= self.indices.len()
+            {
                 // Transition back to green danger level
                 self.danger.set_green();
 
@@ -1895,10 +1892,13 @@ impl<T> HeaderMap<T> {
 
                 self.rebuild();
             }
-        } else if len == self.capacity() {
+        }
+
+        // A rebuild keeps the capacity, so a full map still has to grow, or refuse at MAX_SIZE.
+        if len == self.capacity() {
             if len == 0 {
                 let new_raw_cap = 8;
-                self.mask = 8 - 1;
+
                 self.indices = vec![Pos::none(); new_raw_cap].into_boxed_slice();
                 let cap = usable_capacity(new_raw_cap);
                 self.entries = Vec::with_capacity(cap);
@@ -1923,7 +1923,7 @@ impl<T> HeaderMap<T> {
 
         for (i, pos) in self.indices.iter().enumerate() {
             if let Some((_, entry_hash)) = pos.resolve() {
-                if 0 == probe_distance(self.mask, entry_hash, i) {
+                if 0 == probe_distance(self.mask(), entry_hash, i) {
                     first_ideal = i;
                     break;
                 }
@@ -1936,7 +1936,6 @@ impl<T> HeaderMap<T> {
             &mut self.indices,
             vec![Pos::none(); new_raw_cap].into_boxed_slice(),
         );
-        self.mask = new_raw_cap.wrapping_sub(1) as Size;
 
         for &pos in &old_indices[first_ideal..] {
             self.reinsert_entry_in_order(pos);
@@ -1954,6 +1953,11 @@ impl<T> HeaderMap<T> {
     }
 
     #[inline]
+    fn mask(&self) -> Size {
+        self.indices.len().wrapping_sub(1) as Size
+    }
+
+    #[inline]
     fn raw_links(&mut self) -> RawLinks<T> {
         RawLinks(&mut self.entries[..] as *mut _)
     }
@@ -1967,9 +1971,7 @@ impl<T> HeaderMap<T> {
 
     #[inline]
     fn remove_order(&mut self, index: usize) {
-        if self.order[index].take().is_some() {
-            self.order_holes += 1;
-        }
+        self.order[index] = None;
     }
 
     #[inline]
@@ -3951,7 +3953,7 @@ impl Danger {
 
     fn set_red(&mut self) {
         debug_assert!(self.is_yellow());
-        *self = Danger::Red(RandomState::new());
+        *self = Danger::Red(Box::new(RandomState::new()));
     }
 
     fn is_yellow(&self) -> bool {
@@ -4422,11 +4424,15 @@ fn extend_size_hint_above_capacity() {
 #[cfg(test)]
 fn assert_header_map_invariants<T>(map: &HeaderMap<T>) {
     assert_eq!(map.len(), map.entries.len() + map.extra_values.len());
+    assert!(
+        map.entries.len() <= map.capacity(),
+        "{} names exceed the capacity of {}",
+        map.entries.len(),
+        map.capacity()
+    );
 
     let live_order_slots = map.order.iter().filter(|link| link.is_some()).count();
-    let order_holes = map.order.iter().filter(|link| link.is_none()).count();
     assert_eq!(live_order_slots, map.len());
-    assert_eq!(order_holes, map.order_holes);
 
     let mut indexed_entries = vec![false; map.entries.len()];
     for pos in &*map.indices {
@@ -4730,8 +4736,12 @@ fn assert_header_map_matches_model(map: &HeaderMap, model: &HeaderMapModel) {
 
 #[cfg(test)]
 impl HeaderMapOps {
-    fn run(self) {
+    fn run(self, randomized: bool) {
         let mut map = HeaderMap::new();
+        if randomized {
+            map.danger.set_yellow();
+            map.danger.set_red();
+        }
         let mut model = HeaderMapModel::default();
 
         assert_header_map_matches_model(&map, &model);
@@ -4798,7 +4808,8 @@ impl HeaderMapOps {
 #[test]
 fn quickcheck_header_map_order_and_multivalue_model() {
     fn prop(ops: HeaderMapOps) -> bool {
-        ops.run();
+        ops.clone().run(false);
+        ops.run(true);
         true
     }
 
@@ -5128,22 +5139,22 @@ fn basic_map_api_contracts_cover_capacity_lookup_and_clear() {
     assert_eq!(map.len(), 0);
     assert_eq!(map.keys_len(), 0);
     assert_eq!(map.capacity(), 12);
-    assert_eq!(map.mask as usize, 15);
+    assert_eq!(map.mask() as usize, 15);
 
     let mut reserved = HeaderMap::<HeaderValue>::new();
     reserved.reserve(10);
     assert_eq!(reserved.capacity(), 12);
-    assert_eq!(reserved.mask as usize, 15);
+    assert_eq!(reserved.mask() as usize, 15);
 
     let mut try_reserved = HeaderMap::<HeaderValue>::new();
     try_reserved.try_reserve(10).unwrap();
     assert_eq!(try_reserved.capacity(), 12);
-    assert_eq!(try_reserved.mask as usize, 15);
+    assert_eq!(try_reserved.mask() as usize, 15);
 
     let max_capacity =
         HeaderMap::<HeaderValue>::try_with_capacity(usable_capacity(MAX_SIZE)).unwrap();
     assert_eq!(max_capacity.capacity(), usable_capacity(MAX_SIZE));
-    assert_eq!(max_capacity.mask as usize, MAX_SIZE - 1);
+    assert_eq!(max_capacity.mask() as usize, MAX_SIZE - 1);
     let max_size_err =
         HeaderMap::<HeaderValue>::try_with_capacity(usable_capacity(MAX_SIZE) + 1).unwrap_err();
     assert_eq!(max_size_err.to_string(), "max size reached");
@@ -5614,4 +5625,131 @@ fn order_capacity_grows_with_entry_capacity() {
         map.entries.capacity()
     );
     assert!(map.order.capacity() >= initial_order_cap);
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn compact_map_layout() {
+    assert_eq!(std::mem::size_of::<HeaderMap>(), 104);
+    assert_eq!(std::mem::size_of::<crate::request::Parts>(), 160);
+}
+
+#[test]
+fn order_holes_and_repeated_values_are_not_limited_by_table_capacity() {
+    let mut map = HeaderMap::new();
+    for _ in 0..70_000 {
+        map.insert("x-churn", HeaderValue::from_static("value"));
+        map.remove("x-churn");
+    }
+    for _ in 0..70_000 {
+        map.append("set-cookie", HeaderValue::from_static("a=b"));
+    }
+    assert_header_map_invariants(&map);
+    assert_eq!(map.get_all("set-cookie").iter().count(), 70_000);
+    map.remove("set-cookie");
+    assert_header_map_invariants(&map);
+    assert!(map.is_empty());
+}
+
+#[test]
+fn boxed_flood_hasher_survives_clone_growth_and_clear() {
+    let mut map = HeaderMap::new();
+    for i in 0..512 {
+        let name = HeaderName::from_bytes(format!("x-field-{i}").as_bytes()).unwrap();
+        map.append(name, HeaderValue::from_static("value"));
+        map.append("set-cookie", HeaderValue::from_static("a=b"));
+    }
+    map.danger.set_yellow();
+    map.danger.set_red();
+    for index in &mut *map.indices {
+        *index = Pos::none();
+    }
+    map.rebuild();
+    assert_header_map_invariants(&map);
+    let mut cloned = map.clone();
+    cloned.reserve(2048);
+    assert_header_map_invariants(&cloned);
+    for i in 0..512 {
+        let name = format!("x-field-{i}");
+        assert_eq!(cloned.get(name.as_str()).unwrap(), "value");
+        cloned.remove(name.as_str());
+    }
+    assert_eq!(cloned.get_all("set-cookie").iter().count(), 512);
+    assert_header_map_invariants(&cloned);
+    cloned.clear();
+    cloned.insert("x-reused", HeaderValue::from_static("ok"));
+    assert_header_map_invariants(&cloned);
+    assert!(!cloned.danger.is_red());
+    assert_eq!(map.keys_len(), 513);
+}
+
+#[test]
+fn collision_flood_switches_to_boxed_randomized_hasher() {
+    let names: Vec<_> = (0..)
+        .map(|i| HeaderName::from_bytes(format!("x-collision-{i}").as_bytes()).unwrap())
+        .filter(|name| hash_elem_using(&Danger::Green, name).0 & 32767 == 0)
+        .take(600)
+        .collect();
+    for operation in 0..3 {
+        let mut map = HeaderMap::new();
+        for name in &names {
+            let value = HeaderValue::from_static("value");
+            match operation {
+                0 => {
+                    map.insert(name, value);
+                }
+                1 => {
+                    map.append(name, value);
+                }
+                _ => {
+                    map.entry(name).or_insert(value);
+                }
+            }
+        }
+        assert!(map.danger.is_red(), "operation {operation}");
+        assert_header_map_invariants(&map);
+        for name in &names {
+            assert_eq!(map.get(name).unwrap(), "value");
+        }
+    }
+}
+
+#[test]
+fn collision_mitigation_at_max_capacity_rehashes_without_growing() {
+    let mut map = HeaderMap::with_capacity(usable_capacity(MAX_SIZE));
+    for i in 0..7_000 {
+        map.insert(
+            HeaderName::from_bytes(format!("x-capacity-{i}").as_bytes()).unwrap(),
+            HeaderValue::from_static("value"),
+        );
+    }
+    map.danger.set_yellow();
+    map.try_append("x-new", HeaderValue::from_static("ok"))
+        .unwrap();
+    assert!(map.danger.is_red());
+    assert_eq!(map.get("x-new").unwrap(), "ok");
+    assert_header_map_invariants(&map);
+}
+
+#[test]
+fn collision_mitigation_at_max_size_still_refuses_beyond_capacity() {
+    let capacity = usable_capacity(MAX_SIZE);
+    let mut map = HeaderMap::with_capacity(capacity);
+    for i in 0..capacity {
+        map.insert(
+            HeaderName::from_bytes(format!("x-full-{i}").as_bytes()).unwrap(),
+            HeaderValue::from_static("value"),
+        );
+    }
+    assert_eq!(map.keys_len(), capacity);
+    map.danger.set_yellow();
+    assert!(
+        map.try_insert("x-one-too-many", HeaderValue::from_static("no"))
+            .is_err()
+    );
+    assert!(
+        map.try_append("x-full-0", HeaderValue::from_static("no"))
+            .is_err()
+    );
+    assert_header_map_invariants(&map);
 }
