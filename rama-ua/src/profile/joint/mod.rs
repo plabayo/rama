@@ -523,6 +523,41 @@ impl JointCapture {
     }
 }
 
+/// Compare historical indices under the current normalization without changing
+/// their persisted scope IDs, counts, or reservoir sampling identities.
+pub(super) fn normalize_stored_structure(
+    value: &CanonicalValue,
+    maximum: usize,
+) -> Result<CanonicalValue, ProfileDataError> {
+    let domain = value.validated_domain(maximum)?;
+    let h2_limits = H2CaptureLimits {
+        frames: maximum,
+        settings: maximum,
+        bytes: maximum,
+    };
+    match domain {
+        CanonicalDomain::H2Structure => {
+            H2Capture::decode(value, h2_limits, true)?.structural(h2_limits)
+        }
+        CanonicalDomain::JointStructure => {
+            let limits = JointCaptureLimits {
+                slots: maximum,
+                value_bytes: maximum,
+                bytes: maximum,
+            };
+            let mut joint = decode_joint(value, true, limits)?;
+            for slot in &mut joint.slots {
+                if slot.kind == CapturedSlotKind::Http2EarlyFrames {
+                    slot.value =
+                        H2Capture::decode(&slot.value, h2_limits, true)?.structural(h2_limits)?;
+                }
+            }
+            encode_joint(&joint, true, limits)
+        }
+        _ => Ok(value.clone()),
+    }
+}
+
 pub(super) fn validate_joint_structure(
     value: &CanonicalValue,
     maximum: usize,

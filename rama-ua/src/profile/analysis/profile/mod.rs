@@ -2,6 +2,8 @@
 
 use std::collections::BTreeSet;
 
+use crate::profile::joint::normalize_stored_structure;
+
 use rama_http::Version;
 use rama_utils::octets::{kib, mib};
 use serde::{Deserialize, Serialize};
@@ -244,7 +246,14 @@ pub fn analyze_profile_evidence(
             .as_ref()
             .map(|value| FlowKey::from_canonical(value, limits.metadata_bytes))
             .transpose()?;
-        evidence.structure.validated_domain(limits.metadata_bytes)?;
+        // Historical indices may include H2 ACK timing. Validate their exact
+        // bytes, then compare membership using today's normalization. The
+        // retained window still uses its original scope and sampling identity.
+        let normalized_structure =
+            normalize_stored_structure(&evidence.structure, limits.metadata_bytes)?;
+        let mut normalized_context = context.clone();
+        normalized_context.structure = normalized_structure.id;
+        let normalized_scope = normalized_context.canonical(limits.metadata_bytes)?;
         let window = RetainedBucketWindow::from_snapshot(
             &evidence.window,
             evidence.window.domain,
@@ -269,8 +278,8 @@ pub fn analyze_profile_evidence(
             .prepare(authorized, capture_limits)?;
             if !prepared.buckets.iter().any(|bucket| {
                 bucket.value.id == value.id
-                    && bucket.scope.bytes == evidence.scope.bytes
-                    && bucket.structure.bytes == evidence.structure.bytes
+                    && bucket.scope.bytes == normalized_scope.bytes
+                    && bucket.structure.bytes == normalized_structure.bytes
             }) {
                 return Err(ProfileDataError::Invalid(
                     "profile evidence structural membership",

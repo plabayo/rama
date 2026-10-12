@@ -2,7 +2,7 @@ use rama_utils::octets;
 use std::{fmt, sync::Arc};
 
 use crate::proto::{
-    ConfigError, Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, congestion,
+    ConfigError, Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, cid_queue::CidQueue, congestion,
     connection::qlog::ConnectionQlog,
 };
 use rama_quic_proto::{VarInt, VarIntBoundsExceeded};
@@ -168,12 +168,16 @@ impl TransportConfig {
         ///
         /// The value must be between 2 and
         /// [`MAX_ACTIVE_CONNECTION_ID_LIMIT`](crate::profile::MAX_ACTIVE_CONNECTION_ID_LIMIT);
-        /// unsupported values prevent connection creation. `None` advertises 2 for
+        /// unsupported values are rejected without changing the configuration. `None` advertises 2 for
         /// zero-length local IDs and 5 otherwise. Receive processing enforces the
         /// advertised value independently of internal storage capacity.
-        pub fn active_connection_id_limit(mut self, value: Option<VarInt>) -> Self {
+        pub fn active_connection_id_limit(mut self, value: Option<VarInt>) -> Result<Self, ConfigError> {
+            // RFC 9000 §18.2 requires at least two; the queue bounds storage.
+            if value.is_some_and(|limit| !(2..=CidQueue::LIMIT).contains(&limit.into_inner())) {
+                return Err(ConfigError::OutOfBounds);
+            }
             self.active_connection_id_limit = value;
-            self
+            Ok(self)
         }
     }
 
@@ -908,4 +912,29 @@ impl fmt::Debug for IdleTimeout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
+}
+
+#[cfg(test)]
+#[test]
+fn active_cid_limit_rejects_unsupported_configuration_atomically() {
+    let mut config = TransportConfig::default();
+    config
+        .try_set_active_connection_id_limit(VarInt::from_u32(4))
+        .unwrap();
+    for value in [0, 1, CidQueue::LIMIT + 1, VarInt::MAX.into_inner()] {
+        let result = config.try_set_active_connection_id_limit(VarInt::from_u64(value).unwrap());
+        assert!(matches!(result, Err(ConfigError::OutOfBounds)));
+        assert_eq!(config.active_connection_id_limit, Some(VarInt::from_u32(4)));
+    }
+    for value in [2, CidQueue::LIMIT] {
+        config
+            .try_set_active_connection_id_limit(VarInt::from_u64(value).unwrap())
+            .unwrap();
+        assert_eq!(
+            config.active_connection_id_limit.unwrap().into_inner(),
+            value
+        );
+    }
+    config.try_unset_active_connection_id_limit().unwrap();
+    assert_eq!(config.active_connection_id_limit, None);
 }

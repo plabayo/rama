@@ -929,3 +929,124 @@ fn cookie_crumb_count_is_request_owned_but_other_occurrences_remain_exact() {
         }
     }
 }
+
+#[test]
+fn cookie_layout_evidence_uses_other_variants_without_crossing_protocols() {
+    let mut profile = profile("complete", h3_capabilities(), ConnectionContext::default());
+    let analysis = Arc::make_mut(profile.captured.as_mut().unwrap());
+    let scope = analysis
+        .scopes
+        .iter()
+        .position(|scope| scope.context.flow.is_some())
+        .unwrap();
+    let mut one = analysis.scopes[scope].observations.variants[0].clone();
+    let capture = |count| {
+        request_variant_with_headers(
+            Version::HTTP_3,
+            (0..count)
+                .map(|occurrence| HeaderOccurrence {
+                    name: COOKIE,
+                    occurrence,
+                    sensitive: true,
+                    representation: None,
+                    value: HeaderValueSource::Request(RequestBinding::Cookie),
+                })
+                .collect(),
+        )
+    };
+    one.value = capture(1);
+    analysis.scopes[scope].observations.variants = vec![one.clone()].into();
+    assert_eq!(
+        RequestShapeCache::default().cookie_layout(analysis, Version::HTTP_3),
+        CookieLayoutEvidence::Unknown
+    );
+
+    let mut two = one.clone();
+    two.value = capture(2);
+    analysis.scopes[scope].observations.variants = vec![one, two].into();
+    let cache = RequestShapeCache::default();
+    assert_eq!(
+        cache.cookie_layout(analysis, Version::HTTP_3),
+        CookieLayoutEvidence::Split
+    );
+    assert_eq!(
+        cache.cookie_layout(analysis, Version::HTTP_2),
+        CookieLayoutEvidence::Unknown
+    );
+    assert_eq!(
+        cache.cookie_layout(analysis, Version::HTTP_11),
+        CookieLayoutEvidence::Unknown
+    );
+}
+
+#[test]
+fn pinned_single_cookie_variant_uses_other_capture_layout_evidence() {
+    let context = ConnectionContext::default();
+    let capture = |count| {
+        request_variant_with_headers(
+            Version::HTTP_3,
+            (0..count)
+                .map(|occurrence| HeaderOccurrence {
+                    name: COOKIE,
+                    occurrence,
+                    sensitive: true,
+                    representation: None,
+                    value: HeaderValueSource::Request(RequestBinding::Cookie),
+                })
+                .collect(),
+        )
+    };
+    let one = capture(1);
+    let two = capture(2);
+    let mut captured = profile("browser", h3_capabilities(), context.clone());
+    let analysis = Arc::make_mut(captured.captured.as_mut().unwrap());
+    let scope = analysis
+        .scopes
+        .iter_mut()
+        .find(|scope| scope.context.flow.is_some())
+        .unwrap();
+    scope.observations.counts = counts(2);
+    scope.observations.retained_samples = 2;
+    scope.observations.sample_values = Box::new([one.id, two.id]);
+    scope.observations.variants = [one.clone(), two]
+        .map(|value| AnalyzedCaptureVariant {
+            value,
+            weight: AnalyzedOrderWeight::Counted(ObservationWeight::Exact(1)),
+        })
+        .into();
+    let database: UserAgentDatabase = [captured].into_iter().collect();
+    let mut query = request(context.clone());
+    query.pins.request = Some(one.id);
+    let seed = ProfileSeed([71; 32]);
+    let selected = database.select(&query, seed, DrawKey([72; 32])).unwrap();
+    let connection = selected
+        .connection(&context, seed, DrawKey([73; 32]))
+        .unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(COOKIE, HeaderValue::from_static("a=1; b=2; c=3"));
+    let request = selected
+        .request(
+            &connection,
+            &flow(context, Version::HTTP_3),
+            &headers,
+            ProfilePreservationMode::Strict,
+            seed,
+            DrawKey([74; 32]),
+        )
+        .unwrap();
+    assert_eq!(request.variant, one.id);
+    assert_eq!(request.effective.cookie_layout, CookieLayoutEvidence::Split);
+    let replayed = request
+        .replay_request(&headers, ProfilePreservationMode::Strict)
+        .unwrap();
+    assert!(replayed.report.is_exact());
+    let headers = replayed.headers.unwrap();
+    assert_eq!(
+        headers
+            .get_all(COOKIE)
+            .iter()
+            .map(|value| value.to_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["a=1", "b=2", "c=3"]
+    );
+}

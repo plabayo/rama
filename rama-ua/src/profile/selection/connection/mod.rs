@@ -4,10 +4,10 @@ use rama_core::extensions::Extension;
 use rama_http::proto::h2::frame::EarlyFrame;
 
 use crate::profile::{
-    CaptureLevel, CapturedSlotKind, ConnectionSelection, H2Capture, H2CaptureLimits,
-    H3ClientSequenceCapture, H3SequenceCaptureLimits, JointCapture, JointCaptureLimits,
-    OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture, ProfileDataError,
-    ProfilePreservationMode, ProfilePreservationReport, QuicFlightCapture, QuicFlightCaptureLimits,
+    CanonicalValue, CaptureLevel, CapturedSlotKind, ConnectionSelection, H2Capture,
+    H2CaptureLimits, H3ClientSequenceCapture, H3SequenceCaptureLimits, JointCapture,
+    JointCaptureLimits, OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture,
+    ProfileDataError, ProfilePreservationReport, QuicFlightCapture, QuicFlightCaptureLimits,
 };
 #[cfg(feature = "tls")]
 use crate::profile::{TlsCapture, TlsCaptureLimits};
@@ -30,10 +30,7 @@ pub struct PreparedConnectionComponents {
 
 impl ConnectionSelection {
     /// Decode the selected connection tuple once, before a connector consumes it.
-    pub fn prepare_components(
-        &self,
-        _preservation: ProfilePreservationMode,
-    ) -> Result<PreparedConnectionComponents, ProfileDataError> {
+    pub fn prepare_components(&self) -> Result<PreparedConnectionComponents, ProfileDataError> {
         let limits = JointCaptureLimits::default();
         let joint = JointCapture::from_canonical(&self.effective.capture, limits)?;
         if joint.level != CaptureLevel::Connection {
@@ -136,7 +133,7 @@ impl ConnectionSelection {
 }
 
 fn order(
-    value: &crate::profile::CanonicalValue,
+    value: &CanonicalValue,
     limits: OrderCaptureLimits,
     expected: OrderNamespace,
 ) -> Result<OrderedProtocolCapture, ProfileDataError> {

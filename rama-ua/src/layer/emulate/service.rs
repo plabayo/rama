@@ -307,11 +307,9 @@ where
             .transpose()
             .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
         if let Some(selection) = &connection_selection {
-            let mut prepared = selection
-                .prepare_components(preservation)
-                .map_err(|error| {
-                    ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
-                })?;
+            let mut prepared = selection.prepare_components().map_err(|error| {
+                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+            })?;
             if let Some(h2_early_frames) = &prepared.h2_early_frames {
                 apply_profile_h2_replay(
                     &req,

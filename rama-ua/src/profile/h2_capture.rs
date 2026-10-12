@@ -220,6 +220,17 @@ impl H2Capture {
         limits: H2CaptureLimits,
         structural: bool,
     ) -> Result<CanonicalValue, ProfileDataError> {
+        self.encode_with_ack_policy(limits, structural, true)
+    }
+
+    // Older structural rows include protocol-generated ACKs. Keep their exact
+    // validation separate from the normalizer used for all new observations.
+    fn encode_with_ack_policy(
+        &self,
+        limits: H2CaptureLimits,
+        structural: bool,
+        omit_acknowledgements: bool,
+    ) -> Result<CanonicalValue, ProfileDataError> {
         self.completeness.require_complete("H2 early capture")?;
         if !matches!(
             self.frames.first(),
@@ -307,10 +318,9 @@ impl H2Capture {
         writer.u8(self.completeness.tag())?;
         // Keep acknowledgements in diagnostic samples, but regenerate them
         // from the peer exchange instead of treating their timing as identity.
-        let frames = self
-            .frames
-            .iter()
-            .filter(|frame| !structural || !frame.is_protocol_generated());
+        let frames = self.frames.iter().filter(|frame| {
+            !structural || !omit_acknowledgements || !frame.is_protocol_generated()
+        });
         writer.u64(frames.clone().count() as u64)?;
         for frame in frames {
             match frame {
@@ -414,7 +424,10 @@ impl H2Capture {
             completeness,
             frames: frames.into(),
         };
-        if capture.encode(limits, structural)?.bytes != value.bytes {
+        if capture.encode(limits, structural)?.bytes != value.bytes
+            && (!structural
+                || capture.encode_with_ack_policy(limits, true, false)?.bytes != value.bytes)
+        {
             return Err(invalid());
         }
         Ok(capture)

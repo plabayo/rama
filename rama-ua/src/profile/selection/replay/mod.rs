@@ -7,9 +7,10 @@ use rama_http::{
 use serde::Serialize;
 
 use crate::profile::{
-    CaptureLevel, CapturedSlotKind, FlowKey, HeaderCapture, HeaderCapturePolicy, HeaderValueSource,
-    JointCapture, JointCaptureLimits, ProfileCaptureCompleteness, ProfileDataError,
-    PseudoHeaderCapture, RequestBinding, RequestSelection,
+    CaptureLevel, CapturedSlotKind, CookieLayoutEvidence, FlowKey, HeaderCapture,
+    HeaderCapturePolicy, HeaderValueSource, JointCapture, JointCaptureLimits,
+    ProfileCaptureCompleteness, ProfileDataError, PseudoHeaderCapture, RequestBinding,
+    RequestSelection,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Extension)]
@@ -40,6 +41,9 @@ pub enum H2ClientParameter {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 /// One observable difference between the selected capture and emitted request.
 pub enum ProfilePreservationDifference {
+    /// No capture proves how to lay out several caller cookie pairs; retain
+    /// the caller's fields without claiming an exact captured layout.
+    UnknownCookieLayout,
     CallerValueOverride {
         name: HeaderName,
         occurrence: u32,
@@ -116,12 +120,17 @@ pub enum ProfileReplayError {
         occurrence: u32,
     },
     IncompatibleH2ClientParameter(H2ClientParameter),
+    /// Strict replay needs layout evidence before changing cookie field boundaries.
+    UnknownCookieLayout,
 }
 
 impl fmt::Display for ProfileReplayError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Data(error) => error.fmt(f),
+            Self::UnknownCookieLayout => {
+                f.write_str("captured profile has no cookie layout evidence")
+            }
             Self::IncompatibleHeaderVersion {
                 captured,
                 requested,
@@ -188,7 +197,13 @@ impl RequestSelection {
                             requested: version,
                         });
                     }
-                    headers = Some(replay_headers(&captured, original, mode, &mut differences)?);
+                    headers = Some(replay_headers(
+                        &captured,
+                        original,
+                        self.effective.cookie_layout,
+                        mode,
+                        &mut differences,
+                    )?);
                 }
                 CapturedSlotKind::PseudoHeaders => {
                     let captured =
@@ -223,6 +238,7 @@ impl RequestSelection {
 fn replay_headers(
     captured: &HeaderCapture,
     original: &HeaderMap,
+    cookie_layout: CookieLayoutEvidence,
     mode: ProfilePreservationMode,
     differences: &mut Vec<ProfilePreservationDifference>,
 ) -> Result<HeaderMap, ProfileReplayError> {
@@ -249,7 +265,13 @@ fn replay_headers(
     } else {
         0
     };
-    let mut cookies = replay_cookie_values(&mut original, cookie_slots)?;
+    let mut cookies = replay_cookie_values(
+        &mut original,
+        cookie_slots,
+        cookie_layout,
+        mode,
+        differences,
+    )?;
     let mut cookie_slot = 0;
     let mut output = HeaderMap::with_capacity(captured.fields.len().max(original.len()));
     for field in &captured.fields {
@@ -352,9 +374,38 @@ fn replay_headers(
 fn replay_cookie_values(
     original: &mut [OriginalHeader],
     slots: usize,
+    layout: CookieLayoutEvidence,
+    mode: ProfilePreservationMode,
+    differences: &mut Vec<ProfilePreservationDifference>,
 ) -> Result<Option<VecDeque<HeaderValue>>, ProfileReplayError> {
     if slots == 0 || !original.iter().any(|field| field.name == COOKIE) {
         return Ok(None);
+    }
+
+    if slots == 1 && layout == CookieLayoutEvidence::Unknown {
+        let pairs = original
+            .iter()
+            .filter(|field| field.name == COOKIE)
+            .map(|field| field.value.as_bytes().split(|byte| *byte == b';').count())
+            .sum::<usize>();
+        if pairs > 1 {
+            if mode == ProfilePreservationMode::Strict {
+                return Err(ProfileReplayError::UnknownCookieLayout);
+            }
+            differences.push(ProfilePreservationDifference::UnknownCookieLayout);
+        }
+        // Keep the caller's boundaries until a captured variant establishes
+        // splitting. A single field is never evidence for joining.
+        return Ok(Some(
+            original
+                .iter_mut()
+                .filter(|field| field.name == COOKIE)
+                .map(|field| {
+                    field.used = true;
+                    field.value.clone()
+                })
+                .collect(),
+        ));
     }
 
     let mut joined = Vec::new();
@@ -375,14 +426,10 @@ fn replay_cookie_values(
         value.set_sensitive(sensitive);
         Ok::<_, ProfileReplayError>(value)
     };
-    let values = if slots == 1 {
-        VecDeque::from([make_value(&joined)?])
-    } else {
-        joined
-            .split(|byte| *byte == b';')
-            .map(|pair| make_value(pair.trim_ascii()))
-            .collect::<Result<VecDeque<_>, _>>()?
-    };
+    let values = joined
+        .split(|byte| *byte == b';')
+        .map(|pair| make_value(pair.trim_ascii()))
+        .collect::<Result<VecDeque<_>, _>>()?;
     Ok(Some(values))
 }
 

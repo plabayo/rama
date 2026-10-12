@@ -46,6 +46,13 @@ Rama's UA emulation capabilities are powered by [its automated fingerprinting se
 > but please do so with moderation. In case you have ideas on how to improve
 > the service, please let us know [by opening an issue](https://github.com/plabayo/rama/issues).
 
+### Counted capture storage
+
+H2 SETTINGS acknowledgements remain in literal captures but do not define new
+structural groups. Older ACK-bearing groups remain readable with their original
+counts and sampling identities. Old and new group IDs can coexist until the
+older observations leave the 14-day retention window.
+
 ## User Agent Emulation
 
 Rama provides comprehensive user-agent emulation capabilities across multiple layers:

@@ -544,7 +544,8 @@ pub fn client_hello(initials: &[InitialPacket]) -> Option<Vec<u8>> {
 }
 
 /// Reassemble a bounded ClientHello, including for caller-supplied packet records.
-/// Missing or invalid handshake data returns `Ok(None)`; exhausted budgets return an error.
+/// Missing handshake data returns `Ok(None)`. Malformed data, contradictory
+/// retransmissions, and exhausted budgets return an error.
 pub fn client_hello_with_limits(
     initials: &[InitialPacket],
     limits: &CaptureLimits,
@@ -555,6 +556,13 @@ pub fn client_hello_with_limits(
         .try_fold(0usize, |n, packet| n.checked_add(packet.crypto.len()))
         .ok_or(CaptureError::LimitExceeded("CRYPTO fragments"))?;
     within(fragments, limits.crypto_fragments, "CRYPTO fragments")?;
+    let mut remaining = limits.bytes;
+    for (_, data) in initials.iter().flat_map(|packet| &packet.crypto) {
+        remaining = remaining
+            .checked_sub(data.len())
+            .ok_or(CaptureError::LimitExceeded("CRYPTO bytes"))?;
+    }
+
     let mut chunks: Vec<(u64, &[u8])> = initials
         .iter()
         .flat_map(|packet| {
@@ -566,33 +574,46 @@ pub fn client_hello_with_limits(
         .collect();
     chunks.sort_by_key(|(offset, _)| *offset);
     let mut stream: Vec<u8> = Vec::new();
+    let mut expected_length = None;
     for (offset, data) in chunks {
-        let Ok(offset) = usize::try_from(offset) else {
-            return Ok(None);
-        };
+        let offset =
+            usize::try_from(offset).map_err(|_error| CaptureError::Malformed("CRYPTO offset"))?;
         if offset > stream.len() {
+            // A gap beyond the complete ClientHello does not affect peeking.
+            if expected_length == Some(stream.len()) {
+                continue;
+            }
             return Ok(None);
         }
-        if let Some(new) = data.get(stream.len() - offset..) {
-            let room = limits.client_hello_bytes.saturating_sub(stream.len());
-            stream.extend_from_slice(&new[..new.len().min(room)]);
-            if stream.len() < 4 && new.len() > room {
-                return Err(CaptureError::LimitExceeded("ClientHello bytes"));
-            }
+
+        // Check every retained overlap, including a retransmission received
+        // after a complete hello. First-arrival selection must not conceal
+        // contradictory names or protocol offers from an interception policy.
+        let overlap = data.len().min(stream.len() - offset);
+        if stream[offset..offset + overlap] != data[..overlap] {
+            return Err(CaptureError::Malformed("conflicting CRYPTO overlap"));
         }
-        if let Some(&[kind, a, b, c]) = stream.get(..4) {
+        let new = &data[overlap..];
+        let maximum = expected_length.unwrap_or(limits.client_hello_bytes);
+        let room = maximum.saturating_sub(stream.len());
+        stream.extend_from_slice(&new[..new.len().min(room)]);
+        if stream.len() < 4 && new.len() > room {
+            return Err(CaptureError::LimitExceeded("ClientHello bytes"));
+        }
+        if expected_length.is_none()
+            && let Some(&[kind, a, b, c]) = stream.get(..4)
+        {
+            // TLS HandshakeType client_hello is 1 (RFC 8446 §4).
             if kind != 0x01 {
-                return Ok(None);
+                return Err(CaptureError::Malformed("expected ClientHello"));
             }
-            let len = 4 + (usize::from(a) << 16 | usize::from(b) << 8 | usize::from(c));
-            within(len, limits.client_hello_bytes, "ClientHello bytes")?;
-            if stream.len() >= len {
-                stream.truncate(len);
-                return Ok(Some(stream));
-            }
+            let length = 4 + (usize::from(a) << 16 | usize::from(b) << 8 | usize::from(c));
+            within(length, limits.client_hello_bytes, "ClientHello bytes")?;
+            expected_length = Some(length);
+            stream.truncate(length);
         }
     }
-    Ok(None)
+    Ok((expected_length == Some(stream.len())).then_some(stream))
 }
 
 /// A transport parameter as it was sent: identifier and raw value, in wire order.
@@ -856,6 +877,7 @@ mod tests {
             assert_eq!(parameters[0].value, value);
         }
     }
+
     #[test]
     fn observation_budgets_bound_bytes_packets_hello_and_parameters() {
         let wire = [0x40, 1, 2, 3];
@@ -957,5 +979,81 @@ mod tests {
             ..packet
         };
         assert!(client_hello(&[huge_offset]).is_none());
+    }
+
+    fn crypto_packet(crypto: Vec<(u64, Vec<u8>)>) -> InitialPacket {
+        InitialPacket {
+            header: ObservedPacket {
+                first_byte: 0xc0,
+                kind: PacketKind::Initial,
+                version: Some(Version::V1),
+                dcid: vec![],
+                scid: None,
+                token: None,
+                range: 0..0,
+            },
+            packet_number: 0,
+            packet_number_len: 1,
+            frames: vec![],
+            crypto,
+        }
+    }
+
+    #[test]
+    fn client_hello_overlap_agreement_is_required_before_and_after_completion() {
+        let hello = hello_with_parameter_len(3, b"abc");
+        let limits = CaptureLimits::default();
+        for first_length in [12, hello.len()] {
+            let correct = hello[5..].to_vec();
+            let mut conflicting = correct.clone();
+            conflicting[1] ^= 1;
+            for overlap in [correct, conflicting] {
+                let equal = overlap == hello[5..];
+                let packet = crypto_packet(vec![(0, hello[..first_length].to_vec()), (5, overlap)]);
+                let actual = client_hello_with_limits(slice::from_ref(&packet), &limits);
+                if equal {
+                    assert_eq!(actual, Ok(Some(hello.clone())));
+                } else {
+                    assert_eq!(
+                        actual,
+                        Err(CaptureError::Malformed("conflicting CRYPTO overlap"))
+                    );
+                }
+            }
+        }
+        let packet = crypto_packet(vec![
+            (12, hello[12..].to_vec()),
+            (0, hello[..16].to_vec()),
+            (0, hello.clone()),
+        ]);
+        assert_eq!(
+            client_hello_with_limits(&[packet], &limits),
+            Ok(Some(hello.clone()))
+        );
+        let packet = crypto_packet(vec![(0, hello[..8].to_vec()), (9, hello[9..].to_vec())]);
+        assert_eq!(client_hello_with_limits(&[packet], &limits), Ok(None));
+    }
+
+    #[test]
+    fn client_hello_fragment_bytes_are_bounded_before_overlap_work() {
+        let hello = hello_with_parameter_len(3, b"abc");
+        let length = hello.len();
+        let packet = crypto_packet(vec![(0, hello.clone()), (0, hello.clone())]);
+        let limits = CaptureLimits {
+            bytes: length * 2 - 1,
+            ..CaptureLimits::default()
+        };
+        assert_eq!(
+            client_hello_with_limits(slice::from_ref(&packet), &limits),
+            Err(CaptureError::LimitExceeded("CRYPTO bytes"))
+        );
+        let limits = CaptureLimits {
+            bytes: length * 2,
+            ..limits
+        };
+        assert_eq!(
+            client_hello_with_limits(&[packet], &limits),
+            Ok(Some(hello))
+        );
     }
 }

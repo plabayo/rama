@@ -1,7 +1,8 @@
 use super::*;
 use crate::profile::{
-    AnalyzedOrderWeight, ConnectionContext, HeaderCapturePolicy, ObservationId, ObservationWeight,
-    ResumptionContext,
+    AnalyzedOrderWeight, ConnectionContext, H2Capture, H2CaptureLimits, H2CapturedFrame,
+    H2CapturedSetting, HeaderCapturePolicy, ObservationId, ObservationWeight, ResumptionContext,
+    canonical::CanonicalWriter,
 };
 use rama_http::{HeaderMap, HeaderValue, Method};
 use std::collections::BTreeMap;
@@ -408,4 +409,180 @@ fn multi_day_literals_retain_counts_beyond_one_day_capacity() {
             AnalyzedOrderWeight::Counted(ObservationWeight::Exact(1))
         )));
     }
+}
+
+// This is the structural wire format before ACK timing stopped contributing to
+// identity. Keep the fixture independent of the current structural encoder.
+fn historical_h2_structure(setting_value: u32) -> CanonicalValue {
+    let mut writer = CanonicalWriter::new(CanonicalDomain::H2Structure, kib(16)).unwrap();
+    writer
+        .u8(ProfileCaptureCompleteness::Complete.tag())
+        .unwrap();
+    writer.u64(2).unwrap();
+    writer.u8(0).unwrap(); // SETTINGS frame.
+    writer.u8(0).unwrap(); // Not an ACK.
+    writer.u64(1).unwrap();
+    writer.u16(1).unwrap(); // SETTINGS_HEADER_TABLE_SIZE.
+    writer.u32(setting_value).unwrap();
+    writer.u8(0).unwrap(); // SETTINGS frame.
+    writer.u8(1).unwrap(); // ACK, with an empty payload.
+    writer.u64(0).unwrap();
+    writer.finish()
+}
+
+fn h2_history_evidence(historical: bool, structural_setting: u32) -> ProfileEvidence {
+    let limits = JointCaptureLimits::default();
+    let value = H2Capture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        frames: Box::new([
+            H2CapturedFrame::Settings {
+                ack: false,
+                entries: Box::new([H2CapturedSetting { id: 1, value: 1024 }]),
+            },
+            H2CapturedFrame::Settings {
+                ack: true,
+                entries: Box::default(),
+            },
+        ]),
+    }
+    .canonical(H2CaptureLimits::default())
+    .unwrap();
+    let prepared = ProfileCapture {
+        profile: ProfileKey::new("historical-h2-client"),
+        flow: None,
+        connection: ConnectionContext::default(),
+        joint: JointCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            level: CaptureLevel::Connection,
+            slots: Box::new([CapturedSlot {
+                kind: CapturedSlotKind::Http2EarlyFrames,
+                value,
+            }]),
+        },
+    }
+    .prepare(false, limits)
+    .unwrap();
+    let scopes = prepared
+        .buckets
+        .into_vec()
+        .into_iter()
+        .map(|bucket| {
+            let domain = bucket.value.validated_domain(limits.bytes).unwrap();
+            let structure = if historical {
+                let leaf = historical_h2_structure(structural_setting);
+                if domain == CanonicalDomain::Joint {
+                    let mut writer =
+                        CanonicalWriter::new(CanonicalDomain::JointStructure, limits.bytes)
+                            .unwrap();
+                    writer.u8(0).unwrap(); // Connection-level tuple.
+                    writer
+                        .u8(ProfileCaptureCompleteness::Complete.tag())
+                        .unwrap();
+                    writer.u64(1).unwrap();
+                    writer.u16(6).unwrap(); // Http2EarlyFrames slot.
+                    writer.bytes(&leaf.bytes).unwrap();
+                    writer.finish()
+                } else {
+                    leaf
+                }
+            } else {
+                bucket.structure
+            };
+            let mut context =
+                ProfileObservationScope::from_canonical(&bucket.scope, limits.bytes).unwrap();
+            context.structure = structure.id;
+            let scope = context.canonical(limits.bytes).unwrap();
+            let mut window = RetainedBucketWindow::new(
+                domain,
+                scope.id,
+                [3; 32],
+                ProfileWindowLimits::default(),
+            )
+            .unwrap();
+            for sequence in 1..=40 {
+                window
+                    .observe(
+                        100,
+                        100,
+                        ObservationId {
+                            run: [if historical { 1 } else { 2 }; 16],
+                            sequence,
+                        },
+                        &bucket.value,
+                    )
+                    .unwrap();
+            }
+            ProfileScopeEvidence {
+                scope,
+                flow: None,
+                structure,
+                window: window.snapshot(),
+            }
+        })
+        .collect();
+    ProfileEvidence {
+        format_version: 1,
+        profile: prepared.profile,
+        scopes,
+    }
+}
+
+#[test]
+fn historical_h2_ack_indices_keep_counts_and_sampling_identity() {
+    let mut input = h2_history_evidence(true, 1024);
+    let current = h2_history_evidence(false, 1024);
+    assert_ne!(input.scopes[0].scope.id, current.scopes[0].scope.id);
+    let mut scopes = input.scopes.into_vec();
+    scopes.extend(current.scopes);
+    input.scopes = scopes.into();
+    let original = serde_json::to_vec(&input).unwrap();
+    let result = analyze_profile_evidence(
+        &input,
+        false,
+        [3; 32],
+        100,
+        14,
+        ProfileAnalysisLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        result.components.h2.as_deref(),
+        Some([0, 1, 2, 3].as_slice())
+    );
+    for (analyzed, stored) in result.scopes.iter().zip(&input.scopes) {
+        assert_eq!(analyzed.id, stored.scope.id);
+        assert_eq!(analyzed.structure.bytes, stored.structure.bytes);
+        assert_eq!(analyzed.observations.counts.total, 40);
+    }
+    assert_eq!(serde_json::to_vec(&input).unwrap(), original);
+}
+
+#[test]
+fn historical_h2_ack_compatibility_preserves_membership_and_authorization() {
+    let wrong_setting = h2_history_evidence(true, 4096);
+    assert!(matches!(
+        analyze_profile_evidence(
+            &wrong_setting,
+            false,
+            [3; 32],
+            100,
+            14,
+            ProfileAnalysisLimits::default()
+        ),
+        Err(ProfileDataError::Invalid(
+            "profile evidence structural membership"
+        ))
+    ));
+    let input = h2_history_evidence(true, 1024);
+    assert!(matches!(
+        analyze_profile_evidence(
+            &input,
+            true,
+            [3; 32],
+            100,
+            14,
+            ProfileAnalysisLimits::default()
+        ),
+        Err(ProfileDataError::Invalid("profile evidence ownership"))
+    ));
 }

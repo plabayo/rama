@@ -136,12 +136,15 @@
 //! ```
 
 mod accept_header;
+mod bound_authority;
 mod validate;
 mod validate_fn;
 mod validate_request_header;
 
 #[doc(inline)]
 pub use accept_header::AcceptHeader;
+#[doc(inline)]
+pub use bound_authority::BoundAuthority;
 #[doc(inline)]
 pub use validate::ValidateRequest;
 #[doc(inline)]

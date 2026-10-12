@@ -36,6 +36,7 @@ fn selection_for_version(fields: Vec<HeaderOccurrence>, version: Version) -> Req
         draw: crate::profile::DrawKey([3; 32]),
         analysis_revision: 2,
         effective: PreparedRequestProfile {
+            cookie_layout: CookieLayoutEvidence::Unknown,
             scope: ValueId([4; 32]),
             capture,
             flow: FlowKey::Http {
@@ -235,7 +236,7 @@ fn split_cookie_profiles_accept_request_owned_pair_counts() {
 }
 
 #[test]
-fn joined_cookie_profiles_preserve_caller_pair_order() {
+fn ambiguous_cookie_capture_never_implies_joining() {
     for version in [Version::HTTP_2, Version::HTTP_3] {
         let selected = selection_for_version(
             vec![field(
@@ -248,12 +249,44 @@ fn joined_cookie_profiles_preserve_caller_pair_order() {
         let mut original = HeaderMap::new();
         original.append("cookie", HeaderValue::from_static("b=2"));
         original.append("cookie", HeaderValue::from_static("a=1"));
+        assert!(matches!(
+            selected.replay_request(&original, ProfilePreservationMode::Strict),
+            Err(ProfileReplayError::UnknownCookieLayout)
+        ));
         let replayed = selected
+            .replay_request(&original, ProfilePreservationMode::BestEffort)
+            .unwrap();
+        assert!(matches!(
+            replayed.report.differences.as_ref(),
+            [ProfilePreservationDifference::UnknownCookieLayout]
+        ));
+        let headers = replayed.headers.unwrap();
+        assert_eq!(
+            headers
+                .get_all("cookie")
+                .iter()
+                .map(|v| v.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["b=2", "a=1"]
+        );
+
+        let mut supported = selected;
+        supported.effective.cookie_layout = CookieLayoutEvidence::Split;
+        original.clear();
+        original.append("cookie", HeaderValue::from_static("b=2; a=1"));
+        let replayed = supported
             .replay_request(&original, ProfilePreservationMode::Strict)
             .unwrap();
         assert!(replayed.report.is_exact());
-        let headers = replayed.headers.unwrap();
-        assert_eq!(headers.get_all("cookie").iter().count(), 1);
-        assert_eq!(headers["cookie"], "b=2; a=1");
+        assert_eq!(
+            replayed
+                .headers
+                .unwrap()
+                .get_all("cookie")
+                .iter()
+                .map(|v| v.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["b=2", "a=1"]
+        );
     }
 }

@@ -66,3 +66,6 @@ pub mod profile;
 
 #[cfg(feature = "std")]
 pub mod capture;
+
+#[cfg(feature = "std")]
+pub mod peek;

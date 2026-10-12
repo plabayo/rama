@@ -218,6 +218,18 @@ pub struct PreparedRequestProfile {
     pub scope: ValueId,
     pub capture: CanonicalValue,
     pub flow: FlowKey,
+    /// Cookie layout evidence from this profile for the negotiated HTTP version.
+    pub cookie_layout: CookieLayoutEvidence,
+}
+
+/// Request-owned values cannot show whether a single captured cookie field
+/// contained one pair or several. Multiple cookie fields prove split support;
+/// a single field alone supplies no evidence for joining future pairs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub enum CookieLayoutEvidence {
+    #[default]
+    Unknown,
+    Split,
 }
 
 #[derive(Debug, Clone, Serialize, Extension)]
@@ -695,6 +707,7 @@ impl SelectedProfile {
                 scope: scope.id,
                 capture: variant.value.clone(),
                 flow: flow.clone(),
+                cookie_layout: self.request_shapes.cookie_layout(analysis, protocol),
             },
         })
     }
@@ -712,6 +725,7 @@ struct RequestHeaderShape {
 #[derive(Debug, Default)]
 pub(crate) struct RequestShapeCache {
     shapes: OnceLock<Box<[RequestScopeShapes]>>,
+    cookie_layouts: OnceLock<[CookieLayoutEvidence; 2]>,
 }
 
 type RequestScopeShapes = Box<[Result<DecodedRequestShape, ProfileDataError>]>;
@@ -720,19 +734,12 @@ type RequestScopeShapes = Box<[Result<DecodedRequestShape, ProfileDataError>]>;
 struct DecodedRequestShape {
     version: Option<Version>,
     fields: Vec<RequestHeaderShape>,
+    cookie_layout: CookieLayoutEvidence,
 }
 
 impl RequestShapeCache {
-    fn shape(
-        &self,
-        analysis: &AnalyzedProfile,
-        scope: usize,
-        variant: usize,
-        version: Version,
-    ) -> Result<&[RequestHeaderShape], ProfileDataError> {
-        // Scope/variant coordinates retain identity even when supplied IDs
-        // collide. They also avoid copying canonical bytes into a cache key.
-        let shapes = self.shapes.get_or_init(|| {
+    fn decoded(&self, analysis: &AnalyzedProfile) -> &[RequestScopeShapes] {
+        self.shapes.get_or_init(|| {
             analysis
                 .scopes
                 .iter()
@@ -751,7 +758,48 @@ impl RequestShapeCache {
                     }
                 })
                 .collect()
-        });
+        })
+    }
+
+    fn cookie_layout(&self, analysis: &AnalyzedProfile, version: Version) -> CookieLayoutEvidence {
+        let index = match version {
+            Version::HTTP_2 => 0,
+            Version::HTTP_3 => 1,
+            _ => return CookieLayoutEvidence::Unknown,
+        };
+        // Use observed variants before pinning or random selection. A draw with
+        // one cookie field must not erase evidence from another request. Cache
+        // this evidence alongside shapes rather than scanning on each request.
+        self.cookie_layouts.get_or_init(|| {
+            [Version::HTTP_2, Version::HTTP_3].map(|version| {
+                if self
+                    .decoded(analysis)
+                    .iter()
+                    .flat_map(|scope| scope.iter())
+                    .filter_map(|shape| shape.as_ref().ok())
+                    .any(|shape| {
+                        shape.version == Some(version)
+                            && shape.cookie_layout == CookieLayoutEvidence::Split
+                    })
+                {
+                    CookieLayoutEvidence::Split
+                } else {
+                    CookieLayoutEvidence::Unknown
+                }
+            })
+        })[index]
+    }
+
+    fn shape(
+        &self,
+        analysis: &AnalyzedProfile,
+        scope: usize,
+        variant: usize,
+        version: Version,
+    ) -> Result<&[RequestHeaderShape], ProfileDataError> {
+        // Scope/variant coordinates retain identity even when supplied IDs
+        // collide. They also avoid copying canonical bytes into a cache key.
+        let shapes = self.decoded(analysis);
         let decoded = shapes
             .get(scope)
             .and_then(|scope| scope.get(variant))
@@ -819,12 +867,23 @@ fn request_header_shape(value: &CanonicalValue) -> Result<DecodedRequestShape, P
 
     let mut shape = Vec::new();
     let mut version = None;
+    let mut cookie_layout = CookieLayoutEvidence::Unknown;
     for slot in &joint.slots {
         match slot.kind {
             CapturedSlotKind::Headers => {
                 let captured =
                     HeaderCapture::from_canonical(&slot.value, &HeaderCapturePolicy::default())?;
                 version = Some(captured.version);
+                if matches!(captured.version, Version::HTTP_2 | Version::HTTP_3)
+                    && captured
+                        .fields
+                        .iter()
+                        .filter(|field| field.name == COOKIE)
+                        .count()
+                        > 1
+                {
+                    cookie_layout = CookieLayoutEvidence::Split;
+                }
                 shape.extend(captured.fields.iter().filter_map(|field| {
                     let HeaderValueSource::Request(binding) = &field.value else {
                         return None;
@@ -848,6 +907,7 @@ fn request_header_shape(value: &CanonicalValue) -> Result<DecodedRequestShape, P
     Ok(DecodedRequestShape {
         version,
         fields: shape,
+        cookie_layout,
     })
 }
 

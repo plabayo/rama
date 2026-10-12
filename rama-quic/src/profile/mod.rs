@@ -4,6 +4,8 @@
 //! turns one into this engine's [`EndpointConfig`], [`ClientConfig`] and [`ServerConfig`], and
 //! reads a first flight back through [`capture`].
 
+use std::{error::Error, fmt, sync::Arc};
+
 use rama_quic_proto::{VarInt, profile::*};
 
 pub mod capture;
@@ -25,8 +27,6 @@ mod browsers;
     )
 ))]
 mod tests;
-
-use std::sync::Arc;
 
 use crate::proto::{
     ClientConfig, ConfigError, EndpointConfig, ServerConfig, TransportConfig,
@@ -57,8 +57,8 @@ pub enum ProfileEndpointMismatch {
     MaximumUdpPayload,
 }
 
-impl std::fmt::Display for ProfileEndpointMismatch {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ProfileEndpointMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::ConnectionIdLength => "QUIC profile disagrees with endpoint connection ID length",
             Self::QuicBitGreasing => "QUIC profile disagrees with endpoint fixed-bit greasing",
@@ -67,7 +67,7 @@ impl std::fmt::Display for ProfileEndpointMismatch {
     }
 }
 
-impl std::error::Error for ProfileEndpointMismatch {}
+impl Error for ProfileEndpointMismatch {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct EndpointProfile {
@@ -170,7 +170,7 @@ impl TransportConfig {
             .active_connection_id_limit
             .map(VarInt::from_u64)
             .transpose()?;
-        config.maybe_set_active_connection_id_limit(cid_limit);
+        config.try_maybe_set_active_connection_id_limit(cid_limit)?;
         Ok(config)
     }
 }

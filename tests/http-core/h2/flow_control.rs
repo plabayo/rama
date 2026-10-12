@@ -3,7 +3,7 @@ use h2_support::util::yield_once;
 use rama::ServiceInput;
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::futures::{StreamExt, TryStreamExt};
-use rama_utils::octets::mib_u32;
+use rama_utils::octets::{kib, kib_u32, mib_u32};
 use std::pin::Pin;
 use std::sync::{
     Arc, Barrier,
@@ -3642,4 +3642,74 @@ async fn replay_waiting_for_stream_capacity_keeps_reading() {
     tokio::time::timeout(Duration::from_secs(1), join(srv, client))
         .await
         .expect("replay blocked SETTINGS reads");
+}
+
+/// Exercise the marker that distinguishes the first replayed increment from
+/// later ones through the real connection driver and capacity-release path.
+#[tokio::test]
+async fn repeated_early_connection_windows_replenish_the_combined_credit() {
+    const INCREMENT: u32 = 65_535;
+    // Half of DEFAULT + two increments. After one release, the correct target
+    // replenishes this entire amount; treating both increments as "first"
+    // leaves the release below the automatic WINDOW_UPDATE threshold.
+    const BODY_BYTES: usize = (3 * INCREMENT as usize) / 2 + 1;
+    let (io, mut srv) = mock::new();
+
+    let server = async move {
+        srv.read_preface().await.unwrap();
+        let settings = assert_settings!(srv.next().await.unwrap().unwrap());
+        assert_eq!(settings.config.initial_window_size, Some(kib_u32(256)));
+        srv.recv_frame(frames::window_update(0, INCREMENT)).await;
+        srv.recv_frame(frames::window_update(0, INCREMENT)).await;
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://example.com/")
+                .eos(),
+        )
+        .await;
+        srv.send_frame(frame::Settings::default()).await;
+        srv.send_frame(frame::Settings::ack()).await;
+        srv.send_frame(frames::headers(1).response(200)).await;
+        let payload = vec![b'x'; BODY_BYTES];
+        for chunk in payload.chunks(kib(16)) {
+            srv.send_frame(frames::data(1, Bytes::copy_from_slice(chunk)))
+                .await;
+        }
+        srv.recv_frame(frame::Settings::ack()).await;
+        srv.recv_frame(frames::window_update(0, BODY_BYTES as u32))
+            .await;
+        srv.send_frame(frames::data(1, "").eos()).await;
+    };
+    let client = async move {
+        let (mut client, mut connection) = client::Builder::new()
+            .with_initial_window_size(kib_u32(256))
+            .with_early_frames(vec![
+                frame::EarlyFrame::WindowUpdate(frames::window_update(0, INCREMENT)),
+                frame::EarlyFrame::WindowUpdate(frames::window_update(0, INCREMENT)),
+            ])
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+        let response = client
+            .send_request(Request::get("https://example.com/").body(()).unwrap(), true)
+            .unwrap()
+            .0;
+        connection
+            .drive(async move {
+                let mut body = response.await.unwrap().into_body();
+                let mut read = 0;
+                while read < BODY_BYTES {
+                    read += body.data().await.unwrap().unwrap().len();
+                }
+                assert_eq!(read, BODY_BYTES);
+                body.flow_control().release_capacity(read).unwrap();
+                while let Some(chunk) = body.data().await {
+                    assert!(chunk.unwrap().is_empty());
+                }
+            })
+            .await;
+    };
+    tokio::time::timeout(Duration::from_secs(1), join(server, client))
+        .await
+        .expect("replayed increments lost receive capacity");
 }

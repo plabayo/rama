@@ -1,6 +1,6 @@
 use super::*;
 use crate::profile::{
-    CanonicalValue, CapturedSlot, ConnectionContext, H2CapturedFrame, H2CapturedSetting,
+    CanonicalValue, CapturedSlot, ConnectionContext, DrawKey, H2CapturedFrame, H2CapturedSetting,
     PreparedConnectionProfile, ProfileCaptureCompleteness, ProfileObservationScope, ValueId,
 };
 use rama_http::proto::h2::frame::EarlyFrame;
@@ -26,7 +26,7 @@ fn selection(capture: CanonicalValue) -> ConnectionSelection {
     ConnectionSelection {
         profile: ValueId([1; 32]),
         variant: capture.id,
-        draw: crate::profile::DrawKey([2; 32]),
+        draw: DrawKey([2; 32]),
         analysis_revision: 2,
         effective: PreparedConnectionProfile {
             scope: ValueId([3; 32]),
@@ -66,9 +66,7 @@ fn tcp_connection_components_decode_h2_frames() {
     .canonical(JointCaptureLimits::default())
     .unwrap();
 
-    let prepared = selection(capture)
-        .prepare_components(ProfilePreservationMode::Strict)
-        .unwrap();
+    let prepared = selection(capture).prepare_components().unwrap();
     let replay = prepared.h2_early_frames.unwrap();
     let EarlyFrame::Settings(settings) = &replay[0] else {
         panic!("initial replay frame must be SETTINGS");
@@ -77,7 +75,7 @@ fn tcp_connection_components_decode_h2_frames() {
 }
 
 #[test]
-fn h2_settings_ack_is_regenerated_in_every_preservation_mode() {
+fn h2_settings_ack_is_regenerated_during_component_preparation() {
     let h2 = H2Capture {
         completeness: ProfileCaptureCompleteness::Complete,
         frames: vec![
@@ -106,14 +104,9 @@ fn h2_settings_ack_is_regenerated_in_every_preservation_mode() {
     .canonical(JointCaptureLimits::default())
     .unwrap();
 
-    for mode in [
-        ProfilePreservationMode::Strict,
-        ProfilePreservationMode::BestEffort,
-    ] {
-        let prepared = selection(capture.clone()).prepare_components(mode).unwrap();
-        assert_eq!(prepared.h2_early_frames.unwrap().len(), 1);
-        assert!(prepared.preservation_report.is_exact());
-    }
+    let prepared = selection(capture).prepare_components().unwrap();
+    assert_eq!(prepared.h2_early_frames.unwrap().len(), 1);
+    assert!(prepared.preservation_report.is_exact());
 }
 
 #[test]
@@ -143,9 +136,7 @@ fn quic_connection_components_keep_each_order_namespace_separate() {
     .canonical(JointCaptureLimits::default())
     .unwrap();
 
-    let prepared = selection(capture)
-        .prepare_components(ProfilePreservationMode::Strict)
-        .unwrap();
+    let prepared = selection(capture).prepare_components().unwrap();
     assert_eq!(prepared.quic_parameters.unwrap().fields[0].id, 0x04);
     assert_eq!(prepared.h3_peer_settings.unwrap().fields[0].id, 0x06);
     assert_eq!(prepared.quic_versions.unwrap().fields[0].id, 1);
@@ -163,7 +154,7 @@ fn request_capture_cannot_be_prepared_as_connection_components() {
     .unwrap();
 
     assert!(matches!(
-        selection(capture).prepare_components(ProfilePreservationMode::Strict),
+        selection(capture).prepare_components(),
         Err(ProfileDataError::Invalid(
             "connection profile capture level"
         ))

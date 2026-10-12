@@ -16,17 +16,20 @@ use rama_crypto::hmac::HmacSha2;
 use rama_quic_proto::{
     ConnectionId, Side,
     capture::{
-        CaptureError, CaptureLimits, FirstFlight, KeyProvider, ObservedFrame, PacketKind,
-        first_flight_with_limits, observe,
+        CaptureError, CaptureLimits, FirstFlight, InitialKeys, KeyProvider, ObservedFrame,
+        PacketKind, first_flight_with_limits, observe,
     },
     crypto::{HeaderKey as _, PacketKey as _},
-    version::{ClientVersionPolicy, Version},
+    peek::{InitialPeek, PeekError},
+    version::{ClientVersionPolicy, LongKind, Version},
 };
 use rama_tls::client::TlsClientConfig;
 use rand::{SeedableRng, rngs::StdRng};
 use std::{
+    cell::Cell,
     net::{Ipv4Addr, SocketAddr},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use super::{
@@ -118,8 +121,6 @@ fn the_observer_split_needs_no_keys() {
     }
 }
 
-/// Build a client with a profile, capture its own first flight through an in-memory socket, and
-/// return what a server reads from it.
 /// Build a client with a profile, capture the datagrams of its own first flight through a
 /// loopback socket, and return what a server reads from it, together with whether the client's
 /// TLS backend can change version mid-handshake (so the profile's compatible offer stands).
@@ -160,6 +161,13 @@ fn rama_first_flight(profile: &QuicProfile) -> (FirstFlight, bool) {
         // Collect datagrams until the ClientHello reassembles into a first flight with its
         // parameters, so a timing-dependent later datagram cannot truncate the read.
         let mut datagrams: Vec<Vec<u8>> = Vec::new();
+        let initial_provider = provider();
+        let keys = capture::ProviderKeys(initial_provider.as_ref());
+        let mut peek = InitialPeek::new(
+            CaptureLimits::default(),
+            Instant::now() + Duration::from_secs(5),
+        );
+        let mut peek_complete = false;
         let flight = loop {
             let mut buf = vec![0u8; 2048];
             let (len, _from) =
@@ -168,6 +176,9 @@ fn rama_first_flight(profile: &QuicProfile) -> (FirstFlight, bool) {
                     .expect("the client sends within the deadline")
                     .unwrap();
             buf.truncate(len);
+            if !peek_complete {
+                peek_complete = peek.inspect(Instant::now(), &buf, &keys).unwrap().is_some();
+            }
             datagrams.push(buf);
             let borrowed: Vec<&[u8]> = datagrams.iter().map(Vec::as_slice).collect();
             match capture::first_flight(&borrowed, &*provider()) {
@@ -178,11 +189,13 @@ fn rama_first_flight(profile: &QuicProfile) -> (FirstFlight, bool) {
                 _ => {}
             }
         };
+        assert!(peek_complete);
         drop(connecting);
         client.close(0u32, b"done");
         (flight, capable)
     })
 }
+
 #[test]
 fn the_standard_profile_produces_a_standard_first_flight() {
     let (flight, capable) = rama_first_flight(&QuicProfile::standard());
@@ -811,4 +824,242 @@ fn profile_endpoint_mismatches_fail_before_allocating_a_connection() {
         );
         assert_eq!(endpoint.open_connections(), 0);
     }
+}
+
+struct CountInitialKeys<P> {
+    inner: P,
+    calls: Cell<usize>,
+}
+
+impl<P: KeyProvider> KeyProvider for CountInitialKeys<P> {
+    type Header = P::Header;
+    type Packet = P::Packet;
+
+    fn initial_keys(
+        &self,
+        version: Version,
+        dcid: &[u8],
+        side: Side,
+    ) -> Result<InitialKeys<Self::Header, Self::Packet>, CaptureError> {
+        self.calls.set(self.calls.get() + 1);
+        self.inner.initial_keys(version, dcid, side)
+    }
+}
+
+#[test]
+fn initial_peek_reassembles_reordered_and_duplicate_browser_datagrams() {
+    let server = provider();
+    let keys = capture::ProviderKeys(server.as_ref());
+    let now = Instant::now();
+    for names in [
+        ["chrome-153-initial-1.hex", "chrome-153-initial-2.hex"],
+        ["firefox-156-initial-1.hex", "firefox-156-initial-2.hex"],
+    ] {
+        let datagrams = names.map(hex);
+        for order in [vec![0, 1], vec![1, 0], vec![0, 0, 1], vec![1, 1, 0]] {
+            let mut peek = InitialPeek::new(CaptureLimits::default(), now + Duration::from_secs(1));
+            for (index, packet) in order.iter().enumerate() {
+                let hello = peek.inspect(now, &datagrams[*packet], &keys).unwrap();
+                assert_eq!(hello.is_some(), index + 1 == order.len());
+                if let Some(hello) = hello {
+                    assert_eq!(hello.version, Version::V1);
+                }
+            }
+            assert!(matches!(
+                peek.inspect(now, &datagrams[0], &keys),
+                Err(PeekError::Finished)
+            ));
+        }
+    }
+}
+
+#[test]
+fn initial_peek_charges_cumulative_limits_before_crypto_and_never_renews_deadline() {
+    let server = provider();
+    let keys = CountInitialKeys {
+        inner: capture::ProviderKeys(server.as_ref()),
+        calls: Cell::new(0),
+    };
+    let datagram = hex("chrome-153-initial-1.hex");
+    let now = Instant::now();
+    let deadline = now + Duration::from_secs(1);
+    for limits in [
+        CaptureLimits {
+            datagrams: 2,
+            ..CaptureLimits::default()
+        },
+        CaptureLimits {
+            bytes: 2 * datagram.len(),
+            ..CaptureLimits::default()
+        },
+        CaptureLimits {
+            packets: 2,
+            ..CaptureLimits::default()
+        },
+    ] {
+        let mut peek = InitialPeek::new(limits, deadline);
+        assert!(peek.inspect(now, &datagram, &keys).unwrap().is_none());
+        assert!(peek.inspect(now, &datagram, &keys).unwrap().is_none());
+        let calls = keys.calls.get();
+        peek.inspect(now, &datagram, &keys).unwrap_err();
+        assert_eq!(keys.calls.get(), calls);
+        assert!(matches!(
+            peek.inspect(now, &datagram, &keys),
+            Err(PeekError::Finished)
+        ));
+    }
+    let mut peek = InitialPeek::new(CaptureLimits::default(), deadline);
+    assert!(peek.inspect(now, &datagram, &keys).unwrap().is_none());
+    assert!(
+        peek.inspect(
+            deadline.checked_sub(Duration::from_nanos(1)).unwrap(),
+            &datagram,
+            &keys
+        )
+        .unwrap()
+        .is_none()
+    );
+    let calls = keys.calls.get();
+    assert_eq!(peek.deadline(), deadline);
+    assert!(matches!(
+        peek.inspect(deadline, &datagram, &keys),
+        Err(PeekError::Deadline)
+    ));
+    assert_eq!(keys.calls.get(), calls);
+}
+
+#[test]
+fn initial_peek_rejects_mixed_attempts_before_crypto() {
+    let server = provider();
+    let keys = CountInitialKeys {
+        inner: capture::ProviderKeys(server.as_ref()),
+        calls: Cell::new(0),
+    };
+    let first = hex("chrome-153-initial-1.hex");
+    let second = hex("firefox-156-initial-1.hex");
+    let now = Instant::now();
+    let mut peek = InitialPeek::new(CaptureLimits::default(), now + Duration::from_secs(1));
+    assert!(peek.inspect(now, &first, &keys).unwrap().is_none());
+    let calls = keys.calls.get();
+    assert!(matches!(
+        peek.inspect(now, &second, &keys),
+        Err(PeekError::Capture(CaptureError::Malformed(
+            "mixed Initial attempts"
+        )))
+    ));
+    assert_eq!(keys.calls.get(), calls);
+}
+
+#[test]
+fn initial_peek_accepts_runtime_v1_and_v2_flights() {
+    for version in [Version::V1, Version::V2] {
+        let profile =
+            QuicProfile::standard().with_versions(ClientVersionPolicy::new(version).unwrap());
+        let (flight, _) = rama_first_flight(&profile);
+        assert_eq!(flight.version, version);
+    }
+}
+
+#[test]
+fn initial_peek_terminal_input_is_classified_without_crypto() {
+    let server = provider();
+    let keys = CountInitialKeys {
+        inner: capture::ProviderKeys(server.as_ref()),
+        calls: Cell::new(0),
+    };
+    let now = Instant::now();
+    let deadline = now + Duration::from_secs(1);
+    let mut peek = InitialPeek::new(CaptureLimits::default(), deadline);
+    assert!(matches!(
+        peek.inspect(now, &[0x40, 1], &keys),
+        Err(PeekError::NotClientFlight)
+    ));
+    assert!(matches!(
+        peek.inspect(now, &[0xc0], &keys),
+        Err(PeekError::Finished)
+    ));
+    assert_eq!(keys.calls.get(), 0);
+
+    let mut peek = InitialPeek::new(CaptureLimits::default(), deadline);
+    assert!(matches!(
+        peek.inspect(now, &[0xc0], &keys),
+        Err(PeekError::Capture(CaptureError::Malformed(_)))
+    ));
+    assert_eq!(keys.calls.get(), 0);
+
+    let mut unknown = hex("chrome-153-initial-1.hex");
+    let version = Version::from_be_bytes([0x12, 0x34, 0x56, 0x78]);
+    unknown[1..5].copy_from_slice(&[0x12, 0x34, 0x56, 0x78]);
+    let mut peek = InitialPeek::new(CaptureLimits::default(), deadline);
+    assert!(
+        matches!(peek.inspect(now, &unknown, &keys), Err(PeekError::Capture(CaptureError::UnknownVersion(found))) if found == version)
+    );
+    assert_eq!(keys.calls.get(), 0);
+}
+
+#[test]
+fn initial_peek_byte_boundary_precedes_crypto() {
+    let server = provider();
+    let keys = CountInitialKeys {
+        inner: capture::ProviderKeys(server.as_ref()),
+        calls: Cell::new(0),
+    };
+    let datagram = hex("chrome-153-initial-1.hex");
+    let now = Instant::now();
+    let two_datagrams = 2 * datagram.len();
+    for bytes in [two_datagrams - 1, two_datagrams, two_datagrams + 1] {
+        let mut peek = InitialPeek::new(
+            CaptureLimits {
+                bytes,
+                ..CaptureLimits::default()
+            },
+            now + Duration::from_secs(1),
+        );
+        assert!(peek.inspect(now, &datagram, &keys).unwrap().is_none());
+        let calls = keys.calls.get();
+        let second = peek.inspect(now, &datagram, &keys);
+        if bytes < two_datagrams {
+            assert!(matches!(
+                second,
+                Err(PeekError::Capture(CaptureError::LimitExceeded("bytes")))
+            ));
+            assert_eq!(keys.calls.get(), calls);
+        } else {
+            assert!(second.unwrap().is_none());
+            assert_eq!(keys.calls.get(), calls + 1);
+        }
+    }
+}
+
+#[test]
+fn initial_peek_retains_reordered_early_data_as_opaque_metadata() {
+    let server = provider();
+    let keys = CountInitialKeys {
+        inner: capture::ProviderKeys(server.as_ref()),
+        calls: Cell::new(0),
+    };
+    let first = hex("chrome-153-initial-1.hex");
+    let second = hex("chrome-153-initial-2.hex");
+    let initial = observe(&first).unwrap().packets.remove(0);
+    let wire = Version::V1.wire().unwrap();
+    let mut early = vec![0xc0 | wire.long_type_bits(LongKind::ZeroRtt)];
+    early.extend_from_slice(&Version::V1.to_be_bytes());
+    early.push(initial.dcid.len().try_into().unwrap());
+    early.extend_from_slice(&initial.dcid);
+    let source = initial.scid.unwrap();
+    early.push(source.len().try_into().unwrap());
+    early.extend_from_slice(&source);
+    // The ciphertext is intentionally opaque. The peeker must not ask for
+    // application keys or treat these bytes as CRYPTO data.
+    early.push(32);
+    early.extend_from_slice(&[0; 32]);
+    let now = Instant::now();
+    let mut peek = InitialPeek::new(CaptureLimits::default(), now + Duration::from_secs(1));
+    assert!(peek.inspect(now, &early, &keys).unwrap().is_none());
+    assert_eq!(keys.calls.get(), 0);
+    assert!(peek.inspect(now, &first, &keys).unwrap().is_none());
+    let hello = peek.inspect(now, &second, &keys).unwrap().unwrap();
+    assert!(hello.early_data_observed);
+    assert_eq!(hello.version, Version::V1);
+    assert_eq!(keys.calls.get(), 2);
 }
