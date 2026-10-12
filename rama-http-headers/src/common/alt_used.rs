@@ -38,7 +38,7 @@ impl HeaderDecode for AltUsed {
 
 impl HeaderEncode for AltUsed {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        match HeaderValue::from_maybe_shared(Bytes::from_owner(self.to_string())) {
+        match HeaderValue::from_maybe_shared(Bytes::from(self.to_string())) {
             Ok(value) => values.extend(std::iter::once(value)),
             Err(error) => tracing::debug!("failed to encode Alt-Used authority: {error}"),
         }

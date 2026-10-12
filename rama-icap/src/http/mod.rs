@@ -2411,17 +2411,10 @@ fn upgrade_token<T>(request: &HttpRequest<T>) -> Option<HeaderValue> {
 
 /// Every `Upgrade` line, as the one value they combine to.
 fn upgrade_lines(headers: &HeaderMap) -> Option<HeaderValue> {
-    let mut lines = headers.get_all(header::UPGRADE).iter();
-    let first = lines.next()?;
-    let Some(second) = lines.next() else {
-        return Some(first.clone());
-    };
-    let mut combined = first.as_bytes().to_vec();
-    for line in std::iter::once(second).chain(lines) {
-        combined.extend_from_slice(b", ");
-        combined.extend_from_slice(line.as_bytes());
-    }
-    HeaderValue::try_from(combined).ok()
+    HeaderValue::join(
+        headers.get_all(header::UPGRADE),
+        &HeaderValue::from_static(", "),
+    )
 }
 
 /// Whether `response` accepts the Extended CONNECT `request`: its HTTP/1.1 form is a

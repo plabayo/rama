@@ -445,7 +445,9 @@ impl Ack {
     /// the set is empty (there is nothing to acknowledge). This is the only way to construct an
     /// `Ack` outside decoding, so a hand-built one can never carry inconsistent range bytes.
     pub fn from_ranges(delay: u64, ranges: &ArrayRangeSet, ecn: Option<EcnCounts>) -> Option<Self> {
-        let (largest, additional) = Self::ranges_to_wire(ranges)?;
+        let largest = ranges.max()?;
+        let mut additional = Vec::new();
+        Self::write_ranges(ranges, &mut additional);
         Some(Self {
             largest,
             delay,
@@ -454,15 +456,7 @@ impl Ack {
         })
     }
 
-    /// The largest acknowledged packet and the range bytes an ACK carries for `ranges` (the first
-    /// range's size, then gap/size pairs), or `None` when the set is empty.
-    fn ranges_to_wire(ranges: &ArrayRangeSet) -> Option<(u64, Vec<u8>)> {
-        let largest = ranges.max()?;
-        let mut additional = Vec::new();
-        Self::write_ranges(ranges, &mut additional);
-        Some((largest, additional))
-    }
-
+    /// The range bytes an ACK carries for `ranges`: the first range's size, then gap/size pairs.
     fn write_ranges<W: BufMut>(ranges: &ArrayRangeSet, buf: &mut W) {
         let mut rest = ranges.iter().rev();
         let Some(first) = rest.next() else {

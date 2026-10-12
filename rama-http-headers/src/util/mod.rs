@@ -321,16 +321,7 @@ pub(crate) fn combined_value<'i, I>(values: &mut I) -> Result<HeaderValue, Error
 where
     I: Iterator<Item = &'i HeaderValue>,
 {
-    let first = values.next().ok_or_else(Error::invalid)?;
-    let Some(second) = values.next() else {
-        return Ok(first.clone());
-    };
-    let mut combined = first.as_bytes().to_vec();
-    for value in std::iter::once(second).chain(values) {
-        combined.extend_from_slice(b", ");
-        combined.extend_from_slice(value.as_bytes());
-    }
-    HeaderValue::try_from(combined).map_err(|_error| Error::invalid())
+    HeaderValue::join(values, &HeaderValue::from_static(", ")).ok_or_else(Error::invalid)
 }
 
 /// A helper trait for use when deriving `Header`.

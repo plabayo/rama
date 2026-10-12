@@ -1,5 +1,4 @@
 use super::{DecoderError, NeedMore};
-use crate::header::InvalidHeaderValue;
 use crate::proto::{ext::Protocol, h2::PseudoHeader};
 use crate::{HeaderName, HeaderValue, Method, StatusCode};
 
@@ -146,14 +145,6 @@ impl Header<Option<HeaderName>> {
 
 impl Header {
     pub fn try_new(name: &Bytes, value: Bytes) -> Result<Self, DecoderError> {
-        Self::try_new_with(name, value, true)
-    }
-
-    pub(super) fn try_new_with(
-        name: &Bytes,
-        value: Bytes,
-        compact: bool,
-    ) -> Result<Self, DecoderError> {
         if name.is_empty() {
             return Err(DecoderError::NeedMore(NeedMore::UnexpectedEndOfStream));
         }
@@ -189,7 +180,7 @@ impl Header {
         } else {
             // HTTP/2 requires lower case header names
             let name = HeaderName::from_lowercase(name)?;
-            let value = field_value(value, compact)?;
+            let value = HeaderValue::from_maybe_shared(value)?;
 
             Ok(Self::field(name, value))
         }
@@ -346,26 +337,13 @@ impl From<Header> for Header<Option<HeaderName>> {
     }
 }
 
-fn field_value(value: Bytes, compact: bool) -> Result<HeaderValue, InvalidHeaderValue> {
-    if compact {
-        HeaderValue::from_bytes(&value)
-    } else {
-        HeaderValue::from_maybe_shared(value)
-    }
-}
-
 impl Name<'_> {
     pub fn into_entry(self, value: Bytes) -> Result<Header, DecoderError> {
-        self.into_entry_with(value, true)
-    }
-
-    pub(super) fn into_entry_with(
-        self,
-        value: Bytes,
-        compact: bool,
-    ) -> Result<Header, DecoderError> {
         match self {
-            Name::Field(name) => Ok(Header::field(name.clone(), field_value(value, compact)?)),
+            Name::Field(name) => Ok(Header::field(
+                name.clone(),
+                HeaderValue::from_maybe_shared(value)?,
+            )),
             Name::Authority => Ok(Header::Authority(BytesStr::try_from(value)?)),
             Name::Method => Ok(Header::Method(Method::from_bytes(&value)?)),
             Name::Scheme => Ok(Header::Scheme(BytesStr::try_from(value)?)),

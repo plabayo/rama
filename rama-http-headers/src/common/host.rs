@@ -29,7 +29,7 @@ impl HeaderDecode for Host {
 impl HeaderEncode for Host {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         let s = self.to_string();
-        let bytes = Bytes::from_owner(s);
+        let bytes = Bytes::from(s);
 
         match HeaderValue::from_maybe_shared(bytes) {
             Ok(value) => values.extend(::std::iter::once(value)),

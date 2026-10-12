@@ -143,20 +143,10 @@ fn http_star_name(name: &HeaderName) -> String {
 /// Every line of `name` as one value: RFC 3875 §4.1.18 rewrites repeated fields so, joining
 /// cookie pieces as `; ` (RFC 9113 §8.2.3) and others as `, ` (RFC 9110 §5.3).
 fn combined_field_value(headers: &HeaderMap, name: &HeaderName) -> Bytes {
-    let mut lines = headers.get_all(name).iter();
-    let Some(first) = lines.next() else {
-        return Bytes::new();
-    };
-    let Some(second) = lines.next() else {
-        return Bytes::copy_from_slice(first.as_bytes());
-    };
-    let separator: &[u8] = if name == header::COOKIE { b"; " } else { b", " };
-    let mut combined = BytesMut::from(first.as_bytes());
-    for line in std::iter::once(second).chain(lines) {
-        combined.extend_from_slice(separator);
-        combined.extend_from_slice(line.as_bytes());
-    }
-    combined.freeze()
+    let separator = HeaderValue::from_static(if name == header::COOKIE { "; " } else { ", " });
+    HeaderValue::join(headers.get_all(name), &separator)
+        .map(Bytes::from)
+        .unwrap_or_default()
 }
 
 fn io_error(e: BoxError) -> std::io::Error {
@@ -516,7 +506,7 @@ pub(super) async fn fastcgi_request_to_http(req: FastCgiRequest) -> Result<Reque
             }
             None => Bytes::copy_from_slice(name_bytes),
         };
-        match HeaderValue::from_bytes(&host) {
+        match HeaderValue::from_maybe_shared(host.clone()) {
             Ok(hval) => builder = builder.header(header::HOST, hval),
             Err(err) => tracing::debug!(
                 ?err,

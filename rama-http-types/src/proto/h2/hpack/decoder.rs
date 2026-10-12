@@ -346,13 +346,13 @@ impl Decoder {
             buf.set_position(old_pos);
             // Read the name as a literal
             let name = name_marker.consume(buf);
-            let value = value_marker.consume(buf);
-            Header::try_new_with(&name, value, index)
+            let value = compact_if_indexed(value_marker.consume(buf), index);
+            Header::try_new(&name, value)
         } else {
             let e = self.table.get(table_idx)?;
-            let value = self.decode_string(buf)?;
+            let value = compact_if_indexed(self.decode_string(buf)?, index);
 
-            e.name().into_entry_with(value, index)
+            e.name().into_entry(value)
         }
     }
 
@@ -532,6 +532,15 @@ impl StringMarker {
             }
             None => take(buf, self.len),
         }
+    }
+}
+
+/// An indexed value lives on in the dynamic table, so it must not pin the header block buffer.
+fn compact_if_indexed(value: Bytes, index: bool) -> Bytes {
+    if index {
+        Bytes::copy_from_slice(&value)
+    } else {
+        value
     }
 }
 
@@ -941,7 +950,7 @@ mod test {
     }
 
     #[test]
-    fn test_decode_literal_value_shares_buffer_unless_indexed() {
+    fn test_decode_literal_value_shares_block_unless_indexed() {
         for (case, input, shared) in [
             ("without indexing", &b"\x00\x05x-key\x05value"[..], true),
             ("never indexed", &b"\x10\x05x-key\x05value"[..], true),
@@ -953,6 +962,8 @@ mod test {
             ),
             ("static name never indexed", &b"\x1f\x2b\x05value"[..], true),
             ("static name with indexing", &b"\x7a\x05value"[..], false),
+            ("pseudo without indexing", &b"\x04\x05value"[..], true),
+            ("pseudo with indexing", &b"\x44\x05value"[..], false),
         ] {
             let mut decoder = Decoder::new(4096);
             let mut buffer = BytesMut::from(input);
@@ -965,15 +976,10 @@ mod test {
                 })
                 .unwrap();
 
-            let Some(Header::Field { value, .. }) = decoded else {
-                panic!("{case}: expected a field");
-            };
-            assert_eq!(value.as_bytes(), b"value", "{case}");
-            assert_eq!(
-                source.contains(&value.as_bytes().as_ptr()),
-                shared,
-                "{case}"
-            );
+            let value = decoded.expect(case);
+            let value = value.value_slice();
+            assert_eq!(value, b"value", "{case}");
+            assert_eq!(source.contains(&value.as_ptr()), shared, "{case}");
         }
     }
 
