@@ -37,6 +37,7 @@ use tracing_subscriber::EnvFilter;
 
 use super::{Endpoint, EndpointConfig, RecvStream, SendDatagramError, SendStream, TransportConfig};
 
+mod admission;
 mod closing;
 mod owned;
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]

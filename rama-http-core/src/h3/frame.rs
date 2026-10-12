@@ -208,6 +208,17 @@ impl FrameDecoder {
         matches!(self.state, State::Type) && !self.varint.in_progress() && self.inbox.is_empty()
     }
 
+    /// Received field-section payload bytes, excluding other frames and unread input.
+    pub(crate) fn buffered_headers_len(&self) -> usize {
+        match self.state {
+            State::Buffer {
+                ty: FrameType::HEADERS,
+                ..
+            } => self.payload.len(),
+            _ => 0,
+        }
+    }
+
     /// Try to produce the next event. Returns `Ok(None)` when more input is required.
     pub fn poll(&mut self) -> Result<Option<FrameEvent>, FrameError> {
         loop {

@@ -101,6 +101,8 @@ pub(crate) struct Encode<'a, T> {
     req_method: &'a mut Option<Method>,
     title_case_headers: bool,
     date_header: bool,
+    /// Refuse, rather than drop, framing fields on a 2xx to CONNECT.
+    strict_connect_framing: bool,
 }
 
 /// Extra flags that a request "wants", like expect-continue or upgrades.
@@ -181,6 +183,7 @@ pub(crate) mod test_util {
                 req_method: &mut None,
                 title_case_headers: false,
                 date_header: false,
+                strict_connect_framing: false,
             },
             &mut dst,
         )

@@ -23,6 +23,8 @@ mod support;
 #[cfg(feature = "http-full")]
 mod client;
 #[cfg(feature = "http-full")]
+mod h1_body_after_response;
+#[cfg(feature = "http-full")]
 mod h1_flush_before_yield;
 #[cfg(feature = "http-full")]
 mod h1_ready_in_flight;
@@ -38,6 +40,8 @@ mod server;
 #[cfg(feature = "http-full")]
 mod ready_on_poll_stream;
 #[cfg(feature = "http-full")]
+mod response_framing;
+#[cfg(feature = "http-full")]
 mod unbuffered_stream;
 
 mod examples;
@@ -50,3 +54,8 @@ mod examples;
     )
 ))]
 mod http_service;
+
+#[cfg(feature = "http-full")]
+mod timeouts_h1;
+#[cfg(feature = "http-full")]
+mod timeouts_h2;

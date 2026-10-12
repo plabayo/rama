@@ -86,6 +86,9 @@ pin_project! {
             #[pin]
             inner: B,
         },
+        Empty {
+            _inner: B,
+        },
     }
 }
 
@@ -125,9 +128,18 @@ where
         compressed_body_poll_frame!(self, cx)
     }
 
+    fn is_end_stream(&self) -> bool {
+        match &self.inner {
+            BodyInner::Identity { inner } => inner.is_end_stream(),
+            BodyInner::Empty { .. } => true,
+            _ => false,
+        }
+    }
+
     fn size_hint(&self) -> SizeHint {
         match self.inner {
             BodyInner::Identity { ref inner } => inner.size_hint(),
+            BodyInner::Empty { .. } => SizeHint::with_exact(0),
             BodyInner::Brotli { .. }
             | BodyInner::Gzip { .. }
             | BodyInner::Deflate { .. }

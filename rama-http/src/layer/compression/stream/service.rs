@@ -11,7 +11,9 @@ use crate::headers::encoding::{
     AcceptEncoding, Encoding, maybe_preferred_encoding_with_wildcard,
     parse_accept_encoding_headers, parse_accept_encoding_wildcard_quality,
 };
-use crate::layer::compression::predicate::{DefaultStreamPredicate, Predicate, PreferredEncoding};
+use crate::layer::compression::predicate::{
+    DefaultStreamPredicate, Predicate, PreferredEncoding, should_compress_as_get,
+};
 use crate::layer::remove_header::remove_payload_metadata_headers;
 use crate::{Request, Response, StatusCode, header};
 use rama_core::Service;
@@ -151,18 +153,26 @@ where
 
         let mut res = self.inner.serve(req).await?;
 
-        // RFC 9110 §9.3.2 (HEAD) / §9.3.6 (CONNECT) and the body-prohibiting status codes
-        // (1xx Informational, 204 No Content, 205 Reset Content, 304 Not Modified) mean there
-        // is no representation body to encode (or to reject for the client).
-        let body_allowed = !matches!(req_method, Method::HEAD | Method::CONNECT)
+        // RFC 9110 §9.3.6 (CONNECT) and the body-prohibiting status codes (1xx Informational,
+        // 204 No Content, 205 Reset Content, 304 Not Modified) mean there is no representation
+        // to encode (or to reject for the client). A HEAD response describes the GET one
+        // (RFC 9110 §9.3.2), so it is decided alike and only its empty body is left as is.
+        let is_head = req_method == Method::HEAD;
+        let body_allowed = req_method != Method::CONNECT
             && !matches!(res.status().as_u16(), 100..=199 | 204 | 205 | 304);
 
-        let should_compress = body_allowed
+        let should_compress = if body_allowed
             // never recompress responses that are already compressed
             && !res.headers().contains_key(header::CONTENT_ENCODING)
             // never compress responses that are ranges
             && !res.headers().contains_key(header::CONTENT_RANGE)
-            && self.predicate.should_compress(&mut res);
+        {
+            let (allows, decided) = should_compress_as_get(&self.predicate, res, is_head);
+            res = decided;
+            allows
+        } else {
+            false
+        };
 
         let negotiated = negotiate_response_encoding(
             &accepted_encodings,
@@ -205,6 +215,17 @@ where
         tracing::trace!(
             "should_compress = {should_compress}; always_flush = {always_flush}; encoding = {encoding}"
         );
+
+        if is_head && should_compress && encoding != Encoding::Identity {
+            remove_payload_metadata_headers(&mut parts.headers);
+            parts
+                .headers
+                .insert(header::CONTENT_ENCODING, HeaderValue::from(encoding));
+            return Ok(Response::from_parts(
+                parts,
+                StreamCompressionBody::empty(body),
+            ));
+        }
 
         let body = match (should_compress, encoding) {
             // if StreamCompression is _not_ supported or the client doesn't accept it

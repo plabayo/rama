@@ -1,8 +1,15 @@
 //! Predicates for influencing compression of responses.
 
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
+
+use pin_project_lite::pin_project;
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 use rama_http_types::{
-    HeaderMap, StatusCode, StreamingBody, Version,
+    HeaderMap, Response, StatusCode, StreamingBody, Version,
+    body::{Frame, SizeHint},
     header::{self, content_type::extract_essence},
 };
 use rama_utils::str::{
@@ -12,6 +19,54 @@ use rama_utils::str::{
 
 use crate::headers::encoding::Encoding;
 use crate::layer::decompression::DecompressedFrom;
+
+pin_project! {
+    /// A body reported as of unknown size: the empty body of a HEAD response says nothing about
+    /// the size of the GET one it describes.
+    struct UnknownSize<B> {
+        #[pin]
+        inner: B,
+    }
+}
+
+impl<B: StreamingBody> StreamingBody for UnknownSize<B> {
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        self.project().inner.poll_frame(cx)
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::default()
+    }
+}
+
+/// Run `predicate` as it would decide for the GET a HEAD response describes (RFC 9110 §9.3.2):
+/// size predicates then see its declared length, or an unknown one, never its empty body.
+pub(crate) fn should_compress_as_get<P, B>(
+    predicate: &P,
+    response: Response<B>,
+    is_head: bool,
+) -> (bool, Response<B>)
+where
+    P: Predicate,
+    B: StreamingBody,
+{
+    if !is_head {
+        let mut response = response;
+        let decision = predicate.should_compress(&mut response);
+        return (decision, response);
+    }
+    let (parts, inner) = response.into_parts();
+    let mut probe = Response::from_parts(parts, UnknownSize { inner });
+    let decision = predicate.should_compress(&mut probe);
+    let (parts, UnknownSize { inner }) = probe.into_parts();
+    (decision, Response::from_parts(parts, inner))
+}
 
 /// Predicate used to determine if a response should be compressed or not.
 pub trait Predicate: Clone {

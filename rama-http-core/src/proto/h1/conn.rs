@@ -3,7 +3,6 @@ use std::io;
 use std::marker::{PhantomData, Unpin};
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
-use std::time::Duration;
 
 use httparse::ParserConfig;
 use rama_core::bytes::{Buf, Bytes};
@@ -17,14 +16,15 @@ use rama_http_types::proto::h1::ext::{ConnectionClose, informational::OnInformat
 use rama_http_types::{HeaderMap, HeaderValue, Method, Version};
 use rama_net::conn::{ConnectionHealthWatcher, LingeringClose, MaxConcurrency};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::time::{Instant, Sleep};
 
 use super::io::Buffered;
 use super::{Decoder, Encode, EncodedBuf, Encoder, Http1Transaction, ParseContext, Wants};
-use crate::body::DecodedLength;
-use crate::headers;
-use crate::proto::h1::EncodeHead;
-use crate::proto::{BodyLength, MessageHead};
+use crate::{
+    body::DecodedLength,
+    headers,
+    proto::{BodyLength, MessageHead, h1::EncodeHead},
+    server::conn::timeout::{Activity, ConnTimer, Expired},
+};
 
 const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
@@ -63,10 +63,9 @@ where
                 h1_parser_config: ParserConfig::default(),
                 h1_max_headers: None,
                 h1_max_header_size: None,
-                h1_header_read_timeout: None,
-                h1_header_read_timeout_fut: None,
-                h1_header_read_timeout_running: false,
+                timer: ConnTimer::new(None, None),
                 date_header: true,
+                strict_connect_framing: false,
                 title_case_headers: false,
                 h09_responses: false,
                 on_informational: None,
@@ -125,8 +124,8 @@ where
         self.state.h1_max_header_size = Some(val);
     }
 
-    pub(crate) fn set_http1_header_read_timeout(&mut self, val: Duration) {
-        self.state.h1_header_read_timeout = Some(val);
+    pub(crate) fn set_timer(&mut self, timer: ConnTimer) {
+        self.state.timer = timer;
     }
 
     pub(crate) fn set_allow_half_close(&mut self) {
@@ -178,6 +177,10 @@ where
 
     pub(crate) fn disable_date_header(&mut self) {
         self.state.date_header = false;
+    }
+
+    pub(crate) fn set_strict_connect_framing(&mut self) {
+        self.state.strict_connect_framing = true;
     }
 
     pub(crate) fn into_inner(self) -> (I, Bytes) {
@@ -242,19 +245,13 @@ where
         debug_assert!(self.can_read_head());
         trace!("Conn::read_head");
 
-        if !self.state.h1_header_read_timeout_running
-            && let Some(h1_header_read_timeout) = self.state.h1_header_read_timeout
+        if self
+            .state
+            .timer
+            .head_elapsed(self.io.read_buf().len() as u64)
         {
-            let deadline = Instant::now() + h1_header_read_timeout;
-            self.state.h1_header_read_timeout_running = true;
-            if let Some(h1_header_read_timeout_fut) = &mut self.state.h1_header_read_timeout_fut {
-                trace!("resetting h1 header read timeout timer");
-                *h1_header_read_timeout_fut = Box::pin(tokio::time::sleep_until(deadline));
-            } else {
-                trace!("setting h1 header read timeout timer");
-                self.state.h1_header_read_timeout_fut =
-                    Some(Box::pin(tokio::time::sleep_until(deadline)));
-            }
+            debug!("request head deadline elapsed");
+            return Poll::Ready(Some(Err(crate::Error::new_header_timeout())));
         }
 
         let prepared = if T::is_client() {
@@ -292,23 +289,30 @@ where
             Poll::Ready(Ok(msg)) => msg,
             Poll::Ready(Err(e)) => return self.on_read_head_error(e),
             Poll::Pending => {
-                if self.state.h1_header_read_timeout_running
-                    && let Some(h1_header_read_timeout_fut) =
-                        &mut self.state.h1_header_read_timeout_fut
-                    && Pin::new(h1_header_read_timeout_fut).poll(cx).is_ready()
-                {
-                    self.state.h1_header_read_timeout_running = false;
-
-                    debug!("read header from client timeout");
-                    return Poll::Ready(Some(Err(crate::Error::new_header_timeout())));
-                }
-
-                return Poll::Pending;
+                let bytes = self.io.read_buf().len() as u64;
+                let activity = if bytes == 0 {
+                    Activity::Idle
+                } else {
+                    Activity::Head { bytes, block: 0 }
+                };
+                return match self.state.timer.poll(cx, activity) {
+                    Poll::Pending => Poll::Pending,
+                    Poll::Ready(Expired::Head) => {
+                        debug!("request head deadline elapsed");
+                        Poll::Ready(Some(Err(crate::Error::new_header_timeout())))
+                    }
+                    Poll::Ready(Expired::Idle | Expired::Drain) => {
+                        // An idle close is a clean end of the connection, as an EOF is.
+                        debug!("idle deadline elapsed, closing");
+                        self.close_read();
+                        self.close_write();
+                        Poll::Ready(None)
+                    }
+                };
             }
         };
 
-        self.state.h1_header_read_timeout_running = false;
-        self.state.h1_header_read_timeout_fut = None;
+        self.state.timer.request_received();
 
         if !msg.keep_alive {
             msg.head.extensions.insert(ConnectionClose);
@@ -696,6 +700,7 @@ where
                 req_method: &mut self.state.method,
                 title_case_headers: self.state.title_case_headers,
                 date_header: self.state.date_header,
+                strict_connect_framing: self.state.strict_connect_framing,
             },
             buf,
         ) {
@@ -1008,10 +1013,9 @@ struct State {
     h1_parser_config: ParserConfig,
     h1_max_headers: Option<usize>,
     h1_max_header_size: Option<usize>,
-    h1_header_read_timeout: Option<Duration>,
-    h1_header_read_timeout_fut: Option<Pin<Box<Sleep>>>,
-    h1_header_read_timeout_running: bool,
+    timer: ConnTimer,
     date_header: bool,
+    strict_connect_framing: bool,
     title_case_headers: bool,
     h09_responses: bool,
     /// If set, called with each 1xx informational response received for
@@ -1211,7 +1215,7 @@ impl State {
             self.notify_read = true;
         }
 
-        if self.h1_header_read_timeout.is_some() {
+        if self.timer.is_enabled() {
             // Next read will start and poll the header read timeout,
             // so we can close the connection if another header isn't
             // received in a timely manner.

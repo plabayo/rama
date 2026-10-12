@@ -19,3 +19,33 @@ pub mod http1;
 pub mod http2;
 
 pub mod auto;
+
+pub(crate) mod timeout;
+pub use self::timeout::{HeaderReadTimeout, IdleTimeout};
+
+#[cfg(feature = "fuzz-utils")]
+use std::time::Duration;
+
+/// Evaluate a request-head budget for bounded fuzz harnesses.
+#[cfg(feature = "fuzz-utils")]
+#[doc(hidden)]
+pub fn fuzz_head_allowance(
+    config: &HeaderReadTimeout,
+    rtt: Option<Duration>,
+    bytes: u64,
+) -> Duration {
+    timeout::HeadBudget::new(config, rtt).allowance(bytes)
+}
+
+/// Drive connection deadlines through `steps` of (delay in ms, kind, value) and
+/// report whether every observation matches the history-based reference.
+#[cfg(feature = "fuzz-utils")]
+#[doc(hidden)]
+#[must_use]
+pub fn fuzz_conn_deadlines(
+    idle: Option<IdleTimeout>,
+    head: Option<HeaderReadTimeout>,
+    steps: &[(u16, u8, u16)],
+) -> bool {
+    timeout::model::conforms(idle, head, steps)
+}

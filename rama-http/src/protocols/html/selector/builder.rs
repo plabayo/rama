@@ -154,17 +154,18 @@ impl Compound {
     /// Adds an attribute-presence selector, e.g. `[disabled]`.
     #[must_use]
     pub fn with_attr(self, name: impl AsRef<str>) -> Self {
-        self.push_attr(name, None, "", CaseSensitivity::CaseSensitive)
+        self.push_attr(name, None, "", CaseSensitivity::Default)
     }
 
-    /// Adds `[name="value"]` (exact match).
+    /// Adds `[name="value"]` (exact match; ASCII case-insensitive for the
+    /// attributes HTML compares that way, such as `type` and `rel`).
     #[must_use]
     pub fn with_attr_eq(self, name: impl AsRef<str>, value: impl AsRef<str>) -> Self {
         self.push_attr(
             name,
             Some(AttributeOperator::Equals),
             value.as_ref(),
-            CaseSensitivity::CaseSensitive,
+            CaseSensitivity::Default,
         )
     }
 
@@ -186,7 +187,7 @@ impl Compound {
             name,
             Some(AttributeOperator::Includes),
             value.as_ref(),
-            CaseSensitivity::CaseSensitive,
+            CaseSensitivity::Default,
         )
     }
 
@@ -197,7 +198,7 @@ impl Compound {
             name,
             Some(AttributeOperator::DashMatch),
             value.as_ref(),
-            CaseSensitivity::CaseSensitive,
+            CaseSensitivity::Default,
         )
     }
 
@@ -208,7 +209,7 @@ impl Compound {
             name,
             Some(AttributeOperator::Prefix),
             value.as_ref(),
-            CaseSensitivity::CaseSensitive,
+            CaseSensitivity::Default,
         )
     }
 
@@ -219,7 +220,7 @@ impl Compound {
             name,
             Some(AttributeOperator::Suffix),
             value.as_ref(),
-            CaseSensitivity::CaseSensitive,
+            CaseSensitivity::Default,
         )
     }
 
@@ -230,7 +231,7 @@ impl Compound {
             name,
             Some(AttributeOperator::Substring),
             value.as_ref(),
-            CaseSensitivity::CaseSensitive,
+            CaseSensitivity::Default,
         )
     }
 

@@ -33,6 +33,7 @@ use tokio::io::AsyncRead;
 macro_rules! compressed_body_poll_frame {
     ($self:expr, $cx:expr) => {
         match $self.project().inner.project() {
+            BodyInnerProj::Empty { .. } => Poll::Ready(None),
             BodyInnerProj::Gzip { inner } => inner.poll_frame($cx),
             BodyInnerProj::Deflate { inner } => inner.poll_frame($cx),
             BodyInnerProj::Brotli { inner } => inner.poll_frame($cx),

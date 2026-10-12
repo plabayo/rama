@@ -788,6 +788,11 @@ required-features = ["rss"]
 harness = false
 
 [[bench]]
+name = "html_rewrite"
+required-features = ["html"]
+harness = false
+
+[[bench]]
 name = "h2"
 required-features = ["http-full"]
 harness = false

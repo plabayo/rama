@@ -9,7 +9,6 @@ use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 use crate::proto::{
     Duration, EndpointConfig, Instant,
-    cid_generator::ConnectionIdGenerator,
     cid_queue::CidQueue,
     config::TransportConfig,
     crypto::{self, KeyPair},
@@ -323,7 +322,8 @@ impl Connection {
         remote: SocketAddr,
         local: Option<SocketAddr>,
         crypto: Box<dyn crypto::Session>,
-        cid_gen: &dyn ConnectionIdGenerator,
+        cid_len: usize,
+        cid_lifetime: Option<Duration>,
         now: Instant,
         version: Version,
         allow_mtud: bool,
@@ -364,8 +364,8 @@ impl Connection {
             handshake_cid: loc_cid,
             rem_handshake_cid: rem_cid,
             local_cid_state: CidState::new(
-                cid_gen.cid_len(),
-                cid_gen.cid_lifetime(),
+                cid_len,
+                cid_lifetime,
                 now,
                 if pref_addr_cid.is_some() { 2 } else { 1 },
             ),
@@ -581,6 +581,12 @@ impl Connection {
                 ..
             }
         )
+    }
+
+    /// Tests: the highest packet number space this connection has keys for.
+    #[cfg(test)]
+    pub(crate) fn highest_space(&self) -> SpaceId {
+        self.highest_space
     }
 
     /// Tests: whether this client clears the QUIC bit before the server's parameters arrive.

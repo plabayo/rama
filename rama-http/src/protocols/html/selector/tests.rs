@@ -174,7 +174,8 @@ fn serialization_is_canonical() {
         ("[HREF]", "[href]"),
         (r#"[class~=menu]"#, r#"[class~="menu"]"#),
         (r#"[a="b" i]"#, r#"[a="b" i]"#),
-        (r#"[a="b" s]"#, r#"[a="b"]"#),
+        (r#"[a="b" s]"#, r#"[a="b" s]"#),
+        (r#"[type="b" S]"#, r#"[type="b" s]"#),
         ("*", "*"),
         ("a:not(.x)", "a:not(.x)"),
     ] {

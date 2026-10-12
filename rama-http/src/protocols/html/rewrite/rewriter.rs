@@ -1,67 +1,177 @@
 //! The selector-driven HTML rewriter.
 
-use rama_core::error::BoxError;
+use std::mem;
 
-use super::SelectorMatcher;
+use rama_core::error::BoxError;
+use rama_utils::macros::generate_set_and_with;
+
 use super::element::{Element, ElementContentHandler, EndActions, HandlerResult};
+use super::tree::Origin;
+use super::{Pushed, ScopeMode, SelectorMatcher};
 use crate::protocols::html::selector::Selector;
 use crate::protocols::html::tokenizer::{
-    Cdata, Comment, Doctype, EndTag, StartTag, Text, TokenSink, Tokenizer,
+    Cdata, Comment, ContextTracker, Doctype, EndTag, HtmlTag, LocalNameHash, ParseSink,
+    ParsingAmbiguityError, Span, StartTag, Text, TextMode, Tokenizer,
 };
 
-/// The [`TokenSink`] that drives matching + mutation + serialization.
+/// The UTF-8 byte order mark: browsers strip it while decoding, before any
+/// parsing decision.
+const BOM: &[u8; 3] = b"\xEF\xBB\xBF";
+
+/// The [`ParseSink`] that drives matching + mutation + serialization.
 struct RewriteSink<H> {
     matcher: SelectorMatcher,
+    /// Text-mode and CDATA decisions in [`ScopeMode::NearestMatch`], which
+    /// does not track namespaces in its tree.
+    context: ContextTracker,
     handler: H,
     output: Vec<u8>,
+    /// Bytes of the current input that pass through unchanged but are not
+    /// copied yet: such tokens are contiguous, so a run of them is one copy.
+    pass: Span,
     /// Reused scratch for the selectors matching the current element.
     matched: Vec<usize>,
-    /// Deferred end-tag actions, one entry per open scope — kept in lockstep
-    /// with the matcher's open-element stack (see [`SelectorMatcher`]).
-    pending: Vec<EndActions>,
-    /// Number of open ancestors currently suppressing their content (from a
+    /// Deferred end-anchored actions of open elements, ordered by frame
+    /// index (one entry per frame at most).
+    pending: Vec<Pending>,
+    /// Number of open elements currently suppressing their content (from a
     /// `remove` / `replace` / `set_inner_content`). While non-zero, token
     /// output is swallowed.
     suppress_depth: usize,
+    /// How the head's own edits treat its content, kept after it closes for
+    /// tags browsers still insert into it.
+    closed_head: Option<HeadSuppression>,
     /// First handler error, if any (aborts the rewrite).
     error: Option<BoxError>,
 }
 
-impl<H: ElementContentHandler> TokenSink for RewriteSink<H> {
-    fn start_tag(&mut self, tag: &StartTag<'_>) {
+struct Pending {
+    depth: usize,
+    actions: EndActions,
+    /// The element is the head (see [`RewriteSink::closed_head`]).
+    head: bool,
+}
+
+#[derive(Clone, Copy)]
+struct HeadSuppression {
+    suppress_content: bool,
+    suppress_end_tag: bool,
+}
+
+impl<H> RewriteSink<H> {
+    fn browser(&self) -> bool {
+        self.matcher.tree.mode == ScopeMode::Browser
+    }
+}
+
+impl<H: ElementContentHandler> ParseSink for RewriteSink<H> {
+    fn cdata_allowed(&self) -> bool {
+        if self.browser() {
+            self.matcher.tree.cdata_allowed()
+        } else {
+            self.context.cdata_allowed()
+        }
+    }
+
+    fn text_mode(&mut self, hash: LocalNameHash, name: &[u8]) -> Option<TextMode> {
+        if self.browser() {
+            self.matcher.tree.text_mode(hash, name)
+        } else {
+            self.context.peek_text_mode(hash, name)
+        }
+    }
+
+    fn start_tag(&mut self, tag: &StartTag<'_>) -> Result<(), ParsingAmbiguityError> {
+        if !self.browser() {
+            self.context.on_start_tag(tag)?;
+        }
+        self.handle_start_tag(tag);
+        Ok(())
+    }
+
+    fn end_tag(&mut self, tag: &EndTag<'_>, closes_text: bool) {
+        if !self.browser() && !closes_text {
+            self.context.on_end_tag(tag);
+        }
+        self.handle_end_tag(tag);
+    }
+
+    fn text(&mut self, text: &Text<'_>) {
+        let (input, raw) = (text.input, text.raw);
         if self.error.is_some() {
-            self.output.extend_from_slice(tag.raw());
+            self.pass(input, raw);
             return;
         }
+        // Leading whitespace stays in a head or column group; the stack
+        // changes at the first other byte.
+        let at = raw.start + self.matcher.text(text.raw());
+        if !self.matcher.tree.changed() {
+            self.passthrough(input, raw);
+            return;
+        }
+        self.passthrough(input, Span::new(raw.start, at));
+        self.apply_tree_change(input, None);
+        self.passthrough(input, Span::new(at, raw.end));
+    }
+
+    fn comment(&mut self, comment: &Comment<'_>) {
+        self.passthrough(comment.input, comment.raw);
+    }
+
+    fn cdata(&mut self, cdata: &Cdata<'_>) {
+        self.passthrough(cdata.input, cdata.raw);
+    }
+
+    fn doctype(&mut self, doctype: &Doctype<'_>) {
+        self.matcher.tree.doctype(doctype.raw());
+        self.passthrough(doctype.input, doctype.raw);
+    }
+
+    fn flush(&mut self, input: &[u8]) {
+        self.flush_pass(input);
+    }
+}
+
+impl<H: ElementContentHandler> RewriteSink<H> {
+    fn handle_start_tag(&mut self, tag: &StartTag<'_>) {
+        if self.error.is_some() {
+            self.pass(tag.input, tag.raw);
+            return;
+        }
+        let plan = self.matcher.prepare_start(tag);
+        if self.matcher.tree.changed() {
+            self.apply_tree_change(tag.input, None);
+        }
+
+        // Visible iff no enclosing element is suppressing its content after
+        // any frames closed by this start tag.
+        let visible = self.suppress_depth == 0;
         let Self {
-            matcher,
+            matcher, matched, ..
+        } = self;
+        matched.clear();
+        let pushed = matcher.push_element(tag, plan, |index| matched.push(index));
+        if let Pushed::Open(index) = pushed {
+            matcher.tree.at_mut(index).visible = visible;
+        }
+
+        if self.matched.is_empty() {
+            if visible {
+                self.pass(tag.input, tag.raw);
+            }
+            return;
+        }
+
+        self.flush_pass(tag.input);
+        let Self {
             handler,
             output,
             matched,
             pending,
             suppress_depth,
             error,
+            ..
         } = self;
-
-        let implied = matcher.pop_implied_for_start(tag.name_hash());
-        close_pending(output, pending, suppress_depth, implied, None);
-
-        // Visible iff no enclosing element is suppressing its content after
-        // any optional-end-tag frames closed by this start tag.
-        let visible = *suppress_depth == 0;
-        matched.clear();
-        let opened = matcher.push_element(tag, |index| matched.push(index));
-
-        if matched.is_empty() {
-            if visible {
-                output.extend_from_slice(tag.raw());
-            }
-            if opened {
-                pending.push(EndActions::passthrough());
-            }
-            return;
-        }
-
         let mut element = Element::new(tag);
         for &index in matched.iter() {
             if let Err(err) = handler.handle_element(index, &mut element) {
@@ -69,61 +179,151 @@ impl<H: ElementContentHandler> TokenSink for RewriteSink<H> {
                 break;
             }
         }
+        let is_head = element.tag() == HtmlTag::Head;
         let actions = element.serialize(output, visible);
-
-        if opened {
-            if actions.suppress_content {
-                *suppress_depth += 1;
+        if !visible || actions.is_empty() {
+            return;
+        }
+        match pushed {
+            Pushed::Open(depth) | Pushed::Merged { frame: depth, .. } => {
+                if actions.suppress_content {
+                    *suppress_depth += 1;
+                }
+                // Merged elements sit below newer entries; each frame has at
+                // most one entry, and only the first tag naming it claims it.
+                let at = pending.partition_point(|entry| entry.depth < depth);
+                pending.insert(
+                    at,
+                    Pending {
+                        depth,
+                        actions,
+                        head: is_head,
+                    },
+                );
             }
-            pending.push(actions);
-        } else if visible {
-            // Void / self-closing: no children and no end tag, so the
-            // end-anchored content (if any) lands right here.
-            output.extend_from_slice(actions.append.as_bytes());
-            output.extend_from_slice(actions.after.as_bytes());
+            Pushed::Leaf | Pushed::Nothing => {
+                // Void / self-closing: no children and no end tag, so the
+                // end-anchored content (if any) lands right here.
+                output.extend_from_slice(actions.append.as_bytes());
+                output.extend_from_slice(actions.after.as_bytes());
+            }
         }
     }
 
-    fn end_tag(&mut self, tag: &EndTag<'_>) {
+    fn handle_end_tag(&mut self, tag: &EndTag<'_>) {
         if self.error.is_some() {
-            self.output.extend_from_slice(tag.raw());
+            self.pass(tag.input, tag.raw);
             return;
         }
-        let popped = self.matcher.pop_element(tag.name_hash());
-        if popped == 0 {
-            // Stray end tag: emit verbatim unless inside suppressed content.
+        let outcome = self.matcher.pop_element(tag);
+        self.apply_tree_change(tag.input, outcome.closes_named.then_some(tag.raw));
+        if outcome.closes_named {
+            return;
+        }
+        let anchors = outcome.anchors.into_iter().filter(|&index| index > 0);
+        let mut own_suppression = 0;
+        let mut tag_hidden = true;
+        let mut anchored = false;
+        for index in anchors.clone() {
+            anchored = true;
+            let entry = self.entry(index);
+            if entry.is_some_and(|actions| actions.suppress_content) {
+                own_suppression += 1;
+            }
+            // Only the outermost anchor owns the source end tag.
+            tag_hidden = entry.map_or(!self.matcher.tree.at(index).visible, |actions| {
+                actions.suppress_end_tag
+            });
+        }
+        if !anchored {
             if self.suppress_depth == 0 {
+                self.pass(tag.input, tag.raw);
+            }
+            return;
+        }
+        self.flush_pass(tag.input);
+        // Inside removed content the end tag is swallowed like the rest.
+        let show_tag = !tag_hidden && self.suppress_depth == own_suppression;
+        let mut anchors = anchors.peekable();
+        while let Some(index) = anchors.next() {
+            let outer = anchors.peek().is_none();
+            let Some(slot) = self.slot(index) else {
+                if outer && show_tag {
+                    self.output.extend_from_slice(tag.raw());
+                }
+                continue;
+            };
+            // Inner anchors end implicitly: finish each inner edit first.
+            let actions = &mut self.pending[slot].actions;
+            self.output
+                .extend_from_slice(mem::take(&mut actions.append).as_bytes());
+            if outer && show_tag {
                 self.output.extend_from_slice(tag.raw());
             }
+            let actions = &mut self.pending[slot].actions;
+            self.output
+                .extend_from_slice(mem::take(&mut actions.after).as_bytes());
+        }
+    }
+
+    /// The pending entry of the open frame at `index`.
+    fn slot(&self, index: usize) -> Option<usize> {
+        self.pending
+            .binary_search_by_key(&index, |entry| entry.depth)
+            .ok()
+    }
+
+    fn entry(&self, index: usize) -> Option<&EndActions> {
+        self.slot(index).map(|slot| &self.pending[slot].actions)
+    }
+
+    /// Follows a tree change: emits the end-anchored edits of closed
+    /// elements (with the `named_end_tag` of `input` standing for the deepest
+    /// one's end), and marks the elements browsers created without a tag.
+    #[inline]
+    fn apply_tree_change(&mut self, input: &[u8], named_end_tag: Option<Span>) {
+        if !self.matcher.tree.changed() {
             return;
         }
-        // The end tag closes `popped` frames: the named element plus any
-        // still-open descendants it implicitly closes. Every closed frame gets
-        // its deferred end actions at this point; only the named frame owns
-        // the source end tag bytes.
-        close_pending(
-            &mut self.output,
-            &mut self.pending,
-            &mut self.suppress_depth,
-            popped,
-            Some(tag.raw()),
-        );
-    }
-
-    fn text(&mut self, text: &Text<'_>) {
-        self.passthrough(text.raw());
-    }
-
-    fn comment(&mut self, comment: &Comment<'_>) {
-        self.passthrough(comment.raw());
-    }
-
-    fn cdata(&mut self, cdata: &Cdata<'_>) {
-        self.passthrough(cdata.raw());
-    }
-
-    fn doctype(&mut self, doctype: &Doctype<'_>) {
-        self.passthrough(doctype.raw());
+        let low = self.matcher.sync();
+        if self.pending.last().is_some_and(|entry| entry.depth >= low) {
+            self.flush_pass(input);
+            close_pending(
+                &mut self.output,
+                &mut self.pending,
+                &mut self.suppress_depth,
+                &mut self.closed_head,
+                low,
+                named_end_tag.and_then(|raw| input.get(raw.start..raw.end)),
+            );
+        } else if let Some(raw) = named_end_tag
+            && self.suppress_depth == 0
+        {
+            self.pass(input, raw);
+        }
+        #[cfg(fuzzing)]
+        self.assert_consistent();
+        for index in low..self.matcher.tree.depth() {
+            let visible = self.suppress_depth == 0;
+            let frame = self.matcher.tree.at_mut(index);
+            match frame.origin {
+                Origin::Reopened => {
+                    // Content browsers put back into a removed head stays removed.
+                    if let Some(head) = self.closed_head
+                        && head.suppress_content
+                        && frame.visible
+                    {
+                        self.suppress_depth += 1;
+                        self.pending.push(Pending {
+                            depth: index,
+                            actions: EndActions::suppressing(head.suppress_end_tag),
+                            head: true,
+                        });
+                    }
+                }
+                _ => frame.visible = visible,
+            }
+        }
     }
 }
 
@@ -133,9 +333,16 @@ impl<H: ElementContentHandler> TokenSink for RewriteSink<H> {
 /// [`end`](Self::end); the rewritten bytes accumulate in an internal buffer,
 /// drained with [`take_output`](Self::take_output). Unmatched content passes
 /// through byte-for-byte. For one-shot use, prefer [`rewrite_str`].
+///
+/// By default ([`ScopeMode::Browser`]) the input is parsed as a full
+/// document, the way browsers parse a page they navigate to.
 pub struct HtmlRewriter<H> {
     tokenizer: Tokenizer,
     sink: RewriteSink<H>,
+    /// Leading UTF-8 BOM bytes seen so far (`None` once decided).
+    bom: Option<u8>,
+    /// Whether input has been written (the scope mode is then fixed).
+    started: bool,
 }
 
 impl<H: ElementContentHandler> HtmlRewriter<H> {
@@ -148,13 +355,33 @@ impl<H: ElementContentHandler> HtmlRewriter<H> {
             tokenizer: Tokenizer::new(),
             sink: RewriteSink {
                 matcher: SelectorMatcher::new(selectors),
+                context: ContextTracker::new(false),
                 handler,
                 output: Vec::new(),
+                pass: Span::empty(0),
                 matched: Vec::new(),
                 pending: Vec::new(),
                 suppress_depth: 0,
+                closed_head: None,
                 error: None,
             },
+            bom: Some(0),
+            started: false,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Sets how omitted and misnested end tags affect element scopes.
+        /// Defaults to [`ScopeMode::Browser`].
+        ///
+        /// The mode is fixed once input has been written: later calls have no
+        /// effect, as the document's structure so far was built under the
+        /// mode it started with.
+        pub fn scope_mode(mut self, mode: ScopeMode) -> Self {
+            if !self.started {
+                self.sink.matcher.tree.mode = mode;
+            }
+            self
         }
     }
 
@@ -167,7 +394,11 @@ impl<H: ElementContentHandler> HtmlRewriter<H> {
     ///
     /// [`ParsingAmbiguityError`]: crate::protocols::html::tokenizer::ParsingAmbiguityError
     pub fn write(&mut self, chunk: &[u8]) -> Result<(), BoxError> {
-        self.tokenizer.write(chunk, &mut self.sink)?;
+        self.started = true;
+        let Some(chunk) = self.skip_bom(chunk)? else {
+            return Ok(());
+        };
+        self.tokenizer.write_parse(chunk, &mut self.sink)?;
         self.sink.take_error()
     }
 
@@ -177,15 +408,51 @@ impl<H: ElementContentHandler> HtmlRewriter<H> {
     ///
     /// See [`write`](Self::write).
     pub fn end(&mut self) -> Result<(), BoxError> {
-        self.tokenizer.end(&mut self.sink)?;
+        self.started = true;
+        if let Some(seen) = self.bom.take()
+            && let Some(prefix) = BOM.get(..usize::from(seen))
+            && !prefix.is_empty()
+        {
+            // A truncated BOM is plain text.
+            self.tokenizer.write_parse(prefix, &mut self.sink)?;
+        }
+        self.tokenizer.end_parse(&mut self.sink)?;
         self.sink.finish();
         self.sink.take_error()
+    }
+
+    /// Passes a leading UTF-8 BOM (possibly split across writes) straight
+    /// to the output, returning the rest of `chunk` to parse (`None` while a
+    /// BOM prefix is still undecided).
+    fn skip_bom<'c>(&mut self, chunk: &'c [u8]) -> Result<Option<&'c [u8]>, BoxError> {
+        let Some(seen) = self.bom else {
+            return Ok(Some(chunk));
+        };
+        let seen = usize::from(seen);
+        let needed = BOM.get(seen..).unwrap_or_default();
+        let take = needed.len().min(chunk.len());
+        if chunk.get(..take) == needed.get(..take) {
+            if take < needed.len() {
+                self.bom = u8::try_from(seen + take).ok();
+                return Ok(None);
+            }
+            self.bom = None;
+            self.sink.output.extend_from_slice(BOM);
+            return Ok(chunk.get(take..));
+        }
+        self.bom = None;
+        if let Some(prefix) = BOM.get(..seen)
+            && !prefix.is_empty()
+        {
+            self.tokenizer.write_parse(prefix, &mut self.sink)?;
+        }
+        Ok(Some(chunk))
     }
 
     /// Removes and returns the rewritten output accumulated so far.
     #[must_use]
     pub fn take_output(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.sink.output)
+        mem::take(&mut self.sink.output)
     }
 
     /// Consumes the rewriter, returning the handler (e.g. to read state
@@ -197,13 +464,60 @@ impl<H: ElementContentHandler> HtmlRewriter<H> {
 }
 
 impl<H> RewriteSink<H> {
-    /// Emits a leaf token's raw bytes, unless it is inside suppressed content.
-    /// (On error the rewrite is doomed and its output discarded, so bytes are
-    /// passed through to keep the buffer well-formed for inspection.)
-    fn passthrough(&mut self, raw: &[u8]) {
+    /// Recounts the stack caches and checks the edit bookkeeping against them.
+    #[cfg(fuzzing)]
+    fn assert_consistent(&self) {
+        self.matcher.assert_consistent();
+        let depth = self.matcher.tree.depth();
+        assert!(
+            self.pending.windows(2).all(|w| w[0].depth < w[1].depth),
+            "pending edits are ordered by frame, one per frame"
+        );
+        assert!(
+            self.pending.last().is_none_or(|entry| entry.depth < depth),
+            "pending edits belong to open frames"
+        );
+        let suppressing = self
+            .pending
+            .iter()
+            .filter(|entry| entry.actions.suppress_content)
+            .count();
+        assert_eq!(suppressing, self.suppress_depth, "suppression depth");
+    }
+
+    /// Emits a leaf token's raw bytes (the `raw` span of `input`), unless it
+    /// is inside suppressed content. (On error the rewrite is doomed and its
+    /// output discarded, so bytes are passed through to keep the buffer
+    /// well-formed for inspection.)
+    #[inline]
+    fn passthrough(&mut self, input: &[u8], raw: Span) {
         if self.error.is_some() || self.suppress_depth == 0 {
-            self.output.extend_from_slice(raw);
+            self.pass(input, raw);
         }
+    }
+
+    /// Passes the `raw` span of `input` to the output unchanged.
+    #[inline]
+    fn pass(&mut self, input: &[u8], raw: Span) {
+        if self.pass.end != raw.start {
+            self.flush_pass(input);
+            self.pass.start = raw.start;
+        }
+        self.pass.end = raw.end;
+    }
+
+    /// Copies the pending passthrough bytes of `input` to the output; done
+    /// before anything else is written.
+    #[inline]
+    fn flush_pass(&mut self, input: &[u8]) {
+        if self.pass.start < self.pass.end {
+            self.output.extend_from_slice(
+                input
+                    .get(self.pass.start..self.pass.end)
+                    .unwrap_or_default(),
+            );
+        }
+        self.pass.start = self.pass.end;
     }
 
     fn take_error(&mut self) -> Result<(), BoxError> {
@@ -214,41 +528,71 @@ impl<H> RewriteSink<H> {
     }
 
     fn finish(&mut self) {
-        let popped = self.matcher.finish();
+        self.matcher.finish();
+        let low = self.matcher.sync();
         close_pending(
             &mut self.output,
             &mut self.pending,
             &mut self.suppress_depth,
-            popped,
+            &mut self.closed_head,
+            low,
             None,
         );
     }
 }
 
+/// Emits the end-anchored edits of the elements at stack index `keep_depth`
+/// and above (all closed), innermost first; `named_end_tag` is the source end
+/// tag standing for the end of the element at `keep_depth`.
 fn close_pending(
     output: &mut Vec<u8>,
-    pending: &mut Vec<EndActions>,
+    pending: &mut Vec<Pending>,
     suppress_depth: &mut usize,
-    popped: usize,
+    closed_head: &mut Option<HeadSuppression>,
+    keep_depth: usize,
     named_end_tag: Option<&[u8]>,
 ) {
-    for i in 0..popped {
-        let Some(actions) = pending.pop() else {
+    let mut named = false;
+    while pending
+        .last()
+        .is_some_and(|entry| entry.depth >= keep_depth)
+    {
+        let Some(Pending {
+            depth,
+            actions,
+            head,
+        }) = pending.pop()
+        else {
             break;
         };
         if actions.suppress_content {
             *suppress_depth = (*suppress_depth).saturating_sub(1);
         }
+        if head {
+            *closed_head = Some(HeadSuppression {
+                suppress_content: actions.suppress_content,
+                suppress_end_tag: actions.suppress_end_tag,
+            });
+        }
+        if depth == keep_depth {
+            named = true;
+        }
         if *suppress_depth == 0 {
             output.extend_from_slice(actions.append.as_bytes());
-            if i + 1 == popped
-                && let Some(raw) = named_end_tag
+            if depth == keep_depth
                 && !actions.suppress_end_tag
+                && let Some(raw) = named_end_tag
             {
                 output.extend_from_slice(raw);
             }
             output.extend_from_slice(actions.after.as_bytes());
         }
+    }
+    if !named
+        && *suppress_depth == 0
+        && let Some(raw) = named_end_tag
+    {
+        output.extend_from_slice(raw);
     }
 }
 
@@ -684,9 +1028,8 @@ mod tests {
     }
 
     #[test]
-    fn replace_on_self_closing_element() {
-        // A self-closing (non-void) element has no end tag: the replacement is
-        // emitted inline and suppression is never engaged.
+    fn html_self_closing_flag_does_not_end_suppression() {
+        // HTML ignores the self-closing flag on non-void elements.
         let out = rewrite(
             "<x/>tail",
             ElementContentHandlers::new().on(sel("x"), |el| {
@@ -694,7 +1037,7 @@ mod tests {
                 Ok(())
             }),
         );
-        assert_eq!(out, "Rtail");
+        assert_eq!(out, "R");
     }
 
     #[test]

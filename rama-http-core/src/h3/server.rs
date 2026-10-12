@@ -1,8 +1,20 @@
 //! HTTP/3 server stream admission and response sending.
 
-use std::sync::Arc;
+use std::{
+    future::{pending, poll_fn},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    task::Poll,
+};
 
-use rama_core::{bytes::BytesMut, error::BoxError, extensions::ExtensionsRef};
+use rama_core::{
+    bytes::BytesMut,
+    error::BoxError,
+    extensions::ExtensionsRef,
+    telemetry::tracing::{debug, warn},
+};
 use rama_http::{
     headers::{HeaderMapExt as _, Priority},
     io::upgrade::{self, Pending},
@@ -10,7 +22,7 @@ use rama_http::{
 use rama_http_types::{
     Method, Request, Response, StatusCode,
     body::StreamingBody,
-    header::trailer::ForbiddenTrailers,
+    header::{self, trailer::ForbiddenTrailers},
     proto::{
         ext::{HttpDatagrams, Protocol},
         h3::{Code, FrameType, StreamType},
@@ -18,7 +30,10 @@ use rama_http_types::{
 };
 use rama_net::uri::Uri;
 use rama_quic_proto::{VarInt, coding::Codec as _};
-use tokio::sync::Semaphore;
+use tokio::{
+    sync::{Notify, Semaphore},
+    time::{Instant, timeout},
+};
 
 use super::{
     Error, body,
@@ -27,7 +42,11 @@ use super::{
     datagram::{Association, DatagramDrops, Semantics},
     headers,
     quic::Writer,
-    stream::{Phase, Reader},
+    stream::{HEAD_TIMEOUT, HeadDeadline, Phase, Reader},
+};
+use crate::{
+    headers::{ResponseLength, is_tunnel_response, set_content_length_if_missing},
+    server::conn::timeout::{Activity, ConnTimer, HeadBudget},
 };
 
 /// Accepts request streams; the accompanying driver must run concurrently.
@@ -37,6 +56,25 @@ pub struct Connection {
     admission: Arc<Semaphore>,
     next_id: u64,
     draining: bool,
+    idle: ConnTimer,
+    heads: Arc<Heads>,
+    /// The complete heads the idle deadline already accounted for.
+    heads_seen: u64,
+}
+
+/// What request streams report to their connection's deadlines.
+#[derive(Debug, Default)]
+struct Heads {
+    /// Complete request heads received; the first earns the full idle budget.
+    received: AtomicU64,
+    /// A head timed out on a connection that never received a complete one.
+    stalled: Notify,
+}
+
+impl Heads {
+    fn earned(&self) -> bool {
+        self.received.load(Ordering::Relaxed) != 0
+    }
 }
 
 /// Prepare the server side of an established QUIC connection.
@@ -52,6 +90,7 @@ pub fn handshake(
     }
     config.settings()?;
     let admission = Arc::new(Semaphore::new(config.max_requests));
+    let idle = ConnTimer::new(config.idle_timeout, None);
     let shared = Shared::from_connection(config, Role::Server, &connection)?;
     let driver = Driver::new(connection.clone(), shared.clone(), Role::Server);
     Ok((
@@ -61,6 +100,9 @@ pub fn handshake(
             admission,
             next_id: 0,
             draining: false,
+            idle,
+            heads: Arc::default(),
+            heads_seen: 0,
         },
         driver,
     ))
@@ -110,11 +152,40 @@ impl Connection {
             error = self.connection.closed() => return Err(Error::from_transport(&error)),
             permit = self.admission.clone().acquire_owned() => Arc::new(permit.map_err(|_error| Error::connection(Code::H3_NO_ERROR, "server draining"))?),
         };
-        let (send, recv) = self
-            .connection
-            .accept_bi()
-            .await
-            .map_err(|error| Error::from_transport(&error))?;
+        let (send, recv) = loop {
+            tokio::select! {
+                biased;
+                error = self.shared.failed() => return Err(error),
+                () = self.heads.stalled.notified() => {
+                    // A connection that completed a head meanwhile is serving requests.
+                    if !self.heads.earned() {
+                        return Err(self.close_gracefully("HTTP/3 request head timeout").await);
+                    }
+                }
+                accepted = self.connection.accept_bi() => {
+                    break accepted.map_err(|error| Error::from_transport(&error))?;
+                }
+                () = async {
+                    if !self.idle.is_enabled() {
+                        pending::<()>().await;
+                    }
+                    // The reserved accept permit is the only one left when every request ends.
+                    let all = self.admission.clone().acquire_many_owned(
+                        self.shared.config.max_requests.saturating_sub(1) as u32,
+                    ).await;
+                    drop(all);
+                    let received = self.heads.received.load(Ordering::Relaxed);
+                    if received != self.heads_seen {
+                        self.heads_seen = received;
+                        self.idle.request_received();
+                    }
+                    self.idle.set_rtt(self.connection.rtt());
+                    poll_fn(|cx| self.idle.poll(cx, Activity::Idle)).await;
+                } => return Err(self.close_gracefully("HTTP/3 idle timeout").await),
+            }
+        };
+        self.idle.mark_busy();
+        let accepted = Instant::now();
         let id = u64::from(send.id());
         self.next_id = self.next_id.max(id.saturating_add(4));
         self.shared.schedule.register(id, Priority::default())?;
@@ -129,6 +200,8 @@ impl Connection {
         writer.cancel_code = Code::H3_REQUEST_REJECTED;
         Ok(RequestStream {
             connection: self.connection.clone(),
+            accepted,
+            heads: self.heads.clone(),
             reader,
             writer,
             priority: super::priority::Lease {
@@ -138,11 +211,32 @@ impl Connection {
             },
         })
     }
+
+    /// Send GOAWAY, give the peer a bounded drain, then close QUIC without error.
+    async fn close_gracefully(&mut self, reason: &'static str) -> Error {
+        if let Err(error) = self.shutdown() {
+            return error;
+        }
+        // Bound flushing even when the peer stopped granting control-stream credit.
+        self.idle.set_rtt(self.connection.rtt());
+        _ = timeout(self.idle.drain_budget(), self.shared.control_flushed()).await;
+        // Closing QUIC immediately can discard the queued GOAWAY before transmission.
+        self.idle.start_drain();
+        tokio::select! {
+            _ = self.connection.closed() => (),
+            _ = poll_fn(|cx| self.idle.poll(cx, Activity::Idle)) => (),
+        }
+        self.connection
+            .close(Code::H3_NO_ERROR.value() as u32, reason.as_bytes());
+        Error::connection(Code::H3_NO_ERROR, reason)
+    }
 }
 
 /// A newly accepted request stream, including its bounded admission permit.
 pub struct RequestStream {
     connection: rama_quic::Connection,
+    accepted: Instant,
+    heads: Arc<Heads>,
     reader: Reader<rama_quic::RecvStream>,
     writer: Writer<rama_quic::SendStream>,
     priority: super::priority::Lease,
@@ -154,16 +248,31 @@ impl RequestStream {
         mut self,
     ) -> Result<(Request<crate::body::Incoming>, SendResponse), Error> {
         let extended_connect = self.reader.shared.config.extended_connect;
+        let deadline = self
+            .reader
+            .shared
+            .config
+            .header_read_timeout
+            .map(|config| HeadDeadline {
+                accepted: self.accepted,
+                budget: HeadBudget::new(&config, Some(self.connection.rtt())),
+            });
         let request = match self
             .reader
-            .headers()
+            .headers_within(deadline)
             .await
             .and_then(|fields| headers::request_head(fields, extended_connect))
         {
             Ok(request) => request,
-            Err(error) => return Err(self.reader.reject(error)),
+            Err(error) => {
+                if error == HEAD_TIMEOUT && !self.heads.earned() {
+                    self.heads.stalled.notify_one();
+                }
+                return Err(self.reader.reject(error));
+            }
         };
         let remaining = headers::content_length(request.headers())?;
+        self.heads.received.fetch_add(1, Ordering::Relaxed);
         let method = request.method().clone();
         // Only an Extended CONNECT can be declared to carry datagrams, by its 2xx response.
         let extended_connect =
@@ -231,7 +340,7 @@ impl SendResponse {
     async fn flush(&mut self, finish: bool) -> Result<(), Error> {
         let push = self.outgoing_push.as_ref().map(super::push::Lease::id);
         let shared = self.shared.clone();
-        let write = std::future::poll_fn(|cx| {
+        let write = poll_fn(|cx| {
             if finish {
                 self.writer.poll_finish(cx)
             } else {
@@ -308,10 +417,10 @@ impl SendResponse {
         promise.extend_from_slice(&encoded);
         self.writer
             .queue(FrameType::PUSH_PROMISE, promise.freeze())?;
-        std::future::poll_fn(|cx| {
+        poll_fn(|cx| {
             let mut pushes = self.shared.pushes.lock();
             let result = self.writer.poll_flush(cx);
-            if !matches!(result, std::task::Poll::Ready(Err(_))) && self.writer.is_drained() {
+            if !matches!(result, Poll::Ready(Err(_))) && self.writer.is_drained() {
                 pushes.mark_promised(id);
             }
             result
@@ -330,7 +439,7 @@ impl SendResponse {
         let mut writer = Writer::with_prefix(stream, prefix.freeze());
         tokio::select! {
             error = self.shared.push_cancelled(id) => return Err(error),
-            result = std::future::poll_fn(|cx| writer.poll_flush(cx)) => result?,
+            result = poll_fn(|cx| writer.poll_flush(cx)) => result?,
         }
         let priority =
             self.shared
@@ -361,7 +470,7 @@ impl SendResponse {
     }
 
     /// Send a non-101 informational response before the final response.
-    pub async fn send_informational(&mut self, response: Response<()>) -> Result<(), Error> {
+    pub async fn send_informational(&mut self, mut response: Response<()>) -> Result<(), Error> {
         if !response.status().is_informational()
             || response.status() == StatusCode::SWITCHING_PROTOCOLS
         {
@@ -369,6 +478,13 @@ impl SendResponse {
                 Code::H3_INTERNAL_ERROR,
                 "expected informational response",
             ));
+        }
+        if response
+            .headers_mut()
+            .remove(header::CONTENT_LENGTH)
+            .is_some()
+        {
+            debug!("content-length dropped: forbidden for an informational response");
         }
         self.flush(false).await?;
         let bytes = headers::encode_response(&self.shared, self.id, &response)?;
@@ -389,13 +505,35 @@ impl SendResponse {
                 "final response cannot be informational",
             ));
         }
+        if is_tunnel_response(Some(&self.method), response.status())
+            && self.shared.config.strict_connect_framing
+            && (response.headers().contains_key(header::CONTENT_LENGTH)
+                || response.headers().contains_key(header::TRANSFER_ENCODING))
+        {
+            return Err(Error::stream(
+                Code::H3_INTERNAL_ERROR,
+                "framing headers on a successful response to CONNECT",
+            ));
+        }
+        let response_length = ResponseLength::of(Some(&self.method), response.status());
+        if response_length == ResponseLength::Forbidden
+            && response.headers().contains_key(header::CONTENT_LENGTH)
+        {
+            debug!("content-length dropped: forbidden for this response");
+            response.headers_mut().remove(header::CONTENT_LENGTH);
+        }
         self.flush(false).await?;
         if response.status().is_success()
             && let Some((reader, pending, extended_connect)) = self.connect.take()
         {
-            response
-                .headers_mut()
-                .remove(rama_http_types::header::CONTENT_LENGTH);
+            if response
+                .body()
+                .size_hint()
+                .exact()
+                .is_some_and(|len| len != 0)
+            {
+                warn!("body of a successful response to CONNECT dropped: a tunnel follows");
+            }
             // RFC 9297 §2: the server declares datagram semantics on its response.
             let claimed = extended_connect && response.extensions().contains::<HttpDatagrams>();
             let datagrams = reader.datagrams.clone().and_then(|registration| {
@@ -432,6 +570,13 @@ impl SendResponse {
                     return Err(no_semantics());
                 }
             }
+        }
+        let body = response.body();
+        let body_len = (self.method == Method::HEAD || !body.is_end_stream())
+            .then(|| body.size_hint().exact())
+            .flatten();
+        if let Some(len) = response_length.implied(body_len) {
+            set_content_length_if_missing(response.headers_mut(), len);
         }
         let bodyless = self.method == Method::HEAD
             || response.status() == StatusCode::NOT_MODIFIED

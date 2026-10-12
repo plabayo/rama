@@ -3,7 +3,7 @@ use crate::headers::encoding::{AcceptEncoding, SupportedEncodings};
 use crate::layer::remove_header::remove_payload_metadata_headers;
 use crate::layer::util::compression::{CompressionLevel, WrapBody};
 use crate::{
-    Request, Response, StreamingBody,
+    Method, Request, Response, StreamingBody,
     header::{self, ACCEPT_ENCODING},
 };
 use rama_core::error::{BoxError, ErrorContext as _};
@@ -206,6 +206,7 @@ where
             entry.insert(accept);
         }
 
+        let is_head = req.method() == Method::HEAD;
         let res = self.inner.serve(req).await.context("inner::serve")?;
 
         let ServiceMatch {
@@ -242,6 +243,18 @@ where
                     DecompressionBody::new(BodyInner::identity(body)),
                 ));
             };
+
+            // A bodyless response (such as to HEAD) describes the decoded representation
+            // its GET would have, without an encoded stream to decode.
+            if is_head || body.is_end_stream() {
+                entry.remove();
+                remove_payload_metadata_headers(&mut parts.headers);
+                parts.extensions.insert(marker);
+                return Ok(Response::from_parts(
+                    parts,
+                    DecompressionBody::new(BodyInner::Empty { _inner: body }),
+                ));
+            }
 
             let body = match marker {
                 DecompressedFrom::Gzip => DecompressionBody::new(BodyInner::gzip(

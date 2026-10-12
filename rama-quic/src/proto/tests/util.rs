@@ -26,7 +26,7 @@ use super::crypto::boring::{QuicClientConfig, QuicServerConfig};
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use super::crypto::rustls::{QuicClientConfig, QuicServerConfig, configured_provider};
 use super::*;
-use crate::proto::{Duration, Instant};
+use crate::proto::{Duration, Instant, endpoint::Accepted};
 
 pub(super) const DEFAULT_MTU: usize = 1452;
 
@@ -675,6 +675,12 @@ impl TestEndpoint {
                         self.outbound.extend(split_transmit(transmit, &buf[..size]));
                         buf.clear();
                     }
+                    DatagramEvent::Retry(transmit) => {
+                        self.retries_sent += 1;
+                        let size = transmit.size;
+                        self.outbound.extend(split_transmit(transmit, &buf[..size]));
+                        buf.clear();
+                    }
                 }
             }
         }
@@ -906,8 +912,27 @@ impl TestEndpoint {
         now: Instant,
     ) -> Result<ConnectionHandle, ConnectionError> {
         let mut buf = Vec::new();
-        match self.endpoint.accept(incoming, now, &mut buf, None) {
-            Ok((ch, conn)) => {
+        let outcome = self.endpoint.accept(incoming, now, &mut buf, None);
+        self.settle(outcome, &buf)
+    }
+
+    /// Complete an accept begun with `start_accept`, as `try_accept` does in one go.
+    pub(super) fn finish(
+        &mut self,
+        accepted: Accepted,
+    ) -> Result<ConnectionHandle, ConnectionError> {
+        let mut buf = Vec::new();
+        let outcome = self.endpoint.finish_accept(accepted, &mut buf);
+        self.settle(outcome, &buf)
+    }
+
+    fn settle(
+        &mut self,
+        outcome: Result<(ConnectionHandle, Connection, AdmissionLease), AcceptError>,
+        buf: &[u8],
+    ) -> Result<ConnectionHandle, ConnectionError> {
+        match outcome {
+            Ok((ch, conn, _admission)) => {
                 self.connections.insert(ch, conn);
                 self.accepted = Some(Ok(ch));
                 Ok(ch)

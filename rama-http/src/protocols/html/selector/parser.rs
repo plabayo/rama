@@ -248,11 +248,11 @@ impl<'i> Parser<'i> {
                     self.skip_ws();
                     CaseSensitivity::CaseSensitive
                 }
-                _ => CaseSensitivity::CaseSensitive,
+                _ => CaseSensitivity::Default,
             };
             (value, case)
         } else {
-            (String::new(), CaseSensitivity::CaseSensitive)
+            (String::new(), CaseSensitivity::Default)
         };
 
         if !self.eat(']') {

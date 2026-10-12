@@ -5,7 +5,6 @@ use std::convert::Infallible;
 use std::fmt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::Duration;
 
 use httparse::ParserConfig;
 use rama_core::Service;
@@ -18,8 +17,8 @@ use rama_net::extensions::StreamTransformed;
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::body::Incoming as IncomingBody;
-use crate::proto;
+use super::{HeaderReadTimeout, IdleTimeout, timeout::ConnTimer};
+use crate::{body::Incoming as IncomingBody, proto};
 
 type Http1Dispatcher<T, B, S> = proto::h1::Dispatcher<
     proto::h1::dispatch::Server<S, IncomingBody>,
@@ -52,7 +51,6 @@ pin_project_lite::pin_project! {
 /// # Example
 ///
 /// ```
-/// # use std::time::Duration;
 /// # use rama_http_core::server::conn::http1::Builder;
 /// # fn main() {
 /// let mut http = Builder::new();
@@ -75,12 +73,14 @@ pub struct Builder {
     h1_title_case_headers: bool,
     h1_max_headers: Option<usize>,
     h1_max_header_size: Option<usize>,
-    h1_header_read_timeout: Duration,
+    pub(super) h1_header_read_timeout: Option<HeaderReadTimeout>,
+    pub(super) h1_idle_timeout: Option<IdleTimeout>,
     h1_lingering_close: Option<LingeringClose>,
     h1_writev: Option<bool>,
     max_buf_size: Option<usize>,
     pipeline_flush: bool,
     date_header: bool,
+    strict_connect_framing: bool,
 }
 
 /// Deconstructed parts of a `Connection`.
@@ -249,12 +249,14 @@ impl Builder {
             h1_title_case_headers: false,
             h1_max_headers: None,
             h1_max_header_size: None,
-            h1_header_read_timeout: Duration::from_secs(30),
+            h1_header_read_timeout: Some(HeaderReadTimeout::DEFAULT),
+            h1_idle_timeout: Some(IdleTimeout::DEFAULT),
             h1_lingering_close: Some(LingeringClose::default()),
             h1_writev: None,
             max_buf_size: None,
             pipeline_flush: false,
             date_header: true,
+            strict_connect_framing: false,
         }
     }
 
@@ -390,15 +392,22 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set a timeout for reading client request headers. If a client does not
-        /// transmit the entire header within this time, the connection is closed.
+        /// Set the deadline for receiving a request head, from its first byte.
         ///
-        /// Requires a [`Timer`] set by [`Builder::timer`] to take effect. Panics if `header_read_timeout` is configured
-        /// without a [`Timer`].
+        /// Defaults to [`HeaderReadTimeout::DEFAULT`]; `None` disables it.
+        pub fn header_read_timeout(mut self, timeout: Option<HeaderReadTimeout>) -> Self {
+            self.h1_header_read_timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the budget while no request is open nor a request head in progress,
+        /// after which the connection closes.
         ///
-        /// Default is 30 seconds.
-        pub fn header_read_timeout(mut self, read_timeout: Duration) -> Self{
-            self.h1_header_read_timeout = read_timeout;
+        /// Defaults to [`IdleTimeout::DEFAULT`]; `None` disables it.
+        pub fn idle_timeout(mut self, timeout: Option<IdleTimeout>) -> Self {
+            self.h1_idle_timeout = timeout;
             self
         }
     }
@@ -452,6 +461,19 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Set whether a successful response to CONNECT that carries `Content-Length` or
+        /// `Transfer-Encoding` fails, rather than having those fields dropped.
+        ///
+        /// RFC 9110 §9.3.6 forbids both fields there, as a tunnel follows the response.
+        ///
+        /// Default is `false`: the fields are dropped and the tunnel opens.
+        pub fn strict_connect_framing(mut self, enabled: bool) -> Self {
+            self.strict_connect_framing = enabled;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Aggregates flushes to better support pipelined responses.
         ///
         /// Experimental, may have bugs.
@@ -468,11 +490,22 @@ impl Builder {
     /// This returns a Future that must be polled in order for HTTP to be
     /// driven on the connection.
     ///
-    /// # Panics
-    ///
-    /// If a timeout option has been configured, but a `timer` has not been
-    /// provided, calling `serve_connection` will panic.
     pub fn serve_connection<I, S>(&self, io: I, service: S) -> Connection<I, S>
+    where
+        S: Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
+        I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
+    {
+        let timer = ConnTimer::new(self.h1_idle_timeout, self.h1_header_read_timeout);
+        self.serve_connection_with_timer(io, service, timer)
+    }
+
+    /// Bind a connection whose deadlines already started, as during protocol detection.
+    pub(super) fn serve_connection_with_timer<I, S>(
+        &self,
+        io: I,
+        service: S,
+        mut timer: ConnTimer,
+    ) -> Connection<I, S>
     where
         S: Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
         I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
@@ -497,7 +530,8 @@ impl Builder {
         if let Some(max_header_size) = self.h1_max_header_size {
             conn.set_http1_max_header_size(max_header_size);
         }
-        conn.set_http1_header_read_timeout(self.h1_header_read_timeout);
+        timer.reconfigure(self.h1_idle_timeout, self.h1_header_read_timeout);
+        conn.set_timer(timer);
         conn.set_lingering_close(self.h1_lingering_close);
         if let Some(writev) = self.h1_writev {
             if writev {
@@ -512,6 +546,9 @@ impl Builder {
         }
         if !self.date_header {
             conn.disable_date_header();
+        }
+        if self.strict_connect_framing {
+            conn.set_strict_connect_framing();
         }
         let sd = proto::h1::dispatch::Server::new(service);
         let proto = proto::h1::Dispatcher::new(sd, conn);

@@ -282,7 +282,7 @@ impl Connection {
                     if packet.header.space() == SpaceId::Handshake && self.state.is_handshake() {
                         self.qlog_handshake_started(now);
                     }
-                    if !self.state.is_closed() {
+                    if !self.state.is_closed() && number.is_some() {
                         let spin = match packet.header {
                             Header::Short { spin, .. } => spin,
                             _ => false,
@@ -484,7 +484,7 @@ impl Connection {
                     return Err(TransportError::PROTOCOL_VIOLATION("client sent Retry").into());
                 }
 
-                if self.total_authed_packets > 1
+                if self.total_authed_packets > 0
                             || packet.payload.len() <= 16 // token + 16 byte tag
                             || rem_cid == self.initial_dst_cid
                             || !self.crypto.is_valid_retry(
@@ -510,9 +510,11 @@ impl Connection {
                 trace!("retrying with CID {}", rem_cid);
                 #[expect(
                     clippy::unwrap_used,
-                    reason = "a second Retry is discarded above (`total_authed_packets > 1`), so `client_hello` has not been taken yet"
+                    reason = "a second Retry is discarded above (`total_authed_packets > 0`), so `client_hello` has not been taken yet"
                 )]
                 let client_hello = state.client_hello.take().unwrap();
+                // Retry integrity is checked here; unauthenticated packets never reset timers.
+                self.on_packet_authenticated(now, SpaceId::Initial, None, None, false, false);
                 self.retry_src_cid = Some(rem_cid);
                 let old_remote_cid = self.rem_cids.active();
                 self.rem_cids.update_initial_cid(rem_cid);
@@ -705,7 +707,7 @@ impl Connection {
                         ..
                     }
                 );
-                if self.total_authed_packets > 1 || reacted {
+                if self.total_authed_packets > 0 || reacted {
                     self.qlog_packet_dropped(now, info, DropReason::Rejected);
                     return Ok(());
                 }

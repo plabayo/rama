@@ -6,8 +6,10 @@ mod datagram;
 mod demux;
 mod extended_connect;
 mod fairness;
+mod framing;
 mod loss;
 mod robustness;
+mod timeouts;
 
 use std::{assert_matches, num::NonZeroUsize, sync::Arc, time::Duration};
 

@@ -20,7 +20,7 @@ use rama_http::{
     opentelemetry::version_as_protocol_version,
 };
 use rama_http_types::{
-    Method, Request, Response,
+    Method, Request, Response, StatusCode,
     header::{self, trailer::ForbiddenTrailers},
     proto::{ext::Protocol, h2::ext::ResetStream},
 };
@@ -36,6 +36,7 @@ use crate::{
     },
     headers,
     proto::{Dispatched, h2::ping::Recorder},
+    server::conn::timeout::{Activity, ConnTimer, Expired, HeaderReadTimeout, IdleTimeout},
 };
 
 // Our defaults are chosen for the "majority" case, which usually are not
@@ -69,6 +70,9 @@ pub(crate) struct Config {
     pub(crate) header_table_size: Option<u32>,
     pub(crate) max_header_list_size: u32,
     pub(crate) date_header: bool,
+    pub(crate) strict_connect_framing: bool,
+    pub(crate) header_read_timeout: Option<HeaderReadTimeout>,
+    pub(crate) idle_timeout: Option<IdleTimeout>,
 }
 
 impl Default for Config {
@@ -90,8 +94,19 @@ impl Default for Config {
             max_send_buffer_size: DEFAULT_MAX_SEND_BUF_SIZE,
             max_header_list_size: DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE,
             date_header: true,
+            strict_connect_framing: false,
+            header_read_timeout: Some(HeaderReadTimeout::default()),
+            idle_timeout: Some(IdleTimeout::default()),
         }
     }
+}
+
+/// Per-response options, copied to every stream of a connection.
+#[derive(Debug, Clone, Copy)]
+struct ResponseOptions {
+    date_header: bool,
+    /// Refuse, rather than drop, framing fields on a 2xx to CONNECT.
+    strict_connect_framing: bool,
 }
 
 pin_project! {
@@ -102,8 +117,9 @@ pin_project! {
         exec: Executor,
         service: S,
         state: State<T>,
-        date_header: bool,
+        options: ResponseOptions,
         close_pending: bool,
+        timer: ConnTimer,
     }
 }
 
@@ -118,9 +134,24 @@ enum State<T> {
 }
 
 struct Serving<T> {
+    /// What the deadlines observed at the last poll.
+    activity: Activity,
+    /// How this server closes the connection, once it decided to.
+    closing: Option<Closing>,
     ping: Option<(ping::Recorder, ping::Ponger)>,
     conn: Connection<T, SendBuf<Bytes>>,
-    date_header: bool,
+    options: ResponseOptions,
+}
+
+/// The stages of a close this server started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Closing {
+    /// A graceful GOAWAY went out; requests that raced it may still complete.
+    Draining,
+    /// The final GOAWAY went out; the connection closes once it is flushed.
+    Final,
+    /// A request head timed out: a GOAWAY with `ENHANCE_YOUR_CALM` went out.
+    HeadTimeout,
 }
 
 impl<T, S> Server<T, S>
@@ -128,7 +159,13 @@ where
     T: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
     S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>,
 {
-    pub(crate) fn new(io: T, service: S, config: &Config, exec: Executor) -> Self {
+    pub(crate) fn new(
+        io: T,
+        service: S,
+        config: &Config,
+        exec: Executor,
+        mut timer: ConnTimer,
+    ) -> Self {
         let mut builder = crate::h2::server::Builder::default()
             .with_initial_window_size(config.initial_stream_window_size)
             .with_initial_connection_window_size(config.initial_conn_window_size)
@@ -166,6 +203,8 @@ where
             keep_alive_while_idle: true,
         };
 
+        timer.reconfigure(config.idle_timeout, config.header_read_timeout);
+
         Self {
             exec,
             state: State::Handshaking {
@@ -173,8 +212,12 @@ where
                 hs: handshake,
             },
             service,
-            date_header: config.date_header,
+            options: ResponseOptions {
+                date_header: config.date_header,
+                strict_connect_framing: config.strict_connect_framing,
+            },
             close_pending: false,
+            timer,
         }
     }
 
@@ -203,7 +246,29 @@ where
         loop {
             let next = match &mut me.state {
                 State::Handshaking { hs, ping_config } => {
-                    let mut conn = ready!(Pin::new(hs).poll(cx).map_err(crate::Error::new_h2))?;
+                    let mut conn =
+                        match Pin::new(&mut *hs).poll(cx).map_err(crate::Error::new_h2)? {
+                            Poll::Ready(conn) => conn,
+                            Poll::Pending => {
+                                let activity =
+                                    hs.preface_progress().map_or(Activity::Idle, |bytes| {
+                                        Activity::Head { bytes, block: 0 }
+                                    });
+                                return match me.timer.poll(cx, activity) {
+                                    Poll::Ready(Expired::Head) => {
+                                        debug!("client preface deadline elapsed");
+                                        Poll::Ready(Err(crate::Error::new_header_timeout()))
+                                    }
+                                    Poll::Ready(Expired::Idle | Expired::Drain) => {
+                                        debug!("idle before the client preface, closing");
+                                        Poll::Ready(Ok(Dispatched::Shutdown))
+                                    }
+                                    Poll::Pending => Poll::Pending,
+                                };
+                            }
+                        };
+                    // The preface is not a request head: the first one starts fresh.
+                    me.timer.mark_busy();
                     let ping = if ping_config.is_enabled() {
                         let Some(pp) = conn.ping_pong() else {
                             return Poll::Ready(Err(
@@ -216,9 +281,11 @@ where
                         None
                     };
                     State::Serving(Serving {
+                        activity: Activity::Busy,
+                        closing: None,
                         ping,
                         conn,
-                        date_header: me.date_header,
+                        options: me.options,
                     })
                 }
                 State::Serving(srv) => {
@@ -226,7 +293,7 @@ where
                     if me.close_pending {
                         srv.conn.graceful_shutdown();
                     }
-                    ready!(srv.poll_server(cx, &mut me.service, &me.exec))?;
+                    ready!(srv.poll_server(cx, &mut me.service, &me.exec, &mut me.timer))?;
                     return Poll::Ready(Ok(Dispatched::Shutdown));
                 }
             };
@@ -245,121 +312,202 @@ where
         cx: &mut Context<'_>,
         service: &mut S,
         exec: &Executor,
+        timer: &mut ConnTimer,
     ) -> Poll<crate::Result<()>>
     where
         S: Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
     {
         loop {
-            self.poll_ping(cx);
+            self.poll_ping(cx, timer);
 
-            match ready!(self.conn.poll_accept(cx)) {
-                Some(Ok((req, mut respond))) => {
-                    trace!("incoming request");
-                    let content_length = headers::content_length_parse_all(req.headers());
-                    let ping = self
-                        .ping
-                        .as_ref()
-                        .map(|ping| ping.0.clone())
-                        .unwrap_or_else(ping::disabled);
+            // A head that ran out while unpolled must not be completed by bytes ready now.
+            if let Activity::Head { bytes, .. } = self.activity
+                && timer.head_elapsed(bytes)
+                && let Some(result) = self.expire(timer, Expired::Head)
+            {
+                return Poll::Ready(result);
+            }
 
-                    // Record the headers received
-                    ping.record_non_data();
-
-                    let is_connect = req.method() == Method::CONNECT;
-                    let is_head = req.method() == Method::HEAD;
-                    let (parts, stream) = req.into_parts();
-                    let (req, connect_parts) = if !is_connect {
-                        (
-                            Request::from_parts(
-                                parts,
-                                IncomingBody::h2(stream, content_length.into(), ping),
-                            ),
-                            None,
-                        )
-                    } else {
-                        if content_length.is_some_and(|len| len != 0) {
-                            warn!("h2 connect request with non-zero body not supported");
-                            respond.send_reset(crate::h2::Reason::INTERNAL_ERROR);
-                            return Poll::Ready(Ok(()));
-                        }
-                        let extended = parts.extensions.contains::<Protocol>();
-                        let (pending, upgrade) = upgrade::pending();
-                        parts.extensions.insert(upgrade);
-                        (
-                            Request::from_parts(parts, IncomingBody::empty()),
-                            Some(ConnectParts {
-                                pending,
-                                ping,
-                                recv_stream: stream,
-                                extended,
-                            }),
-                        )
-                    };
-
-                    let serve_span = trace_root_span!(
-                        "h2::stream",
-                        otel.kind = "server",
-                        http.request.method = %req.method().as_str(),
-                        url.full = %req.request_uri(),
-                        url.path = %req.uri().path_or_root().as_ref(),
-                        url.query = %req.uri().query_or_empty().as_ref(),
-                        url.scheme = %req.uri().scheme_str().unwrap_or_default(),
-                        network.protocol.name = "http",
-                        network.protocol.version = version_as_protocol_version(req.version()),
-                    );
-
-                    let serve_fut = {
-                        let service = service.clone();
-                        async move { service.serve(req).await }
-                    };
-
-                    let fut = H2Stream::new(
-                        serve_fut,
-                        connect_parts,
-                        respond,
-                        self.date_header,
-                        is_head,
-                        exec.clone(),
-                    );
-
-                    exec.spawn_task(fut.instrument(serve_span));
+            let (req, mut respond) = match self.conn.poll_accept(cx) {
+                Poll::Ready(Some(Ok(accepted))) => accepted,
+                Poll::Ready(Some(Err(e))) => {
+                    return Poll::Ready(Err(self.close_error(crate::Error::new_h2(e))));
                 }
-                Some(Err(e)) => {
-                    return Poll::Ready(Err(crate::Error::new_h2(e)));
-                }
-                None => {
+                Poll::Ready(None) => {
                     // no more incoming streams...
                     if let Some((ref ping, _)) = self.ping {
                         ping.ensure_not_timed_out()?;
                     }
 
                     trace!("incoming connection complete");
+                    return Poll::Ready(self.closed());
+                }
+                Poll::Pending => {
+                    if !timer.is_enabled() {
+                        return Poll::Pending;
+                    }
+                    self.activity = match self.closing {
+                        None | Some(Closing::Draining) => self.conn.timeout_activity(),
+                        // Only the bound on flushing the close is left.
+                        Some(Closing::Final | Closing::HeadTimeout) => Activity::Idle,
+                    };
+                    match timer.poll(cx, self.activity) {
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready(expired) => {
+                            if let Some(result) = self.expire(timer, expired) {
+                                return Poll::Ready(result);
+                            }
+                            // Drive the GOAWAY this queued.
+                            continue;
+                        }
+                    }
+                }
+            };
+
+            timer.request_received();
+            self.activity = Activity::Busy;
+            trace!("incoming request");
+            let content_length = headers::content_length_parse_all(req.headers());
+            let ping = self
+                .ping
+                .as_ref()
+                .map(|ping| ping.0.clone())
+                .unwrap_or_else(ping::disabled);
+
+            // Record the headers received
+            ping.record_non_data();
+
+            let is_connect = req.method() == Method::CONNECT;
+            let is_head = req.method() == Method::HEAD;
+            let (parts, stream) = req.into_parts();
+            let (req, connect_parts) = if !is_connect {
+                (
+                    Request::from_parts(
+                        parts,
+                        IncomingBody::h2(stream, content_length.into(), ping),
+                    ),
+                    None,
+                )
+            } else {
+                if content_length.is_some_and(|len| len != 0) {
+                    warn!("h2 connect request with non-zero body not supported");
+                    respond.send_reset(Reason::INTERNAL_ERROR);
                     return Poll::Ready(Ok(()));
                 }
-            }
+                let extended = parts.extensions.contains::<Protocol>();
+                let (pending, upgrade) = upgrade::pending();
+                parts.extensions.insert(upgrade);
+                (
+                    Request::from_parts(parts, IncomingBody::empty()),
+                    Some(ConnectParts {
+                        pending,
+                        ping,
+                        recv_stream: stream,
+                        extended,
+                    }),
+                )
+            };
+
+            let serve_span = trace_root_span!(
+                "h2::stream",
+                otel.kind = "server",
+                http.request.method = %req.method().as_str(),
+                url.full = %req.request_uri(),
+                url.path = %req.uri().path_or_root().as_ref(),
+                url.query = %req.uri().query_or_empty().as_ref(),
+                url.scheme = %req.uri().scheme_str().unwrap_or_default(),
+                network.protocol.name = "http",
+                network.protocol.version = version_as_protocol_version(req.version()),
+            );
+
+            let serve_fut = {
+                let service = service.clone();
+                async move { service.serve(req).await }
+            };
+
+            let fut = H2Stream::new(
+                serve_fut,
+                connect_parts,
+                respond,
+                self.options,
+                is_head,
+                exec.clone(),
+            );
+
+            exec.spawn_task(fut.instrument(serve_span));
         }
     }
 
-    fn poll_ping(&mut self, cx: &mut Context<'_>) {
+    /// Act on an elapsed deadline: `Some` ends the connection right away.
+    fn expire(&mut self, timer: &mut ConnTimer, expired: Expired) -> Option<crate::Result<()>> {
+        match (expired, self.closing) {
+            (Expired::Idle, _) => {
+                debug!("idle deadline elapsed, sending a graceful GOAWAY");
+                self.conn.graceful_shutdown();
+                self.closing = Some(Closing::Draining);
+            }
+            (Expired::Head, _) => {
+                debug!("request head deadline elapsed, sending GOAWAY");
+                self.conn.abrupt_shutdown(Reason::ENHANCE_YOUR_CALM);
+                self.closing = Some(Closing::HeadTimeout);
+            }
+            (Expired::Drain, Some(Closing::Draining)) => {
+                // Flushes what raced the first GOAWAY, then closes the transport.
+                debug!("graceful close not completed by the peer, sending the final GOAWAY");
+                self.conn.abrupt_shutdown(Reason::NO_ERROR);
+                self.closing = Some(Closing::Final);
+            }
+            (Expired::Drain, None | Some(Closing::Final | Closing::HeadTimeout)) => {
+                debug!("connection close not flushed in time, dropping it");
+                return Some(self.closed());
+            }
+        }
+        timer.start_drain();
+        None
+    }
+
+    /// How a connection that ended reports to its caller.
+    fn closed(&self) -> crate::Result<()> {
+        match self.closing {
+            Some(Closing::HeadTimeout) => Err(crate::Error::new_header_timeout()),
+            None | Some(Closing::Draining | Closing::Final) => Ok(()),
+        }
+    }
+
+    /// A head timeout is what ended a connection that failed while closing for it.
+    fn close_error(&self, error: crate::Error) -> crate::Error {
+        match self.closing {
+            Some(Closing::HeadTimeout) => crate::Error::new_header_timeout(),
+            None | Some(Closing::Draining | Closing::Final) => error,
+        }
+    }
+
+    fn poll_ping(&mut self, cx: &mut Context<'_>, timer: &mut ConnTimer) {
+        if let Some(rtt) = self.conn.take_settings_rtt() {
+            timer.set_rtt(rtt);
+        }
         if let Some((_, estimator)) = &mut self.ping {
             match estimator.poll(cx) {
                 Poll::Ready(ping::Ponged::SizeUpdate(wnd)) => {
                     if let Err(err) = self.conn.try_set_target_window_size(wnd) {
-                        let reason = err.reason().unwrap_or(crate::h2::Reason::INTERNAL_ERROR);
+                        let reason = err.reason().unwrap_or(Reason::INTERNAL_ERROR);
                         debug!("target window size failed to update: {err}; reason = {reason}");
                         self.conn.abrupt_shutdown(reason);
                     }
                     if let Err(err) = self.conn.try_set_initial_window_size(wnd) {
-                        let reason = err.reason().unwrap_or(crate::h2::Reason::INTERNAL_ERROR);
+                        let reason = err.reason().unwrap_or(Reason::INTERNAL_ERROR);
                         trace!("initial window size failed to update: {err}; reason = {reason}");
                         // this may fail for legit reasons...so we only log it
                     }
                 }
                 Poll::Ready(ping::Ponged::KeepAliveTimedOut) => {
                     debug!("keep-alive timed out, closing connection");
-                    self.conn.abrupt_shutdown(crate::h2::Reason::NO_ERROR);
+                    self.conn.abrupt_shutdown(Reason::NO_ERROR);
                 }
                 Poll::Pending => {}
+            }
+            if let Some(rtt) = estimator.latest_rtt() {
+                timer.set_rtt(rtt);
             }
         }
     }
@@ -379,7 +527,7 @@ pin_project! {
         reply: SendResponse<SendBuf<B::Data>>,
         #[pin]
         state: H2StreamState<F, B>,
-        date_header: bool,
+        options: ResponseOptions,
         is_head: bool,
         exec: Executor,
     }
@@ -424,14 +572,14 @@ where
         fut: F,
         connect_parts: Option<ConnectParts>,
         respond: SendResponse<SendBuf<B::Data>>,
-        date_header: bool,
+        options: ResponseOptions,
         is_head: bool,
         exec: Executor,
     ) -> Self {
         Self {
             reply: respond,
             state: H2StreamState::Service { fut, connect_parts },
-            date_header,
+            options,
             is_head,
             exec,
         }
@@ -494,33 +642,49 @@ where
 
                     let (head, body) = res.into_parts();
                     let mut res = Response::from_parts(head, ());
+                    if connect_parts.is_some()
+                        && res.status().is_success()
+                        && me.options.strict_connect_framing
+                        && (res.headers().contains_key(header::CONTENT_LENGTH)
+                            || res.headers().contains_key(header::TRANSFER_ENCODING))
+                    {
+                        warn!("framing headers on a successful response to CONNECT, refusing");
+                        me.reply.send_reset(Reason::INTERNAL_ERROR);
+                        return Poll::Ready(Err(crate::Error::new_user_header()));
+                    }
                     super::strip_connection_headers(
                         res.headers_mut(),
                         super::MessageKind::Response,
                     );
 
                     // set Date header if it isn't already set if instructed
-                    if *me.date_header {
+                    if me.options.date_header {
                         res.headers_mut()
                             .entry(header::DATE)
                             .or_insert_with(date::update_and_header_value);
                     }
 
+                    let method = if *me.is_head {
+                        Some(&Method::HEAD)
+                    } else if connect_parts.is_some() {
+                        Some(&Method::CONNECT)
+                    } else {
+                        None
+                    };
+                    let response_length = headers::ResponseLength::of(method, res.status());
+                    if response_length == headers::ResponseLength::Forbidden
+                        && res.headers().contains_key(header::CONTENT_LENGTH)
+                    {
+                        debug!("content-length dropped: forbidden for this response");
+                        res.headers_mut().remove(header::CONTENT_LENGTH);
+                    }
+
                     if let Some(connect_parts) = connect_parts.take()
                         && res.status().is_success()
                     {
-                        if headers::content_length_parse_all(res.headers())
-                            .is_some_and(|len| len != 0)
-                        {
+                        if body.size_hint().exact().is_some_and(|len| len != 0) {
                             warn!(
-                                "h2 successful response to CONNECT request with body not supported"
-                            );
-                            me.reply.send_reset(crate::h2::Reason::INTERNAL_ERROR);
-                            return Poll::Ready(Err(crate::Error::new_user_header()));
-                        }
-                        if res.headers_mut().remove(header::CONTENT_LENGTH).is_some() {
-                            warn!(
-                                "successful response to CONNECT request disallows content-length header"
+                                "body of a successful response to CONNECT dropped: a tunnel follows"
                             );
                         }
                         let send_stream = reply!(me, res, false);
@@ -540,8 +704,13 @@ where
                     // for HEAD responses. Forward Content-Length so the client
                     // knows what a GET would return, but close the stream with
                     // END_STREAM immediately (no DATA frames).
-                    if *me.is_head {
-                        if let Some(len) = body.size_hint().exact() {
+                    if *me.is_head
+                        || matches!(
+                            res.status(),
+                            StatusCode::NO_CONTENT | StatusCode::NOT_MODIFIED
+                        )
+                    {
+                        if let Some(len) = response_length.implied(body.size_hint().exact()) {
                             headers::set_content_length_if_missing(res.headers_mut(), len);
                         }
                         reply!(me, res, true);
@@ -550,7 +719,7 @@ where
 
                     if !body.is_end_stream() {
                         // automatically set Content-Length from body...
-                        if let Some(len) = body.size_hint().exact() {
+                        if let Some(len) = response_length.implied(body.size_hint().exact()) {
                             headers::set_content_length_if_missing(res.headers_mut(), len);
                         }
 

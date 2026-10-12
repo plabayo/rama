@@ -48,8 +48,8 @@ use crate::{
         work_limiter::{WorkCycle, WorkLimiter},
     },
     proto::{
-        ClientConfig, ClientHelloPeek, ConnectError, ConnectionError, ConnectionHandle,
-        DatagramEvent, EndpointEvent, ReceiveQueueLimits, ServerConfig,
+        AdmissionLease, ClientConfig, ClientHelloPeek, ConnectError, ConnectionError,
+        ConnectionHandle, DatagramEvent, EndpointEvent, ReceiveQueueLimits, ServerConfig,
     },
 };
 
@@ -204,7 +204,15 @@ impl Endpoint {
     /// Returns relevant stats from this Endpoint
     pub fn stats(&self) -> EndpointStats {
         let state = self.inner.state.lock();
+        let (handshakes_in_progress, retry_threshold) = state.inner.admission_load(now());
+        let admission = state.inner.admission_stats();
         EndpointStats {
+            retried_under_load: admission.retried,
+            refused_at_limit: admission.refused_at_limit,
+            refused_per_source: admission.refused_per_source,
+            refused_unvalidated: admission.refused_unvalidated,
+            handshakes_in_progress,
+            retry_threshold,
             received_datagrams: state.recv_state.received_datagrams,
             truncated_receive_entries: state.recv_state.truncated_receive_entries,
             ignored_receive_errors: state.recv_state.ignored_receive_errors,
@@ -460,6 +468,7 @@ impl Endpoint {
             conn,
             socket,
             EndpointLink::new(Arc::downgrade(&self.inner.0), ch),
+            None,
         );
         // Supervision is reserved before the registration lock is released, and the driver
         // is submitted with no lock held (see `ConnectionDriver::spawn`).
@@ -667,7 +676,7 @@ impl Endpoint {
         loop {
             {
                 let endpoint = &mut *self.inner.state.lock();
-                if endpoint.recv_state.connections.is_empty() {
+                if endpoint.is_idle() {
                     break;
                 }
                 // Construct future while lock is held to avoid race
@@ -703,6 +712,23 @@ pub struct EndpointStats {
     pub failed_responses: u64,
     /// Pending incoming handshakes expired before application acceptance.
     pub expired_incoming: u64,
+    /// Retries issued to unvalidated attempts because the endpoint was under load (see
+    /// [`AdmissionConfig`](crate::AdmissionConfig)); one its response queue dropped is also
+    /// counted in `dropped_responses`.
+    pub retried_under_load: u64,
+    /// Attempts refused because the endpoint held as many in progress as it allows.
+    pub refused_at_limit: u64,
+    /// Attempts refused because their source held as many in progress as it may.
+    pub refused_per_source: u64,
+    /// Unvalidated attempts refused under load, as an endpoint without local connection IDs
+    /// cannot answer them with a Retry.
+    pub refused_unvalidated: u64,
+    /// Incoming attempts in progress: admitted, and not yet established, failed, timed out or
+    /// abandoned.
+    pub handshakes_in_progress: usize,
+    /// In-progress attempts at which unvalidated ones are answered with a Retry; zero while
+    /// admission is disabled.
+    pub retry_threshold: usize,
     /// Received datagrams dropped because a receive queue was saturated.
     pub dropped_packets: u64,
     /// Occupancy and drop counters of the endpoint-wide receive queue budget.
@@ -941,7 +967,9 @@ impl EndpointInner {
             if event.is_drained() {
                 retired = state.recv_state.connections.channels.remove(&handle);
                 if state.recv_state.connections.is_empty() {
-                    self.shared.idle.notify_waiters();
+                    if state.is_idle() {
+                        self.shared.idle.notify_waiters();
+                    }
                     if let Some(driver) = state.driver.take() {
                         driver.wake();
                     }
@@ -1086,6 +1114,11 @@ impl EndpointRef {
     /// Accept an attempt that arrived on socket `received_on`: the connection sends from that
     /// socket, and a refusal response leaves from it too. The attempt's socket dependence is
     /// released here on every path.
+    ///
+    /// TLS setup and first-flight processing, the costly part, run between two holds of the
+    /// endpoint lock so they do not hold up datagram routing for established connections; the
+    /// first hold reserves the attempt's routes and the second registers the connection, or
+    /// releases the reservation when the handshake failed or the endpoint stopped meanwhile.
     pub(crate) fn accept(
         &self,
         incoming: crate::proto::Incoming,
@@ -1093,43 +1126,75 @@ impl EndpointRef {
         server_config: Option<Arc<ServerConfig>>,
     ) -> Result<Connecting, ConnectionError> {
         let received_on = lease.id();
+        let mut response_buffer = Vec::new();
         let mut state = self.state.lock();
-        let now = now();
-        if state.driver_lost || state.shutdown || state.recv_state.connections.close.is_some() {
+        let started = now();
+        if state.is_closing()
+            || !state
+                .sockets
+                .live()
+                .is_some_and(|sockets| sockets.is_usable(received_on))
+        {
+            // Closing, or the receiving socket is gone or unusable: the attempt cannot be
+            // answered on it.
             state.inner.ignore(incoming);
-            let retired = state.sockets.release(lease, now);
+            let retired = state.sockets.release(lease, started);
             drop(state);
             drop(retired);
             return Err(ConnectionError::LocallyClosed);
         }
-        let Some(mut socket) = state
-            .sockets
-            .live_mut()
-            .and_then(|sockets| sockets.sender(received_on))
-        else {
-            // The receiving socket is gone or unusable: the attempt cannot be answered on it.
-            state.inner.ignore(incoming);
-            let retired = state.sockets.release(lease, now);
-            drop(state);
-            drop(retired);
-            return Err(ConnectionError::LocallyClosed);
-        };
-        let mut response_buffer = Vec::new();
-        let mut retired = Vec::new();
-        // An unused send handle is dropped after unlocking, like the sockets it retires.
-        let mut unused_sender = None;
-        let registered =
+        let accepting =
             match state
                 .inner
-                .accept(incoming, now, &mut response_buffer, server_config)
+                .start_accept(incoming, started, &mut response_buffer, server_config)
             {
-                Ok((handle, conn)) => {
+                Ok(accepting) => accepting,
+                Err(error) => {
+                    if let Some(transmit) = error.response {
+                        state
+                            .sockets
+                            .respond(received_on, transmit, &response_buffer);
+                        state.wake_driver();
+                    }
+                    let retired = state.sockets.release(lease, started);
+                    drop(state);
+                    drop(retired);
+                    return Err(error.cause);
+                }
+            };
+        let in_flight = AcceptInFlight::begin(self, &mut state);
+        drop(state);
+
+        let accepted = accepting.accept();
+
+        let mut state = self.state.lock();
+        in_flight.end(&mut state);
+        let now = now();
+        let mut retired = Vec::new();
+        let sender = if state.is_closing() {
+            None
+        } else {
+            state
+                .sockets
+                .live_mut()
+                .and_then(|sockets| sockets.sender(received_on))
+        };
+        // An unused send handle is dropped after unlocking, like the sockets it retires.
+        let mut unused_sender = None;
+        let registered = match sender {
+            None => {
+                state.inner.abandon_accept(accepted);
+                Err(ConnectionError::LocallyClosed)
+            }
+            Some(mut socket) => match state.inner.finish_accept(accepted, &mut response_buffer) {
+                Ok((handle, conn, admission)) => {
                     state.stats.accepted_handshakes += 1;
                     Ok(state.recv_state.connections.insert(
                         handle,
                         conn,
                         socket,
                         EndpointLink::new(Arc::downgrade(&self.0), handle),
+                        Some(admission),
                     ))
                 }
                 Err(error) => {
@@ -1145,8 +1210,14 @@ impl EndpointRef {
                     }
                     Err(error.cause)
                 }
-            };
+            },
+        };
         retired.extend(state.sockets.release(lease, now));
+        // An accept that ends without a connection may have been all that kept the endpoint
+        // from idle, and no Drained event follows it.
+        if registered.is_err() && state.is_idle() {
+            self.shared.idle.notify_waiters();
+        }
         // Supervision is reserved before the registration lock is released, and the driver
         // is submitted with no lock held (see `ConnectionDriver::spawn`).
         let slot = registered
@@ -1162,6 +1233,41 @@ impl EndpointRef {
             }
             connecting
         })
+    }
+}
+
+/// An accept between its two holds of the endpoint lock. It keeps the endpoint from idle,
+/// since it may still become a connection, and is uncounted under the lock however the
+/// handshake work between the holds ends, unwinding included.
+struct AcceptInFlight<'a> {
+    endpoint: &'a EndpointInner,
+    counted: bool,
+}
+
+impl<'a> AcceptInFlight<'a> {
+    fn begin(endpoint: &'a EndpointInner, state: &mut State) -> Self {
+        state.accepting += 1;
+        Self {
+            endpoint,
+            counted: true,
+        }
+    }
+
+    fn end(mut self, state: &mut State) {
+        state.accepting -= 1;
+        self.counted = false;
+    }
+}
+
+impl Drop for AcceptInFlight<'_> {
+    fn drop(&mut self) {
+        if self.counted {
+            let mut state = self.endpoint.state.lock();
+            state.accepting -= 1;
+            if state.is_idle() {
+                self.endpoint.shared.idle.notify_waiters();
+            }
+        }
     }
 }
 
@@ -1277,6 +1383,8 @@ pub(crate) struct State {
     ipv6: bool,
     driver_lost: bool,
     shutdown: bool,
+    /// Accepts between their two holds of this lock (see [`EndpointRef::accept`]).
+    accepting: usize,
     incoming_timer: DeadlineTimer,
     /// Fires when a replaced socket's Retry route hold expires (see [`SocketRegistry::hold_route`]).
     route_timer: DeadlineTimer,
@@ -1304,6 +1412,11 @@ impl State {
     /// Whether this endpoint accepts no more work: closed, shut down or without its driver.
     fn is_closing(&self) -> bool {
         self.driver_lost || self.shutdown || self.recv_state.connections.close.is_some()
+    }
+
+    /// No connection is open and none is being accepted.
+    fn is_idle(&self) -> bool {
+        self.recv_state.connections.is_empty() && self.accepting == 0
     }
 
     fn close(&mut self, error_code: VarInt, reason: &Bytes, shared: &Shared, abandon: bool) {
@@ -1495,6 +1608,14 @@ impl State {
             let progress =
                 recv_state.poll_socket(cx, inner, socket, now, packet_budget, &mut cycle);
             keep_going |= progress.keep_going;
+            // A client answered with a Retry returns to this socket's address.
+            if progress.retried
+                && let Some(until) = inner
+                    .retry_token_lifetime()
+                    .and_then(|lifetime| now.checked_add(lifetime))
+            {
+                sockets.hold_route(id, until);
+            }
             // Attempts admitted from this socket are queued now that the socket borrow is over:
             // each takes a lease on it, or is ignored when no room is left or the socket failed.
             let failed = progress.error.is_some();
@@ -1540,8 +1661,9 @@ impl Drop for State {
     }
 }
 
-fn respond(transmit: crate::proto::Transmit, response_buffer: &[u8], socket: &mut Socket) {
-    socket.queue_response(transmit, response_buffer);
+/// Queue a stateless response on `socket`; false when its bounded queue dropped it.
+fn respond(transmit: crate::proto::Transmit, response_buffer: &[u8], socket: &mut Socket) -> bool {
+    socket.queue_response(transmit, response_buffer)
 }
 
 /// An incoming connection attempt awaiting the application, charged to the endpoint budget.
@@ -1584,11 +1706,19 @@ impl ConnectionSet {
         conn: crate::proto::Connection,
         socket: Sender,
         link: EndpointLink,
+        admission: Option<AdmissionLease>,
     ) -> (Connecting, ConnectionDriver) {
         let (packets, receiver) = bounded_queue(self.connection_limits.datagrams());
         let budget = PacketBudget::new(self.connection_limits);
-        let (connecting, driver) =
-            Connecting::new(handle, conn, link, receiver, socket, budget.clone());
+        let (connecting, driver) = Connecting::new(
+            handle,
+            conn,
+            link,
+            receiver,
+            socket,
+            budget.clone(),
+            admission,
+        );
         let inner = connecting.inner();
         if let Some((error_code, ref reason, abandon)) = self.close {
             inner.control(Control::Close {
@@ -1684,6 +1814,7 @@ impl EndpointRef {
                 driver: None,
                 driver_lost: false,
                 shutdown: false,
+                accepting: 0,
                 incoming_timer: DeadlineTimer::default(),
                 route_timer: DeadlineTimer::default(),
                 recv_state,
@@ -1916,6 +2047,10 @@ impl RecvState {
                                 Some(DatagramEvent::Response(transmit)) => {
                                     respond(transmit, &response_buffer, socket);
                                 }
+                                Some(DatagramEvent::Retry(transmit)) => {
+                                    // Only a Retry that leaves needs its route kept for the return.
+                                    progress.retried |= respond(transmit, &response_buffer, socket);
+                                }
                                 None => {}
                             }
                         }
@@ -1964,6 +2099,8 @@ struct PollProgress {
     received_connection_packet: bool,
     /// Whether datagram handling was interrupted early by the work limiter for fairness
     keep_going: bool,
+    /// Whether an attempt was answered with a Retry, which holds the socket's route.
+    retried: bool,
     /// Attempts admitted during this poll, still to be queued with a lease on the socket.
     admitted: Vec<(crate::proto::Incoming, PacketPermit)>,
     /// The receive error that ended this poll, after everything received before it.

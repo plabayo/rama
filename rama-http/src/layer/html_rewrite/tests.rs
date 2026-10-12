@@ -1,7 +1,9 @@
 use super::{HtmlRewriteBody, HtmlRewriteLayer};
-use crate::protocols::html::rewrite::{Element, ElementContentHandler, HandlerResult};
+use crate::protocols::html::rewrite::{Element, ElementContentHandler, HandlerResult, ScopeMode};
 use crate::protocols::html::selector::Selector;
-use crate::{Body, Request, Response, StreamingBody, body::Frame, body::util::BodyExt, header};
+use crate::{
+    Body, HeaderMap, Request, Response, StreamingBody, body::Frame, body::util::BodyExt, header,
+};
 use parking_lot::Mutex;
 use rama_core::bytes::Bytes;
 use rama_core::futures::stream;
@@ -9,10 +11,11 @@ use rama_core::service::service_fn;
 use rama_core::{Layer, Service};
 use std::collections::VecDeque;
 use std::convert::Infallible;
+use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, Waker};
 
 /// A plain struct handler (`Clone + Send`): appends text as `<body>`'s last
 /// child. No interior-mutability ceremony needed.
@@ -45,7 +48,7 @@ async fn body_rewrites_html_directly() {
 async fn body_rewrites_across_multiple_frames() {
     // The matched element straddles frame boundaries; the streamed result must
     // equal the one-shot rewrite.
-    let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
+    let chunks: Vec<Result<Bytes, io::Error>> = vec![
         Ok(Bytes::from_static(b"<body>he")),
         Ok(Bytes::from_static(b"llo</bo")),
         Ok(Bytes::from_static(b"dy>")),
@@ -57,6 +60,56 @@ async fn body_rewrites_across_multiple_frames() {
     );
     let out = body.collect().await.expect("collect").to_bytes();
     assert_eq!(&out[..], b"<body>hello!</body>");
+}
+
+/// Removes every matched element.
+#[derive(Clone)]
+struct Remove;
+
+impl ElementContentHandler for Remove {
+    fn handle_element(&mut self, _selector: usize, element: &mut Element<'_>) -> HandlerResult {
+        element.remove();
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn scope_mode_reaches_the_body_rewriter() {
+    // A fragment for a table: as a document, browsers drop the row tags.
+    const FRAGMENT: &str = "<tr class=ad><td>sponsored</td></tr><tr><td>row</td></tr>";
+    let fragment = FRAGMENT;
+    for (mode, expected) in [
+        (ScopeMode::Browser, fragment),
+        (ScopeMode::NearestMatch, "<tr><td>row</td></tr>"),
+    ] {
+        let body =
+            HtmlRewriteBody::new(Body::from(fragment), &[sel(".ad")], Remove).with_scope_mode(mode);
+        let out = body.collect().await.expect("collect").to_bytes();
+        assert_eq!(&out[..], expected.as_bytes(), "{mode:?}");
+
+        let svc = HtmlRewriteLayer::new([sel(".ad")], Remove)
+            .with_scope_mode(mode)
+            .into_layer(service_fn(async |_: Request| {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header(header::CONTENT_TYPE, "text/html")
+                        .body(Body::from(FRAGMENT))
+                        .expect("response"),
+                )
+            }));
+        let res = svc.serve(Request::new(Body::empty())).await.expect("serve");
+        let out = res.into_body().collect().await.expect("collect").to_bytes();
+        assert_eq!(&out[..], expected.as_bytes(), "{mode:?} via layer");
+
+        let layer = HtmlRewriteLayer::new([sel(".ad")], Remove).with_scope_mode(mode);
+        let out = layer
+            .rewrite_body(Body::from(fragment))
+            .collect()
+            .await
+            .expect("collect")
+            .to_bytes();
+        assert_eq!(&out[..], expected.as_bytes(), "{mode:?} via rewrite_body");
+    }
 }
 
 #[tokio::test]
@@ -193,7 +246,7 @@ impl StreamingBody for TestBody {
 }
 
 fn poll_body<B: StreamingBody + Unpin>(body: &mut B) -> Option<Result<Frame<B::Data>, B::Error>> {
-    let waker = std::task::Waker::noop();
+    let waker = Waker::noop();
     let mut cx = Context::from_waker(waker);
     match Pin::new(body).poll_frame(&mut cx) {
         Poll::Ready(result) => result,
@@ -203,7 +256,7 @@ fn poll_body<B: StreamingBody + Unpin>(body: &mut B) -> Option<Result<Frame<B::D
 
 #[test]
 fn body_flushes_rewriter_tail_before_trailers() {
-    let mut trailers = crate::HeaderMap::new();
+    let mut trailers = HeaderMap::new();
     trailers.insert("x-checksum", "abc123".parse().expect("header"));
     let inner = TestBody::new(vec![
         Frame::data(Bytes::from_static(b"<body>hello")),
@@ -288,7 +341,7 @@ async fn on_end_recovers_handler_state_on_trailers_terminated_body() {
     let calls = Arc::new(AtomicUsize::new(0));
     let recovered: Arc<Mutex<Option<LinkStripper>>> = Arc::new(Mutex::new(None));
 
-    let mut trailers = crate::HeaderMap::new();
+    let mut trailers = HeaderMap::new();
     trailers.insert("x-done", "1".parse().expect("header"));
     let inner = TestBody::new(vec![
         Frame::data(Bytes::from_static(

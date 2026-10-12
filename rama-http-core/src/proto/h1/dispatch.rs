@@ -494,9 +494,12 @@ where
                             if frame.is_data() {
                                 let chunk = frame.into_data().unwrap_or_else(|_| unreachable!());
                                 match body.try_send_data(chunk) {
-                                    Ok(()) => {
+                                    // The last chunk drops the sender, which ends the body even
+                                    // when no further read follows (the response already went out).
+                                    Ok(()) if self.conn.can_read_body() => {
                                         self.body_tx.set(body);
                                     }
+                                    Ok(()) => {}
                                     Err(_canceled) => {
                                         if self.conn.can_read_body() {
                                             trace!("body receiver dropped before eof, closing");
@@ -508,9 +511,8 @@ where
                                 let trailers =
                                     frame.into_trailers().unwrap_or_else(|_| unreachable!());
                                 match body.try_send_trailers(trailers) {
-                                    Ok(()) => {
-                                        self.body_tx.set(body);
-                                    }
+                                    // Trailers end the body: dropping the sender delivers that.
+                                    Ok(()) => {}
                                     Err(_canceled) => {
                                         if self.conn.can_read_body() {
                                             trace!("body receiver dropped before eof, closing");

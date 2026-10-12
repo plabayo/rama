@@ -71,11 +71,13 @@ as a distant relative.
     advisory through that date (the latest being GHSA-53rm-773f-4q8c and GHSA-wppq-2f6r-wfvm)
     and every behavioural fix are present or ported; not carried over are
     DATA_BLOCKED/STREAM_DATA_BLOCKED emission, the pending-incoming server-config snapshot, the
-    DATAGRAM-instead-of-PING tail-loss probe, the assembler's sorted `VecDeque` storage, the
-    three-phase accept that runs TLS setup outside the endpoint lock, lazily allocated remote
-    stream slots, buffering 1-RTT packets that arrive before the handshake completes, and
-    padding Initial datagrams to `min_mtu` (the profile decides the Initial size), which are
-    functional or performance choices rather than fixes.
+    DATAGRAM-instead-of-PING tail-loss probe, the assembler's sorted `VecDeque` storage,
+    lazily allocated remote stream slots, buffering 1-RTT packets that arrive before the
+    handshake completes, and padding Initial datagrams to `min_mtu` (the profile decides the
+    Initial size), which are functional or performance choices rather than fixes.
+  - the three-phase accept is carried over and runs TLS setup outside the endpoint lock,
+    including the Initials buffered before the accept (a ClientHello spanning several
+    datagrams), so the handshake signature never holds the lock.
   - License:
     - Original: <https://github.com/quinn-rs/quinn/blob/48854d48635875d259a95973cc0575db8c1792a4/LICENSE-MIT>
       and <https://github.com/quinn-rs/quinn/blob/48854d48635875d259a95973cc0575db8c1792a4/LICENSE-APACHE>

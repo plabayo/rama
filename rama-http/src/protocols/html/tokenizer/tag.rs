@@ -5,7 +5,8 @@
 //! the original-case name bytes, so classification never allocates. Matching
 //! a group of tags is a dense-discriminant `match` (no string compares), and
 //! the classifier reuses the [`LocalNameHash`] the tokenizer already computes,
-//! so it is a single `u64` switch with no extra pass over the name.
+//! so it is a single `u64` switch with no extra pass over the name (only a
+//! hashed long name is confirmed on its bytes).
 
 use super::name::LocalNameHash;
 
@@ -28,7 +29,7 @@ macro_rules! html_tags {
             Other(&'a [u8]),
         }
 
-        // One `u64` constant per known tag. Two tags hashing alike would make
+        // One `u64` constant per known tag. Two tags sharing an identity would make
         // the second `classify` arm unreachable — a compile error — so the
         // collision-free property is enforced by the build, not just a test.
         #[expect(non_upper_case_globals)]
@@ -53,9 +54,15 @@ macro_rules! html_tags {
 
             /// Classifies a tag from its [`LocalNameHash`] and original bytes.
             pub(crate) fn classify(name_hash: LocalNameHash, name: &'a [u8]) -> Self {
-                match name_hash.as_u64() {
+                let tag = match name_hash.as_u64() {
                     $( hash::$variant => Self::$variant, )+
-                    _ => Self::Other(name),
+                    _ => return Self::Other(name),
+                };
+                // A crafted long name can share a known tag's hash.
+                if name_hash.is_exact() || tag.as_bytes().eq_ignore_ascii_case(name) {
+                    tag
+                } else {
+                    Self::Other(name)
                 }
             }
         }
@@ -278,6 +285,24 @@ mod tests {
             HtmlTag::classify(LocalNameHash::of(b"DIV"), b"DIV"),
             HtmlTag::Div
         );
+    }
+
+    /// A long name sharing a long known tag's hash (forged here; FNV-1a is
+    /// easy to collide) is still `Other`. Short names are their own identity,
+    /// so they cannot be forged.
+    #[test]
+    fn hash_hits_are_confirmed_on_the_name() {
+        for (known, crafted) in [
+            (&b"plaintext"[..], &b"plaintexx"[..]),
+            (b"blockquote", b"blockquotx"),
+            (b"foreignobject", b"x-foreignobject"),
+        ] {
+            assert!(!LocalNameHash::of(known).is_exact());
+            assert_eq!(
+                HtmlTag::classify(LocalNameHash::of(known), crafted),
+                HtmlTag::Other(crafted)
+            );
+        }
     }
 
     #[test]

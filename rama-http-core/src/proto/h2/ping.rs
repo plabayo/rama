@@ -81,6 +81,7 @@ pub(super) fn channel(ping_pong: PingPong, config: &Config) -> (Recorder, Ponger
             shared: Some(shared.clone()),
         },
         Ponger {
+            latest_rtt: None,
             bdp,
             keep_alive,
             shared,
@@ -106,6 +107,7 @@ pub(crate) struct Recorder {
 }
 
 pub(super) struct Ponger {
+    latest_rtt: Option<Duration>,
     bdp: Option<Bdp>,
     keep_alive: Option<KeepAlive>,
     shared: Arc<Mutex<Shared>>,
@@ -251,6 +253,10 @@ impl Recorder {
 // ===== impl Ponger =====
 
 impl Ponger {
+    pub(super) fn latest_rtt(&self) -> Option<Duration> {
+        self.latest_rtt
+    }
+
     pub(super) fn poll(&mut self, cx: &mut task::Context<'_>) -> Poll<Ponged> {
         let now = Instant::now();
         let mut locked = self.shared.lock();
@@ -276,6 +282,7 @@ impl Ponger {
                         now
                     });
                 let rtt = now - start;
+                self.latest_rtt = Some(rtt);
                 trace!("recv pong");
 
                 if let Some(ka) = &mut self.keep_alive {

@@ -123,6 +123,9 @@ pin_project_cfg! {
             #[pin]
             inner: B,
         },
+        Empty {
+            _inner: B,
+        },
     }
 }
 
@@ -366,6 +369,12 @@ where
         }
     }
 
+    pub(super) fn empty(inner: B) -> Self {
+        Self {
+            inner: BodyInner::Empty { _inner: inner },
+        }
+    }
+
     pub(super) fn identity(inner: B) -> Self {
         Self {
             inner: BodyInner::Identity { inner },
@@ -387,6 +396,7 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         match self.project().inner.project() {
+            BodyInnerProj::Empty { .. } => Poll::Ready(None),
             BodyInnerProj::Identity { inner } => {
                 // Pass through frames, converting data to Bytes
                 match inner.poll_frame(cx) {
@@ -406,6 +416,7 @@ where
     fn is_end_stream(&self) -> bool {
         match &self.inner {
             BodyInner::Identity { inner } => inner.is_end_stream(),
+            BodyInner::Empty { .. } => true,
             BodyInner::Compress { data, .. } => data.state == CompressState::Done,
         }
     }
@@ -413,6 +424,7 @@ where
     fn size_hint(&self) -> SizeHint {
         match &self.inner {
             BodyInner::Identity { inner } => inner.size_hint(),
+            BodyInner::Empty { .. } => SizeHint::with_exact(0),
             // Compressed size is unknown
             BodyInner::Compress { .. } => SizeHint::default(),
         }

@@ -140,3 +140,61 @@ fn removing_server_config_while_holding_incoming_does_not_panic() {
     assert_eq!(pair.server.pending_incoming(), 0);
     assert!(pair.server.poll_incoming_timeout().is_none());
 }
+
+#[test]
+fn accept_replays_datagrams_buffered_while_pending() {
+    let mut pair = pair();
+    let client = pair.begin_connect(client_config());
+    pair.drive_client();
+    let retransmitted = pair.server.inbound.front().unwrap().clone();
+    pair.drive_server();
+    let incoming = pair.server.waiting_incoming.pop().unwrap();
+    assert_eq!(pair.server.open_connections(), 0);
+    assert_eq!(pair.server.incoming_buffer_bytes(), 0);
+
+    let bytes = retransmitted.packet.len() as u64;
+    pair.server.inbound.push_back(retransmitted);
+    pair.drive_server();
+    assert_eq!(pair.server.incoming_buffer_bytes(), bytes);
+    let server = pair.server.try_accept(incoming, pair.time).unwrap();
+    assert_eq!(pair.server.incoming_buffer_bytes(), 0);
+    assert_eq!(pair.server.pending_incoming(), 0);
+    assert_eq!(pair.server.open_connections(), 1);
+    assert_eq!(pair.server_conn_mut(server).stats().udp_rx.datagrams, 1);
+    pair.drive();
+    assert_matches!(
+        pair.client_conn_mut(client).poll(),
+        Some(Event::HandshakeDataReady)
+    );
+    assert_matches!(pair.client_conn_mut(client).poll(), Some(Event::Connected));
+}
+
+/// Without local connection IDs a Retry's follow-up Initials could not find their pending
+/// attempt, so an unvalidated attempt under load is refused instead.
+#[test]
+fn without_local_cids_an_unvalidated_attempt_under_load_is_refused_not_retried() {
+    let cid_generator_factory: fn() -> Box<dyn ConnectionIdGenerator> =
+        || Box::new(RandomConnectionIdGenerator::new(0).expect("zero is a length"));
+    let endpoint_config = Arc::new(EndpointConfig {
+        connection_id_generator_factory: Arc::new(cid_generator_factory),
+        ..EndpointConfig::try_with_rand_key().unwrap()
+    });
+    let always_retry = AdmissionConfig::default()
+        .with_retry_threshold_min(0)
+        .with_retry_threshold_max(0);
+    let mut pair = Pair::new(
+        endpoint_config,
+        server_config().with_admission(always_retry),
+    );
+    let client = pair.begin_connect(client_config());
+    pair.drive();
+    let stats = pair.server.admission_stats();
+    assert_eq!(stats.retried, 0);
+    assert_eq!(stats.refused_unvalidated, 1);
+    assert_matches!(
+        pair.client_conn_mut(client).poll(),
+        Some(Event::ConnectionLost {
+            reason: ConnectionError::ConnectionClosed(close)
+        }) if close.error_code == TransportErrorCode::CONNECTION_REFUSED
+    );
+}

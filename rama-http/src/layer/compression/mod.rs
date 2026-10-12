@@ -102,9 +102,12 @@ mod tests {
     use crate::layer::decompression::DecompressedFrom;
 
     use crate::header::{
-        ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_ENCODING, CONTENT_RANGE, CONTENT_TYPE, RANGE,
+        ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE,
+        CONTENT_TYPE, RANGE, VARY,
     };
-    use crate::{HeaderMap, HeaderValue, Request, Response, StreamingBody, body::util::BodyExt};
+    use crate::{
+        HeaderMap, HeaderValue, Method, Request, Response, StreamingBody, body::util::BodyExt,
+    };
     use async_compression::tokio::write::{BrotliDecoder, BrotliEncoder};
     use flate2::read::GzDecoder;
     use rama_core::Service;
@@ -696,28 +699,85 @@ mod tests {
         assert_eq!(body.size_hint().exact().unwrap(), MSG.len() as u64);
     }
 
-    // RFC 9110 §9.3.2: server MUST NOT send a body in response to a HEAD request.
-    // Compressing an absent body would produce a spurious Content-Encoding header.
+    /// A representation of `x-size` bytes: as a body for GET, as a declared length for HEAD.
+    async fn sized(req: Request) -> Result<Response, Infallible> {
+        let size: usize = req.headers()["x-size"].to_str().unwrap().parse().unwrap();
+        let body = if req.method() == rama_http_types::Method::HEAD {
+            Body::empty()
+        } else {
+            Body::from("a".repeat(size))
+        };
+        Ok(Response::builder()
+            .header(CONTENT_TYPE, "text/plain")
+            .header(CONTENT_LENGTH, size)
+            .body(body)
+            .unwrap())
+    }
+
+    // RFC 9110 §9.3.2: a HEAD response carries the header fields its GET would, minus
+    // those only known while generating the content, and never a body.
     #[tokio::test]
-    async fn does_not_compress_head_response() {
-        use rama_http_types::Method;
-        let svc = Compression::new(service_fn(handle)).with_compress_predicate(Always);
-        let req = Request::builder()
-            .method(Method::HEAD)
+    async fn compressed_head_with_full_body_does_not_advertise_original_length() {
+        let service = Compression::new(service_fn(async |_| {
+            Ok::<_, Infallible>(Response::new(Body::from("a".repeat(4096))))
+        }));
+        let request = Request::builder()
+            .method("HEAD")
             .header(ACCEPT_ENCODING, "gzip")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(req).await.unwrap();
-        assert!(
-            !res.headers().contains_key(CONTENT_ENCODING),
-            "HEAD response must not carry Content-Encoding"
-        );
+        let response = service.serve(request).await.unwrap();
+        assert_eq!(response.headers()["content-encoding"], "gzip");
+        assert!(!response.headers().contains_key("content-length"));
+        assert_eq!(response.body().size_hint().exact(), Some(0));
+        assert!(response.body().is_end_stream());
+    }
+
+    #[tokio::test]
+    async fn head_response_mirrors_get_headers() {
+        let svc = Compression::new(service_fn(sized));
+        for size in [0usize, 10, 31, 32, 33, 4096] {
+            for accept in [
+                None,
+                Some("gzip"),
+                Some("br"),
+                Some("identity"),
+                Some("*;q=0"),
+            ] {
+                let request = |method: Method| {
+                    let mut builder = Request::builder()
+                        .method(method)
+                        .header("x-size", size.to_string());
+                    if let Some(accept) = accept {
+                        builder = builder.header(ACCEPT_ENCODING, accept);
+                    }
+                    builder.body(Body::empty()).unwrap()
+                };
+                let get = svc.serve(request(Method::GET)).await.unwrap();
+                let head = svc.serve(request(Method::HEAD)).await.unwrap();
+                let case = format!("size {size}, accept {accept:?}");
+                assert_eq!(head.status(), get.status(), "{case}");
+                for name in [CONTENT_ENCODING, VARY, CONTENT_TYPE] {
+                    assert_eq!(
+                        head.headers().get_all(&name).iter().collect::<Vec<_>>(),
+                        get.headers().get_all(&name).iter().collect::<Vec<_>>(),
+                        "{case}: {name}"
+                    );
+                }
+                assert_eq!(
+                    head.headers().get(CONTENT_LENGTH),
+                    get.headers().get(CONTENT_LENGTH),
+                    "{case}: a length is kept only where the GET keeps it"
+                );
+                let body = head.into_body().collect().await.unwrap().to_bytes();
+                assert!(body.is_empty(), "{case}");
+            }
+        }
     }
 
     // RFC 9110 §9.3.6: CONNECT tunnels have no HTTP message body phase.
     #[tokio::test]
     async fn does_not_compress_connect_response() {
-        use rama_http_types::Method;
         let svc = Compression::new(service_fn(handle)).with_compress_predicate(Always);
         let req = Request::builder()
             .method(Method::CONNECT)

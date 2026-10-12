@@ -216,7 +216,28 @@ impl PacketSpace {
 
     /// Stop tracking sent packet `number`, and return what we knew about it
     pub(super) fn take(&mut self, number: u64) -> Option<SentPacket> {
-        self.sent_packets.remove(&number)
+        let packet = self.sent_packets.remove(&number)?;
+        if !packet.ack_eliciting {
+            self.trim_non_ack_eliciting();
+        }
+        Some(packet)
+    }
+
+    /// Drop the numbers of ACK-only packets acknowledged or lost meanwhile from the front, and
+    /// give back mostly unused capacity, so a quiet connection keeps no stale history.
+    fn trim_non_ack_eliciting(&mut self) {
+        while let Some(&front) = self.non_ack_eliciting_sent.front()
+            && !self
+                .sent_packets
+                .get(&front)
+                .is_some_and(|sent| !sent.ack_eliciting)
+        {
+            self.non_ack_eliciting_sent.pop_front();
+        }
+        let numbers = &mut self.non_ack_eliciting_sent;
+        if numbers.capacity() > 64 && numbers.len().saturating_mul(4) < numbers.capacity() {
+            numbers.shrink_to(numbers.len().saturating_mul(2));
+        }
     }
 
     /// May return a packet that should be forgotten
@@ -227,6 +248,7 @@ impl PacketSpace {
 
         let mut forgotten = None;
         if !packet.ack_eliciting {
+            self.trim_non_ack_eliciting();
             if self.non_ack_eliciting_sent.len() >= MAX_UNACKED_NON_ACK_ELICITING
                 && let Some(oldest) = self.non_ack_eliciting_sent.pop_front()
                 && self
@@ -1015,6 +1037,19 @@ mod test {
         assert!(space.sent(number, sent_packet(now, false)).is_some());
         assert_eq!(retained(&space, false), 1_000);
         assert_eq!(retained(&space, true), 50);
+
+        // Once the peer acknowledges them, no history is kept for a quiet connection.
+        let ack_only: Vec<u64> = space
+            .sent_packets
+            .iter()
+            .filter(|(_, sent)| !sent.ack_eliciting)
+            .map(|(&pn, _)| pn)
+            .collect();
+        for pn in ack_only {
+            assert!(space.take(pn).is_some());
+        }
+        assert!(space.non_ack_eliciting_sent.is_empty());
+        assert!(space.non_ack_eliciting_sent.capacity() <= 64);
     }
 
     #[test]

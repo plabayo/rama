@@ -4,8 +4,9 @@ use std::assert_matches;
 
 use parking_lot::Mutex;
 use rama_quic_proto::{
-    ConnectionId, Dir, TransportError, TransportErrorCode, VarInt, crypto::CryptoError,
-    packet::SpaceId,
+    ConnectionId, Dir, TransportError, TransportErrorCode, VarInt,
+    crypto::CryptoError,
+    packet::{Header, SpaceId},
 };
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
 use wasm_bindgen_test::wasm_bindgen_test as test;
@@ -1265,4 +1266,46 @@ fn large_initial_token_leaves_room_for_close() {
         closes += 1;
     }
     assert!(closes > 0, "some token lengths leave room for the close");
+}
+
+#[test]
+fn invalid_retry_or_version_negotiation_cannot_prevent_a_valid_retry() {
+    for version_negotiation in [false, true] {
+        let mut pair = Pair::default();
+        pair.server.handle_incoming = Box::new(validate_incoming);
+        let client = pair.begin_connect(client_config());
+        pair.drive_client();
+        pair.drive_server();
+        let retry = pair.client.inbound.pop_front().expect("server sends Retry");
+        let mut corrupt = retry.clone();
+        if version_negotiation {
+            let mut packet = Vec::new();
+            Header::VersionNegotiate {
+                random: 0,
+                src_cid: ConnectionId::new(&[0x44; 8]),
+                dst_cid: pair.client.cids_routing_to(client)[0],
+            }
+            .encode(&mut packet);
+            packet.extend_from_slice(&pair.client_conn_mut(client).version().to_be_bytes());
+            corrupt.packet = packet.as_slice().into();
+        } else {
+            *corrupt.packet.last_mut().unwrap() ^= 1;
+        }
+        pair.client.inbound.push_back(corrupt);
+        pair.drive_client();
+        assert!(pair.client_conn_mut(client).is_handshaking());
+        assert_eq!(pair.client_conn_mut(client).authenticated_packets(), 0);
+        pair.client.inbound.push_back(retry.clone());
+        pair.drive_client();
+        assert_eq!(pair.client_conn_mut(client).authenticated_packets(), 1);
+        // The first authenticated Retry changes Initial keys; replaying it must have no effect.
+        for _ in 0..3 {
+            pair.client.inbound.push_back(retry.clone());
+        }
+        pair.drive();
+        let server = pair.server.assert_accept();
+        assert!(!pair.client_conn_mut(client).is_handshaking());
+        assert!(!pair.server_conn_mut(server).is_handshaking());
+        assert_eq!(pair.server.retries_sent, 1);
+    }
 }

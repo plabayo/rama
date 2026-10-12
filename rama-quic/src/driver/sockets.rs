@@ -322,7 +322,6 @@ impl SocketRegistry {
     }
 
     /// Whether `id` names a retained, usable socket.
-    #[cfg(test)]
     pub(crate) fn is_usable(&self, id: SocketId) -> bool {
         self.entry(id).is_some_and(|e| !e.failed)
     }
