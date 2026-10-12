@@ -2,7 +2,7 @@
 
 The files in this directory are vendored from
 [jsonpath-standard/jsonpath-compliance-test-suite](https://github.com/jsonpath-standard/jsonpath-compliance-test-suite)
-at commit `7be7c1fc28057c91e8eefaf197060fba7ed43acd`.
+at commit `9d1a415a53f5dfb291bc874823892e49174e38eb`.
 
 ## How rama uses this corpus
 
