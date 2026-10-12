@@ -11,9 +11,9 @@ use std::time::Duration;
 use rama_quic_proto::version::{ClientVersionPolicy, ReservedVersionGrease, Version};
 
 use super::{
-    ConnectionIdProfile, GreaseParameter, InitialFlightLayout, MAX_ACTIVE_CONNECTION_ID_LIMIT,
-    OpaqueParameter, PacketNumberLength, PacketizationProfile, PaddingPlacement, ParameterId,
-    ParameterOrder, QuicProfile, TransportLimits, TransportParameterProfile,
+    ConnectionIdProfile, GreaseParameter, InitialFlightLayout, OpaqueParameter, PacketNumberLength,
+    PacketizationProfile, PaddingPlacement, ParameterId, ParameterOrder, QuicProfile,
+    TransportLimits, TransportParameterProfile,
 };
 
 /// Google Chrome 153 (Chromium's QUIC stack), as captured over IPv6.
@@ -150,7 +150,8 @@ pub(crate) fn firefox_156() -> QuicProfile {
             initial_max_streams_bidi: 100,
             initial_max_streams_uni: 100,
             max_ack_delay: Duration::from_millis(20),
-            active_connection_id_limit: Some(MAX_ACTIVE_CONNECTION_ID_LIMIT),
+            // Firefox advertises eight independently of the engine queue capacity.
+            active_connection_id_limit: Some(8),
             max_udp_payload_size: 65527,
             datagram_receive_buffer_size: Some(65535),
         };

@@ -6,10 +6,14 @@ use crate::profile::{
 };
 
 fn selection(fields: Vec<HeaderOccurrence>) -> RequestSelection {
+    selection_for_version(fields, Version::HTTP_11)
+}
+
+fn selection_for_version(fields: Vec<HeaderOccurrence>, version: Version) -> RequestSelection {
     let policy = HeaderCapturePolicy::default();
     let headers = HeaderCapture {
         completeness: ProfileCaptureCompleteness::Complete,
-        version: Version::HTTP_11,
+        version,
         fields: fields.into(),
     }
     .canonical(&policy)
@@ -35,7 +39,7 @@ fn selection(fields: Vec<HeaderOccurrence>) -> RequestSelection {
             scope: ValueId([4; 32]),
             capture,
             flow: FlowKey::Http {
-                version: Version::HTTP_11,
+                version,
                 method: Method::GET,
                 initiator: None,
                 fetch: None,
@@ -172,4 +176,84 @@ fn replay_rejects_conflicting_message_framing_in_every_mode() {
             "conflicting message framing"
         )))
     ));
+}
+
+#[test]
+fn split_cookie_profiles_accept_request_owned_pair_counts() {
+    for version in [Version::HTTP_2, Version::HTTP_3] {
+        let selected = selection_for_version(
+            vec![
+                field(
+                    "cookie",
+                    0,
+                    HeaderValueSource::Request(RequestBinding::Cookie),
+                ),
+                field("user-agent", 0, profile(b"captured-browser")),
+                field(
+                    "cookie",
+                    1,
+                    HeaderValueSource::Request(RequestBinding::Cookie),
+                ),
+                field("accept", 0, profile(b"*/*")),
+            ],
+            version,
+        );
+        for (input, expected) in [
+            ("a=1", vec!["a=1"]),
+            ("a=1; b=2", vec!["a=1", "b=2"]),
+            ("a=1; b=2; c=3", vec!["a=1", "b=2", "c=3"]),
+        ] {
+            let mut original = HeaderMap::new();
+            let mut value = HeaderValue::from_str(input).unwrap();
+            value.set_sensitive(true);
+            original.append("cookie", value);
+            let replayed = selected
+                .replay_request(&original, ProfilePreservationMode::Strict)
+                .unwrap();
+            assert!(replayed.report.is_exact());
+            let headers = replayed.headers.unwrap();
+            let cookies: Vec<_> = headers
+                .get_all("cookie")
+                .iter()
+                .map(|value| {
+                    assert!(value.is_sensitive());
+                    value.to_str().unwrap()
+                })
+                .collect();
+            assert_eq!(cookies, expected);
+            let names: Vec<_> = headers
+                .ordered_iter()
+                .map(|(name, _)| name.as_str())
+                .collect();
+            assert_eq!(&names[..2], &["cookie", "user-agent"]);
+            assert_eq!(names.last(), Some(&"accept"));
+        }
+        selected
+            .replay_request(&HeaderMap::new(), ProfilePreservationMode::Strict)
+            .unwrap_err();
+    }
+}
+
+#[test]
+fn joined_cookie_profiles_preserve_caller_pair_order() {
+    for version in [Version::HTTP_2, Version::HTTP_3] {
+        let selected = selection_for_version(
+            vec![field(
+                "cookie",
+                0,
+                HeaderValueSource::Request(RequestBinding::Cookie),
+            )],
+            version,
+        );
+        let mut original = HeaderMap::new();
+        original.append("cookie", HeaderValue::from_static("b=2"));
+        original.append("cookie", HeaderValue::from_static("a=1"));
+        let replayed = selected
+            .replay_request(&original, ProfilePreservationMode::Strict)
+            .unwrap();
+        assert!(replayed.report.is_exact());
+        let headers = replayed.headers.unwrap();
+        assert_eq!(headers.get_all("cookie").iter().count(), 1);
+        assert_eq!(headers["cookie"], "b=2; a=1");
+    }
 }

@@ -19,7 +19,7 @@ use rama_http::{
 use rama_net::{
     Protocol,
     client::{
-        ConnectRequest, EstablishedClientConnection,
+        ConnectRequest, ConnectionError, ConnectionErrorKind, EstablishedClientConnection,
         pool::{BasicConnIdentifier, ConnectionReuse, MultiplexPool, PooledConnector},
     },
     tls::TlsAlpn,
@@ -171,30 +171,36 @@ fn flow() -> FlowKey {
 }
 
 fn database() -> Arc<UserAgentDatabase> {
-    let mut key = ProfileKey::new("test-browser");
-    key.version = Some("1".into());
-    let canonical = key.canonical(MAXIMUM_FETCH_CONTEXT_BYTES).unwrap();
-    let flow = flow().canonical(MAXIMUM_FETCH_CONTEXT_BYTES).unwrap();
-    let profile = crate::profile::UserAgentProfile::from_captured(AnalyzedProfile {
-        work_units: 0,
-        format_version: 1,
-        classifier_revision: 2,
-        id: canonical.id,
-        key,
-        current_day: 1,
-        horizon: 1,
-        components: AnalyzedProfileComponents {
-            h2: Some(vec![0, 1].into()),
-            tls_tcp: Some(vec![0].into()),
-            ..AnalyzedProfileComponents::default()
-        },
-        scopes: vec![
-            scope(1, canonical.id, None, CaptureLevel::Connection),
-            scope(2, canonical.id, Some(flow.id), CaptureLevel::Request),
-        ]
-        .into(),
+    database_for_clients(&["test-browser"])
+}
+
+fn database_for_clients(clients: &[&str]) -> Arc<UserAgentDatabase> {
+    let profiles = clients.iter().map(|client| {
+        let mut key = ProfileKey::new(*client);
+        key.version = Some("1".into());
+        let canonical = key.canonical(MAXIMUM_FETCH_CONTEXT_BYTES).unwrap();
+        let flow = flow().canonical(MAXIMUM_FETCH_CONTEXT_BYTES).unwrap();
+        crate::profile::UserAgentProfile::from_captured(AnalyzedProfile {
+            work_units: 0,
+            format_version: 1,
+            classifier_revision: 2,
+            id: canonical.id,
+            key,
+            current_day: 1,
+            horizon: 1,
+            components: AnalyzedProfileComponents {
+                h2: Some(vec![0, 1].into()),
+                tls_tcp: Some(vec![0].into()),
+                ..AnalyzedProfileComponents::default()
+            },
+            scopes: vec![
+                scope(1, canonical.id, None, CaptureLevel::Connection),
+                scope(2, canonical.id, Some(flow.id), CaptureLevel::Request),
+            ]
+            .into(),
+        })
     });
-    Arc::new([profile].into_iter().collect())
+    Arc::new(profiles.collect())
 }
 
 fn emulation_context() -> EmulationContext {
@@ -353,7 +359,7 @@ async fn connect_modifier_prepares_before_connect_and_publishes_reuse() {
         ));
         let conn = ServiceInput::new(());
         conn.extensions().insert(TargetHttpVersion(Version::HTTP_2));
-        Ok::<_, rama_net::client::ConnectionError>(EstablishedClientConnection { input, conn })
+        Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
     });
     let input = ConnectRequest::new("example.com:443".parse().unwrap())
         .with_application_protocol(Protocol::HTTPS);
@@ -390,6 +396,20 @@ async fn connect_modifier_prepares_before_connect_and_publishes_reuse() {
 
 #[tokio::test]
 async fn profile_layer_reuses_the_connection_selected_on_the_first_pool_miss() {
+    pooled_profile_reuse(&["test-browser"], false).await;
+}
+
+#[tokio::test]
+async fn different_profiles_reuse_their_own_connections_in_one_pool() {
+    pooled_profile_reuse(&["test-browser", "other-browser"], false).await;
+}
+
+#[tokio::test]
+async fn pooled_requests_inherit_connection_preservation_differences() {
+    pooled_profile_reuse(&["test-browser"], true).await;
+}
+
+async fn pooled_profile_reuse(clients: &[&str], best_effort: bool) {
     let connector_calls = Arc::new(AtomicUsize::new(0));
     let transport = service_fn({
         let connector_calls = Arc::clone(&connector_calls);
@@ -397,12 +417,15 @@ async fn profile_layer_reuses_the_connection_selected_on_the_first_pool_miss() {
             let connector_calls = Arc::clone(&connector_calls);
             async move {
                 connector_calls.fetch_add(1, Ordering::Relaxed);
-                let conn = ServiceInput::new(());
+                let selection = input.extensions().get_ref::<ConnectionSelection>().unwrap();
+                let conn = RequestSink {
+                    extensions: Extensions::new(),
+                    profile: selection.profile,
+                    connection_variant: selection.variant,
+                    expected_differences: usize::from(best_effort),
+                };
                 conn.extensions().insert(TargetHttpVersion(Version::HTTP_2));
-                Ok::<_, rama_net::client::ConnectionError>(EstablishedClientConnection {
-                    input,
-                    conn,
-                })
+                Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
             }
         }
     });
@@ -411,7 +434,7 @@ async fn profile_layer_reuses_the_connection_selected_on_the_first_pool_miss() {
         MultiplexPool::new(),
         BasicConnIdentifier::new(),
     ));
-    let connect = service_fn(move |request: Request<()>| {
+    let connect = Arc::new(service_fn(move |request: Request<()>| {
         let connector = Arc::clone(&connector);
         async move {
             let input = ConnectRequest::new("example.com:443".parse().unwrap())
@@ -427,6 +450,15 @@ async fn profile_layer_reuses_the_connection_selected_on_the_first_pool_miss() {
                     .clone(),
             );
 
+            if best_effort {
+                input
+                    .extensions()
+                    .insert(ProfilePreservationMode::BestEffort);
+                input.extensions().insert(H2ClientContextParams {
+                    init_connection_window_size: Some(1_000_000),
+                    ..H2ClientContextParams::default()
+                });
+            }
             let established = connector.serve(input).await.unwrap();
             let selection = established
                 .conn
@@ -434,31 +466,49 @@ async fn profile_layer_reuses_the_connection_selected_on_the_first_pool_miss() {
                 .get_ref::<ConnectionSelection>()
                 .unwrap()
                 .clone();
+            established
+                .input
+                .extensions()
+                .clone_to_if_absent::<ProfilePreservationReport>(request.extensions());
+            ProfileEmulateHttpRequestModifier::new(established.conn)
+                .serve(request)
+                .await
+                .unwrap();
             Ok::<_, Infallible>(selection)
         }
-    });
-    let service = ProfileEmulateLayer::new(database())
-        .with_selector(ProfileSelector {
-            client: Some("test-browser".into()),
-            ..ProfileSelector::default()
-        })
-        .with_seed(ProfileSeed([1; 32]))
-        .with_connection_key(DrawKey([2; 32]))
-        .with_request_key(DrawKey([3; 32]))
-        .into_layer(connect);
+    }));
+    let database = database_for_clients(clients);
+    for (index, client) in clients.iter().enumerate() {
+        let service = ProfileEmulateLayer::new(database.clone())
+            .with_selector(ProfileSelector {
+                client: Some((*client).into()),
+                ..ProfileSelector::default()
+            })
+            .with_seed(ProfileSeed([1; 32]))
+            .with_connection_key(DrawKey([2; 32]))
+            .with_request_key(DrawKey([3; 32]))
+            .with_preservation(if best_effort {
+                ProfilePreservationMode::BestEffort
+            } else {
+                ProfilePreservationMode::Strict
+            })
+            .into_layer(connect.clone());
 
-    let first = service.serve(h2_request()).await.unwrap();
-    let second = service.serve(h2_request()).await.unwrap();
+        let first = service.serve(h2_request()).await.unwrap();
+        let second = service.serve(h2_request()).await.unwrap();
 
-    assert_eq!(connector_calls.load(Ordering::Relaxed), 1);
-    assert_eq!(second.variant, first.variant);
-    assert_eq!(second.draw, first.draw);
+        let third = service.serve(h2_request()).await.unwrap();
+        assert_eq!(connector_calls.load(Ordering::Relaxed), index + 1);
+        assert_eq!(third.variant, first.variant);
+        assert_eq!(second.variant, first.variant);
+        assert_eq!(second.draw, first.draw);
+    }
 }
 
 #[tokio::test]
 async fn strict_connect_rejects_caller_h2_connection_window_override() {
     let inner = service_fn(|input: ConnectRequest| async move {
-        Ok::<_, rama_net::client::ConnectionError>(EstablishedClientConnection {
+        Ok::<_, ConnectionError>(EstablishedClientConnection {
             input,
             conn: ServiceInput::new(()),
         })
@@ -478,10 +528,7 @@ async fn strict_connect_rejects_caller_h2_connection_window_override() {
         .serve(input)
         .await
         .unwrap_err();
-    assert_eq!(
-        error.kind(),
-        rama_net::client::ConnectionErrorKind::InvalidInput
-    );
+    assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
     assert!(error.to_string().contains("InitialConnectionWindowSize"));
 }
 
@@ -491,7 +538,7 @@ async fn connect_modifier_rejects_an_unadvertised_negotiated_protocol() {
         let conn = ServiceInput::new(());
         conn.extensions()
             .insert(TargetHttpVersion(Version::HTTP_11));
-        Ok::<_, rama_net::client::ConnectionError>(EstablishedClientConnection { input, conn })
+        Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
     });
     let input = ConnectRequest::new("example.com:443".parse().unwrap())
         .with_application_protocol(Protocol::HTTPS);
@@ -504,10 +551,7 @@ async fn connect_modifier_rejects_an_unadvertised_negotiated_protocol() {
         .serve(input)
         .await
         .unwrap_err();
-    assert_eq!(
-        error.kind(),
-        rama_net::client::ConnectionErrorKind::Protocol
-    );
+    assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
 }
 
 #[tokio::test]
@@ -525,6 +569,7 @@ async fn request_modifier_draws_from_the_actual_connection_ticket() {
         extensions: Extensions::new(),
         profile: connection.profile,
         connection_variant: connection.variant,
+        expected_differences: 0,
     };
     inner.extensions().insert(connection);
     inner
@@ -544,6 +589,7 @@ struct RequestSink {
     extensions: Extensions,
     profile: ValueId,
     connection_variant: ValueId,
+    expected_differences: usize,
 }
 
 impl ExtensionsRef for RequestSink {
@@ -570,11 +616,13 @@ impl rama_core::Service<Request<()>> for RequestSink {
             flow().canonical(MAXIMUM_FETCH_CONTEXT_BYTES).unwrap().id
         );
         assert_eq!(req.headers()["user-agent"], "captured-browser");
-        assert!(
+        assert_eq!(
             req.extensions()
                 .get_ref::<ProfilePreservationReport>()
                 .unwrap()
-                .is_exact()
+                .differences
+                .len(),
+            self.expected_differences,
         );
         Ok(req)
     }
@@ -586,7 +634,7 @@ async fn modifiers_do_no_profile_work_without_an_emulation_context() {
         assert!(!input.extensions().contains::<ConnectionSelection>());
         let conn = ServiceInput::new(());
         conn.extensions().insert(TargetHttpVersion(Version::HTTP_2));
-        Ok::<_, rama_net::client::ConnectionError>(EstablishedClientConnection { input, conn })
+        Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
     });
     let input = ConnectRequest::new("example.com:443".parse().unwrap())
         .with_application_protocol(Protocol::HTTPS);
@@ -605,4 +653,40 @@ async fn modifiers_do_no_profile_work_without_an_emulation_context() {
             .contains::<ConnectionSelection>()
     );
     assert!(!established.conn.extensions().contains::<ConnectionReuse>());
+}
+
+#[tokio::test]
+async fn repeated_connect_keeps_its_own_replay_but_rejects_caller_replacement() {
+    let inner = service_fn(|input: ConnectRequest| async move {
+        let conn = ServiceInput::new(());
+        conn.extensions().insert(TargetHttpVersion(Version::HTTP_2));
+        Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
+    });
+    let modifier = UserAgentEmulateHttpConnectModifier::new(inner);
+    let input = ConnectRequest::new("example.com:443".parse().unwrap())
+        .with_application_protocol(Protocol::HTTPS);
+    input
+        .extensions()
+        .insert(TargetHttpVersion(Version::HTTP_2));
+    input.extensions().insert(emulation_context());
+    let input = modifier.serve(input).await.unwrap().input;
+    let input = modifier.serve(input).await.unwrap().input;
+    assert!(
+        input
+            .extensions()
+            .get_ref::<ProfilePreservationReport>()
+            .unwrap()
+            .is_exact()
+    );
+
+    let mut params = input
+        .extensions()
+        .get_ref::<H2ClientContextParams>()
+        .unwrap()
+        .clone();
+    params.replay_early_frames = Some(Vec::new().into());
+    input.extensions().insert(params);
+    let error = modifier.serve(input).await.unwrap_err();
+    assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
+    assert!(error.to_string().contains("ReplayEarlyFrames"));
 }

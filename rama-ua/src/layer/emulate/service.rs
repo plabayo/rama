@@ -26,9 +26,9 @@ use crate::{
     HttpAgent, UserAgent,
     profile::{
         CUSTOM_HEADER_MARKER, ConnectionContext, EmulationContext, H2ClientParameter,
-        HttpHeadersProfile, HttpProfile, PreserveHeaderUserAgent, ProfileConnectionReuse,
-        ProfilePreservationDifference, ProfilePreservationMode, ProfilePreservationReport,
-        ProfileReplayError, RequestClientHints, RequestInitiator,
+        HttpHeadersProfile, HttpProfile, PreparedConnectionComponents, PreserveHeaderUserAgent,
+        ProfileConnectionReuse, ProfilePreservationDifference, ProfilePreservationMode,
+        ProfilePreservationReport, ProfileReplayError, RequestClientHints, RequestInitiator,
     },
 };
 
@@ -361,6 +361,14 @@ where
                 .map_err(|error| {
                     ConnectionError::application(error, ConnectionErrorKind::Protocol)
                 })?;
+            // Every request using this connection inherits its wire differences.
+            if let Some(report) = req.extensions().get_ref::<ProfilePreservationReport>() {
+                let report = match conn.extensions().get_ref::<ProfilePreservationReport>() {
+                    Some(inner) => report.clone().followed_by(inner.clone()),
+                    None => report.clone(),
+                };
+                conn.extensions().insert(report);
+            }
             conn.extensions().insert(selection);
             ProfileConnectionReuse::new(context, version).publish(conn.extensions());
         }
@@ -488,7 +496,19 @@ fn apply_profile_h2_replay(
         .cloned()
         .unwrap_or_default();
 
+    let installed_replay = input
+        .extensions()
+        .get_ref::<PreparedConnectionComponents>()
+        .and_then(|prepared| prepared.h2_early_frames.as_ref())
+        .zip(params.replay_early_frames.as_ref())
+        .is_some_and(|(installed, current)| Arc::ptr_eq(installed, current));
+
     for parameter in h2_wire_parameters(&params) {
+        // A repeated connection attempt may retain our previous replay input.
+        // A caller replacement, even with equal contents, is still an override.
+        if parameter == H2ClientParameter::ReplayEarlyFrames && installed_replay {
+            continue;
+        }
         if preservation == ProfilePreservationMode::Strict {
             return Err(ProfileReplayError::IncompatibleH2ClientParameter(parameter));
         }

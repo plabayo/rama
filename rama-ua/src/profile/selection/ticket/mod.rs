@@ -1,7 +1,11 @@
-use std::{error::Error, fmt, sync::Arc};
+use std::{
+    error::Error,
+    fmt,
+    sync::{Arc, OnceLock},
+};
 
 use rama_core::extensions::{Extension, Extensions};
-use rama_http::{HeaderMap, HeaderName, Version};
+use rama_http::{HeaderMap, HeaderName, Version, header::COOKIE};
 use rama_net::{
     client::pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
     tls::{ApplicationProtocol, TlsAlpn},
@@ -15,8 +19,8 @@ use super::{
     ProfilePreservationMode, ProfileSeed,
 };
 use crate::profile::{
-    AnalyzedCaptureVariant, AnalyzedOrderWeight, CanonicalDomain, CanonicalValue, CaptureLevel,
-    CapturedSlotKind, ConnectionContext, FlowKey, HeaderCapture, HeaderCapturePolicy,
+    AnalyzedCaptureVariant, AnalyzedOrderWeight, AnalyzedProfile, CanonicalDomain, CanonicalValue,
+    CaptureLevel, CapturedSlotKind, ConnectionContext, FlowKey, HeaderCapture, HeaderCapturePolicy,
     HeaderValueSource, JointCapture, JointCaptureLimits, ObservationWeight, ProfileCandidateFilter,
     ProfileCapabilities, ProfileCaptureCompleteness, ProfileDataError, ProfileObservationScope,
     RequestBinding, RequestInitiator, ResumptionContext, UserAgentDatabase, UserAgentProfile,
@@ -155,6 +159,7 @@ pub struct SelectionRequest {
 pub struct SelectedProfile {
     id: ValueId,
     profile: Arc<UserAgentProfile>,
+    request_shapes: Arc<RequestShapeCache>,
     required: CapabilitySet,
     flow: FlowKey,
     pins: VariantPins,
@@ -365,6 +370,9 @@ impl UserAgentDatabase {
         Ok(SelectedProfile {
             id: analysis.id,
             profile: Arc::new(profile.clone()),
+            request_shapes: self
+                .request_shape_cache(profile)
+                .ok_or(SelectionError::MissingProfile)?,
             required: request.required,
             flow: request.flow.clone(),
             pins: request.pins,
@@ -573,18 +581,34 @@ impl SelectedProfile {
             return Err(SelectionError::MissingFlow);
         }
 
+        // Capture request-owned fields once; every candidate compares against
+        // the same validated caller input.
+        let requested = HeaderCapturePolicy::default().capture(
+            ProfileCaptureCompleteness::Complete,
+            protocol,
+            headers,
+            None,
+        )?;
         let mut candidates = Vec::new();
         for (index, scope) in scopes {
             let available: Vec<_> = scope
                 .observations
                 .variants
                 .iter()
-                .filter(|variant| self.pins.request.is_none_or(|pin| variant.value.id == pin))
+                .enumerate()
+                .filter(|(_, variant)| self.pins.request.is_none_or(|pin| variant.value.id == pin))
                 .collect();
-            let compatible = request_variants_for_headers(&available, protocol, headers)?;
+            let compatible = request_variants_for_headers(
+                &available,
+                protocol,
+                &requested,
+                analysis,
+                index,
+                &self.request_shapes,
+            )?;
             let variants =
                 if compatible.is_empty() && preservation == ProfilePreservationMode::BestEffort {
-                    available
+                    available.into_iter().map(|(_, variant)| variant).collect()
                 } else {
                     compatible
                 };
@@ -668,16 +692,79 @@ struct RequestHeaderShape {
     binding: RequestBinding,
 }
 
+/// Decoded request bindings shared by all selections of one database entry.
+/// No captures are decoded until request selection needs them.
+#[derive(Debug, Default)]
+pub(crate) struct RequestShapeCache {
+    shapes: OnceLock<Box<[RequestScopeShapes]>>,
+}
+
+type RequestScopeShapes = Box<[Result<DecodedRequestShape, ProfileDataError>]>;
+
+#[derive(Debug)]
+struct DecodedRequestShape {
+    version: Option<Version>,
+    fields: Vec<RequestHeaderShape>,
+}
+
+impl RequestShapeCache {
+    fn shape(
+        &self,
+        analysis: &AnalyzedProfile,
+        scope: usize,
+        variant: usize,
+        version: Version,
+    ) -> Result<&[RequestHeaderShape], ProfileDataError> {
+        // Scope/variant coordinates retain identity even when supplied IDs
+        // collide. They also avoid copying canonical bytes into a cache key.
+        let shapes = self.shapes.get_or_init(|| {
+            analysis
+                .scopes
+                .iter()
+                .map(|scope| {
+                    if scope.context.flow.is_some()
+                        && scope.observations.domain == CanonicalDomain::Joint
+                    {
+                        scope
+                            .observations
+                            .variants
+                            .iter()
+                            .map(|variant| request_header_shape(&variant.value))
+                            .collect()
+                    } else {
+                        Box::default()
+                    }
+                })
+                .collect()
+        });
+        let decoded = shapes
+            .get(scope)
+            .and_then(|scope| scope.get(variant))
+            .ok_or(ProfileDataError::Invalid("request shape cache entry"))?
+            .as_ref()
+            .map_err(Clone::clone)?;
+        if decoded.version.is_some_and(|captured| captured != version) {
+            return Err(ProfileDataError::Invalid(
+                "request selection header version",
+            ));
+        }
+        Ok(&decoded.fields)
+    }
+}
+
 fn request_variants_for_headers<'a>(
-    variants: &[&'a AnalyzedCaptureVariant],
+    variants: &[(usize, &'a AnalyzedCaptureVariant)],
     version: Version,
-    headers: &HeaderMap,
+    requested: &HeaderCapture,
+    analysis: &AnalyzedProfile,
+    scope: usize,
+    cache: &RequestShapeCache,
 ) -> Result<Vec<&'a AnalyzedCaptureVariant>, SelectionError> {
     let mut decoded = Vec::with_capacity(variants.len());
     let mut observed = Vec::<RequestHeaderShape>::new();
-    for variant in variants {
-        let shape = request_header_shape(&variant.value, version)?;
-        for field in &shape {
+    for (index, variant) in variants {
+        let shape = cache.shape(analysis, scope, *index, version)?;
+        for field in shape {
             if !observed.contains(field) {
                 observed.push(field.clone());
             }
@@ -685,12 +772,6 @@ fn request_variants_for_headers<'a>(
         decoded.push((*variant, shape));
     }
 
-    let requested = HeaderCapturePolicy::default().capture(
-        ProfileCaptureCompleteness::Complete,
-        version,
-        headers,
-        None,
-    )?;
     let mut requested: Vec<_> = requested
         .fields
         .iter()
@@ -706,7 +787,7 @@ fn request_variants_for_headers<'a>(
             observed.contains(&shape).then_some(shape)
         })
         .collect();
-    sort_request_shape(&mut requested);
+    sort_request_shape(&mut requested, version);
 
     Ok(decoded
         .into_iter()
@@ -714,27 +795,21 @@ fn request_variants_for_headers<'a>(
         .collect())
 }
 
-fn request_header_shape(
-    value: &CanonicalValue,
-    version: Version,
-) -> Result<Vec<RequestHeaderShape>, SelectionError> {
+fn request_header_shape(value: &CanonicalValue) -> Result<DecodedRequestShape, ProfileDataError> {
     let limits = JointCaptureLimits::default();
     let joint = JointCapture::from_canonical(value, limits)?;
     if joint.level != CaptureLevel::Request {
-        return Err(ProfileDataError::Invalid("request selection capture level").into());
+        return Err(ProfileDataError::Invalid("request selection capture level"));
     }
 
     let mut shape = Vec::new();
+    let mut version = None;
     for slot in &joint.slots {
         match slot.kind {
             CapturedSlotKind::Headers => {
                 let captured =
                     HeaderCapture::from_canonical(&slot.value, &HeaderCapturePolicy::default())?;
-                if captured.version != version {
-                    return Err(
-                        ProfileDataError::Invalid("request selection header version").into(),
-                    );
-                }
+                version = Some(captured.version);
                 shape.extend(captured.fields.iter().filter_map(|field| {
                     let HeaderValueSource::Request(binding) = &field.value else {
                         return None;
@@ -748,23 +823,36 @@ fn request_header_shape(
             }
             CapturedSlotKind::PseudoHeaders | CapturedSlotKind::RuntimeMetadata => {}
             _ => {
-                return Err(
-                    ProfileDataError::Invalid("connection slot in request selection").into(),
-                );
+                return Err(ProfileDataError::Invalid(
+                    "connection slot in request selection",
+                ));
             }
         }
     }
-    sort_request_shape(&mut shape);
-    Ok(shape)
+    sort_request_shape(&mut shape, version.unwrap_or(Version::HTTP_11));
+    Ok(DecodedRequestShape {
+        version,
+        fields: shape,
+    })
 }
 
-fn sort_request_shape(shape: &mut [RequestHeaderShape]) {
+fn sort_request_shape(shape: &mut Vec<RequestHeaderShape>, version: Version) {
+    // H2/H3 cookie crumbing describes the browser's layout. The number of
+    // cookie pairs belongs to the current request, not the captured site.
+    if matches!(version, Version::HTTP_2 | Version::HTTP_3) {
+        for field in &mut *shape {
+            if field.name == COOKIE && field.binding == RequestBinding::Cookie {
+                field.occurrence = 0;
+            }
+        }
+    }
     shape.sort_unstable_by(|left, right| {
         left.name
             .as_str()
             .cmp(right.name.as_str())
             .then_with(|| left.occurrence.cmp(&right.occurrence))
     });
+    shape.dedup();
 }
 
 fn variant_weight(variants: &[&AnalyzedCaptureVariant]) -> Result<u64, SelectionError> {
@@ -809,9 +897,9 @@ impl ConnectionReusePolicy for ProfileConnectionReuse {
 
     fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
         let context = input.get_ref::<EmulationContext>()?;
-        if self.profile != context.selected.profile_id()
-            || !protocol_supported(context.selected.required, self.negotiated)
-        {
+        // A pool may use any policy instance with this protocol classifier
+        // to derive a request key, including one established for another profile.
+        if !protocol_supported(context.selected.required, self.negotiated) {
             return None;
         }
 

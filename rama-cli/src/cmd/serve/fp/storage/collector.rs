@@ -285,6 +285,9 @@ pub(super) fn connection_capture(
 mod tests {
     use super::*;
     use rama::{
+        http::proto::h2::frame::{
+            EarlyFrameStreamContext, Head, Kind, Settings, StreamId, WindowUpdate,
+        },
         http::proto::h3::observation::{
             H3ObservationSnapshot, ObservationCompleteness, ObservedControlFrame,
             ObservedEncoderInstruction, ObservedSetting, ObservedUniStream, SettingsStatus,
@@ -498,6 +501,48 @@ mod tests {
         assert_eq!(sequence.events.len(), 2);
         assert!(sequence.encoder_instructions.is_empty());
         assert_eq!(info.connection.encoder_instructions.len(), 1);
+    }
+
+    #[test]
+    fn preconnected_h2_ack_keeps_the_same_collected_connection_structure() {
+        let mut structures = Vec::new();
+        for acknowledged in [false, true] {
+            let mut recorder = EarlyFrameStreamContext::new_recorder();
+            let settings =
+                Settings::load_observed(Head::new(Kind::Settings, 0, StreamId::zero()), &[], true)
+                    .unwrap();
+            recorder.record_settings_frame(&settings);
+            if acknowledged {
+                // The peer's SETTINGS arrived before the first request.
+                let ack = Settings::load_observed(
+                    Head::new(Kind::Settings, 1, StreamId::zero()),
+                    &[],
+                    true,
+                )
+                .unwrap();
+                recorder.record_settings_frame(&ack);
+            }
+            recorder.record_windows_update_frame(WindowUpdate::new(StreamId::zero(), 100));
+            let ext = Extensions::new();
+            ext.insert(recorder.freeze_recorder().unwrap());
+            let capture = connection_capture(
+                profile_key("synthetic/1").unwrap(),
+                connection_context(&ext),
+                Version::HTTP_2,
+                &ext,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+            structures.push(
+                capture
+                    .joint
+                    .structural(JointCaptureLimits::default())
+                    .unwrap()
+                    .id,
+            );
+        }
+        assert_eq!(structures[0], structures[1]);
     }
 
     #[test]

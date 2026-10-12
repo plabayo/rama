@@ -1,3 +1,5 @@
+use std::ptr;
+
 use rama_http::{HeaderMap, HeaderName, HeaderValue, Method, Version};
 
 use super::*;
@@ -369,13 +371,15 @@ fn request_shape_selects_cookie_variant_and_ignores_unobserved_caller_fields() {
     let empty = request_variant();
     let cookie = request_variant_with_headers(
         Version::HTTP_3,
-        vec![HeaderOccurrence {
-            name: HeaderName::from_static("cookie"),
-            occurrence: 0,
-            sensitive: true,
-            representation: None,
-            value: HeaderValueSource::Request(RequestBinding::Cookie),
-        }],
+        (0..2)
+            .map(|occurrence| HeaderOccurrence {
+                name: HeaderName::from_static("cookie"),
+                occurrence,
+                sensitive: true,
+                representation: None,
+                value: HeaderValueSource::Request(RequestBinding::Cookie),
+            })
+            .collect(),
     );
     let mut captured = profile("browser", h3_capabilities(), context.clone());
     let analysis = Arc::make_mut(captured.captured.as_mut().unwrap());
@@ -424,7 +428,10 @@ fn request_shape_selects_cookie_variant_and_ignores_unobserved_caller_fields() {
     assert_eq!(selected_empty.variant, empty.id);
 
     let mut cookie_headers = HeaderMap::new();
-    cookie_headers.insert("cookie", HeaderValue::from_static("session=secret"));
+    cookie_headers.insert(
+        "cookie",
+        HeaderValue::from_static("session=secret; other=value"),
+    );
     let selected_cookie = selected
         .request(
             &connection,
@@ -436,6 +443,19 @@ fn request_shape_selects_cookie_variant_and_ignores_unobserved_caller_fields() {
         )
         .unwrap();
     assert_eq!(selected_cookie.variant, cookie.id);
+    let replayed = selected_cookie
+        .replay_request(&cookie_headers, ProfilePreservationMode::Strict)
+        .unwrap();
+    assert!(replayed.report.is_exact());
+    let headers = replayed.headers.unwrap();
+    assert_eq!(
+        headers
+            .get_all("cookie")
+            .iter()
+            .map(|value| value.to_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["session=secret", "other=value"]
+    );
 
     let mut caller_headers = HeaderMap::new();
     caller_headers.insert("authorization", HeaderValue::from_static("Bearer secret"));
@@ -790,4 +810,122 @@ fn reuse_matches_profile_protocol_and_optional_connection_pin() {
             .unwrap()
             .matches(&input)
     );
+}
+
+#[test]
+fn equal_protocol_classifiers_derive_the_same_request_key_across_profiles() {
+    let context = ConnectionContext::default();
+    let database: UserAgentDatabase = [profile("complete", h3_capabilities(), context.clone())]
+        .into_iter()
+        .collect();
+    let selected = database
+        .select(&request(context), ProfileSeed([31; 32]), DrawKey([32; 32]))
+        .unwrap();
+    let mut other = selected.clone();
+    other.id = ValueId([77; 32]);
+    let first = Arc::new(selected).emulation_context(
+        ProfileSeed([31; 32]),
+        DrawKey([34; 32]),
+        DrawKey([35; 32]),
+    );
+    let second = Arc::new(other).emulation_context(
+        ProfileSeed([31; 32]),
+        DrawKey([34; 32]),
+        DrawKey([35; 32]),
+    );
+    let policies = [
+        ProfileConnectionReuse::new(&first, Version::HTTP_3),
+        ProfileConnectionReuse::new(&second, Version::HTTP_3),
+    ];
+    assert_eq!(policies[0].classifier(), policies[1].classifier());
+    assert_ne!(policies[0].connection_key(), policies[1].connection_key());
+    for context in [first, second] {
+        let input = Extensions::new();
+        input.insert(context);
+        assert!(policies[0].request_key(&input).is_some());
+        assert_eq!(
+            policies[0].request_key(&input),
+            policies[1].request_key(&input)
+        );
+    }
+}
+
+#[test]
+fn repeated_profile_selection_shares_lazy_request_shape_cache() {
+    let context = ConnectionContext::default();
+    let database: UserAgentDatabase = [profile("complete", h3_capabilities(), context.clone())]
+        .into_iter()
+        .collect();
+    let request = request(context);
+    let first = database
+        .select(&request, ProfileSeed([41; 32]), DrawKey([42; 32]))
+        .unwrap();
+    let second = database
+        .select(&request, ProfileSeed([43; 32]), DrawKey([44; 32]))
+        .unwrap();
+
+    assert!(Arc::ptr_eq(&first.request_shapes, &second.request_shapes));
+    assert!(first.request_shapes.shapes.get().is_none());
+    let analysis = first.profile.captured.as_ref().unwrap();
+    let scope = analysis
+        .scopes
+        .iter()
+        .position(|scope| scope.context.flow.is_some())
+        .unwrap();
+    let first_shape = first
+        .request_shapes
+        .shape(analysis, scope, 0, Version::HTTP_3)
+        .unwrap();
+    let second_shape = second
+        .request_shapes
+        .shape(analysis, scope, 0, Version::HTTP_3)
+        .unwrap();
+    assert!(ptr::eq(first_shape, second_shape));
+    assert!(first.request_shapes.shapes.get().is_some());
+}
+
+#[test]
+fn request_shape_cache_does_not_alias_distinct_values_with_the_same_supplied_id() {
+    let mut profile = profile("complete", h3_capabilities(), ConnectionContext::default());
+    let analysis = Arc::make_mut(profile.captured.as_mut().unwrap());
+    let scope = analysis
+        .scopes
+        .iter()
+        .position(|scope| scope.context.flow.is_some())
+        .unwrap();
+    let valid = analysis.scopes[scope].observations.variants[0].clone();
+    let mut invalid = valid.clone();
+    invalid.value.bytes[0] ^= 1;
+    analysis.scopes[scope].observations.variants = vec![invalid, valid].into();
+
+    let cache = RequestShapeCache::default();
+    cache
+        .shape(analysis, scope, 0, Version::HTTP_3)
+        .unwrap_err();
+    cache.shape(analysis, scope, 1, Version::HTTP_3).unwrap();
+}
+
+#[test]
+fn cookie_crumb_count_is_request_owned_but_other_occurrences_remain_exact() {
+    for version in [Version::HTTP_2, Version::HTTP_3] {
+        for name in ["cookie", "set-cookie"] {
+            let capture = |count| {
+                request_variant_with_headers(
+                    version,
+                    (0..count)
+                        .map(|occurrence| HeaderOccurrence {
+                            name: HeaderName::from_static(name),
+                            occurrence,
+                            sensitive: true,
+                            representation: None,
+                            value: HeaderValueSource::Request(RequestBinding::Cookie),
+                        })
+                        .collect(),
+                )
+            };
+            let one = request_header_shape(&capture(1)).unwrap();
+            let two = request_header_shape(&capture(2)).unwrap();
+            assert_eq!(one.fields == two.fields, name == "cookie");
+        }
+    }
 }

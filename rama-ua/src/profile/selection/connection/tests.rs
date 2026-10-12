@@ -77,7 +77,7 @@ fn tcp_connection_components_decode_h2_frames() {
 }
 
 #[test]
-fn h2_settings_ack_requires_best_effort_and_is_reported() {
+fn h2_settings_ack_is_regenerated_in_every_preservation_mode() {
     let h2 = H2Capture {
         completeness: ProfileCaptureCompleteness::Complete,
         frames: vec![
@@ -106,21 +106,14 @@ fn h2_settings_ack_requires_best_effort_and_is_reported() {
     .canonical(JointCaptureLimits::default())
     .unwrap();
 
-    assert!(matches!(
-        selection(capture.clone()).prepare_components(ProfilePreservationMode::Strict),
-        Err(ProfileDataError::Unsupported(
-            "H2 SETTINGS acknowledgement replay"
-        ))
-    ));
-
-    let prepared = selection(capture)
-        .prepare_components(ProfilePreservationMode::BestEffort)
-        .unwrap();
-    assert_eq!(prepared.h2_early_frames.unwrap().len(), 1);
-    assert!(matches!(
-        prepared.preservation_report.differences.as_ref(),
-        [ProfilePreservationDifference::DroppedH2SettingsAcknowledgement { index: 1 }]
-    ));
+    for mode in [
+        ProfilePreservationMode::Strict,
+        ProfilePreservationMode::BestEffort,
+    ] {
+        let prepared = selection(capture.clone()).prepare_components(mode).unwrap();
+        assert_eq!(prepared.h2_early_frames.unwrap().len(), 1);
+        assert!(prepared.preservation_report.is_exact());
+    }
 }
 
 #[test]

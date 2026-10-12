@@ -164,8 +164,13 @@ impl TransportConfig {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// The `active_connection_id_limit` to advertise, when not the one this crate derives
-        /// from how many it can hold. At most that many are honoured.
+        /// The maximum number of peer-issued connection IDs retained at once.
+        ///
+        /// The value must be between 2 and
+        /// [`MAX_ACTIVE_CONNECTION_ID_LIMIT`](crate::profile::MAX_ACTIVE_CONNECTION_ID_LIMIT);
+        /// unsupported values prevent connection creation. `None` advertises 2 for
+        /// zero-length local IDs and 5 otherwise. Receive processing enforces the
+        /// advertised value independently of internal storage capacity.
         pub fn active_connection_id_limit(mut self, value: Option<VarInt>) -> Self {
             self.active_connection_id_limit = value;
             self

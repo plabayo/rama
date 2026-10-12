@@ -3093,9 +3093,9 @@ fn cid_retirement() {
     let mut pair = Pair::default();
     let (client_ch, server_ch) = pair.connect();
 
+    let now = pair.time;
     // Server retires current active remote CIDs
-    pair.server_conn_mut(server_ch)
-        .rotate_local_cid(1, Instant::now());
+    pair.server_conn_mut(server_ch).rotate_local_cid(1, now);
     pair.drive();
     // Any unexpected behavior may trigger TransportError::CONNECTION_ID_LIMIT_ERROR
     assert!(!pair.client_conn_mut(client_ch).is_closed());
@@ -3105,15 +3105,15 @@ fn cid_retirement() {
         other => panic!("assertion failed: `{other:?}` does not match `1`"),
     }
 
-    use crate::proto::{LOC_CID_COUNT, cid_queue::CidQueue};
-    let mut active_cid_num = CidQueue::LEN as u64;
-    active_cid_num = active_cid_num.min(LOC_CID_COUNT);
-
-    let next_retire_prior_to = active_cid_num + 1;
+    // Retire what was actually issued under the negotiated limit, rather
+    // than assuming the peer advertised the storage capacity.
+    let (_, highest) = pair.server_conn_mut(server_ch).active_local_cid_seq();
+    let next_retire_prior_to = highest + 1;
     pair.client_conn_mut(client_ch).ping();
+    let now = pair.time;
     // Server retires all valid remote CIDs
     pair.server_conn_mut(server_ch)
-        .rotate_local_cid(next_retire_prior_to, Instant::now());
+        .rotate_local_cid(next_retire_prior_to, now);
     pair.drive();
     assert!(!pair.client_conn_mut(client_ch).is_closed());
     assert!(!pair.server_conn_mut(server_ch).is_closed());
@@ -9456,4 +9456,44 @@ fn buffered_datagrams_advance_only_their_own_attempt() {
     }
     pair.server.ignore(large);
     pair.server.ignore(other);
+}
+
+#[test]
+fn connections_enforce_the_advertised_active_cid_limit() {
+    let _guard = subscribe();
+    for explicit in [None, Some(2_u32), Some(5), Some(8)] {
+        let mut pair = Pair::default();
+        let mut config = client_config();
+        let transport = TransportConfig {
+            active_connection_id_limit: explicit.map(Into::into),
+            ..TransportConfig::default()
+        };
+        config.set_transport_config(Arc::new(transport));
+        let (client, _) = pair.connect_with(config);
+        drive_settled(&mut pair);
+
+        // The peer has filled the advertised allowance. A distinct additional
+        // identifier must fail even when the implementation has spare storage.
+        let now = pair.time;
+        let extra = frame::NewConnectionId {
+            sequence: 100,
+            retire_prior_to: 0,
+            id: ConnectionId::new(&[0x6A; 8]),
+            reset_token: ResetToken::from([0x6B; RESET_TOKEN_SIZE]),
+        };
+        let error = pair
+            .client_conn_mut(client)
+            .apply_new_cid(now, extra)
+            .unwrap_err();
+        assert_eq!(error.code, TransportErrorCode::CONNECTION_ID_LIMIT_ERROR);
+        pair.client_conn_mut(client)
+            .apply_new_cid(
+                now,
+                frame::NewConnectionId {
+                    retire_prior_to: 100,
+                    ..extra
+                },
+            )
+            .unwrap();
+    }
 }

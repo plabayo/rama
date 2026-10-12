@@ -1,4 +1,4 @@
-use rama_quic_proto::{ConnectionId, ResetToken, frame::NewConnectionId};
+use rama_quic_proto::{ConnectionId, ResetToken, TransportError, frame::NewConnectionId};
 use std::net::SocketAddr;
 use std::ops::Range;
 
@@ -327,6 +327,8 @@ impl Retired {
 /// window it may fill.
 #[derive(Debug)]
 pub(crate) struct CidQueue {
+    /// The limit advertised on this connection, independently of storage capacity.
+    limit: usize,
     active: RemCid,
     held: Option<RemCid>,
     reserved: Option<RemCid>,
@@ -340,8 +342,14 @@ pub(crate) struct CidQueue {
 }
 
 impl CidQueue {
-    pub(crate) fn new(cid: ConnectionId) -> Self {
-        Self {
+    pub(crate) fn new(cid: ConnectionId, limit: u64) -> Result<Self, TransportError> {
+        if !(2..=Self::LIMIT).contains(&limit) {
+            return Err(TransportError::INTERNAL_ERROR(
+                "unsupported local active CID limit",
+            ));
+        }
+        Ok(Self {
+            limit: limit as usize,
             active: RemCid {
                 seq: 0,
                 id: cid,
@@ -355,7 +363,7 @@ impl CidQueue {
             bound: [None; Self::LEN],
             unused: [None; Self::LEN],
             floor: 0,
-        }
+        })
     }
 
     fn present(&self) -> impl Iterator<Item = RemCid> + '_ {
@@ -469,7 +477,7 @@ impl CidQueue {
             .present()
             .filter(|held| held.seq >= retire_prior_to && held.seq != cid.sequence)
             .count();
-        if kept + 1 > Self::LEN {
+        if kept + 1 > self.limit {
             return Err(InsertError::ExceedsLimit);
         }
 
@@ -940,7 +948,7 @@ pub(crate) struct Inserted {
 pub(crate) enum InsertError {
     /// CID was already retired
     Retired,
-    /// Sequence number violates the leading edge of the window
+    /// Simultaneously retained identifiers exceed the advertised limit
     ExceedsLimit,
 }
 
@@ -956,6 +964,31 @@ mod tests {
             id: ConnectionId::new(&[0xAB; 8]),
             reset_token: ResetToken::from([0xCD; rama_quic_proto::RESET_TOKEN_SIZE]),
             retire_prior_to,
+        }
+    }
+
+    #[test]
+    fn advertised_cid_limits_bound_retained_identifiers() {
+        for limit in 2..=CidQueue::LIMIT {
+            let mut queue = CidQueue::new(initial_cid(), limit).unwrap();
+            for sequence in 1..limit {
+                queue.insert(cid_token(sequence, 0)).unwrap();
+            }
+            // Retransmission consumes no extra slot. A new identifier does.
+            queue.insert(cid_token(limit - 1, 0)).unwrap();
+            assert_matches!(
+                queue.insert(cid_token(limit, 0)),
+                Err(InsertError::ExceedsLimit)
+            );
+            assert_eq!(queue.present().count(), limit as usize);
+
+            // Retirement in the same frame releases a slot before its new CID
+            // is counted, including replacement of the active identifier.
+            queue.insert(cid_token(limit, 1)).unwrap();
+            assert_eq!(queue.present().count(), limit as usize);
+        }
+        for unsupported in [0, 1, CidQueue::LIMIT + 1, u64::MAX] {
+            CidQueue::new(initial_cid(), unsupported).unwrap_err();
         }
     }
 
@@ -1237,7 +1270,7 @@ mod tests {
                 for c in ops {
                     for d in ops {
                         let history = [a, b, c, d];
-                        let mut q = CidQueue::new(initial_cid());
+                        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
                         let mut model = Model::default();
                         check(&mut q, &model, &[]);
                         for (i, op) in history.iter().enumerate() {
@@ -1256,7 +1289,7 @@ mod tests {
     /// release and the frame name every number the frame retires exactly once.
     #[test]
     fn numbers_a_frame_retires_that_never_arrived_are_named() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         // 1 and 2 were issued by the peer and never reached us; 3 did.
         q.insert(cid_token(3, 0)).unwrap();
 
@@ -1287,7 +1320,7 @@ mod tests {
     /// (RFC 9000 §5.1.2).
     #[test]
     fn unused_identifiers_a_frame_retires_are_reported_to_the_caller() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         for seq in [1, 2, 3] {
             q.insert(cid_token(seq, 0)).unwrap();
         }
@@ -1324,7 +1357,7 @@ mod tests {
 
     #[test]
     fn next_dense() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         assert!(q.next().is_none());
         assert!(q.next().is_none());
 
@@ -1342,7 +1375,7 @@ mod tests {
 
     #[test]
     fn next_sparse() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         let seqs = (1..CidQueue::LEN as u64).filter(|x| x % 2 == 0);
         for i in seqs.clone() {
             q.insert(cid(i, 0)).unwrap();
@@ -1359,7 +1392,7 @@ mod tests {
 
     #[test]
     fn wrap() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
 
         for i in 1..CidQueue::LEN as u64 {
             q.insert(cid(i, 0)).unwrap();
@@ -1379,7 +1412,7 @@ mod tests {
 
     #[test]
     fn retire_dense() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
 
         for i in 1..CidQueue::LEN as u64 {
             q.insert(cid(i, 0)).unwrap();
@@ -1405,7 +1438,7 @@ mod tests {
     #[test]
     fn retire_sparse() {
         // Retiring CID 0 when CID 1 is not known should retire CID 1 as we move to CID 2
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         q.insert(cid(2, 0)).unwrap();
         assert_eq!(
             retired_seqs(&q.insert(cid(3, 1)).unwrap().switched.unwrap().0),
@@ -1419,7 +1452,7 @@ mod tests {
     /// meanwhile is the one to retire.
     #[test]
     fn a_held_id_is_restored_and_the_one_used_meanwhile_retired() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         for i in 1..CidQueue::LEN as u64 {
             q.insert(cid(i, 0)).unwrap();
         }
@@ -1452,7 +1485,7 @@ mod tests {
     /// room for one more.
     #[test]
     fn a_held_id_counts_against_the_limit_until_it_is_let_go() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         for i in 1..CidQueue::LEN as u64 {
             q.insert(cid(i, 0)).unwrap();
         }
@@ -1473,7 +1506,7 @@ mod tests {
     /// A retire_prior_to that covers an aside ID takes it away before the frame is applied.
     #[test]
     fn retire_prior_to_takes_aside_ids() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         for i in 1..4 {
             q.insert(cid(i, 0)).unwrap();
         }
@@ -1494,7 +1527,7 @@ mod tests {
     /// ID and every ID in between.
     #[test]
     fn a_reserved_id_is_skipped_until_promoted() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         q.insert(cid(1, 0)).unwrap();
         let reserved = q.reserve().unwrap();
         assert_eq!(reserved.seq, 1);
@@ -1517,7 +1550,7 @@ mod tests {
     /// alternative just drops it.
     #[test]
     fn a_reservation_survives_switches_and_can_be_released() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         for i in 1..4 {
             q.insert(cid(i, 0)).unwrap();
         }
@@ -1541,7 +1574,7 @@ mod tests {
         assert!(retired.skipped().is_empty());
         assert_eq!(q.active_seq(), 3);
 
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         q.insert(cid(1, 0)).unwrap();
         q.reserve().unwrap();
         assert_eq!(q.release_reserved(), Some(1));
@@ -1563,7 +1596,7 @@ mod tests {
     /// aside (held or reserved), which stay bound to their paths.
     #[test]
     fn skipped_numbers_leave_out_the_aside_ones() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         q.insert(cid(1, 0)).unwrap();
         q.insert(cid(4, 0)).unwrap();
         q.next_holding().unwrap(); // held 0, active 1
@@ -1586,7 +1619,7 @@ mod tests {
     /// around it.
     #[test]
     fn skipped_runs_go_around_a_kept_id() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         q.insert(cid(2, 0)).unwrap();
         q.next_holding().unwrap(); // held 0, active 2, 1 retired
         assert_eq!(q.retire_held(), Some(0));
@@ -1607,7 +1640,7 @@ mod tests {
     /// A specific unused identifier can be set aside, not only the lowest one.
     #[test]
     fn a_named_sequence_can_be_reserved() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         q.insert(cid(1, 0)).unwrap();
         q.insert(cid(2, 0)).unwrap();
         let reserved = q.reserve_seq(2).expect("2 is unused");
@@ -1628,7 +1661,7 @@ mod tests {
     /// that was active.
     #[test]
     fn promoting_forward_retires_what_it_passes() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         q.insert(cid(1, 0)).unwrap();
         q.insert(cid(4, 0)).unwrap();
         let reserved = q.reserve_seq(4).expect("4 is unused");
@@ -1651,7 +1684,7 @@ mod tests {
     /// `retire_prior_to` retires the numbers below it and leaves the one at it in place.
     #[test]
     fn retire_prior_to_keeps_the_id_at_its_own_number() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         q.insert(cid(1, 0)).unwrap();
         q.insert(cid(2, 0)).unwrap();
         q.next_holding().unwrap(); // held 0, active 1
@@ -1668,7 +1701,7 @@ mod tests {
             "0 goes, 2 stays"
         );
         assert_eq!(q.reserved().map(|c| c.seq), Some(2));
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         q.insert(cid(1, 0)).unwrap();
         q.insert(cid(2, 0)).unwrap();
         q.next().unwrap(); // active 1
@@ -1686,7 +1719,7 @@ mod tests {
     /// gains nothing by being moved, and retirement ends it.
     #[test]
     fn send_history_travels_with_the_identifier_and_no_role_change_invents_it() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         for i in 1..5 {
             q.insert(cid_token(i, 0)).unwrap();
         }
@@ -1803,7 +1836,7 @@ mod tests {
     /// One identifier sent to a sequence of addresses, keeping a route for each until something
     /// has to give way. Returns the queue and the identifier's sequence number.
     fn queue_with_one_used_cid() -> (CidQueue, u64) {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         q.insert(cid_token(1, 0)).unwrap();
         q.next().expect("an unused identifier");
         (q, 1)
@@ -1815,7 +1848,7 @@ mod tests {
     /// Learning a token must not leave the gate open on an unconfirmed route.
     #[test]
     fn learning_a_token_closes_the_gate_until_the_route_is_confirmed() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         let here = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 4433));
 
         // No token yet: nothing to route, so the handshake sends freely.
@@ -1903,7 +1936,7 @@ mod tests {
     /// until the endpoint says so. What it has sent to each address survives.
     #[test]
     fn learning_a_token_arranges_every_address_the_identifier_has_used() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         let (a, b) = (addr(1), addr(2));
 
         // The handshake identifier has no token yet, so it sends to two addresses ungated.
@@ -2058,7 +2091,7 @@ mod tests {
     /// the numbers past the bound are refused if they arrive, which is what retires them then.
     #[test]
     fn a_distant_sequence_number_is_skipped_up_to_the_bound() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         let far = (1u64 << 62) - 1;
         q.insert(cid(far, 0)).expect("a distant number is legal");
         let (_, retired) = q.next().expect("the connection switches to it");
@@ -2079,7 +2112,7 @@ mod tests {
     /// not by a floor that has moved past the newest number.
     #[test]
     fn a_released_top_reservation_leaves_earlier_ids_insertable() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         for i in 1..CidQueue::LEN as u64 {
             q.insert(cid(i, 0)).unwrap();
         }
@@ -2099,7 +2132,7 @@ mod tests {
     /// one restored from a held slot: neither makes a later insert fail or panic.
     #[test]
     fn a_restored_hold_leaves_the_window_pinned_by_what_we_hold() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         for i in 1..CidQueue::LEN as u64 {
             q.insert(cid(i, 0)).unwrap();
         }
@@ -2125,7 +2158,7 @@ mod tests {
 
     #[test]
     fn retire_many() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         q.insert(cid(2, 0)).unwrap();
         assert_eq!(
             retired_seqs(
@@ -2142,7 +2175,7 @@ mod tests {
 
     #[test]
     fn insert_limit() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         for i in 1..CidQueue::LEN as u64 {
             assert_eq!(q.insert(cid(i, 0)), Ok(Inserted::default()));
         }
@@ -2161,14 +2194,14 @@ mod tests {
 
     #[test]
     fn insert_duplicate() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         q.insert(cid(0, 0)).unwrap();
         q.insert(cid(0, 0)).unwrap();
     }
 
     #[test]
     fn insert_retired() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         assert_eq!(
             q.insert(cid(0, 0)),
             Ok(Inserted::default()),
@@ -2186,7 +2219,7 @@ mod tests {
 
     #[test]
     fn retire_then_insert_next() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         for i in 1..CidQueue::LEN as u64 {
             q.insert(cid(i, 0)).unwrap();
         }
@@ -2200,7 +2233,7 @@ mod tests {
 
     #[test]
     fn always_valid() {
-        let mut q = CidQueue::new(initial_cid());
+        let mut q = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
         assert!(q.next().is_none());
         assert_eq!(q.active(), initial_cid());
         assert_eq!(q.active_seq(), 0);

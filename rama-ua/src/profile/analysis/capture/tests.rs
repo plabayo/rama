@@ -296,6 +296,7 @@ fn sampled_capture_weights_cover_only_the_reservoir_once() {
     ));
 }
 
+#[cfg(feature = "tls")]
 #[test]
 fn tls_reserved_range_is_exact_and_does_not_include_lookalikes() {
     for id in [0x0a0a, 0x1a1a, 0xfafa] {
@@ -378,4 +379,43 @@ fn absent_tls_extension_path_is_not_an_observed_empty_list() {
     ));
     assert_eq!(path.variants.len(), 1);
     assert_eq!(path.variants[0].elements.len(), 2);
+}
+
+#[test]
+fn settings_ack_timing_does_not_move_later_order_paths() {
+    let limits = H2CaptureLimits::default();
+    let settings = H2CapturedFrame::Settings {
+        ack: false,
+        entries: Box::default(),
+    };
+    let plain = H2Capture {
+        completeness: ProfileCaptureCompleteness::Complete,
+        frames: vec![settings.clone(), settings.clone()].into(),
+    };
+    let acknowledged = H2Capture {
+        frames: vec![
+            settings.clone(),
+            H2CapturedFrame::Settings {
+                ack: true,
+                entries: Box::default(),
+            },
+            settings,
+        ]
+        .into(),
+        ..plain
+    };
+    assert_eq!(
+        sequences(
+            &plain.canonical(limits).unwrap(),
+            CanonicalDomain::H2,
+            OrderAnalysisConfig::default()
+        )
+        .unwrap(),
+        sequences(
+            &acknowledged.canonical(limits).unwrap(),
+            CanonicalDomain::H2,
+            OrderAnalysisConfig::default()
+        )
+        .unwrap(),
+    );
 }

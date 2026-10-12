@@ -1,7 +1,9 @@
-use std::{error::Error, fmt};
+use std::{collections::VecDeque, error::Error, fmt};
 
 use rama_core::extensions::Extension;
-use rama_http::{HeaderMap, HeaderName, HeaderValue, Version, proto::h2::PseudoHeaderOrder};
+use rama_http::{
+    HeaderMap, HeaderName, HeaderValue, Version, header::COOKIE, proto::h2::PseudoHeaderOrder,
+};
 use serde::Serialize;
 
 use crate::profile::{
@@ -54,10 +56,6 @@ pub enum ProfilePreservationDifference {
     /// Best-effort replay retained a caller option that can alter H2 wire output.
     RetainedH2ClientParameter {
         parameter: H2ClientParameter,
-    },
-    /// A SETTINGS acknowledgement cannot be emitted until peer SETTINGS arrives.
-    DroppedH2SettingsAcknowledgement {
-        index: usize,
     },
 }
 
@@ -236,8 +234,49 @@ fn replay_headers(
             used: false,
         })
         .collect::<Vec<_>>();
+    let cookie_slots = if matches!(captured.version, Version::HTTP_2 | Version::HTTP_3) {
+        captured
+            .fields
+            .iter()
+            .filter(|field| {
+                field.name == COOKIE
+                    && matches!(
+                        &field.value,
+                        HeaderValueSource::Request(RequestBinding::Cookie)
+                    )
+            })
+            .count()
+    } else {
+        0
+    };
+    let mut cookies = replay_cookie_values(&mut original, cookie_slots)?;
+    let mut cookie_slot = 0;
     let mut output = HeaderMap::with_capacity(captured.fields.len().max(original.len()));
     for field in &captured.fields {
+        if field.name == COOKIE
+            && matches!(
+                &field.value,
+                HeaderValueSource::Request(RequestBinding::Cookie)
+            )
+            && let Some(values) = &mut cookies
+        {
+            cookie_slot += 1;
+            // Keep captured positions where possible. Additional caller pairs
+            // occupy the final cookie position; fewer pairs leave no empty slots.
+            let count = if cookie_slot == cookie_slots {
+                values.len()
+            } else {
+                1
+            };
+            for _ in 0..count {
+                if let Some(mut value) = values.pop_front() {
+                    value.set_sensitive(value.is_sensitive() || field.sensitive);
+                    output.append(field.name.clone(), value);
+                }
+            }
+            continue;
+        }
+
         let original_index = occurrence_index(&original, &field.name, field.occurrence);
         let original_value = original_index.map(|index| {
             original[index].used = true;
@@ -305,6 +344,46 @@ fn replay_headers(
         None,
     )?;
     Ok(output)
+}
+
+/// RFC 9113 §8.2.3 allows Cookie to be split between fields and joined with
+/// "; ". Preserve pair order and bytes; only separator whitespace is normalized
+/// when reproducing a split capture. Set-Cookie never takes this path.
+fn replay_cookie_values(
+    original: &mut [OriginalHeader],
+    slots: usize,
+) -> Result<Option<VecDeque<HeaderValue>>, ProfileReplayError> {
+    if slots == 0 || !original.iter().any(|field| field.name == COOKIE) {
+        return Ok(None);
+    }
+
+    let mut joined = Vec::new();
+    let mut sensitive = false;
+    let mut first = true;
+    for field in original.iter_mut().filter(|field| field.name == COOKIE) {
+        if !first {
+            joined.extend_from_slice(b"; ");
+        }
+        first = false;
+        joined.extend_from_slice(field.value.as_bytes());
+        sensitive |= field.value.is_sensitive();
+        field.used = true;
+    }
+    let make_value = |bytes: &[u8]| {
+        let mut value = HeaderValue::from_bytes(bytes)
+            .map_err(|_error| ProfileDataError::Invalid("request cookie value"))?;
+        value.set_sensitive(sensitive);
+        Ok::<_, ProfileReplayError>(value)
+    };
+    let values = if slots == 1 {
+        VecDeque::from([make_value(&joined)?])
+    } else {
+        joined
+            .split(|byte| *byte == b';')
+            .map(|pair| make_value(pair.trim_ascii()))
+            .collect::<Result<VecDeque<_>, _>>()?
+    };
+    Ok(Some(values))
 }
 
 struct OriginalHeader {

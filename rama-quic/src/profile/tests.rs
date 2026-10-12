@@ -12,6 +12,7 @@
 use std::assert_matches;
 
 use rama_core::{bytes::BytesMut, rt::Executor};
+use rama_crypto::hmac::HmacSha2;
 use rama_quic_proto::{
     ConnectionId, Side,
     capture::{
@@ -22,13 +23,15 @@ use rama_quic_proto::{
     version::Version,
 };
 use rama_tls::client::TlsClientConfig;
+use rand::{SeedableRng, rngs::StdRng};
 use std::net::{Ipv4Addr, SocketAddr};
 
 use super::{
     browsers::{chrome_153, firefox_156},
     capture, *,
 };
-use crate::{ClientConfig, Endpoint};
+use crate::proto::{cid_generator::RandomConnectionIdGenerator, transport_parameters};
+use crate::{ClientConfig, Endpoint, EndpointConfig};
 
 macro_rules! include_fixture {
     ($name:literal) => {
@@ -707,4 +710,29 @@ fn standard_initial_observation_snapshot_and_budgets() {
         flight.packet_numbers.len() + 1
     );
     assert_eq!(repeated.frames, flight.frames);
+}
+
+#[test]
+fn default_and_profile_connection_id_limits_have_independent_wire_values() {
+    let endpoint = EndpointConfig::new(HmacSha2::new_256(&[37; 32]));
+    let mut rng = StdRng::seed_from_u64(41);
+
+    // The unsent zero-CID default, ordinary endpoint default, and explicit
+    // browser limits must not follow changes to internal queue capacity.
+    for (cid_len, explicit, expected) in [
+        (0, None, 2),
+        (8, None, 5),
+        (8, Some(2_u32), 2),
+        (8, Some(8), 8),
+    ] {
+        let config = TransportConfig {
+            active_connection_id_limit: explicit.map(Into::into),
+            ..TransportConfig::default()
+        };
+        let generator = RandomConnectionIdGenerator::new(cid_len).unwrap();
+        let source = ConnectionId::try_from_bytes(&[1; 8][..cid_len]).unwrap();
+        let parameters =
+            transport_parameters::new(&config, &endpoint, &generator, source, None, &mut rng);
+        assert_eq!(parameters.active_connection_id_limit.into_inner(), expected);
+    }
 }

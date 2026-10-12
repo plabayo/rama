@@ -55,6 +55,13 @@ pub enum H2CapturedFrame {
     },
 }
 
+impl H2CapturedFrame {
+    /// SETTINGS acknowledgements reflect peer timing, not client identity.
+    pub(crate) fn is_protocol_generated(&self) -> bool {
+        matches!(self, Self::Settings { ack: true, .. })
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 /// A complete bounded H2 client connection prefix.
 pub struct H2Capture {
@@ -160,6 +167,7 @@ impl H2Capture {
         self.canonical(limits)?;
         self.frames
             .iter()
+            .filter(|frame| !frame.is_protocol_generated())
             .map(|frame| {
                 Ok(match frame {
                     H2CapturedFrame::Settings { ack: true, .. } => {
@@ -297,8 +305,14 @@ impl H2Capture {
             limits.bytes,
         )?;
         writer.u8(self.completeness.tag())?;
-        writer.u64(self.frames.len() as u64)?;
-        for frame in &self.frames {
+        // Keep acknowledgements in diagnostic samples, but regenerate them
+        // from the peer exchange instead of treating their timing as identity.
+        let frames = self
+            .frames
+            .iter()
+            .filter(|frame| !structural || !frame.is_protocol_generated());
+        writer.u64(frames.clone().count() as u64)?;
+        for frame in frames {
             match frame {
                 H2CapturedFrame::Settings { ack, entries } => {
                     writer.u8(0)?;
@@ -451,6 +465,36 @@ mod tests {
         value.bytes[offset] = replacement;
         value.id.0 = Sha256::digest(&value.bytes).into();
         value
+    }
+
+    #[test]
+    fn acknowledgements_do_not_change_h2_structure_or_replay() {
+        let limits = H2CaptureLimits::default();
+        let plain = captured(&[(1, 4096)]);
+        let mut frames = plain.frames.clone().into_vec();
+        frames.insert(
+            1,
+            H2CapturedFrame::Settings {
+                ack: true,
+                entries: Box::default(),
+            },
+        );
+        let acknowledged = H2Capture {
+            frames: frames.into(),
+            ..plain
+        };
+        assert_ne!(
+            plain.canonical(limits).unwrap().id,
+            acknowledged.canonical(limits).unwrap().id
+        );
+        assert_eq!(
+            plain.structural(limits).unwrap().id,
+            acknowledged.structural(limits).unwrap().id
+        );
+        assert_eq!(
+            plain.replay_frames(limits).unwrap(),
+            acknowledged.replay_frames(limits).unwrap()
+        );
     }
 
     #[test]

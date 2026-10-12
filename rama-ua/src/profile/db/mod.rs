@@ -1,11 +1,13 @@
 mod index;
-use super::{ProfileArchiveLimits, ProfileDataError, load_profile_archive};
+
+use super::{ProfileArchiveLimits, ProfileDataError, RequestShapeCache, load_profile_archive};
 use ahash::HashMap;
 use index::ProfileVersionIndex;
 pub use index::{ProfileCandidate, ProfileCandidateFilter, ProfileCapabilities, ProfileVersion};
 use itertools::Itertools as _;
 use rama_core::error::BoxError;
 use rand::seq::IndexedRandom as _;
+use std::{ptr, sync::Arc};
 
 use crate::{DeviceKind, PlatformKind, UserAgent, UserAgentKind, profile::UserAgentProfile};
 
@@ -22,6 +24,7 @@ use crate::{DeviceKind, PlatformKind, UserAgent, UserAgentKind, profile::UserAge
 /// [`UserAgentProvider`]: crate::layer::emulate::UserAgentProvider
 pub struct UserAgentDatabase {
     profiles: Vec<UserAgentProfile>,
+    request_shapes: Vec<Option<Arc<RequestShapeCache>>>,
     emulation_profiles: Vec<usize>,
     version_index: ProfileVersionIndex,
 
@@ -187,7 +190,22 @@ impl UserAgentDatabase {
             }
         }
 
+        self.request_shapes
+            .push(profile.captured.as_ref().map(|_| Arc::default()));
         self.profiles.push(profile);
+    }
+
+    /// Each immutable database entry owns its own lazy decode cache. Profiles
+    /// with the same identity may have different retained observations.
+    pub(crate) fn request_shape_cache(
+        &self,
+        profile: &UserAgentProfile,
+    ) -> Option<Arc<RequestShapeCache>> {
+        self.profiles
+            .iter()
+            .zip(&self.request_shapes)
+            .find(|(candidate, _)| ptr::eq(*candidate, profile))
+            .and_then(|(_, cache)| cache.clone())
     }
 
     /// Select a random [`UserAgentProfile`] from the database.

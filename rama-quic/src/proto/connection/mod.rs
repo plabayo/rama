@@ -32,6 +32,7 @@ use crate::proto::{
     crypto::{self, KeyPair},
     observation::ServerObservation,
     shared::EndpointEventInner,
+    transport_parameters,
 };
 use rama_quic_proto::{
     ConnectionId, Dir, Side, StreamId, TransportError, VarInt, Version, crypto::PacketKey,
@@ -377,6 +378,10 @@ impl Connection {
             expected_token: Bytes::new(),
             client_hello: None,
         });
+        let rem_cids = CidQueue::new(
+            rem_cid,
+            transport_parameters::active_connection_id_limit(&config, cid_gen).into_inner(),
+        )?;
         let mut rng = StdRng::from_seed(rng_seed);
         let mut this = Self {
             observation: None,
@@ -477,7 +482,7 @@ impl Connection {
             datagrams: DatagramState::default(),
             qlog_sink: config.qlog_sink.for_connection(trace_cid),
             config,
-            rem_cids: CidQueue::new(rem_cid),
+            rem_cids,
             rng,
             qlog_state: None,
             qlog_closed: false,

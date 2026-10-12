@@ -30,10 +30,13 @@ pub enum CaptureOrderPath {
     /// HTTP/2 or HTTP/3 pseudo-header names in their captured wire order.
     PseudoHeaders,
     /// TLS ClientHello extension identifiers.
+    #[cfg(feature = "tls")]
     TlsExtensions,
     /// TLS ClientHello cipher suite identifiers.
+    #[cfg(feature = "tls")]
     TlsCiphers,
     /// Ordered values within the identified TLS extension.
+    #[cfg(feature = "tls")]
     TlsExtensionValues { extension: u16 },
     /// SETTINGS entries in the identified HTTP/2 frame.
     Http2Settings { frame: usize },
@@ -48,26 +51,15 @@ pub enum CaptureOrderPath {
 impl CaptureOrderPath {
     fn reserved(self, id: u64) -> bool {
         match self {
+            #[cfg(feature = "tls")]
             Self::TlsExtensions | Self::TlsCiphers | Self::TlsExtensionValues { .. } => {
-                tls_reserved_candidate(id)
+                u16::try_from(id).is_ok_and(is_grease_u16)
             }
             Self::QuicParameters => OrderNamespace::QuicParameter.reserved_candidate(id),
             Self::Http3Settings => OrderNamespace::Http3Setting.reserved_candidate(id),
             Self::QuicVersions => OrderNamespace::QuicVersion.reserved_candidate(id),
             _ => false,
         }
-    }
-}
-
-fn tls_reserved_candidate(id: u64) -> bool {
-    #[cfg(feature = "tls")]
-    {
-        u16::try_from(id).is_ok_and(is_grease_u16)
-    }
-    #[cfg(not(feature = "tls"))]
-    {
-        let _ = id;
-        false
     }
 }
 
@@ -194,7 +186,12 @@ fn sequences(
                     bytes: config.maximum_bytes,
                 },
             )?;
-            for (frame, value) in capture.frames.iter().enumerate() {
+            for (frame, value) in capture
+                .frames
+                .iter()
+                .filter(|frame| !frame.is_protocol_generated())
+                .enumerate()
+            {
                 if let H2CapturedFrame::Settings {
                     ack: false,
                     entries,

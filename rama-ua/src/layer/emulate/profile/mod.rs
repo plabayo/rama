@@ -254,9 +254,11 @@ where
                 context.request_key,
             )?;
             let replayed = selected.replay_request(req.headers(), preservation)?;
-            let report = req
+            let report = self
+                .inner
                 .extensions()
                 .get_ref::<ProfilePreservationReport>()
+                .or_else(|| req.extensions().get_ref::<ProfilePreservationReport>())
                 .cloned()
                 .unwrap_or_default()
                 .followed_by(replayed.report);

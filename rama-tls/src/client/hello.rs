@@ -498,11 +498,11 @@ mod tests {
             ExtensionId::COOKIE,
             ExtensionId::QUIC_TRANSPORT_PARAMETERS,
             ExtensionId::RENEGOTIATION_INFO,
-            ExtensionId::Unknown(RESERVED_EXTENSION_ID),
-            ExtensionId::Unknown(ENCRYPTED_SERVER_NAME_DRAFT),
-            ExtensionId::Unknown(QUIC_TRANSPORT_PARAMETERS_LEGACY),
-            ExtensionId::Unknown(ECH_DRAFT_MIN),
-            ExtensionId::Unknown(ECH_DRAFT_MAX),
+            ExtensionId::from(RESERVED_EXTENSION_ID),
+            ExtensionId::from(ENCRYPTED_SERVER_NAME_DRAFT),
+            ExtensionId::from(QUIC_TRANSPORT_PARAMETERS_LEGACY),
+            ExtensionId::from(ECH_DRAFT_MIN),
+            ExtensionId::from(ECH_DRAFT_MAX),
         ] {
             assert!(client_hello_extension_is_connection_bound(id), "{id}");
         }
@@ -514,7 +514,7 @@ mod tests {
             ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION,
             ExtensionId::SUPPORTED_VERSIONS,
             ExtensionId::KEY_SHARE,
-            ExtensionId::Unknown(0x1234),
+            ExtensionId::from(0x1234_u16),
         ] {
             assert!(!client_hello_extension_is_connection_bound(id), "{id}");
         }
