@@ -160,17 +160,25 @@ impl TransportParameters {
             })
             .collect();
         slots.extend((0..self.extra.len()).map(WriteSlot::Extra));
-        // `Shuffled`, and any future ordering, use a fresh shuffle.
-        let ParameterOrder::Fixed(ids) = order else {
-            slots.shuffle(rng);
-            return slots;
+        let (ids, explicit_defaults) = match order {
+            ParameterOrder::Fixed(ids) => (ids, false),
+            ParameterOrder::FixedWithExplicitDefaults(ids) => (ids, true),
+            // `Shuffled`, and any future ordering, use a fresh shuffle.
+            _ => {
+                slots.shuffle(rng);
+                return slots;
+            }
         };
         let mut planned: Vec<WriteSlot> = Vec::with_capacity(slots.len());
         for id in ids {
             let slot = if *id == ParameterId::GREASE {
                 Some(WriteSlot::Grease)
             } else if let Ok(known) = TransportParameterId::try_from(id.0) {
-                Some(WriteSlot::Known(known))
+                Some(if explicit_defaults {
+                    WriteSlot::KnownExplicit(known)
+                } else {
+                    WriteSlot::Known(known)
+                })
             } else {
                 self.extra
                     .iter()
@@ -185,7 +193,9 @@ impl TransportParameters {
         }
         let rest: Vec<WriteSlot> = slots
             .into_iter()
-            .filter(|slot| !planned.contains(slot))
+            // Explicit and ordinary slots refer to the same parameter. Do not
+            // append a second copy merely because its emission mode differs.
+            .filter(|slot| !planned.iter().any(|planned| planned.same_parameter(*slot)))
             .collect();
         planned.extend(rest);
         planned
@@ -337,7 +347,7 @@ impl TransportParameters {
             .chain((0..self.extra.len()).map(WriteSlot::Extra))
             .collect();
         for slot in self.write_plan.as_ref().unwrap_or(&canonical) {
-            let id = match slot {
+            let (id, explicit) = match slot {
                 WriteSlot::Grease => {
                     if let Some(param) = &self.grease_transport_parameter {
                         param.write(w);
@@ -352,7 +362,8 @@ impl TransportParameters {
                     }
                     continue;
                 }
-                WriteSlot::Known(id) => *id,
+                WriteSlot::Known(id) => (*id, false),
+                WriteSlot::KnownExplicit(id) => (*id, true),
             };
             match id {
                 TransportParameterId::ReservedTransportParameter => {}
@@ -429,7 +440,7 @@ impl TransportParameters {
                         {$($(#[$doc:meta])* $name:ident ($id:ident) = $default:expr,)*} => {
                             match id {
                                 $(TransportParameterId::$id => {
-                                    if self.$name != $default {
+                                    if explicit || self.$name != $default {
                                         w.write_var(id as u64);
                                         w.write(VarInt::try_from(self.$name.size()).unwrap());
                                         w.write(self.$name);
@@ -611,10 +622,25 @@ pub struct ReservedTransportParameter {
 /// One entry of the order transport parameters are written in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteSlot {
+    /// A known parameter with ordinary default elision.
     Known(TransportParameterId),
+    /// A known parameter whose integer value is emitted even at its protocol default.
+    KnownExplicit(TransportParameterId),
     Grease,
     /// An index into `TransportParameters::extra`.
     Extra(usize),
+}
+
+impl WriteSlot {
+    fn same_parameter(self, other: Self) -> bool {
+        match (self, other) {
+            (
+                Self::Known(left) | Self::KnownExplicit(left),
+                Self::Known(right) | Self::KnownExplicit(right),
+            ) => left == right,
+            _ => self == other,
+        }
+    }
 }
 
 impl ReservedTransportParameter {
@@ -802,9 +828,64 @@ fn decode_cid(len: usize, value: &mut Option<ConnectionId>, r: &mut impl Buf) ->
 mod test {
     use core::convert::Infallible;
 
-    use rand::TryRng;
+    use rand::{SeedableRng as _, TryRng, rngs::StdRng};
 
     use super::*;
+
+    #[test]
+    fn explicit_default_parameters_preserve_presence_order_and_uniqueness() {
+        let ids = vec![
+            ParameterId::MAX_ACK_DELAY,
+            ParameterId::INITIAL_MAX_DATA,
+            ParameterId::MAX_IDLE_TIMEOUT,
+            ParameterId::ACK_DELAY_EXPONENT,
+        ];
+        let mut parameters = TransportParameters {
+            initial_max_data: VarInt::from_u32(12345),
+            ..TransportParameters::default()
+        };
+        parameters.write_plan = Some(parameters.plan(
+            &ParameterOrder::FixedWithExplicitDefaults(ids.clone()),
+            &mut StdRng::seed_from_u64(73),
+        ));
+        let mut bytes = Vec::new();
+        parameters.write(&mut bytes);
+        let mut input = bytes.as_slice();
+        let mut actual = Vec::new();
+        while input.has_remaining() {
+            let id = input.get_var().unwrap();
+            let len = input.get_var().unwrap() as usize;
+            let (mut value, rest) = input.split_at(len);
+            actual.push((ParameterId(id), value.get_var().unwrap()));
+            assert!(value.is_empty());
+            input = rest;
+        }
+        assert_eq!(
+            actual,
+            ids.into_iter().zip([25, 12345, 0, 3]).collect::<Vec<_>>()
+        );
+        let decoded = TransportParameters::read(Side::Server, &mut bytes.as_slice()).unwrap();
+        assert_eq!(decoded.initial_max_data, parameters.initial_max_data);
+        assert_eq!(decoded.max_ack_delay, parameters.max_ack_delay);
+        assert_eq!(decoded.max_idle_timeout, parameters.max_idle_timeout);
+        assert_eq!(decoded.ack_delay_exponent, parameters.ack_delay_exponent);
+    }
+
+    #[test]
+    fn ordinary_fixed_order_still_elides_integer_defaults() {
+        let ids = vec![
+            ParameterId::MAX_ACK_DELAY,
+            ParameterId::INITIAL_MAX_DATA,
+            ParameterId::MAX_IDLE_TIMEOUT,
+            ParameterId::ACK_DELAY_EXPONENT,
+        ];
+        let mut parameters = TransportParameters::default();
+        parameters.write_plan =
+            Some(parameters.plan(&ParameterOrder::Fixed(ids), &mut StdRng::seed_from_u64(73)));
+        let mut bytes = Vec::new();
+        parameters.write(&mut bytes);
+        assert!(bytes.is_empty());
+    }
 
     #[test]
     fn parameter_lengths_past_the_buffer_are_refused() {

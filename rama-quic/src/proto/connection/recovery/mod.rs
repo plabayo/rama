@@ -76,11 +76,10 @@ impl Connection {
         if newly_acked.is_empty() {
             return Ok(());
         }
-        // ECN validation is given the number of contiguous runs of newly acknowledged packets.
-        let newly_acked_runs = 1 + newly_acked
-            .windows(2)
-            .filter(|pair| pair[1] != pair[0] + 1)
-            .count();
+        // ECN counters count packets, not ACK ranges or contiguous packet-number
+        // runs (RFC 9000 section 13.4.2.1). Count only retained packets newly
+        // acknowledged by this frame; previously acknowledged numbers add nothing.
+        let newly_acked_count = newly_acked.len();
 
         let mut ack_eliciting_acked = false;
         let mut largest_current_acked = None;
@@ -171,7 +170,7 @@ impl Connection {
                     self.process_ecn(
                         now,
                         space,
-                        newly_acked_runs as u64,
+                        newly_acked_count as u64,
                         ecn,
                         (all_on_current_path && largest_on_current_path).then_some(sent),
                     );

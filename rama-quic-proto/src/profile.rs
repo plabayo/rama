@@ -20,7 +20,9 @@ use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{MAX_CID_SIZE, VarInt, version::ClientVersionPolicy};
+use crate::{
+    MAX_CID_SIZE, VarInt, transport_parameters::TransportParameters, version::ClientVersionPolicy,
+};
 
 /// The identifier of a transport parameter (RFC 9000 §18.2 and the QUIC transport parameter
 /// registry), including ones this crate does not otherwise know.
@@ -160,6 +162,12 @@ pub enum ParameterOrder {
     /// This order; parameters not listed follow in this crate's canonical order.
     /// [`ParameterId::GREASE`] names the greased parameter's place.
     Fixed(Vec<ParameterId>),
+    /// Fixed order that also emits listed integer parameters at their protocol defaults.
+    ///
+    /// This preserves explicit defaults in a capture. Unlisted parameters still follow
+    /// in canonical order; absent optional parameters are not created. Connection-bound
+    /// values continue to come from the current connection.
+    FixedWithExplicitDefaults(Vec<ParameterId>),
 }
 
 /// The reserved parameter written to exercise the peer's tolerance (RFC 9000 §18.1).
@@ -337,7 +345,8 @@ impl TransportParameterProfile {
 
     /// The order parameters are written in; a fixed order may list each identifier once.
     pub fn try_with_order(mut self, order: ParameterOrder) -> Result<Self, ProfileError> {
-        if let ParameterOrder::Fixed(ids) = &order {
+        if let ParameterOrder::Fixed(ids) | ParameterOrder::FixedWithExplicitDefaults(ids) = &order
+        {
             for (index, id) in ids.iter().enumerate() {
                 // GREASE is a layout marker here, never a literal wire identifier.
                 if *id != ParameterId::GREASE {
@@ -733,6 +742,34 @@ impl TryFrom<TransportLimitsRepr> for TransportLimits {
 }
 
 impl TransportLimits {
+    /// Limits implied by omitted transport parameters (RFC 9000 section 18.2).
+    ///
+    /// Capture compilers start here and replace only observed values. In
+    /// particular, omitted flow-control limits grant no credit, an omitted idle
+    /// timeout is disabled, and omitting the DATAGRAM extension disables reception.
+    /// [`Self::standard`] instead supplies Rama's ordinary endpoint configuration.
+    #[must_use]
+    pub fn protocol_defaults() -> Self {
+        let defaults = TransportParameters::default();
+        Self {
+            max_idle_timeout: Duration::from_millis(defaults.max_idle_timeout.into_inner()),
+            initial_max_data: defaults.initial_max_data.into_inner(),
+            initial_max_stream_data_bidi_local: defaults
+                .initial_max_stream_data_bidi_local
+                .into_inner(),
+            initial_max_stream_data_bidi_remote: defaults
+                .initial_max_stream_data_bidi_remote
+                .into_inner(),
+            initial_max_stream_data_uni: defaults.initial_max_stream_data_uni.into_inner(),
+            initial_max_streams_bidi: defaults.initial_max_streams_bidi.into_inner(),
+            initial_max_streams_uni: defaults.initial_max_streams_uni.into_inner(),
+            max_ack_delay: Duration::from_millis(defaults.max_ack_delay.into_inner()),
+            active_connection_id_limit: Some(defaults.active_connection_id_limit.into_inner()),
+            max_udp_payload_size: defaults.max_udp_payload_size.into_inner(),
+            datagram_receive_buffer_size: None,
+        }
+    }
+
     /// This crate's own advertised limits, matching what its engine sends by default.
     #[must_use]
     pub fn standard() -> Self {
@@ -1066,6 +1103,36 @@ mod tests {
                 ParameterId::GREASE,
             ]))
             .unwrap();
+    }
+
+    #[test]
+    fn explicit_default_order_rejects_invalid_and_duplicate_identifiers() {
+        for ids in [
+            vec![ParameterId(VarInt::MAX.into_inner() + 1)],
+            vec![ParameterId::MAX_ACK_DELAY, ParameterId::MAX_ACK_DELAY],
+            vec![ParameterId::GREASE, ParameterId::GREASE],
+        ] {
+            TransportParameterProfile::standard()
+                .try_with_order(ParameterOrder::FixedWithExplicitDefaults(ids.clone()))
+                .unwrap_err();
+            let invalid = TransportParameterProfile {
+                order: ParameterOrder::FixedWithExplicitDefaults(ids),
+                ..TransportParameterProfile::standard()
+            };
+            serde_json::from_str::<TransportParameterProfile>(
+                &serde_json::to_string(&invalid).unwrap(),
+            )
+            .unwrap_err();
+        }
+        let profile = TransportParameterProfile::standard()
+            .try_with_order(ParameterOrder::FixedWithExplicitDefaults(vec![
+                ParameterId::MAX_ACK_DELAY,
+                ParameterId::GREASE,
+            ]))
+            .unwrap();
+        let roundtrip: TransportParameterProfile =
+            serde_json::from_str(&serde_json::to_string(&profile).unwrap()).unwrap();
+        assert_eq!(profile, roundtrip);
     }
 
     #[test]

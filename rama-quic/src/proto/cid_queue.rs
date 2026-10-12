@@ -454,12 +454,33 @@ impl CidQueue {
         self.floor = self.floor.max(seq + 1);
     }
 
+    /// Check identities before applying the frame's retirement side effects.
+    /// RFC 9000 §19.15 permits rejecting conflicting reuse. Check only retained
+    /// identifiers: remembering every retired value would allow unbounded growth.
+    pub(crate) fn validate_identity(&self, cid: &NewConnectionId) -> Result<(), InsertError> {
+        for previous in self.present() {
+            if previous.seq == cid.sequence {
+                if previous.id != cid.id
+                    || previous
+                        .reset_token
+                        .is_some_and(|token| token != cid.reset_token)
+                {
+                    return Err(InsertError::InconsistentIdentity);
+                }
+            } else if previous.id == cid.id {
+                return Err(InsertError::InconsistentIdentity);
+            }
+        }
+        Ok(())
+    }
+
     /// Handle a `NEW_CONNECTION_ID` frame
     ///
     /// Returns a non-empty range of retired sequence numbers and the reset token of the new active
     /// CID iff the frame retired the active one. An ID kept aside whose sequence the frame retires
     /// must be let go by the caller before this call ([`retire_aside`](Self::retire_aside)).
     pub(crate) fn insert(&mut self, cid: NewConnectionId) -> Result<Inserted, InsertError> {
+        self.validate_identity(&cid)?;
         // A retransmitted or reordered copy of an identifier we hold still carries its
         // `retire_prior_to`; one we let go of already is refused.
         let floor_before = self.floor;
@@ -479,6 +500,16 @@ impl CidQueue {
             .count();
         if kept + 1 > self.limit {
             return Err(InsertError::ExceedsLimit);
+        }
+
+        // The initial identifier may not yet have a token from transport parameters.
+        // Remember the first token so later repeats cannot silently change it.
+        if duplicate {
+            for previous in self.present_mut() {
+                if previous.seq == cid.sequence && previous.reset_token.is_none() {
+                    previous.reset_token = Some(cid.reset_token);
+                }
+            }
         }
 
         // Discard retired unused CIDs, if any. Which ones goes back to the caller: the peer
@@ -946,6 +977,8 @@ pub(crate) struct Inserted {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub(crate) enum InsertError {
+    /// A retained identifier, sequence or reset-token association was reused inconsistently.
+    InconsistentIdentity,
     /// CID was already retired
     Retired,
     /// Simultaneously retained identifiers exceed the advertised limit
@@ -961,10 +994,87 @@ mod tests {
     fn cid(sequence: u64, retire_prior_to: u64) -> NewConnectionId {
         NewConnectionId {
             sequence,
-            id: ConnectionId::new(&[0xAB; 8]),
+            id: ConnectionId::new(&sequence.to_be_bytes()),
             reset_token: ResetToken::from([0xCD; rama_quic_proto::RESET_TOKEN_SIZE]),
             retire_prior_to,
         }
+    }
+
+    #[test]
+    fn cid_identity_rejects_conflicting_repeats_before_retirement() {
+        for role in 0..5 {
+            for mutation in 0..3 {
+                let mut queue = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
+                let original = cid_token(1, 0);
+                queue.insert(original).unwrap();
+                queue.insert(cid_token(2, 0)).unwrap();
+                match role {
+                    0 => {} // Still unused.
+                    1 => {
+                        queue.next().unwrap();
+                    }
+                    2 => {
+                        queue.next().unwrap();
+                        queue.next_holding().unwrap();
+                    }
+                    3 => {
+                        assert_eq!(queue.reserve().unwrap().seq, 1);
+                    }
+                    _ => {
+                        assert_eq!(queue.bind_unused(0).unwrap().seq, 1);
+                    }
+                }
+                let before: Vec<_> = queue
+                    .present()
+                    .map(|cid| (cid.seq, cid.id, cid.reset_token))
+                    .collect();
+                let mut conflict = original;
+                match mutation {
+                    0 => conflict.id = ConnectionId::new(&[33; 8]),
+                    1 => conflict.reset_token = token(33),
+                    _ => conflict.sequence = 3,
+                }
+                // The conflicting frame also tries to discard the evidence.
+                conflict.retire_prior_to = conflict.sequence;
+                assert_eq!(
+                    queue.insert(conflict),
+                    Err(InsertError::InconsistentIdentity)
+                );
+                assert_eq!(
+                    queue
+                        .present()
+                        .map(|cid| (cid.seq, cid.id, cid.reset_token))
+                        .collect::<Vec<_>>(),
+                    before
+                );
+                queue.insert(original).unwrap();
+                assert_eq!(
+                    queue
+                        .present()
+                        .map(|cid| (cid.seq, cid.id, cid.reset_token))
+                        .collect::<Vec<_>>(),
+                    before
+                );
+            }
+        }
+
+        let mut queue = CidQueue::new(initial_cid(), CidQueue::LIMIT).unwrap();
+        let original = NewConnectionId {
+            sequence: 0,
+            retire_prior_to: 0,
+            id: initial_cid(),
+            reset_token: token(4),
+        };
+        queue.insert(original).unwrap();
+        assert_eq!(queue.active_reset_token(), Some(token(4)));
+        queue.insert(original).unwrap();
+        assert_eq!(
+            queue.insert(NewConnectionId {
+                reset_token: token(5),
+                ..original
+            }),
+            Err(InsertError::InconsistentIdentity)
+        );
     }
 
     #[test]
@@ -1007,7 +1117,8 @@ mod tests {
     }
 
     fn initial_cid() -> ConnectionId {
-        ConnectionId::new(&[0xFF; 8])
+        // Sequence zero must name the same identifier in duplicate-frame fixtures.
+        ConnectionId::new(&0_u64.to_be_bytes())
     }
 
     /// A token distinguishable per identifier, so a test can say which one would reset us.
@@ -1019,7 +1130,7 @@ mod tests {
     fn cid_token(sequence: u64, retire_prior_to: u64) -> NewConnectionId {
         NewConnectionId {
             sequence,
-            id: ConnectionId::new(&[sequence as u8; 8]),
+            id: ConnectionId::new(&sequence.to_be_bytes()),
             reset_token: token(sequence as u8),
             retire_prior_to,
         }

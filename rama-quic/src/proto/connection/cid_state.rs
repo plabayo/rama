@@ -2,10 +2,10 @@
 use std::collections::VecDeque;
 
 use rama_core::telemetry::tracing::{debug, trace};
-use rustc_hash::FxHashSet;
+use rustc_hash::FxHashMap;
 
 use crate::proto::{Duration, Instant, shared::IssuedCid};
-use rama_quic_proto::TransportError;
+use rama_quic_proto::{ConnectionId, TransportError};
 
 /// How many retirement batches are tracked at once. A peer that keeps retiring identifiers keeps
 /// new ones being issued; past this many, a new one joins the latest batch and so retires a
@@ -16,10 +16,11 @@ const MAX_RETIREMENT_BATCHES: usize = 64;
 pub(super) struct CidState {
     /// Timestamp when issued cids should be retired
     retire_timestamp: VecDeque<CidTimestamp>,
-    /// Number of local connection IDs that have been issued in NEW_CONNECTION_ID frames.
-    issued: u64,
-    /// Sequence numbers of local connection IDs not yet retired by the peer
-    active_seq: FxHashSet<u64>,
+    /// One past the highest sequence advertised to the peer.
+    advertised: u64,
+    /// Identifiers not yet retired by the peer, keyed by their sequence numbers.
+    /// Retain the value to reject retirement of the enclosing packet's destination.
+    active_seq: FxHashMap<u64, ConnectionId>,
     /// Sequence number the peer has already retired all CIDs below at our request via `retire_prior_to`
     prev_retire_seq: u64,
     /// Sequence number to set in retire_prior_to field in NEW_CONNECTION_ID frame
@@ -35,16 +36,18 @@ impl CidState {
         cid_len: usize,
         cid_lifetime: Option<Duration>,
         now: Instant,
-        issued: u64,
+        initial: ConnectionId,
+        preferred: Option<ConnectionId>,
     ) -> Self {
-        let mut active_seq = FxHashSet::default();
-        // Add sequence number of CIDs used in handshaking into tracking set
-        for seq in 0..issued {
-            active_seq.insert(seq);
+        let mut active_seq = FxHashMap::default();
+        active_seq.insert(0, initial);
+        if let Some(cid) = preferred {
+            active_seq.insert(1, cid);
         }
+        let issued = active_seq.len() as u64;
         let mut this = Self {
             retire_timestamp: VecDeque::new(),
-            issued,
+            advertised: issued,
             active_seq,
             prev_retire_seq: 0,
             retire_seq: 0,
@@ -101,7 +104,7 @@ impl CidState {
     pub(crate) fn on_cid_timeout(&mut self) -> bool {
         // Whether the peer hasn't retired all the CIDs we asked it to yet
         let unretired_ids_found =
-            (self.prev_retire_seq..self.retire_seq).any(|seq| self.active_seq.contains(&seq));
+            (self.prev_retire_seq..self.retire_seq).any(|seq| self.active_seq.contains_key(&seq));
 
         let current_retire_prior_to = self.retire_seq;
         let next_retire_sequence = self
@@ -133,20 +136,24 @@ impl CidState {
         //
         // If yes (return true), a new CID must be pushed with updated `retire_prior_to` field to remote peer.
         // If no (return false), it means CIDs that reach the end of lifetime have been retired already. Do not push a new CID in order to avoid violating above RFC.
-        (current_retire_prior_to..self.retire_seq).any(|seq| self.active_seq.contains(&seq))
+        (current_retire_prior_to..self.retire_seq).any(|seq| self.active_seq.contains_key(&seq))
     }
 
     /// Update cid state when `NewIdentifiers` event is received
     pub(crate) fn new_cids(&mut self, ids: &[IssuedCid], now: Instant) {
         // `ids` could be `None` once active_connection_id_limit is set to 1 by peer
         let Some(last_cid) = ids.last() else { return };
-        self.issued += ids.len() as u64;
         // Record the timestamp of CID with the largest seq number
         let sequence = last_cid.sequence;
         ids.iter().for_each(|frame| {
-            self.active_seq.insert(frame.sequence);
+            self.active_seq.insert(frame.sequence, frame.id);
         });
         self.track_lifetime(sequence, now);
+    }
+
+    /// Record an encoded NEW_CONNECTION_ID, including retransmissions.
+    pub(crate) fn on_cid_sent(&mut self, sequence: u64) {
+        self.advertised = self.advertised.max(sequence + 1);
     }
 
     /// Update CidState for receipt of a `RETIRE_CONNECTION_ID` frame
@@ -157,13 +164,14 @@ impl CidState {
         &mut self,
         sequence: u64,
         limit: u64,
+        received_dcid: ConnectionId,
     ) -> Result<Option<bool>, TransportError> {
         if self.cid_len == 0 {
             return Err(TransportError::PROTOCOL_VIOLATION(
                 "RETIRE_CONNECTION_ID when CIDs aren't in use",
             ));
         }
-        if sequence > self.issued {
+        if sequence >= self.advertised {
             debug!(
                 sequence,
                 "got RETIRE_CONNECTION_ID for unissued sequence number"
@@ -172,7 +180,14 @@ impl CidState {
                 "RETIRE_CONNECTION_ID for unissued sequence number",
             ));
         }
-        if !self.active_seq.remove(&sequence) {
+        // RFC 9000 §19.16: the peer must use another identifier for this packet.
+        // Check before removing the route, including handshake/preferred-address IDs.
+        if self.active_seq.get(&sequence) == Some(&received_dcid) {
+            return Err(TransportError::PROTOCOL_VIOLATION(
+                "RETIRE_CONNECTION_ID for enclosing packet destination",
+            ));
+        }
+        if self.active_seq.remove(&sequence).is_none() {
             return Ok(None);
         }
         // Consider a scenario where peer A has active remote cid 0,1,2.
@@ -197,7 +212,7 @@ impl CidState {
     pub(crate) fn active_seq(&self) -> (u64, u64) {
         let mut min = u64::MAX;
         let mut max = u64::MIN;
-        for n in self.active_seq.iter() {
+        for n in self.active_seq.keys() {
             if n < &min {
                 min = *n;
             }
@@ -211,7 +226,7 @@ impl CidState {
     #[cfg(test)]
     pub(crate) fn assign_retire_seq(&mut self, v: u64) -> u64 {
         // Cannot retire more CIDs than what have been issued
-        debug_assert!(v <= *self.active_seq.iter().max().unwrap() + 1);
+        debug_assert!(v <= *self.active_seq.keys().max().unwrap() + 1);
         let n = v.checked_sub(self.retire_seq).unwrap();
         self.retire_seq = v;
         n
@@ -230,14 +245,76 @@ struct CidTimestamp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_quic_proto::{ConnectionId, RESET_TOKEN_SIZE, ResetToken};
+    use rama_quic_proto::{RESET_TOKEN_SIZE, ResetToken, TransportErrorCode};
+
+    #[test]
+    fn cid_retirement_rejects_unissued_and_packet_destination_before_mutation() {
+        let initial = ConnectionId::new(&[1; 8]);
+        let preferred = ConnectionId::new(&[2; 8]);
+        let another = ConnectionId::new(&[3; 8]);
+        let now = Instant::now();
+
+        for with_preferred in [false, true] {
+            let mut state =
+                CidState::new(8, None, now, initial, with_preferred.then_some(preferred));
+            let before = state.active_seq.clone();
+            for sequence in [state.advertised, state.advertised + 1, (1 << 62) - 1] {
+                let error = state.on_cid_retirement(sequence, 4, another).unwrap_err();
+                assert_eq!(error.code, TransportErrorCode::PROTOCOL_VIOLATION);
+                assert_eq!(state.active_seq, before);
+            }
+
+            // The same admission rule covers IDs supplied in transport parameters
+            // and later NEW_CONNECTION_ID frames, not just the handshake ID.
+            let next = state.advertised;
+            state.new_cids(
+                &[IssuedCid {
+                    sequence: next,
+                    id: another,
+                    reset_token: ResetToken::from([4; RESET_TOKEN_SIZE]),
+                }],
+                now,
+            );
+            let pending = state.active_seq.clone();
+            assert_eq!(
+                state.on_cid_retirement(next, 4, initial).unwrap_err().code,
+                TransportErrorCode::PROTOCOL_VIOLATION
+            );
+            assert_eq!(state.active_seq, pending);
+            state.on_cid_sent(next);
+            state.on_cid_sent(0); // A reordered retransmission cannot lower the bound.
+            let before = state.active_seq.clone();
+            for (&sequence, &id) in &before {
+                let error = state.on_cid_retirement(sequence, 4, id).unwrap_err();
+                assert_eq!(error.code, TransportErrorCode::PROTOCOL_VIOLATION);
+                assert_eq!(state.active_seq, before);
+            }
+
+            assert_eq!(state.on_cid_retirement(0, 4, another).unwrap(), Some(true));
+            assert_eq!(state.on_cid_retirement(0, 4, another).unwrap(), None);
+            assert_eq!(state.active_seq.len(), before.len() - 1);
+        }
+
+        let mut zero = CidState::new(0, None, now, ConnectionId::new(&[]), None);
+        assert_eq!(
+            zero.on_cid_retirement(0, 4, another).unwrap_err().code,
+            TransportErrorCode::PROTOCOL_VIOLATION
+        );
+        assert_eq!(zero.active_seq.len(), 1);
+    }
 
     /// A peer that retires every identifier it is given keeps new ones being issued; however
     /// long it keeps at it, the retirement schedule stays bounded and still retires the newest.
     #[test]
     fn retirement_batches_stay_bounded_under_identifier_churn() {
         let start = Instant::now();
-        let mut state = CidState::new(8, Some(Duration::from_mins(10)), start, 1);
+        let mut state = CidState::new(
+            8,
+            Some(Duration::from_mins(10)),
+            start,
+            ConnectionId::new(&[0; 8]),
+            None,
+        );
         for sequence in 1..10_000u64 {
             let issued = IssuedCid {
                 sequence,

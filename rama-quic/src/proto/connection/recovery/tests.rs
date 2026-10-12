@@ -1,7 +1,11 @@
-use crate::proto::{Duration, connection::recovery::persistent_congestion_period};
+use crate::proto::{
+    Duration, Instant,
+    connection::{recovery::persistent_congestion_period, spaces::SentPacket},
+};
 use rama_quic_proto::{
     frame::{self, EcnCounts},
     packet::SpaceId,
+    range_set::ArrayRangeSet,
 };
 
 #[test]
@@ -274,5 +278,67 @@ impl super::Connection {
         };
         assert_eq!(self.path.rtt.get(), expected);
         assert_eq!(self.path.rtt.min(), Duration::from_millis(50));
+    }
+}
+
+impl super::Connection {
+    /// Exercise real ACK processing after the fixture handshake, with sent packet
+    /// numbers chosen explicitly so random optimistic-ACK skips cannot mask the case.
+    pub(crate) fn assert_ecn_counts_packets(
+        &mut self,
+        now: Instant,
+        offsets: &[u64],
+        ect0_increase: u64,
+        expected_enabled: bool,
+    ) {
+        self.skip_no_packet_number();
+        self.path.sending_ecn = true;
+        self.spaces[SpaceId::Data].ecn_feedback = EcnCounts::ZERO;
+        let first = self.spaces[SpaceId::Data].next_packet_number;
+        let mut ranges = ArrayRangeSet::new();
+
+        for &offset in offsets {
+            // Gaps represent packets absent from this ACK, not additional packets
+            // whose markings can justify its ECN counts.
+            let number = first + offset;
+            self.spaces[SpaceId::Data].next_packet_number = number + 1;
+            self.path.sent(
+                number,
+                SentPacket {
+                    path_generation: self.path.generation(),
+                    time_sent: now,
+                    size: 0,
+                    ack_eliciting: false,
+                    is_0rtt: false,
+                    is_mtu_probe_packet: false,
+                    largest_acked: None,
+                    retransmits: Default::default(),
+                    stream_frames: Default::default(),
+                },
+                &mut self.spaces[SpaceId::Data],
+            );
+            ranges.insert_one(number);
+        }
+
+        let ack = frame::Ack::from_ranges(
+            0,
+            &ranges,
+            Some(EcnCounts {
+                ect0: ect0_increase,
+                ect1: 0,
+                ce: 0,
+            }),
+        )
+        .unwrap();
+        self.on_ack_received(now, SpaceId::Data, &ack).unwrap();
+        assert_eq!(
+            self.path.sending_ecn, expected_enabled,
+            "offsets={offsets:?}, ECT(0) increase={ect0_increase}"
+        );
+
+        // A duplicate ACK has no newly acknowledged packets. It must not require
+        // another counter increase or disable otherwise valid ECN feedback.
+        self.on_ack_received(now, SpaceId::Data, &ack).unwrap();
+        assert_eq!(self.path.sending_ecn, expected_enabled);
     }
 }

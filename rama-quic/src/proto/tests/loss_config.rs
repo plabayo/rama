@@ -171,3 +171,27 @@ fn old_path_ecn_advances_feedback_without_penalizing_current_path() {
     pair.server_conn_mut(server)
         .assert_old_path_ecn_only_advances_feedback(now);
 }
+
+#[test]
+fn ecn_validation_counts_packets_instead_of_contiguous_runs() {
+    for offsets in [&[0, 1, 2, 3][..], &[0, 2, 3, 7][..]] {
+        for (reported, expected_enabled) in [(3, false), (4, true), (9, true)] {
+            let mut pair = Pair::default();
+            let (client, server) = pair.connect();
+            pair.drive();
+            let now = pair.time;
+            pair.client_conn_mut(client).assert_ecn_counts_packets(
+                now,
+                offsets,
+                reported,
+                expected_enabled,
+            );
+            pair.server_conn_mut(server).assert_ecn_counts_packets(
+                now,
+                offsets,
+                reported,
+                expected_enabled,
+            );
+        }
+    }
+}

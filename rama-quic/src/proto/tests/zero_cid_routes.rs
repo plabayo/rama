@@ -240,3 +240,43 @@ fn zero_cid_profile_prevents_accept_on_another_route() {
     pair.server.try_accept(incoming, pair.time).unwrap();
     assert_eq!(pair.server.endpoint.open_connections(), 1);
 }
+
+#[test]
+fn cid_retirement_keeps_established_zero_cid_routes_until_drained() {
+    let mut pair = dedicated_pair();
+    let (client, server) = pair.connect_with(dedicated_client());
+    let now = pair.time;
+    pair.server_conn_mut(server)
+        .close(now, 0_u32.into(), Default::default());
+    pair.drive_server();
+    pair.drive_client();
+
+    assert_eq!(pair.time, now, "no drain timeout has elapsed");
+    assert!(pair.client_conn_mut(client).is_closed());
+    assert!(!pair.client_conn_mut(client).is_drained());
+    assert_eq!(pair.client.endpoint.open_connections(), 1);
+    let address = pair.server.addr;
+    assert_eq!(
+        pair.client
+            .endpoint
+            .connect(now, dedicated_client(), address, "localhost")
+            .err(),
+        Some(ConnectError::CidsExhausted)
+    );
+}
+
+#[test]
+fn cid_retirement_keeps_nonzero_cid_handshake_draining() {
+    let mut pair = Pair::default();
+    pair.server.handle_incoming = Box::new(|_| IncomingConnectionBehavior::Reject);
+    let client = pair.begin_connect(client_config());
+    let now = pair.time;
+    pair.drive_client();
+    pair.drive_server();
+    pair.drive_client();
+
+    assert_eq!(pair.time, now, "no drain timeout has elapsed");
+    assert!(pair.client_conn_mut(client).is_closed());
+    assert!(!pair.client_conn_mut(client).is_drained());
+    assert_eq!(pair.client.endpoint.open_connections(), 1);
+}

@@ -304,12 +304,12 @@ fn client_stateless_reset() {
     let (_, server_ch) = pair.connect();
     pair.client.endpoint =
         Endpoint::new(endpoint_config, Some(Arc::new(server_config())), true, None);
-    // Send something big enough to allow room for a smaller stateless reset.
-    pair.server.connections.get_mut(&server_ch).unwrap().close(
-        pair.time,
-        VarInt::from_u32(42),
-        (&[0xab; 128][..]).into(),
-    );
+    // Keep the connection active: a local close already owns its outcome.
+    // Stream data makes enough room for the client's smaller stateless reset.
+    let stream = pair.server_streams(server_ch).open(Dir::Uni).unwrap();
+    pair.server_send(server_ch, stream)
+        .write(&[0xab; 128])
+        .unwrap();
     info!("resetting");
     pair.drive();
     match pair.server_conn_mut(server_ch).poll() {
@@ -9497,5 +9497,93 @@ fn connections_enforce_the_advertised_active_cid_limit() {
                 },
             )
             .unwrap();
+    }
+}
+
+/// A late reset can release routing state, but it must not replace an unpolled
+/// close reason or report a second loss after the application consumed the first.
+#[test]
+fn late_stateless_reset_preserves_close_reason() {
+    let _guard = subscribe();
+    for server in [false, true] {
+        for local_close in [false, true] {
+            for poll_before_reset in [false, true] {
+                let (mut pair, key) = pair_with_known_reset_key();
+                let (client_ch, server_ch) = pair.connect();
+                pair.drive();
+                let now = pair.time;
+                let (target, peer, target_ch, peer_ch) = if server {
+                    (&mut pair.server, &mut pair.client, server_ch, client_ch)
+                } else {
+                    (&mut pair.client, &mut pair.server, client_ch, server_ch)
+                };
+                let target_conn = target.connections.get_mut(&target_ch).unwrap();
+                while let Some(event) = target_conn.poll() {
+                    assert!(!matches!(event, Event::ConnectionLost { .. }));
+                }
+                let reset = stateless_reset_for(&key, target_conn.active_rem_cid());
+                let peer_addr = peer.addr;
+                let reason = ApplicationClose {
+                    error_code: VarInt::from_u32(73),
+                    reason: Bytes::from_static(b"original application close"),
+                };
+                if local_close {
+                    target_conn.close(now, reason.error_code, reason.reason.clone());
+                } else {
+                    peer.connections.get_mut(&peer_ch).unwrap().close(
+                        now,
+                        reason.error_code,
+                        reason.reason.clone(),
+                    );
+                }
+
+                // Exchange close packets at a fixed instant, without advancing
+                // the draining timeout. Keep the original error unpolled.
+                for _ in 0..3 {
+                    pair.drive_client();
+                    pair.drive_server();
+                }
+                let target = if server {
+                    &mut pair.server
+                } else {
+                    &mut pair.client
+                };
+                let conn = target.connections.get_mut(&target_ch).unwrap();
+                assert!(conn.is_closed());
+                assert!(!conn.is_drained());
+                let mut losses = Vec::new();
+                if poll_before_reset {
+                    while let Some(event) = conn.poll() {
+                        if let Event::ConnectionLost { reason } = event {
+                            losses.push(reason);
+                        }
+                    }
+                }
+
+                target
+                    .inbound
+                    .push_back(Inbound::plain(now, None, reset.as_slice().into()));
+                target.drive(now, peer_addr);
+                let conn = target.connections.get_mut(&target_ch).unwrap();
+                assert!(
+                    conn.is_drained(),
+                    "the authenticated reset released the route"
+                );
+                while let Some(event) = conn.poll() {
+                    if let Event::ConnectionLost { reason } = event {
+                        losses.push(reason);
+                    }
+                }
+                let expected = if local_close {
+                    Vec::new()
+                } else {
+                    vec![ConnectionError::ApplicationClosed(reason)]
+                };
+                assert_eq!(
+                    losses, expected,
+                    "server={server}, local={local_close}, polled={poll_before_reset}"
+                );
+            }
+        }
     }
 }

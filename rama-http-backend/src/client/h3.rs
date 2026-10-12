@@ -810,17 +810,17 @@ mod concrete_transport_tests {
     use super::*;
     use rama_net::{
         Protocol,
-        address::{HostWithPort, SocketAddress},
+        address::{Domain, HostWithPort, SocketAddress},
         client::{
-            ConnectionErrorDomain, ProxyRouteFailureCache, ProxyRouteFailureCacheConnector,
-            ProxyRoutes, ProxyRoutesConnector, pool::ReuseKey,
+            AddressCandidates, ConnectionErrorDomain, ProxyRouteFailureCache,
+            ProxyRouteFailureCacheConnector, ProxyRoutes, ProxyRoutesConnector, pool::ReuseKey,
         },
         tls::TlsAlpn,
     };
     use std::assert_matches;
 
-    use rama_core::rt::spawn;
     use rama_core::{extensions::Extensions, graceful::Shutdown};
+    use rama_core::{futures::stream::BoxStream, rt::spawn};
     use rama_http_core::h3::{
         client as h3_client,
         observation::{H3Observer, SettingsObservation},
@@ -988,6 +988,110 @@ mod concrete_transport_tests {
         let error = connector.serve(input).await.err().unwrap();
         assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
         assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
+    }
+
+    struct RepeatedAddress {
+        domain: Domain,
+        address: IpAddr,
+    }
+
+    impl AddressCandidates for RepeatedAddress {
+        fn domain(&self) -> &Domain {
+            &self.domain
+        }
+
+        fn stream<'a>(&'a self, _: &'a Extensions) -> BoxStream<'a, Result<IpAddr, BoxError>> {
+            Box::pin(stream::iter([Ok(self.address), Ok(self.address)]))
+        }
+    }
+
+    #[tokio::test]
+    async fn supplied_zero_cid_endpoint_retries_after_peer_refusal() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let identity =
+                ServerAuthData::new_self_signed_leaf(LeafCertRequest::default()).unwrap();
+            let server_tls = TlsServerConfig::new()
+                .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
+                .with_server_auth(identity.clone());
+            let server = Endpoint::bind_server(
+                Executor::new(),
+                ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default()).unwrap(),
+                SocketAddress::local_ipv4(0),
+            )
+            .await
+            .unwrap();
+            let address = server.local_addr().unwrap();
+            let accept = server.clone();
+            let serve = spawn(async move {
+                // Reuse one peer address to isolate endpoint admission from DNS
+                // ordering, IP-family policy and local-interface availability.
+                accept.accept().await.unwrap().refuse();
+                let connection = accept
+                    .accept()
+                    .await
+                    .unwrap()
+                    .accept()
+                    .unwrap()
+                    .await
+                    .unwrap();
+                let (mut send, _) = connection.accept_bi().await.unwrap();
+                send.write_all(b"accepted after refusal").await.unwrap();
+                send.finish().unwrap();
+                connection
+            });
+            let profile = QuicProfile::standard()
+                .with_versions(ClientVersionPolicy::new(QuicVersion::V1).unwrap())
+                .with_connection_ids(
+                    ConnectionIdProfile::standard()
+                        .try_with_local_len(0)
+                        .unwrap(),
+                );
+            let mut endpoint_config = EndpointConfig::try_with_rand_key().unwrap();
+            endpoint_config.apply_quic_profile(&profile).unwrap();
+            let endpoint = Endpoint::build(Executor::new())
+                .with_config(endpoint_config)
+                .bind_client_address(SocketAddress::local_ipv4(0))
+                .await
+                .unwrap();
+            let connector = Http3Connector::builder(Executor::new())
+                .with_endpoint(endpoint.clone())
+                .with_tls_config(
+                    TlsClientConfig::new()
+                        .try_with_server_trust_anchors([identity
+                            .cert_chain
+                            .last()
+                            .unwrap()
+                            .clone()])
+                        .unwrap(),
+                )
+                .build_lazy()
+                .unwrap();
+            let input =
+                ConnectRequest::new(HostWithPort::localhost_domain_with_port(address.port()))
+                    .with_application_protocol(Protocol::HTTPS);
+            input.extensions.insert(profile);
+            input
+                .extensions
+                .insert(ConnectorTargetStream::new(RepeatedAddress {
+                    domain: "localhost".parse().unwrap(),
+                    address: address.ip(),
+                }));
+            let transport = connector.serve(input).await.unwrap().conn;
+            let (mut send, mut recv) = transport.connection.open_bi().await.unwrap();
+            send.write_all(b"hello").await.unwrap();
+            send.finish().unwrap();
+            assert_eq!(
+                recv.read_to_end(64).await.unwrap(),
+                b"accepted after refusal"
+            );
+            let peer = serve.await.unwrap();
+            transport.connection.close(0u32, b"test complete");
+            peer.close(0u32, b"test complete");
+            endpoint.shutdown().await;
+            server.shutdown().await;
+        })
+        .await
+        .unwrap();
     }
 
     #[test]

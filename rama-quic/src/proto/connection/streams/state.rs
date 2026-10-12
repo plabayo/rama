@@ -454,14 +454,33 @@ impl StreamsState {
             reason = "reachable through `fuzzing` under cfg(fuzzing)"
         )
     )]
-    pub fn received_stop_sending(&mut self, id: StreamId, error_code: VarInt) {
+    pub fn received_stop_sending(
+        &mut self,
+        id: StreamId,
+        error_code: VarInt,
+    ) -> Result<(), TransportError> {
+        // STOP_SENDING can open a peer's bidirectional stream, but never one
+        // outside its stream credit. Validate before touching lazy stream state.
+        if id.initiator() != self.side {
+            if id.dir() == Dir::Uni {
+                return Err(TransportError::STREAM_STATE_ERROR(
+                    "STOP_SENDING on recv-only stream",
+                ));
+            }
+            self.validate_receive_id(id)?;
+        } else if self.is_local_unopened(id) {
+            return Err(TransportError::STREAM_STATE_ERROR(
+                "STOP_SENDING on unopened stream",
+            ));
+        }
+
         let max_send_data = self.max_send_data(id);
         let Some(stream) = self
             .send
             .get_mut(&id)
             .map(get_or_insert_send(max_send_data))
         else {
-            return;
+            return Ok(());
         };
 
         if stream.try_stop(error_code) {
@@ -469,6 +488,18 @@ impl StreamsState {
                 .push_back(StreamEvent::Stopped { id, error_code });
             self.on_stream_frame(false, id);
         }
+        Ok(())
+    }
+
+    /// A blocked frame opens a peer receive stream without making data readable.
+    /// The same direction and stream-count rules apply as for STREAM/RESET_STREAM.
+    pub(crate) fn received_stream_data_blocked(
+        &mut self,
+        id: StreamId,
+    ) -> Result<(), TransportError> {
+        self.validate_receive_id(id)?;
+        self.on_stream_frame(false, id);
+        Ok(())
     }
 
     pub(crate) fn reset_acked(&mut self, id: StreamId) {
@@ -1428,7 +1459,9 @@ mod tests {
             write(&mut state, second, &[0; 10]),
             Err(WriteError::Blocked)
         );
-        state.received_stop_sending(second, VarInt::from(9u32));
+        state
+            .received_stop_sending(second, VarInt::from(9u32))
+            .unwrap();
         assert_eq!(
             write(&mut state, second, &[0; 10]),
             Err(WriteError::Stopped(VarInt::from(9u32))),
@@ -1693,6 +1726,85 @@ mod tests {
             .unwrap(),
             4
         );
+    }
+
+    #[test]
+    fn stream_control_frames_validate_before_opening() {
+        for side in [Side::Client, Side::Server] {
+            for stop in [false, true] {
+                for dir in [Dir::Bi, Dir::Uni] {
+                    let limit = make(side).max_remote[dir as usize];
+                    for index in [limit, 1 << 40, rama_quic_proto::MAX_STREAM_COUNT - 1] {
+                        let mut state = make(side);
+                        let id = StreamId::new(!side, dir, index);
+                        let before = (state.next_remote, state.send.len(), state.recv.len());
+                        let result = if stop {
+                            state.received_stop_sending(id, VarInt::from_u32(1))
+                        } else {
+                            state.received_stream_data_blocked(id)
+                        };
+                        let expected = if stop && dir == Dir::Uni {
+                            TransportErrorCode::STREAM_STATE_ERROR
+                        } else {
+                            TransportErrorCode::STREAM_LIMIT_ERROR
+                        };
+                        assert_eq!(result.unwrap_err().code, expected);
+                        assert_eq!(
+                            (state.next_remote, state.send.len(), state.recv.len()),
+                            before
+                        );
+                        assert!(state.poll().is_none());
+                    }
+                }
+
+                // A legal highest-numbered peer stream opens all lower streams.
+                // Repeating the same control frame produces no additional events.
+                for dir in [Dir::Bi, Dir::Uni] {
+                    if stop && dir == Dir::Uni {
+                        continue;
+                    }
+                    let mut state = make(side);
+                    let limit = state.max_remote[dir as usize];
+                    let id = StreamId::new(!side, dir, limit - 1);
+                    for _ in 0..2 {
+                        if stop {
+                            state
+                                .received_stop_sending(id, VarInt::from_u32(1))
+                                .unwrap();
+                        } else {
+                            state.received_stream_data_blocked(id).unwrap();
+                        }
+                    }
+                    assert_eq!(state.next_remote[dir as usize], limit);
+                    assert_eq!(state.poll(), Some(StreamEvent::Opened { dir }));
+                    if stop {
+                        assert_eq!(
+                            state.poll(),
+                            Some(StreamEvent::Stopped {
+                                id,
+                                error_code: VarInt::from_u32(1)
+                            })
+                        );
+                    }
+                    assert!(state.poll().is_none());
+                }
+
+                for dir in [Dir::Bi, Dir::Uni] {
+                    let mut state = make(side);
+                    let id = StreamId::new(side, dir, 0);
+                    let result = if stop {
+                        state.received_stop_sending(id, VarInt::from_u32(1))
+                    } else {
+                        state.received_stream_data_blocked(id)
+                    };
+                    assert_eq!(
+                        result.unwrap_err().code,
+                        TransportErrorCode::STREAM_STATE_ERROR
+                    );
+                    assert!(state.poll().is_none());
+                }
+            }
+        }
     }
 
     #[test]
@@ -2266,7 +2378,7 @@ mod tests {
         };
 
         let error_code = 0u32.into();
-        stream.state.received_stop_sending(id, error_code);
+        stream.state.received_stop_sending(id, error_code).unwrap();
         assert!(
             stream
                 .state
@@ -2281,7 +2393,7 @@ mod tests {
         assert_eq!(stream.write(&[]), Err(WriteError::ClosedStream));
 
         // A duplicate frame is a no-op
-        stream.state.received_stop_sending(id, error_code);
+        stream.state.received_stop_sending(id, error_code).unwrap();
         assert!(stream.state.events.is_empty());
     }
 

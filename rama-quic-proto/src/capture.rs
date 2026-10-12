@@ -32,7 +32,10 @@ use rama_tls::{
     },
 };
 use rama_utils::octets;
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize, Serialize, Serializer,
+    ser::{SerializeSeq, SerializeStruct},
+};
 
 use crate::{
     MAX_CID_SIZE, Side, Version,
@@ -162,17 +165,72 @@ impl CaptureCompleteness {
 /// A bounded server observation of one attempt, including its Retry lineage.
 ///
 /// The parsed ClientHello belongs to the connection's SecureTransport extension.
-#[derive(Debug, Clone, Serialize)]
+/// Debug output contains shape metadata only. Serialization omits connection IDs
+/// and raw ClientHello bytes, and replaces connection-specific parameter values
+/// with their lengths. Explicit field access remains available to capture consumers.
+#[derive(Clone, Serialize)]
 pub struct QuicObservation {
+    #[serde(skip)]
     pub connection_id: Vec<u8>,
+    #[serde(skip)]
     pub attempt_id: Vec<u8>,
+    #[serde(skip)]
     pub retry_parent: Option<Vec<u8>>,
     pub first_flight: Option<FirstFlight>,
+    #[serde(serialize_with = "serialize_observation_parameters")]
     pub transport_parameters: Vec<RawParameter>,
     /// Retained internally; display and profile serialization omit the raw handshake.
     #[serde(skip)]
     pub client_hello_message: Vec<u8>,
     pub completeness: CaptureCompleteness,
+}
+
+impl fmt::Debug for QuicObservation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QuicObservation")
+            .field("connection_id_len", &self.connection_id.len())
+            .field("attempt_id_len", &self.attempt_id.len())
+            .field(
+                "retry_parent_len",
+                &self.retry_parent.as_ref().map(Vec::len),
+            )
+            .field("first_flight", &self.first_flight)
+            .field(
+                "transport_parameter_count",
+                &self.transport_parameters.len(),
+            )
+            .field("client_hello_len", &self.client_hello_message.len())
+            .field("completeness", &self.completeness)
+            .finish()
+    }
+}
+
+// RawParameter remains the explicit wire codec. The observation's automatic
+// output follows the same connection-value classification as reusable profiles.
+struct ObservationParameter<'a>(&'a RawParameter);
+
+impl Serialize for ObservationParameter<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut value = serializer.serialize_struct("ObservationParameter", 2)?;
+        value.serialize_field("id", &self.0.id)?;
+        if self.0.id.has_connection_specific_value() {
+            value.serialize_field("length", &self.0.value.len())?;
+        } else {
+            value.serialize_field("value", &self.0.value)?;
+        }
+        value.end()
+    }
+}
+
+fn serialize_observation_parameters<S: Serializer>(
+    parameters: &[RawParameter],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let mut values = serializer.serialize_seq(Some(parameters.len()))?;
+    for parameter in parameters {
+        values.serialize_element(&ObservationParameter(parameter))?;
+    }
+    values.end()
 }
 
 impl Extension for QuicObservation {}
@@ -846,6 +904,69 @@ mod tests {
     use crate::VarInt;
     use rama_core::bytes::BufMut;
     use std::slice;
+
+    #[test]
+    fn observation_output_omits_connection_material() {
+        let sensitive = vec![211, 212, 213, 214, 215];
+        let connection_parameters = [
+            ParameterId::ORIGINAL_DESTINATION_CONNECTION_ID,
+            ParameterId::STATELESS_RESET_TOKEN,
+            ParameterId::PREFERRED_ADDRESS,
+            ParameterId::INITIAL_SOURCE_CONNECTION_ID,
+            ParameterId::RETRY_SOURCE_CONNECTION_ID,
+            ParameterId::GOOGLE_HANDSHAKE_MESSAGE,
+            ParameterId::GOOGLE_LEGACY_CUSTOM_PARAMETERS,
+            ParameterId::DEBUGGING_SNI,
+        ];
+        let mut parameters: Vec<_> = connection_parameters
+            .iter()
+            .map(|&id| RawParameter {
+                id,
+                value: sensitive.clone(),
+            })
+            .collect();
+        parameters.push(RawParameter {
+            id: ParameterId::INITIAL_MAX_DATA,
+            value: vec![42],
+        });
+        let observation = QuicObservation {
+            connection_id: sensitive.clone(),
+            attempt_id: sensitive.clone(),
+            retry_parent: Some(sensitive.clone()),
+            first_flight: None,
+            transport_parameters: parameters,
+            client_hello_message: sensitive.clone(),
+            completeness: CaptureCompleteness::default(),
+        };
+        let debug = format!("{observation:?}");
+        assert!(!debug.contains("211"));
+        assert!(!debug.contains("client_hello_message"));
+        assert!(debug.contains("client_hello_len: 5"));
+        let json = serde_json::to_value(&observation).unwrap();
+        for omitted in [
+            "connection_id",
+            "attempt_id",
+            "retry_parent",
+            "client_hello_message",
+        ] {
+            assert!(json.get(omitted).is_none(), "{omitted}");
+        }
+        let parameters = json["transport_parameters"].as_array().unwrap();
+        for (parameter, id) in parameters.iter().zip(connection_parameters) {
+            assert_eq!(
+                parameter,
+                &serde_json::json!({"id": id.0, "length": sensitive.len()})
+            );
+        }
+        assert_eq!(
+            parameters.last().unwrap(),
+            &serde_json::json!({"id": ParameterId::INITIAL_MAX_DATA.0, "value": [42]})
+        );
+        // Explicit consumers still receive the original capture; formatting and
+        // serialization neither mutate nor erase the in-memory evidence.
+        assert_eq!(observation.client_hello_message, sensitive);
+        assert_eq!(observation.transport_parameters[0].value, sensitive);
+    }
 
     fn hello_with_parameter_len(len: u64, value: &[u8]) -> Vec<u8> {
         let mut parameters = vec![0x21];
