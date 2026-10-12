@@ -57,6 +57,8 @@ pub(crate) struct Endpoint {
     rng: StdRng,
     index: ConnectionIndex,
     connections: Slab<ConnectionMeta>,
+    /// A profiled zero-CID client owns this endpoint until its connection drains.
+    exclusive_connection: Option<ConnectionHandle>,
     local_cid_generator: Box<dyn ConnectionIdGenerator>,
     config: Arc<EndpointConfig>,
     server_config: Option<Arc<ServerConfig>>,
@@ -99,6 +101,7 @@ impl Endpoint {
             },
             index: ConnectionIndex::default(),
             connections: Slab::new(),
+            exclusive_connection: None,
             local_cid_generator: (config.connection_id_generator_factory.as_ref())(),
             config,
             server_config,
@@ -251,6 +254,9 @@ impl Endpoint {
             EndpointEventInner::Drained => {
                 if let Some(conn) = self.connections.try_remove(ch.0) {
                     self.index.remove(&conn);
+                    if self.exclusive_connection == Some(ch) {
+                        self.exclusive_connection = None;
+                    }
                 } else {
                     // This indicates a bug in downstream code, which could cause spurious
                     // connection loss instead of this error if the CID was (re)allocated prior to
@@ -486,7 +492,12 @@ impl Endpoint {
             .validate_endpoint(&self.config, self.local_cid_generator.cid_len())
             .map_err(ConnectError::ProfileEndpointMismatch)?;
 
-        if self.cids_exhausted() {
+        let dedicated = config.transport.wire.requires_dedicated_endpoint();
+        if self.cids_exhausted()
+            || self.zero_cid_route_in_use(remote, None)
+            || self.exclusive_connection.is_some()
+            || (dedicated && !self.connections.is_empty())
+        {
             return Err(ConnectError::CidsExhausted);
         }
         if remote.port() == 0 || remote.ip().is_unspecified() {
@@ -558,6 +569,11 @@ impl Endpoint {
                 self.index.connection_ids.remove(&loc_cid);
                 ConnectError::Crypto(error)
             })?;
+        // Reserve only after successful TLS/connection construction. A failed dial
+        // must leave an application-supplied endpoint available for another attempt.
+        if dedicated {
+            self.exclusive_connection = Some(ch);
+        }
         conn.qlog_local_parameters(now, &params);
         Ok((ch, conn))
     }
@@ -835,7 +851,10 @@ impl Endpoint {
             });
         }
 
-        if self.cids_exhausted() {
+        if self.cids_exhausted()
+            || self.zero_cid_route_in_use(incoming.addresses.remote, incoming.addresses.local)
+            || self.exclusive_connection.is_some()
+        {
             debug!("refusing connection");
             self.index.remove_initial(dst_cid);
             return Err(AcceptError {
@@ -1528,6 +1547,30 @@ impl Endpoint {
             .filter(|&(_, &handle)| handle == ch)
             .map(|(&cid, _)| cid)
             .collect()
+    }
+
+    /// A zero-length CID leaves only addresses to distinguish connections.
+    /// Client routes lack a local-address key, so they overlap every server
+    /// route to that peer. Check at accept time as well as connect time: several
+    /// Initials can be pending before the first one installs its route.
+    fn zero_cid_route_in_use(&self, remote: SocketAddr, local: Option<SocketAddr>) -> bool {
+        if self.local_cid_generator.cid_len() != 0 {
+            return false;
+        }
+        if self.index.outgoing_connection_remotes.contains_key(&remote) {
+            return true;
+        }
+        let routes = &self.index.incoming_connection_remotes;
+        match local {
+            Some(_) => {
+                routes.contains_key(&FourTuple { remote, local })
+                    || routes.contains_key(&FourTuple {
+                        remote,
+                        local: None,
+                    })
+            }
+            None => routes.keys().any(|addresses| addresses.remote == remote),
+        }
     }
 
     /// Whether we've used up 3/4 of the available CID space
@@ -2288,7 +2331,8 @@ pub enum ConnectError {
     EndpointStopping,
     /// The connection could not be created because not enough of the CID space is available
     ///
-    /// Try using longer connection IDs
+    /// Try longer connection IDs or a separate endpoint. With zero-length IDs,
+    /// an existing connection's address route cannot be assigned to another one.
     CidsExhausted,
     /// The given server name was malformed
     InvalidServerName(String),

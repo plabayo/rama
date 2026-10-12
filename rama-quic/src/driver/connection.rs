@@ -816,6 +816,19 @@ impl Future for ConnectionDriver {
             // Our lock is released, so the endpoint may lock this connection back (lock order).
             self.conn.deliver_endpoint_events();
         }
+        if outcome.is_ready() {
+            let conn = &mut *self.conn.state.lock();
+            conn.forward_app_events(&self.conn.shared);
+            if conn.error.is_none() {
+                conn.terminate(
+                    rama_quic_proto::TransportError::INTERNAL_ERROR(
+                        "QUIC engine drained without a close reason",
+                    )
+                    .into(),
+                    &self.conn.shared,
+                );
+            }
+        }
         if let Some((local, descriptor)) = wanted_local {
             // Asked with our lock released, in endpoint-then-connection order.
             self.conn.follow_local_address(local, descriptor);
@@ -2674,9 +2687,8 @@ impl State {
         self.forward_endpoint_events();
         let closed = self.inner.is_closed();
         self.inner.publish_observation(extensions, false, closed);
-        self.forward_app_events(shared);
-
         if !self.inner.is_drained() {
+            self.forward_app_events(shared);
             if keep_going {
                 // If the connection hasn't processed all tasks, schedule it again
                 cx.waker().wake_by_ref();
@@ -2685,15 +2697,9 @@ impl State {
             }
             return Poll::Pending;
         }
-        if self.error.is_none() {
-            self.terminate(
-                rama_quic_proto::TransportError::INTERNAL_ERROR(
-                    "QUIC engine drained without a close reason",
-                )
-                .into(),
-                shared,
-            );
-        }
+        // The driver delivers Drained to the endpoint before notifying the
+        // application. A Version Negotiation retry can then reuse this socket
+        // even if the waiting task resumes immediately on another worker.
         Poll::Ready(Ok(()))
     }
 

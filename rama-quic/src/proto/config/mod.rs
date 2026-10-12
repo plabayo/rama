@@ -148,7 +148,7 @@ impl EndpointConfig {
     }
 
     /// Create a configuration with a fresh operating-system-generated reset key.
-    pub(crate) fn try_with_rand_key() -> Result<Self, BoxError> {
+    pub fn try_with_rand_key() -> Result<Self, BoxError> {
         HmacSha2::try_rand_256().map(Self::new)
     }
 

@@ -529,7 +529,7 @@ fn check_list(versions: &[Version]) -> Result<(), VersionPolicyError> {
 /// [`Version::V2`] without a round trip, and restarts in either version if the server answers
 /// with a Version Negotiation packet. A TLS provider that cannot change version during the
 /// handshake narrows the compatible set to the original version.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "ClientVersionPolicyRepr")]
 pub struct ClientVersionPolicy {
     original: Version,
@@ -562,7 +562,7 @@ impl TryFrom<ClientVersionPolicyRepr> for ClientVersionPolicy {
 }
 
 /// Where a reserved `0x?a?a?a?a` version goes in an advertised version list (RFC 9368 §3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ReservedVersionGrease {
     /// No reserved version.

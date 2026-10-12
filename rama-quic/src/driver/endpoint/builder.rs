@@ -15,8 +15,8 @@ use rama_udp::{DatagramError, DatagramSocket, UdpPacketSocket, UdpSocketConfig, 
 
 use crate::driver::{
     EndpointConfig,
-    endpoint::default_socket_config,
     endpoint::{Endpoint, bind_advertised},
+    endpoint::{client_socket_config, default_socket_config},
     udp::Socket,
 };
 use crate::proto::ServerConfig;
@@ -87,6 +87,20 @@ impl EndpointBuilder {
         address: impl Into<SocketAddress>,
     ) -> Result<Endpoint, DatagramError> {
         self.bind_address_with_socket_config(address, default_socket_config())
+            .await
+    }
+
+    /// Bind an outbound endpoint with the client's best-effort dual-stack policy.
+    ///
+    /// This retains the endpoint configuration selected on this builder. IPv6
+    /// bindings request a dual-stack socket; unsupported platforms retain their
+    /// system policy. Callers can retry with an IPv4 address if binding fails.
+    pub async fn bind_client_address(
+        self,
+        address: impl Into<SocketAddress>,
+    ) -> Result<Endpoint, DatagramError> {
+        let address = address.into();
+        self.bind_address_with_socket_config(address, client_socket_config(address))
             .await
     }
 

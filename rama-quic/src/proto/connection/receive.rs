@@ -345,7 +345,11 @@ impl Connection {
             self.state = match conn_err {
                 ConnectionError::ApplicationClosed(reason) => State::closed(reason),
                 ConnectionError::ConnectionClosed(reason) => State::closed(reason),
+                // Version Negotiation abandons this Initial attempt. There is no
+                // authenticated connection to drain, and its route must be free
+                // before the client retries on the same zero-CID socket.
                 ConnectionError::Reset
+                | ConnectionError::VersionMismatch { .. }
                 | ConnectionError::TransportError(TransportError {
                     code: TransportErrorCode::AEAD_LIMIT_REACHED,
                     ..
@@ -361,7 +365,6 @@ impl Connection {
                     debug!("closing connection due to transport error: {}", err);
                     State::closed(err)
                 }
-                ConnectionError::VersionMismatch { .. } => State::Draining,
                 #[expect(
                     clippy::unreachable,
                     reason = "`conn_err` was produced by processing one received packet, which only yields peer-driven errors (transport error, close frames, version mismatch, reset)"

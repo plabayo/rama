@@ -111,7 +111,7 @@ impl Endpoint {
     ) -> Result<Self, DatagramError> {
         let address = address.into();
         EndpointBuilder::new(exec)
-            .bind_address_with_socket_config(address, client_socket_config(address))
+            .bind_client_address(address)
             .await
     }
 

@@ -11,6 +11,9 @@
 //! taken from captures of the named browser versions and are verified against those captures
 //! in this crate's tests; [`crate::capture`] is the parser that reads a first flight back.
 
+#[cfg(feature = "std")]
+use rama_core::extensions::Extension;
+
 use core::{fmt, time::Duration};
 
 use alloc::vec::Vec;
@@ -149,7 +152,7 @@ impl fmt::Display for ParameterId {
 }
 
 /// The order transport parameters are written in.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ParameterOrder {
     /// A fresh random order per connection.
@@ -160,7 +163,7 @@ pub enum ParameterOrder {
 }
 
 /// The reserved parameter written to exercise the peer's tolerance (RFC 9000 §18.1).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum GreaseParameter {
     /// None.
@@ -173,14 +176,14 @@ pub enum GreaseParameter {
 }
 
 /// A transport parameter this crate does not interpret, written as given.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OpaqueParameter {
     pub id: ParameterId,
     pub value: Vec<u8>,
 }
 
 /// How the transport parameters are laid out.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "TransportParameterProfileRepr")]
 pub struct TransportParameterProfile {
     order: ParameterOrder,
@@ -414,7 +417,7 @@ impl TransportParameterProfile {
 }
 
 /// How long packet numbers are encoded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum PacketNumberLength {
     /// The fewest bytes that disambiguate the number (RFC 9000 §17.1).
@@ -424,7 +427,7 @@ pub enum PacketNumberLength {
 }
 
 /// How the frames of a client's Initial packets are arranged.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum InitialFlightLayout {
     /// CRYPTO frames in order, padding after them.
@@ -435,7 +438,7 @@ pub enum InitialFlightLayout {
 }
 
 /// Where the bytes that bring an Initial datagram up to size go.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum PaddingPlacement {
     /// PADDING frames inside the last packet.
@@ -445,7 +448,7 @@ pub enum PaddingPlacement {
 }
 
 /// How packets and datagrams are formed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "PacketizationProfileRepr")]
 pub struct PacketizationProfile {
     initial_datagram_size: u16,
@@ -599,7 +602,7 @@ impl PacketizationProfile {
 }
 
 /// Connection ID lengths.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "ConnectionIdProfileRepr")]
 pub struct ConnectionIdProfile {
     initial_destination_len: u8,
@@ -670,7 +673,7 @@ impl ConnectionIdProfile {
 }
 
 /// The advertised flow-control and timing limits, as the transport parameters carry them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "TransportLimitsRepr")]
 pub struct TransportLimits {
     pub max_idle_timeout: Duration,
@@ -796,7 +799,7 @@ impl TransportLimits {
 /// Every field is a type that can only hold values its builder accepts and that validates its own
 /// deserialization, so a `QuicProfile` is valid by construction: there is no separate check to
 /// remember, and none to forget.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct QuicProfile {
     versions: ClientVersionPolicy,
     transport_parameters: TransportParameterProfile,
@@ -899,6 +902,9 @@ impl QuicProfile {
         }
     }
 }
+
+#[cfg(feature = "std")]
+impl Extension for QuicProfile {}
 
 #[cfg(test)]
 mod tests {
@@ -1127,3 +1133,5 @@ mod tests {
             .unwrap();
     }
 }
+
+// A profile is a value-only input. Runtime application remains in rama-quic.

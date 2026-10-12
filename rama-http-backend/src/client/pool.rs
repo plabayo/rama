@@ -1,6 +1,6 @@
 //! HTTP connection pool: connection identity and connector assembly.
 
-use std::{num::NonZeroUsize, time::Duration};
+use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 use rama_core::error::BoxError;
 use rama_core::{
@@ -21,6 +21,7 @@ use rama_net::client::{ConnectRequest, ConnectorService, ProxyRoute};
 use rama_net::http::HttpRequestVersion;
 use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 use rama_net::{HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt};
+use rama_quic_proto::profile::QuicProfile;
 use rama_tls::client::TlsPoolId;
 
 use super::{BindBodyToConnLayer, BindBodyToConnector};
@@ -61,6 +62,7 @@ impl HttpConnIdentifier {
 /// Connection identity produced by [`HttpConnIdentifier`].
 ///
 /// Besides physical route and HTTP-version requirements, this identity keeps
+/// explicit QUIC profiles distinct by value. It also keeps
 /// plaintext forward-proxy connections separate from plaintext CONNECT
 /// tunnels. Those connections address the same proxy socket but use different
 /// HTTP request semantics.
@@ -68,6 +70,7 @@ impl HttpConnIdentifier {
 pub struct HttpConnId {
     reusable: bool,
     tls: Option<TlsPoolId>,
+    quic_profile: Option<Arc<QuicProfile>>,
     network: BasicConnId,
     required_version: Option<Version>,
     http_proxy_mode: Option<HttpProxyModeRequirement>,
@@ -110,6 +113,7 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
         Ok(HttpConnId {
             reusable: tls.as_ref().is_none_or(TlsPoolId::is_reusable),
             tls,
+            quic_profile: input.extensions().get_arc::<QuicProfile>(),
             network,
             required_version: connection_version_requirement(input),
             http_proxy_mode: http_proxy_mode_requirement(input),
@@ -422,6 +426,7 @@ mod tests {
     use rama_net::http::{HttpRequestVersion, TargetHttpVersion};
     use rama_net::test_utils::client::MockConnectorService;
     use rama_net::{HttpVersionInputExt, Protocol, transport::TransportProtocol};
+    use rama_quic_proto::profile::QuicProfile;
     use rama_tls::{
         TlsTunnel,
         client::{
@@ -1892,5 +1897,38 @@ mod tests {
         assert_eq!(config.max_connecting_per_id, None);
         assert_eq!(config.idle_timeout, Some(Duration::from_secs(90)));
         assert_eq!(config.wait_for_pool_timeout, Some(Duration::from_mins(2)));
+    }
+
+    #[tokio::test]
+    async fn explicit_quic_profiles_partition_http_pool_connections_by_value() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner = service_fn({
+            let attempts = attempts.clone();
+            move |input: ConnectRequest| {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    Ok::<_, ConnectionError>(EstablishedClientConnection {
+                        input,
+                        conn: ServiceInput::new(()),
+                    })
+                }
+            }
+        });
+        let connector =
+            PooledConnector::new(inner, MultiplexPool::new(), HttpConnIdentifier::new());
+        for (kind, expected) in [(0, 1), (1, 2), (1, 2), (2, 3), (1, 3), (0, 3)] {
+            let input = ConnectRequest::new("example.com:443".parse().unwrap())
+                .with_application_protocol(Protocol::HTTPS);
+            input
+                .extensions()
+                .insert(TargetHttpVersion(Version::HTTP_3));
+            if kind != 0 {
+                input
+                    .extensions()
+                    .insert(QuicProfile::standard().with_grease_quic_bit(kind == 1));
+            }
+            let _connection = connector.serve(input).await.unwrap();
+            assert_eq!(attempts.load(Ordering::Relaxed), expected);
+        }
     }
 }

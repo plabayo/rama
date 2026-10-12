@@ -29,16 +29,17 @@ use rama_net::{
 };
 use rama_quic::{
     ClientConfig, ConnectError as QuicConnectError, Connection,
-    ConnectionError as QuicConnectionError, Endpoint, TransportConfig,
+    ConnectionError as QuicConnectionError, Endpoint, EndpointConfig, TransportConfig,
     tls::{ClientConfigCache, QuicClientConfigProvider, TlsOptions, default_tls_provider},
 };
-use rama_quic_proto::TransportErrorCode;
+use rama_quic_proto::{TransportErrorCode, profile::QuicProfile};
 use rama_tls::client::{
     TlsClientConfig, TlsConnectionReuse, TlsServerAuthentication, TlsServerName,
     TlsStoreServerCertChain,
 };
 use rama_utils::macros::generate_set_and_with;
 use std::{
+    collections::VecDeque,
     error::Error as StdError,
     io::{Error as IoError, ErrorKind as IoErrorKind},
     net::{IpAddr, SocketAddr},
@@ -49,6 +50,7 @@ use tokio::sync::Mutex as AsyncMutex;
 // Allow the alternate address family to progress while one QUIC handshake is waiting,
 // without starting a handshake (and its retransmission state) for every DNS result.
 const MAX_IN_FLIGHT_CONNECT_ATTEMPTS: usize = 2;
+const MAX_CACHED_PROFILE_ENDPOINTS: usize = 8;
 
 /// Establish authenticated QUIC transports for the common HTTP handshake.
 ///
@@ -59,6 +61,13 @@ const MAX_IN_FLIGHT_CONNECT_ATTEMPTS: usize = 2;
 /// verification target even when routing selects a different physical address.
 /// This direct UDP connector rejects proxy routes before any connection attempt.
 /// Proxy-capable QUIC connectors can be injected separately.
+///
+/// A [`QuicProfile`] on the input applies to the client, transport and endpoint.
+/// The default HTTP pool identifier includes explicit profiles by value; custom
+/// identifiers must preserve that separation. Managed endpoints cache at most
+/// eight endpoint policies. Zero-length local CIDs use a fresh bound endpoint
+/// for each address-race attempt. A supplied zero-CID endpoint accepts one
+/// connection at a time, so address attempts on it run sequentially.
 pub struct Http3Connector {
     endpoint: Arc<ConnectorEndpoint>,
     tls: TlsClientConfig,
@@ -73,7 +82,32 @@ pub struct Http3Connector {
 #[derive(Debug)]
 enum ConnectorEndpoint {
     Supplied(Endpoint),
-    Managed(AsyncMutex<Option<Endpoint>>),
+    Managed(AsyncMutex<ManagedEndpoints>),
+}
+
+#[derive(Debug, Default)]
+struct ManagedEndpoints {
+    default: Option<Endpoint>,
+    profiles: VecDeque<(EndpointProfileKey, Endpoint)>,
+}
+
+// Only endpoint-wide wire properties determine socket compatibility. Packet
+// layouts and parameter permutations remain per-connection client configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EndpointProfileKey {
+    cid_len: u8,
+    grease_quic_bit: bool,
+    max_udp_payload_size: u64,
+}
+
+impl EndpointProfileKey {
+    fn of(profile: &QuicProfile) -> Self {
+        Self {
+            cid_len: profile.connection_ids().local_len(),
+            grease_quic_bit: profile.greases_quic_bit(),
+            max_udp_payload_size: profile.limits().max_udp_payload_size,
+        }
+    }
 }
 
 impl Clone for Http3Connector {
@@ -204,7 +238,7 @@ impl Http3ConnectorBuilder {
         Ok(Http3Connector {
             endpoint: Arc::new(match self.endpoint {
                 Some(endpoint) => ConnectorEndpoint::Supplied(endpoint),
-                None => ConnectorEndpoint::Managed(AsyncMutex::new(None)),
+                None => ConnectorEndpoint::Managed(AsyncMutex::new(ManagedEndpoints::default())),
             }),
             tls: self.tls,
             tls_configs: ClientConfigCache::new(provider, TlsOptions::default()),
@@ -224,6 +258,7 @@ fn invalid(message: &'static str) -> ConnectionError {
 
 /// Values derived once from the effective TLS configuration for one dial.
 struct PreparedTls {
+    profile: Option<Arc<QuicProfile>>,
     config: ClientConfig,
     server_name: String,
     authenticated_identity: Option<Host>,
@@ -247,7 +282,8 @@ impl Http3Connector {
                 "HTTP/3 connector is shutting down",
             ));
         }
-        let mut endpoint = endpoint.lock().await;
+        let mut managed = endpoint.lock().await;
+        let endpoint = &mut managed.default;
         if let Some(endpoint) = endpoint.as_ref().filter(|endpoint| !endpoint.is_closed()) {
             return Ok(endpoint.clone());
         }
@@ -271,7 +307,83 @@ impl Http3Connector {
         Ok(bound)
     }
 
+    async fn endpoint_for_profile(
+        &self,
+        profile: Option<&QuicProfile>,
+    ) -> Result<Endpoint, BoxError> {
+        let Some(profile) = profile else {
+            return self.endpoint().await;
+        };
+        let managed = match self.endpoint.as_ref() {
+            ConnectorEndpoint::Supplied(endpoint) => {
+                return Ok(endpoint.clone());
+            }
+            ConnectorEndpoint::Managed(managed) => managed,
+        };
+        if self
+            .executor
+            .guard()
+            .is_some_and(|guard| guard.cancelled().now_or_never().is_some())
+        {
+            return Err(BoxError::from_static_str(
+                "HTTP/3 connector is shutting down",
+            ));
+        }
+        if profile.connection_ids().local_len() == 0 {
+            return self.bind_profile_endpoint(profile).await;
+        }
+
+        let key = EndpointProfileKey::of(profile);
+        let mut managed = managed.lock().await;
+        if let Some(index) = managed
+            .profiles
+            .iter()
+            .position(|(stored, _)| *stored == key)
+            && let Some((key, endpoint)) = managed.profiles.remove(index)
+            && !endpoint.is_closed()
+        {
+            managed.profiles.push_back((key, endpoint.clone()));
+            return Ok(endpoint);
+        }
+        let endpoint = self.bind_profile_endpoint(profile).await?;
+        if managed.profiles.len() == MAX_CACHED_PROFILE_ENDPOINTS {
+            // Active connections keep their endpoint driver and socket alive;
+            // dropping a cached handle does not close a connection using it.
+            managed.profiles.pop_front();
+        }
+        managed.profiles.push_back((key, endpoint.clone()));
+        Ok(endpoint)
+    }
+
+    async fn bind_profile_endpoint(&self, profile: &QuicProfile) -> Result<Endpoint, BoxError> {
+        let mut config = EndpointConfig::try_with_rand_key()?;
+        config.apply_quic_profile(profile)?;
+        match Endpoint::build(self.executor.clone())
+            .with_config(config.clone())
+            .bind_client_address(SocketAddress::default_ipv6(0))
+            .await
+        {
+            Ok(endpoint) => Ok(endpoint),
+            Err(error) => {
+                tracing::debug!(%error, "binding IPv4 profile endpoint after IPv6 bind failed");
+                Ok(Endpoint::build(self.executor.clone())
+                    .with_config(config)
+                    .bind_client_address(SocketAddress::default_ipv4(0))
+                    .await?)
+            }
+        }
+    }
+
     fn prepare_tls(&self, input: &ConnectRequest) -> Result<PreparedTls, ConnectionError> {
+        let profile = input.extensions().get_arc::<QuicProfile>();
+        if let Some(profile) = &profile
+            && profile.limits().initial_max_streams_uni < 3
+        {
+            return Err(invalid(
+                "HTTP/3 profiles must permit the peer's three critical streams",
+            ));
+        }
+
         let tls = self
             .tls
             .clone()
@@ -311,7 +423,13 @@ impl Http3Connector {
             .tls_configs
             .client_config(&tls, input.extensions())
             .map_err(|error| ConnectionError::local(error, InvalidInput))?;
-        config.set_transport_config(self.transport.clone());
+        if let Some(profile) = &profile {
+            config
+                .apply_quic_profile(profile)
+                .map_err(|error| ConnectionError::local(error, InvalidInput))?;
+        } else {
+            config.set_transport_config(self.transport.clone());
+        }
         let server_name = if let Ok(ip) = server_identity.try_as_ip() {
             ip.to_string()
         } else {
@@ -321,6 +439,7 @@ impl Http3Connector {
                 .to_string()
         };
         Ok(PreparedTls {
+            profile,
             config,
             server_name,
             authenticated_identity,
@@ -347,13 +466,37 @@ impl Http3Connector {
         let attempt = &attempt;
         let failures = ConnectFailures::default();
         let failures = &failures;
-        let endpoint = self.endpoint().await.map_err(|error| {
-            ConnectionError::local(error, Unavailable).context("binding HTTP/3 endpoint")
-        })?;
-        let endpoint_ref = &endpoint;
+        let zero_cid = prepared
+            .profile
+            .as_ref()
+            .is_some_and(|profile| profile.connection_ids().local_len() == 0);
+        let supplied = matches!(self.endpoint.as_ref(), ConnectorEndpoint::Supplied(_));
+        let shared_endpoint = if zero_cid && !supplied {
+            None
+        } else {
+            Some(
+                self.endpoint_for_profile(prepared.profile.as_deref())
+                    .await
+                    .map_err(|error| {
+                        ConnectionError::local(error, Unavailable)
+                            .context("binding HTTP/3 endpoint")
+                    })?,
+            )
+        };
+        let shared_endpoint = &shared_endpoint;
         let dial = |address| async move {
             let result: Result<_, BoxError> = async {
-                let connection = endpoint_ref
+                let endpoint = match shared_endpoint {
+                    Some(endpoint) => endpoint.clone(),
+                    None => self
+                        .endpoint_for_profile(prepared.profile.as_deref())
+                        .await
+                        .map_err(|error| {
+                            ConnectionError::local(error, Unavailable)
+                                .context("binding HTTP/3 profile endpoint")
+                        })?,
+                };
+                let connection = endpoint
                     .connect_with(tls.clone(), address, server_name)?
                     .await?;
                 connection.handshake_confirmed().await?;
@@ -369,7 +512,7 @@ impl Http3Connector {
                     )
                     .into());
                 }
-                Ok(connection)
+                Ok((endpoint, connection))
             }
             .await;
             result.map_err(|error| failures.record(error, attempt))
@@ -413,9 +556,14 @@ impl Http3Connector {
                         .map_err(|error| ConnectionError::local(error, InvalidInput).into())
                 })
             });
-            race_connect(addresses, MAX_IN_FLIGHT_CONNECT_ATTEMPTS, dial).await
+            let concurrency = if zero_cid && supplied {
+                1
+            } else {
+                MAX_IN_FLIGHT_CONNECT_ATTEMPTS
+            };
+            race_connect(addresses, concurrency, dial).await
         }
-        .map(|(_, connection)| (endpoint, connection))
+        .map(|(_, connection)| connection)
         .map_err(|error| {
             failures
                 .finish(error)
@@ -645,11 +793,27 @@ mod concrete_transport_tests {
     };
     use std::assert_matches;
 
+    use rama_core::rt::spawn;
     use rama_core::{extensions::Extensions, graceful::Shutdown};
-    use rama_quic::tls::TlsConfigError;
-    use rama_quic_proto::{TransportError, frame::ApplicationClose};
+    use rama_http_core::h3::{client as h3_client, server as h3_server};
+    use rama_http_types::{Body, Request, Response};
+    use rama_net::client::ConnectorTarget;
+    use rama_quic::{ServerConfig, tls::TlsConfigError};
+    use rama_quic_proto::{
+        TransportError,
+        frame::ApplicationClose,
+        profile::{ConnectionIdProfile, ParameterId, ParameterOrder, TransportLimits},
+    };
+    use rama_quic_proto::{
+        VarInt,
+        capture::{CaptureLimits, QuicObservation},
+        coding::Codec,
+        version::{ClientVersionPolicy, Version as QuicVersion},
+    };
     use rama_tls::client::{ServerVerifyMode, TlsClientConfigProvider, TlsPoolId, TlsServerVerify};
+    use rama_tls::server::{LeafCertRequest, ServerAuthData, TlsServerConfig};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
     use tokio::{runtime::Runtime, sync::oneshot};
 
     #[derive(Debug, Default)]
@@ -717,7 +881,7 @@ mod concrete_transport_tests {
             .with_tls_provider(Arc::new(CustomProvider::default()))
             .build_lazy()
             .unwrap();
-        assert_matches!(connector.endpoint.as_ref(), ConnectorEndpoint::Managed(endpoint) if endpoint.try_lock().unwrap().is_none());
+        assert_matches!(connector.endpoint.as_ref(), ConnectorEndpoint::Managed(endpoint) if endpoint.try_lock().unwrap().default.is_none());
     }
 
     #[tokio::test]
@@ -771,7 +935,7 @@ mod concrete_transport_tests {
         cancel.send(()).unwrap();
         guard.cancelled().await;
         _ = connector.endpoint().await.unwrap_err();
-        assert_matches!(connector.endpoint.as_ref(), ConnectorEndpoint::Managed(endpoint) if endpoint.try_lock().unwrap().is_none());
+        assert_matches!(connector.endpoint.as_ref(), ConnectorEndpoint::Managed(endpoint) if endpoint.try_lock().unwrap().default.is_none());
     }
 
     #[tokio::test]
@@ -997,5 +1161,287 @@ mod concrete_transport_tests {
             classify_connect_error(&alpn),
             (Application, ConnectionErrorKind::Protocol)
         );
+    }
+
+    #[tokio::test]
+    async fn profile_endpoints_cache_only_endpoint_wide_policy() {
+        let connector = Http3Connector::builder(Executor::new())
+            .with_tls_provider(Arc::new(CustomProvider::default()))
+            .build_lazy()
+            .unwrap();
+        let profile = QuicProfile::standard();
+        let first = connector
+            .endpoint_for_profile(Some(&profile))
+            .await
+            .unwrap();
+        let reordered = profile.clone().with_transport_parameters(
+            profile
+                .transport_parameters()
+                .clone()
+                .try_with_order(ParameterOrder::Fixed(vec![ParameterId::MAX_IDLE_TIMEOUT]))
+                .unwrap(),
+        );
+        let same = connector
+            .endpoint_for_profile(Some(&reordered))
+            .await
+            .unwrap();
+        assert_eq!(first.local_addr().unwrap(), same.local_addr().unwrap());
+        let changes = [
+            profile.clone().with_grease_quic_bit(false),
+            profile
+                .clone()
+                .with_connection_ids((*profile.connection_ids()).try_with_local_len(3).unwrap()),
+            profile
+                .clone()
+                .try_with_limits(TransportLimits {
+                    max_udp_payload_size: 1400,
+                    ..profile.limits().clone()
+                })
+                .unwrap(),
+        ];
+        let mut addresses = vec![first.local_addr().unwrap()];
+        let mut endpoints = vec![first];
+        for changed in changes {
+            let different = connector
+                .endpoint_for_profile(Some(&changed))
+                .await
+                .unwrap();
+            let address = different.local_addr().unwrap();
+            assert!(!addresses.contains(&address));
+            addresses.push(address);
+            endpoints.push(different);
+        }
+        for endpoint in endpoints {
+            endpoint.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn profile_endpoints_zero_cids_never_share_a_bound_socket() {
+        let connector = Http3Connector::builder(Executor::new())
+            .with_tls_provider(Arc::new(CustomProvider::default()))
+            .build_lazy()
+            .unwrap();
+        let profile = QuicProfile::standard().with_connection_ids(
+            ConnectionIdProfile::standard()
+                .try_with_local_len(0)
+                .unwrap(),
+        );
+        let (first, second) = tokio::join!(
+            connector.endpoint_for_profile(Some(&profile)),
+            connector.endpoint_for_profile(Some(&profile)),
+        );
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_ne!(first.local_addr().unwrap(), second.local_addr().unwrap());
+        let ConnectorEndpoint::Managed(cache) = connector.endpoint.as_ref() else {
+            panic!("expected managed endpoints");
+        };
+        assert!(cache.lock().await.profiles.is_empty());
+        first.shutdown().await;
+        second.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn profile_endpoints_cache_has_a_finite_bound() {
+        let connector = Http3Connector::builder(Executor::new())
+            .with_tls_provider(Arc::new(CustomProvider::default()))
+            .build_lazy()
+            .unwrap();
+        for len in 1..=(MAX_CACHED_PROFILE_ENDPOINTS + 1) {
+            let profile = QuicProfile::standard().with_connection_ids(
+                ConnectionIdProfile::standard()
+                    .try_with_local_len(len as u8)
+                    .unwrap(),
+            );
+            let _endpoint = connector
+                .endpoint_for_profile(Some(&profile))
+                .await
+                .unwrap();
+        }
+        let ConnectorEndpoint::Managed(cache) = connector.endpoint.as_ref() else {
+            panic!("expected managed endpoints");
+        };
+        assert_eq!(
+            cache.lock().await.profiles.len(),
+            MAX_CACHED_PROFILE_ENDPOINTS
+        );
+    }
+
+    #[tokio::test]
+    async fn profile_endpoints_reach_the_peer_and_survive_connector_drop() {
+        profile_peer_exchange(false).await;
+    }
+
+    #[tokio::test]
+    async fn profile_supplied_zero_cid_endpoint_survives_connector_drop() {
+        profile_peer_exchange(true).await;
+    }
+
+    async fn profile_peer_exchange(supplied: bool) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let identity =
+                ServerAuthData::new_self_signed_leaf(LeafCertRequest::default()).unwrap();
+            let server_tls = TlsServerConfig::new()
+                .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
+                .with_server_auth(identity.clone());
+            let mut server_config =
+                ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default()).unwrap();
+            server_config.set_capture(CaptureLimits::default());
+            let server =
+                Endpoint::bind_server(Executor::new(), server_config, SocketAddress::local_ipv4(0))
+                    .await
+                    .unwrap();
+            let address = server.local_addr().unwrap();
+            let count = if supplied { 1 } else { 2 };
+            let accept = server.clone();
+            let serve = spawn(async move {
+                let mut handlers = Vec::new();
+                for _ in 0..count {
+                    let connection = accept
+                        .accept()
+                        .await
+                        .unwrap()
+                        .accept()
+                        .unwrap()
+                        .await
+                        .unwrap();
+                    let remote = connection.remote_address();
+                    let observed = connection
+                        .extensions()
+                        .get_ref::<QuicObservation>()
+                        .unwrap()
+                        .clone();
+                    let (mut http, driver) =
+                        h3_server::handshake(connection.clone(), Config::default()).unwrap();
+                    spawn(driver.run());
+                    handlers.push(spawn(async move {
+                        let (_request, response) =
+                            http.accept().await.unwrap().resolve().await.unwrap();
+                        response
+                            .send_response(Response::new(Body::empty()))
+                            .await
+                            .unwrap();
+                        (remote, observed, connection)
+                    }));
+                }
+                let mut results = Vec::new();
+                for handler in handlers {
+                    results.push(handler.await.unwrap());
+                }
+                results
+            });
+            let tls = TlsClientConfig::new()
+                .try_with_server_trust_anchors([identity.cert_chain.last().unwrap().clone()])
+                .unwrap();
+            let profile = QuicProfile::standard()
+                .with_versions(ClientVersionPolicy::new(QuicVersion::V1).unwrap())
+                .with_connection_ids(
+                    ConnectionIdProfile::standard()
+                        .try_with_local_len(0)
+                        .unwrap(),
+                )
+                .with_grease_quic_bit(false)
+                .try_with_limits(TransportLimits {
+                    max_udp_payload_size: 1400,
+                    initial_max_data: 1_234_567,
+                    ..TransportLimits::standard()
+                })
+                .unwrap();
+            let mut builder = Http3Connector::builder(Executor::new()).with_tls_config(tls);
+            if supplied {
+                let mut endpoint = EndpointConfig::try_with_rand_key().unwrap();
+                endpoint.apply_quic_profile(&profile).unwrap();
+                builder = builder.with_endpoint(
+                    Endpoint::build(Executor::new())
+                        .with_config(endpoint)
+                        .bind_client_address(SocketAddress::local_ipv4(0))
+                        .await
+                        .unwrap(),
+                );
+            }
+            let connector = builder.build_lazy().unwrap();
+            let mut transports = Vec::new();
+            for _ in 0..count {
+                let input =
+                    ConnectRequest::new(HostWithPort::localhost_domain_with_port(address.port()))
+                        .with_application_protocol(Protocol::HTTPS);
+                input
+                    .extensions()
+                    .insert(ConnectorTarget(HostWithPort::local_ipv4(address.port())));
+                input.extensions().insert(profile.clone());
+                transports.push(connector.serve(input).await.unwrap().conn);
+            }
+            // Each established connection retains its socket through the driver;
+            // neither the connector nor an endpoint-cache entry is needed now.
+            drop(connector);
+            let connections: Vec<_> = transports
+                .iter()
+                .map(|transport| transport.connection.clone())
+                .collect();
+            let mut senders = Vec::new();
+            for transport in transports {
+                let (mut sender, driver) = h3_client::handshake::<Body>(
+                    transport.connection,
+                    Arc::unwrap_or_clone(transport.config),
+                    Executor::new(),
+                )
+                .unwrap();
+                spawn(driver.run());
+                sender
+                    .send_request(
+                        Request::builder()
+                            .uri("https://localhost/")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                senders.push(sender);
+            }
+            let results = serve.await.unwrap();
+            if !supplied {
+                assert_ne!(results[0].0.port(), results[1].0.port());
+            }
+            for (_, observed, connection) in results {
+                assert_eq!(observed.first_flight.as_ref().unwrap().scid_len, 0);
+                assert!(
+                    !observed
+                        .transport_parameters
+                        .iter()
+                        .any(|parameter| parameter.id == ParameterId::GREASE_QUIC_BIT)
+                );
+                let max_udp = observed
+                    .transport_parameters
+                    .iter()
+                    .find(|parameter| parameter.id == ParameterId::MAX_UDP_PAYLOAD_SIZE)
+                    .unwrap();
+                assert_eq!(
+                    VarInt::decode(&mut max_udp.value.as_slice())
+                        .unwrap()
+                        .into_inner(),
+                    1400
+                );
+                let max_data = observed
+                    .transport_parameters
+                    .iter()
+                    .find(|parameter| parameter.id == ParameterId::INITIAL_MAX_DATA)
+                    .unwrap();
+                assert_eq!(
+                    VarInt::decode(&mut max_data.value.as_slice())
+                        .unwrap()
+                        .into_inner(),
+                    1_234_567
+                );
+                connection.close(0u32, b"test complete");
+            }
+            for connection in connections {
+                connection.close(0u32, b"test complete");
+            }
+            drop(senders);
+            server.shutdown().await;
+        })
+        .await
+        .unwrap();
     }
 }

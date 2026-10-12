@@ -54,6 +54,7 @@ mod tls;
 mod token;
 mod validation;
 mod version;
+mod zero_cid_routes;
 
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
 use wasm_bindgen_test::wasm_bindgen_test as test;

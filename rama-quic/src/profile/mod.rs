@@ -87,6 +87,11 @@ impl Default for WireProfile {
 }
 
 impl WireProfile {
+    /// Zero-CID emulation uses one socket per connection, including supplied endpoints.
+    pub(crate) fn requires_dedicated_endpoint(&self) -> bool {
+        self.endpoint.is_some_and(|profile| profile.cid_len == 0)
+    }
+
     pub(crate) fn validate_endpoint(
         &self,
         config: &EndpointConfig,
