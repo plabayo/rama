@@ -83,16 +83,17 @@ impl SizeHint {
     }
 }
 
-/// Perfectly adds two `SizeHint`s.
+/// Adds two `SizeHint`s, saturating the lower bound and dropping an overflowing upper one.
 impl core::ops::Add for SizeHint {
     type Output = SizeHint;
 
     fn add(self, rhs: Self) -> Self::Output {
         SizeHint {
-            lower: self.lower() + rhs.lower(),
+            lower: self.lower().saturating_add(rhs.lower()),
             upper: self
                 .upper()
-                .and_then(|this| rhs.upper().map(|rhs| this + rhs)),
+                .zip(rhs.upper())
+                .and_then(|(this, rhs)| this.checked_add(rhs)),
         }
     }
 }
@@ -177,5 +178,26 @@ mod tests {
 
         assert_eq!(inexact_exact.lower(), 30);
         assert_eq!(inexact_exact.upper(), Some(70));
+    }
+
+    #[test]
+    fn size_hint_addition_does_not_overflow() {
+        let max = SizeHint::with_exact(u64::MAX);
+        let one = SizeHint::with_exact(1);
+        for sum in [max + one, one + max, max + max] {
+            assert_eq!(sum.lower(), u64::MAX);
+            assert_eq!(sum.upper(), None);
+            assert_eq!(sum.exact(), None);
+        }
+
+        let unbounded = SizeHint {
+            lower: u64::MAX,
+            upper: None,
+        };
+        assert_eq!((unbounded + one).lower(), u64::MAX);
+        assert_eq!((unbounded + one).upper(), None);
+
+        let fits = SizeHint::with_exact(u64::MAX - 1) + one;
+        assert_eq!(fits.exact(), Some(u64::MAX));
     }
 }
