@@ -32,6 +32,13 @@ use tokio::io::AsyncWrite;
 use std::sync::Arc;
 use std::{fmt, io};
 
+/// Whether replay advanced, must wait for stream state, or queued SETTINGS.
+pub(crate) enum ReplayStep {
+    Idle,
+    Advanced,
+    Settings(Settings),
+}
+
 #[derive(Debug)]
 pub(crate) struct Streams<B, P>
 where
@@ -217,7 +224,7 @@ where
         cx: &mut Context,
         dst: &mut Codec<T, Prioritized<B>>,
         settings_synced: bool,
-    ) -> Poll<Result<Option<Settings>, Error>>
+    ) -> Poll<Result<ReplayStep, Error>>
     where
         T: AsyncWrite + Unpin,
     {
@@ -230,14 +237,12 @@ where
             let mut me = self.inner.lock();
             let next_stream_id = me.actions.send.peek_next_id();
             if !me.early_frame_ctx.can_replay_next_frame(next_stream_id) {
-                // Clear a replay context whose next frame is no longer valid
-                // while observing the same stream state used by the check.
-                let replayed = me.early_frame_ctx.replay_next_frame(next_stream_id);
-                debug_assert!(replayed.is_none());
-                return Poll::Ready(Ok(None));
+                // A stream-targeted frame can precede the request which creates
+                // that stream. Retain it until opening the stream wakes us.
+                return Poll::Ready(Ok(ReplayStep::Idle));
             }
             if !settings_synced && me.early_frame_ctx.next_frame_is_settings() {
-                return Poll::Ready(Ok(None));
+                return Poll::Ready(Ok(ReplayStep::Idle));
             }
             me.early_frame_ctx
                 .next_stream_window_update()
@@ -260,7 +265,7 @@ where
                     .is_some_and(|stream| stream.is_pending_open)
             };
             if still_pending {
-                return Poll::Ready(Ok(None));
+                return Poll::Ready(Ok(ReplayStep::Idle));
             }
 
             // Make space after the staged HEADERS before appending the replay.
@@ -272,6 +277,7 @@ where
         let me = &mut *me;
 
         let next_stream_id = me.actions.send.peek_next_id();
+        let first_connection_window = !me.early_frame_ctx.has_replayed_connection_window();
         match me.early_frame_ctx.replay_next_frame(next_stream_id) {
             Some(early_frame) => {
                 let has_more = me.early_frame_ctx.has_replay_frame();
@@ -282,7 +288,11 @@ where
                         if has_more {
                             cx.waker().wake_by_ref();
                         }
-                        return Poll::Ready(Ok((!settings.flags.is_ack()).then_some(settings)));
+                        return Poll::Ready(Ok(if settings.flags.is_ack() {
+                            ReplayStep::Advanced
+                        } else {
+                            ReplayStep::Settings(settings)
+                        }));
                     }
                     frame::EarlyFrame::WindowUpdate(window_update)
                         if !window_update.stream_id.is_zero() =>
@@ -295,7 +305,7 @@ where
                             if has_more {
                                 cx.waker().wake_by_ref();
                             }
-                            return Poll::Ready(Ok(None));
+                            return Poll::Ready(Ok(ReplayStep::Advanced));
                         };
 
                         // Validate both changes on a copy so an invalid captured
@@ -320,31 +330,39 @@ where
                         if has_more {
                             cx.waker().wake_by_ref();
                         }
-                        return Poll::Ready(Ok(None));
+                        return Poll::Ready(Ok(ReplayStep::Advanced));
                     }
-                    // NOTE: this can cause issues in case regular logic would also send a windows update soon afterwards
                     frame::EarlyFrame::WindowUpdate(window_update) => {
                         tracing::trace!(
                             "replay: increment h2 window update size w/ {}",
                             window_update.size_increment
                         );
-                        if let Err(reason) =
-                            Recv::replayed_connection_window(window_update.size_increment)
-                                .and_then(|target| me.set_target_connection_window(target))
-                        {
-                            tracing::debug!(
-                                "h2 streams: failed to replay window update: reason = {reason}; go away"
-                            );
-                            return Poll::Ready(Err(Error::library_go_away(reason)));
+                        let replay = match me.actions.recv.prepare_replayed_connection_window(
+                            window_update.size_increment,
+                            first_connection_window,
+                        ) {
+                            Ok(replay) => replay,
+                            Err(reason) => {
+                                tracing::debug!(
+                                    "h2 streams: failed to replay window update: reason = {reason}; go away"
+                                );
+                                return Poll::Ready(Err(Error::library_go_away(reason)));
+                            }
+                        };
+                        if let Err(error) = dst.buffer(window_update.into()) {
+                            return Poll::Ready(Err(error.into()));
                         }
+                        let target = replay.target;
+                        me.actions.recv.commit_replayed_connection_window(replay);
+                        me.counts.set_target_connection_window_size(target);
                         if has_more {
                             cx.waker().wake_by_ref();
                         }
-                        return Poll::Ready(Ok(None));
+                        return Poll::Ready(Ok(ReplayStep::Advanced));
                     }
                 };
                 let result = match dst.buffer(frame) {
-                    Ok(_) => Ok(None),
+                    Ok(_) => Ok(ReplayStep::Advanced),
                     Err(err) => Err(err.into()),
                 };
                 if result.is_ok() && has_more {
@@ -352,7 +370,7 @@ where
                 }
                 Poll::Ready(result)
             }
-            None => Poll::Ready(Ok(None)),
+            None => Poll::Ready(Ok(ReplayStep::Idle)),
         }
     }
 

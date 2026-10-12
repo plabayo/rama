@@ -80,7 +80,10 @@ impl EarlyFrameStreamContext {
         };
         (
             Self {
-                kind: EarlyFrameKind::Replayer(frames),
+                kind: EarlyFrameKind::Replayer {
+                    frames,
+                    connection_window_replayed: false,
+                },
             },
             settings,
         )
@@ -96,7 +99,7 @@ impl EarlyFrameStreamContext {
     /// replay. The actual replay still goes through [`Self::replay_next_frame`].
     #[must_use]
     pub fn can_replay_next_frame(&self, next_stream_id: Option<StreamId>) -> bool {
-        let EarlyFrameKind::Replayer(frames) = &self.kind else {
+        let EarlyFrameKind::Replayer { frames, .. } = &self.kind else {
             return false;
         };
 
@@ -112,7 +115,7 @@ impl EarlyFrameStreamContext {
     pub fn next_frame_is_settings(&self) -> bool {
         matches!(
             &self.kind,
-            EarlyFrameKind::Replayer(frames)
+            EarlyFrameKind::Replayer { frames, .. }
                 if matches!(
                     frames.last(),
                     Some(EarlyFrame::Settings(settings)) if !settings.flags.is_ack()
@@ -125,7 +128,7 @@ impl EarlyFrameStreamContext {
     #[must_use]
     pub fn next_stream_window_update(&self) -> Option<StreamId> {
         match &self.kind {
-            EarlyFrameKind::Replayer(frames) => match frames.last() {
+            EarlyFrameKind::Replayer { frames, .. } => match frames.last() {
                 Some(EarlyFrame::WindowUpdate(frame)) if !frame.stream_id.is_zero() => {
                     Some(frame.stream_id)
                 }
@@ -138,7 +141,20 @@ impl EarlyFrameStreamContext {
     /// Returns whether another captured frame remains to be replayed.
     #[must_use]
     pub fn has_replay_frame(&self) -> bool {
-        matches!(&self.kind, EarlyFrameKind::Replayer(frames) if !frames.is_empty())
+        matches!(&self.kind, EarlyFrameKind::Replayer { frames, .. } if !frames.is_empty())
+    }
+
+    /// Whether a connection WINDOW_UPDATE was consumed from this replay.
+    /// Only meaningful while a replay still has pending frames.
+    #[must_use]
+    pub fn has_replayed_connection_window(&self) -> bool {
+        matches!(
+            &self.kind,
+            EarlyFrameKind::Replayer {
+                connection_window_replayed: true,
+                ..
+            }
+        )
     }
 
     pub fn record_priority_frame(&mut self, frame: &Priority) {
@@ -173,21 +189,25 @@ impl EarlyFrameStreamContext {
     }
 
     pub fn replay_next_frame(&mut self, next_stream_id: Option<StreamId>) -> Option<EarlyFrame> {
-        if let EarlyFrameKind::Replayer(ref mut v) = self.kind {
+        if let EarlyFrameKind::Replayer {
+            frames: v,
+            connection_window_replayed,
+        } = &mut self.kind
+        {
             if let Some(next_stream_id) = next_stream_id
                 && !v
                     .last()
                     .map(|f| f.stream_created(next_stream_id))
                     .unwrap_or_default()
             {
-                self.kind = EarlyFrameKind::Nop;
-                tracing::trace!(
-                    "stop replayer early, the scenario has changed, we are beyond the existing streams now"
-                );
+                tracing::trace!("wait to replay an early frame until its target stream exists");
                 return None;
             }
 
             let next = v.pop();
+            if matches!(&next, Some(EarlyFrame::WindowUpdate(frame)) if frame.stream_id.is_zero()) {
+                *connection_window_replayed = true;
+            }
             if v.is_empty() {
                 self.kind = EarlyFrameKind::Nop;
             }
@@ -202,7 +222,10 @@ impl EarlyFrameStreamContext {
 #[derive(Debug, Default, Clone)]
 enum EarlyFrameKind {
     Recorder(EarlyFrameRecorder),
-    Replayer(Vec<EarlyFrame>),
+    Replayer {
+        frames: Vec<EarlyFrame>,
+        connection_window_replayed: bool,
+    },
     #[default]
     Nop,
 }

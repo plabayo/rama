@@ -1,3 +1,4 @@
+use super::streams::ReplayStep;
 use crate::h2::codec::UserError;
 use crate::h2::proto::*;
 use crate::h2::{client, server};
@@ -300,18 +301,24 @@ where
         }
 
         let settings_synced = self.inner.settings.is_synced();
-        if let Some(settings) = ready!(self.inner.streams.send_pending(
-            cx,
-            &mut self.codec,
-            settings_synced,
-        ))? {
-            tracing::trace!("send replayed early settings frame: {settings:?}");
-            if let Err(err) = self.inner.settings.send_settings(settings) {
-                return Poll::Ready(Err(err.into()));
+        // Drain only frames which actually advance replay. A future or
+        // concurrency-blocked stream must let the connection continue reading.
+        loop {
+            match ready!(
+                self.inner
+                    .streams
+                    .send_pending(cx, &mut self.codec, settings_synced)
+            )? {
+                ReplayStep::Idle => break,
+                ReplayStep::Advanced => {}
+                ReplayStep::Settings(settings) => {
+                    tracing::trace!("send replayed early settings frame: {settings:?}");
+                    self.inner.settings.send_settings(settings)?;
+                    // The frame is queued; another poll passes it to the codec.
+                    cx.waker().wake_by_ref();
+                    break;
+                }
             }
-            // `send_settings` only queues the frame; schedule the next poll to
-            // pass it to the codec even when the connection is otherwise idle.
-            cx.waker().wake_by_ref();
         }
 
         Poll::Ready(Ok(()))
