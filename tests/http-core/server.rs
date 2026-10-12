@@ -1596,7 +1596,8 @@ async fn header_read_timeout_slow_writes_multiple_requests() {
         )
         .expect("write 4");
 
-        thread::sleep(Duration::from_secs(6));
+        // Within the idle budget, so the slow head below trips the header-read timeout.
+        thread::sleep(Duration::from_secs(3));
 
         tcp.write_all(
             b"\
@@ -1624,8 +1625,8 @@ async fn header_read_timeout_slow_writes_multiple_requests() {
             ceiling: Duration::from_secs(5),
         })
         .with_idle_timeout(IdleTimeout {
-            first_request: Duration::from_secs(5),
-            idle: Duration::from_secs(5),
+            first_request: Duration::from_secs(10),
+            idle: Duration::from_secs(10),
         })
         .serve_connection(
             socket,

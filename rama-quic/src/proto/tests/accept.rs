@@ -170,6 +170,51 @@ fn a_client_hello_spanning_initials_completes_before_registration() {
     assert_connected(&mut pair, client);
 }
 
+/// The rest of a ClientHello that arrives while the handshake runs is handed back with the
+/// registered connection rather than processed while registering it, so completing the
+/// ClientHello (and signing the first flight) stays outside the endpoint.
+#[test]
+fn the_rest_of_a_client_hello_arriving_between_phases_is_handed_back() {
+    let mut pair = pair_with(
+        EndpointConfig::try_with_rand_key().unwrap(),
+        ServerConfig::with_crypto(Arc::new(server_crypto_with_alpn(vec![vec![0, 0, 0, 42]]))),
+    );
+    let client_crypto =
+        client_crypto_with_alpn((0..300u32).map(|x| x.to_be_bytes().to_vec()).collect());
+    let client = pair.begin_connect(ClientConfig::new(Arc::new(client_crypto)));
+    pair.drive_client();
+    let rest: Vec<_> = pair.server.inbound.drain(1..).collect();
+    assert!(!rest.is_empty(), "the ClientHello spans several Initials");
+    pair.drive_server();
+    let incoming = pair.server.waiting_incoming.pop().unwrap();
+    let accepting = start(&mut pair, incoming, None);
+    pair.server.inbound.extend(rest.iter().cloned());
+    pair.drive_server();
+
+    let accepted = accepting.accept();
+    assert_eq!(
+        accepted.connection().unwrap().highest_space(),
+        SpaceId::Initial,
+        "the ClientHello is still incomplete"
+    );
+    let registered = pair
+        .server
+        .endpoint
+        .finish_accept(accepted, &mut Vec::new())
+        .unwrap();
+    assert_eq!(registered.late.len(), rest.len());
+    assert_eq!(
+        registered.connection.highest_space(),
+        SpaceId::Initial,
+        "not processed while registering"
+    );
+    assert_eq!(pair.server.incoming_buffer_bytes(), 0);
+    let (handle, conn, _admission) = registered.replayed();
+    assert_ne!(conn.highest_space(), SpaceId::Initial);
+    pair.server.connections.insert(handle, conn);
+    assert_connected(&mut pair, client);
+}
+
 #[test]
 fn a_failed_handshake_between_phases_releases_what_was_reserved() {
     let mut pair = pair();

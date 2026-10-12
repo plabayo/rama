@@ -849,6 +849,7 @@ impl Endpoint {
     ) -> Result<(ConnectionHandle, Connection, AdmissionLease), AcceptError> {
         let accepting = self.start_accept(incoming, now, buf, server_config)?;
         self.finish_accept(accepting.accept(), buf)
+            .map(Registered::replayed)
     }
 
     /// Begin accepting an attempt with the part that needs the endpoint: validation and the
@@ -1055,15 +1056,15 @@ impl Endpoint {
         })
     }
 
-    /// Complete an accept begun by [`Self::start_accept`]: register the connection and replay
-    /// the datagrams that arrived for it since, or release what was reserved and answer the
-    /// client with the failure. An attempt that expired or was discarded while its
+    /// Complete an accept begun by [`Self::start_accept`]: register the connection and hand
+    /// back the datagrams that arrived for it since, or release what was reserved and answer
+    /// the client with the failure. An attempt that expired or was discarded while its
     /// handshake ran fails as timed out; its reservation went with it.
     pub(crate) fn finish_accept(
         &mut self,
         accepted: Accepted,
         buf: &mut Vec<u8>,
-    ) -> Result<(ConnectionHandle, Connection, AdmissionLease), AcceptError> {
+    ) -> Result<Registered, AcceptError> {
         let Accepted {
             reservation,
             result,
@@ -1082,7 +1083,7 @@ impl Endpoint {
         improper_drop_warner.dismiss();
         let buffer = self.take_buffer(incoming_idx, &progress);
         match (result, buffer) {
-            (Ok(mut conn), Some(buffer)) => {
+            (Ok(conn), Some(buffer)) => {
                 // Install address routes only after TLS and the first flight succeeded. A
                 // failed fresh handshake must not displace an established zero-CID route.
                 let ch = ConnectionHandle(self.connections.vacant_key());
@@ -1101,10 +1102,15 @@ impl Endpoint {
                     admission,
                     ..
                 } = buffer;
-                for event in datagrams {
-                    conn.handle_event(ConnectionEvent(ConnectionEventInner::Datagram(event)))
-                }
-                Ok((ch, conn, admission))
+                Ok(Registered {
+                    handle: ch,
+                    connection: conn,
+                    admission,
+                    late: datagrams
+                        .into_iter()
+                        .map(|event| ConnectionEvent(ConnectionEventInner::Datagram(event)))
+                        .collect(),
+                })
             }
             (result, buffer) => {
                 let cause = result.err().unwrap_or(ConnectionError::TimedOut);
@@ -2507,6 +2513,34 @@ impl std::error::Error for ConnectError {
             Self::Crypto(error) => Some(error),
             _ => None,
         }
+    }
+}
+
+/// A connection [`Endpoint::finish_accept`] registered.
+#[derive(Debug)]
+pub(crate) struct Registered {
+    pub(crate) handle: ConnectionHandle,
+    pub(crate) connection: Connection,
+    pub(crate) admission: AdmissionLease,
+    /// Datagrams that arrived while the handshake ran, possibly the rest of the ClientHello:
+    /// the caller feeds them to the connection without the endpoint, before anything newer.
+    pub(crate) late: Vec<ConnectionEvent>,
+}
+
+impl Registered {
+    /// Tests: feed the late datagrams to the connection, as the driver does.
+    #[cfg(test)]
+    pub(crate) fn replayed(self) -> (ConnectionHandle, Connection, AdmissionLease) {
+        let Self {
+            handle,
+            mut connection,
+            admission,
+            late,
+        } = self;
+        for event in late {
+            connection.handle_event(event);
+        }
+        (handle, connection, admission)
     }
 }
 

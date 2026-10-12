@@ -76,8 +76,8 @@ as a distant relative.
     handshake completes, and padding Initial datagrams to `min_mtu` (the profile decides the
     Initial size), which are functional or performance choices rather than fixes.
   - the three-phase accept is carried over and runs TLS setup outside the endpoint lock,
-    including the Initials buffered before the accept (a ClientHello spanning several
-    datagrams), so the handshake signature never holds the lock.
+    including Initials that arrive before or during the accept (a ClientHello spanning
+    several datagrams), so the handshake signature never holds the lock.
   - License:
     - Original: <https://github.com/quinn-rs/quinn/blob/48854d48635875d259a95973cc0575db8c1792a4/LICENSE-MIT>
       and <https://github.com/quinn-rs/quinn/blob/48854d48635875d259a95973cc0575db8c1792a4/LICENSE-APACHE>

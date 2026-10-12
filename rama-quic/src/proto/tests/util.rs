@@ -922,7 +922,10 @@ impl TestEndpoint {
         accepted: Accepted,
     ) -> Result<ConnectionHandle, ConnectionError> {
         let mut buf = Vec::new();
-        let outcome = self.endpoint.finish_accept(accepted, &mut buf);
+        let outcome = self
+            .endpoint
+            .finish_accept(accepted, &mut buf)
+            .map(|registered| registered.replayed());
         self.settle(outcome, &buf)
     }
 

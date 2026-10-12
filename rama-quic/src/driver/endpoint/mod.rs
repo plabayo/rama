@@ -1187,15 +1187,16 @@ impl EndpointRef {
                 Err(ConnectionError::LocallyClosed)
             }
             Some(mut socket) => match state.inner.finish_accept(accepted, &mut response_buffer) {
-                Ok((handle, conn, admission)) => {
+                Ok(registered) => {
                     state.stats.accepted_handshakes += 1;
-                    Ok(state.recv_state.connections.insert(
-                        handle,
-                        conn,
+                    let (connecting, driver) = state.recv_state.connections.insert(
+                        registered.handle,
+                        registered.connection,
                         socket,
-                        EndpointLink::new(Arc::downgrade(&self.0), handle),
-                        Some(admission),
-                    ))
+                        EndpointLink::new(Arc::downgrade(&self.0), registered.handle),
+                        Some(registered.admission),
+                    );
+                    Ok((connecting, driver, registered.late))
                 }
                 Err(error) => {
                     if let Some(sender_lease) = socket.take_lease() {
@@ -1227,7 +1228,16 @@ impl EndpointRef {
         drop(state);
         drop(retired);
         drop(unused_sender);
-        registered.map(|(connecting, driver)| {
+        registered.map(|(connecting, driver, late)| {
+            // What arrived while the handshake ran may complete the ClientHello: it is processed
+            // under the connection's lock, ahead of the queue its driver drains, not the endpoint's.
+            if !late.is_empty() {
+                let inner = connecting.inner();
+                let mut conn = inner.state.lock();
+                for event in late {
+                    conn.inner.handle_event(event);
+                }
+            }
             if let Some(slot) = slot {
                 driver.spawn(slot);
             }

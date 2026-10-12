@@ -227,10 +227,10 @@ impl PacketSpace {
     /// give back mostly unused capacity, so a quiet connection keeps no stale history.
     fn trim_non_ack_eliciting(&mut self) {
         while let Some(&front) = self.non_ack_eliciting_sent.front()
-            && !self
+            && self
                 .sent_packets
                 .get(&front)
-                .is_some_and(|sent| !sent.ack_eliciting)
+                .is_none_or(|sent| sent.ack_eliciting)
         {
             self.non_ack_eliciting_sent.pop_front();
         }
