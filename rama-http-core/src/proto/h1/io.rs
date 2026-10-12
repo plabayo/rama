@@ -228,6 +228,7 @@ where
                     req_method: parse_ctx.req_method,
                     h1_parser_config: parse_ctx.h1_parser_config.clone(),
                     h1_max_headers: parse_ctx.h1_max_headers,
+                    h1_max_header_size: parse_ctx.h1_max_header_size,
                     h09_responses: parse_ctx.h09_responses,
                     on_informational: parse_ctx.on_informational,
                     prepared_extensions: parse_ctx.prepared_extensions,
@@ -237,8 +238,16 @@ where
                 self.partial_len = None;
                 return Poll::Ready(Ok(msg));
             } else {
-                let max = self.read_buf_strategy.max();
                 let curr_len = self.read_buf.len();
+                // A partial head that already holds the limit can only end up past it.
+                if curr_len > 0
+                    && let Some(max_header_size) = parse_ctx.h1_max_header_size
+                    && curr_len >= max_header_size
+                {
+                    debug!("max_header_size ({max_header_size}) reached, closing");
+                    return Poll::Ready(Err(crate::Error::new_too_large()));
+                }
+                let max = self.read_buf_strategy.max();
                 if curr_len >= max {
                     debug!("max_buf_size ({}) reached, closing", max);
                     return Poll::Ready(Err(crate::Error::new_too_large()));
@@ -751,6 +760,7 @@ mod tests {
                 req_method: &mut None,
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
+                h1_max_header_size: None,
                 h09_responses: false,
                 on_informational: &mut None,
                 prepared_extensions: &mut Some(Extensions::default()),

@@ -136,6 +136,7 @@ pub struct Builder {
     h1_writev: Option<bool>,
     h1_title_case_headers: bool,
     h1_max_headers: Option<usize>,
+    h1_max_header_size: Option<usize>,
 
     h1_read_buf_exact_size: Option<usize>,
     h1_max_buf_size: Option<usize>,
@@ -353,6 +354,7 @@ impl Builder {
             h1_parser_config: ParserConfig::default(),
             h1_title_case_headers: false,
             h1_max_headers: None,
+            h1_max_header_size: None,
             h1_max_buf_size: None,
         }
     }
@@ -498,6 +500,22 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum size in bytes of a response head, its status line included.
+        ///
+        /// If the server sends a larger head, the error "message head is too large"
+        /// is returned.
+        ///
+        /// This also bounds the size of chunked trailers.
+        ///
+        /// Default is `None`: the head is only bounded by the maximum buffer size,
+        /// and trailers by 16 KiB.
+        pub fn max_header_size(mut self, val: Option<usize>) -> Self {
+            self.h1_max_header_size = val;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Sets the exact size of the read buffer to *always* use.
         ///
         /// Note that setting this option unsets the `max_buf_size` option.
@@ -575,6 +593,9 @@ impl Builder {
             }
             if let Some(max_headers) = opts.h1_max_headers {
                 conn.set_http1_max_headers(max_headers);
+            }
+            if let Some(max_header_size) = opts.h1_max_header_size {
+                conn.set_http1_max_header_size(max_header_size);
             }
 
             if opts.h09_responses {

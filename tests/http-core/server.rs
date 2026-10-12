@@ -2780,6 +2780,48 @@ async fn max_buf_size_split_header_boundary() {
 }
 
 #[tokio::test]
+async fn max_header_size() {
+    const MAX_HEADER: usize = 512;
+
+    // (long header length, max buffer size, accepted)
+    for (long_header, max_buf_size, accepted) in [
+        (1000, None, false),
+        (1000, Some(64 * 1024), false),
+        (100, None, true),
+    ] {
+        let (listener, addr) = setup_tcp_listener();
+
+        let client = thread::spawn(move || {
+            let mut tcp = connect(&addr);
+            tcp.write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\nX-Long: ")
+                .expect("write 1");
+            tcp.write_all(&vec![b'a'; long_header]).expect("write 2");
+            tcp.write_all(b"\r\n\r\n").expect("write 3");
+            let mut buf = [0; 256];
+            _ = tcp.read(&mut buf).expect("read 1");
+
+            let expected = if accepted {
+                "HTTP/1.1 200 "
+            } else {
+                "HTTP/1.1 431 "
+            };
+            assert_eq!(s(&buf[..expected.len()]), expected);
+        });
+
+        let (socket, _) = listener.accept().await.unwrap();
+        let socket = ServiceInput::new(socket);
+        let served = http1::Builder::new()
+            .with_max_header_size(MAX_HEADER)
+            .try_maybe_with_max_buf_size(max_buf_size)
+            .unwrap()
+            .serve_connection(socket, RamaHttpService::new(HelloWorld))
+            .await;
+        assert_eq!(served.is_ok(), accepted, "{long_header} {max_buf_size:?}");
+        client.join().unwrap();
+    }
+}
+
+#[tokio::test]
 async fn graceful_shutdown_before_first_request_no_block() {
     let (listener, addr) = setup_tcp_listener();
 

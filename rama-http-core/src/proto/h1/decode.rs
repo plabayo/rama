@@ -20,9 +20,8 @@ use super::{DecodedLength, io::MemRead, role::DEFAULT_MAX_HEADERS};
 /// This limit is currentlty applied for the entire body, not per chunk.
 const CHUNKED_EXTENSIONS_LIMIT: u64 = 1024 * 16;
 
-/// Maximum number of bytes allowed for all trailer fields.
-///
-/// TODO: remove this when we land h1_max_header_size support.
+/// Maximum number of bytes allowed for all trailer fields, unless a maximum
+/// header size is configured.
 const TRAILER_LIMIT: usize = 1024 * 16;
 
 /// Decoders to handle different Transfer-Encodings.

@@ -73,6 +73,7 @@ pub(crate) struct ParseContext<'a> {
     req_method: &'a mut Option<Method>,
     h1_parser_config: ParserConfig,
     h1_max_headers: Option<usize>,
+    h1_max_header_size: Option<usize>,
     h09_responses: bool,
     on_informational: &'a mut Option<OnInformational>,
     /// This can be consumed but we pass this as mut ref to prevent cloning in parse loops.
@@ -139,6 +140,7 @@ pub(crate) mod test_util {
                 req_method: &mut None,
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
+                h1_max_header_size: None,
                 h09_responses: false,
                 on_informational: &mut None,
                 prepared_extensions: &mut Some(Extensions::default()),

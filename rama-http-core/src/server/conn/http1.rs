@@ -74,6 +74,7 @@ pub struct Builder {
     h1_keep_alive: bool,
     h1_title_case_headers: bool,
     h1_max_headers: Option<usize>,
+    h1_max_header_size: Option<usize>,
     h1_header_read_timeout: Duration,
     h1_lingering_close: Option<LingeringClose>,
     h1_writev: Option<bool>,
@@ -247,6 +248,7 @@ impl Builder {
             h1_keep_alive: true,
             h1_title_case_headers: false,
             h1_max_headers: None,
+            h1_max_header_size: None,
             h1_header_read_timeout: Duration::from_secs(30),
             h1_lingering_close: Some(LingeringClose::default()),
             h1_writev: None,
@@ -334,6 +336,22 @@ impl Builder {
         /// Default is `100`.
         pub fn max_headers(mut self, val: Option<usize>) -> Self {
             self.h1_max_headers = val;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the maximum size in bytes of a request head, its request line included.
+        ///
+        /// If the client sends a larger head, the server responds with
+        /// "431 Request Header Fields Too Large" and closes the connection.
+        ///
+        /// This also bounds the size of chunked trailers.
+        ///
+        /// Default is `None`: the head is only bounded by the maximum buffer size,
+        /// and trailers by 16 KiB.
+        pub fn max_header_size(mut self, val: Option<usize>) -> Self {
+            self.h1_max_header_size = val;
             self
         }
     }
@@ -475,6 +493,9 @@ impl Builder {
         }
         if let Some(max_headers) = self.h1_max_headers {
             conn.set_http1_max_headers(max_headers);
+        }
+        if let Some(max_header_size) = self.h1_max_header_size {
+            conn.set_http1_max_header_size(max_header_size);
         }
         conn.set_http1_header_read_timeout(self.h1_header_read_timeout);
         conn.set_lingering_close(self.h1_lingering_close);

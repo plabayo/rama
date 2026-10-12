@@ -22,6 +22,51 @@ pub(super) fn connection_any_close(headers: &HeaderMap) -> bool {
     headers.get_all(CONNECTION).iter().any(connection_close)
 }
 
+pub(super) fn connection_any_keep_alive(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(CONNECTION)
+        .iter()
+        .any(connection_keep_alive)
+}
+
+/// Makes `Connection` carry `close` instead of any `keep-alive`, keeping the
+/// other options as they nominate the message's hop-by-hop fields.
+pub(super) fn connection_set_close(headers: &mut HeaderMap) {
+    const CLOSE: &str = "close";
+    const KEEP_ALIVE: &str = "keep-alive";
+
+    if !connection_any_keep_alive(headers) {
+        if !connection_any_close(headers) {
+            headers.append(CONNECTION, HeaderValue::from_static(CLOSE));
+        }
+        return;
+    }
+
+    let kept = || {
+        headers
+            .get_all(CONNECTION)
+            .iter()
+            .flat_map(|value| value.as_bytes().split(|byte| *byte == b','))
+            .map(trim_ows)
+            .filter(|option| {
+                !option.is_empty()
+                    && !option.eq_ignore_ascii_case(CLOSE.as_bytes())
+                    && !option.eq_ignore_ascii_case(KEEP_ALIVE.as_bytes())
+            })
+    };
+    // Exactly sized, so the line moves into the value without a copy or slack.
+    let len = kept().map(|option| option.len() + 2).sum::<usize>() + CLOSE.len();
+    let mut line = BytesMut::with_capacity(len);
+    for option in kept() {
+        line.extend_from_slice(option);
+        line.extend_from_slice(b", ");
+    }
+    line.extend_from_slice(CLOSE.as_bytes());
+    let value = HeaderValue::from_maybe_shared(line.freeze())
+        .unwrap_or_else(|_| HeaderValue::from_static(CLOSE));
+    headers.insert(CONNECTION, value);
+}
+
 pub(super) fn connection_header_names(headers: &HeaderMap) -> ConnectionHeaderNames {
     comma_header_names(headers.get_all(CONNECTION).iter()).collect()
 }
@@ -247,6 +292,35 @@ mod tests {
                 "expected no duplicate chunked in {:?}",
                 std::str::from_utf8(v).unwrap()
             );
+        }
+    }
+
+    #[test]
+    fn connection_set_close_keeps_nominated_fields() {
+        let cases: &[(&[&str], &[&str])] = &[
+            (&[], &["close"]),
+            (&["close"], &["close"]),
+            (&["close, x-hop"], &["close, x-hop"]),
+            (&["x-hop"], &["x-hop", "close"]),
+            (&["x-a", "Close"], &["x-a", "Close"]),
+            (&["keep-alive"], &["close"]),
+            (&["keep-alive, x-hop"], &["x-hop, close"]),
+            (&["Keep-Alive", " x-a ,x-b"], &["x-a, x-b, close"]),
+            (&["close", "keep-alive"], &["close"]),
+            (&["x-hop,, keep-alive"], &["x-hop, close"]),
+        ];
+        for &(lines, expected) in cases {
+            let mut headers = HeaderMap::new();
+            for &line in lines {
+                headers.append(CONNECTION, HeaderValue::from_static(line));
+            }
+            connection_set_close(&mut headers);
+            let actual: Vec<_> = headers
+                .get_all(CONNECTION)
+                .iter()
+                .map(|value| value.to_str().unwrap())
+                .collect();
+            assert_eq!(actual, expected, "{lines:?}");
         }
     }
 

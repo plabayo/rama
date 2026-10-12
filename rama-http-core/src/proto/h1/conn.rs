@@ -62,6 +62,7 @@ where
                 method: None,
                 h1_parser_config: ParserConfig::default(),
                 h1_max_headers: None,
+                h1_max_header_size: None,
                 h1_header_read_timeout: None,
                 h1_header_read_timeout_fut: None,
                 h1_header_read_timeout_running: false,
@@ -118,6 +119,10 @@ where
 
     pub(crate) fn set_http1_max_headers(&mut self, val: usize) {
         self.state.h1_max_headers = Some(val);
+    }
+
+    pub(crate) fn set_http1_max_header_size(&mut self, val: usize) {
+        self.state.h1_max_header_size = Some(val);
     }
 
     pub(crate) fn set_http1_header_read_timeout(&mut self, val: Duration) {
@@ -278,6 +283,7 @@ where
                 req_method: &mut self.state.method,
                 h1_parser_config: self.state.h1_parser_config.clone(),
                 h1_max_headers: self.state.h1_max_headers,
+                h1_max_header_size: self.state.h1_max_header_size,
                 h09_responses: self.state.h09_responses,
                 on_informational: &mut self.state.on_informational,
                 prepared_extensions: &mut prepared_extensions,
@@ -338,19 +344,17 @@ where
                 self.try_keep_alive(cx);
             }
         } else if msg.expect_continue && msg.head.version.gt(&Version::HTTP_10) {
-            let h1_max_header_size = None; // TODO: remove this when we land h1_max_header_size support
             self.state.reading = Reading::Continue(Decoder::new(
                 msg.decode,
                 self.state.h1_max_headers,
-                h1_max_header_size,
+                self.state.h1_max_header_size,
             ));
             wants = wants.add(Wants::EXPECT);
         } else {
-            let h1_max_header_size = None; // TODO: remove this when we land h1_max_header_size support
             self.state.reading = Reading::Body(Decoder::new(
                 msg.decode,
                 self.state.h1_max_headers,
-                h1_max_header_size,
+                self.state.h1_max_header_size,
             ));
         }
 
@@ -710,24 +714,25 @@ where
 
     // Fix keep-alive when Connection: keep-alive header is not present
     fn fix_keep_alive(&mut self, head: &mut MessageHead<T::Outgoing>) {
-        let outgoing_is_keep_alive = head
-            .headers
-            .get(CONNECTION)
-            .is_some_and(headers::connection_keep_alive);
-
-        if !outgoing_is_keep_alive {
-            match head.version {
-                // If response is version 1.0 and keep-alive is not present in the response,
-                // disable keep-alive so the server closes the connection
-                Version::HTTP_10 => self.state.disable_keep_alive(),
-                // If response is version 1.1 and keep-alive is wanted, add
-                // Connection: keep-alive header when not present
-                Version::HTTP_11 if self.state.wants_keep_alive() => {
-                    head.headers
-                        .insert(CONNECTION, HeaderValue::from_static("keep-alive"));
-                }
-                _ => (),
+        // A `close` option wins over any `keep-alive` one.
+        if headers::connection_any_close(&head.headers) {
+            self.state.disable_keep_alive();
+            return;
+        }
+        if headers::connection_any_keep_alive(&head.headers) {
+            return;
+        }
+        match head.version {
+            // If response is version 1.0 and keep-alive is not present in the response,
+            // disable keep-alive so the server closes the connection
+            Version::HTTP_10 => self.state.disable_keep_alive(),
+            // If response is version 1.1 and keep-alive is wanted, add
+            // Connection: keep-alive, keeping the hop-by-hop fields it nominates.
+            Version::HTTP_11 if self.state.wants_keep_alive() => {
+                head.headers
+                    .append(CONNECTION, HeaderValue::from_static("keep-alive"));
             }
+            _ => (),
         }
     }
 
@@ -744,8 +749,7 @@ where
             }
             Version::HTTP_11 => {
                 if matches!(self.state.keep_alive.status(), KA::Disabled) {
-                    head.headers
-                        .insert(CONNECTION, HeaderValue::from_static("close"));
+                    headers::connection_set_close(&mut head.headers);
                 }
             }
             _ => (),
@@ -1003,6 +1007,7 @@ struct State {
     method: Option<Method>,
     h1_parser_config: ParserConfig,
     h1_max_headers: Option<usize>,
+    h1_max_header_size: Option<usize>,
     h1_header_read_timeout: Option<Duration>,
     h1_header_read_timeout_fut: Option<Pin<Box<Sleep>>>,
     h1_header_read_timeout_running: bool,
@@ -1343,6 +1348,97 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn enforce_version_keeps_nominated_hop_by_hop_fields() {
+        // (peer version, keep-alive enabled, outgoing lines, expected lines, expected keep-alive)
+        let cases: &[(Version, bool, &[&str], &[&str], bool)] = &[
+            (
+                Version::HTTP_11,
+                false,
+                &["x-hop"],
+                &["x-hop", "close"],
+                false,
+            ),
+            (
+                Version::HTTP_11,
+                false,
+                &["close, x-hop"],
+                &["close, x-hop"],
+                false,
+            ),
+            (
+                Version::HTTP_11,
+                false,
+                &["keep-alive, x-hop"],
+                &["x-hop, close"],
+                false,
+            ),
+            (
+                Version::HTTP_11,
+                false,
+                &["Keep-Alive", "x-hop"],
+                &["x-hop, close"],
+                false,
+            ),
+            (Version::HTTP_11, true, &["x-hop"], &["x-hop"], true),
+            (
+                Version::HTTP_10,
+                true,
+                &["x-hop"],
+                &["x-hop", "keep-alive"],
+                true,
+            ),
+            (
+                Version::HTTP_10,
+                true,
+                &["keep-alive, x-hop"],
+                &["keep-alive, x-hop"],
+                true,
+            ),
+            (
+                Version::HTTP_10,
+                true,
+                &["close, x-hop"],
+                &["close, x-hop"],
+                false,
+            ),
+            (
+                Version::HTTP_10,
+                true,
+                &["keep-alive", "close"],
+                &["keep-alive", "close"],
+                false,
+            ),
+            (Version::HTTP_10, false, &["x-hop"], &["x-hop"], false),
+        ];
+        for &(peer_version, enabled, lines, expected, expected_keep_alive) in cases {
+            let io = TestIo::new(tokio_test::io::Builder::new().build());
+            let mut conn = Conn::<_, Bytes, ServerTransaction>::new(io);
+            conn.state.version = peer_version;
+            if !enabled {
+                conn.state.disable_keep_alive();
+            }
+            let mut head = MessageHead {
+                version: Version::HTTP_11,
+                ..MessageHead::default()
+            };
+            for &line in lines {
+                head.headers
+                    .append(CONNECTION, HeaderValue::from_static(line));
+            }
+            conn.enforce_version(&mut head);
+            let actual: Vec<_> = head
+                .headers
+                .get_all(CONNECTION)
+                .iter()
+                .map(|value| value.to_str().unwrap())
+                .collect();
+            let case = format!("{peer_version:?}, enabled = {enabled}, {lines:?}");
+            assert_eq!(actual, expected, "{case}");
+            assert_eq!(conn.state.wants_keep_alive(), expected_keep_alive, "{case}");
         }
     }
 
