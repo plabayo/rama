@@ -1812,3 +1812,47 @@ async fn a_unit_given_back_over_the_limits_asks_a_trim() {
     settle().await;
     assert_eq!(stored(&pool).len(), 1, "trimmed to the limit");
 }
+
+#[tokio::test(start_paused = true)]
+async fn leaving_a_lane_trims_its_idle_excess_while_waiting_elsewhere() {
+    let pool = MultiplexPool::new()
+        .with_max_connections_total(NonZeroUsize::new(3).unwrap())
+        .with_max_streams_per_connection(NonZeroUsize::new(1).unwrap())
+        .with_max_idle_per_id(NonZeroUsize::new(1).unwrap());
+    let first = add(&pool, 0, Some(keyed(0, 1))).await;
+    let second = add(&pool, 0, Some(keyed(0, 1))).await;
+    let busy = add(&pool, 0, Some(keyed(0, 2))).await;
+    let old_lane = first.inner.lane_waiters.lock().clone().unwrap();
+    let new_lane = busy.inner.lane_waiters.lock().clone().unwrap();
+    let mut waiting = Waiting::new(
+        &pool.waiting,
+        &pool.slot_waiters,
+        None,
+        pool.next_order.fetch_add(1, Ordering::Relaxed),
+        pool.idle_trim(),
+    );
+    {
+        let _storage = pool.storage.lock();
+        waiting.register(&old_lane);
+        waiting.register(&new_lane);
+    }
+
+    drop((first, second));
+    assert_eq!(stored(&pool).len(), 3, "the old lane still has a waiter");
+
+    // The next look only queues in the busy lane. Keep Waiting alive so its
+    // destructor cannot conceal a missing trim on the lane-leaving path.
+    waiting.begin_look();
+    {
+        let _storage = pool.storage.lock();
+        waiting.register(&new_lane);
+    }
+    waiting.leave_other_lanes();
+    assert!(old_lane.is_empty());
+    assert!(!new_lane.is_empty());
+    assert_eq!(
+        stored(&pool).len(),
+        2,
+        "leaving the old lane trims its excess before checkout ends"
+    );
+}
