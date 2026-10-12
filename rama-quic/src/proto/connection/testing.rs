@@ -179,6 +179,24 @@ impl Connection {
         self.rem_cids.is_sent_to(seq, remote)
     }
 
+    /// Tests: owe the peer an ACK in `space` for each of `packets`, as if they had arrived.
+    #[cfg(test)]
+    pub(crate) fn owe_acks(
+        &mut self,
+        now: Instant,
+        space: SpaceId,
+        packets: impl IntoIterator<Item = u64>,
+    ) {
+        let space = &mut self.spaces[space];
+        for packet in packets {
+            space.pending_acks.insert_one(packet, now);
+            space.dedup.insert(packet);
+            space
+                .pending_acks
+                .packet_received(now, packet, true, &space.dedup);
+        }
+    }
+
     /// Tests: put the 1-RTT keys' packet count where the caller wants it, so the confidentiality
     /// limit is reachable without sending as many packets as the AEAD allows.
     #[cfg(test)]

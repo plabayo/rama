@@ -448,14 +448,23 @@ impl StreamsState {
             reason = "reachable through `fuzzing` under cfg(fuzzing)"
         )
     )]
-    pub fn received_stop_sending(&mut self, id: StreamId, error_code: VarInt) {
+    pub fn received_stop_sending(
+        &mut self,
+        id: StreamId,
+        error_code: VarInt,
+    ) -> Result<(), TransportError> {
+        // STOP_SENDING implicitly opens a peer-initiated bidirectional stream too.
+        self.validate_remote_limit(id).inspect_err(|_e| {
+            debug!("received illegal STOP_SENDING frame");
+        })?;
+
         let max_send_data = self.max_send_data(id);
         let Some(stream) = self
             .send
             .get_mut(&id)
             .map(get_or_insert_send(max_send_data))
         else {
-            return;
+            return Ok(());
         };
 
         if stream.try_stop(error_code) {
@@ -463,6 +472,7 @@ impl StreamsState {
                 .push_back(StreamEvent::Stopped { id, error_code });
             self.on_stream_frame(false, id);
         }
+        Ok(())
     }
 
     pub(crate) fn reset_acked(&mut self, id: StreamId) {
@@ -751,6 +761,15 @@ impl StreamsState {
             }
             return;
         }
+        let limit = self.max_remote[stream.dir() as usize];
+        debug_assert!(
+            stream.index() < limit,
+            "every frame naming a peer stream is checked against the limit first"
+        );
+        if stream.index() >= limit {
+            // Never let a missed check open streams past what was granted.
+            return;
+        }
         let next = &mut self.next_remote[stream.dir() as usize];
         if stream.index() >= *next {
             *next = stream.index() + 1;
@@ -867,11 +886,10 @@ impl StreamsState {
             ));
         }
 
-        if id.initiator() != self.side {
-            // MAX_STREAM_DATA implicitly opens a peer-initiated bidirectional stream,
-            // subject to the same stream-count limit as STREAM and RESET_STREAM.
-            self.validate_receive_id(id)?;
-        }
+        // MAX_STREAM_DATA implicitly opens a peer-initiated bidirectional stream.
+        self.validate_remote_limit(id).inspect_err(|_e| {
+            debug!("received illegal MAX_STREAM_DATA frame");
+        })?;
 
         let write_limit = self.write_limit();
         let reserve_cap = (self.initial_send_credit / 2).min(self.send_window / 2);
@@ -978,6 +996,22 @@ impl StreamsState {
         if self.max_remote[dir as usize] > limit {
             pending.max_stream_id[dir as usize] = true;
         }
+    }
+
+    /// Check a STREAM_DATA_BLOCKED frame, which names a stream without opening it
+    pub(crate) fn received_stream_data_blocked(&self, id: StreamId) -> Result<(), TransportError> {
+        self.validate_remote_limit(id).inspect_err(|_e| {
+            debug!("received illegal STREAM_DATA_BLOCKED frame");
+        })
+    }
+
+    /// Check that a frame naming a peer-initiated stream stays within the advertised limit
+    /// (RFC 9000 §4.6); frames naming this side's streams are checked by their own rules.
+    fn validate_remote_limit(&self, id: StreamId) -> Result<(), TransportError> {
+        if id.initiator() == self.side {
+            return Ok(());
+        }
+        self.validate_receive_id(id)
     }
 
     /// Check for errors entailed by the peer's use of `id` as a send stream
@@ -1396,7 +1430,9 @@ mod tests {
             write(&mut state, second, &[0; 10]),
             Err(WriteError::Blocked)
         );
-        state.received_stop_sending(second, VarInt::from(9u32));
+        state
+            .received_stop_sending(second, VarInt::from(9u32))
+            .unwrap();
         assert_eq!(
             write(&mut state, second, &[0; 10]),
             Err(WriteError::Stopped(VarInt::from(9u32))),
@@ -1680,6 +1716,82 @@ mod tests {
             .accept(Dir::Bi)
             .is_none()
         );
+    }
+
+    /// Every frame that implicitly opens a peer's stream is held to the advertised limit
+    /// (RFC 9000 §4.6): one at the limit is refused and opens nothing, one just below opens.
+    #[test]
+    fn no_frame_opens_a_peer_stream_past_the_limit() {
+        #[derive(Debug, Clone, Copy)]
+        enum Opener {
+            Stream,
+            ResetStream,
+            MaxStreamData,
+            StopSending,
+            // Names the stream without opening it here, but is held to the limit all the same.
+            StreamDataBlocked,
+        }
+
+        for dir in Dir::iter() {
+            for opener in [
+                Opener::Stream,
+                Opener::ResetStream,
+                Opener::MaxStreamData,
+                Opener::StopSending,
+                Opener::StreamDataBlocked,
+            ] {
+                // The peer only sends MAX_STREAM_DATA and STOP_SENDING for streams it receives on.
+                if dir == Dir::Uni && matches!(opener, Opener::MaxStreamData | Opener::StopSending)
+                {
+                    continue;
+                }
+                let limit = make(Side::Server).max_remote[dir as usize];
+                for (index, allowed) in [(limit - 1, true), (limit, false)] {
+                    let mut state = make(Side::Server);
+                    let id = StreamId::new(Side::Client, dir, index);
+                    let result = match opener {
+                        Opener::Stream => state
+                            .received(
+                                frame::Stream {
+                                    id,
+                                    offset: 0,
+                                    fin: false,
+                                    data: Bytes::from_static(b"x"),
+                                },
+                                1,
+                            )
+                            .map(|_| ()),
+                        Opener::ResetStream => state
+                            .received_reset(frame::ResetStream {
+                                id,
+                                error_code: 0u32.into(),
+                                final_offset: 0u32.into(),
+                            })
+                            .map(|_| ()),
+                        Opener::MaxStreamData => state.received_max_stream_data(id, 1),
+                        Opener::StopSending => state.received_stop_sending(id, 0u32.into()),
+                        Opener::StreamDataBlocked => state.received_stream_data_blocked(id),
+                    };
+                    let case = format!("{opener:?} on {dir:?} stream {index}");
+                    if allowed {
+                        assert_eq!(result.map_err(|e| e.code), Ok(()), "{case}");
+                        let opened = match opener {
+                            Opener::StreamDataBlocked => 0,
+                            _ => limit,
+                        };
+                        assert_eq!(state.next_remote[dir as usize], opened, "{case}");
+                    } else {
+                        assert_eq!(
+                            result.map_err(|e| e.code),
+                            Err(TransportErrorCode::STREAM_LIMIT_ERROR),
+                            "{case}"
+                        );
+                        assert_eq!(state.next_remote[dir as usize], 0, "{case}");
+                        assert!(state.poll().is_none(), "{case}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -2129,7 +2241,7 @@ mod tests {
         };
 
         let error_code = 0u32.into();
-        stream.state.received_stop_sending(id, error_code);
+        stream.state.received_stop_sending(id, error_code).unwrap();
         assert!(
             stream
                 .state
@@ -2144,7 +2256,7 @@ mod tests {
         assert_eq!(stream.write(&[]), Err(WriteError::ClosedStream));
 
         // A duplicate frame is a no-op
-        stream.state.received_stop_sending(id, error_code);
+        stream.state.received_stop_sending(id, error_code).unwrap();
         assert!(stream.state.events.is_empty());
     }
 

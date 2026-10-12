@@ -423,6 +423,8 @@ impl Connection {
                 // especially important with ack delay, since the peer might not
                 // have gotten any other ACK for the data earlier on.
                 if !self.spaces[space_id].pending_acks.ranges().is_empty() {
+                    // The ACK yields to the close: a large Initial token can leave room for
+                    // little more than the close itself.
                     Self::try_populate_acks(
                         now,
                         self.receiving_ecn,
@@ -430,19 +432,19 @@ impl Connection {
                         &self.spaces[space_id],
                         buf,
                         &mut self.stats,
-                        buf_capacity,
+                        builder
+                            .max_size
+                            .saturating_sub(frame::ConnectionClose::SIZE_BOUND),
                     );
                 }
 
-                // Since there only 64 ACK frames there will always be enough space
-                // to encode the ConnectionClose frame too. However we still have the
-                // check here to prevent crashes if something changes.
+                // A packet always has room for a close, which the ACK above left free.
                 debug_assert!(
-                    buf.len() + frame::ConnectionClose::SIZE_BOUND < builder.max_size,
+                    buf.len() + frame::ConnectionClose::SIZE_BOUND <= builder.max_size,
                     "ACKs should leave space for ConnectionClose"
                 );
                 let mut encoded = false;
-                if buf.len() + frame::ConnectionClose::SIZE_BOUND < builder.max_size {
+                if buf.len() + frame::ConnectionClose::SIZE_BOUND <= builder.max_size {
                     encoded = true;
                     // The only place a close frame is written, so the only place one is
                     // counted.

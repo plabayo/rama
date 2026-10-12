@@ -211,14 +211,10 @@ impl Controller for Cubic {
         self.cubic_state.cwnd_inc = (self.cubic_state.cwnd_inc as f64 * BETA_CUBIC) as u64;
 
         if is_persistent_congestion {
+            // ssthresh already holds the single β_cubic reduction above; a timeout lowers only
+            // cwnd (RFC 9438 §4.8).
             self.recovery_start_time = None;
             self.cubic_state.w_max = self.window as f64;
-
-            // 4.7 Timeout - reduce ssthresh based on BETA_CUBIC
-            self.ssthresh = cmp::max(
-                (self.window as f64 * BETA_CUBIC) as u64,
-                self.minimum_window(),
-            );
 
             self.cubic_state.cwnd_inc = 0;
 
@@ -285,6 +281,34 @@ impl ControllerFactory for CubicConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A timeout reduces ssthresh by β_cubic once, from the window before the event, and only
+    /// cwnd drops to the minimum (RFC 9438 §4.8).
+    #[test]
+    fn persistent_congestion_reduces_ssthresh_once() {
+        let now = Instant::now();
+        for (window, w_max) in [
+            (8 * BASE_DATAGRAM_SIZE, 8 * BASE_DATAGRAM_SIZE),
+            // Fast convergence lowers w_max, which must not feed into ssthresh either.
+            (8 * BASE_DATAGRAM_SIZE, 12 * BASE_DATAGRAM_SIZE),
+            (100 * BASE_DATAGRAM_SIZE, 100 * BASE_DATAGRAM_SIZE),
+            // Near the floor the reduction is clamped to the minimum window.
+            (2 * BASE_DATAGRAM_SIZE, 2 * BASE_DATAGRAM_SIZE),
+        ] {
+            let config = Arc::new(CubicConfig::default());
+            let mut cubic = Cubic::new(config, now, BASE_DATAGRAM_SIZE as u16);
+            cubic.window = window;
+            cubic.ssthresh = window;
+            cubic.cubic_state.w_max = w_max as f64;
+
+            cubic.on_congestion_event(now, now + Duration::from_millis(1), true, 0);
+
+            let expected = cmp::max((window as f64 * BETA_CUBIC) as u64, cubic.minimum_window());
+            assert_eq!(cubic.ssthresh, expected, "window {window}, w_max {w_max}");
+            assert_eq!(cubic.window, cubic.minimum_window(), "window {window}");
+            assert_eq!(cubic.recovery_start_time, None);
+        }
+    }
 
     #[test]
     fn fast_convergence_reduces_w_max_without_double_reducing_window() {

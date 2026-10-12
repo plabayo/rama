@@ -319,7 +319,14 @@ impl Connection {
         };
 
         // State transitions for error cases
-        if let Err(conn_err) = result {
+        if matches!(result, Err(ConnectionError::Reset))
+            && (matches!(self.state, State::Draining | State::Drained)
+                || (self.state.is_closed() && self.error.is_some()))
+        {
+            // The close reason is already known, so a reset only ends the closing or draining
+            // period, as the close timer would (RFC 9000 §10.3.1).
+            self.state = State::Drained;
+        } else if let Err(conn_err) = result {
             self.error = Some(conn_err.clone());
             self.state = match conn_err {
                 ConnectionError::ApplicationClosed(reason) => State::closed(reason),
@@ -479,6 +486,7 @@ impl Connection {
 
                 if self.total_authed_packets > 1
                             || packet.payload.len() <= 16 // token + 16 byte tag
+                            || rem_cid == self.initial_dst_cid
                             || !self.crypto.is_valid_retry(
                                 &self.rem_cids.active(),
                                 &packet.header_data,
@@ -492,6 +500,8 @@ impl Connection {
                     //   packets that it receives.
                     // - A client MUST discard a Retry packet with a zero-length Retry Token
                     //   field.
+                    // - A client MUST discard a Retry packet whose Source Connection ID is
+                    //   the Destination Connection ID of its first Initial.
                     // - Clients MUST discard Retry packets that have a Retry Integrity Tag
                     //   that cannot be validated
                     return Ok(());

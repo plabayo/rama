@@ -12,7 +12,7 @@ use super::{Connection, spaces::SentPacket};
 use crate::proto::{Instant, connection::ConnectionSide};
 use rama_quic_proto::{
     ConnectionId, TransportError,
-    frame::Close,
+    frame::{self, Close, FrameStruct},
     packet::{FIXED_BIT, Header, InitialHeader, LongType, PacketNumber, PartialEncode, SpaceId},
     profile::InitialFlightLayout,
 };
@@ -40,7 +40,7 @@ impl PacketBuilder {
     /// Write a new packet header to `buffer` and determine the packet's properties
     ///
     /// Marks the connection drained and returns `None` if the confidentiality limit would be
-    /// violated.
+    /// violated, or an Initial token leaves too little space for frames.
     #[expect(
         clippy::unwrap_used,
         clippy::unreachable,
@@ -175,7 +175,26 @@ impl PacketBuilder {
             buffer.len() + (sample_size + 4).saturating_sub(number.len() + tag_len),
             partial_encode.start + dst_cid.len() + 6,
         );
-        let max_size = buffer_capacity - tag_len;
+        let max_size = buffer_capacity.saturating_sub(tag_len);
+        // The Initial token comes from the peer (a Retry or NEW_TOKEN) and can leave no room for
+        // a CRYPTO frame with data (whose writer needs one byte past its bound) or a close.
+        let required_frame_space = Ord::max(
+            frame::Crypto::SIZE_BOUND + 1,
+            frame::ConnectionClose::SIZE_BOUND,
+        );
+        if space_id == SpaceId::Initial
+            && (max_size < min_size || max_size.saturating_sub(buffer.len()) < required_frame_space)
+        {
+            buffer.truncate(partial_encode.start);
+            conn.kill(
+                now,
+                TransportError::PROTOCOL_VIOLATION(
+                    "Initial token leaves insufficient packet space",
+                )
+                .into(),
+            );
+            return None;
+        }
         debug_assert!(max_size >= min_size);
 
         Some(Self {

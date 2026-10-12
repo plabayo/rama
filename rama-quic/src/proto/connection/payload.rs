@@ -270,6 +270,7 @@ impl Connection {
                             "STREAM_DATA_BLOCKED on send-only stream",
                         ));
                     }
+                    self.streams.received_stream_data_blocked(id)?;
                     debug!(
                         stream = %id,
                         offset, "peer claims to be blocked at stream level"
@@ -304,7 +305,7 @@ impl Connection {
                             "STOP_SENDING on unopened stream",
                         ));
                     }
-                    self.streams.received_stop_sending(id, error_code);
+                    self.streams.received_stop_sending(id, error_code)?;
                 }
                 Frame::RetireConnectionId { sequence } => {
                     let allow_more_cids = self.local_cid_state.on_cid_retirement(

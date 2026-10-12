@@ -319,6 +319,159 @@ fn client_stateless_reset() {
     }
 }
 
+/// Every loss a connection reports, in order, past its other events.
+fn losses(conn: &mut Connection) -> Vec<ConnectionError> {
+    let mut lost = Vec::new();
+    while let Some(event) = conn.poll() {
+        if let Event::ConnectionLost { reason } = event {
+            lost.push(reason);
+        }
+    }
+    lost
+}
+
+/// The server closes and, past its closing period, forgets the connection while its
+/// CONNECTION_CLOSE still waits unread at the client.
+fn server_closes_and_forgets(pair: &mut Pair, server_ch: ConnectionHandle, reason: &'static [u8]) {
+    pair.drive(); // Flush post-handshake traffic so the close is the only unread datagram.
+    let now = pair.time;
+    pair.server_conn_mut(server_ch)
+        .close(now, VarInt::from_u32(42), Bytes::from_static(reason));
+    pair.drive_server();
+    assert!(
+        !pair.client.inbound.is_empty(),
+        "the server sent its CONNECTION_CLOSE"
+    );
+    for _ in 0..100 {
+        if pair.server.known_connections() == 0 {
+            break;
+        }
+        pair.time = pair
+            .server
+            .next_wakeup()
+            .expect("the server's close timer is armed");
+        pair.drive_server();
+    }
+    assert_eq!(pair.server.known_connections(), 0, "the server forgot it");
+    // Read at the current time, so the client is still draining when the reset arrives.
+    for datagram in &mut pair.client.inbound {
+        datagram.at = pair.time;
+    }
+}
+
+/// Whether `lost` is exactly the server's application close carrying `reason`.
+fn is_application_close(lost: &[ConnectionError], reason: &[u8]) -> bool {
+    matches!(
+        lost,
+        [ConnectionError::ApplicationClosed(ApplicationClose {
+            error_code,
+            reason: got,
+        })] if *error_code == VarInt::from_u32(42) && got == reason
+    )
+}
+
+/// The client reads the peer's CONNECTION_CLOSE only after the peer forgot the connection, so
+/// its answer draws a stateless reset, which it processes before the application polls. The
+/// peer's reason is what the application learns (RFC 9000 §10.3.1).
+#[test]
+fn stateless_reset_while_draining_keeps_close_reason() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (client_ch, server_ch) = pair.connect();
+    const REASON: &[u8] = b"not accepted";
+    server_closes_and_forgets(&mut pair, server_ch, REASON);
+
+    pair.drive_client();
+    assert!(
+        !pair.server.inbound.is_empty(),
+        "the client answered the close"
+    );
+    pair.drive_server();
+    assert!(
+        !pair.client.inbound.is_empty(),
+        "the server answered with a stateless reset"
+    );
+    pair.drive_client();
+
+    let client = pair.client_conn_mut(client_ch);
+    assert!(client.is_drained());
+    let lost = losses(client);
+    assert!(is_application_close(&lost, REASON), "{lost:?}");
+    assert_eq!(pair.client.known_connections(), 0);
+}
+
+/// The application already read the peer's reason when the reset arrives: the reset ends the
+/// draining period and is not reported as a second loss.
+#[test]
+fn stateless_reset_while_draining_is_not_a_second_loss() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (client_ch, server_ch) = pair.connect();
+    const REASON: &[u8] = b"not accepted";
+    server_closes_and_forgets(&mut pair, server_ch, REASON);
+
+    pair.drive_client();
+    let lost = losses(pair.client_conn_mut(client_ch));
+    assert!(is_application_close(&lost, REASON), "{lost:?}");
+
+    pair.drive_server();
+    assert!(
+        !pair.client.inbound.is_empty(),
+        "the server answered with a stateless reset"
+    );
+    pair.drive_client();
+
+    let client = pair.client_conn_mut(client_ch);
+    assert!(client.is_drained());
+    assert!(losses(client).is_empty());
+    assert_eq!(pair.client.known_connections(), 0);
+}
+
+/// A connection closing on a protocol error it has not reported yet keeps that error as the
+/// reason when the close it sends draws a stateless reset.
+#[test]
+fn stateless_reset_while_closing_keeps_an_unread_reason() {
+    let _guard = subscribe();
+    let mut endpoint_config = EndpointConfig::new(HmacSha2::new_256(&[0x11; 32]));
+    endpoint_config.set_cid_generator(Arc::new(move || {
+        Box::new(HashedConnectionIdGenerator::from_key(0))
+    }));
+    let endpoint_config = Arc::new(endpoint_config);
+
+    let mut pair = Pair::new(endpoint_config.clone(), server_config());
+    let (client_ch, _) = pair.connect();
+    pair.drive(); // Flush any post-handshake frames
+    pair.server.endpoint =
+        Endpoint::new(endpoint_config, Some(Arc::new(server_config())), true, None);
+    let now = pair.time;
+    let client = pair.client_conn_mut(client_ch);
+    client.overflow_retirement_queue();
+    client.settle_deferred_error(now);
+
+    pair.drive_client();
+    assert!(!pair.server.inbound.is_empty(), "the client sent its close");
+    pair.drive_server();
+    assert!(
+        !pair.client.inbound.is_empty(),
+        "the server answered with a stateless reset"
+    );
+    pair.drive_client();
+
+    // No time has passed, so only the reset can have ended the closing period.
+    let client = pair.client_conn_mut(client_ch);
+    assert!(client.is_drained());
+    let lost = losses(client);
+    match &lost[..] {
+        [
+            ConnectionError::TransportError(TransportError {
+                code: TransportErrorCode::CONNECTION_ID_LIMIT_ERROR,
+                ..
+            }),
+        ] => {}
+        other => panic!("the protocol error stays the reason, not {other:?}"),
+    }
+}
+
 /// A stateless reset whose token was derived with a different key is not a reset for us: the
 /// bytes reach the real client receive path, are not recognised, and the connection stays usable.
 /// A reset for the same CID with the real key is recognised, so only the key differs.

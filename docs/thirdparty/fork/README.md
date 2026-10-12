@@ -64,17 +64,21 @@ as a distant relative.
 
 ### quinn-rs
 
-- <https://github.com/quinn-rs/quinn/tree/769ef759a35dda0362117bb83a933069f97ba953>
+- <https://github.com/quinn-rs/quinn/tree/48854d48635875d259a95973cc0575db8c1792a4>
   - QUIC transport adapted into `rama-quic`, reusing Rama's UDP, TLS, runtime and
     utilities while preserving useful upstream structure.
-  - reviewed against upstream `main` (`769ef75`, 2026-09-14): every quinn-proto security
-    advisory through that date and every behavioural fix are present or ported; not carried
-    over are DATA_BLOCKED/STREAM_DATA_BLOCKED emission, the pending-incoming server-config
-    snapshot, the DATAGRAM-instead-of-PING tail-loss probe, and the assembler's sorted
-    `VecDeque` storage, which are functional or performance choices rather than fixes.
+  - reviewed against upstream `main` (`48854d4`, 2026-10-12): every quinn-proto security
+    advisory through that date (the latest being GHSA-53rm-773f-4q8c and GHSA-wppq-2f6r-wfvm)
+    and every behavioural fix are present or ported; not carried over are
+    DATA_BLOCKED/STREAM_DATA_BLOCKED emission, the pending-incoming server-config snapshot, the
+    DATAGRAM-instead-of-PING tail-loss probe, the assembler's sorted `VecDeque` storage, the
+    three-phase accept that runs TLS setup outside the endpoint lock, lazily allocated remote
+    stream slots, buffering 1-RTT packets that arrive before the handshake completes, and
+    padding Initial datagrams to `min_mtu` (the profile decides the Initial size), which are
+    functional or performance choices rather than fixes.
   - License:
-    - Original: <https://github.com/quinn-rs/quinn/blob/769ef759a35dda0362117bb83a933069f97ba953/LICENSE-MIT>
-      and <https://github.com/quinn-rs/quinn/blob/769ef759a35dda0362117bb83a933069f97ba953/LICENSE-APACHE>
+    - Original: <https://github.com/quinn-rs/quinn/blob/48854d48635875d259a95973cc0575db8c1792a4/LICENSE-MIT>
+      and <https://github.com/quinn-rs/quinn/blob/48854d48635875d259a95973cc0575db8c1792a4/LICENSE-APACHE>
     - Type: MIT OR Apache-2.0 (Copyright (c) 2018 The quinn Developers)
     - Copy: [./licenses/quinn/LICENSE-MIT](./licenses/quinn/LICENSE-MIT),
       [./licenses/quinn/LICENSE-APACHE](./licenses/quinn/LICENSE-APACHE)

@@ -54,8 +54,8 @@ impl Assembler {
         } else if !ordered && self.state.is_ordered() {
             // Enter unordered mode
             if !self.data.is_empty() {
-                // Get rid of possible duplicates
-                self.defragment();
+                // Get rid of possible duplicates, including copies of what was already read
+                self.defragment(self.bytes_read);
             }
             let mut recvd = RangeSet::new();
             recvd.insert(0..self.bytes_read);
@@ -112,8 +112,9 @@ impl Assembler {
     /// Copy fragmented chunk data to new chunks backed by a single buffer
     ///
     /// This makes sure we're not unnecessarily holding on to many larger allocations.
-    /// We merge contiguous chunks in the process of doing so.
-    fn defragment(&mut self) {
+    /// We merge contiguous chunks in the process of doing so. Bytes before `start` are treated
+    /// as already delivered and discarded.
+    fn defragment(&mut self, start: u64) {
         // Chunks smaller than min_chunk_size are merged regardless of fragmentation
         let min_chunk_size = max(self.buffered.div_ceil(MAX_CHUNKS), MIN_RETAINED_CHUNK_SIZE);
         let new = BinaryHeap::with_capacity(self.data.len());
@@ -121,7 +122,7 @@ impl Assembler {
         let mut buffers = old.into_sorted_vec();
         self.buffered = 0;
         let mut fragmented_buffered = 0;
-        let mut offset = 0;
+        let mut offset = start;
         for chunk in buffers.iter_mut().rev() {
             chunk.try_mark_defragment(offset);
             let size = chunk.bytes.len();
@@ -224,7 +225,7 @@ impl Assembler {
         let threshold = 32768.max(buffered * 3 / 2);
         // Small gapped frames hold over-allocation below the threshold, so bound the count too.
         if over_allocation > threshold || self.data.len() > COMPACT_THRESHOLD {
-            self.defragment();
+            self.defragment(0);
             // ngtcp2 uses a threshold of 4000 -- try to be a little more conservative?
             if self.data.len() > MAX_CHUNKS {
                 return Err(TooManyChunks);
@@ -462,6 +463,51 @@ mod test {
         }
     }
 
+    /// Copies of bytes an ordered read already returned can still be buffered when the stream
+    /// switches to unordered reads; they must not be handed back a second time.
+    #[test]
+    fn unordered_after_ordered_read_drops_already_read_copies() {
+        // Frames buffered before any read, the length of the ordered read, what is left unread.
+        let cases: [(&[(u64, &'static str)], usize, &str); 3] = [
+            (&[(0, "abc"), (0, "abc")], 3, ""),
+            (&[(0, "abc"), (0, "abcdef")], 3, "def"),
+            (&[(0, "abcd"), (1, "bcdef")], 4, "ef"),
+        ];
+        for (frames, ordered, rest) in cases {
+            let mut x = Assembler::new();
+            for &(offset, data) in frames {
+                x.insert(offset, Bytes::from_static(data.as_bytes()), data.len())
+                    .unwrap();
+            }
+            let chunk = x
+                .read(ordered, true)
+                .expect("the prefix is readable in order");
+            assert_eq!(
+                (chunk.offset, chunk.bytes.len()),
+                (0, ordered),
+                "{frames:?}"
+            );
+
+            x.ensure_ordering(false).unwrap();
+            let mut unread = Vec::new();
+            while let Some(chunk) = x.read(usize::MAX, false) {
+                assert!(
+                    chunk.offset >= ordered as u64,
+                    "{frames:?}: offset {} was already read",
+                    chunk.offset
+                );
+                unread.push(chunk);
+            }
+            unread.sort_by_key(|chunk| chunk.offset);
+            let unread: Vec<u8> = unread
+                .iter()
+                .flat_map(|chunk| chunk.bytes.iter().copied())
+                .collect();
+            assert_eq!(unread, rest.as_bytes(), "{frames:?}");
+            assert_eq!(x.bytes_read(), (ordered + rest.len()) as u64, "{frames:?}");
+        }
+    }
+
     #[test]
     fn assemble_duplicate() {
         let mut x = Assembler::new();
@@ -484,7 +530,7 @@ mod test {
         let mut x = Assembler::new();
         x.insert(0, Bytes::from_static(b"123"), 3).unwrap();
         x.insert(0, Bytes::from_static(b"123"), 3).unwrap();
-        x.defragment();
+        x.defragment(0);
         match next(&mut x, 32) {
             Some(ref y) if &y[..] == b"123" => {}
             other => panic!(
@@ -519,7 +565,7 @@ mod test {
         let mut x = Assembler::new();
         x.insert(0, Bytes::from_static(b"12345"), 5).unwrap();
         x.insert(1, Bytes::from_static(b"234"), 3).unwrap();
-        x.defragment();
+        x.defragment(0);
         match next(&mut x, 32) {
             Some(ref y) if &y[..] == b"12345" => {}
             other => panic!(
@@ -554,7 +600,7 @@ mod test {
         let mut x = Assembler::new();
         x.insert(1, Bytes::from_static(b"234"), 3).unwrap();
         x.insert(0, Bytes::from_static(b"12345"), 5).unwrap();
-        x.defragment();
+        x.defragment(0);
         match next(&mut x, 32) {
             Some(ref y) if &y[..] == b"12345" => {}
             other => panic!(
@@ -595,7 +641,7 @@ mod test {
         let mut x = Assembler::new();
         x.insert(0, Bytes::from_static(b"123"), 4).unwrap();
         x.insert(1, Bytes::from_static(b"234"), 4).unwrap();
-        x.defragment();
+        x.defragment(0);
         match next(&mut x, 32) {
             Some(ref y) if &y[..] == b"1234" => {}
             other => panic!(
@@ -634,7 +680,7 @@ mod test {
         x.insert(2, Bytes::from_static(b"3"), 1).unwrap();
         x.insert(4, Bytes::from_static(b"5"), 1).unwrap();
         x.insert(0, Bytes::from_static(b"123456"), 6).unwrap();
-        x.defragment();
+        x.defragment(0);
         match next(&mut x, 32) {
             Some(ref y) if &y[..] == b"123456" => {}
             other => panic!(
@@ -671,7 +717,7 @@ mod test {
         x.insert(3, Bytes::from_static(b"def"), 4).unwrap();
         x.insert(9, Bytes::from_static(b"jkl"), 4).unwrap();
         x.insert(12, Bytes::from_static(b"mno"), 4).unwrap();
-        x.defragment();
+        x.defragment(0);
         assert_eq!(
             next_unordered(&mut x),
             Chunk::new(0, Bytes::from_static(b"abcdef"))
@@ -686,7 +732,7 @@ mod test {
     fn defrag_with_missing_prefix() {
         let mut x = Assembler::new();
         x.insert(3, Bytes::from_static(b"def"), 3).unwrap();
-        x.defragment();
+        x.defragment(0);
         assert_eq!(
             next_unordered(&mut x),
             Chunk::new(3, Bytes::from_static(b"def"))
@@ -700,7 +746,7 @@ mod test {
         x.insert(0, Bytes::from_static(b"abc"), 4).unwrap();
         x.insert(7, Bytes::from_static(b"hij"), 4).unwrap();
         x.insert(11, Bytes::from_static(b"lmn"), 4).unwrap();
-        x.defragment();
+        x.defragment(0);
         match x.read(usize::MAX, true) {
             Some(ref y) if &y.bytes[..] == b"abcdef" => {}
             other => panic!(
@@ -885,7 +931,7 @@ mod test {
         // Add 1 extra chunk, defragment must coalesce the previous
         // chunks to stay within MAX_CHUNKS
         x.insert(offset, Bytes::from_static(b"x"), 1).unwrap();
-        x.defragment();
+        x.defragment(0);
         assert!(x.data.len() <= MAX_CHUNKS);
     }
 
