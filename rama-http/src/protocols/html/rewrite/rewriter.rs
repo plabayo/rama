@@ -754,4 +754,43 @@ mod tests {
         );
         assert_eq!(out, "<div>tail!A");
     }
+
+    // --- foreign-content integration points ---------------------------------
+
+    fn mark_hit(selector: &str) -> ElementContentHandlers<'static> {
+        ElementContentHandlers::new().on(sel(selector), |el| {
+            el.set_attribute(AttributeName::from_static("hit"), "");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn consecutive_svg_integration_points_all_match() {
+        let html = "<svg><desc>d</desc><title>t</title><foreignObject></foreignObject></svg>";
+        let expected = r#"<svg><desc hit="">d</desc><title hit="">t</title><foreignObject hit=""></foreignObject></svg>"#;
+        assert_eq!(
+            rewrite(html, mark_hit("desc, title, foreignobject")),
+            expected
+        );
+
+        // Same result however the input is split across writes.
+        let mut rewriter = HtmlRewriter::from_handlers(mark_hit("desc, title, foreignobject"));
+        for chunk in html.as_bytes().chunks(1) {
+            rewriter.write(chunk).expect("write succeeds");
+        }
+        rewriter.end().expect("end succeeds");
+        let out = String::from_utf8(rewriter.take_output()).expect("utf8");
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn consecutive_math_ml_integration_points_all_match() {
+        assert_eq!(
+            rewrite(
+                "<math><mi>x</mi><mo>+</mo><mn>1</mn><annotation-xml></annotation-xml></math>",
+                mark_hit("mi, mo, mn, annotation-xml"),
+            ),
+            r#"<math><mi hit="">x</mi><mo hit="">+</mo><mn hit="">1</mn><annotation-xml hit=""></annotation-xml></math>"#
+        );
+    }
 }

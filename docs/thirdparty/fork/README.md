@@ -147,7 +147,7 @@ not be kept in sync with upstream — they are now part of `rama`.
     - Original: <https://github.com/JonahLund/vy/blob/1280174f54774c24fa478475af17fd7f5814c91a/LICENSE>
     - Type: MIT
     - Copy: [./licenses/vy](./licenses/vy)
-- <https://github.com/cloudflare/lol-html/tree/02f139c4437b2da666a50d32e11d9158cbe0a393>
+- <https://github.com/cloudflare/lol-html/tree/608cc4a66b7ab4fcbe1bbdeb25df8f265572b11c>
   - Forked into private modules under
     [`rama-http/src/protocols/html`](https://github.com/plabayo/rama/tree/main/rama-http/src/protocols/html)
     as the foundation for rama's native streaming HTML parsing and
@@ -164,7 +164,7 @@ not be kept in sync with upstream — they are now part of `rama`.
     - Fewer dependencies: the CSS selector parser is hand-rolled for the
       streaming-safe subset, dropping `cssparser` and Servo's `selectors`.
   - License:
-    - Original: <https://github.com/cloudflare/lol-html/blob/02f139c4437b2da666a50d32e11d9158cbe0a393/LICENSE>
+    - Original: <https://github.com/cloudflare/lol-html/blob/608cc4a66b7ab4fcbe1bbdeb25df8f265572b11c/LICENSE>
     - Type: BSD-3-Clause
     - Copy: [./licenses/lol-html](./licenses/lol-html)
 - <https://github.com/jprendes/trapeze/tree/f0dfea7f49d133e10a2a0027de53ed931ba3d47f>

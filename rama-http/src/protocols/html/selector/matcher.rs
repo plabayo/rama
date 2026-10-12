@@ -61,38 +61,47 @@ impl Selector {
 }
 
 fn complex_matches<S: SelectorSubject>(complex: &ComplexSelector, subject: &S) -> bool {
-    match_from(&complex.parts, complex.parts.len() - 1, subject)
+    match_from(&complex.parts, complex.parts.len() - 1, subject) == MatchResult::Matched
+}
+
+/// Outcome of matching a compound-prefix of a complex selector at an element.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MatchResult {
+    Matched,
+    /// No match here; an enclosing descendant combinator may try a higher
+    /// ancestor.
+    NotMatched,
+    /// No match here nor at any ancestor, so every enclosing descendant scan
+    /// can stop too.
+    NotMatchedGlobally,
 }
 
 /// Matches `parts[..=idx]` against `subject` as the right-most compound,
 /// recursing leftward through the combinators.
-fn match_from<S: SelectorSubject>(parts: &[SelectorPart], idx: usize, subject: &S) -> bool {
+fn match_from<S: SelectorSubject>(parts: &[SelectorPart], idx: usize, subject: &S) -> MatchResult {
     let part = &parts[idx];
     if !compound_matches(&part.compound, subject) {
-        return false;
+        return MatchResult::NotMatched;
     }
     if idx == 0 {
-        return true;
+        return MatchResult::Matched;
     }
 
     let Some(combinator) = part.combinator else {
-        return false;
+        return MatchResult::NotMatched;
     };
-    match combinator {
-        Combinator::Child => subject
-            .parent()
-            .is_some_and(|parent| match_from(parts, idx - 1, &parent)),
-        Combinator::Descendant => {
-            let mut ancestor = subject.parent();
-            while let Some(node) = ancestor {
-                if match_from(parts, idx - 1, &node) {
-                    return true;
-                }
-                ancestor = node.parent();
+    let mut candidate = subject.parent();
+    while let Some(node) = candidate {
+        match match_from(parts, idx - 1, &node) {
+            MatchResult::NotMatched if combinator == Combinator::Descendant => {
+                candidate = node.parent();
             }
-            false
+            result => return result,
         }
     }
+    // Out of ancestors: any other placement of the compounds to the right sits
+    // higher and sees a subset of them, so stop re-walking ancestor chains.
+    MatchResult::NotMatchedGlobally
 }
 
 fn compound_matches<S: SelectorSubject>(compound: &Compound, subject: &S) -> bool {
@@ -136,4 +145,118 @@ fn attribute_matches<S: SelectorSubject>(selector: &AttributeSelector, subject: 
     subject
         .attribute(&selector.name)
         .is_some_and(|actual| selector.matches_value(actual.as_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SelectorSubject, compound_matches};
+    use crate::protocols::html::selector::ast::{Combinator, SelectorPart};
+    use crate::protocols::html::selector::{Dom, NodeId, Selector};
+
+    /// Exhaustive backtracking reference: every ancestor is tried for every
+    /// descendant combinator, without pruning.
+    fn exhaustive_match<S: SelectorSubject>(
+        parts: &[SelectorPart],
+        idx: usize,
+        subject: &S,
+    ) -> bool {
+        if !compound_matches(&parts[idx].compound, subject) {
+            return false;
+        }
+        if idx == 0 {
+            return true;
+        }
+        match parts[idx].combinator {
+            Some(Combinator::Child) => subject
+                .parent()
+                .is_some_and(|parent| exhaustive_match(parts, idx - 1, &parent)),
+            Some(Combinator::Descendant) => {
+                let mut ancestor = subject.parent();
+                while let Some(node) = ancestor {
+                    if exhaustive_match(parts, idx - 1, &node) {
+                        return true;
+                    }
+                    ancestor = node.parent();
+                }
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Every tree on `n` nodes whose parents precede their children.
+    fn parent_arrays(n: usize) -> Vec<Vec<Option<usize>>> {
+        let mut trees = vec![vec![None]];
+        for i in 1..n {
+            trees = trees
+                .into_iter()
+                .flat_map(|tree| {
+                    (0..i).map(move |parent| {
+                        let mut tree = tree.clone();
+                        tree.push(Some(parent));
+                        tree
+                    })
+                })
+                .collect();
+        }
+        trees
+    }
+
+    /// Complex selectors of one to four compounds over `a` / `b` (plus `*` in
+    /// the shorter ones), joined by every mix of child and descendant.
+    fn selector_matrix() -> Vec<Selector> {
+        let mut all: Vec<String> = vec!["a".into(), "b".into(), "*".into()];
+        let mut frontier = all.clone();
+        for len in 2..=4 {
+            let compounds: &[&str] = if len < 3 {
+                &["a", "b", "*"]
+            } else {
+                &["a", "b"]
+            };
+            frontier = frontier
+                .iter()
+                .flat_map(|prefix| {
+                    [" ", " > "].into_iter().flat_map(move |combinator| {
+                        compounds
+                            .iter()
+                            .map(move |compound| format!("{prefix}{combinator}{compound}"))
+                    })
+                })
+                .collect();
+            all.extend_from_slice(&frontier);
+        }
+        all.iter().map(|s| s.parse().unwrap()).collect()
+    }
+
+    #[test]
+    fn pruned_matching_agrees_with_exhaustive_backtracking() {
+        let selectors = selector_matrix();
+        for parents in parent_arrays(5) {
+            for labels in 0u32..(1 << parents.len()) {
+                let mut dom = Dom::new();
+                let mut ids: Vec<NodeId> = Vec::with_capacity(parents.len());
+                for (i, parent) in parents.iter().enumerate() {
+                    let name = if labels & (1 << i) == 0 { "a" } else { "b" };
+                    let id = match parent {
+                        None => dom.create(name),
+                        Some(p) => dom.append(ids[*p], name),
+                    };
+                    ids.push(id);
+                }
+                for selector in &selectors {
+                    for &id in &ids {
+                        let element = dom.element(id);
+                        let expected = selector.selectors.iter().any(|complex| {
+                            exhaustive_match(&complex.parts, complex.parts.len() - 1, &element)
+                        });
+                        assert_eq!(
+                            selector.matches(&element),
+                            expected,
+                            "`{selector}` at {id:?} in tree {parents:?} labelled {labels:#b}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

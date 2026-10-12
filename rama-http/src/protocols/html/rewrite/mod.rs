@@ -13,6 +13,10 @@
 //!
 //! It underpins the selector-driven [`HtmlRewriter`].
 
+use std::collections::hash_map::Entry;
+
+use ahash::{HashMap, RandomState};
+
 use super::selector::Selector;
 use super::selector::ast::{Combinator, ComplexSelector, Compound, NthType};
 use super::tokenizer::{LocalNameHash, StartTag};
@@ -145,7 +149,8 @@ impl SelectorState {
 struct Frame {
     name: LocalNameHash,
     child_count: usize,
-    type_counts: Vec<(LocalNameHash, usize)>,
+    /// Children seen per type; a map so many distinct child names stay O(1).
+    type_counts: Option<HashMap<LocalNameHash, usize>>,
 }
 
 impl Frame {
@@ -153,27 +158,28 @@ impl Frame {
         Self {
             name,
             child_count: 0,
-            type_counts: Vec::new(),
+            type_counts: None,
         }
     }
 
     fn type_count(&self, name: LocalNameHash) -> usize {
         self.type_counts
-            .iter()
-            .find(|(n, _)| *n == name)
-            .map_or(0, |(_, c)| *c)
+            .as_ref()
+            .and_then(|counts| counts.get(&name))
+            .copied()
+            .unwrap_or(0)
     }
 
-    fn record_child(&mut self, name: LocalNameHash, track_type: bool) {
+    /// Records a child; `type_hasher` is `Some` only when some selector uses
+    /// `:nth-of-type`, the one case that needs (and allocates) per-type counts.
+    fn record_child(&mut self, name: LocalNameHash, type_hasher: Option<&RandomState>) {
         self.child_count += 1;
-        // Per-type counts are only needed (and only allocate) when some
-        // selector uses `:nth-of-type`.
-        if track_type {
-            if let Some(entry) = self.type_counts.iter_mut().find(|(n, _)| *n == name) {
-                entry.1 += 1;
-            } else {
-                self.type_counts.push((name, 1));
-            }
+        if let Some(hasher) = type_hasher {
+            *self
+                .type_counts
+                .get_or_insert_with(|| HashMap::with_hasher(hasher.clone()))
+                .entry(name)
+                .or_default() += 1;
         }
     }
 }
@@ -189,6 +195,9 @@ pub(crate) struct SelectorMatcher {
     /// from (what [`SelectorMatcher::push_element`] reports).
     owner: Vec<usize>,
     stack: Vec<Frame>,
+    /// Open frames per name (root sentinel excluded): closing a name that isn't
+    /// open skips the stack scan. Randomly seeded, as the names are untrusted.
+    open_counts: HashMap<LocalNameHash, usize>,
     /// Flat NFA state: row `r` (one per stack frame) holds `selectors.len()`
     /// entries at `[r * n .. (r + 1) * n]`.
     states: Vec<SelectorState>,
@@ -220,6 +229,7 @@ impl SelectorMatcher {
             selectors: complexes,
             owner,
             stack: vec![Frame::new(LocalNameHash::NONE)],
+            open_counts: HashMap::default(),
             states: vec![SelectorState::ROOT; n],
             scratch: Vec::with_capacity(n),
             matched: Vec::new(),
@@ -268,11 +278,14 @@ impl SelectorMatcher {
             on_match(index);
         }
 
-        self.stack[parent_index].record_child(name, self.tracks_type);
+        // Per-type child maps reuse the open-count map's random seed.
+        let type_hasher = self.tracks_type.then_some(self.open_counts.hasher());
+        self.stack[parent_index].record_child(name, type_hasher);
 
         let opened = !is_void(name) && !tag.is_self_closing();
         if opened {
             self.stack.push(Frame::new(name));
+            *self.open_counts.entry(name).or_default() += 1;
             self.states.extend_from_slice(&self.scratch);
         }
         opened
@@ -326,29 +339,26 @@ impl SelectorMatcher {
         // per frame off the transient input buffer), so this match is by hash:
         // two distinct names colliding (≈1/2^64 for 64-bit FNV) would mis-close
         // an element. Not UB — at worst a mis-rewrite on adversarial input.
-        //
-        // Index 0 is the root sentinel and is never closed.
+        if !self.open_counts.contains_key(&name) {
+            return 0;
+        }
+        // The scan stops at the frame it then closes, so it is bounded by the
+        // number of frames popped.
         let Some(pos) = self.stack.iter().rposition(|f| f.name == name) else {
             return 0;
         };
-        if pos == 0 {
-            return 0;
-        }
-        let popped = self.stack.len() - pos;
-        self.stack.truncate(pos);
-        self.states.truncate(pos * self.selectors.len());
-        popped
+        self.close_from(pos)
     }
 
     /// Closes every still-open element at EOF.
     pub(crate) fn finish(&mut self) -> usize {
-        let popped = self.stack.len().saturating_sub(1);
-        self.stack.truncate(1);
-        self.states.truncate(self.selectors.len());
-        popped
+        self.close_from(1)
     }
 
     fn pop_nearest(&mut self, names: &[LocalNameHash]) -> usize {
+        if !names.iter().any(|name| self.open_counts.contains_key(name)) {
+            return 0;
+        }
         let Some(pos) = self
             .stack
             .iter()
@@ -356,11 +366,25 @@ impl SelectorMatcher {
         else {
             return 0;
         };
-        if pos == 0 {
+        self.close_from(pos)
+    }
+
+    /// Closes the frames at `pos` and above, returning how many closed. Index
+    /// 0 is the root sentinel and is never closed.
+    fn close_from(&mut self, pos: usize) -> usize {
+        if pos == 0 || pos >= self.stack.len() {
             return 0;
         }
         let popped = self.stack.len() - pos;
-        self.stack.truncate(pos);
+        for frame in self.stack.drain(pos..) {
+            if let Entry::Occupied(mut open) = self.open_counts.entry(frame.name) {
+                let count = open.get_mut();
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    open.remove();
+                }
+            }
+        }
         self.states.truncate(pos * self.selectors.len());
         popped
     }

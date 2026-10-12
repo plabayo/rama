@@ -1,30 +1,61 @@
 //! Tests for the streaming selector matcher, driven through the tokenizer.
 
+use ahash::HashMap;
+
 use super::SelectorMatcher;
 use crate::protocols::html::selector::Selector;
-use crate::protocols::html::tokenizer::{EndTag, StartTag, TokenSink, tokenize};
+use crate::protocols::html::tokenizer::{EndTag, LocalNameHash, StartTag, TokenSink, tokenize};
 
 /// Drives a [`SelectorMatcher`] from token events, recording each match as
 /// `(selector index, element name)` in document order.
 struct Recorder {
     vm: SelectorMatcher,
     hits: Vec<(usize, String)>,
+    /// Recount the open stack after every event (O(depth) each, so off for the
+    /// large pathological inputs).
+    check_open_counts: bool,
 }
 
 impl TokenSink for Recorder {
     fn start_tag(&mut self, tag: &StartTag<'_>) {
-        let Self { vm, hits } = self;
+        let Self {
+            vm,
+            hits,
+            check_open_counts,
+        } = self;
         let name = String::from_utf8_lossy(tag.name()).into_owned();
         vm.pop_implied_for_start(tag.name_hash());
+        if *check_open_counts {
+            assert_open_counts_mirror_stack(vm);
+        }
         vm.push_element(tag, |index| hits.push((index, name.clone())));
+        if *check_open_counts {
+            assert_open_counts_mirror_stack(vm);
+        }
     }
 
     fn end_tag(&mut self, tag: &EndTag<'_>) {
         self.vm.pop_element(tag.name_hash());
+        if self.check_open_counts {
+            assert_open_counts_mirror_stack(&self.vm);
+        }
     }
 }
 
+/// The per-name open counts must always equal a recount of the open stack.
+fn assert_open_counts_mirror_stack(vm: &SelectorMatcher) {
+    let mut expected: HashMap<LocalNameHash, usize> = HashMap::default();
+    for frame in vm.stack.iter().skip(1) {
+        *expected.entry(frame.name).or_default() += 1;
+    }
+    assert_eq!(vm.open_counts, expected);
+}
+
 fn run(selectors: &[&str], html: &[u8]) -> Vec<(usize, String)> {
+    run_with(selectors, html, true)
+}
+
+fn run_with(selectors: &[&str], html: &[u8], check_open_counts: bool) -> Vec<(usize, String)> {
     let selectors: Vec<Selector> = selectors
         .iter()
         .map(|s| {
@@ -35,8 +66,14 @@ fn run(selectors: &[&str], html: &[u8]) -> Vec<(usize, String)> {
     let mut recorder = Recorder {
         vm: SelectorMatcher::new(&selectors),
         hits: Vec::new(),
+        check_open_counts,
     };
     tokenize(html, &mut recorder).expect("no ambiguity in test inputs");
+    recorder.vm.finish();
+    assert!(
+        recorder.vm.open_counts.is_empty(),
+        "EOF closes every open frame"
+    );
     recorder.hits
 }
 
@@ -191,4 +228,71 @@ fn same_name_nesting() {
 #[test]
 fn universal_and_star_child() {
     assert_eq!(run(&["*"], b"<a><b></b></a>"), [hit(0, "a"), hit(0, "b")]);
+}
+
+#[test]
+fn attribute_names_match_ascii_case_insensitively() {
+    assert_eq!(
+        run(&["[FOO]"], b"<a foo></a><b FOO=1></b><c></c>"),
+        [hit(0, "a"), hit(0, "b")]
+    );
+    assert_eq!(
+        run(
+            &[r#"[FOO="bar"]"#],
+            b"<a foo='bar'></a><b FOO='bar'></b><c foo='BAR'></c><d></d>"
+        ),
+        [hit(0, "a"), hit(0, "b")]
+    );
+    assert_eq!(
+        run(&[":not([FOO])"], b"<a foo></a><b FOO=1></b><c></c>"),
+        [hit(0, "c")]
+    );
+}
+
+#[test]
+fn nth_of_type_counts_names_ascii_case_insensitively() {
+    assert_eq!(
+        run(
+            &["my-widget:nth-of-type(2)"],
+            b"<div><My-Widget></My-Widget><p></p><MY-WIDGET></MY-WIDGET></div>"
+        ),
+        [hit(0, "MY-WIDGET")]
+    );
+}
+
+#[test]
+fn nth_of_type_with_many_distinct_sibling_names() {
+    // Each child costs one map lookup, however many distinct names came before.
+    let siblings: String = (0..20_000).map(|i| format!("<x{i}></x{i}>")).collect();
+    let html = format!("<div>{siblings}<x7></x7></div>");
+    assert_eq!(run(&["x7:nth-of-type(2)"], html.as_bytes()), [hit(0, "x7")]);
+}
+
+#[test]
+fn open_counts_follow_implied_and_crossed_closes() {
+    // `run` recounts the open stack against the per-name counts after every event.
+    for html in [
+        &b"<ul><li>a<li>b<ul><li>c</ul></ul>"[..],
+        b"<p>a<div>b</div><p>c<p>d",
+        b"<table><tr><td>1<td>2<tr><th>3<tbody><tr><td>4</table>",
+        b"<select><optgroup><option>a<option>b<optgroup><option>c</select>",
+        b"<dl><dt>a<dd>b<dt>c</dl>",
+        b"<ruby>a<rb>b<rt>c<rp>d<rtc>e</ruby>",
+        b"<a><b><a></b></a>stray</i></a>",
+        b"<x/><img><br><X></x><DIV><div></DIV></div><p>unclosed",
+    ] {
+        assert!(!run(&["*"], html).is_empty());
+    }
+}
+
+#[test]
+fn stray_end_tags_and_implied_closes_skip_the_stack_scan() {
+    // Each stray `</b>` and each p-closing `<div>` meets a deep open stack; a
+    // scan per tag would make this input quadratic.
+    const N: usize = 50_000;
+    let mut html = "<div>".repeat(N);
+    html.push_str(&"<a></b>".repeat(N));
+    let hits = run_with(&["div a"], html.as_bytes(), false);
+    assert_eq!(hits.len(), N);
+    assert!(hits.iter().all(|(index, name)| *index == 0 && name == "a"));
 }
