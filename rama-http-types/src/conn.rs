@@ -67,6 +67,11 @@ pub struct H2ClientContextParams {
     /// The `SETTINGS_MAX_FRAME_SIZE` option for HTTP2.
     pub max_frame_size: Option<u32>,
 
+    /// The `SETTINGS_HEADER_TABLE_SIZE` option for HTTP2, the header
+    /// compression table size the remote peer may use to encode header
+    /// blocks sent to us.
+    pub header_table_size: Option<u32>,
+
     /// The `SETTINGS_MAX_CONCURRENT_STREAMS` option for HTTP2,
     /// limiting the number of concurrent streams the remote peer
     /// may initiate.
