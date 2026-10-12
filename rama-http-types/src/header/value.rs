@@ -7,6 +7,7 @@ use std::str::FromStr;
 use std::{cmp, fmt, str};
 
 use crate::header::name::HeaderName;
+use rama_utils::collections::smallvec::SmallVec;
 
 /// Represents an HTTP header field value.
 ///
@@ -211,6 +212,46 @@ impl HeaderValue {
                 is_sensitive: false,
             }
         }
+    }
+
+    /// Join `values` with `separator` into one exactly sized value, as field lines combine
+    /// (RFC 9110 §5.3), or `None` without values.
+    ///
+    /// A lone value is shared rather than copied; the result is sensitive if any value is.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rama_http_types::header::HeaderValue;
+    /// let lines = [HeaderValue::from_static("gzip"), HeaderValue::from_static("br")];
+    /// let joined = HeaderValue::join(&lines, &HeaderValue::from_static(", ")).unwrap();
+    /// assert_eq!(joined, "gzip, br");
+    /// assert!(HeaderValue::join(&[], &HeaderValue::from_static(", ")).is_none());
+    /// ```
+    pub fn join<'a, I>(values: I, separator: &HeaderValue) -> Option<HeaderValue>
+    where
+        I: IntoIterator<Item = &'a HeaderValue>,
+    {
+        let values: SmallVec<[&HeaderValue; 4]> = values.into_iter().collect();
+        let (first, rest) = values.split_first()?;
+        if rest.is_empty() {
+            return Some((*first).clone());
+        }
+
+        let len =
+            values.iter().map(|value| value.len()).sum::<usize>() + rest.len() * separator.len();
+        let mut joined = Vec::with_capacity(len);
+        joined.extend_from_slice(first.as_bytes());
+        for value in rest {
+            joined.extend_from_slice(separator.as_bytes());
+            joined.extend_from_slice(value.as_bytes());
+        }
+
+        // Validity is per byte, so valid values joined by a valid separator stay valid.
+        Some(HeaderValue {
+            inner: Bytes::from(joined),
+            is_sensitive: values.iter().any(|value| value.is_sensitive()),
+        })
     }
 
     fn from_shared(src: Bytes) -> Result<HeaderValue, InvalidHeaderValue> {
@@ -511,6 +552,13 @@ impl From<&HeaderValue> for HeaderValue {
     #[inline]
     fn from(t: &HeaderValue) -> Self {
         t.clone()
+    }
+}
+
+impl From<HeaderValue> for Bytes {
+    #[inline]
+    fn from(value: HeaderValue) -> Self {
+        value.inner
     }
 }
 
@@ -885,6 +933,22 @@ impl PartialOrd<HeaderValue> for &str {
 #[test]
 fn test_try_from() {
     HeaderValue::try_from(vec![127]).unwrap_err();
+}
+
+#[test]
+fn test_join_exact_shared_and_sensitive() {
+    let separator = HeaderValue::from_static("; ");
+    let mut secret = HeaderValue::from_bytes(b"a=1").unwrap();
+    secret.set_sensitive(true);
+
+    let lone = HeaderValue::join([&secret], &separator).unwrap();
+    assert_eq!(lone.as_bytes().as_ptr(), secret.as_bytes().as_ptr());
+    assert!(lone.is_sensitive());
+
+    let joined =
+        HeaderValue::join([&HeaderValue::from_static("b=2"), &secret], &separator).unwrap();
+    assert_eq!(joined, "b=2; a=1");
+    assert!(joined.is_sensitive());
 }
 
 #[test]

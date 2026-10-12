@@ -102,8 +102,7 @@ where
 
     async fn try_into_string(self) -> Result<String, BoxError> {
         let body = self.into_body().collect().await.into_box_error()?;
-        let bytes = body.to_bytes();
-        String::from_utf8(bytes.to_vec()).context("parse body as utf-8 string")
+        String::from_utf8(body.to_vec()).context("parse body as utf-8 string")
     }
 
     async fn try_capture_json(
@@ -150,8 +149,7 @@ where
 
     async fn try_into_string(self) -> Result<String, BoxError> {
         let body = self.into_body().collect().await.into_box_error()?;
-        let bytes = body.to_bytes();
-        String::from_utf8(bytes.to_vec()).context("parse request body as utf-8 string")
+        String::from_utf8(body.to_vec()).context("parse request body as utf-8 string")
     }
 
     async fn try_capture_json(
@@ -198,8 +196,7 @@ impl<B: Into<crate::Body> + Send + 'static> BodyExtractExt for B {
     async fn try_into_string(self) -> Result<String, BoxError> {
         let body = self.into();
         let collected_body = body.collect().await.context("collect body")?;
-        let bytes = collected_body.to_bytes();
-        String::from_utf8(bytes.to_vec()).context("parse body as utf-8 string")
+        String::from_utf8(collected_body.to_vec()).context("parse body as utf-8 string")
     }
 
     async fn try_capture_json(

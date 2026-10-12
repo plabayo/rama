@@ -67,7 +67,7 @@ impl EnabledCompressionEncodings {
 
         value.put_slice(b"identity");
         Ok(Some(
-            rama_http_types::HeaderValue::from_maybe_shared(value)
+            rama_http_types::HeaderValue::from_maybe_shared(value.freeze())
                 .context("create header value from encoding values")?,
         ))
     }

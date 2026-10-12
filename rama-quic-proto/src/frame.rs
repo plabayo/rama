@@ -445,7 +445,9 @@ impl Ack {
     /// the set is empty (there is nothing to acknowledge). This is the only way to construct an
     /// `Ack` outside decoding, so a hand-built one can never carry inconsistent range bytes.
     pub fn from_ranges(delay: u64, ranges: &ArrayRangeSet, ecn: Option<EcnCounts>) -> Option<Self> {
-        let (largest, additional) = Self::ranges_to_wire(ranges)?;
+        let largest = ranges.max()?;
+        let mut additional = Vec::new();
+        Self::write_ranges(ranges, &mut additional);
         Some(Self {
             largest,
             delay,
@@ -454,21 +456,19 @@ impl Ack {
         })
     }
 
-    /// The largest acknowledged packet and the range bytes an ACK carries for `ranges` (the first
-    /// range's size, then gap/size pairs), or `None` when the set is empty.
-    fn ranges_to_wire(ranges: &ArrayRangeSet) -> Option<(u64, Vec<u8>)> {
+    /// The range bytes an ACK carries for `ranges`: the first range's size, then gap/size pairs.
+    fn write_ranges<W: BufMut>(ranges: &ArrayRangeSet, buf: &mut W) {
         let mut rest = ranges.iter().rev();
-        let first = rest.next()?;
-        let largest = first.end - 1;
-        let mut additional = Vec::new();
-        additional.write_var(first.end - first.start - 1);
+        let Some(first) = rest.next() else {
+            return;
+        };
+        buf.write_var(first.end - first.start - 1);
         let mut prev = first.start;
         for block in rest {
-            additional.write_var(prev - block.end - 1);
-            additional.write_var(block.end - block.start - 1);
+            buf.write_var(prev - block.end - 1);
+            buf.write_var(block.end - block.start - 1);
             prev = block.start;
         }
-        Some((largest, additional))
     }
 
     pub fn encode<W: BufMut>(
@@ -479,7 +479,7 @@ impl Ack {
     ) {
         // A caller only encodes a non-empty ACK (`PendingAcks` gates on `can_send`); an empty
         // range set writes no frame rather than panicking.
-        let Some((largest, additional)) = Self::ranges_to_wire(ranges) else {
+        let Some(largest) = ranges.max() else {
             return;
         };
         buf.write(if ecn.is_some() {
@@ -490,7 +490,7 @@ impl Ack {
         buf.write_var(largest);
         buf.write_var(delay);
         buf.write_var(ranges.len() as u64 - 1);
-        buf.put_slice(&additional);
+        Self::write_ranges(ranges, buf);
         if let Some(x) = ecn {
             x.encode(buf)
         }

@@ -29,7 +29,6 @@
 //! trailer capabilities are intentionally unsupported. See [request] and
 //! [response] for the other removal policies.
 
-use rama_core::bytes::BytesMut;
 use rama_core::telemetry::tracing;
 use rama_utils::str::{any_submatch_ignore_ascii_case, starts_with_ignore_ascii_case};
 
@@ -145,34 +144,14 @@ pub fn coalesce_cookie_headers(headers: &mut HeaderMap) {
         return;
     };
 
-    let Some((bytes_count, header_count, is_sensitive)) = cookie_headers
-        .iter()
-        .map(|value| (value.as_bytes().len(), 1usize, value.is_sensitive()))
-        .reduce(|a, b| (a.0 + b.0, a.1 + b.1, a.2 || b.2))
-    else {
-        return;
-    };
-    if header_count <= 1 {
+    if cookie_headers.iter().nth(1).is_none() {
         return;
     }
-
-    let mut buffer = BytesMut::with_capacity(bytes_count + ((header_count - 1) * 2));
-    let mut header_values = cookie_headers.iter();
-    if let Some(header_value) = header_values.next() {
-        buffer.extend_from_slice(header_value.as_bytes());
+    if let Some(header_value) =
+        HeaderValue::join(cookie_headers.iter(), &HeaderValue::from_static("; "))
+    {
+        cookie_headers.insert(header_value);
     }
-    for header_value in header_values {
-        buffer.extend_from_slice(b"; ");
-        buffer.extend_from_slice(header_value.as_bytes());
-    }
-
-    // Every input is already a valid HeaderValue and the separator is valid as well.
-    let Ok(mut header_value) = HeaderValue::from_maybe_shared(buffer.freeze()) else {
-        tracing::error!("failed to coalesce valid Cookie header values");
-        return;
-    };
-    header_value.set_sensitive(is_sensitive);
-    cookie_headers.insert(header_value);
 }
 
 /// Remove headers that are illegal on an HTTP/2 (or HTTP/3) request.

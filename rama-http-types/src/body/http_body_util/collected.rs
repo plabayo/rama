@@ -6,7 +6,7 @@ use std::{
 
 use crate::HeaderMap;
 use crate::body::http_body::{Body, Frame};
-use bytes::{Buf, Bytes};
+use bytes::{Buf, BufMut, Bytes};
 
 use crate::body::http_body_util::util::BufList;
 
@@ -36,6 +36,13 @@ impl<B: Buf> Collected<B> {
     /// Convert this body into a [`Bytes`].
     pub fn to_bytes(mut self) -> Bytes {
         self.bufs.copy_to_bytes(self.bufs.remaining())
+    }
+
+    /// Copy this body into an exactly sized [`Vec`], never adopting a larger receive buffer.
+    pub fn to_vec(self) -> Vec<u8> {
+        let mut vec = Vec::with_capacity(self.bufs.remaining());
+        vec.put(self.bufs);
+        vec
     }
 
     pub(crate) fn push_frame(&mut self, frame: Frame<B>) {
@@ -163,6 +170,24 @@ mod tests {
         let mut buf = buffered.to_bytes();
 
         assert_eq!(&buf.copy_to_bytes(buf.remaining())[..], b"helloworld!");
+    }
+
+    #[tokio::test]
+    async fn to_vec_is_exactly_sized() {
+        let mut receive_buffer = bytes::BytesMut::with_capacity(8 * 1024);
+        receive_buffer.extend_from_slice(b"hello");
+        let bufs = [
+            vec![receive_buffer.freeze()],
+            vec![Bytes::from_static(b"hello "), Bytes::from_static(b"world!")],
+        ];
+        for (frames, expected) in bufs.into_iter().zip([&b"hello"[..], b"hello world!"]) {
+            let body = StreamBody::new(stream::iter(
+                frames.into_iter().map(Frame::data).map(Ok::<_, Infallible>),
+            ));
+            let vec = body.collect().await.unwrap().to_vec();
+            assert_eq!(vec, expected);
+            assert_eq!(vec.capacity(), expected.len());
+        }
     }
 
     /// Test for issue [#88](https://github.com/hyperium/http-body/issues/88).
