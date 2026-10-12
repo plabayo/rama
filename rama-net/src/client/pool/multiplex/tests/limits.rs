@@ -535,23 +535,60 @@ async fn idle_connections_over_the_total_limit_close_across_ids() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn idle_limits_close_nothing_while_checkouts_wait() {
+async fn idle_limits_trim_other_lanes_while_a_checkout_waits() {
     let pool = MultiplexPool::new()
         .with_max_streams_per_connection(NonZeroUsize::new(1).unwrap())
-        .with_max_connections_total(NonZeroUsize::new(2).unwrap())
+        .with_max_connections_total(NonZeroUsize::new(4).unwrap())
         .with_saturation_policy(SaturationPolicy::Wait)
         .with_max_idle_total(NonZeroUsize::new(1).unwrap());
-    let held = [fresh(&pool, 0).await, fresh(&pool, 1).await];
-    let mut waiting = checkout(&pool, 2);
+
+    let held = [
+        fresh(&pool, 1).await,
+        fresh(&pool, 2).await,
+        fresh(&pool, 3).await,
+        fresh(&pool, 4).await,
+    ];
+    let mut waiting = checkout(&pool, 0);
     assert!(waiting.poll().is_pending());
+
     drop(held);
     assert_eq!(
         stored(&pool).len(),
-        2,
-        "what is idle now may serve a waiter"
+        1,
+        "idle connections of other lanes cannot serve the checkout"
     );
     drop(waiting);
-    assert_eq!(stored(&pool).len(), 1, "trimmed once the last waiter left");
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_limits_keep_a_waiting_lanes_connections_until_its_last_waiter_leaves() {
+    let pool = MultiplexPool::new()
+        .with_max_streams_per_connection(NonZeroUsize::new(1).unwrap())
+        .with_max_connections_total(NonZeroUsize::new(3).unwrap())
+        .with_saturation_policy(SaturationPolicy::Wait)
+        .with_max_idle_total(NonZeroUsize::new(1).unwrap());
+
+    let first = fresh(&pool, 0).await;
+    let second = fresh(&pool, 0).await;
+    let other = fresh(&pool, 1).await;
+    let mut waiting = checkout(&pool, 0);
+    assert!(waiting.poll().is_pending());
+
+    drop(first);
+    drop(second);
+    drop(other);
+    assert_eq!(
+        stored(&pool),
+        [(0, 0), (0, 1)],
+        "the waiting lane is kept while the other lane is trimmed"
+    );
+
+    drop(waiting);
+    assert_eq!(
+        stored(&pool).len(),
+        1,
+        "the excess is trimmed when the lane's last waiter leaves"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -648,6 +685,29 @@ async fn settle() {
     for _ in 0..8 {
         tokio::task::yield_now().await;
     }
+}
+
+/// An idle connection counted without asking for a trim, and its admission.
+async fn counted_idle_with_state(
+    pool: &MultiplexPool<Conn, TestId>,
+    id: u32,
+) -> (Arc<StoredConnection<Conn, TestId>>, Arc<AdmissionState>) {
+    let (conn, state) = admission_connection(pool, 4);
+    let handout = pool
+        .create(TestId(id), conn, pool.test_slot(), &EMPTY_INPUT)
+        .await
+        .unwrap();
+
+    // Work outlives the handout, so its release does not count or trim it.
+    state.in_use.store(true, Ordering::SeqCst);
+    let inner = handout.inner.clone();
+    drop(handout);
+
+    // End the work without notifying its listener, then count it directly.
+    state.in_use.store(false, Ordering::SeqCst);
+    inner.changes.fetch_add(1, Ordering::Release);
+    assert!(inner.count_if_idle());
+    (inner, state)
 }
 
 #[test]
@@ -763,6 +823,80 @@ async fn idle_connections_going_idle_at_once_keep_exactly_the_limit() {
             pool.storage.lock().by_id.len(),
             1,
             "neither over nor under the limit"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lane_emptying_while_a_trim_is_held_still_trims_its_excess() {
+    for _ in 0..20 {
+        let pool = MultiplexPool::new()
+            .with_max_streams_per_connection(NonZeroUsize::new(1).unwrap())
+            .with_max_connections_total(NonZeroUsize::new(3).unwrap())
+            .with_saturation_policy(SaturationPolicy::Wait)
+            .with_max_idle_per_id(NonZeroUsize::new(1).unwrap())
+            .with_max_idle_total(NonZeroUsize::new(2).unwrap());
+
+        let (_first, first_state) = counted_idle_with_state(&pool, 0).await;
+        std::thread::sleep(Duration::from_millis(1));
+        let (_second, second_state) = counted_idle_with_state(&pool, 0).await;
+        std::thread::sleep(Duration::from_millis(1));
+
+        // A third lane gives the trimmer work after it skips both connections
+        // of the waiting lane.
+        let (on_ask, in_use) = (Arc::new(Mutex::new(None)), Arc::new(AtomicBool::new(true)));
+        let conn = Conn {
+            serial: 7,
+            extensions: Extensions::new(),
+        };
+        conn.extensions.insert(upgrading(&on_ask, &in_use));
+        let handout = pool
+            .create(TestId(1), conn, pool.test_slot(), &EMPTY_INPUT)
+            .await
+            .unwrap();
+        let other = handout.inner.clone();
+        drop(handout);
+        in_use.store(false, Ordering::SeqCst);
+        other.changes.fetch_add(1, Ordering::Release);
+        assert!(other.count_if_idle());
+
+        // Neither connection in the first lane can admit the checkout, so it
+        // queues there while the pool is at its connection limit.
+        first_state.limit.store(0, Ordering::SeqCst);
+        second_state.limit.store(0, Ordering::SeqCst);
+        let mut waiting = checkout(&pool, 0);
+        assert!(waiting.poll().is_pending());
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        *on_ask.lock() = Some(Box::new(move || {
+            entered_tx.send(()).unwrap();
+            resume_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        }) as Box<dyn FnOnce() + Send>);
+
+        let storage = Arc::downgrade(&pool.storage);
+        let limits = pool.idle_limits.as_ref().unwrap().clone();
+        let trimmer = std::thread::spawn(move || {
+            ask_trim(&storage, &limits, Some(&TestId(0)), true);
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the trim skipped the waiting lane and reached the other lane");
+
+        drop(waiting);
+        resume_tx.send(()).unwrap();
+        trimmer.join().unwrap();
+
+        for _ in 0..100 {
+            if stored(&pool).len() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert_eq!(
+            stored(&pool).iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [0],
+            "the other lane and one excess connection of the emptied lane are trimmed"
         );
     }
 }
@@ -906,7 +1040,7 @@ async fn a_trim_left_for_waiters_keeps_the_ids_asked_only() {
         .with_max_idle_per_id(NonZeroUsize::new(1).unwrap());
     let held = [fresh(&pool, 0).await, fresh(&pool, 0).await];
     drop(fresh(&pool, 5).await);
-    let mut waiting = checkout(&pool, 1);
+    let mut waiting = checkout(&pool, 0);
     assert!(waiting.poll().is_pending());
     drop(held);
     settle().await;
@@ -934,13 +1068,13 @@ async fn the_last_waiter_leaving_trims_over_the_per_id_limit() {
         .with_saturation_policy(SaturationPolicy::Wait)
         .with_max_idle_per_id(NonZeroUsize::new(1).unwrap());
     let held = [fresh(&pool, 0).await, fresh(&pool, 0).await];
-    let mut waiting = checkout(&pool, 1);
+    let mut waiting = checkout(&pool, 0);
     assert!(waiting.poll().is_pending());
     drop(held);
     assert_eq!(
         stored(&pool).len(),
         2,
-        "what is idle now may serve a waiter"
+        "the waiting lane's idle connections are kept"
     );
     drop(waiting);
     assert_eq!(stored(&pool).len(), 1, "trimmed once the last waiter left");
@@ -1508,19 +1642,7 @@ async fn counted_idle(
     pool: &MultiplexPool<Conn, TestId>,
     id: u32,
 ) -> Arc<StoredConnection<Conn, TestId>> {
-    let (conn, state) = admission_connection(pool, 4);
-    let handout = pool
-        .create(TestId(id), conn, pool.test_slot(), &EMPTY_INPUT)
-        .await
-        .unwrap();
-    // Work outlives the handout: its release counts nothing.
-    state.in_use.store(true, Ordering::SeqCst);
-    let inner = handout.inner.clone();
-    drop(handout);
-    // It ends: a change of its source, without the listener's trim.
-    state.in_use.store(false, Ordering::SeqCst);
-    inner.changes.fetch_add(1, Ordering::Release);
-    assert!(inner.count_if_idle());
+    let (inner, _state) = counted_idle_with_state(pool, id).await;
     tokio::time::advance(Duration::from_millis(1)).await;
     inner
 }

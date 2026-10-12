@@ -1318,14 +1318,12 @@ where
         ConnectionResult::CreatePermit(slot)
     }
 
-    /// Trims the idle connections over the limits once the last waiting
-    /// checkout leaves: the ids asked meanwhile, which trims left alone.
+    /// Trims the idle connections over the limits once a waiting checkout
+    /// leaves a lane empty: the asks that a trim kept for that lane.
     fn idle_trim(&self) -> Option<Box<dyn Fn() + Send + Sync>> {
         let limits = self.idle_limits.clone()?;
-        let (storage, waiting) = (Arc::downgrade(&self.storage), self.waiting.clone());
-        Some(Box::new(move || {
-            ask_trim(&storage, &limits, &waiting, None, true)
-        }))
+        let storage = Arc::downgrade(&self.storage);
+        Some(Box::new(move || ask_trim(&storage, &limits, None, true)))
     }
 
     /// Dial, or wait for the connects in flight for the request's lanes, as

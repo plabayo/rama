@@ -86,8 +86,8 @@ pub(super) struct Waiting {
     /// The checkouts at its id's limit that may replace one of the id's idle
     /// connections, if the pool limits connections per id.
     pub(super) id_evictors: Option<Arc<WaitQueue>>,
-    /// Trims the idle connections over the pool's limits, if it has any, once
-    /// the last waiting checkout leaves.
+    /// Trims the idle connections over the pool's limits, if it has any, when
+    /// this checkout leaves a lane empty.
     pub(super) idle_trim: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
@@ -219,6 +219,7 @@ impl Waiting {
     pub(super) fn leave_other_lanes(&mut self) {
         let emptied = self.leave_where(|place| !place.looked && !place.chances);
         self.announce(emptied, self.others_wait());
+        self.trim_if_lane_emptied(emptied);
     }
 
     /// A look found nothing: it spent the wakes it answered, and the checkout
@@ -280,6 +281,16 @@ impl Waiting {
         }
     }
 
+    /// A trim may have kept asks for this lane while its last waiter left.
+    /// The fences make either that trimmer see the empty queue or this trim see
+    /// its kept asks.
+    fn trim_if_lane_emptied(&self, emptied: bool) {
+        if emptied && let Some(trim) = &self.idle_trim {
+            fence(Ordering::SeqCst);
+            trim();
+        }
+    }
+
     /// The checkout was served through `queue`: the lane of its connection, if
     /// filed, or the chance queue of the idle connection it evicted.
     pub(super) fn served(&mut self, queue: Option<Arc<WaitQueue>>) {
@@ -305,11 +316,6 @@ impl Drop for Waiting {
         }
         let others = self.waiting.fetch_sub(1, Ordering::Relaxed) > 1;
         self.announce(emptied, others);
-        if !others && let Some(trim) = &self.idle_trim {
-            // Pairs with the fence of a trim: it sees this checkout gone, or
-            // this trim sees its counts.
-            fence(Ordering::SeqCst);
-            trim();
-        }
+        self.trim_if_lane_emptied(emptied);
     }
 }

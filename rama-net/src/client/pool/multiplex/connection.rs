@@ -89,7 +89,7 @@ pub(super) const GONE: u8 = 2;
 
 /// Asks for a trim of the idle connections over the limits, see [`ask_trim`].
 pub(super) type AskTrim<C, ID> =
-    fn(&Weak<Mutex<Storage<C, ID>>>, &Arc<IdleLimits<ID>>, &Arc<AtomicUsize>, Option<&ID>, bool);
+    fn(&Weak<Mutex<Storage<C, ID>>>, &Arc<IdleLimits<ID>>, Option<&ID>, bool);
 
 /// A stream reserved on a connection by [`StoredConnection::try_admit`], with
 /// the transport credit reserved for it, if the connection has a provider.
@@ -306,7 +306,7 @@ impl<C, ID> StoredConnection<C, ID> {
     /// trimming asks admissions.
     fn ask_trim(&self, inline: bool) {
         if let Some(limits) = &self.idle_limits {
-            (self.ask_trim_fn)(&self.storage, limits, &self.waiting, Some(&self.id), inline);
+            (self.ask_trim_fn)(&self.storage, limits, Some(&self.id), inline);
         }
     }
 
@@ -582,14 +582,13 @@ pub(super) fn relist_stored<C, ID: ConnID>(conn: &Arc<StoredConnection<C, ID>>) 
 pub(super) fn ask_trim<C: Send + Sync + 'static, ID: ConnID>(
     storage: &Weak<Mutex<Storage<C, ID>>>,
     limits: &Arc<IdleLimits<ID>>,
-    waiting: &Arc<AtomicUsize>,
     id: Option<&ID>,
     inline: bool,
 ) {
     if let Some(id) = id {
         limits.ask(id);
     }
-    if inline && trim_asked(storage, limits, waiting) {
+    if inline && trim_asked(storage, limits) {
         return;
     }
     // The current runtime, else that of the newest connection: a source may
@@ -604,16 +603,12 @@ pub(super) fn ask_trim<C: Send + Sync + 'static, ID: ConnID>(
     if !limits.schedule(runtime.id()) {
         return;
     }
-    let (storage, waiting, scheduled) = (
-        storage.clone(),
-        waiting.clone(),
-        Scheduled(limits.clone(), runtime.id()),
-    );
+    let (storage, scheduled) = (storage.clone(), Scheduled(limits.clone(), runtime.id()));
     runtime.spawn(async move {
         let limits = scheduled.0.clone();
         // Running: an ask from now on may schedule another.
         drop(scheduled);
-        while !trim_asked(&storage, &limits, &waiting) {
+        while !trim_asked(&storage, &limits) {
             tokio::task::yield_now().await;
         }
     });
@@ -624,7 +619,6 @@ pub(super) fn ask_trim<C: Send + Sync + 'static, ID: ConnID>(
 fn trim_asked<C, ID: ConnID>(
     storage: &Weak<Mutex<Storage<C, ID>>>,
     limits: &IdleLimits<ID>,
-    waiting: &AtomicUsize,
 ) -> bool {
     let Some(hold) = limits.hold() else {
         // Whoever trims looks at the asks again as it lets go.
@@ -634,19 +628,17 @@ fn trim_asked<C, ID: ConnID>(
         return true;
     };
     let asked = limits.take();
-    // Its own decision, not a second look at the waiters: one leaving between
-    // them would find this trimmer still held, and its trim would be lost.
-    let left_for_waiters = trim(&storage, limits, waiting, &asked);
-    if left_for_waiters {
-        // Waiting checkouts take idle connections: what they leave is trimmed
-        // as the last of them leaves, of these ids only, not every id's.
+    let skipped = trim(&storage, limits, &asked);
+    if !skipped.is_empty() {
+        // Keep the asks for the lanes whose waiters may take the idle
+        // connections. Their last waiter trims what remains.
         limits.ask_again(asked);
     }
     drop(hold);
-    // Pairs with the fence of the last waiting checkout leaving: it sees the
-    // asks kept for it, or this sees it gone and trims them.
+    // Pairs with the fence of a skipped lane's last waiter leaving: it sees
+    // the asks kept for it, or this sees the lane empty and tries again.
     fence(Ordering::SeqCst);
-    if left_for_waiters && waiting.load(Ordering::Relaxed) != 0 {
+    if !skipped.is_empty() && skipped.iter().all(|queue| !queue.is_empty()) {
         return true;
     }
     limits.nothing_asked()
@@ -664,14 +656,13 @@ impl<ID> Drop for Scheduled<ID> {
 
 /// Close the least recently used idle connections beyond the limits, of the
 /// ids `asked` first, then in total. Picks from atomics under the storage lock,
-/// asks the pick's admission without it. Whether it left the rest to waiting
-/// checkouts.
+/// asks the pick's admission without it. Returns the lane queues whose waiters
+/// kept an otherwise extra connection.
 fn trim<C, ID: ConnID>(
     storage: &Mutex<Storage<C, ID>>,
     limits: &IdleLimits<ID>,
-    waiting: &AtomicUsize,
     asked: &Asked<ID>,
-) -> bool {
+) -> SmallVec<[Arc<WaitQueue>; 2]> {
     // Count what went idle without a release that counted it, such as work
     // outliving its handouts ending: asked about here, outside the lock.
     let uncounted: SmallVec<[Arc<StoredConnection<C, ID>>; 4]> = {
@@ -688,14 +679,22 @@ fn trim<C, ID: ConnID>(
     }
     drop(uncounted);
     let mut busy: SmallVec<[u64; 2]> = SmallVec::new();
-    // Pairs with the fence of the last waiting checkout leaving: this sees it
-    // gone, or its trim sees these counts.
-    fence(Ordering::SeqCst);
-    // Waiting checkouts take idle connections: none of them is extra then.
-    while waiting.load(Ordering::Relaxed) == 0 {
+    let mut skipped: SmallVec<[Arc<WaitQueue>; 2]> = SmallVec::new();
+
+    loop {
         let Some((extra, excess)) = pick_extra(&storage.lock(), limits, asked, &busy) else {
-            return false;
+            return skipped;
         };
+
+        let lane_waiters = extra.lane_waiters.lock().clone();
+        if let Some(queue) = lane_waiters.filter(|queue| !queue.is_empty()) {
+            busy.push(extra.seq);
+            if !skipped.iter().any(|known| Arc::ptr_eq(known, &queue)) {
+                skipped.push(queue);
+            }
+            continue;
+        }
+
         // Still over at the commit, whatever others closed since the pick. Asks
         // the admission under the slot lock, as `in_use` allows.
         if extra
@@ -709,7 +708,6 @@ fn trim<C, ID: ConnID>(
         let stored = unstore(&mut storage.lock(), &extra);
         drop((stored, extra));
     }
-    true
 }
 
 /// The idle connection a trim closes next, and the limit it is over: the
