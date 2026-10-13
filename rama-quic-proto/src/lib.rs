@@ -31,6 +31,10 @@ extern crate alloc;
 
 /// The longest connection ID QUIC version 1 carries, in bytes (RFC 9000 §17.2).
 pub const MAX_CID_SIZE: usize = 20;
+/// Smallest UDP payload a client may carry an Initial packet in (RFC 9000 §14.1).
+pub const MIN_INITIAL_SIZE: usize = 1200;
+/// Shortest destination connection ID of a client's first Initial (RFC 9000 §7.2).
+pub const MIN_INITIAL_DCID_SIZE: usize = 8;
 
 /// Maximum number of streams that can be uniquely identified by a stream ID (RFC 9000 §2.1).
 pub const MAX_STREAM_COUNT: u64 = 1 << 60;

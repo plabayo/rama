@@ -164,3 +164,35 @@ fn the_header_sizes_the_buffer_once() {
         "no reallocation after the header"
     );
 }
+
+#[test]
+fn fragments_straddling_the_bound_or_the_declared_end_are_clipped() {
+    let limits = limits(100, 128);
+    // Before the header, a fragment runs past the message bound.
+    let hello = message(100);
+    let mut straddling = hello[90..].to_vec();
+    straddling.extend([0xee; 20]);
+    let mut assembly = ClientHelloAssembly::new(&limits);
+    assembly.take_in(90, &straddling).unwrap();
+    assert!(
+        assembly.buffer.capacity() <= 100,
+        "{}",
+        assembly.buffer.capacity()
+    );
+    assembly.take_in(0, &hello[..90]).unwrap();
+    assert_eq!(assembly.client_hello().unwrap(), hello);
+    // After the header, a fragment runs past the declared end.
+    let hello = message(60);
+    let mut straddling = hello[50..].to_vec();
+    straddling.extend([0xee; 30]);
+    let mut assembly = ClientHelloAssembly::new(&limits);
+    assembly.take_in(0, &hello[..10]).unwrap();
+    assembly.take_in(50, &straddling).unwrap();
+    assert!(
+        assembly.buffer.capacity() <= 100,
+        "{}",
+        assembly.buffer.capacity()
+    );
+    assembly.take_in(10, &hello[10..50]).unwrap();
+    assert_eq!(assembly.client_hello().unwrap(), hello);
+}

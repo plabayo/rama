@@ -15,7 +15,7 @@ use rama_net::address::{SocketAddress, ip::IntoCanonicalIpAddr as _};
 
 use crate::{
     DatagramError, DatagramFeature, DatagramMetadata, DatagramSender, DatagramSenderExt as _,
-    DatagramSocket, DatagramSocketExt as _, SendDatagram,
+    DatagramSocket, DatagramSocketExt as _, InvalidDatagramMetadata, SendDatagram,
 };
 
 /// ECN behavior selected before either direction starts sending.
@@ -203,25 +203,13 @@ impl DatagramForwardService {
             };
             // Split GRO into logical UDP datagrams. This works even when the
             // other leg has no segmentation support, with one bounded send at a time.
-            let stride = metadata
-                .segment_size
-                .map_or(payload.len().max(1), NonZeroUsize::get);
-            if payload.is_empty() {
+            for packet in metadata.segments(payload) {
                 to.send(
-                    SendDatagram::new(destination, payload)
+                    SendDatagram::new(destination, packet)
                         .maybe_with_ecn(ecn)
                         .maybe_with_source_ip(source_ip),
                 )
                 .await?;
-            } else {
-                for packet in payload.chunks(stride) {
-                    to.send(
-                        SendDatagram::new(destination, packet)
-                            .maybe_with_ecn(ecn)
-                            .maybe_with_source_ip(source_ip),
-                    )
-                    .await?;
-                }
             }
         }
     }
@@ -232,23 +220,18 @@ impl DatagramForwardService {
         capacity: usize,
         expected: SocketAddress,
     ) -> Result<(), DatagramForwardError> {
-        if metadata.peer != expected {
+        if !metadata.is_from(expected) {
             return Err(DatagramForwardError::UnexpectedPeer {
                 expected,
                 actual: metadata.peer,
             });
         }
-        if metadata.truncated {
-            return Err(DatagramForwardError::Truncated);
-        }
-        if metadata.len > capacity
-            || metadata.original_len != metadata.len
-            || metadata
-                .segment_size
-                .is_some_and(|size| size.get() >= metadata.len)
-        {
-            return Err(DatagramForwardError::InvalidMetadata);
-        }
+        metadata.validate(capacity).map_err(|error| match error {
+            InvalidDatagramMetadata::Truncated => DatagramForwardError::Truncated,
+            InvalidDatagramMetadata::Length | InvalidDatagramMetadata::Segments => {
+                DatagramForwardError::InvalidMetadata
+            }
+        })?;
         if self.ecn == EcnPolicy::Preserve && metadata.ecn.is_none() {
             return Err(DatagramForwardError::MissingEcn);
         }

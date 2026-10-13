@@ -274,10 +274,11 @@ mod tests {
     fn a_contradicting_retransmission_is_invalid() {
         let message = client_hello(100);
         let mut changed = message.clone();
-        changed[50] ^= 1;
+        // A byte of the random: the changed message is itself well formed.
+        changed[20] ^= 1;
         let mut assembly = HelloAssembly::default();
         assembly.take_in(0, &message);
-        assembly.take_in(40, &changed[40..60]);
+        assembly.take_in(10, &changed[10..30]);
         assert!(matches!(assembly.peek(), ClientHelloPeek::Invalid));
     }
 

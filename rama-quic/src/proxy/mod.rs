@@ -4,7 +4,7 @@
 mod peek;
 pub use peek::{
     DEFAULT_QUIC_PEEK_TIMEOUT, InputWithQuicClientHello, NoQuicRejectError,
-    PeekQuicClientHelloService,
+    PeekQuicClientHelloService, QuicPeekFallbackPolicy, QuicPeekRejectedError, QuicPeekRejection,
 };
 
 mod relay;

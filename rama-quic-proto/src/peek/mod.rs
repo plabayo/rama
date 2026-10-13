@@ -16,20 +16,22 @@ use rama_tls::client::{
 };
 
 use crate::{
-    Side, Version,
+    MIN_INITIAL_DCID_SIZE, MIN_INITIAL_SIZE, Side, Version,
     capture::{
         CaptureError, CaptureLimits, ClientHelloAssembly, InitialKeys, KeyProvider, PacketKind,
         initial_keys, observe_with_limits, open_initial,
     },
     crypto::{HeaderKey, PacketKey},
     frame::{self, Frame},
+    packet::LONG_HEADER_FORM,
 };
 
 /// A terminal inspection outcome. The router decides what to do with retained
 /// datagrams; malformed or expired input must not imply untouched forwarding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeekError {
-    /// The datagram cannot begin inspection of a client's Initial flight.
+    /// The association does not start with a QUIC client's flight: another protocol, or QUIC
+    /// already past its handshake.
     NotClientFlight,
     /// The absolute inspection deadline has expired, even if bytes keep arriving.
     Deadline,
@@ -151,6 +153,10 @@ impl<H: HeaderKey, P: PacketKey> InitialPeek<H, P> {
         if now >= self.deadline {
             return Err(PeekError::Deadline);
         }
+        if self.identity.is_none() {
+            // Classified before any budget is charged: another protocol never counts as QUIC.
+            admit_first(datagram)?;
+        }
         charge(&mut self.remaining.datagrams, 1, "datagrams")?;
         // Admission precedes parsing, key derivation and peer-controlled copies.
         let byte_budget = self.remaining.bytes;
@@ -164,6 +170,14 @@ impl<H: HeaderKey, P: PacketKey> InitialPeek<H, P> {
             "packets",
         )?;
 
+        if datagram.len() < MIN_INITIAL_SIZE
+            && observed
+                .packets
+                .iter()
+                .any(|packet| packet.kind == PacketKind::Initial)
+        {
+            return Err(CaptureError::Malformed("Initial datagram below 1200 bytes").into());
+        }
         let lead = observed.packets.first().ok_or(PeekError::NotClientFlight)?;
         if self.identity.is_none() {
             // UDP reordering can deliver opaque 0-RTT before the Initial.
@@ -173,6 +187,11 @@ impl<H: HeaderKey, P: PacketKey> InitialPeek<H, P> {
             }
             let version = lead.version.ok_or(PeekError::NotClientFlight)?;
             let source = lead.scid.clone().ok_or(PeekError::NotClientFlight)?;
+            if lead.dcid.len() < MIN_INITIAL_DCID_SIZE {
+                return Err(
+                    CaptureError::Malformed("Initial destination CID below 8 bytes").into(),
+                );
+            }
             self.identity = Some((version, lead.dcid.clone(), source));
         }
         let (version, destination, source) =
@@ -236,6 +255,23 @@ impl<H: HeaderKey, P: PacketKey> InitialPeek<H, P> {
                 Err(CaptureError::Malformed("ClientHello").into())
             }
         }
+    }
+}
+
+/// Whether a datagram can start a client's flight: a long header that is not Version
+/// Negotiation, of an unknown version only at an Initial's size (RFC 8999 §5.1, RFC 9000 §14.1).
+fn admit_first(datagram: &[u8]) -> Result<(), PeekError> {
+    let Some(&[first, a, b, c, d]) = datagram.first_chunk::<5>() else {
+        return Err(PeekError::NotClientFlight);
+    };
+    let version = Version::from_be_bytes([a, b, c, d]);
+    let claims_quic = first & LONG_HEADER_FORM != 0
+        && !version.is_negotiation()
+        && (version.wire().is_some() || datagram.len() >= MIN_INITIAL_SIZE);
+    if claims_quic {
+        Ok(())
+    } else {
+        Err(PeekError::NotClientFlight)
     }
 }
 

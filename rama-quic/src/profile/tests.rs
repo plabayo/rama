@@ -980,11 +980,37 @@ fn initial_peek_terminal_input_is_classified_without_crypto() {
     ));
     assert_eq!(keys.calls.get(), 0);
 
-    let mut peek = InitialPeek::new(CaptureLimits::default(), deadline);
-    assert!(matches!(
-        peek.inspect(now, &[0xc0], &keys),
-        Err(PeekError::Capture(CaptureError::Malformed(_)))
-    ));
+    // Too short for a version, a Version Negotiation, or an unknown version below an Initial's
+    // size: none of these starts a client's flight.
+    let mut negotiation = hex("chrome-153-initial-1.hex");
+    negotiation[1..5].copy_from_slice(&[0; 4]);
+    let mut short_unknown = hex("chrome-153-initial-1.hex");
+    short_unknown.truncate(600);
+    short_unknown[1..5].copy_from_slice(&[0x12, 0x34, 0x56, 0x78]);
+    for datagram in [&[0xc0][..], &negotiation, &short_unknown] {
+        let mut peek = InitialPeek::new(CaptureLimits::default(), deadline);
+        assert!(matches!(
+            peek.inspect(now, datagram, &keys),
+            Err(PeekError::NotClientFlight)
+        ));
+    }
+    assert_eq!(keys.calls.get(), 0);
+
+    // A client's Initial fills 1200 bytes and names a destination of at least 8 (RFC 9000 §14.1,
+    // §7.2); checked before any key is derived.
+    for (dcid, size, reason) in [
+        (8, 1199, "Initial datagram below 1200 bytes"),
+        (7, 1200, "Initial destination CID below 8 bytes"),
+    ] {
+        let mut peek = InitialPeek::new(CaptureLimits::default(), deadline);
+        assert!(
+            matches!(
+                peek.inspect(now, &opaque_initial(dcid, size), &keys),
+                Err(PeekError::Capture(CaptureError::Malformed(found))) if found == reason
+            ),
+            "{reason}"
+        );
+    }
     assert_eq!(keys.calls.get(), 0);
 
     let mut unknown = hex("chrome-153-initial-1.hex");
@@ -1043,6 +1069,23 @@ fn initial_peek_byte_boundary_precedes_crypto() {
         Err(PeekError::Capture(CaptureError::LimitExceeded("bytes")))
     ));
     assert_eq!(keys.calls.get(), 0);
+}
+
+/// A v1 Initial with a `dcid`-byte destination and an opaque payload, `size` bytes in all.
+fn opaque_initial(dcid: usize, size: usize) -> Vec<u8> {
+    let wire = Version::V1.wire().unwrap();
+    let mut packet = vec![0xc0 | wire.long_type_bits(LongKind::Initial)];
+    packet.extend_from_slice(&Version::V1.to_be_bytes());
+    packet.push(dcid.try_into().unwrap());
+    packet.resize(packet.len() + dcid, 1);
+    packet.push(8);
+    packet.extend([2; 8]);
+    // No token, then a two-byte length covering the rest of the datagram.
+    packet.push(0);
+    let payload = size - packet.len() - 2;
+    packet.extend_from_slice(&(0x4000 | u16::try_from(payload).unwrap()).to_be_bytes());
+    packet.resize(size, 0x55);
+    packet
 }
 
 #[test]
@@ -1139,5 +1182,53 @@ fn profile_cannot_advertise_datagrams_with_reception_disabled() {
         let previous = client.transport.clone();
         assert!(client.apply_quic_profile(&profile).is_err());
         assert!(Arc::ptr_eq(&client.transport, &previous));
+    }
+}
+
+/// Each peek budget holds at the Chrome flight's exact need and fails one below it, by name.
+/// Its Initials are padded, yet need few frames: a PADDING run counts once.
+#[test]
+fn initial_peek_budgets_hold_at_a_real_flights_exact_need() {
+    let server = provider();
+    let keys = capture::ProviderKeys(server.as_ref());
+    let flight = [
+        hex("chrome-153-initial-1.hex"),
+        hex("chrome-153-initial-2.hex"),
+    ];
+    let now = Instant::now();
+    let run = |limits: CaptureLimits| {
+        let mut peek = InitialPeek::new(limits, now + Duration::from_secs(1));
+        let mut result = Ok(None);
+        for datagram in &flight {
+            result = peek.inspect(now, datagram, &keys);
+            if !matches!(result, Ok(None)) {
+                break;
+            }
+        }
+        result
+    };
+    let budgets: [(&str, fn(&mut CaptureLimits) -> &mut usize, usize); 5] = [
+        ("datagrams", |limits| &mut limits.datagrams, 2),
+        ("bytes", |limits| &mut limits.bytes, 2460),
+        ("packets", |limits| &mut limits.packets, 2),
+        ("frames", |limits| &mut limits.frames, 41),
+        (
+            "CRYPTO fragments",
+            |limits| &mut limits.crypto_fragments,
+            15,
+        ),
+    ];
+    for (name, budget, need) in budgets {
+        let mut limits = CaptureLimits::default();
+        *budget(&mut limits) = need;
+        assert!(matches!(run(limits), Ok(Some(_))), "{name} at {need}");
+        *budget(&mut limits) = need - 1;
+        assert!(
+            matches!(
+                run(limits),
+                Err(PeekError::Capture(CaptureError::LimitExceeded(found))) if found == name
+            ),
+            "{name} below {need}"
+        );
     }
 }

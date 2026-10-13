@@ -181,24 +181,17 @@ impl QuicPeekRouter {
             retained += metadata.len;
             datagrams += count;
             let payload = buffer[..metadata.len].to_vec();
-            let stride = metadata
-                .segment_size
-                .map_or(payload.len().max(1), NonZeroUsize::get);
             let mut outcome = None;
-            if payload.is_empty() {
-                outcome = Some(Inspection::Inconclusive(PeekError::NotClientFlight));
-            } else {
-                for datagram in payload.chunks(stride) {
-                    match inspector.inspect(Instant::now().into_std(), datagram, keys) {
-                        Ok(Some(hello)) => {
-                            outcome = Some(Inspection::ClientHello(hello));
-                            break;
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            outcome = Some(Inspection::Inconclusive(error));
-                            break;
-                        }
+            for datagram in metadata.segments(&payload) {
+                match inspector.inspect(Instant::now().into_std(), datagram, keys) {
+                    Ok(Some(hello)) => {
+                        outcome = Some(Inspection::ClientHello(hello));
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        outcome = Some(Inspection::Inconclusive(error));
+                        break;
                     }
                 }
             }
@@ -245,17 +238,9 @@ pub(super) fn validate_metadata(
     metadata: &DatagramMetadata,
     capacity: usize,
 ) -> Result<(), BoxError> {
-    if metadata.truncated || metadata.len > capacity || metadata.original_len != metadata.len {
+    if metadata.validate(capacity).is_err() {
         return Err(BoxError::from_static_str(
             "QUIC route received truncated or invalid datagram",
-        ));
-    }
-    if metadata
-        .segment_size
-        .is_some_and(|size| metadata.len == 0 || size.get() > metadata.len)
-    {
-        return Err(BoxError::from_static_str(
-            "QUIC route received invalid GRO metadata",
         ));
     }
     if metadata.peer.into_canonical_ip_addr() != context.key.peer

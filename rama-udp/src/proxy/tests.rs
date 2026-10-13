@@ -1,6 +1,7 @@
 use std::{
     io,
     io::IoSliceMut,
+    net::IpAddr,
     num::NonZeroUsize,
     pin::pin,
     task::{Context, Poll},
@@ -322,4 +323,46 @@ async fn forwarding_unpolled_service_drops_both_socket_owners() {
         origin.recv(&mut bytes).await,
         Err(DatagramError::Closed)
     ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn forwarding_takes_a_v4_mapped_peer_as_that_peer() {
+    timeout(Duration::from_secs(1), async {
+        // A v4-mapped peer is the same peer, as everywhere the validator is used.
+        for (segment_size, mapped_peer) in [(3, false), (3, true), (0, true)] {
+            let (client, down) = pair(24000);
+            let (up, mut origin) = pair(25000);
+            let address = client.local_addr().unwrap();
+            let mut metadata = DatagramMetadata::empty();
+            metadata.peer = match (mapped_peer, address.ip_addr) {
+                (true, IpAddr::V4(ip)) => {
+                    SocketAddress::new(ip.to_ipv6_mapped().into(), address.port)
+                }
+                _ => address,
+            };
+            metadata.local = down.local_addr().unwrap();
+            metadata.ecn = Some(EcnCodepoint::Ect0);
+            metadata.segment_size = NonZeroUsize::new(segment_size);
+            down.inject_received(b"aaabbbc".to_vec(), metadata).unwrap();
+            let relay = tokio::spawn(relay(config(7), peer(down), peer(up)));
+            let expected: &[&[u8]] = if segment_size == 0 {
+                &[b"aaabbbc"]
+            } else {
+                &[b"aaa", b"bbb", b"c"]
+            };
+            let mut bytes = [0; 16];
+            for expected in expected {
+                let metadata = origin.recv(&mut bytes).await.unwrap();
+                assert_eq!(
+                    &bytes[..metadata.len],
+                    *expected,
+                    "segment size {segment_size}"
+                );
+            }
+            relay.abort();
+            let _cancelled = relay.await;
+        }
+    })
+    .await
+    .unwrap();
 }

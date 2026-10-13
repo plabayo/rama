@@ -5,19 +5,17 @@ use std::{fmt, time::Duration};
 use rama_core::{
     Service,
     bytes::Bytes,
-    error::{BoxError, BoxErrorExt as _},
-    extensions::{Extensions, ExtensionsRef},
-    io::peek::PeekTimeoutPolicy,
+    error::BoxError,
+    extensions::{Extension, Extensions, ExtensionsRef},
     service::RejectService,
     telemetry::tracing,
 };
 use rama_quic_proto::{
-    capture::{CaptureLimits, KeyProvider},
-    peek::{InitialPeek, PeekedClientHello},
+    capture::{CaptureError, CaptureLimits, KeyProvider},
+    peek::{InitialPeek, PeekError, PeekedClientHello},
 };
 use rama_udp::{
-    DatagramMetadata, DatagramPeekInput, DatagramSocketExt as _, PrefixedDatagramSocket,
-    RetainedDatagram,
+    DatagramPeekInput, DatagramSocketExt as _, PrefixedDatagramSocket, RetainedDatagram,
 };
 use rama_utils::octets::kib;
 use tokio::time::{Instant, timeout_at};
@@ -42,15 +40,116 @@ impl<Input: ExtensionsRef> ExtensionsRef for InputWithQuicClientHello<Input> {
     }
 }
 
+/// Why a peek found no complete QUIC ClientHello. The fallback finds it in its input's
+/// extensions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(net, proxy))]
+pub enum QuicPeekRejection {
+    /// The association does not start with a QUIC client's flight: another protocol, or a
+    /// QUIC connection already past its handshake.
+    NotQuic,
+    /// A client flight of a QUIC version this inspector does not implement.
+    UnsupportedVersion,
+    /// A client flight that cannot be inspected: malformed, undecryptable, contradictory (such
+    /// as conflicting CRYPTO data or mixed attempts), or cut short by its receive.
+    Malformed,
+    /// The flight exhausted the configured [`CaptureLimits`].
+    Budget,
+    /// No complete ClientHello arrived before the deadline.
+    Deadline,
+}
+
+impl fmt::Display for QuicPeekRejection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::NotQuic => "not a QUIC client flight",
+            Self::UnsupportedVersion => "unsupported QUIC version",
+            Self::Malformed => "malformed QUIC client flight",
+            Self::Budget => "QUIC peek limits exhausted",
+            Self::Deadline => "QUIC peek deadline exceeded",
+        })
+    }
+}
+
+/// Which [`QuicPeekRejection`]s reach the fallback; any other fails the association with
+/// [`QuicPeekRejectedError`].
+///
+/// The default admits only [`QuicPeekRejection::NotQuic`]: forwarding any other class
+/// untouched would let a client evade inspection by malforming, stretching or stalling its
+/// flight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuicPeekFallbackPolicy {
+    pub not_quic: bool,
+    pub unsupported_version: bool,
+    pub malformed: bool,
+    pub budget: bool,
+    pub deadline: bool,
+}
+
+impl QuicPeekFallbackPolicy {
+    /// Only associations that are not QUIC reach the fallback.
+    pub const NOT_QUIC: Self = Self {
+        not_quic: true,
+        unsupported_version: false,
+        malformed: false,
+        budget: false,
+        deadline: false,
+    };
+
+    /// Every association without a complete ClientHello reaches the fallback.
+    pub const ALL: Self = Self {
+        not_quic: true,
+        unsupported_version: true,
+        malformed: true,
+        budget: true,
+        deadline: true,
+    };
+
+    /// Whether `rejection` reaches the fallback.
+    #[must_use]
+    pub const fn admits(self, rejection: QuicPeekRejection) -> bool {
+        match rejection {
+            QuicPeekRejection::NotQuic => self.not_quic,
+            QuicPeekRejection::UnsupportedVersion => self.unsupported_version,
+            QuicPeekRejection::Malformed => self.malformed,
+            QuicPeekRejection::Budget => self.budget,
+            QuicPeekRejection::Deadline => self.deadline,
+        }
+    }
+}
+
+impl Default for QuicPeekFallbackPolicy {
+    fn default() -> Self {
+        Self::NOT_QUIC
+    }
+}
+
+/// An association refused because its peek ended in a class the fallback policy does not
+/// admit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuicPeekRejectedError(pub QuicPeekRejection);
+
+impl fmt::Display for QuicPeekRejectedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "QUIC ClientHello peek rejected: {}", self.0)
+    }
+}
+
+impl std::error::Error for QuicPeekRejectedError {}
+
 /// Inspects the first datagrams of a UDP association for a QUIC client's Initial flight and
 /// its ClientHello, then hands the association on with those datagrams replayed in front.
 ///
-/// A complete ClientHello goes to the inner service as [`InputWithQuicClientHello`]; anything
-/// else (not QUIC, an unsupported version, malformed or truncated input, exhausted limits, or
-/// the deadline) goes to the fallback with the same datagrams intact, so the fallback can still
-/// forward the association untouched. Nothing is ever sent while peeking: the decision is made
-/// before any local QUIC output exists. The deadline is absolute from `serve`, and the read
-/// ahead is bounded by [`CaptureLimits`].
+/// A complete ClientHello goes to the inner service as [`InputWithQuicClientHello`]. Anything
+/// else ends in a [`QuicPeekRejection`]: classes the [`QuicPeekFallbackPolicy`] admits go to
+/// the fallback with the same datagrams intact and the rejection in the input's extensions, so
+/// the fallback can still forward the association untouched; the others fail with
+/// [`QuicPeekRejectedError`]. Nothing is ever sent while peeking: the decision is made before
+/// any local QUIC output exists. The deadline is absolute from `serve`, and the read ahead is
+/// bounded by [`CaptureLimits`].
+///
+/// Routing sees the outer ClientHello only: with ECH that is the public name, never the
+/// encrypted inner one.
 ///
 /// The fallback rejects by default; use [`Self::with_fallback`] to forward instead.
 pub struct PeekQuicClientHelloService<K, S, F = RejectService<(), NoQuicRejectError>> {
@@ -59,7 +158,7 @@ pub struct PeekQuicClientHelloService<K, S, F = RejectService<(), NoQuicRejectEr
     fallback: F,
     limits: CaptureLimits,
     peek_timeout: Duration,
-    peek_timeout_policy: PeekTimeoutPolicy,
+    fallback_policy: QuicPeekFallbackPolicy,
 }
 
 impl<K, S> PeekQuicClientHelloService<K, S> {
@@ -72,13 +171,13 @@ impl<K, S> PeekQuicClientHelloService<K, S> {
             fallback: RejectService::new(NoQuicRejectError),
             limits: CaptureLimits::default(),
             peek_timeout: DEFAULT_QUIC_PEEK_TIMEOUT,
-            peek_timeout_policy: PeekTimeoutPolicy::default(),
+            fallback_policy: QuicPeekFallbackPolicy::default(),
         }
     }
 }
 
 impl<K, S, F> PeekQuicClientHelloService<K, S, F> {
-    /// Hand associations without a complete QUIC ClientHello to `fallback`.
+    /// Hand associations the fallback policy admits to `fallback`.
     pub fn with_fallback<G>(self, fallback: G) -> PeekQuicClientHelloService<K, S, G> {
         PeekQuicClientHelloService {
             keys: self.keys,
@@ -86,7 +185,7 @@ impl<K, S, F> PeekQuicClientHelloService<K, S, F> {
             fallback,
             limits: self.limits,
             peek_timeout: self.peek_timeout,
-            peek_timeout_policy: self.peek_timeout_policy,
+            fallback_policy: self.fallback_policy,
         }
     }
 
@@ -108,10 +207,10 @@ impl<K, S, F> PeekQuicClientHelloService<K, S, F> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Whether an inspection still inconclusive at its deadline goes to the fallback
-        /// (the default) or fails.
-        pub fn peek_timeout_policy(mut self, policy: PeekTimeoutPolicy) -> Self {
-            self.peek_timeout_policy = policy;
+        /// Which rejections reach the fallback. Defaults to
+        /// [`QuicPeekFallbackPolicy::NOT_QUIC`].
+        pub fn fallback_policy(mut self, policy: QuicPeekFallbackPolicy) -> Self {
+            self.fallback_policy = policy;
             self
         }
     }
@@ -127,7 +226,7 @@ impl<K: fmt::Debug, S: fmt::Debug, F: fmt::Debug> fmt::Debug
             .field("fallback", &self.fallback)
             .field("limits", &self.limits)
             .field("peek_timeout", &self.peek_timeout)
-            .field("peek_timeout_policy", &self.peek_timeout_policy)
+            .field("fallback_policy", &self.fallback_policy)
             .finish()
     }
 }
@@ -140,21 +239,15 @@ impl<K: Clone, S: Clone, F: Clone> Clone for PeekQuicClientHelloService<K, S, F>
             fallback: self.fallback.clone(),
             limits: self.limits,
             peek_timeout: self.peek_timeout,
-            peek_timeout_policy: self.peek_timeout_policy,
+            fallback_policy: self.fallback_policy,
         }
     }
-}
-
-/// How an inspection ended.
-enum Peeked {
-    ClientHello(PeekedClientHello),
-    Other,
-    Deadline,
 }
 
 impl<I, K, S, F, O> Service<I> for PeekQuicClientHelloService<K, S, F>
 where
     I: DatagramPeekInput,
+    I::Mapped<PrefixedDatagramSocket<I::Socket>>: ExtensionsRef,
     K: KeyProvider + Send + Sync + 'static,
     S: Service<
             InputWithQuicClientHello<I::Mapped<PrefixedDatagramSocket<I::Socket>>>,
@@ -178,7 +271,7 @@ where
             let input =
                 input.map_peek_socket(|socket| PrefixedDatagramSocket::new(socket, retained));
             match peeked {
-                Peeked::ClientHello(client_hello) => self
+                Ok(client_hello) => self
                     .inner
                     .serve(InputWithQuicClientHello {
                         input,
@@ -186,14 +279,11 @@ where
                     })
                     .await
                     .map_err(Into::into),
-                Peeked::Deadline if self.peek_timeout_policy == PeekTimeoutPolicy::FailClosed => {
-                    Err(BoxError::from_static_str(
-                        "QUIC ClientHello peek deadline exceeded",
-                    ))
-                }
-                Peeked::Deadline | Peeked::Other => {
+                Err(rejection) if self.fallback_policy.admits(rejection) => {
+                    input.extensions().insert(rejection);
                     self.fallback.serve(input).await.map_err(Into::into)
                 }
+                Err(rejection) => Err(QuicPeekRejectedError(rejection).into()),
             }
         }
     }
@@ -205,30 +295,31 @@ impl<K: KeyProvider, S, F> PeekQuicClientHelloService<K, S, F> {
         socket: &mut Socket,
         deadline: Instant,
         retained: &mut Vec<RetainedDatagram>,
-    ) -> Result<Peeked, BoxError> {
+    ) -> Result<Result<PeekedClientHello, QuicPeekRejection>, BoxError> {
         let mut inspector = InitialPeek::new(self.limits, deadline.into_std());
         let mut buffer = vec![0; RECEIVE_BUFFER];
         loop {
             let metadata = match timeout_at(deadline, socket.recv(&mut buffer)).await {
                 Ok(received) => received?,
-                Err(_elapsed) => return Ok(Peeked::Deadline),
+                Err(_elapsed) => return Ok(Err(QuicPeekRejection::Deadline)),
             };
-            let payload = Bytes::copy_from_slice(&buffer[..metadata.len]);
+            let payload = Bytes::copy_from_slice(&buffer[..metadata.len.min(buffer.len())]);
             retained.push(RetainedDatagram {
                 payload: payload.clone(),
                 metadata,
             });
-            // A cut datagram cannot be inspected, and is replayed as it was received.
-            if metadata.truncated {
-                return Ok(Peeked::Other);
+            // A cut or inconsistent receive cannot be inspected, and is replayed as received.
+            if let Err(error) = metadata.validate(buffer.len()) {
+                tracing::debug!(%error, "QUIC ClientHello peek received an uninspectable datagram");
+                return Ok(Err(QuicPeekRejection::Malformed));
             }
-            for segment in segments(&payload, &metadata) {
+            for segment in metadata.segments(&payload) {
                 match inspector.inspect(Instant::now().into_std(), segment, &self.keys) {
-                    Ok(Some(client_hello)) => return Ok(Peeked::ClientHello(client_hello)),
+                    Ok(Some(client_hello)) => return Ok(Ok(client_hello)),
                     Ok(None) => {}
                     Err(error) => {
                         tracing::debug!(%error, "QUIC ClientHello peek ended without a ClientHello");
-                        return Ok(Peeked::Other);
+                        return Ok(Err(rejection(&error)));
                     }
                 }
             }
@@ -236,15 +327,16 @@ impl<K: KeyProvider, S, F> PeekQuicClientHelloService<K, S, F> {
     }
 }
 
-/// The logical datagrams of one receive: GRO coalesces equal-size segments, the last possibly
-/// shorter.
-fn segments<'a>(payload: &'a [u8], metadata: &DatagramMetadata) -> impl Iterator<Item = &'a [u8]> {
-    let size = metadata
-        .segment_size
-        .map_or(payload.len().max(1), |size| size.get());
-    payload
-        .chunks(size)
-        .chain(payload.is_empty().then_some(&payload[..0]))
+fn rejection(error: &PeekError) -> QuicPeekRejection {
+    match error {
+        PeekError::NotClientFlight => QuicPeekRejection::NotQuic,
+        PeekError::Deadline => QuicPeekRejection::Deadline,
+        PeekError::Capture(CaptureError::UnknownVersion(_)) => {
+            QuicPeekRejection::UnsupportedVersion
+        }
+        PeekError::Capture(CaptureError::LimitExceeded(_)) => QuicPeekRejection::Budget,
+        PeekError::Capture(_) | PeekError::Finished => QuicPeekRejection::Malformed,
+    }
 }
 
 /// The fallback's default rejection: the association carried no complete QUIC ClientHello.
