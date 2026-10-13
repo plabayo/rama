@@ -5,6 +5,8 @@
 //! rama pulls in no extra dependencies — no `cssparser`, no Servo
 //! `selectors`. See `parser.rs` for the grammar.
 
+use crate::protocols::html::tokenizer::LocalNameHash;
+
 /// A parsed CSS selector string.
 ///
 /// A selector string may contain a comma-separated list of complex
@@ -94,11 +96,65 @@ pub(crate) enum AttributeOperator {
 /// Whether an attribute value is matched case-sensitively.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CaseSensitivity {
-    /// Default for HTML attribute values.
+    /// No flag: case-sensitive, except for the attributes whose values HTML
+    /// compares ASCII case-insensitively (`type`, `rel`, `target`, …).
+    Default,
+    /// Requested via the `s` flag.
     CaseSensitive,
     /// Requested via the `i` flag (ASCII case-insensitive).
     AsciiCaseInsensitive,
 }
+
+/// Attributes whose values HTML documents match ASCII case-insensitively
+/// in selectors (sorted, ASCII lowercase).
+const CASE_INSENSITIVE_ATTRIBUTES: &[&str] = &[
+    "accept",
+    "accept-charset",
+    "align",
+    "alink",
+    "axis",
+    "bgcolor",
+    "charset",
+    "checked",
+    "clear",
+    "codetype",
+    "color",
+    "compact",
+    "declare",
+    "defer",
+    "dir",
+    "direction",
+    "disabled",
+    "enctype",
+    "face",
+    "frame",
+    "hreflang",
+    "http-equiv",
+    "lang",
+    "language",
+    "link",
+    "media",
+    "method",
+    "multiple",
+    "nohref",
+    "noresize",
+    "noshade",
+    "nowrap",
+    "readonly",
+    "rel",
+    "rev",
+    "rules",
+    "scope",
+    "scrolling",
+    "selected",
+    "shape",
+    "target",
+    "text",
+    "type",
+    "valign",
+    "valuetype",
+    "vlink",
+];
 
 /// A structural `:nth-*` selector as a step `a` and offset `b`: it matches
 /// sibling positions `a*n + b` for integers `n >= 0`.
@@ -142,24 +198,23 @@ impl Nth {
     }
 }
 
-/// An ASCII-lowercased element (tag) name with a precomputed packed key
-/// for allocation-free comparison against raw element names.
+/// An ASCII-lowercased element (tag) name with its precomputed
+/// [`LocalNameHash`], for allocation-free comparison against raw element
+/// names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LocalName {
     /// ASCII-lowercased name.
     name: Box<str>,
-    /// `Some(_)` when `name` fits in 8 ASCII bytes, enabling an integer
-    /// fast path in [`LocalName::matches`].
-    packed: Option<u64>,
+    hash: LocalNameHash,
 }
 
 impl LocalName {
     pub(crate) fn new(name: &str) -> Self {
         let lower = name.to_ascii_lowercase();
-        let packed = pack_name(lower.as_bytes());
+        let hash = LocalNameHash::of(lower.as_bytes());
         Self {
             name: lower.into_boxed_str(),
-            packed,
+            hash,
         }
     }
 
@@ -170,17 +225,13 @@ impl LocalName {
     /// ASCII-case-insensitive comparison against a raw element name,
     /// without allocating.
     pub(crate) fn matches(&self, raw: &str) -> bool {
-        self.matches_bytes(raw.as_bytes())
+        self.matches_tag(LocalNameHash::of(raw.as_bytes()), raw.as_bytes())
     }
 
-    /// Byte-slice variant of [`Self::matches`].
-    pub(crate) fn matches_bytes(&self, raw: &[u8]) -> bool {
-        if let Some(packed) = self.packed
-            && let Some(other) = pack_name(raw)
-        {
-            return packed == other;
-        }
-        raw.eq_ignore_ascii_case(self.name.as_bytes())
+    /// [`Self::matches`] for a raw element name whose identity is known.
+    #[inline]
+    pub(crate) fn matches_tag(&self, hash: LocalNameHash, raw: &[u8]) -> bool {
+        hash.names(raw, self.hash, self.name.as_bytes())
     }
 }
 
@@ -190,7 +241,13 @@ impl AttributeSelector {
     /// value; callers must have already confirmed the attribute exists.
     pub(crate) fn matches_value(&self, actual: &[u8]) -> bool {
         let expected = self.value.as_bytes();
-        let ci = matches!(self.case, CaseSensitivity::AsciiCaseInsensitive);
+        let ci = match self.case {
+            CaseSensitivity::AsciiCaseInsensitive => true,
+            CaseSensitivity::CaseSensitive => false,
+            CaseSensitivity::Default => CASE_INSENSITIVE_ATTRIBUTES
+                .binary_search(&&*self.name)
+                .is_ok(),
+        };
         match self.operator {
             None => true,
             Some(AttributeOperator::Equals) => bytes_eq(actual, expected, ci),
@@ -261,16 +318,33 @@ fn bytes_contains(haystack: &[u8], needle: &[u8], case_insensitive: bool) -> boo
 /// Packs an element name into a `u64` when it is at most 8 ASCII bytes,
 /// ASCII-lowercasing each byte. Returns `None` otherwise, signalling the
 /// caller to fall back to a byte comparison.
-fn pack_name(bytes: &[u8]) -> Option<u64> {
-    if bytes.len() > 8 {
-        return None;
+#[cfg(test)]
+mod tests {
+    use super::{
+        AttributeOperator, AttributeSelector, CASE_INSENSITIVE_ATTRIBUTES, CaseSensitivity,
+    };
+
+    #[test]
+    fn case_insensitive_attribute_list_is_sorted_lowercase() {
+        assert!(CASE_INSENSITIVE_ATTRIBUTES.windows(2).all(|w| w[0] < w[1]));
+        assert!(
+            CASE_INSENSITIVE_ATTRIBUTES
+                .iter()
+                .all(|name| *name == name.to_ascii_lowercase())
+        );
     }
-    let mut packed = 0u64;
-    for &b in bytes {
-        if !b.is_ascii() {
-            return None;
-        }
-        packed = (packed << 8) | u64::from(b.to_ascii_lowercase());
+
+    #[test]
+    fn html_case_insensitive_attributes_ignore_value_case_by_default() {
+        let attr = |name: &str, case| AttributeSelector {
+            name: name.into(),
+            operator: Some(AttributeOperator::Equals),
+            value: "hidden".into(),
+            case,
+        };
+        assert!(attr("type", CaseSensitivity::Default).matches_value(b"HIDDEN"));
+        assert!(!attr("type", CaseSensitivity::CaseSensitive).matches_value(b"HIDDEN"));
+        assert!(!attr("data-type", CaseSensitivity::Default).matches_value(b"HIDDEN"));
+        assert!(attr("data-type", CaseSensitivity::AsciiCaseInsensitive).matches_value(b"HIDDEN"));
     }
-    Some(packed)
 }

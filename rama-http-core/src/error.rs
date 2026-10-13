@@ -254,8 +254,9 @@ impl Error {
 
     /// Returns true if the error was caused by a timeout.
     ///
-    /// For HTTP/1 servers, this includes the header read timeout (see
-    /// [`header_read_timeout`](crate::server::conn::http1::Builder::set_header_read_timeout)).
+    /// For HTTP/1 and HTTP/2 servers, this includes the header read timeout (see
+    /// [`http1::Builder::set_header_read_timeout`](crate::server::conn::http1::Builder::set_header_read_timeout)
+    /// and [`http2::Builder::set_header_read_timeout`](crate::server::conn::http2::Builder::set_header_read_timeout)).
     /// It also covers any timeout set via a user-provided timer
     #[inline(always)]
     #[must_use]

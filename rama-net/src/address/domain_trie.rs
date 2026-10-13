@@ -19,6 +19,9 @@ use radix_trie::{Trie, TrieCommon};
 ///
 /// Both modes can coexist at the same name: inserting `example.com` and
 /// later `*.example.com` (or vice versa) leaves both values addressable.
+///
+/// Matching is ASCII case-insensitive, as [`Domain`] comparison is; stored
+/// names are kept, and returned, in lowercase.
 #[derive(Debug, Clone)]
 pub struct DomainTrie<T> {
     trie: Trie<String, NodeData<T>>,
@@ -337,7 +340,7 @@ impl<T> NodeData<T> {
 /// sentinel keeps radix_trie matching strictly per-label; see
 /// `regression_no_byte_prefix_false_match` for the case it guards.
 ///
-/// Result for `"example.com"` is `"com.example."`.
+/// Result for `"example.com"` (or `"EXAMPLE.com"`) is `"com.example."`.
 fn reverse_domain(domain: &str) -> String {
     let from = domain.trim_matches('.');
     // Pre-cap: same byte count as input + one trailing dot.
@@ -351,6 +354,8 @@ fn reverse_domain(domain: &str) -> String {
         out.push_str(part);
     }
     out.push('.');
+    // Keys are lowercase, as domain comparison is ASCII case-insensitive.
+    out.make_ascii_lowercase();
     out
 }
 
@@ -523,6 +528,42 @@ mod test {
         assert!(m.is_match("other.com"));
         assert!(m.is_match("any.thing.other.com"));
         assert!(!m.is_match("nope.org"));
+    }
+
+    #[test]
+    fn matching_ignores_ascii_case_of_stored_and_queried_names() {
+        let m = DomainTrie::new()
+            .with_insert_domain("Example.COM", "exact")
+            .with_insert_domain("*.Other.Com", "subtree");
+        for query in ["example.com", "EXAMPLE.COM", "eXaMpLe.CoM"] {
+            assert_eq!(m.get(query), Some(exact_match(&"exact")), "{query}");
+            assert!(m.is_match(query), "{query}");
+            assert_eq!(m.get_value(query), Some(&"exact"), "{query}");
+            assert_eq!(m.match_exact(query), Some(&"exact"), "{query}");
+        }
+        for query in ["other.com", "OTHER.COM", "WWW.Other.com", "a.B.oThEr.CoM"] {
+            assert_eq!(
+                m.get(query),
+                Some(subtree_match(&"subtree", "other.com")),
+                "{query}"
+            );
+            assert!(m.is_match(query), "{query}");
+            assert_eq!(m.get_value(query), Some(&"subtree"), "{query}");
+        }
+        assert!(!m.is_match("WWW.EXAMPLE.COM"));
+
+        let mut reinserted = m.clone();
+        reinserted.insert_domain("EXAMPLE.com", "replaced");
+        assert_eq!(
+            reinserted.len(),
+            m.len(),
+            "one entry per name, whatever its case"
+        );
+        assert_eq!(reinserted.match_exact("example.com"), Some(&"replaced"));
+
+        let mut stored: Vec<_> = m.iter().map(|(domain, _)| domain.to_string()).collect();
+        stored.sort_unstable();
+        assert_eq!(stored, ["*.other.com", "example.com"]);
     }
 
     #[test]

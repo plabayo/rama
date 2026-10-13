@@ -40,6 +40,8 @@ pub trait OptionalFromRequestBody: OptionalFromRequest {
     ) -> impl Future<Output = Result<Option<Self>, Self::Rejection>> + Send + 'static;
 }
 
+// Diagnostics would name these `Option<T>` impls without the optional-extractor bound they need.
+#[diagnostic::do_not_recommend]
 impl<T, State> FromPartsStateRefPair<State> for Option<T>
 where
     T: OptionalFromPartsStateRefPair<State>,
@@ -54,6 +56,7 @@ where
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<T> FromRequest for Option<T>
 where
     T: OptionalFromRequest,
@@ -65,6 +68,7 @@ where
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<T> FromRequestBody for Option<T>
 where
     T: OptionalFromRequestBody,

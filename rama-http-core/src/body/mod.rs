@@ -69,9 +69,10 @@ pub use rama_http_types::body::{Body, Frame, SizeHint};
 
 pub use self::incoming::Incoming;
 
-pub(crate) use self::incoming::Sender;
+pub(crate) use self::chan::Sender;
 pub(crate) use self::length::DecodedLength;
 
+mod chan;
 mod incoming;
 mod length;
 

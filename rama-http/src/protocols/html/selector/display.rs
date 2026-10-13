@@ -77,8 +77,10 @@ fn write_attribute(f: &mut fmt::Formatter<'_>, attr: &AttributeSelector) -> fmt:
             AttributeOperator::Substring => "*=",
         })?;
         write_string(f, &attr.value)?;
-        if matches!(attr.case, CaseSensitivity::AsciiCaseInsensitive) {
-            f.write_str(" i")?;
+        match attr.case {
+            CaseSensitivity::AsciiCaseInsensitive => f.write_str(" i")?,
+            CaseSensitivity::CaseSensitive => f.write_str(" s")?,
+            CaseSensitivity::Default => {}
         }
     }
     f.write_str("]")

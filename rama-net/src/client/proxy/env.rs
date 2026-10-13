@@ -851,6 +851,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn proxy_userinfo_without_a_password_keeps_its_username() {
+        for value in [
+            "http://Aladdin@proxy.example",
+            "http://Aladdin:@proxy.example:3128",
+            "Aladdin@proxy.example:3128",
+            "socks5://Aladdin@proxy.example",
+        ] {
+            let proxy = parse_proxy_address_env_value(Some(value)).unwrap().unwrap();
+            let Some(ProxyCredential::Basic(basic)) = proxy.credential else {
+                panic!("expected Basic proxy credentials for {value}")
+            };
+            assert_eq!(basic.username(), "Aladdin", "{value}");
+            assert_eq!(basic.password(), None, "{value}");
+        }
+    }
+
     #[tokio::test]
     async fn custom_scheme_cache_is_bounded() {
         let schemes = LazySchemeProxyAddresses::new(Arc::new(|_| Ok(None)));

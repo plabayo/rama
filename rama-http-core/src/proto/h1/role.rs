@@ -156,6 +156,9 @@ impl Http1Transaction for Server {
             ) {
                 Ok(httparse::Status::Complete(parsed_len)) => {
                     trace!("Request.parse Complete({parsed_len})");
+                    if ctx.h1_max_header_size.is_some_and(|max| parsed_len > max) {
+                        return Err(Parse::TooLarge);
+                    }
                     len = parsed_len;
                     let Some(uri) = req.path else {
                         return Err(Parse::Uri);
@@ -246,6 +249,7 @@ impl Http1Transaction for Server {
 
         let mut decoder = DecodedLength::ZERO;
         let mut expect_continue = false;
+        let mut saw_connection_close = false;
         let mut con_len = None;
         let mut is_cl = false;
         let mut is_te = false;
@@ -325,14 +329,7 @@ impl Http1Transaction for Server {
                 decoder = DecodedLength::try_checked_new(len)?;
                 con_len = Some(len);
             } else if name == header::CONNECTION {
-                // keep_alive was previously set to default for Version
-                if keep_alive {
-                    // HTTP/1.1
-                    keep_alive = !headers::connection_close(&value);
-                } else {
-                    // HTTP/1.0
-                    keep_alive = headers::connection_keep_alive(&value);
-                }
+                read_connection_line(&mut keep_alive, &mut saw_connection_close, &value);
             } else if name == header::EXPECT {
                 // According to https://datatracker.ietf.org/doc/html/rfc2616#section-14.20
                 // Comparison of expectation values is case-insensitive for unquoted tokens
@@ -403,13 +400,9 @@ impl Http1Transaction for Server {
             msg.head.subject,
         );
         if close_delimited {
-            msg.head
-                .headers
-                .insert(header::CONNECTION, HeaderValue::from_static("close"));
+            headers::connection_set_close(&mut msg.head.headers);
             msg.keep_alive = false;
         }
-
-        let mut wrote_len = false;
 
         // hyper currently doesn't support returning 1xx status codes as a Response
         // This is because Service only allows returning a single Response, and
@@ -417,10 +410,10 @@ impl Http1Transaction for Server {
         // replying with the latter status code response.
         let (ret, is_last) = if msg.head.subject == StatusCode::SWITCHING_PROTOCOLS {
             (Ok(()), true)
-        } else if msg.req_method == &Some(Method::CONNECT) && msg.head.subject.is_success() {
-            // Sending content-length or transfer-encoding header on 2xx response
-            // to CONNECT is forbidden in RFC 7231.
-            wrote_len = true;
+        } else if headers::is_tunnel_response(msg.req_method.as_ref(), msg.head.subject) {
+            if matches!(msg.body, Some(BodyLength::Known(len)) if len != 0) {
+                warn!("body of a successful response to CONNECT dropped: a tunnel follows");
+            }
             (Ok(()), true)
         } else if msg.head.subject.is_informational() {
             warn!("response with 1xx status code not supported");
@@ -479,9 +472,8 @@ impl Http1Transaction for Server {
 
         let allowed_trailers = msg.head.extensions.get_arc::<ForbiddenTrailers>();
         let _extensions = std::mem::take(msg.head.extensions);
-        let encoder =
-            Self::encode_h1_headers(msg, close_delimited, dst, is_last, orig_len, wrote_len)?
-                .maybe_with_allowed_trailers(allowed_trailers);
+        let encoder = Self::encode_h1_headers(msg, close_delimited, dst, is_last, orig_len)?
+            .maybe_with_allowed_trailers(allowed_trailers);
         ret.map(|()| encoder)
     }
 
@@ -553,25 +545,12 @@ impl Server {
         }
     }
 
-    fn can_have_content_length(method: Option<&Method>, status: StatusCode) -> bool {
-        if status.is_informational() || method == Some(&Method::CONNECT) && status.is_success() {
-            false
-        } else {
-            !matches!(status, StatusCode::NO_CONTENT | StatusCode::NOT_MODIFIED)
-        }
-    }
-
-    fn can_have_implicit_zero_content_length(method: Option<&Method>, status: StatusCode) -> bool {
-        Self::can_have_content_length(method, status) && method != Some(&Method::HEAD)
-    }
-
     fn encode_h1_headers(
         msg: Encode<'_, StatusCode>,
         close_delimited: bool,
         dst: &mut Vec<u8>,
         is_last: bool,
         orig_len: usize,
-        wrote_len: bool,
     ) -> crate::Result<Encoder> {
         struct OrigCaseWriter {
             title_case_headers: bool,
@@ -618,7 +597,6 @@ impl Server {
             dst,
             is_last,
             orig_len,
-            wrote_len,
             header_name_writer,
         )
     }
@@ -630,7 +608,6 @@ impl Server {
         dst: &mut Vec<u8>,
         mut is_last: bool,
         orig_len: usize,
-        mut wrote_len: bool,
         mut header_name_writer: W,
     ) -> crate::Result<Encoder>
     where
@@ -643,9 +620,43 @@ impl Server {
             dst.truncate(orig_len);
         };
 
+        let response_length =
+            headers::ResponseLength::of(msg.req_method.as_ref(), msg.head.subject);
+        let tunnel = headers::is_tunnel_response(msg.req_method.as_ref(), msg.head.subject);
+        // A HEAD or 304 may name the coding a GET would use (RFC 9112 §6.1).
+        let describes_get = msg.head.version != Version::HTTP_10
+            && (msg.req_method == &Some(Method::HEAD)
+                || msg.head.subject == StatusCode::NOT_MODIFIED);
+
+        let descriptive_transfer_encoding = describes_get
+            && response_length != headers::ResponseLength::Forbidden
+            && msg.head.headers.contains_key(header::TRANSFER_ENCODING);
+        // A described coding wins over a length, as a recipient would let it (RFC 9112 §6.3).
+        if descriptive_transfer_encoding
+            && msg.head.headers.remove(header::CONTENT_LENGTH).is_some()
+        {
+            debug!("content-length dropped: the response describes a transfer coding");
+        }
+
+        // Codings over several field lines combine into one, as RFC 9110 §5.3 allows.
+        if msg
+            .head
+            .headers
+            .get_all(header::TRANSFER_ENCODING)
+            .iter()
+            .nth(1)
+            .is_some()
+            && let Some(joined) = HeaderValue::join(
+                msg.head.headers.get_all(header::TRANSFER_ENCODING),
+                &HeaderValue::from_static(", "),
+            )
+        {
+            msg.head.headers.insert(header::TRANSFER_ENCODING, joined);
+        }
+
         // Normalize repeated or comma-separated lengths before writing any headers.
         // Every value must parse and agree; never select just the first value.
-        let normalize_content_length = {
+        let normalize_content_length = response_length != headers::ResponseLength::Forbidden && {
             let mut values = msg.head.headers.get_all(header::CONTENT_LENGTH).into_iter();
             values
                 .next()
@@ -661,6 +672,7 @@ impl Server {
                 .headers
                 .insert(header::CONTENT_LENGTH, HeaderValue::from(len));
         }
+        let mut wrote_len = false;
         let mut encoder = Encoder::length(0);
         let mut wrote_date = false;
         let mut is_name_written = false;
@@ -692,6 +704,15 @@ impl Server {
 
             match name.standard() {
                 Some(header::StandardHeader::ContentLength) => {
+                    if response_length == headers::ResponseLength::Forbidden {
+                        if tunnel && msg.strict_connect_framing {
+                            warn!("content-length on a successful response to CONNECT, canceling");
+                            rewind(dst);
+                            return Err(crate::Error::new_user_header());
+                        }
+                        debug!("content-length dropped: forbidden for this response");
+                        continue 'headers;
+                    }
                     if wrote_len && !is_name_written {
                         warn!("unexpected content-length found, canceling");
                         rewind(dst);
@@ -699,29 +720,30 @@ impl Server {
                     }
                     match msg.body {
                         Some(BodyLength::Known(known_len)) => {
-                            // The Body claims to know a length, and
-                            // the headers are already set. For performance
-                            // reasons, we are just going to trust that
-                            // the values match.
-                            //
-                            // In debug builds, we'll assert they are the
-                            // same to help developers find bugs.
-                            #[cfg(debug_assertions)]
-                            {
-                                if let Some(len) = headers::content_length_parse(&value)
-                                    && (msg.req_method != &Some(Method::HEAD) || known_len != 0)
-                                {
-                                    assert!(
-                                        len == known_len,
-                                        "payload claims content-length of {known_len}, custom content-length header claims {len}",
-                                    );
-                                }
-                            }
-
+                            // A HEAD or 304 describes another representation; otherwise the
+                            // field must frame the body that is sent.
+                            let frames_body = match response_length {
+                                headers::ResponseLength::Known => true,
+                                headers::ResponseLength::NonZero => known_len != 0,
+                                headers::ResponseLength::ExplicitOnly
+                                | headers::ResponseLength::Forbidden => false,
+                            };
                             if !is_name_written {
                                 encoder = Encoder::length(known_len);
                                 header_name_writer.write_header_name_with_colon(dst, &name);
-                                extend(dst, value.as_bytes());
+                                if frames_body
+                                    && headers::content_length_parse(&value) != Some(known_len)
+                                {
+                                    // A length the body does not have would desync the framing.
+                                    warn!(
+                                        ?value,
+                                        known_len,
+                                        "content-length disagrees with the body, sending the body's length"
+                                    );
+                                    extend(dst, ::itoa::Buffer::new().format(known_len).as_bytes());
+                                } else {
+                                    extend(dst, value.as_bytes());
+                                }
                                 wrote_len = true;
                                 is_name_written = true;
                             }
@@ -753,7 +775,11 @@ impl Server {
                             //
                             // - The header says the length is `0`.
                             // - This is a response to a `HEAD` request.
-                            if msg.req_method == &Some(Method::HEAD) {
+                            if matches!(
+                                response_length,
+                                headers::ResponseLength::NonZero
+                                    | headers::ResponseLength::ExplicitOnly
+                            ) {
                                 debug_assert_eq!(encoder, Encoder::length(0));
                             } else {
                                 if value.as_bytes() != b"0" {
@@ -769,6 +795,17 @@ impl Server {
                     wrote_len = true;
                 }
                 Some(header::StandardHeader::TransferEncoding) => {
+                    if response_length == headers::ResponseLength::Forbidden {
+                        if tunnel && msg.strict_connect_framing {
+                            warn!(
+                                "transfer-encoding on a successful response to CONNECT, canceling"
+                            );
+                            rewind(dst);
+                            return Err(crate::Error::new_user_header());
+                        }
+                        debug!("transfer-encoding dropped: forbidden for this response");
+                        continue 'headers;
+                    }
                     if wrote_len && !is_name_written {
                         warn!("unexpected transfer-encoding found, canceling");
                         rewind(dst);
@@ -778,6 +815,16 @@ impl Server {
                     if msg.head.version == Version::HTTP_10
                         || !Self::can_chunked(msg.req_method.as_ref(), msg.head.subject)
                     {
+                        if describes_get {
+                            // Kept as the GET would carry it, which ends in `chunked`; it frames
+                            // nothing here.
+                            header_name_writer.write_header_name_with_colon(dst, &name);
+                            extend(dst, value.as_bytes());
+                            if !headers::is_chunked_(&value) {
+                                extend(dst, b", chunked");
+                            }
+                            extend(dst, b"\r\n");
+                        }
                         continue;
                     }
                     wrote_len = true;
@@ -849,9 +896,9 @@ impl Server {
 
         handle_is_name_written!();
 
-        if !wrote_len && close_delimited {
+        if !wrote_len && !descriptive_transfer_encoding && close_delimited {
             encoder = Encoder::close_delimited();
-        } else if !wrote_len {
+        } else if !wrote_len && !descriptive_transfer_encoding {
             encoder = match msg.body {
                 Some(BodyLength::Unknown) => {
                     if msg.head.version == Version::HTTP_10
@@ -867,26 +914,22 @@ impl Server {
                     }
                 }
                 None | Some(BodyLength::Known(0)) => {
-                    if Self::can_have_implicit_zero_content_length(
-                        msg.req_method.as_ref(),
-                        msg.head.subject,
-                    ) {
+                    if response_length.implied(Some(0)).is_some() {
                         header_name_writer
                             .write_full_header_line(dst, (header::CONTENT_LENGTH, ": 0\r\n"))
                     }
                     Encoder::length(0)
                 }
-                Some(BodyLength::Known(len)) => {
-                    if !Self::can_have_content_length(msg.req_method.as_ref(), msg.head.subject) {
-                        Encoder::length(0)
-                    } else {
+                Some(BodyLength::Known(len)) => match response_length.implied(Some(len)) {
+                    Some(len) => {
                         header_name_writer
                             .write_header_name_with_colon(dst, &header::CONTENT_LENGTH);
                         extend(dst, ::itoa::Buffer::new().format(len).as_bytes());
                         extend(dst, b"\r\n");
                         Encoder::length(len)
                     }
-                }
+                    None => Encoder::length(0),
+                },
             };
         }
 
@@ -962,6 +1005,9 @@ impl Http1Transaction for Client {
                 ) {
                     Ok(httparse::Status::Complete(len)) => {
                         trace!("Response.parse Complete({})", len);
+                        if ctx.h1_max_header_size.is_some_and(|max| len > max) {
+                            return Err(Parse::TooLarge);
+                        }
                         let status = StatusCode::from_u16(res.code.unwrap_or(u16::MAX))?;
 
                         let reason = {
@@ -1010,6 +1056,7 @@ impl Http1Transaction for Client {
             let slice = slice.freeze();
 
             let mut keep_alive = version == Version::HTTP_11;
+            let mut saw_connection_close = false;
 
             let mut headers = HeaderMap::with_capacity(headers_len);
             let mut resp_is_te_chunked = false;
@@ -1029,14 +1076,7 @@ impl Http1Transaction for Client {
                 }
 
                 if name == header::CONNECTION {
-                    // keep_alive was previously set to default for Version
-                    if keep_alive {
-                        // HTTP/1.1
-                        keep_alive = !headers::connection_close(&value);
-                    } else {
-                        // HTTP/1.0
-                        keep_alive = headers::connection_keep_alive(&value);
-                    }
+                    read_connection_line(&mut keep_alive, &mut saw_connection_close, &value);
                 } else if name == header::TRANSFER_ENCODING {
                     // RFC 9112 §6.1: `chunked` MUST NOT be applied more than once.
                     if headers::has_duplicate_chunked(&value) {
@@ -1282,6 +1322,16 @@ impl Client {
         // header, so unfortunately, we must do the check here, first.
 
         let existing_con_len = headers::content_length_parse_all(headers);
+        // A valid list of equal lengths goes out as the one value it stands for.
+        if let Some(len) = existing_con_len {
+            let mut values = headers.get_all(header::CONTENT_LENGTH).iter();
+            if values
+                .next()
+                .is_some_and(|first| first.as_bytes().contains(&b',') || values.next().is_some())
+            {
+                headers.insert(header::CONTENT_LENGTH, HeaderValue::from(len));
+            }
+        }
         let mut should_remove_con_len = false;
 
         if !can_chunked {
@@ -1297,6 +1347,7 @@ impl Client {
             } else {
                 // HTTP/1.0 client requests without a content-length
                 // cannot have any body at all.
+                headers.remove(header::CONTENT_LENGTH);
                 Encoder::length(0)
             };
         }
@@ -1335,6 +1386,8 @@ impl Client {
                 if let Some(len) = existing_con_len {
                     Some(Encoder::length(len))
                 } else if matches!(body, BodyLength::Unknown) {
+                    // A valid Content-Length would have been used above: drop invalid ones.
+                    should_remove_con_len = true;
                     // GET, HEAD, and CONNECT almost never have bodies.
                     //
                     // So instead of sending a "chunked" body with a 0-chunk,
@@ -1362,7 +1415,7 @@ impl Client {
         // This is because we need a second mutable borrow to remove
         // content-length header.
         if let Some(encoder) = encoder {
-            if should_remove_con_len && existing_con_len.is_some() {
+            if should_remove_con_len {
                 headers.remove(header::CONTENT_LENGTH);
             }
             return encoder;
@@ -1434,6 +1487,18 @@ impl Client {
         }
         buf[..unfolded.len()].copy_from_slice(&unfolded);
         idx.value.1 = idx.value.0 + unfolded.len();
+    }
+}
+
+/// Folds a received `Connection` line into `keep_alive`, which starts at the
+/// version's default: once any line carries `close`, a later `keep-alive` cannot undo it.
+fn read_connection_line(keep_alive: &mut bool, saw_close: &mut bool, value: &HeaderValue) {
+    if *saw_close || headers::connection_close(value) {
+        *saw_close = true;
+        *keep_alive = false;
+    } else if !*keep_alive {
+        // HTTP/1.0, which defaults to close
+        *keep_alive = headers::connection_keep_alive(value);
     }
 }
 
@@ -1837,6 +1902,7 @@ mod tests {
                 req_method: &mut method,
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
+                h1_max_header_size: None,
                 h09_responses: false,
                 on_informational: &mut None,
                 prepared_extensions: &mut Some(Extensions::default()),
@@ -1950,6 +2016,7 @@ mod tests {
                 req_method: &mut None,
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
+                h1_max_header_size: None,
                 h09_responses: false,
                 on_informational: &mut None,
                 prepared_extensions: &mut Some(Extensions::default()),
@@ -1973,6 +2040,7 @@ mod tests {
             req_method: &mut Some(Method::GET),
             h1_parser_config: Default::default(),
             h1_max_headers: None,
+            h1_max_header_size: None,
             h09_responses: false,
             on_informational: &mut None,
             prepared_extensions: &mut Some(Extensions::default()),
@@ -1993,6 +2061,7 @@ mod tests {
             req_method: &mut None,
             h1_parser_config: Default::default(),
             h1_max_headers: None,
+            h1_max_header_size: None,
             h09_responses: false,
             on_informational: &mut None,
             prepared_extensions: &mut Some(Extensions::default()),
@@ -2009,6 +2078,7 @@ mod tests {
             req_method: &mut Some(Method::GET),
             h1_parser_config: Default::default(),
             h1_max_headers: None,
+            h1_max_header_size: None,
             h09_responses: true,
             on_informational: &mut None,
             prepared_extensions: &mut Some(Extensions::default()),
@@ -2027,6 +2097,7 @@ mod tests {
             req_method: &mut Some(Method::GET),
             h1_parser_config: Default::default(),
             h1_max_headers: None,
+            h1_max_header_size: None,
             h09_responses: false,
             on_informational: &mut None,
             prepared_extensions: &mut Some(Extensions::default()),
@@ -2049,6 +2120,7 @@ mod tests {
             req_method: &mut Some(Method::GET),
             h1_parser_config,
             h1_max_headers: None,
+            h1_max_header_size: None,
             h09_responses: false,
             on_informational: &mut None,
             prepared_extensions: &mut Some(Extensions::default()),
@@ -2068,6 +2140,7 @@ mod tests {
             req_method: &mut Some(Method::GET),
             h1_parser_config: Default::default(),
             h1_max_headers: None,
+            h1_max_header_size: None,
             h09_responses: false,
             on_informational: &mut None,
             prepared_extensions: &mut Some(Extensions::default()),
@@ -2088,6 +2161,7 @@ mod tests {
             req_method: &mut method,
             h1_parser_config,
             h1_max_headers: None,
+            h1_max_header_size: None,
             h09_responses: false,
             on_informational: &mut None,
             prepared_extensions: &mut Some(Extensions::default()),
@@ -2109,6 +2183,7 @@ mod tests {
             req_method: &mut None,
             h1_parser_config: Default::default(),
             h1_max_headers: None,
+            h1_max_header_size: None,
             h09_responses: false,
             on_informational: &mut None,
             prepared_extensions: &mut Some(Extensions::default()),
@@ -2124,6 +2199,7 @@ mod tests {
             req_method: &mut None,
             h1_parser_config: Default::default(),
             h1_max_headers: None,
+            h1_max_header_size: None,
             h09_responses: false,
             on_informational: &mut None,
             prepared_extensions: &mut Some(Extensions::default()),
@@ -2144,6 +2220,7 @@ mod tests {
                     req_method: &mut None,
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
+                    h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
                     prepared_extensions: &mut Some(Extensions::default()),
@@ -2161,6 +2238,7 @@ mod tests {
                     req_method: &mut None,
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
+                    h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
                     prepared_extensions: &mut Some(Extensions::default()),
@@ -2396,6 +2474,7 @@ mod tests {
                     req_method: &mut None,
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
+                    h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
                     prepared_extensions: &mut Some(Extensions::default()),
@@ -2457,6 +2536,7 @@ mod tests {
                     req_method: &mut None,
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
+                    h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
                     prepared_extensions: &mut Some(Extensions::default()),
@@ -2487,6 +2567,7 @@ mod tests {
                     req_method: &mut None,
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
+                    h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
                     prepared_extensions: &mut Some(Extensions::default()),
@@ -2525,6 +2606,7 @@ mod tests {
                 req_method: &mut Some(Method::GET),
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
+                h1_max_header_size: None,
                 h09_responses: false,
                 on_informational: &mut None,
                 prepared_extensions: &mut Some(prepared),
@@ -2561,6 +2643,7 @@ mod tests {
                         req_method: &mut Some(Method::GET),
                         h1_parser_config: Default::default(),
                         h1_max_headers: None,
+                        h1_max_header_size: None,
                         h09_responses: false,
                         on_informational: &mut None,
                         prepared_extensions: &mut Some(Extensions::default()),
@@ -2579,6 +2662,7 @@ mod tests {
                     req_method: &mut Some(m),
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
+                    h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
                     prepared_extensions: &mut Some(Extensions::default()),
@@ -2596,6 +2680,7 @@ mod tests {
                     req_method: &mut Some(Method::GET),
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
+                    h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
                     prepared_extensions: &mut Some(Extensions::default()),
@@ -2909,12 +2994,247 @@ mod tests {
                     req_method: &mut None,
                     title_case_headers: false,
                     date_header: true,
+                    strict_connect_framing: false,
                 },
                 &mut vec,
             )
             .unwrap();
             assert!(encoder.is_eof(), "{length}");
             assert_eq!(String::from_utf8(vec).unwrap(), expected, "{length}");
+        }
+    }
+
+    fn encode_request(mut head: MessageHead<RequestLine>, body: BodyLength) -> (Encoder, String) {
+        let mut vec = Vec::new();
+        let encoder = Client::encode(
+            Encode {
+                head: EncodeHead {
+                    version: head.version,
+                    subject: head.subject,
+                    headers: head.headers,
+                    extensions: &mut head.extensions,
+                },
+                body: Some(body),
+                keep_alive: true,
+                req_method: &mut None,
+                title_case_headers: false,
+                date_header: true,
+                strict_connect_framing: false,
+            },
+            &mut vec,
+        )
+        .unwrap();
+        (encoder, String::from_utf8(vec).unwrap())
+    }
+
+    const CONTENT_LENGTHS: [&[&str]; 9] = [
+        &[],
+        &["10"],
+        &[""],
+        &["abc"],
+        &["+10"],
+        &["18446744073709551616"],
+        &["10", "11"],
+        &["10, 11"],
+        &["10", "abc"],
+    ];
+
+    /// A sent Transfer-Encoding frames the body, so no Content-Length goes along.
+    #[test]
+    fn client_request_with_transfer_encoding_drops_content_length() {
+        for values in CONTENT_LENGTHS {
+            for (transfer_encoding, sent) in [("chunked", "chunked"), ("gzip", "gzip, chunked")] {
+                for body in [BodyLength::Known(10), BodyLength::Unknown] {
+                    let case = format!("{values:?} {transfer_encoding} {body:?}");
+                    let mut head = MessageHead::default();
+                    for &value in values {
+                        head.headers
+                            .append("content-length", HeaderValue::from_static(value));
+                    }
+                    head.headers.insert(
+                        "transfer-encoding",
+                        HeaderValue::from_static(transfer_encoding),
+                    );
+                    let (encoder, wire) = encode_request(head, body);
+                    assert!(encoder.is_chunked(), "{case}");
+                    assert_eq!(
+                        wire,
+                        format!("GET / HTTP/1.1\r\ntransfer-encoding: {sent}\r\n\r\n"),
+                        "{case}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A valid list of equal lengths is sent as the one value it stands for.
+    #[test]
+    fn client_request_sends_a_listed_content_length_as_one_value() {
+        for values in [&["10, 10"][..], &["10", "10"], &["10"]] {
+            for body in [BodyLength::Known(10), BodyLength::Unknown] {
+                let case = format!("{values:?} {body:?}");
+                let mut head: MessageHead<RequestLine> = MessageHead::default();
+                head.subject.0 = Method::POST;
+                for &value in values {
+                    head.headers
+                        .append("content-length", HeaderValue::from_static(value));
+                }
+                let (encoder, wire) = encode_request(head, body);
+                assert!(!encoder.is_chunked(), "{case}");
+                assert_eq!(
+                    wire, "POST / HTTP/1.1\r\ncontent-length: 10\r\n\r\n",
+                    "{case}"
+                );
+            }
+        }
+    }
+
+    /// Whatever frames an unknown body, a Content-Length that cannot is not sent along.
+    #[test]
+    fn client_request_framing_an_unknown_body_drops_invalid_content_length() {
+        let framings = [
+            (Method::POST, Version::HTTP_11, "POST / HTTP/1.1\r\n", true),
+            (Method::GET, Version::HTTP_11, "GET / HTTP/1.1\r\n", false),
+            (Method::POST, Version::HTTP_10, "POST / HTTP/1.0\r\n", false),
+        ];
+        for values in CONTENT_LENGTHS {
+            for (method, version, request_line, chunked) in framings.clone() {
+                let case = format!("{values:?} {request_line:?}");
+                let mut head = MessageHead {
+                    version,
+                    subject: RequestLine(method, "/".parse().unwrap()),
+                    ..Default::default()
+                };
+                for &value in values {
+                    head.headers
+                        .append("content-length", HeaderValue::from_static(value));
+                }
+                let (encoder, wire) = encode_request(head, BodyLength::Unknown);
+                if values == ["10"] {
+                    assert!(!encoder.is_chunked() && !encoder.is_eof(), "{case}");
+                    assert_eq!(
+                        wire,
+                        format!("{request_line}content-length: 10\r\n\r\n"),
+                        "{case}"
+                    );
+                } else if chunked {
+                    assert!(encoder.is_chunked(), "{case}");
+                    assert_eq!(
+                        wire,
+                        format!("{request_line}transfer-encoding: chunked\r\n\r\n"),
+                        "{case}"
+                    );
+                } else {
+                    assert!(encoder.is_eof(), "{case}");
+                    assert_eq!(wire, format!("{request_line}\r\n"), "{case}");
+                }
+            }
+        }
+    }
+
+    /// A message may carry several `Connection` lines; a `close` on any of them wins.
+    #[test]
+    fn parse_connection_close_wins_over_any_keep_alive() {
+        let cases: &[(&str, &[&str], bool)] = &[
+            ("HTTP/1.1", &["close", "keep-alive"], false),
+            ("HTTP/1.1", &["keep-alive", "close"], false),
+            ("HTTP/1.1", &["foo", "bar"], true),
+            ("HTTP/1.0", &["keep-alive", "foo"], true),
+            ("HTTP/1.0", &["keep-alive", "close"], false),
+            ("HTTP/1.0", &["close", "keep-alive"], false),
+            ("HTTP/1.0", &["close, keep-alive"], false),
+        ];
+        for &(version, lines, keep_alive) in cases {
+            let connection: String = lines
+                .iter()
+                .map(|line| format!("connection: {line}\r\n"))
+                .collect();
+
+            let mut request =
+                BytesMut::from(format!("GET / {version}\r\n{connection}\r\n").as_str());
+            let request = Server::parse(
+                &mut request,
+                ParseContext {
+                    req_method: &mut None,
+                    h1_parser_config: Default::default(),
+                    h1_max_headers: None,
+                    h1_max_header_size: None,
+                    h09_responses: false,
+                    on_informational: &mut None,
+                    prepared_extensions: &mut Some(Extensions::default()),
+                },
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                request.keep_alive, keep_alive,
+                "request {version} {lines:?}"
+            );
+
+            let mut response = BytesMut::from(
+                format!("{version} 200 OK\r\ncontent-length: 0\r\n{connection}\r\n").as_str(),
+            );
+            let response = Client::parse(
+                &mut response,
+                ParseContext {
+                    req_method: &mut Some(Method::GET),
+                    h1_parser_config: Default::default(),
+                    h1_max_headers: None,
+                    h1_max_header_size: None,
+                    h09_responses: false,
+                    on_informational: &mut None,
+                    prepared_extensions: &mut Some(Extensions::default()),
+                },
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                response.keep_alive, keep_alive,
+                "response {version} {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_respects_max_header_size() {
+        fn accepted<T>(parsed: &ParseResult<T>, case: &str) -> bool {
+            match parsed {
+                Ok(Some(_)) => true,
+                Err(Parse::TooLarge) => false,
+                Ok(None) => panic!("{case}: incomplete"),
+                Err(err) => panic!("{case}: {err:?}"),
+            }
+        }
+
+        let request = "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+        for (head, is_request) in [(request, true), (response, false)] {
+            let len = head.len();
+            for (max_header_size, expected) in [
+                (None, true),
+                (Some(len), true),
+                (Some(len + 13), true),
+                (Some(len - 1), false),
+                (Some(10), false),
+            ] {
+                let case = format!("{head:?} max_header_size = {max_header_size:?}");
+                let ctx = ParseContext {
+                    req_method: &mut Some(Method::GET),
+                    h1_parser_config: Default::default(),
+                    h1_max_headers: None,
+                    h1_max_header_size: max_header_size,
+                    h09_responses: false,
+                    on_informational: &mut None,
+                    prepared_extensions: &mut Some(Extensions::default()),
+                };
+                let mut bytes = BytesMut::from(head);
+                let parsed = if is_request {
+                    accepted(&Server::parse(&mut bytes, ctx), &case)
+                } else {
+                    accepted(&Client::parse(&mut bytes, ctx), &case)
+                };
+                assert_eq!(parsed, expected, "{case}");
+            }
         }
     }
 
@@ -2949,6 +3269,7 @@ mod tests {
                     req_method: &mut None,
                     title_case_headers: false,
                     date_header: true,
+                    strict_connect_framing: false,
                 },
                 &mut vec,
             );
@@ -2983,6 +3304,7 @@ mod tests {
                 req_method: &mut None,
                 title_case_headers: true,
                 date_header: true,
+                strict_connect_framing: false,
             },
             &mut vec,
         )
@@ -3016,6 +3338,7 @@ mod tests {
                 req_method: &mut None,
                 title_case_headers: false,
                 date_header: false,
+                strict_connect_framing: false,
             },
             &mut wire,
         )
@@ -3061,6 +3384,7 @@ mod tests {
                 req_method: &mut None,
                 title_case_headers: false,
                 date_header: true,
+                strict_connect_framing: false,
             },
             &mut vec,
         )
@@ -3097,6 +3421,7 @@ mod tests {
                 req_method: &mut None,
                 title_case_headers: true,
                 date_header: true,
+                strict_connect_framing: false,
             },
             &mut vec,
         )
@@ -3147,6 +3472,7 @@ mod tests {
                 req_method: &mut None,
                 title_case_headers: false,
                 date_header: false,
+                strict_connect_framing: false,
             },
             &mut encoded,
         )
@@ -3175,6 +3501,7 @@ mod tests {
                 req_method: &mut None,
                 title_case_headers: false,
                 date_header: false,
+                strict_connect_framing: false,
             },
             &mut encoded,
         )
@@ -3221,6 +3548,7 @@ mod tests {
                             req_method: &mut Some(Method::POST),
                             title_case_headers: false,
                             date_header: false,
+                            strict_connect_framing: false,
                         },
                         &mut bytes,
                     )
@@ -3276,6 +3604,7 @@ mod tests {
                 req_method: &mut Some(method),
                 title_case_headers: false,
                 date_header: false,
+                strict_connect_framing: false,
             },
             &mut wire,
         )?;
@@ -3368,6 +3697,7 @@ mod tests {
                                 req_method: &mut Some(Method::GET),
                                 title_case_headers: false,
                                 date_header: false,
+                                strict_connect_framing: false,
                             },
                             &mut wire,
                         )
@@ -3623,6 +3953,7 @@ mod tests {
                     req_method: &mut Some(method),
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
+                    h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
                     prepared_extensions: &mut Some(inherited.fork()),
@@ -3635,6 +3966,359 @@ mod tests {
                 Some(&expected)
             );
             assert_eq!(msg.head.extensions.get_ref::<Framing>(), Some(&expected));
+        }
+    }
+
+    #[expect(
+        clippy::option_option,
+        reason = "test matrix distinguishes absent and unknown-length bodies"
+    )]
+    fn encode_framing(
+        method: Method,
+        status: u16,
+        version: Version,
+        fields: &[(&'static str, &'static str)],
+        body: Option<Option<u64>>,
+        strict_connect_framing: bool,
+    ) -> crate::Result<(Vec<String>, Encoder)> {
+        // `None` is no body, `Some(None)` one of unknown length.
+        let body = body.map(|len| len.map_or(BodyLength::Unknown, BodyLength::Known));
+        let mut head = MessageHead {
+            version,
+            subject: StatusCode::from_u16(status).unwrap(),
+            ..MessageHead::default()
+        };
+        for (name, value) in fields {
+            head.headers.append(*name, HeaderValue::from_static(value));
+        }
+        let mut bytes = Vec::new();
+        let encoder = Server::encode(
+            Encode {
+                head: EncodeHead {
+                    version: head.version,
+                    subject: head.subject,
+                    headers: head.headers,
+                    extensions: &mut head.extensions,
+                },
+                body,
+                keep_alive: true,
+                req_method: &mut Some(method),
+                title_case_headers: false,
+                date_header: false,
+                strict_connect_framing,
+            },
+            &mut bytes,
+        )?;
+        let lines = String::from_utf8(bytes)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .filter(|line| !line.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect();
+        Ok((lines, encoder))
+    }
+
+    const FRAMING_FIELDS: [&[(&str, &str)]; 5] = [
+        &[],
+        &[("content-length", "0")],
+        &[("content-length", "5")],
+        &[("transfer-encoding", "chunked")],
+        &[
+            ("content-length", "5"),
+            ("transfer-encoding", "gzip, chunked"),
+        ],
+    ];
+
+    #[expect(
+        clippy::option_option,
+        reason = "test matrix distinguishes absent and unknown-length bodies"
+    )]
+    const BODIES: [Option<Option<u64>>; 4] = [None, Some(Some(0)), Some(Some(5)), Some(None)];
+
+    fn has_framing(lines: &[String]) -> bool {
+        lines.iter().any(|line| {
+            line.starts_with("content-length:") || line.starts_with("transfer-encoding:")
+        })
+    }
+
+    fn lines_named<'a>(lines: &'a [String], name: &str) -> Vec<&'a str> {
+        lines
+            .iter()
+            .filter(|line| line.starts_with(name))
+            .map(String::as_str)
+            .collect()
+    }
+
+    #[test]
+    fn descriptive_transfer_encoding_wins_over_content_length() {
+        for (method, status) in [(Method::HEAD, 200), (Method::GET, 304)] {
+            for body in BODIES {
+                let case = format!("{method} {status} {body:?}");
+                let (lines, encoder) = encode_framing(
+                    method.clone(),
+                    status,
+                    Version::HTTP_11,
+                    &[
+                        ("transfer-encoding", "gzip"),
+                        ("transfer-encoding", "chunked"),
+                    ],
+                    body,
+                    false,
+                )
+                .unwrap();
+                assert!(encoder.is_eof(), "{case}");
+                assert!(lines_named(&lines, "content-length:").is_empty(), "{case}");
+                assert_eq!(
+                    lines_named(&lines, "transfer-encoding:"),
+                    ["transfer-encoding: gzip, chunked"],
+                    "{case}"
+                );
+                for fields in [
+                    [("transfer-encoding", "chunked"), ("content-length", "5")],
+                    [("content-length", "5"), ("transfer-encoding", "chunked")],
+                ] {
+                    let (lines, encoder) = encode_framing(
+                        method.clone(),
+                        status,
+                        Version::HTTP_11,
+                        &fields,
+                        body,
+                        false,
+                    )
+                    .unwrap();
+                    assert!(encoder.is_eof(), "{case}");
+                    assert!(lines_named(&lines, "content-length:").is_empty(), "{case}");
+                    assert_eq!(
+                        lines_named(&lines, "transfer-encoding:"),
+                        ["transfer-encoding: chunked"],
+                        "{case}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_described_coding_ends_in_chunked_as_the_get_would() {
+        let (lines, _) = encode_framing(
+            Method::HEAD,
+            200,
+            Version::HTTP_11,
+            &[("transfer-encoding", "gzip")],
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            lines_named(&lines, "transfer-encoding:"),
+            ["transfer-encoding: gzip, chunked"]
+        );
+    }
+
+    #[test]
+    fn codings_over_several_lines_frame_a_body() {
+        for body in [Some(None), Some(Some(5))] {
+            let (lines, encoder) = encode_framing(
+                Method::GET,
+                200,
+                Version::HTTP_11,
+                &[
+                    ("transfer-encoding", "gzip"),
+                    ("x-between", "1"),
+                    ("transfer-encoding", "chunked"),
+                ],
+                body,
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                lines_named(&lines, "transfer-encoding:"),
+                ["transfer-encoding: gzip, chunked"],
+                "{body:?}"
+            );
+            assert!(!encoder.is_eof(), "{body:?}: a chunked body follows");
+        }
+    }
+
+    #[test]
+    fn a_content_length_the_body_does_not_have_is_corrected() {
+        for (declared, known) in [("3", 5), ("9", 5), ("not-a-number", 5)] {
+            let fields: &'static [(&'static str, &'static str)] = match declared {
+                "3" => &[("content-length", "3")],
+                "9" => &[("content-length", "9")],
+                _ => &[("content-length", "not-a-number")],
+            };
+            let (lines, encoder) = encode_framing(
+                Method::GET,
+                200,
+                Version::HTTP_11,
+                fields,
+                Some(Some(known)),
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                lines_named(&lines, "content-length:"),
+                ["content-length: 5"],
+                "declared {declared}"
+            );
+            assert!(!encoder.is_eof());
+        }
+    }
+
+    #[test]
+    fn connect_2xx_drops_framing_fields_and_opens_the_tunnel() {
+        for status in [200, 204, 299] {
+            for fields in FRAMING_FIELDS {
+                for body in BODIES {
+                    let case = format!("{status} {fields:?} {body:?}");
+                    let (lines, encoder) = encode_framing(
+                        Method::CONNECT,
+                        status,
+                        Version::HTTP_11,
+                        fields,
+                        body,
+                        false,
+                    )
+                    .unwrap_or_else(|err| panic!("{case}: {err}"));
+                    assert!(!has_framing(&lines), "{case}: {lines:?}");
+                    assert!(encoder.is_last(), "{case}");
+                    assert!(encoder.is_eof(), "{case}: a tunnel follows, no body");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn connect_2xx_framing_fields_fail_when_strict() {
+        for fields in &FRAMING_FIELDS[1..] {
+            let result = encode_framing(Method::CONNECT, 200, Version::HTTP_11, fields, None, true);
+            assert!(result.is_err(), "{fields:?}");
+        }
+        let (lines, _) =
+            encode_framing(Method::CONNECT, 200, Version::HTTP_11, &[], None, true).unwrap();
+        assert!(!has_framing(&lines));
+    }
+
+    #[test]
+    fn rejected_connect_keeps_its_framing() {
+        let (lines, encoder) = encode_framing(
+            Method::CONNECT,
+            407,
+            Version::HTTP_11,
+            &[("content-length", "5")],
+            Some(Some(5)),
+            true,
+        )
+        .unwrap();
+        assert!(lines.contains(&"content-length: 5".to_owned()), "{lines:?}");
+        assert!(!encoder.is_eof());
+    }
+
+    #[test]
+    fn no_content_drops_content_length() {
+        for body in BODIES {
+            let (lines, encoder) = encode_framing(
+                Method::GET,
+                204,
+                Version::HTTP_11,
+                &[("content-length", "10"), ("transfer-encoding", "chunked")],
+                body,
+                false,
+            )
+            .unwrap();
+            assert!(!has_framing(&lines), "{body:?}: {lines:?}");
+            assert!(encoder.is_eof(), "{body:?}");
+        }
+    }
+
+    #[test]
+    fn not_modified_keeps_its_declared_content_length() {
+        for body in [None, Some(Some(0))] {
+            let (lines, encoder) = encode_framing(
+                Method::GET,
+                304,
+                Version::HTTP_11,
+                &[("content-length", "1234")],
+                body,
+                false,
+            )
+            .unwrap();
+            assert!(
+                lines.contains(&"content-length: 1234".to_owned()),
+                "{body:?}: {lines:?}"
+            );
+            assert!(encoder.is_eof(), "{body:?}");
+        }
+        let (lines, _) =
+            encode_framing(Method::GET, 304, Version::HTTP_11, &[], None, false).unwrap();
+        assert!(!has_framing(&lines), "never invented: {lines:?}");
+    }
+
+    #[test]
+    fn head_content_length_is_never_invented() {
+        for (fields, body, expected) in [
+            (&[][..], None, None),
+            (&[][..], Some(Some(0)), None),
+            (&[][..], Some(Some(42)), Some("content-length: 42")),
+            (&[][..], Some(None), None),
+            (
+                &[("content-length", "99")][..],
+                None,
+                Some("content-length: 99"),
+            ),
+            (
+                &[("content-length", "99")][..],
+                Some(Some(0)),
+                Some("content-length: 99"),
+            ),
+        ] {
+            let (lines, encoder) =
+                encode_framing(Method::HEAD, 200, Version::HTTP_11, fields, body, false).unwrap();
+            let length: Vec<_> = lines
+                .iter()
+                .filter(|line| line.starts_with("content-length:"))
+                .collect();
+            match expected {
+                Some(expected) => assert_eq!(length, [expected], "{fields:?} {body:?}"),
+                None => assert!(length.is_empty(), "{fields:?} {body:?}: {lines:?}"),
+            }
+            assert!(encoder.is_eof(), "{fields:?} {body:?}");
+        }
+    }
+
+    #[test]
+    fn head_and_not_modified_keep_the_transfer_coding_a_get_would_use() {
+        for (method, status) in [(Method::HEAD, 200), (Method::GET, 304)] {
+            let (lines, encoder) = encode_framing(
+                method.clone(),
+                status,
+                Version::HTTP_11,
+                &[("transfer-encoding", "gzip, chunked")],
+                None,
+                false,
+            )
+            .unwrap();
+            assert!(
+                lines.contains(&"transfer-encoding: gzip, chunked".to_owned()),
+                "{method} {status}: {lines:?}"
+            );
+            assert!(encoder.is_eof(), "{method} {status}");
+
+            let (lines, _) = encode_framing(
+                method.clone(),
+                status,
+                Version::HTTP_10,
+                &[("transfer-encoding", "chunked")],
+                None,
+                false,
+            )
+            .unwrap();
+            assert!(
+                !has_framing(&lines),
+                "an HTTP/1.0 peer knows no coding: {lines:?}"
+            );
         }
     }
 
@@ -3656,6 +4340,7 @@ mod tests {
                 req_method: &mut Some(Method::CONNECT),
                 title_case_headers: false,
                 date_header: true,
+                strict_connect_framing: false,
             },
             &mut vec,
         )
@@ -3692,6 +4377,7 @@ mod tests {
                 req_method: &mut None,
                 title_case_headers: true,
                 date_header: true,
+                strict_connect_framing: false,
             },
             &mut vec,
         )
@@ -3728,6 +4414,7 @@ mod tests {
                 req_method: &mut None,
                 title_case_headers: false,
                 date_header: true,
+                strict_connect_framing: false,
             },
             &mut vec,
         )
@@ -3764,6 +4451,7 @@ mod tests {
                 req_method: &mut None,
                 title_case_headers: true,
                 date_header: true,
+                strict_connect_framing: false,
             },
             &mut vec,
         )
@@ -3801,6 +4489,7 @@ mod tests {
                 req_method: &mut None,
                 title_case_headers: true,
                 date_header: false,
+                strict_connect_framing: false,
             },
             &mut vec,
         )
@@ -3821,6 +4510,7 @@ mod tests {
                 req_method: &mut Some(Method::GET),
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
+                h1_max_header_size: None,
                 h09_responses: false,
                 on_informational: &mut None,
                 prepared_extensions: &mut Some(Extensions::default()),
@@ -3860,6 +4550,7 @@ mod tests {
                         req_method: &mut None,
                         h1_parser_config: Default::default(),
                         h1_max_headers: max_headers,
+                        h1_max_header_size: None,
                         h09_responses: false,
                         on_informational: &mut None,
                         prepared_extensions: &mut Some(Extensions::default()),
@@ -3880,6 +4571,7 @@ mod tests {
                         req_method: &mut None,
                         h1_parser_config: Default::default(),
                         h1_max_headers: max_headers,
+                        h1_max_header_size: None,
                         h09_responses: false,
                         on_informational: &mut None,
                         prepared_extensions: &mut Some(Extensions::default()),
@@ -3996,6 +4688,7 @@ mod tests {
                 req_method: &mut None,
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
+                h1_max_header_size: None,
                 h09_responses: false,
                 on_informational: &mut None,
                 prepared_extensions: &mut prepared_extensions,
@@ -4046,6 +4739,7 @@ mod tests {
                     req_method: &mut Some(Method::GET),
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
+                    h1_max_header_size: None,
                     h09_responses: false,
                     on_informational: &mut None,
                     prepared_extensions: &mut Some(Extensions::default()),
@@ -4103,6 +4797,7 @@ mod tests {
                 req_method: &mut Some(Method::GET),
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
+                h1_max_header_size: None,
                 h09_responses: false,
                 on_informational: &mut None,
                 prepared_extensions: &mut Some(Extensions::default()),

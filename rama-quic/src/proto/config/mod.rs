@@ -32,8 +32,8 @@ use {
 };
 
 use crate::proto::{
-    BloomTokenLog, DEFAULT_SUPPORTED_VERSIONS, Duration, RandomConnectionIdGenerator, SystemTime,
-    TokenLog, TokenMemoryCache, TokenStore,
+    AdmissionConfig, BloomTokenLog, DEFAULT_SUPPORTED_VERSIONS, Duration,
+    RandomConnectionIdGenerator, SystemTime, TokenLog, TokenMemoryCache, TokenStore,
     cid_generator::{
         ConnectionIdGenerator, ConnectionIdGeneratorFactory, HashedConnectionIdGenerator,
     },
@@ -350,6 +350,8 @@ pub struct ServerConfig {
     pub(crate) max_incoming: usize,
     pub(crate) incoming_buffer_size: u64,
     pub(crate) incoming_buffer_size_total: u64,
+    /// How attempts are admitted under load; `None` admits every attempt as it arrives.
+    pub(crate) admission: Option<AdmissionConfig>,
 
     pub(crate) time_source: Arc<dyn TimeSource>,
 
@@ -421,6 +423,7 @@ impl ServerConfig {
             max_incoming: 1 << 16,
             incoming_buffer_size: 10 << 20,
             incoming_buffer_size_total: 100 << 20,
+            admission: Some(AdmissionConfig::default()),
 
             time_source: Arc::new(StdSystemTime),
 
@@ -578,6 +581,18 @@ impl ServerConfig {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// How incoming attempts are admitted while the endpoint is under load: accepted at
+        /// once, answered with a Retry or refused, as [`AdmissionConfig`] describes. `None`
+        /// accepts every attempt as it arrives, bounded only by [`Self::set_max_incoming`].
+        ///
+        /// Enabled with the [`AdmissionConfig`] defaults.
+        pub fn admission(mut self, admission: Option<AdmissionConfig>) -> Self {
+            self.admission = admission;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Object to get current [`SystemTime`]
         ///
         /// This exists to allow system time to be mocked in tests, or wherever else desired.
@@ -663,6 +678,7 @@ impl fmt::Debug for ServerConfig {
                 "incoming_buffer_size_total",
                 &self.incoming_buffer_size_total,
             )
+            .field("admission", &self.admission)
             // system_time_clock not debug
             .finish_non_exhaustive()
     }

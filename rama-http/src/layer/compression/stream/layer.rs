@@ -139,12 +139,16 @@ mod tests {
 
     use crate::layer::compression::predicate::MirrorDecompressed;
     use crate::layer::decompression::DecompressedFrom;
-    use crate::{Request, Response, body::util::BodyExt, header::ACCEPT_ENCODING};
+    use crate::{
+        Method, Request, Response,
+        body::util::BodyExt,
+        header::{ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_LENGTH, VARY},
+    };
     use rama_core::Service;
     use rama_core::extensions::ExtensionsRef;
     use rama_core::service::service_fn;
     use rama_core::stream::io::ReaderStream;
-    use rama_http_types::Body;
+    use rama_http_types::{Body, StreamingBody as _};
     use std::convert::Infallible;
     use tokio::fs::File;
 
@@ -281,29 +285,63 @@ mod tests {
         Ok(())
     }
 
-    // RFC 9110 §9.3.2: server MUST NOT send a body in response to a HEAD request.
+    // RFC 9110 §9.3.2: a HEAD response carries the header fields its GET would, never a body.
     #[tokio::test]
-    async fn does_not_compress_head_response() {
-        use crate::header::CONTENT_ENCODING;
-        use rama_http_types::Method;
-        let service = StreamCompressionLayer::new().into_layer(service_fn(handle));
-        let req = Request::builder()
-            .method(Method::HEAD)
+    async fn compressed_head_with_full_body_does_not_advertise_original_length() {
+        let service = StreamCompressionLayer::new().into_layer(service_fn(async |_| {
+            Ok::<_, Infallible>(Response::new(Body::from("a".repeat(4096))))
+        }));
+        let request = Request::builder()
+            .method("HEAD")
             .header(ACCEPT_ENCODING, "gzip")
             .body(Body::empty())
             .unwrap();
-        let res = service.serve(req).await.unwrap();
-        assert!(
-            !res.headers().contains_key(CONTENT_ENCODING),
-            "HEAD response must not carry Content-Encoding"
-        );
+        let response = service.serve(request).await.unwrap();
+        assert_eq!(response.headers()["content-encoding"], "gzip");
+        assert!(!response.headers().contains_key("content-length"));
+        assert_eq!(response.body().size_hint().exact(), Some(0));
+        assert!(response.body().is_end_stream());
+    }
+
+    #[tokio::test]
+    async fn head_response_mirrors_get_headers() {
+        async fn sized(req: Request) -> Result<Response, Infallible> {
+            let body = if req.method() == Method::HEAD {
+                Body::empty()
+            } else {
+                Body::from("a".repeat(4096))
+            };
+            Ok(Response::builder()
+                .header(CONTENT_LENGTH, 4096)
+                .body(body)
+                .unwrap())
+        }
+        let service = StreamCompressionLayer::new().into_layer(service_fn(sized));
+        for accept in ["gzip", "identity"] {
+            let request = |method: Method| {
+                Request::builder()
+                    .method(method)
+                    .header(ACCEPT_ENCODING, accept)
+                    .body(Body::empty())
+                    .unwrap()
+            };
+            let get = service.serve(request(Method::GET)).await.unwrap();
+            let head = service.serve(request(Method::HEAD)).await.unwrap();
+            for name in [CONTENT_ENCODING, VARY, CONTENT_LENGTH] {
+                assert_eq!(
+                    head.headers().get(&name),
+                    get.headers().get(&name),
+                    "{accept}: {name}"
+                );
+            }
+            let body = head.into_body().collect().await.unwrap().to_bytes();
+            assert!(body.is_empty(), "{accept}");
+        }
     }
 
     // RFC 9110 §9.3.6: CONNECT tunnels have no HTTP message body phase.
     #[tokio::test]
     async fn does_not_compress_connect_response() {
-        use crate::header::CONTENT_ENCODING;
-        use rama_http_types::Method;
         let service = StreamCompressionLayer::new().into_layer(service_fn(handle));
         let req = Request::builder()
             .method(Method::CONNECT)
@@ -320,7 +358,6 @@ mod tests {
     // RFC 9110 §15.3.5: 204 No Content responses have no body.
     #[tokio::test]
     async fn does_not_compress_204_response() {
-        use crate::header::CONTENT_ENCODING;
         let service =
             StreamCompressionLayer::new().into_layer(service_fn(async |_: Request<Body>| {
                 Ok::<_, Infallible>(Response::builder().status(204).body(Body::empty()).unwrap())
@@ -339,7 +376,6 @@ mod tests {
     // RFC 9110 §15.4.5: 304 Not Modified responses have no body.
     #[tokio::test]
     async fn does_not_compress_304_response() {
-        use crate::header::CONTENT_ENCODING;
         let service =
             StreamCompressionLayer::new().into_layer(service_fn(async |_: Request<Body>| {
                 Ok::<_, Infallible>(Response::builder().status(304).body(Body::empty()).unwrap())
@@ -358,7 +394,6 @@ mod tests {
     // RFC 9110 §15.2: 1xx Informational responses have no body.
     #[tokio::test]
     async fn does_not_compress_1xx_response() {
-        use crate::header::CONTENT_ENCODING;
         let service =
             StreamCompressionLayer::new().into_layer(service_fn(async |_: Request<Body>| {
                 Ok::<_, Infallible>(Response::builder().status(100).body(Body::empty()).unwrap())
@@ -377,7 +412,6 @@ mod tests {
     // RFC 9110 §15.3.6: 205 Reset Content responses have no body.
     #[tokio::test]
     async fn does_not_compress_205_response() {
-        use crate::header::CONTENT_ENCODING;
         let service =
             StreamCompressionLayer::new().into_layer(service_fn(async |_: Request<Body>| {
                 Ok::<_, Infallible>(Response::builder().status(205).body(Body::empty()).unwrap())
@@ -438,7 +472,6 @@ mod tests {
     #[tokio::test]
     async fn enforce_not_acceptable_opt_out_falls_back_to_identity() {
         use crate::StatusCode;
-        use crate::header::CONTENT_ENCODING;
         let service = StreamCompressionLayer::new()
             .with_enforce_not_acceptable(false)
             .into_layer(service_fn(handle));

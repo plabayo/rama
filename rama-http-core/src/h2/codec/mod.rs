@@ -3,6 +3,7 @@ mod framed_read;
 mod framed_write;
 
 pub use self::error::{SendError, UserError};
+pub(crate) use self::framed_read::HeadProgress;
 
 use self::framed_read::FramedRead;
 use self::framed_write::FramedWrite;
@@ -61,6 +62,11 @@ where
 }
 
 impl<T, B> Codec<T, B> {
+    /// The request head the peer started but did not complete, if any.
+    pub(crate) fn head_progress(&self) -> Option<HeadProgress> {
+        self.inner.head_progress()
+    }
+
     /// Enable decoding ALTSVC advertisements. Servers must disable this:
     /// RFC 7838 §4 requires them to ignore client advertisements entirely.
     /// Header-block continuity and the receive frame-size limit still apply.

@@ -38,6 +38,8 @@ fn parse_errors() {
     );
     assert_eq!(err("svg|img"), SelectorError::NamespacedSelector);
     assert_eq!(err("*|img"), SelectorError::NamespacedSelector);
+    assert_eq!(err("[*|Foo]"), SelectorError::NamespacedSelector);
+    assert_eq!(err("[*|Foo=bar]"), SelectorError::NamespacedSelector);
     assert_eq!(err(".foo()"), SelectorError::UnexpectedToken);
     assert_eq!(err(":not()"), SelectorError::EmptyNegation);
     assert_eq!(err("div + span"), SelectorError::UnsupportedCombinator('+'));
@@ -172,7 +174,8 @@ fn serialization_is_canonical() {
         ("[HREF]", "[href]"),
         (r#"[class~=menu]"#, r#"[class~="menu"]"#),
         (r#"[a="b" i]"#, r#"[a="b" i]"#),
-        (r#"[a="b" s]"#, r#"[a="b"]"#),
+        (r#"[a="b" s]"#, r#"[a="b" s]"#),
+        (r#"[type="b" S]"#, r#"[type="b" s]"#),
         ("*", "*"),
         ("a:not(.x)", "a:not(.x)"),
     ] {
@@ -297,6 +300,28 @@ fn matching_attributes() {
     assert!(sel(r#"[data-k^="V1" i]"#).matches(&b));
     assert!(sel(r#"[id="I" i]"#).matches(&b));
     assert!(!sel(r#"[id="I"]"#).matches(&b));
+
+    // Attribute names match ASCII case-insensitively; values stay case-sensitive.
+    assert!(sel("[DATA-K]").matches(&b));
+    assert!(sel(r#"[DATA-K="v1 v2"]"#).matches(&b));
+    assert!(!sel(r#"[DATA-K="V1 V2"]"#).matches(&b));
+    assert!(!sel(":not([DATA-K])").matches(&b));
+    assert!(Selector::of(Compound::any().with_attr_eq("DATA-K", "v1 v2")).matches(&b));
+}
+
+#[test]
+fn matching_deep_descendant_chain_stays_linear() {
+    // Every `b` ancestor satisfies the inner compounds, so an unpruned search
+    // re-walks the chain once per combinator: O(depth^4) here.
+    let mut dom = Dom::new();
+    let root = dom.create("root");
+    let mut deepest = dom.append(root, "b");
+    for _ in 1..2_000 {
+        deepest = dom.append(deepest, "b");
+    }
+    assert!(!sel("a b b b b").matches(&dom.element(deepest)));
+    assert!(sel("root b b b b").matches(&dom.element(deepest)));
+    assert!(!sel("a > b b b b").matches(&dom.element(deepest)));
 }
 
 #[test]

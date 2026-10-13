@@ -171,6 +171,49 @@ mod tests {
         );
     }
 
+    // A bodyless response describes the decoded representation its GET would have.
+    #[tokio::test]
+    async fn bodyless_encoded_response_mirrors_decoded_headers() {
+        for (method, status, length) in [
+            (rama_http_types::Method::HEAD, 200, "123"),
+            (rama_http_types::Method::GET, 200, "0"),
+            (rama_http_types::Method::GET, 304, "123"),
+        ] {
+            let client = Decompression::new(service_fn(move |_req: Request<Body>| {
+                std::future::ready(Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(status)
+                        .header(header::CONTENT_ENCODING, "gzip")
+                        .header(header::CONTENT_LENGTH, length)
+                        .body(Body::empty())
+                        .unwrap(),
+                ))
+            }));
+            let req = Request::builder()
+                .method(method.clone())
+                .header("accept-encoding", "gzip")
+                .body(Body::empty())
+                .unwrap();
+            let res = client.serve(req).await.unwrap();
+            let case = format!("{method} {status}");
+            assert_eq!(
+                res.extensions().get_ref::<DecompressedFrom>(),
+                Some(&DecompressedFrom::Gzip),
+                "{case}"
+            );
+            assert!(
+                !res.headers().contains_key(header::CONTENT_ENCODING),
+                "{case}"
+            );
+            assert!(
+                !res.headers().contains_key(header::CONTENT_LENGTH),
+                "{case}"
+            );
+            let body = res.into_body().collect().await.unwrap().to_bytes();
+            assert!(body.is_empty(), "{case}");
+        }
+    }
+
     async fn handle(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
         let mut trailers = HeaderMap::new();
         trailers.insert(HeaderName::from_static("foo"), "bar".parse().unwrap());

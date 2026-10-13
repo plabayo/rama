@@ -272,6 +272,7 @@ where
         h2_tx,
         req_rx,
         fut_ctx: None,
+        closing: None,
         admission,
         marker: PhantomData,
     })
@@ -547,6 +548,8 @@ where
     h2_tx: SendRequest<SendBuf<B::Data>>,
     req_rx: ClientRx<B>,
     fut_ctx: Option<FutCtx<B>>,
+    // The outcome, kept while the request queue drains.
+    closing: Option<crate::Result<Dispatched>>,
     admission: AdmissionOwner,
     marker: PhantomData<T>,
 }
@@ -857,14 +860,12 @@ where
     }
 }
 
-impl<B, T> Future for ClientTask<B, T>
+impl<B, T> ClientTask<B, T>
 where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsRef,
 {
-    type Output = crate::Result<Dispatched>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll_dispatch(&mut self, cx: &mut Context<'_>) -> Poll<crate::Result<Dispatched>> {
         loop {
             match ready!(self.h2_tx.poll_ready(cx)) {
                 Ok(()) => (),
@@ -980,5 +981,27 @@ where
                 }
             }
         }
+    }
+}
+
+impl<B, T> Future for ClientTask<B, T>
+where
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsRef,
+{
+    type Output = crate::Result<Dispatched>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let result = match self.closing.take() {
+            Some(result) => result,
+            None => ready!(self.poll_dispatch(cx)),
+        };
+        // A send that began before the close may still publish its request,
+        // whose caller can hold a sender while awaiting the response.
+        if self.req_rx.poll_close(cx).is_pending() {
+            self.closing = Some(result);
+            return Poll::Pending;
+        }
+        Poll::Ready(result)
     }
 }

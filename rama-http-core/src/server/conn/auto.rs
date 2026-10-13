@@ -4,7 +4,7 @@ use rama_core::error::BoxErrorExt as _;
 use std::convert::Infallible;
 use std::io;
 use std::marker::PhantomPinned;
-use std::mem::MaybeUninit;
+use std::mem;
 use std::pin::Pin;
 use std::task::ready;
 use std::task::{Context, Poll};
@@ -24,7 +24,10 @@ use rama_core::rt::Executor;
 
 use crate::body::Incoming;
 
-use super::{http1, http2};
+use super::{
+    HeaderReadTimeout, IdleTimeout, http1, http2,
+    timeout::{Activity, ConnTimer},
+};
 
 const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
@@ -44,6 +47,32 @@ impl Builder {
             http1: http1::Builder::new(),
             http2: http2::Builder::new(executor),
             version: None,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the request-head deadline of both protocols.
+        ///
+        /// Protocol detection follows the HTTP/1 deadline, as HTTP/1 serves a
+        /// connection that did not send the HTTP/2 preface in time.
+        /// Defaults to [`HeaderReadTimeout::DEFAULT`]; `None` disables it.
+        pub fn header_read_timeout(mut self, timeout: Option<HeaderReadTimeout>) -> Self {
+            self.http1.maybe_set_header_read_timeout(timeout);
+            self.http2.maybe_set_header_read_timeout(timeout);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the idle budget of both protocols.
+        ///
+        /// Protocol detection follows the HTTP/1 budget, and the detected
+        /// protocol continues the window it started.
+        /// Defaults to [`IdleTimeout::DEFAULT`]; `None` disables it.
+        pub fn idle_timeout(mut self, timeout: Option<IdleTimeout>) -> Self {
+            self.http1.maybe_set_idle_timeout(timeout);
+            self.http2.maybe_set_idle_timeout(timeout);
+            self
         }
     }
 
@@ -135,7 +164,7 @@ impl Builder {
                 ConnState::H2 { conn }
             }
             _ => ConnState::ReadVersion {
-                read_version: read_version(io),
+                read_version: read_version(io, self.detection_timer()),
                 builder: Cow::Borrowed(self),
                 service: Some(service),
             },
@@ -158,11 +187,19 @@ impl Builder {
     {
         UpgradeableConnection {
             state: UpgradeableConnState::ReadVersion {
-                read_version: read_version(io),
+                read_version: read_version(io, self.detection_timer()),
                 builder: Cow::Borrowed(self),
                 service: Some(service),
             },
         }
+    }
+
+    /// The deadlines of protocol detection, handed on to the detected protocol.
+    fn detection_timer(&self) -> ConnTimer {
+        ConnTimer::new(
+            self.http1.h1_idle_timeout,
+            self.http1.h1_header_read_timeout,
+        )
     }
 }
 
@@ -172,16 +209,17 @@ enum Version {
     H2,
 }
 
-fn read_version<I>(io: I) -> ReadVersion<I>
+fn read_version<I>(io: I, timer: ConnTimer) -> ReadVersion<I>
 where
     I: AsyncRead + Unpin,
 {
     ReadVersion {
         io: Some(io),
-        buf: [MaybeUninit::uninit(); 24],
+        buf: [0; 24],
         filled: 0,
         version: Version::H2,
         cancelled: false,
+        timer,
         _pin: PhantomPinned,
     }
 }
@@ -189,11 +227,12 @@ where
 pin_project! {
     struct ReadVersion<I> {
         io: Option<I>,
-        buf: [MaybeUninit<u8>; 24],
+        buf: [u8; 24],
         // the amount of `buf` thats been filled
         filled: usize,
         version: Version,
         cancelled: bool,
+        timer: ConnTimer,
         // Make this future `!Unpin` for compatibility with async trait methods.
         #[pin]
         _pin: PhantomPinned,
@@ -210,7 +249,7 @@ impl<I> Future for ReadVersion<I>
 where
     I: AsyncRead + Unpin,
 {
-    type Output = io::Result<(Version, Rewind<I>)>;
+    type Output = io::Result<(Version, Rewind<I>, ConnTimer)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
@@ -218,7 +257,7 @@ where
             return Poll::Ready(Err(io::Error::new(io::ErrorKind::Interrupted, "Cancelled")));
         }
 
-        let mut buf = ReadBuf::uninit(&mut *this.buf);
+        let mut buf = ReadBuf::new(&mut *this.buf);
         buf.advance(*this.filled);
 
         // We start as H2 and switch to H1 as soon as we don't have the preface.
@@ -230,7 +269,26 @@ where
             };
 
             let len = buf.filled().len();
-            ready!(Pin::new(io).poll_read(cx, &mut buf))?;
+            match Pin::new(io).poll_read(cx, &mut buf) {
+                Poll::Ready(result) => result?,
+                Poll::Pending => {
+                    let activity = if buf.filled().is_empty() {
+                        Activity::Idle
+                    } else {
+                        Activity::Head {
+                            bytes: buf.filled().len() as u64,
+                            block: 0,
+                        }
+                    };
+                    if this.timer.poll(cx, activity).is_pending() {
+                        return Poll::Pending;
+                    }
+                    // HTTP/1 serves what did not become HTTP/2 in time: it closes an
+                    // idle connection cleanly and reports a stalled head.
+                    *this.version = Version::H1;
+                    break;
+                }
+            }
             *this.filled = buf.filled().len();
 
             // We starts as H2 and switch to H1 when we don't get the preface.
@@ -252,6 +310,7 @@ where
         Poll::Ready(Ok((
             *this.version,
             Rewind::new_buffered(io, Bytes::from(buf)),
+            mem::replace(this.timer, ConnTimer::new(None, None)),
         )))
     }
 }
@@ -376,7 +435,7 @@ where
                     builder,
                     service,
                 } => {
-                    let (version, io) = ready!(read_version.poll(cx))?;
+                    let (version, io, timer) = ready!(read_version.poll(cx))?;
                     let Some(service) = service.take() else {
                         return Poll::Ready(Err(BoxError::from_static_str(
                             "unexpected error: auto http svc in connection already taken, report bug in rama repo",
@@ -384,11 +443,15 @@ where
                     };
                     match version {
                         Version::H1 => {
-                            let conn = builder.http1.serve_connection(io, service);
+                            let conn = builder
+                                .http1
+                                .serve_connection_with_timer(io, service, timer);
                             this.state.set(ConnState::H1 { conn });
                         }
                         Version::H2 => {
-                            let conn = builder.http2.serve_connection(io, service);
+                            let conn = builder
+                                .http2
+                                .serve_connection_with_timer(io, service, timer);
                             this.state.set(ConnState::H2 { conn });
                         }
                     }
@@ -506,7 +569,7 @@ where
                     builder,
                     service,
                 } => {
-                    let (version, io) = ready!(read_version.poll(cx))?;
+                    let (version, io, timer) = ready!(read_version.poll(cx))?;
                     let Some(service) = service.take() else {
                         return Poll::Ready(Err(BoxError::from_static_str(
                             "unexpected error: auto http svc in upgradeable connection already taken, report bug in rama repo",
@@ -514,11 +577,16 @@ where
                     };
                     match version {
                         Version::H1 => {
-                            let conn = builder.http1.serve_connection(io, service).with_upgrades();
+                            let conn = builder
+                                .http1
+                                .serve_connection_with_timer(io, service, timer)
+                                .with_upgrades();
                             this.state.set(UpgradeableConnState::H1 { conn });
                         }
                         Version::H2 => {
-                            let conn = builder.http2.serve_connection(io, service);
+                            let conn = builder
+                                .http2
+                                .serve_connection_with_timer(io, service, timer);
                             this.state.set(UpgradeableConnState::H2 { conn });
                         }
                     }
@@ -759,5 +827,189 @@ mod tests {
 
     async fn hello(_req: Request) -> Result<Response, Infallible> {
         Ok(Response::new(rama_http_types::Body::from(BODY)))
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::{Builder, H2_PREFACE, Version, read_version};
+    use crate::{
+        server::conn::{HeaderReadTimeout, IdleTimeout, timeout::ConnTimer},
+        service::RamaHttpService,
+    };
+    use rama_core::{ServiceInput, error::BoxError, rt::Executor, service::service_fn};
+    use rama_http_types::{Body, Request, Response};
+    use std::{convert::Infallible, future::poll_fn, task::Poll, time::Duration};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex},
+        pin, spawn,
+        task::{JoinHandle, yield_now},
+        time::{Instant, advance},
+    };
+
+    const SECOND: Duration = Duration::from_secs(1);
+
+    fn default_timer() -> ConnTimer {
+        ConnTimer::new(Some(IdleTimeout::DEFAULT), Some(HeaderReadTimeout::DEFAULT))
+    }
+
+    fn serve(builder: Builder) -> (DuplexStream, JoinHandle<Result<(), BoxError>>) {
+        let (client, server) = duplex(64 * 1024);
+        let task = spawn(async move {
+            builder
+                .serve_connection(
+                    ServiceInput::new(server),
+                    RamaHttpService::new(service_fn(async |_: Request| {
+                        Ok::<_, Infallible>(Response::new(Body::empty()))
+                    })),
+                )
+                .await
+        });
+        (client, task)
+    }
+
+    async fn settle() {
+        for _ in 0..16 {
+            yield_now().await;
+        }
+    }
+
+    fn is_header_timeout(error: &BoxError) -> bool {
+        error
+            .downcast_ref::<crate::Error>()
+            .is_some_and(crate::Error::is_timeout)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_late_preface_is_handed_to_http1_with_its_timer() {
+        for partial in [false, true] {
+            let (mut client, server) = duplex(64);
+            if partial {
+                client.write_all(b"PRI *").await.unwrap();
+            }
+            let started = Instant::now();
+            let (version, mut io, _timer) = read_version(server, default_timer()).await.unwrap();
+            assert!(matches!(version, Version::H1));
+            assert_eq!(started.elapsed(), SECOND * 10);
+            if partial {
+                let mut bytes = [0; 5];
+                io.read_exact(&mut bytes).await.unwrap();
+                assert_eq!(&bytes, b"PRI *", "the received bytes are rewound");
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fragmented_preface_survives_repoll_and_is_rewound() {
+        let (mut client, server) = duplex(64);
+        client.write_all(&H2_PREFACE[..5]).await.unwrap();
+        let future = read_version(server, default_timer());
+        pin!(future);
+        assert!(
+            poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        client.write_all(&H2_PREFACE[5..]).await.unwrap();
+        let (version, mut io, _timer) = future.await.unwrap();
+        assert!(matches!(version, Version::H2));
+        let mut bytes = [0; 24];
+        io.read_exact(&mut bytes).await.unwrap();
+        assert_eq!(bytes, H2_PREFACE);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn protocol_preface_deadlines_can_be_disabled() {
+        let (_client, server) = duplex(64);
+        let future = read_version(server, ConnTimer::new(None, None));
+        pin!(future);
+        assert!(
+            poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        advance(Duration::from_hours(1)).await;
+        assert!(
+            poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_before_any_byte_closes_cleanly() {
+        let (mut client, task) = serve(Builder::new(Executor::new()));
+        let started = Instant::now();
+        task.await.unwrap().unwrap();
+        assert_eq!(started.elapsed(), SECOND * 10);
+        let mut rest = Vec::new();
+        client.read_to_end(&mut rest).await.unwrap();
+        assert!(rest.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_preface_is_a_head_timeout() {
+        let (mut client, task) = serve(Builder::new(Executor::new()));
+        client.write_all(b"PRI * HTTP/2.0").await.unwrap();
+        let started = Instant::now();
+        let error = task.await.unwrap().unwrap_err();
+        assert!(is_header_timeout(&error), "{error}");
+        assert_eq!(started.elapsed(), SECOND * 10);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn http1_detected_late_keeps_the_head_start() {
+        let (mut client, task) = serve(Builder::new(Executor::new()));
+        let started = Instant::now();
+        // Matches the HTTP/2 preface, so detection waits for the next byte.
+        client.write_all(b"P").await.unwrap();
+        settle().await;
+        advance(SECOND * 5).await;
+        client.write_all(b"OST / HTTP/1.1\r\n").await.unwrap();
+        settle().await;
+        assert!(!task.is_finished());
+        let error = task.await.unwrap().unwrap_err();
+        assert!(is_header_timeout(&error), "{error}");
+        assert_eq!(
+            started.elapsed(),
+            SECOND * 10,
+            "the head started with its first byte, before detection"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn http2_detected_late_keeps_the_first_request_window() {
+        let (mut client, task) = serve(Builder::new(Executor::new()));
+        let started = Instant::now();
+        settle().await;
+        advance(SECOND * 5).await;
+        client.write_all(H2_PREFACE).await.unwrap();
+        // An empty SETTINGS frame.
+        client
+            .write_all(&[0, 0, 0, 4, 0, 0, 0, 0, 0])
+            .await
+            .unwrap();
+        task.await.unwrap().unwrap();
+        // The GOAWAY at 10 s plus the unacknowledged drain.
+        assert_eq!(
+            started.elapsed(),
+            SECOND * 11,
+            "the first request window counts from the connection's first idle phase"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn http1_request_over_auto_earns_the_idle_budget() {
+        let (mut client, task) = serve(Builder::new(Executor::new()));
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: test\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = [0; 1024];
+        let n = client.read(&mut response).await.unwrap();
+        assert!(response[..n].starts_with(b"HTTP/1.1 200"));
+        let idle = Instant::now();
+        task.await.unwrap().unwrap();
+        assert_eq!(idle.elapsed(), SECOND * 30);
     }
 }

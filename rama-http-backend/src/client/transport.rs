@@ -30,6 +30,10 @@ impl ExtensionsRef for Http3Transport {
 }
 
 /// The transport on which the common HTTP connector performs its handshake.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Consumed once at handshake; inline settings avoid another connection allocation"
+)]
 #[derive(Debug)]
 pub enum HttpTransport<IO> {
     Stream(IO),

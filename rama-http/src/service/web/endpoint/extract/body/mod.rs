@@ -1,22 +1,13 @@
 //! module in function of extractors for `Request` bodies
 
 use super::{FromRequest, FromRequestBody};
-use rama_http_types as http;
+use rama_core::error::error_chain;
+use rama_http_types::{self as http, body::util::LengthLimitError};
 use rama_utils::macros::impl_deref;
 use std::convert::Infallible;
 
 fn is_length_limit_error(error: &(dyn std::error::Error + 'static)) -> bool {
-    let mut current = Some(error);
-    while let Some(error) = current {
-        if error
-            .downcast_ref::<rama_http_types::body::util::LengthLimitError>()
-            .is_some()
-        {
-            return true;
-        }
-        current = error.source();
-    }
-    false
+    error_chain(error).any(|cause| cause.is::<LengthLimitError>())
 }
 
 mod bytes;
@@ -78,7 +69,7 @@ impl FromRequestBody for Body {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::service::web::WebService;
+    use crate::service::web::{WebService, extract::datastar::ReadSignals};
     use crate::{Method, Request, StatusCode, body::util::BodyExt, header};
     use rama_core::Service;
 
@@ -167,6 +158,15 @@ mod test {
                 .await
                 .unwrap_err()
                 .status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        assert_eq!(
+            ReadSignals::<serde_json::Value>::from_request(limited_request(Some(
+                "application/json",
+            )))
+            .await
+            .unwrap_err()
+            .status(),
             StatusCode::PAYLOAD_TOO_LARGE
         );
     }

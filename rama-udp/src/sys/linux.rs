@@ -19,11 +19,14 @@ pub(super) mod gso {
     /// Checks whether GSO support is available
     ///
     /// Checks the kernel version followed by setting the UDP_SEGMENT option on a socket.
-    pub(crate) fn max_gso_segments(socket: &impl AsRawFd) -> usize {
+    ///
+    /// Fails when the probe cannot be undone, since the socket would then
+    /// segment every datagram larger than the probe size.
+    pub(crate) fn max_gso_segments(socket: &impl AsRawFd) -> io::Result<usize> {
         const GSO_SIZE: libc::c_int = 1500;
 
         if !SUPPORTED_BY_CURRENT_KERNEL.get_or_init(supported_by_current_kernel) {
-            return 1;
+            return Ok(1);
         }
 
         // As defined in linux/udp.h
@@ -34,21 +37,16 @@ pub(super) mod gso {
                 // See:
                 // - https://github.com/quinn-rs/quinn/issues/2575
                 // - https://man7.org/linux/man-pages/man7/udp.7.html
-                drop(set_socket_option(
-                    socket,
-                    libc::SOL_UDP,
-                    libc::UDP_SEGMENT,
-                    0,
-                ));
+                set_socket_option(socket, libc::SOL_UDP, libc::UDP_SEGMENT, 0)?;
 
-                64
+                Ok(64)
             }
             Err(_e) => {
                 crate::log::debug!(
                     "failed to set `UDP_SEGMENT` socket option ({_e}); setting `max_gso_segments = 1`"
                 );
 
-                1
+                Ok(1)
             }
         }
     }

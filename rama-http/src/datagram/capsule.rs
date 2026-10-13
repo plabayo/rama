@@ -216,9 +216,10 @@ impl CapsuleDecoder {
                     if take == 0 {
                         return Ok(None);
                     }
-                    // Sized once to the bounded value, which then takes the whole buffer.
-                    if self.value.is_empty() {
-                        self.value.reserve(length);
+                    // Storage doubles with what arrived, never jumping to a length only declared.
+                    let have = self.value.len();
+                    if self.value.capacity() - have < take {
+                        self.value.reserve(take.max(have).min(length - have));
                     }
                     self.value.put(self.inbox.split_to(take));
                     if self.value.len() == length {

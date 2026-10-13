@@ -30,9 +30,10 @@ use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Semaphore;
+use tokio::time::Instant;
 
 /// [`LeasedConnection`] is a connection that is temporarily leased from a pool
 ///
@@ -98,6 +99,7 @@ struct PooledConnection<C, ID> {
     conn: C,
     id: ID,
     pool_slot: PoolSlot,
+    /// On the runtime clock, as the multiplex pool's, so a paused clock drives idle expiry.
     last_used: Instant,
     /// Which requests may use the connection, `None` if it is dropped once
     /// returned. Read from [`ConnectionReuse`] once, when it is added.
@@ -361,7 +363,7 @@ where
         &self,
         id: &ID,
         input: &Extensions,
-        _deadline: Option<tokio::time::Instant>,
+        _deadline: Option<Instant>,
     ) -> Result<ConnectionResult<Self::Connection, Self::CreatePermit>, BoxError> {
         if self.retired.load(Ordering::Acquire) {
             return Err(BoxError::from_static_str(
@@ -1644,11 +1646,11 @@ mod tests {
         assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn drop_idle_connections() {
         let pool = LruDropPool::try_new(5, 10)
             .unwrap()
-            .with_idle_timeout(Duration::from_micros(1))
+            .with_idle_timeout(Duration::from_secs(90))
             .with_drop_connection_if_no_response(false);
 
         let svc = PooledConnector::new(TestService::default(), pool, StringInputLengthID {});
@@ -1661,18 +1663,32 @@ mod tests {
 
         assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
         drop(conn);
-        // Need for this to consistently work in ci, we only need this sleep here
-        // because we have a very very short idle timeout, this is never the problem
-        // if we use realistic values
-        tokio::time::sleep(Duration::from_millis(100)).await;
 
+        // Idle time is read from the runtime clock: advancing the paused clock expires it.
+        tokio::time::advance(Duration::from_secs(89)).await;
         let conn = svc
             .connect(ServiceInput::new(String::from("")))
             .await
             .unwrap()
             .conn;
+        assert_eq!(
+            svc.inner.created_connection.load(Ordering::Relaxed),
+            1,
+            "idle for less than the timeout"
+        );
+        drop(conn);
 
-        assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
+        tokio::time::advance(Duration::from_secs(91)).await;
+        let conn = svc
+            .connect(ServiceInput::new(String::from("")))
+            .await
+            .unwrap()
+            .conn;
+        assert_eq!(
+            svc.inner.created_connection.load(Ordering::Relaxed),
+            2,
+            "idle past the timeout"
+        );
         drop(conn);
     }
 

@@ -6,7 +6,7 @@
 use super::CompressionBody;
 use super::CompressionLevel;
 use super::body::BodyInner;
-use super::predicate::{DefaultPredicate, Predicate, PreferredEncoding};
+use super::predicate::{DefaultPredicate, Predicate, PreferredEncoding, should_compress_as_get};
 use crate::headers::encoding::{
     AcceptEncoding, Encoding, maybe_preferred_encoding_with_wildcard,
     parse_accept_encoding_headers, parse_accept_encoding_wildcard_quality,
@@ -194,18 +194,27 @@ where
         let mut res = self.inner.serve(req).await?;
         let mut respected_encoding = None;
 
-        // RFC 9110 §9.3.2 (HEAD) / §9.3.6 (CONNECT) and the body-prohibiting status codes
-        // (1xx Informational, 204 No Content, 205 Reset Content, 304 Not Modified) mean there
-        // is no representation body to encode (or to reject for the client).
-        let body_allowed = !matches!(req_method, Method::HEAD | Method::CONNECT)
+        // RFC 9110 §9.3.6 (CONNECT) and the body-prohibiting status codes (1xx Informational,
+        // 204 No Content, 205 Reset Content, 304 Not Modified) mean there is no representation
+        // to encode (or to reject for the client). A HEAD response describes the GET one
+        // (RFC 9110 §9.3.2), so it is decided alike and only its empty body is left as is.
+        let is_head = req_method == Method::HEAD;
+        let body_allowed = req_method != Method::CONNECT
             && !matches!(res.status().as_u16(), 100..=199 | 204 | 205 | 304);
 
-        let should_compress = body_allowed &&
-            //never compress responses that are ranges
-            !res.headers().contains_key(header::CONTENT_RANGE) &&
-            self.predicate.should_compress(&mut res) &&
-            if self.respect_content_encoding_if_possible {
-                respected_encoding = Encoding::maybe_from_content_encoding_header(res.headers(), self.accept);
+        //never compress responses that are ranges
+        let predicate_allows = if body_allowed && !res.headers().contains_key(header::CONTENT_RANGE)
+        {
+            let (allows, decided) = should_compress_as_get(&self.predicate, res, is_head);
+            res = decided;
+            allows
+        } else {
+            false
+        };
+        let should_compress = predicate_allows
+            && if self.respect_content_encoding_if_possible {
+                respected_encoding =
+                    Encoding::maybe_from_content_encoding_header(res.headers(), self.accept);
                 true
             } else {
                 // unless requested do not recompress responses that are already compressed
@@ -241,6 +250,18 @@ where
 
         if should_compress {
             ensure_vary_accept_encoding(&mut parts.headers);
+        }
+
+        if is_head && should_compress && selected_encoding != Encoding::Identity {
+            remove_payload_metadata_headers(&mut parts.headers);
+            parts.headers.insert(
+                header::CONTENT_ENCODING,
+                HeaderValue::from(selected_encoding),
+            );
+            return Ok(Response::from_parts(
+                parts,
+                CompressionBody::new(BodyInner::Empty { _inner: body }),
+            ));
         }
 
         let body = match (should_compress, selected_encoding) {

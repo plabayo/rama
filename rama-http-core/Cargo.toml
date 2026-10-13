@@ -58,6 +58,7 @@ tokio = { workspace = true, features = ["io-util"] }
 want = { workspace = true }
 
 [dev-dependencies]
+quickcheck = { workspace = true }
 rama-error = { path = "../rama-error" }
 rama-http = { workspace = true, features = ["compression"] }
 rama-quic = { workspace = true, features = ["rustls", "ring", "test-utils"] }

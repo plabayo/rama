@@ -177,7 +177,7 @@ impl<T> Event<T> {
         }
     }
 
-    /// Return the event's data data field(s) (`data: <content>`)
+    /// Return the event's data field(s) (`data: <content>`)
     ///
     /// This corresponds to [`MessageEvent`'s data field].
     ///
@@ -186,7 +186,7 @@ impl<T> Event<T> {
         self.data.as_ref()
     }
 
-    /// Consume `self` and return the event's data data field(s) (`data: <content>`)
+    /// Consume `self` and return the event's data field(s) (`data: <content>`)
     ///
     /// This corresponds to [`MessageEvent`'s data field].
     ///
@@ -196,7 +196,7 @@ impl<T> Event<T> {
     }
 
     generate_set_and_with! {
-        /// Set the event's data data field(s) (`data: <content>`)
+        /// Set the event's data field(s) (`data: <content>`)
         ///
         /// The serialized data will automatically break newlines across `data: ` fields.
         ///

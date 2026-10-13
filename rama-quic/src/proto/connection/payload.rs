@@ -176,20 +176,10 @@ impl Connection {
             }
 
             let _guard = span.as_ref().map(|x| x.enter());
-            // RFC 9000 §12.5: CRYPTO frames cannot be sent in 0-RTT packets. Both
-            // CONNECTION_CLOSE types are permitted there, as 0-RTT belongs to the application
-            // data packet number space; see §12.4 Table 3.
-            // ACK frequency support cannot be remembered for 0-RTT either (draft-ietf-quic-
-            // ack-frequency-11 §3), so its frames require 1-RTT as well.
-            if packet.header.is_0rtt()
-                && matches!(
-                    frame,
-                    Frame::Crypto(_) | Frame::AckFrequency(_) | Frame::ImmediateAck
-                )
-            {
-                return Err(TransportError::PROTOCOL_VIOLATION(
-                    "illegal frame type in 0-RTT",
-                ));
+            if packet.header.is_0rtt() && !permitted_in_0rtt(&frame) {
+                let mut err = TransportError::PROTOCOL_VIOLATION("illegal frame type in 0-RTT");
+                err.frame = Some(frame.ty());
+                return Err(err);
             }
             ack_eliciting |= frame.is_ack_eliciting();
 
@@ -270,6 +260,7 @@ impl Connection {
                             "STREAM_DATA_BLOCKED on send-only stream",
                         ));
                     }
+                    self.streams.received_stream_data_blocked(id)?;
                     debug!(
                         stream = %id,
                         offset, "peer claims to be blocked at stream level"
@@ -304,7 +295,7 @@ impl Connection {
                             "STOP_SENDING on unopened stream",
                         ));
                     }
-                    self.streams.received_stop_sending(id, error_code);
+                    self.streams.received_stop_sending(id, error_code)?;
                 }
                 Frame::RetireConnectionId { sequence } => {
                     let allow_more_cids = self.local_cid_state.on_cid_retirement(
@@ -482,6 +473,36 @@ impl Connection {
     }
 }
 
+/// Whether a 0-RTT packet may carry `frame` (RFC 9000 §12.4 Table 3 with erratum 7365, RFC 9221
+/// §4, draft-ietf-quic-ack-frequency §3); every other frame type is a PROTOCOL_VIOLATION there.
+fn permitted_in_0rtt(frame: &Frame) -> bool {
+    match frame {
+        Frame::Padding
+        | Frame::Ping
+        | Frame::ResetStream(_)
+        | Frame::StopSending(_)
+        | Frame::Stream(_)
+        | Frame::MaxData(_)
+        | Frame::MaxStreamData { .. }
+        | Frame::MaxStreams { .. }
+        | Frame::DataBlocked { .. }
+        | Frame::StreamDataBlocked { .. }
+        | Frame::StreamsBlocked { .. }
+        | Frame::NewConnectionId(_)
+        | Frame::PathChallenge(_)
+        | Frame::Close(_)
+        | Frame::Datagram(_) => true,
+        Frame::Ack(_)
+        | Frame::Crypto(_)
+        | Frame::NewToken(_)
+        | Frame::RetireConnectionId { .. }
+        | Frame::PathResponse(_)
+        | Frame::HandshakeDone
+        | Frame::AckFrequency(_)
+        | Frame::ImmediateAck => false,
+    }
+}
+
 #[cfg(all(
     test,
     any(
@@ -550,6 +571,51 @@ mod tests {
                 } else {
                     result.unwrap();
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn zero_rtt_frames_follow_the_packet_type_table() {
+        // (encoded frame, whether a 0-RTT packet may carry it)
+        let cases: [(&[u8], bool); 8] = [
+            (&[0x02, 0x00, 0x00, 0x00, 0x00], false), // ACK
+            (&[0x06, 0x00, 0x00], false),             // CRYPTO
+            (&[0x07, 0x01, 0xaa], false),             // NEW_TOKEN
+            (&[0x19, 0x00], false),                   // RETIRE_CONNECTION_ID
+            (&[0x1b, 1, 2, 3, 4, 5, 6, 7, 8], false), // PATH_RESPONSE
+            (&[0x1e], false),                         // HANDSHAKE_DONE
+            (&[0x01], true),                          // PING
+            (&[0x1a, 1, 2, 3, 4, 5, 6, 7, 8], true),  // PATH_CHALLENGE
+        ];
+        for (payload, permitted) in cases {
+            let mut pair = Pair::default();
+            let (_, server) = pair.connect();
+            let now = pair.time;
+            let conn = pair.server_conn_mut(server);
+            let packet = Packet {
+                header: Header::Long {
+                    ty: LongType::ZeroRtt,
+                    dst_cid: conn.handshake_cid,
+                    src_cid: conn.orig_rem_cid,
+                    number: PacketNumber::U8(0),
+                    version: Version::V1.to_wire().unwrap(),
+                },
+                header_data: Default::default(),
+                payload: payload.into(),
+            };
+            let result =
+                conn.process_payload(now, conn.path.remote, conn.path.local, 0, packet, None);
+            if permitted {
+                result.unwrap();
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(error.code, TransportErrorCode::PROTOCOL_VIOLATION);
+                assert_eq!(
+                    error.reason, "illegal frame type in 0-RTT",
+                    "{payload:02x?}"
+                );
+                assert!(error.frame.is_some(), "{payload:02x?}");
             }
         }
     }

@@ -5064,6 +5064,24 @@
       ]
     },
     {
+      "name": "index selector, null element",
+      "selector": "$[1]",
+      "document": [
+        "first",
+        null,
+        "third"
+      ],
+      "result": [
+        null
+      ],
+      "result_paths": [
+        "$[1]"
+      ],
+      "tags": [
+        "index"
+      ]
+    },
+    {
       "name": "name selector, double quotes",
       "selector": "$[\"a\"]",
       "document": {
@@ -7604,6 +7622,52 @@
       "name": "slice selector, step, leading -0",
       "selector": "$[::-01]",
       "invalid_selector": true,
+      "tags": [
+        "slice"
+      ]
+    },
+    {
+      "name": "slice selector, explicit start, omitted end and step",
+      "selector": "$[9::]",
+      "document": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "result": [
+        9
+      ],
+      "result_paths": [
+        "$[9]"
+      ],
+      "tags": [
+        "slice"
+      ]
+    },
+    {
+      "name": "slice selector, explicit start equal to length, omitted end and step",
+      "selector": "$[10::]",
+      "document": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "result": [],
+      "result_paths": [],
       "tags": [
         "slice"
       ]

@@ -85,6 +85,15 @@ fn note_unprocessed(attempts: Option<&SendAttempts>, err: &HttpError) {
     }
 }
 
+fn note_http3_unprocessed(attempts: Option<&SendAttempts>, err: &Http3Error) {
+    // Only rejection guarantees no processing; a closed connection may have sent it.
+    if let Some(attempts) = attempts
+        && err.is_rejected()
+    {
+        attempts.unprocessed.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
 impl<Body> Service<Request<Body>> for HttpClientService<Body>
 where
     Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
@@ -139,6 +148,7 @@ where
                 match Box::pin(sender.send_request(req)).await {
                     Ok(response) => response,
                     Err(error) => {
+                        note_http3_unprocessed(attempts.as_deref(), &error);
                         mark_broken_if_closed(
                             sender.is_closed() || sender.is_draining(),
                             &self.extensions,
@@ -365,6 +375,7 @@ mod tests {
     use rama_http_types::{
         Body,
         body::{Frame, util::StreamBody},
+        proto::h3::Code,
     };
     use rama_net::{
         address::ProxyAddress,
@@ -385,6 +396,41 @@ mod tests {
         rama_net::{Protocol, ProtocolInputExt},
         rama_tls::SecureTransport,
     };
+
+    #[test]
+    fn http3_only_explicit_request_rejection_is_unprocessed() {
+        for (error, unprocessed) in [
+            (
+                Http3Error::stream(Code::H3_REQUEST_REJECTED, "excluded by GOAWAY"),
+                true,
+            ),
+            (
+                Http3Error::stream(Code::H3_REQUEST_CANCELLED, "cancelled"),
+                false,
+            ),
+            (
+                Http3Error::stream(Code::H3_REQUEST_INCOMPLETE, "response truncated"),
+                false,
+            ),
+            (
+                Http3Error::connection(Code::H3_NO_ERROR, "connection closed"),
+                false,
+            ),
+            (
+                Http3Error::connection(Code::H3_REQUEST_REJECTED, "connection closed"),
+                false,
+            ),
+        ] {
+            let attempts = SendAttempts::default();
+            attempts.started.fetch_add(1, Ordering::Relaxed);
+            note_http3_unprocessed(Some(&attempts), &error);
+            assert_eq!(attempts.none_processed(), unprocessed, "{error:?}");
+            // A rejected later hop cannot make an earlier sent attempt retry safe.
+            attempts.started.fetch_add(1, Ordering::Relaxed);
+            assert!(!attempts.none_processed());
+            note_http3_unprocessed(None, &error);
+        }
+    }
 
     fn is_broken(extensions: &Extensions) -> bool {
         extensions

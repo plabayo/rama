@@ -296,3 +296,41 @@ fn a_tls_key_update_message_is_refused_as_an_unexpected_message() {
         assert_eq!(error.code().as_u64(), 0x010a, "{side}");
     }
 }
+
+#[test]
+fn failed_fresh_handshake_preserves_established_zero_cid_route() {
+    for initial_keys in [false, true] {
+        let mut endpoint = EndpointConfig::try_with_rand_key().unwrap();
+        endpoint.set_cid_generator(Arc::new(|| {
+            Box::new(RandomConnectionIdGenerator::new(0).unwrap())
+        }));
+        let mut pair = Pair::new(Arc::new(endpoint), server_config());
+        let (client, server) = pair.connect();
+        let mut failing = server_config();
+        failing.crypto = ServerCrypto::Fixed(Arc::new(FailingServer(
+            failing.crypto.into_fixed(),
+            initial_keys,
+        )));
+        pair.server.set_server_config(Some(Arc::new(failing)));
+        pair.begin_connect(client_config());
+        pair.drive_client();
+        pair.drive_server();
+        assert_matches!(
+            pair.server.assert_accept_error(),
+            ConnectionError::TransportError(_)
+        );
+        assert_eq!(pair.server.open_connections(), 1);
+        assert_eq!(pair.server.pending_incoming(), 0);
+        assert_eq!(pair.server.admission_load(pair.time).0, 0);
+
+        // One-way traffic avoids relying on the client's overwritten zero-CID route: this
+        // checks that rejecting a fresh attempt preserved the established server route.
+        let data = Bytes::from_static(b"established route survived");
+        pair.client_datagrams(client)
+            .send(data.clone(), true)
+            .unwrap();
+        pair.drive_client();
+        pair.drive_server();
+        assert_eq!(pair.server_datagrams(server).recv(), Some(data));
+    }
+}

@@ -282,7 +282,7 @@ impl Connection {
                     if packet.header.space() == SpaceId::Handshake && self.state.is_handshake() {
                         self.qlog_handshake_started(now);
                     }
-                    if !self.state.is_closed() {
+                    if !self.state.is_closed() && number.is_some() {
                         let spin = match packet.header {
                             Header::Short { spin, .. } => spin,
                             _ => false,
@@ -319,7 +319,14 @@ impl Connection {
         };
 
         // State transitions for error cases
-        if let Err(conn_err) = result {
+        if matches!(result, Err(ConnectionError::Reset))
+            && (matches!(self.state, State::Draining | State::Drained)
+                || (self.state.is_closed() && self.error.is_some()))
+        {
+            // The close reason is already known, so a reset only ends the closing or draining
+            // period, as the close timer would (RFC 9000 §10.3.1).
+            self.state = State::Drained;
+        } else if let Err(conn_err) = result {
             self.error = Some(conn_err.clone());
             self.state = match conn_err {
                 ConnectionError::ApplicationClosed(reason) => State::closed(reason),
@@ -477,8 +484,9 @@ impl Connection {
                     return Err(TransportError::PROTOCOL_VIOLATION("client sent Retry").into());
                 }
 
-                if self.total_authed_packets > 1
+                if self.total_authed_packets > 0
                             || packet.payload.len() <= 16 // token + 16 byte tag
+                            || rem_cid == self.initial_dst_cid
                             || !self.crypto.is_valid_retry(
                                 &self.rem_cids.active(),
                                 &packet.header_data,
@@ -492,6 +500,8 @@ impl Connection {
                     //   packets that it receives.
                     // - A client MUST discard a Retry packet with a zero-length Retry Token
                     //   field.
+                    // - A client MUST discard a Retry packet whose Source Connection ID is
+                    //   the Destination Connection ID of its first Initial.
                     // - Clients MUST discard Retry packets that have a Retry Integrity Tag
                     //   that cannot be validated
                     return Ok(());
@@ -500,9 +510,11 @@ impl Connection {
                 trace!("retrying with CID {}", rem_cid);
                 #[expect(
                     clippy::unwrap_used,
-                    reason = "a second Retry is discarded above (`total_authed_packets > 1`), so `client_hello` has not been taken yet"
+                    reason = "a second Retry is discarded above (`total_authed_packets > 0`), so `client_hello` has not been taken yet"
                 )]
                 let client_hello = state.client_hello.take().unwrap();
+                // Retry integrity is checked here; unauthenticated packets never reset timers.
+                self.on_packet_authenticated(now, SpaceId::Initial, None, None, false, false);
                 self.retry_src_cid = Some(rem_cid);
                 let old_remote_cid = self.rem_cids.active();
                 self.rem_cids.update_initial_cid(rem_cid);
@@ -695,7 +707,7 @@ impl Connection {
                         ..
                     }
                 );
-                if self.total_authed_packets > 1 || reacted {
+                if self.total_authed_packets > 0 || reacted {
                     self.qlog_packet_dropped(now, info, DropReason::Rejected);
                     return Ok(());
                 }

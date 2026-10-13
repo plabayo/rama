@@ -1,6 +1,9 @@
 use std::{
     ffi::{c_int, c_uchar},
-    io, ptr,
+    io,
+    marker::PhantomData,
+    ops::Deref,
+    ptr::{self, NonNull},
 };
 
 #[cfg(unix)]
@@ -19,7 +22,9 @@ pub(crate) use imp::Aligned;
 /// explicitly or by dropping the `Encoder`.
 pub(crate) struct Encoder<'a, M: MsgHdr> {
     hdr: &'a mut M,
-    cmsg: Option<&'a mut M::ControlMessage>,
+    // A pointer derived from the control buffer, not a reference to one header,
+    // so that it also covers the payload trailing that header.
+    cmsg: Option<NonNull<M::ControlMessage>>,
     len: usize,
 }
 
@@ -29,39 +34,40 @@ impl<'a, M: MsgHdr> Encoder<'a, M> {
     ///   bytes. All bytes of this buffer can be safely written.
     /// - The `Encoder` must be dropped before `hdr` is passed to a system call, and must not be leaked.
     pub(crate) unsafe fn new(hdr: &'a mut M) -> Self {
-        // SAFETY: the caller guarantees that the header's control buffer is
-        // valid, aligned, writable and lives for `'a`.
-        let cmsg = unsafe { hdr.cmsg_first_hdr().as_mut() };
+        let cmsg = NonNull::new(hdr.cmsg_first_hdr());
         Self { cmsg, hdr, len: 0 }
     }
 
     /// Append a control message to the buffer.
     ///
-    /// Layout or capacity failures are programming errors guarded at socket
+    /// Capacity failures are programming errors guarded at socket
     /// construction, but are still returned so requested metadata is never
     /// silently omitted in a release build.
     pub(crate) fn push<T: Copy>(&mut self, level: c_int, ty: c_int, value: T) -> io::Result<()> {
         let space = M::ControlMessage::cmsg_space(size_of_val(&value));
-        let valid_layout = align_of::<T>() <= align_of::<M::ControlMessage>()
-            && self.hdr.control_len() >= self.len + space;
-        if !valid_layout {
-            return Err(io::Error::other("invalid control-message buffer layout"));
+        if self.hdr.control_len() < self.len + space {
+            return Err(io::Error::other("control-message buffer too small"));
         }
         let Some(cmsg) = self.cmsg.take() else {
             return Err(io::Error::other(
                 "no control-message buffer space remaining",
             ));
         };
-        cmsg.set(level, ty, M::ControlMessage::cmsg_len(size_of_val(&value)));
-        // SAFETY: `new` established the backing buffer, and the alignment and
-        // remaining capacity for `T` were checked above.
-        unsafe {
-            ptr::write(cmsg.cmsg_data() as *const T as *mut T, value);
-        }
+        let cmsg = cmsg.as_ptr();
+        let cmsg_len = M::ControlMessage::cmsg_len(size_of_val(&value));
+        // SAFETY: `new` established that `cmsg` points into the writable
+        // control buffer, and the capacity check above covers its header.
+        unsafe { (*cmsg).set(level, ty, cmsg_len) };
+        // SAFETY: `cmsg` is a header inside the control buffer and carries the
+        // provenance of the whole buffer.
+        let data = unsafe { M::ControlMessage::cmsg_data(cmsg) };
+        // The payload is only aligned for the native header, not necessarily for `T`.
+        // SAFETY: the capacity check above covers the payload after the header.
+        unsafe { ptr::write_unaligned(data.cast::<T>(), value) };
+        // SAFETY: `cmsg` is the header just initialized inside this message's
+        // control buffer.
+        self.cmsg = NonNull::new(unsafe { self.hdr.cmsg_nxt_hdr(cmsg) });
         self.len += space;
-        // SAFETY: `cmsg` is the current entry in the valid buffer established
-        // by `new`; the native helper returns either its next entry or null.
-        self.cmsg = unsafe { self.hdr.cmsg_nxt_hdr(cmsg).as_mut() };
         Ok(())
     }
 }
@@ -74,30 +80,11 @@ impl<M: MsgHdr> Drop for Encoder<'_, M> {
     }
 }
 
-/// Decode a control-message payload after checking its native length.
-///
-/// # Safety
-///
-/// `cmsg` must come from a live native control-message buffer. When its native
-/// length matches `T`, the payload must contain `size_of::<T>()` initialized,
-/// readable bytes.
-pub(crate) unsafe fn decode<T: Copy, C: CMsgHdr>(cmsg: &C) -> io::Result<T> {
-    if cmsg.len() != C::cmsg_len(size_of::<T>()) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid UDP control-message length",
-        ));
-    }
-    // The payload is only aligned for `C`, which on musl is less strict than payloads such as
-    // `libc::timespec`, so it cannot be read through an aligned `ptr::read`.
-    // SAFETY: the caller supplied a valid native control message and the length
-    // check above proves that its payload contains all bytes of `T`.
-    Ok(unsafe { ptr::read_unaligned(cmsg.cmsg_data() as *const T) })
-}
-
 pub(crate) struct Iter<'a, M: MsgHdr> {
     hdr: &'a M,
-    cmsg: Option<&'a M::ControlMessage>,
+    cmsg: Option<NonNull<M::ControlMessage>>,
+    /// Address just past the control bytes the receive reported.
+    end: usize,
 }
 
 impl<'a, M: MsgHdr> Iter<'a, M> {
@@ -105,36 +92,91 @@ impl<'a, M: MsgHdr> Iter<'a, M> {
     ///
     /// `hdr` must hold a pointer to memory outliving `'a` which can be soundly read for the
     /// lifetime of the constructed `Iter` and contains a buffer of native cmsgs, i.e. is aligned
-    /// for native `cmsghdr`, is fully initialized, and has correct internal links.
+    /// for native `cmsghdr`, is initialized for its reported length, and has correct internal
+    /// links.
     pub(crate) unsafe fn new(hdr: &'a M) -> Self {
-        // SAFETY: the caller guarantees a readable, aligned control buffer
-        // that lives for `'a`.
-        let cmsg = unsafe { hdr.cmsg_first_hdr().as_ref() };
-        Self { hdr, cmsg }
+        let first = hdr.cmsg_first_hdr();
+        Self {
+            hdr,
+            cmsg: NonNull::new(first),
+            end: first.addr().saturating_add(hdr.control_len()),
+        }
     }
 }
 
 impl<'a, M: MsgHdr> Iterator for Iter<'a, M> {
-    type Item = &'a M::ControlMessage;
+    type Item = CMsg<'a, M::ControlMessage>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let current = self.cmsg.take()?;
-        // SAFETY: `current` belongs to the valid native control-message chain
-        // established by `Iter::new`.
-        self.cmsg = unsafe { self.hdr.cmsg_nxt_hdr(current).as_ref() };
+        // SAFETY: `new` guarantees that every linked header lies inside the
+        // initialized control buffer.
+        let len = unsafe { current.as_ref() }.len();
 
-        // A native length that cannot cover its own header is malformed, and
-        // both platforms keep walking such an entry forever: on MacOS < 14
-        // CMSG_NXTHDR might continuously return a zeroed cmsg, and the Winsock
-        // rule advances by the aligned length, so a zero never leaves the
-        // current entry. End the cmsghdr chain instead.
-        #[cfg(any(target_vendor = "apple", windows))]
-        if current.len() < size_of::<M::ControlMessage>() {
-            self.cmsg = None;
+        // A length short of its own header never advances the chain on several
+        // platforms (MacOS < 14 may even yield zeroed cmsgs), and one past the
+        // reported bytes reads what the receive never wrote: both end it.
+        let within = len >= size_of::<M::ControlMessage>()
+            && current
+                .as_ptr()
+                .addr()
+                .checked_add(len)
+                .is_some_and(|entry_end| entry_end <= self.end);
+        if !within {
             return None;
         }
 
-        Some(current)
+        // SAFETY: `current` is an initialized header inside this message's
+        // control buffer, as established by `new`.
+        self.cmsg = NonNull::new(unsafe { self.hdr.cmsg_nxt_hdr(current.as_ptr()) });
+        Some(CMsg {
+            ptr: current,
+            _lifetime: PhantomData,
+        })
+    }
+}
+
+/// A native control message: its header and the payload that trails it.
+///
+/// Holds a pointer with provenance over the whole control buffer, since a
+/// reference to the header would not cover the payload.
+#[derive(Clone, Copy)]
+pub(crate) struct CMsg<'a, C: CMsgHdr> {
+    ptr: NonNull<C>,
+    _lifetime: PhantomData<&'a C>,
+}
+
+impl<C: CMsgHdr> CMsg<'_, C> {
+    /// Decode the payload after checking its native length.
+    ///
+    /// # Safety
+    ///
+    /// Every bit pattern of `size_of::<T>()` bytes must be a valid `T`.
+    pub(crate) unsafe fn decode<T: Copy>(self) -> io::Result<T> {
+        if self.len() != C::cmsg_len(size_of::<T>()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid UDP control-message length",
+            ));
+        }
+        // SAFETY: `Iter` only yields headers inside the control buffer, with
+        // the provenance of that buffer.
+        let data = unsafe { C::cmsg_data(self.ptr.as_ptr()) };
+        // The payload is only aligned for `C`, which on musl is less strict than payloads such as
+        // `libc::timespec`, so it cannot be read through an aligned `ptr::read`.
+        // SAFETY: `Iter` only yields entries within the initialized control
+        // bytes, and the length check above proves the payload is a whole `T`.
+        Ok(unsafe { ptr::read_unaligned(data.cast::<T>()) })
+    }
+}
+
+impl<C: CMsgHdr> Deref for CMsg<'_, C> {
+    type Target = C;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: `Iter` only yields initialized headers of a buffer that
+        // outlives `'a`.
+        unsafe { self.ptr.as_ref() }
     }
 }
 
@@ -142,9 +184,19 @@ impl<'a, M: MsgHdr> Iterator for Iter<'a, M> {
 pub(crate) trait MsgHdr {
     type ControlMessage: CMsgHdr;
 
+    /// The first control-message header, or null when the buffer cannot hold one.
+    ///
+    /// This is the stored control buffer pointer itself, so it carries the
+    /// provenance of the whole buffer rather than of `self`.
     fn cmsg_first_hdr(&self) -> *mut Self::ControlMessage;
 
-    fn cmsg_nxt_hdr(&self, cmsg: &Self::ControlMessage) -> *mut Self::ControlMessage;
+    /// The header following `cmsg`, or null when there is none.
+    ///
+    /// # Safety
+    ///
+    /// `cmsg` must point to an initialized header inside this message's control
+    /// buffer, with the provenance of that buffer.
+    unsafe fn cmsg_nxt_hdr(&self, cmsg: *const Self::ControlMessage) -> *mut Self::ControlMessage;
 
     /// Sets the number of control messages added to this `struct msghdr`.
     ///
@@ -160,7 +212,13 @@ pub(crate) trait CMsgHdr {
 
     fn cmsg_space(length: usize) -> usize;
 
-    fn cmsg_data(&self) -> *mut c_uchar;
+    /// The payload trailing the header `this` points to.
+    ///
+    /// # Safety
+    ///
+    /// `this` must point to a header inside a control buffer. The result
+    /// inherits its provenance, which must therefore cover the whole buffer.
+    unsafe fn cmsg_data(this: *const Self) -> *mut c_uchar;
 
     fn set(&mut self, level: c_int, ty: c_int, len: usize);
 
@@ -214,12 +272,8 @@ mod tests {
         header
     }
 
-    /// A zeroed native control-message header, for tests that write its fields
-    /// themselves instead of walking a buffer the operating system filled in.
-    fn zeroed_control_message() -> NativeCMsgHdr {
-        // SAFETY: the native header contains only integer fields, for which
-        // zero is a valid initialized value.
-        unsafe { std::mem::zeroed() }
+    fn level_and_type(message: CMsg<'_, NativeCMsgHdr>) -> (c_int, c_int) {
+        (message.cmsg_level as c_int, message.cmsg_type as c_int)
     }
 
     #[test]
@@ -242,9 +296,58 @@ mod tests {
         let message = messages.next().unwrap();
         assert_eq!(message.cmsg_level as c_int, TEST_LEVEL);
         assert_eq!(message.cmsg_type as c_int, TEST_TYPE);
-        // SAFETY: `messages` walks the live control buffer initialized above.
-        let decoded = unsafe { decode::<u32, _>(message) };
+        // SAFETY: every bit pattern is a valid `u32`.
+        let decoded = unsafe { message.decode::<u32>() };
         assert_eq!(decoded.unwrap(), value);
+        assert!(messages.next().is_none());
+    }
+
+    /// Payloads are written and read through a pointer covering the whole
+    /// buffer, at whatever offset the padding of earlier entries leaves them.
+    /// Mixed sizes move that offset, and a payload stricter than the native
+    /// header's alignment must not be assumed aligned: Miri checks both.
+    #[test]
+    fn mixed_payloads_round_trip_through_one_control_buffer() {
+        let mut control = Aligned([0; TEST_LEN]);
+        let mut header = message_header(&mut control, TEST_LEN);
+        {
+            // SAFETY: `message_header` points at the aligned, writable
+            // `control` buffer, whose full capacity is recorded in the header.
+            let mut encoder = unsafe { Encoder::new(&mut header) };
+            encoder.push(1, 2, 0x1234_5678_u32).unwrap();
+            encoder.push(3, 4, [0xab_u8; 5]).unwrap();
+            encoder.push(5, 6, 0x0102_u16).unwrap();
+            encoder.push(7, 8, 0x0102_0304_0506_0708_u64).unwrap();
+        }
+
+        // SAFETY: the encoder initialized the control-message chain and
+        // finalized its reported length without outliving the backing buffer.
+        let mut messages = unsafe { Iter::new(&header) };
+
+        let message = messages.next().unwrap();
+        assert_eq!(level_and_type(message), (1, 2));
+        // SAFETY: every bit pattern is a valid `u32`.
+        let decoded = unsafe { message.decode::<u32>() };
+        assert_eq!(decoded.unwrap(), 0x1234_5678);
+
+        let message = messages.next().unwrap();
+        assert_eq!(level_and_type(message), (3, 4));
+        // SAFETY: every bit pattern is a valid byte array.
+        let decoded = unsafe { message.decode::<[u8; 5]>() };
+        assert_eq!(decoded.unwrap(), [0xab; 5]);
+
+        let message = messages.next().unwrap();
+        assert_eq!(level_and_type(message), (5, 6));
+        // SAFETY: every bit pattern is a valid `u16`.
+        let decoded = unsafe { message.decode::<u16>() };
+        assert_eq!(decoded.unwrap(), 0x0102);
+
+        let message = messages.next().unwrap();
+        assert_eq!(level_and_type(message), (7, 8));
+        // SAFETY: every bit pattern is a valid `u64`.
+        let decoded = unsafe { message.decode::<u64>() };
+        assert_eq!(decoded.unwrap(), 0x0102_0304_0506_0708);
+
         assert!(messages.next().is_none());
     }
 
@@ -261,12 +364,22 @@ mod tests {
 
     #[test]
     fn decode_rejects_a_payload_with_the_wrong_native_length() {
-        let mut cmsg = zeroed_control_message();
-        cmsg.set(0, 0, <NativeCMsgHdr as CMsgHdr>::cmsg_len(size_of::<u8>()));
+        let mut control = Aligned([0; TEST_LEN]);
+        let header = message_header(&mut control, TEST_LEN);
+        // SAFETY: the header points at aligned storage for a complete native
+        // control message, and the test writes only that header.
+        unsafe { header.cmsg_first_hdr().as_mut().unwrap() }.set(
+            TEST_LEVEL,
+            TEST_TYPE,
+            <NativeCMsgHdr as CMsgHdr>::cmsg_len(size_of::<u8>()),
+        );
+        // SAFETY: the native header and its backing buffer remain initialized
+        // and live for the iterator.
+        let message = unsafe { Iter::new(&header) }.next().unwrap();
 
-        // SAFETY: the header is initialized and its mismatched length makes
-        // `decode` reject it before reading a payload.
-        let error = unsafe { decode::<u32, _>(&cmsg) }.unwrap_err();
+        // SAFETY: every bit pattern is a valid `u32`, and the mismatched
+        // length makes `decode` reject it before reading a payload.
+        let error = unsafe { message.decode::<u32>() }.unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
@@ -283,11 +396,11 @@ mod tests {
         }
     }
 
-    /// Both platforms can be asked to walk an entry whose native length does
+    /// Several platforms can be asked to walk an entry whose native length does
     /// not even cover its own header: MacOS < 14 by returning a zeroed cmsg,
-    /// and Winsock because the chain advances by that length alone. Neither
-    /// may loop on it, and a length exactly at the boundary still decodes.
-    #[cfg(any(target_vendor = "apple", windows))]
+    /// and the BSDs and Winsock because the chain advances by that length
+    /// alone. None may loop on it, and a length exactly at the boundary still
+    /// decodes.
     #[test]
     fn iterator_ends_on_a_header_too_short_to_advance_the_chain() {
         let mut control = Aligned([0; TEST_LEN]);
@@ -308,6 +421,32 @@ mod tests {
         // SAFETY: as above; this time `cmsg_len` is exactly the valid lower
         // boundary for a native header.
         assert!(unsafe { Iter::new(&header) }.next().is_some());
+    }
+
+    /// Some kernels copy a truncated control message with its original length,
+    /// so an entry may claim payload bytes past what the receive reported.
+    /// Decoding it would read bytes the kernel never wrote; an entry is only
+    /// yielded once the reported control bytes cover all of it.
+    #[test]
+    fn iterator_ends_on_an_entry_running_past_the_reported_control_bytes() {
+        let entry_len = <NativeCMsgHdr as CMsgHdr>::cmsg_len(size_of::<u32>());
+        for (control_len, yielded) in [(entry_len, true), (entry_len - 1, false)] {
+            let mut control = Aligned([0; TEST_LEN]);
+            let header = message_header(&mut control, control_len);
+            // SAFETY: the header points at aligned storage for a complete
+            // native control message, and the test writes only that header.
+            unsafe { header.cmsg_first_hdr().as_mut().unwrap() }
+                .set(TEST_LEVEL, TEST_TYPE, entry_len);
+            // SAFETY: the native header and its backing buffer remain
+            // initialized and live for the iterator.
+            let mut messages = unsafe { Iter::new(&header) };
+            assert_eq!(
+                messages.next().is_some(),
+                yielded,
+                "control_len {control_len}"
+            );
+            assert!(messages.next().is_none(), "control_len {control_len}");
+        }
     }
 
     /// Unix walks the chain with the platform's own `CMSG_NXTHDR`, but the

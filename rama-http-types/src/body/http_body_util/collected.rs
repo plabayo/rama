@@ -28,6 +28,13 @@ impl<B: Buf> Collected<B> {
         self.trailers.as_ref()
     }
 
+    /// If there is a trailers frame buffered, remove and return it.
+    ///
+    /// Returns `None` if the body contained no trailers.
+    pub fn take_trailers(&mut self) -> Option<HeaderMap> {
+        self.trailers.take()
+    }
+
     /// Aggregate this buffered into a [`Buf`].
     pub fn aggregate(self) -> impl Buf {
         self.bufs
@@ -170,6 +177,23 @@ mod tests {
         let mut buf = buffered.to_bytes();
 
         assert_eq!(&buf.copy_to_bytes(buf.remaining())[..], b"helloworld!");
+    }
+
+    #[tokio::test]
+    async fn take_trailers_keeps_data() {
+        let mut trailers = HeaderMap::new();
+        trailers.insert("this", "a trailer".try_into().unwrap());
+        let frames = [
+            Frame::data(&b"hello"[..]),
+            Frame::trailers(trailers.clone()),
+        ];
+
+        let body = StreamBody::new(stream::iter(frames.map(Ok::<_, Infallible>)));
+        let mut buffered = body.collect().await.unwrap();
+
+        assert_eq!(buffered.take_trailers(), Some(trailers));
+        assert!(buffered.trailers().is_none());
+        assert_eq!(buffered.to_bytes(), "hello");
     }
 
     #[tokio::test]

@@ -29,7 +29,7 @@ use rama::{
         core::{
             body::{Body, Incoming as IncomingBody},
             h2::{self, RecvStream, SendStream, client::SendRequest},
-            server::conn::{http1, http2},
+            server::conn::{HeaderReadTimeout, IdleTimeout, http1, http2},
             service::RamaHttpService,
         },
         header::{HeaderMap, HeaderName, HeaderValue},
@@ -633,7 +633,7 @@ fn head_response_doesnt_send_body() {
 }
 
 #[test]
-fn response_does_not_set_chunked_if_body_not_allowed() {
+fn response_preserves_descriptive_chunked_without_a_304_body() {
     let server = serve();
     server
         .reply()
@@ -653,7 +653,9 @@ fn response_does_not_set_chunked_if_body_not_allowed() {
     let mut response = String::new();
     req.read_to_string(&mut response).unwrap();
 
-    assert!(!response.contains("transfer-encoding"));
+    // A 304 may describe the selected representation's transfer encoding,
+    // but it must not emit a body or the chunked terminator.
+    assert!(response.contains("transfer-encoding: chunked\r\n"));
 
     let mut lines = response.lines();
     assert_eq!(lines.next(), Some("HTTP/1.1 304 Not Modified"));
@@ -1512,7 +1514,11 @@ async fn header_read_timeout_slow_writes() {
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
     let conn = http1::Builder::new()
-        .with_header_read_timeout(Duration::from_secs(5))
+        .with_header_read_timeout(HeaderReadTimeout {
+            grace: Duration::from_secs(5),
+            min_rate: 0,
+            ceiling: Duration::from_secs(5),
+        })
         .serve_connection(
             socket,
             RamaHttpService::new(service_fn(|_| {
@@ -1527,7 +1533,7 @@ async fn header_read_timeout_slow_writes() {
 }
 
 #[tokio::test]
-async fn header_read_timeout_starts_immediately() {
+async fn idle_timeout_starts_immediately() {
     let (listener, addr) = setup_tcp_listener();
 
     thread::spawn(move || {
@@ -1541,9 +1547,13 @@ async fn header_read_timeout_starts_immediately() {
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
     let conn = http1::Builder::new()
-        .with_header_read_timeout(Duration::from_secs(2))
+        .with_idle_timeout(IdleTimeout {
+            first_request: Duration::from_secs(2),
+            idle: Duration::from_secs(2),
+        })
         .serve_connection(socket, RamaHttpService::new(unreachable_service()));
-    assert!(conn.await.unwrap_err().is_timeout());
+    // An idle close ends the connection cleanly.
+    conn.await.unwrap();
 }
 
 #[tokio::test]
@@ -1586,7 +1596,8 @@ async fn header_read_timeout_slow_writes_multiple_requests() {
         )
         .expect("write 4");
 
-        thread::sleep(Duration::from_secs(6));
+        // Within the idle budget, so the slow head below trips the header-read timeout.
+        thread::sleep(Duration::from_secs(3));
 
         tcp.write_all(
             b"\
@@ -1608,7 +1619,15 @@ async fn header_read_timeout_slow_writes_multiple_requests() {
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
     let conn = http1::Builder::new()
-        .with_header_read_timeout(Duration::from_secs(5))
+        .with_header_read_timeout(HeaderReadTimeout {
+            grace: Duration::from_secs(5),
+            min_rate: 0,
+            ceiling: Duration::from_secs(5),
+        })
+        .with_idle_timeout(IdleTimeout {
+            first_request: Duration::from_secs(10),
+            idle: Duration::from_secs(10),
+        })
         .serve_connection(
             socket,
             RamaHttpService::new(service_fn(|_| {
@@ -1623,7 +1642,7 @@ async fn header_read_timeout_slow_writes_multiple_requests() {
 }
 
 #[tokio::test]
-async fn header_read_timeout_as_idle_timeout() {
+async fn idle_timeout_after_a_request() {
     let (listener, addr) = setup_tcp_listener();
 
     thread::spawn(move || {
@@ -1651,7 +1670,10 @@ async fn header_read_timeout_as_idle_timeout() {
     let (socket, _) = listener.accept().await.unwrap();
     let socket = ServiceInput::new(socket);
     let conn = http1::Builder::new()
-        .with_header_read_timeout(Duration::from_secs(3))
+        .with_idle_timeout(IdleTimeout {
+            first_request: Duration::from_secs(3),
+            idle: Duration::from_secs(3),
+        })
         .serve_connection(
             socket,
             RamaHttpService::new(service_fn(|_| {
@@ -1662,7 +1684,8 @@ async fn header_read_timeout_as_idle_timeout() {
                 future::ready(Ok::<_, Infallible>(res))
             })),
         );
-    assert!(conn.without_shutdown().await.unwrap_err().is_timeout());
+    // An idle close ends the connection cleanly.
+    drop(conn.without_shutdown().await.unwrap());
 }
 
 #[tokio::test]
@@ -2777,6 +2800,48 @@ async fn max_buf_size_split_header_boundary() {
         .serve_connection(socket, RamaHttpService::new(HelloWorld))
         .await
         .expect_err("should TooLarge error");
+}
+
+#[tokio::test]
+async fn max_header_size() {
+    const MAX_HEADER: usize = 512;
+
+    // (long header length, max buffer size, accepted)
+    for (long_header, max_buf_size, accepted) in [
+        (1000, None, false),
+        (1000, Some(64 * 1024), false),
+        (100, None, true),
+    ] {
+        let (listener, addr) = setup_tcp_listener();
+
+        let client = thread::spawn(move || {
+            let mut tcp = connect(&addr);
+            tcp.write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\nX-Long: ")
+                .expect("write 1");
+            tcp.write_all(&vec![b'a'; long_header]).expect("write 2");
+            tcp.write_all(b"\r\n\r\n").expect("write 3");
+            let mut buf = [0; 256];
+            _ = tcp.read(&mut buf).expect("read 1");
+
+            let expected = if accepted {
+                "HTTP/1.1 200 "
+            } else {
+                "HTTP/1.1 431 "
+            };
+            assert_eq!(s(&buf[..expected.len()]), expected);
+        });
+
+        let (socket, _) = listener.accept().await.unwrap();
+        let socket = ServiceInput::new(socket);
+        let served = http1::Builder::new()
+            .with_max_header_size(MAX_HEADER)
+            .try_maybe_with_max_buf_size(max_buf_size)
+            .unwrap()
+            .serve_connection(socket, RamaHttpService::new(HelloWorld))
+            .await;
+        assert_eq!(served.is_ok(), accepted, "{long_header} {max_buf_size:?}");
+        client.join().unwrap();
+    }
 }
 
 #[tokio::test]

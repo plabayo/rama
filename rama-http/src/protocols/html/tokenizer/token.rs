@@ -102,6 +102,21 @@ impl<'i> StartTag<'i> {
     }
 }
 
+impl StartTag<'static> {
+    /// A start tag without attributes: what selectors see of an element
+    /// browsers create without a tag.
+    pub(crate) fn synthetic(name: &'static [u8]) -> Self {
+        Self {
+            input: name,
+            raw: Span::empty(0),
+            name: Span::new(0, name.len()),
+            name_hash: LocalNameHash::of(name),
+            attributes: &[],
+            self_closing: false,
+        }
+    }
+}
+
 /// Iterator over a [`StartTag`]'s attributes.
 #[derive(Debug, Clone)]
 pub struct Attributes<'i> {

@@ -15,6 +15,7 @@
 //! plus the SVG/MathML foreign-content context needed to distinguish real
 //! CDATA from bogus comments. The identity property holds for all input.
 
+mod charref;
 mod context;
 mod machine;
 mod name;
@@ -25,9 +26,13 @@ mod token;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use self::charref::{attribute_value_is, decode_attribute_value_into};
 pub use self::context::ParsingAmbiguityError;
+pub(crate) use self::context::{ContextTracker, TextMode, annotation_xml_is_html};
 pub use self::machine::{Tokenizer, tokenize};
 pub use self::name::LocalNameHash;
+pub(crate) use self::sink::ParseSink;
 pub use self::sink::TokenSink;
 pub use self::tag::HtmlTag;
+pub(crate) use self::token::Span;
 pub use self::token::{Attribute, Attributes, Cdata, Comment, Doctype, EndTag, StartTag, Text};

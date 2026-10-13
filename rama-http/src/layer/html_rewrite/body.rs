@@ -8,11 +8,12 @@ use pin_project_lite::pin_project;
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::BoxError;
 use rama_core::futures::ready;
+use rama_utils::macros::generate_set_and_with;
 
 use crate::HeaderMap;
 use crate::body::{Frame, SizeHint, StreamingBody};
 use crate::layer::util::stream_body::{IntoHandler, OnEnd, fire_on_end, poll_passthrough_frame};
-use crate::protocols::html::rewrite::{ElementContentHandler, HtmlRewriter};
+use crate::protocols::html::rewrite::{ElementContentHandler, HtmlRewriter, ScopeMode};
 use crate::protocols::html::selector::Selector;
 
 impl<H: ElementContentHandler> IntoHandler<H> for HtmlRewriter<H> {
@@ -57,6 +58,22 @@ where
             on_end: None,
             pending_trailers: None,
             done: false,
+        }
+    }
+}
+
+impl<B, H> HtmlRewriteBody<B, H>
+where
+    H: ElementContentHandler,
+{
+    generate_set_and_with! {
+        /// Sets how element scopes are tracked, see [`ScopeMode`]. Applies
+        /// before the first frame is read; a passthrough body ignores it.
+        pub fn scope_mode(mut self, mode: ScopeMode) -> Self {
+            if let Some(rewriter) = self.rewriter.as_mut() {
+                rewriter.set_scope_mode(mode);
+            }
+            self
         }
     }
 }

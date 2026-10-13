@@ -1,5 +1,6 @@
 //! [`Service`] that rewrites `text/html` response bodies.
 
+use std::any::type_name;
 use std::fmt;
 
 use rama_core::error::BoxError;
@@ -13,7 +14,7 @@ use crate::layer::remove_header::{
     remove_cache_validation_response_headers, remove_payload_metadata_headers,
 };
 use crate::layer::util::rewrite_policy::BodyRewritePolicy;
-use crate::protocols::html::rewrite::ElementContentHandler;
+use crate::protocols::html::rewrite::{ElementContentHandler, ScopeMode};
 use crate::protocols::html::selector::Selector;
 use crate::{HeaderMap, Request, Response, StreamingBody};
 
@@ -28,6 +29,7 @@ pub struct HtmlRewrite<S, H> {
     pub(crate) selectors: Box<[Selector]>,
     pub(crate) handler: H,
     policy: BodyRewritePolicy,
+    scope_mode: ScopeMode,
 }
 
 impl<S, H> HtmlRewrite<S, H> {
@@ -41,6 +43,7 @@ impl<S, H> HtmlRewrite<S, H> {
             selectors: selectors.into_iter().collect(),
             handler,
             policy: BodyRewritePolicy::unencoded_content_type(is_html_content_type),
+            scope_mode: ScopeMode::default(),
         }
     }
 
@@ -58,6 +61,17 @@ impl<S, H> HtmlRewrite<S, H> {
         }
     }
 
+    generate_set_and_with! {
+        /// Sets how element scopes are tracked, see [`ScopeMode`]. The default,
+        /// [`ScopeMode::Browser`], parses each body as a full document;
+        /// rewrite endpoints that serve fragments for insertion elsewhere with
+        /// [`ScopeMode::NearestMatch`].
+        pub fn scope_mode(mut self, mode: ScopeMode) -> Self {
+            self.scope_mode = mode;
+            self
+        }
+    }
+
     define_inner_service_accessors!();
 }
 
@@ -66,8 +80,9 @@ impl<S: fmt::Debug, H> fmt::Debug for HtmlRewrite<S, H> {
         f.debug_struct("HtmlRewrite")
             .field("inner", &self.inner)
             .field("selectors", &self.selectors)
-            .field("handler", &std::any::type_name::<H>())
+            .field("handler", &type_name::<H>())
             .field("policy", &self.policy)
+            .field("scope_mode", &self.scope_mode)
             .finish()
     }
 }
@@ -100,6 +115,7 @@ where
             remove_payload_metadata_headers(&mut parts.headers);
             remove_cache_validation_response_headers(&mut parts.headers);
             HtmlRewriteBody::new(body, &self.selectors, self.handler.clone())
+                .with_scope_mode(self.scope_mode)
         } else {
             HtmlRewriteBody::passthrough(body)
         };
@@ -122,6 +138,7 @@ pub struct HtmlRewriteLayer<H> {
     selectors: Box<[Selector]>,
     handler: H,
     policy: BodyRewritePolicy,
+    scope_mode: ScopeMode,
 }
 
 impl<H> HtmlRewriteLayer<H> {
@@ -133,6 +150,7 @@ impl<H> HtmlRewriteLayer<H> {
             selectors: selectors.into_iter().collect(),
             handler,
             policy: BodyRewritePolicy::unencoded_content_type(is_html_content_type),
+            scope_mode: ScopeMode::default(),
         }
     }
 
@@ -150,6 +168,17 @@ impl<H> HtmlRewriteLayer<H> {
         }
     }
 
+    generate_set_and_with! {
+        /// Sets how element scopes are tracked, see [`ScopeMode`]. The default,
+        /// [`ScopeMode::Browser`], parses each body as a full document;
+        /// rewrite endpoints that serve fragments for insertion elsewhere with
+        /// [`ScopeMode::NearestMatch`].
+        pub fn scope_mode(mut self, mode: ScopeMode) -> Self {
+            self.scope_mode = mode;
+            self
+        }
+    }
+
     /// Wraps a body directly using this layer's selector set and handler.
     ///
     /// This is useful for services that need request-specific gating before
@@ -160,6 +189,7 @@ impl<H> HtmlRewriteLayer<H> {
         H: ElementContentHandler + Clone,
     {
         HtmlRewriteBody::new(body, &self.selectors, self.handler.clone())
+            .with_scope_mode(self.scope_mode)
     }
 }
 
@@ -169,6 +199,7 @@ impl<H: fmt::Debug> fmt::Debug for HtmlRewriteLayer<H> {
             .field("selectors", &self.selectors)
             .field("handler", &self.handler)
             .field("policy", &self.policy)
+            .field("scope_mode", &self.scope_mode)
             .finish()
     }
 }
@@ -182,6 +213,7 @@ impl<S, H: Clone> Layer<S> for HtmlRewriteLayer<H> {
             selectors: self.selectors.clone(),
             handler: self.handler.clone(),
             policy: self.policy.clone(),
+            scope_mode: self.scope_mode,
         }
     }
 
@@ -191,6 +223,7 @@ impl<S, H: Clone> Layer<S> for HtmlRewriteLayer<H> {
             selectors: self.selectors,
             handler: self.handler,
             policy: self.policy,
+            scope_mode: self.scope_mode,
         }
     }
 }

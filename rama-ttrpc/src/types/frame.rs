@@ -13,6 +13,8 @@ use crate::types::protos::{Response, Status};
 
 const MAX_DATA_LENGTH: usize = mib(4);
 pub(crate) const HEADER_LENGTH: usize = 10;
+/// The first read allowance of a frame's data, doubled as more of it arrives.
+const READ_CHUNK: usize = 8 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct Frame<Msg = FallibleBytesMessage> {
@@ -155,8 +157,19 @@ pub(crate) async fn read_frame_bytes(
         return Ok(buf.into());
     }
 
-    buf.resize(HEADER_LENGTH + data_length, 0);
-    readable.read_exact(&mut buf[HEADER_LENGTH..]).await?;
+    // Grow with what arrives, at most doubling: a declared length alone never sizes the buffer.
+    let frame_length = HEADER_LENGTH + data_length;
+    while buf.len() < frame_length {
+        let missing = frame_length - buf.len();
+        buf.reserve(missing.min(buf.len().max(READ_CHUNK)));
+        let mut limited = (&mut *readable).take(missing as u64);
+        if limited.read_buf(&mut buf).await? == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "connection closed mid ttRPC frame",
+            ));
+        }
+    }
 
     Ok(buf.into())
 }
@@ -164,7 +177,13 @@ pub(crate) async fn read_frame_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::assert_matches;
+    use std::{
+        assert_matches,
+        io::{Cursor, ErrorKind},
+        pin::Pin,
+        task::{Context, Poll},
+    };
+    use tokio::io::ReadBuf;
 
     fn oversized_header(data_length: usize) -> Vec<u8> {
         let mut data = vec![0u8; HEADER_LENGTH];
@@ -178,6 +197,46 @@ mod tests {
     /// Go parity (containerd/ttrpc channel.go `recv`): an oversized frame is discarded from
     /// the wire — keeping the connection frame-synced for the frames behind it — and decodes
     /// to a deferred `OversizedMessage` error instead of killing the connection.
+    /// Hands out at most three bytes per read, as a trickling peer would.
+    struct Trickle(Cursor<Vec<u8>>);
+
+    impl AsyncRead for Trickle {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let mut small = [0u8; 3];
+            let room = buf.remaining().min(small.len());
+            let mut limited = ReadBuf::new(&mut small[..room]);
+            let result = Pin::new(&mut self.0).poll_read(cx, &mut limited);
+            buf.put_slice(limited.filled());
+            result
+        }
+    }
+
+    #[tokio::test]
+    async fn read_frame_bytes_assembles_a_trickled_frame() {
+        let payload = b"a payload trickled in";
+        let mut data = oversized_header(payload.len());
+        data.extend_from_slice(payload);
+        let bytes = read_frame_bytes(&mut Trickle(Cursor::new(data.clone())), false)
+            .await
+            .unwrap();
+        assert_eq!(&bytes[..], &data[..]);
+    }
+
+    #[tokio::test]
+    async fn read_frame_bytes_reports_a_frame_cut_short() {
+        // Declares the maximum, sends a few bytes: an error, without sizing a buffer for it.
+        let mut data = oversized_header(MAX_DATA_LENGTH);
+        data.extend_from_slice(b"short");
+        let err = read_frame_bytes(&mut Trickle(Cursor::new(data)), false)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::UnexpectedEof);
+    }
+
     #[tokio::test]
     async fn read_frame_bytes_discards_oversized_payload_and_stays_synced() {
         let oversized = MAX_DATA_LENGTH + mib(1);
@@ -324,6 +383,6 @@ mod tests {
         let err = read_frame_bytes(&mut reader, true)
             .await
             .expect_err("truncated oversized frame must error");
-        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(err.kind(), ErrorKind::UnexpectedEof);
     }
 }

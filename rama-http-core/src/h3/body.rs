@@ -71,6 +71,16 @@ impl Body {
         self
     }
 
+    /// A message whose content ends before its declared length is malformed (RFC 9114 §4.1.2).
+    fn check_content_length_met(&self) -> Result<(), Error> {
+        if self.remaining.is_some_and(|len| len != 0) {
+            return Err(
+                Error::stream(Code::H3_MESSAGE_ERROR, "body shorter than content-length").remote(),
+            );
+        }
+        Ok(())
+    }
+
     fn poll_inner(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, Error>>> {
         if self.failed {
             return Poll::Ready(None);
@@ -109,6 +119,8 @@ impl Body {
                     return Poll::Ready(Some(Ok(Frame::data(bytes))));
                 }
                 Some(FrameEvent::Headers(bytes)) => {
+                    // Trailers start on a frame boundary, so the declared length must be met.
+                    self.check_content_length_met()?;
                     self.reader.phase = Phase::Trailers;
                     let shared = self.reader.shared.clone();
                     let id = self.reader.id;
@@ -120,13 +132,7 @@ impl Body {
                     return self.poll_inner(cx);
                 }
                 None => {
-                    if self.remaining.is_some_and(|len| len != 0) {
-                        return Poll::Ready(Some(Err(Error::stream(
-                            Code::H3_MESSAGE_ERROR,
-                            "body shorter than content-length",
-                        )
-                        .remote())));
-                    }
+                    self.check_content_length_met()?;
                     if let Some(push) = &mut self.push {
                         push.finished = true;
                     }

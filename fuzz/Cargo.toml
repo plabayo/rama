@@ -288,6 +288,20 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "quic_admission"
+path = "fuzz_targets/quic_admission.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_deadlines"
+path = "fuzz_targets/http_deadlines.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
 arbitrary = { workspace = true }
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }

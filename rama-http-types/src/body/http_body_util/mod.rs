@@ -38,8 +38,11 @@ mod collected;
 pub mod combinators;
 mod either;
 mod empty;
+mod error;
 mod full;
+mod future;
 mod limited;
+mod pending;
 mod stream;
 
 mod util;
@@ -53,8 +56,11 @@ pub use self::collect_with::{CollectOptions, CollectWith};
 pub use self::collected::Collected;
 pub use self::either::Either;
 pub use self::empty::Empty;
+pub use self::error::ErrorBody;
 pub use self::full::Full;
+pub use self::future::TryFutureBody;
 pub use self::limited::{LengthLimitError, Limited};
+pub use self::pending::Pending;
 pub use self::stream::{BodyDataStream, BodyStream, StreamBody};
 
 /// An extension trait for [`crate::body::http_body::Body`] adding various combinators and adapters
@@ -143,6 +149,14 @@ pub trait BodyExt: crate::body::http_body::Body {
         Self: Sized + Send + 'static,
     {
         UnsyncBoxBody::new(self)
+    }
+
+    /// Turn this body into a [`Limited`] body with the given limit.
+    fn limited(self, limit: usize) -> Limited<Self>
+    where
+        Self: Sized,
+    {
+        Limited::new(self, limit)
     }
 
     /// Turn this body into [`Collected`] body which will collect all the DATA frames
@@ -297,6 +311,60 @@ pub trait BodyExt: crate::body::http_body::Body {
         Self: Sized,
     {
         combinators::Fuse::new(self)
+    }
+
+    /// Chain this body with another one, like [`Iterator::chain`].
+    ///
+    /// The returned [`Chain`][combinators::Chain] yields every frame of this body,
+    /// followed by every frame of `other`.
+    ///
+    /// Trailers of this body are held back and merged into those of `other`, whose
+    /// values win on conflicts. An error of either body ends the chain: `other` is
+    /// not polled after this body failed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rama_core::bytes::Bytes;
+    /// use rama_http_types::body::util::{BodyExt, Full};
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let first = Full::new(Bytes::from("hello "));
+    /// let second = Full::new(Bytes::from("world!"));
+    ///
+    /// let collected = first.chain(second).collect().await.unwrap();
+    /// assert_eq!(collected.to_bytes(), "hello world!");
+    /// # }
+    /// ```
+    ///
+    /// ```
+    /// use rama_core::bytes::Bytes;
+    /// use rama_http_types::body::util::{BodyExt, Full};
+    /// use rama_http_types::{HeaderMap, HeaderName, HeaderValue};
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let mut trailers = HeaderMap::new();
+    /// trailers.insert(
+    ///     HeaderName::from_static("name"),
+    ///     HeaderValue::from_static("value"),
+    /// );
+    ///
+    /// let first = Full::new(Bytes::from("trailers"))
+    ///     .with_trailers(std::future::ready(Some(Ok(trailers))));
+    /// let second = Full::new(Bytes::from(" too!"));
+    ///
+    /// let collected = first.chain(second).collect().await.unwrap();
+    /// assert_eq!(collected.trailers().unwrap()["name"], "value");
+    /// assert_eq!(collected.to_bytes(), "trailers too!");
+    /// # }
+    /// ```
+    fn chain<B>(self, other: B) -> combinators::Chain<Self, B>
+    where
+        Self: Sized,
+    {
+        combinators::Chain::new(self, other)
     }
 }
 
