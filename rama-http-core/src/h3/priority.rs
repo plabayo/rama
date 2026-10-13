@@ -68,6 +68,7 @@ impl PriorityHandle {
 /// Updates coalesce to the latest effective priority. Cancel an outstanding wait
 /// when the request/response completes: completion alone need not wake it.
 /// The weak handle does not keep the response body or connection alive.
+#[derive(Clone, rama_core::extensions::Extension)]
 pub struct PriorityObserver {
     shared: Weak<Shared>,
     id: u64,

@@ -67,6 +67,11 @@ pub(crate) struct SendAttempts {
 }
 
 impl SendAttempts {
+    /// Count an attempt up front: a dropped attempt may have been sent.
+    pub(crate) fn begin(&self) {
+        self.started.fetch_add(1, Ordering::AcqRel);
+    }
+
     /// At least one attempt was made and none of them was processed.
     pub(crate) fn none_processed(&self) -> bool {
         let started = self.started.load(Ordering::Acquire);
@@ -85,7 +90,7 @@ fn note_unprocessed(attempts: Option<&SendAttempts>, err: &HttpError) {
     }
 }
 
-fn note_http3_unprocessed(attempts: Option<&SendAttempts>, err: &Http3Error) {
+pub(crate) fn note_http3_unprocessed(attempts: Option<&SendAttempts>, err: &Http3Error) {
     // Only rejection guarantees no processing; a closed connection may have sent it.
     if let Some(attempts) = attempts
         && err.is_rejected()
@@ -105,7 +110,7 @@ where
         // counted up front: a dropped attempt may have been sent
         let attempts = req.extensions().get_arc::<SendAttempts>();
         if let Some(attempts) = &attempts {
-            attempts.started.fetch_add(1, Ordering::AcqRel);
+            attempts.begin();
         }
 
         // Request-target encoding must follow the connection that survived
@@ -310,7 +315,7 @@ fn remote_io_failure(error: &io::Error) -> Option<ConnectionErrorKind> {
     }
 }
 
-fn classify_http3_error(error: Http3Error) -> BoxError {
+pub(crate) fn classify_http3_error(error: Http3Error) -> BoxError {
     if error.is_remote_failure() {
         ConnectionError::application(error, ConnectionErrorKind::Unavailable).into_box_error()
     } else {

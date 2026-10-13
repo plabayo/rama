@@ -3,7 +3,7 @@
 mod svc;
 #[doc(inline)]
 pub use svc::HttpClientService;
-pub(crate) use svc::SendAttempts;
+pub(crate) use svc::{SendAttempts, classify_http3_error, note_http3_unprocessed};
 
 mod connect_request;
 #[doc(inline)]

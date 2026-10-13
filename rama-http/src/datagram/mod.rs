@@ -20,3 +20,6 @@ pub use session::{
     DatagramTransport, HttpDatagramSession, SessionConfig, SessionError, SessionEvent,
     SessionReceiver, SessionSender,
 };
+
+mod relay;
+pub use relay::{DatagramRelayDirection, DatagramRelayOutcome, HttpDatagramRelay};

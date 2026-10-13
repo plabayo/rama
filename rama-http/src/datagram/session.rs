@@ -699,6 +699,21 @@ impl<T: AsyncRead> SessionReceiver<T> {
         std::future::poll_fn(|cx| self.poll_recv(cx)).await
     }
 
+    /// Receive only Capsule Protocol events from the reliable data stream.
+    ///
+    /// A forwarding intermediary uses this while streaming a capsule value to
+    /// another hop: an intervening native datagram must not become a DATAGRAM
+    /// capsule inside that value when the next hop lacks native support.
+    /// Native datagrams remain in the carrier's bounded queue, subject to its
+    /// normal drop policy; this method adds no queue or receiver state.
+    ///
+    /// `None` ends the reliable stream but leaves queued native datagrams for
+    /// [`Self::recv`]. Dropping the receiver releases that queue. Cancellation
+    /// and malformed-capsule handling match [`Self::recv`].
+    pub async fn recv_reliable(&mut self) -> Result<Option<SessionEvent>, SessionError> {
+        std::future::poll_fn(|cx| self.poll_recv_from::<false>(cx)).await
+    }
+
     /// Received datagrams discarded by this session or its native carrier.
     #[must_use]
     pub fn dropped_datagrams(&self) -> u64 {
@@ -711,6 +726,13 @@ impl<T: AsyncRead> SessionReceiver<T> {
 
     /// Poll for the next event; see [`Self::recv`].
     pub fn poll_recv(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<SessionEvent>, SessionError>> {
+        self.poll_recv_from::<true>(cx)
+    }
+
+    fn poll_recv_from<const NATIVE: bool>(
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<SessionEvent>, SessionError>> {
@@ -728,20 +750,28 @@ impl<T: AsyncRead> SessionReceiver<T> {
             return Poll::Ready(Err(SessionError::Io(aborted())));
         }
         if self.stream_ended {
-            return Poll::Ready(self.drain_after_end(cx));
+            return Poll::Ready(if NATIVE {
+                self.drain_after_end(cx)
+            } else {
+                Ok(None)
+            });
         }
         // Alternate sources per event so neither can starve the other.
-        self.native_first = !self.native_first;
-        if self.native_first
+        if NATIVE {
+            self.native_first = !self.native_first;
+        }
+        if NATIVE
+            && self.native_first
             && let Poll::Ready(Some(result)) = self.poll_native(cx)
         {
             return Poll::Ready(result.map(|payload| Some(native_event(payload))));
         }
-        match self.poll_stream(cx) {
+        match self.poll_stream::<NATIVE>(cx) {
             Poll::Ready(result) => return Poll::Ready(result),
             Poll::Pending => (),
         }
-        if !self.native_first
+        if NATIVE
+            && !self.native_first
             && let Poll::Ready(Some(result)) = self.poll_native(cx)
         {
             return Poll::Ready(result.map(|payload| Some(native_event(payload))));
@@ -749,7 +779,7 @@ impl<T: AsyncRead> SessionReceiver<T> {
         Poll::Pending
     }
 
-    fn poll_stream(
+    fn poll_stream<const NATIVE: bool>(
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<SessionEvent>, SessionError>> {
@@ -769,7 +799,11 @@ impl<T: AsyncRead> SessionReceiver<T> {
                     return Poll::Ready(match self.decoder.finish() {
                         Ok(()) => {
                             self.stream_ended = true;
-                            self.drain_after_end(cx)
+                            if NATIVE {
+                                self.drain_after_end(cx)
+                            } else {
+                                Ok(None)
+                            }
                         }
                         Err(error) => Err(self.fail(error)),
                     });

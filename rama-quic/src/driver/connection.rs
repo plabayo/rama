@@ -1566,9 +1566,14 @@ impl Connection {
         self.0.state.lock().inner.datagrams().send_buffer_space()
     }
 
-    // Persisted by the engine after 0-RTT keys are discarded. Inspecting only
-    // whether a stream was accepted during the handshake misses buffered early data.
-    pub(crate) fn early_data_keys_enabled(&self) -> bool {
+    /// Whether this connection ever enabled early-data keys.
+    ///
+    /// This remains true after the keys are discarded. Waiting for handshake
+    /// confirmation and then inspecting a stream's acceptance time cannot rule
+    /// out early bytes buffered before that acceptance. Applications rejecting
+    /// early request data must disable it before connection establishment.
+    #[must_use]
+    pub fn early_data_keys_enabled(&self) -> bool {
         self.0.state.lock().inner.has_0rtt()
     }
 

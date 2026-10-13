@@ -1843,3 +1843,79 @@ async fn small_capsules_take_one_write() {
         assert_eq!(counted.load(Ordering::Relaxed), writes, "{len}");
     }
 }
+
+#[tokio::test]
+async fn reliable_receive_keeps_native_datagrams_out_of_fragmented_capsules() {
+    let native = FakeNative::default();
+    let (left, mut right) = tokio::io::duplex(64);
+    let left = ServiceInput::new(left);
+    left.extensions()
+        .insert(NativeDatagrams::new(native.clone()));
+    let mut settings = config();
+    settings.capsules.unknown = UnknownCapsules::Forward;
+    let (_, mut receiver) = HttpDatagramSession::with_config(left, settings).split();
+    let ty = CapsuleType::new(0x4242).unwrap();
+    let wire = encode_capsule(ty, b"abcd").unwrap();
+    let header_len = wire.len() - 4;
+    right.write_all(&wire[..header_len]).await.unwrap();
+    let event = receiver.recv().await.unwrap().unwrap();
+    assert!(matches!(event, SessionEvent::UnknownCapsule(header) if header.ty == ty));
+    native.push(b"native between header and value");
+    // Poll while the reliable value is absent: a queued native datagram cannot
+    // satisfy this wait or be consumed and hidden in an extra relay buffer.
+    let mut pending = Box::pin(receiver.recv_reliable());
+    assert!(
+        std::future::poll_fn(|cx| Poll::Ready(pending.as_mut().poll(cx)))
+            .await
+            .is_pending()
+    );
+    drop(pending);
+    assert_eq!(native.0.lock().inbox.len(), 1);
+    for chunk in [b"ab", b"cd"] {
+        right.write_all(chunk).await.unwrap();
+        assert_eq!(
+            receiver.recv_reliable().await.unwrap(),
+            Some(SessionEvent::UnknownCapsuleData(Bytes::copy_from_slice(
+                chunk
+            )))
+        );
+        assert_eq!(native.0.lock().inbox.len(), 1);
+    }
+    right.shutdown().await.unwrap();
+    assert_eq!(receiver.recv_reliable().await.unwrap(), None);
+    assert_eq!(native.0.lock().released, 0);
+    assert_eq!(
+        receiver.recv().await.unwrap(),
+        Some(datagram(
+            b"native between header and value",
+            DatagramTransport::Native
+        ))
+    );
+    assert_eq!(receiver.recv().await.unwrap(), None);
+    assert_eq!(native.0.lock().released, 1);
+}
+
+#[tokio::test]
+async fn reliable_receive_rejects_truncation_before_queued_native_input() {
+    let native = FakeNative::default();
+    let (left, mut right) = tokio::io::duplex(64);
+    let left = ServiceInput::new(left);
+    left.extensions()
+        .insert(NativeDatagrams::new(native.clone()));
+    let mut settings = config();
+    settings.capsules.unknown = UnknownCapsules::Forward;
+    let (_, mut receiver) = HttpDatagramSession::with_config(left, settings).split();
+    let wire = encode_capsule(CapsuleType::new(0x4242).unwrap(), b"missing").unwrap();
+    right.write_all(&wire[..wire.len() - 7]).await.unwrap();
+    assert!(matches!(
+        receiver.recv_reliable().await.unwrap(),
+        Some(SessionEvent::UnknownCapsule(_))
+    ));
+    native.push(b"must not mask truncation");
+    right.shutdown().await.unwrap();
+    assert_matches!(
+        receiver.recv_reliable().await,
+        Err(SessionError::Malformed(_))
+    );
+    assert_matches!(receiver.recv().await, Err(SessionError::Malformed(_)));
+}
