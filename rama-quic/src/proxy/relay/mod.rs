@@ -41,7 +41,8 @@ pub struct QuicRelay {
     /// reception; an oversized datagram fails explicitly rather than truncating.
     datagrams: bool,
     /// Application error used when the relay itself fails or is cancelled.
-    /// A peer's application close is forwarded with its original code and reason.
+    /// A peer's application close is forwarded with its original code and reason, and ends
+    /// the relay successfully.
     failure_code: VarInt,
 }
 
@@ -272,11 +273,13 @@ fn propagate_close(
     reason: ConnectionError,
     fallback: VarInt,
 ) -> Result<(), BoxError> {
+    // An application closing its connection is how a relayed exchange normally ends: relaying
+    // that close faithfully is success. Anything else is a failure of that hop.
     if let ConnectionError::ApplicationClosed(close) = &reason {
         to.close(close.error_code, &close.reason);
-    } else {
-        to.close(fallback, b"QUIC relay peer failed");
+        return Ok(());
     }
+    to.close(fallback, b"QUIC relay peer failed");
     Err(reason.into())
 }
 

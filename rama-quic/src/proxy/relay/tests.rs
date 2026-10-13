@@ -213,7 +213,7 @@ async fn relay_reset_interrupts_a_flow_control_blocked_write() {
 async fn relay_forwards_application_close_and_cancellation() {
     timeout(Duration::from_secs(10), async {
         for egress in [false, true] {
-            let fixture = fixture(false).await;
+            let mut fixture = fixture(false).await;
             let (from, to) = if egress { (&fixture.origin, &fixture.client) } else { (&fixture.client, &fixture.origin) };
             // A completed exchange establishes that the relay passed its gates.
             from.send_datagram_wait(Bytes::from_static(b"ready")).await.unwrap();
@@ -221,6 +221,8 @@ async fn relay_forwards_application_close_and_cancellation() {
             from.close(94u32, b"application reason");
             assert!(matches!(to.closed().await, ConnectionError::ApplicationClosed(close)
                 if close.error_code == VarInt::from_u32(94) && close.reason == b"application reason".as_slice()));
+            // Relaying an application's own close ends the relay successfully.
+            (&mut fixture.relay).await.unwrap().unwrap();
         }
         let fixture = fixture(false).await;
         fixture.client.send_datagram_wait(Bytes::from_static(b"ready")).await.unwrap();

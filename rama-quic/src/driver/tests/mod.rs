@@ -21,7 +21,7 @@ use std::{
 };
 
 use crate::driver::{Duration, Instant};
-use crate::proto::RandomConnectionIdGenerator;
+use crate::proto::{NegotiatedTlsParameters, RandomConnectionIdGenerator};
 use crate::test_helpers;
 use rama_core::bytes::Bytes;
 use rama_core::extensions::{Extension, ExtensionsRef};
@@ -235,6 +235,37 @@ async fn connection_extensions_are_shared_by_handles_and_isolated_between_connec
 
     drop(shared);
     drop(incoming);
+    endpoint.close(0u32, b"done");
+    timeout(Duration::from_secs(5), endpoint.shutdown())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn established_connections_publish_their_negotiated_tls_parameters() {
+    let endpoint = endpoint();
+    let connecting = endpoint
+        .connect(endpoint.local_addr().unwrap(), "localhost")
+        .unwrap();
+    let (outgoing, incoming) = timeout(Duration::from_secs(5), async {
+        join!(connecting, async { endpoint.accept().await.unwrap().await })
+    })
+    .await
+    .unwrap();
+    for connection in [outgoing.unwrap(), incoming.unwrap()] {
+        let parameters = connection
+            .extensions()
+            .get_arc::<NegotiatedTlsParameters>()
+            .expect("published once connected");
+        assert_eq!(
+            parameters.application_layer_protocol,
+            connection
+                .handshake_data()
+                .unwrap()
+                .application_layer_protocol
+        );
+        assert!(parameters.application_layer_protocol.is_some());
+    }
     endpoint.close(0u32, b"done");
     timeout(Duration::from_secs(5), endpoint.shutdown())
         .await

@@ -820,7 +820,7 @@ impl Future for ConnectionDriver {
         }
         if outcome.is_ready() {
             let conn = &mut *self.conn.state.lock();
-            conn.forward_app_events(&self.conn.shared);
+            conn.forward_app_events(&self.conn.shared, &self.conn.extensions);
             if conn.error.is_none() {
                 conn.terminate(
                     rama_quic_proto::TransportError::INTERNAL_ERROR(
@@ -2706,7 +2706,7 @@ impl State {
         let closed = self.inner.is_closed();
         self.inner.publish_observation(extensions, false, closed);
         if !self.inner.is_drained() {
-            self.forward_app_events(shared);
+            self.forward_app_events(shared, extensions);
             if keep_going {
                 // If the connection hasn't processed all tasks, schedule it again
                 cx.waker().wake_by_ref();
@@ -3393,7 +3393,7 @@ impl State {
         Ok(true)
     }
 
-    fn forward_app_events(&mut self, shared: &Shared) {
+    fn forward_app_events(&mut self, shared: &Shared, extensions: &Extensions) {
         while let Some(event) = self.inner.poll() {
             match event {
                 Event::HandshakeDataReady => {
@@ -3404,6 +3404,11 @@ impl State {
                 }
                 Event::Connected => {
                     self.connected = true;
+                    // Published like the TLS stacks do for streams, so services read the
+                    // negotiated protocol and peer identity from the connection's extensions.
+                    if let Some(parameters) = self.inner.crypto_session().handshake_summary() {
+                        extensions.insert(parameters);
+                    }
                     if let Some(admission) = self.admission.take() {
                         admission.complete(now());
                     }

@@ -9,3 +9,8 @@ pub use peek::{
 
 mod relay;
 pub use relay::QuicRelay;
+
+#[cfg(feature = "boring")]
+mod mitm;
+#[cfg(feature = "boring")]
+pub use mitm::{DEFAULT_QUIC_MITM_HANDSHAKE_TIMEOUT, QuicMitmRelay, QuicMitmRelayService};

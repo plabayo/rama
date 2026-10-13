@@ -13,6 +13,7 @@ use std::{
 };
 
 use parking_lot::{Mutex, MutexGuard};
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_net::{
     address::{SocketAddress, ip::IntoCanonicalIpAddr as _},
     stream::Socket,
@@ -30,6 +31,7 @@ use crate::{
 pub struct MemoryDatagramSocket {
     shared: Arc<Shared>,
     side: usize,
+    extensions: Extensions,
 }
 
 impl MemoryDatagramSocket {
@@ -55,8 +57,13 @@ impl MemoryDatagramSocket {
             Self {
                 shared: shared.clone(),
                 side: 0,
+                extensions: Extensions::new(),
             },
-            Self { shared, side: 1 },
+            Self {
+                shared,
+                side: 1,
+                extensions: Extensions::new(),
+            },
         )
     }
 
@@ -246,6 +253,12 @@ impl Drop for MemoryDatagramSocket {
             waker.wake();
         }
         wake_all(send_wakers);
+    }
+}
+
+impl ExtensionsRef for MemoryDatagramSocket {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
     }
 }
 
