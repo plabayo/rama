@@ -9,7 +9,9 @@ use crate::{profile::capture, tls::BoringTlsProvider};
 mod config;
 #[cfg(test)]
 pub(crate) use config::QuicServerConfig;
-pub(crate) use config::{QuicClientConfig, SharedClientSessions, server_config_from_rama};
+pub(crate) use config::{
+    QuicClientConfig, SharedClientSessions, retry_tag, server_config_from_rama, server_initial_keys,
+};
 mod packet;
 mod session;
 #[cfg(any(test, not(any(feature = "ring", feature = "aws-lc"))))]

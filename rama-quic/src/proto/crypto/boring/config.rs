@@ -341,7 +341,7 @@ fn contexts(
     Ok([context(Version::V1)?, context(Version::V2)?])
 }
 
-fn server_initial_keys(
+pub(crate) fn server_initial_keys(
     version: Version,
     cid: &ConnectionId,
 ) -> Result<crypto::Keys, crypto::InitialKeysError> {
@@ -349,7 +349,7 @@ fn server_initial_keys(
     packet::initial_keys(wire, cid, Side::Server).map_err(crypto::InitialKeysError::Crypto)
 }
 
-fn retry_tag(
+pub(crate) fn retry_tag(
     version: Version,
     cid: &ConnectionId,
     packet: &[u8],
