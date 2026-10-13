@@ -49,7 +49,7 @@ impl ServerObservation {
     pub(crate) fn new_parts(limits: CaptureLimits, parts: &[&[u8]]) -> Self {
         let mut this = Self {
             limits,
-            hello: HelloAssembly::with_limit(limits.client_hello_bytes),
+            hello: HelloAssembly::with_limits(&limits),
             value: QuicObservation {
                 connection_id: Vec::new(),
                 attempt_id: Vec::new(),
@@ -221,7 +221,7 @@ impl ServerObservation {
                     if end.is_none_or(|end| end > self.limits.client_hello_bytes as u64) {
                         self.done = true;
                     } else {
-                        self.hello.take_in(crypto.offset, crypto.data.clone());
+                        self.hello.take_in(crypto.offset, &crypto.data);
                     }
                     ObservedFrame::Crypto {
                         offset: crypto.offset,
@@ -368,7 +368,6 @@ pub(crate) mod fuzzing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::bytes::Bytes;
     use rama_utils::octets;
 
     #[test]
@@ -394,7 +393,7 @@ mod tests {
             &[0x40],
             None,
         );
-        recorder.hello.take_in(0, Bytes::from(message));
+        recorder.hello.take_in(0, &message);
         recorder.finish_buffered();
         assert!(recorder.done);
         assert!(recorder.value.completeness.client_hello);
@@ -406,7 +405,7 @@ mod tests {
     #[test]
     fn observation_invalid_hello_is_terminal_and_releases_assembly() {
         let mut recorder = ServerObservation::new(CaptureLimits::default(), &[0x40], None);
-        recorder.hello.take_in(0, Bytes::from_static(&[2, 0, 0, 0]));
+        recorder.hello.take_in(0, &[2, 0, 0, 0]);
         recorder.finish_buffered();
         assert!(recorder.done);
         assert!(matches!(recorder.hello.peek(), ClientHelloPeek::Incomplete));

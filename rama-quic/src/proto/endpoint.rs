@@ -2106,7 +2106,7 @@ fn take_in_frames(assembly: &mut HelloAssembly, payload: Bytes) {
     if let Ok(frames) = frame::Iter::new(payload) {
         for frame in frames.flatten() {
             if let frame::Frame::Crypto(frame::Crypto { offset, data }) = frame {
-                assembly.take_in(offset, data);
+                assembly.take_in(offset, &data);
             }
         }
     }

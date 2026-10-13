@@ -21,7 +21,7 @@ use alloc::vec::Vec;
 use core::{fmt, ops::Range};
 
 use rama_core::{
-    bytes::{Buf, BytesMut},
+    bytes::{Buf, Bytes, BytesMut},
     extensions::Extension,
 };
 use rama_tls::{
@@ -46,6 +46,9 @@ use crate::{
     profile::{PaddingPlacement, ParameterId},
     version::{LongKind, VersionInformation},
 };
+
+mod assembly;
+pub use assembly::ClientHelloAssembly;
 
 /// The Initial keys that open one direction of a captured flight.
 ///
@@ -512,42 +515,20 @@ impl ObservedDatagram {
             let Some(version) = observed.version else {
                 continue;
             };
-            let seed = original_dcid.unwrap_or(&observed.dcid);
-            // Every version this crate implements limits connection IDs to 20 bytes (RFC 9000
-            // §17.2); a longer one is refused before it reaches key derivation.
-            if seed.len() > MAX_CID_SIZE {
-                return Err(CaptureError::Malformed(
-                    "Initial connection ID longer than 20 bytes",
-                ));
-            }
-            let keys = provider.initial_keys(version, seed, side)?;
-            let header_key: &dyn HeaderKey = &keys.header;
-            // The observation may come from elsewhere (it is serializable), so its range is not
-            // trusted to fit the datagram handed in.
-            let bytes = BytesMut::from(
-                datagram
-                    .get(observed.range.clone())
-                    .ok_or(CaptureError::Malformed("packet range outside the datagram"))?,
-            );
-            let (decode, _) = PartialDecode::new(
-                bytes,
-                &FixedLengthConnectionIdParser::new(0),
-                &[version],
-                true,
-            )
-            .map_err(|_error| CaptureError::Malformed("Initial header"))?;
-            let mut packet = decode
-                .finish_protected(header_key)
-                .map_err(|_error| CaptureError::Undecryptable)?;
-            let number = packet.header.number().ok_or(CaptureError::Undecryptable)?;
-            let packet_number_len = number.len() as u8;
-            let packet_number = number.expand(0);
-            keys.packet
-                .decrypt(packet_number, &packet.header_data, &mut packet.payload)
-                .map_err(|_error| CaptureError::Undecryptable)?;
+            let keys = initial_keys(
+                provider,
+                version,
+                original_dcid.unwrap_or(&observed.dcid),
+                side,
+            )?;
+            let OpenedInitial {
+                packet_number,
+                packet_number_len,
+                payload,
+            } = open_initial(datagram, observed, version, &keys)?;
             let mut frames = Vec::new();
             let mut crypto = Vec::new();
-            let iter = frame::Iter::new(packet.payload.freeze())
+            let iter = frame::Iter::new(payload)
                 .map_err(|_error| CaptureError::Malformed("empty Initial payload"))?;
             for item in iter {
                 let item = item.map_err(|_error| CaptureError::Malformed("frame"))?;
@@ -592,6 +573,67 @@ impl ObservedDatagram {
     }
 }
 
+/// Initial keys for `dcid`, refusing an identifier no implemented version allows.
+pub(crate) fn initial_keys<P: KeyProvider>(
+    provider: &P,
+    version: Version,
+    dcid: &[u8],
+    side: Side,
+) -> Result<InitialKeys<P::Header, P::Packet>, CaptureError> {
+    // Every version this crate implements limits connection IDs to 20 bytes (RFC 9000 §17.2);
+    // a longer one is refused before it reaches key derivation.
+    if dcid.len() > MAX_CID_SIZE {
+        return Err(CaptureError::Malformed(
+            "Initial connection ID longer than 20 bytes",
+        ));
+    }
+    provider.initial_keys(version, dcid, side)
+}
+
+/// An Initial packet with its protection removed.
+pub(crate) struct OpenedInitial {
+    pub(crate) packet_number: u64,
+    pub(crate) packet_number_len: u8,
+    pub(crate) payload: Bytes,
+}
+
+/// Remove header and packet protection from the Initial `observed` found in `datagram`.
+pub(crate) fn open_initial<H: HeaderKey, P: PacketKey>(
+    datagram: &[u8],
+    observed: &ObservedPacket,
+    version: Version,
+    keys: &InitialKeys<H, P>,
+) -> Result<OpenedInitial, CaptureError> {
+    let header_key: &dyn HeaderKey = &keys.header;
+    // The observation may come from elsewhere (it is serializable), so its range is not trusted
+    // to fit the datagram handed in.
+    let bytes = BytesMut::from(
+        datagram
+            .get(observed.range.clone())
+            .ok_or(CaptureError::Malformed("packet range outside the datagram"))?,
+    );
+    let (decode, _) = PartialDecode::new(
+        bytes,
+        &FixedLengthConnectionIdParser::new(0),
+        &[version],
+        true,
+    )
+    .map_err(|_error| CaptureError::Malformed("Initial header"))?;
+    let mut packet = decode
+        .finish_protected(header_key)
+        .map_err(|_error| CaptureError::Undecryptable)?;
+    let number = packet.header.number().ok_or(CaptureError::Undecryptable)?;
+    let packet_number = number.expand(0);
+    keys.packet
+        .decrypt(packet_number, &packet.header_data, &mut packet.payload)
+        .map_err(|_error| CaptureError::Undecryptable)?;
+    Ok(OpenedInitial {
+        packet_number,
+        packet_number_len: number.len() as u8,
+        payload: packet.payload.freeze(),
+    })
+}
+
 /// The ClientHello reassembled from Initial packets, when the CRYPTO data covers it from
 /// offset zero through its length.
 #[must_use]
@@ -620,58 +662,11 @@ pub fn client_hello_with_limits(
             .checked_sub(data.len())
             .ok_or(CaptureError::LimitExceeded("CRYPTO bytes"))?;
     }
-
-    let mut chunks: Vec<(u64, &[u8])> = initials
-        .iter()
-        .flat_map(|packet| {
-            packet
-                .crypto
-                .iter()
-                .map(|(offset, data)| (*offset, &data[..]))
-        })
-        .collect();
-    chunks.sort_by_key(|(offset, _)| *offset);
-    let mut stream: Vec<u8> = Vec::new();
-    let mut expected_length = None;
-    for (offset, data) in chunks {
-        let offset =
-            usize::try_from(offset).map_err(|_error| CaptureError::Malformed("CRYPTO offset"))?;
-        if offset > stream.len() {
-            // A gap beyond the complete ClientHello does not affect peeking.
-            if expected_length == Some(stream.len()) {
-                continue;
-            }
-            return Ok(None);
-        }
-
-        // Check every retained overlap, including a retransmission received
-        // after a complete hello. First-arrival selection must not conceal
-        // contradictory names or protocol offers from an interception policy.
-        let overlap = data.len().min(stream.len() - offset);
-        if stream[offset..offset + overlap] != data[..overlap] {
-            return Err(CaptureError::Malformed("conflicting CRYPTO overlap"));
-        }
-        let new = &data[overlap..];
-        let maximum = expected_length.unwrap_or(limits.client_hello_bytes);
-        let room = maximum.saturating_sub(stream.len());
-        stream.extend_from_slice(&new[..new.len().min(room)]);
-        if stream.len() < 4 && new.len() > room {
-            return Err(CaptureError::LimitExceeded("ClientHello bytes"));
-        }
-        if expected_length.is_none()
-            && let Some(&[kind, a, b, c]) = stream.get(..4)
-        {
-            // TLS HandshakeType client_hello is 1 (RFC 8446 §4).
-            if kind != 0x01 {
-                return Err(CaptureError::Malformed("expected ClientHello"));
-            }
-            let length = 4 + (usize::from(a) << 16 | usize::from(b) << 8 | usize::from(c));
-            within(length, limits.client_hello_bytes, "ClientHello bytes")?;
-            expected_length = Some(length);
-            stream.truncate(length);
-        }
+    let mut assembly = ClientHelloAssembly::new(limits);
+    for (offset, data) in initials.iter().flat_map(|packet| &packet.crypto) {
+        assembly.take_in(*offset, data)?;
     }
-    Ok((expected_length == Some(stream.len())).then_some(stream))
+    Ok(assembly.client_hello().map(<[u8]>::to_vec))
 }
 
 /// A transport parameter as it was sent: identifier and raw value, in wire order.

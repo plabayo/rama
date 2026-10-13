@@ -1,7 +1,9 @@
 //! Bounded inspection of one client Initial flight without producing packets.
 //!
 //! The caller retains original datagrams and their metadata for routing. This
-//! inspector retains only decoded Initials until ClientHello assembly completes.
+//! inspector keeps only the ClientHello being assembled: each Initial is opened
+//! once with keys derived once per attempt, and its CRYPTO data is copied straight
+//! into place.
 //! It neither accepts a QUIC connection nor makes an interception decision. An
 //! ECH ClientHello describes only the outer hello; offered ALPN is not negotiated
 //! protocol evidence. Source/global admission and inspection rate limits belong
@@ -16,9 +18,11 @@ use rama_tls::client::{
 use crate::{
     Side, Version,
     capture::{
-        CaptureError, CaptureLimits, InitialPacket, KeyProvider, PacketKind,
-        client_hello_with_limits, observe_with_limits,
+        CaptureError, CaptureLimits, ClientHelloAssembly, InitialKeys, KeyProvider, PacketKind,
+        initial_keys, observe_with_limits, open_initial,
     },
+    crypto::{HeaderKey, PacketKey},
+    frame::{self, Frame},
 };
 
 /// A terminal inspection outcome. The router decides what to do with retained
@@ -78,22 +82,24 @@ impl fmt::Debug for PeekedClientHello {
 
 /// Incremental, opt-in ClientHello inspection for one QUIC connection attempt.
 ///
-/// Each datagram is decrypted once. Retransmissions, frames, fragments and input
-/// bytes consume cumulative budgets. The deadline is absolute and never renewed.
+/// Each datagram is decrypted once, with the attempt's Initial keys derived once.
+/// Retransmissions, frames, fragments and input bytes consume cumulative budgets. The deadline is absolute and never renewed.
 /// Both successful completion and errors release retained Initials and prevent
 /// reuse. Callers must also expire a pending inspector when no datagrams arrive.
 /// This type deliberately has no raw-data `Debug` or serialization implementation.
-pub struct InitialPeek {
+pub struct InitialPeek<H, P> {
     limits: CaptureLimits,
     remaining: CaptureLimits,
     deadline: Instant,
     identity: Option<(Version, Vec<u8>, Vec<u8>)>,
-    initials: Vec<InitialPacket>,
+    /// The attempt's Initial keys, derived once from its version and destination identifier.
+    keys: Option<InitialKeys<H, P>>,
+    assembly: ClientHelloAssembly,
     finished: bool,
     early_data_observed: bool,
 }
 
-impl InitialPeek {
+impl<H: HeaderKey, P: PacketKey> InitialPeek<H, P> {
     #[must_use]
     pub fn new(limits: CaptureLimits, deadline: Instant) -> Self {
         Self {
@@ -101,7 +107,8 @@ impl InitialPeek {
             remaining: limits,
             deadline,
             identity: None,
-            initials: Vec::new(),
+            keys: None,
+            assembly: ClientHelloAssembly::new(&limits),
             finished: false,
             early_data_observed: false,
         }
@@ -115,11 +122,11 @@ impl InitialPeek {
 
     /// Inspect one logical UDP datagram. `None` means more CRYPTO bytes are needed.
     /// Neither this call nor its key provider may emit QUIC responses.
-    pub fn inspect<P: KeyProvider>(
+    pub fn inspect<K: KeyProvider<Header = H, Packet = P>>(
         &mut self,
         now: Instant,
         datagram: &[u8],
-        provider: &P,
+        provider: &K,
     ) -> Result<Option<PeekedClientHello>, PeekError> {
         if self.finished {
             return Err(PeekError::Finished);
@@ -127,17 +134,19 @@ impl InitialPeek {
         let result = self.inspect_pending(now, datagram, provider);
         if !matches!(&result, Ok(None)) {
             self.finished = true;
-            self.initials = Vec::new();
+            // Release what was reassembled; an empty assembly holds no allocation.
+            self.assembly = ClientHelloAssembly::new(&self.limits);
             self.identity = None;
+            self.keys = None;
         }
         result
     }
 
-    fn inspect_pending<P: KeyProvider>(
+    fn inspect_pending<K: KeyProvider<Header = H, Packet = P>>(
         &mut self,
         now: Instant,
         datagram: &[u8],
-        provider: &P,
+        provider: &K,
     ) -> Result<Option<PeekedClientHello>, PeekError> {
         if now >= self.deadline {
             return Err(PeekError::Deadline);
@@ -183,31 +192,41 @@ impl InitialPeek {
             .packets
             .iter()
             .any(|packet| packet.kind == PacketKind::ZeroRtt);
-        // The capture decoder bounds temporary decoded copies separately from
-        // cumulative wire admission. Reusing the remaining wire budget here
-        // would reject the final admitted datagram merely for needing a copy.
-        limits.bytes = self.limits.bytes;
-        let packets = observed.unprotect_initials_with_limits(
-            datagram,
-            provider,
-            Side::Server,
-            Some(destination),
-            &limits,
-        )?;
-        for packet in &packets {
-            charge(&mut self.remaining.frames, packet.frames.len(), "frames")?;
-            charge(
-                &mut self.remaining.crypto_fragments,
-                packet.crypto.len(),
-                "CRYPTO fragments",
-            )?;
+        for packet in observed
+            .packets
+            .iter()
+            .filter(|packet| packet.kind == PacketKind::Initial)
+        {
+            let keys = match &self.keys {
+                Some(keys) => keys,
+                None => {
+                    self.keys
+                        .insert(initial_keys(provider, *version, destination, Side::Server)?)
+                }
+            };
+            let opened = open_initial(datagram, packet, *version, keys)?;
+            let frames = frame::Iter::new(opened.payload)
+                .map_err(|_error| CaptureError::Malformed("empty Initial payload"))?;
+            // CRYPTO data goes straight into the assembly; nothing else of a frame is kept.
+            let mut padding = false;
+            for frame in frames {
+                let frame = frame.map_err(|_error| CaptureError::Malformed("frame"))?;
+                let is_padding = matches!(frame, Frame::Padding);
+                // A run of PADDING counts as one frame against the budget.
+                if !(is_padding && padding) {
+                    charge(&mut self.remaining.frames, 1, "frames")?;
+                }
+                padding = is_padding;
+                if let Frame::Crypto(crypto) = frame {
+                    charge(&mut self.remaining.crypto_fragments, 1, "CRYPTO fragments")?;
+                    self.assembly.take_in(crypto.offset, &crypto.data)?;
+                }
+            }
         }
-        self.initials.extend(packets);
-
-        let Some(message) = client_hello_with_limits(&self.initials, &self.limits)? else {
+        let Some(message) = self.assembly.client_hello() else {
             return Ok(None);
         };
-        match parse_client_hello_message_prefix(&message) {
+        match parse_client_hello_message_prefix(message) {
             ClientHelloHandshakePrefix::Complete(client_hello) => Ok(Some(PeekedClientHello {
                 version: *version,
                 client_hello,

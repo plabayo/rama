@@ -247,7 +247,7 @@ fn rewrite_initial(wire: &mut BytesMut, reverse: bool, token: bool) -> usize {
 }
 
 #[test]
-fn observation_reverse_fragments_finalize_incomplete_before_close() {
+fn observation_reverse_fragments_complete_within_the_fragment_budget() {
     let mut server = server_config();
     server.set_capture(CaptureLimits::default());
     let mut pair = Pair::new(
@@ -275,9 +275,9 @@ fn observation_reverse_fragments_finalize_incomplete_before_close() {
         "final publication must release all assembly and recorder storage"
     );
     let observed = extensions.get_ref::<QuicObservation>().unwrap();
-    assert!(!observed.completeness.client_hello);
+    assert!(observed.completeness.client_hello);
     assert!(observed.completeness.frames);
-    assert!(!extensions.contains::<SecureTransport>());
+    assert!(extensions.contains::<SecureTransport>());
 }
 
 #[test]

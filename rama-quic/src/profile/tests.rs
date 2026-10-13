@@ -1016,19 +1016,33 @@ fn initial_peek_byte_boundary_precedes_crypto() {
             now + Duration::from_secs(1),
         );
         assert!(peek.inspect(now, &datagram, &keys).unwrap().is_none());
-        let calls = keys.calls.get();
+        // The attempt's keys are derived once, for its first Initial, and then reused.
+        assert_eq!(keys.calls.get(), 1);
         let second = peek.inspect(now, &datagram, &keys);
         if bytes < two_datagrams {
             assert!(matches!(
                 second,
                 Err(PeekError::Capture(CaptureError::LimitExceeded("bytes")))
             ));
-            assert_eq!(keys.calls.get(), calls);
         } else {
             assert!(second.unwrap().is_none());
-            assert_eq!(keys.calls.get(), calls + 1);
         }
+        assert_eq!(keys.calls.get(), 1);
+        keys.calls.set(0);
     }
+    // A first datagram past the byte budget derives no keys at all.
+    let mut peek = InitialPeek::new(
+        CaptureLimits {
+            bytes: datagram.len() - 1,
+            ..CaptureLimits::default()
+        },
+        now + Duration::from_secs(1),
+    );
+    assert!(matches!(
+        peek.inspect(now, &datagram, &keys),
+        Err(PeekError::Capture(CaptureError::LimitExceeded("bytes")))
+    ));
+    assert_eq!(keys.calls.get(), 0);
 }
 
 #[test]
@@ -1061,7 +1075,8 @@ fn initial_peek_retains_reordered_early_data_as_opaque_metadata() {
     let hello = peek.inspect(now, &second, &keys).unwrap().unwrap();
     assert!(hello.early_data_observed);
     assert_eq!(hello.version, Version::V1);
-    assert_eq!(keys.calls.get(), 2);
+    // Initial keys only, derived once for the attempt; the opaque 0-RTT asked for none.
+    assert_eq!(keys.calls.get(), 1);
 }
 
 #[test]
