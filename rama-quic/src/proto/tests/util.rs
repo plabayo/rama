@@ -234,7 +234,7 @@ impl Pair {
         self.connect_with(client_config())
     }
 
-    pub(super) fn connect_with(
+    pub(crate) fn connect_with(
         &mut self,
         config: ClientConfig,
     ) -> (ConnectionHandle, ConnectionHandle) {
@@ -1130,7 +1130,7 @@ pub(super) fn test_provider() -> Arc<rustls::crypto::CryptoProvider> {
     Arc::new(provider)
 }
 
-pub(super) fn client_config() -> ClientConfig {
+pub(crate) fn client_config() -> ClientConfig {
     ClientConfig::new(Arc::new(client_crypto()))
 }
 

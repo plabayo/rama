@@ -202,29 +202,26 @@ impl ConnectionId {
         res
     }
 
-    /// Construct a cid by reading `len` bytes from a `Buf`.
+    /// Read a connection ID without consuming input on failure.
     ///
-    /// Callers need to assure that `buf.remaining() >= len` and, as with [`Self::new`], that
-    /// `len <= MAX_CID_SIZE`; a larger `len` keeps only the first [`MAX_CID_SIZE`] bytes.
-    pub fn from_buf(buf: &mut (impl Buf + ?Sized), len: usize) -> Self {
-        debug_assert!(len <= MAX_CID_SIZE);
-        let len = len.min(MAX_CID_SIZE);
+    /// Rejects lengths above [`MAX_CID_SIZE`] and buffers shorter than `len`.
+    /// Fragmented buffers are supported; an empty ID is valid.
+    pub fn from_buf(buf: &mut (impl Buf + ?Sized), len: usize) -> Result<Self, InvalidCid> {
+        if len > MAX_CID_SIZE || buf.remaining() < len {
+            return Err(InvalidCid::new());
+        }
         let mut res = Self {
             len: len as u8,
             bytes: [0; MAX_CID_SIZE],
         };
         buf.copy_to_slice(&mut res.bytes[..len]);
-        res
+        Ok(res)
     }
 
-    /// Decode from long header format.
+    /// Decode from long header format. The length byte is consumed first.
     pub fn decode_long(buf: &mut impl Buf) -> Option<Self> {
         let len = buf.get::<u8>().ok()? as usize;
-        if len > MAX_CID_SIZE || buf.remaining() < len {
-            None
-        } else {
-            Some(Self::from_buf(buf, len))
-        }
+        Self::from_buf(buf, len).ok()
     }
 
     /// Encode in long header format.

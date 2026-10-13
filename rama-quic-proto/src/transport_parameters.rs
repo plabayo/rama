@@ -820,7 +820,7 @@ fn decode_cid(len: usize, value: &mut Option<ConnectionId>, r: &mut impl Buf) ->
         return Err(Error::Malformed);
     }
 
-    *value = Some(ConnectionId::from_buf(r, len));
+    *value = Some(ConnectionId::from_buf(r, len).map_err(|_error| Error::Malformed)?);
     Ok(())
 }
 

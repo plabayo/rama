@@ -980,17 +980,22 @@ impl PacketNumber {
         }
     }
 
+    /// Decode a one-to-four-byte packet number without consuming input on error.
+    /// Invalid widths and truncated numbers are rejected in every build mode.
     pub fn decode<R: Buf>(len: usize, r: &mut R) -> Result<Self, PacketDecodeError> {
+        if r.remaining() < len {
+            return Err(PacketDecodeError::InvalidHeader("truncated packet number"));
+        }
         let pn = match len {
             1 => Self::U8(r.get()?),
             2 => Self::U16(r.get()?),
             3 => Self::U24(r.get_uint(3) as u32),
             4 => Self::U32(r.get()?),
-            #[expect(
-                clippy::unreachable,
-                reason = "`len` is two bits plus one, so it is 1..=4"
-            )]
-            _ => unreachable!(),
+            _ => {
+                return Err(PacketDecodeError::InvalidHeader(
+                    "invalid packet number width",
+                ));
+            }
         };
         Ok(pn)
     }
@@ -1054,9 +1059,8 @@ impl FixedLengthConnectionIdParser {
 
 impl ConnectionIdParser for FixedLengthConnectionIdParser {
     fn parse(&self, buffer: &mut dyn Buf) -> Result<ConnectionId, PacketDecodeError> {
-        (buffer.remaining() >= self.expected_len)
-            .then(|| ConnectionId::from_buf(buffer, self.expected_len))
-            .ok_or(PacketDecodeError::InvalidHeader("packet too small"))
+        ConnectionId::from_buf(buffer, self.expected_len)
+            .map_err(|_error| PacketDecodeError::InvalidHeader("invalid connection ID length"))
     }
 }
 

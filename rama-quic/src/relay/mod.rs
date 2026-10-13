@@ -86,7 +86,10 @@ impl QuicRelay {
         /// Forward native QUIC datagrams in both directions. Configure both
         /// connections' receive advertisements consistently before handshaking.
         /// Each forwarding direction retains at most one datagram; oversized
-        /// datagrams fail explicitly and are never truncated.
+        /// datagrams close both connections with `failure_code` and are never
+        /// truncated. This is an intentional failure policy for applications that
+        /// require explicit detection of incompatible hop limits; choose receive
+        /// limits compatible with both hops before enabling this relay.
         pub fn datagrams(mut self, enabled: bool) -> Self {
             self.datagrams = enabled;
             self
@@ -102,15 +105,15 @@ impl QuicRelay {
             ));
         }
         tokio::try_join!(ingress.handshake_confirmed(), egress.handshake_confirmed())?;
-        let down_alpn = ingress
+        let ingress_alpn = ingress
             .handshake_data()
             .and_then(|tls| tls.application_layer_protocol)
             .filter(|protocol| !protocol.as_bytes().is_empty());
-        let up_alpn = egress
+        let egress_alpn = egress
             .handshake_data()
             .and_then(|tls| tls.application_layer_protocol)
             .filter(|protocol| !protocol.as_bytes().is_empty());
-        if down_alpn.is_none() || down_alpn != up_alpn {
+        if ingress_alpn.is_none() || ingress_alpn != egress_alpn {
             return Err(BoxError::from_static_str(
                 "QUIC relay negotiated application protocols differ or are absent",
             ));

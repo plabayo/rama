@@ -231,6 +231,58 @@ impl Connection {
                     break;
                 }
 
+                // RFC 9000 §13.2.4: obtain ACK-of-ACK feedback before the bounded
+                // history fills. This is opportunistic: ACK-only traffic must
+                // still leave immediately when congestion control blocks PING.
+                // Waiting a round trip and leaving a non-eliciting packet between
+                // probes also prevents turning an ACK exchange into a PING loop.
+                const ACK_HISTORY_PING_THRESHOLD: usize = 32;
+                let space = &self.spaces[space_id];
+                let feedback_due = space_id == SpaceId::Data
+                    && !close
+                    && !ack_eliciting
+                    && self.state.is_established()
+                    && buf.is_empty()
+                    && builder_storage.is_none()
+                    && self.in_flight_ack_eliciting == 0
+                    // An upper bound: retired numbers leave the history from its front.
+                    && space.non_ack_eliciting_sent.len() >= ACK_HISTORY_PING_THRESHOLD
+                    && space
+                        .sent_packets
+                        .last_key_value()
+                        .is_some_and(|(_, packet)| {
+                            !packet.ack_eliciting
+                                && space
+                                    .time_of_last_ack_eliciting_packet
+                                    .is_none_or(|sent| packet.time_sent > sent)
+                        })
+                    && space.time_of_last_ack_eliciting_packet.is_none_or(|sent| {
+                        now.saturating_duration_since(sent) >= self.path.rtt.get()
+                    });
+
+                if feedback_due
+                    && self
+                        .path
+                        .in_flight
+                        .bytes
+                        .saturating_add(segment_size as u64)
+                        <= self.path.congestion.window()
+                    && self
+                        .path
+                        .pacing
+                        .delay(
+                            self.path.rtt.get(),
+                            segment_size as u64,
+                            self.path.current_mtu(),
+                            self.path.congestion.window(),
+                            now,
+                        )
+                        .is_none()
+                {
+                    self.spaces[space_id].ping_pending = true;
+                    ack_eliciting = true;
+                }
+
                 // Congestion control and pacing checks
                 // Tail loss probes must not be blocked by congestion, or a deadlock could arise.
                 // Close packets contain only ACKs and CONNECTION_CLOSE, neither of which is

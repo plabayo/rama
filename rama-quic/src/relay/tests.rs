@@ -497,3 +497,62 @@ async fn relay_rejects_resumed_early_data_on_either_hop() {
     .await
     .unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn relay_stream_class_limits_hold_until_the_active_pair_finishes() {
+    timeout(Duration::from_secs(10), async {
+        let fixture = fixture(false).await;
+        for (from, to) in [
+            (&fixture.client, &fixture.origin),
+            (&fixture.origin, &fixture.client),
+        ] {
+            // A stream with no FIN retains its slot even after its current bytes
+            // are delivered. Admission must resume when that exact pair ends.
+            let mut first = from.open_uni().await.unwrap();
+            first.write_all(b"a").await.unwrap();
+            let mut first_peer = to.accept_uni().await.unwrap();
+            let mut byte = [0];
+            first_peer.read_exact(&mut byte).await.unwrap();
+            assert_eq!(byte, [b'a']);
+            let mut second = from.open_uni().await.unwrap();
+            second.write_all(b"b").await.unwrap();
+            second.finish().unwrap();
+            timeout(Duration::from_millis(1), to.accept_uni())
+                .await
+                .unwrap_err();
+            first.finish().unwrap();
+            assert!(first_peer.read_to_end(1).await.unwrap().is_empty());
+            assert_eq!(
+                to.accept_uni().await.unwrap().read_to_end(1).await.unwrap(),
+                b"b"
+            );
+
+            let (mut first_send, mut first_receive) = from.open_bi().await.unwrap();
+            first_send.write_all(b"c").await.unwrap();
+            let (mut first_peer_send, mut first_peer_receive) = to.accept_bi().await.unwrap();
+            first_peer_receive.read_exact(&mut byte).await.unwrap();
+            assert_eq!(byte, [b'c']);
+            let (mut second_send, mut second_receive) = from.open_bi().await.unwrap();
+            second_send.write_all(b"d").await.unwrap();
+            second_send.finish().unwrap();
+            timeout(Duration::from_millis(1), to.accept_bi())
+                .await
+                .unwrap_err();
+
+            // Ending only the request direction must still retain the pair's slot.
+            first_send.finish().unwrap();
+            assert!(first_peer_receive.read_to_end(1).await.unwrap().is_empty());
+            timeout(Duration::from_millis(1), to.accept_bi())
+                .await
+                .unwrap_err();
+            first_peer_send.finish().unwrap();
+            assert!(first_receive.read_to_end(1).await.unwrap().is_empty());
+            let (mut second_peer_send, mut second_peer_receive) = to.accept_bi().await.unwrap();
+            assert_eq!(second_peer_receive.read_to_end(1).await.unwrap(), b"d");
+            second_peer_send.finish().unwrap();
+            assert!(second_receive.read_to_end(1).await.unwrap().is_empty());
+        }
+    })
+    .await
+    .unwrap();
+}
