@@ -59,10 +59,10 @@ fn zero_cid_routes_reject_client_server_overlap() {
     assert_eq!(pair.server.endpoint.open_connections(), 1);
 }
 
-/// Zero-length IDs leave a server only the four-tuple, so a client reusing its port cannot be
-/// told apart from one multiplexing (RFC 9000 §5.1): the newest accepted attempt takes the route.
+/// Zero-length IDs leave a server only the four-tuple (RFC 9000 §5.1): the first attempt
+/// accepted from it keeps it, and a later one is refused, even one that started first.
 #[test]
-fn zero_cid_routes_give_a_reused_four_tuple_to_the_newest_accept() {
+fn zero_cid_routes_keep_a_four_tuple_for_its_first_accept() {
     let client = Endpoint::new(
         Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         None,
@@ -77,16 +77,32 @@ fn zero_cid_routes_give_a_reused_four_tuple_to_the_newest_accept() {
     );
     let mut pair = Pair::new_from_endpoint(client, server);
     pair.server.handle_incoming = Box::new(|_| IncomingConnectionBehavior::Wait);
-    pair.begin_connect(client_config());
+    let first_client = pair.begin_connect(client_config());
     pair.begin_connect(client_config());
     pair.drive_client();
     pair.drive_server();
     assert_eq!(pair.server.waiting_incoming.len(), 2);
-    let first = pair.server.waiting_incoming.remove(0);
-    pair.server.try_accept(first, pair.time).unwrap();
     let second = pair.server.waiting_incoming.pop().unwrap();
-    pair.server.try_accept(second, pair.time).unwrap();
-    assert_eq!(pair.server.endpoint.open_connections(), 2);
+    let first = pair.server.waiting_incoming.pop().unwrap();
+    let mut buf = Vec::new();
+    let first = pair
+        .server
+        .start_accept(first, pair.time, &mut buf, None)
+        .unwrap();
+    let second = pair
+        .server
+        .start_accept(second, pair.time, &mut buf, None)
+        .unwrap();
+    let established = pair.server.finish(first.accept()).unwrap();
+    assert!(matches!(
+        pair.server.finish(second.accept()),
+        Err(ConnectionError::TransportError(_))
+    ));
+    assert_eq!(pair.server.endpoint.open_connections(), 1);
+    // The first attempt completes its handshake over the addresses it kept.
+    pair.drive();
+    assert!(!pair.client_conn_mut(first_client).is_handshaking());
+    assert!(!pair.server_conn_mut(established).is_handshaking());
 }
 
 #[test]

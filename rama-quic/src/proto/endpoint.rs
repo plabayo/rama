@@ -948,6 +948,7 @@ impl Endpoint {
 
         if self.cids_exhausted()
             || self.zero_cid_client_route_in_use(incoming.addresses.remote)
+            || self.zero_cid_incoming_route_in_use(&incoming.addresses)
             || self.exclusive_connection.is_some()
         {
             debug!("refusing connection");
@@ -1169,6 +1170,16 @@ impl Endpoint {
         } = reservation;
         improper_drop_warner.dismiss();
         let buffer = self.take_buffer(incoming_idx, &progress);
+        // An attempt that started before another from its addresses was established.
+        let result = result.and_then(|conn| {
+            if self.zero_cid_incoming_route_in_use(&addresses) {
+                Err(ConnectionError::TransportError(
+                    TransportError::CONNECTION_REFUSED("addresses in use"),
+                ))
+            } else {
+                Ok(conn)
+            }
+        });
         match (result, buffer) {
             (Ok(conn), Some(buffer)) => {
                 // Install address routes only after TLS and the first flight succeeded. A
@@ -1708,6 +1719,17 @@ impl Endpoint {
                     .incoming_connection_remotes
                     .keys()
                     .any(|addresses| addresses.remote == remote))
+    }
+
+    /// Whether this zero-CID endpoint already routes `addresses` to an accepted connection. A
+    /// fresh attempt from them is refused: an unvalidated sender could otherwise take the route
+    /// of the connection whose packets it cannot be told apart from.
+    fn zero_cid_incoming_route_in_use(&self, addresses: &FourTuple) -> bool {
+        self.local_cid_generator.cid_len() == 0
+            && self
+                .index
+                .incoming_connection_remotes
+                .contains_key(addresses)
     }
 
     /// Whether this zero-CID endpoint already dialed `remote`: an incoming connection from that

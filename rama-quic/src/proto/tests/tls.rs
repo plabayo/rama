@@ -314,9 +314,10 @@ fn failed_fresh_handshake_preserves_established_zero_cid_route() {
         pair.server.set_server_config(Some(Arc::new(failing)));
         pair.fresh_attempt_from_client_address(client_config());
         pair.drive_server();
+        // Refused before its TLS runs: the addresses belong to the established connection.
         assert_matches!(
             pair.server.assert_accept_error(),
-            ConnectionError::TransportError(_)
+            ConnectionError::CidsExhausted
         );
         assert_eq!(pair.server.open_connections(), 1);
         assert_eq!(pair.server.pending_incoming(), 0);
