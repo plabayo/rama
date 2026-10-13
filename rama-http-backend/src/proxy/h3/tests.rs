@@ -23,8 +23,9 @@ use rama_http::{
         ext::{HttpDatagrams, Protocol},
     },
 };
+use rama_http_types::proto::h3::{SettingId, Settings};
 use rama_net::{address::SocketAddress, uri::Uri};
-use rama_quic::{ClientConfig, Endpoint, ServerConfig, tls::TlsOptions};
+use rama_quic::{ClientConfig, ConnectionError, Endpoint, ServerConfig, tls::TlsOptions};
 use rama_tls::{
     client::TlsClientConfig,
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
@@ -54,6 +55,10 @@ use super::*;
 const LIMIT: Duration = Duration::from_secs(20);
 
 async fn hop() -> (Endpoint, Endpoint, Connection, Connection) {
+    hop_with_early_data(false).await
+}
+
+async fn hop_with_early_data(early_data: bool) -> (Endpoint, Endpoint, Connection, Connection) {
     let identity = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
     let server_tls = TlsServerConfig::new()
         .with_alpn([b"h3".as_slice().into()].into_iter().collect())
@@ -62,10 +67,9 @@ async fn hop() -> (Endpoint, Endpoint, Connection, Connection) {
         .with_alpn([b"h3".as_slice().into()].into_iter().collect())
         .try_with_server_trust_anchors([identity.cert_chain.last().unwrap().clone()])
         .unwrap();
-    let server_config =
-        ServerConfig::try_from_rama_tls(&server_tls, TlsOptions::default()).unwrap();
-    let client_config =
-        ClientConfig::try_from_rama_tls(&client_tls, TlsOptions::default()).unwrap();
+    let options = TlsOptions::default().with_early_data(early_data);
+    let server_config = ServerConfig::try_from_rama_tls(&server_tls, options).unwrap();
+    let client_config = ClientConfig::try_from_rama_tls(&client_tls, options).unwrap();
     let (server_socket, client_socket) = MemoryDatagramSocket::pair(
         SocketAddress::local_ipv4(443),
         SocketAddress::local_ipv4(444),
@@ -75,9 +79,10 @@ async fn hop() -> (Endpoint, Endpoint, Connection, Connection) {
         .with_server_config(server_config)
         .with_datagram_socket(server_socket)
         .unwrap();
-    let client_endpoint = Endpoint::build(Executor::new())
+    let mut client_endpoint = Endpoint::build(Executor::new())
         .with_datagram_socket(client_socket)
         .unwrap();
+    client_endpoint.set_default_client_config(client_config.clone());
     let (client, server) = tokio::join!(
         client_endpoint
             .connect_with(
@@ -94,6 +99,55 @@ async fn hop() -> (Endpoint, Endpoint, Connection, Connection) {
         client.unwrap(),
         server.unwrap(),
     )
+}
+
+/// A hop resumed from an earlier session's ticket, so both peers hold installed early-data keys.
+async fn resumed_hop() -> (Endpoint, Endpoint, Connection, Connection) {
+    let (client_endpoint, server_endpoint, client, server) = hop_with_early_data(true).await;
+    let mut send = server.open_uni().await.unwrap();
+    send.write_all(b"ticket delivery barrier").await.unwrap();
+    send.finish().unwrap();
+    client
+        .accept_uni()
+        .await
+        .unwrap()
+        .read_to_end(128)
+        .await
+        .unwrap();
+    client.close(0u32, b"resume next session");
+    server.closed().await;
+    let connecting = client_endpoint
+        .connect(server_endpoint.local_addr().unwrap(), "localhost")
+        .unwrap();
+    let Ok((client, accepted)) = connecting.into_0rtt() else {
+        panic!("the first session must provide resumption keys");
+    };
+    let server = server_endpoint.accept().await.unwrap().await.unwrap();
+    assert!(accepted.await.unwrap());
+    tokio::try_join!(client.handshake_confirmed(), server.handshake_confirmed()).unwrap();
+    assert!(client.early_data_keys_enabled() && server.early_data_keys_enabled());
+    (client_endpoint, server_endpoint, client, server)
+}
+
+/// A literal SETTINGS profile `config` accepts, extended with `extra` entries.
+fn settings_profile(config: &Config, extra: &[(SettingId, u64)]) -> Arc<Settings> {
+    let mut settings = Settings::new();
+    settings
+        .set(
+            SettingId::QPACK_MAX_TABLE_CAPACITY,
+            config.decoder.max_table_capacity,
+        )
+        .unwrap();
+    settings
+        .set(
+            SettingId::QPACK_BLOCKED_STREAMS,
+            config.decoder.max_blocked_streams,
+        )
+        .unwrap();
+    for &(id, value) in extra {
+        settings.set(id, value).unwrap();
+    }
+    Arc::new(settings)
 }
 
 fn ordinary_config() -> Config {
@@ -178,6 +232,8 @@ async fn native_h3_mitm_cancellation_before_first_poll_closes_both_hops() {
     timeout(LIMIT, async {
         let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
         let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
+        // Handles the producer keeps must not keep either hop open.
+        let _retained = (ingress.clone(), egress.clone());
         let relay = Http3MitmRelay::new(Executor::new());
         drop(
             relay
@@ -185,7 +241,7 @@ async fn native_h3_mitm_cancellation_before_first_poll_closes_both_hops() {
                 .with_egress_config(ordinary_config())
                 .serve(BridgeIo(ingress, egress)),
         );
-        tokio::join!(browser.closed(), origin.closed());
+        assert_relay_ended([&browser, &origin]).await;
         for endpoint in [
             &browser_endpoint,
             &ingress_endpoint,
@@ -918,4 +974,301 @@ async fn native_h3_mitm_datagrams_preserve_carriers_across_asymmetric_hops() {
             let _drivers = tokio::join!(browser_driver, origin_driver);
         }
     }).await.unwrap();
+}
+
+#[tokio::test]
+async fn native_h3_mitm_ignores_origin_settings_it_does_not_understand() {
+    timeout(LIMIT, async {
+        let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
+        let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
+        let mut origin_config = ordinary_config();
+        // WebTransport and the draft HTTP datagram identifier: extensions nothing here knows.
+        origin_config.settings_profile = Some(settings_profile(
+            &origin_config,
+            &[
+                (SettingId::new(0x2b60_3742), 1),
+                (SettingId::new(0xff_d277), 1),
+            ],
+        ));
+        let (mut origin, origin_driver) = server::handshake(origin, origin_config).unwrap();
+        let origin_driver = spawn(origin_driver.run());
+        let relay = spawn(async move {
+            Http3MitmRelay::new(Executor::new())
+                .with_ingress_config(ordinary_config())
+                .with_egress_config(ordinary_config())
+                .serve(BridgeIo(ingress, egress))
+                .await
+        });
+        let (mut browser, browser_driver) =
+            client::handshake::<Body>(browser, ordinary_config(), Executor::new()).unwrap();
+        let browser_driver = spawn(browser_driver.run());
+        let seen = browser.peer_settings().await.unwrap();
+        for unknown in [SettingId::new(0x2b60_3742), SettingId::new(0xff_d277)] {
+            assert_eq!(
+                seen.get(unknown),
+                None,
+                "{unknown:?} is the origin's, not the relay's"
+            );
+        }
+        let request = Request::builder()
+            .uri("https://localhost/")
+            .body(Body::empty())
+            .unwrap();
+        let (sent, received) = tokio::join!(browser.send_request(request), async {
+            let (_request, response) = origin.accept().await.unwrap().resolve().await.unwrap();
+            response.send_response(Response::new(Body::empty())).await
+        });
+        received.unwrap();
+        assert_eq!(sent.unwrap().status(), StatusCode::OK);
+        origin.shutdown().unwrap();
+        relay.await.unwrap().unwrap();
+        for endpoint in [
+            &browser_endpoint,
+            &ingress_endpoint,
+            &egress_endpoint,
+            &origin_endpoint,
+        ] {
+            endpoint.close(0u32, b"complete");
+        }
+        tokio::join!(
+            browser_endpoint.shutdown(),
+            ingress_endpoint.shutdown(),
+            egress_endpoint.shutdown(),
+            origin_endpoint.shutdown()
+        );
+        let _drivers = tokio::join!(browser_driver, origin_driver);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_h3_mitm_refuses_what_it_cannot_preserve_before_any_control_output() {
+    timeout(LIMIT, async {
+        let with_pushes = || Config {
+            max_pushes: 1,
+            ..ordinary_config()
+        };
+        let profiled = || {
+            let mut config = ordinary_config();
+            config.settings_profile = Some(settings_profile(&config, &[]));
+            config
+        };
+        let cases: [(&str, bool, bool, Config, Config, bool, &str); 6] = [
+            (
+                "early ingress",
+                true,
+                false,
+                ordinary_config(),
+                ordinary_config(),
+                false,
+                "early data",
+            ),
+            (
+                "early egress",
+                false,
+                true,
+                ordinary_config(),
+                ordinary_config(),
+                false,
+                "early data",
+            ),
+            (
+                "ingress push",
+                false,
+                false,
+                with_pushes(),
+                ordinary_config(),
+                false,
+                "unsupported",
+            ),
+            (
+                "egress push",
+                false,
+                false,
+                ordinary_config(),
+                with_pushes(),
+                false,
+                "unsupported",
+            ),
+            (
+                "ingress profile",
+                false,
+                false,
+                profiled(),
+                ordinary_config(),
+                false,
+                "unsupported",
+            ),
+            (
+                "swapped sides",
+                false,
+                false,
+                ordinary_config(),
+                ordinary_config(),
+                true,
+                "server ingress",
+            ),
+        ];
+        for (name, early_ingress, early_egress, ingress_config, egress_config, swapped, expected) in
+            cases
+        {
+            let (browser_endpoint, ingress_endpoint, browser, ingress) = if early_ingress {
+                resumed_hop().await
+            } else {
+                hop().await
+            };
+            let (egress_endpoint, origin_endpoint, egress, origin) = if early_egress {
+                resumed_hop().await
+            } else {
+                hop().await
+            };
+            // A live origin, so a missing refusal relays instead of timing out on SETTINGS.
+            let (_origin, origin_driver) = server::handshake(origin, ordinary_config()).unwrap();
+            let origin_driver = spawn(origin_driver.run());
+            let io = if swapped {
+                BridgeIo(egress, ingress)
+            } else {
+                BridgeIo(ingress, egress)
+            };
+            let error = Http3MitmRelay::new(Executor::new())
+                .with_ingress_config(ingress_config)
+                .with_egress_config(egress_config)
+                .serve(io)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains(expected), "{name}: {error}");
+            assert!(
+                browser.accept_uni().await.is_err(),
+                "{name}: control output"
+            );
+            for endpoint in [
+                &browser_endpoint,
+                &ingress_endpoint,
+                &egress_endpoint,
+                &origin_endpoint,
+            ] {
+                endpoint.close(0u32, b"complete");
+            }
+            tokio::join!(
+                browser_endpoint.shutdown(),
+                ingress_endpoint.shutdown(),
+                egress_endpoint.shutdown(),
+                origin_endpoint.shutdown()
+            );
+            let _driver = origin_driver.await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_h3_mitm_bounds_ingress_field_sections_by_the_origin() {
+    const ORIGIN_LIMIT: usize = 1024;
+    timeout(LIMIT, async {
+        let (browser_endpoint, ingress_endpoint, browser, ingress) = hop().await;
+        let (egress_endpoint, origin_endpoint, egress, origin) = hop().await;
+        let mut origin_config = ordinary_config();
+        origin_config.decoder.max_field_section_size = ORIGIN_LIMIT;
+        let (mut origin, origin_driver) = server::handshake(origin, origin_config).unwrap();
+        let origin_driver = spawn(origin_driver.run());
+        let relay = spawn(async move {
+            Http3MitmRelay::new(Executor::new())
+                .with_ingress_config(ordinary_config())
+                .with_egress_config(ordinary_config())
+                .serve(BridgeIo(ingress, egress))
+                .await
+        });
+        let (mut browser, browser_driver) =
+            client::handshake::<Body>(browser, ordinary_config(), Executor::new()).unwrap();
+        let browser_driver = spawn(browser_driver.run());
+        let advertised = browser
+            .peer_settings()
+            .await
+            .unwrap()
+            .max_field_section_size();
+        assert_eq!(advertised, Some(ORIGIN_LIMIT as u64));
+        let request = Request::builder()
+            .uri("https://localhost/")
+            .header("x-oversized", "x".repeat(2 * ORIGIN_LIMIT))
+            .body(Body::empty())
+            .unwrap();
+        browser.send_request(request).await.unwrap_err();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), origin.accept())
+                .await
+                .is_err(),
+            "the origin saw an oversized request"
+        );
+        origin.shutdown().unwrap();
+        relay.await.unwrap().unwrap();
+        for endpoint in [
+            &browser_endpoint,
+            &ingress_endpoint,
+            &egress_endpoint,
+            &origin_endpoint,
+        ] {
+            endpoint.close(0u32, b"complete");
+        }
+        tokio::join!(
+            browser_endpoint.shutdown(),
+            ingress_endpoint.shutdown(),
+            egress_endpoint.shutdown(),
+            origin_endpoint.shutdown()
+        );
+        let _drivers = tokio::join!(browser_driver, origin_driver);
+    })
+    .await
+    .unwrap();
+}
+
+async fn assert_relay_ended(peers: [&Connection; 2]) {
+    let internal = VarInt::from_u32(Code::H3_INTERNAL_ERROR.value() as u32);
+    for peer in peers {
+        let closed = peer.closed().await;
+        assert!(
+            matches!(&closed, ConnectionError::ApplicationClosed(close) if close.error_code == internal),
+            "{closed:?}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_h3_mitm_failure_and_cancellation_end_both_hops_as_internal_errors() {
+    timeout(LIMIT, async {
+        for cancel in [false, true] {
+            let (_browser_endpoint, _ingress_endpoint, browser, ingress) = hop().await;
+            let (_egress_endpoint, _origin_endpoint, egress, origin) = hop().await;
+            let (_origin, origin_driver) =
+                server::handshake(origin.clone(), ordinary_config()).unwrap();
+            let _origin_driver = spawn(origin_driver.run());
+            let mut ingress_config = ordinary_config();
+            if !cancel {
+                // Fails the ingress HTTP/3 handshake after the egress one succeeded.
+                ingress_config.decoder.max_table_capacity = u64::MAX;
+            }
+            let relay = spawn(async move {
+                Http3MitmRelay::new(Executor::new())
+                    .with_ingress_config(ingress_config)
+                    .with_egress_config(ordinary_config())
+                    .serve(BridgeIo(ingress, egress))
+                    .await
+            });
+            // The browser's client lives until the assertion, so it cannot close its own hop.
+            let (sender, driver) =
+                client::handshake::<Body>(browser.clone(), ordinary_config(), Executor::new())
+                    .unwrap();
+            let _driver = spawn(driver.run());
+            if cancel {
+                sender.peer_settings().await.unwrap();
+                relay.abort();
+            } else {
+                relay.await.unwrap().unwrap_err();
+            }
+            assert_relay_ended([&browser, &origin]).await;
+        }
+    })
+    .await
+    .unwrap();
 }

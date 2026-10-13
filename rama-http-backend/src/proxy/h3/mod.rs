@@ -30,7 +30,7 @@ use rama_http_core::{
     h3::{Error, PriorityHandle, client, connection::Config, qpack::ErrorScope, server},
     service::RamaHttpService,
 };
-use rama_http_types::proto::h3::{Code, SettingId};
+use rama_http_types::proto::h3::Code;
 use rama_net::proxy::IoForwardService;
 use rama_quic::Connection;
 use rama_quic_proto::{Side, VarInt};
@@ -61,8 +61,9 @@ struct Rejected;
 /// directions finish, and middleware selects Capsule/HTTP Datagram semantics with
 /// [`HttpDatagrams`]. GOAWAY from either side drains the relay.
 ///
-/// Both connections must have early data disabled. Dropping the serve future, even before it
-/// is first polled, closes both connections.
+/// Both connections must have early data disabled; server push is not supported. A relay that
+/// fails, or whose serve future is dropped (even before it is first polled), closes both
+/// connections with `H3_INTERNAL_ERROR`.
 #[derive(Debug, Clone)]
 pub struct Http3MitmRelay<M = DefaultMiddleware, P = bool> {
     middleware: M,
@@ -189,9 +190,8 @@ where
         let close_ingress = ingress.clone();
         let close_egress = egress.clone();
         let mut guard = DropGuard::new(move || {
-            let code = VarInt::from_u32(Code::H3_INTERNAL_ERROR.value() as u32);
-            close_ingress.close(code, b"relay ended");
-            close_egress.close(code, b"relay ended");
+            close_ended(&close_ingress);
+            close_ended(&close_egress);
         });
         async move {
             let result = self
@@ -257,27 +257,20 @@ where
         }
         let ingress_extensions = ingress.extensions().clone();
         let egress_extensions = egress.extensions().clone();
+        let close_egress = egress.clone();
         let (sender, driver) = client::handshake::<Body>(egress, egress_config, self.exec.clone())?;
+        // Holding a sender keeps the client's clean release from closing egress before this does.
+        let held = sender.clone();
+        let mut egress_guard = DropGuard::new(move || {
+            close_ended(&close_egress);
+            drop(held);
+        });
         self.exec.clone().into_spawn_task(async move {
             let _driver_result = driver.run().await;
         });
         let peer = tokio::time::timeout_at(settings_deadline, sender.peer_settings()).await??;
-        for setting in peer.entries() {
-            if !setting.id.is_reserved()
-                && !matches!(
-                    setting.id,
-                    SettingId::QPACK_MAX_TABLE_CAPACITY
-                        | SettingId::QPACK_BLOCKED_STREAMS
-                        | SettingId::MAX_FIELD_SECTION_SIZE
-                        | SettingId::ENABLE_CONNECT_PROTOCOL
-                        | SettingId::H3_DATAGRAM
-                )
-            {
-                return Err(BoxError::from_static_str(
-                    "HTTP/3 relay cannot preserve unknown semantic SETTINGS",
-                ));
-            }
-        }
+        // Unknown peer SETTINGS are ignored (RFC 9114 §7.2.4) and never advertised downstream.
+
         // Header decoding is per hop. Bound ingress input by the next hop's
         // advertised field-section limit without copying its QPACK table state.
         if let Some(limit) = peer.max_field_section_size() {
@@ -333,8 +326,11 @@ where
         }));
 
         // Egress SETTINGS are known before the ingress driver can emit any.
+        let close_ingress = ingress.clone();
         let (mut connection, driver) = server::handshake(ingress, ingress_config)?;
         let mut driver = pin!(driver.run());
+        // Declared after the server state, so it closes ingress before that state's clean stop.
+        let mut ingress_guard = DropGuard::new(move || close_ended(&close_ingress));
         let mut upstream_draining = upstream_draining;
         let cancelled = async {
             match self.exec.guard() {
@@ -346,113 +342,128 @@ where
         let forwarding = IoForwardService::new(self.exec.clone());
         let mut requests = FuturesUnordered::new();
         let mut draining = false;
-        loop {
-            tokio::select! {
-                result = &mut driver => return completed(result),
-                _ = &mut cancelled, if !draining => {
-                    connection.shutdown()?;
-                    draining = true;
-                }
-                _ = &mut upstream_draining, if !draining => {
-                    connection.shutdown()?;
-                    draining = true;
-                }
-                accepted = connection.accept(), if !draining => {
-                    let stream = match accepted {
-                        Ok(stream) => stream,
-                        Err(error) => return completed(Err(error)),
-                    };
-                    let service = service.clone();
-                    let extensions = ingress_extensions.clone();
-                    let forwarding = forwarding.clone();
-                    requests.push(async move {
-                        let (request, response) = stream.resolve().await?;
-                        request.extensions().insert(Ingress(extensions));
-                        let mut priority = response.peer_priority();
-                        request.extensions().insert(priority.clone());
-                        let ingress_upgrade = (request.method() == Method::CONNECT)
-                            .then(|| handle_upgrade(&request));
-                        let ingress_tunnel_extensions = ingress_upgrade.as_ref().and_then(|_| {
-                            request.extensions()
-                                .self_get_ref::<HttpUpgradeMitmRelayExtensions>()
-                                .cloned()
-                        });
-                        let output = match service.serve(request).await {
-                            Ok(output) => output,
-                            Err(never) => match never {},
+        // The exchange borrows the HTTP/3 state, so the guards see its outcome while it lives.
+        let result = async {
+            loop {
+                tokio::select! {
+                    result = &mut driver => return completed(result),
+                    _ = &mut cancelled, if !draining => {
+                        connection.shutdown()?;
+                        draining = true;
+                    }
+                    _ = &mut upstream_draining, if !draining => {
+                        connection.shutdown()?;
+                        draining = true;
+                    }
+                    accepted = connection.accept(), if !draining => {
+                        let stream = match accepted {
+                            Ok(stream) => stream,
+                            Err(error) => return completed(Err(error)),
                         };
-                        if output.extensions().contains::<Rejected>() {
-                            return response.reset(Code::H3_REQUEST_REJECTED);
-                        }
-                        let upstream_priority = output.extensions().get_arc::<PriorityHandle>();
-                        let exchange = async move {
-                            let upgrade = ingress_upgrade.filter(|_| output.status().is_success());
-                            let egress_upgrade = upgrade.as_ref().map(|_| handle_upgrade(&output));
-                            // Only explicit middleware protocol ownership selects
-                            // Capsule semantics. A CONNECT token alone is insufficient.
-                            let datagrams = upgrade.is_some()
-                                && output.extensions().contains::<HttpDatagrams>();
-                            let egress_extensions = output
-                                .extensions()
-                                .self_get_ref::<HttpUpgradeMitmRelayExtensions>()
-                                .cloned();
-                            response.send_response(output).await?;
-                            if let (Some(ingress), Some(egress)) = (upgrade, egress_upgrade) {
-                                let (ingress, egress) = tokio::try_join!(ingress, egress)
-                                    .map_err(|error| {
-                                        tracing::debug!(%error, "HTTP/3 relay tunnel upgrade failed");
-                                        Error::stream(Code::H3_CONNECT_ERROR, "relay upgrade failed")
-                                    })?;
-                                if let Some(extensions) = ingress_tunnel_extensions {
-                                    ingress.extensions().extend(&extensions.0);
-                                }
-                                if let Some(extensions) = egress_extensions {
-                                    egress.extensions().extend(&extensions.0);
-                                }
-                                // Keep this work in the request future: GOAWAY drains
-                                // the tunnel, and relay cancellation drops both halves.
-                                if datagrams {
-                                    HttpDatagramRelay::default().serve(BridgeIo(ingress, egress))
-                                        .await.map_err(|error| {
-                                            tracing::debug!(%error, "HTTP/3 relay datagram tunnel failed");
-                                            Error::stream(Code::H3_CONNECT_ERROR, "relay datagram tunnel failed")
-                                        })?;
-                                } else {
-                                forwarding.serve(BridgeIo(ingress, egress)).await.map_err(|error| {
-                                    tracing::debug!(%error, "HTTP/3 relay tunnel forwarding failed");
-                                    Error::stream(Code::H3_CONNECT_ERROR, "relay tunnel failed")
-                                })?;
-                                }
+                        let service = service.clone();
+                        let extensions = ingress_extensions.clone();
+                        let forwarding = forwarding.clone();
+                        requests.push(async move {
+                            let (request, response) = stream.resolve().await?;
+                            request.extensions().insert(Ingress(extensions));
+                            let mut priority = response.peer_priority();
+                            request.extensions().insert(priority.clone());
+                            let ingress_upgrade = (request.method() == Method::CONNECT)
+                                .then(|| handle_upgrade(&request));
+                            let ingress_tunnel_extensions = ingress_upgrade.as_ref().and_then(|_| {
+                                request.extensions()
+                                    .self_get_ref::<HttpUpgradeMitmRelayExtensions>()
+                                    .cloned()
+                            });
+                            let output = match service.serve(request).await {
+                                Ok(output) => output,
+                                Err(never) => match never {},
+                            };
+                            if output.extensions().contains::<Rejected>() {
+                                return response.reset(Code::H3_REQUEST_REJECTED);
                             }
-                            Ok(())
-                        };
-                        let mut sending = pin!(exchange);
-                        match upstream_priority {
-                            Some(handle) => tokio::select! {
-                                result = &mut sending => result,
-                                () = forward_priority(&mut priority, &handle) => sending.await,
-                            },
-                            None => sending.await,
+                            let upstream_priority = output.extensions().get_arc::<PriorityHandle>();
+                            let exchange = async move {
+                                let upgrade = ingress_upgrade.filter(|_| output.status().is_success());
+                                let egress_upgrade = upgrade.as_ref().map(|_| handle_upgrade(&output));
+                                // Only explicit middleware protocol ownership selects
+                                // Capsule semantics. A CONNECT token alone is insufficient.
+                                let datagrams = upgrade.is_some()
+                                    && output.extensions().contains::<HttpDatagrams>();
+                                let egress_extensions = output
+                                    .extensions()
+                                    .self_get_ref::<HttpUpgradeMitmRelayExtensions>()
+                                    .cloned();
+                                response.send_response(output).await?;
+                                if let (Some(ingress), Some(egress)) = (upgrade, egress_upgrade) {
+                                    let (ingress, egress) = tokio::try_join!(ingress, egress)
+                                        .map_err(|error| {
+                                            tracing::debug!(%error, "HTTP/3 relay tunnel upgrade failed");
+                                            Error::stream(Code::H3_CONNECT_ERROR, "relay upgrade failed")
+                                        })?;
+                                    if let Some(extensions) = ingress_tunnel_extensions {
+                                        ingress.extensions().extend(&extensions.0);
+                                    }
+                                    if let Some(extensions) = egress_extensions {
+                                        egress.extensions().extend(&extensions.0);
+                                    }
+                                    // Keep this work in the request future: GOAWAY drains
+                                    // the tunnel, and relay cancellation drops both halves.
+                                    if datagrams {
+                                        HttpDatagramRelay::default().serve(BridgeIo(ingress, egress))
+                                            .await.map_err(|error| {
+                                                tracing::debug!(%error, "HTTP/3 relay datagram tunnel failed");
+                                                Error::stream(Code::H3_CONNECT_ERROR, "relay datagram tunnel failed")
+                                            })?;
+                                    } else {
+                                    forwarding.serve(BridgeIo(ingress, egress)).await.map_err(|error| {
+                                        tracing::debug!(%error, "HTTP/3 relay tunnel forwarding failed");
+                                        Error::stream(Code::H3_CONNECT_ERROR, "relay tunnel failed")
+                                    })?;
+                                    }
+                                }
+                                Ok(())
+                            };
+                            let mut sending = pin!(exchange);
+                            match upstream_priority {
+                                Some(handle) => tokio::select! {
+                                    result = &mut sending => result,
+                                    () = forward_priority(&mut priority, &handle) => sending.await,
+                                },
+                                None => sending.await,
+                            }
+                        });
+                    }
+                    result = requests.next(), if !requests.is_empty() => {
+                        if let Some(Err(error)) = result {
+                            if error.scope() == ErrorScope::Connection {
+                                return completed(Err(error));
+                            }
+                            tracing::debug!(%error, "HTTP/3 relay request stream failed");
                         }
-                    });
-                }
-                result = requests.next(), if !requests.is_empty() => {
-                    if let Some(Err(error)) = result {
-                        if error.scope() == ErrorScope::Connection {
-                            return completed(Err(error));
-                        }
-                        tracing::debug!(%error, "HTTP/3 relay request stream failed");
                     }
                 }
-            }
-            if draining && requests.is_empty() {
-                return tokio::select! {
-                    result = &mut driver => completed(result),
-                    result = connection.drained() => completed(result),
-                };
+                if draining && requests.is_empty() {
+                    return tokio::select! {
+                        result = &mut driver => completed(result),
+                        result = connection.drained() => completed(result),
+                    };
+                }
             }
         }
+        .await;
+        if result.is_ok() {
+            ingress_guard.disarm();
+            egress_guard.disarm();
+        }
+        result
     }
+}
+
+/// Close a hop the relay did not drain.
+fn close_ended(connection: &Connection) {
+    let code = VarInt::from_u32(Code::H3_INTERNAL_ERROR.value() as u32);
+    connection.close(code, b"relay ended");
 }
 
 fn completed(result: Result<(), Error>) -> Result<(), BoxError> {
