@@ -51,8 +51,8 @@ pub mod route;
 #[cfg(any(feature = "aws-lc", feature = "ring", feature = "boring"))]
 pub use proto::AddressTokenKey;
 pub use proto::{
-    AckFrequencyConfig, BloomTokenLog, Chunk, ClientConfig, ClosedStream, ConfigError,
-    CongestionControl, ConnectError, ConnectionError, ConnectionIdGenerator,
+    AckFrequencyConfig, AdmissionConfig, BloomTokenLog, Chunk, ClientConfig, ClosedStream,
+    ConfigError, CongestionControl, ConnectError, ConnectionError, ConnectionIdGenerator,
     ConnectionIdGeneratorFactory, ConnectionStats, EndpointConfig, ExportKeyingMaterialError,
     FrameStats, HashedConnectionIdGenerator, IdleTimeout, KEY_MATERIAL_SIZE,
     MIN_INITIAL_CONGESTION_WINDOW, MtuDiscoveryConfig, NegotiatedTlsParameters, NoneTokenLog,

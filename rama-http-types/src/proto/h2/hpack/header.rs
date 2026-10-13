@@ -180,7 +180,7 @@ impl Header {
         } else {
             // HTTP/2 requires lower case header names
             let name = HeaderName::from_lowercase(name)?;
-            let value = HeaderValue::from_bytes(&value)?;
+            let value = HeaderValue::from_maybe_shared(value)?;
 
             Ok(Self::field(name, value))
         }
@@ -365,7 +365,7 @@ impl Name<'_> {
         match self {
             Name::Field(name) => Ok(Header::field(
                 name.clone(),
-                HeaderValue::from_bytes(&value)?,
+                HeaderValue::from_maybe_shared(value)?,
             )),
             Name::Authority => Ok(Header::Authority(BytesStr::try_from(value)?)),
             Name::Method => Ok(Header::Method(Method::from_bytes(&value)?)),

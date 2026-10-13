@@ -526,6 +526,7 @@ impl Connection {
                 if self.total_authed_packets > 0
                             || self.retry_src_cid.is_some()
                             || packet.payload.len() <= 16 // token + 16 byte tag
+                            || rem_cid == self.initial_dst_cid
                             || !self.crypto.is_valid_retry(
                                 &self.rem_cids.active(),
                                 &packet.header_data,
@@ -540,6 +541,8 @@ impl Connection {
                     //   packets that it receives.
                     // - A client MUST discard a Retry packet with a zero-length Retry Token
                     //   field.
+                    // - A client MUST discard a Retry packet whose Source Connection ID is
+                    //   the Destination Connection ID of its first Initial.
                     // - Clients MUST discard Retry packets that have a Retry Integrity Tag
                     //   that cannot be validated
                     return Ok(());
@@ -551,6 +554,8 @@ impl Connection {
                     reason = "a second Retry is discarded above (`retry_src_cid` is set), so `client_hello` has not been taken yet"
                 )]
                 let client_hello = state.client_hello.take().unwrap();
+                // Retry integrity is checked here; unauthenticated packets never reset timers.
+                self.on_packet_authenticated(now, SpaceId::Initial, None, None, false, false);
                 self.retry_src_cid = Some(rem_cid);
                 // A Retry that validates is a packet processed successfully (RFC 9000 §10.1).
                 self.reset_idle_timeout(now, SpaceId::Initial);

@@ -28,6 +28,24 @@ pub(super) struct FramedRead<T> {
     inner: InnerFramedRead<T, LengthDelimitedCodec>,
 
     decoder: FrameDecoder,
+
+    /// Bytes of the complete frames of the header block being received.
+    header_bytes: u64,
+
+    /// Header blocks that ended, completed or not: it tells consecutive heads apart.
+    header_blocks: u64,
+}
+
+/// A request head the peer started but did not complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HeadProgress {
+    /// Bytes of it received so far.
+    pub(crate) bytes: u64,
+    /// The header block it belongs to.
+    pub(crate) block: u64,
+    /// Whether the bytes surely belong to a header block, rather than to a
+    /// frame whose type has not arrived yet.
+    pub(crate) certain: bool,
 }
 
 #[derive(Debug)]
@@ -66,7 +84,47 @@ enum Continuable {
 impl<T> FramedRead<T> {
     pub(super) fn new(inner: InnerFramedRead<T, LengthDelimitedCodec>) -> Self {
         let decoder = FrameDecoder::new(inner.decoder().max_frame_length());
-        Self { inner, decoder }
+        Self {
+            inner,
+            decoder,
+            header_bytes: 0,
+            header_blocks: 0,
+        }
+    }
+
+    /// The header block in progress, including buffered fragments so a peer
+    /// cannot evade the deadline with partial frames.
+    pub(super) fn head_progress(&self) -> Option<HeadProgress> {
+        let buffered = self.inner.read_buffer();
+        // Only the first buffered frame can be incomplete or undecoded head bytes.
+        let frame = match buffered.get(..3) {
+            Some(&[a, b, c]) => {
+                let len = u64::from(u32::from_be_bytes([0, a, b, c]));
+                (buffered.len() as u64).min(len.saturating_add(frame::HEADER_LEN as u64))
+            }
+            _ => buffered.len() as u64,
+        };
+        let block = self.header_blocks;
+        if self.decoder.partial.is_some() {
+            return Some(HeadProgress {
+                bytes: self.header_bytes.saturating_add(frame),
+                block,
+                certain: true,
+            });
+        }
+        match buffered.get(3).copied() {
+            Some(kind) if kind == Kind::Headers as u8 => Some(HeadProgress {
+                bytes: frame,
+                block,
+                certain: true,
+            }),
+            None if !buffered.is_empty() => Some(HeadProgress {
+                bytes: frame,
+                block,
+                certain: false,
+            }),
+            _ => None,
+        }
     }
 
     pub(super) fn set_observe_early_frames(&mut self, enabled: bool) {
@@ -484,7 +542,23 @@ where
 
             budget.made_progress();
             tracing::trace!("bytes read = {}", bytes.len());
-            if let Some(frame) = self.decoder.decode(bytes)? {
+            let in_block = bytes.get(3).is_some_and(|&kind| {
+                kind == Kind::Headers as u8
+                    || kind == Kind::Continuation as u8
+                    || kind == Kind::PushPromise as u8
+            });
+            let header_bytes = self.header_bytes.saturating_add(bytes.len() as u64);
+            let decoded = self.decoder.decode(bytes);
+            if self.decoder.partial.is_some() {
+                self.header_bytes = header_bytes;
+            } else {
+                // A block ends when its last frame decodes or is refused.
+                if in_block {
+                    self.header_blocks = self.header_blocks.wrapping_add(1);
+                }
+                self.header_bytes = 0;
+            }
+            if let Some(frame) = decoded? {
                 tracing::trace!("frame received: {frame:?}");
                 return Poll::Ready(Some(Ok(frame)));
             }

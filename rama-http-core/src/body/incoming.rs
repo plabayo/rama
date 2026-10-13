@@ -1,21 +1,16 @@
 use std::fmt;
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, ready};
 
-use futures_channel::{mpsc, oneshot};
 use rama_core::bytes::Bytes;
-use rama_core::futures::{Stream, stream::FusedStream}; // for mpsc::Receiver
-use rama_http_types::HeaderMap;
 use rama_http_types::body::{Frame, SizeHint, StreamingBody};
-use std::task::ready;
 
-use super::DecodedLength;
-use crate::common::watch;
+use super::{
+    DecodedLength,
+    chan::{self, Sender},
+};
 use crate::h2;
 use crate::proto::h2::ping;
-
-type BodySender = mpsc::Sender<Result<Bytes, crate::Error>>;
-type TrailersSender = oneshot::Sender<HeaderMap>;
 
 /// A stream of `Bytes`, used when receiving bodies from the network.
 ///
@@ -31,9 +26,7 @@ enum Kind {
     Empty,
     Chan {
         content_length: DecodedLength,
-        want_tx: watch::Sender,
-        data_rx: mpsc::Receiver<Result<Bytes, crate::Error>>,
-        trailers_rx: oneshot::Receiver<HeaderMap>,
+        rx: chan::Receiver,
     },
     H2 {
         content_length: DecodedLength,
@@ -46,29 +39,6 @@ enum Kind {
     // larger state off the enum so HTTP/1 and HTTP/2 bodies retain their size.
     H3(Box<crate::h3::body::Body>),
 }
-
-/// A sender half created through [`Body::channel()`].
-///
-/// Useful when wanting to stream chunks from another thread.
-///
-/// ## Body Closing
-///
-/// Note that the request body will always be closed normally when the sender is dropped (meaning
-/// that the empty terminating chunk will be sent to the remote). If you desire to close the
-/// connection with an incomplete response (e.g. in the case of an error during asynchronous
-/// processing), call the [`Sender::abort()`] method to abort the body in an abnormal fashion.
-///
-/// [`Body::channel()`]: struct.Body.html#method.channel
-/// [`Sender::abort()`]: struct.Sender.html#method.abort
-#[must_use = "Sender does nothing unless sent on"]
-pub(crate) struct Sender {
-    want_rx: watch::Receiver,
-    data_tx: BodySender,
-    trailers_tx: Option<TrailersSender>,
-}
-
-const WANT_PENDING: usize = 1;
-const WANT_READY: usize = 2;
 
 impl Incoming {
     pub(crate) fn h3(body: crate::h3::body::Body) -> Self {
@@ -85,28 +55,8 @@ impl Incoming {
     }
 
     pub(crate) fn new_channel(content_length: DecodedLength, wanter: bool) -> (Sender, Self) {
-        let (data_tx, data_rx) = mpsc::channel(0);
-        let (trailers_tx, trailers_rx) = oneshot::channel();
-
-        // If wanter is true, `Sender::poll_ready()` won't becoming ready
-        // until the `Body` has been polled for data once.
-        let want = if wanter { WANT_PENDING } else { WANT_READY };
-
-        let (want_tx, want_rx) = watch::channel(want);
-
-        let tx = Sender {
-            want_rx,
-            data_tx,
-            trailers_tx: Some(trailers_tx),
-        };
-        let rx = Self::new(Kind::Chan {
-            content_length,
-            want_tx,
-            data_rx,
-            trailers_rx,
-        });
-
-        (tx, rx)
+        let (tx, rx) = chan::channel(wanter);
+        (tx, Self::new(Kind::Chan { content_length, rx }))
     }
 
     fn new(kind: Kind) -> Self {
@@ -150,24 +100,13 @@ impl StreamingBody for Incoming {
             Kind::Empty => Poll::Ready(None),
             Kind::Chan {
                 content_length: len,
-                data_rx,
-                want_tx,
-                trailers_rx,
+                rx,
             } => {
-                want_tx.send(WANT_READY);
-
-                if !data_rx.is_terminated()
-                    && let Some(chunk) = ready!(Pin::new(data_rx).poll_next(cx)?)
-                {
+                if let Some(chunk) = ready!(rx.poll_next(cx)?) {
                     len.sub_if(chunk.len() as u64);
                     return Poll::Ready(Some(Ok(Frame::data(chunk))));
                 }
-
-                // check trailers after data is terminated
-                match ready!(Pin::new(trailers_rx).poll(cx)) {
-                    Ok(t) => Poll::Ready(Some(Ok(Frame::trailers(t)))),
-                    Err(_) => Poll::Ready(None),
-                }
+                Poll::Ready(rx.take_trailers().map(Frame::trailers).map(Ok))
             }
             Kind::H2 {
                 data_done,
@@ -266,116 +205,6 @@ impl fmt::Debug for Incoming {
     }
 }
 
-impl Sender {
-    /// Check to see if this `Sender` can send more data.
-    pub(crate) fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<crate::Result<()>> {
-        // Check if the receiver end has tried polling for the body yet
-        ready!(self.poll_want(cx)?);
-        self.data_tx
-            .poll_ready(cx)
-            .map_err(|_e| crate::Error::new_closed())
-    }
-
-    fn poll_want(&mut self, cx: &mut Context<'_>) -> Poll<crate::Result<()>> {
-        match self.want_rx.load(cx) {
-            WANT_READY => Poll::Ready(Ok(())),
-            WANT_PENDING => Poll::Pending,
-            watch::CLOSED => Poll::Ready(Err(crate::Error::new_closed())),
-            unexpected => unreachable!("want_rx value: {}", unexpected),
-        }
-    }
-
-    #[cfg(test)]
-    async fn ready(&mut self) -> crate::Result<()> {
-        use std::future::poll_fn;
-
-        poll_fn(|cx| self.poll_ready(cx)).await
-    }
-
-    /// Send data on data channel when it is ready.
-    #[cfg(test)]
-    #[expect(unused)]
-    pub(crate) async fn send_data(&mut self, chunk: Bytes) -> crate::Result<()> {
-        self.ready().await?;
-        self.data_tx
-            .try_send(Ok(chunk))
-            .map_err(|_e| crate::Error::new_closed())
-    }
-
-    /// Send trailers on trailers channel.
-    #[expect(unused)]
-    pub(crate) async fn send_trailers(&mut self, trailers: HeaderMap) -> crate::Result<()> {
-        let Some(tx) = self.trailers_tx.take() else {
-            return Err(crate::Error::new_closed());
-        };
-        tx.send(trailers).map_err(|_e| crate::Error::new_closed())
-    }
-
-    /// Try to send data on this channel.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err(Bytes)` if the channel could not (currently) accept
-    /// another `Bytes`.
-    ///
-    /// # Note
-    ///
-    /// This is mostly useful for when trying to send from some other thread
-    /// that doesn't have an async context. If in an async context, prefer
-    /// `send_data()` instead.
-    pub(crate) fn try_send_data(&mut self, chunk: Bytes) -> Result<(), Bytes> {
-        self.data_tx.try_send(Ok(chunk)).map_err(|err| {
-            #[expect(
-                clippy::expect_used,
-                reason = "we only send Ok, so into_inner here is always Ok..."
-            )]
-            err.into_inner().expect("just sent Ok")
-        })
-    }
-
-    pub(crate) fn try_send_trailers(
-        &mut self,
-        trailers: HeaderMap,
-    ) -> Result<(), Option<HeaderMap>> {
-        let Some(tx) = self.trailers_tx.take() else {
-            return Err(None);
-        };
-
-        tx.send(trailers).map_err(Some)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn abort(mut self) {
-        self.send_error(crate::Error::new_body_write_aborted());
-    }
-
-    #[expect(clippy::needless_pass_by_ref_mut)]
-    pub(crate) fn send_error(&mut self, err: crate::Error) {
-        _ = self
-            .data_tx
-            // clone so the send works even if buffer is full
-            .clone()
-            .try_send(Err(err));
-    }
-}
-
-impl fmt::Debug for Sender {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        #[derive(Debug)]
-        struct Open;
-        #[derive(Debug)]
-        struct Closed;
-
-        let mut builder = f.debug_tuple("Sender");
-        match self.want_rx.peek() {
-            watch::CLOSED => builder.field(&Closed),
-            _ => builder.field(&Open),
-        };
-
-        builder.finish()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::mem;
@@ -398,7 +227,7 @@ mod tests {
 
         assert_eq!(
             mem::size_of::<Sender>(),
-            mem::size_of::<usize>() * 5,
+            mem::size_of::<usize>() * 2,
             "Sender"
         );
 

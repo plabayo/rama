@@ -112,7 +112,7 @@ impl Error for LengthLimitError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::body::http_body_util::{BodyExt, Full, StreamBody};
+    use crate::body::http_body_util::{BodyExt, ErrorBody, Full, StreamBody};
     use bytes::Bytes;
     use std::assert_matches;
     use std::convert::Infallible;
@@ -252,23 +252,9 @@ mod tests {
 
     impl Error for ErrorBodyError {}
 
-    struct ErrorBody;
-
-    impl Body for ErrorBody {
-        type Data = &'static [u8];
-        type Error = ErrorBodyError;
-
-        fn poll_frame(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-            Poll::Ready(Some(Err(ErrorBodyError)))
-        }
-    }
-
     #[tokio::test]
     async fn read_for_body_returning_error_propagates_error() {
-        let body = &mut Limited::new(ErrorBody, 8);
+        let body = &mut Limited::new(ErrorBody::<Bytes, _>::new(ErrorBodyError), 8);
         let error = body.frame().await.unwrap().unwrap_err();
         assert_matches!(error.downcast_ref(), Some(ErrorBodyError));
     }

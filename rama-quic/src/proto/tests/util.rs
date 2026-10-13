@@ -26,7 +26,7 @@ use super::crypto::boring::{QuicClientConfig, QuicServerConfig};
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use super::crypto::rustls::{QuicClientConfig, QuicServerConfig, configured_provider};
 use super::*;
-use crate::proto::{Duration, Instant};
+use crate::proto::{Duration, Instant, endpoint::Accepted};
 
 pub(super) const DEFAULT_MTU: usize = 1452;
 
@@ -244,6 +244,30 @@ impl Pair {
         let server_ch = self.server.assert_accept();
         self.finish_connect(client_ch, server_ch);
         (client_ch, server_ch)
+    }
+
+    /// Deliver a fresh attempt's first Initial to the server from the client's address, as a
+    /// client that restarted on the same port sends it. A separate endpoint builds it: one
+    /// endpoint cannot hold two zero-CID connections to the same remote.
+    pub(super) fn fresh_attempt_from_client_address(&mut self, config: ClientConfig) {
+        let mut endpoint = Endpoint::new(
+            Arc::new(self.client.endpoint.config().clone()),
+            None,
+            true,
+            None,
+        );
+        let (_, mut conn) = endpoint
+            .connect(self.time, config, self.server.addr, "localhost")
+            .unwrap();
+        let mut buf = Vec::new();
+        let transmit = conn.poll_transmit(self.time, 1, &mut buf).unwrap();
+        self.server.inbound.push_back(Inbound {
+            at: self.time + self.latency,
+            ecn: None,
+            packet: buf[..transmit.size].into(),
+            from: None,
+            to: (!self.server.hide_local).then_some(self.server.addr),
+        });
     }
 
     /// Just start connecting the client
@@ -675,6 +699,12 @@ impl TestEndpoint {
                         self.outbound.extend(split_transmit(transmit, &buf[..size]));
                         buf.clear();
                     }
+                    DatagramEvent::Retry(transmit) => {
+                        self.retries_sent += 1;
+                        let size = transmit.size;
+                        self.outbound.extend(split_transmit(transmit, &buf[..size]));
+                        buf.clear();
+                    }
                 }
             }
         }
@@ -906,8 +936,30 @@ impl TestEndpoint {
         now: Instant,
     ) -> Result<ConnectionHandle, ConnectionError> {
         let mut buf = Vec::new();
-        match self.endpoint.accept(incoming, now, &mut buf, None) {
-            Ok((ch, conn)) => {
+        let outcome = self.endpoint.accept(incoming, now, &mut buf, None);
+        self.settle(outcome, &buf)
+    }
+
+    /// Complete an accept begun with `start_accept`, as `try_accept` does in one go.
+    pub(super) fn finish(
+        &mut self,
+        accepted: Accepted,
+    ) -> Result<ConnectionHandle, ConnectionError> {
+        let mut buf = Vec::new();
+        let outcome = self
+            .endpoint
+            .finish_accept(accepted, &mut buf)
+            .map(|registered| registered.replayed());
+        self.settle(outcome, &buf)
+    }
+
+    fn settle(
+        &mut self,
+        outcome: Result<(ConnectionHandle, Connection, AdmissionLease), AcceptError>,
+        buf: &[u8],
+    ) -> Result<ConnectionHandle, ConnectionError> {
+        match outcome {
+            Ok((ch, conn, _admission)) => {
                 self.connections.insert(ch, conn);
                 self.accepted = Some(Ok(ch));
                 Ok(ch)

@@ -189,17 +189,24 @@ impl NvPair {
             return Err(ProtocolError::content_too_large(total));
         }
 
-        let mut name = vec![0u8; name_len];
-        r.read_exact(&mut name).await?;
-
-        let mut value = vec![0u8; value_len];
-        r.read_exact(&mut value).await?;
-
         Ok(Self {
-            name: Bytes::from(name),
-            value: Bytes::from(value),
+            name: read_declared(r, name_len).await?,
+            value: read_declared(r, value_len).await?,
         })
     }
+}
+
+/// Read `len` bytes, growing with what arrives: a declared length alone never sizes the buffer.
+async fn read_declared<R>(r: &mut R, len: usize) -> Result<Bytes, ProtocolError>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut out = Vec::new();
+    (&mut *r).take(len as u64).read_to_end(&mut out).await?;
+    if out.len() != len {
+        return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+    }
+    Ok(Bytes::from(out))
 }
 
 /// A borrowed FastCGI name-value pair, for zero-copy writes.
@@ -390,6 +397,19 @@ mod tests {
         let mut cursor = std::io::Cursor::new(buf);
         let decoded = NvPair::read_from(&mut cursor, kib(64)).await.unwrap();
         assert_eq!(pair, decoded);
+    }
+
+    #[tokio::test]
+    async fn test_nv_pair_read_from_reports_a_pair_cut_short() {
+        // Declares 60 KiB of name within the cap but sends three bytes: an error, without
+        // sizing a buffer for the declared length.
+        let mut header = Vec::new();
+        header.extend_from_slice(&[0x80, 0x00, 0xF0, 0x00]);
+        header.push(0);
+        header.extend_from_slice(b"abc");
+        let mut cursor = std::io::Cursor::new(header);
+        let err = NvPair::read_from(&mut cursor, kib(64)).await.unwrap_err();
+        assert_matches!(err, ProtocolError::IO(_));
     }
 
     #[tokio::test]

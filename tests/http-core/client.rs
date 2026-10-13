@@ -1597,6 +1597,35 @@ test! {
             body: None,
 }
 
+// Closing the connection must keep the hop-by-hop fields the request nominates.
+test! {
+    name: client_hop_by_hop_headers,
+
+    server:
+        expected: "\
+            GET / HTTP/1.1\r\n\
+            connection: close, x-hop\r\n\
+            x-hop: ...\r\n\
+            Host: {addr}\r\n\
+            \r\n\
+            ",
+        reply: REPLY_OK,
+
+    client:
+        request: {
+            method: GET,
+            url: "http://{addr}/",
+            headers: {
+                "connection" => "close, x-hop",
+                "x-hop" => "...",
+            },
+        },
+        response:
+            status: OK,
+            headers: {},
+            body: None,
+}
+
 mod conn {
     use std::assert_matches;
     use std::convert::Infallible;
@@ -2304,6 +2333,48 @@ mod conn {
             .body(Empty::<Bytes>::new())
             .unwrap();
         let _res = client.send_request(req).await.expect("send_request");
+    }
+
+    #[tokio::test]
+    async fn client_max_header_size() {
+        for (long_header, accepted) in [(1000, false), (100, true)] {
+            let (server, addr) = setup_std_test_server();
+
+            thread::spawn(move || {
+                let mut sock = server.accept().unwrap().0;
+                let mut buf = [0; 1024];
+                _ = sock.read(&mut buf).unwrap();
+                sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nX-Long: ")
+                    .unwrap();
+                sock.write_all(&vec![b'a'; long_header]).unwrap();
+                sock.write_all(b"\r\n\r\n").unwrap();
+            });
+
+            let tcp = tcp_connect(&addr).await.unwrap();
+            let tcp = ServiceInput::new(tcp);
+
+            let (mut client, conn) = conn::http1::Builder::new()
+                .with_max_header_size(512)
+                .handshake(tcp)
+                .await
+                .unwrap();
+
+            tokio::spawn(async move {
+                _ = conn.await;
+            });
+
+            let req = Request::builder()
+                .uri("/a")
+                .body(Empty::<Bytes>::new())
+                .unwrap();
+            let res = client.send_request(req).await;
+            if accepted {
+                assert_eq!(res.expect("send_request").status(), StatusCode::OK);
+            } else {
+                let err = res.expect_err("head too large");
+                assert!(err.is_parse_too_large(), "{err:?}");
+            }
+        }
     }
 
     #[tokio::test]
@@ -3699,6 +3770,116 @@ mod conn {
         let _send_result = stream_a_done_tx.send(());
         drop(tx_a);
         drop(tokio::time::timeout(Duration::from_secs(5), a_handle).await);
+    }
+
+    // Like `h2_idle_stream_does_not_pin_connection_window`, but the idle stream
+    // is the send side of a CONNECT tunnel.
+    #[tokio::test]
+    async fn h2_idle_upgraded_does_not_pin_connection_window() {
+        // One byte short of the initial connection-level window.
+        const STREAM_A_LEN: usize = 65534;
+
+        let (client_io, server_io, _) = setup_duplex_test_server();
+        let (stream_a_full_tx, stream_a_full_rx) = oneshot::channel::<()>();
+        let (stream_a_done_tx, stream_a_done_rx) = oneshot::channel::<()>();
+        let (stream_b_got_tx, stream_b_got_rx) = oneshot::channel::<usize>();
+
+        // Never releases capacity, so it never sends a connection-level WINDOW_UPDATE.
+        tokio::spawn(async move {
+            let mut h2 = rama_http_core::h2::server::handshake(ServiceInput::new(server_io))
+                .await
+                .unwrap();
+            let mut stream_a_full_tx = Some(stream_a_full_tx);
+            let mut stream_a_done_rx = Some(stream_a_done_rx);
+            let mut stream_b_got_tx = Some(stream_b_got_tx);
+            while let Some(result) = h2.accept().await {
+                let (req, mut respond) = result.unwrap();
+                if req.method() == Method::CONNECT {
+                    let full_tx = stream_a_full_tx.take().unwrap();
+                    let done_rx = stream_a_done_rx.take().unwrap();
+                    tokio::spawn(async move {
+                        let _send = respond.send_response(Response::new(()), false).unwrap();
+                        let mut body = req.into_body();
+                        let mut received = 0;
+                        while received < STREAM_A_LEN {
+                            let Some(Ok(frame)) = body.data().await else {
+                                return;
+                            };
+                            received += frame.len();
+                        }
+                        _ = full_tx.send(());
+                        // Dropping the recv stream would release its capacity.
+                        _ = done_rx.await;
+                        drop(body);
+                    });
+                } else {
+                    let got_tx = stream_b_got_tx.take().unwrap();
+                    tokio::spawn(async move {
+                        let mut body = req.into_body();
+                        let received = match body.data().await {
+                            Some(Ok(frame)) => frame.len(),
+                            _ => 0,
+                        };
+                        _ = got_tx.send(received);
+                        let mut send = respond.send_response(Response::new(()), false).unwrap();
+                        _ = send.send_data(Bytes::from_static(b"ok"), true);
+                    });
+                }
+            }
+        });
+
+        let io = ServiceInput::new(client_io);
+        let (mut client, conn) = conn::http2::Builder::new(Executor::default())
+            .handshake::<_, Full<Bytes>>(io)
+            .await
+            .expect("http handshake");
+        tokio::spawn(async move {
+            drop(conn.await);
+        });
+
+        // Stream A: a tunnel that writes STREAM_A_LEN bytes and then stays open,
+        // leaving one byte of connection window.
+        let req_a = Request::connect(Uri::parse_authority_form("localhost:80").unwrap())
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let res_a = client.send_request(req_a).await.expect("send_request A");
+        assert_eq!(res_a.status(), StatusCode::OK);
+        let mut upgraded = rama::http::io::upgrade::handle_upgrade(res_a)
+            .await
+            .unwrap();
+        upgraded
+            .write_all(&vec![b'A'; STREAM_A_LEN])
+            .await
+            .expect("write to tunnel");
+
+        tokio::time::timeout(Duration::from_secs(5), stream_a_full_rx)
+            .await
+            .expect("server should receive all of stream A in time")
+            .expect("stream_a_full_rx");
+
+        // Let the tunnel settle while it waits for more writes.
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+
+        // Stream B: one byte of body, which needs the last byte of window.
+        let req_b = Request::post("http://localhost/b")
+            .body(Full::new(Bytes::from_static(b"b")))
+            .unwrap();
+        let b_fut = client.send_request(req_b);
+
+        let received_b = tokio::time::timeout(Duration::from_secs(5), stream_b_got_rx)
+            .await
+            .expect("stream B must reach the server even while the tunnel is idle")
+            .expect("stream_b_got_rx");
+        assert_eq!(
+            received_b, 1,
+            "stream B should deliver its single body byte"
+        );
+
+        drop(tokio::time::timeout(Duration::from_secs(5), b_fut).await);
+        _ = stream_a_done_tx.send(());
+        drop(upgraded);
     }
 }
 

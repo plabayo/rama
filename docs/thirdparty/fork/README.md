@@ -14,27 +14,27 @@ as a distant relative.
     - Original: <https://github.com/hyperium/h2/blob/e64c1662ebb14794fc19cbcbb5b5dd0f67925f27/LICENSE>
     - Type: MIT
     - Copy: [./licenses/h2](./licenses/h2)
-- h3: <https://github.com/hyperium/h3/tree/102dcd540a8b2eb1c58ecf97fbdfad6751d3ea11>
+- h3: <https://github.com/hyperium/h3/tree/43745ad87e95b0c035ac9c547aad467303213425>
   - reviewed as the starting donor for HTTP/3 wire types and QPACK.
   - the shipped code in `rama-http-types` (`proto::h3`) and `rama-http-core` (`h3`) is
     Rama-original, using Rama types throughout rather than the `http` crate.
   - License:
-    - Original: <https://github.com/hyperium/h3/blob/102dcd540a8b2eb1c58ecf97fbdfad6751d3ea11/LICENSE>
+    - Original: <https://github.com/hyperium/h3/blob/43745ad87e95b0c035ac9c547aad467303213425/LICENSE>
     - Type: MIT
     - Copy: [./licenses/h3](./licenses/h3)
-- hyper: <https://github.com/hyperium/hyper/tree/8fcaf1a62787b824fdd7b95a3e7c9ea81acd3449>
+- hyper: <https://github.com/hyperium/hyper/tree/2b454af2127561a447214a11ac3a498ee868062c>
   - License:
-    - Original: <https://github.com/hyperium/hyper/blob/8fcaf1a62787b824fdd7b95a3e7c9ea81acd3449/LICENSE>
+    - Original: <https://github.com/hyperium/hyper/blob/2b454af2127561a447214a11ac3a498ee868062c/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper](./licenses/hyper)
-- hyper-util: <https://github.com/hyperium/hyper-util/tree/66afc93debef02548c86e8454e6bc01cf4fca280>
+- hyper-util: <https://github.com/hyperium/hyper-util/tree/7539356138b918bbb033f52d81703131cd7bf587>
   - License:
-    - Original: <https://github.com/hyperium/hyper-util/blob/66afc93debef02548c86e8454e6bc01cf4fca280/LICENSE>
+    - Original: <https://github.com/hyperium/hyper-util/blob/7539356138b918bbb033f52d81703131cd7bf587/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper-util](./licenses/hyper-util)
-- headers: <https://github.com/hyperium/headers/tree/c3e009e89bde5e77e9d11df681f4b808067c3040>
+- headers: <https://github.com/hyperium/headers/tree/6a091bf3ae6ae39b22f4185a981efffe60a8b8e5>
   - License:
-    - Original: <https://github.com/hyperium/headers/blob/c3e009e89bde5e77e9d11df681f4b808067c3040/LICENSE>
+    - Original: <https://github.com/hyperium/headers/blob/6a091bf3ae6ae39b22f4185a981efffe60a8b8e5/LICENSE>
     - Type: MIT
     - Copy: [./licenses/headers](./licenses/headers)
 - tonic: <https://github.com/hyperium/tonic/tree/a88b919bd872f20e29d40aa05a88b19574037358>
@@ -42,37 +42,45 @@ as a distant relative.
     - Original: <https://github.com/hyperium/tonic/blob/a88b919bd872f20e29d40aa05a88b19574037358/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tonic](./licenses/tonic)
-- http: <https://github.com/hyperium/http/tree/4d18d3ea731c6267ce0d26bc04ae394a786ed3f0>
+- http: <https://github.com/hyperium/http/tree/c6af28bfd8ef171a7f8c61e551d3ee68db4ca577>
   - License:
-    - Original: <https://github.com/hyperium/http/blob/4d18d3ea731c6267ce0d26bc04ae394a786ed3f0/LICENSE-MIT>
+    - Original: <https://github.com/hyperium/http/blob/c6af28bfd8ef171a7f8c61e551d3ee68db4ca577/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/http](./licenses/http)
-- http-body: <https://github.com/hyperium/http-body/tree/768504721c1e27c598cf1d4e06e8cd5730f97d60>
+- http-body: <https://github.com/hyperium/http-body/tree/929ff1c456c6cfe7a984e8d4bd70f506cbd9c78c>
   - forked into `rama-http-types` (`http_body`) so `Frame` trailers use rama's `HeaderMap`
   - License:
-    - Original: <https://github.com/hyperium/http-body/blob/768504721c1e27c598cf1d4e06e8cd5730f97d60/LICENSE>
+    - Original: <https://github.com/hyperium/http-body/blob/929ff1c456c6cfe7a984e8d4bd70f506cbd9c78c/LICENSE>
     - Type: MIT
     - Copy: [./licenses/http-body](./licenses/http-body)
-- http-body-util: <https://github.com/hyperium/http-body/tree/07838bd97b714b95bd783cd695ebf211b67545c4>
+- http-body-util: <https://github.com/hyperium/http-body/tree/929ff1c456c6cfe7a984e8d4bd70f506cbd9c78c>
   - forked into `rama-http-types` (`http_body_util`) alongside the forked `http-body`
+  - `Chain` keeps a `BoxError` error so it can join bodies with unrelated error types,
+    and `SizeHint` addition saturates instead of overflowing
   - License:
-    - Original: <https://github.com/hyperium/http-body/blob/07838bd97b714b95bd783cd695ebf211b67545c4/LICENSE>
+    - Original: <https://github.com/hyperium/http-body/blob/929ff1c456c6cfe7a984e8d4bd70f506cbd9c78c/LICENSE>
     - Type: MIT
     - Copy: [./licenses/http-body-util](./licenses/http-body-util)
 
 ### quinn-rs
 
-- <https://github.com/quinn-rs/quinn/tree/769ef759a35dda0362117bb83a933069f97ba953>
+- <https://github.com/quinn-rs/quinn/tree/48854d48635875d259a95973cc0575db8c1792a4>
   - QUIC transport adapted into `rama-quic`, reusing Rama's UDP, TLS, runtime and
     utilities while preserving useful upstream structure.
-  - reviewed against upstream `main` (`769ef75`, 2026-09-14): every quinn-proto security
-    advisory through that date and every behavioural fix are present or ported; not carried
-    over are DATA_BLOCKED/STREAM_DATA_BLOCKED emission, the pending-incoming server-config
-    snapshot, the DATAGRAM-instead-of-PING tail-loss probe, and the assembler's sorted
-    `VecDeque` storage, which are functional or performance choices rather than fixes.
+  - reviewed against upstream `main` (`48854d4`, 2026-10-12): every quinn-proto security
+    advisory through that date (the latest being GHSA-53rm-773f-4q8c and GHSA-wppq-2f6r-wfvm)
+    and every behavioural fix are present or ported; not carried over are
+    DATA_BLOCKED/STREAM_DATA_BLOCKED emission, the pending-incoming server-config snapshot, the
+    DATAGRAM-instead-of-PING tail-loss probe, the assembler's sorted `VecDeque` storage,
+    lazily allocated remote stream slots, buffering 1-RTT packets that arrive before the
+    handshake completes, and padding Initial datagrams to `min_mtu` (the profile decides the
+    Initial size), which are functional or performance choices rather than fixes.
+  - the three-phase accept is carried over and runs TLS setup outside the endpoint lock,
+    including Initials that arrive before or during the accept (a ClientHello spanning
+    several datagrams), so the handshake signature never holds the lock.
   - License:
-    - Original: <https://github.com/quinn-rs/quinn/blob/769ef759a35dda0362117bb83a933069f97ba953/LICENSE-MIT>
-      and <https://github.com/quinn-rs/quinn/blob/769ef759a35dda0362117bb83a933069f97ba953/LICENSE-APACHE>
+    - Original: <https://github.com/quinn-rs/quinn/blob/48854d48635875d259a95973cc0575db8c1792a4/LICENSE-MIT>
+      and <https://github.com/quinn-rs/quinn/blob/48854d48635875d259a95973cc0575db8c1792a4/LICENSE-APACHE>
     - Type: MIT OR Apache-2.0 (Copyright (c) 2018 The quinn Developers)
     - Copy: [./licenses/quinn/LICENSE-MIT](./licenses/quinn/LICENSE-MIT),
       [./licenses/quinn/LICENSE-APACHE](./licenses/quinn/LICENSE-APACHE)
@@ -86,13 +94,13 @@ as a distant relative.
     - Original: <https://github.com/tower-rs/tower/blob/df06d70dbea345facbffb5881fe8647f53bf424d/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower](./licenses/tower)
-- <https://github.com/tower-rs/tower-http/tree/e2582e2fde4ef768caedc1377d07169480d07cc4>
+- <https://github.com/tower-rs/tower-http/tree/659adab07278c8fc8ebd960067030e5e1f024df4>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
     <https://github.com/plabayo/tower-async/tree/57798b7baea8e212197a226a2481fa282591dda4>
   - License:
-    - Original: <https://github.com/tower-rs/tower-http/blob/e2582e2fde4ef768caedc1377d07169480d07cc4/tower-http/LICENSE>
+    - Original: <https://github.com/tower-rs/tower-http/blob/659adab07278c8fc8ebd960067030e5e1f024df4/tower-http/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower-http](./licenses/tower-http)
 
@@ -145,7 +153,7 @@ not be kept in sync with upstream — they are now part of `rama`.
     - Original: <https://github.com/JonahLund/vy/blob/1280174f54774c24fa478475af17fd7f5814c91a/LICENSE>
     - Type: MIT
     - Copy: [./licenses/vy](./licenses/vy)
-- <https://github.com/cloudflare/lol-html/tree/02f139c4437b2da666a50d32e11d9158cbe0a393>
+- <https://github.com/cloudflare/lol-html/tree/608cc4a66b7ab4fcbe1bbdeb25df8f265572b11c>
   - Forked into private modules under
     [`rama-http/src/protocols/html`](https://github.com/plabayo/rama/tree/main/rama-http/src/protocols/html)
     as the foundation for rama's native streaming HTML parsing and
@@ -162,7 +170,7 @@ not be kept in sync with upstream — they are now part of `rama`.
     - Fewer dependencies: the CSS selector parser is hand-rolled for the
       streaming-safe subset, dropping `cssparser` and Servo's `selectors`.
   - License:
-    - Original: <https://github.com/cloudflare/lol-html/blob/02f139c4437b2da666a50d32e11d9158cbe0a393/LICENSE>
+    - Original: <https://github.com/cloudflare/lol-html/blob/608cc4a66b7ab4fcbe1bbdeb25df8f265572b11c/LICENSE>
     - Type: BSD-3-Clause
     - Copy: [./licenses/lol-html](./licenses/lol-html)
 - <https://github.com/jprendes/trapeze/tree/f0dfea7f49d133e10a2a0027de53ed931ba3d47f>
@@ -194,19 +202,23 @@ not be kept in sync with upstream — they are now part of `rama`.
 
 ## Relative Forks
 
-- <https://github.com/quinn-rs/quinn/tree/d9c8c4c695fc64292d9b117844ea6924ca0d0815/quinn-udp>
+- <https://github.com/quinn-rs/quinn/tree/48854d48635875d259a95973cc0575db8c1792a4/quinn-udp>
   - Generic UDP socket code adapted for Rama.
+  - reviewed against upstream `main` (`48854d4`, 2026-10-12): not carried over are the opt-in
+    Linux transport-error queue (`IP_RECVERR` stays off), the WASI backend, and building the
+    Windows socket state before `bind`; truncated control data marks the datagram truncated
+    (so it is dropped) instead of failing the socket.
   - License:
-    - Original: <https://github.com/quinn-rs/quinn/blob/d9c8c4c695fc64292d9b117844ea6924ca0d0815/LICENSE-MIT>
+    - Original: <https://github.com/quinn-rs/quinn/blob/48854d48635875d259a95973cc0575db8c1792a4/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/quinn-udp](./licenses/quinn-udp)
-- <https://github.com/tokio-rs/axum/tree/061666a1116d853f9ca838fb2d0c668614a9f535>
+- <https://github.com/tokio-rs/axum/tree/e57b547eb95de74b73b34719dd5926254a085634>
   - IntoResponse Code
   - (Optional)FromRequest/ (Optional)FromRequestParts code
   - Error/BoxError
   - web::extract inspiration + Path (param) deserializion code
   - License:
-    - Original: <https://github.com/tokio-rs/axum/blob/061666a1116d853f9ca838fb2d0c668614a9f535/LICENSE>
+    - Original: <https://github.com/tokio-rs/axum/blob/e57b547eb95de74b73b34719dd5926254a085634/LICENSE>
     - Type: MIT
     - Copy: [./licenses/axum](./licenses/axum)
 - <https://github.com/dtolnay/paste/tree/6a302522990cbfd9de4e0c61d91854622f7b2999>
@@ -284,7 +296,7 @@ of the rama ecosystem.
     - Original: <https://github.com/thomcc/arcstr/blob/faa7692b0d6662bb177b3aefa80a6a13f897554d/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/arcstr](./licenses/arcstr)
-- <https://github.com/rustls/rustls-native-certs/tree/9d1f11e5da42f061c9a5aebbcde48a1b843afff2>
+- <https://github.com/rustls/rustls-native-certs/tree/da7d23de157a16b3643efc0073e9e8e65d0eb1b8>
   - Forked into [`rama-crypto::native_certs`](https://github.com/plabayo/rama/tree/main/rama-crypto/src/native_certs)
     as rama's tls-implementation agnostic native trust store loader, used by
     both the rustls and boring client connectors.
@@ -297,7 +309,7 @@ of the rama ecosystem.
     - Broaden the Windows reader to both the current-user and local-machine
       ROOT + CA stores (carried over from rama's previous boring-only logic).
   - License:
-    - Original: <https://github.com/rustls/rustls-native-certs/blob/9d1f11e5da42f061c9a5aebbcde48a1b843afff2/LICENSE-MIT>
+    - Original: <https://github.com/rustls/rustls-native-certs/blob/da7d23de157a16b3643efc0073e9e8e65d0eb1b8/LICENSE-MIT>
     - Type: MIT (offered as Apache-2.0 OR ISC OR MIT)
     - Copy: [../licenses/rustls-native-certs](../licenses/rustls-native-certs)
 
@@ -306,22 +318,22 @@ of the rama ecosystem.
 Third-party test data vendored verbatim and used only by the test suite
 (not shipped in any published crate).
 
-- <https://github.com/html5lib/html5lib-tests/tree/9fb614afaa42ce8787840f057b32084308e76549>
+- <https://github.com/html5lib/html5lib-tests/tree/c777c408b61078ea2eb4acefc2535f54dbc8b28a>
   - The `tokenizer/*.test` data, vendored under
     [`rama-http/tests/html5lib-tokenizer`](https://github.com/plabayo/rama/tree/main/rama-http/tests/html5lib-tokenizer)
     and used to exercise the HTML tokenizer's identity property over a large
     real-world corpus.
   - License:
-    - Original: <https://github.com/html5lib/html5lib-tests/blob/9fb614afaa42ce8787840f057b32084308e76549/LICENSE>
+    - Original: <https://github.com/html5lib/html5lib-tests/blob/c777c408b61078ea2eb4acefc2535f54dbc8b28a/LICENSE>
     - Type: MIT
     - Copy: [./licenses/html5lib-tests](./licenses/html5lib-tests)
 
-- <https://github.com/jsonpath-standard/jsonpath-compliance-test-suite/tree/7be7c1fc28057c91e8eefaf197060fba7ed43acd>
+- <https://github.com/jsonpath-standard/jsonpath-compliance-test-suite/tree/9d1a415a53f5dfb291bc874823892e49174e38eb>
   - The generated `cts.json` corpus and schema, vendored under
     [`rama-json/tests/jsonpath-compliance`](https://github.com/plabayo/rama/tree/main/rama-json/tests/jsonpath-compliance)
     and used to exercise the RFC 9535 JSONPath selectors supported by
     rama-json's streaming matcher.
   - License:
-    - Original: <https://github.com/jsonpath-standard/jsonpath-compliance-test-suite/blob/7be7c1fc28057c91e8eefaf197060fba7ed43acd/LICENSE>
+    - Original: <https://github.com/jsonpath-standard/jsonpath-compliance-test-suite/blob/9d1a415a53f5dfb291bc874823892e49174e38eb/LICENSE>
     - Type: BSD-2-Clause
     - Copy: [./licenses/jsonpath-compliance-test-suite](./licenses/jsonpath-compliance-test-suite)

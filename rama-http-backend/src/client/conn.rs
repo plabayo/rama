@@ -318,6 +318,9 @@ fn apply_h2_client_extensions_to_builder(
         if let Some(sz) = params.max_frame_size {
             builder.set_max_frame_size(sz);
         }
+        if let Some(size) = params.header_table_size {
+            builder.set_header_table_size(size);
+        }
         if let Some(max) = params.max_concurrent_streams {
             builder.set_max_concurrent_streams(max);
         }
@@ -1072,5 +1075,72 @@ mod http3_dispatch_tests {
         ));
         let error = connector.serve(input).await.err().unwrap();
         assert_eq!(error.kind(), ConnectionErrorKind::Rejected);
+    }
+}
+
+#[cfg(test)]
+mod h2_client_params_tests {
+    use super::*;
+    use rama_core::ServiceInput;
+    use rama_http_types::Body;
+    use rama_net::client::ConnectRequest;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt as _, DuplexStream};
+
+    const SETTINGS_HEADER_TABLE_SIZE: u16 = 0x1;
+
+    /// The entries of the first non-ACK SETTINGS frame a client writes after its preface.
+    async fn client_settings(peer: &mut DuplexStream) -> Vec<(u16, u32)> {
+        let mut preface = [0u8; 24];
+        peer.read_exact(&mut preface).await.unwrap();
+        assert_eq!(&preface, b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+        loop {
+            let mut head = [0u8; 9];
+            peer.read_exact(&mut head).await.unwrap();
+            let len = u32::from_be_bytes([0, head[0], head[1], head[2]]) as usize;
+            let mut payload = vec![0u8; len];
+            peer.read_exact(&mut payload).await.unwrap();
+            if head[3] == 0x4 && (head[4] & 0x1) == 0 {
+                return payload
+                    .as_chunks::<6>()
+                    .0
+                    .iter()
+                    .map(|[a, b, c, d, e, f]| {
+                        (
+                            u16::from_be_bytes([*a, *b]),
+                            u32::from_be_bytes([*c, *d, *e, *f]),
+                        )
+                    })
+                    .collect();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn header_table_size_param_is_advertised_in_the_client_settings() {
+        for header_table_size in [None, Some(8_192)] {
+            let (io, mut peer) = tokio::io::duplex(4096);
+            let input = ConnectRequest::new("origin.example:443".parse().unwrap());
+            input
+                .extensions()
+                .insert(TargetHttpVersion(Version::HTTP_2));
+            input.extensions().insert(H2ClientContextParams {
+                header_table_size,
+                ..Default::default()
+            });
+            let established =
+                http_connect::<_, _, Body>(ServiceInput::new(io), input, Executor::default())
+                    .await
+                    .unwrap();
+
+            let advertised =
+                tokio::time::timeout(Duration::from_secs(2), client_settings(&mut peer))
+                    .await
+                    .expect("the client writes its SETTINGS without waiting for the server")
+                    .into_iter()
+                    .find_map(|(id, value)| (id == SETTINGS_HEADER_TABLE_SIZE).then_some(value));
+            assert_eq!(advertised, header_table_size);
+            drop(established);
+        }
     }
 }

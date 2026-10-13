@@ -69,8 +69,21 @@ impl Peer {
                 if self.connection.is_some() {
                     self.endpoint.ignore(incoming);
                 } else {
-                    match self.endpoint.accept(incoming, now, &mut response, None) {
-                        Ok(connection) => self.connection = Some(connection),
+                    let accepted = self
+                        .endpoint
+                        .start_accept(incoming, now, &mut response, None)
+                        .and_then(|accepting| {
+                            self.endpoint
+                                .finish_accept(accepting.accept(), &mut response)
+                        });
+                    match accepted {
+                        Ok(registered) => {
+                            let mut connection = registered.connection;
+                            for event in registered.late {
+                                connection.handle_event(event);
+                            }
+                            self.connection = Some((registered.handle, connection))
+                        }
                         Err(error) => {
                             if let Some(transmit) = error.response {
                                 self.outgoing.push_back(response[..transmit.size].to_vec());
@@ -85,7 +98,7 @@ impl Peer {
                     connection.handle_event(event);
                 }
             }
-            Some(DatagramEvent::Response(transmit)) => {
+            Some(DatagramEvent::Response(transmit) | DatagramEvent::Retry(transmit)) => {
                 self.outgoing.push_back(response[..transmit.size].to_vec());
             }
             None => {}

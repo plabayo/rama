@@ -1,10 +1,13 @@
 //! Request-stream framing and message sequencing.
 
 use std::{
+    future::poll_fn,
+    pin::{Pin, pin},
     sync::Arc,
     task::{Context, Poll, ready},
 };
 
+use crate::server::conn::timeout::{HeadBudget, LazyDeadline, deadline_after};
 use rama_core::bytes::Bytes;
 use rama_http_types::{
     HeaderMap,
@@ -13,6 +16,7 @@ use rama_http_types::{
 };
 use rama_net::uri::Uri;
 use rama_quic::StreamAbortHandle;
+use tokio::time::{Instant, Sleep};
 
 use super::{
     Error,
@@ -40,14 +44,15 @@ pub(crate) struct Reader<R: RecvStream> {
     pub(crate) abort: Option<StreamAbortHandle>,
     pub(crate) client_lifetime: Option<Arc<ConnectionLifetime>>,
     frames: FrameDecoder,
+    head_bytes: u64,
     pub(crate) push_id: Option<u64>,
     pub(crate) origin: Option<Uri>,
     /// The request's datagram demux entry while this connection receives datagrams.
     pub(crate) datagrams: Option<Arc<super::datagram::Registration>>,
     // A tunnel's peer reset or a lost connection, returned again instead of reading past it.
     terminal: Option<Error>,
-    push_cancelled: Option<std::pin::Pin<Box<dyn Future<Output = Error> + Send + Sync>>>,
-    promise: Option<std::pin::Pin<Box<dyn Future<Output = Result<(), Error>> + Send + Sync>>>,
+    push_cancelled: Option<Pin<Box<dyn Future<Output = Error> + Send + Sync>>>,
+    promise: Option<Pin<Box<dyn Future<Output = Result<(), Error>> + Send + Sync>>>,
 }
 
 impl<R: RecvStream> Reader<R> {
@@ -74,6 +79,7 @@ impl<R: RecvStream> Reader<R> {
             abort: None,
             client_lifetime: None,
             frames,
+            head_bytes: 0,
             origin: None,
             datagrams: None,
             terminal: None,
@@ -202,6 +208,13 @@ impl<R: RecvStream> Reader<R> {
                         "frame input backpressure",
                     ))
             })?;
+            if self.phase == Phase::Headers {
+                // Only field-section bytes earn time; unread DATA and extension frames do not.
+                self.head_bytes = match &event {
+                    Some(FrameEvent::Headers(bytes)) => bytes.len() as u64,
+                    _ => self.frames.buffered_headers_len() as u64,
+                };
+            }
             match event {
                 Some(FrameEvent::Header(header)) => {
                     let ty = header.ty;
@@ -287,22 +300,81 @@ impl<R: RecvStream> Reader<R> {
     }
 
     pub(crate) async fn headers(&mut self) -> Result<Vec<super::qpack::FieldPair>, Error> {
-        let event = std::future::poll_fn(|cx| self.poll_event(cx)).await?;
+        self.headers_within(None).await
+    }
+
+    /// Receive and decode a field section, within `deadline` when one applies.
+    ///
+    /// A request head's budget includes waiting for referenced QPACK inserts.
+    pub(crate) async fn headers_within(
+        &mut self,
+        deadline: Option<HeadDeadline>,
+    ) -> Result<Vec<super::qpack::FieldPair>, Error> {
+        let mut lazy = LazyDeadline::default();
+        let mut sleep = pin!(None::<Sleep>);
+        let event = poll_fn(|cx| {
+            let result = self.poll_event(cx);
+            let at = deadline.map(|deadline| deadline.at(self.head_bytes));
+            within(result, at, &mut lazy, &mut sleep, cx)
+        })
+        .await?;
         let Some(FrameEvent::Headers(bytes)) = event else {
             return Err(Error::connection(
                 Code::H3_FRAME_UNEXPECTED,
                 "expected field section",
             ));
         };
-        let result =
-            if self.shared.role == super::control::Role::Server && self.phase == Phase::Headers {
-                self.shared.decode_request(self.id, bytes).await
-            } else {
-                self.shared
-                    .decode_for_stream(self.id, self.push_id, bytes)
-                    .await
+        let at = deadline.map(|deadline| deadline.at(self.head_bytes));
+        let result = {
+            let decode = async {
+                if self.shared.role == super::control::Role::Server && self.phase == Phase::Headers
+                {
+                    self.shared.decode_request(self.id, bytes).await
+                } else {
+                    self.shared
+                        .decode_for_stream(self.id, self.push_id, bytes)
+                        .await
+                }
             };
+            let mut decode = pin!(decode);
+            poll_fn(|cx| within(decode.as_mut().poll(cx), at, &mut lazy, &mut sleep, cx)).await
+        };
         result.map_err(|error| self.reject(error))
+    }
+}
+
+/// The error of a request head that did not arrive in time.
+pub(crate) const HEAD_TIMEOUT: Error =
+    Error::stream(Code::H3_REQUEST_REJECTED, "request head timeout");
+
+/// A request head's budget, counted from the acceptance of its stream.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HeadDeadline {
+    pub(crate) accepted: Instant,
+    pub(crate) budget: HeadBudget,
+}
+
+impl HeadDeadline {
+    fn at(self, bytes: u64) -> Instant {
+        deadline_after(self.accepted, self.budget.allowance(bytes))
+    }
+}
+
+/// `result`, unless `deadline` passed: a ready result cannot revive an expired head.
+fn within<T>(
+    result: Poll<Result<T, Error>>,
+    deadline: Option<Instant>,
+    lazy: &mut LazyDeadline,
+    sleep: &mut Pin<&mut Option<Sleep>>,
+    cx: &mut Context<'_>,
+) -> Poll<Result<T, Error>> {
+    let Some(deadline) = deadline else {
+        return result;
+    };
+    match result {
+        Poll::Ready(_) if Instant::now() >= deadline => Poll::Ready(Err(HEAD_TIMEOUT)),
+        Poll::Ready(result) => Poll::Ready(result),
+        Poll::Pending => lazy.poll(sleep, cx, deadline).map(|()| Err(HEAD_TIMEOUT)),
     }
 }
 

@@ -1620,6 +1620,7 @@ where
                 headers_pseudo_order: builder.headers_pseudo_order,
                 early_frame_ctx,
                 data_frame_budget: builder.data_frame_budget,
+                settings_sent_at: None,
             },
         )?;
         let send_request = SendRequest {

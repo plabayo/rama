@@ -2,6 +2,7 @@
 //! [`ElementContentHandler`] trait.
 
 use std::borrow::Cow;
+use std::error::Error;
 use std::fmt;
 use std::str::FromStr;
 
@@ -50,7 +51,7 @@ impl fmt::Display for InvalidAttributeName {
     }
 }
 
-impl std::error::Error for InvalidAttributeName {}
+impl Error for InvalidAttributeName {}
 
 impl AttributeName {
     /// Validates a literal attribute name at construction.
@@ -463,15 +464,21 @@ pub(crate) struct EndActions {
 }
 
 impl EndActions {
-    /// The no-op actions for an opened element that needs no end-side edits
-    /// (an unmatched element, or one with only start-anchored edits).
-    pub(crate) fn passthrough() -> Self {
+    /// Swallows the element's content (and maybe its end tag), adding nothing.
+    pub(crate) fn suppressing(suppress_end_tag: bool) -> Self {
         Self {
             append: String::new(),
             after: String::new(),
-            suppress_content: false,
-            suppress_end_tag: false,
+            suppress_content: true,
+            suppress_end_tag,
         }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.append.is_empty()
+            && self.after.is_empty()
+            && !self.suppress_content
+            && !self.suppress_end_tag
     }
 }
 

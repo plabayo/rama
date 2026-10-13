@@ -76,11 +76,13 @@ quic-streamid SECONDS="0": (_run "quic_streamid" SECONDS "-max_len=4096 -timeout
 
 quic-streams SECONDS="0": (_run "quic_streams" SECONDS "-max_len=4096 -timeout=10")
 
-quic-tokens SECONDS="0":
-    mkdir -p fuzz/corpus/quic_tokens
-    cargo +nightly fuzz run {{ target-flag }} quic_tokens fuzz/corpus/quic_tokens -- -max_len=65 -timeout=10 -max_total_time={{ SECONDS }}
+quic-tokens SECONDS="0": (_run "quic_tokens" SECONDS "-max_len=65 -timeout=10")
 
-quic SECONDS="0": (quic-packet SECONDS) (quic-capture SECONDS) (quic-frame SECONDS) (quic-params SECONDS) (quic-streamid SECONDS) (quic-streams SECONDS) (quic-tokens SECONDS)
+quic-admission SECONDS="0": (_run "quic_admission" SECONDS "-max_len=8192 -timeout=10")
+
+http-deadlines SECONDS="0": (_run "http_deadlines" SECONDS "-max_len=8192 -timeout=10")
+
+quic SECONDS="0": (quic-packet SECONDS) (quic-capture SECONDS) (quic-frame SECONDS) (quic-params SECONDS) (quic-streamid SECONDS) (quic-streams SECONDS) (quic-tokens SECONDS) (quic-admission SECONDS)
 
 # HTTP/3 frame/settings codecs and QPACK instruction/field-section decoding.
 http-capsule SECONDS="0": (_run "http_capsule" SECONDS "-max_len=65536 -timeout=10")
@@ -106,6 +108,6 @@ qpack-stateful SECONDS="0": (_run "qpack_stateful" SECONDS "-max_len=257 -timeou
 h3 SECONDS="0": (http-capsule SECONDS) (h3-frame SECONDS) (h3-settings SECONDS) (h3-state SECONDS) (h3-datagram-demux SECONDS) (h3-request-head SECONDS) (qpack-field-section SECONDS) (qpack-encoder-stream SECONDS) (qpack-instruction SECONDS) (qpack-stateful SECONDS)
 
 # The pre-release smoke pass: a minute per target.
-all-60s: (ua "60") (h2 "60") (http-headers-x-robots-tag "60") (http-header-map "60") (http-typed-headers "60") (http-structured-fields "60") (icap "60") (quic "60") (h3 "60")
+all-60s: (ua "60") (h2 "60") (http-headers-x-robots-tag "60") (http-header-map "60") (http-typed-headers "60") (http-structured-fields "60") (http-deadlines "60") (icap "60") (quic "60") (h3 "60")
 
 full: all-60s h2-main

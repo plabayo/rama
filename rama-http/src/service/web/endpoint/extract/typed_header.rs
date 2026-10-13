@@ -50,15 +50,16 @@ where
         _state: &State,
     ) -> Result<Option<Self>, Self::Rejection> {
         let mut values = parts.headers.get_all(H::name()).iter();
-        let is_missing = values.size_hint() == (0, Some(0));
-        match H::decode(&mut values) {
-            Ok(res) => Ok(Some(Self(res))),
-            Err(_) if is_missing => Ok(None),
-            Err(err) => Err(TypedHeaderRejection {
+        // A missing header is `None` even for headers that decode from zero values.
+        if values.size_hint() == (0, Some(0)) {
+            return Ok(None);
+        }
+        H::decode(&mut values)
+            .map(|header| Some(Self(header)))
+            .map_err(|err| TypedHeaderRejection {
                 name: H::name(),
                 reason: TypedHeaderRejectionReason::Error(err),
-            }),
-        }
+            })
     }
 }
 
@@ -131,8 +132,9 @@ impl std::fmt::Display for TypedHeaderRejection {
             TypedHeaderRejectionReason::Missing => {
                 write!(f, "Header of type `{}` was missing", self.name)
             }
-            TypedHeaderRejectionReason::Error(err) => {
-                write!(f, "{} ({})", err, self.name)
+            // The decode error is exposed via `source`; repeating it here duplicates reports.
+            TypedHeaderRejectionReason::Error(_) => {
+                write!(f, "Failed to parse header `{}`", self.name)
             }
         }
     }
@@ -150,10 +152,77 @@ impl std::error::Error for TypedHeaderRejection {
 #[cfg(test)]
 mod tests {
     use crate::{
-        Body, Request,
-        headers::ContentType,
-        service::web::extract::{FromPartsStateRefPair, TypedHeader},
+        Body, HeaderName, HeaderValue, Request, header,
+        headers::{self, ContentType, HeaderDecode},
+        request::Parts,
+        service::web::extract::{
+            FromPartsStateRefPair, TypedHeader, typed_header::TypedHeaderRejection,
+        },
     };
+
+    #[derive(Debug)]
+    struct DecodesFromNothing;
+
+    impl headers::TypedHeader for DecodesFromNothing {
+        fn name() -> &'static HeaderName {
+            &header::COOKIE
+        }
+    }
+
+    impl HeaderDecode for DecodesFromNothing {
+        fn decode<'i, I>(_values: &mut I) -> Result<Self, headers::Error>
+        where
+            I: Iterator<Item = &'i HeaderValue>,
+        {
+            Ok(Self)
+        }
+    }
+
+    fn parts_with(headers: &[(&'static str, &'static str)]) -> Parts {
+        let mut builder = Request::builder();
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        builder.body(Body::empty()).unwrap().into_parts().0
+    }
+
+    async fn extract_optional<H>(
+        parts: &Parts,
+    ) -> Result<Option<TypedHeader<H>>, TypedHeaderRejection>
+    where
+        H: HeaderDecode + Send + Sync + 'static,
+    {
+        <Option<TypedHeader<H>> as FromPartsStateRefPair<()>>::from_parts_state_ref_pair(parts, &())
+            .await
+    }
+
+    #[tokio::test]
+    async fn optional_typed_header_is_none_when_missing() {
+        let header = extract_optional::<DecodesFromNothing>(&parts_with(&[]))
+            .await
+            .unwrap();
+        assert!(header.is_none());
+
+        let header = extract_optional::<DecodesFromNothing>(&parts_with(&[("cookie", "a=1")]))
+            .await
+            .unwrap();
+        assert!(header.is_some());
+    }
+
+    #[tokio::test]
+    async fn invalid_typed_header_rejection_does_not_repeat_its_source() {
+        let rejection =
+            extract_optional::<ContentType>(&parts_with(&[("content-type", "not a mime type")]))
+                .await
+                .unwrap_err();
+
+        assert!(!rejection.is_missing());
+        assert_eq!(
+            rejection.to_string(),
+            "Failed to parse header `content-type`"
+        );
+        assert!(std::error::Error::source(&rejection).is_some());
+    }
 
     #[tokio::test]
     async fn test_get_typed_header() {

@@ -51,7 +51,7 @@ impl PacketBuilder {
     /// Write a new packet header to `buffer` and determine the packet's properties
     ///
     /// Marks the connection drained and returns `None` if the confidentiality limit would be
-    /// violated, or an Initial token leaves insufficient space for frames.
+    /// violated, or an Initial token leaves too little space for frames.
     #[expect(
         clippy::unwrap_used,
         clippy::unreachable,

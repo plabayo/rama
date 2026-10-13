@@ -1,10 +1,12 @@
 //! The scan-based, resumable HTML tokenizer.
 //!
-//! The tokenizer owns a growable buffer and is driven by [`Tokenizer::write`]
-//! (feed a chunk) and [`Tokenizer::end`] (finalize); [`Tokenizer::tokenize`]
-//! is the one-shot convenience (`write` + `end`). Both paths share one
-//! resumable core, so a document tokenizes identically no matter how the
-//! input is split across `write` calls.
+//! The tokenizer is driven by [`Tokenizer::write`] (feed a chunk) and
+//! [`Tokenizer::end`] (finalize); [`Tokenizer::tokenize`] is the one-shot
+//! convenience (`write` + `end`). Both paths share one resumable core, so a
+//! document tokenizes identically no matter how the input is split across
+//! `write` calls. A chunk is scanned in place; only an incomplete construct
+//! at its end is copied into the tokenizer's buffer, to be completed by the
+//! next chunk.
 //!
 //! It is built for verbatim re-serialization: the `raw` spans of the emitted
 //! tokens partition the input contiguously, so concatenating them reproduces
@@ -14,19 +16,22 @@
 //!
 //! Atomic constructs (tags, comments, CDATA, doctype, and raw-text/script
 //! bodies) are retained whole until their terminator arrives; ordinary text
-//! streams in chunk-sized pieces. A small context tracker (see
-//! [`super::context`]) supplies the open-element context needed to pick the
-//! right text mode and to recognize CDATA in foreign content.
+//! streams in chunk-sized pieces. The text mode of a start tag and whether
+//! CDATA is real come from the consumer ([`ParseSink`]): a small context
+//! tracker (see [`super::context`]) for a plain [`TokenSink`], the rewriter's
+//! tree builder for the rewriter.
 //!
 //! > Memory note: a single unterminated raw-text/script body (or
 //! > `<plaintext>`) is buffered until its end tag or end of input; ordinary
 //! > text is not.
 
 use memchr::{memchr, memchr2};
+use rama_utils::byte_set::set_each;
+use rama_utils::macros::generate_set_and_with;
 
 use super::context::{ContextTracker, ParsingAmbiguityError, TextMode};
 use super::name::LocalNameHash;
-use super::sink::TokenSink;
+use super::sink::{ParseSink, Standalone, TokenSink};
 use super::token::{AttrRange, Cdata, Comment, Doctype, EndTag, Span, StartTag, Text};
 
 /// `<!` — the markup-declaration opener.
@@ -89,7 +94,7 @@ impl Tokenizer {
         Self::default()
     }
 
-    rama_utils::macros::generate_set_and_with! {
+    generate_set_and_with! {
         /// Sets strict mode. When enabled, ambiguous text-mode contexts abort
         /// with a [`ParsingAmbiguityError`] instead of tokenizing best-effort.
         pub fn strict(mut self, strict: bool) -> Self {
@@ -109,8 +114,19 @@ impl Tokenizer {
         chunk: &[u8],
         sink: &mut S,
     ) -> Result<(), ParsingAmbiguityError> {
-        self.buffer.extend_from_slice(chunk);
-        self.run(false, sink)
+        let Self {
+            buffer,
+            attributes,
+            context,
+            ..
+        } = self;
+        feed(
+            buffer,
+            attributes,
+            chunk,
+            &mut Standalone { sink, context },
+            false,
+        )
     }
 
     /// Finalizes the stream, emitting any remaining (possibly unterminated)
@@ -120,7 +136,40 @@ impl Tokenizer {
     ///
     /// See [`tokenize`].
     pub fn end<S: TokenSink>(&mut self, sink: &mut S) -> Result<(), ParsingAmbiguityError> {
-        let result = self.run(true, sink);
+        let Self {
+            buffer,
+            attributes,
+            context,
+            ..
+        } = self;
+        let result = feed(
+            buffer,
+            attributes,
+            &[],
+            &mut Standalone { sink, context },
+            true,
+        );
+        self.reset();
+        result
+    }
+
+    /// [`write`](Self::write) for a consumer that supplies its own
+    /// tree-construction context.
+    pub(crate) fn write_parse<P: ParseSink>(
+        &mut self,
+        chunk: &[u8],
+        sink: &mut P,
+    ) -> Result<(), ParsingAmbiguityError> {
+        feed(&mut self.buffer, &mut self.attributes, chunk, sink, false)
+    }
+
+    /// [`end`](Self::end) for a consumer that supplies its own
+    /// tree-construction context.
+    pub(crate) fn end_parse<P: ParseSink>(
+        &mut self,
+        sink: &mut P,
+    ) -> Result<(), ParsingAmbiguityError> {
+        let result = feed(&mut self.buffer, &mut self.attributes, &[], sink, true);
         self.reset();
         result
     }
@@ -146,63 +195,76 @@ impl Tokenizer {
         self.buffer.clear();
         self.context = ContextTracker::new(self.strict);
     }
+}
 
-    /// The resumable core. Emits all complete tokens from the buffer; if
-    /// `is_final` is false, stops at the first incomplete construct and
-    /// retains it (and the trailing text run) for the next call.
-    fn run<S: TokenSink>(
-        &mut self,
-        is_final: bool,
-        sink: &mut S,
-    ) -> Result<(), ParsingAmbiguityError> {
-        // Disjoint field borrows: the buffer is read while the attribute
-        // scratch and context are mutated.
-        let Self {
-            buffer,
-            attributes,
-            context,
-            ..
-        } = self;
+/// Tokenizes `chunk` after the bytes retained from earlier calls. Without
+/// retained bytes the chunk is scanned in place, and only its incomplete tail
+/// is copied.
+fn feed<P: ParseSink>(
+    buffer: &mut Vec<u8>,
+    attributes: &mut Vec<AttrRange>,
+    chunk: &[u8],
+    sink: &mut P,
+    is_final: bool,
+) -> Result<(), ParsingAmbiguityError> {
+    if buffer.is_empty() {
+        let result = run(chunk, attributes, sink, is_final);
+        sink.flush(chunk);
+        let consumed = result.inspect_err(|_| buffer.extend_from_slice(chunk))?;
+        buffer.extend_from_slice(chunk.get(consumed..).unwrap_or_default());
+    } else {
+        buffer.extend_from_slice(chunk);
+        let result = run(buffer, attributes, sink, is_final);
+        sink.flush(buffer);
+        buffer.drain(..result?);
+    }
+    Ok(())
+}
 
-        let mut pos = 0;
-        // Start of the pending (not-yet-emitted) text run.
-        let mut text_start = 0;
+/// The resumable core. Emits all complete tokens of `input`; if `is_final`
+/// is false, stops at the first incomplete construct. Returns how many bytes
+/// were consumed: the rest is retained for the next call.
+fn run<P: ParseSink>(
+    input: &[u8],
+    attributes: &mut Vec<AttrRange>,
+    sink: &mut P,
+    is_final: bool,
+) -> Result<usize, ParsingAmbiguityError> {
+    let mut pos = 0;
+    // Start of the pending (not-yet-emitted) text run.
+    let mut text_start = 0;
 
-        loop {
-            let Some(rel) = memchr(b'<', buffer.get(pos..).unwrap_or(&[])) else {
-                // No more markup: the rest is text.
-                emit_text(buffer, text_start, buffer.len(), sink);
-                text_start = buffer.len();
-                break;
-            };
-            let lt = pos + rel;
+    loop {
+        let Some(rel) = memchr(b'<', input.get(pos..).unwrap_or(&[])) else {
+            // No more markup: the rest is text.
+            emit_text(input, text_start, input.len(), sink);
+            return Ok(input.len());
+        };
+        let lt = pos + rel;
 
-            match classify(buffer, lt, context.cdata_allowed()) {
-                Resolve::Text => pos = lt + 1, // a `<` that isn't markup is text
-                Resolve::NeedMore => {
-                    if is_final {
-                        pos = lt + 1; // a trailing `<` at EOF is text
-                    } else {
-                        emit_text(buffer, text_start, lt, sink);
-                        text_start = lt;
-                        break;
-                    }
+        match classify(input, lt, sink) {
+            Resolve::Text => pos = lt + 1, // a `<` that isn't markup is text
+            Resolve::NeedMore => {
+                if is_final {
+                    pos = lt + 1; // a trailing `<` at EOF is text
+                } else {
+                    emit_text(input, text_start, lt, sink);
+                    return Ok(lt);
                 }
-                Resolve::Construct(construct) => {
-                    if !is_final && !terminator_available(construct, buffer, lt, context) {
-                        emit_text(buffer, text_start, lt, sink);
-                        text_start = lt;
-                        break;
+            }
+            Resolve::Construct(construct) => {
+                // The pending text goes first: it can change the context the
+                // construct is judged in.
+                emit_text(input, text_start, lt, sink);
+                match process(construct, attributes, sink, input, lt, is_final)? {
+                    Some(next) => {
+                        pos = next;
+                        text_start = next;
                     }
-                    emit_text(buffer, text_start, lt, sink);
-                    pos = process(construct, attributes, context, buffer, lt, sink)?;
-                    text_start = pos;
+                    None => return Ok(lt),
                 }
             }
         }
-
-        buffer.drain(..text_start);
-        Ok(())
     }
 }
 
@@ -226,18 +288,10 @@ enum Construct {
     BogusComment(usize),
 }
 
-/// A pending raw-text scan triggered by a text-mode start tag.
-#[derive(Debug, Clone, Copy)]
-struct RawScan {
-    mode: TextMode,
-    /// Span of the element name, used to find the matching end tag.
-    name: Span,
-}
-
 /// Classifies the `<` at `lt`, signalling [`Resolve::NeedMore`] when the
 /// available bytes are only a prefix of a longer opener (`<!--`, `<![CDATA[`,
 /// `<!doctype`).
-fn classify(input: &[u8], lt: usize, cdata_allowed: bool) -> Resolve {
+fn classify<P: ParseSink>(input: &[u8], lt: usize, sink: &P) -> Resolve {
     match input.get(lt + 1) {
         None => Resolve::NeedMore,
         Some(b) if b.is_ascii_alphabetic() => Resolve::Construct(Construct::StartTag),
@@ -246,13 +300,13 @@ fn classify(input: &[u8], lt: usize, cdata_allowed: bool) -> Resolve {
             Some(c) if c.is_ascii_alphabetic() => Resolve::Construct(Construct::EndTag),
             Some(_) => Resolve::Construct(Construct::BogusComment(2)),
         },
-        Some(b'!') => classify_markup_declaration(input, lt, cdata_allowed),
+        Some(b'!') => classify_markup_declaration(input, lt, sink),
         Some(b'?') => Resolve::Construct(Construct::BogusComment(1)),
         Some(_) => Resolve::Text,
     }
 }
 
-fn classify_markup_declaration(input: &[u8], lt: usize, cdata_allowed: bool) -> Resolve {
+fn classify_markup_declaration<P: ParseSink>(input: &[u8], lt: usize, sink: &P) -> Resolve {
     // Bytes after the `<!`.
     let rest = input.get(lt + MARKUP_DECL_PREFIX.len()..).unwrap_or(&[]);
 
@@ -262,7 +316,7 @@ fn classify_markup_declaration(input: &[u8], lt: usize, cdata_allowed: bool) -> 
     if is_strict_prefix(rest, b"--") {
         return Resolve::NeedMore;
     }
-    if cdata_allowed {
+    if sink.cdata_allowed() {
         let cdata_inner = &CDATA_PREFIX[MARKUP_DECL_PREFIX.len()..]; // `[CDATA[`
         if rest.starts_with(cdata_inner) {
             return Resolve::Construct(Construct::Cdata);
@@ -280,149 +334,169 @@ fn classify_markup_declaration(input: &[u8], lt: usize, cdata_allowed: bool) -> 
     Resolve::Construct(Construct::BogusComment(MARKUP_DECL_PREFIX.len()))
 }
 
-/// Whether the construct at `lt` has its terminator within the buffer (so it
-/// can be emitted without more input). For a text-mode start tag this also
-/// requires the body's end tag to be present.
-fn terminator_available(
-    construct: Construct,
-    input: &[u8],
-    lt: usize,
-    context: &ContextTracker,
-) -> bool {
-    match construct {
-        Construct::StartTag => {
-            let name_end = scan_tag_name(input, lt + 1);
-            let (close, _self_closing, complete) = scan_attributes(None, input, name_end);
-            if !complete {
-                return false;
-            }
-            let name = slice(input, lt + 1, name_end);
-            match context.peek_text_mode(LocalNameHash::of(name)) {
-                None => true,
-                Some(mode) => find_body_end(mode, input, close, name).is_some(),
-            }
-        }
-        Construct::EndTag => scan_attributes(None, input, scan_tag_name(input, lt + 2)).2,
-        Construct::Comment => find_seq(input, lt + COMMENT_PREFIX.len(), COMMENT_SUFFIX).is_some(),
-        Construct::Cdata => find_seq(input, lt + CDATA_PREFIX.len(), CDATA_SUFFIX).is_some(),
-        Construct::Doctype => {
-            let from = lt + MARKUP_DECL_PREFIX.len() + DOCTYPE_KEYWORD.len();
-            memchr(b'>', input.get(from..).unwrap_or(&[])).is_some()
-        }
-        Construct::BogusComment(open) => {
-            memchr(b'>', input.get(lt + open..).unwrap_or(&[])).is_some()
-        }
-    }
-}
-
-/// Emits the construct at `lt`, returning the position just past it.
-fn process<S: TokenSink>(
+/// Emits the construct at `lt`, returning the position just past it, or
+/// `None` (only when `is_final` is false) when it is not complete yet: then
+/// nothing was emitted.
+fn process<P: ParseSink>(
     construct: Construct,
     attributes: &mut Vec<AttrRange>,
-    context: &mut ContextTracker,
+    sink: &mut P,
     input: &[u8],
     lt: usize,
-    sink: &mut S,
-) -> Result<usize, ParsingAmbiguityError> {
+    is_final: bool,
+) -> Result<Option<usize>, ParsingAmbiguityError> {
     Ok(match construct {
-        Construct::StartTag => {
-            let (close, name_hash, name, self_closing) =
-                scan_start_tag(attributes, input, lt, sink);
-            let text_mode = context.on_start_tag(
-                name_hash,
-                slice(input, name.start, name.end),
-                attributes,
-                input,
-                self_closing,
-            )?;
-            if let Some(mode) = text_mode {
-                scan_raw_text(attributes, input, close, RawScan { mode, name }, sink)
-            } else {
-                close
-            }
+        Construct::StartTag => return scan_start_tag(attributes, input, lt, sink, is_final),
+        Construct::EndTag => scan_end_tag(attributes, input, lt, sink, false, is_final),
+        Construct::Comment => {
+            let data_start = lt + COMMENT_PREFIX.len();
+            let end = find_seq(input, data_start, COMMENT_SUFFIX);
+            delimited(input, lt, data_start, end, COMMENT_SUFFIX.len(), is_final).map(
+                |(raw, data)| {
+                    sink.comment(&Comment { input, raw, data });
+                    raw.end
+                },
+            )
         }
-        Construct::EndTag => {
-            let (close, name_hash, name) = scan_end_tag(attributes, input, lt, sink);
-            context.on_end_tag(name_hash, slice(input, name.start, name.end));
-            close
+        Construct::Cdata => {
+            let data_start = lt + CDATA_PREFIX.len();
+            let end = find_seq(input, data_start, CDATA_SUFFIX);
+            delimited(input, lt, data_start, end, CDATA_SUFFIX.len(), is_final).map(
+                |(raw, data)| {
+                    sink.cdata(&Cdata { input, raw, data });
+                    raw.end
+                },
+            )
         }
-        Construct::Comment => scan_comment(input, lt, sink),
-        Construct::Cdata => scan_cdata(input, lt, sink),
-        Construct::Doctype => scan_doctype(input, lt, sink),
-        Construct::BogusComment(open) => scan_bogus_comment(input, lt, open, sink),
+        Construct::Doctype => {
+            let after_keyword = lt + MARKUP_DECL_PREFIX.len() + DOCTYPE_KEYWORD.len();
+            let end = find_byte(input, after_keyword, b'>');
+            delimited(input, lt, after_keyword, end, 1, is_final).map(|(raw, content)| {
+                let name = parse_doctype_name(input, after_keyword, content.end);
+                sink.doctype(&Doctype { input, raw, name });
+                raw.end
+            })
+        }
+        Construct::BogusComment(open) => {
+            let data_start = lt + open;
+            let end = find_byte(input, data_start, b'>');
+            delimited(input, lt, data_start, end, 1, is_final).map(|(raw, data)| {
+                sink.comment(&Comment { input, raw, data });
+                raw.end
+            })
+        }
     })
 }
 
-fn scan_start_tag<S: TokenSink>(
+/// The raw and data spans of a construct opened at `lt` whose data starts at
+/// `data_start` and is closed by a `close_len`-byte terminator at `end`; an
+/// unterminated construct runs to the end of the final input.
+fn delimited(
+    input: &[u8],
+    lt: usize,
+    data_start: usize,
+    end: Option<usize>,
+    close_len: usize,
+    is_final: bool,
+) -> Option<(Span, Span)> {
+    let (data_end, close) = match end {
+        Some(at) => (at, at + close_len),
+        None if is_final => (input.len(), input.len()),
+        None => return None,
+    };
+    Some((
+        Span::new(lt, close),
+        Span::new(data_start.min(data_end), data_end),
+    ))
+}
+
+/// Emits a start tag (and the text-mode body it opens, with its end tag),
+/// returning the position past it. In a non-final run nothing is emitted
+/// until the tag, and a text-mode body up to its end tag, are complete.
+fn scan_start_tag<P: ParseSink>(
     attributes: &mut Vec<AttrRange>,
     input: &[u8],
     lt: usize,
-    sink: &mut S,
-) -> (usize, LocalNameHash, Span, bool) {
+    sink: &mut P,
+    is_final: bool,
+) -> Result<Option<usize>, ParsingAmbiguityError> {
     let name_start = lt + 1;
     let name_end = scan_tag_name(input, name_start);
-    let name = Span::new(name_start, name_end);
-    let name_hash = LocalNameHash::of(slice(input, name_start, name_end));
+    let name_bytes = slice(input, name_start, name_end);
 
     attributes.clear();
-    let (close, self_closing, _complete) = scan_attributes(Some(attributes), input, name_end);
+    let (close, self_closing, complete) = scan_attributes(Some(attributes), input, name_end);
+    if !complete && !is_final {
+        return Ok(None);
+    }
+    let name_hash = LocalNameHash::of(name_bytes);
+    // Decided before the tag is applied, so an incomplete body leaves no trace.
+    let text_mode = sink.text_mode(name_hash, name_bytes);
+    let body_end = match text_mode {
+        Some(mode) => {
+            let end = find_body_end(mode, input, close, name_bytes);
+            // The end tag, too, must be whole: edits anchored at it land after it.
+            let complete =
+                end.is_some_and(|lt| scan_attributes(None, input, scan_tag_name(input, lt + 2)).2);
+            if !complete && !is_final {
+                return Ok(None);
+            }
+            end
+        }
+        None => None,
+    };
 
-    let tag = StartTag {
+    sink.start_tag(&StartTag {
         input,
         raw: Span::new(lt, close),
-        name,
+        name: Span::new(name_start, name_end),
         name_hash,
         attributes,
         self_closing,
+    })?;
+    if text_mode.is_none() {
+        return Ok(Some(close));
+    }
+    let Some(end_lt) = body_end else {
+        // An unterminated text-mode body runs to the end of the final input.
+        emit_text(input, close, input.len(), sink);
+        return Ok(Some(input.len()));
     };
-    sink.start_tag(&tag);
-    (close, name_hash, name, self_closing)
+    emit_text(input, close, end_lt, sink);
+    Ok(scan_end_tag(attributes, input, end_lt, sink, true, true))
 }
 
-fn scan_end_tag<S: TokenSink>(
+/// Emits an end tag, returning the position past it (`None` while it is
+/// incomplete in a non-final run).
+fn scan_end_tag<P: ParseSink>(
     attributes: &mut Vec<AttrRange>,
     input: &[u8],
     lt: usize,
-    sink: &mut S,
-) -> (usize, LocalNameHash, Span) {
+    sink: &mut P,
+    closes_text: bool,
+    is_final: bool,
+) -> Option<usize> {
     let name_start = lt + 2;
     let name_end = scan_tag_name(input, name_start);
-    let name = Span::new(name_start, name_end);
-    let name_hash = LocalNameHash::of(slice(input, name_start, name_end));
 
     // End tags may carry (ignored) attributes; scan past them so that a `>`
     // inside a quoted value does not close the tag prematurely.
     attributes.clear();
-    let (close, _self_closing, _complete) = scan_attributes(Some(attributes), input, name_end);
-
-    let tag = EndTag {
-        input,
-        raw: Span::new(lt, close),
-        name,
-        name_hash,
-    };
-    sink.end_tag(&tag);
-    (close, name_hash, name)
-}
-
-/// Scans an element body in a raw text mode, emitting a [`Text`] token for
-/// the content and (if found) the matching end tag.
-fn scan_raw_text<S: TokenSink>(
-    attributes: &mut Vec<AttrRange>,
-    input: &[u8],
-    content_start: usize,
-    scan: RawScan,
-    sink: &mut S,
-) -> usize {
-    let name = slice(input, scan.name.start, scan.name.end);
-    if let Some(lt) = find_body_end(scan.mode, input, content_start, name) {
-        emit_text(input, content_start, lt, sink);
-        let (close, _name_hash, _name) = scan_end_tag(attributes, input, lt, sink);
-        close
-    } else {
-        emit_text(input, content_start, input.len(), sink);
-        input.len()
+    let (close, _self_closing, complete) = scan_attributes(Some(attributes), input, name_end);
+    if !complete && !is_final {
+        return None;
     }
+
+    sink.end_tag(
+        &EndTag {
+            input,
+            raw: Span::new(lt, close),
+            name: Span::new(name_start, name_end),
+            name_hash: LocalNameHash::of(slice(input, name_start, name_end)),
+        },
+        closes_text,
+    );
+    Some(close)
 }
 
 fn find_body_end(mode: TextMode, input: &[u8], content_start: usize, name: &[u8]) -> Option<usize> {
@@ -497,56 +571,13 @@ fn scan_one_attribute(attributes: Option<&mut Vec<AttrRange>>, input: &[u8], i: 
     after
 }
 
-fn emit_text<S: TokenSink>(input: &[u8], start: usize, end: usize, sink: &mut S) {
+fn emit_text<P: ParseSink>(input: &[u8], start: usize, end: usize, sink: &mut P) {
     if end > start {
         sink.text(&Text {
             input,
             raw: Span::new(start, end),
         });
     }
-}
-
-fn scan_comment<S: TokenSink>(input: &[u8], lt: usize, sink: &mut S) -> usize {
-    let data_start = lt + COMMENT_PREFIX.len();
-    let (data_end, close) = match find_seq(input, data_start, COMMENT_SUFFIX) {
-        Some(at) => (at, at + COMMENT_SUFFIX.len()),
-        None => (input.len(), input.len()),
-    };
-    sink.comment(&Comment {
-        input,
-        raw: Span::new(lt, close),
-        data: Span::new(data_start.min(data_end), data_end),
-    });
-    close
-}
-
-fn scan_cdata<S: TokenSink>(input: &[u8], lt: usize, sink: &mut S) -> usize {
-    let data_start = lt + CDATA_PREFIX.len();
-    let (data_end, close) = match find_seq(input, data_start, CDATA_SUFFIX) {
-        Some(at) => (at, at + CDATA_SUFFIX.len()),
-        None => (input.len(), input.len()),
-    };
-    sink.cdata(&Cdata {
-        input,
-        raw: Span::new(lt, close),
-        data: Span::new(data_start.min(data_end), data_end),
-    });
-    close
-}
-
-fn scan_doctype<S: TokenSink>(input: &[u8], lt: usize, sink: &mut S) -> usize {
-    let after_keyword = lt + MARKUP_DECL_PREFIX.len() + DOCTYPE_KEYWORD.len();
-    let (content_end, close) = match memchr(b'>', input.get(after_keyword..).unwrap_or(&[])) {
-        Some(rel) => (after_keyword + rel, after_keyword + rel + 1),
-        None => (input.len(), input.len()),
-    };
-    let name = parse_doctype_name(input, after_keyword, content_end);
-    sink.doctype(&Doctype {
-        input,
-        raw: Span::new(lt, close),
-        name,
-    });
-    close
 }
 
 fn parse_doctype_name(input: &[u8], from: usize, end: usize) -> Option<Span> {
@@ -560,25 +591,6 @@ fn parse_doctype_name(input: &[u8], from: usize, end: usize) -> Option<Span> {
         }
     }
     (i > start).then(|| Span::new(start, i))
-}
-
-fn scan_bogus_comment<S: TokenSink>(
-    input: &[u8],
-    lt: usize,
-    open_len: usize,
-    sink: &mut S,
-) -> usize {
-    let data_start = lt + open_len;
-    let (data_end, close) = match memchr(b'>', input.get(data_start..).unwrap_or(&[])) {
-        Some(rel) => (data_start + rel, data_start + rel + 1),
-        None => (input.len(), input.len()),
-    };
-    sink.comment(&Comment {
-        input,
-        raw: Span::new(lt, close),
-        data: Span::new(data_start.min(data_end), data_end),
-    });
-    close
 }
 
 fn scan_tag_name(input: &[u8], from: usize) -> usize {
@@ -636,7 +648,7 @@ fn skip_space(input: &[u8], from: usize) -> usize {
 
 /// HTML whitespace (space, tab, LF, FF, CR) as a `[bool; 256]` table so the
 /// hot-path check is a single branchless byte load.
-const HTML_SPACE: [bool; 256] = rama_utils::byte_set::set_each([false; 256], b" \t\n\x0c\r");
+const HTML_SPACE: [bool; 256] = set_each([false; 256], b" \t\n\x0c\r");
 
 #[inline]
 const fn is_html_space(b: u8) -> bool {
@@ -676,6 +688,11 @@ fn find_seq(input: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
         i = at + 1;
     }
     None
+}
+
+/// Finds `byte` in `input[from..]`, returning its absolute position.
+fn find_byte(input: &[u8], from: usize, byte: u8) -> Option<usize> {
+    memchr(byte, input.get(from..)?).map(|rel| from + rel)
 }
 
 fn is_tag_terminator(b: u8) -> bool {

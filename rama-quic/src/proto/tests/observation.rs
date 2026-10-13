@@ -384,7 +384,7 @@ fn observation_accept_configuration_controls_retention() {
         pair.drive_client();
         pair.drive_server();
         let incoming = pair.server.waiting_incoming.pop().unwrap();
-        let (_, mut conn) = pair
+        let (_, mut conn, _admission) = pair
             .server
             .endpoint
             .accept(

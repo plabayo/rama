@@ -274,7 +274,7 @@ impl UdpSocketState {
         let original_destination = false;
 
         Ok(Self {
-            max_gso_segments: AtomicUsize::new(gso::max_gso_segments(&*io)),
+            max_gso_segments: AtomicUsize::new(gso::max_gso_segments(&*io)?),
             gro_segments,
             may_fragment,
             send_ecn: cfg!(not(any(
@@ -808,6 +808,9 @@ pub(crate) fn decode_recv<M: cmsg::MsgHdr<ControlMessage = libc::cmsghdr>>(
     original_len: usize,
     flags: libc::c_int,
 ) -> io::Result<RecvMeta> {
+    // Control data that did not fit may have lost the segment size of a coalesced
+    // read, so the entry is reported truncated (and dropped) rather than mis-split.
+    let control_truncated = flags & libc::MSG_CTRUNC != 0;
     // SAFETY: receive callers create `name` with `MaybeUninit::zeroed`, so the
     // complete storage is initialized even if the kernel writes only a prefix.
     let name = unsafe { name.assume_init() };
@@ -822,18 +825,11 @@ pub(crate) fn decode_recv<M: cmsg::MsgHdr<ControlMessage = libc::cmsghdr>>(
         timestamp: None,
     };
 
-    // Metadata the kernel cut short cannot be trusted to describe the datagram (a lost segment
-    // size alone misreads a coalesced batch), so such an entry is reported truncated instead.
-    let control_truncated = flags & libc::MSG_CTRUNC != 0;
-    if !control_truncated {
-        // SAFETY: the receive syscall initialized `hdr`'s reported control-message
-        // region, and its backing buffer remains alive while this function runs.
-        let cmsg_iter = unsafe { cmsg::Iter::new(hdr) };
-        for cmsg in cmsg_iter {
-            // SAFETY: `cmsg` was yielded from the live native buffer walked by
-            // `cmsg_iter`.
-            unsafe { ctrl.decode(&cmsg)? };
-        }
+    // SAFETY: the receive syscall initialized `hdr`'s reported control-message
+    // region, and its backing buffer remains alive while this function runs.
+    let cmsg_iter = unsafe { cmsg::Iter::new(hdr) };
+    for cmsg in cmsg_iter.take_while(|_| !control_truncated) {
+        ctrl.decode(cmsg)?;
     }
 
     Ok(RecvMeta {
@@ -846,7 +842,7 @@ pub(crate) fn decode_recv<M: cmsg::MsgHdr<ControlMessage = libc::cmsghdr>>(
         interface_index: ctrl.interface_index,
         original_destination: ctrl.original_destination,
         timestamp: ctrl.timestamp,
-        truncated: flags & libc::MSG_TRUNC != 0 || control_truncated || original_len > len,
+        truncated: control_truncated || flags & libc::MSG_TRUNC != 0 || original_len > len,
     })
 }
 
@@ -862,14 +858,10 @@ struct ControlMetadata {
 
 impl ControlMetadata {
     /// Decodes a control message and updates the metadata state
-    ///
-    /// # Safety
-    ///
-    /// `cmsg` must come from a live native control-message buffer.
-    unsafe fn decode(&mut self, cmsg: &cmsg::CMsg<'_, libc::cmsghdr>) -> io::Result<()> {
+    fn decode(&mut self, cmsg: cmsg::CMsg<'_, libc::cmsghdr>) -> io::Result<()> {
         match (cmsg.cmsg_level, cmsg.cmsg_type) {
             (libc::IPPROTO_IP, libc::IP_TOS) => {
-                // SAFETY: required by this function's contract.
+                // SAFETY: every bit pattern is a valid `u8`.
                 self.ecn_bits = Some(unsafe { cmsg.decode::<u8>() }?);
             }
             // FreeBSD uses IP_RECVTOS here, and we can be liberal because cmsgs are opt-in.
@@ -882,7 +874,7 @@ impl ControlMetadata {
                 target_os = "illumos"
             )))]
             (libc::IPPROTO_IP, libc::IP_RECVTOS) => {
-                // SAFETY: required by this function's contract.
+                // SAFETY: every bit pattern is a valid `u8`.
                 self.ecn_bits = Some(unsafe { cmsg.decode::<u8>() }?);
             }
             #[cfg(not(target_os = "redox",))]
@@ -890,19 +882,19 @@ impl ControlMetadata {
                 // Temporary hack around broken macos ABI. Remove once upstream fixes it.
                 // https://bugreport.apple.com/web/?problemID=48761855
                 let byte_sized = cfg!(target_vendor = "apple")
-                    && cmsg::CMsgHdr::len(&**cmsg)
+                    && cmsg::CMsgHdr::len(&*cmsg)
                         == <libc::cmsghdr as cmsg::CMsgHdr>::cmsg_len(size_of::<u8>());
                 if byte_sized {
-                    // SAFETY: required by this function's contract.
+                    // SAFETY: every bit pattern is a valid `u8`.
                     self.ecn_bits = Some(unsafe { cmsg.decode::<u8>() }?);
                 } else {
-                    // SAFETY: required by this function's contract.
+                    // SAFETY: every bit pattern is a valid `c_int`.
                     self.ecn_bits = Some(unsafe { cmsg.decode::<libc::c_int>() }? as u8);
                 }
             }
             #[cfg(any(target_os = "linux", target_os = "android"))]
             (libc::IPPROTO_IP, libc::IP_PKTINFO) => {
-                // SAFETY: required by this function's contract.
+                // SAFETY: `in_pktinfo` holds only integers, valid for any bit pattern.
                 let pktinfo = unsafe { cmsg.decode::<libc::in_pktinfo>() }?;
                 self.dst_ip = Some(IpAddr::V4(Ipv4Addr::from(
                     pktinfo.ipi_addr.s_addr.to_ne_bytes(),
@@ -916,13 +908,13 @@ impl ControlMetadata {
                 target_vendor = "apple"
             ))]
             (libc::IPPROTO_IP, libc::IP_RECVDSTADDR) => {
-                // SAFETY: required by this function's contract.
+                // SAFETY: `in_addr` holds only integers, valid for any bit pattern.
                 let in_addr = unsafe { cmsg.decode::<libc::in_addr>() }?;
                 self.dst_ip = Some(IpAddr::V4(Ipv4Addr::from(in_addr.s_addr.to_ne_bytes())));
             }
             #[cfg(not(any(target_os = "redox", target_os = "hurd")))]
             (libc::IPPROTO_IPV6, libc::IPV6_PKTINFO) => {
-                // SAFETY: required by this function's contract.
+                // SAFETY: `in6_pktinfo` holds only integers, valid for any bit pattern.
                 let pktinfo = unsafe { cmsg.decode::<libc::in6_pktinfo>() }?;
                 self.dst_ip = Some(IpAddr::V6(Ipv6Addr::from(pktinfo.ipi6_addr.s6_addr)));
                 #[cfg(target_os = "android")]
@@ -936,7 +928,7 @@ impl ControlMetadata {
             }
             #[cfg(any(target_os = "linux", target_os = "android"))]
             (libc::IPPROTO_IP, IP_RECV_ORIGINAL_DESTINATION) => {
-                // SAFETY: required by this function's contract.
+                // SAFETY: `sockaddr_in` holds only integers, valid for any bit pattern.
                 let addr = unsafe { cmsg.decode::<libc::sockaddr_in>() }?;
                 self.original_destination = Some(SocketAddr::V4(SocketAddrV4::new(
                     Ipv4Addr::from(addr.sin_addr.s_addr.to_ne_bytes()),
@@ -945,7 +937,7 @@ impl ControlMetadata {
             }
             #[cfg(any(target_os = "linux", target_os = "android"))]
             (libc::IPPROTO_IPV6, IPV6_RECV_ORIGINAL_DESTINATION) => {
-                // SAFETY: required by this function's contract.
+                // SAFETY: `sockaddr_in6` holds only integers, valid for any bit pattern.
                 let addr = unsafe { cmsg.decode::<libc::sockaddr_in6>() }?;
                 self.original_destination = Some(SocketAddr::V6(SocketAddrV6::new(
                     Ipv6Addr::from(addr.sin6_addr.s6_addr),
@@ -956,12 +948,12 @@ impl ControlMetadata {
             }
             #[cfg(any(target_os = "linux", target_os = "android"))]
             (libc::SOL_UDP, libc::UDP_GRO) => {
-                // SAFETY: required by this function's contract.
+                // SAFETY: every bit pattern is a valid `c_int`.
                 self.stride = unsafe { cmsg.decode::<libc::c_int>() }? as usize;
             }
             #[cfg(any(target_os = "linux", target_os = "android"))]
             (libc::SOL_SOCKET, libc::SCM_TIMESTAMPNS) => {
-                // SAFETY: required by this function's contract.
+                // SAFETY: `timespec` holds only integers, valid for any bit pattern.
                 let ts = unsafe { cmsg.decode::<libc::timespec>() }?;
                 let secs = u64::try_from(ts.tv_sec).unwrap_or(0);
                 let nsecs = u32::try_from(ts.tv_nsec).unwrap_or(0);
@@ -1013,8 +1005,8 @@ pub(crate) const BATCH_SIZE: usize = 1;
 mod gso {
     use super::*;
 
-    pub(super) fn max_gso_segments(_socket: &impl AsRawFd) -> usize {
-        1
+    pub(super) fn max_gso_segments(_socket: &impl AsRawFd) -> io::Result<usize> {
+        Ok(1)
     }
 
     pub(super) fn set_segment_size(
@@ -1326,7 +1318,7 @@ mod tests {
         decode_with_flags(control, name, len, original_len, 0, push)
     }
 
-    /// As [`decode_with`], for a receive that reported `flags`.
+    /// [`decode_with`], for a receive that reported `flags`.
     fn decode_with_flags(
         control: &mut cmsg::Aligned<[u8; cmsg::LEN]>,
         name: libc::sockaddr_storage,
@@ -1450,6 +1442,79 @@ mod tests {
         assert_eq!(meta.len, 512);
         assert_eq!(meta.original_len, 1200);
         assert_eq!(meta.stride, 1200);
+    }
+
+    /// BSD kernels can report truncation through the flag alone, with a length
+    /// that already matches the copied prefix.
+    #[test]
+    fn the_truncation_flag_alone_marks_a_datagram_truncated() {
+        let mut control = cmsg::Aligned([0; cmsg::LEN]);
+        let meta = decode_with_flags(&mut control, loopback_name(), 8, 8, libc::MSG_TRUNC, |_| {})
+            .unwrap();
+
+        assert!(meta.truncated);
+        assert_eq!(meta.len, 8);
+    }
+
+    /// A control message the kernel could not fit is gone, and with it perhaps
+    /// the segment size that splits a coalesced read: the whole entry is marked
+    /// truncated so it is dropped, never handed on as one datagram nor failing
+    /// the socket.
+    #[test]
+    fn a_receive_whose_control_data_was_truncated_is_marked_truncated() {
+        let mut control = cmsg::Aligned([0; cmsg::LEN]);
+        let meta = decode_with_flags(
+            &mut control,
+            loopback_name(),
+            4000,
+            4000,
+            libc::MSG_CTRUNC,
+            |encoder| {
+                encoder
+                    .push(libc::IPPROTO_IP, libc::IP_TOS, 0b10_u8)
+                    .unwrap();
+            },
+        )
+        .unwrap();
+
+        assert!(meta.truncated);
+        assert_eq!(meta.stride, 4000);
+        assert_eq!(
+            meta.ecn, None,
+            "control data past a truncation is not trusted"
+        );
+    }
+
+    /// The single-message receive reports a datagram longer than its buffer
+    /// as truncated rather than dropping it, and an empty queue afterwards
+    /// ends the call with `WouldBlock` instead of retrying on stale flags.
+    #[test]
+    fn the_single_message_receive_reports_truncation_and_then_would_block() {
+        let receiver = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        // Block instead of polling, since loopback delivery can be asynchronous.
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        sender
+            .send_to(&[7; 16], receiver.local_addr().unwrap())
+            .unwrap();
+
+        let socket = SockRef::from(&receiver);
+        let mut buffer = [0; 8];
+        let mut meta = [RecvMeta::default()];
+        let received =
+            recv_single(&socket, &mut [IoSliceMut::new(&mut buffer)], &mut meta).unwrap();
+        assert_eq!(received, 1);
+        assert!(meta[0].truncated);
+        assert_eq!(meta[0].len, buffer.len());
+        assert_eq!(buffer, [7; 8]);
+        assert_eq!(meta[0].addr, sender.local_addr().unwrap());
+
+        receiver.set_nonblocking(true).unwrap();
+        let error =
+            recv_single(&socket, &mut [IoSliceMut::new(&mut buffer)], &mut meta).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
     }
 
     #[test]

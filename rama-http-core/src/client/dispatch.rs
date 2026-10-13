@@ -1,7 +1,7 @@
 use std::mem::ManuallyDrop;
 use std::pin::Pin;
 use std::sync::atomic::{self, AtomicBool};
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, ready};
 
 use pin_project_lite::pin_project;
 use rama_core::error::BoxError;
@@ -164,7 +164,12 @@ pub(crate) struct Receiver<T, U> {
 impl<T, U> Receiver<T, U> {
     pub(crate) fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<(T, Callback<T, U>)>> {
         match self.inner.poll_recv(cx) {
-            Poll::Ready(item) => Poll::Ready(item.map(|env| env.into_inner())),
+            Poll::Ready(item) => {
+                // A want signaled on an empty or budget-starved poll can outlive the message
+                // taken here and report the busy connection as ready.
+                self.taker.unwant();
+                Poll::Ready(item.map(|env| env.into_inner()))
+            }
             Poll::Pending => {
                 self.taker.want();
                 Poll::Pending
@@ -175,6 +180,14 @@ impl<T, U> Receiver<T, U> {
     pub(crate) fn close(&mut self) {
         self.taker.cancel();
         self.inner.close();
+    }
+
+    /// Closes the queue and cancels what it holds, including messages whose send began before
+    /// the close: their callers may hold a sender while awaiting the response.
+    pub(crate) fn poll_close(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        self.close();
+        while ready!(self.inner.poll_recv(cx)).is_some() {}
+        Poll::Ready(())
     }
 
     pub(crate) fn try_recv(&mut self) -> Option<(T, Callback<T, U>)> {
@@ -404,8 +417,11 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::future::poll_fn;
     use std::pin::Pin;
     use std::task::{Context, Poll};
+
+    use tokio::task::{coop, yield_now};
 
     use super::{Callback, Receiver, channel};
 
@@ -456,6 +472,38 @@ mod tests {
             (true, Some(_)) => (),
             e => panic!("expected Error::Cancel(_), found {e:?}"),
         }
+    }
+
+    #[cfg(not(miri))]
+    #[tokio::test]
+    async fn poll_close_cancels_queued_messages_without_a_drop() {
+        let (tx, mut rx) = channel::<Custom, ()>();
+        let mut tx = tx.unbound();
+        let promise = tx.try_send(Custom(1)).unwrap();
+
+        // Out of coop budget a closed queue still reports Pending, as it does
+        // for a send that began before the close and has yet to publish.
+        let closed = poll_fn(|cx| {
+            while let Poll::Ready(restore) = coop::poll_proceed(cx) {
+                restore.made_progress();
+            }
+            Poll::Ready(rx.poll_close(cx).is_ready())
+        })
+        .await;
+        assert!(!closed, "must drain what was sent before completing");
+        assert!(tx.is_closed(), "must reject new messages while draining");
+
+        yield_now().await;
+        assert!(poll_fn(|cx| Poll::Ready(rx.poll_close(cx).is_ready())).await);
+
+        // Both halves stay alive: the cancel must not depend on a destructor.
+        let err = promise
+            .await
+            .expect("fulfilled")
+            .expect_err("promise should error");
+        assert!(err.error.is_canceled(), "{err:?}");
+        assert!(err.message.is_some(), "a message never sent is returned");
+        drop((tx, rx));
     }
 
     #[cfg(not(miri))]

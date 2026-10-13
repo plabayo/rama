@@ -1,7 +1,13 @@
 use super::streams::ReplayStep;
-use crate::h2::codec::UserError;
-use crate::h2::proto::*;
-use crate::h2::{client, server};
+use crate::{
+    h2::{
+        client,
+        codec::{HeadProgress, UserError},
+        proto::*,
+        server,
+    },
+    server::conn::timeout::Activity,
+};
 
 use rama_core::bytes::Bytes;
 use rama_core::extensions::{Extensions, ExtensionsRef};
@@ -21,8 +27,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::io::AsyncRead;
-use tokio::sync::mpsc;
+use tokio::{io::AsyncRead, sync::mpsc, time::Instant};
 
 /// An H2 connection
 #[derive(Debug)]
@@ -108,6 +113,8 @@ pub(crate) struct Config {
     pub headers_pseudo_order: Option<PseudoHeaderOrder>,
     pub early_frame_ctx: EarlyFrameStreamContext,
     pub data_frame_budget: DataFrameBudget,
+    /// When the initial SETTINGS left, so their ACK measures a round trip.
+    pub settings_sent_at: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -218,7 +225,7 @@ where
                 go_away: GoAway::new(),
                 pending_refusal: None,
                 ping_pong: PingPong::new(),
-                settings: Settings::new(config.settings),
+                settings: Settings::new(config.settings, config.settings_sent_at),
                 streams,
                 alt_svc_observer,
                 alt_svc_send,
@@ -812,6 +819,28 @@ where
             .get_ref::<AltSvcSender>()
             .ok_or(AltSvcSendError::Disabled)?
             .try_send(frame)
+    }
+
+    /// What the deadlines see: a header block in progress, open streams, or neither.
+    ///
+    /// A few bytes whose frame type has not arrived yet are a head in progress
+    /// only on a connection without streams, where nothing else can be pending.
+    pub(crate) fn timeout_activity(&self) -> Activity {
+        match self.codec.head_progress() {
+            Some(HeadProgress {
+                bytes,
+                block,
+                certain: true,
+            }) => Activity::Head { bytes, block },
+            _ if self.inner.streams.has_streams() => Activity::Busy,
+            Some(HeadProgress { bytes, block, .. }) => Activity::Head { bytes, block },
+            None => Activity::Idle,
+        }
+    }
+
+    /// The round trip of the initial SETTINGS, once, when their ACK arrived.
+    pub(crate) fn take_settings_rtt(&mut self) -> Option<Duration> {
+        self.inner.settings.take_rtt()
     }
 
     pub(crate) fn next_incoming(&mut self) -> Option<StreamRef<B>> {

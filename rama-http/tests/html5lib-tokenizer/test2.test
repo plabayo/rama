@@ -183,19 +183,17 @@
     { "code": "invalid-first-character-of-tag-name", "line": 1, "col": 3 }
 ]},
 
-{"description":"Simili processing instruction",
+{"description":"Processing instruction",
 "input":"<?namespace>",
-"output":[["Comment", "?namespace"]],
-"errors":[
-    { "code": "unexpected-question-mark-instead-of-tag-name", "line": 1, "col": 2 }
-]},
+"output":[["ProcessingInstruction", "namespace", ""]]},
 
-{"description":"A bogus comment stops at >, even if preceded by two dashes",
-"input":"<?foo-->",
-"output":[["Comment", "?foo--"]],
-"errors":[
-    { "code": "unexpected-question-mark-instead-of-tag-name", "line": 1, "col": 2 }
-]},
+{"description":"A processing instruction delimited by ?> doesn't contain the delimiting ?",
+"input":"<?foo bar?>",
+"output":[["ProcessingInstruction", "foo", "bar"]]},
+
+{"description":"A processing instruction's data delimited by ?> contains the correct amount of ?",
+"input":"<?foo bar??>",
+"output":[["ProcessingInstruction", "foo", "bar?"]]},
 
 {"description":"Unescaped <",
 "input":"foo < bar",

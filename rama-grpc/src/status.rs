@@ -580,7 +580,7 @@ impl Status {
 
             header_map.insert(
                 Self::GRPC_STATUS_DETAILS,
-                HeaderValue::from_maybe_shared(details).map_err(invalid_header_value_byte)?,
+                HeaderValue::try_from(details).map_err(invalid_header_value_byte)?,
             );
         }
 

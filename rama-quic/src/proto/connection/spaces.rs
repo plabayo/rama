@@ -2,7 +2,7 @@ use std::{
     cmp,
     collections::{BTreeMap, VecDeque},
     mem,
-    ops::{Bound, Index, IndexMut, Range},
+    ops::{Index, IndexMut, Range},
 };
 
 use rama_core::telemetry::tracing::trace;
@@ -18,9 +18,9 @@ use rama_quic_proto::{
     Dir, StreamId, TransportError, VarInt, frame, packet::SpaceId, range_set::ArrayRangeSet,
 };
 
-// Non-eliciting packets need no frame retransmission state; retain only a bounded
-// history for ACK-of-ACK processing and padded-packet congestion accounting.
-const MAX_UNACKED_NON_ACK_ELICITING: u64 = 1_000;
+// Only a later acknowledgement retires these, so a peer that acknowledges nothing would
+// otherwise pin every ACK-only packet, however many ack-eliciting ones go out between.
+const MAX_UNACKED_NON_ACK_ELICITING: usize = 1_000;
 
 pub(super) struct PacketSpace {
     pub(super) crypto: Option<Keys>,
@@ -39,10 +39,9 @@ pub(super) struct PacketSpace {
     /// The largest packet number the remote peer acknowledged in an ACK frame.
     pub(super) largest_acked_packet: Option<u64>,
     pub(super) largest_acked_packet_sent: Instant,
-    /// Number of retained non-ACK-eliciting packets, regardless of later transmissions.
-    pub(super) unacked_non_ack_eliciting: u64,
-    /// Oldest retained non-ACK-eliciting packet; zero when none remain.
-    pub(super) oldest_non_ack_eliciting_sent: u64,
+    /// Numbers of the non-ACK-eliciting packets sent, oldest first; acknowledged or lost ones
+    /// leave only when they reach the front.
+    pub(super) non_ack_eliciting_sent: VecDeque<u64>,
     /// Transmitted but not acked
     // We use a BTreeMap here so we can efficiently query by range on ACK and for loss detection
     pub(super) sent_packets: BTreeMap<u64, SentPacket>,
@@ -88,8 +87,7 @@ impl PacketSpace {
             next_packet_number: 0,
             largest_acked_packet: None,
             largest_acked_packet_sent: now,
-            unacked_non_ack_eliciting: 0,
-            oldest_non_ack_eliciting_sent: 0,
+            non_ack_eliciting_sent: VecDeque::new(),
             sent_packets: BTreeMap::new(),
             ecn_counters: frame::EcnCounts::ZERO,
             ecn_feedback: frame::EcnCounts::ZERO,
@@ -220,38 +218,51 @@ impl PacketSpace {
         Ok(ce_increase != 0)
     }
 
-    /// Stop tracking sent packet `number`, and return what we knew about it.
+    /// Stop tracking sent packet `number`, and return what we knew about it
     pub(super) fn take(&mut self, number: u64) -> Option<SentPacket> {
         let packet = self.sent_packets.remove(&number)?;
         if !packet.ack_eliciting {
-            self.unacked_non_ack_eliciting -= 1;
-            if number == self.oldest_non_ack_eliciting_sent {
-                // This cursor only moves forward: each intervening eliciting
-                // packet is visited at most once, even when the peer withholds ACKs.
-                self.oldest_non_ack_eliciting_sent = self
-                    .sent_packets
-                    .range((Bound::Excluded(number), Bound::Unbounded))
-                    .find_map(|(&number, packet)| (!packet.ack_eliciting).then_some(number))
-                    .unwrap_or(0);
-            }
+            self.trim_non_ack_eliciting();
         }
         Some(packet)
     }
 
-    /// May return a non-ACK-eliciting packet that should be forgotten.
+    /// Drop the numbers of ACK-only packets acknowledged or lost meanwhile from the front, and
+    /// give back mostly unused capacity, so a quiet connection keeps no stale history.
+    fn trim_non_ack_eliciting(&mut self) {
+        while let Some(&front) = self.non_ack_eliciting_sent.front()
+            && self
+                .sent_packets
+                .get(&front)
+                .is_none_or(|sent| sent.ack_eliciting)
+        {
+            self.non_ack_eliciting_sent.pop_front();
+        }
+        let numbers = &mut self.non_ack_eliciting_sent;
+        if numbers.capacity() > 64 && numbers.len().saturating_mul(4) < numbers.capacity() {
+            numbers.shrink_to(numbers.len().saturating_mul(2));
+        }
+    }
+
+    /// May return a packet that should be forgotten
     pub(super) fn sent(&mut self, number: u64, packet: SentPacket) -> Option<SentPacket> {
         let mut forgotten = None;
         if !packet.ack_eliciting {
-            // A later eliciting packet does not guarantee that the peer will ACK
-            // earlier ACK-only packets. Bound the entire retained set, not just
-            // the tail after the most recent eliciting transmission.
-            if self.unacked_non_ack_eliciting >= MAX_UNACKED_NON_ACK_ELICITING {
-                forgotten = self.take(self.oldest_non_ack_eliciting_sent);
+            self.trim_non_ack_eliciting();
+            if self.non_ack_eliciting_sent.len() >= MAX_UNACKED_NON_ACK_ELICITING
+                && let Some(oldest) = self.non_ack_eliciting_sent.pop_front()
+                && self
+                    .sent_packets
+                    .get(&oldest)
+                    .is_some_and(|sent| !sent.ack_eliciting)
+            {
+                // Per https://www.rfc-editor.org/rfc/rfc9000.html#name-frames-and-frame-types,
+                // non-ACK-eliciting packets must only contain PADDING, ACK, and CONNECTION_CLOSE
+                // frames, which require no special handling on ACK or loss beyond removal from
+                // in-flight counters if padded.
+                forgotten = self.sent_packets.remove(&oldest);
             }
-            if self.unacked_non_ack_eliciting == 0 {
-                self.oldest_non_ack_eliciting_sent = number;
-            }
-            self.unacked_non_ack_eliciting += 1;
+            self.non_ack_eliciting_sent.push_back(number);
         }
         self.sent_packets.insert(number, packet);
         forgotten
@@ -259,8 +270,7 @@ impl PacketSpace {
 
     /// Drain packet history together with its non-eliciting retention accounting.
     pub(super) fn take_sent_packets(&mut self) -> BTreeMap<u64, SentPacket> {
-        self.unacked_non_ack_eliciting = 0;
-        self.oldest_non_ack_eliciting_sent = 0;
+        self.non_ack_eliciting_sent.clear();
         mem::take(&mut self.sent_packets)
     }
 
@@ -969,6 +979,84 @@ const MAX_ACK_BLOCKS: usize = 64;
 mod test {
     use super::*;
 
+    fn sent_packet(now: Instant, ack_eliciting: bool) -> SentPacket {
+        SentPacket {
+            path_generation: 0,
+            time_sent: now,
+            size: 0,
+            ack_eliciting,
+            is_0rtt: false,
+            is_mtu_probe_packet: false,
+            largest_acked: None,
+            retransmits: ThinRetransmits::default(),
+            stream_frames: frame::StreamMetaVec::new(),
+        }
+    }
+
+    #[test]
+    fn unacked_non_ack_eliciting_packets_stay_bounded() {
+        // A peer that acknowledges nothing, prompting ACK-only packets with the odd ack-eliciting
+        // packet in between: each gap is short, the total is not.
+        let now = Instant::now();
+        let mut space = PacketSpace::new(now);
+        let mut number = 0;
+        for _ in 0..50 {
+            space.sent(number, sent_packet(now, true));
+            number += 1;
+            for _ in 0..500 {
+                space.sent(number, sent_packet(now, false));
+                number += 1;
+            }
+        }
+        let retained = |space: &PacketSpace, ack_eliciting: bool| {
+            space
+                .sent_packets
+                .values()
+                .filter(|sent| sent.ack_eliciting == ack_eliciting)
+                .count()
+        };
+        assert_eq!(retained(&space, false), 1_000);
+        assert_eq!(
+            retained(&space, true),
+            50,
+            "ack-eliciting packets are never forgotten"
+        );
+        assert!(space.non_ack_eliciting_sent.len() <= 1_000);
+
+        // Packets acknowledged meanwhile free their slot without anything else being forgotten.
+        let acked: Vec<u64> = space
+            .sent_packets
+            .iter()
+            .filter(|(_, sent)| !sent.ack_eliciting)
+            .map(|(&pn, _)| pn)
+            .take(10)
+            .collect();
+        for pn in acked {
+            assert!(space.take(pn).is_some());
+        }
+        for _ in 0..10 {
+            assert!(space.sent(number, sent_packet(now, false)).is_none());
+            number += 1;
+        }
+        assert_eq!(retained(&space, false), 1_000);
+        assert!(space.sent(number, sent_packet(now, false)).is_some());
+        assert_eq!(retained(&space, false), 1_000);
+        assert_eq!(retained(&space, true), 50);
+
+        // Once the peer acknowledges them, no history is kept for a quiet connection.
+        let ack_only: Vec<u64> = space
+            .sent_packets
+            .iter()
+            .filter(|(_, sent)| !sent.ack_eliciting)
+            .map(|(&pn, _)| pn)
+            .collect();
+        for pn in ack_only {
+            assert!(space.take(pn).is_some());
+        }
+        assert!(space.non_ack_eliciting_sent.is_empty());
+        assert!(space.non_ack_eliciting_sent.capacity() <= 64);
+    }
+
     #[test]
     fn ack_only_retention_is_bounded_across_eliciting_transmissions() {
         let now = Instant::now();
@@ -1002,8 +1090,9 @@ mod test {
                     .values()
                     .filter(|packet| !packet.ack_eliciting)
                     .count();
-                assert_eq!(space.unacked_non_ack_eliciting as usize, retained);
-                assert!(retained <= MAX_UNACKED_NON_ACK_ELICITING as usize);
+                // Numbers of retired packets leave the history lazily, from its front.
+                assert!(space.non_ack_eliciting_sent.len() >= retained);
+                assert!(retained <= MAX_UNACKED_NON_ACK_ELICITING);
                 assert_eq!(space.sent_packets.len(), retained + eliciting.len());
             }
             assert!(forgotten > 0);
@@ -1020,7 +1109,7 @@ mod test {
                 assert!(!space.take(*number).unwrap().ack_eliciting);
                 assert!(space.take(*number).is_none());
             }
-            assert_eq!(space.unacked_non_ack_eliciting, 0);
+            assert!(space.non_ack_eliciting_sent.is_empty());
             assert!(space.sent_packets.is_empty());
         }
     }
@@ -1042,11 +1131,12 @@ mod test {
                     retransmits: ThinRetransmits::default(),
                     stream_frames: Default::default(),
                 };
-                let _ = space.sent(round * 2 * MAX_UNACKED_NON_ACK_ELICITING + index, packet);
+                let number = (round * 2 * MAX_UNACKED_NON_ACK_ELICITING + index) as u64;
+                let _ = space.sent(number, packet);
             }
             let drained = space.take_sent_packets();
-            assert_eq!(drained.len(), MAX_UNACKED_NON_ACK_ELICITING as usize);
-            assert_eq!(space.unacked_non_ack_eliciting, 0);
+            assert_eq!(drained.len(), MAX_UNACKED_NON_ACK_ELICITING);
+            assert!(space.non_ack_eliciting_sent.is_empty());
             assert!(space.sent_packets.is_empty());
         }
     }
@@ -1070,13 +1160,13 @@ mod test {
             assert!(space.sent(number, packet).is_none());
         }
         assert_eq!(space.sent_packets.len(), 4);
-        assert_eq!(space.unacked_non_ack_eliciting, 4);
+        assert_eq!(space.non_ack_eliciting_sent.len(), 4);
         for number in [1 << 40, 1, (1 << 62) - 1, 1 << 20] {
             assert!(space.take(number).is_some());
             assert!(space.take(number).is_none());
         }
         assert!(space.sent_packets.is_empty());
-        assert_eq!(space.unacked_non_ack_eliciting, 0);
+        assert!(space.non_ack_eliciting_sent.is_empty());
     }
 
     #[test]

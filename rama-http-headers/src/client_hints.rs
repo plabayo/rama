@@ -251,17 +251,24 @@ client_hint! {
 /// item. The names are static ASCII tokens and the set is non-empty, so this
 /// only ever returns `None` in the unreachable case of an invalid header value.
 fn encode_client_hint_names(hints: &NonEmptySmallVec<16, ClientHint>) -> Option<HeaderValue> {
-    let mut buf = Vec::new();
-    for name in hints
-        .iter()
-        .flat_map(|h| h.header_name_strs().iter().copied())
-    {
+    let names = || {
+        hints
+            .iter()
+            .flat_map(|h| h.header_name_strs().iter().copied())
+    };
+    // Exactly sized, so the buffer moves into the value without a copy or slack.
+    let len = names()
+        .map(|name| name.len().saturating_add(2))
+        .fold(0, usize::saturating_add)
+        .saturating_sub(2);
+    let mut buf = Vec::with_capacity(len);
+    for name in names() {
         if !buf.is_empty() {
             buf.extend_from_slice(b", ");
         }
         buf.extend_from_slice(name.as_bytes());
     }
-    HeaderValue::from_bytes(&buf).ok()
+    HeaderValue::try_from(buf).ok()
 }
 
 macro_rules! client_hint_advert_header {

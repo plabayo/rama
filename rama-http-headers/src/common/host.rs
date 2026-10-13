@@ -3,7 +3,7 @@ use std::fmt;
 
 use rama_core::{bytes::Bytes, telemetry::tracing};
 use rama_http_types::{HeaderName, HeaderValue};
-use rama_net::address::{self, HostWithOptPort};
+use rama_net::address::{self, Authority, HostWithOptPort};
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util::single_value};
 
@@ -29,7 +29,7 @@ impl HeaderDecode for Host {
 impl HeaderEncode for Host {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         let s = self.to_string();
-        let bytes = Bytes::from_owner(s);
+        let bytes = Bytes::from(s);
 
         match HeaderValue::from_maybe_shared(bytes) {
             Ok(value) => values.extend(::std::iter::once(value)),
@@ -70,6 +70,13 @@ impl From<Host> for HostWithOptPort {
     }
 }
 
+impl From<Host> for Authority {
+    #[inline(always)]
+    fn from(host: Host) -> Self {
+        Self::new(host.0)
+    }
+}
+
 impl From<address::HostWithPort> for Host {
     #[inline(always)]
     fn from(addr: address::HostWithPort) -> Self {
@@ -81,5 +88,18 @@ impl fmt::Display for Host {
     #[inline(always)]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_converts_into_authority_without_reparsing() {
+        let host = Host(HostWithOptPort::try_from("example.com:8080").unwrap());
+        let authority = Authority::from(host.clone());
+        assert!(authority.user_info.is_none());
+        assert_eq!(authority.address, host.0);
     }
 }

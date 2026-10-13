@@ -16,8 +16,8 @@ use std::borrow::Cow;
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::body::Incoming as IncomingBody;
-use crate::proto;
+use super::{HeaderReadTimeout, IdleTimeout, timeout::ConnTimer};
+use crate::{body::Incoming as IncomingBody, proto};
 
 pin_project! {
     /// A [`Future`] representing an HTTP/2 connection, bound to a
@@ -317,6 +317,41 @@ impl Builder {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Set the deadline for receiving a request head: the client preface and
+        /// every HEADERS block with its CONTINUATION frames.
+        ///
+        /// Defaults to [`HeaderReadTimeout::DEFAULT`]; `None` disables it.
+        pub fn header_read_timeout(mut self, timeout: Option<HeaderReadTimeout>) -> Self {
+            self.h2_builder.header_read_timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the budget while no stream is open nor a request head in progress,
+        /// after which the connection closes with a graceful GOAWAY.
+        ///
+        /// Defaults to [`IdleTimeout::DEFAULT`]; `None` disables it.
+        pub fn idle_timeout(mut self, timeout: Option<IdleTimeout>) -> Self {
+            self.h2_builder.idle_timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set whether a successful response to CONNECT that carries `Content-Length`
+        /// resets its stream, rather than having that field dropped.
+        ///
+        /// RFC 9110 §9.3.6 forbids the field there, as a tunnel follows the response.
+        ///
+        /// Default is `false`: the field is dropped and the tunnel opens.
+        pub fn strict_connect_framing(mut self, enabled: bool) -> Self {
+            self.h2_builder.strict_connect_framing = enabled;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Set whether the `date` header should be included in HTTP responses.
         ///
         /// Note that including the `date` header is recommended by RFC 7231.
@@ -344,6 +379,24 @@ impl Builder {
         S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>,
         I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
     {
+        let timer = ConnTimer::new(
+            self.h2_builder.idle_timeout,
+            self.h2_builder.header_read_timeout,
+        );
+        self.serve_connection_with_timer(io, service, timer)
+    }
+
+    /// Bind a connection whose deadlines already started, as during protocol detection.
+    pub(super) fn serve_connection_with_timer<S, I>(
+        &self,
+        io: I,
+        service: S,
+        timer: ConnTimer,
+    ) -> Connection<I, S>
+    where
+        S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>,
+        I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
+    {
         let h2_builder = if let Some(params) = io.extensions().get_ref::<H2ServerContextParams>() {
             let mut cfg = self.h2_builder.clone();
             apply_h2_server_context_params(&mut cfg, params);
@@ -351,7 +404,7 @@ impl Builder {
         } else {
             Cow::Borrowed(&self.h2_builder)
         };
-        let proto = proto::h2::Server::new(io, service, &h2_builder, self.exec.clone());
+        let proto = proto::h2::Server::new(io, service, &h2_builder, self.exec.clone(), timer);
         Connection { conn: proto }
     }
 }

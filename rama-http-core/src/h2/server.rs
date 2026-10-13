@@ -124,6 +124,7 @@ use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 use crate::proto::target::{
     AsteriskHostError, asterisk_host, normalize_received, received_authority, several_hosts,
 };
+use crate::server::conn::timeout::Activity;
 
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::extensions::{Extensions, ExtensionsRef};
@@ -149,7 +150,10 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use std::{fmt, io};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    time::Instant,
+};
 
 /// In progress HTTP/2 connection handshake future.
 ///
@@ -171,6 +175,8 @@ pub struct Handshake<T, B: Buf = Bytes> {
     builder: Builder,
     /// The current state of the handshake.
     state: Handshaking<T, B>,
+    /// When the initial SETTINGS were flushed.
+    settings_sent_at: Option<Instant>,
     /// Span tracking the handshake
     span: tracing::Span,
 }
@@ -459,6 +465,7 @@ where
         Handshake {
             builder,
             state,
+            settings_sent_at: None,
             span,
         }
     }
@@ -468,6 +475,15 @@ where
         &mut self,
     ) -> Option<Result<(Request<RecvStream>, SendResponse<B>), crate::h2::Error>> {
         crate::h2::poll_fn(move |cx| self.poll_accept(cx)).await
+    }
+
+    pub(crate) fn timeout_activity(&self) -> Activity {
+        self.connection.timeout_activity()
+    }
+
+    /// The round trip of the initial SETTINGS, once, when their ACK arrived.
+    pub(crate) fn take_settings_rtt(&mut self) -> Option<Duration> {
+        self.connection.take_settings_rtt()
     }
 
     #[doc(hidden)]
@@ -1662,6 +1678,7 @@ where
                             flushed
                         }
                     };
+                    self.settings_sent_at = Some(Instant::now());
                     self.state = Handshaking::ReadingPreface(
                         ReadPreface::new(codec).instrument(tracing::trace_span!("read_preface")),
                     );
@@ -1693,6 +1710,7 @@ where
                                 EarlyFrameStreamContext::new_nop()
                             },
                             data_frame_budget: self.builder.data_frame_budget,
+                            settings_sent_at: self.settings_sent_at,
                         },
                     )?;
 
@@ -1708,6 +1726,19 @@ where
                     panic!("Handshaking::poll() called again after handshaking was complete")
                 }
             }
+        }
+    }
+}
+
+impl<T, B: Buf> Handshake<T, B> {
+    /// Bytes of the client preface received so far, once it started arriving.
+    pub(crate) fn preface_progress(&self) -> Option<u64> {
+        match &self.state {
+            Handshaking::ReadingPreface(read) => {
+                let received = read.inner().pos;
+                (received != 0).then_some(received as u64)
+            }
+            Handshaking::Flushing(_) | Handshaking::Done => None,
         }
     }
 }

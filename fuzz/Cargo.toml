@@ -296,8 +296,22 @@ doc = false
 bench = false
 
 [[bin]]
+name = "quic_admission"
+path = "fuzz_targets/quic_admission.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "quic_tokens"
 path = "fuzz_targets/quic_tokens.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_deadlines"
+path = "fuzz_targets/http_deadlines.rs"
 test = false
 doc = false
 bench = false

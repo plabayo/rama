@@ -524,10 +524,9 @@ async fn try_call_returns_not_a_directory_error() {
         .await
         .expect_err("a non-directory path component should remain an I/O error");
 
-    assert_eq!(err.raw_os_error(), Some(20));
+    assert_eq!(err.kind(), std::io::ErrorKind::NotADirectory);
 }
 
-#[cfg(target_family = "unix")]
 #[tokio::test]
 async fn not_found_when_not_a_directory() {
     let svc = ServeDir::new("../test-files");
@@ -1757,6 +1756,76 @@ async fn calls_fallback_on_null() {
     let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.headers()["from-fallback"], "1");
+}
+
+#[tokio::test]
+async fn not_found_on_nul_filename_for_get_and_head() {
+    test_not_found_on_invalid_filename("/invalid-path%00").await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn not_found_on_too_long_filename_for_get_and_head() {
+    // exceeds the 255 byte name limit of common unix filesystems
+    test_not_found_on_invalid_filename(&format!("/{}", "a".repeat(300))).await;
+}
+
+async fn test_not_found_on_invalid_filename(uri: &str) {
+    async fn fallback<T>(_: T) -> Result<Response, Infallible> {
+        let mut res = Response::new(Body::empty());
+        res.headers_mut()
+            .insert("from-fallback", "1".parse().unwrap());
+        Ok(res)
+    }
+
+    for method in [Method::GET, Method::HEAD] {
+        let request = || {
+            Request::builder()
+                .method(method.clone())
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        let svc = ServeDir::new("../test-files");
+        let res = svc.serve(request()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+        let res = svc.try_call(request()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+
+        let svc = ServeDir::new("../test-files").fallback(service_fn(fallback));
+        let res = svc.serve(request()).await.unwrap();
+        assert_eq!(res.headers()["from-fallback"], "1", "{method} {uri}");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn precompressed_variant_with_too_long_name_falls_back_to_uncompressed() {
+    let dir = rama_utils::fs::tempdir().unwrap();
+    // 254 bytes fits the 255 byte name limit, the `.gz` variant does not
+    let name = format!("{}.txt", "a".repeat(250));
+    std::fs::write(dir.path().join(&name), "plain").unwrap();
+    let svc = ServeDir::new(dir.path()).with_precompressed_gzip();
+
+    for method in [Method::GET, Method::HEAD] {
+        let req = Request::builder()
+            .method(method.clone())
+            .uri(format!("/{name}"))
+            .header("Accept-Encoding", "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK, "{method}");
+        assert!(
+            res.headers().get(header::CONTENT_ENCODING).is_none(),
+            "{method}"
+        );
+        assert_eq!(res.headers()["content-length"], "5", "{method}");
+        let expected = if method == Method::HEAD { "" } else { "plain" };
+        assert_eq!(body_into_text(res.into_body()).await, expected, "{method}");
+    }
 }
 
 // --- Regression test for tower-rs/tower-http#664 ----------------------------

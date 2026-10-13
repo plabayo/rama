@@ -41,10 +41,12 @@ const DEFAULT_CAPACITY: usize = 65536;
 /// An empty response with status `404 Not Found` will be returned if:
 ///
 /// - The file doesn't exist
-/// - Any segment of the path contains `..`
+/// - A percent-decoded segment is `..` (literal `..` segments are clamped at the root)
 /// - Any segment of the path contains a backslash
-/// - On unix, any segment of the path referenced as directory is actually an
+/// - Any segment of the path referenced as directory is actually an
 ///   existing file (`/file.html/something`)
+/// - The path is not a valid file name for the platform (e.g. a segment is
+///   too long or contains a NUL byte)
 /// - We don't have necessary permissions to read the file
 #[derive(Clone, Debug)]
 pub struct ServeDir<F = DefaultServeDirFallback> {
@@ -331,10 +333,10 @@ impl<F> ServeDir<F> {
     /// of being returned.
     ///
     /// By default `<ServeDir as Service<_>>::serve` will handle IO errors and convert them into
-    /// responses. It does that by converting [`std::io::ErrorKind::NotFound`] and
-    /// [`std::io::ErrorKind::PermissionDenied`] to `404 Not Found`. On Unix, errors indicating
-    /// that a path component is not a directory are also converted to `404 Not Found`. Any other
-    /// error is converted to `500 Internal Server Error` and will also be logged with `tracing`.
+    /// responses. It does that by converting [`std::io::ErrorKind::NotFound`],
+    /// [`std::io::ErrorKind::PermissionDenied`], [`std::io::ErrorKind::NotADirectory`] and
+    /// [`std::io::ErrorKind::InvalidFilename`] to `404 Not Found`. Any other error is converted
+    /// to `500 Internal Server Error` and will also be logged with `tracing`.
     ///
     /// If you want to manually control how the error response is generated you can make a new
     /// service that wraps a `ServeDir` and calls `try_call` instead of `serve`.

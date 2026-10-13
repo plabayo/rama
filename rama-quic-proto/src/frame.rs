@@ -180,9 +180,10 @@ pub enum Frame {
 impl Frame {
     /// Whether this frame can appear in a 0-RTT packet.
     ///
-    /// RFC 9000 section 12.4, Table 3 permits both CONNECTION_CLOSE forms in
-    /// 0-RTT. DATAGRAM is permitted by RFC 9221 section 5. ACK-frequency frames
-    /// require 1-RTT because their negotiation is not retained across connections.
+    /// RFC 9000 section 12.4, Table 3 with erratum 7365 permits both CONNECTION_CLOSE
+    /// forms but not RETIRE_CONNECTION_ID in 0-RTT. DATAGRAM is permitted by RFC 9221
+    /// section 5. ACK-frequency frames require 1-RTT because their negotiation is not
+    /// retained across connections.
     /// Role, stream limits and negotiated extension support are checked separately.
     #[must_use]
     pub fn is_allowed_in_0rtt(&self) -> bool {
@@ -199,13 +200,13 @@ impl Frame {
             | Self::StreamDataBlocked { .. }
             | Self::StreamsBlocked { .. }
             | Self::NewConnectionId(_)
-            | Self::RetireConnectionId { .. }
             | Self::PathChallenge(_)
             | Self::Close(_)
             | Self::Datagram(_) => true,
             Self::Ack(_)
             | Self::Crypto(_)
             | Self::NewToken(_)
+            | Self::RetireConnectionId { .. }
             | Self::PathResponse(_)
             | Self::HandshakeDone
             | Self::AckFrequency(_)
@@ -480,7 +481,9 @@ impl Ack {
     /// the set is empty (there is nothing to acknowledge). This is the only way to construct an
     /// `Ack` outside decoding, so a hand-built one can never carry inconsistent range bytes.
     pub fn from_ranges(delay: u64, ranges: &ArrayRangeSet, ecn: Option<EcnCounts>) -> Option<Self> {
-        let (largest, additional) = Self::ranges_to_wire(ranges)?;
+        let largest = ranges.max()?;
+        let mut additional = Vec::new();
+        Self::write_ranges(ranges, &mut additional);
         Some(Self {
             largest,
             delay,
@@ -489,21 +492,19 @@ impl Ack {
         })
     }
 
-    /// The largest acknowledged packet and the range bytes an ACK carries for `ranges` (the first
-    /// range's size, then gap/size pairs), or `None` when the set is empty.
-    fn ranges_to_wire(ranges: &ArrayRangeSet) -> Option<(u64, Vec<u8>)> {
+    /// The range bytes an ACK carries for `ranges`: the first range's size, then gap/size pairs.
+    fn write_ranges<W: BufMut>(ranges: &ArrayRangeSet, buf: &mut W) {
         let mut rest = ranges.iter().rev();
-        let first = rest.next()?;
-        let largest = first.end - 1;
-        let mut additional = Vec::new();
-        additional.write_var(first.end - first.start - 1);
+        let Some(first) = rest.next() else {
+            return;
+        };
+        buf.write_var(first.end - first.start - 1);
         let mut prev = first.start;
         for block in rest {
-            additional.write_var(prev - block.end - 1);
-            additional.write_var(block.end - block.start - 1);
+            buf.write_var(prev - block.end - 1);
+            buf.write_var(block.end - block.start - 1);
             prev = block.start;
         }
-        Some((largest, additional))
     }
 
     pub fn encode<W: BufMut>(
@@ -514,7 +515,7 @@ impl Ack {
     ) {
         // A caller only encodes a non-empty ACK (`PendingAcks` gates on `can_send`); an empty
         // range set writes no frame rather than panicking.
-        let Some((largest, additional)) = Self::ranges_to_wire(ranges) else {
+        let Some(largest) = ranges.max() else {
             return;
         };
         buf.write(if ecn.is_some() {
@@ -525,7 +526,7 @@ impl Ack {
         buf.write_var(largest);
         buf.write_var(delay);
         buf.write_var(ranges.len() as u64 - 1);
-        buf.put_slice(&additional);
+        Self::write_ranges(ranges, buf);
         if let Some(x) = ecn {
             x.encode(buf)
         }
@@ -1115,7 +1116,7 @@ mod test {
             (FrameType::STREAMS_BLOCKED_BIDI, vec![0], true),
             (FrameType::STREAMS_BLOCKED_UNI, vec![0], true),
             (FrameType::NEW_CONNECTION_ID, new_cid, true),
-            (FrameType::RETIRE_CONNECTION_ID, vec![1], true),
+            (FrameType::RETIRE_CONNECTION_ID, vec![1], false),
             (FrameType::PATH_CHALLENGE, vec![0; 8], true),
             (FrameType::PATH_RESPONSE, vec![0; 8], false),
             (FrameType::CONNECTION_CLOSE, vec![0; 3], true),

@@ -56,7 +56,7 @@ impl Assembler {
         } else if !ordered && self.state.is_ordered() {
             // Enter unordered mode
             if !self.data.is_empty() {
-                // Discard bytes already delivered before unordered reads stop trimming the prefix.
+                // Get rid of possible duplicates, including copies of what was already read
                 self.defragment(self.bytes_read);
             }
             let mut recvd = RangeSet::new();
@@ -114,7 +114,8 @@ impl Assembler {
     /// Copy fragmented chunk data to new chunks backed by a single buffer
     ///
     /// This makes sure we're not unnecessarily holding on to many larger allocations.
-    /// We merge contiguous chunks in the process of doing so.
+    /// We merge contiguous chunks in the process of doing so. Bytes before `start` are treated
+    /// as already delivered and discarded.
     fn defragment(&mut self, start: u64) {
         // Chunks smaller than min_chunk_size are merged regardless of fragmentation
         let min_chunk_size = max(self.buffered.div_ceil(MAX_CHUNKS), MIN_RETAINED_CHUNK_SIZE);
@@ -463,6 +464,51 @@ mod test {
         match next(&mut x, 32) {
             None => {}
             other => panic!("assertion failed: `{other:?}` does not match `None`"),
+        }
+    }
+
+    /// Copies of bytes an ordered read already returned can still be buffered when the stream
+    /// switches to unordered reads; they must not be handed back a second time.
+    #[test]
+    fn unordered_after_ordered_read_drops_already_read_copies() {
+        // Frames buffered before any read, the length of the ordered read, what is left unread.
+        let cases: [(&[(u64, &'static str)], usize, &str); 3] = [
+            (&[(0, "abc"), (0, "abc")], 3, ""),
+            (&[(0, "abc"), (0, "abcdef")], 3, "def"),
+            (&[(0, "abcd"), (1, "bcdef")], 4, "ef"),
+        ];
+        for (frames, ordered, rest) in cases {
+            let mut x = Assembler::new();
+            for &(offset, data) in frames {
+                x.insert(offset, Bytes::from_static(data.as_bytes()), data.len())
+                    .unwrap();
+            }
+            let chunk = x
+                .read(ordered, true)
+                .expect("the prefix is readable in order");
+            assert_eq!(
+                (chunk.offset, chunk.bytes.len()),
+                (0, ordered),
+                "{frames:?}"
+            );
+
+            x.ensure_ordering(false).unwrap();
+            let mut unread = Vec::new();
+            while let Some(chunk) = x.read(usize::MAX, false) {
+                assert!(
+                    chunk.offset >= ordered as u64,
+                    "{frames:?}: offset {} was already read",
+                    chunk.offset
+                );
+                unread.push(chunk);
+            }
+            unread.sort_by_key(|chunk| chunk.offset);
+            let unread: Vec<u8> = unread
+                .iter()
+                .flat_map(|chunk| chunk.bytes.iter().copied())
+                .collect();
+            assert_eq!(unread, rest.as_bytes(), "{frames:?}");
+            assert_eq!(x.bytes_read(), (ordered + rest.len()) as u64, "{frames:?}");
         }
     }
 

@@ -26,7 +26,6 @@ use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 use crate::proto::{
     Duration, EndpointConfig, Instant,
-    cid_generator::ConnectionIdGenerator,
     cid_queue::CidQueue,
     config::TransportConfig,
     crypto::{self, KeyPair},
@@ -344,7 +343,8 @@ impl Connection {
         remote: SocketAddr,
         local: Option<SocketAddr>,
         crypto: Box<dyn crypto::Session>,
-        cid_gen: &dyn ConnectionIdGenerator,
+        cid_len: usize,
+        cid_lifetime: Option<Duration>,
         now: Instant,
         version: Version,
         allow_mtud: bool,
@@ -380,7 +380,7 @@ impl Connection {
         });
         let rem_cids = CidQueue::new(
             rem_cid,
-            transport_parameters::active_connection_id_limit(&config, cid_gen).into_inner(),
+            transport_parameters::active_connection_id_limit(&config, cid_len).into_inner(),
         )?;
         let mut rng = StdRng::from_seed(rng_seed);
         let mut this = Self {
@@ -389,13 +389,7 @@ impl Connection {
             crypto,
             handshake_cid: loc_cid,
             rem_handshake_cid: rem_cid,
-            local_cid_state: CidState::new(
-                cid_gen.cid_len(),
-                cid_gen.cid_lifetime(),
-                now,
-                loc_cid,
-                pref_addr_cid,
-            ),
+            local_cid_state: CidState::new(cid_len, cid_lifetime, now, loc_cid, pref_addr_cid),
             path: PathData::new(remote, local, allow_mtud, None, 0, now, &config),
             path_counter: 0,
             allow_mtud,
@@ -608,6 +602,12 @@ impl Connection {
                 ..
             }
         )
+    }
+
+    /// Tests: the highest packet number space this connection has keys for.
+    #[cfg(test)]
+    pub(crate) fn highest_space(&self) -> SpaceId {
+        self.highest_space
     }
 
     /// Tests: whether this client clears the QUIC bit before the server's parameters arrive.

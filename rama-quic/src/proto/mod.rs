@@ -15,6 +15,9 @@ use std::{net::SocketAddr, num::NonZeroUsize};
 
 use rama_quic_proto::{EcnCodepoint, Version};
 
+mod admission;
+pub use admission::AdmissionConfig;
+pub(crate) use admission::{Admission, AdmissionLease, Decision, Refusal};
 pub(crate) mod cid_queue;
 #[cfg(test)]
 #[cfg(any(
@@ -142,6 +145,7 @@ pub(crate) mod fuzzing {
     ))]
     pub use crate::proto::connection::token_sequence;
 
+    pub use crate::proto::admission::fuzz_admission;
     pub use rama_core::bytes::{BufMut, Bytes, BytesMut};
     use rama_quic_proto::{
         TransportError,

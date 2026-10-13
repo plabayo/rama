@@ -95,6 +95,9 @@ pin_project_cfg! {
             #[pin]
             inner: B,
         },
+        Empty {
+            _inner: B,
+        },
     }
 }
 
@@ -137,6 +140,8 @@ where
     fn size_hint(&self) -> rama_http_types::body::SizeHint {
         if let BodyInner::Identity { inner } = &self.inner {
             inner.size_hint()
+        } else if matches!(self.inner, BodyInner::Empty { .. }) {
+            rama_http_types::body::SizeHint::with_exact(0)
         } else {
             rama_http_types::body::SizeHint::new()
         }
@@ -146,7 +151,7 @@ where
         if let BodyInner::Identity { inner } = &self.inner {
             inner.is_end_stream()
         } else {
-            false
+            matches!(self.inner, BodyInner::Empty { .. })
         }
     }
 }

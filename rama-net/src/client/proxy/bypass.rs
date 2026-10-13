@@ -770,6 +770,44 @@ mod tests {
     }
 
     #[test]
+    fn rules_and_hosts_match_regardless_of_ascii_case() {
+        for dialect in [
+            BypassRuleDialect::Rama,
+            BypassRuleDialect::NoProxy,
+            BypassRuleDialect::Glib,
+            BypassRuleDialect::Kde,
+            BypassRuleDialect::FlatGlob,
+        ] {
+            for (pattern, host) in [
+                ("example.com", "EXAMPLE.COM"),
+                ("EXAMPLE.COM", "example.com"),
+                ("Example.Com", "eXaMpLe.cOm"),
+                (".example.com", "WWW.EXAMPLE.COM"),
+                (".EXAMPLE.COM", "www.example.com"),
+                (".Example.Com", "Www.eXaMpLe.cOm"),
+            ] {
+                let rule = BypassRule::compile_with_dialect(pattern, dialect).unwrap();
+                assert!(
+                    rule.matches(None, Host::try_from(host).unwrap().view(), None),
+                    "dialect={dialect:?} pattern={pattern:?} host={host:?}"
+                );
+            }
+        }
+
+        assert!(BypassRule::compile("*CORP*").unwrap().matches(
+            None,
+            Host::try_from("api.corp.example").unwrap().view(),
+            None,
+        ));
+
+        let rules = BypassRules::from_no_proxy(".example.com").unwrap();
+        for authority in ["EXAMPLE.COM:80", "Example.Com:443", "WWW.Example.COM:8080"] {
+            let input = ConnectRequest::new(authority.parse().unwrap());
+            assert!(rules.matches_input(&input), "{authority}");
+        }
+    }
+
+    #[test]
     fn standalone_wildcard_matches_every_host() {
         let rule = BypassRule::compile("*").unwrap();
         for host in ["example.com", "127.0.0.1", "2001:db8::1"] {

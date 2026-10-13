@@ -208,6 +208,17 @@ impl FrameDecoder {
         matches!(self.state, State::Type) && !self.varint.in_progress() && self.inbox.is_empty()
     }
 
+    /// Received field-section payload bytes, excluding other frames and unread input.
+    pub(crate) fn buffered_headers_len(&self) -> usize {
+        match self.state {
+            State::Buffer {
+                ty: FrameType::HEADERS,
+                ..
+            } => self.payload.len(),
+            _ => 0,
+        }
+    }
+
     /// Try to produce the next event. Returns `Ok(None)` when more input is required.
     pub fn poll(&mut self) -> Result<Option<FrameEvent>, FrameError> {
         loop {
@@ -271,10 +282,12 @@ impl FrameDecoder {
                         if self.inbox.is_empty() {
                             return Ok(None);
                         }
-                        // Only fragmented payloads need storage. Reserve the bounded full length
-                        // once so subsequent fragments do not repeatedly grow and copy it.
-                        self.payload.reserve(len - have);
                         let take = usize::min(len - have, self.inbox.len());
+                        // Only fragmented payloads need storage; it doubles with what arrived,
+                        // never jumping to a length the peer only declared.
+                        if self.payload.capacity() - have < take {
+                            self.payload.reserve(usize::max(take, have).min(len - have));
+                        }
                         let chunk = self.inbox.split_to(take);
                         self.payload.extend_from_slice(&chunk);
                         if self.payload.len() < len {
@@ -618,6 +631,36 @@ mod tests {
             dec.poll(),
             Err(FrameError::UnexpectedH2Frame(FrameType::new(0x02)))
         );
+    }
+
+    #[test]
+    fn fragmented_payload_storage_follows_arrival() {
+        const LEN: usize = 60_000;
+        let mut wire = BytesMut::new();
+        FrameHeader::new(FrameType::HEADERS, LEN as u64)
+            .encode(&mut wire)
+            .unwrap();
+        wire.extend_from_slice(b"x");
+        let mut dec = FrameDecoder::new(64 * 1024);
+        dec.feed(&wire).unwrap();
+        assert_eq!(dec.poll().unwrap(), None);
+        // A declared length alone must not size the buffer.
+        assert!(dec.payload.capacity() < 1024, "{}", dec.payload.capacity());
+
+        let rest = vec![b'y'; LEN - 1];
+        let mut produced = None;
+        for chunk in rest.chunks(700) {
+            dec.feed(chunk).unwrap();
+            produced = dec.poll().unwrap();
+            assert!(dec.payload.capacity() <= 2 * LEN);
+        }
+        let Some(FrameEvent::Headers(payload)) = produced else {
+            panic!("expected a HEADERS frame");
+        };
+        assert_eq!(payload.len(), LEN);
+        assert_eq!(payload[0], b'x');
+        assert!(payload[1..].iter().all(|&b| b == b'y'));
+        assert!(dec.is_at_frame_boundary());
     }
 
     #[test]

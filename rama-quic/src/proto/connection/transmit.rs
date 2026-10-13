@@ -433,6 +433,8 @@ impl Connection {
                 // especially important with ack delay, since the peer might not
                 // have gotten any other ACK for the data earlier on.
                 if !self.spaces[space_id].pending_acks.ranges().is_empty() {
+                    // The ACK yields to the close: a large Initial token can leave room for
+                    // little more than the close itself.
                     Self::try_populate_acks(
                         now,
                         self.receiving_ecn,

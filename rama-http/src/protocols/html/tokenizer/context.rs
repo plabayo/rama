@@ -17,102 +17,89 @@
 //!
 //! Adapted from lol-html's `tree_builder_simulator` (BSD-3-Clause).
 
+use std::error::Error;
 use std::fmt;
 
-use super::name::LocalNameHash;
-use super::token::AttrRange;
+use super::charref::attribute_value_is;
+use super::name::{KnownName, KnownNames, LocalNameHash};
+use super::token::{EndTag, StartTag};
 
-// --- known tag-name hashes -------------------------------------------------
+// --- known tag names -------------------------------------------------------
 
-const SVG: LocalNameHash = LocalNameHash::from_static(b"svg");
-const MATH: LocalNameHash = LocalNameHash::from_static(b"math");
-const FONT: LocalNameHash = LocalNameHash::from_static(b"font");
-const P: LocalNameHash = LocalNameHash::from_static(b"p");
-const BR: LocalNameHash = LocalNameHash::from_static(b"br");
+const SVG: KnownName = KnownName::new(b"svg");
+const MATH: KnownName = KnownName::new(b"math");
+const FONT: KnownName = KnownName::new(b"font");
+const P: KnownName = KnownName::new(b"p");
+const BR: KnownName = KnownName::new(b"br");
+const ANNOTATION_XML: KnownName = KnownName::new(b"annotation-xml");
 
-const SCRIPT: LocalNameHash = LocalNameHash::from_static(b"script");
-const STYLE: LocalNameHash = LocalNameHash::from_static(b"style");
-const TEXTAREA: LocalNameHash = LocalNameHash::from_static(b"textarea");
-const TITLE: LocalNameHash = LocalNameHash::from_static(b"title");
-const PLAINTEXT: LocalNameHash = LocalNameHash::from_static(b"plaintext");
-const XMP: LocalNameHash = LocalNameHash::from_static(b"xmp");
-const IFRAME: LocalNameHash = LocalNameHash::from_static(b"iframe");
-const NOEMBED: LocalNameHash = LocalNameHash::from_static(b"noembed");
-const NOFRAMES: LocalNameHash = LocalNameHash::from_static(b"noframes");
-const NOSCRIPT: LocalNameHash = LocalNameHash::from_static(b"noscript");
+const SCRIPT: KnownName = KnownName::new(b"script");
+const NOFRAMES: KnownName = KnownName::new(b"noframes");
 
 // SVG HTML-integration points.
-const DESC: LocalNameHash = LocalNameHash::from_static(b"desc");
-const FOREIGN_OBJECT: LocalNameHash = LocalNameHash::from_static(b"foreignobject");
+const SVG_HTML_INTEGRATION_POINTS: KnownNames<3> =
+    KnownNames::new([b"foreignobject", b"desc", b"title"]);
 
 // MathML text-integration points.
-const MI: LocalNameHash = LocalNameHash::from_static(b"mi");
-const MO: LocalNameHash = LocalNameHash::from_static(b"mo");
-const MN: LocalNameHash = LocalNameHash::from_static(b"mn");
-const MS: LocalNameHash = LocalNameHash::from_static(b"ms");
-const MTEXT: LocalNameHash = LocalNameHash::from_static(b"mtext");
+const MATHML_TEXT_INTEGRATION_POINTS: KnownNames<5> =
+    KnownNames::new([b"mi", b"mo", b"mn", b"ms", b"mtext"]);
 
 // Ambiguity-guard insertion-mode markers.
-const SELECT: LocalNameHash = LocalNameHash::from_static(b"select");
-const FRAMESET: LocalNameHash = LocalNameHash::from_static(b"frameset");
-const TEMPLATE: LocalNameHash = LocalNameHash::from_static(b"template");
-const INPUT: LocalNameHash = LocalNameHash::from_static(b"input");
-const KEYGEN: LocalNameHash = LocalNameHash::from_static(b"keygen");
-
-/// Text-parsing-mode switching tags — the ones whose context-sensitivity is
-/// dangerous to misjudge.
-const TEXT_SWITCH_TAGS: &[LocalNameHash] = &[
-    TEXTAREA, TITLE, PLAINTEXT, SCRIPT, STYLE, IFRAME, XMP, NOEMBED, NOFRAMES, NOSCRIPT,
-];
+const SELECT: KnownName = KnownName::new(b"select");
+const FRAMESET: KnownName = KnownName::new(b"frameset");
+const TEMPLATE: KnownName = KnownName::new(b"template");
 
 /// HTML elements that force an exit from foreign content (per the HTML
 /// "any other start tag" foreign-content breakout list).
-const BREAKOUT_TAGS: &[LocalNameHash] = &[
-    LocalNameHash::from_static(b"b"),
-    LocalNameHash::from_static(b"big"),
-    LocalNameHash::from_static(b"blockquote"),
-    LocalNameHash::from_static(b"body"),
-    LocalNameHash::from_static(b"br"),
-    LocalNameHash::from_static(b"center"),
-    LocalNameHash::from_static(b"code"),
-    LocalNameHash::from_static(b"dd"),
-    LocalNameHash::from_static(b"div"),
-    LocalNameHash::from_static(b"dl"),
-    LocalNameHash::from_static(b"dt"),
-    LocalNameHash::from_static(b"em"),
-    LocalNameHash::from_static(b"embed"),
-    LocalNameHash::from_static(b"h1"),
-    LocalNameHash::from_static(b"h2"),
-    LocalNameHash::from_static(b"h3"),
-    LocalNameHash::from_static(b"h4"),
-    LocalNameHash::from_static(b"h5"),
-    LocalNameHash::from_static(b"h6"),
-    LocalNameHash::from_static(b"head"),
-    LocalNameHash::from_static(b"hr"),
-    LocalNameHash::from_static(b"i"),
-    LocalNameHash::from_static(b"img"),
-    LocalNameHash::from_static(b"li"),
-    LocalNameHash::from_static(b"listing"),
-    LocalNameHash::from_static(b"menu"),
-    LocalNameHash::from_static(b"meta"),
-    LocalNameHash::from_static(b"nobr"),
-    LocalNameHash::from_static(b"ol"),
-    LocalNameHash::from_static(b"p"),
-    LocalNameHash::from_static(b"pre"),
-    LocalNameHash::from_static(b"ruby"),
-    LocalNameHash::from_static(b"s"),
-    LocalNameHash::from_static(b"small"),
-    LocalNameHash::from_static(b"span"),
-    LocalNameHash::from_static(b"strong"),
-    LocalNameHash::from_static(b"strike"),
-    LocalNameHash::from_static(b"sub"),
-    LocalNameHash::from_static(b"sup"),
-    LocalNameHash::from_static(b"table"),
-    LocalNameHash::from_static(b"tt"),
-    LocalNameHash::from_static(b"u"),
-    LocalNameHash::from_static(b"ul"),
-    LocalNameHash::from_static(b"var"),
-];
+const BREAKOUT_TAGS: KnownNames<44> = KnownNames::new([
+    b"b",
+    b"big",
+    b"blockquote",
+    b"body",
+    b"br",
+    b"center",
+    b"code",
+    b"dd",
+    b"div",
+    b"dl",
+    b"dt",
+    b"em",
+    b"embed",
+    b"h1",
+    b"h2",
+    b"h3",
+    b"h4",
+    b"h5",
+    b"h6",
+    b"head",
+    b"hr",
+    b"i",
+    b"img",
+    b"li",
+    b"listing",
+    b"menu",
+    b"meta",
+    b"nobr",
+    b"ol",
+    b"p",
+    b"pre",
+    b"ruby",
+    b"s",
+    b"small",
+    b"span",
+    b"strong",
+    b"strike",
+    b"sub",
+    b"sup",
+    b"table",
+    b"tt",
+    b"u",
+    b"ul",
+    b"var",
+]);
+
+/// Start tags that end the "in select" insertion mode early.
+const SELECT_EXITS: KnownNames<4> = KnownNames::new([b"select", b"textarea", b"input", b"keygen"]);
 
 /// How an element's body is tokenized once its start tag is seen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,24 +117,35 @@ pub(crate) enum TextMode {
 }
 
 /// HTML element (in the HTML namespace) whose body is a special text mode.
-fn html_text_mode(name: LocalNameHash) -> Option<TextMode> {
-    if name == SCRIPT {
-        Some(TextMode::ScriptData)
-    } else if name == TEXTAREA || name == TITLE {
-        Some(TextMode::RcData)
-    } else if name == PLAINTEXT {
-        Some(TextMode::PlainText)
-    } else if name == STYLE
-        || name == XMP
-        || name == IFRAME
-        || name == NOEMBED
-        || name == NOFRAMES
-        || name == NOSCRIPT
-    {
-        Some(TextMode::RawText)
-    } else {
-        None
+fn html_text_mode(hash: LocalNameHash, name: &[u8]) -> Option<TextMode> {
+    const fn h(name: &'static [u8]) -> u64 {
+        LocalNameHash::from_static(name).as_u64()
     }
+    const SCRIPT: u64 = h(b"script");
+    const TEXTAREA: u64 = h(b"textarea");
+    const TITLE: u64 = h(b"title");
+    const PLAINTEXT: u64 = h(b"plaintext");
+    const STYLE: u64 = h(b"style");
+    const XMP: u64 = h(b"xmp");
+    const IFRAME: u64 = h(b"iframe");
+    const NOEMBED: u64 = h(b"noembed");
+    const NOFRAMES: u64 = h(b"noframes");
+    const NOSCRIPT: u64 = h(b"noscript");
+    let (known, mode): (&[u8], _) = match hash.as_u64() {
+        SCRIPT => (b"script", TextMode::ScriptData),
+        TEXTAREA => (b"textarea", TextMode::RcData),
+        TITLE => (b"title", TextMode::RcData),
+        PLAINTEXT => (b"plaintext", TextMode::PlainText),
+        STYLE => (b"style", TextMode::RawText),
+        XMP => (b"xmp", TextMode::RawText),
+        IFRAME => (b"iframe", TextMode::RawText),
+        NOEMBED => (b"noembed", TextMode::RawText),
+        NOFRAMES => (b"noframes", TextMode::RawText),
+        NOSCRIPT => (b"noscript", TextMode::RawText),
+        _ => return None,
+    };
+    // A crafted long name can share the hash.
+    (hash.is_exact() || name.eq_ignore_ascii_case(known)).then_some(mode)
 }
 
 /// The namespace an element's content is parsed in.
@@ -175,7 +173,7 @@ impl fmt::Display for ParsingAmbiguityError {
     }
 }
 
-impl std::error::Error for ParsingAmbiguityError {}
+impl Error for ParsingAmbiguityError {}
 
 /// Tracks the open-element context needed for correct tokenization.
 #[derive(Debug)]
@@ -201,54 +199,48 @@ impl ContextTracker {
         self.current_ns != Namespace::Html
     }
 
-    /// Non-mutating peek at the text mode a start tag would enter in the
-    /// current context (used by the streaming tokenizer to decide whether a
-    /// raw-text body is fully buffered before committing to it). Mirrors the
-    /// text-mode outcome of [`Self::on_start_tag`].
-    pub(crate) fn peek_text_mode(&self, name: LocalNameHash) -> Option<TextMode> {
-        if self.current_ns != Namespace::Html || name == SVG || name == MATH {
+    /// Non-mutating peek at the text mode a start tag enters in the current
+    /// context (the streaming tokenizer uses it to decide whether a raw-text
+    /// body is fully buffered before committing to it).
+    pub(crate) fn peek_text_mode(&self, hash: LocalNameHash, name: &[u8]) -> Option<TextMode> {
+        if self.current_ns != Namespace::Html || SVG.is(hash, name) || MATH.is(hash, name) {
             None
         } else {
-            html_text_mode(name)
+            html_text_mode(hash, name)
         }
     }
 
-    /// Updates context for a start tag, returning the body's text mode (only
-    /// possible in the HTML namespace).
-    pub(crate) fn on_start_tag(
-        &mut self,
-        name_hash: LocalNameHash,
-        name: &[u8],
-        attributes: &[AttrRange],
-        input: &[u8],
-        self_closing: bool,
-    ) -> Result<Option<TextMode>, ParsingAmbiguityError> {
+    /// Updates context for a start tag.
+    pub(crate) fn on_start_tag(&mut self, tag: &StartTag<'_>) -> Result<(), ParsingAmbiguityError> {
+        let (hash, name) = (tag.name_hash(), tag.name());
         if self.strict {
-            self.ambiguity.track_start_tag(name_hash, name)?;
+            self.ambiguity.track_start_tag(hash, name)?;
         }
 
-        if name_hash == SVG {
-            self.enter_ns(Namespace::Svg);
-            Ok(None)
-        } else if name_hash == MATH {
-            self.enter_ns(Namespace::MathMl);
-            Ok(None)
-        } else if self.current_ns == Namespace::Html {
-            Ok(html_text_mode(name_hash))
-        } else {
-            self.foreign_start_tag(name_hash, name, attributes, input, self_closing);
-            Ok(None)
+        // A self-closing foreign root never opens: browsers pop it at once.
+        if SVG.is(hash, name) {
+            if !tag.is_self_closing() {
+                self.enter_ns(Namespace::Svg);
+            }
+        } else if MATH.is(hash, name) {
+            if !tag.is_self_closing() {
+                self.enter_ns(Namespace::MathMl);
+            }
+        } else if self.current_ns != Namespace::Html {
+            self.foreign_start_tag(tag);
         }
+        Ok(())
     }
 
     /// Updates context for an end tag.
-    pub(crate) fn on_end_tag(&mut self, name_hash: LocalNameHash, name: &[u8]) {
+    pub(crate) fn on_end_tag(&mut self, tag: &EndTag<'_>) {
+        let (hash, name) = (tag.name_hash(), tag.name());
         if self.strict {
-            self.ambiguity.track_end_tag(name_hash);
+            self.ambiguity.track_end_tag(hash, name);
         }
         if self.current_ns == Namespace::Html {
-            self.check_integration_point_exit(name_hash, name);
-        } else if self.should_leave_ns(name_hash) {
+            self.check_integration_point_exit(hash, name);
+        } else if self.should_leave_ns(hash, name) {
             self.leave_ns();
         }
     }
@@ -263,50 +255,49 @@ impl ContextTracker {
         self.current_ns = self.ns_stack.last().copied().unwrap_or(Namespace::Html);
     }
 
-    fn should_leave_ns(&self, name: LocalNameHash) -> bool {
+    fn should_leave_ns(&self, hash: LocalNameHash, name: &[u8]) -> bool {
         match self.current_ns {
-            Namespace::Svg => name == SVG || name == P || name == BR,
-            Namespace::MathMl => name == MATH || name == P || name == BR,
+            Namespace::Svg => SVG.is(hash, name) || P.is(hash, name) || BR.is(hash, name),
+            Namespace::MathMl => MATH.is(hash, name) || P.is(hash, name) || BR.is(hash, name),
             Namespace::Html => false,
         }
     }
 
-    fn foreign_start_tag(
-        &mut self,
-        name_hash: LocalNameHash,
-        name: &[u8],
-        attributes: &[AttrRange],
-        input: &[u8],
-        self_closing: bool,
-    ) {
-        if BREAKOUT_TAGS.contains(&name_hash) {
+    fn foreign_start_tag(&mut self, tag: &StartTag<'_>) {
+        let (hash, name) = (tag.name_hash(), tag.name());
+        if BREAKOUT_TAGS.contains(hash, name) {
             self.leave_ns();
-        } else if self.is_integration_point_enter(name_hash) {
-            if !self_closing {
+        } else if self.is_integration_point_enter(hash, name) {
+            if !tag.is_self_closing() {
                 self.enter_ns(Namespace::Html);
             }
-        } else if name_hash == FONT {
-            if attr_named_any(attributes, input, &[b"color", b"size", b"face"]) {
+        } else if FONT.is(hash, name) {
+            if tag.attributes().any(|attr| {
+                let name = attr.name();
+                [&b"color"[..], b"size", b"face"]
+                    .iter()
+                    .any(|n| name.eq_ignore_ascii_case(n))
+            }) {
                 self.leave_ns();
             }
         } else if self.current_ns == Namespace::MathMl
-            && !self_closing
-            && name.eq_ignore_ascii_case(b"annotation-xml")
-            && annotation_xml_is_html(attributes, input)
+            && !tag.is_self_closing()
+            && ANNOTATION_XML.is(hash, name)
+            && annotation_xml_is_html(tag)
         {
             self.enter_ns(Namespace::Html);
         }
     }
 
-    fn is_integration_point_enter(&self, name: LocalNameHash) -> bool {
+    fn is_integration_point_enter(&self, hash: LocalNameHash, name: &[u8]) -> bool {
         match self.current_ns {
-            Namespace::Svg => is_svg_html_integration_point(name),
-            Namespace::MathMl => is_mathml_text_integration_point(name),
+            Namespace::Svg => SVG_HTML_INTEGRATION_POINTS.contains(hash, name),
+            Namespace::MathMl => MATHML_TEXT_INTEGRATION_POINTS.contains(hash, name),
             Namespace::Html => false,
         }
     }
 
-    fn check_integration_point_exit(&mut self, name_hash: LocalNameHash, name: &[u8]) {
+    fn check_integration_point_exit(&mut self, hash: LocalNameHash, name: &[u8]) {
         if self.ns_stack.len() < 2 {
             return;
         }
@@ -314,10 +305,9 @@ impl ContextTracker {
             return;
         };
         let exits = match prev_ns {
-            Namespace::Svg => is_svg_html_integration_point(name_hash),
+            Namespace::Svg => SVG_HTML_INTEGRATION_POINTS.contains(hash, name),
             Namespace::MathMl => {
-                is_mathml_text_integration_point(name_hash)
-                    || name.eq_ignore_ascii_case(b"annotation-xml")
+                MATHML_TEXT_INTEGRATION_POINTS.contains(hash, name) || ANNOTATION_XML.is(hash, name)
             }
             Namespace::Html => false,
         };
@@ -327,34 +317,15 @@ impl ContextTracker {
     }
 }
 
-fn is_svg_html_integration_point(name: LocalNameHash) -> bool {
-    name == FOREIGN_OBJECT || name == DESC || name == TITLE
-}
-
-fn is_mathml_text_integration_point(name: LocalNameHash) -> bool {
-    name == MI || name == MO || name == MN || name == MS || name == MTEXT
-}
-
-/// Whether any attribute's name (ASCII case-insensitive) is in `names`.
-fn attr_named_any(attributes: &[AttrRange], input: &[u8], names: &[&[u8]]) -> bool {
-    attributes.iter().any(|attr| {
-        let attr_name = input.get(attr.name.start..attr.name.end).unwrap_or(&[]);
-        names.iter().any(|n| attr_name.eq_ignore_ascii_case(n))
-    })
-}
-
 /// Whether `<annotation-xml>` carries `encoding=text/html` (or the XHTML
-/// equivalent), which makes its content an HTML integration point.
-fn annotation_xml_is_html(attributes: &[AttrRange], input: &[u8]) -> bool {
-    attributes.iter().any(|attr| {
-        let attr_name = input.get(attr.name.start..attr.name.end).unwrap_or(&[]);
-        if !attr_name.eq_ignore_ascii_case(b"encoding") {
-            return false;
-        }
-        let value = input.get(attr.value.start..attr.value.end).unwrap_or(&[]);
-        value.eq_ignore_ascii_case(b"text/html")
-            || value.eq_ignore_ascii_case(b"application/xhtml+xml")
-    })
+/// equivalent), which makes its content an HTML integration point. Browsers
+/// read the first `encoding` attribute, character references decoded.
+pub(crate) fn annotation_xml_is_html(tag: &StartTag<'_>) -> bool {
+    tag.attributes()
+        .find(|attr| attr.name().eq_ignore_ascii_case(b"encoding"))
+        .is_some_and(|attr| {
+            attribute_value_is(attr.value(), &[b"text/html", b"application/xhtml+xml"])
+        })
 }
 
 /// Guards against tokenizing a text-mode element in an insertion mode where
@@ -383,55 +354,51 @@ impl Default for AmbiguityGuard {
 impl AmbiguityGuard {
     fn track_start_tag(
         &mut self,
-        name_hash: LocalNameHash,
+        hash: LocalNameHash,
         name: &[u8],
     ) -> Result<(), ParsingAmbiguityError> {
         match self.state {
             AmbiguityState::Default => {
-                if name_hash == SELECT {
+                if SELECT.is(hash, name) {
                     self.state = AmbiguityState::InSelect;
-                } else if name_hash == FRAMESET {
+                } else if FRAMESET.is(hash, name) {
                     self.state = AmbiguityState::InOrAfterFrameset;
                 }
             }
             AmbiguityState::InSelect => {
                 // These prematurely exit the "in select" insertion mode.
-                if name_hash == SELECT
-                    || name_hash == TEXTAREA
-                    || name_hash == INPUT
-                    || name_hash == KEYGEN
-                {
+                if SELECT_EXITS.contains(hash, name) {
                     self.state = AmbiguityState::Default;
-                } else if name_hash == TEMPLATE {
+                } else if TEMPLATE.is(hash, name) {
                     self.state = AmbiguityState::InTemplateInSelect(1);
-                } else if name_hash != SCRIPT {
+                } else if !SCRIPT.is(hash, name) {
                     // `<script>` is allowed in "in select".
-                    assert_not_ambiguous(name_hash, name)?;
+                    assert_not_ambiguous(hash, name)?;
                 }
             }
             AmbiguityState::InTemplateInSelect(depth) => {
-                if name_hash == TEMPLATE {
+                if TEMPLATE.is(hash, name) {
                     self.state = AmbiguityState::InTemplateInSelect(depth + 1);
                 } else {
-                    assert_not_ambiguous(name_hash, name)?;
+                    assert_not_ambiguous(hash, name)?;
                 }
             }
             AmbiguityState::InOrAfterFrameset => {
                 // `<noframes>` is allowed in and after `<frameset>`.
-                if name_hash != NOFRAMES {
-                    assert_not_ambiguous(name_hash, name)?;
+                if !NOFRAMES.is(hash, name) {
+                    assert_not_ambiguous(hash, name)?;
                 }
             }
         }
         Ok(())
     }
 
-    fn track_end_tag(&mut self, name_hash: LocalNameHash) {
+    fn track_end_tag(&mut self, hash: LocalNameHash, name: &[u8]) {
         match self.state {
-            AmbiguityState::InSelect if name_hash == SELECT => {
+            AmbiguityState::InSelect if SELECT.is(hash, name) => {
                 self.state = AmbiguityState::Default;
             }
-            AmbiguityState::InTemplateInSelect(depth) if name_hash == TEMPLATE => {
+            AmbiguityState::InTemplateInSelect(depth) if TEMPLATE.is(hash, name) => {
                 self.state = if depth == 1 {
                     AmbiguityState::InSelect
                 } else {
@@ -443,11 +410,8 @@ impl AmbiguityGuard {
     }
 }
 
-fn assert_not_ambiguous(
-    name_hash: LocalNameHash,
-    name: &[u8],
-) -> Result<(), ParsingAmbiguityError> {
-    if TEXT_SWITCH_TAGS.contains(&name_hash) {
+fn assert_not_ambiguous(hash: LocalNameHash, name: &[u8]) -> Result<(), ParsingAmbiguityError> {
+    if html_text_mode(hash, name).is_some() {
         Err(ParsingAmbiguityError {
             tag_name: String::from_utf8_lossy(name)
                 .to_ascii_lowercase()
@@ -455,5 +419,46 @@ fn assert_not_ambiguous(
         })
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::protocols::html::tokenizer::{Cdata, Comment, TokenSink, tokenize};
+
+    #[derive(Default)]
+    struct ContentKind {
+        cdata: usize,
+        comments: usize,
+    }
+
+    impl TokenSink for ContentKind {
+        fn cdata(&mut self, _: &Cdata<'_>) {
+            self.cdata += 1;
+        }
+
+        fn comment(&mut self, _: &Comment<'_>) {
+            self.comments += 1;
+        }
+    }
+
+    #[test]
+    fn annotation_encoding_uses_first_attribute_and_decodes_entities() {
+        for (attrs, html) in [
+            ("encoding='text&#47;html'", true),
+            ("encoding='application/xhtml&#x2b;xml'", true),
+            ("encoding='x' encoding='text/html'", false),
+            ("encoding='text/html' encoding='x'", true),
+        ] {
+            let input =
+                format!("<math><annotation-xml {attrs}><![CDATA[x]]></annotation-xml></math>");
+            let mut sink = ContentKind::default();
+            tokenize(input.as_bytes(), &mut sink).unwrap();
+            assert_eq!(
+                (sink.comments, sink.cdata),
+                if html { (1, 0) } else { (0, 1) },
+                "{attrs}"
+            );
+        }
     }
 }

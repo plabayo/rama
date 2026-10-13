@@ -3,6 +3,7 @@ mod framed_read;
 mod framed_write;
 
 pub use self::error::{SendError, UserError};
+pub(crate) use self::framed_read::HeadProgress;
 
 use self::framed_read::FramedRead;
 use self::framed_write::FramedWrite;
@@ -63,6 +64,11 @@ where
 impl<T, B> Codec<T, B> {
     pub fn set_observe_early_frames(&mut self, enabled: bool) {
         self.inner.set_observe_early_frames(enabled);
+    }
+
+    /// The request head the peer started but did not complete, if any.
+    pub(crate) fn head_progress(&self) -> Option<HeadProgress> {
+        self.inner.head_progress()
     }
 
     /// Enable decoding ALTSVC advertisements. Servers must disable this:

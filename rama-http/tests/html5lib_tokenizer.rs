@@ -17,6 +17,7 @@
 use std::fs;
 use std::path::PathBuf;
 
+use rama_http::protocols::html::rewrite::{ElementContentHandlers, HtmlRewriter, ScopeMode};
 use rama_http::protocols::html::tokenizer::{
     Cdata, Comment, Doctype, EndTag, StartTag, Text, TokenSink, Tokenizer,
 };
@@ -87,6 +88,19 @@ fn decode_double_escaped(s: &str) -> String {
 }
 
 fn assert_identity(input: &[u8], origin: &str) {
+    for mode in [ScopeMode::Browser, ScopeMode::NearestMatch] {
+        let mut rewriter =
+            HtmlRewriter::from_handlers(ElementContentHandlers::new()).with_scope_mode(mode);
+        for chunk in input.chunks(7) {
+            rewriter.write(chunk).expect("lenient rewrite never errors");
+        }
+        rewriter.end().expect("lenient rewrite never errors");
+        assert_eq!(
+            rewriter.take_output(),
+            input,
+            "rewriter identity: {origin}, {mode:?}"
+        );
+    }
     let mut sink = Identity::default();
     // Lenient mode never bails, so identity is checked even for the
     // ambiguity-guard cases.

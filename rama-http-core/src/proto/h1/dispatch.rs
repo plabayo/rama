@@ -29,9 +29,9 @@ pub(crate) struct Dispatcher<D, Bs: StreamingBody, I, T> {
     body_tx: SenderDropGuard,
     body_rx: Pin<Box<Option<Bs>>>,
     is_closing: bool,
-    // Set once the dispatch loop has errored: we still want to drive a
-    // best-effort transport shutdown (so e.g. a TLS stream emits close_notify)
-    // before yielding, instead of dropping it mid-flight.
+    // Set once the dispatch loop has ended. After an error we still want to
+    // drive a best-effort transport shutdown (so e.g. a TLS stream emits
+    // close_notify) before yielding, instead of dropping it mid-flight.
     shutting_down: bool,
     // An error that could not be handed to a user (e.g. server-side, where
     // there is no client callback) and must be surfaced once the best-effort
@@ -89,6 +89,8 @@ pub(crate) trait Dispatch {
     -> crate::Result<()>;
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), ()>>;
     fn should_poll(&self) -> bool;
+    /// Stops taking messages, settling those still on their way in.
+    fn poll_close(&mut self, cx: &mut Context<'_>) -> Poll<()>;
 }
 
 pub(crate) struct Server<S, B>
@@ -181,7 +183,9 @@ where
         // transport mid-flight (which would skip TLS `close_notify`).
         if !self.shutting_down {
             match ready!(self.poll_inner(cx, should_shutdown)) {
-                Ok(ds) => return Poll::Ready(Ok(ds)),
+                // An upgrade hands the connection off: its sender stays ready until dropped.
+                Ok(upgrade @ Dispatched::Upgrade(_)) => return Poll::Ready(Ok(upgrade)),
+                Ok(Dispatched::Shutdown) => (),
                 Err(e) => {
                     // Be sure to alert a streaming body of the failure with a
                     // more specific error than the drop guard would provide.
@@ -203,9 +207,9 @@ where
                     // shutdown below before surfacing any residual error,
                     // rather than returning early as the old code did.
                     self.pending_err = self.dispatch.recv_msg(Err(e)).err();
-                    self.shutting_down = true;
                 }
             }
+            self.shutting_down = true;
         }
 
         // Phase 2: best-effort transport shutdown so a still-writable stream
@@ -226,6 +230,10 @@ where
             // Phase 3: lingering close, see `Linger`.
             ready!(self.poll_linger(cx));
         }
+
+        // Phase 4: a send that began before the close may still publish its
+        // request, whose caller can hold the sender while awaiting the response.
+        ready!(self.dispatch.poll_close(cx));
 
         match self.pending_err.take() {
             Some(e) => Poll::Ready(Err(e)),
@@ -486,9 +494,12 @@ where
                             if frame.is_data() {
                                 let chunk = frame.into_data().unwrap_or_else(|_| unreachable!());
                                 match body.try_send_data(chunk) {
-                                    Ok(()) => {
+                                    // The last chunk drops the sender, which ends the body even
+                                    // when no further read follows (the response already went out).
+                                    Ok(()) if self.conn.can_read_body() => {
                                         self.body_tx.set(body);
                                     }
+                                    Ok(()) => {}
                                     Err(_canceled) => {
                                         if self.conn.can_read_body() {
                                             trace!("body receiver dropped before eof, closing");
@@ -500,9 +511,8 @@ where
                                 let trailers =
                                     frame.into_trailers().unwrap_or_else(|_| unreachable!());
                                 match body.try_send_trailers(trailers) {
-                                    Ok(()) => {
-                                        self.body_tx.set(body);
-                                    }
+                                    // Trailers end the body: dropping the sender delivers that.
+                                    Ok(()) => {}
                                     Err(_canceled) => {
                                         if self.conn.can_read_body() {
                                             trace!("body receiver dropped before eof, closing");
@@ -885,6 +895,10 @@ where
     fn should_poll(&self) -> bool {
         self.in_flight.is_some()
     }
+
+    fn poll_close(&mut self, _cx: &mut Context<'_>) -> Poll<()> {
+        Poll::Ready(())
+    }
 }
 
 // ===== impl Client =====
@@ -1008,15 +1022,137 @@ where
     fn should_poll(&self) -> bool {
         self.callback.is_none()
     }
+
+    fn poll_close(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        self.rx.poll_close(cx)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use rama_core::ServiceInput;
+    use tokio::io::{ReadBuf, join};
+    use tokio::task::{coop, yield_now};
 
     use super::*;
     use crate::proto::h1::ClientTransaction;
+    use std::cell::Cell;
+    use std::future::poll_fn;
+    use std::io;
+    use std::rc::Rc;
     use std::time::Duration;
+
+    #[derive(Clone, Copy)]
+    enum ReadState {
+        Pending,
+        Response,
+        Close,
+        Done,
+    }
+
+    /// Consumes no coop budget, so the close is seen while the request queue yields.
+    struct ClosingReader {
+        state: Rc<Cell<ReadState>>,
+        reset: bool,
+    }
+
+    impl AsyncRead for ClosingReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            match self.state.get() {
+                ReadState::Pending => Poll::Pending,
+                ReadState::Response => {
+                    buf.put_slice(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n");
+                    self.state.set(ReadState::Pending);
+                    Poll::Ready(Ok(()))
+                }
+                ReadState::Close => {
+                    self.state.set(ReadState::Done);
+                    if self.reset {
+                        Poll::Ready(Err(io::ErrorKind::ConnectionReset.into()))
+                    } else {
+                        Poll::Ready(Ok(()))
+                    }
+                }
+                ReadState::Done => panic!("closed IO must not be polled again"),
+            }
+        }
+    }
+
+    #[cfg(not(miri))]
+    #[tokio::test]
+    async fn client_close_cancels_requests_still_queued() {
+        for (reset, should_shutdown) in [(true, true), (false, true), (false, false)] {
+            let state = Rc::new(Cell::new(ReadState::Pending));
+            let io = ServiceInput::new(join(
+                ClosingReader {
+                    state: state.clone(),
+                    reset,
+                },
+                Vec::<u8>::new(),
+            ));
+            let (mut tx, rx) = crate::client::dispatch::channel();
+            let conn = Conn::<_, Bytes, ClientTransaction>::new(io);
+            let mut dispatcher = Dispatcher::new(Client::new(rx), conn);
+
+            // Complete an exchange to put the connection into idle keep-alive.
+            let first = tx.try_send(Request::new(IncomingBody::empty())).unwrap();
+            let mut first = tokio_test::task::spawn(first);
+            tokio_test::task::spawn(()).enter(|cx, _| {
+                assert!(Pin::new(&mut dispatcher).poll(cx).is_pending());
+                state.set(ReadState::Response);
+                assert!(Pin::new(&mut dispatcher).poll(cx).is_pending());
+            });
+            tokio_test::assert_ready_ok!(first.poll()).unwrap();
+            assert!(tx.is_ready());
+
+            state.set(ReadState::Close);
+            let req = Request::builder()
+                .uri("/not-sent")
+                .body(IncomingBody::empty())
+                .unwrap();
+            let promise = tx.try_send(req).unwrap();
+            let closing = poll_fn(|cx| dispatcher.poll_catch(cx, should_shutdown));
+            let mut closing = tokio_test::task::spawn(closing);
+
+            // Out of coop budget even a closed queue reports Pending, as it does
+            // for a send that began before the close and has yet to publish.
+            poll_fn(|cx| {
+                while let Poll::Ready(restore) = coop::poll_proceed(cx) {
+                    restore.made_progress();
+                }
+                Poll::Ready(())
+            })
+            .await;
+            assert!(
+                closing.poll().is_pending(),
+                "must finish draining before exiting"
+            );
+            assert!(tx.is_closed(), "must reject new requests while draining");
+
+            // The result is kept while draining, rather than polling the closed IO again.
+            yield_now().await;
+            assert!(closing.is_woken());
+            match tokio_test::assert_ready!(closing.poll()) {
+                Err(err) if reset => assert_eq!(
+                    err.find_source::<io::Error>().unwrap().kind(),
+                    io::ErrorKind::ConnectionReset,
+                ),
+                Ok(Dispatched::Shutdown) if !reset => (),
+                _ => panic!("unexpected result (reset = {reset})"),
+            }
+
+            // Both the sender and the dispatcher are alive: the cancel must not need a drop.
+            let mut promise = tokio_test::task::spawn(promise);
+            let mut err = tokio_test::assert_ready_ok!(promise.poll()).unwrap_err();
+            assert!(err.error.is_canceled(), "{err:?}");
+            assert_eq!(err.take_message().unwrap().uri().as_str(), "/not-sent");
+            assert!(tx.is_closed());
+        }
+    }
 
     #[test]
     fn client_read_bytes_before_writing_request() {

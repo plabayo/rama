@@ -25,12 +25,26 @@
 //! When the handler *accumulates* state, recover it once the body finishes
 //! via [`HtmlRewriteBody::on_end`].
 //!
+//! ## Documents and fragments
+//!
+//! By default each body is parsed as a full document, the way a browser
+//! parses a page it navigates to ([`ScopeMode::Browser`]), which keeps a
+//! hostile server from ending a matched element early with markup browsers
+//! ignore. Responses that carry fragments for insertion into another element
+//! (`<tr>` rows, partial templates, …) are not documents; rewrite those with
+//! [`ScopeMode::NearestMatch`] via `with_scope_mode`. The mode is not guessed
+//! from the content: a server choosing which parse the rewriter follows is
+//! exactly what the default guards against.
+//!
+//! [`ScopeMode::Browser`]: crate::protocols::html::rewrite::ScopeMode::Browser
+//! [`ScopeMode::NearestMatch`]: crate::protocols::html::rewrite::ScopeMode::NearestMatch
+//!
 //! ## Encoding
 //!
 //! The rewriter sees raw bytes, so a compressed (`Content-Encoding`) body is
 //! skipped. Place this layer *after* a decompression layer if you need to
 //! rewrite compressed responses. Charset is assumed UTF-8 (the rewriter is
-//! byte-faithful and does not decode entities).
+//! byte-faithful; a leading byte order mark passes through untouched).
 
 mod body;
 mod service;

@@ -259,6 +259,7 @@ impl<S: SendStream> Drop for Writer<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::h3::qpack::ErrorScope;
     use parking_lot::Mutex;
     use std::assert_matches;
     use std::sync::Arc;
@@ -371,6 +372,41 @@ mod tests {
         drop(writer);
         let state = state.lock();
         assert_eq!(state.wire, b"\x00\x07payload");
+        assert!(state.finished);
+        assert!(state.reset.is_none());
+    }
+
+    #[test]
+    fn abandoned_write_is_flushed_before_the_next_frame_and_fin() {
+        let state = Arc::new(Mutex::new(State::default()));
+        let mut writer = Writer::new(Fake(state.clone()));
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        writer
+            .queue(FrameType::DATA, Bytes::from_static(b"first"))
+            .unwrap();
+        // A cancelled send stops polling mid-frame; the tail stays queued.
+        while state.lock().wire.len() < 3 {
+            _ = writer.poll_flush(&mut cx);
+        }
+        // Queuing over that tail is a local stream error, never a connection close.
+        let error = writer
+            .queue(FrameType::DATA, Bytes::from_static(b"second"))
+            .unwrap_err();
+        assert_eq!(error.scope(), ErrorScope::Stream);
+        assert_eq!(error.code(), Code::H3_INTERNAL_ERROR);
+        while writer.poll_flush(&mut cx).is_pending() {}
+        writer
+            .queue(FrameType::DATA, Bytes::from_static(b"second"))
+            .unwrap();
+        while state.lock().wire.len() < 10 {
+            _ = writer.poll_flush(&mut cx);
+        }
+        // FIN must wait for the abandoned tail instead of truncating the frame.
+        while writer.poll_finish(&mut cx).is_pending() {}
+        writer.mark_acknowledged();
+        drop(writer);
+        let state = state.lock();
+        assert_eq!(state.wire, b"\x00\x05first\x00\x06second");
         assert!(state.finished);
         assert!(state.reset.is_none());
     }

@@ -196,9 +196,9 @@ impl Connection {
             // Reject frames forbidden at this encryption level before any frame-specific
             // dispatch can acknowledge packets, retire CIDs, store tokens or validate paths.
             if packet.header.is_0rtt() && !frame.is_allowed_in_0rtt() {
-                return Err(TransportError::PROTOCOL_VIOLATION(
-                    "illegal frame type in 0-RTT",
-                ));
+                let mut err = TransportError::PROTOCOL_VIOLATION("illegal frame type in 0-RTT");
+                err.frame = Some(frame.ty());
+                return Err(err);
             }
             ack_eliciting |= frame.is_ack_eliciting();
 
@@ -1038,6 +1038,52 @@ mod tests {
                 } else {
                     result.unwrap();
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn zero_rtt_frames_follow_the_packet_type_table() {
+        // (encoded frame, whether a 0-RTT packet may carry it)
+        let cases: [(&[u8], bool); 8] = [
+            (&[0x02, 0x00, 0x00, 0x00, 0x00], false), // ACK
+            (&[0x06, 0x00, 0x00], false),             // CRYPTO
+            (&[0x07, 0x01, 0xaa], false),             // NEW_TOKEN
+            (&[0x19, 0x00], false),                   // RETIRE_CONNECTION_ID
+            (&[0x1b, 1, 2, 3, 4, 5, 6, 7, 8], false), // PATH_RESPONSE
+            (&[0x1e], false),                         // HANDSHAKE_DONE
+            (&[0x01], true),                          // PING
+            (&[0x1a, 1, 2, 3, 4, 5, 6, 7, 8], true),  // PATH_CHALLENGE
+        ];
+        for (payload, permitted) in cases {
+            let mut pair = Pair::default();
+            let (_, server) = pair.connect();
+            let now = pair.time;
+            let conn = pair.server_conn_mut(server);
+            let packet = Packet {
+                header: Header::Long {
+                    ty: LongType::ZeroRtt,
+                    dst_cid: conn.handshake_cid,
+                    src_cid: conn.orig_rem_cid,
+                    number: PacketNumber::U8(0),
+                    version: Version::V1.to_wire().unwrap(),
+                },
+                header_data: Default::default(),
+                payload: payload.into(),
+                allocated: payload.len(),
+            };
+            let result =
+                conn.process_payload(now, conn.path.remote, conn.path.local, 0, packet, None);
+            if permitted {
+                result.unwrap();
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(error.code, TransportErrorCode::PROTOCOL_VIOLATION);
+                assert_eq!(
+                    error.reason, "illegal frame type in 0-RTT",
+                    "{payload:02x?}"
+                );
+                assert!(error.frame.is_some(), "{payload:02x?}");
             }
         }
     }

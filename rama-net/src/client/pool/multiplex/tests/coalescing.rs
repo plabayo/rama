@@ -397,6 +397,28 @@ async fn a_cancelled_checkout_leaves_nothing_in_flight_or_waiting() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_cancelled_connect_hands_the_checkouts_that_waited_for_it_a_dial_of_their_own() {
+    let svc = dialing(MultiplexPool::new(), Dialer::new(Some(4)));
+    let _held = hold(&svc, 0, 4).await;
+    let before = dials(&svc);
+    let mut dialing = tokio_test::task::spawn(Box::pin(svc.connect(ServiceInput::new(0))));
+    assert!(dialing.poll().is_pending(), "dialing");
+    let mut waiting = tokio_test::task::spawn(Box::pin(svc.connect(ServiceInput::new(0))));
+    assert!(
+        waiting.poll().is_pending(),
+        "waits for the connect in flight"
+    );
+    assert_eq!(dials(&svc), before + 1, "one connect in flight for both");
+    drop(dialing);
+    let served = tokio::time::timeout(HANDSHAKE * 2, waiting)
+        .await
+        .expect("no checkout is left waiting on a cancelled connect")
+        .unwrap();
+    assert_eq!(dials(&svc), before + 2, "the waiter dialed its own");
+    drop(served);
+}
+
+#[tokio::test(start_paused = true)]
 async fn checkouts_of_a_connection_kept_by_none_never_wait() {
     let pool = MultiplexPool::new().with_streams_hint(expect_ten);
     let svc = dialing(pool, Dialer::new(Some(10)));

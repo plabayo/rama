@@ -39,7 +39,7 @@ use crate::{
         udp::{FailureLog, SendError, Sender},
     },
     proto::{
-        ConnectionError, ConnectionHandle, ConnectionStats, EndpointEvent, Event,
+        AdmissionLease, ConnectionError, ConnectionHandle, ConnectionStats, EndpointEvent, Event,
         NegotiatedTlsParameters, SendDatagramError as ProtoSendDatagramError, SendPermit,
         StreamEvent,
     },
@@ -167,6 +167,7 @@ impl Connecting {
         packets: BoundedReceiver<QueuedPacket>,
         socket: Sender,
         receive_queue: PacketBudget,
+        admission: Option<AdmissionLease>,
     ) -> (Self, ConnectionDriver) {
         let (on_handshake_data_send, on_handshake_data_recv) = oneshot::channel();
         let (on_connected_send, on_connected_recv) = oneshot::channel();
@@ -179,6 +180,7 @@ impl Connecting {
             on_connected_send,
             socket,
             receive_queue,
+            admission,
         );
         let driver = ConnectionDriver::new(conn.0.clone());
         (
@@ -2186,6 +2188,7 @@ impl ConnectionRef {
         on_connected: oneshot::Sender<Result<bool, ConnectionError>>,
         socket: Sender,
         receive_queue: PacketBudget,
+        admission: Option<AdmissionLease>,
     ) -> Self {
         let extensions = Extensions::new();
         conn.publish_observation(&extensions, true, false);
@@ -2198,6 +2201,7 @@ impl ConnectionRef {
                 on_handshake_data: Some(on_handshake_data),
                 on_connected: Some(on_connected),
                 connected: false,
+                admission,
                 available_streams: [0; 2],
                 stream_budget_changed: [BudgetChange::default(); 2],
                 reserved_streams: [0; 2],
@@ -2569,6 +2573,9 @@ pub(crate) struct State {
     on_handshake_data: Option<oneshot::Sender<()>>,
     on_connected: Option<oneshot::Sender<Result<bool, ConnectionError>>>,
     connected: bool,
+    /// An accepted attempt's place among those in progress, until its handshake completes or
+    /// the connection ends.
+    admission: Option<AdmissionLease>,
     available_streams: [u64; 2],
     stream_budget_changed: [BudgetChange; 2],
     reserved_streams: [u64; 2],
@@ -3392,6 +3399,9 @@ impl State {
                 }
                 Event::Connected => {
                     self.connected = true;
+                    if let Some(admission) = self.admission.take() {
+                        admission.complete(now());
+                    }
                     // Reservations are disabled before this event, even when
                     // provisional transport parameters already exposed credit.
                     for pending in &mut self.stream_budget_changed {
@@ -3544,6 +3554,8 @@ impl State {
     /// Used to wake up all blocked futures when the connection becomes closed for any reason
     fn terminate(&mut self, reason: ConnectionError, shared: &Shared) {
         let reason = self.error.get_or_insert(reason).clone();
+        // A handshake that ends here leaves the attempts in progress.
+        self.admission = None;
         // Whatever was waiting to be sent is never going out, and holding it would pin the
         // sender's state for a descriptor nobody will offer again. What waits on a handle kept
         // aside is accounted as it is given up: a prefix that left counts either way.
@@ -3986,6 +3998,7 @@ mod tests {
             receiver,
             sender,
             receive_queue,
+            None,
         );
         (connecting, driver, alive, packets, endpoint)
     }

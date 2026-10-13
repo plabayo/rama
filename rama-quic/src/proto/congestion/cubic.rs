@@ -211,12 +211,10 @@ impl Controller for Cubic {
         self.cubic_state.cwnd_inc = (self.cubic_state.cwnd_inc as f64 * BETA_CUBIC) as u64;
 
         if is_persistent_congestion {
+            // ssthresh already holds the single β_cubic reduction above; a timeout lowers only
+            // cwnd (RFC 9438 §4.8).
             self.recovery_start_time = None;
             self.cubic_state.w_max = self.window as f64;
-
-            // RFC 9438 §4.8 uses the same single reduction as §4.6.
-            // ssthresh already reflects the pre-event window; persistent loss
-            // resets cwnd to its minimum without reducing that threshold again.
 
             self.cubic_state.cwnd_inc = 0;
 

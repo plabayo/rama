@@ -283,7 +283,7 @@ turmoil = "0.7"
 unicode-normalization = "0.1"
 uuid = "1.27"
 venndb = "0.6"
-want = "0.3"
+want = "0.3.2"
 wasmtime = { version = "49.0.2", default-features = false }
 webpki-root-certs = "1.0"
 webpki-roots = "1.0"
@@ -786,6 +786,11 @@ harness = false
 [[bench]]
 name = "rss_parser"
 required-features = ["rss"]
+harness = false
+
+[[bench]]
+name = "html_rewrite"
+required-features = ["html"]
 harness = false
 
 [[bench]]

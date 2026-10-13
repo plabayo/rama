@@ -74,6 +74,7 @@ zeroize = { workspace = true, optional = true }
 
 [dev-dependencies]
 dial9 = { workspace = true, features = ["analysis"] }
+quickcheck = { workspace = true }
 rama-udp = { workspace = true, features = ["test-utils"] }
 rand = { workspace = true }
 sha2 = { workspace = true }

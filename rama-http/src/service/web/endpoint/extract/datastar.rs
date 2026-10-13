@@ -1,14 +1,18 @@
 //! [🚀 Datastar](https://data-star.dev/) support extractor for rama.
 
 use crate::{
+    body::util::BodyExt,
     headers::{DatastarRequest, HeaderMapExt},
     service::web::{
-        extract::{FromRequest, FromRequestBody, OptionalFromRequest, OptionalFromRequestBody},
+        extract::{
+            FromRequest, FromRequestBody, OptionalFromRequest, OptionalFromRequestBody,
+            body::BytesRejection,
+        },
         response::IntoResponse,
     },
 };
 use rama_core::telemetry::tracing;
-use rama_http_types::{BodyExtractExt, Method, Request, Response, StatusCode};
+use rama_http_types::{Method, Request, Response, StatusCode};
 use serde::{Deserialize, de::DeserializeOwned};
 
 /// [`ReadSignals`] is a request extractor that reads Datastar signals from the request.
@@ -79,12 +83,17 @@ where
                 return result;
             }
 
-            let json = body.try_into_json().await.map_err(|err| {
+            // Collected like every other body extractor so body limits reject with 413.
+            let bytes = body
+                .collect()
+                .await
+                .map_err(|err| BytesRejection::from_err(err).into_response())?
+                .to_bytes();
+
+            serde_json::from_slice(&bytes).map(Self).map_err(|err| {
                 tracing::debug!("failed to parse datastar JSON request body: {err:?}");
                 (StatusCode::BAD_REQUEST, err.to_string()).into_response()
-            })?;
-
-            Ok(Self(json))
+            })
         }
     }
 }

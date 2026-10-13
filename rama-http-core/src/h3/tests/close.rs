@@ -440,6 +440,76 @@ async fn memory_received_body_length_and_trailer_errors_are_remote() {
     .unwrap();
 }
 
+/// Trailers after fewer DATA bytes than the declared content-length end a malformed message: a
+/// consumer that stops at the trailers, as a forwarding proxy does, must still see the error.
+#[tokio::test(start_paused = true)]
+async fn memory_trailers_after_a_short_body_are_malformed() {
+    tokio::time::timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (client, driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let driver = spawn(driver.run());
+        let response = spawn({
+            let mut client = client.clone();
+            async move {
+                client
+                    .send_request(
+                        Request::builder()
+                            .uri("https://localhost/short-body-trailers")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap()
+            }
+        });
+        let (mut send, mut recv) = pair.server.accept_bi().await.unwrap();
+        recv.read_to_end(4096).await.unwrap();
+        let id = u64::from(send.id());
+        let mut encoder = Encoder::new(EncoderConfig {
+            max_table_capacity: 0,
+            ..EncoderConfig::default()
+        });
+        let fields = encoder
+            .encode(id, [(":status", "200"), ("content-length", "2")])
+            .unwrap();
+        let mut bytes = BytesMut::new();
+        FrameHeader::new(FrameType::HEADERS, fields.len() as u64)
+            .encode(&mut bytes)
+            .unwrap();
+        bytes.extend_from_slice(&fields);
+        FrameHeader::new(FrameType::DATA, 1)
+            .encode(&mut bytes)
+            .unwrap();
+        bytes.extend_from_slice(b"x");
+        let trailers = encoder.encode(id, [("x-checksum", "1")]).unwrap();
+        FrameHeader::new(FrameType::HEADERS, trailers.len() as u64)
+            .encode(&mut bytes)
+            .unwrap();
+        bytes.extend_from_slice(&trailers);
+        send.write_all(&bytes).await.unwrap();
+        send.finish().unwrap();
+
+        let mut body = response.await.unwrap().into_body();
+        let data = body.frame().await.unwrap().unwrap();
+        assert_eq!(data.into_data().unwrap(), b"x"[..]);
+        let error = body.frame().await.unwrap().unwrap_err();
+        let cause = error_chain(&error)
+            .find_map(|cause| cause.downcast_ref::<Error>())
+            .unwrap();
+        assert_eq!(cause.code(), Code::H3_MESSAGE_ERROR);
+        assert!(cause.is_remote_failure());
+        assert!(pair.client.close_reason().is_none());
+        pair.client
+            .close(Code::H3_NO_ERROR.value() as u32, b"complete");
+        driver.await.unwrap().unwrap();
+        pair.close().await;
+    })
+    .await
+    .unwrap();
+}
+
 /// A retained CONNECT tunnel whose peer ended its stream, by FIN or by a reset without error,
 /// and whose own end was acknowledged, frees its connection's only request slot.
 #[tokio::test(start_paused = true)]

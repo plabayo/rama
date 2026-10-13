@@ -176,13 +176,20 @@ pub(super) async fn open_file(
     if req.method() == Method::HEAD {
         match source {
             DirSource::Filesystem(_) => {
-                let (meta, maybe_encoding) = file_metadata_with_fallback(
+                let (meta, maybe_encoding) = match file_metadata_with_fallback(
                     source,
                     path_to_file,
                     negotiated_encodings,
                     symlink_policy,
                 )
-                .await?;
+                .await
+                {
+                    Ok(result) => result,
+                    Err(err) if is_invalid_filename_error(&err) => {
+                        return Ok(OpenFileOutput::InvalidFilename);
+                    }
+                    Err(err) => return Err(err),
+                };
 
                 let last_modified = meta
                     .modified()
@@ -353,6 +360,11 @@ fn is_invalid_filename_error(err: &io::Error) -> bool {
         err.kind(),
         ErrorKind::InvalidInput | ErrorKind::InvalidFilename
     )
+}
+
+/// Check if an IO error shows that no file exists at the probed path.
+fn is_missing_file_error(err: &io::Error) -> bool {
+    err.kind() == ErrorKind::NotFound || is_invalid_filename_error(err)
 }
 
 // Common MIME type guessing logic
@@ -526,7 +538,7 @@ async fn open_file_with_fallback(
             // when the preferred encoding actually appended an extension.
             // Regression test: see `identity_encoding_does_not_strip_extension`.
             (Err(err), Some(encoding))
-                if err.kind() == io::ErrorKind::NotFound && encoding != Encoding::Identity =>
+                if is_missing_file_error(&err) && encoding != Encoding::Identity =>
             {
                 // Remove the extension corresponding to a precompressed file (.gz, .br, .zz)
                 // to reset the path before the next iteration.
@@ -591,7 +603,7 @@ async fn file_metadata_with_fallback(
             (Ok(file), maybe_encoding) => break (file, maybe_encoding),
             // See `open_file_with_fallback` for why Identity is skipped here.
             (Err(err), Some(encoding))
-                if err.kind() == io::ErrorKind::NotFound && encoding != Encoding::Identity =>
+                if is_missing_file_error(&err) && encoding != Encoding::Identity =>
             {
                 // Remove the extension corresponding to a precompressed file (.gz, .br, .zz)
                 // to reset the path before the next iteration.
@@ -806,9 +818,7 @@ async fn is_dir(
 ) -> io::Result<Option<bool>> {
     match filesystem_metadata(source, path_to_file, symlink_policy).await {
         Ok(metadata) => Ok(Some(metadata.is_dir())),
-        Err(err) if err.kind() == io::ErrorKind::NotFound || is_invalid_filename_error(&err) => {
-            Ok(None)
-        }
+        Err(err) if is_missing_file_error(&err) => Ok(None),
         Err(err) => Err(err),
     }
 }

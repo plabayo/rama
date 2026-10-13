@@ -190,7 +190,9 @@ async fn harness_with(mode: EgressMode, middleware: Middleware) -> Harness {
 
     let relay_exec = Executor::graceful(graceful.guard());
     let relay = tokio::spawn(async move {
-        let relay = HttpMitmRelay::new(relay_exec);
+        let mut relay = HttpMitmRelay::new(relay_exec);
+        // The origin controls closure in these propagation fixtures.
+        relay.h2_mut().maybe_set_idle_timeout(None);
         let io = BridgeIo(MockSocket::new(relay_ingress_stream), egress);
         match middleware {
             Middleware::Propagate => {

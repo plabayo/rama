@@ -3,7 +3,11 @@ use crate::h2::error::Reason;
 use crate::h2::proto::*;
 
 use rama_core::telemetry::tracing;
-use std::task::{Context, Poll};
+use std::{
+    task::{Context, Poll},
+    time::Duration,
+};
+use tokio::time::Instant;
 
 #[derive(Debug)]
 pub(crate) struct Settings {
@@ -16,6 +20,10 @@ pub(crate) struct Settings {
     /// Whether the connection has received the initial SETTINGS frame from the
     /// remote peer.
     has_received_remote_initial_settings: bool,
+    /// When the initial local SETTINGS left, until their ACK arrives.
+    initial_sent_at: Option<Instant>,
+    /// The round trip of the initial local SETTINGS, until taken.
+    rtt: Option<Duration>,
 }
 
 #[derive(Debug)]
@@ -30,14 +38,21 @@ enum Local {
 }
 
 impl Settings {
-    pub(crate) fn new(local: frame::Settings) -> Self {
+    pub(crate) fn new(local: frame::Settings, initial_sent_at: Option<Instant>) -> Self {
         Self {
             // We assume the initial local SETTINGS were flushed during
             // the handshake process.
             local: Local::WaitingAck(local),
             remote: None,
             has_received_remote_initial_settings: false,
+            initial_sent_at,
+            rtt: None,
         }
+    }
+
+    /// The round trip of the initial local SETTINGS, once they were acknowledged.
+    pub(crate) fn take_rtt(&mut self) -> Option<Duration> {
+        self.rtt.take()
     }
 
     pub(crate) fn recv_settings<T, B, C, P>(
@@ -71,6 +86,9 @@ impl Settings {
 
                     streams.apply_local_settings(local, &frame)?;
                     self.local = Local::Synced;
+                    if let Some(sent) = self.initial_sent_at.take() {
+                        self.rtt = Some(Instant::now().saturating_duration_since(sent));
+                    }
                     Ok(())
                 }
                 Local::ToSend(..) | Local::Synced => {

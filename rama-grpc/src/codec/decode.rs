@@ -196,8 +196,7 @@ impl StreamingInner {
                 )));
             }
 
-            self.buf.reserve(len);
-
+            // The buffer grows with what arrives: a declared length alone never sizes it.
             self.state = State::ReadBody {
                 compression: compression_encoding,
                 len,

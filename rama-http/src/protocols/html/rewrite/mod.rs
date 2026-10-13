@@ -11,14 +11,28 @@
 //!   * `desc_ready` — which prefixes are available to descendants (a
 //!     descendant combinator reads its ancestor's `desc_ready`).
 //!
+//! Ancestry comes from a model of the browser's stack of open elements (see
+//! [`ScopeMode`]), which also decides how the tokenizer reads what follows a
+//! start tag (raw text, CDATA), so the rewriter's view of where an element
+//! ends cannot drift from the browser's. Attribute values are compared the
+//! way browsers see them: character references decoded, class and id case
+//! folded in quirks mode, and the values HTML treats case-insensitively
+//! (`type`, `rel`, …) folded too.
+//!
 //! It underpins the selector-driven [`HtmlRewriter`].
+
+use memchr::memchr;
 
 use super::selector::Selector;
 use super::selector::ast::{Combinator, ComplexSelector, Compound, NthType};
-use super::tokenizer::{LocalNameHash, StartTag};
+use super::tokenizer::{EndTag, StartTag, decode_attribute_value_into};
 
 mod element;
 mod rewriter;
+mod tree;
+
+pub use self::tree::ScopeMode;
+use self::tree::{EndOutcome, OpenElements, Origin, Placement, StartPlan};
 
 #[cfg(test)]
 mod tests;
@@ -32,95 +46,38 @@ pub use self::rewriter::{ElementContentHandlers, HtmlRewriter, rewrite_str};
 /// `u64` match bitmask; they simply never match (absurd in practice).
 const MAX_COMPOUNDS: usize = 63;
 
-// HTML void elements (the current WHATWG list): they never have children, so
-// they are not pushed onto the open-element stack.
-//
-// This mirrors the compile-time list in `rama-http-macros` (`is_void_tag`);
-// the two can't share a single const across the proc-macro/runtime boundary
-// (that crate only depends on proc-macro libraries). `param` is intentionally
-// absent — it is obsolete and not a void element in the current spec.
-const VOID_AREA: LocalNameHash = LocalNameHash::from_static(b"area");
-const VOID_BASE: LocalNameHash = LocalNameHash::from_static(b"base");
-const VOID_BR: LocalNameHash = LocalNameHash::from_static(b"br");
-const VOID_COL: LocalNameHash = LocalNameHash::from_static(b"col");
-const VOID_EMBED: LocalNameHash = LocalNameHash::from_static(b"embed");
-const VOID_HR: LocalNameHash = LocalNameHash::from_static(b"hr");
-const VOID_IMG: LocalNameHash = LocalNameHash::from_static(b"img");
-const VOID_INPUT: LocalNameHash = LocalNameHash::from_static(b"input");
-const VOID_LINK: LocalNameHash = LocalNameHash::from_static(b"link");
-const VOID_META: LocalNameHash = LocalNameHash::from_static(b"meta");
-const VOID_SOURCE: LocalNameHash = LocalNameHash::from_static(b"source");
-const VOID_TRACK: LocalNameHash = LocalNameHash::from_static(b"track");
-const VOID_WBR: LocalNameHash = LocalNameHash::from_static(b"wbr");
+/// A complex selector's combinators as bit masks over its compounds: bit `i`
+/// is set when compound `i` follows its predecessor by that combinator.
+#[derive(Debug, Clone, Copy)]
+struct Combinators {
+    child: u64,
+    descendant: u64,
+    /// Bit `k` for `k` compounds: set in `completed` once the whole selector
+    /// matched (0 for a selector too long to match).
+    full: u64,
+}
 
-// Optional-end-tag / implied-close elements. These cover the common HTML
-// tree-builder cases that affect streaming selector ancestry.
-const ADDRESS: LocalNameHash = LocalNameHash::from_static(b"address");
-const ARTICLE: LocalNameHash = LocalNameHash::from_static(b"article");
-const ASIDE: LocalNameHash = LocalNameHash::from_static(b"aside");
-const BLOCKQUOTE: LocalNameHash = LocalNameHash::from_static(b"blockquote");
-const DD: LocalNameHash = LocalNameHash::from_static(b"dd");
-const DETAILS: LocalNameHash = LocalNameHash::from_static(b"details");
-const DIV: LocalNameHash = LocalNameHash::from_static(b"div");
-const DL: LocalNameHash = LocalNameHash::from_static(b"dl");
-const DT: LocalNameHash = LocalNameHash::from_static(b"dt");
-const FIELDSET: LocalNameHash = LocalNameHash::from_static(b"fieldset");
-const FIGCAPTION: LocalNameHash = LocalNameHash::from_static(b"figcaption");
-const FIGURE: LocalNameHash = LocalNameHash::from_static(b"figure");
-const FOOTER: LocalNameHash = LocalNameHash::from_static(b"footer");
-const FORM: LocalNameHash = LocalNameHash::from_static(b"form");
-const H1: LocalNameHash = LocalNameHash::from_static(b"h1");
-const H2: LocalNameHash = LocalNameHash::from_static(b"h2");
-const H3: LocalNameHash = LocalNameHash::from_static(b"h3");
-const H4: LocalNameHash = LocalNameHash::from_static(b"h4");
-const H5: LocalNameHash = LocalNameHash::from_static(b"h5");
-const H6: LocalNameHash = LocalNameHash::from_static(b"h6");
-const HEADER: LocalNameHash = LocalNameHash::from_static(b"header");
-const HGROUP: LocalNameHash = LocalNameHash::from_static(b"hgroup");
-const LI: LocalNameHash = LocalNameHash::from_static(b"li");
-const MAIN: LocalNameHash = LocalNameHash::from_static(b"main");
-const MENU: LocalNameHash = LocalNameHash::from_static(b"menu");
-const NAV: LocalNameHash = LocalNameHash::from_static(b"nav");
-const OL: LocalNameHash = LocalNameHash::from_static(b"ol");
-const OPTGROUP: LocalNameHash = LocalNameHash::from_static(b"optgroup");
-const OPTION: LocalNameHash = LocalNameHash::from_static(b"option");
-const P: LocalNameHash = LocalNameHash::from_static(b"p");
-const PRE: LocalNameHash = LocalNameHash::from_static(b"pre");
-const RB: LocalNameHash = LocalNameHash::from_static(b"rb");
-const RP: LocalNameHash = LocalNameHash::from_static(b"rp");
-const RT: LocalNameHash = LocalNameHash::from_static(b"rt");
-const RTC: LocalNameHash = LocalNameHash::from_static(b"rtc");
-const SEARCH: LocalNameHash = LocalNameHash::from_static(b"search");
-const SECTION: LocalNameHash = LocalNameHash::from_static(b"section");
-const TABLE: LocalNameHash = LocalNameHash::from_static(b"table");
-const TBODY: LocalNameHash = LocalNameHash::from_static(b"tbody");
-const TD: LocalNameHash = LocalNameHash::from_static(b"td");
-const TFOOT: LocalNameHash = LocalNameHash::from_static(b"tfoot");
-const TH: LocalNameHash = LocalNameHash::from_static(b"th");
-const THEAD: LocalNameHash = LocalNameHash::from_static(b"thead");
-const TR: LocalNameHash = LocalNameHash::from_static(b"tr");
-const UL: LocalNameHash = LocalNameHash::from_static(b"ul");
-
-/// Whether `name` is an HTML void element. A `match` over the precomputed
-/// name hashes lets the compiler build a decision tree (a handful of integer
-/// compares), rather than a runtime slice scan.
-fn is_void(name: LocalNameHash) -> bool {
-    matches!(
-        name,
-        VOID_AREA
-            | VOID_BASE
-            | VOID_BR
-            | VOID_COL
-            | VOID_EMBED
-            | VOID_HR
-            | VOID_IMG
-            | VOID_INPUT
-            | VOID_LINK
-            | VOID_META
-            | VOID_SOURCE
-            | VOID_TRACK
-            | VOID_WBR
-    )
+impl Combinators {
+    fn of(complex: &ComplexSelector) -> Self {
+        let k = complex.parts.len();
+        let mut masks = Self {
+            child: 0,
+            descendant: 0,
+            full: 0,
+        };
+        if k == 0 || k > MAX_COMPOUNDS {
+            return masks;
+        }
+        masks.full = 1 << k;
+        for (i, part) in complex.parts.iter().enumerate().skip(1) {
+            match part.combinator {
+                Some(Combinator::Child) => masks.child |= 1 << i,
+                Some(Combinator::Descendant) => masks.descendant |= 1 << i,
+                None => {}
+            }
+        }
+        masks
+    }
 }
 
 /// Per-selector NFA state carried by an open element.
@@ -140,42 +97,27 @@ impl SelectorState {
     };
 }
 
-/// An open element on the matching stack.
-#[derive(Debug)]
-struct Frame {
-    name: LocalNameHash,
-    child_count: usize,
-    type_counts: Vec<(LocalNameHash, usize)>,
+/// What a start tag did to the stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pushed {
+    /// No element: browsers drop the tag.
+    Nothing,
+    /// An element without children.
+    Leaf,
+    /// A new open element, at this frame index.
+    Open(usize),
+    /// An element that was already open, at this frame index; `claim` when
+    /// the tag is the first to name it (only then is it matched).
+    Merged { frame: usize, claim: bool },
 }
 
-impl Frame {
-    fn new(name: LocalNameHash) -> Self {
-        Self {
-            name,
-            child_count: 0,
-            type_counts: Vec::new(),
-        }
-    }
-
-    fn type_count(&self, name: LocalNameHash) -> usize {
-        self.type_counts
-            .iter()
-            .find(|(n, _)| *n == name)
-            .map_or(0, |(_, c)| *c)
-    }
-
-    fn record_child(&mut self, name: LocalNameHash, track_type: bool) {
-        self.child_count += 1;
-        // Per-type counts are only needed (and only allocate) when some
-        // selector uses `:nth-of-type`.
-        if track_type {
-            if let Some(entry) = self.type_counts.iter_mut().find(|(n, _)| *n == name) {
-                entry.1 += 1;
-            } else {
-                self.type_counts.push((name, 1));
-            }
-        }
-    }
+/// The element a compound is matched against.
+struct Candidate<'t, 'i> {
+    tag: &'t StartTag<'i>,
+    nth_child: usize,
+    nth_of_type: usize,
+    /// Class and id compare ASCII case-insensitively (a quirks-mode document).
+    quirks: bool,
 }
 
 /// Matches a fixed set of selectors against a stream of start/end tags.
@@ -185,20 +127,24 @@ impl Frame {
 pub(crate) struct SelectorMatcher {
     /// All complex selectors, flattened from the registered [`Selector`]s.
     selectors: Vec<ComplexSelector>,
+    /// The combinators of each complex selector.
+    combinators: Vec<Combinators>,
     /// `owner[c]` is the index of the registered selector complex `c` came
     /// from (what [`SelectorMatcher::push_element`] reports).
     owner: Vec<usize>,
-    stack: Vec<Frame>,
-    /// Flat NFA state: row `r` (one per stack frame) holds `selectors.len()`
-    /// entries at `[r * n .. (r + 1) * n]`.
+    tree: OpenElements,
+    /// Flat NFA state: row `r` holds `states_per_frame` ancestry states.
     states: Vec<SelectorState>,
+    /// Single compounds do not need ancestry state.
+    states_per_frame: usize,
     /// Reused scratch for a child row.
     scratch: Vec<SelectorState>,
     /// Reused scratch for de-duplicating matched selector indices.
     matched: Vec<usize>,
-    /// Whether any selector uses `:nth-of-type` (gates per-type counting,
-    /// the only potential per-element allocation).
-    tracks_type: bool,
+    /// The closed head's row, for tags browsers still insert into the head.
+    head_row: Vec<SelectorState>,
+    /// Reused scratch for decoding attribute values.
+    decoded: Vec<u8>,
 }
 
 impl SelectorMatcher {
@@ -214,195 +160,193 @@ impl SelectorMatcher {
                 owner.push(index);
             }
         }
-        let n = complexes.len();
-        let tracks_type = complexes.iter().any(complex_uses_nth_of_type);
+        let n = complexes
+            .iter()
+            .filter(|complex| complex.parts.len() != 1)
+            .count();
+        let combinators = complexes.iter().map(Combinators::of).collect();
+        let mut tree = OpenElements::new();
+        // Per-type counting is the only potential per-element allocation.
+        tree.tracks_type = complexes.iter().any(complex_uses_nth_of_type);
         Self {
             selectors: complexes,
+            combinators,
             owner,
-            stack: vec![Frame::new(LocalNameHash::NONE)],
+            tree,
             states: vec![SelectorState::ROOT; n],
+            states_per_frame: n,
             scratch: Vec::with_capacity(n),
             matched: Vec::new(),
-            tracks_type,
+            head_row: Vec::new(),
+            decoded: Vec::new(),
         }
     }
 
-    /// Processes a start tag, invoking `on_match` once for each registered
-    /// selector index that matches the element being opened.
-    ///
-    /// Returns `true` if the element opened a new scope (was pushed onto the
-    /// stack) — i.e. it is neither void nor self-closing, so a matching end
-    /// tag is expected. The rewriter uses this to keep its deferred-action
-    /// stack in lockstep with the open-element stack.
-    pub(crate) fn push_element(
+    /// Matches the element of a start tag planned by [`Self::prepare_start`],
+    /// invoking `on_match` once for each registered selector index that
+    /// matches it, and opens it when it stays open.
+    fn push_element(
         &mut self,
         tag: &StartTag<'_>,
+        plan: StartPlan,
         mut on_match: impl FnMut(usize),
-    ) -> bool {
-        let n = self.selectors.len();
-        let name = tag.name_hash();
-        let parent_index = self.stack.len() - 1;
-        let parent = &self.stack[parent_index];
-        let nth_child = parent.child_count + 1;
-        // Only meaningful (and only computed) when a selector uses it.
-        let nth_of_type = if self.tracks_type {
-            parent.type_count(name) + 1
-        } else {
-            1
-        };
-
-        self.scratch.clear();
-        self.matched.clear();
-        let parent_row = parent_index * n;
-        for s in 0..n {
-            let parent_state = self.states[parent_row + s];
-            let complex = &self.selectors[s];
-            let (state, matched) =
-                eval_selector(complex, parent_state, tag, nth_child, nth_of_type);
-            if matched && !self.matched.contains(&self.owner[s]) {
-                self.matched.push(self.owner[s]);
+    ) -> Pushed {
+        let (parent, (nth_child, nth_of_type), report) = match plan.placement {
+            Placement::Dropped => return Pushed::Nothing,
+            Placement::Merged { frame, claim } => {
+                let element = self.tree.at(frame);
+                (frame - 1, (element.position, element.type_position), claim)
             }
-            self.scratch.push(state);
+            Placement::Leaf(slot) | Placement::Open(slot, _) => {
+                (slot.parent, self.tree.place(slot, plan.name), true)
+            }
+        };
+        let candidate = Candidate {
+            tag,
+            nth_child: nth_child as usize,
+            nth_of_type: nth_of_type as usize,
+            quirks: self.tree.quirks(),
+        };
+        let Self {
+            selectors,
+            combinators,
+            owner,
+            states,
+            states_per_frame,
+            scratch,
+            matched,
+            decoded,
+            ..
+        } = self;
+        scratch.clear();
+        matched.clear();
+        let parent_row = parent * *states_per_frame;
+        let mut state_index = 0;
+        for ((complex, &masks), &owner) in
+            selectors.iter().zip(combinators.iter()).zip(owner.iter())
+        {
+            let hit = if let [part] = complex.parts.as_slice() {
+                compound_matches(&part.compound, &candidate, decoded)
+            } else {
+                let parent_state = states[parent_row + state_index];
+                state_index += 1;
+                let (state, hit) = eval_selector(complex, masks, parent_state, &candidate, decoded);
+                scratch.push(state);
+                hit
+            };
+            if report && hit && !matched.contains(&owner) {
+                matched.push(owner);
+            }
         }
-        for &index in &self.matched {
+        for &index in matched.iter() {
             on_match(index);
         }
 
-        self.stack[parent_index].record_child(name, self.tracks_type);
-
-        let opened = !is_void(name) && !tag.is_self_closing();
-        if opened {
-            self.stack.push(Frame::new(name));
-            self.states.extend_from_slice(&self.scratch);
-        }
-        opened
-    }
-
-    /// Applies start-tag implied end tags before a new element is matched.
-    ///
-    /// This mirrors the common optional-end-tag cases (`<li><li>`,
-    /// `<p><p>`, table cells/rows, options, ruby annotations). It keeps
-    /// selector ancestry and deferred rewriter actions aligned with the HTML
-    /// tree-builder shape for in-the-wild markup that legally omits end tags.
-    pub(crate) fn pop_implied_for_start(&mut self, name: LocalNameHash) -> usize {
-        let mut popped = 0;
-        match name {
-            LI => popped += self.pop_nearest(&[LI]),
-            DD | DT => popped += self.pop_nearest(&[DD, DT]),
-            OPTION => popped += self.pop_nearest(&[OPTION]),
-            OPTGROUP => {
-                popped += self.pop_nearest(&[OPTION]);
-                popped += self.pop_nearest(&[OPTGROUP]);
+        match plan.placement {
+            Placement::Open(_, element) => {
+                self.tree.push(plan.name, element, (nth_child, nth_of_type));
+                self.states.extend_from_slice(&self.scratch);
+                Pushed::Open(self.tree.depth() - 1)
             }
-            RB | RT | RTC | RP => popped += self.pop_nearest(&[RB, RT, RTC, RP]),
-            TR => {
-                popped += self.pop_nearest(&[TD, TH]);
-                popped += self.pop_nearest(&[TR]);
+            Placement::Merged { frame, claim } => {
+                // Its attributes reach the ancestry of later descendants.
+                let row = frame * self.states_per_frame;
+                if let Some(states) = self.states.get_mut(row..row + self.states_per_frame) {
+                    for (state, merged) in states.iter_mut().zip(&self.scratch) {
+                        state.completed |= merged.completed;
+                        state.desc_ready |= merged.desc_ready;
+                    }
+                }
+                Pushed::Merged { frame, claim }
             }
-            TD | TH => popped += self.pop_nearest(&[TD, TH]),
-            THEAD | TBODY | TFOOT => {
-                popped += self.pop_nearest(&[TD, TH]);
-                popped += self.pop_nearest(&[TR]);
-                popped += self.pop_nearest(&[THEAD, TBODY, TFOOT]);
+            Placement::Leaf(_) => Pushed::Leaf,
+            Placement::Dropped => Pushed::Nothing,
+        }
+    }
+
+    /// Recounts the stack caches; every frame carries its state row.
+    #[cfg(any(test, fuzzing))]
+    fn assert_consistent(&self) {
+        self.tree.assert_consistent();
+        assert_eq!(
+            self.states.len(),
+            self.tree.depth() * self.states_per_frame,
+            "one selector state row per frame"
+        );
+    }
+
+    fn prepare_start(&mut self, tag: &StartTag<'_>) -> StartPlan {
+        self.tree.start_tag(tag)
+    }
+
+    fn pop_element(&mut self, tag: &EndTag<'_>) -> EndOutcome {
+        self.tree.end_tag(tag)
+    }
+
+    /// Applies a text run; see [`OpenElements::text`].
+    fn text(&mut self, text: &[u8]) -> usize {
+        self.tree.text(text)
+    }
+
+    fn finish(&mut self) {
+        self.tree.finish();
+    }
+
+    /// Brings the per-frame selector state in line with the stack after a
+    /// tree change, returning the lowest stack length the change reached:
+    /// frames from there up closed, or are new elements browsers created
+    /// without a tag.
+    #[inline]
+    fn sync(&mut self) -> usize {
+        if !self.tree.changed() {
+            return self.tree.depth();
+        }
+        let low = self.tree.take_low();
+        let n = self.states_per_frame;
+        if let Some(head) = self.tree.take_closed_head()
+            && let Some(row) = self.states.get(head * n..(head + 1) * n)
+        {
+            self.head_row.clear();
+            self.head_row.extend_from_slice(row);
+        }
+        self.states.truncate(low * n);
+        if n != 0 && low < self.tree.depth() {
+            self.sync_new_frames(low);
+        }
+        low
+    }
+
+    /// Computes the state rows of the frames from `low` up: elements browsers
+    /// created without a tag, or the reopened head.
+    fn sync_new_frames(&mut self, low: usize) {
+        let n = self.states_per_frame;
+        for index in low..self.tree.depth() {
+            let frame = self.tree.at(index);
+            if frame.origin == Origin::Reopened && self.head_row.len() == n {
+                self.states.extend_from_slice(&self.head_row);
+                continue;
             }
-            _ if closes_p(name) => popped += self.pop_nearest(&[P]),
-            _ => {}
+            let tag = StartTag::synthetic(frame.tag.name());
+            let candidate = Candidate {
+                tag: &tag,
+                nth_child: frame.position as usize,
+                nth_of_type: frame.type_position as usize,
+                quirks: false,
+            };
+            let parent_row = (index - 1) * n;
+            let mut state_index = 0;
+            for (complex, &masks) in self.selectors.iter().zip(self.combinators.iter()) {
+                if complex.parts.len() == 1 {
+                    continue;
+                }
+                let parent_state = self.states[parent_row + state_index];
+                state_index += 1;
+                let (state, _) =
+                    eval_selector(complex, masks, parent_state, &candidate, &mut self.decoded);
+                self.states.push(state);
+            }
         }
-        popped
     }
-
-    /// Processes an end tag, closing the matching open element.
-    ///
-    /// Mirrors HTML's "generate implied end tags": it closes the *topmost*
-    /// open element with this `name` **and every still-open descendant above
-    /// it** (so crossed/unclosed tags like `<a><b></a>` close `b` too).
-    /// Returns the number of frames closed — `0` for a stray end tag that
-    /// matches nothing. The rewriter relies on this count to keep its
-    /// deferred-action stack and suppression depth in lockstep with the
-    /// open-element stack (otherwise a never-popped suppressing frame would
-    /// swallow the rest of the document).
-    pub(crate) fn pop_element(&mut self, name: LocalNameHash) -> usize {
-        // Frames hold only the name hash (not owned bytes, which would alloc
-        // per frame off the transient input buffer), so this match is by hash:
-        // two distinct names colliding (≈1/2^64 for 64-bit FNV) would mis-close
-        // an element. Not UB — at worst a mis-rewrite on adversarial input.
-        //
-        // Index 0 is the root sentinel and is never closed.
-        let Some(pos) = self.stack.iter().rposition(|f| f.name == name) else {
-            return 0;
-        };
-        if pos == 0 {
-            return 0;
-        }
-        let popped = self.stack.len() - pos;
-        self.stack.truncate(pos);
-        self.states.truncate(pos * self.selectors.len());
-        popped
-    }
-
-    /// Closes every still-open element at EOF.
-    pub(crate) fn finish(&mut self) -> usize {
-        let popped = self.stack.len().saturating_sub(1);
-        self.stack.truncate(1);
-        self.states.truncate(self.selectors.len());
-        popped
-    }
-
-    fn pop_nearest(&mut self, names: &[LocalNameHash]) -> usize {
-        let Some(pos) = self
-            .stack
-            .iter()
-            .rposition(|frame| names.contains(&frame.name))
-        else {
-            return 0;
-        };
-        if pos == 0 {
-            return 0;
-        }
-        let popped = self.stack.len() - pos;
-        self.stack.truncate(pos);
-        self.states.truncate(pos * self.selectors.len());
-        popped
-    }
-}
-
-fn closes_p(name: LocalNameHash) -> bool {
-    matches!(
-        name,
-        ADDRESS
-            | ARTICLE
-            | ASIDE
-            | BLOCKQUOTE
-            | DD
-            | DETAILS
-            | DIV
-            | DL
-            | DT
-            | FIELDSET
-            | FIGCAPTION
-            | FIGURE
-            | FOOTER
-            | FORM
-            | H1
-            | H2
-            | H3
-            | H4
-            | H5
-            | H6
-            | HEADER
-            | HGROUP
-            | VOID_HR
-            | MAIN
-            | MENU
-            | NAV
-            | OL
-            | P
-            | PRE
-            | SEARCH
-            | SECTION
-            | TABLE
-            | UL
-    )
 }
 
 fn complex_uses_nth_of_type(complex: &ComplexSelector) -> bool {
@@ -419,94 +363,90 @@ fn compound_uses_nth_of_type(compound: &Compound) -> bool {
 
 /// Computes an element's NFA state for one complex selector, returning that
 /// state and whether the whole selector matches the element.
+#[inline]
 fn eval_selector(
     complex: &ComplexSelector,
+    masks: Combinators,
     parent: SelectorState,
-    tag: &StartTag<'_>,
-    nth_child: usize,
-    nth_of_type: usize,
+    candidate: &Candidate<'_, '_>,
+    decoded: &mut Vec<u8>,
 ) -> (SelectorState, bool) {
-    let k = complex.parts.len();
-    if k == 0 || k > MAX_COMPOUNDS {
+    if masks.full == 0 {
         return (SelectorState::ROOT, false);
     }
-
-    // Which slots can be matched at this element (bit 0 always).
-    let mut ready = 1u64;
-    for (i, part) in complex.parts.iter().enumerate().skip(1) {
-        let bit = 1u64 << i;
-        match part.combinator {
-            Some(Combinator::Child) if parent.completed & bit != 0 => ready |= bit,
-            Some(Combinator::Descendant) if parent.desc_ready & bit != 0 => ready |= bit,
-            _ => {}
-        }
-    }
+    // Which compounds can be matched at this element (bit 0 always): those
+    // whose prefix completed at the parent (child) or an ancestor
+    // (descendant).
+    let ready = 1 | (parent.completed & masks.child) | (parent.desc_ready & masks.descendant);
 
     // Which prefixes complete at this element (bit 0 = empty prefix).
     let mut completed = 1u64;
-    for (i, part) in complex.parts.iter().enumerate() {
-        if ready & (1u64 << i) != 0 && compound_matches(&part.compound, tag, nth_child, nth_of_type)
+    let mut pending = ready;
+    while pending != 0 {
+        let i = pending.trailing_zeros() as usize;
+        pending &= pending - 1;
+        if complex
+            .parts
+            .get(i)
+            .is_some_and(|part| compound_matches(&part.compound, candidate, decoded))
         {
-            completed |= 1u64 << (i + 1);
+            completed |= 2 << i;
         }
     }
-    let matched = completed & (1u64 << k) != 0;
 
     // What flows down to descendants (descendant combinators only).
-    let mut desc_ready = 1u64;
-    for (i, part) in complex.parts.iter().enumerate().skip(1) {
-        if part.combinator == Some(Combinator::Descendant) {
-            let bit = 1u64 << i;
-            if (completed | parent.desc_ready) & bit != 0 {
-                desc_ready |= bit;
-            }
-        }
-    }
-
+    let desc_ready = 1 | ((completed | parent.desc_ready) & masks.descendant);
     (
         SelectorState {
             completed,
             desc_ready,
         },
-        matched,
+        completed & masks.full != 0,
     )
 }
 
-/// Whether a single compound selector matches the element `tag` (at the
-/// given sibling positions). Combinators are handled by the caller.
+/// Whether a single compound selector matches the candidate element.
+/// Combinators are handled by the caller.
 fn compound_matches(
     compound: &Compound,
-    tag: &StartTag<'_>,
-    nth_child: usize,
-    nth_of_type: usize,
+    candidate: &Candidate<'_, '_>,
+    decoded: &mut Vec<u8>,
 ) -> bool {
+    let tag = candidate.tag;
     if let Some(name) = &compound.name
-        && !name.matches_bytes(tag.name())
+        && !name.matches_tag(tag.name_hash(), tag.name())
     {
         return false;
     }
     if let Some(id) = &compound.id
-        && attribute(tag, b"id") != Some(id.as_bytes())
+        && !attribute_matches(tag, b"id", decoded, |value| {
+            text_eq(value, id.as_bytes(), candidate.quirks)
+        })
     {
         return false;
     }
     for class in &compound.classes {
         let class = class.as_bytes();
-        let present = attribute(tag, b"class")
-            .is_some_and(|value| value.split(u8::is_ascii_whitespace).any(|c| c == class));
+        let present = attribute_matches(tag, b"class", decoded, |value| {
+            value
+                .split(u8::is_ascii_whitespace)
+                .any(|c| text_eq(c, class, candidate.quirks))
+        });
         if !present {
             return false;
         }
     }
     for attr in &compound.attributes {
-        if !attribute(tag, attr.name.as_bytes()).is_some_and(|value| attr.matches_value(value)) {
+        if !attribute_matches(tag, attr.name.as_bytes(), decoded, |value| {
+            attr.matches_value(value)
+        }) {
             return false;
         }
     }
     for nth in &compound.nth {
         let index = match nth.ty {
-            NthType::Child => nth_child,
-            NthType::OfType => nth_of_type,
+            NthType::Child => candidate.nth_child,
+            NthType::OfType => candidate.nth_of_type,
         };
         if !nth.matches_index(index) {
             return false;
@@ -515,12 +455,39 @@ fn compound_matches(
     !compound
         .negations
         .iter()
-        .any(|neg| compound_matches(neg, tag, nth_child, nth_of_type))
+        .any(|neg| compound_matches(neg, candidate, decoded))
 }
 
-/// Looks up an attribute value by (ASCII case-insensitive) name.
-fn attribute<'i>(tag: &StartTag<'i>, name: &[u8]) -> Option<&'i [u8]> {
-    tag.attributes()
+/// Class and id equality; quirks-mode documents compare ASCII
+/// case-insensitively.
+fn text_eq(value: &[u8], expected: &[u8], quirks: bool) -> bool {
+    if quirks {
+        value.eq_ignore_ascii_case(expected)
+    } else {
+        value == expected
+    }
+}
+
+/// Tests the value browsers see (character references decoded) of the
+/// first attribute named `name` (ASCII case-insensitive); `false` when the
+/// element has no such attribute.
+fn attribute_matches(
+    tag: &StartTag<'_>,
+    name: &[u8],
+    decoded: &mut Vec<u8>,
+    test: impl FnOnce(&[u8]) -> bool,
+) -> bool {
+    let Some(attr) = tag
+        .attributes()
         .find(|attr| attr.name().eq_ignore_ascii_case(name))
-        .map(|attr| attr.value())
+    else {
+        return false;
+    };
+    let raw = attr.value();
+    if memchr(b'&', raw).is_none() {
+        return test(raw);
+    }
+    decoded.clear();
+    decode_attribute_value_into(raw, decoded);
+    test(decoded)
 }

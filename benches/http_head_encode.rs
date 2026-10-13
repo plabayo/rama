@@ -11,11 +11,12 @@ use divan::black_box;
 use rama::{
     extensions::ExtensionsRef as _,
     http::{
-        HeaderValue, Method, Request,
+        HeaderMap, HeaderName, HeaderValue, Method, Request,
         proto::{h1::head::encode_request, h2::frame::Pseudo},
     },
     net::{address::ProxyAddress, client::EstablishedProxyRoute, uri::Uri},
 };
+use std::hash::{Hash, Hasher};
 
 mod bench_alloc;
 
@@ -74,4 +75,78 @@ fn h2_pseudo_request(bencher: divan::Bencher, index: usize) {
 #[divan::bench(sample_count = 100)]
 fn content_length_value(bencher: divan::Bencher) {
     bencher.bench_local(|| HeaderValue::from(black_box(1_048_576_u64)));
+}
+
+/// Common unique fields and repeated Set-Cookie / cookie-crumb traffic.
+#[divan::bench(args = [false, true])]
+fn header_map_build(bencher: divan::Bencher, repeated: bool) {
+    let names: Vec<_> = (0..32)
+        .map(|i| HeaderName::from_bytes(format!("x-field-{i}").as_bytes()).unwrap())
+        .collect();
+    bencher.bench_local(|| {
+        let mut map = HeaderMap::with_capacity(32);
+        for name in &names {
+            map.append(name, HeaderValue::from_static("value"));
+            if repeated {
+                map.append(
+                    "set-cookie",
+                    HeaderValue::from_static("session=abc; Secure"),
+                );
+                map.append("cookie", HeaderValue::from_static("a=b"));
+            }
+        }
+        black_box(map)
+    });
+}
+
+#[divan::bench(args = [false, true])]
+fn header_map_lookup(bencher: divan::Bencher, repeated: bool) {
+    let mut map = HeaderMap::new();
+    for i in 0..32 {
+        map.insert(
+            HeaderName::from_bytes(format!("x-field-{i}").as_bytes()).unwrap(),
+            HeaderValue::from_static("value"),
+        );
+        if repeated {
+            map.append("cookie", HeaderValue::from_static("a=b"));
+        }
+    }
+    bencher.bench_local(|| {
+        black_box(map.get(black_box("x-field-17")));
+        black_box(map.get_all(black_box("cookie")).iter().count());
+    });
+}
+
+struct CollisionHash(u64);
+
+impl Hasher for CollisionHash {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(0x100000001b3);
+        }
+    }
+}
+
+/// Names colliding under the fast hash force the randomized-hasher fallback.
+#[divan::bench]
+fn header_map_hash_flood(bencher: divan::Bencher) {
+    let names: Vec<_> = (0..)
+        .map(|i| HeaderName::from_bytes(format!("x-collision-{i}").as_bytes()).unwrap())
+        .filter(|name| {
+            let mut hasher = CollisionHash(0xcbf29ce484222325);
+            name.hash(&mut hasher);
+            hasher.finish() & 32767 == 0
+        })
+        .take(600)
+        .collect();
+    bencher.bench_local(|| {
+        let mut map = HeaderMap::new();
+        for name in &names {
+            map.insert(name, HeaderValue::from_static("value"));
+        }
+        black_box(map)
+    });
 }

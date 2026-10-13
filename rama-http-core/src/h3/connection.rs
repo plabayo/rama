@@ -7,6 +7,7 @@ use super::{
     observation::{H3Observer, Recorder, SettingsObservation},
     qpack::{Decoder, DecoderConfig, Encoder, EncoderConfig, FieldPair, QpackError},
 };
+use crate::server::conn::{HeaderReadTimeout, IdleTimeout};
 use parking_lot::Mutex;
 use rama_core::{
     bytes::{Bytes, BytesMut},
@@ -66,6 +67,11 @@ pub struct Config {
     pub encoder: EncoderConfig,
     /// Maximum concurrent application requests retained by the engine.
     pub max_requests: usize,
+    /// Deadline for incomplete server request heads, including blocked QPACK sections.
+    /// `None` disables the deadline.
+    pub header_read_timeout: Option<HeaderReadTimeout>,
+    /// Server connection idle budgets. `None` disables the deadline.
+    pub idle_timeout: Option<IdleTimeout>,
     /// Lifetime push quota; zero disables push. Bounds reordered push state.
     pub max_pushes: usize,
     /// Maximum buffered encoded non-DATA frame.
@@ -89,6 +95,9 @@ pub struct Config {
     /// semantics once declared with
     /// [`HttpDatagrams`](rama_http_types::proto::ext::HttpDatagrams).
     pub datagrams: Option<DatagramConfig>,
+    /// Reject, rather than drop, `Content-Length` or `Transfer-Encoding` on a successful response to CONNECT,
+    /// which RFC 9110 §9.3.6 forbids as a tunnel follows the response.
+    pub strict_connect_framing: bool,
 }
 
 impl Default for Config {
@@ -99,12 +108,15 @@ impl Default for Config {
             decoder: DecoderConfig::default(),
             encoder: EncoderConfig::default(),
             max_requests: 128,
+            header_read_timeout: Some(HeaderReadTimeout::default()),
+            idle_timeout: Some(IdleTimeout::default()),
             max_pushes: 0,
             max_frame_size: kib(64),
             read_chunk_size: kib(16),
             max_pending_uni_streams: 32,
             extended_connect: false,
             datagrams: Some(DatagramConfig::default()),
+            strict_connect_framing: false,
         }
     }
 }

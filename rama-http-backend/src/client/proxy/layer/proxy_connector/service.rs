@@ -1310,6 +1310,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connect_tunnel_keeps_bytes_sent_along_with_the_proxy_response() {
+        let transport = MockConnectorService::new(|| {
+            service_fn(move |mut socket: MockSocket| async move {
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(socket.read_u8().await.unwrap());
+                }
+                assert!(request.starts_with(b"CONNECT "));
+                // A server that speaks first can land in the same read as the response head.
+                socket
+                    .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\nserver-first")
+                    .await
+                    .unwrap();
+                let mut rest = Vec::new();
+                _ = socket.read_to_end(&mut rest).await;
+                Ok::<_, Infallible>(())
+            })
+        });
+        let connector = HttpProxyConnector::required(transport);
+        let input = ConnectRequest::new(HostWithPort::example_domain_https())
+            .with_application_protocol(Protocol::HTTPS);
+        input.extensions.insert(ProxyRoute::Proxy(
+            "http://proxy.example:8080".parse().unwrap(),
+        ));
+
+        let mut established = tokio::time::timeout(Duration::from_secs(2), connector.serve(input))
+            .await
+            .expect("a complete response head establishes the tunnel without waiting for more")
+            .expect("200 establishes the tunnel");
+        let mut first = [0u8; 12];
+        established.conn.read_exact(&mut first).await.unwrap();
+        assert_eq!(&first, b"server-first");
+    }
+
+    #[tokio::test]
     async fn connect_closed_proxy_may_fall_back_to_direct() {
         for version in [Version::HTTP_11, Version::HTTP_2] {
             let dials = Arc::new(AtomicUsize::new(0));

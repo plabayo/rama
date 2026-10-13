@@ -59,8 +59,10 @@ fn zero_cid_routes_reject_client_server_overlap() {
     assert_eq!(pair.server.endpoint.open_connections(), 1);
 }
 
+/// Zero-length IDs leave a server only the four-tuple, so a client reusing its port cannot be
+/// told apart from one multiplexing (RFC 9000 §5.1): the newest accepted attempt takes the route.
 #[test]
-fn zero_cid_routes_check_pending_accepts_before_replacing_a_route() {
+fn zero_cid_routes_give_a_reused_four_tuple_to_the_newest_accept() {
     let client = Endpoint::new(
         Arc::new(EndpointConfig::try_with_rand_key().unwrap()),
         None,
@@ -83,9 +85,8 @@ fn zero_cid_routes_check_pending_accepts_before_replacing_a_route() {
     let first = pair.server.waiting_incoming.remove(0);
     pair.server.try_accept(first, pair.time).unwrap();
     let second = pair.server.waiting_incoming.pop().unwrap();
-    let error = pair.server.try_accept(second, pair.time).unwrap_err();
-    assert!(matches!(error, ConnectionError::CidsExhausted));
-    assert_eq!(pair.server.endpoint.open_connections(), 1);
+    pair.server.try_accept(second, pair.time).unwrap();
+    assert_eq!(pair.server.endpoint.open_connections(), 2);
 }
 
 #[test]

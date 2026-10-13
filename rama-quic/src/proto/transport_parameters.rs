@@ -50,7 +50,7 @@ pub(crate) fn new(
         max_ack_delay: VarInt::from_u64(config.max_ack_delay.as_millis() as u64)
             .unwrap_or(VarInt::from_u32(25)),
         disable_active_migration: server_config.is_some_and(|c| !c.migration),
-        active_connection_id_limit: active_connection_id_limit(config, cid_gen),
+        active_connection_id_limit: active_connection_id_limit(config, cid_gen.cid_len()),
         max_datagram_frame_size: config.max_datagram_frame_size(),
         grease_quic_bit: endpoint_config.grease_quic_bit,
         min_ack_delay: wire.parameters.sends_min_ack_delay().then(|| {
@@ -81,12 +81,9 @@ pub(crate) fn new(
 }
 
 /// One source for both the wire advertisement and receive-side enforcement.
-pub(crate) fn active_connection_id_limit(
-    config: &TransportConfig,
-    cid_gen: &dyn ConnectionIdGenerator,
-) -> VarInt {
+pub(crate) fn active_connection_id_limit(config: &TransportConfig, cid_len: usize) -> VarInt {
     config.active_connection_id_limit.unwrap_or_else(|| {
-        if cid_gen.cid_len() == 0 {
+        if cid_len == 0 {
             VarInt::from_u32(2)
         } else {
             VarInt::from_u32(DEFAULT_ACTIVE_CONNECTION_ID_LIMIT)

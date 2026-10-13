@@ -88,19 +88,20 @@ where
                     trailers,
                     prev_trailers,
                 } => {
-                    let trailers = ready!(trailers.poll(cx)?);
-                    match (trailers, prev_trailers.take()) {
+                    let trailers = ready!(trailers.poll(cx));
+                    let prev_trailers = prev_trailers.take();
+                    // done on every outcome, a resolved future must not be polled again
+                    this.state.set(State::Done);
+                    let trailers = match (trailers, prev_trailers) {
+                        (Some(Err(err)), _) => return Poll::Ready(Some(Err(err))),
                         (None, None) => return Poll::Ready(None),
-                        (None, Some(trailers)) | (Some(trailers), None) => {
-                            this.state.set(State::Done);
-                            return Poll::Ready(Some(Ok(Frame::trailers(trailers))));
-                        }
-                        (Some(new_trailers), Some(mut prev_trailers)) => {
+                        (None, Some(trailers)) | (Some(Ok(trailers)), None) => trailers,
+                        (Some(Ok(new_trailers)), Some(mut prev_trailers)) => {
                             prev_trailers.extend(new_trailers);
-                            this.state.set(State::Done);
-                            return Poll::Ready(Some(Ok(Frame::trailers(prev_trailers))));
+                            prev_trailers
                         }
-                    }
+                    };
+                    return Poll::Ready(Some(Ok(Frame::trailers(trailers))));
                 }
                 StateProj::Done => {
                     return Poll::Ready(None);
@@ -121,6 +122,8 @@ where
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
+    use std::io;
+    use std::task::Waker;
 
     use crate::{HeaderName, HeaderValue};
     use bytes::Bytes;
@@ -201,6 +204,36 @@ mod tests {
         all_trailers.extend(trailers_2);
         assert_eq!(body_trailers, all_trailers);
 
+        assert!(unwrap_ready(body.as_mut().poll_frame(&mut cx)).is_none());
+    }
+
+    #[test]
+    fn repoll_after_end_does_not_poll_trailers_again() {
+        let body = Empty::<Bytes>::new().with_trailers(std::future::ready(None));
+
+        rama_core::futures::pin_mut!(body);
+        let mut cx = Context::from_waker(Waker::noop());
+
+        assert!(unwrap_ready(body.as_mut().poll_frame(&mut cx)).is_none());
+        // `Ready` panics when polled after completion
+        assert!(unwrap_ready(body.as_mut().poll_frame(&mut cx)).is_none());
+    }
+
+    #[test]
+    fn repoll_after_trailers_error_does_not_poll_trailers_again() {
+        let body = Empty::<Bytes>::new()
+            .map_err(|never| -> io::Error { match never {} })
+            .with_trailers(std::future::ready(Some(Err(io::Error::other(
+                "no trailers",
+            )))));
+
+        rama_core::futures::pin_mut!(body);
+        let mut cx = Context::from_waker(Waker::noop());
+
+        let err = unwrap_ready(body.as_mut().poll_frame(&mut cx))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(err.to_string(), "no trailers");
         assert!(unwrap_ready(body.as_mut().poll_frame(&mut cx)).is_none());
     }
 
