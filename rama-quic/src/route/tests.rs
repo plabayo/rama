@@ -18,7 +18,7 @@ use rama_quic_proto::{
 use rama_udp::{
     DatagramError, DatagramMetadata, DatagramSenderExt as _, DatagramSocket,
     DatagramSocketExt as _, SendDatagram,
-    relay::{EcnPolicy, Peer, UdpRelay},
+    proxy::{DatagramForwardService, EcnPolicy, Peer},
     test_utils::MemoryDatagramSocket,
 };
 use rama_utils::{hex::decode, octets::kib};
@@ -116,7 +116,8 @@ async fn router_forwarding_replays_gro_prefix_once_before_future_datagrams() {
                 context.egress,
                 NonZeroUsize::new(8).unwrap(),
             );
-            let service = UdpRelay::new(NonZeroUsize::new(kib(4)).unwrap(), EcnPolicy::Discard);
+            let service =
+                DatagramForwardService::new(NonZeroUsize::new(kib(4)).unwrap(), EcnPolicy::Discard);
             let mut relay = Box::pin(service.serve(BridgeIo(
                 Peer {
                     socket,

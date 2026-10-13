@@ -41,7 +41,10 @@ pub use meta::{
 #[cfg_attr(docsrs, doc(cfg(feature = "test-utils")))]
 pub mod test_utils;
 
-pub mod relay;
+pub mod proxy;
+
+mod peek;
+pub use peek::{DatagramPeekInput, PrefixedDatagramSocket, RetainedDatagram};
 
 mod packet;
 pub use packet::SendDatagram;

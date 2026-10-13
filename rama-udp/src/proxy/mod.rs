@@ -1,4 +1,5 @@
-//! Bounded, packet-preserving forwarding between two fixed UDP peers.
+//! Bounded, packet-preserving forwarding between two fixed UDP peers: the datagram
+//! counterpart of forwarding a byte stream untouched.
 //!
 //! This is address translation, not an IP tunnel. Payloads and datagram boundaries
 //! are preserved, including empty datagrams and GRO groups. ECN preservation is
@@ -41,7 +42,7 @@ pub struct Peer<S> {
 
 /// Per-association memory and metadata policy.
 #[derive(Debug, Clone, Copy)]
-pub struct UdpRelay {
+pub struct DatagramForwardService {
     /// Receive-buffer bytes in each direction, including any GRO grouping.
     /// At most two such buffers are retained by this relay. A larger input fails
     /// as truncated; no partial datagram is forwarded.
@@ -51,7 +52,7 @@ pub struct UdpRelay {
 
 /// A forwarding failure ends both directions; it never authorizes a route change.
 #[derive(Debug)]
-pub enum RelayError {
+pub enum DatagramForwardError {
     Datagram(DatagramError),
     UnexpectedPeer {
         expected: SocketAddress,
@@ -62,7 +63,7 @@ pub enum RelayError {
     MissingEcn,
 }
 
-impl fmt::Display for RelayError {
+impl fmt::Display for DatagramForwardError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Datagram(error) => error.fmt(f),
@@ -78,7 +79,7 @@ impl fmt::Display for RelayError {
     }
 }
 
-impl Error for RelayError {
+impl Error for DatagramForwardError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Datagram(error) => Some(error),
@@ -87,15 +88,17 @@ impl Error for RelayError {
     }
 }
 
-impl From<DatagramError> for RelayError {
+impl From<DatagramError> for DatagramForwardError {
     fn from(error: DatagramError) -> Self {
         Self::Datagram(error)
     }
 }
 
-impl<A: DatagramSocket, B: DatagramSocket> Service<BridgeIo<Peer<A>, Peer<B>>> for UdpRelay {
+impl<A: DatagramSocket, B: DatagramSocket> Service<BridgeIo<Peer<A>, Peer<B>>>
+    for DatagramForwardService
+{
     type Output = ();
-    type Error = RelayError;
+    type Error = DatagramForwardError;
 
     /// Forward both directions until an I/O or preservation error occurs.
     /// Dropping the future drops its socket owners and pending send handles.
@@ -103,7 +106,7 @@ impl<A: DatagramSocket, B: DatagramSocket> Service<BridgeIo<Peer<A>, Peer<B>>> f
     async fn serve(
         &self,
         BridgeIo(mut ingress, mut egress): BridgeIo<Peer<A>, Peer<B>>,
-    ) -> Result<(), RelayError> {
+    ) -> Result<(), DatagramForwardError> {
         ingress.address = ingress.address.into_canonical_ip_addr();
         egress.address = egress.address.into_canonical_ip_addr();
         let mut to_ingress = ingress.socket.create_sender();
@@ -133,7 +136,7 @@ impl<A: DatagramSocket, B: DatagramSocket> Service<BridgeIo<Peer<A>, Peer<B>>> f
     }
 }
 
-impl UdpRelay {
+impl DatagramForwardService {
     /// Bound each direction's receive buffer and select an explicit ECN policy.
     /// There is no implicit metadata loss or unbounded default allocation.
     #[must_use]
@@ -163,7 +166,7 @@ impl UdpRelay {
         from: &S,
         to: &T,
         source_ip: Option<IpAddr>,
-    ) -> Result<(), RelayError> {
+    ) -> Result<(), DatagramForwardError> {
         if !from.capabilities().receive_truncation {
             return Err(DatagramError::Unsupported(DatagramFeature::ReceiveTruncation).into());
         }
@@ -188,7 +191,7 @@ impl UdpRelay {
         to: &mut T,
         destination: SocketAddress,
         source_ip: Option<IpAddr>,
-    ) -> Result<(), RelayError> {
+    ) -> Result<(), DatagramForwardError> {
         let mut buffer = vec![0; self.buffer_bytes.get()];
         loop {
             let metadata = from.recv(&mut buffer).await?;
@@ -228,15 +231,15 @@ impl UdpRelay {
         metadata: &DatagramMetadata,
         capacity: usize,
         expected: SocketAddress,
-    ) -> Result<(), RelayError> {
+    ) -> Result<(), DatagramForwardError> {
         if metadata.peer != expected {
-            return Err(RelayError::UnexpectedPeer {
+            return Err(DatagramForwardError::UnexpectedPeer {
                 expected,
                 actual: metadata.peer,
             });
         }
         if metadata.truncated {
-            return Err(RelayError::Truncated);
+            return Err(DatagramForwardError::Truncated);
         }
         if metadata.len > capacity
             || metadata.original_len != metadata.len
@@ -244,10 +247,10 @@ impl UdpRelay {
                 .segment_size
                 .is_some_and(|size| size.get() >= metadata.len)
         {
-            return Err(RelayError::InvalidMetadata);
+            return Err(DatagramForwardError::InvalidMetadata);
         }
         if self.ecn == EcnPolicy::Preserve && metadata.ecn.is_none() {
-            return Err(RelayError::MissingEcn);
+            return Err(DatagramForwardError::MissingEcn);
         }
         Ok(())
     }

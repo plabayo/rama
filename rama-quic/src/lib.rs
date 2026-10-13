@@ -41,8 +41,8 @@ mod test_helpers;
 
 pub mod profile;
 mod proto;
+pub mod proxy;
 pub mod qlog;
-pub mod relay;
 
 pub mod route;
 

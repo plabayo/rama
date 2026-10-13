@@ -11,22 +11,22 @@ use rama_core::{Service as _, futures::poll, io::BridgeIo};
 use rama_net::{address::SocketAddress, stream::Socket};
 use tokio::time::timeout;
 
-use super::{EcnPolicy, Peer, RelayError, UdpRelay};
+use super::{DatagramForwardError, DatagramForwardService, EcnPolicy, Peer};
 use crate::{
     DatagramCapabilities, DatagramError, DatagramFeature, DatagramMetadata, DatagramSenderExt as _,
     DatagramSocket, DatagramSocketExt as _, EcnCodepoint, SendDatagram,
     test_utils::{MemoryDatagramSender, MemoryDatagramSocket},
 };
 
-fn config(bytes: usize) -> UdpRelay {
-    UdpRelay::new(NonZeroUsize::new(bytes).unwrap(), EcnPolicy::Preserve)
+fn config(bytes: usize) -> DatagramForwardService {
+    DatagramForwardService::new(NonZeroUsize::new(bytes).unwrap(), EcnPolicy::Preserve)
 }
 
 async fn relay<A: DatagramSocket, B: DatagramSocket>(
-    service: UdpRelay,
+    service: DatagramForwardService,
     ingress: Peer<A>,
     egress: Peer<B>,
-) -> Result<(), RelayError> {
+) -> Result<(), DatagramForwardError> {
     service.serve(BridgeIo(ingress, egress)).await
 }
 
@@ -139,9 +139,12 @@ async fn forwarding_rejects_truncation_and_peer_changes_before_send() {
             down.inject_received(vec![42; 8], metadata).unwrap();
             let result = relay(config(buffer), peer(down), peer(up)).await;
             if wrong_peer {
-                assert!(matches!(result, Err(RelayError::UnexpectedPeer { .. })));
+                assert!(matches!(
+                    result,
+                    Err(DatagramForwardError::UnexpectedPeer { .. })
+                ));
             } else {
-                assert!(matches!(result, Err(RelayError::Truncated)));
+                assert!(matches!(result, Err(DatagramForwardError::Truncated)));
             }
             // Closing the relay may be visible, but never the retained prefix.
             let mut bytes = [0; 16];
@@ -199,7 +202,7 @@ async fn forwarding_requires_metadata_capability_or_explicit_discard() {
                 peer(up)
             )
             .await,
-            Err(RelayError::Datagram(DatagramError::Unsupported(
+            Err(DatagramForwardError::Datagram(DatagramError::Unsupported(
                 DatagramFeature::ReceiveEcn
             )))
         ));
@@ -259,7 +262,7 @@ async fn forwarding_reports_failure_of_a_backpressured_send() {
         drop(origin);
         assert!(matches!(
             relay.await,
-            Err(RelayError::Datagram(DatagramError::Closed))
+            Err(DatagramForwardError::Datagram(DatagramError::Closed))
         ));
     })
     .await
