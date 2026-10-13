@@ -833,12 +833,7 @@ class Counted:
 
 
 def keep_receiving_after_unreachable_ports(sock):
-    """Windows reports an ICMP port unreachable, answering an earlier send to a socket that has
-    since closed, as an error on the next receive. When that error is already queued as asyncio's
-    proactor starts its next receive, the receive fails at once and the transport stops reading
-    for good, so this peer would miss everything after it, such as a close from a peer that moved
-    away from that socket. Turn the report off, as established UDP stacks do; other platforms
-    never deliver it to a receive."""
+    """Windows: a queued ICMP port unreachable otherwise stops asyncio's proactor reading."""
     if sys.platform != "win32":
         return
     import ctypes
