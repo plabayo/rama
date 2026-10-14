@@ -415,8 +415,8 @@ fn watch_origin(origin: Endpoint) -> (Arc<AtomicUsize>, tokio::task::JoinHandle<
 /// The Initial datagrams of a captured Chrome flight.
 fn chrome_flight() -> [Vec<u8>; 2] {
     [
-        include_str!("../../profile/fixtures/chrome-153-initial-1.hex"),
-        include_str!("../../profile/fixtures/chrome-153-initial-2.hex"),
+        include_str!("../../../profile/fixtures/chrome-153-initial-1.hex"),
+        include_str!("../../../profile/fixtures/chrome-153-initial-2.hex"),
     ]
     .map(|hex| {
         rama_utils::hex::decode::<Vec<u8>>(hex.split_whitespace().collect::<String>()).unwrap()
@@ -710,3 +710,5 @@ async fn a_client_that_fails_its_handshake_closes_the_origin_with_the_failure_co
     .await
     .unwrap();
 }
+
+mod client_auth;

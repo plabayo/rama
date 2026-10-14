@@ -35,7 +35,8 @@ pub struct TlsMitmCertificateRequest {
 }
 
 impl TlsMitmCertificateRequest {
-    pub(super) fn from_selection(selection: &CertificateSelection<'_>) -> Self {
+    /// Copy the peer's certificate request while its selection callback runs.
+    pub fn from_selection(selection: &CertificateSelection<'_>) -> Self {
         Self {
             signature_algorithms: selection.peer_verify_algorithms().to_vec(),
             certificate_types: selection.certificate_types().to_vec(),
@@ -119,6 +120,13 @@ impl TlsMitmClientIdentity {
         self.chain.first()
     }
 
+    /// The chain, leaf first, that a completed ingress handshake verified under the plan's
+    /// ingress setup, so the client also proved possession of the leaf's key. A relay builds
+    /// it only once that handshake completed.
+    pub fn from_authenticated_chain(chain: Vec<X509>) -> Self {
+        Self { chain }
+    }
+
     pub(super) fn from_completed_handshake(ssl: &SslRef) -> Self {
         // Server-side peer_cert_chain excludes the leaf.
         let mut chain = Vec::new();
@@ -152,6 +160,21 @@ impl fmt::Debug for TlsMitmClientAuthPlan {
 }
 
 impl TlsMitmClientAuthPlan {
+    /// Apply the plan's ingress TLS setup to this connection, once, before its handshake.
+    pub fn configure_ingress(&mut self, ssl: &mut SslRef) -> Result<(), BoxError> {
+        match self.configure.take() {
+            Some(configure) => configure(ssl),
+            None => Ok(()),
+        }
+    }
+
+    /// The second stage, for an ingress identity whose handshake completed.
+    pub fn into_resolver(
+        self,
+    ) -> BoxService<TlsMitmClientIdentity, Option<SslCredential>, BoxError> {
+        self.resolve
+    }
+
     /// By default, ingress does not request a certificate.
     pub fn new<S>(resolver: S) -> Self
     where
@@ -232,6 +255,18 @@ impl TlsMitmClientAuthPolicy {
             let credential = input.request.is_some().then(|| credential.clone());
             async move { Ok::<_, Infallible>(TlsMitmClientAuthPlan::fixed(credential)) }
         }))
+    }
+}
+
+impl Service<TlsMitmClientAuthInput> for TlsMitmClientAuthPolicy {
+    type Output = TlsMitmClientAuthPlan;
+    type Error = BoxError;
+
+    fn serve(
+        &self,
+        input: TlsMitmClientAuthInput,
+    ) -> impl Future<Output = Result<TlsMitmClientAuthPlan, BoxError>> + Send + '_ {
+        self.0.serve(input)
     }
 }
 

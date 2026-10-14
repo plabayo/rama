@@ -6,12 +6,18 @@ use parking_lot::Mutex;
 use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _},
-    extensions::ExtensionsRef,
+    extensions::{Extensions, ExtensionsRef},
     io::BridgeIo,
     rt::Executor,
 };
 use rama_crypto::{
-    dep::boring::x509::X509,
+    dep::boring::{
+        ssl::{
+            AsyncSelectCertError, BoxCertificateFinish, CertificateSelection, SelectCertError,
+            SslCredential, SslRef,
+        },
+        x509::X509,
+    },
     pki_types::{CertificateDer, PrivateKeyDer},
 };
 use rama_net::{
@@ -25,20 +31,32 @@ use rama_tls::{
     client::TlsClientConfig,
     server::{ServerAuthData, TlsServerConfig},
 };
-use rama_tls_boring::proxy::cert_issuer::BoringMitmCertIssuer;
+use rama_tls_boring::proxy::{
+    cert_issuer::BoringMitmCertIssuer,
+    client_auth::{
+        TlsMitmCertificateRequest, TlsMitmClientAuthInput, TlsMitmClientAuthPlan,
+        TlsMitmClientAuthPolicy, TlsMitmClientIdentity,
+    },
+};
 use rama_udp::DatagramSocket;
 use rama_utils::guard::DropGuard;
-use tokio::time::{Instant, timeout_at};
+use tokio::{
+    sync::oneshot,
+    time::{Instant, timeout_at},
+};
 
 use super::InputWithQuicClientHello;
 use crate::{
-    ClientConfig, Connection, Endpoint, IncomingOutcome, ServerConfig, TransportConfig,
+    ClientConfig, Connecting, Connection, Endpoint, IncomingOutcome, ServerConfig, TransportConfig,
     proto::ServerCrypto,
     proto::crypto::{
         self,
-        boring::{retry_tag, server_config_from_rama, server_initial_keys},
+        boring::{
+            HandshakeInitializer, SharedClientSessions, retry_tag, server_config_from_rama,
+            server_initial_keys,
+        },
     },
-    tls::TlsOptions,
+    tls::{BoringTlsProvider, TlsOptions},
 };
 
 /// The default for [`QuicMitmRelay::with_handshake_timeout`].
@@ -57,6 +75,12 @@ pub const DEFAULT_QUIC_MITM_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10
 /// established connections; this service closes them only when establishment fails. Early
 /// data is disabled on both hops. All of it shares one deadline, fixed when `serve` is called.
 ///
+/// An origin requesting a client certificate is answered by the [`TlsMitmClientAuthPolicy`]
+/// (a flow's own extension overrides the relay's): its plan configures the ingress handshake,
+/// and its credential is released to the origin only once that handshake completed, with
+/// proof of possession of any certificate the client presented. Without a policy, a
+/// certificate request fails the association.
+///
 /// Destination selection is the producer's: this service dials nothing but the egress socket's
 /// peer, and the received server name never changes where traffic goes.
 #[derive(Debug, Clone)]
@@ -69,6 +93,7 @@ pub struct QuicMitmRelay<Issuer> {
     handshake_timeout: Duration,
     validate_address: bool,
     failure_code: VarInt,
+    client_auth: Option<TlsMitmClientAuthPolicy>,
 }
 
 impl<Issuer> QuicMitmRelay<Issuer> {
@@ -94,6 +119,16 @@ impl<Issuer> QuicMitmRelay<Issuer> {
             handshake_timeout: DEFAULT_QUIC_MITM_HANDSHAKE_TIMEOUT,
             validate_address: true,
             failure_code,
+            client_auth: None,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// The client-authentication policy for origins requesting a certificate. A flow's
+        /// own [`TlsMitmClientAuthPolicy`] extension overrides it.
+        pub fn client_auth(mut self, policy: Option<TlsMitmClientAuthPolicy>) -> Self {
+            self.client_auth = policy;
+            self
         }
     }
 
@@ -223,16 +258,27 @@ impl<Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone> QuicMitmRelay<
                 })?,
         };
 
+        // Flow extensions are only cloned when a policy will receive them.
+        let client_auth = ingress
+            .extensions()
+            .get_ref::<TlsMitmClientAuthPolicy>()
+            .cloned()
+            .or_else(|| self.client_auth.clone())
+            .map(|policy| (policy, ingress.extensions().clone()));
+
         let origin = Arc::new(Mutex::new(None::<Origin>));
         let failure_code = self.failure_code;
-        // An origin reached for a client that is not accepted after all learns why.
+        // An origin reached for a client that is not accepted after all learns why. One paused
+        // at its certificate request fails there, as its credential reply is dropped.
         let mut close_origin = DropGuard::new({
             let origin = origin.clone();
             move || {
-                if let Some(origin) = origin.lock().take() {
-                    origin
-                        .connection
-                        .close(failure_code, b"QUIC MITM establishment failed");
+                if let Some(Origin {
+                    connection: OriginConnection::Established(connection),
+                    ..
+                }) = origin.lock().take()
+                {
+                    connection.close(failure_code, b"QUIC MITM establishment failed");
                 }
             }
         });
@@ -240,6 +286,7 @@ impl<Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone> QuicMitmRelay<
             relay: self.clone(),
             peeked: client_hello,
             server_name,
+            client_auth,
             egress: Mutex::new(Some(egress)),
             origin: origin.clone(),
         }));
@@ -260,17 +307,15 @@ impl<Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone> QuicMitmRelay<
             }
         };
         let mut close_ingress = close_on_drop(&ingress_connection, failure_code);
-        let Origin {
-            connection: egress_connection,
-            endpoint: egress_endpoint,
-            negotiated,
-        } = origin.lock().take().ok_or_else(|| {
-            BoxError::from_static_str("QUIC MITM accepted a client without its origin")
-        })?;
-        close_origin.disarm();
+        let (negotiated, client_auth) = {
+            let mut origin = origin.lock();
+            let origin = origin.as_mut().ok_or_else(|| {
+                BoxError::from_static_str("QUIC MITM accepted a client without its origin")
+            })?;
+            (origin.negotiated.clone(), origin.client_auth.take())
+        };
         let negotiated = negotiated
             .ok_or_else(|| BoxError::from_static_str("QUIC origin negotiated no ALPN"))?;
-        let mut close_egress = close_on_drop(&egress_connection, failure_code);
         if ingress_connection
             .handshake_data()
             .and_then(|data| data.application_layer_protocol)
@@ -281,6 +326,22 @@ impl<Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone> QuicMitmRelay<
                 "QUIC MITM ingress ALPN differs from the origin's",
             ));
         }
+        if let Some(client_auth) = client_auth {
+            client_auth.release(&ingress_connection).await?;
+        }
+        let Origin {
+            connection,
+            endpoint: egress_endpoint,
+            ..
+        } = origin.lock().take().ok_or_else(|| {
+            BoxError::from_static_str("QUIC MITM accepted a client without its origin")
+        })?;
+        close_origin.disarm();
+        let egress_connection = match connection {
+            OriginConnection::Established(connection) => connection,
+            OriginConnection::AwaitingCredential(connecting) => (*connecting).await?,
+        };
+        let mut close_egress = close_on_drop(&egress_connection, failure_code);
 
         // As the TLS relay does: the HTTP version the origin agreed to, for the inner service.
         if let Ok(version) = Version::try_from(&negotiated) {
@@ -300,9 +361,58 @@ impl<Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone> QuicMitmRelay<
 
 /// The origin of one association, reached for the client attempt its ingress admitted.
 struct Origin {
-    connection: Connection,
+    connection: OriginConnection,
     endpoint: Endpoint,
     negotiated: Option<ApplicationProtocol>,
+    /// Taken once the ingress handshake, which the plan configured, completed.
+    client_auth: Option<ClientAuthExchange>,
+}
+
+enum OriginConnection {
+    Established(Connection),
+    /// Paused at the origin's certificate request until the ingress client authenticated.
+    AwaitingCredential(Box<Connecting>),
+}
+
+/// An origin's certificate request, seen from its paused handshake.
+struct CertificateRequested {
+    leaf: X509,
+    alpn: Option<ApplicationProtocol>,
+    request: TlsMitmCertificateRequest,
+    reply: oneshot::Sender<Option<SslCredential>>,
+}
+
+/// The policy's plan for one association, and the origin's request it answers, if any.
+struct ClientAuthExchange {
+    plan: TlsMitmClientAuthPlan,
+    reply: Option<oneshot::Sender<Option<SslCredential>>>,
+}
+
+impl ClientAuthExchange {
+    /// Resolve the egress credential for the identity the completed ingress handshake proved,
+    /// and release it to the origin.
+    async fn release(self, ingress: &Connection) -> Result<(), BoxError> {
+        // An accepted connection completed its handshake, the client's Finished included, so
+        // the key of any certificate it presented was proven. Ingress contexts live for one
+        // association, so no session resumes into it.
+        let chain = ingress
+            .peer_identity()
+            .unwrap_or_default()
+            .iter()
+            .map(|cert| X509::from_der(cert))
+            .collect::<Result<Vec<_>, _>>()?;
+        let identity = TlsMitmClientIdentity::from_authenticated_chain(chain);
+        let credential = self.plan.into_resolver().serve(identity).await?;
+        match self.reply {
+            Some(reply) => reply.send(credential).map_err(|_credential| {
+                BoxError::from_static_str("QUIC MITM origin handshake closed before its credential")
+            }),
+            None if credential.is_some() => Err(BoxError::from_static_str(
+                "QUIC MITM credential supplied without an origin request",
+            )),
+            None => Ok(()),
+        }
+    }
 }
 
 /// Resolves the ingress configuration of one association. The endpoint asks only for the
@@ -312,6 +422,7 @@ struct OriginResolver<Issuer, Egress> {
     relay: QuicMitmRelay<Issuer>,
     peeked: PeekedClientHello,
     server_name: Host,
+    client_auth: Option<(TlsMitmClientAuthPolicy, Extensions)>,
     egress: Mutex<Option<Egress>>,
     origin: Arc<Mutex<Option<Origin>>>,
 }
@@ -339,36 +450,114 @@ where
             None => offered.iter().cloned().collect(),
         };
         tls.set_alpn(allowed);
-        let mut client = ClientConfig::try_from_rama_tls(&tls, TlsOptions::default())?;
+        let requested = if self.client_auth.is_some() {
+            // A resumed origin session would reuse an earlier client's authentication.
+            if tls
+                .as_extensions()
+                .get_ref::<SharedClientSessions>()
+                .is_some()
+            {
+                return Err(BoxError::from_static_str(
+                    "QUIC MITM client auth: shared egress sessions can bypass authentication",
+                ));
+            }
+            Some(pause_at_certificate_request(&tls))
+        } else {
+            tls.insert(HandshakeInitializer(Arc::new(|ssl: &mut SslRef| {
+                ssl.set_certificate_callback(|_| Err(SelectCertError::ERROR));
+                Ok(())
+            })));
+            None
+        };
+        let mut client = ClientConfig::try_from_rama_tls_with_provider(
+            &tls,
+            TlsOptions::default(),
+            &BoringTlsProvider,
+        )?;
         client.set_transport_config(self.relay.egress_transport.clone());
         client.set_version(self.peeked.version)?;
 
         let origin = egress.peer_addr()?;
         let endpoint = Endpoint::build(self.relay.exec.clone()).with_datagram_socket(egress)?;
-        let connection = endpoint
-            .connect_with(client, origin.into(), &self.server_name.to_string())?
-            .await?;
-        let negotiated = connection
-            .handshake_data()
-            .and_then(|data| data.application_layer_protocol);
-        let origin_leaf = connection
-            .peer_identity()
-            .and_then(|chain| chain.into_iter().next());
-        // Held from here, so a failure closes the origin with the relay's code.
+        let mut connecting =
+            endpoint.connect_with(client, origin.into(), &self.server_name.to_string())?;
+        let (connection, negotiated, origin_leaf, request) = if let Some(requested) = requested {
+            tokio::select! {
+                biased;
+                // The callback can report a request and fail in the same poll.
+                connection = &mut connecting => {
+                    let connection = connection?;
+                    let (negotiated, leaf) = established_origin(&connection)?;
+                    (OriginConnection::Established(connection), negotiated, leaf, None)
+                }
+                requested = requested => {
+                    let requested = requested.map_err(|_closed| {
+                        BoxError::from_static_str("QUIC MITM origin handshake closed")
+                    })?;
+                    (
+                        OriginConnection::AwaitingCredential(Box::new(connecting)),
+                        requested.alpn.clone(),
+                        requested.leaf.clone(),
+                        Some(requested),
+                    )
+                }
+            }
+        } else {
+            let connection = connecting.await?;
+            let (negotiated, leaf) = established_origin(&connection)?;
+            (
+                OriginConnection::Established(connection),
+                negotiated,
+                leaf,
+                None,
+            )
+        };
+        // Held from here, so a failure ends the origin.
         *self.origin.lock() = Some(Origin {
             connection,
             endpoint,
             negotiated: negotiated.clone(),
+            client_auth: None,
         });
         let negotiated = negotiated
             .ok_or_else(|| BoxError::from_static_str("QUIC origin negotiated no ALPN"))?;
-        let origin_leaf = origin_leaf
-            .ok_or_else(|| BoxError::from_static_str("QUIC origin presented no certificate"))?;
+
+        let mut server_tls = TlsServerConfig::new();
+        if let Some((policy, extensions)) = &self.client_auth {
+            let (request, reply) = match request {
+                Some(CertificateRequested { request, reply, .. }) => (Some(request), Some(reply)),
+                None => (None, None),
+            };
+            let plan = policy
+                .serve(TlsMitmClientAuthInput {
+                    request,
+                    extensions: extensions.clone(),
+                    server_name: Some(self.server_name.clone()),
+                    server_certificate: origin_leaf.clone(),
+                })
+                .await?;
+            if let Some(origin) = self.origin.lock().as_mut() {
+                origin.client_auth = Some(ClientAuthExchange { plan, reply });
+            }
+            // The plan configures the one ingress handshake this association accepts.
+            let origin = self.origin.clone();
+            server_tls.insert(HandshakeInitializer(Arc::new(move |ssl: &mut SslRef| {
+                origin
+                    .lock()
+                    .as_mut()
+                    .and_then(|origin| origin.client_auth.as_mut())
+                    .ok_or_else(|| {
+                        BoxError::from_static_str("QUIC MITM client auth plan already released")
+                    })?
+                    .plan
+                    .configure_ingress(ssl)
+            })));
+        }
 
         let issued = self
             .relay
             .issuer
-            .issue_mitm_x509_cert(X509::from_der(&origin_leaf)?)
+            .issue_mitm_x509_cert(origin_leaf)
             .await
             .map_err(Into::into)?;
         let mut identity = ServerAuthData::new(
@@ -381,9 +570,8 @@ where
                 .map_err(BoxError::from_static_str)?,
         );
         identity.ocsp = issued.ocsp_staple.map(|bytes| bytes.to_vec());
-        let server_tls = TlsServerConfig::new()
-            .with_server_auth(identity)
-            .with_alpn([negotiated].into_iter().collect());
+        server_tls.set_server_auth(identity);
+        server_tls.set_alpn([negotiated].into_iter().collect());
         match server_config_from_rama(&server_tls, TlsOptions::default())? {
             ServerCrypto::Fixed(config) => Ok(config),
             ServerCrypto::Resolver(_) => Err(BoxError::from_static_str(
@@ -441,6 +629,59 @@ where
             )))
         })
     }
+}
+
+/// The protocol an established origin negotiated, and the leaf it presented.
+fn established_origin(
+    connection: &Connection,
+) -> Result<(Option<ApplicationProtocol>, X509), BoxError> {
+    let negotiated = connection
+        .handshake_data()
+        .and_then(|data| data.application_layer_protocol);
+    let leaf = connection
+        .peer_identity()
+        .and_then(|chain| chain.into_iter().next())
+        .ok_or_else(|| BoxError::from_static_str("QUIC origin presented no certificate"))?;
+    Ok((negotiated, X509::from_der(&leaf)?))
+}
+
+/// Pause the origin handshake at its certificate request: the request is handed out, and the
+/// handshake resumes with the credential sent back, or fails when the reply is dropped.
+fn pause_at_certificate_request(tls: &TlsClientConfig) -> oneshot::Receiver<CertificateRequested> {
+    let (request_tx, request_rx) = oneshot::channel();
+    let exchange = Arc::new(Mutex::new(Some(request_tx)));
+    tls.insert(HandshakeInitializer(Arc::new(move |ssl: &mut SslRef| {
+        let exchange = exchange.clone();
+        ssl.set_async_certificate_callback(move |selection| {
+            let request = exchange.lock().take().ok_or(AsyncSelectCertError)?;
+            let ssl = selection.ssl();
+            let leaf = ssl.peer_certificate().ok_or(AsyncSelectCertError)?;
+            let alpn = ssl.selected_alpn_protocol().map(ApplicationProtocol::from);
+            let (reply, credential) = oneshot::channel();
+            request
+                .send(CertificateRequested {
+                    leaf,
+                    alpn,
+                    request: TlsMitmCertificateRequest::from_selection(selection),
+                    reply,
+                })
+                .map_err(|_request| AsyncSelectCertError)?;
+            Ok(Box::pin(async move {
+                let credential = credential.await.map_err(|_closed| AsyncSelectCertError)?;
+                Ok(Box::new(move |mut selection: CertificateSelection<'_>| {
+                    let ssl = selection.ssl_mut();
+                    ssl.clear_certificates();
+                    if let Some(credential) = credential {
+                        ssl.add_credential(&credential)
+                            .map_err(|_error| AsyncSelectCertError)?;
+                    }
+                    Ok(())
+                }) as BoxCertificateFinish)
+            }))
+        });
+        Ok(())
+    })));
+    request_rx
 }
 
 /// Close `connection` with `failure_code` unless the guard is disarmed on hand-over.
