@@ -29,16 +29,23 @@ use crate::{
 /// An extractor that fails returns its `Rejection` instead of calling the function.
 /// How that rejection becomes a response depends on the return type:
 ///
-/// - A function returning `impl IntoResponse` requires every rejection to implement
-///   [`IntoResponse`], which all rama extractors do.
+/// - A function returning `impl IntoResponse` requires
+///   `ErrorResponse: From<Rejection>` for every extractor argument. This conversion
+///   is provided for any rejection implementing [`IntoResponse`].
 /// - A function returning `Result<O, E>` propagates rejections through `E`, so it
-///   requires `E: From<Rejection>` for every extractor argument, in addition to
-///   `O` and `E` implementing [`IntoResponse`]. `Result` itself does not implement
+///   requires `E: From<Rejection>` for every extractor argument.
+///   `Result` itself does not implement
 ///   [`IntoResponse`], so there is no fallback when such a `From` impl is missing.
 ///
 /// A function that breaks either rule does not implement this trait, which the compiler
 /// reports as an unsatisfied [`IntoEndpointService`] or [`IntoEndpointServiceWithState`]
 /// bound rather than naming the missing impl.
+///
+/// When registering a `Result<O, E>` handler with [`WebService`](super::super::WebService),
+/// response conversion additionally requires `O: IntoResponse` and `E: Into<ErrorResponse>`.
+/// Implementing [`IntoResponse`] for `E` provides the latter conversion, but is not
+/// required: [`ErrorResponse`] itself also satisfies it, as used by
+/// [`response::Result`](super::response::Result).
 ///
 /// [`IntoEndpointService`]: super::IntoEndpointService
 /// [`IntoEndpointServiceWithState`]: super::IntoEndpointServiceWithState
