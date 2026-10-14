@@ -32,12 +32,12 @@ use rama_core::{
 };
 use rama_crypto::dep::x509_parser::nom::AsBytes;
 use rama_net::{address::Host, tls::ApplicationProtocol};
-use rama_tls::KeyLogIntent;
 use rama_tls::client::ClientAuth;
 use rama_tls::client::TlsClientConfig;
 use rama_tls::client::TlsServerCertPins;
 use rama_tls::client::{ServerTrustRoots, ServerVerifyMode};
 use rama_tls::client::{TlsServerTrust, TlsServerTrustAnchors};
+use rama_tls::{ExtensionId, KeyLogIntent};
 use rama_utils::macros::generate_set_and_with;
 use std::{
     fmt,
@@ -341,12 +341,25 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
             })
             .transpose()?;
 
-        let cipher_list: Option<Vec<u16>> = value
-            .cipher_suites
-            .map(|p| p.0.iter().map(|c| (*c).into()).collect());
-        let extension_order: Option<Vec<u16>> = value
-            .extension_order
-            .map(|p| p.0.iter().map(|e| u16::from(*e)).collect());
+        // A set list is exact: with GREASE on, one naming no GREASE slot gets the native ones.
+        let cipher_list: Option<Vec<u16>> = value.cipher_suites.map(|p| {
+            let list = p.0.iter().map(|c| (*c).into()).collect();
+            if grease_enabled {
+                with_native_grease_slots(list, NativeGrease::First)
+            } else {
+                list
+            }
+        });
+        // An empty order keeps the native layout, GREASE extensions included.
+        let extension_order: Option<Vec<u16>> =
+            value.extension_order.filter(|p| !p.0.is_empty()).map(|p| {
+                let order = p.0.iter().map(|e| u16::from(*e)).collect();
+                if grease_enabled {
+                    with_native_grease_slots(order, NativeGrease::FirstAndLast)
+                } else {
+                    order
+                }
+            });
         let certificate_compression_algorithms = value.cert_compression.map(|p| p.0.clone());
 
         // BoringSSL rejects any duplicate group or signature scheme, adjacent or not.
@@ -627,6 +640,26 @@ fn client_credential_scope(
         .to_der()
         .context("encode TLS client credential identity")?;
     Ok(Some(sha256(&encoded)))
+}
+
+/// Where BoringSSL's native lists carry GREASE: first, and for extensions also last.
+#[derive(Clone, Copy)]
+enum NativeGrease {
+    First,
+    FirstAndLast,
+}
+
+/// `list` as set, or with GREASE slots where the native list has them when it names none.
+fn with_native_grease_slots(mut list: Vec<u16>, slots: NativeGrease) -> Vec<u16> {
+    if list.iter().any(|id| ExtensionId::from(*id).is_grease()) {
+        return list;
+    }
+    // Two distinct codepoints: a repeated one would name the same slot twice.
+    list.insert(0, 0x0a0a);
+    if matches!(slots, NativeGrease::FirstAndLast) {
+        list.push(0x1a1a);
+    }
+    list
 }
 
 fn ordered_subset<T: PartialEq>(values: impl Iterator<Item = T>, superset: &[T]) -> Vec<T> {

@@ -53,13 +53,22 @@ fn permutation_is_per_handshake_and_takes_precedence_over_explicit_order() {
         let mut orders = BTreeSet::new();
         for _ in 0..20 {
             let hello = first_flight(&context, None);
-            assert!(hello.extensions().first().unwrap().id().is_grease());
-            assert!(hello.extensions().last().unwrap().id().is_grease());
+            let ids: Vec<_> = hello.extensions().iter().map(|ext| ext.id()).collect();
+            assert!(ids[0].is_grease());
+            // An order is a prefix: its second GREASE slot ends it; native GREASE ends the hello.
+            let second = if explicit && !permuted {
+                declared.len() + 1
+            } else {
+                ids.len() - 1
+            };
+            assert!(ids[second].is_grease(), "{ids:?}");
+            assert_eq!(ids.iter().filter(|id| id.is_grease()).count(), 2, "{ids:?}");
+            // Padding follows the hello's length, not the configuration.
             let mut all_ids: Vec<u16> = hello
                 .extensions()
                 .iter()
                 .map(|ext| ext.id())
-                .filter(|id| !id.is_grease())
+                .filter(|id| !id.is_grease() && *id != ExtensionId::PADDING)
                 .map(Into::into)
                 .collect();
             all_ids.sort_unstable();
@@ -85,6 +94,49 @@ fn permutation_is_per_handshake_and_takes_precedence_over_explicit_order() {
             );
         } else {
             assert_eq!(orders.len(), 1);
+        }
+    }
+}
+
+/// Set lists are exact, so GREASE turned on puts its slots into a set cipher list and
+/// extension order that name none, where the native lists have them: as before such lists
+/// were exact.
+#[test]
+fn set_lists_without_grease_get_the_native_grease_slots() {
+    let ciphers = [
+        CipherSuite::TLS13_AES_128_GCM_SHA256,
+        CipherSuite::TLS13_AES_256_GCM_SHA384,
+    ];
+    let order = [
+        ExtensionId::SUPPORTED_VERSIONS,
+        ExtensionId::SUPPORTED_GROUPS,
+    ];
+    for grease in [true, false] {
+        for explicit in [true, false] {
+            let config = TlsClientConfig::new()
+                .with_grease(grease)
+                .with_cipher_suites(ciphers.to_vec())
+                .with_extension_order(if explicit { order.to_vec() } else { Vec::new() });
+            let context = TlsConnectorContextBuilder::try_from(&config)
+                .unwrap()
+                .build();
+            let hello = first_flight(&context, None);
+            let suites = hello.cipher_suites();
+            assert_eq!(suites[0].is_grease(), grease, "{grease} {explicit}");
+            assert_eq!(&suites[usize::from(grease)..], ciphers.as_slice());
+            let ids: Vec<_> = hello.extensions().iter().map(|ext| ext.id()).collect();
+            let greased = ids.iter().filter(|id| id.is_grease()).count();
+            assert_eq!(greased, if grease { 2 } else { 0 }, "{ids:?}");
+            if grease {
+                assert!(ids[0].is_grease(), "{ids:?}");
+                // A set order ends with its second slot; an empty one keeps native GREASE last.
+                let second = if explicit {
+                    order.len() + 1
+                } else {
+                    ids.len() - 1
+                };
+                assert!(ids[second].is_grease(), "{ids:?}");
+            }
         }
     }
 }
