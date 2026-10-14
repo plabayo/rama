@@ -1,5 +1,9 @@
 use itertools::Itertools;
-use rama_boring::x509::store::X509Store;
+use rama_boring::{
+    ssl::{GreaseValues, UnknownValues},
+    x509::store::X509Store,
+};
+use rama_core::bytes::Bytes;
 use rama_core::conversion::RamaFrom;
 use rama_core::extensions::{Extension, Extensions, FromExtensions};
 use rama_net::{
@@ -51,6 +55,9 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub alps: Option<&'a BoringAlps>,
     pub extension_order: Option<&'a BoringExtensionOrder>,
     pub permute_extensions: Option<&'a BoringPermuteExtensions>,
+    pub unknown_values: Option<&'a BoringUnknownValues>,
+    pub grease_values: Option<&'a BoringGreaseValues>,
+    pub extension_bodies: Option<&'a BoringExtensionBodies>,
     pub requested_trust_anchors: Option<&'a BoringRequestedTrustAnchors>,
     pub cert_compression: Option<&'a BoringCertCompression>,
     pub delegated_credentials: Option<&'a BoringDelegatedCredentials>,
@@ -98,6 +105,9 @@ impl BoringTlsConnectorConfig<'_> {
             alps,
             extension_order,
             permute_extensions,
+            unknown_values,
+            grease_values,
+            extension_bodies,
             requested_trust_anchors,
             cert_compression,
             delegated_credentials,
@@ -146,6 +156,15 @@ impl BoringTlsConnectorConfig<'_> {
         }
         if let Some(store) = verify_cert_store {
             builder.set_component(store.as_ref());
+        }
+        if let Some(policy) = unknown_values {
+            builder.set_component(*policy);
+        }
+        if let Some(values) = grease_values {
+            builder.set_component(*values);
+        }
+        if let Some(bodies) = extension_bodies {
+            builder.set_component(*bodies);
         }
         if let Some(anchors) = requested_trust_anchors {
             match anchors.extension_body() {
@@ -205,6 +224,9 @@ impl BoringTlsConnectorConfig<'_> {
             alps: _,
             extension_order: _,
             permute_extensions: _,
+            unknown_values: _,
+            grease_values: _,
+            extension_bodies: _,
             requested_trust_anchors: _,
             cert_compression: _,
             delegated_credentials: _,
@@ -243,6 +265,9 @@ impl BoringTlsConnectorConfig<'_> {
             alps: None,
             extension_order: None,
             permute_extensions: None,
+            unknown_values: None,
+            grease_values: None,
+            extension_bodies: None,
             requested_trust_anchors: None,
             cert_compression: None,
             delegated_credentials: None,
@@ -282,6 +307,9 @@ impl BoringTlsConnectorConfig<'_> {
             alps: _,
             extension_order: _,
             permute_extensions: _,
+            unknown_values: _,
+            grease_values: _,
+            extension_bodies: _,
             requested_trust_anchors: _,
             cert_compression: _,
             delegated_credentials: _,
@@ -356,6 +384,24 @@ pub trait BoringClientConfigExt: Sized {
         ///
         /// [`extension_order`]: BoringClientConfigExt::set_extension_order
         fn permute_extensions(self, enabled: bool) -> Self;
+    }
+    generate_set_and_with! {
+        /// What to do with listed values BoringSSL cannot negotiate (groups, signature
+        /// schemes, extensions): drop them (the default), send them as listed
+        /// ([`UnknownValues::Preserve`]: a server that selects or answers one fails the
+        /// handshake), or fail ([`UnknownValues::Forbid`]).
+        fn unknown_values(self, policy: UnknownValues) -> Self;
+    }
+    generate_set_and_with! {
+        /// How GREASE slots are filled: fresh per connection (the default), from a seed,
+        /// or exactly the listed codepoints ([`GreaseValues::Pinned`], for a relay that
+        /// mirrors its client).
+        fn grease_values(self, values: GreaseValues) -> Self;
+    }
+    generate_set_and_with! {
+        /// Bodies of GREASE extensions and of preserved extensions BoringSSL does not
+        /// build itself, as a mimicked ClientHello sent them.
+        fn extension_bodies(self, bodies: Vec<(ExtensionId, Bytes)>) -> Self;
     }
     generate_set_and_with! {
         /// Set requested trust anchor identifiers without changing certificate verification.
@@ -476,6 +522,24 @@ impl BoringClientConfigExt for TlsClientConfig {
     generate_set_and_with! {
         fn permute_extensions(mut self, enabled: bool) -> Self {
             self.insert(BoringPermuteExtensions(enabled));
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn unknown_values(mut self, policy: UnknownValues) -> Self {
+            self.insert(BoringUnknownValues(policy));
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn grease_values(mut self, values: GreaseValues) -> Self {
+            self.insert(BoringGreaseValues(values));
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn extension_bodies(mut self, bodies: Vec<(ExtensionId, Bytes)>) -> Self {
+            self.insert(BoringExtensionBodies(Arc::from(bodies)));
             self
         }
     }
@@ -666,6 +730,45 @@ pub struct BoringExtensionOrder(pub Vec<ExtensionId>);
 #[extension(tags(tls))]
 pub struct BoringPermuteExtensions(pub bool);
 
+/// What a ClientHello does with listed values BoringSSL cannot negotiate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(tls))]
+pub struct BoringUnknownValues(pub UnknownValues);
+
+impl TlsPoolComponent for BoringUnknownValues {
+    type Identity = Self;
+
+    fn pool_component_identity(&self) -> Self {
+        *self
+    }
+}
+
+/// How a ClientHello fills its GREASE slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(tls))]
+pub struct BoringGreaseValues(pub GreaseValues);
+
+impl TlsPoolComponent for BoringGreaseValues {
+    type Identity = Self;
+
+    fn pool_component_identity(&self) -> Self {
+        *self
+    }
+}
+
+/// Bodies of GREASE extensions and of preserved extensions BoringSSL does not build itself.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(tls))]
+pub struct BoringExtensionBodies(pub Arc<[(ExtensionId, Bytes)]>);
+
+impl TlsPoolComponent for BoringExtensionBodies {
+    type Identity = Self;
+
+    fn pool_component_identity(&self) -> Self {
+        self.clone()
+    }
+}
+
 /// Certificate compression algorithms to advertise.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
@@ -740,8 +843,6 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
 
         // Every shaping piece is set explicitly, absent extensions included,
         // so a layered base config cannot add anything the hello did not offer.
-        let mut grease = false;
-        let mut grease_signature_schemes = false;
         let mut alps = BoringAlps {
             protocols: Vec::new(),
             new_codepoint: false,
@@ -754,10 +855,10 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         let mut signed_cert_timestamps = false;
         let mut tls12_session_tickets = false;
         let mut requested_trust_anchors = BoringRequestedTrustAnchors::omitted();
+        let mut extension_bodies = Vec::new();
 
         let cipher_suites = hello.cipher_suites();
         if !cipher_suites.is_empty() {
-            grease |= cipher_suites.iter().any(|c| c.is_grease());
             config.set_cipher_suites(cipher_suites.to_vec());
         }
 
@@ -766,7 +867,6 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         config.set_permute_extensions(false);
 
         for ext in extensions {
-            grease |= ext.id().is_grease();
             match ext {
                 // The server identity is resolved per request from the target
                 // host, rather than copied from the observed ClientHello.
@@ -775,16 +875,12 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
                     config.set_alpn(alpn.clone().into());
                 }
                 ClientHelloExtension::SupportedGroups(groups) => {
-                    grease |= groups.iter().any(|g| g.is_grease());
                     config.set_supported_groups(groups.clone());
                 }
                 ClientHelloExtension::SupportedVersions(versions) => {
-                    grease |= versions.iter().any(|v| v.is_grease());
                     config.set_supported_versions(versions.clone());
                 }
                 ClientHelloExtension::SignatureAlgorithms(schemes) => {
-                    grease_signature_schemes = schemes.iter().any(|s| s.is_grease());
-                    grease |= grease_signature_schemes;
                     config.set_signature_schemes(schemes.clone());
                 }
                 ClientHelloExtension::CertificateCompression(algorithms) => {
@@ -812,8 +908,15 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
                     requested_trust_anchors =
                         BoringRequestedTrustAnchors::from_raw_extension_body(data.as_slice());
                 }
+                // GREASE bodies, and extensions BoringSSL does not build, which an unknown-value
+                // policy of `Preserve` sends as captured.
+                ClientHelloExtension::Opaque { id, data }
+                    if !NATIVE_EXTENSIONS.contains(&u16::from(*id)) =>
+                {
+                    extension_bodies.push((*id, Bytes::copy_from_slice(data)));
+                }
                 other => match other.id() {
-                    ExtensionId::STATUS_REQUEST | ExtensionId::STATUS_REQUEST_V2 => {
+                    ExtensionId::STATUS_REQUEST => {
                         ocsp_stapling = true;
                     }
                     ExtensionId::SIGNED_CERTIFICATE_TIMESTAMP => {
@@ -828,11 +931,16 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         }
 
         config.insert(alps);
-        config.set_grease(grease);
-        config.set_grease_signature_schemes(grease_signature_schemes);
+        // Every list above is set exactly as captured, its GREASE codepoints included, so no
+        // native list may add GREASE the capture did not have.
+        config.set_grease(false);
+        config.set_grease_signature_schemes(false);
         // Only a TLS 1.3 offer sends key shares, and it always carries the extension.
         if let Some(groups) = hello.ext_key_share_groups() {
-            config.set_key_shares(groups.into_iter().filter(|g| !g.is_grease()).collect());
+            config.set_key_shares(groups);
+        }
+        if !extension_bodies.is_empty() {
+            config.set_extension_bodies(extension_bodies);
         }
         config.set_cert_compression(cert_compression);
         config.set_delegated_credentials(delegated_credentials);
@@ -852,6 +960,13 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         config
     }
 }
+
+/// Extensions BoringSSL writes itself (its extension table, padding and pre_shared_key): a
+/// ClientHello shape cannot carry a body for them.
+const NATIVE_EXTENSIONS: [u16; 33] = [
+    0, 5, 10, 11, 13, 14, 16, 18, 19, 20, 21, 23, 27, 34, 35, 41, 42, 43, 44, 45, 47, 51, 57, 4832,
+    13172, 17513, 17613, 30032, 0x8a3b, 0xca34, 0xfe0d, 0xff01, 0xffa5,
+];
 
 /// Compute the egress max-version clamp for a mirrored [`ClientHello`], or
 /// `None` when no clamp is needed.
@@ -1387,5 +1502,36 @@ mod pool_tests {
             BoringTlsConnectorConfig::from_extensions(&empty).session_scope(),
             BoringTlsConnectorConfig::from_extensions(&explicit).session_scope()
         );
+    }
+}
+
+#[cfg(test)]
+mod native_extension_tests {
+    use rama_boring::ssl::{ClientHelloShape, ExtensionType};
+    use rama_tls::client::TlsClientConfig;
+
+    use super::NATIVE_EXTENSIONS;
+    use crate::client::TlsConnectorData;
+
+    /// Whether a ClientHello shape may carry a body for `id`.
+    fn takes_a_body(id: u16) -> bool {
+        let mut data = TlsConnectorData::try_from(&TlsClientConfig::new()).unwrap();
+        data.config
+            .set_client_hello_shape(
+                &ClientHelloShape::new().with_extension_body(ExtensionType::from(id), vec![1]),
+            )
+            .is_ok()
+    }
+
+    #[test]
+    fn native_extensions_are_the_ones_boringssl_builds() {
+        for id in NATIVE_EXTENSIONS {
+            assert!(!takes_a_body(id), "{id:#06x} is not native");
+        }
+        // Mimicked hellos carry these as bodies: status_request_v2, a private extension,
+        // signature_algorithms_cert, a GREASE codepoint.
+        for id in [17, 0x1234, 50, 0x0a0a] {
+            assert!(takes_a_body(id), "{id:#06x} is native");
+        }
     }
 }

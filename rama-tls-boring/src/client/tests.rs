@@ -4,7 +4,8 @@ use std::{
     io::{self, Read, Write},
 };
 
-use rama_boring::ssl::{HandshakeError, SslSignatureAlgorithm};
+use rama_boring::ssl::{HandshakeError, SslCurve, SslSignatureAlgorithm, UnknownValues};
+use rama_core::conversion::RamaTryInto as _;
 use rama_net::{address::Host, tls::ApplicationProtocol};
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, CompressionAlgorithm, ExtensionId,
@@ -216,9 +217,8 @@ fn mirrored_hello_does_not_inherit_base_shaping() {
 struct NativeLimits;
 
 impl NativeLimits {
-    /// BoringSSL rejects duplicate and unknown signature schemes.
+    /// Without `Preserve`, signature schemes BoringSSL does not implement are left out.
     fn signature_schemes(captured: &[SignatureScheme]) -> Vec<String> {
-        let mut seen = Vec::new();
         captured
             .iter()
             .filter(|scheme| {
@@ -227,16 +227,11 @@ impl NativeLimits {
                         .name()
                         .is_some()
             })
-            .filter(|scheme| {
-                let first = !seen.contains(*scheme);
-                seen.push(**scheme);
-                first
-            })
             .map(|scheme| grease_or(scheme.is_grease(), scheme))
             .collect()
     }
 
-    /// Finite-field groups have no native implementation, so they are not offered.
+    /// Without `Preserve`, finite-field groups (no native implementation) are left out.
     fn supported_groups(captured: &[SupportedGroup]) -> Vec<String> {
         captured
             .iter()
@@ -259,13 +254,19 @@ impl NativeLimits {
 fn embedded_profiles_are_mirrored_on_the_wire() {
     let db = UserAgentDatabase::try_embedded().unwrap();
     assert!(!db.is_empty());
-    for profile in db.iter() {
+    for (profile, preserve) in db
+        .iter()
+        .flat_map(|profile| [(profile, false), (profile, true)])
+    {
         let tls = profile.tls.as_ref().unwrap();
         let captured = &tls.client_hello;
-        let context =
-            TlsConnectorContextBuilder::try_from(&TlsClientConfig::new_from_client_hello(captured))
-                .unwrap()
-                .build();
+        let mut config = TlsClientConfig::new_from_client_hello(captured);
+        if preserve {
+            config.set_unknown_values(UnknownValues::Preserve);
+        }
+        let context = TlsConnectorContextBuilder::try_from(&config)
+            .unwrap()
+            .build();
         let server_name = captured.ext_server_name().cloned().map(Host::from);
         let emitted = first_flight(&context, server_name);
         let ua = profile.ua_str().unwrap_or_default();
@@ -305,10 +306,11 @@ fn embedded_profiles_are_mirrored_on_the_wire() {
                         "{ua}: key shares"
                     );
                 }
+                // With `Preserve` nothing is left out, so no native limit applies.
                 _ => assert_eq!(
-                    normalized_extension(captured, true),
+                    normalized_extension(captured, !preserve),
                     normalized_extension(emitted, false),
-                    "{ua}"
+                    "{ua} (preserve: {preserve})"
                 ),
             }
         }
@@ -648,5 +650,368 @@ impl Write for HelloSink {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+/// A TLS 1.3 hello with a value of every kind BoringSSL cannot negotiate itself: an unknown
+/// group, an unknown signature scheme, `status_request_v2` and a private extension.
+fn hello_with_unknown_values() -> ClientHello {
+    ClientHello::new(
+        ProtocolVersion::TLSv1_2,
+        vec![
+            CipherSuite::TLS13_AES_128_GCM_SHA256,
+            CipherSuite::TLS13_AES_256_GCM_SHA384,
+        ],
+        vec![CompressionAlgorithm::Null],
+        vec![
+            ClientHelloExtension::SupportedVersions(vec![ProtocolVersion::TLSv1_3]),
+            ClientHelloExtension::SupportedGroups(vec![
+                SupportedGroup::X25519,
+                SupportedGroup::from(0x0abc),
+            ]),
+            ClientHelloExtension::SignatureAlgorithms(vec![
+                SignatureScheme::ECDSA_NISTP256_SHA256,
+                SignatureScheme::from(0x0999),
+                SignatureScheme::RSA_PSS_SHA256,
+            ]),
+            ClientHelloExtension::Opaque {
+                id: ExtensionId::STATUS_REQUEST_V2,
+                data: vec![0, 7, 2, 0, 4, 0, 0, 0, 0],
+            },
+            ClientHelloExtension::Opaque {
+                id: ExtensionId::from(0x1234),
+                data: vec![1, 2, 3],
+            },
+        ],
+    )
+}
+
+fn emitted_with(config: &TlsClientConfig) -> ClientHello {
+    hello_from_data(TlsConnectorData::try_from(config).unwrap())
+}
+
+#[test]
+fn unknown_values_are_dropped_by_default_and_preserved_on_request() {
+    let captured = hello_with_unknown_values();
+    let unknown_group = SupportedGroup::from(0x0abc);
+    let unknown_scheme = SignatureScheme::from(0x0999);
+    for preserve in [false, true] {
+        let mut config = TlsClientConfig::new_from_client_hello(&captured);
+        if preserve {
+            config.set_unknown_values(UnknownValues::Preserve);
+        }
+        let emitted = emitted_with(&config);
+        let groups = emitted.ext_supported_groups().unwrap();
+        let schemes = emitted.ext_signature_algorithms().unwrap();
+        assert_eq!(groups.contains(&unknown_group), preserve);
+        assert_eq!(schemes.contains(&unknown_scheme), preserve);
+        let opaque = |id: ExtensionId| {
+            emitted.extensions().iter().find_map(|ext| match ext {
+                ClientHelloExtension::Opaque { id: ext_id, data } if *ext_id == id => {
+                    Some(data.clone())
+                }
+                _ => None,
+            })
+        };
+        let expected = |data: Vec<u8>| preserve.then_some(data);
+        assert_eq!(
+            opaque(ExtensionId::STATUS_REQUEST_V2),
+            expected(vec![0, 7, 2, 0, 4, 0, 0, 0, 0])
+        );
+        assert_eq!(opaque(ExtensionId::from(0x1234)), expected(vec![1, 2, 3]));
+        // status_request_v2 is not OCSP status_request.
+        assert!(
+            emitted
+                .extensions()
+                .iter()
+                .all(|ext| ext.id() != ExtensionId::STATUS_REQUEST)
+        );
+        if preserve {
+            // As captured, in order.
+            assert_eq!(
+                emitted
+                    .extensions()
+                    .iter()
+                    .map(|ext| ext.id())
+                    .filter(|id| captured.extensions().iter().any(|ext| ext.id() == *id))
+                    .collect::<Vec<_>>(),
+                captured
+                    .extensions()
+                    .iter()
+                    .map(|ext| ext.id())
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(schemes, captured.ext_signature_algorithms().unwrap());
+        }
+    }
+}
+
+/// The GREASE codepoints of a hello, in order of appearance.
+fn grease_values(hello: &ClientHello) -> Vec<u16> {
+    let mut values: Vec<u16> = hello
+        .cipher_suites()
+        .iter()
+        .filter(|c| c.is_grease())
+        .map(|c| u16::from(*c))
+        .collect();
+    for ext in hello.extensions() {
+        if ext.id().is_grease() {
+            values.push(u16::from(ext.id()));
+        }
+        match ext {
+            ClientHelloExtension::SupportedGroups(groups) => values.extend(
+                groups
+                    .iter()
+                    .filter(|g| g.is_grease())
+                    .map(|g| u16::from(*g)),
+            ),
+            ClientHelloExtension::SupportedVersions(versions) => values.extend(
+                versions
+                    .iter()
+                    .filter(|v| v.is_grease())
+                    .map(|v| u16::from(*v)),
+            ),
+            _ => {}
+        }
+    }
+    values
+}
+
+#[test]
+fn grease_values_can_be_pinned_or_seeded() {
+    let captured = ClientHello::new(
+        ProtocolVersion::TLSv1_2,
+        vec![
+            CipherSuite::from(0x3a3a),
+            CipherSuite::TLS13_AES_128_GCM_SHA256,
+        ],
+        vec![CompressionAlgorithm::Null],
+        vec![
+            ClientHelloExtension::Opaque {
+                id: ExtensionId::from(0x6a6a),
+                data: Vec::new(),
+            },
+            ClientHelloExtension::SupportedVersions(vec![
+                ProtocolVersion::from(0xdada),
+                ProtocolVersion::TLSv1_3,
+            ]),
+            ClientHelloExtension::SupportedGroups(vec![
+                SupportedGroup::from(0x8a8a),
+                SupportedGroup::X25519,
+            ]),
+            ClientHelloExtension::SignatureAlgorithms(vec![SignatureScheme::ECDSA_NISTP256_SHA256]),
+            ClientHelloExtension::Opaque {
+                id: ExtensionId::from(0xbaba),
+                data: vec![0],
+            },
+        ],
+    );
+    let pinned = TlsClientConfig::new_from_client_hello(&captured)
+        .with_grease_values(rama_boring::ssl::GreaseValues::Pinned);
+    for _ in 0..2 {
+        assert_eq!(
+            grease_values(&emitted_with(&pinned)),
+            [0x3a3a, 0x6a6a, 0xdada, 0x8a8a, 0xbaba]
+        );
+    }
+    let seeded = |seed| {
+        grease_values(&emitted_with(
+            &TlsClientConfig::new_from_client_hello(&captured)
+                .with_grease_values(rama_boring::ssl::GreaseValues::Seeded(seed)),
+        ))
+    };
+    assert_eq!(seeded(7), seeded(7));
+    assert_ne!(seeded(7), seeded(8));
+}
+
+/// A small deterministic generator, so every case is reproducible from its seed.
+struct XorShift(u64);
+
+impl XorShift {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+
+    fn chance(&mut self) -> bool {
+        self.next() & 1 == 1
+    }
+
+    /// A random non-empty selection of `items`, in random order.
+    fn pick<T: Copy>(&mut self, items: &[T]) -> Vec<T> {
+        let mut pool = items.to_vec();
+        let mut picked = Vec::new();
+        let count = 1 + self.below(pool.len());
+        for _ in 0..count {
+            picked.push(pool.remove(self.below(pool.len())));
+        }
+        picked
+    }
+
+    /// `list` with GREASE codepoint `grease` at a random position, half of the time.
+    fn with_grease<T>(&mut self, mut list: Vec<T>, grease: T) -> Vec<T> {
+        if self.chance() {
+            let at = self.below(list.len() + 1);
+            list.insert(at, grease);
+        }
+        list
+    }
+}
+
+fn random_hello(seed: u64) -> ClientHello {
+    let mut rng = XorShift(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+    let ciphers = rng.pick(&[
+        CipherSuite::TLS13_AES_128_GCM_SHA256,
+        CipherSuite::TLS13_AES_256_GCM_SHA384,
+        CipherSuite::TLS13_CHACHA20_POLY1305_SHA256,
+        CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+        CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+    ]);
+    let mut ciphers = rng.with_grease(ciphers, CipherSuite::from(0x2a2a));
+    // Always one TLS 1.3 cipher.
+    if !ciphers.iter().any(|c| c.is_tls13()) {
+        ciphers.push(CipherSuite::TLS13_AES_128_GCM_SHA256);
+    }
+    let mut groups = rng.pick(&[
+        SupportedGroup::X25519,
+        SupportedGroup::SECP256R1,
+        SupportedGroup::SECP384R1,
+        SupportedGroup::X25519MLKEM768,
+        SupportedGroup::FFDHE2048,
+        SupportedGroup::from(0x0abc),
+    ]);
+    // Key shares need a group BoringSSL implements.
+    let native = |g: &SupportedGroup| -> bool {
+        let curve: Option<SslCurve> = (*g).rama_try_into().ok();
+        curve.is_some()
+    };
+    if !groups.iter().any(native) {
+        groups.push(SupportedGroup::X25519);
+    }
+    let share = *groups.iter().find(|g| native(g)).unwrap();
+    let grease_group = rng.chance();
+    if grease_group {
+        groups.insert(0, SupportedGroup::from(0x4a4a));
+    }
+    let mut schemes = rng.pick(&[
+        SignatureScheme::ECDSA_NISTP256_SHA256,
+        SignatureScheme::RSA_PSS_SHA256,
+        SignatureScheme::RSA_PKCS1_SHA256,
+        SignatureScheme::ECDSA_NISTP384_SHA384,
+        SignatureScheme::from(0x0999),
+    ]);
+    // Always one TLS 1.3 scheme, and sometimes a repeat as some browsers send.
+    schemes.push(SignatureScheme::RSA_PSS_SHA384);
+    if rng.chance() {
+        schemes.push(schemes[0]);
+    }
+    let schemes = rng.with_grease(schemes, SignatureScheme::from(0x5a5a));
+    let versions = rng.with_grease(
+        vec![ProtocolVersion::TLSv1_3, ProtocolVersion::TLSv1_2],
+        ProtocolVersion::from(0x6a6a),
+    );
+    let mut key_share = Vec::new();
+    for group in grease_group
+        .then_some(SupportedGroup::from(0x4a4a))
+        .into_iter()
+        .chain([share])
+    {
+        let key: &[u8] = if group.is_grease() { &[0] } else { &[] };
+        key_share.extend_from_slice(&u16::from(group).to_be_bytes());
+        key_share.extend_from_slice(&u16::try_from(key.len()).unwrap().to_be_bytes());
+        key_share.extend_from_slice(key);
+    }
+    let mut key_share_body = u16::try_from(key_share.len())
+        .unwrap()
+        .to_be_bytes()
+        .to_vec();
+    key_share_body.extend_from_slice(&key_share);
+
+    let mut extensions = vec![
+        ClientHelloExtension::ServerName(Some(rama_net::address::Domain::from_static(
+            "example.test",
+        ))),
+        ClientHelloExtension::SupportedGroups(groups),
+        ClientHelloExtension::SignatureAlgorithms(schemes),
+        ClientHelloExtension::SupportedVersions(versions),
+        ClientHelloExtension::Opaque {
+            id: ExtensionId::KEY_SHARE,
+            data: key_share_body,
+        },
+        ClientHelloExtension::Opaque {
+            id: ExtensionId::PSK_KEY_EXCHANGE_MODES,
+            data: vec![1, 1],
+        },
+        ClientHelloExtension::Opaque {
+            id: ExtensionId::EXTENDED_MASTER_SECRET,
+            data: Vec::new(),
+        },
+        ClientHelloExtension::Opaque {
+            id: ExtensionId::RENEGOTIATION_INFO,
+            data: vec![0],
+        },
+        ClientHelloExtension::ECPointFormats(vec![rama_tls::ECPointFormat::Uncompressed]),
+    ];
+    if rng.chance() {
+        extensions.push(ClientHelloExtension::Opaque {
+            id: ExtensionId::from(0x1234),
+            data: vec![1, 2, 3],
+        });
+    }
+    if rng.chance() {
+        extensions.push(ClientHelloExtension::Opaque {
+            id: ExtensionId::from(0x7a7a),
+            data: vec![0],
+        });
+    }
+    // A random order.
+    let mut ordered = Vec::new();
+    while !extensions.is_empty() {
+        ordered.push(extensions.remove(rng.below(extensions.len())));
+    }
+    ClientHello::new(
+        ProtocolVersion::TLSv1_2,
+        ciphers,
+        vec![CompressionAlgorithm::Null],
+        ordered,
+    )
+}
+
+/// Everything of a hello that is not drawn per connection: every list in order with its
+/// GREASE codepoints, the key share groups, and the extension order (padding aside).
+fn round_trip_shape(hello: &ClientHello) -> Vec<String> {
+    let mut shape = vec![format!("{:?}", hello.cipher_suites())];
+    for ext in hello.extensions() {
+        match ext {
+            ClientHelloExtension::Opaque { id, .. } if *id == ExtensionId::PADDING => {}
+            ClientHelloExtension::Opaque { id, data } if *id == ExtensionId::KEY_SHARE => {
+                shape.push(format!("key_share {:?}", key_share_groups(data)));
+            }
+            ClientHelloExtension::ServerName(_) => shape.push("server_name".to_owned()),
+            other => shape.push(format!("{other:?}")),
+        }
+    }
+    shape
+}
+
+#[test]
+fn preserved_and_pinned_hellos_round_trip_exactly() {
+    for seed in 0..128 {
+        let captured = random_hello(seed);
+        let config = TlsClientConfig::new_from_client_hello(&captured)
+            .with_unknown_values(UnknownValues::Preserve)
+            .with_grease_values(rama_boring::ssl::GreaseValues::Pinned);
+        let emitted = emitted_with(&config);
+        assert_eq!(
+            round_trip_shape(&emitted),
+            round_trip_shape(&captured),
+            "seed {seed}"
+        );
     }
 }

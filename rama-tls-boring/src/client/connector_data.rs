@@ -18,9 +18,9 @@ use rama_boring::{
     rsa::Rsa,
     sha::sha256,
     ssl::{
-        ClientHelloShape, ConnectConfiguration, GreaseLists, SslConnector, SslConnectorBuilder,
-        SslCredential, SslCurve, SslMethod, SslOptions, SslRef, SslSessionCacheMode,
-        SslSignatureAlgorithm, SslVerifyMode, SslVersion,
+        ClientHelloShape, ConnectConfiguration, ExtensionType, GreaseLists, GreaseValues,
+        SslConnector, SslConnectorBuilder, SslCredential, SslCurve, SslMethod, SslOptions, SslRef,
+        SslSessionCacheMode, SslSignatureAlgorithm, SslVerifyMode, SslVersion, UnknownValues,
     },
     x509::{
         X509,
@@ -43,7 +43,7 @@ use rama_tls::client::TlsClientConfig;
 use rama_tls::client::{ServerTrustRoots, ServerVerifyMode};
 use rama_tls::client::{TlsPoolId, TlsServerCertPins};
 use rama_tls::client::{TlsServerTrust, TlsServerTrustAnchors};
-use rama_tls::{ExtensionId, KeyLogIntent};
+use rama_tls::{ExtensionId, KeyLogIntent, SignatureScheme, SupportedGroup};
 use rama_utils::macros::generate_set_and_with;
 use std::{
     fmt,
@@ -104,15 +104,20 @@ struct ConnectorOptions {
 struct WirePlan {
     cipher_list: Option<Vec<u16>>,
     alpn_protos: Option<Bytes>,
-    curves: Option<Vec<SslCurve>>,
-    key_shares: Option<Vec<SslCurve>>,
+    curves: Option<ListPlan<SslCurve>>,
+    key_shares: Option<ListPlan<SslCurve>>,
+    versions: Option<Vec<u16>>,
     verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>>,
+    signature_algorithms: Option<Vec<u16>>,
     min_version: Option<SslVersion>,
     max_version: Option<SslVersion>,
     extension_order: Option<Vec<u16>>,
     permute_extensions: bool,
     requested_trust_anchors: Option<Vec<u8>>,
     grease: GreaseLists,
+    grease_values: GreaseValues,
+    unknown_values: UnknownValues,
+    extension_bodies: Option<Arc<[(ExtensionId, Bytes)]>>,
     ocsp_stapling: bool,
     signed_cert_timestamps: bool,
     session_tickets: bool,
@@ -123,11 +128,46 @@ struct WirePlan {
     encrypted_client_hello: bool,
 }
 
+/// A list set natively (typed, GREASE from the connection's GREASE lists), or exactly as
+/// listed: GREASE codepoints are its GREASE slots and unknown values follow the
+/// connection's unknown-value policy.
+#[derive(Clone, Debug)]
+enum ListPlan<T> {
+    Native(Vec<T>),
+    Raw(Vec<u16>),
+}
+
 impl WirePlan {
-    fn apply(&self, cfg: &mut ConnectConfiguration) -> Result<(), BoxError> {
+    /// The connection's ClientHello shape, unless every part of it is the default.
+    fn shape(&self) -> Option<ClientHelloShape> {
+        let defaults = self.grease.is_empty()
+            && self.grease_values == GreaseValues::Fresh
+            && self.unknown_values == UnknownValues::Drop
+            && self.extension_bodies.is_none();
+        if defaults {
+            return None;
+        }
+        let mut shape = ClientHelloShape::new();
         if !self.grease.is_empty() {
-            cfg.set_client_hello_shape(&ClientHelloShape::new().with_grease_lists(self.grease))
-                .context("set GREASE lists")?;
+            shape.set_grease_lists(self.grease);
+        }
+        shape
+            .set_grease_values(self.grease_values)
+            .set_unknown_values(self.unknown_values);
+        for (id, body) in self
+            .extension_bodies
+            .iter()
+            .flat_map(|bodies| bodies.iter())
+        {
+            shape.set_extension_body(ExtensionType::from(u16::from(*id)), body.to_vec());
+        }
+        Some(shape)
+    }
+
+    fn apply(&self, cfg: &mut ConnectConfiguration) -> Result<(), BoxError> {
+        if let Some(shape) = self.shape() {
+            cfg.set_client_hello_shape(&shape)
+                .context("set ClientHello shape")?;
         }
         if self.permute_extensions {
             cfg.set_permute_extensions(true);
@@ -145,12 +185,21 @@ impl WirePlan {
         if let Some(protos) = &self.alpn_protos {
             cfg.set_alpn_protos(protos).context("set alpn protos")?;
         }
-        if let Some(curves) = &self.curves {
-            cfg.set_curves(curves).context("set curves")?;
+        match &self.curves {
+            Some(ListPlan::Native(curves)) => cfg.set_curves(curves).context("set curves")?,
+            Some(ListPlan::Raw(groups)) => cfg
+                .set_raw_supported_groups(groups)
+                .context("set supported groups")?,
+            None => {}
         }
-        if let Some(curves) = &self.key_shares {
-            cfg.set_client_key_shares(curves)
-                .context("set client key shares")?;
+        match &self.key_shares {
+            Some(ListPlan::Native(curves)) => cfg
+                .set_client_key_shares(curves)
+                .context("set client key shares")?,
+            Some(ListPlan::Raw(groups)) => {
+                cfg.set_raw_key_shares(groups).context("set key shares")?;
+            }
+            None => {}
         }
         if self.min_version.is_some() {
             cfg.set_min_proto_version(self.min_version)
@@ -163,6 +212,14 @@ impl WirePlan {
         if let Some(prefs) = &self.verify_algorithm_prefs {
             cfg.set_verify_algorithm_prefs(prefs)
                 .context("set signature schemes (verify algorithm prefs)")?;
+        }
+        if let Some(algorithms) = &self.signature_algorithms {
+            cfg.set_raw_signature_algorithms(algorithms)
+                .context("set signature algorithms")?;
+        }
+        if let Some(versions) = &self.versions {
+            cfg.set_raw_supported_versions(versions)
+                .context("set supported versions")?;
         }
         if self.ocsp_stapling {
             cfg.enable_ocsp_stapling();
@@ -450,13 +507,19 @@ impl TryFrom<&BoringTlsConnectorConfig<'_>> for ConnectorOptions {
                 }
             });
 
-        // BoringSSL rejects any duplicate group or signature scheme, adjacent or not.
-        let curves: Option<Vec<SslCurve>> = value
-            .supported_groups
-            .map(|p| native_unique(p.0.iter().filter_map(|g| (*g).rama_try_into().ok())));
+        // A list naming a GREASE slot, a value BoringSSL cannot negotiate or a repeat is
+        // set exactly as listed; otherwise natively, where BoringSSL rejects repeats.
+        let curves: Option<ListPlan<SslCurve>> = value.supported_groups.map(|p| {
+            list_plan(
+                &p.0,
+                SupportedGroup::is_grease,
+                |g| g.rama_try_into().ok(),
+                u16::from,
+            )
+        });
         // An empty native list means BoringSSL's defaults, which a configuration naming
-        // only groups it cannot use never asked for.
-        if curves.as_ref().is_some_and(Vec::is_empty) {
+        // no group never asked for.
+        if matches!(&curves, Some(ListPlan::Native(curves)) if curves.is_empty()) {
             return Err(BoxError::from_static_str(
                 "build (boring) ssl connector: no supported group",
             ));
@@ -464,14 +527,43 @@ impl TryFrom<&BoringTlsConnectorConfig<'_>> for ConnectorOptions {
         let verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>> = value
             .signature_schemes
             .map(|p| native_unique(p.0.iter().filter_map(|s| (*s).rama_try_into().ok())));
-        // BoringSSL only accepts key shares for an ordered subset of the offered groups.
-        let key_shares: Option<Vec<SslCurve>> = value.key_shares.map(|p| {
-            let shares = p.0.iter().filter_map(|g| (*g).rama_try_into().ok());
-            match &curves {
-                Some(curves) => ordered_subset(shares, curves),
-                None => native_unique(shares),
+        let signature_algorithms: Option<Vec<u16>> = value.signature_schemes.and_then(|p| {
+            match list_plan(
+                &p.0,
+                SignatureScheme::is_grease,
+                |s| {
+                    let algorithm = SslSignatureAlgorithm::from(u16::from(s));
+                    algorithm.name().is_some().then_some(algorithm)
+                },
+                u16::from,
+            ) {
+                ListPlan::Raw(raw) => Some(raw),
+                ListPlan::Native(_) => None,
             }
         });
+        // BoringSSL only accepts key shares for an ordered subset of the offered groups.
+        let key_shares: Option<ListPlan<SslCurve>> = value.key_shares.map(|p| {
+            let plan = list_plan(
+                &p.0,
+                SupportedGroup::is_grease,
+                |g| g.rama_try_into().ok(),
+                u16::from,
+            );
+            match (plan, &curves) {
+                (ListPlan::Native(shares), Some(ListPlan::Native(curves))) => {
+                    ListPlan::Native(ordered_subset(shares.into_iter(), curves))
+                }
+                (ListPlan::Native(shares), None) => {
+                    ListPlan::Native(native_unique(shares.into_iter()))
+                }
+                // Raw groups take raw key shares, which BoringSSL matches to them itself.
+                (_, _) => ListPlan::Raw(p.0.iter().map(|g| u16::from(*g)).collect()),
+            }
+        });
+        let versions: Option<Vec<u16>> = value
+            .versions
+            .filter(|p| p.0.iter().any(|v| v.is_grease()))
+            .map(|p| p.0.iter().map(|v| u16::from(*v)).collect());
         let delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>> =
             value.delegated_credentials.map(|p| {
                 p.0.iter()
@@ -542,19 +634,32 @@ impl TryFrom<&BoringTlsConnectorConfig<'_>> for ConnectorOptions {
         if value.grease_signature_schemes.is_some_and(|p| p.0) {
             grease |= GreaseLists::SIGNATURE_ALGORITHMS;
         }
+        // A permuted layout keeps the GREASE extensions the (unused) order names.
+        if permute_extensions
+            && value
+                .extension_order
+                .is_some_and(|order| order.0.iter().any(ExtensionId::is_grease))
+        {
+            grease |= GreaseLists::EXTENSIONS;
+        }
 
         let wire = WirePlan {
             cipher_list,
             alpn_protos,
             curves,
             key_shares,
+            versions,
             verify_algorithm_prefs,
+            signature_algorithms,
             min_version,
             max_version,
             extension_order,
             permute_extensions,
             requested_trust_anchors,
             grease,
+            grease_values: value.grease_values.map(|p| p.0).unwrap_or_default(),
+            unknown_values: value.unknown_values.map(|p| p.0).unwrap_or_default(),
+            extension_bodies: value.extension_bodies.map(|p| p.0.clone()),
             ocsp_stapling: value.ocsp_stapling.map(|p| p.0).unwrap_or_default(),
             signed_cert_timestamps: value
                 .signed_cert_timestamps
@@ -758,6 +863,26 @@ fn with_native_grease_slots(mut list: Vec<u16>, slots: NativeGrease) -> Vec<u16>
         list.push(0x1a1a);
     }
     list
+}
+
+/// `list` exactly as listed when it names a GREASE slot, a value BoringSSL cannot negotiate
+/// natively, or a value twice; otherwise its native values.
+fn list_plan<T: Copy + PartialEq, N>(
+    list: &[T],
+    is_grease: impl Fn(&T) -> bool,
+    native: impl Fn(T) -> Option<N>,
+    id: impl Fn(T) -> u16,
+) -> ListPlan<N> {
+    let repeats = list
+        .iter()
+        .enumerate()
+        .any(|(i, value)| list[..i].contains(value));
+    let natives: Vec<N> = list.iter().filter_map(|value| native(*value)).collect();
+    if repeats || natives.len() != list.len() || list.iter().any(&is_grease) {
+        ListPlan::Raw(list.iter().map(|value| id(*value)).collect())
+    } else {
+        ListPlan::Native(natives)
+    }
 }
 
 fn ordered_subset<T: PartialEq>(values: impl Iterator<Item = T>, superset: &[T]) -> Vec<T> {
