@@ -151,6 +151,8 @@ where
             },
         )?;
 
+        // Servers never renegotiate, so the handshake configuration can go once it is done.
+        ssl.set_shed_handshake_config(true);
         let stream = rama_boring_tokio::SslStreamBuilder::new(ssl, stream)
             .accept()
             .await

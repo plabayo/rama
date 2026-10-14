@@ -711,7 +711,9 @@ where
     };
 
     let server_name = data.server_name.clone();
-    let ssl = data.into_ssl().map_err(TlsConnectError::Builder)?;
+    let mut ssl = data.into_ssl().map_err(TlsConnectError::Builder)?;
+    // Rama clients never renegotiate, so the handshake configuration can go once it is done.
+    ssl.set_shed_handshake_config(true);
     let stream: SslStream<T> = rama_boring_tokio::SslStreamBuilder::new(ssl, stream)
         .connect()
         .await

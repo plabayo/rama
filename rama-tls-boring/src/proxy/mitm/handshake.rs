@@ -313,6 +313,7 @@ where
         let authenticates_ingress = plan.as_ref().is_some_and(|plan| plan.configure.is_some());
         let acceptor = self.acceptor_for(&snapshot, authenticates_ingress).await?;
         let mut ssl = Ssl::new(acceptor.context()).map_err(TlsMitmRelayError::config)?;
+        ssl.set_shed_handshake_config(true);
         answer
             .mirror_for(client_ciphers.as_deref(), false)
             .apply(&mut ssl)

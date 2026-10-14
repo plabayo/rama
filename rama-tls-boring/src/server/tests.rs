@@ -588,3 +588,35 @@ async fn a_panicking_keylog_sink_does_not_abort_the_process() {
         server.unwrap();
     }
 }
+
+/// A server connection keeps carrying data after shedding its handshake configuration.
+#[tokio::test]
+async fn a_server_connection_carries_data_after_shedding_its_handshake_configuration() {
+    let auth = server_auth(CertificateKeyKind::EcP256);
+    let acceptor = TlsAcceptorService::new(
+        TlsServerConfig::new().with_server_auth(auth),
+        service_fn(
+            |mut stream: TlsStream<ServiceInput<DuplexStream>>| async move {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).await?;
+                stream.write_all(&byte).await?;
+                Ok::<_, BoxError>(())
+            },
+        ),
+        false,
+    );
+    let config = client(SslVersion::TLS1_3).build().configure().unwrap();
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let client = async {
+        let mut stream = rama_boring_tokio::connect(config, Some("localhost"), client_io)
+            .await
+            .unwrap();
+        stream.write_all(b"x").await.unwrap();
+        let mut byte = [0];
+        stream.read_exact(&mut byte).await.unwrap();
+        byte
+    };
+    let (byte, served) = tokio::join!(client, acceptor.serve(ServiceInput::new(server_io)));
+    assert_eq!(&byte, b"x");
+    served.unwrap();
+}
