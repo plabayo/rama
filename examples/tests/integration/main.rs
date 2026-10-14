@@ -19,6 +19,8 @@ mod utils;
     )
 ))]
 mod quic_client_server;
+#[cfg(all(feature = "http-full", feature = "boring"))]
+mod quic_h3_mitm_proxy;
 #[cfg(all(
     feature = "quic",
     any(

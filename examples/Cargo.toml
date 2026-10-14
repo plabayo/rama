@@ -42,6 +42,11 @@ path = "src/quic_terminating_relay.rs"
 required-features = ["quic"]
 
 [[bin]]
+name = "quic_h3_mitm_proxy"
+path = "src/quic_h3_mitm_proxy.rs"
+required-features = ["http-full", "boring"]
+
+[[bin]]
 name = "quic_client_server"
 path = "src/quic_client_server.rs"
 required-features = ["quic"]

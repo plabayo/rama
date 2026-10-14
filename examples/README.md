@@ -229,6 +229,7 @@ Other locations that demonstrate how to make and run a Transparent Proxy:
   - `getaddrinfo` on other Linux platforms,
   - and tokio's basic `lookup_host` on everything else
 - [`quic_client_server.rs`](./src/quic_client_server.rs) - Authenticated QUIC client and server on one shared graceful runtime, exchanging a bidirectional request and a unidirectional upload
+- [`quic_h3_mitm_proxy.rs`](./src/quic_h3_mitm_proxy.rs) - Conditional QUIC interception: peeks each association's ClientHello, terminates HTTP/3 for chosen server names and forwards the rest untouched (executable end-to-end coverage in the integration suite)
 - [`quic_terminating_relay.rs`](./src/quic_terminating_relay.rs) - Terminating QUIC relay: presents its own identity downstream and authenticates the origin upstream, carrying client-initiated bidirectional streams
 - [`tcp_listener_fd_passing.rs`](./src/tcp_listener_fd_passing.rs) - FD passing via SCM_RIGHTS for zero-downtime restarts (Unix-only)
 - [`tcp_listener_hello.rs`](./src/tcp_listener_hello.rs) - Basic TCP listener example
