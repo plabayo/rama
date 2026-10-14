@@ -17,7 +17,7 @@ use rama_quic_proto::{EcnCodepoint, Version};
 
 mod admission;
 pub use admission::AdmissionConfig;
-pub(crate) use admission::{Admission, AdmissionLease, Decision, Refusal};
+pub(crate) use admission::{Admission, AdmissionLease, Decision, Refusal, SourceKey};
 pub(crate) mod cid_queue;
 #[cfg(test)]
 #[cfg(any(

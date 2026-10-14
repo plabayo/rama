@@ -141,13 +141,13 @@ pub(crate) struct Ticket {
 
 /// The unit attempts are counted per: an IPv4 address or an IPv6 /64 prefix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum SourceKey {
+pub(crate) enum SourceKey {
     V4([u8; 4]),
     V6([u8; 8]),
 }
 
 impl SourceKey {
-    fn of(ip: IpAddr) -> Self {
+    pub(crate) fn of(ip: IpAddr) -> Self {
         match ip {
             IpAddr::V4(ip) => Self::V4(ip.octets()),
             IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
