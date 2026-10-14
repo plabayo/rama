@@ -28,7 +28,7 @@ use rama_net::{
 };
 use rama_quic_proto::{ConnectionId, VarInt, crypto::CryptoError, peek::PeekedClientHello};
 use rama_tls::{
-    client::{ClientHello, TlsClientConfig},
+    client::TlsClientConfig,
     server::{ServerAuthData, TlsServerConfig},
 };
 use rama_tls_boring::client::ServerAnswerRecorder;
@@ -536,7 +536,9 @@ where
         let mirror = answer
             .lock()
             .as_ref()
-            .map(|recorder| IngressMirror::of(recorder, &self.peeked.client_hello))
+            .map(|recorder| {
+                recorder.mirror_for(Some(self.peeked.client_hello.cipher_suites()), true)
+            })
             .unwrap_or_default();
         let mut server_tls = TlsServerConfig::new();
         let authenticates = if let Some((policy, extensions)) = &self.client_auth {
@@ -702,47 +704,6 @@ fn pause_at_certificate_request(ssl: &mut SslRef, exchange: Arc<Mutex<Option<Req
 }
 
 type RequestSender = oneshot::Sender<CertificateRequested>;
-
-impl IngressMirror {
-    /// What the ingress mirrors of the origin's answer to a client that sent `client_hello`.
-    fn of(answer: &ServerAnswerRecorder, client_hello: &ClientHello) -> Self {
-        let Some(server_hello) = answer.server_hello(true) else {
-            return Self::default();
-        };
-        // Pinning a cipher the client did not offer would fail its handshake.
-        let cipher = client_hello
-            .cipher_suites()
-            .contains(&server_hello.cipher_suite())
-            .then(|| u16::from(server_hello.cipher_suite()));
-        let order = server_hello
-            .extensions()
-            .iter()
-            .chain(answer.encrypted_extensions().as_deref().unwrap_or_default())
-            .map(|id| u16::from(*id))
-            .collect();
-        Self { cipher, order }
-    }
-}
-
-/// The origin's cipher and response extension order, for the ingress handshake to answer
-/// its client as the origin answered the relay.
-#[derive(Default)]
-struct IngressMirror {
-    cipher: Option<u16>,
-    order: Vec<u16>,
-}
-
-impl IngressMirror {
-    fn apply(&self, ssl: &mut SslRef) -> Result<(), BoxError> {
-        if let Some(cipher) = self.cipher {
-            ssl.set_strict_tls13_server_ciphers(&[cipher])?;
-        }
-        if !self.order.is_empty() {
-            ssl.set_server_extension_order(&self.order)?;
-        }
-        Ok(())
-    }
-}
 
 /// Close `connection` with `failure_code` unless the guard is disarmed on hand-over.
 fn close_on_drop(

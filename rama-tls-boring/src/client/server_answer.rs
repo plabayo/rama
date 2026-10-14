@@ -7,10 +7,12 @@ use parking_lot::Mutex;
 use rama_boring::{
     error::ErrorStack,
     ex_data::Index,
-    ssl::{Ssl, SslContentType, SslRef},
+    ssl::{Ssl, SslContentType, SslOptions, SslRef},
 };
-use rama_core::error::BoxError;
-use rama_tls::{ExtensionId, server::ServerHello};
+use rama_core::error::{BoxError, ErrorContext as _};
+use rama_tls::{CipherSuite, ExtensionId, ProtocolVersion, server::ServerHello};
+
+use crate::type_conversion::openssl_cipher_str_from_cipher_suite;
 
 const SERVER_HELLO: u8 = 2;
 const ENCRYPTED_EXTENSIONS: u8 = 8;
@@ -73,9 +75,85 @@ impl ServerAnswerRecorder {
         }
     }
 
+    /// What a relay's ingress repeats of this answer to a client that offered
+    /// `client_ciphers` (unknown: `None`), so the client sees the answer the origin gave.
+    #[must_use]
+    pub fn mirror_for(&self, client_ciphers: Option<&[CipherSuite]>, quic: bool) -> AnswerMirror {
+        let Some(server_hello) = self.server_hello(quic) else {
+            return AnswerMirror::default();
+        };
+        let cipher = server_hello.cipher_suite();
+        // Pinning a cipher the client did not offer would fail its handshake.
+        let cipher = client_ciphers
+            .is_some_and(|offered| offered.contains(&cipher))
+            .then(|| {
+                if server_hello.protocol_version() == ProtocolVersion::TLSv1_3 {
+                    Some(PinnedCipher::Tls13(u16::from(cipher)))
+                } else {
+                    openssl_cipher_str_from_cipher_suite(cipher).map(PinnedCipher::Tls12)
+                }
+            })
+            .flatten();
+        let order = server_hello
+            .extensions()
+            .iter()
+            .chain(self.encrypted_extensions().as_deref().unwrap_or_default())
+            .map(|id| u16::from(*id))
+            .collect();
+        // A TLS 1.2 ServerHello answers a ticket offer only when the server issues tickets.
+        let no_ticket = server_hello.protocol_version() != ProtocolVersion::TLSv1_3
+            && !server_hello
+                .extensions()
+                .contains(&ExtensionId::SESSION_TICKET);
+        AnswerMirror {
+            cipher,
+            order,
+            no_ticket,
+        }
+    }
+
     /// The extensions of the EncryptedExtensions received so far (TLS 1.3), in order.
     pub fn encrypted_extensions(&self) -> Option<Vec<ExtensionId>> {
         let recorded = self.0.lock();
         rama_tls::server::parse_encrypted_extensions(recorded.encrypted_extensions.as_deref()?).ok()
+    }
+}
+
+/// The origin's cipher (pinned only when the client offered it), the order of its
+/// ServerHello and EncryptedExtensions extensions, and (TLS 1.2) whether it answered a
+/// ticket offer, for a relay's ingress handshake.
+#[derive(Debug, Clone, Default)]
+pub struct AnswerMirror {
+    cipher: Option<PinnedCipher>,
+    order: Vec<u16>,
+    no_ticket: bool,
+}
+
+#[derive(Debug, Clone)]
+enum PinnedCipher {
+    Tls13(u16),
+    Tls12(&'static str),
+}
+
+impl AnswerMirror {
+    /// Configure a server connection, before its handshake, to answer as the origin did.
+    pub fn apply(&self, ssl: &mut SslRef) -> Result<(), BoxError> {
+        match &self.cipher {
+            Some(PinnedCipher::Tls13(id)) => ssl
+                .set_strict_tls13_server_ciphers(&[*id])
+                .context("pin the origin's cipher")?,
+            Some(PinnedCipher::Tls12(name)) => ssl
+                .set_strict_cipher_list(name)
+                .context("pin the origin's cipher")?,
+            None => {}
+        }
+        if !self.order.is_empty() {
+            ssl.set_server_extension_order(&self.order)
+                .context("mirror the origin's extension order")?;
+        }
+        if self.no_ticket {
+            ssl.set_options(SslOptions::NO_TICKET);
+        }
+        Ok(())
     }
 }

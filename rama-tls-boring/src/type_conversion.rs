@@ -213,7 +213,9 @@ pub fn openssl_cipher_list_str_from_cipher_list(
     (!s.is_empty()).then_some(s)
 }
 
-fn openssl_cipher_str_from_cipher_suite(suite: rama_tls::CipherSuite) -> Option<&'static str> {
+pub(crate) fn openssl_cipher_str_from_cipher_suite(
+    suite: rama_tls::CipherSuite,
+) -> Option<&'static str> {
     match suite {
         rama_tls::CipherSuite::TLS_RSA_WITH_NULL_MD5 => Some("NULL-MD5"),
         rama_tls::CipherSuite::TLS_RSA_WITH_NULL_SHA => Some("NULL-SHA"),

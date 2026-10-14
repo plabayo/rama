@@ -39,7 +39,7 @@ pub use session::{
 
 mod server_answer;
 #[doc(inline)]
-pub use server_answer::ServerAnswerRecorder;
+pub use server_answer::{AnswerMirror, ServerAnswerRecorder};
 
 mod connector_data;
 #[doc(inline)]

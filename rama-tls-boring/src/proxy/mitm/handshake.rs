@@ -6,7 +6,10 @@ use super::{
     AcceptorKey, HandshakeRelayClassification, TlsMitmRelay, TlsMitmRelayError,
     TlsMitmRelayErrorDirection, TlsMitmRelayErrorKind, server_name_as_sni,
 };
-use crate::{TlsStream, client};
+use crate::{
+    TlsStream,
+    client::{self, ServerAnswerRecorder},
+};
 use rama_boring::{
     ssl::{
         AsyncSelectCertError, BoxCertificateFinish, CertificateSelection, NameType,
@@ -29,7 +32,7 @@ use rama_net::{
     address::Domain, client::ConnectorTarget, extensions::StreamTransformed,
     tls::ApplicationProtocol,
 };
-use rama_tls::{CertificateCompressionAlgorithm, client::NegotiatedTlsParameters};
+use rama_tls::{CertificateCompressionAlgorithm, SecureTransport, client::NegotiatedTlsParameters};
 use std::sync::Arc;
 use tokio::sync::oneshot;
 
@@ -208,6 +211,15 @@ where
         }
         let server_name = data.server_name.clone();
         let store_chain = data.store_server_certificate_chain;
+        // The ingress answers its client as the origin answers the egress.
+        let answer =
+            ServerAnswerRecorder::of(&mut data.config).map_err(TlsMitmRelayError::config)?;
+        let client_ciphers = input
+            .0
+            .extensions()
+            .get_ref::<SecureTransport>()
+            .and_then(SecureTransport::client_hello)
+            .map(|hello| hello.cipher_suites().to_vec());
         let request_rx = if policy.is_some() {
             let (request_tx, request_rx) = oneshot::channel();
             let exchange = parking_lot::Mutex::new(Some(request_tx));
@@ -301,6 +313,10 @@ where
         let authenticates_ingress = plan.as_ref().is_some_and(|plan| plan.configure.is_some());
         let acceptor = self.acceptor_for(&snapshot, authenticates_ingress).await?;
         let mut ssl = Ssl::new(acceptor.context()).map_err(TlsMitmRelayError::config)?;
+        answer
+            .mirror_for(client_ciphers.as_deref(), false)
+            .apply(&mut ssl)
+            .map_err(TlsMitmRelayError::config)?;
         if let (Some(protocol), Some(settings)) = (&snapshot.alpn, &snapshot.application_settings) {
             ssl.add_application_settings_value(protocol.as_bytes(), settings)
                 .map_err(TlsMitmRelayError::config)?;

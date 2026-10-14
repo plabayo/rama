@@ -286,8 +286,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parking_lot::Mutex;
     use rama_boring::{
-        ssl::{SslConnector, SslMethod, SslVerifyMode},
+        ssl::{SslConnector, SslContentType, SslMethod, SslRef, SslVerifyMode, SslVersion},
         x509::store::X509StoreBuilder,
     };
     use rama_core::{Layer, ServiceInput, service::service_fn};
@@ -303,7 +304,11 @@ mod tests {
             ClientHelloExtension, ServerTrustRoots, ServerVerifyMode, TlsServerCertPins,
             TlsServerTrust, TlsServerVerify,
         },
-        server::{GeneratedServerAuthConfig, SelfSignedCaConfig, ServerAuthData, TlsServerConfig},
+        fingerprint::Ja4S,
+        server::{
+            GeneratedServerAuthConfig, SelfSignedCaConfig, ServerAuthData, ServerHello,
+            TlsServerConfig,
+        },
     };
     use std::assert_matches;
     use std::sync::Arc;
@@ -1192,6 +1197,107 @@ mod tests {
         service_result.expect("relay");
         upstream_handle.await.expect("upstream assertions");
         client
+    }
+
+    /// Keeps the ServerHello `ssl` writes (`written`) or receives.
+    fn keep_server_hello(ssl: &mut SslRef, written: bool) -> Arc<Mutex<Option<Vec<u8>>>> {
+        let kept = Arc::new(Mutex::new(None));
+        let slot = kept.clone();
+        ssl.set_msg_callback(move |_, message| {
+            if message.is_written() == written
+                && message.content_type() == SslContentType::HANDSHAKE
+                && message.bytes().first() == Some(&2)
+            {
+                *slot.lock() = Some(message.bytes().to_vec());
+            }
+        });
+        kept
+    }
+
+    #[tokio::test]
+    async fn the_client_gets_the_answer_the_upstream_gave() {
+        // TLS 1.3 pins AES-256 and orders supported_versions before key_share (not native);
+        // TLS 1.2 pins an AES-256 suite through the strict cipher list.
+        for version in [SslVersion::TLS1_3, SslVersion::TLS1_2] {
+            let (cert_chain, private_key) =
+                generate_server_auth(GeneratedServerAuthConfig::default())
+                    .expect("generate private upstream identity");
+            let upstream = crate::server::TlsAcceptorData::try_from(
+                &TlsServerConfig::new().with_single_cert(ServerAuthData {
+                    cert_chain,
+                    private_key,
+                    ocsp: None,
+                }),
+            )
+            .unwrap()
+            .into_static_acceptor_builder()
+            .unwrap()
+            .build();
+
+            let mut client = SslConnector::builder(SslMethod::tls_client()).unwrap();
+            client.set_verify(SslVerifyMode::NONE);
+            client.set_max_proto_version(Some(version)).unwrap();
+            let mut client = client.build().configure().unwrap();
+            let received = keep_server_hello(&mut client, false);
+            let (hello_version, ciphers) = if version == SslVersion::TLS1_3 {
+                (
+                    ProtocolVersion::TLSv1_3,
+                    vec![
+                        CipherSuite::TLS13_AES_128_GCM_SHA256,
+                        CipherSuite::TLS13_AES_256_GCM_SHA384,
+                        CipherSuite::TLS13_CHACHA20_POLY1305_SHA256,
+                    ],
+                )
+            } else {
+                (
+                    ProtocolVersion::TLSv1_2,
+                    vec![
+                        CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+                        CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+                        CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+                        CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+                    ],
+                )
+            };
+            let client_hello = ClientHello::new(hello_version, ciphers, Vec::new(), Vec::new());
+            let sent = Arc::new(Mutex::new(None));
+            let kept = sent.clone();
+            let stream = relay_flow(client_hello, client, |io| {
+                tokio::spawn(async move {
+                    let mut ssl = rama_boring::ssl::Ssl::new(upstream.context()).unwrap();
+                    ssl.set_max_proto_version(Some(version)).unwrap();
+                    if version == SslVersion::TLS1_3 {
+                        ssl.set_strict_tls13_server_ciphers(&[u16::from(
+                            CipherSuite::TLS13_AES_256_GCM_SHA384,
+                        )])
+                        .unwrap();
+                        ssl.set_server_extension_order(&[0x002b, 0x0033]).unwrap();
+                    } else {
+                        ssl.set_strict_cipher_list(
+                            "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384",
+                        )
+                        .unwrap();
+                    }
+                    *kept.lock() = Some(keep_server_hello(&mut ssl, true));
+                    drop(
+                        rama_boring_tokio::SslStreamBuilder::new(ssl, io)
+                            .accept()
+                            .await
+                            .expect("upstream TLS"),
+                    );
+                })
+            })
+            .await;
+            drop(stream);
+            let sent = sent.lock().clone().unwrap().lock().clone().unwrap();
+            let received = received.lock().clone().unwrap();
+            let ja4s = |bytes: &[u8]| {
+                Ja4S::compute_from_server_hello(&ServerHello::parse_handshake(bytes).unwrap())
+                    .unwrap()
+                    .to_human_string()
+            };
+            assert_eq!(ja4s(&received), ja4s(&sent), "{version:?}");
+        }
     }
 
     #[cfg(feature = "compression")]
