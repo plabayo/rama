@@ -28,15 +28,17 @@ use tokio::{
 };
 
 use super::harness::{
-    Close, FORCED_DELAY, REQUEST, Received, SIZES, exchange, read_until_end, reply, spawn_origin,
-    spawn_origin_fn, tally,
+    Close, FORCED_DELAY, REQUEST, Received, SIZES, connect_paced, exchange, read_until_end, reply,
+    spawn_origin, spawn_origin_fn, tally,
 };
 use crate::{
-    TcpStream, TokioTcpStream,
+    TcpStream,
     client::service::TcpConnector,
     posted_recv::{PostedRecv, PostedRecvConfig, PostedRecvLayer},
 };
 
+#[cfg(target_os = "windows")]
+use crate::TokioTcpStream;
 #[cfg(target_os = "windows")]
 use tokio::sync::Semaphore;
 
@@ -53,7 +55,7 @@ async fn connect_with(
     addr: std::net::SocketAddr,
     config: &PostedRecvConfig,
 ) -> PostedRecv<TcpStream> {
-    let stream = TokioTcpStream::connect(addr).await.unwrap();
+    let stream = connect_paced(addr).await;
     PostedRecv::with_config(TcpStream::new(stream), config)
 }
 
@@ -496,7 +498,7 @@ async fn forward_keeps_reply_of_resetting_origin() {
         let proxy = spawn_proxy(origin.addr, true, true).await;
         let proxy_addr = proxy.addr;
         let tally = tally(RUNS, 100, len, move || async move {
-            let mut client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+            let mut client = connect_paced(proxy_addr).await;
             exchange(&mut client, Duration::ZERO).await
         })
         .await;
@@ -514,7 +516,7 @@ async fn forward_with_lingering_keeps_reply_while_client_sends() {
     let origin = spawn_origin(len, Close::Reset).await;
     let origin_addr = origin.addr;
     let proxy = spawn_origin_fn(move |client| async move {
-        let egress = TcpStream::new(TokioTcpStream::connect(origin_addr).await.unwrap());
+        let egress = TcpStream::new(connect_paced(origin_addr).await);
         let egress = PostedRecv::new(egress);
         let svc = IoForwardService::default().with_lingering_close(LingeringClose::default());
         _ = svc.serve(BridgeIo(ServiceInput::new(client), egress)).await;
@@ -522,7 +524,7 @@ async fn forward_with_lingering_keeps_reply_while_client_sends() {
     .await;
     let proxy_addr = proxy.addr;
     let tally = tally(100, 16, len, move || async move {
-        let client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+        let client = connect_paced(proxy_addr).await;
         let (mut client_r, mut client_w) = client.into_split();
         client_w.write_all(REQUEST).await.unwrap();
         let writer = tokio::spawn(async move {
@@ -564,7 +566,7 @@ async fn forward_reflects_origin_reset_after_the_reply() {
     for ingress in [Ingress::Plain, Ingress::Posted, Ingress::Unabortable] {
         let origin_addr = origin.addr;
         let proxy = spawn_origin_fn(move |client| async move {
-            let egress = TcpStream::new(TokioTcpStream::connect(origin_addr).await.unwrap());
+            let egress = TcpStream::new(connect_paced(origin_addr).await);
             let egress = PostedRecv::new(egress);
             let svc = IoForwardService::default();
             _ = match ingress {
@@ -643,7 +645,7 @@ async fn forward_baseline_loses_reply_of_resetting_origin() {
             let proxy = spawn_proxy(origin.addr, posted, read_late).await;
             let proxy_addr = proxy.addr;
             let tally = tally(RUNS, 32, len, move || async move {
-                let mut client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+                let mut client = connect_paced(proxy_addr).await;
                 exchange(&mut client, Duration::ZERO).await
             })
             .await;
@@ -679,7 +681,7 @@ async fn spawn_proxy(
     }
 
     spawn_origin_fn(move |client| async move {
-        let egress = TcpStream::new(TokioTcpStream::connect(origin).await.unwrap());
+        let egress = TcpStream::new(connect_paced(origin).await);
         if posted {
             bridge(client, PostedRecv::new(egress), read_late).await;
         } else {
@@ -785,7 +787,7 @@ async fn control_plain_stream_loses_reply_before_reset() {
     let tally = tally(20, 1, len, move || {
         let reset = reset.clone();
         async move {
-            let mut stream = TokioTcpStream::connect(addr).await.unwrap();
+            let mut stream = connect_paced(addr).await;
             stream.write_all(REQUEST).await.unwrap();
             // Count the delay from the reset going out, which a slow origin cannot outlast.
             reset.acquire().await.unwrap().forget();
