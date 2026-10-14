@@ -41,6 +41,118 @@ jobs:
       - name: Check formatting before reserving platform runners
         run: bash scripts/ci/check-format.sh
 
+  apple-runner:
+    permissions:
+      contents: read
+    needs: precheck
+    runs-on: ubuntu-latest
+    outputs:
+      runner: ${{ steps.apple_runner.outputs.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Discover newest advertised Xcode runner
+        id: apple_runner
+        run: python3 scripts/ci/apple_preview_runner.py
+
+  test-apple-private-api-stable:
+    permissions:
+      contents: read
+    needs: precheck
+    runs-on: macos-latest
+    concurrency:
+      group: rama-macos-slot-4
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check private API SDK exports and runtime calls
+        run: >-
+          python3 ffi/apple/examples/transparent_proxy/scripts/private_api_availability.py
+          --download-ios-runtime --output "$RUNNER_TEMP/apple-private-api"
+      - name: Retain availability evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apple-private-api-stable
+          path: |
+            ${{ runner.temp }}/apple-private-api/report.json
+            ${{ runner.temp }}/apple-private-api/*.log
+          retention-days: 7
+
+  test-apple-preview:
+    permissions:
+      contents: read
+    needs: apple-runner
+    # Discovered from GitHub's catalog; rolls to the next major without a YAML edit.
+    runs-on: ${{ needs.apple-runner.outputs.runner }}
+    concurrency:
+      group: rama-macos-slot-4
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 240
+    env:
+      RUSTUP_TOOLCHAIN: stable
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just,nextest,cargo-sort
+      - name: Install Apple build and lint tools
+        run: brew install xcodegen shellcheck
+      - name: Select newest installed Xcode, including betas
+        run: |
+          developer_dir=$(python3 ffi/apple/examples/transparent_proxy/scripts/private_api_availability.py --select-xcode)
+          echo "DEVELOPER_DIR=$developer_dir" >> "$GITHUB_ENV"
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Setup complete
+        id: setup
+        run: xcodebuild -version
+      - name: Check private API SDK exports and runtime calls
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: >-
+          just ./ffi/apple/examples/transparent_proxy/test-private-api-availability
+          --download-ios-runtime --output "$RUNNER_TEMP/apple-private-api"
+      - name: Apple example QA and unsigned extension build
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: just qa-ffi-apple
+      - name: Rust and Swift NetworkExtension FFI tests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: just test-e2e-ffi-apple
+      - name: Apple NetworkExtension and XPC crate tests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: cargo test -p rama-net-apple-networkextension -p rama-net-apple-xpc --all-features
+      - name: Optimized Swift FFI tests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: just ./ffi/apple/examples/transparent_proxy/run-tproxy-ffi-e2e-swift-release
+      - name: TCP egress tests in Debug, Release, ASan and TSan
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: just ./ffi/apple/examples/transparent_proxy/test-egress-policy --deep --scratch-path "$RUNNER_TEMP/egress-policy-build"
+      - name: Apple XPC checks and round trips
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: just qa-xpc-apple
+      - name: Retain availability and TCP egress evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apple-preview-evidence
+          path: |
+            ${{ runner.temp }}/apple-private-api/report.json
+            ${{ runner.temp }}/apple-private-api/*.log
+            ${{ runner.temp }}/rama-egress-policy-*/report.zip
+          retention-days: 7
+
   check-rust:
     permissions:
       contents: read

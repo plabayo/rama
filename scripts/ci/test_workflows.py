@@ -35,6 +35,15 @@ class WorkflowPolicyTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate(self.workflow, self.path)
 
+    def test_xcode_runners_share_macos_budget(self):
+        for runner in ("xcode-28", "${{ needs.apple-runner.outputs.runner }}"):
+            with self.subTest(runner=runner):
+                job = self.daily["jobs"]["test-rust-linux-gnu-cross-macos"]
+                job["runs-on"] = runner
+                job["concurrency"]["group"] = "rama-macos-slot-5"
+                with self.assertRaises(AssertionError):
+                    validate(self.daily, self.daily_path)
+
     def test_lossy_queue(self):
         self.workflow["jobs"]["test-rust-base"]["concurrency"]["queue"] = "single"
         with self.assertRaises(AssertionError):

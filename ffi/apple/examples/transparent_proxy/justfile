@@ -230,6 +230,10 @@ test-e2e-sanitizers: test-e2e-asan run-tproxy-ffi-e2e-swift-tsan
 stress-traffic *ARGS:
     python3 ./scripts/stress_traffic.py {{ARGS}}
 
+# Private symbol exports and runtime calls with the newest installed Xcode.
+test-private-api-availability *ARGS:
+    python3 ./scripts/private_api_availability.py {{ARGS}}
+
 # Local production-adapter matrix; saves a shareable report without changing settings.
 test-egress-policy *ARGS:
     python3 ./scripts/egress_proxy_policy.py {{ARGS}}

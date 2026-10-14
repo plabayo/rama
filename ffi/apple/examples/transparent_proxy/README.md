@@ -496,6 +496,15 @@ just test-egress-policy-deep Wi-Fi
 CI runs `test-egress-policy --deep` without system changes, rejects skipped tests,
 and uploads the report as `apple-tcp-egress-policy`.
 
+`just test-private-api-availability` checks private API exports in the newest
+installed Xcode's macOS/iOS SDKs and calls them on macOS and an iOS simulator.
+Daily unstable CI discovers GitHub's newest Xcode runner, selects its newest
+Xcode (including betas), and downloads a matching iOS runtime. It also runs
+Apple FFI/NE tests, Release and sanitizer egress tests, XPC checks, and an unsigned
+extension build. Reports name the exact versions; this follows GitHub's image
+updates, not Apple's release day. It does not verify physical iOS devices,
+system PAC behavior, or signed attribution.
+
 `test-egress-policy-deep` needs `sudo` on an isolated development Mac. It runs
 Debug, Release, ASan and TSan adapter tests, then verifies live PAC selection and proxy
 contacts for all three policies. It restores proxy settings after failures and

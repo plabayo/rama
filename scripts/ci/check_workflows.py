@@ -43,6 +43,10 @@ def matrix_rows(matrix):
 
 
 def expression(value, matrix, job_index=0, run_id=1):
+    # The catalog resolver admits only xcode-<integer>. Account for it as macOS;
+    # all other dynamic runner expressions remain unsupported/fail closed.
+    if value == "${{ needs.apple-runner.outputs.runner }}":
+        return "xcode-preview"
     if not isinstance(value, str) or not value.startswith("${{"):
         return value
     assert value.endswith("}}"), value
@@ -145,7 +149,8 @@ def validate(workflow, path):
             runner = expression(job.get("runs-on", ""), row)
             runners = [runner] if isinstance(runner, str) else runner
             for family, slots in SLOTS.items():
-                if not any(label.startswith(family) for label in runners):
+                prefixes = ("macos", "xcode-") if family == "macos" else (family,)
+                if not any(label.startswith(prefixes) for label in runners):
                     continue
                 concurrency = job.get("concurrency", {})
                 assert concurrency.get("cancel-in-progress") is False, (path, name, "cancellation")
