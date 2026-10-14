@@ -380,7 +380,9 @@ async fn acceptors_resume_only_when_opted_in() {
         let client = Client::new(version);
         let disabled = acceptor(static_config(), false);
         assert!(!client.resumes(&disabled, None).await);
-        assert!(!client.resumes(&disabled, Some(&client.latest())).await);
+        assert!(!client.resumes(&disabled, None).await);
+        // No ticket is issued that no connection could redeem.
+        assert!(client.sessions.lock().is_empty(), "{version:?}");
         let enabled = acceptor(static_config(), true);
         assert!(!client.resumes(&enabled, None).await);
         for _ in 0..3 {
@@ -389,6 +391,7 @@ async fn acceptors_resume_only_when_opted_in() {
                 "{version:?}"
             );
         }
+        assert!(!client.resumes(&disabled, Some(&client.latest())).await);
     }
 }
 

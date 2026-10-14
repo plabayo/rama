@@ -3,7 +3,7 @@ use super::acceptor_data::{ConnectionState, bind_connection, prepare_server_cert
 use super::config::{BoringTlsAcceptorConfig, BoringTlsAuth};
 use crate::{TlsStream, type_conversion::peer_certificate_chain, types::SecureTransport};
 use parking_lot::Mutex;
-use rama_boring::ssl::{Ssl, SslContext, SslSessionCacheMode};
+use rama_boring::ssl::{Ssl, SslContext, SslOptions, SslSessionCacheMode};
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Service,
@@ -26,7 +26,8 @@ use std::sync::{Arc, OnceLock};
 pub struct TlsAcceptorService<S> {
     config: TlsServerConfig,
     store_client_hello: bool,
-    sessions: Option<Arc<OnceLock<Acceptor>>>,
+    resumption: bool,
+    shared: Arc<OnceLock<Acceptor>>,
     inner: S,
 }
 
@@ -39,37 +40,43 @@ struct Acceptor {
 
 impl<S> TlsAcceptorService<S> {
     /// Creates a new [`TlsAcceptorService`].
-    pub const fn new(config: TlsServerConfig, inner: S, store_client_hello: bool) -> Self {
+    #[must_use]
+    pub fn new(config: TlsServerConfig, inner: S, store_client_hello: bool) -> Self {
         Self {
             config,
             store_client_hello,
-            sessions: None,
+            resumption: false,
+            shared: Arc::default(),
             inner,
         }
     }
 
     generate_set_and_with!(
-        /// Let clients resume sessions of earlier connections to this acceptor. Off by default.
+        /// Let clients resume sessions of earlier connections to this acceptor. Off by default,
+        /// and then the acceptor issues no session tickets.
         ///
         /// Connections share one native context, whose session tickets no other acceptor
         /// can decrypt; clones of this service share it. Connections that override the
         /// TLS configuration never resume. The server keeps no session state itself.
         pub fn session_resumption(mut self, enabled: bool) -> Self {
-            self.sessions = enabled.then(Arc::default);
+            self.resumption = enabled;
+            self.shared = Arc::default();
             self
         }
     );
 
     define_inner_service_accessors!();
 
-    fn acceptor(&self, extensions: &Extensions) -> Result<Acceptor, BoxError> {
+    fn acceptor(&self, extensions: &Extensions, resumable: bool) -> Result<Acceptor, BoxError> {
         let tls_config =
             TlsAcceptorData::try_from(BoringTlsAcceptorConfig::from_extensions(extensions))
                 .context("boring acceptor: build acceptor data from config")?
                 .config;
         let mut builder = tls_config.acceptor_builder()?;
-        if self.sessions.is_some() {
-            builder.set_session_cache_mode(SslSessionCacheMode::OFF);
+        // Tickets only, and only when a later connection can use them.
+        builder.set_session_cache_mode(SslSessionCacheMode::OFF);
+        if !resumable {
+            builder.set_options(SslOptions::NO_TICKET);
         }
         let builder = tls_config
             .cert_source
@@ -86,16 +93,14 @@ impl<S> TlsAcceptorService<S> {
         connection: &Extensions,
         merged: &Extensions,
     ) -> Result<Acceptor, BoxError> {
-        match &self.sessions {
-            Some(shared) if BoringTlsAcceptorConfig::from_extensions(connection).is_empty() => {
-                if let Some(acceptor) = shared.get() {
-                    return Ok(acceptor.clone());
-                }
-                let acceptor = self.acceptor(merged)?;
-                Ok(shared.get_or_init(|| acceptor).clone())
-            }
-            _ => self.acceptor(merged),
+        if !BoringTlsAcceptorConfig::from_extensions(connection).is_empty() {
+            return self.acceptor(merged, false);
         }
+        if let Some(acceptor) = self.shared.get() {
+            return Ok(acceptor.clone());
+        }
+        let acceptor = self.acceptor(merged, self.resumption)?;
+        Ok(self.shared.get_or_init(|| acceptor).clone())
     }
 }
 
@@ -264,6 +269,7 @@ mod tests {
     };
     use rama_core::{ServiceInput, service::service_fn};
     use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+    use rama_net::tls::TlsAlpn;
     use rama_tls::{
         client::{ClientAuth, ClientAuthData, ServerVerifyMode, TlsClientConfig},
         server::{
@@ -423,6 +429,31 @@ mod tests {
                     "source #{index}, requested: {request}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn connections_without_overrides_share_one_context() {
+        let config = TlsServerConfig::new().with_server_auth(
+            ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap(),
+        );
+        let overriding = Extensions::new();
+        overriding.insert(TlsAlpn::http_2());
+        for resumption in [false, true] {
+            let service = TlsAcceptorService::new(config.clone(), (), false)
+                .with_session_resumption(resumption);
+            let context = |connection: &Extensions| {
+                let merged = connection.with_base(service.config.as_extensions());
+                service
+                    .connection_acceptor(connection, &merged)
+                    .unwrap()
+                    .context
+            };
+            let plain = Extensions::new();
+            let (first, second) = (context(&plain), context(&plain));
+            assert!(std::ptr::eq(&*first, &*second), "resumption: {resumption}");
+            let (first, second) = (context(&overriding), context(&overriding));
+            assert!(!std::ptr::eq(&*first, &*second), "resumption: {resumption}");
         }
     }
 }
