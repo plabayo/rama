@@ -113,7 +113,9 @@ class Probe:
     def simulator(self, download):
         sdk_version = self.run("xcrun", "--sdk", "iphonesimulator", "--show-sdk-version")
         if download:
-            self.run("xcodebuild", "-downloadPlatform", "iOS", "-buildVersion", sdk_version,
+            # Let the selected Xcode resolve its runtime, including beta builds.
+            # A bare SDK version can fail to match a beta in Apple's catalog.
+            self.run("xcodebuild", "-downloadPlatform", "iOS",
                      "-architectureVariant", "arm64", timeout=1800)
         inventory = json.loads(self.run("xcrun", "simctl", "list", "runtimes", "--json"))
         runtime = newest_runtime(inventory["runtimes"])

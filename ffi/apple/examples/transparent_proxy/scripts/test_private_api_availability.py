@@ -113,5 +113,5 @@ class AvailabilityTests(unittest.TestCase):
             with patch.object(probe, "run", side_effect=["27.2", "", json.dumps({"runtimes": [runtime]})]) as run:
                 with self.assertRaisesRegex(ValueError, "older than SDK"):
                     probe.simulator(True)
-                self.assertIn(unittest.mock.call("xcodebuild", "-downloadPlatform", "iOS", "-buildVersion", "27.2",
+                self.assertIn(unittest.mock.call("xcodebuild", "-downloadPlatform", "iOS",
                                                  "-architectureVariant", "arm64", timeout=1800), run.call_args_list)
