@@ -44,6 +44,11 @@ pub mod test_utils;
 
 pub mod proxy;
 
+mod demux;
+pub use demux::{
+    DatagramDemux, DemuxConfig, DemuxStats, DemuxStatsHandle, DemuxedSender, DemuxedSocket,
+};
+
 mod peek;
 pub use peek::{DatagramPeekInput, PrefixedDatagramSocket, RetainedDatagram};
 

@@ -2,7 +2,7 @@ use std::{
     ffi::{c_int, c_uint},
     io::{self, IoSliceMut},
     mem,
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     os::windows::io::AsRawSocket,
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
@@ -35,6 +35,9 @@ pub(crate) struct UdpSocketState {
 
     /// Whether the underlying Winsock provider supports IPv6 ECN socket options/control messages.
     ecn_v6_supported: bool,
+
+    /// The peer a connected socket is fixed to, read when it was wrapped.
+    connected_peer: Option<SocketAddr>,
 }
 
 impl UdpSocketState {
@@ -149,6 +152,10 @@ impl UdpSocketState {
             wsa_sendmsg,
             ecn_v4_supported,
             ecn_v6_supported,
+            connected_peer: socket
+                .peer_addr()
+                .ok()
+                .and_then(|address| address.as_socket()),
         })
     }
 
@@ -164,6 +171,7 @@ impl UdpSocketState {
             self.wsa_sendmsg,
             self.ecn_v4_supported,
             self.ecn_v6_supported,
+            self.connected_peer,
         );
         if result
             .as_ref()
@@ -368,6 +376,7 @@ fn send(
     wsa_sendmsg: WinSock::LPFN_WSASENDMSG,
     ecn_v4_supported: bool,
     ecn_v6_supported: bool,
+    connected_peer: Option<SocketAddr>,
 ) -> io::Result<()> {
     let Some(wsa_sendmsg) = wsa_sendmsg else {
         return Err(io::Error::new(
@@ -390,9 +399,15 @@ fn send(
         len: ctrl_buf.0.len() as _,
     };
 
+    // A connected socket refuses an explicit destination; its peer needs none.
+    let connected = super::is_connected_peer(connected_peer, transmit.destination);
     let mut wsa_msg = WinSock::WSAMSG {
-        name: daddr.as_ptr() as *mut _,
-        namelen: daddr.len(),
+        name: if connected {
+            ptr::null_mut()
+        } else {
+            daddr.as_ptr() as *mut _
+        },
+        namelen: if connected { 0 } else { daddr.len() },
         lpBuffers: &mut data,
         Control: ctrl,
         dwBufferCount: 1,

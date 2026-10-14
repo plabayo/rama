@@ -383,7 +383,9 @@ pub enum DatagramError {
     },
     /// A receive operation was submitted without any buffers.
     EmptyReceiveBatch,
-    /// The deterministic in-memory peer has shut down.
+    /// A send to a destination other than the one peer the socket is fixed to.
+    ForeignDestination(SocketAddress),
+    /// The peer, or the association, has shut down.
     Closed,
 }
 
@@ -421,6 +423,12 @@ impl fmt::Display for DatagramError {
                 "receive has {buffers} buffers but {metadata} metadata slots"
             ),
             Self::EmptyReceiveBatch => f.write_str("receive batch has no buffers"),
+            Self::ForeignDestination(destination) => {
+                write!(
+                    f,
+                    "datagram destination {destination} is not the socket's peer"
+                )
+            }
             Self::Closed => f.write_str("datagram peer is closed"),
         }
     }
@@ -470,7 +478,8 @@ impl DatagramError {
             | Self::TooManySegments { .. }
             | Self::SourceAddressFamilyMismatch { .. }
             | Self::ReceiveSlotMismatch { .. }
-            | Self::EmptyReceiveBatch => SendFailure::Descriptor,
+            | Self::EmptyReceiveBatch
+            | Self::ForeignDestination(_) => SendFailure::Descriptor,
         }
     }
 }

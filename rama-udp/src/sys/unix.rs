@@ -1,15 +1,9 @@
-#[cfg(not(any(
-    target_vendor = "apple",
-    target_os = "openbsd",
-    target_os = "solaris",
-    target_os = "illumos"
-)))]
-use std::ptr;
 use std::{
     io::{self, IoSliceMut},
     mem::{self, MaybeUninit},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     os::fd::AsRawFd,
+    ptr,
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
@@ -44,6 +38,8 @@ pub(crate) struct UdpSocketState {
     receive_timestamp: bool,
     send_dscp_v4: u8,
     send_dscp_v6: u8,
+    /// The peer a connected socket is fixed to, read when it was wrapped.
+    connected_peer: Option<SocketAddr>,
 
     /// Cached `SO_SNDBUF`.
     #[cfg(target_vendor = "apple")]
@@ -299,6 +295,7 @@ impl UdpSocketState {
             receive_timestamp: timestamp,
             send_dscp_v4,
             send_dscp_v6,
+            connected_peer: io.peer_addr().ok().and_then(|address| address.as_socket()),
             #[cfg(target_vendor = "apple")]
             send_buffer_size: AtomicUsize::new(io.send_buffer_size().unwrap_or(usize::MAX)),
         })
@@ -696,11 +693,14 @@ fn prepare_msg(
     iov.iov_base = transmit.contents.as_ptr() as *const _ as *mut _;
     iov.iov_len = transmit.contents.len();
 
-    // POSIX declares this pointer mutable even though sendmsg does not modify it.
-    let name = dst_addr.as_ptr() as *mut libc::c_void;
-    let namelen = dst_addr.len();
-    hdr.msg_name = name as *mut _;
-    hdr.msg_namelen = namelen;
+    if super::is_connected_peer(state.connected_peer, transmit.destination) {
+        hdr.msg_name = ptr::null_mut();
+        hdr.msg_namelen = 0;
+    } else {
+        // POSIX declares this pointer mutable even though sendmsg does not modify it.
+        hdr.msg_name = dst_addr.as_ptr() as *mut libc::c_void as *mut _;
+        hdr.msg_namelen = dst_addr.len();
+    }
     hdr.msg_iov = iov;
     hdr.msg_iovlen = 1;
 

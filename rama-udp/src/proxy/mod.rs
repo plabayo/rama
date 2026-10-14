@@ -8,6 +8,9 @@
 
 use std::{error::Error, fmt, net::IpAddr, num::NonZeroUsize};
 
+mod bridge;
+pub use bridge::{DatagramToProxyBridge, DatagramToProxyBridgeLayer, UdpConnector};
+
 use rama_core::{Service, io::BridgeIo};
 use rama_utils::macros::generate_set_and_with;
 
@@ -38,6 +41,18 @@ pub struct Peer<S> {
     pub address: SocketAddress,
     /// Optional local source address for sends to this peer.
     pub source_ip: Option<IpAddr>,
+}
+
+impl<S: DatagramSocket> Peer<S> {
+    /// The peer a connected socket is fixed to.
+    pub fn connected(socket: S) -> Result<Self, DatagramError> {
+        let address = socket.peer_addr().map_err(DatagramError::Io)?;
+        Ok(Self {
+            socket,
+            address,
+            source_ip: None,
+        })
+    }
 }
 
 /// Per-association memory and metadata policy.
@@ -133,6 +148,18 @@ impl<A: DatagramSocket, B: DatagramSocket> Service<BridgeIo<Peer<A>, Peer<B>>>
             ),
         )?;
         Ok(())
+    }
+}
+
+/// Forward between two connected sockets, as [`Peer::connected`] makes them: a
+/// [`DatagramToProxyBridge`] association, for example.
+impl<A: DatagramSocket, B: DatagramSocket> Service<BridgeIo<A, B>> for DatagramForwardService {
+    type Output = ();
+    type Error = DatagramForwardError;
+
+    async fn serve(&self, BridgeIo(ingress, egress): BridgeIo<A, B>) -> Result<(), Self::Error> {
+        let peers = BridgeIo(Peer::connected(ingress)?, Peer::connected(egress)?);
+        self.serve(peers).await
     }
 }
 

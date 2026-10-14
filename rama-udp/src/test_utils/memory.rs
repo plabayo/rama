@@ -342,6 +342,19 @@ pub struct MemoryDatagramSender {
     waiter: Arc<SendWaiter>,
 }
 
+/// Another handle with its own readiness registration, as [`DatagramSocket::create_sender`]
+/// gives.
+impl Clone for MemoryDatagramSender {
+    fn clone(&self) -> Self {
+        self.lock().endpoints[self.side].senders += 1;
+        Self {
+            shared: self.shared.clone(),
+            side: self.side,
+            waiter: Arc::new(SendWaiter::default()),
+        }
+    }
+}
+
 impl MemoryDatagramSender {
     fn lock(&self) -> MutexGuard<'_, PairState> {
         self.shared.state.lock()

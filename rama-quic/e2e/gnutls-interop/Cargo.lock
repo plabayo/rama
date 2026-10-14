@@ -1564,7 +1564,9 @@ dependencies = [
 name = "rama-udp"
 version = "0.5.0"
 dependencies = [
+ "ahash",
  "libc",
+ "parking_lot",
  "rama-core",
  "rama-net",
  "rama-utils",
