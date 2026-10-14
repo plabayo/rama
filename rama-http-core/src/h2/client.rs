@@ -1605,10 +1605,15 @@ where
             return Err(err.into());
         }
 
+        // A replayed capture starts where it started, unless the builder chose otherwise.
+        let next_stream_id = match early_frame_ctx.first_stream_id() {
+            Some(first) if builder.stream_id == StreamId::from(1) => first,
+            _ => builder.stream_id,
+        };
         let inner = proto::Connection::try_new(
             codec,
             proto::Config {
-                next_stream_id: builder.stream_id,
+                next_stream_id,
                 initial_max_send_streams: builder.initial_max_send_streams,
                 max_send_buffer_size: builder.max_send_buffer_size,
                 reset_stream_duration: builder.reset_stream_duration,

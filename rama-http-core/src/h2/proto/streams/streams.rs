@@ -218,7 +218,7 @@ where
     }
 
     /// Replays the next early frame. SETTINGS waits for any outstanding local
-    /// SETTINGS acknowledgment, and a stream WINDOW_UPDATE follows its HEADERS.
+    /// SETTINGS acknowledgment. Stream window raises are sent with their HEADERS.
     pub(crate) fn send_pending<T>(
         &mut self,
         cx: &mut Context,
@@ -233,8 +233,8 @@ where
         // replay frame: doing so can starve reads while an unrelated DATA
         // frame is blocked in the codec (for example, a peer error that should
         // terminate that blocked write).
-        let pending_stream_window = {
-            let mut me = self.inner.lock();
+        {
+            let me = self.inner.lock();
             let next_stream_id = me.actions.send.peek_next_id();
             if !me.early_frame_ctx.can_replay_next_frame(next_stream_id) {
                 // A stream-targeted frame can precede the request which creates
@@ -244,32 +244,6 @@ where
             if !settings_synced && me.early_frame_ctx.next_frame_is_settings() {
                 return Poll::Ready(Ok(ReplayStep::Idle));
             }
-            me.early_frame_ctx
-                .next_stream_window_update()
-                .filter(|stream_id| {
-                    me.store
-                        .find_mut(*stream_id)
-                        .is_some_and(|stream| stream.is_pending_open)
-                })
-        };
-
-        if let Some(stream_id) = pending_stream_window {
-            // A WINDOW_UPDATE on an idle stream is a connection error. Stage
-            // request HEADERS first, preserving their order in the codec.
-            ready!(dst.poll_ready(cx))?;
-            let still_pending = {
-                let mut me = self.inner.lock();
-                me.buffer_pending(&self.send_buffer, dst)?;
-                me.store
-                    .find_mut(stream_id)
-                    .is_some_and(|stream| stream.is_pending_open)
-            };
-            if still_pending {
-                return Poll::Ready(Ok(ReplayStep::Idle));
-            }
-
-            // Make space after the staged HEADERS before appending the replay.
-            ready!(dst.poll_ready(cx))?;
         }
         ready!(dst.poll_ready(cx))?;
 
@@ -293,44 +267,6 @@ where
                         } else {
                             ReplayStep::Settings(settings)
                         }));
-                    }
-                    frame::EarlyFrame::WindowUpdate(window_update)
-                        if !window_update.stream_id.is_zero() =>
-                    {
-                        let Some(mut stream) = me.store.find_mut(window_update.stream_id) else {
-                            tracing::trace!(
-                                "replay: skip window update for missing stream {:?}",
-                                window_update.stream_id
-                            );
-                            if has_more {
-                                cx.waker().wake_by_ref();
-                            }
-                            return Poll::Ready(Ok(ReplayStep::Advanced));
-                        };
-
-                        // Validate both changes on a copy so an invalid captured
-                        // increment cannot leave the local receive window half
-                        // updated. The peer-visible and locally available windows
-                        // must advance together with the frame sent below.
-                        let mut recv_flow = stream.recv_flow;
-                        if let Err(reason) = recv_flow
-                            .inc_window(window_update.size_increment)
-                            .and_then(|()| recv_flow.assign_capacity(window_update.size_increment))
-                        {
-                            tracing::debug!(
-                                "h2 streams: failed to replay stream window update: reason = {reason}; go away"
-                            );
-                            return Poll::Ready(Err(Error::library_go_away(reason)));
-                        }
-
-                        if let Err(err) = dst.buffer(window_update.into()) {
-                            return Poll::Ready(Err(err.into()));
-                        }
-                        stream.recv_flow = recv_flow;
-                        if has_more {
-                            cx.waker().wake_by_ref();
-                        }
-                        return Poll::Ready(Ok(ReplayStep::Advanced));
                     }
                     frame::EarlyFrame::WindowUpdate(window_update) => {
                         tracing::trace!(

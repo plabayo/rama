@@ -3267,8 +3267,11 @@ async fn repeated_early_connection_windows(first: u32, second: u32) {
         .expect("replayed connection windows stalled");
 }
 
+/// A captured stream WINDOW_UPDATE is how its client raises every stream's window: the
+/// replay starts at the captured stream and raises each new stream right after its HEADERS,
+/// also when the connection was polled idle before any request.
 #[tokio::test]
-async fn a_future_stream_window_update_survives_an_idle_connection_poll() {
+async fn a_captured_stream_window_update_raises_every_new_stream() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
     const INCREMENT: u32 = 2_000_000;
@@ -3277,15 +3280,15 @@ async fn a_future_stream_window_update_survives_an_idle_connection_poll() {
         srv.read_preface().await.unwrap();
         let settings = assert_settings!(srv.next().await.unwrap().unwrap());
         assert_default_settings!(settings);
-        for id in [1, 3] {
+        for id in [3, 5, 7] {
             srv.recv_frame(
                 frames::headers(id)
                     .request("GET", "https://example.com/")
                     .eos(),
             )
             .await;
+            srv.recv_frame(frames::window_update(id, INCREMENT)).await;
         }
-        srv.recv_frame(frames::window_update(3, INCREMENT)).await;
     };
 
     let client = async move {
@@ -3305,6 +3308,54 @@ async fn a_future_stream_window_update_survives_an_idle_connection_poll() {
         .await;
 
         let mut responses = Vec::new();
+        for _ in 0..3 {
+            let request = Request::get("https://example.com/").body(()).unwrap();
+            let (response, _) = client.send_request(request, true).unwrap();
+            responses.push(response);
+        }
+        drop(conn.await);
+        drop(responses);
+    };
+
+    tokio::time::timeout(Duration::from_secs(1), join(srv, client))
+        .await
+        .expect("stream window replay stalled");
+}
+
+/// A first stream ID the builder sets wins over the captured one; every stream it opens is
+/// still raised.
+#[tokio::test]
+async fn a_configured_first_stream_keeps_the_captured_stream_window_policy() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+    const INCREMENT: u32 = 12_451_840;
+
+    let srv = async move {
+        srv.read_preface().await.unwrap();
+        let settings = assert_settings!(srv.next().await.unwrap().unwrap());
+        assert_default_settings!(settings);
+        for id in [11, 13] {
+            srv.recv_frame(
+                frames::headers(id)
+                    .request("GET", "https://example.com/")
+                    .eos(),
+            )
+            .await;
+            srv.recv_frame(frames::window_update(id, INCREMENT)).await;
+        }
+    };
+
+    let client = async move {
+        let (mut client, conn) = client::Builder::new()
+            .with_early_frames(vec![frame::EarlyFrame::WindowUpdate(
+                frames::window_update(3, INCREMENT),
+            )])
+            .try_with_initial_stream_id(11)
+            .unwrap()
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+        let mut responses = Vec::new();
         for _ in 0..2 {
             let request = Request::get("https://example.com/").body(()).unwrap();
             let (response, _) = client.send_request(request, true).unwrap();
@@ -3316,7 +3367,7 @@ async fn a_future_stream_window_update_survives_an_idle_connection_poll() {
 
     tokio::time::timeout(Duration::from_secs(1), join(srv, client))
         .await
-        .expect("future stream replay stalled");
+        .expect("stream window replay stalled");
 }
 
 /// A reply that is one small DATA frame before its end, as a gRPC unary reply
@@ -3498,7 +3549,7 @@ async fn stream_window_updates_are_not_replayed_as_the_connection_window() {
 }
 
 /// A stream-level WINDOW_UPDATE larger than the connection increment is sent
-/// on its captured stream and never becomes a second connection update.
+/// on each new stream and never becomes a second connection update.
 #[tokio::test]
 async fn a_replayed_stream_window_update_sends_no_connection_window_update() {
     h2_support::trace_init!();
@@ -3512,21 +3563,21 @@ async fn a_replayed_stream_window_update_sends_no_connection_window_update() {
         assert_default_settings!(settings);
         srv.recv_frame(frames::window_update(0, CONNECTION_INCREMENT))
             .await;
-        for id in [1, 3] {
+        for id in [3, 5] {
             srv.recv_frame(
                 frames::headers(id)
                     .request("GET", "https://example.com/")
                     .eos(),
             )
             .await;
+            srv.recv_frame(frames::window_update(id, STREAM_INCREMENT))
+                .await;
         }
-        srv.recv_frame(frames::window_update(3, STREAM_INCREMENT))
-            .await;
         srv.send_frame(frame::Settings::default()).await;
         srv.recv_frame(frame::Settings::ack()).await;
         srv.send_frame(frame::Settings::ack()).await;
-        srv.send_frame(frames::headers(1).response(200).eos()).await;
         srv.send_frame(frames::headers(3).response(200).eos()).await;
+        srv.send_frame(frames::headers(5).response(200).eos()).await;
 
         while let Some(Ok(frame)) = srv.next().await {
             assert!(

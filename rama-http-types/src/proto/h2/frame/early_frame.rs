@@ -58,8 +58,28 @@ impl EarlyFrameStreamContext {
         }
     }
 
+    /// Replay `frames`, the client's captured start of a connection.
+    ///
+    /// A captured stream WINDOW_UPDATE follows the HEADERS of the first request, and browsers
+    /// that send one raise every stream's window that way. It is replayed as that policy: the
+    /// same increment right after the HEADERS of each new stream, starting from the captured
+    /// stream, rather than once for a stream ID the replaying client may never open.
     #[must_use]
     pub fn new_replayer(mut frames: Vec<EarlyFrame>) -> (Self, Option<Settings>) {
+        let stream_window = frames.iter().find_map(|frame| match frame {
+            EarlyFrame::WindowUpdate(update)
+                if !update.stream_id.is_zero() && update.stream_id.is_client_initiated() =>
+            {
+                Some(StreamWindow {
+                    first_stream: update.stream_id,
+                    increment: update.size_increment,
+                })
+            }
+            _ => None,
+        });
+        frames.retain(|frame| {
+            !matches!(frame, EarlyFrame::WindowUpdate(update) if !update.stream_id.is_zero())
+        });
         frames.reverse();
         let settings = match frames.pop() {
             Some(frame) => match frame {
@@ -69,7 +89,7 @@ impl EarlyFrameStreamContext {
                     None
                 }
             },
-            None => {
+            None if stream_window.is_none() => {
                 return (
                     Self {
                         kind: EarlyFrameKind::Nop,
@@ -77,16 +97,43 @@ impl EarlyFrameStreamContext {
                     None,
                 );
             }
+            None => None,
         };
         (
             Self {
                 kind: EarlyFrameKind::Replayer {
                     frames,
                     connection_window_replayed: false,
+                    stream_window,
                 },
             },
             settings,
         )
+    }
+
+    /// The stream a replayed connection opens first: the one its capture opened first, when
+    /// the capture shows it.
+    #[must_use]
+    pub fn first_stream_id(&self) -> Option<StreamId> {
+        match &self.kind {
+            EarlyFrameKind::Replayer {
+                stream_window: Some(window),
+                ..
+            } => Some(window.first_stream),
+            _ => None,
+        }
+    }
+
+    /// The window increment a replaying client sends right after each new stream's HEADERS.
+    #[must_use]
+    pub fn stream_window_increment(&self) -> Option<u32> {
+        match &self.kind {
+            EarlyFrameKind::Replayer {
+                stream_window: Some(window),
+                ..
+            } => Some(window.increment),
+            _ => None,
+        }
     }
 }
 
@@ -121,21 +168,6 @@ impl EarlyFrameStreamContext {
                     Some(EarlyFrame::Settings(settings)) if !settings.flags.is_ack()
                 )
         )
-    }
-
-    /// Returns the stream ID when the next replay frame is a stream-level
-    /// WINDOW_UPDATE.
-    #[must_use]
-    pub fn next_stream_window_update(&self) -> Option<StreamId> {
-        match &self.kind {
-            EarlyFrameKind::Replayer { frames, .. } => match frames.last() {
-                Some(EarlyFrame::WindowUpdate(frame)) if !frame.stream_id.is_zero() => {
-                    Some(frame.stream_id)
-                }
-                _ => None,
-            },
-            EarlyFrameKind::Recorder(_) | EarlyFrameKind::Nop => None,
-        }
     }
 
     /// Returns whether another captured frame remains to be replayed.
@@ -192,6 +224,7 @@ impl EarlyFrameStreamContext {
         if let EarlyFrameKind::Replayer {
             frames: v,
             connection_window_replayed,
+            ..
         } = &mut self.kind
         {
             if let Some(next_stream_id) = next_stream_id
@@ -225,9 +258,17 @@ enum EarlyFrameKind {
     Replayer {
         frames: Vec<EarlyFrame>,
         connection_window_replayed: bool,
+        stream_window: Option<StreamWindow>,
     },
     #[default]
     Nop,
+}
+
+/// The window raise a captured client sends right after each new stream's HEADERS.
+#[derive(Debug, Clone, Copy)]
+struct StreamWindow {
+    first_stream: StreamId,
+    increment: u32,
 }
 
 #[derive(Debug, Clone)]

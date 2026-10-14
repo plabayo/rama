@@ -55,6 +55,15 @@ pub(super) struct Prioritize {
 
     /// The maximum amount of bytes a stream should buffer.
     max_buffer_size: u32,
+
+    /// The window increment a replayed client sends right after each new stream's HEADERS.
+    stream_window_increment: Option<u32>,
+
+    /// The stream whose opening HEADERS is next to be written, when it is owed a window raise.
+    raise_after_headers: Option<StreamId>,
+
+    /// The stream whose window raise is owed now: its HEADERS were just written.
+    owed_stream_window: Option<StreamId>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -103,6 +112,9 @@ impl Prioritize {
             last_opened_id: StreamId::ZERO,
             in_flight_data_frame: InFlightData::Nothing,
             max_buffer_size: config.local_max_buffer_size,
+            stream_window_increment: config.early_frame_ctx.stream_window_increment(),
+            raise_after_headers: None,
+            owed_stream_window: None,
         })
     }
 
@@ -542,7 +554,16 @@ impl Prioritize {
                 return Ok(BufferStatus::CodecFull);
             }
 
+            // Adjacent to its HEADERS, as the captured client sends it.
+            if let Some(stream_id) = self.owed_stream_window.take() {
+                self.raise_stream_window(stream_id, store, dst)?;
+                continue;
+            }
+
             if let Some(mut stream) = self.pop_pending_open(store, counts) {
+                if self.stream_window_increment.is_some() {
+                    self.raise_after_headers = Some(stream.id);
+                }
                 self.pending_send.push_front(&mut stream);
                 self.try_assign_capacity(&mut stream);
             }
@@ -550,6 +571,11 @@ impl Prioritize {
             match self.pop_frame(buffer, store, max_frame_len, counts)? {
                 Some(frame) => {
                     tracing::trace!(?frame, "writing");
+                    if let Frame::Headers(headers) = &frame
+                        && self.raise_after_headers == Some(headers.stream_id())
+                    {
+                        self.owed_stream_window = self.raise_after_headers.take();
+                    }
 
                     debug_assert_eq!(self.in_flight_data_frame, InFlightData::Nothing);
                     if let Frame::Data(ref frame) = frame {
@@ -568,6 +594,34 @@ impl Prioritize {
                 }
             }
         }
+    }
+
+    /// Send a replayed client's window raise for a stream it just opened, moving the stream's
+    /// receive window and capacity with it.
+    fn raise_stream_window<T, B>(
+        &self,
+        stream_id: StreamId,
+        store: &mut Store,
+        dst: &mut Codec<T, Prioritized<B>>,
+    ) -> Result<(), crate::h2::proto::Error>
+    where
+        T: AsyncWrite + Unpin,
+        B: Buf,
+    {
+        let (Some(increment), Some(mut stream)) =
+            (self.stream_window_increment, store.find_mut(stream_id))
+        else {
+            return Ok(());
+        };
+        // Validated on a copy, so an invalid increment leaves the window untouched.
+        let mut recv_flow = stream.recv_flow;
+        recv_flow
+            .inc_window(increment)
+            .and_then(|()| recv_flow.assign_capacity(increment))
+            .map_err(crate::h2::proto::Error::library_go_away)?;
+        dst.buffer(frame::WindowUpdate::new(stream_id, increment).into())?;
+        stream.recv_flow = recv_flow;
+        Ok(())
     }
 
     pub fn reclaim_written_frame<T, B>(
