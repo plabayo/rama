@@ -9,6 +9,7 @@ use super::{
 use crate::{
     TlsStream,
     client::{self, ServerAnswerRecorder},
+    type_conversion::peer_certificate_chain,
 };
 use rama_boring::{
     ssl::{
@@ -25,7 +26,6 @@ use rama_core::{
     io::{BridgeIo, Io},
     telemetry::tracing,
 };
-use rama_crypto::pki_types::CertificateDer;
 #[cfg(feature = "http")]
 use rama_net::http::{TargetHttpVersion, Version};
 use rama_net::{
@@ -73,10 +73,7 @@ impl Snapshot {
                     })?,
                     application_layer_protocol: alpn.clone(),
                     peer_certificate_chain: if store_chain {
-                        ssl.peer_cert_chain()
-                            .map(|chain| chain.rama_try_into())
-                            .transpose()
-                            .map_err(TlsMitmRelayError::config)?
+                        peer_certificate_chain(ssl).map_err(TlsMitmRelayError::config)?
                     } else {
                         None
                     },
@@ -356,17 +353,9 @@ where
                         "tls mitm client auth: resumed ingress session",
                     )));
                 }
+                peer_chain =
+                    peer_certificate_chain(stream.ssl()).map_err(TlsMitmRelayError::config)?;
                 let identity = TlsMitmClientIdentity::from_completed_handshake(stream.ssl());
-                if !identity.certificate_chain().is_empty() {
-                    peer_chain = Some(
-                        identity
-                            .certificate_chain()
-                            .iter()
-                            .map(|cert| cert.to_der().map(CertificateDer::from))
-                            .collect::<Result<Vec<_>, _>>()
-                            .map_err(TlsMitmRelayError::config)?,
-                    );
-                }
                 let credential = plan
                     .resolve
                     .serve(identity)

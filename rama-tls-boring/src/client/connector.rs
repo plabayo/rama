@@ -35,7 +35,7 @@ use super::{
     set_alpn_list_with_coupled_alps,
 };
 
-use crate::{TlsStream, types::TlsTunnel};
+use crate::{TlsStream, type_conversion::peer_certificate_chain, types::TlsTunnel};
 #[cfg(feature = "http")]
 use rama_net::http::TargetHttpVersion;
 #[cfg(all(test, feature = "http"))]
@@ -882,12 +882,10 @@ where
                 tracing::trace!("boring client (connector) has selected ALPN {proto}");
             }
 
-            let server_certificate_chain = match store_server_certificate_chain
-                .then(|| stream.ssl().peer_cert_chain())
-                .flatten()
-            {
-                Some(chain) => Some(chain.rama_try_into()?),
-                None => None,
+            let server_certificate_chain = if store_server_certificate_chain {
+                peer_certificate_chain(stream.ssl())?
+            } else {
+                None
             };
 
             NegotiatedTlsParameters {
@@ -981,10 +979,16 @@ mod tests {
         TlsStoreServerHello,
     };
 
+    use crate::server::TlsAcceptorLayer;
     use rama_crypto::cert::generate_server_auth;
     use rama_net::stream::service::EchoService;
-    use rama_tls::server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig};
+    use rama_tls::client::{ClientAuth, ClientAuthData};
+    use rama_tls::server::{
+        CertificateAuthorityData, ClientVerifyMode, GeneratedServerAuthConfig, LeafCertRequest,
+        SelfSignedCaConfig, ServerAuthData, TlsServerConfig,
+    };
     use std::{sync::Arc, time::Duration};
+    use tokio::io::DuplexStream;
 
     fn origin_attempt() -> ConnectRequest {
         let input =
@@ -1965,5 +1969,55 @@ mod tests {
                 .map(|alpn| alpn.0.as_slice()),
             Some([].as_slice()),
         );
+    }
+
+    /// Both ends store the peer's whole chain, leaf first.
+    #[tokio::test]
+    async fn stored_peer_chains_are_complete_and_leaf_first() {
+        let ca = CertificateAuthorityData::generate(SelfSignedCaConfig::default()).unwrap();
+        let anchor = ca.certificate_chain()[0].clone();
+        let server_auth = ServerAuthData::new_issued_by(&ca, LeafCertRequest::default()).unwrap();
+        let (client_chain, private_key) = ca.issue_client_leaf(LeafCertRequest::default()).unwrap();
+        assert!(
+            server_auth.cert_chain.len() > 1 && client_chain.len() > 1,
+            "a single certificate cannot show a missing leaf"
+        );
+        let server_chain = server_auth.cert_chain.clone();
+        let server = TlsAcceptorLayer::new(
+            TlsServerConfig::new()
+                .with_server_auth(server_auth)
+                .with_client_verify(ClientVerifyMode::ClientAuth(vec![anchor.clone()]))
+                .with_store_client_cert_chain(true),
+        )
+        .into_layer(service_fn(
+            |stream: TlsStream<ServiceInput<DuplexStream>>| async move {
+                Ok::<_, BoxError>(
+                    stream
+                        .extensions()
+                        .get_ref::<NegotiatedTlsParameters>()
+                        .and_then(|params| params.peer_certificate_chain.clone()),
+                )
+            },
+        ));
+        let client = TlsConnectorData::try_from(
+            &TlsClientConfig::new()
+                .with_server_name(Host::from_static("localhost"))
+                .try_with_server_trust_anchors([anchor])
+                .unwrap()
+                .with_client_auth(ClientAuth::Single(ClientAuthData {
+                    private_key,
+                    cert_chain: client_chain.clone(),
+                }))
+                .with_store_server_cert_chain(true),
+        )
+        .unwrap();
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let (client, server) = tokio::join!(
+            handshake(client, ServiceInput::new(client_io)),
+            server.serve(ServiceInput::new(server_io)),
+        );
+        let (_stream, params) = client.unwrap();
+        assert_eq!(params.peer_certificate_chain, Some(server_chain));
+        assert_eq!(server.unwrap(), Some(client_chain));
     }
 }

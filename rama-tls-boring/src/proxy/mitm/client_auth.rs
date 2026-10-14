@@ -128,14 +128,10 @@ impl TlsMitmClientIdentity {
     }
 
     pub(super) fn from_completed_handshake(ssl: &SslRef) -> Self {
-        // Server-side peer_cert_chain excludes the leaf.
-        let mut chain = Vec::new();
-        if let Some(leaf) = ssl.peer_certificate() {
-            chain.push(leaf);
-            if let Some(rest) = ssl.peer_cert_chain() {
-                chain.extend(rest.iter().map(ToOwned::to_owned));
-            }
-        }
+        let chain = ssl
+            .peer_full_cert_chain()
+            .map(|chain| chain.iter().map(ToOwned::to_owned).collect())
+            .unwrap_or_default();
         Self { chain }
     }
 }

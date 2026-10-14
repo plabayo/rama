@@ -8,6 +8,7 @@ use parking_lot::Mutex;
 use rama_core::{
     conversion::RamaFrom as _,
     error::{ArcError, BoxError},
+    telemetry::tracing::debug,
 };
 use rama_crypto::{
     dep::boring::{
@@ -29,7 +30,7 @@ use rama_quic_proto::{
     version::Wire,
 };
 use rama_tls::client::NegotiatedTlsAlgorithms;
-use rama_tls_boring::client::ServerAnswerRecorder;
+use rama_tls_boring::{client::ServerAnswerRecorder, type_conversion::peer_certificate_chain};
 use zeroize::Zeroizing;
 
 use super::{
@@ -252,6 +253,10 @@ impl TlsSession {
             match status.map_err(|error| self.tls_error(error))? {
                 HandshakeStatus::EarlyData => {}
                 HandshakeStatus::EarlyDataRejected => {
+                    debug!(
+                        reason = self.inner.ssl().early_data_reason().as_str(),
+                        "boring quic: 0-RTT rejected"
+                    );
                     self.early_rejected = true;
                     self.inner
                         .reset_early_data_rejection()
@@ -368,20 +373,8 @@ impl TlsSession {
             self.server_name =
                 Some(Domain::try_from(name).map_err(|error| crypto_error(error.into()))?);
         }
-        if self.certificates.is_none()
-            && let Some(leaf) = ssl.peer_certificate()
-        {
-            let leaf = leaf.to_der().map_err(|error| crypto_error(error.into()))?;
-            let mut chain = vec![CertificateDer::from(leaf.clone())];
-            if let Some(peers) = ssl.peer_cert_chain() {
-                for cert in peers {
-                    let der = cert.to_der().map_err(|error| crypto_error(error.into()))?;
-                    if der != leaf {
-                        chain.push(CertificateDer::from(der));
-                    }
-                }
-            }
-            self.certificates = Some(chain);
+        if self.certificates.is_none() {
+            self.certificates = peer_certificate_chain(ssl).map_err(crypto_error)?;
         }
         // The peer's parameters arrive once and never change, so they are parsed once: this runs
         // for every CRYPTO frame, and a large parameter list must not be re-read for each.

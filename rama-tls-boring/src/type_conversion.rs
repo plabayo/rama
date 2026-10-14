@@ -5,8 +5,8 @@ use rama_core::conversion::{RamaFrom, RamaTryFrom, RamaTryInto as _};
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing::trace;
 use rama_crypto::pki_types::CertificateDer;
-use rama_tls::CipherSuite;
 use rama_tls::client::{ClientHello, NegotiatedTlsAlgorithms, parse_client_hello};
+use rama_tls::{CipherSuite, SupportedGroup};
 
 impl RamaFrom<&rama_boring::ssl::SslRef, RamaTlsBoringCrateMarker> for NegotiatedTlsAlgorithms {
     fn rama_from(ssl: &rama_boring::ssl::SslRef) -> Self {
@@ -19,9 +19,9 @@ impl RamaFrom<&rama_boring::ssl::SslRef, RamaTlsBoringCrateMarker> for Negotiate
                 .current_cipher()
                 .map(|cipher| CipherSuite::from(cipher.protocol_id())),
             key_exchange_group: key_exchanged
-                .then(|| ssl.curve())
+                .then(|| ssl.group_id())
                 .flatten()
-                .and_then(|curve| curve.rama_try_into().ok()),
+                .map(SupportedGroup::from),
             peer_signature_scheme: (!resumed)
                 .then(|| ssl.peer_signature_algorithm())
                 .flatten()
@@ -176,6 +176,15 @@ impl RamaTryFrom<&rama_boring::stack::StackRef<rama_boring::x509::X509>, RamaTls
             .map(RamaTryFrom::rama_try_from)
             .collect::<Result<Vec<CertificateDer<'static>>, BoxError>>()
     }
+}
+
+/// The peer's certificate chain in DER, leaf first, on clients and servers alike.
+pub fn peer_certificate_chain(
+    ssl: &rama_boring::ssl::SslRef,
+) -> Result<Option<Vec<CertificateDer<'static>>>, BoxError> {
+    ssl.peer_full_cert_chain()
+        .map(RamaTryFrom::rama_try_from)
+        .transpose()
 }
 
 /// Keep the first of duplicate values, which BoringSSL rejects in its lists.

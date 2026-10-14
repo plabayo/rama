@@ -1,7 +1,7 @@
 use super::TlsAcceptorData;
 use super::acceptor_data::{ConnectionState, bind_connection, prepare_server_cert_issuer};
 use super::config::{BoringTlsAcceptorConfig, BoringTlsAuth};
-use crate::{TlsStream, types::SecureTransport};
+use crate::{TlsStream, type_conversion::peer_certificate_chain, types::SecureTransport};
 use parking_lot::Mutex;
 use rama_boring::ssl::{Ssl, SslContext, SslSessionCacheMode};
 use rama_core::error::BoxErrorExt as _;
@@ -190,23 +190,9 @@ where
                     .selected_alpn_protocol()
                     .map(ApplicationProtocol::from);
 
-                let client_certificate_chain = if let Some(certificate) = acceptor
-                    .store_client_certificate_chain
-                    .then(|| stream.ssl().peer_certificate())
-                    .flatten()
-                {
-                    // peer_cert_chain doesn't contain the leaf certificate in a server ctx
-                    let mut chain = stream
-                        .ssl()
-                        .peer_cert_chain()
-                        .map_or(Ok(vec![]), RamaTryInto::rama_try_into)?;
-
-                    let certificate = certificate
-                        .as_ref()
-                        .rama_try_into()
-                        .context("boring ssl session: failed to convert peer certificate to der")?;
-                    chain.insert(0, certificate);
-                    Some(chain)
+                let client_certificate_chain = if acceptor.store_client_certificate_chain {
+                    peer_certificate_chain(stream.ssl())
+                        .context("boring ssl session: convert peer certificate chain")?
                 } else {
                     None
                 };
