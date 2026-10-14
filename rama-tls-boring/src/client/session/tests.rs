@@ -645,3 +645,64 @@ async fn a_generated_client_credential_is_shared_by_the_wire_variants_of_its_pol
         assert_eq!(actual, expected);
     }
 }
+
+/// A session resumes only after its certificate verifies again when the configuration pins
+/// one: here against a verification time after the certificate expired.
+#[tokio::test]
+async fn a_pinned_session_is_verified_again_when_it_resumes() {
+    use crate::client::TlsConnectorContextBuilder;
+    use rama_tls::client::TlsServerCertPins;
+
+    let server = Server::new(SslVersion::TLS1_3);
+    for pinned in [false, true] {
+        let mut config = trusting_config();
+        if pinned {
+            config.set_server_cert_pins(TlsServerCertPins::new(AUTH.0[0].clone()));
+        }
+        let store: Arc<dyn TlsClientSessionStore> = cache();
+        let mut builder = TlsConnectorContextBuilder::try_from(&config).unwrap();
+        builder.set_session_store(store);
+        let context = builder.build();
+        // A full handshake, then a resumption judged a century later.
+        let mut outcomes = Vec::new();
+        for later in [false, true] {
+            let mut data = context.configure().unwrap();
+            data.server_name = Some(Host::from_static("a.test"));
+            let mut ssl = data.into_ssl().unwrap();
+            if later {
+                let century = 100 * 365 * 24 * 60 * 60;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                ssl.param_mut()
+                    .set_time(i64::try_from(now + century).unwrap());
+            }
+            let (client_io, server_io) = tokio::io::duplex(1024);
+            let acceptor = server.acceptor.clone();
+            let accepted = tokio::spawn(async move {
+                let mut stream = rama_boring_tokio::accept(&acceptor, server_io).await.ok()?;
+                stream.write_all(b"x").await.ok()?;
+                Some(())
+            });
+            let connected = rama_boring_tokio::SslStreamBuilder::new(ssl, client_io)
+                .connect()
+                .await;
+            outcomes.push(match connected {
+                Ok(mut stream) => {
+                    stream.read_exact(&mut [0]).await.unwrap();
+                    Some(stream.ssl().session_reused())
+                }
+                Err(_) => None,
+            });
+            drop(accepted.await);
+        }
+        // The full handshake verified now; the resumption only resumes unverified when unpinned.
+        let expected = if pinned {
+            [Some(false), None]
+        } else {
+            [Some(false), Some(true)]
+        };
+        assert_eq!(outcomes, expected, "pinned: {pinned}");
+    }
+}
