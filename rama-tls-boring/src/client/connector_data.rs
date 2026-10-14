@@ -100,7 +100,7 @@ struct ConnectorOptions {
 struct WirePlan {
     cipher_list: Option<Vec<u16>>,
     alpn_protos: Option<Bytes>,
-    groups: Option<Vec<u16>>,
+    curves: Option<Vec<SslCurve>>,
     key_shares: Option<Vec<SslCurve>>,
     verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>>,
     min_version: Option<SslVersion>,
@@ -141,9 +141,8 @@ impl WirePlan {
         if let Some(protos) = &self.alpn_protos {
             cfg.set_alpn_protos(protos).context("set alpn protos")?;
         }
-        if let Some(groups) = &self.groups {
-            cfg.set_raw_supported_groups(groups)
-                .context("set supported groups")?;
+        if let Some(curves) = &self.curves {
+            cfg.set_curves(curves).context("set curves")?;
         }
         if let Some(curves) = &self.key_shares {
             cfg.set_client_key_shares(curves)
@@ -444,15 +443,16 @@ impl TryFrom<&BoringTlsConnectorConfig<'_>> for ConnectorOptions {
             });
 
         // BoringSSL rejects any duplicate group or signature scheme, adjacent or not.
-        let groups: Option<Vec<(u16, SslCurve)>> = value.supported_groups.map(|p| {
-            native_unique(p.0.iter().filter_map(|group| {
-                let curve: SslCurve = (*group).rama_try_into().ok()?;
-                Some((u16::from(*group), curve))
-            }))
-        });
-        let curves: Option<Vec<SslCurve>> = groups
-            .as_ref()
-            .map(|groups| groups.iter().map(|(_, curve)| *curve).collect());
+        let curves: Option<Vec<SslCurve>> = value
+            .supported_groups
+            .map(|p| native_unique(p.0.iter().filter_map(|g| (*g).rama_try_into().ok())));
+        // An empty native list means BoringSSL's defaults, which a configuration naming
+        // only groups it cannot use never asked for.
+        if curves.as_ref().is_some_and(Vec::is_empty) {
+            return Err(BoxError::from_static_str(
+                "build (boring) ssl connector: no supported group",
+            ));
+        }
         let verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>> = value
             .signature_schemes
             .map(|p| native_unique(p.0.iter().filter_map(|s| (*s).rama_try_into().ok())));
@@ -538,15 +538,7 @@ impl TryFrom<&BoringTlsConnectorConfig<'_>> for ConnectorOptions {
         let wire = WirePlan {
             cipher_list,
             alpn_protos,
-            groups: groups.map(|groups| {
-                let ids = groups.into_iter().map(|(id, _)| id).collect();
-                // Set as raw IDs, so the native GREASE slot is added here (see the provider gap).
-                if grease_enabled {
-                    with_native_grease_slots(ids, NativeGrease::First)
-                } else {
-                    ids
-                }
-            }),
+            curves,
             key_shares,
             verify_algorithm_prefs,
             min_version,

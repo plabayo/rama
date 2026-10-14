@@ -601,6 +601,25 @@ fn wire_variants_of_one_policy_share_a_context_and_keep_their_own_hellos() {
     }
 }
 
+#[test]
+fn naming_only_unusable_groups_fails_instead_of_offering_defaults() {
+    let config = TlsClientConfig::new().with_supported_groups(vec![SupportedGroup::FFDHE2048]);
+    TlsConnectorData::try_from(&config).unwrap_err();
+    // One usable group is enough, and is all that is offered.
+    let config = TlsClientConfig::new()
+        .with_supported_groups(vec![SupportedGroup::FFDHE2048, SupportedGroup::X25519]);
+    let hello = hello_from_data(TlsConnectorData::try_from(&config).unwrap());
+    let groups = hello
+        .extensions()
+        .iter()
+        .find_map(|ext| match ext {
+            ClientHelloExtension::SupportedGroups(groups) => Some(groups.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(groups, [SupportedGroup::X25519]);
+}
+
 /// Drive a fresh connection until it has written its ClientHello.
 fn first_flight(context: &TlsConnectorContext, server_name: Option<Host>) -> ClientHello {
     let mut data = context.configure().unwrap();
