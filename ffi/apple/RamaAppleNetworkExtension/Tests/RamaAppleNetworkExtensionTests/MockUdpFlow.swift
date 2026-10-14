@@ -77,7 +77,6 @@ final class MockUdpFlow: UdpFlowLike, @unchecked Sendable {
     }
 
 
-
     // MARK: - Driving
 
     @discardableResult
@@ -168,6 +167,4 @@ final class MockUdpFlow: UdpFlowLike, @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return _writeAfterCloseCount
     }
-
-
 }

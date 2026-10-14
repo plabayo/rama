@@ -169,13 +169,12 @@ def swift_command(scratch):
             "-Xlinker", "-framework", "-Xlinker", "SystemConfiguration"]
 
 
-def run_suite(directory, report, name, command, expected, proxy=None, **kwargs):
+def run_suite(directory, report, name, command, expected, proxy=None, proxy_baseline=None, **kwargs):
     check = {"name": name, "status": "failed"}
     report["checks"].append(check)
     if proxy:
         with proxy.count_lock:
-            before = proxy.contacts
-            before_fetches = proxy.pac_fetches
+            before, before_fetches = proxy_baseline or (proxy.contacts, proxy.pac_fetches)
     try:
         log = directory / (name + ".log")
         run(command, log_path=log, **kwargs)
@@ -248,6 +247,9 @@ def execute(args, directory, report):
             print("Recovery command:", recovery, flush=True)
             report["recovery_command"] = recovery
             report["settings_restored"] = False
+            # macOS can fetch the PAC as soon as settings are applied.
+            with proxy.count_lock:
+                baseline = (proxy.contacts, proxy.pac_fetches)
             try:
                 with settings_transaction(privileged, snapshot):
                     time.sleep(2)
@@ -260,7 +262,7 @@ def execute(args, directory, report):
                     check = suite("system-pac-" + name,
                           [*command, "--skip-build", "--filter",
                            "NativeTcpConnectionTests/testDeveloperSystemProxyScenario$"],
-                          {"testDeveloperSystemProxyScenario"}, proxy=proxy, env=env)
+                          {"testDeveloperSystemProxyScenario"}, proxy=proxy, proxy_baseline=baseline, env=env)
                     contacts = check["proxy_contacts"]
                     if (uses_proxy and contacts < 1) or (not uses_proxy and contacts != 0):
                         check["status"] = "failed"

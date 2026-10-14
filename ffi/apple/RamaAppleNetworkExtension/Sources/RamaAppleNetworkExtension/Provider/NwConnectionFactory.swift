@@ -87,27 +87,9 @@ extension NwConnectionLike {
         queue.async { completion(nil) }
     }
 
-    /// Cancel the connection AND release its `stateUpdateHandler` /
-    /// `viabilityUpdateHandler` in one step. Independently of object
-    /// lifetime, an attached handler keeps Apple's framework
-    /// `NWConnection` internals alive after `cancel()` — which observably
-    /// does NOT free for hundreds of connections under sustained churn
-    /// (heap audit: `__NWPath`, `MutableParametersStorage`,
-    /// `Endpoint.addressStorage` grow unboundedly; kernel emits 4,390
-    /// `nw_path_necp_check_for_updates Failed (22)` per 5 min of stress
-    /// while polling NECP sessions the kernel has already destroyed).
-    /// Detaching first releases that framework-internal graph promptly.
-    ///
-    /// Dropping the handlers before `cancel()` also suppresses Apple's
-    /// final `.cancelled` callback. No production teardown path depends on
-    /// observing it — they pivot to terminal on the synchronous initiator
-    /// side via `ctx.connection = nil` and registry removal.
-    ///
-    /// **Use everywhere a teardown path cancels an egress connection in
-    /// this crate**. Plain `cancel()` is for protocol conformance; the
-    /// per-flow teardown (`TcpFlowContext.applyX`) nils `ctx.connection`
-    /// after each call for idempotency, so the "already cancelled" log
-    /// noise (1,177 events / 5 min of stress pre-fix) stays at zero.
+    /// Release flow callbacks before cancellation so teardown cannot re-enter the
+    /// flow. NativeTcpConnection retains only weak native callbacks; these setters
+    /// detach the Swift handlers without reconfiguring the native connection.
     func cancelAndDetach() {
         self.stateUpdateHandler = nil
         self.viabilityUpdateHandler = nil

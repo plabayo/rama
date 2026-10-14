@@ -175,6 +175,31 @@ class HarnessSelectionTests(unittest.TestCase):
             else:
                 self.assertEqual(call.args[4], LOCAL_TESTS)
 
+    def test_system_pac_prefetch_during_apply_counts_for_its_case(self):
+        args = SimpleNamespace(system_pac_service="Wi-Fi", scratch_path=Path("/tmp/build"),
+                               skip_build=False, deep=False, configuration=None)
+        proxy = SimpleNamespace(count_lock=threading.Lock(), contacts=0, pac_fetches=0)
+        report = {"checks": []}
+        def command(cmd, log_path=None, **kwargs):
+            if "apply" in cmd and "denied" not in cmd[-1]:
+                proxy.pac_fetches += 1  # Settings notification fetches before Swift starts.
+            if log_path:
+                system = log_path.name.startswith("system-pac-")
+                names = {"testDeveloperSystemProxyScenario"} if system else LOCAL_TESTS
+                log_path.write_text("".join(
+                    f"Test Case '-[RamaAppleNetworkExtensionTests.NativeTcpConnectionTests {name}]' " + suffix
+                    for name in names for suffix in ("started.\n", "passed (0.001 seconds).\n")))
+                if system and kwargs["env"]["RAMA_EGRESS_TEST_USED_PROXY"] == "1":
+                    proxy.contacts += 1
+        with tempfile.TemporaryDirectory() as directory, patch("egress_proxy_policy.servers") as fixture, \
+                patch("egress_proxy_policy.run", side_effect=command), \
+                patch("egress_proxy_policy.time.sleep"), patch("egress_proxy_policy.signal.signal"), \
+                patch("egress_proxy_policy.platform.mac_ver", return_value=("26.5", (), "")):
+            fixture.return_value.__enter__.return_value = (proxy, "http://127.0.0.1/example.pac")
+            execute(args, Path(directory), report)
+        self.assertEqual([check["pac_fetches"] for check in report["checks"][1:]], [1, 0, 1])
+        self.assertTrue(report["settings_restored"])
+
     def test_failed_command_prints_log_path_and_tail(self):
         with tempfile.TemporaryDirectory() as directory:
             log_path = Path(directory) / "failure.log"

@@ -515,7 +515,7 @@ On macOS 12–13, it reports the proxy-configuration tests that require macOS 14
 
 `just test-private-api-availability` checks private API exports in the newest
 installed Xcode's macOS/iOS SDKs and calls them on macOS and an iOS simulator.
-Pass `--stable` to exclude preview Xcodes. Daily unstable CI discovers GitHub's
+Pass `--stable` to use the runner’s system-selected Xcode. Daily unstable CI discovers GitHub's
 newest Xcode runner, selects its newest Xcode (including betas), and downloads a
 matching iOS runtime. It also runs
 Apple FFI/NE tests, Release and sanitizer egress tests, XPC checks, and an unsigned

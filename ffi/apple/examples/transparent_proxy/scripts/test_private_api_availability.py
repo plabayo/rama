@@ -117,18 +117,33 @@ class AvailabilityTests(unittest.TestCase):
                                                  "-architectureVariant", "arm64", timeout=1800), run.call_args_list)
 
 
-    def test_stable_selection_rejects_beta_build_even_with_plain_name(self):
+    def test_stable_uses_system_selection_and_accepts_release_build_letters(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            for name, short, build in (("Xcode_26.app", "26.6", "17G100"),
-                                       ("Xcode.app", "27.2", "27B5028f")):
+            for name, short, build in (("Xcode_16.2.app", "16.2", "16C5032a"),
+                                       ("Xcode_27_beta.app", "27.2", "27B5028f")):
                 contents = root / name / "Contents"
                 contents.mkdir(parents=True)
                 (contents / "version.plist").write_bytes(plistlib.dumps({
                     "CFBundleShortVersionString": short, "CFBundleVersion": short,
                     "ProductBuildVersion": build}))
-            self.assertEqual(newest_xcode(root, stable=True), root / "Xcode_26.app/Contents/Developer")
-            self.assertEqual(newest_xcode(root), root / "Xcode.app/Contents/Developer")
+            selected = root / "Xcode_16.2.app/Contents/Developer"
+            with patch("private_api_availability.subprocess.check_output", return_value=str(selected)) as command, \
+                    patch.dict("os.environ", {"DEVELOPER_DIR": "/overridden/beta"}):
+                self.assertEqual(newest_xcode(root, stable=True), selected)
+            self.assertNotIn("DEVELOPER_DIR", command.call_args.kwargs["env"])
+            self.assertEqual(newest_xcode(root), root / "Xcode_27_beta.app/Contents/Developer")
+
+    def test_stable_rejects_selected_preview_and_command_line_tools(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            for name in ("Xcode_26.1_rc.app", "Xcode_beta.app", "Xcode_preview.app", "CommandLineTools"):
+                selected = root / name / "Contents/Developer"
+                if name != "CommandLineTools":
+                    selected.parent.mkdir(parents=True)
+                    (selected.parent / "version.plist").write_bytes(plistlib.dumps({}))
+                with self.subTest(name=name), patch("private_api_availability.subprocess.check_output", return_value=str(selected)), self.assertRaises(ValueError):
+                    newest_xcode(root, stable=True)
 
     def test_matching_installed_runtime_avoids_download_and_executes_probe(self):
         self.check_runtime_download(installed=True)
@@ -174,10 +189,10 @@ class AvailabilityTests(unittest.TestCase):
             self.assertEqual(probe.report["checks"]["next"]["status"], "passed")
 
 
-    def test_stable_runtime_selection_ignores_newer_beta(self):
+    def test_stable_runtime_selection_stays_with_selected_sdk(self):
         runtimes = [{"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-" + v,
                      "version": v, "buildversion": build, "isAvailable": True}
-                    for v, build in (("26.5", "23F70"), ("27.2", "24C5000a"))]
+                    for v, build in (("26.5", "23F70a"), ("27.2", "24C5000a"))]
         with tempfile.TemporaryDirectory() as directory:
             probe = Probe(Path(directory), Path("/Xcode"))
             # Stop at device selection: neither runtime supplies a device here.

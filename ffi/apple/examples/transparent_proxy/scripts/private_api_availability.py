@@ -25,14 +25,20 @@ def version(value):
 
 
 def newest_xcode(applications=Path("/Applications"), stable=False):
+    if stable:
+        # Use the image's configured release, ignoring caller overrides. Released
+        # Xcode build identifiers can end in letters too (e.g. 16C5032a).
+        env = {key: value for key, value in os.environ.items() if key != "DEVELOPER_DIR"}
+        selected = Path(subprocess.check_output(["xcode-select", "-p"], env=env, text=True).strip()).resolve()
+        if not (selected.parent / "version.plist").is_file():
+            raise ValueError(f"Selected developer directory is not a full Xcode: {selected}")
+        if re.search(r"beta|preview|(?:^|[^a-z0-9])rc(?:[^a-z0-9]|$)", selected.parent.parent.name, re.IGNORECASE):
+            raise ValueError(f"Selected Xcode is a preview: {selected}")
+        return selected
     candidates = []
     for app in sorted({p.resolve() for p in applications.glob("Xcode*.app")}):
         with (app / "Contents/version.plist").open("rb") as source:
             info = plistlib.load(source)
-        build = info.get("ProductBuildVersion", "")
-        if stable and (re.search(r"beta|preview|\brc\b", app.name, re.IGNORECASE)
-                       or (build and not build[-1].isdigit())):
-            continue
         candidates.append((version(info["CFBundleShortVersionString"]),
                            version(info["CFBundleVersion"]), app))
     if not candidates:
@@ -118,7 +124,7 @@ class Probe:
         sdk_version = self.run("xcrun", "--sdk", "iphonesimulator", "--show-sdk-version")
         def inventory():
             runtimes = json.loads(self.run("xcrun", "simctl", "list", "runtimes", "--json"))["runtimes"]
-            return [r for r in runtimes if not stable or r["buildversion"][-1].isdigit()]
+            return [r for r in runtimes if not stable or version(r["version"])[:2] <= version(sdk_version)[:2]]
 
         def matches(runtime):
             return runtime.get("isAvailable") and version(runtime["version"])[:2] >= version(sdk_version)[:2]
@@ -167,7 +173,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--download-ios-runtime", action="store_true")
-    parser.add_argument("--stable", action="store_true", help="exclude beta and release-candidate Xcodes")
+    parser.add_argument("--stable", action="store_true", help="use the system-selected Xcode and runtimes no newer than its SDK")
     parser.add_argument("--select-xcode", action="store_true", help="print newest DEVELOPER_DIR and exit")
     args = parser.parse_args()
     developer = newest_xcode(stable=args.stable)

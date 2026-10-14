@@ -65,11 +65,13 @@ final class NativeTcpConnection: NwConnectionLike, @unchecked Sendable {
     func forceCancel() { cancel(force: true) }
 
     private func cancel(force: Bool) {
-        lock.withLock {
-            guard !cancellationRequested else { return }
+        let shouldCancel = lock.withLock {
+            guard !cancellationRequested else { return false }
             cancellationRequested = true
-            if force { nw_connection_force_cancel(native) } else { nw_connection_cancel(native) }
+            return true
         }
+        guard shouldCancel else { return }
+        if force { nw_connection_force_cancel(native) } else { nw_connection_cancel(native) }
     }
 
     func send(
