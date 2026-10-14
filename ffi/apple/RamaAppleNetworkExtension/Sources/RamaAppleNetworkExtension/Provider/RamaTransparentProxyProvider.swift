@@ -843,15 +843,10 @@ protocol UdpFlowLike: UdpFlowReadable, UdpFlowWritable, AnyObject {
     )
     func closeReadWithError(_ error: Error?)
     func closeWriteWithError(_ error: Error?)
-    func applyMetadata(to params: NWParameters)
 }
 
 extension NEAppProxyUDPFlow: @unchecked @retroactive Sendable {}
-extension NEAppProxyUDPFlow: UdpFlowLike {
-    func applyMetadata(to params: NWParameters) {
-        applyFlowMetadata(self, params)
-    }
-}
+extension NEAppProxyUDPFlow: UdpFlowLike {}
 
 /// Cross-thread state of `TcpClientWritePump`. Reachable only via
 /// `Locked.withLock` so the closed-flag / byte-budget / drain-signal
@@ -1674,63 +1669,4 @@ extension RamaTransparentProxyProvider {
             .appendingPathComponent("rama", isDirectory: true)
             .appendingPathComponent("tproxy", isDirectory: true)
     }
-}
-// ── NWConnection helpers ──────────────────────────────────────────────────────
-
-/// Capability `applyFlowMetadata` needs from a flow: stamp the source-app
-/// `NEFlowMetaData` onto egress `NWParameters` so a downstream proxy
-/// attributes the connection to the original app, not to this extension.
-///
-/// Behind a protocol so the macOS-version routing in `applyFlowMetadata`
-/// is unit-testable without a live `NEAppProxyFlow`. There is deliberately
-/// no pre-macOS-15 member: before macOS 15 the stamp cannot be applied
-/// safely (see `applyFlowMetadata`), so the seam must not offer a way to try.
-protocol EgressMetadataFlow: AnyObject {
-    /// Caller guarantees macOS 15+.
-    func stampSourceAppMetadata(onto params: NWParameters)
-}
-
-extension NEAppProxyFlow: EgressMetadataFlow {
-    func stampSourceAppMetadata(onto params: NWParameters) {
-        // The typed overlay performs the `NWParameters -> nw_parameters_t`
-        // bridge; it — and this method — only run on macOS 15+.
-        if #available(macOS 15.0, *) {
-            setMetadata(on: params)
-        }
-    }
-}
-
-func isMacOS15OrLater() -> Bool {
-    if #available(macOS 15.0, *) { return true }
-    return false
-}
-
-/// Stamp the intercepted flow's `NEFlowMetaData` onto the egress
-/// `NWParameters` via the typed `NEAppProxyFlow.setMetadata(on:)` overlay.
-///
-/// macOS 15+ only. The Obj-C method `-[NEAppProxyFlow setMetadata:]` takes an
-/// `nw_parameters_t`; the typed Swift overlay performs the `NWParameters ->
-/// nw_parameters_t` bridge for us. Before macOS 15 there is no public way to
-/// stamp an existing Swift wrapper: the overlay is 15.0-gated and there is no public `NWParameters ->
-/// nw_parameters_t` accessor. A prior version invoked the raw `setMetadata:`
-/// selector via `perform(_:with:)` with the Swift `NWParameters` wrapper —
-/// unbridged — so Apple's `nw_parameters_set_metadata` read a
-/// `Network._NWParameters` as an `OS_nw_parameters` and corrupted the heap.
-/// That was the macOS-14 new-flow crashloop (over-release / dealloc faults
-/// inside `nw_parameters_set_metadata`). So before macOS 15 we omit the stamp
-/// rather than corrupt memory. TCP now constructs native parameters and calls
-/// the native overload directly on every supported macOS version; this helper
-/// only covers callers that still hold Swift NWParameters wrappers.
-func applyFlowMetadata(
-    _ flow: EgressMetadataFlow,
-    _ params: NWParameters,
-    macOS15OrLater: Bool = isMacOS15OrLater()
-) {
-    guard macOS15OrLater else {
-        RamaLog.debug(
-            "applyFlowMetadata: omitting egress source-app metadata on macOS < 15 (no safe public NWParameters -> nw_parameters_t bridge)"
-        )
-        return
-    }
-    flow.stampSourceAppMetadata(onto: params)
 }

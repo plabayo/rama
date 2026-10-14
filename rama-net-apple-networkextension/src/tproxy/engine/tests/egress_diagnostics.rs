@@ -63,18 +63,18 @@ fn ffi_egress_report_logs_metadata_and_fields_after_activation_and_cancel() {
     let endpoint = "127.0.0.1:8888";
     let error = "POSIXErrorCode: ECONNREFUSED";
     let mut ffi = crate::ffi::tproxy::TcpEgressReport {
-        ready: false,
+        ready: true,
         report_available: true,
         used_proxy: true,
         proxy_configured: true,
-        allow_proxy: false,
-        proxy_policy: 1,
+        allow_proxy: true,
+        proxy_policy: 0,
         connect_duration_ms: 250,
-        report_duration_ms: 245.5,
+        report_duration_ms: 245,
         proxy_endpoint_utf8: endpoint.as_ptr().cast(),
         proxy_endpoint_utf8_len: endpoint.len(),
-        error_utf8: error.as_ptr().cast(),
-        error_utf8_len: error.len(),
+        error_utf8: std::ptr::null(),
+        error_utf8_len: 0,
     };
     let capture = Capture::default();
     tracing::subscriber::with_default(capture.clone(), || {
@@ -84,7 +84,12 @@ fn ffi_egress_report_logs_metadata_and_fields_after_activation_and_cancel() {
         for (allow_proxy, proxy_policy) in [(true, 0), (false, 2), (false, 255)] {
             ffi.allow_proxy = allow_proxy;
             ffi.proxy_policy = proxy_policy;
+            ffi.ready = false;
             ffi.report_available = false;
+            ffi.proxy_endpoint_utf8 = std::ptr::null();
+            ffi.proxy_endpoint_utf8_len = 0;
+            ffi.error_utf8 = error.as_ptr().cast();
+            ffi.error_utf8_len = error.len();
             session.report_egress(&unsafe { ffi.to_rust_type() });
         }
     });
@@ -94,16 +99,15 @@ fn ffi_egress_report_logs_metadata_and_fields_after_activation_and_cancel() {
     assert_eq!(event.get("pid").map(String::as_str), Some("42"));
     assert!(event.get("remote").unwrap().contains(":443"));
     for (key, expected) in [
-        ("ready", "false"),
-        ("allow_proxy", "false"),
-        ("proxy_policy", "\"no_proxy_applied\""),
+        ("ready", "true"),
+        ("allow_proxy", "true"),
+        ("proxy_policy", "\"allowed\""),
         ("report_available", "true"),
         ("used_proxy", "true"),
         ("proxy_configured", "true"),
         ("connect_duration_ms", "250"),
-        ("duration_ms", "245.5"),
+        ("report_duration_ms", "245"),
         ("proxy_endpoint", "\"127.0.0.1:8888\""),
-        ("error", "\"POSIXErrorCode: ECONNREFUSED\""),
     ] {
         assert_eq!(event.get(key).map(String::as_str), Some(expected), "{key}");
     }
@@ -117,6 +121,13 @@ fn ffi_egress_report_logs_metadata_and_fields_after_activation_and_cancel() {
             event.get("allow_proxy").map(String::as_str),
             Some(if policy == "allowed" { "true" } else { "false" })
         );
+        assert_eq!(event.get("ready").map(String::as_str), Some("false"));
+        assert_eq!(
+            event.get("error").map(String::as_str),
+            Some("\"POSIXErrorCode: ECONNREFUSED\"")
+        );
+        assert!(!event.contains_key("proxy_endpoint"));
+        assert!(!event.contains_key("report_duration_ms"));
         assert!(!event.contains_key("used_proxy"));
         assert!(!event.contains_key("proxy_configured"));
         assert_eq!(

@@ -3,6 +3,8 @@
 
 import os
 import re
+import time
+import urllib.error
 import urllib.request
 
 CATALOG = "https://raw.githubusercontent.com/actions/runner-images/main/README.md"
@@ -19,9 +21,21 @@ def select_runner(catalog):
     return max(labels, key=lambda label: int(label.split("-")[1]))
 
 
+def fetch_catalog():
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(CATALOG, timeout=30) as response:
+                return response.read().decode("utf-8")
+        except (urllib.error.URLError, TimeoutError) as error:
+            if isinstance(error, urllib.error.HTTPError) and error.code not in (408, 429, 500, 502, 503, 504):
+                raise
+            if attempt == 2:
+                raise
+            time.sleep(2 ** attempt)
+
+
 def main():
-    with urllib.request.urlopen(CATALOG, timeout=30) as response:
-        runner = select_runner(response.read().decode("utf-8"))
+    runner = select_runner(fetch_catalog())
     print(f"Newest advertised Xcode runner: {runner} ({CATALOG})")
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
         output.write(f"runner={runner}\n")

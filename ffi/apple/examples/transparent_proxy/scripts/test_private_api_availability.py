@@ -110,8 +110,79 @@ class AvailabilityTests(unittest.TestCase):
                    "buildversion": "A1", "isAvailable": True}
         with tempfile.TemporaryDirectory() as directory:
             probe = Probe(Path(directory), Path("/Xcode"))
-            with patch.object(probe, "run", side_effect=["27.2", "", json.dumps({"runtimes": [runtime]})]) as run:
+            with patch.object(probe, "run", side_effect=["27.2", json.dumps({"runtimes": [runtime]}), "", json.dumps({"runtimes": [runtime]})]) as run:
                 with self.assertRaisesRegex(ValueError, "older than SDK"):
                     probe.simulator(True)
-                self.assertIn(unittest.mock.call("xcodebuild", "-downloadPlatform", "iOS",
+                self.assertIn(unittest.mock.call("xcodebuild", "-downloadPlatform", "iOS", "-buildVersion", "27.2",
                                                  "-architectureVariant", "arm64", timeout=1800), run.call_args_list)
+
+
+    def test_stable_selection_rejects_beta_build_even_with_plain_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            for name, short, build in (("Xcode_26.app", "26.6", "17G100"),
+                                       ("Xcode.app", "27.2", "27B5028f")):
+                contents = root / name / "Contents"
+                contents.mkdir(parents=True)
+                (contents / "version.plist").write_bytes(plistlib.dumps({
+                    "CFBundleShortVersionString": short, "CFBundleVersion": short,
+                    "ProductBuildVersion": build}))
+            self.assertEqual(newest_xcode(root, stable=True), root / "Xcode_26.app/Contents/Developer")
+            self.assertEqual(newest_xcode(root), root / "Xcode.app/Contents/Developer")
+
+    def test_matching_installed_runtime_avoids_download_and_executes_probe(self):
+        self.check_runtime_download(installed=True)
+
+    def test_beta_catalog_falls_back_then_requires_runtime_probe(self):
+        self.check_runtime_download(installed=False)
+
+    def check_runtime_download(self, installed):
+        runtime = {"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-2", "version": "27.2",
+                   "buildversion": "24C5000a", "isAvailable": True,
+                   "supportedDeviceTypes": [{"identifier": "iphone", "productFamily": "iPhone"}]}
+        result = {"symbol": SYMBOL, "platform": "ios-simulator", "os": "27.2", "called_true_and_false": True}
+        ready = installed
+        def run(*args, **kwargs):
+            nonlocal ready
+            if "--show-sdk-version" in args:
+                return "27.2"
+            if "runtimes" in args:
+                return json.dumps({"runtimes": [runtime] if ready else []})
+            if "-downloadPlatform" in args:
+                if "-buildVersion" in args:
+                    raise RuntimeError("iOS 27.2 (arm64Only) is not available for download.")
+                ready = True
+            if "create" in args:
+                return "owned-device"
+            if "spawn" in args:
+                return json.dumps(result)
+            return ""
+        with tempfile.TemporaryDirectory() as directory:
+            probe = Probe(Path(directory), Path("/Xcode"))
+            with patch.object(probe, "run", side_effect=run) as commands, patch.object(probe, "compile", return_value="probe"):
+                self.assertEqual(probe.simulator(True), result)
+            downloads = [c for c in commands.call_args_list if "-downloadPlatform" in c.args]
+            self.assertEqual(len(downloads), 0 if installed else 2)
+            self.assertIn(unittest.mock.call("xcrun", "simctl", "spawn", "owned-device", "probe"), commands.call_args_list)
+
+    def test_unexpected_error_is_recorded_and_later_checks_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            probe = Probe(Path(directory), Path("/Xcode"))
+            probe.check("unexpected", lambda: {}["missing"])
+            probe.check("next", lambda: "completed")
+            self.assertEqual(probe.report["checks"]["unexpected"]["status"], "failed")
+            self.assertEqual(probe.report["checks"]["next"]["status"], "passed")
+
+
+    def test_stable_runtime_selection_ignores_newer_beta(self):
+        runtimes = [{"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-" + v,
+                     "version": v, "buildversion": build, "isAvailable": True}
+                    for v, build in (("26.5", "23F70"), ("27.2", "24C5000a"))]
+        with tempfile.TemporaryDirectory() as directory:
+            probe = Probe(Path(directory), Path("/Xcode"))
+            # Stop at device selection: neither runtime supplies a device here.
+            with patch.object(probe, "run", side_effect=["26.5", json.dumps({"runtimes": runtimes})]) as commands:
+                with self.assertRaisesRegex(ValueError, "supported iPhone"):
+                    probe.simulator(True, stable=True)
+            self.assertEqual(probe.report["simulator_runtime"]["version"], "26.5")
+            self.assertEqual(commands.call_count, 2)

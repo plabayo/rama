@@ -1087,7 +1087,7 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
                     proxy_configured: report?.proxyConfigured ?? false,
                     allow_proxy: allowProxy, proxy_policy: proxyPolicy.rawValue,
                     connect_duration_ms: connectDurationMs,
-                    report_duration_ms: (report?.duration ?? 0) * 1_000,
+                    report_duration_ms: report?.durationMs ?? 0,
                     proxy_endpoint_utf8: endpointPtr,
                     proxy_endpoint_utf8_len: endpoint.utf8.count,
                     error_utf8: errorPtr, error_utf8_len: errorText.utf8.count)

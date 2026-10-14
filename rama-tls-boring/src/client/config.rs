@@ -216,6 +216,8 @@ pub trait BoringClientConfigExt: Sized {
     }
     generate_set_and_with! {
         /// Enable/disable GREASE injection.
+        /// Explicit [`extension_order`](BoringClientConfigExt::set_extension_order)
+        /// controls which GREASE extension slots are sent.
         fn grease(self, enabled: bool) -> Self;
     }
     generate_set_and_with! {

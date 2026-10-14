@@ -25,7 +25,7 @@ pub struct TcpEgressReport {
     pub allow_proxy: bool,
     pub proxy_policy: u8,
     pub connect_duration_ms: u64,
-    pub report_duration_ms: f64,
+    pub report_duration_ms: u64,
     pub proxy_endpoint_utf8: *const c_char,
     pub proxy_endpoint_utf8_len: usize,
     pub error_utf8: *const c_char,
@@ -35,11 +35,11 @@ pub struct TcpEgressReport {
 impl TcpEgressReport {
     /// # Safety
     /// Non-null string pointers must be readable for their lengths for the lifetime of the returned report.
-    pub unsafe fn to_rust_type(&self) -> crate::tproxy::engine::TcpEgressReport<'_> {
-        crate::tproxy::engine::TcpEgressReport {
+    pub unsafe fn to_rust_type(&self) -> crate::tproxy::TcpEgressReport<'_> {
+        crate::tproxy::TcpEgressReport {
             ready: self.ready,
             allow_proxy: self.allow_proxy,
-            proxy_policy: self.proxy_policy,
+            proxy_policy: self.proxy_policy.into(),
             connect_duration_ms: self.connect_duration_ms,
             report_duration_ms: self.report_available.then_some(self.report_duration_ms),
             used_proxy: self.report_available.then_some(self.used_proxy),
@@ -1018,7 +1018,8 @@ mod tests {
     }
 
     #[test]
-    fn tcp_egress_report_borrows_fields_and_preserves_unavailable_report() {
+    fn tcp_egress_report_decodes_borrowed_ffi_fields() {
+        // Exercise independent ABI fields; this is not a native connection scenario.
         let endpoint = String::from("127.0.0.1:8888");
         let error = String::from("POSIXErrorCode: ECONNREFUSED");
         let mut ffi = TcpEgressReport {
@@ -1029,7 +1030,7 @@ mod tests {
             allow_proxy: false,
             proxy_policy: 1,
             connect_duration_ms: 123,
-            report_duration_ms: 120.5,
+            report_duration_ms: 120,
             proxy_endpoint_utf8: endpoint.as_ptr().cast(),
             proxy_endpoint_utf8_len: endpoint.len(),
             error_utf8: error.as_ptr().cast(),
@@ -1038,13 +1039,16 @@ mod tests {
         let report = unsafe { ffi.to_rust_type() };
         assert!(!report.ready);
         assert_eq!(report.connect_duration_ms, 123);
-        assert_eq!(report.report_duration_ms, Some(120.5));
+        assert_eq!(report.report_duration_ms, Some(120));
         assert_eq!(report.used_proxy, Some(true));
         assert_eq!(report.proxy_configured, Some(true));
         assert_eq!(report.proxy_endpoint.unwrap().as_ptr(), endpoint.as_ptr());
         assert_eq!(report.error.unwrap().as_ptr(), error.as_ptr());
         assert!(!report.allow_proxy);
-        assert_eq!(report.proxy_policy, 1);
+        assert_eq!(
+            report.proxy_policy,
+            crate::tproxy::TcpProxyPolicy::NoProxyApplied
+        );
         assert_eq!(report.proxy_endpoint, Some("127.0.0.1:8888"));
         assert_eq!(report.error, Some("POSIXErrorCode: ECONNREFUSED"));
         ffi.proxy_endpoint_utf8 = std::ptr::null();

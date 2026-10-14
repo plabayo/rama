@@ -1,6 +1,8 @@
 import unittest
+import urllib.error
+from unittest.mock import patch, MagicMock
 
-from apple_preview_runner import select_runner
+from apple_preview_runner import select_runner, fetch_catalog
 
 
 class PreviewRunnerTests(unittest.TestCase):
@@ -21,3 +23,17 @@ class PreviewRunnerTests(unittest.TestCase):
                         "| Xcode | arm64 | `xcode-27;evil` | [software] |"):
             with self.subTest(catalog=catalog), self.assertRaises(ValueError):
                 select_runner(catalog)
+
+
+    def test_transient_fetch_retries_but_bad_catalog_does_not(self):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b"bad catalog"
+        with patch("apple_preview_runner.urllib.request.urlopen", side_effect=[urllib.error.URLError("offline"), response]) as fetch, patch("apple_preview_runner.time.sleep"):
+            with self.assertRaises(ValueError):
+                select_runner(fetch_catalog())
+        self.assertEqual(fetch.call_count, 2)
+
+    def test_fetch_retry_budget_is_bounded(self):
+        with patch("apple_preview_runner.urllib.request.urlopen", side_effect=TimeoutError()) as fetch, patch("apple_preview_runner.time.sleep"), self.assertRaises(TimeoutError):
+            fetch_catalog()
+        self.assertEqual(fetch.call_count, 3)

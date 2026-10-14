@@ -198,10 +198,9 @@ pub struct NwEgressParameters {
     /// source.
     pub preserve_original_meta_data: bool,
     /// Permit Network.framework to use an upstream system/PAC proxy.
-    /// Defaults to `false`: apply the public direct preference and, when
-    /// available, the dynamically resolved private `nw_parameters_set_no_proxy`.
-    /// If that symbol is absent, only the preference applies and proxy fallback
-    /// remains possible. `true` clears both controls; it does not force a proxy.
+    /// Defaults to `false`: apply the public direct preference. Swift builds
+    /// opting into `PrivateNetworkProxyControl` also apply the private no-proxy
+    /// control when available. Otherwise proxy fallback remains possible. `true` clears both controls; it does not force a proxy.
     ///
     /// The existing establishment event records `allow_proxy`, `proxy_policy`
     /// (`allowed`, `no_proxy_applied`, or `prefer_direct_only`) and the actual

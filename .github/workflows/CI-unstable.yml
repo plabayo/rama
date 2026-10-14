@@ -52,9 +52,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
       - name: Discover newest advertised Xcode runner
         id: apple_runner
-        run: python3 scripts/ci/apple_preview_runner.py
+        run: just scripts/ci/apple-preview-runner
 
   test-apple-private-api-stable:
     permissions:
@@ -62,7 +65,7 @@ jobs:
     needs: precheck
     runs-on: macos-latest
     concurrency:
-      group: rama-macos-slot-4
+      group: rama-macos-slot-1
       cancel-in-progress: false
       queue: max
     # Runtime download (30m), cold boot migration (15m), probes and cleanup.
@@ -71,10 +74,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: just
       - name: Check private API SDK exports and runtime calls
         run: >-
-          python3 ffi/apple/examples/transparent_proxy/scripts/private_api_availability.py
-          --download-ios-runtime --output "$RUNNER_TEMP/apple-private-api"
+          just ./ffi/apple/examples/transparent_proxy/test-private-api-availability
+          --stable --download-ios-runtime --output "$RUNNER_TEMP/apple-private-api"
       - name: Retain availability evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -92,7 +98,7 @@ jobs:
     # Discovered from GitHub's catalog; rolls to the next major without a YAML edit.
     runs-on: ${{ needs.apple-runner.outputs.runner }}
     concurrency:
-      group: rama-macos-slot-4
+      group: rama-macos-slot-1
       cancel-in-progress: false
       queue: max
     timeout-minutes: 240
@@ -133,13 +139,16 @@ jobs:
         run: just test-e2e-ffi-apple
       - name: Apple NetworkExtension and XPC crate tests
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        run: cargo test -p rama-net-apple-networkextension -p rama-net-apple-xpc --all-features
+        run: just ./ffi/apple/examples/transparent_proxy/test-apple-crates
+      - name: Verify private API compile-time opt-in
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: just ./ffi/apple/examples/transparent_proxy/test-private-api-trait
       - name: Optimized Swift FFI tests
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: just ./ffi/apple/examples/transparent_proxy/run-tproxy-ffi-e2e-swift-release
-      - name: TCP egress tests in Debug, Release, ASan and TSan
+      - name: TCP egress sanitizer tests
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        run: just ./ffi/apple/examples/transparent_proxy/test-egress-policy --deep --scratch-path "$RUNNER_TEMP/egress-policy-build"
+        run: just ./ffi/apple/examples/transparent_proxy/test-egress-policy --configuration asan --configuration tsan --scratch-path "$RUNNER_TEMP/egress-policy-build"
       - name: Apple XPC checks and round trips
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: just qa-xpc-apple

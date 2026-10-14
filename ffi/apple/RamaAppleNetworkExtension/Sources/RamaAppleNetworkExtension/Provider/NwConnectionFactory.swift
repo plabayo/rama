@@ -16,7 +16,7 @@ struct TcpEstablishmentReport: Sendable {
     let usedProxy: Bool
     let proxyConfigured: Bool
     let proxyEndpoint: String?
-    let duration: TimeInterval
+    let durationMs: UInt64
 }
 
 /// The surface of `NWConnection` that the per-flow code in

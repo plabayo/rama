@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.1
 
 import PackageDescription
 
@@ -24,6 +24,10 @@ let package = Package(
             name: "RamaAppleXpcClient",
             targets: ["RamaAppleXpcClient"]
         ),
+    ],
+    traits: [
+        .trait(name: "PrivateNetworkProxyControl",
+               description: "Use Apple's private no-proxy control when available.")
     ],
     targets: [
         .target(
@@ -78,5 +82,6 @@ let package = Package(
             dependencies: ["RamaAppleXpcClient"],
             path: "ffi/apple/RamaAppleXpcClient/Tests/RamaAppleXpcClientTests"
         ),
-    ]
+    ],
+    swiftLanguageModes: [.v5]
 )

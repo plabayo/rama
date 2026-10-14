@@ -24,11 +24,15 @@ def version(value):
     return tuple(int(part) for part in re.findall(r"\d+", value))
 
 
-def newest_xcode(applications=Path("/Applications")):
+def newest_xcode(applications=Path("/Applications"), stable=False):
     candidates = []
     for app in sorted({p.resolve() for p in applications.glob("Xcode*.app")}):
         with (app / "Contents/version.plist").open("rb") as source:
             info = plistlib.load(source)
+        build = info.get("ProductBuildVersion", "")
+        if stable and (re.search(r"beta|preview|\brc\b", app.name, re.IGNORECASE)
+                       or (build and not build[-1].isdigit())):
+            continue
         candidates.append((version(info["CFBundleShortVersionString"]),
                            version(info["CFBundleVersion"]), app))
     if not candidates:
@@ -81,7 +85,7 @@ class Probe:
     def check(self, name, function):
         try:
             self.report["checks"][name] = {"status": "passed", "detail": function()}
-        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        except Exception as error:
             self.report["checks"][name] = {"status": "failed", "error": str(error)}
             print(f"{name}: {error}", flush=True)
         self.save()
@@ -110,17 +114,33 @@ class Probe:
         self.compile(sdk, target, f"{sdk}-link", link_only=True)
         return "Direct reference linked successfully (not executed)"
 
-    def simulator(self, download):
+    def simulator(self, download, stable=False):
         sdk_version = self.run("xcrun", "--sdk", "iphonesimulator", "--show-sdk-version")
-        if download:
-            # Let the selected Xcode resolve its runtime, including beta builds.
-            # A bare SDK version can fail to match a beta in Apple's catalog.
-            self.run("xcodebuild", "-downloadPlatform", "iOS",
-                     "-architectureVariant", "arm64", timeout=1800)
-        inventory = json.loads(self.run("xcrun", "simctl", "list", "runtimes", "--json"))
-        runtime = newest_runtime(inventory["runtimes"])
+        def inventory():
+            runtimes = json.loads(self.run("xcrun", "simctl", "list", "runtimes", "--json"))["runtimes"]
+            return [r for r in runtimes if not stable or r["buildversion"][-1].isdigit()]
+
+        def matches(runtime):
+            return runtime.get("isAvailable") and version(runtime["version"])[:2] >= version(sdk_version)[:2]
+
+        runtimes = inventory()
+        ios = [r for r in runtimes if r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")]
+        if download and not any(matches(r) for r in ios):
+            try:
+                self.run("xcodebuild", "-downloadPlatform", "iOS", "-buildVersion", sdk_version,
+                         "-architectureVariant", "arm64", timeout=1800)
+            except RuntimeError as error:
+                # Beta catalogs may require Xcode's default selection rather than
+                # the bare SDK version. Other download failures remain failures.
+                if not any(text in str(error) for text in ("not available for download", "No needed downloadables")):
+                    raise
+                self.report["versioned_download_error"] = str(error)
+                self.run("xcodebuild", "-downloadPlatform", "iOS",
+                         "-architectureVariant", "arm64", timeout=1800)
+            runtimes = inventory()
+        runtime = newest_runtime(runtimes)
         self.report["simulator_runtime"] = {key: runtime[key] for key in ("identifier", "version", "buildversion")}
-        if download and version(runtime["version"])[:2] < version(sdk_version)[:2]:
+        if download and not matches(runtime):
             raise ValueError(f"Newest runtime {runtime['version']} is older than SDK {sdk_version}")
         devices = runtime.get("supportedDeviceTypes", [])
         device = next((d for d in devices if d.get("productFamily") == "iPhone"), None)
@@ -147,9 +167,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--download-ios-runtime", action="store_true")
+    parser.add_argument("--stable", action="store_true", help="exclude beta and release-candidate Xcodes")
     parser.add_argument("--select-xcode", action="store_true", help="print newest DEVELOPER_DIR and exit")
     args = parser.parse_args()
-    developer = newest_xcode()
+    developer = newest_xcode(stable=args.stable)
     if args.select_xcode:
         print(developer)
         return 0
@@ -160,7 +181,7 @@ def main():
     probe.check("macos-runtime", probe.macos)
     probe.check("macos-sdk", lambda: probe.sdk_export("macosx", "arm64-apple-macos12.0"))
     probe.check("ios-device-sdk", lambda: probe.sdk_export("iphoneos", "arm64-apple-ios15.0"))
-    probe.check("ios-simulator-runtime", lambda: probe.simulator(args.download_ios_runtime))
+    probe.check("ios-simulator-runtime", lambda: probe.simulator(args.download_ios_runtime, stable=args.stable))
     report = output / "report.json"
     print(f"Report: {report}")
     if os.environ.get("GITHUB_STEP_SUMMARY"):

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Test settings restoration and evidence validation without changing settings."""
 import http.client
+import io
+import sys
+from contextlib import redirect_stderr
 import json
 import socket
 import subprocess
@@ -13,7 +16,7 @@ from urllib.parse import urlsplit
 from pathlib import Path
 from unittest.mock import patch
 
-from egress_proxy_policy import check_test_log, main, run_suite, servers, settings_transaction
+from egress_proxy_policy import check_test_log, main, run, run_suite, servers, settings_transaction, execute, LOCAL_TESTS
 
 
 class SettingsTransactionTests(unittest.TestCase):
@@ -116,7 +119,7 @@ class FixtureTests(unittest.TestCase):
 
 class ReportTests(unittest.TestCase):
     def test_failed_pac_test_preserves_server_counters(self):
-        proxy = SimpleNamespace(count_lock=threading.Lock(), contacts=2, pac_fetches=0)
+        proxy = SimpleNamespace(count_lock=threading.Lock(), contacts=2, pac_fetches=7)
         report = {"checks": []}
 
         def failed_test(*args, **kwargs):
@@ -149,6 +152,38 @@ class ReportTests(unittest.TestCase):
                 evidence = json.loads(report.read("report.json"))
                 self.assertEqual(evidence["status"], "failed")
                 self.assertEqual(evidence["error"], "required check failed")
+
+
+class HarnessSelectionTests(unittest.TestCase):
+    def test_only_requested_configuration_runs_and_old_os_coverage_is_explicit(self):
+        for version in ("13.7", "26.5"):
+            args = SimpleNamespace(system_pac_service=None, scratch_path=Path("/tmp/build"),
+                                   skip_build=False, deep=False, configuration=["asan"])
+            report = {}
+            with tempfile.TemporaryDirectory() as directory, patch("egress_proxy_policy.run"), patch("egress_proxy_policy.platform.mac_ver", return_value=(version, (), "")), patch("egress_proxy_policy.run_suite") as suite:
+                execute(args, Path(directory), report)
+            self.assertEqual(suite.call_count, 1)
+            call = suite.call_args
+            self.assertEqual(call.args[2], "local-asan")
+            self.assertIn("address", call.args[3])
+            self.assertIn("PrivateNetworkProxyControl", call.args[3])
+            self.assertEqual(call.args[3][call.args[3].index("--filter") + 1], "NativeTcpConnectionTests/")
+            self.assertIn("testDeveloperSystemProxyScenario", call.args[3][-1])
+            if version.startswith("13"):
+                self.assertEqual(len(report["unsupported_tests"]), 3)
+                self.assertEqual(call.args[4], LOCAL_TESTS - set(report["unsupported_tests"]))
+            else:
+                self.assertEqual(call.args[4], LOCAL_TESTS)
+
+    def test_failed_command_prints_log_path_and_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "failure.log"
+            stderr = io.StringIO()
+            with (Path(directory) / "run.log").open("w") as log, patch("egress_proxy_policy.LOG", log), redirect_stderr(stderr):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    run([sys.executable, "-c", "print('meaningful failure'); raise SystemExit(1)"], log_path)
+            self.assertIn(str(log_path), stderr.getvalue())
+            self.assertIn("meaningful failure", stderr.getvalue())
 
 
 if __name__ == "__main__":

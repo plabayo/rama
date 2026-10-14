@@ -490,13 +490,16 @@ jobs:
       - name: Build Release products and run optimized Swift FFI tests
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: just ./ffi/apple/examples/transparent_proxy/run-tproxy-ffi-e2e-swift-release
-      - name: Require complete TCP egress coverage in Debug, Release, ASan and TSan
+      - name: Verify private API compile-time opt-in
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: just ./ffi/apple/examples/transparent_proxy/test-private-api-trait
+      - name: Require complete TCP egress coverage under ASan
         id: egress_policy
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         env:
           TMPDIR: ${{ runner.temp }}
         # Local peers only; no sudo, system PAC or signed extension required.
-        run: just ./ffi/apple/examples/transparent_proxy/test-egress-policy --deep --scratch-path "$RUNNER_TEMP/egress-policy-build"
+        run: just ./ffi/apple/examples/transparent_proxy/test-egress-policy --configuration asan --scratch-path "$RUNNER_TEMP/egress-policy-build"
       - name: Retain TCP egress validation report
         if: ${{ always() && steps.egress_policy.outcome != 'skipped' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

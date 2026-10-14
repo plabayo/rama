@@ -517,9 +517,9 @@ typedef struct {
     /// egress NWParameters via NEAppProxyFlow.setMetadata(_:) before
     /// constructing the NWConnection. Defaults to true on the Rust side.
     bool preserve_original_meta_data;
-    /// False (default): public direct preference plus dynamically resolved
-    /// private nw_parameters_set_no_proxy when available. If unavailable,
-    /// preference-only fallback can still use a system/PAC proxy.
+    /// False (default): prefer direct. The opt-in PrivateNetworkProxyControl
+    /// SwiftPM trait also enables the private no-proxy control when available.
+    /// Without that control, fallback can still use a system/PAC proxy.
     /// True clears both controls and permits, but does not force, proxy use.
     /// The establishment event records the requested/applied policy and result.
     /// Private API behavior is unsupported; validate each deployed OS version.
@@ -872,7 +872,7 @@ typedef struct {
     /// 0: allowed, 1: private no-proxy applied, 2: public preference only.
     uint8_t proxy_policy;
     uint64_t connect_duration_ms;
-    double report_duration_ms;
+    uint64_t report_duration_ms;
     const char *proxy_endpoint_utf8;
     size_t proxy_endpoint_utf8_len;
     const char *error_utf8;

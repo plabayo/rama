@@ -6,7 +6,7 @@ import XCTest
 @testable import RamaAppleNEFFI
 @testable import RamaAppleNetworkExtension
 
-/// Pin `preferNoProxies = true` as the default and `allow_proxy`
+/// Pin `allow_proxy = true` as the default and `allow_proxy`
 /// as the opt-out — a regression in either polarity re-introduces the
 /// stacked-proxy loop or breaks the intentional opt-in.
 final class MakeTcpNwParametersTests: XCTestCase {

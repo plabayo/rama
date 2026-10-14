@@ -127,7 +127,7 @@ final class SessionHandleTests: XCTestCase {
         XCTAssertEqual(session.flowId, id)
         session.reportEgress(
             TcpEstablishmentReport(usedProxy: true, proxyConfigured: true,
-                proxyEndpoint: "127.0.0.1:8888", duration: 0.125),
+                proxyEndpoint: "127.0.0.1:8888", durationMs: 125),
             ready: true, connectDurationMs: 130, error: nil)
         session.reportEgress(nil, ready: false, connectDurationMs: 17, error: .posix(.ECONNREFUSED))
     }

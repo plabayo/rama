@@ -470,18 +470,34 @@ echo "$DEST"
 
 TCP establishment and close logs join on `flow_id`. Establishment records include
 `ready`, errors, requested `allow_proxy`, applied `proxy_policy`, and actual
-`used_proxy`. `report_available=false` means Apple supplied no report.
+`used_proxy`. Failed establishment normally has no report: policy, timing, error
+and flow metadata remain available; proxy use stays unknown.
 
 `NwEgressParameters.allow_proxy` defaults to `false`:
 
 | Configuration | `proxy_policy` | Behavior |
 | --- | --- | --- |
 | Proxy allowed | `allowed` | System proxy selection permitted |
-| Proxy denied, private symbol available | `no_proxy_applied` | Apply no-proxy and prefer-direct controls |
-| Proxy denied, symbol unavailable | `prefer_direct_only` | Prefer direct; proxy fallback remains possible |
+| Proxy denied, trait enabled and symbol available | `no_proxy_applied` | Apply no-proxy and prefer-direct controls |
+| Proxy denied, trait disabled or symbol unavailable | `prefer_direct_only` | Prefer direct; proxy fallback remains possible |
 
-`nw_parameters_set_no_proxy` is private and unsupported by Apple; validate each
-macOS version. Neither control bypasses VPNs or other NE providers.
+The example opts into the `PrivateNetworkProxyControl` SwiftPM trait. Library
+consumers must enable it explicitly (Swift 6.1+):
+
+```swift
+// Add to the existing Rama .package(...) dependency:
+traits: ["PrivateNetworkProxyControl"]
+```
+
+With XcodeGen 2.46+, add `traits: [PrivateNetworkProxyControl]` under the Rama
+package reference; direct SwiftPM builds use `--traits PrivateNetworkProxyControl`.
+Keep Rust and Swift dependencies on the same Rama revision. Traits are additive
+across the dependency graph: another dependency can enable this trait too.
+
+Without the trait, the private lookup and call are excluded from production code.
+`just test-private-api-trait` verifies both builds. The private control is
+unsupported by Apple and unsuitable for App Store submissions; validate deployed
+OS versions. Neither control bypasses VPNs or other NE providers.
 `preserve_original_meta_data` keeps stamping on by default. Disabled establishment
 logging skips report collection; enabled logging retains full flow metadata
 without separate per-flow warnings.
@@ -493,13 +509,15 @@ just test-egress-policy
 just test-egress-policy-deep Wi-Fi
 ```
 
-CI runs `test-egress-policy --deep` without system changes, rejects skipped tests,
-and uploads the report as `apple-tcp-egress-policy`.
+CI covers Debug, Release, ASan and TSan without system changes, reusing full-suite
+coverage. The focused harness rejects skipped required tests and uploads evidence.
+On macOS 12–13, it reports the proxy-configuration tests that require macOS 14.
 
 `just test-private-api-availability` checks private API exports in the newest
 installed Xcode's macOS/iOS SDKs and calls them on macOS and an iOS simulator.
-Daily unstable CI discovers GitHub's newest Xcode runner, selects its newest
-Xcode (including betas), and downloads a matching iOS runtime. It also runs
+Pass `--stable` to exclude preview Xcodes. Daily unstable CI discovers GitHub's
+newest Xcode runner, selects its newest Xcode (including betas), and downloads a
+matching iOS runtime. It also runs
 Apple FFI/NE tests, Release and sanitizer egress tests, XPC checks, and an unsigned
 extension build. Reports name the exact versions; this follows GitHub's image
 updates, not Apple's release day. It does not verify physical iOS devices,

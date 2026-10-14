@@ -16,12 +16,15 @@ struct TcpProxyControl: @unchecked Sendable {
     typealias Setter = @convention(c) (nw_parameters_t, Bool) -> Void
     let setter: Setter?
 
-    // Resolve once per process, never on each flow. No private object layouts
-    // or Swift-to-C object casts are used.
+    // Resolve once per process, only in explicitly opted-in builds.
+    #if PrivateNetworkProxyControl
     static let system = TcpProxyControl(
         setter: dlsym(
             UnsafeMutableRawPointer(bitPattern: -2), "nw_parameters_set_no_proxy"
         ).map { unsafeBitCast($0, to: Setter.self) })
+    #else
+    static let system = TcpProxyControl(setter: nil)
+    #endif
 
     func apply(to parameters: nw_parameters_t, allowProxy: Bool) -> TcpProxyPolicy {
         nw_parameters_set_prefer_no_proxy(parameters, !allowProxy)

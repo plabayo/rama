@@ -2,11 +2,11 @@ import Foundation
 import Network
 import RamaAppleNetwork
 
-/// Native Network.framework TCP connection. The flow pumps retain their existing
-/// interface; parameters and metadata never cross an unsafe Swift-object bridge.
+/// Native Network.framework TCP connection with source-app attribution.
 final class NativeTcpConnection: NwConnectionLike, @unchecked Sendable {
     let native: nw_connection_t
     private let lock = NSLock()
+    private var cancellationRequested = false
     private var currentState: NWConnection.State = .setup
     private var stateHandler: (@Sendable (NWConnection.State) -> Void)?
     private var viabilityHandler: (@Sendable (Bool) -> Void)?
@@ -14,55 +14,46 @@ final class NativeTcpConnection: NwConnectionLike, @unchecked Sendable {
     init?(host: String, port: UInt16, parameters: nw_parameters_t) {
         guard port != 0 else { return nil }
         native = nw_connection_create(nw_endpoint_create_host(host, String(port)), parameters)
+        // Install native callbacks once. Detaching Swift handlers after cancellation
+        // must not reconfigure Network.framework's terminal connection.
+        nw_connection_set_state_changed_handler(native) { [weak self] state, error in
+            guard let self else { return }
+            let converted: NWConnection.State
+            switch state {
+            case nw_connection_state_invalid: converted = .setup
+            case nw_connection_state_waiting:
+                converted = .waiting(Self.error(error) ?? .posix(.EIO))
+            case nw_connection_state_preparing: converted = .preparing
+            case nw_connection_state_ready: converted = .ready
+            case nw_connection_state_failed:
+                converted = .failed(Self.error(error) ?? .posix(.EIO))
+            case nw_connection_state_cancelled: converted = .cancelled
+            default: converted = .failed(.posix(.EIO))
+            }
+            let handler = self.lock.withLock {
+                self.currentState = converted
+                if case .cancelled = converted { self.cancellationRequested = true }
+                return self.stateHandler
+            }
+            handler?(converted)
+        }
+        nw_connection_set_viability_changed_handler(native) { [weak self] viable in
+            guard let self else { return }
+            let handler = self.lock.withLock { self.viabilityHandler }
+            handler?(viable)
+        }
     }
 
     var state: NWConnection.State { lock.withLock { currentState } }
 
     var stateUpdateHandler: (@Sendable (NWConnection.State) -> Void)? {
         get { lock.withLock { stateHandler } }
-        set {
-            lock.withLock { stateHandler = newValue }
-            if newValue == nil {
-                nw_connection_set_state_changed_handler(native, nil)
-            } else {
-                nw_connection_set_state_changed_handler(native) { [weak self] state, error in
-                    guard let self else { return }
-                    let converted: NWConnection.State
-                    switch state {
-                    case nw_connection_state_invalid: converted = .setup
-                    case nw_connection_state_waiting:
-                        converted = .waiting(Self.error(error) ?? .posix(.EIO))
-                    case nw_connection_state_preparing: converted = .preparing
-                    case nw_connection_state_ready: converted = .ready
-                    case nw_connection_state_failed:
-                        converted = .failed(Self.error(error) ?? .posix(.EIO))
-                    case nw_connection_state_cancelled: converted = .cancelled
-                    default: converted = .failed(.posix(.EIO))
-                    }
-                    let handler = self.lock.withLock {
-                        self.currentState = converted
-                        return self.stateHandler
-                    }
-                    handler?(converted)
-                }
-            }
-        }
+        set { lock.withLock { stateHandler = newValue } }
     }
 
     var viabilityUpdateHandler: (@Sendable (Bool) -> Void)? {
         get { lock.withLock { viabilityHandler } }
-        set {
-            lock.withLock { viabilityHandler = newValue }
-            if newValue == nil {
-                nw_connection_set_viability_changed_handler(native, nil)
-            } else {
-                nw_connection_set_viability_changed_handler(native) { [weak self] viable in
-                    guard let self else { return }
-                    let handler = self.lock.withLock { self.viabilityHandler }
-                    handler?(viable)
-                }
-            }
-        }
+        set { lock.withLock { viabilityHandler = newValue } }
     }
 
     func start(queue: DispatchQueue) {
@@ -70,8 +61,16 @@ final class NativeTcpConnection: NwConnectionLike, @unchecked Sendable {
         nw_connection_start(native)
     }
 
-    func cancel() { nw_connection_cancel(native) }
-    func forceCancel() { nw_connection_force_cancel(native) }
+    func cancel() { cancel(force: false) }
+    func forceCancel() { cancel(force: true) }
+
+    private func cancel(force: Bool) {
+        lock.withLock {
+            guard !cancellationRequested else { return }
+            cancellationRequested = true
+            if force { nw_connection_force_cancel(native) } else { nw_connection_cancel(native) }
+        }
+    }
 
     func send(
         content: Data?, contentContext: NWConnection.ContentContext, isComplete: Bool,
@@ -127,8 +126,7 @@ final class NativeTcpConnection: NwConnectionLike, @unchecked Sendable {
                         usedProxy: nw_establishment_report_get_used_proxy(report),
                         proxyConfigured: nw_establishment_report_get_proxy_configured(report),
                         proxyEndpoint: description,
-                        duration: Double(nw_establishment_report_get_duration_milliseconds(report))
-                            / 1_000)
+                        durationMs: nw_establishment_report_get_duration_milliseconds(report))
                 })
         }
     }
@@ -145,8 +143,6 @@ final class NativeTcpConnection: NwConnectionLike, @unchecked Sendable {
     }
 
     deinit {
-        nw_connection_set_state_changed_handler(native, nil)
-        nw_connection_set_viability_changed_handler(native, nil)
-        nw_connection_cancel(native)
+        if !cancellationRequested { nw_connection_cancel(native) }
     }
 }

@@ -726,15 +726,46 @@ struct TcpSessionPendingData {
     egress_connect_options: Option<NwTcpConnectOptions>,
 }
 
+/// Proxy control applied to native TCP parameters, independent of the observed path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TcpProxyPolicy {
+    Allowed,
+    NoProxyApplied,
+    PreferDirectOnly,
+    Unknown(u8),
+}
+
+impl From<u8> for TcpProxyPolicy {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => Self::Allowed,
+            1 => Self::NoProxyApplied,
+            2 => Self::PreferDirectOnly,
+            value => Self::Unknown(value),
+        }
+    }
+}
+
+impl TcpProxyPolicy {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Allowed => "allowed",
+            Self::NoProxyApplied => "no_proxy_applied",
+            Self::PreferDirectOnly => "prefer_direct_only",
+            Self::Unknown(_) => "unknown",
+        }
+    }
+}
+
 /// Snapshot of one TCP egress establishment attempt. Missing report fields
 /// mean Network.framework supplied no report, not that the path was direct.
 #[derive(Debug, PartialEq)]
 pub struct TcpEgressReport<'a> {
     pub ready: bool,
     pub allow_proxy: bool,
-    pub proxy_policy: u8,
+    pub proxy_policy: TcpProxyPolicy,
     pub connect_duration_ms: u64,
-    pub report_duration_ms: Option<f64>,
+    pub report_duration_ms: Option<u64>,
     pub used_proxy: Option<bool>,
     pub proxy_configured: Option<bool>,
     pub proxy_endpoint: Option<&'a str>,
@@ -746,7 +777,7 @@ pub struct TcpEgressReport<'a> {
 pub fn tcp_egress_reporting_enabled() -> bool {
     tracing::event_enabled!(target: "rama_apple_ne::tproxy", tracing::Level::INFO,
         flow_id, remote, pid, bundle_id, signing_id, ready, allow_proxy, proxy_policy,
-        connect_duration_ms, report_available, duration_ms, used_proxy,
+        connect_duration_ms, report_available, report_duration_ms, used_proxy,
         proxy_configured, proxy_endpoint, error, message)
 }
 
@@ -815,15 +846,10 @@ impl TransparentProxyTcpSession {
             signing_id = meta.source_app_signing_identifier.as_deref(),
             ready = report.ready,
             allow_proxy = report.allow_proxy,
-            proxy_policy = match report.proxy_policy {
-                0 => "allowed",
-                1 => "no_proxy_applied",
-                2 => "prefer_direct_only",
-                _ => "unknown",
-            },
+            proxy_policy = report.proxy_policy.as_str(),
             connect_duration_ms = report.connect_duration_ms,
             report_available = report.used_proxy.is_some(),
-            duration_ms = report.report_duration_ms,
+            report_duration_ms = report.report_duration_ms,
             used_proxy = report.used_proxy,
             proxy_configured = report.proxy_configured,
             proxy_endpoint = report.proxy_endpoint,

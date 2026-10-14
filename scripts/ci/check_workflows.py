@@ -144,6 +144,13 @@ def validate(workflow, path):
     validate_step_gates(workflow, path)
     jobs = workflow["jobs"]
     for name, job in jobs.items():
+        if job.get("runs-on") == "${{ needs.apple-runner.outputs.runner }}":
+            assert "apple-runner" in ancestors(jobs, name), "Dynamic Apple runner must depend on its resolver"
+            resolver = jobs["apple-runner"]
+            assert resolver.get("runs-on") == "ubuntu-latest", "Apple resolver must run on Linux"
+            assert resolver.get("outputs", {}).get("runner") == "${{ steps.apple_runner.outputs.runner }}", "Invalid Apple runner output"
+            steps = [step for step in resolver.get("steps", []) if step.get("id") == "apple_runner"]
+            assert len(steps) == 1 and steps[0].get("run") == "just scripts/ci/apple-preview-runner", "Unrecognized Apple runner resolver"
         ancestors(jobs, name)
         for index, row in enumerate(matrix_rows(job.get("strategy", {}).get("matrix", {}))):
             runner = expression(job.get("runs-on", ""), row)

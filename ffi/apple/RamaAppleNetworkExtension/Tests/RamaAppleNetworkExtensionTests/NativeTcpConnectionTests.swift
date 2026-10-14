@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import Network
+import OSLog
 import RamaAppleNEFFI
 import RamaAppleNetwork
 import XCTest
@@ -8,6 +9,18 @@ import XCTest
 @testable import RamaAppleNetworkExtension
 
 final class NativeTcpConnectionTests: XCTestCase {
+    private func assertNoCancellationErrors(_ store: OSLogStore, since position: OSLogPosition)
+        throws
+    {
+        // Native cancellation diagnostics are emitted asynchronously.
+        Thread.sleep(forTimeInterval: 0.5)
+        let errors = try store.getEntries(at: position).compactMap {
+            ($0 as? OSLogEntryLog)?.composedMessage
+        }
+        .filter { $0.contains("already cancelled") || $0.contains("handler after cancel") }
+        XCTAssertTrue(errors.isEmpty, errors.joined(separator: "\n"))
+    }
+
     private func noProxy(_ parameters: nw_parameters_t) throws -> Bool {
         let symbol = try XCTUnwrap(
             dlsym(UnsafeMutableRawPointer(bitPattern: -2), "nw_parameters_get_no_proxy"))
@@ -16,17 +29,26 @@ final class NativeTcpConnectionTests: XCTestCase {
     }
 
     func testPolicyAndCopyAndAllowAfterDeny() throws {
-        guard TcpProxyControl.system.setter != nil else {
-            throw XCTSkip("private no-proxy symbol unavailable")
-        }
-        let params = makeTcpNwParameters(nil)
-        XCTAssertEqual(params.proxyPolicy, .noProxyApplied)
-        XCTAssertTrue(try noProxy(params.native))
-        XCTAssertTrue(try noProxy(nw_parameters_copy(params.native)))
-        XCTAssertTrue(nw_parameters_get_prefer_no_proxy(params.native))
-        XCTAssertEqual(TcpProxyControl.system.apply(to: params.native, allowProxy: true), .allowed)
-        XCTAssertFalse(try noProxy(params.native))
-        XCTAssertFalse(nw_parameters_get_prefer_no_proxy(params.native))
+        #if !PrivateNetworkProxyControl
+            XCTAssertNil(TcpProxyControl.system.setter)
+            let publicOnly = makeTcpNwParameters(nil)
+            XCTAssertEqual(publicOnly.proxyPolicy, .preferDirectOnly)
+            XCTAssertTrue(nw_parameters_get_prefer_no_proxy(publicOnly.native))
+            return
+        #else
+            guard TcpProxyControl.system.setter != nil else {
+                throw XCTSkip("private no-proxy symbol unavailable")
+            }
+            let params = makeTcpNwParameters(nil)
+            XCTAssertEqual(params.proxyPolicy, .noProxyApplied)
+            XCTAssertTrue(try noProxy(params.native))
+            XCTAssertTrue(try noProxy(nw_parameters_copy(params.native)))
+            XCTAssertTrue(nw_parameters_get_prefer_no_proxy(params.native))
+            XCTAssertEqual(
+                TcpProxyControl.system.apply(to: params.native, allowProxy: true), .allowed)
+            XCTAssertFalse(try noProxy(params.native))
+            XCTAssertFalse(nw_parameters_get_prefer_no_proxy(params.native))
+        #endif
     }
 
     func testUnavailableSymbolAndMetadataOrder() throws {
@@ -122,6 +144,76 @@ final class NativeTcpConnectionTests: XCTestCase {
         wait(for: [reported], timeout: 5)
     }
 
+    func testRepeatedCancellationAndDetachment() throws {
+        let store = try OSLogStore(scope: .currentProcessIdentifier)
+        let position = store.position(date: Date())
+        for force in [false, true] {
+            var connection: NativeTcpConnection? = try XCTUnwrap(
+                NativeTcpConnection(
+                    host: "127.0.0.1", port: 9, parameters: makeTcpNwParameters(nil).native))
+            let cancelled = expectation(description: "cancelled once")
+            cancelled.assertForOverFulfill = true
+            connection!.stateUpdateHandler = { if case .cancelled = $0 { cancelled.fulfill() } }
+            connection!.start(queue: DispatchQueue(label: "rama.test.cancel"))
+            if force { connection!.forceCancel() } else { connection!.cancel() }
+            connection!.cancel()
+            connection!.forceCancel()
+            wait(for: [cancelled], timeout: 5)
+            connection!.cancelAndDetach()
+            connection!.forceCancelAndDetach()
+            weak var released = connection
+            connection = nil
+            XCTAssertNil(released)
+        }
+        try assertNoCancellationErrors(store, since: position)
+    }
+
+    func testFrameworkCancellationAndConcurrentTeardown() throws {
+        let store = try OSLogStore(scope: .currentProcessIdentifier)
+        let position = store.position(date: Date())
+        let connection = try XCTUnwrap(
+            NativeTcpConnection(
+                host: "127.0.0.1", port: 9, parameters: makeTcpNwParameters(nil).native))
+        let cancelled = expectation(description: "framework cancelled")
+        connection.stateUpdateHandler = { if case .cancelled = $0 { cancelled.fulfill() } }
+        connection.start(queue: DispatchQueue(label: "rama.test.external-cancel"))
+        nw_connection_cancel(connection.native)
+        wait(for: [cancelled], timeout: 5)
+        DispatchQueue.concurrentPerform(iterations: 64) { index in
+            if index.isMultiple(of: 2) {
+                connection.cancelAndDetach()
+            } else {
+                connection.forceCancelAndDetach()
+            }
+        }
+        if case .cancelled = connection.state {} else { XCTFail("terminal state lost") }
+        try assertNoCancellationErrors(store, since: position)
+    }
+
+    func testReleaseCancelsLiveConnection() throws {
+        let store = try OSLogStore(scope: .currentProcessIdentifier)
+        let position = store.position(date: Date())
+        let server = try EchoServer(proxy: false)
+        defer { server.cancel() }
+        var connection: NativeTcpConnection? = try XCTUnwrap(
+            NativeTcpConnection(
+                host: "127.0.0.1", port: server.port, parameters: makeTcpNwParameters(nil).native))
+        let ready = expectation(description: "ready")
+        connection!.stateUpdateHandler = { if case .ready = $0 { ready.fulfill() } }
+        connection!.start(queue: DispatchQueue(label: "rama.test.release"))
+        wait(for: [ready], timeout: 5)
+        let native = connection!.native
+        let cancelled = expectation(description: "deinit cancels live native connection")
+        nw_connection_set_state_changed_handler(native) { state, _ in
+            if state == nw_connection_state_cancelled { cancelled.fulfill() }
+        }
+        weak var released = connection
+        connection = nil
+        XCTAssertNil(released)
+        wait(for: [cancelled], timeout: 5)
+        try assertNoCancellationErrors(store, since: position)
+    }
+
     @available(macOS 14.0, *)
     private func proxiedParameters(
         port: UInt16, allow: Bool, missingSymbol: Bool = false, proxyHost: String = "127.0.0.1"
@@ -199,6 +291,14 @@ final class NativeTcpConnectionTests: XCTestCase {
         }
         connection.start(queue: DispatchQueue(label: "rama.test.deny"))
         wait(for: [failed], timeout: 10)
+        let reportRead = expectation(description: "failed establishment has no report")
+        connection.requestTcpEstablishmentReport(
+            queue: DispatchQueue(label: "rama.test.failed-report")
+        ) { report in
+            XCTAssertNil(report)
+            reportRead.fulfill()
+        }
+        wait(for: [reportRead], timeout: 5)
         let observed = expectation(description: "fallback observation window")
         DispatchQueue.global().asyncAfter(deadline: .now() + 2) { observed.fulfill() }
         wait(for: [observed], timeout: 3)
