@@ -4,7 +4,6 @@ use rama_tls::{
     fingerprint::Ja4S,
     server::{ServerHello, TlsServerConfig, parse_encrypted_extensions},
 };
-use rama_tls_boring::client::BoringClientConfigExt as _;
 
 use super::*;
 

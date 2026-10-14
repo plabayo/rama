@@ -9,12 +9,13 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     io::BridgeIo,
     rt::Executor,
+    telemetry::tracing,
 };
 use rama_crypto::{
     dep::boring::{
         ssl::{
-            AsyncSelectCertError, BoxCertificateFinish, CertificateSelection, SelectCertError,
-            SslCredential, SslRef,
+            AsyncSelectCertError, BoxCertificateFinish, CertificateSelection, GreaseValues,
+            SelectCertError, SslCredential, SslRef, UnknownValues,
         },
         x509::X509,
     },
@@ -26,12 +27,20 @@ use rama_net::{
     http::{TargetHttpVersion, Version},
     tls::ApplicationProtocol,
 };
-use rama_quic_proto::{ConnectionId, VarInt, crypto::CryptoError, peek::PeekedClientHello};
+use rama_quic_proto::{
+    ConnectionId, VarInt,
+    capture::{CaptureLimits, transport_parameters_from_hello},
+    crypto::CryptoError,
+    peek::PeekedClientHello,
+    profile::{
+        PacketizationProfile, ParameterId, QuicProfile, TransportLimits, TransportParameterProfile,
+    },
+};
 use rama_tls::{
-    client::TlsClientConfig,
+    client::{ClientHello, TlsClientConfig},
     server::{ServerAuthData, TlsServerConfig},
 };
-use rama_tls_boring::client::ServerAnswerRecorder;
+use rama_tls_boring::client::{BoringClientConfigExt as _, ServerAnswerRecorder};
 use rama_tls_boring::proxy::{
     cert_issuer::BoringMitmCertIssuer,
     client_auth::{
@@ -48,7 +57,8 @@ use tokio::{
 
 use super::InputWithQuicClientHello;
 use crate::{
-    ClientConfig, Connecting, Connection, Endpoint, IncomingOutcome, ServerConfig, TransportConfig,
+    ClientConfig, Connecting, Connection, Endpoint, EndpointConfig, IncomingOutcome, ServerConfig,
+    TransportConfig,
     proto::ServerCrypto,
     proto::crypto::{
         self,
@@ -95,6 +105,7 @@ pub struct QuicMitmRelay<Issuer> {
     validate_address: bool,
     failure_code: VarInt,
     client_auth: Option<TlsMitmClientAuthPolicy>,
+    mirror_client: bool,
 }
 
 impl<Issuer> QuicMitmRelay<Issuer> {
@@ -121,6 +132,22 @@ impl<Issuer> QuicMitmRelay<Issuer> {
             validate_address: true,
             failure_code,
             client_auth: None,
+            mirror_client: false,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Whether the origin sees the client's own first flight instead of the egress
+        /// configuration's (default: off). The ClientHello is mirrored exactly, unknown
+        /// values preserved and GREASE codepoints pinned, with the configured egress TLS
+        /// layered over it (its trust and every setting it names win); the transport
+        /// parameters keep the client's order, greased parameter, extra parameters and
+        /// limits, while connection IDs stay fresh and datagram support stays the relay's.
+        /// What cannot be mirrored falls back to the configuration. An origin that selects or
+        /// answers a preserved value fails the handshake.
+        pub fn mirror_client(mut self, mirror: bool) -> Self {
+            self.mirror_client = mirror;
+            self
         }
     }
 
@@ -439,21 +466,11 @@ where
             .lock()
             .take()
             .ok_or_else(|| BoxError::from_static_str("QUIC MITM origin already reached"))?;
-        let offered = self.peeked.client_hello.ext_alpn().unwrap_or_default();
-        let mut tls = self.relay.egress_tls.clone();
-        // The client's order, bounded by what the egress configuration allows.
-        let allowed = match tls.alpn() {
-            Some(configured) => offered
-                .iter()
-                .filter(|protocol| configured.0.contains(protocol))
-                .cloned()
-                .collect(),
-            None => offered.iter().cloned().collect(),
-        };
-        tls.set_alpn(allowed);
         let (exchange, requested) = if self.client_auth.is_some() {
             // A resumed origin session would reuse an earlier client's authentication.
-            if tls
+            if self
+                .relay
+                .egress_tls
                 .as_extensions()
                 .get_ref::<SharedClientSessions>()
                 .is_some()
@@ -472,24 +489,84 @@ where
         };
         let answer = Arc::new(Mutex::new(None::<ServerAnswerRecorder>));
         let observed = answer.clone();
-        tls.insert(HandshakeInitializer(Arc::new(move |ssl: &mut SslRef| {
+        let initializer = HandshakeInitializer(Arc::new(move |ssl: &mut SslRef| {
             *observed.lock() = Some(ServerAnswerRecorder::of(ssl)?);
             match &exchange {
                 Some(exchange) => pause_at_certificate_request(ssl, exchange.clone()),
                 None => ssl.set_certificate_callback(|_| Err(SelectCertError::ERROR)),
             }
             Ok(())
-        })));
-        let mut client = ClientConfig::try_from_rama_tls_with_provider(
-            &tls,
-            TlsOptions::default(),
-            &BoringTlsProvider,
-        )?;
-        client.set_transport_config(self.relay.egress_transport.clone());
+        }));
+        let offered = self.peeked.client_hello.ext_alpn().unwrap_or_default();
+        let client_config = |mut tls: TlsClientConfig| {
+            // The client's order, bounded by what the egress configuration allows.
+            let allowed = match self.relay.egress_tls.alpn() {
+                Some(configured) => offered
+                    .iter()
+                    .filter(|protocol| configured.0.contains(protocol))
+                    .cloned()
+                    .collect(),
+                None => offered.iter().cloned().collect(),
+            };
+            tls.set_alpn(allowed);
+            tls.insert(initializer.clone());
+            ClientConfig::try_from_rama_tls_with_provider(
+                &tls,
+                TlsOptions::default(),
+                &BoringTlsProvider,
+            )
+        };
+        let mut client = if self.relay.mirror_client {
+            // The configured egress TLS layers over the mirror: its trust and every
+            // setting it names win.
+            let mirrored = TlsClientConfig::new_from_client_hello(&self.peeked.client_hello)
+                .with_unknown_values(UnknownValues::Preserve)
+                .with_grease_values(GreaseValues::Pinned)
+                .with_overrides(self.relay.egress_tls.as_extensions());
+            match client_config(mirrored) {
+                Ok(client) => client,
+                Err(error) => {
+                    tracing::debug!(%error, "QUIC MITM: the client's ClientHello cannot be mirrored");
+                    client_config(self.relay.egress_tls.clone())?
+                }
+            }
+        } else {
+            client_config(self.relay.egress_tls.clone())?
+        };
+        let mirrored = self
+            .relay
+            .mirror_client
+            .then(|| {
+                mirrored_profile(&self.relay.egress_transport, &self.peeked.client_hello)
+                    .and_then(|profile| {
+                        let transport = TransportConfig::clone(&self.relay.egress_transport)
+                            .try_with_quic_profile(&profile)?;
+                        let mut endpoint = EndpointConfig::try_with_rand_key()?;
+                        endpoint.apply_quic_profile(&profile)?;
+                        Ok::<_, BoxError>((Arc::new(transport), endpoint))
+                    })
+                    .inspect_err(|error| {
+                        tracing::debug!(
+                            %error,
+                            "QUIC MITM: the client's transport parameters cannot be mirrored"
+                        );
+                    })
+                    .ok()
+            })
+            .flatten();
+        let (transport, endpoint_config) = match mirrored {
+            Some((transport, endpoint)) => (transport, Some(endpoint)),
+            None => (self.relay.egress_transport.clone(), None),
+        };
+        client.set_transport_config(transport);
         client.set_version(self.peeked.version)?;
 
         let origin = egress.peer_addr()?;
-        let endpoint = Endpoint::build(self.relay.exec.clone()).with_datagram_socket(egress)?;
+        // QUIC bit greasing and the payload limit are endpoint-wide; a mirroring egress
+        // advertises them as its client did.
+        let endpoint = Endpoint::build(self.relay.exec.clone())
+            .maybe_with_config(endpoint_config)
+            .with_datagram_socket(egress)?;
         let mut connecting =
             endpoint.connect_with(client, origin.into(), &self.server_name.to_string())?;
         let (connection, negotiated, origin_leaf, request) = if let Some(requested) = requested {
@@ -655,6 +732,32 @@ where
             )))
         })
     }
+}
+
+/// The profile of the transport parameters `client_hello` carries: their order, extra
+/// parameters, limits and QUIC bit greasing. Datagram support and the first datagram size stay
+/// `base`'s own, as the relay carries datagrams only when both of its transports do.
+fn mirrored_profile(
+    base: &TransportConfig,
+    client_hello: &ClientHello,
+) -> Result<QuicProfile, BoxError> {
+    let sent = transport_parameters_from_hello(client_hello, &CaptureLimits::default())?;
+    let mut parameters = TransportParameterProfile::try_from_sent(&sent)?;
+    let mut limits = TransportLimits::try_from_sent(&sent)?;
+    if base.datagram_receive_buffer_size.is_none() {
+        parameters = parameters.try_with_max_datagram_frame_size(None)?;
+    }
+    limits.datagram_receive_buffer_size = base.datagram_receive_buffer_size;
+    let packetization =
+        PacketizationProfile::standard().try_with_initial_datagram_size(base.initial_mtu)?;
+    Ok(QuicProfile::standard()
+        .with_transport_parameters(parameters)
+        .with_packetization(packetization)
+        .try_with_limits(limits)?
+        .with_grease_quic_bit(
+            sent.iter()
+                .any(|parameter| parameter.id == ParameterId::GREASE_QUIC_BIT),
+        ))
 }
 
 /// The protocol an established origin negotiated, and the leaf it presented.

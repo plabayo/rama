@@ -1401,3 +1401,99 @@ fn a_permuting_browser_draws_its_extension_order_per_connection() {
     // Twelve extensions permute; four equal draws would mean the order is not drawn.
     assert!(orders.iter().any(|order| *order != orders[0]));
 }
+
+/// Compiling a browser's sent transport parameters reproduces the layout and limits its
+/// hand-written profile states, except what a relay pins instead of drawing.
+#[cfg(feature = "boring")]
+#[test]
+fn sent_transport_parameters_compile_to_the_captured_layouts() {
+    use rama_quic_proto::capture::transport_parameters_from_hello;
+    let compile = |files| {
+        let sent = transport_parameters_from_hello(
+            &captured_client_hello(files),
+            &CaptureLimits::default(),
+        )
+        .unwrap();
+        (
+            sent.clone(),
+            TransportParameterProfile::try_from_sent(&sent).unwrap(),
+            TransportLimits::try_from_sent(&sent).unwrap(),
+        )
+    };
+
+    let (sent, parameters, limits) =
+        compile(["firefox-156-initial-1.hex", "firefox-156-initial-2.hex"]);
+    let firefox = firefox_156();
+    let ParameterOrder::Fixed(expected_order) = firefox.transport_parameters().order() else {
+        panic!("Firefox writes a fixed order");
+    };
+    assert_eq!(
+        parameters.order(),
+        &ParameterOrder::FixedWithExplicitDefaults(sent.iter().map(|p| p.id).collect())
+    );
+    assert_eq!(
+        &sent.iter().map(|p| p.id).collect::<Vec<_>>(),
+        expected_order
+    );
+    assert_eq!(parameters.grease(), &GreaseParameter::None);
+    assert_eq!(parameters.extra(), firefox.transport_parameters().extra());
+    assert_eq!(
+        parameters.max_datagram_frame_size(),
+        firefox.transport_parameters().max_datagram_frame_size()
+    );
+    assert_eq!(
+        parameters.sends_min_ack_delay(),
+        firefox.transport_parameters().sends_min_ack_delay()
+    );
+    assert_eq!(&limits, firefox.limits());
+
+    let (sent, parameters, limits) =
+        compile(["chrome-153-initial-1.hex", "chrome-153-initial-2.hex"]);
+    let chrome = chrome_153();
+    // Chrome draws its order and greased parameter per connection; a relay pins the drawn
+    // ones, the greased parameter as an extra parameter with its value.
+    let grease = sent.iter().find(|p| p.id.is_reserved()).unwrap();
+    assert_eq!(grease.value.len(), 4);
+    assert_eq!(parameters.grease(), &GreaseParameter::None);
+    assert_eq!(
+        parameters.order(),
+        &ParameterOrder::FixedWithExplicitDefaults(sent.iter().map(|p| p.id).collect())
+    );
+    assert!(
+        parameters
+            .extra()
+            .iter()
+            .any(|extra| extra.id == grease.id && extra.value == grease.value)
+    );
+    let mut chrome_extra = parameters.extra().to_vec();
+    chrome_extra.retain(|extra| extra.id != grease.id);
+    assert_eq!(chrome_extra, chrome.transport_parameters().extra());
+    assert_eq!(
+        parameters.max_datagram_frame_size(),
+        chrome.transport_parameters().max_datagram_frame_size()
+    );
+    let expected = chrome.limits();
+    assert_eq!(limits.initial_max_data, expected.initial_max_data);
+    assert_eq!(
+        (
+            limits.initial_max_stream_data_bidi_local,
+            limits.initial_max_stream_data_bidi_remote,
+            limits.initial_max_stream_data_uni,
+            limits.initial_max_streams_bidi,
+            limits.initial_max_streams_uni,
+        ),
+        (
+            expected.initial_max_stream_data_bidi_local,
+            expected.initial_max_stream_data_bidi_remote,
+            expected.initial_max_stream_data_uni,
+            expected.initial_max_streams_bidi,
+            expected.initial_max_streams_uni,
+        )
+    );
+    assert_eq!(limits.max_idle_timeout, expected.max_idle_timeout);
+    assert_eq!(limits.max_udp_payload_size, expected.max_udp_payload_size);
+    assert_eq!(
+        limits.datagram_receive_buffer_size,
+        expected.datagram_receive_buffer_size
+    );
+}

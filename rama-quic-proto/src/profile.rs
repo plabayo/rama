@@ -21,7 +21,8 @@ use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    MAX_CID_SIZE, VarInt, transport_parameters::TransportParameters, version::ClientVersionPolicy,
+    MAX_CID_SIZE, VarInt, coding::BufExt as _, transport_parameters::TransportParameters,
+    version::ClientVersionPolicy,
 };
 
 /// The identifier of a transport parameter (RFC 9000 §18.2 and the QUIC transport parameter
@@ -183,6 +184,13 @@ pub enum GreaseParameter {
     Fixed { id: ParameterId, value: Vec<u8> },
 }
 
+/// A transport parameter as it was sent: identifier and raw value, in wire order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RawParameter {
+    pub id: ParameterId,
+    pub value: Vec<u8>,
+}
+
 /// A transport parameter this crate does not interpret, written as given.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OpaqueParameter {
@@ -314,6 +322,36 @@ impl TransportParameterProfile {
     #[must_use]
     pub fn standard() -> Self {
         Self::default()
+    }
+
+    /// The layout of the transport parameters a client sent, for a relay that repeats them:
+    /// their order, and every parameter this crate does not interpret (a greased one
+    /// included) with its value, as sent. Values this crate derives per connection
+    /// (connection IDs, tokens) or takes from [`TransportLimits`] are not part of a layout.
+    pub fn try_from_sent(parameters: &[RawParameter]) -> Result<Self, ProfileError> {
+        let mut order = Vec::with_capacity(parameters.len());
+        let mut extra = Vec::new();
+        let mut min_ack_delay = false;
+        let mut max_datagram_frame_size = None;
+        for RawParameter { id, value } in parameters {
+            order.push(*id);
+            if *id == ParameterId::MIN_ACK_DELAY {
+                min_ack_delay = true;
+            } else if *id == ParameterId::MAX_DATAGRAM_FRAME_SIZE {
+                max_datagram_frame_size = Some(sent_integer(*id, value)?);
+            } else if !id.is_known() {
+                extra.push(OpaqueParameter {
+                    id: *id,
+                    value: value.clone(),
+                });
+            }
+        }
+        Self::standard()
+            .try_with_order(ParameterOrder::FixedWithExplicitDefaults(order))?
+            .try_with_grease(GreaseParameter::None)?
+            .try_with_extra(extra)?
+            .with_min_ack_delay(min_ack_delay)
+            .try_with_max_datagram_frame_size(max_datagram_frame_size)
     }
 
     #[must_use]
@@ -742,6 +780,50 @@ impl TryFrom<TransportLimitsRepr> for TransportLimits {
 }
 
 impl TransportLimits {
+    /// The limits a client's sent transport parameters advertised, over
+    /// [`Self::protocol_defaults`] for those it omitted.
+    pub fn try_from_sent(parameters: &[RawParameter]) -> Result<Self, ProfileError> {
+        let mut limits = Self::protocol_defaults();
+        for RawParameter { id, value } in parameters {
+            let integer = || sent_integer(*id, value);
+            match *id {
+                ParameterId::MAX_IDLE_TIMEOUT => {
+                    limits.max_idle_timeout = Duration::from_millis(integer()?);
+                }
+                ParameterId::MAX_UDP_PAYLOAD_SIZE => limits.max_udp_payload_size = integer()?,
+                ParameterId::INITIAL_MAX_DATA => limits.initial_max_data = integer()?,
+                ParameterId::INITIAL_MAX_STREAM_DATA_BIDI_LOCAL => {
+                    limits.initial_max_stream_data_bidi_local = integer()?;
+                }
+                ParameterId::INITIAL_MAX_STREAM_DATA_BIDI_REMOTE => {
+                    limits.initial_max_stream_data_bidi_remote = integer()?;
+                }
+                ParameterId::INITIAL_MAX_STREAM_DATA_UNI => {
+                    limits.initial_max_stream_data_uni = integer()?;
+                }
+                ParameterId::INITIAL_MAX_STREAMS_BIDI => {
+                    limits.initial_max_streams_bidi = integer()?;
+                }
+                ParameterId::INITIAL_MAX_STREAMS_UNI => limits.initial_max_streams_uni = integer()?,
+                ParameterId::MAX_ACK_DELAY => {
+                    limits.max_ack_delay = Duration::from_millis(integer()?);
+                }
+                ParameterId::ACTIVE_CONNECTION_ID_LIMIT => {
+                    limits.active_connection_id_limit = Some(integer()?);
+                }
+                ParameterId::MAX_DATAGRAM_FRAME_SIZE => {
+                    limits.datagram_receive_buffer_size = Some(
+                        usize::try_from(integer()?)
+                            .map_err(|_error| ProfileError::Limit("max_datagram_frame_size"))?,
+                    );
+                }
+                _ => {}
+            }
+        }
+        limits.check()?;
+        Ok(limits)
+    }
+
     /// Limits implied by omitted transport parameters (RFC 9000 section 18.2).
     ///
     /// Capture compilers start here and replace only observed values. In
@@ -943,6 +1025,18 @@ impl QuicProfile {
 
 #[cfg(feature = "std")]
 impl Extension for QuicProfile {}
+
+/// The integer value of a sent transport parameter, which must fill its value exactly.
+fn sent_integer(id: ParameterId, value: &[u8]) -> Result<u64, ProfileError> {
+    let mut reader = value;
+    let integer = reader
+        .get_var()
+        .map_err(|_error| ProfileError::Limit("transport parameter integer"))?;
+    if !reader.is_empty() {
+        return Err(ProfileError::ValueTooLong(id));
+    }
+    Ok(integer)
+}
 
 #[cfg(test)]
 mod tests {

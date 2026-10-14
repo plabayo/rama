@@ -669,12 +669,7 @@ pub fn client_hello_with_limits(
     Ok(assembly.client_hello().map(<[u8]>::to_vec))
 }
 
-/// A transport parameter as it was sent: identifier and raw value, in wire order.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RawParameter {
-    pub id: ParameterId,
-    pub value: Vec<u8>,
-}
+pub use crate::profile::RawParameter;
 
 /// The transport parameters of a ClientHello handshake message, in the order they were sent.
 pub fn transport_parameters(client_hello: &[u8]) -> Result<Vec<RawParameter>, CaptureError> {

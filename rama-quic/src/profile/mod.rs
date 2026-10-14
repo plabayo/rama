@@ -17,7 +17,7 @@ pub mod capture;
         all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))
     )
 ))]
-mod browsers;
+pub(crate) mod browsers;
 
 #[cfg(all(
     test,
@@ -132,6 +132,12 @@ impl TransportConfig {
     /// remote connection IDs than the engine retains is rejected. Connection creation
     /// also checks that the endpoint-wide settings match this profile.
     pub fn from_quic_profile(profile: &QuicProfile) -> Result<Self, ConfigError> {
+        Self::default().try_with_quic_profile(profile)
+    }
+
+    /// This configuration advertising `profile`'s limits and carrying its layout; every other
+    /// setting stays as it is.
+    pub fn try_with_quic_profile(self, profile: &QuicProfile) -> Result<Self, ConfigError> {
         let limits = profile.limits();
         if limits
             .active_connection_id_limit
@@ -158,7 +164,7 @@ impl TransportConfig {
         let initial_max_stream_data_bidi_remote =
             VarInt::from_u64(limits.initial_max_stream_data_bidi_remote)?;
         let initial_max_stream_data_uni = VarInt::from_u64(limits.initial_max_stream_data_uni)?;
-        let mut config = Self::default()
+        let mut config = self
             .with_max_concurrent_bidi_streams(initial_max_streams_bidi)
             .with_max_concurrent_uni_streams(initial_max_streams_uni)
             .with_receive_window(initial_max_data)
