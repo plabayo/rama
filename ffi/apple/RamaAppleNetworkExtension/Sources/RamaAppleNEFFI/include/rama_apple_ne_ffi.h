@@ -518,8 +518,13 @@ typedef struct {
     /// constructing the NWConnection. Defaults to true on the Rust side.
     bool preserve_original_meta_data;
     /// When false (Rust-side default), Swift sets preferNoProxies = true on
-    /// egress to break the stacked-proxy loop. Scopes the SystemConfiguration
-    /// proxy table only — other NE providers / VPNs are unaffected.
+    /// egress to prefer a direct connection. Network.framework may still fall
+    /// back to a system or PAC proxy; local-proxy loops remain possible.
+    /// True only drops the preference. Other NE providers / VPNs are unaffected.
+    /// See <Network/parameters.h>, nw_parameters_set_prefer_no_proxy:
+    /// https://developer.apple.com/documentation/network/nw_parameters_set_prefer_no_proxy(_:_:)
+    /// https://developer.apple.com/forums/thread/828775
+    /// https://developer.apple.com/forums/thread/832291
     bool allow_system_proxy;
 } RamaNwEgressParameters;
 
@@ -856,6 +861,27 @@ void rama_transparent_proxy_tcp_session_on_client_eof(RamaTransparentProxyTcpSes
 
 /// Cancel TCP session and suppress any future server callbacks for this session.
 void rama_transparent_proxy_tcp_session_cancel(RamaTransparentProxyTcpSession* session);
+
+/// Borrowed diagnostic snapshot. String pointers are valid for their lengths
+/// during the call only. Unavailable reports leave proxy fields unknown.
+typedef struct {
+    bool ready;
+    bool report_available;
+    bool used_proxy;
+    bool proxy_configured;
+    uint64_t connect_duration_ms;
+    double report_duration_ms;
+    const char *proxy_endpoint_utf8;
+    size_t proxy_endpoint_utf8_len;
+    const char *error_utf8;
+    size_t error_utf8_len;
+} RamaTcpEgressReport;
+
+/// Read-only diagnostics are valid even after cancel, until session_free.
+/// Serialize these calls with all other entries on the same live session.
+uint64_t rama_transparent_proxy_tcp_session_flow_id(RamaTransparentProxyTcpSession *session);
+void rama_transparent_proxy_tcp_session_report_egress(
+    RamaTransparentProxyTcpSession *session, const RamaTcpEgressReport *report);
 
 /// Query handler-supplied egress connect options for a TCP session.
 ///

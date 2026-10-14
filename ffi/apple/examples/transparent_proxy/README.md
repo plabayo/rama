@@ -468,7 +468,21 @@ log show --last 8m --style ndjson --info --debug \
 echo "$DEST"
 ```
 
-Failure signature of intercept-but-no-forward:
+TCP egress now emits `transparent proxy tcp egress establishment`, joined to the
+Rust close events and Swift `tcp_terminal` records by `flow_id`. `ready=false`
+means establishment failed; `error` carries the final connection error. A missing
+Network.framework report is marked `report_available=false`, with proxy fields
+absent rather than reported as false. `connect_duration_ms` measures from start
+to ready/failure; `duration_ms` comes from Apple's establishment report. A later
+failure appears in `tcp_terminal event=egress_failure` with its error kind/code.
+
+Promoted relays emit `transparent proxy tcp bridge handed off` with
+`mode=promoted`, `counters_scope=until_handoff`, and
+`bytes_received_until_handoff` / `bytes_sent_until_handoff`. These describe the
+Rust bridge only, not final connection totals or the time of transport closure.
+Use Swift terminal diagnostics to investigate the relay's actual teardown.
+
+Failure signature of intercept-but-no-forward on the Rust data path:
 
 1. `transparent proxy tcp flow closed` with `bytes_sent=0` (client request
    received, nothing returned), and many closes with `age_ms < 50` (flows

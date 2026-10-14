@@ -769,6 +769,30 @@ macro_rules! __transparent_proxy_ffi_emit {
             unsafe { (*session).on_client_close() };
         }
 
+        /// Stable flow join key; zero for a null session.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_flow_id(
+            session: *mut RamaTransparentProxyTcpSession,
+        ) -> u64 {
+            if session.is_null() {
+                return 0;
+            }
+            unsafe { &*session }.flow_id()
+        }
+
+        /// Borrowed strings are copied synchronously; valid after cancel until free.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_report_egress(
+            session: *mut RamaTransparentProxyTcpSession,
+            report: *const $crate::ffi::tproxy::TcpEgressReport,
+        ) {
+            if session.is_null() || report.is_null() {
+                return;
+            }
+            let report = unsafe { (&*report).to_rust_type() };
+            unsafe { &*session }.report_egress(&report);
+        }
+
         // ── TCP egress ──────────────────────────────────────────────────────────
 
         /// Query handler-supplied egress connect options for a TCP session.

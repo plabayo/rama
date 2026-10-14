@@ -726,7 +726,22 @@ struct TcpSessionPendingData {
     egress_connect_options: Option<NwTcpConnectOptions>,
 }
 
+/// Snapshot of one TCP egress establishment attempt. Missing report fields
+/// mean Network.framework supplied no report, not that the path was direct.
+#[derive(Debug, PartialEq)]
+pub struct TcpEgressReport {
+    pub ready: bool,
+    pub connect_duration_ms: u64,
+    pub report_duration_ms: Option<f64>,
+    pub used_proxy: Option<bool>,
+    pub proxy_configured: Option<bool>,
+    pub proxy_endpoint: Option<Box<str>>,
+    pub error: Option<Box<str>>,
+}
+
 pub struct TransparentProxyTcpSession {
+    /// Retained beyond activation so asynchronous diagnostics keep their join key.
+    diagnostic_meta: TransparentProxyFlowMeta,
     // ingress data path
     //
     // Shared with `promote::PromoteRegistry` so the promote fire
@@ -771,6 +786,34 @@ pub struct TransparentProxyTcpSession {
 }
 
 impl TransparentProxyTcpSession {
+    /// Stable Rust flow identifier, including after activation or cancellation.
+    pub fn flow_id(&self) -> u64 {
+        self.diagnostic_meta.flow_id
+    }
+
+    /// Log a Swift establishment snapshot at the same level/privacy as closure.
+    /// This observes metadata only and remains valid after cancellation.
+    pub fn report_egress(&self, report: &TcpEgressReport) {
+        let meta = &self.diagnostic_meta;
+        tracing::info!(
+            target: "rama_apple_ne::tproxy",
+            flow_id = meta.flow_id,
+            remote = meta.remote_endpoint.as_ref().map(tracing::field::display),
+            pid = meta.source_app_pid,
+            bundle_id = meta.source_app_bundle_identifier.as_deref(),
+            signing_id = meta.source_app_signing_identifier.as_deref(),
+            ready = report.ready,
+            connect_duration_ms = report.connect_duration_ms,
+            report_available = report.used_proxy.is_some(),
+            duration_ms = report.report_duration_ms,
+            used_proxy = report.used_proxy,
+            proxy_configured = report.proxy_configured,
+            proxy_endpoint = report.proxy_endpoint.as_deref(),
+            error = report.error.as_deref(),
+            "transparent proxy tcp egress establishment",
+        );
+    }
+
     /// Called by Swift when client bytes arrive on the intercepted flow.
     ///
     /// See [`TcpDeliverStatus`] for the return contract. Never blocks the
@@ -1342,6 +1385,18 @@ where
     let on_client_read_demand_guarded =
         guarded_demand_sink(callback_active.clone(), Arc::new(on_client_read_demand));
 
+    let client_tx_shared = Arc::new(parking_lot::Mutex::new(Some(client_tx)));
+    let egress_tx_shared: Arc<parking_lot::Mutex<Option<mpsc::Sender<Bytes>>>> =
+        Arc::new(parking_lot::Mutex::new(None));
+    let egress_read_failed = Arc::new(AtomicBool::new(false));
+    let promote_registry = promote::PromoteRegistry::new(
+        client_tx_shared.clone(),
+        egress_tx_shared.clone(),
+        callback_active.clone(),
+    );
+
+    let promoted_for_close = promote_registry.promoted.clone();
+
     // Capture the current runtime handle so `activate` (which Swift may
     // call from an external, non-Tokio thread) can back the promote handle.
     let rt_handle = OwnedRuntimeHandle::current();
@@ -1529,10 +1584,12 @@ where
         );
         #[cfg(not(feature = "dial9"))]
         let _ = dial9_reason;
+        let promoted = promoted_for_close.load(Ordering::Acquire);
         emit_tcp_bridge_close_event(
             BridgeDirection::Ingress,
             ingress_reason,
             &meta_for_close,
+            promoted,
             ingress_received,
             ingress_sent,
         );
@@ -1540,6 +1597,7 @@ where
             BridgeDirection::Egress,
             egress_reason,
             &meta_for_close,
+            promoted,
             egress_received,
             egress_sent,
         );
@@ -1575,23 +1633,14 @@ where
         ingress_close_reason,
         egress_close_reason,
         flow_close_reason,
-        meta,
+        meta: meta.clone(),
         flow_guard,
         rt_handle,
         egress_connect_options,
     };
 
-    let client_tx_shared = Arc::new(parking_lot::Mutex::new(Some(client_tx)));
-    let egress_tx_shared: Arc<parking_lot::Mutex<Option<mpsc::Sender<Bytes>>>> =
-        Arc::new(parking_lot::Mutex::new(None));
-    let egress_read_failed = Arc::new(AtomicBool::new(false));
-    let promote_registry = promote::PromoteRegistry::new(
-        client_tx_shared.clone(),
-        egress_tx_shared.clone(),
-        callback_active.clone(),
-    );
-
     SessionFlowAction::Intercept(TransparentProxyTcpSession {
+        diagnostic_meta: meta,
         client_tx: client_tx_shared,
         saw_client_bytes: false,
         saw_server_bytes: false,
@@ -2968,6 +3017,7 @@ fn emit_tcp_bridge_close_event(
     direction: BridgeDirection,
     reason: BridgeCloseReason,
     meta: &TransparentProxyFlowMeta,
+    promoted: bool,
     bytes_received: u64,
     bytes_sent: u64,
 ) {
@@ -2993,8 +3043,12 @@ fn emit_tcp_bridge_close_event(
         direction = %direction,
         reason = %reason,
         age_ms,
-        bytes_received,
-        bytes_sent,
+        mode = if promoted { "promoted" } else { "via_rust" },
+        counters_scope = if promoted { "until_handoff" } else { "bridge_lifetime" },
+        bytes_received = (!promoted).then_some(bytes_received),
+        bytes_sent = (!promoted).then_some(bytes_sent),
+        bytes_received_until_handoff = promoted.then_some(bytes_received),
+        bytes_sent_until_handoff = promoted.then_some(bytes_sent),
         pid = meta.source_app_pid,
         bundle_id = meta.source_app_bundle_identifier.as_deref(),
         signing_id = meta.source_app_signing_identifier.as_deref(),
@@ -3006,7 +3060,11 @@ fn emit_tcp_bridge_close_event(
         local_interface_type = ?meta.local_interface_type,
         local_interface_index = meta.local_interface_index,
         is_bound = meta.is_bound,
-        "transparent proxy tcp flow closed",
+        message = if promoted {
+            "transparent proxy tcp bridge handed off"
+        } else {
+            "transparent proxy tcp flow closed"
+        },
     );
 }
 

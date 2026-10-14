@@ -11,14 +11,26 @@
 import Foundation
 import Network
 
+/// Value snapshot of the Network.framework establishment report.
+struct TcpEstablishmentReport: Sendable {
+    let usedProxy: Bool
+    let proxyConfigured: Bool
+    let proxyEndpoint: String?
+    let duration: TimeInterval
+}
+
 /// The surface of `NWConnection` that the per-flow code in
 /// `RamaTransparentProxyProvider` actually uses.
 ///
 /// Abstracted behind a protocol so `TcpFlowSession` / `UdpFlowSession`
 /// can be driven by `MockNwConnection` in unit tests instead of by
-/// a real `NWConnection`. Production conforms via the trivial
-/// extension below.
+/// a real `NWConnection`. Production maps establishment reports into a
+/// small value snapshot in the extension below.
 protocol NwConnectionLike: AnyObject, Sendable {
+    func requestTcpEstablishmentReport(
+        queue: DispatchQueue,
+        completion: @escaping @Sendable (TcpEstablishmentReport?) -> Void)
+
     var state: NWConnection.State { get }
 
     // Matches `NWConnection`'s real `@Sendable` declaration so the
@@ -65,11 +77,32 @@ protocol NwConnectionLike: AnyObject, Sendable {
 }
 
 // `NWConnection` already exposes `stateUpdateHandler` / `viabilityUpdateHandler`
-// with matching signatures, so the conformance is trivial.
+// with matching signatures; only the report needs a value-snapshot adapter.
 extension NWConnection: @unchecked @retroactive Sendable {}
-extension NWConnection: NwConnectionLike {}
+extension NWConnection: NwConnectionLike {
+    func requestTcpEstablishmentReport(
+        queue: DispatchQueue,
+        completion: @escaping @Sendable (TcpEstablishmentReport?) -> Void
+    ) {
+        requestEstablishmentReport(queue: queue) { report in
+            completion(report.map {
+                TcpEstablishmentReport(
+                    usedProxy: $0.usedProxy, proxyConfigured: $0.proxyConfigured,
+                    proxyEndpoint: $0.proxyEndpoint.map { String(describing: $0) },
+                    duration: $0.duration)
+            })
+        }
+    }
+}
 
 extension NwConnectionLike {
+    func requestTcpEstablishmentReport(
+        queue: DispatchQueue,
+        completion: @escaping @Sendable (TcpEstablishmentReport?) -> Void
+    ) {
+        queue.async { completion(nil) }
+    }
+
     /// Cancel the connection AND release its `stateUpdateHandler` /
     /// `viabilityUpdateHandler` in one step. Independently of object
     /// lifetime, an attached handler keeps Apple's framework

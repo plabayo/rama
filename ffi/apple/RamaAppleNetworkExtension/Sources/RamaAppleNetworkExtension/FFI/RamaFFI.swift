@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import RamaAppleNEFFI
 
 func clampedFFISizeToInt<T: BinaryInteger>(_ value: T) -> Int {
@@ -1057,6 +1058,40 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
         defer { lock.unlock() }
         guard !cancelled, let s = sessionPtr else { return }
         rama_transparent_proxy_tcp_session_on_client_eof(s)
+    }
+
+    var flowId: UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let s = sessionPtr else { return 0 }
+        return rama_transparent_proxy_tcp_session_flow_id(s)
+    }
+
+    /// Diagnostics may arrive after teardown. The completion retains this handle,
+    /// and cancellation does not free it or invalidate its immutable Rust metadata.
+    func reportEgress(
+        _ report: TcpEstablishmentReport?, ready: Bool, connectDurationMs: UInt64,
+        error: NWError?
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let s = sessionPtr else { return }
+        let endpoint = report?.proxyEndpoint ?? ""
+        let errorText = error.map { String(describing: $0) } ?? ""
+        endpoint.withCString { endpointPtr in
+            errorText.withCString { errorPtr in
+                var value = RamaTcpEgressReport(
+                    ready: ready, report_available: report != nil,
+                    used_proxy: report?.usedProxy ?? false,
+                    proxy_configured: report?.proxyConfigured ?? false,
+                    connect_duration_ms: connectDurationMs,
+                    report_duration_ms: (report?.duration ?? 0) * 1_000,
+                    proxy_endpoint_utf8: endpointPtr,
+                    proxy_endpoint_utf8_len: endpoint.utf8.count,
+                    error_utf8: errorPtr, error_utf8_len: errorText.utf8.count)
+                rama_transparent_proxy_tcp_session_report_egress(s, &value)
+            }
+        }
     }
 
     /// Query handler-supplied egress connect options.

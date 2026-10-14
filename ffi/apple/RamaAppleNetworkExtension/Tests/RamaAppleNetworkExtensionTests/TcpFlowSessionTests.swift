@@ -36,6 +36,26 @@ final class TcpFlowSessionTests: XCTestCase {
         }
     }
 
+    func testEstablishmentReportRequestedOnceAcrossRecoveryAndFailure() {
+        let fx = Fixture()
+        fx.session.flowQueue.sync {
+            fx.session.handleEgressReady(connection: fx.conn)
+            fx.session.handleEgressReady(connection: fx.conn)
+            fx.session.handleEgressFailed(.posix(.ECONNRESET))
+        }
+        XCTAssertEqual(fx.conn.establishmentReportRequests, 1)
+    }
+
+    func testPreReadyFailureRequestsReportBeforeDetachingConnection() {
+        let fx = Fixture()
+        fx.session.flowQueue.sync {
+            fx.session.handleEgressFailed(.posix(.ECONNREFUSED))
+        }
+        XCTAssertEqual(fx.conn.establishmentReportRequests, 1)
+        XCTAssertNil(fx.session.ctx.connection)
+        XCTAssertTrue(fx.session.ctx.isDone)
+    }
+
     // MARK: - Construction
 
     /// init() wires the teardown inputs (flow/core/flowId) onto ctx so its

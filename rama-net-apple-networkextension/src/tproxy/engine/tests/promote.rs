@@ -294,8 +294,10 @@ fn engine_promote_fires_swift_callback_and_returns_ok_on_confirm() {
         .recv_timeout(Duration::from_secs(5))
         .expect("promote callback fired");
 
-    // ACK the cutover.
+    // ACK publishes diagnostics before the service can finish.
+    assert!(!session.promote_registry.promoted.load(Ordering::Acquire));
     session.confirm_promoted(Ok(()));
+    assert!(session.promote_registry.promoted.load(Ordering::Acquire));
 
     let r = result_rx
         .recv_timeout(Duration::from_secs(5))
@@ -723,11 +725,13 @@ fn engine_promote_confirm_without_pending_ack_is_no_op() {
     // promote must not panic and must not affect a later promote.
     let (engine, mut session, result_rx) = spawn_session_running_into_passthrough();
 
+    assert!(!session.promote_registry.promoted.load(Ordering::Acquire));
     // Confirm BEFORE the service ever runs — no pending ACK.
     session.confirm_promoted(Ok(())); // must not panic
     session.confirm_promoted(Err(PromoteError::SwiftCutoverFailed {
         reason: "bogus".into(),
     })); // also a no-op
+    assert!(!session.promote_registry.promoted.load(Ordering::Acquire));
 
     let (cb_tx, cb_rx) = std::sync::mpsc::channel::<()>();
     let cb_tx = Mutex::new(Some(cb_tx));

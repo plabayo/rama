@@ -1687,11 +1687,14 @@ extension RamaTransparentProxyProvider {
 /// (see `handleTcpFlow`), so we have a single canonical timeout
 /// instead of two with mismatched precision.
 ///
-/// Sets `preferNoProxies = true` unless the engine opts in via
-/// `allow_system_proxy` — breaks the stacked-proxy loop documented in
-/// the `tproxy` module preamble (Apple TN3134). Only scopes the
-/// SystemConfiguration proxy table; other NE providers / VPNs are
-/// unaffected.
+/// Sets `preferNoProxies = true` to prefer a direct connection. Network.framework
+/// may still fall back to a system or PAC proxy, so local-proxy loops are less
+/// likely, not ruled out. `allow_system_proxy` only drops the preference.
+/// Other NE providers / VPNs are unaffected. See the SDK header comment for
+/// `nw_parameters_set_prefer_no_proxy` in <Network/parameters.h>:
+/// https://developer.apple.com/documentation/network/nw_parameters_set_prefer_no_proxy(_:_:)
+/// https://developer.apple.com/forums/thread/828775
+/// https://developer.apple.com/forums/thread/832291
 ///
 /// Enables TCP keepalive on the egress connection by default (opt-out
 /// via `tcp_keepalive_enabled`) — see `applyTcpKeepalive`. Further TCP

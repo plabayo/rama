@@ -40,6 +40,23 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
     private var _forceCancelCount: Int = 0
     private var _startInvocations: [DispatchQueue] = []
 
+    private var _establishmentReportRequests = 0
+    var establishmentReportRequests: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _establishmentReportRequests
+    }
+
+    func requestTcpEstablishmentReport(
+        queue: DispatchQueue,
+        completion: @escaping @Sendable (TcpEstablishmentReport?) -> Void
+    ) {
+        lock.lock()
+        _establishmentReportRequests += 1
+        lock.unlock()
+        queue.async { completion(nil) }
+    }
+
     // MARK: - NwConnectionLike
 
     var state: NWConnection.State {

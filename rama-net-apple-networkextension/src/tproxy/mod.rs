@@ -70,12 +70,17 @@
 //!
 //! With a system HTTP/SOCKS proxy enabled (Charles, Proxyman, corporate
 //! PAC, …) the kernel routes our egress back through it, the proxy
-//! re-emits, and we intercept again — a loop. Swift sets
-//! `NWParameters.preferNoProxies = true` on egress by default (see
-//! `makeTcpNwParameters` + Apple TN3134); opt back in via
-//! [`NwEgressParameters::allow_system_proxy`]. Scope is the
-//! SystemConfiguration proxy table only — other NE providers and VPN
-//! tunnels in the stack are unaffected.
+//! re-emits, and we intercept again — a loop. By default Swift sets
+//! `NWParameters.preferNoProxies = true`: egress prefers a direct connection,
+//! but Network.framework may still fall back to a system or PAC proxy.
+//! This makes a local-proxy loop less likely; it does not rule one out.
+//! [`NwEgressParameters::allow_system_proxy`] only drops that preference.
+//! Other NE providers and VPN tunnels in the stack are unaffected.
+//!
+//! See the SDK's `<Network/parameters.h>` comment for
+//! [`nw_parameters_set_prefer_no_proxy`](https://developer.apple.com/documentation/network/nw_parameters_set_prefer_no_proxy(_:_:)),
+//! and Apple's [DTS clarification](https://developer.apple.com/forums/thread/828775)
+//! and [frameworks reply](https://developer.apple.com/forums/thread/832291).
 //!
 //! ## Declining a flow (`return false`) IS the per-flow passthrough mechanism
 //!

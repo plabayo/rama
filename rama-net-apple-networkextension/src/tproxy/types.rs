@@ -198,9 +198,10 @@ pub struct NwEgressParameters {
     /// source.
     pub preserve_original_meta_data: bool,
     /// Default `false` → Swift sets `preferNoProxies = true` on egress,
-    /// bypassing system / PAC HTTP/SOCKS proxies to break the stacked-proxy
-    /// loop (see [`crate::tproxy`]). Only scopes the SystemConfiguration
-    /// proxy table; other NE providers and VPNs are unaffected.
+    /// preferring a direct connection. Network.framework may still fall back
+    /// to a system or PAC proxy, so local-proxy loops remain possible.
+    /// `true` only drops the preference. Other NE providers and VPNs are
+    /// unaffected. See [`crate::tproxy`] for the SDK header and Apple replies.
     pub allow_system_proxy: bool,
 }
 

@@ -40,6 +40,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
 
     // Egress lifecycle state — queue-confined.
     var egressReady = false
+    private var egressStartedAt: DispatchTime?
+    private var establishmentReportRequested = false
     var timeoutWork: DispatchWorkItem?
     var waitingWork: DispatchWorkItem?
     var terminalDrainBackstop: DispatchWorkItem?
@@ -170,6 +172,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         case .intercept(let session):
             sessionHandle = session
             ctx.session = session
+            ctx.rustFlowId = session.flowId
             guard let core else {
                 ctx.applyPreReadyFailure()
                 return true
@@ -398,6 +401,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
 
         installConnectTimeout(connectTimeoutMs: connectTimeoutMs, remoteHost: remoteHost)
         installEgressStateHandler(connection: connection)
+        egressStartedAt = now()
         connection.start(queue: flowQueue)
         return true
     }
@@ -425,6 +429,10 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             if let token = self.ctx.admissionToken {
                 self.core?.finishTcpStart(token, outcome: .timeout)
                 self.ctx.admissionToken = nil
+            }
+            if let connection = self.ctx.connection {
+                self.reportEgressEstablishment(
+                    connection: connection, ready: false, error: .posix(.ETIMEDOUT))
             }
             self.ctx.applyConnectTimeout()
         }
@@ -629,6 +637,23 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         }
     }
 
+    /// Request once per connection, before teardown can detach it. Only the
+    /// immutable diagnostic arguments and Rust handle survive in the completion;
+    /// a late report must neither retain the flow nor restart its data path.
+    private func reportEgressEstablishment(
+        connection: any NwConnectionLike, ready: Bool, error: NWError?
+    ) {
+        guard !establishmentReportRequested else { return }
+        establishmentReportRequested = true
+        let end = now().uptimeNanoseconds
+        let start = egressStartedAt?.uptimeNanoseconds ?? end
+        let elapsedMs = (end >= start ? end - start : 0) / 1_000_000
+        let session = sessionHandle
+        connection.requestTcpEstablishmentReport(queue: flowQueue) { report in
+            session?.reportEgress(report, ready: ready, connectDurationMs: elapsedMs, error: error)
+        }
+    }
+
     func handleEgressReady(connection: any NwConnectionLike) {
         if egressReady {
             // Duplicate `.ready` after a recovered `.waiting`. Cancel
@@ -639,6 +664,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             ctx.egressWritePump?.connectionBecameReady()
             return
         }
+        reportEgressEstablishment(connection: connection, ready: true, error: nil)
         egressReady = true
         ctx.egressReady = true
         // Reaching ready is progress: start the idle clock here, not at
@@ -733,6 +759,10 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     func handleEgressFailed(_ error: NWError?) {
         // A failure queued before a Rust abort's reset detached the handlers changes nothing.
         guard !ctx.egressReset else { return }
+        ctx.logDiagnostic(.egressFailure, error: error)
+        if let connection = ctx.connection {
+            reportEgressEstablishment(connection: connection, ready: false, error: error)
+        }
         if !egressReady {
             timeoutWork?.cancel()
             timeoutWork = nil
@@ -808,6 +838,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 "egress NWConnection pre-ready waiting exceeded budget; failing fast "
                     + "remote=\(self.meta.remoteHost ?? "?"):\(self.meta.remotePort)"
             )
+            if let connection = self.ctx.connection {
+                self.reportEgressEstablishment(connection: connection, ready: false, error: error)
+            }
             self.ctx.applyPreReadyWaitingTimeout()
         }
         waitingWork = work
@@ -818,6 +851,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     }
 
     func handleEgressCancelled() {
+        if let connection = ctx.connection {
+            reportEgressEstablishment(connection: connection, ready: false, error: .posix(.ECANCELED))
+        }
         waitingWork?.cancel()
         waitingWork = nil
         // Network.framework has already cancelled it; assigning handlers or
