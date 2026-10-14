@@ -97,7 +97,7 @@ struct Registry {
 /// counterpart of accepting connections.
 ///
 /// Every association is bounded: by [`DemuxConfig::associations`], by its queue, and by its
-/// idle timeout. A reply leaves the listening socket for the association's peer only, from
+/// idle timeout, and all end when the demux stops serving. A reply leaves the listening socket for the association's peer only, from
 /// the address the client sent to. A transparently redirected datagram, whose original
 /// destination is not the listening address, cannot be answered from there; it is dropped
 /// and counted rather than answered from the wrong address. Admission and inspection
@@ -115,6 +115,13 @@ impl<S: fmt::Debug> fmt::Debug for DatagramDemux<S> {
             .field("socket", &self.socket)
             .field("config", &self.config)
             .finish_non_exhaustive()
+    }
+}
+
+/// A demux that stops serving ends its associations too: nothing more arrives for them.
+impl<S> Drop for DatagramDemux<S> {
+    fn drop(&mut self) {
+        self.registry.lock().associations.clear();
     }
 }
 

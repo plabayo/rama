@@ -244,19 +244,36 @@ async fn datagrams_that_cannot_be_answered_or_are_invalid_are_dropped_and_counte
 }
 
 #[tokio::test]
-async fn graceful_shutdown_stops_serving() {
+async fn graceful_shutdown_stops_serving_and_ends_its_associations() {
     timeout(LIMIT, async {
         let (_client, listener) = listener();
+        inject(&listener, peer(1), b"live");
         let (signal, cancelled) = oneshot::channel::<()>();
         let shutdown = Shutdown::new(async move {
             cancelled.await.unwrap_err();
         });
+        let (sockets, mut received) = tokio::sync::mpsc::unbounded_channel();
         let serving = tokio::spawn(DatagramDemux::new(listener, config()).serve(
             Executor::graceful(shutdown.guard()),
-            service_fn(async |_: DemuxedSocket<_>| Ok::<_, BoxError>(())),
+            service_fn(move |socket: DemuxedSocket<_>| {
+                let sockets = sockets.clone();
+                async move {
+                    sockets.send(socket).unwrap();
+                    Ok::<_, BoxError>(())
+                }
+            }),
         ));
+        let mut association = received.recv().await.unwrap();
+        assert_eq!(next(&mut association).await, b"live");
         drop(signal);
         serving.await.unwrap().unwrap();
+        // Nothing more arrives for an association once its demux stopped.
+        let mut buffer = [0; 64];
+        assert!(matches!(
+            association.recv(&mut buffer).await,
+            Err(DatagramError::Closed)
+        ));
+        drop(association);
         shutdown.shutdown().await;
     })
     .await
