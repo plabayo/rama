@@ -65,7 +65,8 @@ jobs:
       group: rama-macos-slot-4
       cancel-in-progress: false
       queue: max
-    timeout-minutes: 45
+    # Runtime download (30m), cold boot migration (15m), probes and cleanup.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -92,6 +92,19 @@ class AvailabilityTests(unittest.TestCase):
             self.assertIn(("xcrun", "simctl", "delete", "owned-device"), calls)
             self.assertEqual(probe.report["checks"]["simulator-shutdown"]["status"], "failed")
 
+            def boot_timeout(*args, **kwargs):
+                if "bootstatus" in args:
+                    raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+                return run(*args, **kwargs)
+
+            calls.clear()
+            with patch.object(probe, "run", side_effect=boot_timeout), patch.object(probe, "compile", return_value="probe"):
+                probe.check("ios-simulator-runtime", lambda: probe.simulator(False))
+            self.assertEqual(probe.report["checks"]["ios-simulator-runtime"]["status"], "failed")
+            self.assertFalse(any("spawn" in args for args in calls))
+            self.assertIn(("xcrun", "simctl", "shutdown", "owned-device"), calls)
+            self.assertIn(("xcrun", "simctl", "delete", "owned-device"), calls)
+
     def test_download_cannot_silently_use_an_older_runtime(self):
         runtime = {"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-26", "version": "26.0",
                    "buildversion": "A1", "isAvailable": True}
