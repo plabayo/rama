@@ -4307,7 +4307,7 @@ mod tests {
             assert!(encoder.is_eof(), "{method} {status}");
 
             let (lines, _) = encode_framing(
-                method.clone(),
+                method,
                 status,
                 Version::HTTP_10,
                 &[("transfer-encoding", "chunked")],

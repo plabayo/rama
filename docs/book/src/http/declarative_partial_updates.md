@@ -52,7 +52,7 @@ from `unpkg.com/template-for-polyfill`).
 > it isn't last-sibling either. See Google's [explainer][exp] for the spec.
 
 [polyfill]: https://github.com/GoogleChromeLabs/template-for-polyfill
-[demo]: https://github.com/GoogleChromeLabs/web-perf-demos/blob/main/patching-demos/server.js
+[demo]: https://github.com/GoogleChromeLabs/web-perf-demos/blob/main/patching-demos/counter.js
 [`start`]: https://ramaproxy.org/docs/rama/http/protocols/html/fn.start.html
 [`end`]: https://ramaproxy.org/docs/rama/http/protocols/html/fn.end.html
 [exp]: https://github.com/WICG/declarative-partial-updates

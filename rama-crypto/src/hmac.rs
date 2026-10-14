@@ -2,6 +2,13 @@
 
 use rama_core::error::{BoxError, ErrorContext as _};
 
+// Cargo cannot disable fallback dependencies when another backend is enabled.
+// Keep them acknowledged for its unused-dependency lint in those builds.
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
+use ::hmac as _;
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
+use rand as _;
+
 cfg_select! {
     all(feature = "aws-lc", not(feature = "ring")) => {
         use crate::dep::aws_lc_rs::{hmac::{self, Key}, rand::SystemRandom};
