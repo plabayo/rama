@@ -10,22 +10,62 @@ restore settings; SIGKILL/power loss require the printed recovery command.
 import argparse
 from contextlib import contextmanager
 import http.server
+import json
 import os
+import platform
+import re
 from pathlib import Path
 import shlex
 import signal
 import socketserver
 import subprocess
+import sys
 import tempfile
 import threading
 import time
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[5]
 HERE = Path(__file__).resolve().parent
+LOG = None
+LOCAL_TESTS = {
+    "testPolicyAndCopyAndAllowAfterDeny", "testUnavailableSymbolAndMetadataOrder",
+    "testCommonParametersAndInvalidValues", "testDirectBulkTransferHalfCloseAndReport",
+    "testIPv6BulkTransferAndHalfClose", "testReportCallbackSurvivesCancellationAndRelease",
+    "testExplicitProxyOptInAndPreferenceOnlyFallback", "testIPv6ProxyEndpointFormatting",
+    "testNoProxyDoesNotFallBackAfterDnsFailure", "testInvalidPortAndCancellation",
+}
 
 
-def run(command, **kwargs):
-    subprocess.run(command, check=True, **kwargs)
+def check_test_log(path, expected):
+    # SwiftPM's serial runner omits xUnit output; its parallel runner labels
+    # XCTest skips as passes. Require each actual XCTest completion instead.
+    content = path.read_text()
+    prefix = r"^Test Case '-\[RamaAppleNetworkExtensionTests\.NativeTcpConnectionTests (\w+)\]' "
+    started = re.findall(prefix + r"started\.$", content, re.MULTILINE)
+    completed = re.findall(prefix + r"(passed|failed|skipped) \(", content, re.MULTILINE)
+    names = [name for name, _ in completed]
+    if (set(started) != expected or len(started) != len(expected)
+            or set(names) != expected or len(names) != len(expected)):
+        raise RuntimeError(f"incomplete/unexpected test inventory: {names}; expected {sorted(expected)}")
+    for name, status in completed:
+        if status != "passed":
+            raise RuntimeError(f"required test {name}: {status}")
+    return len(completed)
+
+
+def run(command, log_path=None, **kwargs):
+    if LOG is None:
+        subprocess.run(command, check=True, **kwargs)
+        return
+    print("+", shlex.join(map(str, command)), flush=True)
+    LOG.write("+ " + shlex.join(map(str, command)) + "\n")
+    LOG.flush()
+    if log_path:
+        with log_path.open("w") as output:
+            subprocess.run(command, check=True, stdout=output, stderr=subprocess.STDOUT, **kwargs)
+    else:
+        subprocess.run(command, check=True, stdout=LOG, stderr=subprocess.STDOUT, **kwargs)
 
 
 @contextmanager
@@ -78,11 +118,17 @@ def servers():
     with Server(("127.0.0.1", 0), Proxy) as proxy:
         proxy.contacts = 0
         proxy.count_lock = threading.Lock()
-        script = ('function FindProxyForURL(url, host) { return "PROXY 127.0.0.1:%d"; }' % proxy.server_address[1]).encode()
+        proxy.pac_fetches = 0
+        script = ('function FindProxyForURL(url, host) { '
+                  'if (host === "rama-egress-test.invalid") return "PROXY 127.0.0.1:%d"; '
+                  'return "DIRECT"; }' % proxy.server_address[1]).encode()
 
         class PAC(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
+                with proxy.count_lock:
+                    proxy.pac_fetches += 1
                 self.send_response(200)
+                self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Type", "application/x-ns-proxy-autoconfig")
                 self.send_header("Content-Length", str(len(script)))
                 self.end_headers()
@@ -106,55 +152,141 @@ def servers():
 
 def swift_command(scratch):
     library = ROOT / "ffi/apple/examples/transparent_proxy/tproxy_rs/target/debug"
-    return ["swift", "test", "--package-path", str(ROOT), "--scratch-path", str(scratch),
+    return ["swift", "test", "--disable-sandbox", "--package-path", str(ROOT), "--scratch-path", str(scratch),
             "-Xlinker", "-L" + str(library), "-Xlinker", "-lrama_tproxy_example", "-Xlinker", "-lz",
             "-Xlinker", "-framework", "-Xlinker", "NetworkExtension",
             "-Xlinker", "-framework", "-Xlinker", "SystemConfiguration"]
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--system-pac-service", help="exact macOS network service name")
-    parser.add_argument("--allow-system-settings", action="store_true")
-    parser.add_argument("--scratch-path", type=Path, default=ROOT / ".build")
-    parser.add_argument("--skip-build", action="store_true", help="reuse a test binary built with matching sources")
-    args = parser.parse_args()
-    if bool(args.system_pac_service) != args.allow_system_settings:
-        parser.error("system PAC testing requires both --system-pac-service and --allow-system-settings")
+def execute(args, directory, report):
+    if args.system_pac_service:
+        # Fail before expensive builds or mutations; the just target authenticates.
+        try:
+            run(["sudo", "-n", "true"])
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError("sudo authentication required: run just test-egress-policy-deep in your terminal") from error
     command = swift_command(args.scratch_path)
     if args.skip_build:
         command.append("--skip-build")
     else:
-        run(["cargo", "build", "--manifest-path", str(ROOT / "ffi/apple/examples/transparent_proxy/tproxy_rs/Cargo.toml")])
-    run([*command, "--filter", "NativeTcpConnectionTests", "--skip", "NativeTcpConnectionTests.testDeveloperSystemProxyScenario"])
+        library = ROOT / "ffi/apple/examples/transparent_proxy/tproxy_rs"
+        run(["cargo", "build", "--manifest-path", str(library / "Cargo.toml"),
+             "--target-dir", str(library / "target")])
+
+    def suite(name, cmd, expected, **kwargs):
+        log = directory / (name + ".log")
+        run(cmd, log_path=log, **kwargs)
+        report["checks"].append({"name": name, "passed": check_test_log(log, expected)})
+
+    local = ["--filter", "NativeTcpConnectionTests", "--skip",
+             "NativeTcpConnectionTests.testDeveloperSystemProxyScenario"]
+    suite("local-debug", [*command, *local], LOCAL_TESTS)
+    if args.deep:
+        for name, flags in (("release", ["-c", "release", "-Xswiftc", "-DRAMA_TESTING"]),
+                            ("asan", ["--sanitize", "address"]),
+                            ("tsan", ["--sanitize", "thread"])):
+            scratch = args.scratch_path.with_name(args.scratch_path.name + "-" + name)
+            env = dict(os.environ)
+            # Do not inherit suppressions or a successful sanitizer exit code.
+            if name == "tsan":
+                env["TSAN_OPTIONS"] = "halt_on_error=1:exitcode=66"
+            elif name == "asan":
+                env["ASAN_OPTIONS"] = "halt_on_error=1:abort_on_error=1"
+            suite("local-" + name, [*swift_command(scratch), *flags, *local], LOCAL_TESTS, env=env)
     if not args.system_pac_service:
         return
-    # Build and snapshot before any mutation; keep artifacts on restoration error.
-    directory = Path(tempfile.mkdtemp(prefix="rama-egress-pac-"))
     helper = directory / "settings"
     snapshot = directory / "original.plist"
     run(["swiftc", str(HERE / "egress_proxy_settings.swift"), "-o", str(helper)])
+    # Builds can outlast sudo's ticket. Prompt in the developer's terminal again.
     run(["sudo", "-v"])
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(SystemExit(143)))
     with servers() as (proxy, url):
         run([str(helper), "capture", args.system_pac_service, str(snapshot), url])
         privileged = ["sudo", "-n", str(helper)]
-        print("Recovery command:", shlex.join([*privileged, "restore", str(snapshot)]), flush=True)
-        with settings_transaction(privileged, snapshot):
-            time.sleep(2)  # Let SystemConfiguration publish the change.
-            for allow in (True, False):
-                with proxy.count_lock:
-                    before = proxy.contacts
-                env = dict(os.environ, RAMA_EGRESS_TEST_HOST="rama-egress-test.invalid", RAMA_EGRESS_TEST_PORT="443",
-                           RAMA_EGRESS_TEST_ALLOW_PROXY=str(int(allow)), RAMA_EGRESS_TEST_USED_PROXY=str(int(allow)),
-                           RAMA_EGRESS_TEST_EXPECT_FAILURE=str(int(not allow)))
-                run([*command, "--filter", "NativeTcpConnectionTests.testDeveloperSystemProxyScenario"], env=env)
-                with proxy.count_lock:
-                    contacts = proxy.contacts - before
-                if (allow and contacts < 1) or (not allow and contacts != 0):
-                    raise RuntimeError(f"allow_proxy={allow}: unexpected proxy contacts={contacts}")
-        print("System proxy settings restored and verified. Snapshot retained:", snapshot)
+        recovery = shlex.join([*privileged, "restore", str(snapshot)])
+        print("Recovery command:", recovery, flush=True)
+        report["recovery_command"] = recovery
+        report["settings_restored"] = False
+        try:
+            with settings_transaction(privileged, snapshot):
+                time.sleep(2)  # Let SystemConfiguration publish the change.
+                for name, allow, missing in (("allowed", True, False),
+                                             ("denied", False, False),
+                                             ("missing-symbol", False, True)):
+                    uses_proxy = allow or missing
+                    with proxy.count_lock:
+                        before = proxy.contacts
+                    env = dict(os.environ, RAMA_EGRESS_TEST_HOST="rama-egress-test.invalid",
+                               RAMA_EGRESS_TEST_PORT="443", RAMA_EGRESS_TEST_ALLOW_PROXY=str(int(allow)),
+                               RAMA_EGRESS_TEST_MISSING_SYMBOL=str(int(missing)),
+                               RAMA_EGRESS_TEST_USED_PROXY=str(int(uses_proxy)),
+                               RAMA_EGRESS_TEST_EXPECT_FAILURE=str(int(not uses_proxy)))
+                    suite("system-pac-" + name,
+                          [*command, "--skip-build", "--filter",
+                           "NativeTcpConnectionTests.testDeveloperSystemProxyScenario"],
+                          {"testDeveloperSystemProxyScenario"}, env=env)
+                    with proxy.count_lock:
+                        contacts = proxy.contacts - before
+                        fetches = proxy.pac_fetches
+                    report["checks"][-1].update(proxy_contacts=contacts, pac_fetches=fetches)
+                    if (uses_proxy and contacts < 1) or (not uses_proxy and contacts != 0):
+                        raise RuntimeError(f"{name}: unexpected proxy contacts={contacts}")
+                    if fetches < 1:
+                        raise RuntimeError("no PAC fetch observed; system configuration was not exercised")
+        finally:
+            # The transaction already restored; verify idempotently even after a test failure.
+            run([*privileged, "restore", str(snapshot)])
+            report["settings_restored"] = True
+        print("System proxy settings restored and verified.")
+
+
+def main():
+    global LOG
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--system-pac-service", help="exact macOS network service name")
+    parser.add_argument("--allow-system-settings", action="store_true")
+    parser.add_argument("--deep", action="store_true", help="also run Release, ASan and TSan matrices")
+    parser.add_argument("--scratch-path", type=Path, default=ROOT / ".build/egress-policy")
+    parser.add_argument("--skip-build", action="store_true", help="reuse matching binaries (local checks only)")
+    args = parser.parse_args()
+    if bool(args.system_pac_service) != args.allow_system_settings:
+        parser.error("system PAC testing requires both --system-pac-service and --allow-system-settings")
+    if args.skip_build and (args.deep or args.system_pac_service):
+        parser.error("deep/system validation requires a fresh build")
+    directory = Path(tempfile.mkdtemp(prefix="rama-egress-policy-"))
+    report = {"status": "running", "macos": platform.mac_ver()[0], "architecture": platform.machine(),
+              "commit": subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip(),
+              "dirty": bool(subprocess.check_output(["git", "-C", str(ROOT), "status", "--porcelain"])),
+              "system_pac_service": args.system_pac_service, "deep": args.deep, "checks": [],
+              "not_covered": ["signed NE interception and downstream identity stamping",
+                              "other macOS versions", "Rust sanitizer instrumentation"]}
+    if not args.system_pac_service:
+        report["not_covered"].append("live system PAC")
+    print("Evidence directory:", directory, flush=True)
+    try:
+        with (directory / "run.log").open("w") as log:
+            LOG = log
+            execute(args, directory, report)
+        report["status"] = "passed"
+    except BaseException as error:
+        report["status"] = "failed"
+        report["error"] = str(error) or type(error).__name__
+        raise
+    finally:
+        LOG = None
+        (directory / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+        archive = directory / "report.zip"
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
+            for path in [directory / "report.json", *directory.glob("*.log")]:
+                bundle.write(path, path.name)
+        print(f"Result: {report['status']}. Share this report: {archive}", flush=True)
+        print("Signed-extension attribution is a separate check; it is not covered by this harness.")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)

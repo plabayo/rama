@@ -229,3 +229,12 @@ test-e2e-sanitizers: test-e2e-asan run-tproxy-ffi-e2e-swift-tsan
 # Generate HTTP traffic through the running proxy; use --help for workload options.
 stress-traffic *ARGS:
     python3 ./scripts/stress_traffic.py {{ARGS}}
+
+# Local production-adapter matrix; saves a shareable report without changing settings.
+test-egress-policy *ARGS:
+    python3 ./scripts/egress_proxy_policy.py {{ARGS}}
+
+# Isolated development Mac: Release/sanitizers plus live PAC; restores proxy settings.
+test-egress-policy-deep SERVICE="Wi-Fi" *ARGS:
+    sudo -v
+    python3 ./scripts/egress_proxy_policy.py --deep --system-pac-service "{{SERVICE}}" --allow-system-settings {{ARGS}}

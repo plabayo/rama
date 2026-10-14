@@ -230,7 +230,12 @@ final class NativeTcpConnectionTests: XCTestCase {
         let allow = env["RAMA_EGRESS_TEST_ALLOW_PROXY"] == "1"
         var opts = RamaTcpEgressConnectOptions()
         opts.parameters.allow_proxy = allow
-        let parameters = makeTcpNwParameters(opts)
+        let missingSymbol = env["RAMA_EGRESS_TEST_MISSING_SYMBOL"] == "1"
+        let parameters = makeTcpNwParameters(
+            opts, proxyControl: missingSymbol ? TcpProxyControl(setter: nil) : .system)
+        XCTAssertEqual(
+            parameters.proxyPolicy,
+            allow ? .allowed : (missingSymbol ? .preferDirectOnly : .noProxyApplied))
         if env["RAMA_EGRESS_TEST_EXPECT_FAILURE"] == "1" {
             XCTAssertEqual(
                 parameters.proxyPolicy, .noProxyApplied,

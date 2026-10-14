@@ -468,68 +468,39 @@ log show --last 8m --style ndjson --info --debug \
 echo "$DEST"
 ```
 
-TCP egress now emits `transparent proxy tcp egress establishment`, joined to the
-Rust close events and Swift `tcp_terminal` records by `flow_id`. `ready=false`
-means establishment failed; `error` carries the final connection error. A missing
-Network.framework report is marked `report_available=false`, with proxy fields
-absent rather than reported as false. `connect_duration_ms` measures from start
-to ready/failure; `duration_ms` comes from Apple's establishment report. A later
-failure appears in `tcp_terminal event=egress_failure` with its error kind/code.
+TCP establishment and close logs join on `flow_id`. Establishment records include
+`ready`, errors, requested `allow_proxy`, applied `proxy_policy`, and actual
+`used_proxy`. `report_available=false` means Apple supplied no report.
 
-The public TCP option is `NwEgressParameters.allow_proxy` (default `false`).
-The same establishment event contains the requested `allow_proxy` and applied
-`proxy_policy`, alongside the actual `used_proxy` result:
+`NwEgressParameters.allow_proxy` defaults to `false`:
 
-| Request / capability | `proxy_policy` | Applied controls |
+| Configuration | `proxy_policy` | Behavior |
 | --- | --- | --- |
-| `allow_proxy=true` | `allowed` | Clear direct preference and private no-proxy when available |
-| `allow_proxy=false`, private symbol present | `no_proxy_applied` | Set private no-proxy and public direct preference |
-| `allow_proxy=false`, private symbol absent | `prefer_direct_only` | Set public preference; proxy fallback remains possible |
+| Proxy allowed | `allowed` | System proxy selection permitted |
+| Proxy denied, private symbol available | `no_proxy_applied` | Apply no-proxy and prefer-direct controls |
+| Proxy denied, symbol unavailable | `prefer_direct_only` | Prefer direct; proxy fallback remains possible |
 
-`nw_parameters_set_no_proxy` is private and unsupported by Apple. Symbol presence
-is not a guarantee across macOS releases or an App Store compatibility promise.
-Neither setting bypasses other NE providers or VPNs. TCP uses native
-Network.framework parameters and connections, with the public native
-`NEAppProxyFlow.setMetadata(_:)` overload for stamping on supported macOS versions.
-`preserve_original_meta_data=false` disables stamping but keeps the same backend.
-Rebuild the Swift package and Rust static library together after the option rename.
+`nw_parameters_set_no_proxy` is private and unsupported by Apple; validate each
+macOS version. Neither control bypasses VPNs or other NE providers.
+`preserve_original_meta_data` keeps stamping on by default. Disabled establishment
+logging skips report collection; enabled logging retains full flow metadata
+without separate per-flow warnings.
 
-There are no added per-flow warnings. Symbol resolution happens once per process.
-When the establishment event is filtered out, no report is requested or converted.
-When enabled, only the required native report fields are read; Rust borrows its
-strings for synchronous logging. Full flow metadata is retained and shared with
-close logging. Swift terminal logs check their level before constructing strings.
-Enabled report collection and log emission still have a cost.
-
-Developer validation (run from the repository root):
+Run from this directory:
 
 ```sh
-# Production adapter, local echo/CONNECT peers; no system settings changed.
-python3 ffi/apple/examples/transparent_proxy/scripts/egress_proxy_policy.py
-
-# Isolated development Mac only: temporarily configure this exact service's PAC.
-python3 ffi/apple/examples/transparent_proxy/scripts/egress_proxy_policy.py \
-  --system-pac-service 'Wi-Fi' --allow-system-settings
+just test-egress-policy
+just test-egress-policy-deep Wi-Fi
 ```
 
-The isolated matrix checks direct IPv4/IPv6, byte integrity, TCP half-close,
-proxy opt-in, a missing-symbol simulation, no-proxy DNS failure, cancellation,
-late report lifetime, and parameter copying. The optional system test requires
-`sudo`, serves a loopback PAC and CONNECT peer, verifies opt-in proxy use and
-no-proxy failure, and checks proxy contact counts. It snapshots the exact Proxies
-dictionary (including absent keys), restores it on normal exit, failure, SIGINT,
-and SIGTERM, and refuses to overwrite independently changed settings. It prints
-a recovery command and retains the snapshot for SIGKILL/power-loss recovery.
-It never forwards unrelated traffic through its test proxy.
-
-The system PAC scenario is skipped by the ordinary Swift suite. Running the
-local matrix does **not** validate system PAC, signed NE interception, downstream
-identity stamping, or every supported OS version. For deployment validation,
-repeat on each target macOS version with the signed extension enabled, toggle
-`allow_proxy` in the handler, and compare the joined establishment event with
-proxy access logs. With a downstream flow observer, verify that two originating
-apps retain distinct identities with stamping enabled and show the extension's
-identity when `preserve_original_meta_data=false`.
+The deep check requires `sudo` on an isolated development Mac. It runs Debug,
+Release, ASan and TSan adapter tests, then verifies live PAC selection and proxy
+contacts for all three policies. It restores proxy settings after failures and
+interrupts, and prints a recovery command for power loss or forced termination.
+Send back the printed `report.zip`; it excludes the saved settings snapshot.
+Skipped required tests fail validation. Signed NE interception and downstream
+identity stamping require a separate signed observer; this harness does not
+verify them.
 
 Promoted relays emit `transparent proxy tcp bridge handed off` with
 `mode=promoted`, `counters_scope=until_handoff`, and
