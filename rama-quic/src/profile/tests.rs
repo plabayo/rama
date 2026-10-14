@@ -125,12 +125,23 @@ fn the_observer_split_needs_no_keys() {
 /// loopback socket, and return what a server reads from it, together with whether the client's
 /// TLS backend can change version mid-handshake (so the profile's compatible offer stands).
 fn rama_first_flight(profile: &QuicProfile) -> (FirstFlight, bool) {
+    let identity = crate::test_helpers::identity();
+    let (flight, capable, _) =
+        rama_first_flight_with(profile, crate::test_helpers::client(&identity), "localhost");
+    (flight, capable)
+}
+
+/// Rama's first flight for `profile` over `client_config`, with the ClientHello it carried.
+fn rama_first_flight_with(
+    profile: &QuicProfile,
+    mut client_config: ClientConfig,
+    server_name: &str,
+) -> (FirstFlight, bool, rama_tls::client::ClientHello) {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
     runtime.block_on(async move {
-        let identity = crate::test_helpers::identity();
         let peer = tokio::net::UdpSocket::bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0))
             .await
             .unwrap();
@@ -138,7 +149,6 @@ fn rama_first_flight(profile: &QuicProfile) -> (FirstFlight, bool) {
 
         let mut endpoint_config = crate::EndpointConfig::try_with_rand_key().unwrap();
         endpoint_config.apply_quic_profile(profile).unwrap();
-        let mut client_config = crate::test_helpers::client(&identity);
         // The round trip exercises packetization and parameters; a backend that cannot change
         // version mid-handshake offers only the first flight's version, which the caller knows.
         let capable = client_config.apply_quic_profile(profile).is_ok();
@@ -155,7 +165,7 @@ fn rama_first_flight(profile: &QuicProfile) -> (FirstFlight, bool) {
             .await
             .unwrap();
         let connecting = client
-            .connect_with(client_config, server_addr, "localhost")
+            .connect_with(client_config, server_addr, server_name)
             .unwrap();
 
         // Collect datagrams until the ClientHello reassembles into a first flight with its
@@ -167,7 +177,7 @@ fn rama_first_flight(profile: &QuicProfile) -> (FirstFlight, bool) {
             CaptureLimits::default(),
             Instant::now() + Duration::from_secs(5),
         );
-        let mut peek_complete = false;
+        let mut peeked = None;
         let flight = loop {
             let mut buf = vec![0u8; 2048];
             let (len, _from) =
@@ -176,8 +186,8 @@ fn rama_first_flight(profile: &QuicProfile) -> (FirstFlight, bool) {
                     .expect("the client sends within the deadline")
                     .unwrap();
             buf.truncate(len);
-            if !peek_complete {
-                peek_complete = peek.inspect(Instant::now(), &buf, &keys).unwrap().is_some();
+            if peeked.is_none() {
+                peeked = peek.inspect(Instant::now(), &buf, &keys).unwrap();
             }
             datagrams.push(buf);
             let borrowed: Vec<&[u8]> = datagrams.iter().map(Vec::as_slice).collect();
@@ -189,10 +199,10 @@ fn rama_first_flight(profile: &QuicProfile) -> (FirstFlight, bool) {
                 _ => {}
             }
         };
-        assert!(peek_complete);
+        let peeked = peeked.expect("the peek completes with the first flight");
         drop(connecting);
         client.close(0u32, b"done");
-        (flight, capable)
+        (flight, capable, peeked.client_hello)
     })
 }
 
@@ -1231,4 +1241,163 @@ fn initial_peek_budgets_hold_at_a_real_flights_exact_need() {
             "{name} below {need}"
         );
     }
+}
+
+/// The ClientHello a captured first flight carried.
+#[cfg(feature = "boring")]
+fn captured_client_hello(names: [&str; 2]) -> rama_tls::client::ClientHello {
+    let provider = provider();
+    let keys = capture::ProviderKeys(provider.as_ref());
+    let mut peek = InitialPeek::new(
+        CaptureLimits::default(),
+        Instant::now() + Duration::from_secs(5),
+    );
+    for name in names {
+        if let Some(peeked) = peek.inspect(Instant::now(), &hex(name), &keys).unwrap() {
+            return peeked.client_hello;
+        }
+    }
+    panic!("no ClientHello in {names:?}");
+}
+
+/// A ClientHello's wire shape: every list and extension in order, with GREASE values,
+/// key shares, ECH payloads and transport parameter bytes (connection IDs) reduced to what
+/// is not drawn per connection.
+#[cfg(feature = "boring")]
+fn wire_shape(hello: &rama_tls::client::ClientHello) -> Vec<String> {
+    use rama_tls::client::ClientHelloExtension;
+    fn listed<T: std::fmt::Debug>(items: impl Iterator<Item = (bool, T)>) -> String {
+        items
+            .map(|(grease, item)| {
+                if grease {
+                    "GREASE".to_owned()
+                } else {
+                    format!("{item:?}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+    let mut shape = vec![format!(
+        "ciphers {}",
+        listed(hello.cipher_suites().iter().map(|c| (c.is_grease(), *c)))
+    )];
+    for ext in hello.extensions() {
+        let id = ext.id();
+        let body = match ext {
+            ClientHelloExtension::SupportedGroups(groups) => {
+                listed(groups.iter().map(|g| (g.is_grease(), *g)))
+            }
+            ClientHelloExtension::SignatureAlgorithms(schemes)
+            | ClientHelloExtension::DelegatedCredentials(schemes) => {
+                listed(schemes.iter().map(|s| (s.is_grease(), *s)))
+            }
+            ClientHelloExtension::SupportedVersions(versions) => {
+                listed(versions.iter().map(|v| (v.is_grease(), *v)))
+            }
+            ClientHelloExtension::EncryptedClientHello(_) => "ECH GREASE".to_owned(),
+            ClientHelloExtension::ServerName(_) => "the connection's name".to_owned(),
+            ClientHelloExtension::Opaque { id, data }
+                if id.is_grease()
+                    || *id == rama_tls::ExtensionId::KEY_SHARE
+                    || u16::from(*id) == 57 =>
+            {
+                format!("{} bytes", data.len())
+            }
+            other => format!("{other:?}"),
+        };
+        let id = if id.is_grease() {
+            "GREASE".to_owned()
+        } else {
+            format!("{id:?}")
+        };
+        shape.push(format!("{id}: {body}"));
+    }
+    shape
+}
+
+/// The TLS ClientHello of a QUIC browser profile, mimicked from its capture, applied per
+/// connection and sent with the profile's QUIC first flight, as the browser sent it.
+#[cfg(feature = "boring")]
+#[test]
+fn a_captured_browser_client_hello_is_reproduced_over_quic() {
+    use rama_tls_boring::client::BoringClientConfigExt as _;
+    for (profile, files) in [
+        (
+            chrome_153(),
+            ["chrome-153-initial-1.hex", "chrome-153-initial-2.hex"],
+        ),
+        (
+            firefox_156(),
+            ["firefox-156-initial-1.hex", "firefox-156-initial-2.hex"],
+        ),
+    ] {
+        let captured = captured_client_hello(files);
+        let server_name = captured.ext_server_name().unwrap().to_string();
+        let tls = TlsClientConfig::new_from_client_hello(&captured)
+            .with_server_verify(rama_tls::client::ServerVerifyMode::Disable);
+        let config = ClientConfig::try_from_rama_tls_with_provider(
+            &tls,
+            crate::tls::TlsOptions::default(),
+            &crate::tls::BoringTlsProvider,
+        )
+        .unwrap();
+        let (_, _, emitted) = rama_first_flight_with(&profile, config, &server_name);
+        assert_eq!(emitted.ext_server_name(), captured.ext_server_name());
+
+        let mut expected = wire_shape(&captured);
+        // BoringSSL writes these TLS 1.2 extensions only when it may negotiate TLS 1.2,
+        // which a QUIC connection never may (see the rama-sprints provider follow-up).
+        expected.retain(|ext| {
+            !ext.starts_with("EXTENDED_MASTER_SECRET:") && !ext.starts_with("RENEGOTIATION_INFO:")
+        });
+        // Without the compression feature, no compressor is registered.
+        if !cfg!(feature = "compression") {
+            expected.retain(|ext| !ext.starts_with("COMPRESS_CERTIFICATE:"));
+        }
+        assert_eq!(wire_shape(&emitted), expected, "{server_name}");
+    }
+}
+
+/// A browser that permutes its extensions draws a fresh order per connection from one
+/// configuration, always over the captured set.
+#[cfg(feature = "boring")]
+#[test]
+fn a_permuting_browser_draws_its_extension_order_per_connection() {
+    use rama_tls_boring::client::BoringClientConfigExt as _;
+    let captured = captured_client_hello(["chrome-153-initial-1.hex", "chrome-153-initial-2.hex"]);
+    let server_name = captured.ext_server_name().unwrap().to_string();
+    let tls = TlsClientConfig::new_from_client_hello(&captured)
+        .with_server_verify(rama_tls::client::ServerVerifyMode::Disable)
+        .with_permute_extensions(true);
+    let config = ClientConfig::try_from_rama_tls_with_provider(
+        &tls,
+        crate::tls::TlsOptions::default(),
+        &crate::tls::BoringTlsProvider,
+    )
+    .unwrap();
+    let sorted = |hello: &rama_tls::client::ClientHello| {
+        let mut shape = wire_shape(hello);
+        shape.sort();
+        shape
+    };
+    let mut expected = wire_shape(&captured);
+    if !cfg!(feature = "compression") {
+        expected.retain(|ext| !ext.starts_with("COMPRESS_CERTIFICATE:"));
+    }
+    expected.sort();
+    let mut orders = Vec::new();
+    for _ in 0..4 {
+        let (_, _, emitted) = rama_first_flight_with(&chrome_153(), config.clone(), &server_name);
+        assert_eq!(sorted(&emitted), expected);
+        orders.push(
+            emitted
+                .extensions()
+                .iter()
+                .map(|ext| ext.id())
+                .collect::<Vec<_>>(),
+        );
+    }
+    // Twelve extensions permute; four equal draws would mean the order is not drawn.
+    assert!(orders.iter().any(|order| *order != orders[0]));
 }
