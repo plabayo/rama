@@ -1,4 +1,4 @@
-use std::{future::ready, io, str, sync::Arc};
+use std::{future::ready, io, str, sync::Arc, task::Context};
 
 use ahash::HashMap;
 use parking_lot::Mutex;
@@ -211,6 +211,16 @@ impl crypto::Session for TlsSession {
     fn is_handshaking(&self) -> bool {
         self.inner.is_handshaking()
     }
+
+    // Rustls has no asynchronous callbacks to resume.
+    fn poll_pending_callbacks(
+        &mut self,
+        _: &mut Context<'_>,
+    ) -> Result<Option<bool>, TransportError> {
+        Ok(None)
+    }
+
+    fn cancel_pending_callbacks(&mut self) {}
 
     fn read_handshake(&mut self, _level: SpaceId, buf: &[u8]) -> Result<bool, TransportError> {
         self.inner.read_hs(buf).map_err(|e| {

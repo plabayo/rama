@@ -2682,6 +2682,8 @@ impl State {
                 return Poll::Ready(Ok(()));
             }
         };
+        // Callback work can finish without a peer packet: resume it before sending.
+        self.inner.poll_pending_callbacks(now, cx);
         keep_going |= match self.drive_transmit(cx) {
             Ok(keep_going) => keep_going,
             Err(error) => {
@@ -3563,6 +3565,8 @@ impl State {
 
     /// Used to wake up all blocked futures when the connection becomes closed for any reason
     fn terminate(&mut self, reason: ConnectionError, shared: &Shared) {
+        // Driver and socket failures can end a connection without its closing path.
+        self.inner.cancel_pending_callbacks();
         let reason = self.error.get_or_insert(reason).clone();
         // A handshake that ends here leaves the attempts in progress.
         self.admission = None;

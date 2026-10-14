@@ -1,4 +1,5 @@
 use std::{
+    fmt,
     num::NonZeroUsize,
     sync::{Arc, LazyLock},
 };
@@ -11,7 +12,7 @@ use rama_core::{
 use rama_crypto::dep::boring::{
     error::ErrorStack,
     ex_data::Index,
-    ssl::{Ssl, SslAcceptorBuilder, SslContext, SslVersion},
+    ssl::{Ssl, SslAcceptorBuilder, SslContext, SslRef, SslVersion},
 };
 use rama_net::address::Host;
 use rama_quic_proto::{
@@ -42,6 +43,21 @@ use crate::proto::{
         config::{TlsConfigError, TlsOptions},
     },
 };
+
+/// Per-connection TLS setup, in a TLS configuration's extensions: callbacks a relay needs on
+/// one connection only, such as pausing egress at a CertificateRequest.
+#[derive(Clone, Extension)]
+#[extension(tags(tls))]
+pub(crate) struct HandshakeInitializer(
+    pub(crate) Arc<dyn Fn(&mut SslRef) -> Result<(), BoxError> + Send + Sync>,
+);
+
+impl fmt::Debug for HandshakeInitializer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HandshakeInitializer")
+            .finish_non_exhaustive()
+    }
+}
 
 struct Ticket {
     session: TlsClientSession,
@@ -93,6 +109,7 @@ pub(crate) struct QuicClientConfig {
     tickets: Arc<Tickets>,
     ticket_index: Index<Ssl, TicketState>,
     early_data: bool,
+    initializer: Option<HandshakeInitializer>,
 }
 
 fn validate_versions(versions: Option<&TlsSupportedVersions>) -> Result<(), TlsConfigError> {
@@ -168,6 +185,10 @@ impl QuicClientConfig {
             tickets,
             ticket_index,
             early_data: options.early_data,
+            initializer: config
+                .as_extensions()
+                .get_ref::<HandshakeInitializer>()
+                .cloned(),
         })
     }
 }
@@ -217,6 +238,7 @@ impl crypto::ClientConfig for QuicClientConfig {
             wire,
             params,
             self.early_data,
+            self.initializer.as_ref(),
             remembered,
             peer_params,
         )
@@ -260,6 +282,7 @@ pub(crate) struct QuicServerConfig {
     /// session-ID context that issued it, which scopes tickets by version (RFC 9369 §5).
     contexts: [SslContext; 2],
     early_data: bool,
+    initializer: Option<HandshakeInitializer>,
 }
 
 /// Issues a certificate per ClientHello, installed on the session of a connection that shares
@@ -268,6 +291,7 @@ pub(crate) struct QuicServerCertIssuer {
     data: TlsAcceptorData,
     contexts: [SslContext; 2],
     early_data: bool,
+    initializer: Option<HandshakeInitializer>,
 }
 
 /// The server TLS configured by `config`: fixed, or resolved per ClientHello when it issues
@@ -277,14 +301,23 @@ pub(crate) fn server_config_from_rama(
     options: TlsOptions,
 ) -> Result<ServerCrypto, TlsConfigError> {
     let data = acceptor_data(config, options)?;
+    let initializer = config
+        .as_extensions()
+        .get_ref::<HandshakeInitializer>()
+        .cloned();
     Ok(if data.issues_certificates() {
         ServerCrypto::Resolver(Arc::new(QuicServerCertIssuer {
             contexts: contexts(|| data.acceptor_builder_without_identity())?,
             data,
             early_data: options.early_data,
+            initializer,
         }))
     } else {
-        ServerCrypto::Fixed(Arc::new(QuicServerConfig::fixed(&data, options)?))
+        ServerCrypto::Fixed(Arc::new(QuicServerConfig::fixed(
+            &data,
+            options,
+            initializer,
+        )?))
     })
 }
 
@@ -309,14 +342,19 @@ impl QuicServerConfig {
         if data.issues_certificates() {
             return Err(TlsConfigError::UnsupportedDynamicConfig);
         }
-        Self::fixed(&data, options)
+        Self::fixed(&data, options, None)
     }
 
-    fn fixed(data: &TlsAcceptorData, options: TlsOptions) -> Result<Self, TlsConfigError> {
+    fn fixed(
+        data: &TlsAcceptorData,
+        options: TlsOptions,
+        initializer: Option<HandshakeInitializer>,
+    ) -> Result<Self, TlsConfigError> {
         Ok(Self {
             issued: None,
             contexts: contexts(|| data.clone().into_static_acceptor_builder())?,
             early_data: options.early_data,
+            initializer,
         })
     }
 }
@@ -449,6 +487,7 @@ impl QuicServerCertIssuer {
             issued: Some(certificate),
             contexts: self.contexts.clone(),
             early_data: self.early_data,
+            initializer: self.initializer.clone(),
         })
     }
 }
@@ -481,6 +520,7 @@ impl QuicServerConfig {
             early_wire,
             params,
             self.early_data,
+            self.initializer.as_ref(),
             None,
             Arc::new(Mutex::new(None)),
         )?))

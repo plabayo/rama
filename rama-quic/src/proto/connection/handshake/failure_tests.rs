@@ -1,4 +1,4 @@
-use std::assert_matches;
+use std::{assert_matches, task::Context};
 
 use rama_quic_proto::{
     ConnectionId, Side, TransportErrorCode, Version,
@@ -45,6 +45,15 @@ impl Session for FailedKeyUpdate {
     fn is_handshaking(&self) -> bool {
         false
     }
+    fn poll_pending_callbacks(
+        &mut self,
+        _: &mut Context<'_>,
+    ) -> Result<Option<bool>, TransportError> {
+        Ok(None)
+    }
+
+    fn cancel_pending_callbacks(&mut self) {}
+
     #[expect(
         clippy::panic,
         reason = "the test injects only a post-handshake key update failure"

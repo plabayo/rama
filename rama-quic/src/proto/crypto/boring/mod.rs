@@ -8,7 +8,7 @@ use crate::{profile::capture, tls::BoringTlsProvider};
 
 mod config;
 #[cfg(test)]
-pub(crate) use config::QuicServerConfig;
+pub(crate) use config::{HandshakeInitializer, QuicServerConfig};
 pub(crate) use config::{
     QuicClientConfig, SharedClientSessions, retry_tag, server_config_from_rama, server_initial_keys,
 };

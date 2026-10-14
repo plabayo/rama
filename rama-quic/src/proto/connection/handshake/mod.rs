@@ -17,7 +17,7 @@ use rama_quic_proto::{
     transport_parameters::TransportParameters,
     version::VersionInformation,
 };
-use std::{cmp, mem, net::SocketAddr};
+use std::{cmp, mem, net::SocketAddr, task::Context};
 
 use rama_core::{
     bytes::{Bytes, BytesMut},
@@ -663,6 +663,42 @@ pub(super) fn negotiate_max_idle_timeout(x: Option<VarInt>, y: Option<VarInt>) -
         (None, None) => None,
         (Some(v), None) | (None, Some(v)) => Some(Duration::from_millis(v)),
         (Some(a), Some(b)) => Some(Duration::from_millis(cmp::min(a, b))),
+    }
+}
+
+impl Connection {
+    /// Resume TLS callback work that waits asynchronously, such as a relay answering a
+    /// CertificateRequest later. A session without such work returns at once, and the
+    /// clock is read only when something resumed.
+    pub(crate) fn poll_pending_callbacks(
+        &mut self,
+        now: impl FnOnce() -> Instant,
+        cx: &mut Context<'_>,
+    ) {
+        if !self.state.is_handshake() {
+            return;
+        }
+        let metadata_ready = match self.crypto.poll_pending_callbacks(cx) {
+            Ok(None) => return,
+            Ok(Some(ready)) => ready,
+            Err(error) => {
+                self.kill(now(), error.into());
+                return;
+            }
+        };
+        let now = now();
+        if metadata_ready {
+            self.events.push_back(Event::HandshakeDataReady);
+        }
+        self.write_crypto(now);
+        if let Err(error) = self.finish_handshake(now) {
+            self.kill(now, error.into());
+        }
+    }
+
+    /// Drop pending TLS callback work: nothing may resume once the connection closed.
+    pub(crate) fn cancel_pending_callbacks(&mut self) {
+        self.crypto.cancel_pending_callbacks();
     }
 }
 

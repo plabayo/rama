@@ -3497,6 +3497,8 @@ fn incoming_container_gives_back_burst_capacity_after_sustained_quiet_cycles() {
 /// The shared spawn path is the only way driver tasks are created, so an attached dial9
 /// recorder sees them; without a recorder the same path stays a plain Tokio spawn.
 mod accept;
+#[cfg(feature = "boring")]
+mod async_handshake;
 #[cfg(feature = "dial9")]
 mod dial9;
 /// One attempt on A and nothing else depending on A: the server rebinds A→B→C, then sends

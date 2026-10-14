@@ -5,6 +5,7 @@
 use std::{
     pin::pin,
     sync::{OnceLock, Weak},
+    task::Context,
     thread,
 };
 
@@ -268,6 +269,17 @@ impl Session for ObservedSession {
 
     fn is_handshaking(&self) -> bool {
         self.inner.is_handshaking()
+    }
+
+    fn poll_pending_callbacks(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Result<Option<bool>, TransportError> {
+        self.inner.poll_pending_callbacks(cx)
+    }
+
+    fn cancel_pending_callbacks(&mut self) {
+        self.inner.cancel_pending_callbacks();
     }
 
     fn read_handshake(&mut self, level: SpaceId, buf: &[u8]) -> Result<bool, TransportError> {

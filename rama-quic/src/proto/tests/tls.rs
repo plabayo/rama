@@ -1,4 +1,4 @@
-use std::assert_matches;
+use std::{assert_matches, task::Context};
 
 use rama_quic_proto::{ConnectionId, Side, TransportError, TransportErrorCode, packet::SpaceId};
 
@@ -108,6 +108,15 @@ impl crypto::Session for FailingInitialKeys {
     fn is_handshaking(&self) -> bool {
         true
     }
+    fn poll_pending_callbacks(
+        &mut self,
+        _: &mut Context<'_>,
+    ) -> Result<Option<bool>, TransportError> {
+        Ok(None)
+    }
+
+    fn cancel_pending_callbacks(&mut self) {}
+
     fn read_handshake(
         &mut self,
         _: rama_quic_proto::packet::SpaceId,

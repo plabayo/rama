@@ -637,65 +637,7 @@ impl Connection {
                     return Ok(());
                 }
 
-                if self.crypto.is_handshaking() {
-                    trace!("handshake ongoing");
-                    return Ok(());
-                }
-
-                if self.side.is_client() {
-                    // Client-only because server params were set from the client's Initial
-                    let params = self.crypto.transport_parameters()?.ok_or_else(|| {
-                        TransportError::new(
-                            TransportErrorCode::crypto(0x6d),
-                            "transport parameters missing",
-                        )
-                    })?;
-
-                    if self.has_0rtt() {
-                        if !self.crypto.early_data_accepted().unwrap() {
-                            debug_assert!(self.side.is_client());
-                            debug!("0-RTT rejected");
-                            self.accepted_0rtt = false;
-                            self.streams.zero_rtt_rejected([
-                                self.config.max_concurrent_bidi_streams,
-                                self.config.max_concurrent_uni_streams,
-                            ]);
-
-                            // Discard already-queued frames
-                            self.spaces[SpaceId::Data].pending = Retransmits::default();
-
-                            // Discard 0-RTT packets
-                            let sent_packets = self.spaces[SpaceId::Data].take_sent_packets();
-                            for packet in sent_packets.into_values() {
-                                self.remove_in_flight(&packet);
-                            }
-                        } else {
-                            self.accepted_0rtt = true;
-                            params.validate_resumption_from(&self.peer_params)?;
-                        }
-                    }
-                    if let Some(token) = params.stateless_reset_token {
-                        self.rem_cids.set_initial_reset_token(token);
-                        self.set_reset_token(self.path.remote, token);
-                        // Every address this identifier has already been sent to needs a route
-                        // now, not just the one in use.
-                        let seq = self.rem_cids.active_seq();
-                        self.announce_reset_routes(seq);
-                    }
-                    self.handle_peer_params(now, params)?;
-                    self.issue_first_cids(now);
-                } else {
-                    // Server-only
-                    self.queue_handshake_done();
-                    self.discard_space(now, SpaceId::Handshake);
-                    self.events.push_back(Event::HandshakeConfirmed);
-                    trace!("handshake confirmed");
-                }
-
-                self.timers.stop(Timer::Handshake);
-                self.events.push_back(Event::Connected);
-                self.state = State::Established;
-                trace!("established");
+                self.finish_handshake(now)?;
                 Ok(())
             }
             Header::Initial(InitialHeader {
@@ -1047,5 +989,78 @@ impl Connection {
         .ok()?;
 
         Some(packet.payload.to_vec())
+    }
+}
+
+impl Connection {
+    /// Establish the connection once TLS completed, by a peer packet or by asynchronous
+    /// callback work that finished on its own.
+    pub(super) fn finish_handshake(&mut self, now: Instant) -> Result<(), TransportError> {
+        if !self.state.is_handshake() {
+            return Ok(());
+        }
+        if self.crypto.is_handshaking() {
+            trace!("handshake ongoing");
+            return Ok(());
+        }
+
+        if self.side.is_client() {
+            // Client-only because server params were set from the client's Initial
+            let params = self.crypto.transport_parameters()?.ok_or_else(|| {
+                TransportError::new(
+                    TransportErrorCode::crypto(0x6d),
+                    "transport parameters missing",
+                )
+            })?;
+
+            if self.has_0rtt() {
+                let accepted = self.crypto.early_data_accepted().ok_or_else(|| {
+                    TransportError::INTERNAL_ERROR("TLS completed without early-data disposition")
+                })?;
+                if !accepted {
+                    debug_assert!(self.side.is_client());
+                    debug!("0-RTT rejected");
+                    self.accepted_0rtt = false;
+                    self.streams.zero_rtt_rejected([
+                        self.config.max_concurrent_bidi_streams,
+                        self.config.max_concurrent_uni_streams,
+                    ]);
+
+                    // Discard already-queued frames
+                    self.spaces[SpaceId::Data].pending = Retransmits::default();
+
+                    // Discard 0-RTT packets
+                    let sent_packets = self.spaces[SpaceId::Data].take_sent_packets();
+                    for packet in sent_packets.into_values() {
+                        self.remove_in_flight(&packet);
+                    }
+                } else {
+                    self.accepted_0rtt = true;
+                    params.validate_resumption_from(&self.peer_params)?;
+                }
+            }
+            if let Some(token) = params.stateless_reset_token {
+                self.rem_cids.set_initial_reset_token(token);
+                self.set_reset_token(self.path.remote, token);
+                // Every address this identifier has already been sent to needs a route
+                // now, not just the one in use.
+                let seq = self.rem_cids.active_seq();
+                self.announce_reset_routes(seq);
+            }
+            self.handle_peer_params(now, params)?;
+            self.issue_first_cids(now);
+        } else {
+            // Server-only
+            self.queue_handshake_done();
+            self.discard_space(now, SpaceId::Handshake);
+            self.events.push_back(Event::HandshakeConfirmed);
+            trace!("handshake confirmed");
+        }
+
+        self.timers.stop(Timer::Handshake);
+        self.events.push_back(Event::Connected);
+        self.state = State::Established;
+        trace!("established");
+        Ok(())
     }
 }

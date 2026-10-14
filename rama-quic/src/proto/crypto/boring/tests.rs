@@ -1,6 +1,14 @@
-use std::{assert_matches, sync::Arc};
+use std::{
+    assert_matches,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    task::{Context, Wake, Waker},
+};
 
 use rama_core::bytes::BytesMut;
+use rama_crypto::dep::boring::ssl::{BoxCustomVerifyFinish, SslAlert, SslRef, SslVerifyMode};
 use rama_quic_proto::{ConnectionId, Side, Version, transport_parameters::TransportParameters};
 use rama_tls::{
     ExtensionId,
@@ -1012,4 +1020,66 @@ fn cached_quic_draws_resume_without_crossing_profile_policy_or_version() {
             check_session(&mut *c, &mut *s, resumed);
         }
     }
+}
+
+/// Counts how often it was woken.
+#[derive(Default)]
+struct Wakes(AtomicUsize);
+
+impl Wake for Wakes {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// A peer packet read while an asynchronous callback waits must not replace the waker the
+/// driver gave the session: finishing the callback wakes that driver, which then resumes
+/// the handshake without another packet.
+#[test]
+fn a_callback_finishing_after_a_packet_read_still_wakes_the_driver() {
+    let (client, server) = configs();
+    let (finish, finished) = tokio::sync::oneshot::channel::<()>();
+    let finished = Arc::new(parking_lot::Mutex::new(Some(finished)));
+    client
+        .as_extensions()
+        .insert(HandshakeInitializer(Arc::new(move |ssl| {
+            let finished = finished.clone();
+            ssl.set_async_custom_verify_callback(SslVerifyMode::PEER, move |_| {
+                let finished = finished.lock().take().ok_or(SslAlert::INTERNAL_ERROR)?;
+                Ok(Box::pin(async move {
+                    finished.await.map_err(|_closed| SslAlert::INTERNAL_ERROR)?;
+                    Ok(Box::new(|_: &mut SslRef| Ok(())) as BoxCustomVerifyFinish)
+                }))
+            });
+            Ok(())
+        })));
+    let client: Arc<dyn crypto::ClientConfig> =
+        Arc::new(QuicClientConfig::from_rama(&client, TlsOptions::default()).unwrap());
+    let server: Arc<dyn crypto::ServerConfig> =
+        Arc::new(QuicServerConfig::from_rama(&server, TlsOptions::default()).unwrap());
+    let mut c = client
+        .start_session(Version::V1, "localhost", &params(Side::Client))
+        .unwrap();
+    let mut s = server
+        .start_session(Version::V1, &params(Side::Server))
+        .unwrap();
+    let wakes = Arc::new(Wakes::default());
+    let waker = Waker::from(wakes.clone());
+    let mut cx = Context::from_waker(&waker);
+    // The driver's first poll gives the session its waker; nothing waits yet.
+    assert_eq!(c.poll_pending_callbacks(&mut cx).unwrap(), None);
+    transfer(&mut *c, &mut *s).unwrap();
+    // The server's flight arrives in fragments: the verifier starts at the Certificate,
+    // and the fragments after it are read while it waits.
+    transfer(&mut *s, &mut *c).unwrap();
+    assert!(c.is_handshaking());
+    assert_eq!(wakes.0.load(Ordering::SeqCst), 0);
+    finish.send(()).unwrap();
+    assert_eq!(
+        wakes.0.load(Ordering::SeqCst),
+        1,
+        "finishing the callback must wake the driver"
+    );
+    assert!(c.poll_pending_callbacks(&mut cx).unwrap().is_some());
+    handshake(&mut *c, &mut *s).unwrap();
 }

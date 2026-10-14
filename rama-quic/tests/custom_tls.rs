@@ -7,6 +7,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    task::Context,
 };
 
 use rama_core::error::BoxError;
@@ -115,6 +116,13 @@ impl Session for TestSession {
     fn is_handshaking(&self) -> bool {
         true
     }
+    fn poll_pending_callbacks(
+        &mut self,
+        _: &mut Context<'_>,
+    ) -> Result<Option<bool>, TransportError> {
+        Ok(None)
+    }
+    fn cancel_pending_callbacks(&mut self) {}
     fn read_handshake(&mut self, _: EncryptionLevel, _: &[u8]) -> Result<bool, TransportError> {
         Err(TransportError::new(
             TransportErrorCode::crypto(42),
