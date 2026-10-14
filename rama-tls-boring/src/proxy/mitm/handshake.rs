@@ -80,6 +80,7 @@ impl Snapshot {
                     server_name: None,
                     resumed: Some(ssl.session_reused()),
                     algorithms: ssl.rama_into(),
+                    server_hello: None,
                 })
             })
             .transpose()?;
@@ -398,6 +399,7 @@ where
                 .map_err(TlsMitmRelayError::config)?,
             resumed: Some(ssl.session_reused()),
             algorithms: ssl.rama_into(),
+            server_hello: None,
         };
         if let Some(params) = snapshot.params {
             #[cfg(feature = "http")]

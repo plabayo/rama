@@ -132,6 +132,7 @@ fn pooled_dispatch(b: divan::Bencher, discovery: bool) {
         server_name: None,
         resumed: None,
         algorithms: Default::default(),
+        server_hello: None,
     });
     let connector = HttpServiceConnector::new(service_fn(move |input: ConnectRequest| {
         let conn = Connection(extensions.clone());
@@ -195,6 +196,7 @@ fn pooled_selection(b: divan::Bencher, discovery: bool) {
         server_name: None,
         resumed: None,
         algorithms: Default::default(),
+        server_hello: None,
     });
     let connection = Connection(extensions);
     let connector = HttpServiceConnector::new(service_fn(move |input: ConnectRequest| {

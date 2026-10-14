@@ -228,6 +228,19 @@ impl TlsClientConfig {
     }
 
     generate_set_and_with! {
+        /// Set whether the server's ServerHello is captured, for server fingerprints such
+        /// as [`Ja4S`] and [`Ja3S`]. Backends that cannot observe handshake messages
+        /// (rustls) report none.
+        ///
+        /// [`Ja4S`]: crate::fingerprint::Ja4S
+        /// [`Ja3S`]: crate::fingerprint::Ja3S
+        pub fn store_server_hello(mut self, store: bool) -> Self {
+            self.0.insert(TlsStoreServerHello(store));
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Layer request-specific TLS extensions over this configuration.
         /// Parent scopes are preserved and subsequent setters remain local to the result.
         pub fn overrides(mut self, overrides: &Extensions) -> Self {
@@ -703,6 +716,13 @@ pub struct TlsClientAuth(pub ClientAuth);
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 pub struct TlsStoreServerCertChain(pub bool);
+
+/// Whether to capture the server's ServerHello into `NegotiatedTlsParameters`.
+///
+/// [`NegotiatedTlsParameters`]: crate::client::NegotiatedTlsParameters
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+pub struct TlsStoreServerHello(pub bool);
 
 #[derive(Debug, Clone)]
 /// The kind of client auth to be used.

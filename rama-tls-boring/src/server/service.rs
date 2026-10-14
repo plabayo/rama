@@ -220,6 +220,7 @@ where
                         .transpose()?,
                     resumed: Some(stream.ssl().session_reused()),
                     algorithms: stream.ssl().rama_into(),
+                    server_hello: None,
                 }
             }
             None => {

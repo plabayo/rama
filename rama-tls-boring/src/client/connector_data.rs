@@ -3,6 +3,7 @@ use crate::certificate_compression::{
     native_certificate_compression,
 };
 use crate::client::config::BoringTlsConnectorConfig;
+use crate::client::server_answer::ServerAnswerRecorder;
 use crate::client::session::{
     self, SessionStore, TlsClientSession, TlsClientSessionKey, TlsClientSessionStore,
 };
@@ -55,6 +56,8 @@ use rama_tls::keylog::{KeyLogSink, open_intent_sink};
 pub struct TlsConnectorData {
     pub config: ConnectConfiguration,
     pub store_server_certificate_chain: bool,
+    /// Record the ServerHello for the connection's negotiated parameters.
+    pub store_server_hello: bool,
     pub server_name: Option<Host>,
     pub server_verify_mode: ServerVerifyMode,
     pub server_cert_pins: Option<TlsServerCertPins>,
@@ -86,6 +89,7 @@ impl fmt::Debug for TlsConnectorContextBuilder {
 #[derive(Clone, Debug)]
 struct ConnectorOptions {
     store_server_certificate_chain: bool,
+    store_server_hello: bool,
     server_name: Option<Host>,
     server_verify_mode: ServerVerifyMode,
     server_cert_pins: Option<TlsServerCertPins>,
@@ -275,6 +279,7 @@ impl TlsConnectorContext {
         Ok(TlsConnectorData {
             config: cfg,
             store_server_certificate_chain: self.options.store_server_certificate_chain,
+            store_server_hello: self.options.store_server_hello,
             server_name: self.options.server_name.clone(),
             server_verify_mode: self.options.server_verify_mode,
             server_cert_pins: self.options.server_cert_pins.clone(),
@@ -308,6 +313,9 @@ impl TlsConnectorData {
             .config
             .into_ssl(identity.as_deref())
             .context("prepare boring client TLS session")?;
+        if self.store_server_hello {
+            ServerAnswerRecorder::of(&mut ssl)?;
+        }
         if self.remembers_sessions
             && let Some(server) = &self.server_name
             && let Some(key) = session::bind_session_key(&mut ssl, server)?
@@ -568,6 +576,7 @@ impl TryFrom<&BoringTlsConnectorConfig<'_>> for ConnectorOptions {
 
         Ok(Self {
             store_server_certificate_chain: value.store_chain.map(|p| p.0).unwrap_or_default(),
+            store_server_hello: value.store_server_hello.map(|p| p.0).unwrap_or_default(),
             server_name: value.server_name.map(|s| s.0.clone()),
             server_verify_mode: value.verify.map(|v| v.0).unwrap_or_default(),
             server_cert_pins: value.server_cert_pins.cloned(),

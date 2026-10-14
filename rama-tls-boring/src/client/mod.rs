@@ -37,6 +37,10 @@ pub use session::{
     TlsClientSessionStore,
 };
 
+mod server_answer;
+#[doc(inline)]
+pub use server_answer::ServerAnswerRecorder;
+
 mod connector_data;
 #[doc(inline)]
 pub use connector_data::{

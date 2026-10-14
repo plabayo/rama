@@ -180,6 +180,7 @@ impl crypto::Session for TlsSession {
                 .handshake_kind()
                 .map(|kind| kind == HandshakeKind::Resumed),
             algorithms: NegotiatedTlsAlgorithms::rama_from(&*self.inner),
+            server_hello: None,
         })
     }
 

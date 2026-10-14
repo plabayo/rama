@@ -97,6 +97,7 @@ mod tests {
                 server_name: None,
                 resumed: None,
                 algorithms: Default::default(),
+                server_hello: None,
             });
         }
         input

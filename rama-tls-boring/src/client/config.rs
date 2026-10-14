@@ -12,6 +12,7 @@ use rama_tls::client::{
     ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsClientConfigProvider,
     TlsComponentIdentity, TlsPoolComponent, TlsPoolId, TlsServerCertPins, TlsServerName,
     TlsServerTrust, TlsServerVerify, TlsSessionProfileScope, TlsStoreServerCertChain,
+    TlsStoreServerHello,
 };
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, ProtocolVersion, SignatureScheme,
@@ -37,6 +38,7 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub keylog: Option<&'a TlsKeyLog>,
     pub server_name: Option<&'a TlsServerName>,
     pub store_chain: Option<&'a TlsStoreServerCertChain>,
+    pub store_server_hello: Option<&'a TlsStoreServerHello>,
     pub client_auth: Option<&'a TlsClientAuth>,
     pub server_cert_pins: Option<&'a TlsServerCertPins>,
     pub server_trust: Option<&'a TlsServerTrust>,
@@ -83,6 +85,7 @@ impl BoringTlsConnectorConfig<'_> {
             keylog,
             server_name,
             store_chain,
+            store_server_hello,
             client_auth,
             server_cert_pins,
             server_trust,
@@ -114,6 +117,7 @@ impl BoringTlsConnectorConfig<'_> {
             .maybe_with_keylog(*keylog)
             .maybe_with_server_name(*server_name)
             .maybe_with_store_chain(*store_chain)
+            .maybe_with_store_server_hello(*store_server_hello)
             .maybe_with_client_auth(*client_auth)
             .maybe_with_server_cert_pins(*server_cert_pins)
             .maybe_with_server_trust(*server_trust)
@@ -188,6 +192,7 @@ impl BoringTlsConnectorConfig<'_> {
             keylog: _,
             server_name: _,
             store_chain: _,
+            store_server_hello: _,
             client_auth,
             server_cert_pins,
             server_trust,
@@ -223,6 +228,7 @@ impl BoringTlsConnectorConfig<'_> {
             keylog,
             server_name: None,
             store_chain: None,
+            store_server_hello: None,
             client_auth,
             server_cert_pins,
             server_trust,
@@ -263,6 +269,7 @@ impl BoringTlsConnectorConfig<'_> {
             keylog: _,
             server_name: _,
             store_chain: _,
+            store_server_hello: _,
             client_auth: _,
             server_cert_pins: _,
             server_trust: _,
@@ -1050,6 +1057,9 @@ mod pool_tests {
             }),
             ("store_chain", |ext, value| {
                 ext.insert(TlsStoreServerCertChain(value != 0));
+            }),
+            ("store_server_hello", |ext, value| {
+                ext.insert(TlsStoreServerHello(value != 0));
             }),
             ("pins", |ext, value| {
                 ext.insert(TlsServerCertPins::new(TlsServerCertPin::SpkiSha256(

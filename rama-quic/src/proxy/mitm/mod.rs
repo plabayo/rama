@@ -28,9 +28,10 @@ use rama_net::{
 };
 use rama_quic_proto::{ConnectionId, VarInt, crypto::CryptoError, peek::PeekedClientHello};
 use rama_tls::{
-    client::TlsClientConfig,
+    client::{ClientHello, TlsClientConfig},
     server::{ServerAuthData, TlsServerConfig},
 };
+use rama_tls_boring::client::ServerAnswerRecorder;
 use rama_tls_boring::proxy::{
     cert_issuer::BoringMitmCertIssuer,
     client_auth::{
@@ -450,7 +451,7 @@ where
             None => offered.iter().cloned().collect(),
         };
         tls.set_alpn(allowed);
-        let requested = if self.client_auth.is_some() {
+        let (exchange, requested) = if self.client_auth.is_some() {
             // A resumed origin session would reuse an earlier client's authentication.
             if tls
                 .as_extensions()
@@ -461,14 +462,24 @@ where
                     "QUIC MITM client auth: shared egress sessions can bypass authentication",
                 ));
             }
-            Some(pause_at_certificate_request(&tls))
+            let (request_tx, request_rx) = oneshot::channel();
+            (
+                Some(Arc::new(Mutex::new(Some(request_tx)))),
+                Some(request_rx),
+            )
         } else {
-            tls.insert(HandshakeInitializer(Arc::new(|ssl: &mut SslRef| {
-                ssl.set_certificate_callback(|_| Err(SelectCertError::ERROR));
-                Ok(())
-            })));
-            None
+            (None, None)
         };
+        let answer = Arc::new(Mutex::new(None::<ServerAnswerRecorder>));
+        let observed = answer.clone();
+        tls.insert(HandshakeInitializer(Arc::new(move |ssl: &mut SslRef| {
+            *observed.lock() = Some(ServerAnswerRecorder::of(ssl)?);
+            match &exchange {
+                Some(exchange) => pause_at_certificate_request(ssl, exchange.clone()),
+                None => ssl.set_certificate_callback(|_| Err(SelectCertError::ERROR)),
+            }
+            Ok(())
+        })));
         let mut client = ClientConfig::try_from_rama_tls_with_provider(
             &tls,
             TlsOptions::default(),
@@ -522,8 +533,13 @@ where
         let negotiated = negotiated
             .ok_or_else(|| BoxError::from_static_str("QUIC origin negotiated no ALPN"))?;
 
+        let mirror = answer
+            .lock()
+            .as_ref()
+            .map(|recorder| IngressMirror::of(recorder, &self.peeked.client_hello))
+            .unwrap_or_default();
         let mut server_tls = TlsServerConfig::new();
-        if let Some((policy, extensions)) = &self.client_auth {
+        let authenticates = if let Some((policy, extensions)) = &self.client_auth {
             let (request, reply) = match request {
                 Some(CertificateRequested { request, reply, .. }) => (Some(request), Some(reply)),
                 None => (None, None),
@@ -539,20 +555,28 @@ where
             if let Some(origin) = self.origin.lock().as_mut() {
                 origin.client_auth = Some(ClientAuthExchange { plan, reply });
             }
-            // The plan configures the one ingress handshake this association accepts.
-            let origin = self.origin.clone();
-            server_tls.insert(HandshakeInitializer(Arc::new(move |ssl: &mut SslRef| {
-                origin
-                    .lock()
-                    .as_mut()
-                    .and_then(|origin| origin.client_auth.as_mut())
-                    .ok_or_else(|| {
-                        BoxError::from_static_str("QUIC MITM client auth plan already released")
-                    })?
-                    .plan
-                    .configure_ingress(ssl)
-            })));
-        }
+            true
+        } else {
+            false
+        };
+        // Configures the one ingress handshake this association accepts: the origin's answer
+        // mirrored, and the client-auth plan.
+        let origin = self.origin.clone();
+        server_tls.insert(HandshakeInitializer(Arc::new(move |ssl: &mut SslRef| {
+            mirror.apply(ssl)?;
+            if !authenticates {
+                return Ok(());
+            }
+            origin
+                .lock()
+                .as_mut()
+                .and_then(|origin| origin.client_auth.as_mut())
+                .ok_or_else(|| {
+                    BoxError::from_static_str("QUIC MITM client auth plan already released")
+                })?
+                .plan
+                .configure_ingress(ssl)
+        })));
 
         let issued = self
             .relay
@@ -647,41 +671,77 @@ fn established_origin(
 
 /// Pause the origin handshake at its certificate request: the request is handed out, and the
 /// handshake resumes with the credential sent back, or fails when the reply is dropped.
-fn pause_at_certificate_request(tls: &TlsClientConfig) -> oneshot::Receiver<CertificateRequested> {
-    let (request_tx, request_rx) = oneshot::channel();
-    let exchange = Arc::new(Mutex::new(Some(request_tx)));
-    tls.insert(HandshakeInitializer(Arc::new(move |ssl: &mut SslRef| {
-        let exchange = exchange.clone();
-        ssl.set_async_certificate_callback(move |selection| {
-            let request = exchange.lock().take().ok_or(AsyncSelectCertError)?;
-            let ssl = selection.ssl();
-            let leaf = ssl.peer_certificate().ok_or(AsyncSelectCertError)?;
-            let alpn = ssl.selected_alpn_protocol().map(ApplicationProtocol::from);
-            let (reply, credential) = oneshot::channel();
-            request
-                .send(CertificateRequested {
-                    leaf,
-                    alpn,
-                    request: TlsMitmCertificateRequest::from_selection(selection),
-                    reply,
-                })
-                .map_err(|_request| AsyncSelectCertError)?;
-            Ok(Box::pin(async move {
-                let credential = credential.await.map_err(|_closed| AsyncSelectCertError)?;
-                Ok(Box::new(move |mut selection: CertificateSelection<'_>| {
-                    let ssl = selection.ssl_mut();
-                    ssl.clear_certificates();
-                    if let Some(credential) = credential {
-                        ssl.add_credential(&credential)
-                            .map_err(|_error| AsyncSelectCertError)?;
-                    }
-                    Ok(())
-                }) as BoxCertificateFinish)
-            }))
-        });
+fn pause_at_certificate_request(ssl: &mut SslRef, exchange: Arc<Mutex<Option<RequestSender>>>) {
+    ssl.set_async_certificate_callback(move |selection| {
+        let request = exchange.lock().take().ok_or(AsyncSelectCertError)?;
+        let ssl = selection.ssl();
+        let leaf = ssl.peer_certificate().ok_or(AsyncSelectCertError)?;
+        let alpn = ssl.selected_alpn_protocol().map(ApplicationProtocol::from);
+        let (reply, credential) = oneshot::channel();
+        request
+            .send(CertificateRequested {
+                leaf,
+                alpn,
+                request: TlsMitmCertificateRequest::from_selection(selection),
+                reply,
+            })
+            .map_err(|_request| AsyncSelectCertError)?;
+        Ok(Box::pin(async move {
+            let credential = credential.await.map_err(|_closed| AsyncSelectCertError)?;
+            Ok(Box::new(move |mut selection: CertificateSelection<'_>| {
+                let ssl = selection.ssl_mut();
+                ssl.clear_certificates();
+                if let Some(credential) = credential {
+                    ssl.add_credential(&credential)
+                        .map_err(|_error| AsyncSelectCertError)?;
+                }
+                Ok(())
+            }) as BoxCertificateFinish)
+        }))
+    });
+}
+
+type RequestSender = oneshot::Sender<CertificateRequested>;
+
+impl IngressMirror {
+    /// What the ingress mirrors of the origin's answer to a client that sent `client_hello`.
+    fn of(answer: &ServerAnswerRecorder, client_hello: &ClientHello) -> Self {
+        let Some(server_hello) = answer.server_hello(true) else {
+            return Self::default();
+        };
+        // Pinning a cipher the client did not offer would fail its handshake.
+        let cipher = client_hello
+            .cipher_suites()
+            .contains(&server_hello.cipher_suite())
+            .then(|| u16::from(server_hello.cipher_suite()));
+        let order = server_hello
+            .extensions()
+            .iter()
+            .chain(answer.encrypted_extensions().as_deref().unwrap_or_default())
+            .map(|id| u16::from(*id))
+            .collect();
+        Self { cipher, order }
+    }
+}
+
+/// The origin's cipher and response extension order, for the ingress handshake to answer
+/// its client as the origin answered the relay.
+#[derive(Default)]
+struct IngressMirror {
+    cipher: Option<u16>,
+    order: Vec<u16>,
+}
+
+impl IngressMirror {
+    fn apply(&self, ssl: &mut SslRef) -> Result<(), BoxError> {
+        if let Some(cipher) = self.cipher {
+            ssl.set_strict_tls13_server_ciphers(&[cipher])?;
+        }
+        if !self.order.is_empty() {
+            ssl.set_server_extension_order(&self.order)?;
+        }
         Ok(())
-    })));
-    request_rx
+    }
 }
 
 /// Close `connection` with `failure_code` unless the guard is disarmed on hand-over.

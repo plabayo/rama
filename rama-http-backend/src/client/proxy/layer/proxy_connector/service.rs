@@ -1577,6 +1577,7 @@ mod tests {
                         server_name: None,
                         resumed: None,
                         algorithms: Default::default(),
+                        server_hello: None,
                     });
                 Ok::<_, Infallible>(established)
             }
@@ -1897,6 +1898,7 @@ mod tests {
                         server_name: None,
                         resumed: None,
                         algorithms: Default::default(),
+                        server_hello: None,
                     });
                 Ok::<_, Infallible>(established)
             }
@@ -1940,6 +1942,7 @@ mod tests {
                             server_name: None,
                             resumed: None,
                             algorithms: Default::default(),
+                            server_hello: None,
                         });
                     established
                 },
@@ -1998,6 +2001,7 @@ mod tests {
                         server_name: None,
                         resumed: None,
                         algorithms: Default::default(),
+                        server_hello: None,
                     });
                 established
             },

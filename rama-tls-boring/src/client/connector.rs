@@ -29,8 +29,8 @@ use std::{fmt, sync::Arc};
 #[cfg(feature = "http")]
 use super::set_alpn_with_coupled_alps;
 use super::{
-    AutoTlsStream, BoringTlsClientConfigProvider, BoringTlsConnectorConfig, TlsClientSessionStore,
-    TlsConnectorData,
+    AutoTlsStream, BoringTlsClientConfigProvider, BoringTlsConnectorConfig, ServerAnswerRecorder,
+    TlsClientSessionStore, TlsConnectorData,
     session::{ConnectorSessions, SessionStore},
     set_alpn_list_with_coupled_alps,
 };
@@ -797,6 +797,7 @@ where
         .then(|| connector_data.server_name.clone())
         .flatten();
     let store_server_certificate_chain = connector_data.store_server_certificate_chain;
+    let store_server_hello = connector_data.store_server_hello;
     #[cfg(feature = "dial9")]
     let dial9_server_name = connector_data.server_name.clone();
     #[cfg(feature = "dial9")]
@@ -894,6 +895,10 @@ where
                 server_name: None,
                 resumed: Some(stream.ssl().session_reused()),
                 algorithms: stream.ssl().rama_into(),
+                server_hello: store_server_hello
+                    .then(|| ServerAnswerRecorder::installed(stream.ssl()))
+                    .flatten()
+                    .and_then(|recorder| recorder.server_hello(false)),
             }
         }
         None => {
@@ -969,7 +974,10 @@ mod tests {
         address::HostWithPort,
         client::{ConnectRequest, ConnectionErrorDomain},
     };
-    use rama_tls::client::{ServerVerifyMode, TlsServerName, TlsServerVerify};
+    use rama_tls::client::{
+        NegotiatedTlsParameters, ServerVerifyMode, TlsServerName, TlsServerVerify,
+        TlsStoreServerHello,
+    };
 
     use rama_crypto::cert::generate_server_auth;
     use rama_net::stream::service::EchoService;
@@ -1236,6 +1244,73 @@ mod tests {
         .expect("handshake timeout")
         .expect("the handshake names and verifies the target");
         server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_connection_publishes_its_server_hello_only_when_asked() {
+        let (cert_chain, private_key) =
+            generate_server_auth(GeneratedServerAuthConfig::default()).expect("server auth");
+        let trust_anchor = cert_chain.last().expect("trust anchor").clone();
+        let server = Arc::new(
+            crate::server::TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(
+                ServerAuthData {
+                    cert_chain,
+                    private_key,
+                    ocsp: None,
+                },
+            ))
+            .into_layer(EchoService::new()),
+        );
+        // Off, on through the connector's configuration, and on for one request.
+        for (base_stores, request_stores) in [(false, None), (true, None), (false, Some(true))] {
+            let base = TlsClientConfig::new()
+                .with_server_name(Host::from_static("localhost"))
+                .with_store_server_hello(base_stores)
+                .try_with_server_trust_anchors([trust_anchor.clone()])
+                .expect("trust anchor");
+            let (client_io, server_io) = tokio::io::duplex(64);
+            let server = server.clone();
+            let server_task =
+                tokio::spawn(async move { server.serve(ServiceInput::new(server_io)).await });
+            let client_io = Arc::new(tokio::sync::Mutex::new(Some(client_io)));
+            let transport = service_fn(move |input: ConnectRequest| {
+                let client_io = client_io.clone();
+                async move {
+                    let conn = ServiceInput::new(client_io.lock().await.take().expect("one dial"));
+                    Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
+                }
+            });
+            let connector = TlsConnector::secure(transport).with_base_config(base);
+            let input = ConnectRequest::new(HostWithPort::new(Host::from_static("localhost"), 443));
+            if let Some(store) = request_stores {
+                input.extensions().insert(TlsStoreServerHello(store));
+            }
+            let established = tokio::time::timeout(Duration::from_secs(5), connector.serve(input))
+                .await
+                .expect("handshake timeout")
+                .expect("origin handshake");
+            let extensions = established.conn.extensions();
+            let stored = request_stores.unwrap_or(base_stores);
+            let hello = extensions
+                .get_ref::<NegotiatedTlsParameters>()
+                .expect("negotiated parameters")
+                .server_hello
+                .clone();
+            assert_eq!(hello.is_some(), stored);
+            if stored {
+                let hello = hello.unwrap();
+                assert!(!hello.is_quic());
+                assert_eq!(hello.protocol_version(), rama_tls::ProtocolVersion::TLSv1_3);
+                let ja4s = rama_tls::fingerprint::Ja4S::compute(extensions).expect("ja4s");
+                assert!(ja4s.to_string().starts_with("t13"), "{ja4s}");
+                let ja3s = rama_tls::fingerprint::Ja3S::compute(extensions).expect("ja3s");
+                assert!(ja3s.to_string().starts_with("771,"), "{ja3s}");
+            } else {
+                rama_tls::fingerprint::Ja4S::compute(extensions).unwrap_err();
+            }
+            drop(established);
+            server_task.abort();
+        }
     }
 
     #[tokio::test]

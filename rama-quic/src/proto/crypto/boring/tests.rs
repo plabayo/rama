@@ -378,6 +378,36 @@ fn a_peer_chain_is_reported_without_a_repeated_leaf() {
     assert_eq!(c.peer_certificates().unwrap(), expected);
 }
 
+/// A client that asked to store the ServerHello reports it, as sent over QUIC, in its
+/// handshake data; one that did not reports none.
+#[test]
+fn a_client_reports_the_server_hello_it_was_asked_to_store() {
+    use rama_tls::fingerprint::Ja4S;
+    let options = TlsOptions::default();
+    for store in [false, true] {
+        let (client_tls, server_tls) = configs();
+        client_tls.insert(rama_tls::client::TlsStoreServerHello(store));
+        let client = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
+        let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
+        let mut c = client
+            .start_session(Version::V1, "localhost", &params(Side::Client))
+            .unwrap();
+        let mut s = server
+            .start_session(Version::V1, &params(Side::Server))
+            .unwrap();
+        handshake(&mut *c, &mut *s).unwrap();
+        let hello = c.handshake_summary().unwrap().server_hello;
+        assert_eq!(hello.is_some(), store);
+        if let Some(hello) = hello {
+            assert!(hello.is_quic());
+            let ja4s = Ja4S::compute_from_server_hello(&hello).unwrap();
+            assert!(ja4s.to_string().starts_with("q13"), "{ja4s}");
+        }
+        // A server never reports one.
+        assert!(s.handshake_summary().unwrap().server_hello.is_none());
+    }
+}
+
 /// A server learns the name and the application protocol from the ClientHello, and reports
 /// them then, so the application can act on them while the handshake is still running. Waiting
 /// for the handshake to finish would be too late to be useful.

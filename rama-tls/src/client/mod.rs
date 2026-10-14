@@ -33,7 +33,7 @@ pub use config::{
     ClientAuth, ClientAuthData, ServerTrustRoots, ServerVerifyMode, TlsClientAuth, TlsClientConfig,
     TlsServerCertPin, TlsServerCertPinCheck, TlsServerCertPinSet, TlsServerCertPins,
     TlsServerIdentity, TlsServerName, TlsServerTrust, TlsServerTrustAnchors, TlsServerVerify,
-    TlsStoreServerCertChain,
+    TlsStoreServerCertChain, TlsStoreServerHello,
 };
 #[cfg(feature = "http")]
 pub use http::{http_alpn_override, negotiated_http_version};
@@ -78,6 +78,9 @@ pub struct NegotiatedTlsParameters {
     pub resumed: Option<bool>,
     /// Algorithms selected by the handshake, as far as the backend reports them.
     pub algorithms: NegotiatedTlsAlgorithms,
+    /// The ServerHello a client received, when its configuration asked to store it and the
+    /// backend can observe handshake messages.
+    pub server_hello: Option<crate::server::ServerHello>,
 }
 
 /// Algorithms selected by a TLS handshake.

@@ -599,6 +599,7 @@ impl<S, K> TlsConnector<S, K> {
                 .handshake_kind()
                 .map(|kind| kind == crate::dep::rustls::HandshakeKind::Resumed),
             algorithms: NegotiatedTlsAlgorithms::rama_from(&***conn_data_ref),
+            server_hello: None,
         };
 
         #[cfg(feature = "dial9")]

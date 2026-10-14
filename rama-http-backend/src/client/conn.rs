@@ -913,6 +913,7 @@ mod http3_dispatch_tests {
                             server_name: None,
                             resumed: None,
                             algorithms: Default::default(),
+                            server_hello: None,
                         });
                     }
                     if let Some(complete) = complete {

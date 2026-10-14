@@ -29,6 +29,7 @@ use rama_quic_proto::{
     version::Wire,
 };
 use rama_tls::client::NegotiatedTlsAlgorithms;
+use rama_tls_boring::client::ServerAnswerRecorder;
 use zeroize::Zeroizing;
 
 use super::{
@@ -454,6 +455,8 @@ impl crypto::Session for TlsSession {
                     .is_init_finished()
                     .then(|| self.inner.ssl().session_reused()),
                 algorithms: NegotiatedTlsAlgorithms::rama_from(self.inner.ssl()),
+                server_hello: ServerAnswerRecorder::installed(self.inner.ssl())
+                    .and_then(|recorder| recorder.server_hello(true)),
             })
     }
     fn negotiated_alpn(&self) -> Option<&[u8]> {

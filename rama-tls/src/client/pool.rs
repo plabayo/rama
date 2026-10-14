@@ -19,7 +19,7 @@ use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with}
 
 use crate::client::{
     ClientAuth, ServerVerifyMode, TlsClientAuth, TlsClientConfigProvider, TlsServerCertPins,
-    TlsServerName, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
+    TlsServerName, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain, TlsStoreServerHello,
 };
 use crate::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, KeyLogIntent, ProtocolVersion,
@@ -404,6 +404,7 @@ struct Overrides<'a> {
     keylog: Option<&'a TlsKeyLog>,
     server_name: Option<&'a TlsServerName>,
     store_chain: Option<&'a TlsStoreServerCertChain>,
+    store_server_hello: Option<&'a TlsStoreServerHello>,
     client_auth: Option<&'a TlsClientAuth>,
     server_cert_pins: Option<&'a TlsServerCertPins>,
     server_trust: Option<&'a TlsServerTrust>,
@@ -504,6 +505,14 @@ impl<'a> TlsPoolIdBuilder<'a> {
         /// Whether to retain the peer certificate chain.
         pub fn store_chain(mut self, value: Option<&'a TlsStoreServerCertChain>) -> Self {
             self.overrides.store_chain = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Whether to retain the server's ServerHello.
+        pub fn store_server_hello(mut self, value: Option<&'a TlsStoreServerHello>) -> Self {
+            self.overrides.store_server_hello = value;
             self
         }
     }
@@ -760,6 +769,7 @@ impl<'a> TlsPoolIdBuilder<'a> {
             keylog,
             server_name,
             store_chain,
+            store_server_hello,
             client_auth,
             server_cert_pins,
             server_trust,
@@ -782,6 +792,7 @@ impl<'a> TlsPoolIdBuilder<'a> {
             keylog,
             server_name: server_name.map(|value| &value.0),
             store_chain: store_chain.map(|value| value.0),
+            store_server_hello: store_server_hello.map(|value| value.0),
             server_cert_pins,
             server_trust,
             client_hello: self.client_hello,
@@ -799,7 +810,7 @@ impl<'a> TlsPoolIdBuilder<'a> {
             return None;
         }
         Some(TlsPoolId {
-            digest: policy_digest(b"rama.tls.overrides.v4", &settings),
+            digest: policy_digest(b"rama.tls.overrides.v5", &settings),
             reusable,
             components: has_shared.then(|| Arc::new(self.components)),
         })
@@ -814,6 +825,7 @@ struct ComparableOverrides<'a> {
     keylog: Option<ComparableKeyLog<'a>>,
     server_name: Option<&'a Host>,
     store_chain: Option<bool>,
+    store_server_hello: Option<bool>,
     server_cert_pins: Option<&'a TlsServerCertPins>,
     server_trust: Option<&'a TlsServerTrust>,
     client_hello: ClientHelloSettings<'a>,

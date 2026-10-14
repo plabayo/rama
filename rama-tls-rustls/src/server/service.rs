@@ -92,6 +92,7 @@ where
                 .handshake_kind()
                 .map(|kind| kind == crate::dep::rustls::HandshakeKind::Resumed),
             algorithms: NegotiatedTlsAlgorithms::rama_from(&***conn_data_ref),
+            server_hello: None,
         };
 
         stream.extensions().insert(negotiated_tls_params);
