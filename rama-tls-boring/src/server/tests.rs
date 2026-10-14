@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use rama_boring::ssl::{SslConnector, SslConnectorBuilder, SslMethod, SslVerifyMode, SslVersion};
+use rama_boring::ssl::{
+    SslConnector, SslConnectorBuilder, SslMethod, SslVerifyMode, SslVersion, UnknownValues,
+};
 use rama_boring_tokio::{SslStream, SslStreamBuilder};
 use rama_core::{
     Layer as _, Service, ServiceInput,
@@ -22,11 +24,13 @@ use rama_tls::{
         ClientHello, NegotiatedTlsAlgorithms, NegotiatedTlsParameters, ServerVerifyMode,
         TlsClientConfig,
     },
+    fingerprint::{Ja3, Ja4, PeetPrint},
     server::{
         CertificateIssuanceContext, DynamicCertIssuer, GeneratedServerAuthConfig, LeafCertRequest,
         ServerAuthData, TlsServerConfig,
     },
 };
+use rama_ua::profile::UserAgentDatabase;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
 
 use super::{
@@ -622,4 +626,81 @@ async fn a_server_connection_carries_data_after_shedding_its_handshake_configura
     let (byte, served) = tokio::join!(client, acceptor.serve(ServiceInput::new(server_io)));
     assert_eq!(&byte, b"x");
     served.unwrap();
+}
+
+/// Every embedded browser profile, replayed by the emulating client, reaches a Rama acceptor
+/// with the fingerprints of its capture.
+#[tokio::test]
+async fn embedded_profiles_reach_the_acceptor_with_their_fingerprints() {
+    let server = TlsAcceptorService::new(
+        static_config(),
+        service_fn(|stream: TlsStream<ServiceInput<DuplexStream>>| async move {
+            Ok::<_, BoxError>(
+                stream
+                    .extensions()
+                    .get_ref::<SecureTransport>()
+                    .and_then(SecureTransport::client_hello)
+                    .cloned(),
+            )
+        }),
+        true,
+    );
+    let database = UserAgentDatabase::try_embedded().unwrap();
+    assert!(!database.is_empty());
+    for profile in database.iter() {
+        let captured = &profile.tls.as_ref().unwrap().client_hello;
+        let ua = profile.ua_str().unwrap_or_default();
+        let config = TlsClientConfig::new_from_client_hello(captured)
+            .with_server_verify(ServerVerifyMode::Disable)
+            .with_unknown_values(UnknownValues::Preserve);
+        let mut data = TlsConnectorContextBuilder::try_from(&config)
+            .unwrap()
+            .build()
+            .configure()
+            .unwrap();
+        // An IP identity sends no SNI, as a capture without one did.
+        data.server_name = Some(
+            captured
+                .ext_server_name()
+                .cloned()
+                .map_or(Host::LOCALHOST_IPV4, Host::from),
+        );
+        let ssl = data.into_ssl().unwrap();
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let (client, observed) = tokio::join!(
+            SslStreamBuilder::new(ssl, client_io).connect(),
+            server.serve(ServiceInput::new(server_io)),
+        );
+        client.unwrap_or_else(|error| panic!("{ua}: {error}"));
+        let observed = observed
+            .unwrap()
+            .expect("the acceptor stores the ClientHello");
+        assert_eq!(
+            Ja4::compute_from_client_hello(&observed)
+                .unwrap()
+                .to_string(),
+            Ja4::compute_from_client_hello(captured)
+                .unwrap()
+                .to_string(),
+            "{ua}: ja4"
+        );
+        assert_eq!(
+            Ja3::compute_from_client_hello(&observed)
+                .unwrap()
+                .to_string(),
+            Ja3::compute_from_client_hello(captured)
+                .unwrap()
+                .to_string(),
+            "{ua}: ja3"
+        );
+        assert_eq!(
+            PeetPrint::compute_from_client_hello(&observed)
+                .unwrap()
+                .to_string(),
+            PeetPrint::compute_from_client_hello(captured)
+                .unwrap()
+                .to_string(),
+            "{ua}: peetprint"
+        );
+    }
 }
