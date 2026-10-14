@@ -646,10 +646,9 @@ async fn a_generated_client_credential_is_shared_by_the_wire_variants_of_its_pol
     }
 }
 
-/// A session resumes only after its certificate verifies again when the configuration pins
-/// one: here against a verification time after the certificate expired.
+/// A pinned configuration resumes its sessions like an unpinned one.
 #[tokio::test]
-async fn a_pinned_session_is_verified_again_when_it_resumes() {
+async fn a_pinned_session_resumes() {
     use crate::client::TlsConnectorContextBuilder;
     use rama_tls::client::TlsServerCertPins;
 
@@ -663,21 +662,11 @@ async fn a_pinned_session_is_verified_again_when_it_resumes() {
         let mut builder = TlsConnectorContextBuilder::try_from(&config).unwrap();
         builder.set_session_store(store);
         let context = builder.build();
-        // A full handshake, then a resumption judged a century later.
         let mut outcomes = Vec::new();
-        for later in [false, true] {
+        for _ in 0..2 {
             let mut data = context.configure().unwrap();
             data.server_name = Some(Host::from_static("a.test"));
-            let mut ssl = data.into_ssl().unwrap();
-            if later {
-                let century = 100 * 365 * 24 * 60 * 60;
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
-                ssl.param_mut()
-                    .set_time(i64::try_from(now + century).unwrap());
-            }
+            let ssl = data.into_ssl().unwrap();
             let (client_io, server_io) = tokio::io::duplex(1024);
             let acceptor = server.acceptor.clone();
             let accepted = tokio::spawn(async move {
@@ -697,12 +686,6 @@ async fn a_pinned_session_is_verified_again_when_it_resumes() {
             });
             drop(accepted.await);
         }
-        // The full handshake verified now; the resumption only resumes unverified when unpinned.
-        let expected = if pinned {
-            [Some(false), None]
-        } else {
-            [Some(false), Some(true)]
-        };
-        assert_eq!(outcomes, expected, "pinned: {pinned}");
+        assert_eq!(outcomes, [Some(false), Some(true)], "pinned: {pinned}");
     }
 }

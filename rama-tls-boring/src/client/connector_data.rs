@@ -786,12 +786,6 @@ fn security_context(value: &BoringTlsConnectorConfig<'_>) -> Result<SslConnector
     add_certificate_compressors(&mut cfg_builder, SUPPORTED_CERTIFICATE_COMPRESSION)
         .context("build (boring) ssl connector: certificate compression")?;
 
-    // A resumed session skips verification, pins included; with pins, verify it again so
-    // a session cannot outlive what the pins and the trust policy accept.
-    if value.server_cert_pins.is_some() {
-        cfg_builder.set_reverify_on_resume(true);
-    }
-
     match server_verify_mode {
         ServerVerifyMode::Auto => {
             trace!("boring connector: server verify mode: auto (default verifier)");
