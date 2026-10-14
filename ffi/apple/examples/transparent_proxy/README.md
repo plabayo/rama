@@ -493,8 +493,11 @@ just test-egress-policy
 just test-egress-policy-deep Wi-Fi
 ```
 
-The deep check requires `sudo` on an isolated development Mac. It runs Debug,
-Release, ASan and TSan adapter tests, then verifies live PAC selection and proxy
+CI runs `test-egress-policy --deep` without system changes, rejects skipped tests,
+and uploads the report as `apple-tcp-egress-policy`.
+
+`test-egress-policy-deep` needs `sudo` on an isolated development Mac. It runs
+Debug, Release, ASan and TSan adapter tests, then verifies live PAC selection and proxy
 contacts for all three policies. It restores proxy settings after failures and
 interrupts, and prints a recovery command for power loss or forced termination.
 Send back the printed `report.zip`; it excludes the saved settings snapshot.
