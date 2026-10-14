@@ -25,7 +25,7 @@ use rama_tls::{
     ExtensionId,
     client::{
         ClientAuth, ClientHello, NegotiatedTlsParameters, ServerVerifyMode, TlsClientAuth,
-        TlsClientConfig, TlsServerVerify, TlsSessionProfileScope,
+        TlsClientConfig, TlsServerCertPins, TlsServerVerify, TlsSessionProfileScope,
     },
     server::{
         CertificateIdentity, GeneratedServerAuthConfig, LeafCertRequest, ServerAuthData,
@@ -646,46 +646,63 @@ async fn a_generated_client_credential_is_shared_by_the_wire_variants_of_its_pol
     }
 }
 
-/// A pinned configuration resumes its sessions like an unpinned one.
+/// A pinned session resumes only while its stored chain still verifies; unpinned sessions and
+/// pins without chain verification resume without that check.
 #[tokio::test]
-async fn a_pinned_session_resumes() {
-    use crate::client::TlsConnectorContextBuilder;
-    use rama_tls::client::TlsServerCertPins;
-
-    let server = Server::new(SslVersion::TLS1_3);
-    for pinned in [false, true] {
-        let mut config = trusting_config();
-        if pinned {
-            config.set_server_cert_pins(TlsServerCertPins::new(AUTH.0[0].clone()));
-        }
-        let store: Arc<dyn TlsClientSessionStore> = cache();
-        let mut builder = TlsConnectorContextBuilder::try_from(&config).unwrap();
-        builder.set_session_store(store);
-        let context = builder.build();
-        let mut outcomes = Vec::new();
-        for _ in 0..2 {
-            let mut data = context.configure().unwrap();
-            data.server_name = Some(Host::from_static("a.test"));
-            let ssl = data.into_ssl().unwrap();
-            let (client_io, server_io) = tokio::io::duplex(1024);
-            let acceptor = server.acceptor.clone();
-            let accepted = tokio::spawn(async move {
-                let mut stream = rama_boring_tokio::accept(&acceptor, server_io).await.ok()?;
-                stream.write_all(b"x").await.ok()?;
-                Some(())
-            });
-            let connected = rama_boring_tokio::SslStreamBuilder::new(ssl, client_io)
-                .connect()
-                .await;
-            outcomes.push(match connected {
-                Ok(mut stream) => {
-                    stream.read_exact(&mut [0]).await.unwrap();
-                    Some(stream.ssl().session_reused())
+async fn a_pinned_session_resumes_only_while_its_chain_verifies() {
+    // The test certificates live 90 days: a year on they have expired (and fit a 32-bit time_t).
+    let later = std::time::SystemTime::now() + Duration::from_hours(365 * 24);
+    let later = later
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    for version in VERSIONS {
+        let server = Server::new(version);
+        for (pinned, verify, expected_later) in [
+            (false, ServerVerifyMode::Auto, Some(true)),
+            (true, ServerVerifyMode::Auto, None),
+            (true, ServerVerifyMode::Disable, Some(true)),
+        ] {
+            let mut config = trusting_config().with_server_verify(verify);
+            if pinned {
+                config.set_server_cert_pins(TlsServerCertPins::new(AUTH.0[0].clone()));
+            }
+            let store: Arc<dyn TlsClientSessionStore> = cache();
+            let mut builder = TlsConnectorContextBuilder::try_from(&config).unwrap();
+            builder.set_session_store(store);
+            let context = builder.build();
+            let mut outcomes = Vec::new();
+            for judged_later in [false, false, true] {
+                let mut data = context.configure().unwrap();
+                data.server_name = Some(Host::from_static("a.test"));
+                let mut ssl = data.into_ssl().unwrap();
+                if judged_later {
+                    ssl.param_mut().set_time(later.try_into().unwrap());
                 }
-                Err(_) => None,
-            });
-            drop(accepted.await);
+                let (client_io, server_io) = tokio::io::duplex(1024);
+                let acceptor = server.acceptor.clone();
+                let accepted = tokio::spawn(async move {
+                    let mut stream = rama_boring_tokio::accept(&acceptor, server_io).await.ok()?;
+                    stream.write_all(b"x").await.ok()?;
+                    Some(())
+                });
+                let connected = rama_boring_tokio::SslStreamBuilder::new(ssl, client_io)
+                    .connect()
+                    .await;
+                outcomes.push(match connected {
+                    Ok(mut stream) => {
+                        stream.read_exact(&mut [0]).await.unwrap();
+                        Some(stream.ssl().session_reused())
+                    }
+                    Err(_) => None,
+                });
+                drop(accepted.await);
+            }
+            assert_eq!(
+                outcomes,
+                [Some(false), Some(true), expected_later],
+                "{version:?} pinned: {pinned} verify: {verify:?}"
+            );
         }
-        assert_eq!(outcomes, [Some(false), Some(true)], "pinned: {pinned}");
     }
 }

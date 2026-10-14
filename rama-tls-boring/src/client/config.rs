@@ -57,6 +57,7 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub permute_extensions: Option<&'a BoringPermuteExtensions>,
     pub unknown_values: Option<&'a BoringUnknownValues>,
     pub grease_values: Option<&'a BoringGreaseValues>,
+    pub legacy_extensions: Option<&'a BoringLegacyExtensions>,
     pub extension_bodies: Option<&'a BoringExtensionBodies>,
     pub requested_trust_anchors: Option<&'a BoringRequestedTrustAnchors>,
     pub cert_compression: Option<&'a BoringCertCompression>,
@@ -107,6 +108,7 @@ impl BoringTlsConnectorConfig<'_> {
             permute_extensions,
             unknown_values,
             grease_values,
+            legacy_extensions,
             extension_bodies,
             requested_trust_anchors,
             cert_compression,
@@ -162,6 +164,9 @@ impl BoringTlsConnectorConfig<'_> {
         }
         if let Some(values) = grease_values {
             builder.set_component(*values);
+        }
+        if let Some(legacy) = legacy_extensions {
+            builder.set_component(*legacy);
         }
         if let Some(bodies) = extension_bodies {
             builder.set_component(*bodies);
@@ -226,6 +231,7 @@ impl BoringTlsConnectorConfig<'_> {
             permute_extensions: _,
             unknown_values: _,
             grease_values: _,
+            legacy_extensions: _,
             extension_bodies: _,
             requested_trust_anchors: _,
             cert_compression: _,
@@ -267,6 +273,7 @@ impl BoringTlsConnectorConfig<'_> {
             permute_extensions: None,
             unknown_values: None,
             grease_values: None,
+            legacy_extensions: None,
             extension_bodies: None,
             requested_trust_anchors: None,
             cert_compression: None,
@@ -309,6 +316,7 @@ impl BoringTlsConnectorConfig<'_> {
             permute_extensions: _,
             unknown_values: _,
             grease_values: _,
+            legacy_extensions: _,
             extension_bodies: _,
             requested_trust_anchors: _,
             cert_compression: _,
@@ -397,6 +405,11 @@ pub trait BoringClientConfigExt: Sized {
         /// or exactly the listed codepoints ([`GreaseValues::Pinned`], for a relay that
         /// mirrors its client).
         fn grease_values(self, values: GreaseValues) -> Self;
+    }
+    generate_set_and_with! {
+        /// Send extended_master_secret and renegotiation_info even when the minimum version is
+        /// TLS 1.3, as some browsers do over QUIC. Off by default.
+        fn legacy_extensions(self, enabled: bool) -> Self;
     }
     generate_set_and_with! {
         /// Bodies of GREASE extensions and of preserved extensions BoringSSL does not
@@ -534,6 +547,12 @@ impl BoringClientConfigExt for TlsClientConfig {
     generate_set_and_with! {
         fn grease_values(mut self, values: GreaseValues) -> Self {
             self.insert(BoringGreaseValues(values));
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn legacy_extensions(mut self, enabled: bool) -> Self {
+            self.insert(BoringLegacyExtensions(enabled));
             self
         }
     }
@@ -756,6 +775,20 @@ impl TlsPoolComponent for BoringGreaseValues {
     }
 }
 
+/// Whether a ClientHello with a TLS 1.3 minimum still sends the TLS 1.2 extensions
+/// extended_master_secret and renegotiation_info.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(tls))]
+pub struct BoringLegacyExtensions(pub bool);
+
+impl TlsPoolComponent for BoringLegacyExtensions {
+    type Identity = Self;
+
+    fn pool_component_identity(&self) -> Self {
+        *self
+    }
+}
+
 /// Bodies of GREASE extensions and of preserved extensions BoringSSL does not build itself.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(tls))]
@@ -941,6 +974,11 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         }
         if !extension_bodies.is_empty() {
             config.set_extension_bodies(extension_bodies);
+        }
+        // Browsers over QUIC send both although only TLS 1.3 can be negotiated there.
+        let sent = |id| hello.extensions().iter().any(|ext| ext.id() == id);
+        if sent(ExtensionId::EXTENDED_MASTER_SECRET) && sent(ExtensionId::RENEGOTIATION_INFO) {
+            config.set_legacy_extensions(true);
         }
         config.set_cert_compression(cert_compression);
         config.set_delegated_credentials(delegated_credentials);

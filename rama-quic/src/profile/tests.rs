@@ -1346,11 +1346,6 @@ fn a_captured_browser_client_hello_is_reproduced_over_quic() {
         assert_eq!(emitted.ext_server_name(), captured.ext_server_name());
 
         let mut expected = wire_shape(&captured);
-        // BoringSSL writes these TLS 1.2 extensions only when it may negotiate TLS 1.2,
-        // which a QUIC connection never may (see the rama-sprints provider follow-up).
-        expected.retain(|ext| {
-            !ext.starts_with("EXTENDED_MASTER_SECRET:") && !ext.starts_with("RENEGOTIATION_INFO:")
-        });
         // Without the compression feature, no compressor is registered.
         if !cfg!(feature = "compression") {
             expected.retain(|ext| !ext.starts_with("COMPRESS_CERTIFICATE:"));

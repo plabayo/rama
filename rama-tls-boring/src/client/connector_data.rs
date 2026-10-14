@@ -116,6 +116,7 @@ struct WirePlan {
     requested_trust_anchors: Option<Vec<u8>>,
     grease: GreaseLists,
     grease_values: GreaseValues,
+    legacy_extensions: bool,
     unknown_values: UnknownValues,
     extension_bodies: Option<Arc<[(ExtensionId, Bytes)]>>,
     ocsp_stapling: bool,
@@ -142,6 +143,7 @@ impl WirePlan {
     fn shape(&self) -> Option<ClientHelloShape> {
         let defaults = self.grease.is_empty()
             && self.grease_values == GreaseValues::Fresh
+            && !self.legacy_extensions
             && self.unknown_values == UnknownValues::Drop
             && self.extension_bodies.is_none();
         if defaults {
@@ -153,7 +155,8 @@ impl WirePlan {
         }
         shape
             .set_grease_values(self.grease_values)
-            .set_unknown_values(self.unknown_values);
+            .set_unknown_values(self.unknown_values)
+            .set_legacy_extensions(self.legacy_extensions);
         for (id, body) in self
             .extension_bodies
             .iter()
@@ -658,6 +661,7 @@ impl TryFrom<&BoringTlsConnectorConfig<'_>> for ConnectorOptions {
             requested_trust_anchors,
             grease,
             grease_values: value.grease_values.map(|p| p.0).unwrap_or_default(),
+            legacy_extensions: value.legacy_extensions.is_some_and(|p| p.0),
             unknown_values: value.unknown_values.map(|p| p.0).unwrap_or_default(),
             extension_bodies: value.extension_bodies.map(|p| p.0.clone()),
             ocsp_stapling: value.ocsp_stapling.map(|p| p.0).unwrap_or_default(),
@@ -785,6 +789,11 @@ fn security_context(value: &BoringTlsConnectorConfig<'_>) -> Result<SslConnector
     // Each connection selects its own algorithms from these.
     add_certificate_compressors(&mut cfg_builder, SUPPORTED_CERTIFICATE_COMPRESSION)
         .context("build (boring) ssl connector: certificate compression")?;
+
+    // A resumed session skips verification; with pins, verify its stored chain again.
+    if value.server_cert_pins.is_some() {
+        cfg_builder.set_reverify_on_resume(true);
+    }
 
     match server_verify_mode {
         ServerVerifyMode::Auto => {
