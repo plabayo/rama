@@ -147,20 +147,11 @@ impl QuicClientConfig {
         validate_alpn(pieces.alpn, options)?;
         let mut builder = TlsConnectorContextBuilder::try_from(pieces)?;
         if builder
-            .config
             .max_proto_version()
             .is_some_and(|version| version != SslVersion::TLS1_3)
         {
             return Err(TlsConfigError::Tls13Required);
         }
-        builder
-            .config
-            .set_min_proto_version(Some(SslVersion::TLS1_3))
-            .map_err(|error| TlsConfigError::InvalidConfiguration(error.into()))?;
-        builder
-            .config
-            .set_max_proto_version(Some(SslVersion::TLS1_3))
-            .map_err(|error| TlsConfigError::InvalidConfiguration(error.into()))?;
         let tickets = config
             .as_extensions()
             .get_ref::<SharedClientSessions>()

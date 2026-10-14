@@ -1,4 +1,7 @@
-use crate::certificate_compression::add_certificate_compressors;
+use crate::certificate_compression::{
+    NativeCertificateCompression, SUPPORTED_CERTIFICATE_COMPRESSION, add_certificate_compressors,
+    native_certificate_compression,
+};
 use crate::client::config::BoringTlsConnectorConfig;
 use crate::client::session::{
     self, SessionStore, TlsClientSession, TlsClientSessionKey, TlsClientSessionStore,
@@ -14,7 +17,8 @@ use rama_boring::{
     rsa::Rsa,
     sha::sha256,
     ssl::{
-        ConnectConfiguration, SslCredential, SslCurve, SslOptions, SslRef, SslSessionCacheMode,
+        ClientHelloShape, ConnectConfiguration, GreaseLists, SslConnector, SslConnectorBuilder,
+        SslCredential, SslCurve, SslMethod, SslOptions, SslRef, SslSessionCacheMode,
         SslSignatureAlgorithm, SslVerifyMode, SslVersion,
     },
     x509::{
@@ -24,6 +28,7 @@ use rama_boring::{
         verify::X509VerifyFlags,
     },
 };
+use rama_core::bytes::Bytes;
 use rama_core::error::BoxErrorExt as _;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_core::{
@@ -34,8 +39,8 @@ use rama_crypto::dep::x509_parser::nom::AsBytes;
 use rama_net::{address::Host, tls::ApplicationProtocol};
 use rama_tls::client::ClientAuth;
 use rama_tls::client::TlsClientConfig;
-use rama_tls::client::TlsServerCertPins;
 use rama_tls::client::{ServerTrustRoots, ServerVerifyMode};
+use rama_tls::client::{TlsPoolId, TlsServerCertPins};
 use rama_tls::client::{TlsServerTrust, TlsServerTrustAnchors};
 use rama_tls::{ExtensionId, KeyLogIntent};
 use rama_utils::macros::generate_set_and_with;
@@ -60,13 +65,13 @@ pub struct TlsConnectorData {
 /// Shared client configuration, including native context callbacks and session state.
 #[derive(Clone, Debug)]
 pub struct TlsConnectorContext {
-    connector: rama_boring::ssl::SslConnector,
+    connector: SslConnector,
     options: ConnectorOptions,
 }
 
 /// Configures a reusable client TLS context before it is shared.
 pub struct TlsConnectorContextBuilder {
-    pub config: rama_boring::ssl::SslConnectorBuilder,
+    pub config: SslConnectorBuilder,
     options: ConnectorOptions,
 }
 
@@ -84,13 +89,110 @@ struct ConnectorOptions {
     server_name: Option<Host>,
     server_verify_mode: ServerVerifyMode,
     server_cert_pins: Option<TlsServerCertPins>,
+    wire: WirePlan,
+    remembers_sessions: bool,
+    session_store: Option<SessionStore>,
+}
+
+/// Every ClientHello setting, applied per connection: a native context carries only the
+/// security policy, so one context serves every wire variant of that policy.
+#[derive(Clone, Debug)]
+struct WirePlan {
+    cipher_list: Option<Vec<u16>>,
+    alpn_protos: Option<Bytes>,
+    groups: Option<Vec<u16>>,
+    key_shares: Option<Vec<SslCurve>>,
+    verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>>,
+    min_version: Option<SslVersion>,
+    max_version: Option<SslVersion>,
+    extension_order: Option<Vec<u16>>,
+    permute_extensions: bool,
+    requested_trust_anchors: Option<Vec<u8>>,
+    grease: GreaseLists,
+    ocsp_stapling: bool,
+    signed_cert_timestamps: bool,
+    session_tickets: bool,
+    certificate_compression: Vec<NativeCertificateCompression>,
     alps: Option<(Vec<ApplicationProtocol>, bool)>,
     record_size_limit: Option<u16>,
     delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
     encrypted_client_hello: bool,
-    key_shares: Option<Vec<SslCurve>>,
-    remembers_sessions: bool,
-    session_store: Option<SessionStore>,
+}
+
+impl WirePlan {
+    fn apply(&self, cfg: &mut ConnectConfiguration) -> Result<(), BoxError> {
+        if !self.grease.is_empty() {
+            cfg.set_client_hello_shape(&ClientHelloShape::new().with_grease_lists(self.grease))
+                .context("set GREASE lists")?;
+        }
+        if self.permute_extensions {
+            cfg.set_permute_extensions(true);
+        } else if let Some(order) = &self.extension_order {
+            cfg.set_extension_order(order)
+                .context("set extension order")?;
+        }
+        if let Some(ids) = &self.requested_trust_anchors {
+            cfg.set_requested_trust_anchors(ids)
+                .context("set requested trust anchors")?;
+        }
+        if let Some(list) = &self.cipher_list {
+            cfg.set_raw_cipher_list(list).context("set cipher list")?;
+        }
+        if let Some(protos) = &self.alpn_protos {
+            cfg.set_alpn_protos(protos).context("set alpn protos")?;
+        }
+        if let Some(groups) = &self.groups {
+            cfg.set_raw_supported_groups(groups)
+                .context("set supported groups")?;
+        }
+        if let Some(curves) = &self.key_shares {
+            cfg.set_client_key_shares(curves)
+                .context("set client key shares")?;
+        }
+        if self.min_version.is_some() {
+            cfg.set_min_proto_version(self.min_version)
+                .context("set min proto version")?;
+        }
+        if self.max_version.is_some() {
+            cfg.set_max_proto_version(self.max_version)
+                .context("set max proto version")?;
+        }
+        if let Some(prefs) = &self.verify_algorithm_prefs {
+            cfg.set_verify_algorithm_prefs(prefs)
+                .context("set signature schemes (verify algorithm prefs)")?;
+        }
+        if self.ocsp_stapling {
+            cfg.enable_ocsp_stapling();
+        }
+        if self.signed_cert_timestamps {
+            cfg.enable_signed_cert_timestamps();
+        }
+        if !self.session_tickets {
+            cfg.set_options(SslOptions::NO_TICKET);
+        }
+        // The context registers every algorithm; a connection offers only its own.
+        cfg.set_certificate_compression_algorithms(&self.certificate_compression)
+            .context("set certificate compression algorithms")?;
+        if let Some((alps_list, new_codepoint)) = &self.alps {
+            cfg.set_alps_use_new_codepoint(*new_codepoint);
+            for app_proto in alps_list {
+                cfg.add_application_settings(app_proto.as_bytes())
+                    .context("set alps application settings")?;
+            }
+        }
+        if let Some(limit) = self.record_size_limit {
+            cfg.set_record_size_limit(limit)
+                .context("set record size limit")?;
+        }
+        if let Some(schemes) = &self.delegated_credential_schemes {
+            cfg.set_delegated_credential_schemes(schemes)
+                .context("set delegated credential schemes")?;
+        }
+        if self.encrypted_client_hello {
+            cfg.set_enable_ech_grease(true);
+        }
+        Ok(())
+    }
 }
 
 impl TlsConnectorContextBuilder {
@@ -124,6 +226,12 @@ impl TlsConnectorContextBuilder {
         }
     );
 
+    /// The highest version a connection offers, if configured.
+    #[must_use]
+    pub fn max_proto_version(&self) -> Option<SslVersion> {
+        self.options.wire.max_version
+    }
+
     pub fn build(self) -> TlsConnectorContext {
         TlsConnectorContext {
             connector: self.config.build(),
@@ -142,34 +250,29 @@ impl TlsConnectorContext {
         )
     }
 
+    /// Configure a connection with `config`'s wire settings and identity on this context,
+    /// which carries `config`'s security policy; session settings stay this context's.
+    pub(super) fn configure_variant(
+        &self,
+        config: &BoringTlsConnectorConfig<'_>,
+    ) -> Result<TlsConnectorData, BoxError> {
+        let mut options = ConnectorOptions::try_from(config)?;
+        options.remembers_sessions = self.options.remembers_sessions;
+        options.session_store = self.options.session_store.clone();
+        Self {
+            connector: self.connector.clone(),
+            options,
+        }
+        .configure()
+    }
+
     /// Create independent connection state while retaining the shared native context.
     pub fn configure(&self) -> Result<TlsConnectorData, BoxError> {
         let mut cfg = self
             .connector
             .configure()
             .context("create ssl connector configuration")?;
-        if let Some((alps_list, new_codepoint)) = &self.options.alps {
-            cfg.set_alps_use_new_codepoint(*new_codepoint);
-            for app_proto in alps_list {
-                cfg.add_application_settings(app_proto.as_bytes())
-                    .context("set alps application settings")?;
-            }
-        }
-        if let Some(limit) = self.options.record_size_limit {
-            cfg.set_record_size_limit(limit)
-                .context("set record size limit")?;
-        }
-        if let Some(schemes) = &self.options.delegated_credential_schemes {
-            cfg.set_delegated_credential_schemes(schemes)
-                .context("set delegated credential schemes")?;
-        }
-        if self.options.encrypted_client_hello {
-            cfg.set_enable_ech_grease(true);
-        }
-        if let Some(curves) = &self.options.key_shares {
-            cfg.set_client_key_shares(curves)
-                .context("set client key shares")?;
-        }
+        self.options.wire.apply(&mut cfg)?;
         Ok(TlsConnectorData {
             config: cfg,
             store_server_certificate_chain: self.options.store_server_certificate_chain,
@@ -261,10 +364,28 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
     type Error = BoxError;
 
     fn try_from(value: BoringTlsConnectorConfig<'_>) -> Result<Self, Self::Error> {
-        TlsConnectorContextBuilder::try_from(value)?
-            .build()
-            .configure()
+        TlsConnectorContext {
+            connector: shared_security_context(&value)?,
+            options: ConnectorOptions::try_from(&value)?,
+        }
+        .configure()
     }
+}
+
+/// The native context for `value`'s security policy, shared by every connection without a
+/// session store: it holds no per-connection or session state.
+fn shared_security_context(value: &BoringTlsConnectorConfig<'_>) -> Result<SslConnector, BoxError> {
+    const MAX_SHARED_CONTEXTS: u64 = 64;
+    static CONTEXTS: LazyLock<Cache<TlsPoolId, SslConnector>> =
+        LazyLock::new(|| Cache::new(MAX_SHARED_CONTEXTS));
+    let Some(scope) = value.context_scope().filter(TlsPoolId::is_reusable) else {
+        return Ok(security_context(value)?.build());
+    };
+    if let Some(connector) = CONTEXTS.get(&scope) {
+        return Ok(connector);
+    }
+    let connector = security_context(value)?.build();
+    Ok(CONTEXTS.entry(scope).or_insert(connector).into_value())
 }
 
 impl TryFrom<&TlsClientConfig> for TlsConnectorContextBuilder {
@@ -281,57 +402,18 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
     type Error = BoxError;
 
     fn try_from(value: BoringTlsConnectorConfig<'_>) -> Result<Self, Self::Error> {
-        let session_policy = value.session_scope();
-        let session_domain = value.session_domain.copied();
-        let server_verify_mode = value.verify.map(|v| v.0).unwrap_or_default();
-        let server_cert_pins = value.server_cert_pins.cloned();
-        let store_server_certificate_chain = value.store_chain.map(|p| p.0).unwrap_or_default();
-        let server_name = value.server_name.map(|s| s.0.clone());
+        Ok(Self {
+            config: security_context(&value)?,
+            options: ConnectorOptions::try_from(&value)?,
+        })
+    }
+}
 
-        let keylog_intent = value
-            .keylog
-            .map(|k| k.0.clone())
-            .unwrap_or(KeyLogIntent::Environment);
+impl TryFrom<&BoringTlsConnectorConfig<'_>> for ConnectorOptions {
+    type Error = BoxError;
+
+    fn try_from(value: &BoringTlsConnectorConfig<'_>) -> Result<Self, Self::Error> {
         let grease_enabled = value.grease.map(|p| p.0).unwrap_or_default();
-        let ocsp_stapling_enabled = value.ocsp_stapling.map(|p| p.0).unwrap_or_default();
-        let signed_cert_timestamps_enabled = value
-            .signed_cert_timestamps
-            .map(|p| p.0)
-            .unwrap_or_default();
-        let session_tickets_enabled = value.tls12_session_tickets.is_none_or(|p| p.0);
-        let encrypted_client_hello = value
-            .encrypted_client_hello
-            .map(|p| p.0)
-            .unwrap_or_default();
-        let record_size_limit = value.record_size_limit.map(|p| p.0);
-        let server_verify_cert_store = value.verify_cert_store.as_ref().map(|p| p.0.clone());
-        if server_verify_mode == ServerVerifyMode::Disable {
-            if value.server_trust.is_some() {
-                debug!(
-                    "boring connector: server trust policy ignored: server verification is disabled"
-                );
-            }
-            if server_verify_cert_store.is_some() {
-                debug!(
-                    "boring connector: custom certificate store ignored: server verification is disabled"
-                );
-            }
-        }
-        let server_trust_store = match (server_verify_mode, value.server_trust) {
-            (ServerVerifyMode::Auto, Some(trust)) => {
-                if server_verify_cert_store.is_some() {
-                    debug!(
-                        "boring connector: server trust policy ignored: custom certificate store takes precedence"
-                    );
-                    None
-                } else {
-                    Some(resolve_server_trust_store(trust)?)
-                }
-            }
-            (ServerVerifyMode::Auto, None) => Some(ResolvedServerTrustStore::Default),
-            _ => None,
-        };
-        let alps = value.alps.map(|p| (p.protocols.clone(), p.new_codepoint));
 
         let alpn_protos = value
             .alpn
@@ -360,12 +442,17 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
                     order
                 }
             });
-        let certificate_compression_algorithms = value.cert_compression.map(|p| p.0.clone());
 
         // BoringSSL rejects any duplicate group or signature scheme, adjacent or not.
-        let curves: Option<Vec<SslCurve>> = value
-            .supported_groups
-            .map(|p| native_unique(p.0.iter().filter_map(|g| (*g).rama_try_into().ok())));
+        let groups: Option<Vec<(u16, SslCurve)>> = value.supported_groups.map(|p| {
+            native_unique(p.0.iter().filter_map(|group| {
+                let curve: SslCurve = (*group).rama_try_into().ok()?;
+                Some((u16::from(*group), curve))
+            }))
+        });
+        let curves: Option<Vec<SslCurve>> = groups
+            .as_ref()
+            .map(|groups| groups.iter().map(|(_, curve)| *curve).collect());
         let verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>> = value
             .signature_schemes
             .map(|p| native_unique(p.0.iter().filter_map(|s| (*s).rama_try_into().ok())));
@@ -384,37 +471,32 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
                     .collect()
             });
 
-        let client_auth = value
-            .client_auth
-            .map(|c| ConnectorConfigClientAuth::try_from(c.0.clone()))
-            .transpose()?;
-
         // Versions: min/max derived from the offered list, explicit overrides win.
         // (The max override also doubles as the mitm egress safety clamp.)
-        let mut min_ssl_version: Option<SslVersion> = None;
-        let mut max_ssl_version: Option<SslVersion> = None;
+        let mut min_version: Option<SslVersion> = None;
+        let mut max_version: Option<SslVersion> = None;
         if let Some(versions) = value.versions {
             if let Some(min) = versions.0.iter().filter(|v| !v.is_grease()).min() {
-                min_ssl_version = Some((*min).rama_try_into().map_err(|v| {
+                min_version = Some((*min).rama_try_into().map_err(|v| {
                     BoxError::from_static_str("boring connector: cast min proto version")
                         .context_field("protocol_version", v)
                 })?);
             }
             if let Some(max) = versions.0.iter().filter(|v| !v.is_grease()).max() {
-                max_ssl_version = Some((*max).rama_try_into().map_err(|v| {
+                max_version = Some((*max).rama_try_into().map_err(|v| {
                     BoxError::from_static_str("boring connector: cast max proto version")
                         .context_field("protocol_version", v)
                 })?);
             }
         }
         if let Some(p) = value.min_version {
-            min_ssl_version = Some((p.0).rama_try_into().map_err(|v| {
+            min_version = Some((p.0).rama_try_into().map_err(|v| {
                 BoxError::from_static_str("boring connector: cast min proto version override")
                     .context_field("protocol_version", v)
             })?);
         }
         if let Some(p) = value.max_version {
-            max_ssl_version = Some((p.0).rama_try_into().map_err(|v| {
+            max_version = Some((p.0).rama_try_into().map_err(|v| {
                 BoxError::from_static_str("boring connector: cast max proto version override")
                     .context_field("protocol_version", v)
             })?);
@@ -426,206 +508,221 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorContextBuilder {
         // max to TLS 1.2, min would exceed max, which boring rejects. TLS 1.3 is
         // the only version above TLS 1.2, so lower exactly that floor to keep the
         // connector internally consistent (a lower legitimate floor is untouched).
-        if min_ssl_version == Some(SslVersion::TLS1_3)
-            && max_ssl_version == Some(SslVersion::TLS1_2)
-        {
-            min_ssl_version = Some(SslVersion::TLS1_2);
+        if min_version == Some(SslVersion::TLS1_3) && max_version == Some(SslVersion::TLS1_2) {
+            min_version = Some(SslVersion::TLS1_2);
         }
 
-        // `no_default_verify_builder` skips boring's per-call
-        // `set_default_verify_paths`, which would otherwise parse the entire OS
-        // trust store into a throwaway per-connector store on every build. We
-        // install exactly the store we need below instead.
-        let mut cfg_builder = rama_boring::ssl::SslConnector::no_default_verify_builder(
-            rama_boring::ssl::SslMethod::tls_client(),
-        )
-        .context("create (boring) ssl connector builder")?;
-
-        if let Some(store) = &server_verify_cert_store {
-            trace!("boring connector: set provided cert store to verify as server");
-            cfg_builder.set_cert_store_ref(store);
-        } else {
-            match (server_verify_mode, server_trust_store) {
-                (ServerVerifyMode::Disable, _) => {
-                    // Verification is disabled (a NONE verify callback is
-                    // installed below), so the trust store is never consulted:
-                    // leave the empty store from `no_default_verify_builder`
-                    // and don't parse the OS bundle at all.
-                    trace!(
-                        "boring connector: server verification disabled; no verify cert store loaded"
-                    );
-                }
-                (ServerVerifyMode::Auto, Some(ResolvedServerTrustStore::Default) | None) => {
-                    // Install a process-wide, parse-once shared OS default store
-                    // so every connector references one copy instead of
-                    // re-parsing the bundle on every build.
-                    trace!("boring connector: using shared default verify cert store");
-                    cfg_builder.set_cert_store_ref(shared_default_verify_store()?);
-                }
-                (ServerVerifyMode::Auto, Some(ResolvedServerTrustStore::WebPki)) => {
-                    trace!("boring connector: using shared WebPKI verify cert store");
-                    cfg_builder.set_cert_store_ref(shared_webpki_verify_store()?);
-                }
-                (ServerVerifyMode::Auto, Some(ResolvedServerTrustStore::Derived(store))) => {
-                    trace!("boring connector: using shared derived server verify cert store");
-                    cfg_builder.set_cert_store_ref(store.as_ref());
-                }
-            }
-        }
-
-        if let Some(sink) = open_intent_sink(&keylog_intent)? {
-            cfg_builder.set_keylog_callback(move |_, line| {
-                let mut buf = String::with_capacity(line.len() + 1);
-                buf.push_str(line);
-                buf.push('\n');
-                sink.write_line(&buf);
-            });
-        }
-
-        // An explicit order replaces native permutation, so only apply it without.
-        let permute_extensions = value.permute_extensions.is_some_and(|p| p.0);
-        cfg_builder.set_permute_extensions(permute_extensions);
-        if !permute_extensions && let Some(order) = &extension_order {
-            trace!(?order, "boring connector: set extension order");
-            cfg_builder
-                .set_extension_order(order)
-                .context("build (boring) ssl connector: set extension order")?;
-        }
-
-        if let Some(ids) = value
+        let requested_trust_anchors = value
             .requested_trust_anchors
             .map(|anchors| anchors.identifier_list())
             .transpose()
             .context("build (boring) ssl connector: validate requested trust anchors")?
             .flatten()
-        {
-            cfg_builder
-                .set_requested_trust_anchors(ids)
-                .context("build (boring) ssl connector: set requested trust anchors")?;
+            .map(<[u8]>::to_vec);
+
+        // An explicit order replaces native permutation, so only apply it without.
+        let permute_extensions = value.permute_extensions.is_some_and(|p| p.0);
+
+        let mut grease = GreaseLists::empty();
+        if grease_enabled {
+            grease |= GreaseLists::CIPHERS
+                | GreaseLists::GROUPS
+                | GreaseLists::KEY_SHARES
+                | GreaseLists::VERSIONS
+                | GreaseLists::EXTENSIONS;
+        }
+        if value.grease_signature_schemes.is_some_and(|p| p.0) {
+            grease |= GreaseLists::SIGNATURE_ALGORITHMS;
         }
 
-        if let Some(list) = &cipher_list {
-            trace!(?list, "boring connector: set raw cipher list");
-            cfg_builder
-                .set_raw_cipher_list(list)
-                .context("build (boring) ssl connector: set cipher list")?;
-        }
-
-        if let Some(alpn_protos) = &alpn_protos {
-            trace!(?alpn_protos, "boring connector: set ALPN protos");
-            cfg_builder
-                .set_alpn_protos(alpn_protos)
-                .context("build (boring) ssl connector: set alpn protos")?;
-        }
-
-        if let Some(curves) = &curves {
-            trace!(curves = curves.len(), "boring connector: set SSL curve(s)");
-            cfg_builder
-                .set_curves(curves)
-                .context("build (boring) ssl connector: set curves")?;
-        }
-
-        trace!(?min_ssl_version, "boring connector: set min SSL version");
-        cfg_builder
-            .set_min_proto_version(min_ssl_version)
-            .context("build (boring) ssl connector: set min proto version")?;
-
-        trace!(?max_ssl_version, "boring connector: set max SSL version");
-        cfg_builder
-            .set_max_proto_version(max_ssl_version)
-            .context("build (boring) ssl connector: set max proto version")?;
-
-        if let Some(s) = &verify_algorithm_prefs {
-            cfg_builder.set_verify_algorithm_prefs(s).context(
-                "build (boring) ssl connector: set signature schemes (verify algorithm prefs)",
-            )?;
-        }
-
-        cfg_builder.set_grease_enabled(grease_enabled);
-        cfg_builder.set_grease_sigalgs_enabled(value.grease_signature_schemes.is_some_and(|p| p.0));
-
-        if ocsp_stapling_enabled {
-            cfg_builder.enable_ocsp_stapling();
-        }
-
-        if signed_cert_timestamps_enabled {
-            cfg_builder.enable_signed_cert_timestamps();
-        }
-
-        if !session_tickets_enabled {
-            cfg_builder.set_options(SslOptions::NO_TICKET);
-        }
-
-        if let Some(algorithms) = &certificate_compression_algorithms {
-            add_certificate_compressors(&mut cfg_builder, algorithms)
-                .context("build (boring) ssl connector: certificate compression")?;
-        }
-
-        match server_verify_mode {
-            ServerVerifyMode::Auto => {
-                trace!("boring connector: server verify mode: auto (default verifier)");
-            }
-            ServerVerifyMode::Disable => {
-                trace!("boring connector: server verify mode: disable");
-                cfg_builder.set_custom_verify_callback(SslVerifyMode::NONE, |_| Ok(()));
-            }
-        }
-
-        if let Some(auth) = &client_auth {
-            trace!("boring connector: client mTls: set private key");
-            cfg_builder
-                .set_private_key(auth.private_key.as_ref())
-                .context("build (boring) ssl connector: set private key")?;
-            if auth.cert_chain.is_empty() {
-                return Err(BoxError::from_static_str(
-                    "build (boring) ssl connector: cert chain is empty",
-                ));
-            }
-            trace!("boring connector: client mTls: set cert chain root");
-            cfg_builder
-                .set_certificate(
-                    auth.cert_chain
-                        .first()
-                        .context("build (boring) ssl connector: get primary client cert")?,
-                )
-                .context("build (boring) ssl connector: add primary client cert")?;
-            for cert in &auth.cert_chain[1..] {
-                trace!("boring connector: client mTls: set extra cert chain");
-                cfg_builder
-                    .add_extra_chain_cert(cert.clone())
-                    .context("build (boring) ssl connector: set client cert")?;
-            }
-        }
-
-        trace!(
-            ?server_name,
-            "boring connector: return SSL connector config for server"
-        );
-
-        session::identify_context(
-            &mut cfg_builder,
-            session_domain,
-            session_policy,
-            client_credential_scope(client_auth.as_ref())?,
-        )?;
+        let wire = WirePlan {
+            cipher_list,
+            alpn_protos,
+            groups: groups.map(|groups| {
+                let ids = groups.into_iter().map(|(id, _)| id).collect();
+                // Set as raw IDs, so the native GREASE slot is added here (see the provider gap).
+                if grease_enabled {
+                    with_native_grease_slots(ids, NativeGrease::First)
+                } else {
+                    ids
+                }
+            }),
+            key_shares,
+            verify_algorithm_prefs,
+            min_version,
+            max_version,
+            extension_order,
+            permute_extensions,
+            requested_trust_anchors,
+            grease,
+            ocsp_stapling: value.ocsp_stapling.map(|p| p.0).unwrap_or_default(),
+            signed_cert_timestamps: value
+                .signed_cert_timestamps
+                .map(|p| p.0)
+                .unwrap_or_default(),
+            session_tickets: value.tls12_session_tickets.is_none_or(|p| p.0),
+            certificate_compression: value
+                .cert_compression
+                .map(|p| native_certificate_compression(&p.0))
+                .unwrap_or_default(),
+            alps: value.alps.map(|p| (p.protocols.clone(), p.new_codepoint)),
+            record_size_limit: value.record_size_limit.map(|p| p.0),
+            delegated_credential_schemes,
+            encrypted_client_hello: value
+                .encrypted_client_hello
+                .map(|p| p.0)
+                .unwrap_or_default(),
+        };
 
         Ok(Self {
-            config: cfg_builder,
-            options: ConnectorOptions {
-                store_server_certificate_chain,
-                server_name,
-                server_verify_mode,
-                server_cert_pins,
-                alps,
-                record_size_limit,
-                delegated_credential_schemes,
-                encrypted_client_hello,
-                key_shares,
-                remembers_sessions: false,
-                session_store: None,
-            },
+            store_server_certificate_chain: value.store_chain.map(|p| p.0).unwrap_or_default(),
+            server_name: value.server_name.map(|s| s.0.clone()),
+            server_verify_mode: value.verify.map(|v| v.0).unwrap_or_default(),
+            server_cert_pins: value.server_cert_pins.cloned(),
+            wire,
+            remembers_sessions: false,
+            session_store: None,
         })
     }
+}
+
+/// The native context for `value`'s security policy: trust, verification, client
+/// credential, keylog and session identity. Wire settings are per connection.
+fn security_context(value: &BoringTlsConnectorConfig<'_>) -> Result<SslConnectorBuilder, BoxError> {
+    let session_policy = value.session_scope();
+    let session_domain = value.session_domain.copied();
+    let server_verify_mode = value.verify.map(|v| v.0).unwrap_or_default();
+    let keylog_intent = value
+        .keylog
+        .map(|k| k.0.clone())
+        .unwrap_or(KeyLogIntent::Environment);
+    let server_verify_cert_store = value.verify_cert_store.as_ref().map(|p| p.0.clone());
+    if server_verify_mode == ServerVerifyMode::Disable {
+        if value.server_trust.is_some() {
+            debug!(
+                "boring connector: server trust policy ignored: server verification is disabled"
+            );
+        }
+        if server_verify_cert_store.is_some() {
+            debug!(
+                "boring connector: custom certificate store ignored: server verification is disabled"
+            );
+        }
+    }
+    let server_trust_store = match (server_verify_mode, value.server_trust) {
+        (ServerVerifyMode::Auto, Some(trust)) => {
+            if server_verify_cert_store.is_some() {
+                debug!(
+                    "boring connector: server trust policy ignored: custom certificate store takes precedence"
+                );
+                None
+            } else {
+                Some(resolve_server_trust_store(trust)?)
+            }
+        }
+        (ServerVerifyMode::Auto, None) => Some(ResolvedServerTrustStore::Default),
+        _ => None,
+    };
+    let client_auth = value
+        .client_auth
+        .map(|c| ConnectorConfigClientAuth::try_from(c.0.clone()))
+        .transpose()?;
+
+    // `no_default_verify_builder` skips boring's per-call
+    // `set_default_verify_paths`, which would otherwise parse the entire OS
+    // trust store into a throwaway per-connector store on every build. We
+    // install exactly the store we need below instead.
+    let mut cfg_builder = SslConnector::no_default_verify_builder(SslMethod::tls_client())
+        .context("create (boring) ssl connector builder")?;
+
+    if let Some(store) = &server_verify_cert_store {
+        trace!("boring connector: set provided cert store to verify as server");
+        cfg_builder.set_cert_store_ref(store);
+    } else {
+        match (server_verify_mode, server_trust_store) {
+            (ServerVerifyMode::Disable, _) => {
+                // Verification is disabled (a NONE verify callback is
+                // installed below), so the trust store is never consulted:
+                // leave the empty store from `no_default_verify_builder`
+                // and don't parse the OS bundle at all.
+                trace!(
+                    "boring connector: server verification disabled; no verify cert store loaded"
+                );
+            }
+            (ServerVerifyMode::Auto, Some(ResolvedServerTrustStore::Default) | None) => {
+                // Install a process-wide, parse-once shared OS default store
+                // so every connector references one copy instead of
+                // re-parsing the bundle on every build.
+                trace!("boring connector: using shared default verify cert store");
+                cfg_builder.set_cert_store_ref(shared_default_verify_store()?);
+            }
+            (ServerVerifyMode::Auto, Some(ResolvedServerTrustStore::WebPki)) => {
+                trace!("boring connector: using shared WebPKI verify cert store");
+                cfg_builder.set_cert_store_ref(shared_webpki_verify_store()?);
+            }
+            (ServerVerifyMode::Auto, Some(ResolvedServerTrustStore::Derived(store))) => {
+                trace!("boring connector: using shared derived server verify cert store");
+                cfg_builder.set_cert_store_ref(store.as_ref());
+            }
+        }
+    }
+
+    if let Some(sink) = open_intent_sink(&keylog_intent)? {
+        cfg_builder.set_keylog_callback(move |_, line| {
+            let mut buf = String::with_capacity(line.len() + 1);
+            buf.push_str(line);
+            buf.push('\n');
+            sink.write_line(&buf);
+        });
+    }
+
+    // Each connection selects its own algorithms from these.
+    add_certificate_compressors(&mut cfg_builder, SUPPORTED_CERTIFICATE_COMPRESSION)
+        .context("build (boring) ssl connector: certificate compression")?;
+
+    match server_verify_mode {
+        ServerVerifyMode::Auto => {
+            trace!("boring connector: server verify mode: auto (default verifier)");
+        }
+        ServerVerifyMode::Disable => {
+            trace!("boring connector: server verify mode: disable");
+            cfg_builder.set_custom_verify_callback(SslVerifyMode::NONE, |_| Ok(()));
+        }
+    }
+
+    if let Some(auth) = &client_auth {
+        trace!("boring connector: client mTls: set private key");
+        cfg_builder
+            .set_private_key(auth.private_key.as_ref())
+            .context("build (boring) ssl connector: set private key")?;
+        if auth.cert_chain.is_empty() {
+            return Err(BoxError::from_static_str(
+                "build (boring) ssl connector: cert chain is empty",
+            ));
+        }
+        trace!("boring connector: client mTls: set cert chain root");
+        cfg_builder
+            .set_certificate(
+                auth.cert_chain
+                    .first()
+                    .context("build (boring) ssl connector: get primary client cert")?,
+            )
+            .context("build (boring) ssl connector: add primary client cert")?;
+        for cert in &auth.cert_chain[1..] {
+            trace!("boring connector: client mTls: set extra cert chain");
+            cfg_builder
+                .add_extra_chain_cert(cert.clone())
+                .context("build (boring) ssl connector: set client cert")?;
+        }
+    }
+
+    session::identify_context(
+        &mut cfg_builder,
+        session_domain,
+        session_policy,
+        client_credential_scope(client_auth.as_ref())?,
+    )?;
+    Ok(cfg_builder)
 }
 
 // SelfSigned resolves to a new certificate when a native context is built. Keep

@@ -18,7 +18,7 @@ use rama_ua::{
 
 use super::{
     BoringClientConfigExt, BoringRequestedTrustAnchors, BoringTlsConnectorConfig,
-    TlsConnectorContext, TlsConnectorContextBuilder,
+    TlsConnectorContext, TlsConnectorContextBuilder, TlsConnectorData,
 };
 
 #[test]
@@ -442,6 +442,163 @@ fn key_share_groups(data: &[u8]) -> Vec<u16> {
             .unwrap_or_default();
     }
     groups
+}
+
+const VARIANT_CIPHERS: [CipherSuite; 2] = [
+    CipherSuite::TLS13_AES_256_GCM_SHA384,
+    CipherSuite::TLS13_AES_128_GCM_SHA256,
+];
+
+/// The security policy both variants share: the cipher list is part of it.
+fn plain_variant() -> TlsClientConfig {
+    TlsClientConfig::new().with_cipher_suites(VARIANT_CIPHERS.to_vec())
+}
+
+/// Every other wire option set, on the same security policy.
+fn wire_variant() -> TlsClientConfig {
+    plain_variant()
+        .with_grease(true)
+        .with_supported_groups(vec![SupportedGroup::SECP256R1, SupportedGroup::X25519])
+        .with_key_shares(vec![SupportedGroup::SECP256R1])
+        .with_signature_schemes(vec![
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::RSA_PSS_SHA256,
+        ])
+        .with_supported_versions(vec![ProtocolVersion::TLSv1_3])
+        .with_alpn(vec![ApplicationProtocol::HTTP_2].into())
+        .with_ocsp_stapling(true)
+        .with_signed_cert_timestamps(true)
+        .with_cert_compression(vec![CertificateCompressionAlgorithm::Brotli])
+        .with_extension_order(
+            [ExtensionId::SUPPORTED_VERSIONS, ExtensionId::KEY_SHARE]
+                .into_iter()
+                .collect(),
+        )
+}
+
+fn hello_from_data(mut data: TlsConnectorData) -> ClientHello {
+    data.server_name = Some(Host::try_from("example.test").unwrap());
+    let ssl = data.into_ssl().unwrap();
+    let Err(HandshakeError::WouldBlock(stream)) = ssl.connect(HelloSink::default()) else {
+        panic!("the client must write its first flight before waiting for the server");
+    };
+    parse_client_hello_handshake(&stream.get_ref().0).unwrap()
+}
+
+/// Every ID in a list, with GREASE codepoints as `None`.
+fn ids(hello: &ClientHello) -> Vec<Option<u16>> {
+    hello
+        .extensions()
+        .iter()
+        .map(|ext| (!ext.id().is_grease()).then(|| u16::from(ext.id())))
+        .collect()
+}
+
+#[test]
+fn wire_variants_of_one_policy_share_a_context_and_keep_their_own_hellos() {
+    let plain = plain_variant();
+    let variant = wire_variant();
+    let first = TlsConnectorData::try_from(&plain).unwrap();
+    let second = TlsConnectorData::try_from(&variant).unwrap();
+    let third = TlsConnectorData::try_from(&plain).unwrap();
+    // One native context per security policy, whatever the wire settings.
+    assert!(std::ptr::eq(
+        first.config.ssl_context(),
+        second.config.ssl_context()
+    ));
+    assert!(std::ptr::eq(
+        first.config.ssl_context(),
+        third.config.ssl_context()
+    ));
+    // A different policy gets its own.
+    let insecure = TlsConnectorData::try_from(
+        &TlsClientConfig::new().with_server_verify(rama_tls::client::ServerVerifyMode::Disable),
+    )
+    .unwrap();
+    assert!(!std::ptr::eq(
+        first.config.ssl_context(),
+        insecure.config.ssl_context()
+    ));
+
+    let (first, second, third) = (
+        hello_from_data(first),
+        hello_from_data(second),
+        hello_from_data(third),
+    );
+    // Nothing of the variant leaks into a plain connection on the same context.
+    assert_eq!(ids(&first), ids(&third));
+    assert_eq!(first.cipher_suites(), third.cipher_suites());
+    for hello in [&first, &third] {
+        assert!(
+            hello
+                .cipher_suites()
+                .iter()
+                .all(|cipher| !cipher.is_grease())
+        );
+        for absent in [
+            ExtensionId::STATUS_REQUEST,
+            ExtensionId::SIGNED_CERTIFICATE_TIMESTAMP,
+            ExtensionId::COMPRESS_CERTIFICATE,
+            ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION,
+        ] {
+            assert!(
+                hello.extensions().iter().all(|ext| ext.id() != absent),
+                "{absent:?}"
+            );
+        }
+    }
+    // The variant carries each of its own settings.
+    let ciphers = second.cipher_suites();
+    assert!(ciphers[0].is_grease());
+    assert_eq!(&ciphers[1..], VARIANT_CIPHERS);
+    let order = ids(&second);
+    assert_eq!(order[0], None, "GREASE first");
+    assert_eq!(
+        &order[1..3],
+        [
+            Some(u16::from(ExtensionId::SUPPORTED_VERSIONS)),
+            Some(u16::from(ExtensionId::KEY_SHARE))
+        ]
+    );
+    for present in [
+        ExtensionId::STATUS_REQUEST,
+        ExtensionId::SIGNED_CERTIFICATE_TIMESTAMP,
+        ExtensionId::COMPRESS_CERTIFICATE,
+    ] {
+        assert!(
+            second.extensions().iter().any(|ext| ext.id() == present),
+            "{present:?}"
+        );
+    }
+    for ext in second.extensions() {
+        match ext {
+            ClientHelloExtension::SupportedGroups(groups) => {
+                assert!(groups[0].is_grease());
+                assert_eq!(
+                    &groups[1..],
+                    [SupportedGroup::SECP256R1, SupportedGroup::X25519]
+                );
+            }
+            ClientHelloExtension::SignatureAlgorithms(schemes) => assert_eq!(
+                schemes,
+                &[
+                    SignatureScheme::ECDSA_NISTP256_SHA256,
+                    SignatureScheme::RSA_PSS_SHA256
+                ]
+            ),
+            ClientHelloExtension::SupportedVersions(versions) => {
+                assert!(versions[0].is_grease());
+                assert_eq!(&versions[1..], [ProtocolVersion::TLSv1_3]);
+            }
+            ClientHelloExtension::ApplicationLayerProtocolNegotiation(protocols) => {
+                assert_eq!(protocols, &[ApplicationProtocol::HTTP_2]);
+            }
+            ClientHelloExtension::CertificateCompression(algorithms) => {
+                assert_eq!(algorithms, &[CertificateCompressionAlgorithm::Brotli]);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Drive a fresh connection until it has written its ClientHello.

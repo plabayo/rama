@@ -383,29 +383,30 @@ impl ConnectorSessions {
         }
     }
 
-    /// Retain one native context per effective wire configuration. Compatible
-    /// contexts share this connector's security-derived session scope. Non-reusable
-    /// configurations get an isolated native context and session domain.
+    /// Retain one native context per security policy, sharing this connector's session
+    /// domain; each connection gets its own wire settings. Non-reusable configurations get
+    /// an isolated native context and session domain.
     pub(super) fn connector_data<'a>(
         &'a self,
         mut config: BoringTlsConnectorConfig<'a>,
     ) -> Result<TlsConnectorData, BoxError> {
         config.session_domain = Some(&self.domain);
-        let identity = config.pool_id();
-        if identity.as_ref().is_some_and(|id| !id.is_reusable()) {
+        let scope = config.context_scope();
+        if scope.as_ref().is_some_and(|id| !id.is_reusable()) {
             config.session_domain = None;
             return TlsConnectorData::try_from(config);
         }
-        if let Some(context) = self.contexts.get(&identity) {
-            return context.configure();
-        }
-        let mut builder = TlsConnectorContextBuilder::try_from(config)?;
-        builder.set_session_store(self.store.clone());
-        self.contexts
-            .entry(identity)
-            .or_insert(builder.build())
-            .into_value()
-            .configure()
+        let context = if let Some(context) = self.contexts.get(&scope) {
+            context
+        } else {
+            let mut builder = TlsConnectorContextBuilder::try_from(config.clone())?;
+            builder.set_session_store(self.store.clone());
+            self.contexts
+                .entry(scope)
+                .or_insert(builder.build())
+                .into_value()
+        };
+        context.configure_variant(&config)
     }
 }
 

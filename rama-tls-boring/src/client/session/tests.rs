@@ -274,7 +274,7 @@ async fn sessions_stay_with_their_connector() {
 }
 
 #[tokio::test]
-async fn sessions_stay_with_their_effective_configuration() {
+async fn sessions_stay_with_their_security_policy_across_wire_variants() {
     let verify_disabled = |extensions: &Extensions| {
         extensions.insert(TlsServerVerify(ServerVerifyMode::Disable));
     };
@@ -293,7 +293,8 @@ async fn sessions_stay_with_their_effective_configuration() {
             connect(&connector, &server, "a.test", no_overrides).await,
             FULL
         );
-        assert_eq!(connect(&connector, &server, "a.test", http2).await, FULL);
+        // Another ALPN is a wire variant of the same policy.
+        assert_eq!(connect(&connector, &server, "a.test", http2).await, RESUMED);
         assert_eq!(
             connect(&connector, &server, "a.test", verify_disabled).await,
             RESUMED
@@ -616,12 +617,12 @@ async fn profile_scopes_and_security_policies_remain_isolated_across_draws() {
 }
 
 #[tokio::test]
-async fn newly_generated_client_credentials_do_not_resume_another_draw() {
+async fn a_generated_client_credential_is_shared_by_the_wire_variants_of_its_policy() {
     let server = Server::new(SslVersion::TLS1_3);
     let connector = connector(&server, Some(cache()));
     for (reversed, expected) in [
         (false, FULL),
-        (true, FULL),
+        (true, RESUMED),
         (false, RESUMED),
         (true, RESUMED),
     ] {
@@ -640,8 +641,7 @@ async fn newly_generated_client_credentials_do_not_resume_another_draw() {
             extensions.insert(BoringExtensionOrder(order));
         })
         .await;
-        // Each order constructs a different certificate; reusing that exact context
-        // retains its credential and may resume on subsequent connections.
+        // Both orders use the one context of this policy, and so its one certificate.
         assert_eq!(actual, expected);
     }
 }

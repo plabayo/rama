@@ -156,22 +156,99 @@ impl BoringTlsConnectorConfig<'_> {
         builder.build()
     }
 
-    /// Identity of compatible client sessions, independent of the drawn extension order.
-    ///
-    /// Security settings and the optional profile scope remain in this identity.
-    /// Diagnostic sinks, chain retention and the separately keyed server name do not.
+    /// Identity of compatible client sessions: security settings, the cipher list, the session
+    /// domain and the optional profile scope. Other wire settings, diagnostic sinks, chain
+    /// retention and the separately keyed server name are not part of it, so sessions resume
+    /// across those variants.
     pub fn session_scope(&self) -> Option<TlsPoolId> {
-        let default_verify = TlsServerVerify(rama_tls::client::ServerVerifyMode::Auto);
-        let mut policy = self.clone();
-        policy.verify = Some(self.verify.unwrap_or(&default_verify));
-        policy.extension_order = None;
-        policy.permute_extensions = None;
-        policy.keylog = None;
-        policy.store_chain = None;
-        policy.server_name = None;
+        self.security_policy(None).pool_id()
+    }
+
+    /// What a native context is keyed by: the session scope and the keylog, the only
+    /// context-level setting outside it. Wire settings are applied per connection.
+    pub(crate) fn context_scope(&self) -> Option<TlsPoolId> {
+        self.security_policy(self.keylog).pool_id()
+    }
+
+    /// The security part only: wire settings are per connection, so sessions and native
+    /// contexts are shared across them.
+    fn security_policy<'a>(&self, keylog: Option<&'a TlsKeyLog>) -> BoringTlsConnectorConfig<'a>
+    where
+        Self: 'a,
+    {
+        static DEFAULT_VERIFY: TlsServerVerify =
+            TlsServerVerify(rama_tls::client::ServerVerifyMode::Auto);
+        // New fields must also be reviewed for whether they are security or wire.
+        let Self {
+            session_domain,
+            session_profile_scope,
+            alpn: _,
+            versions: _,
+            verify,
+            keylog: _,
+            server_name: _,
+            store_chain: _,
+            client_auth,
+            server_cert_pins,
+            server_trust,
+            cipher_suites,
+            supported_groups: _,
+            key_shares: _,
+            signature_schemes: _,
+            grease: _,
+            grease_signature_schemes: _,
+            alps: _,
+            extension_order: _,
+            permute_extensions: _,
+            requested_trust_anchors: _,
+            cert_compression: _,
+            delegated_credentials: _,
+            record_size_limit: _,
+            encrypted_client_hello: _,
+            ocsp_stapling: _,
+            signed_cert_timestamps: _,
+            tls12_session_tickets: _,
+            verify_cert_store,
+            min_version: _,
+            max_version: _,
+        } = self.clone();
         // The mandatory verification policy makes normal configurations nonempty.
         // A missing or non-reusable identity must get an isolated native domain.
-        policy.pool_id()
+        BoringTlsConnectorConfig {
+            session_domain,
+            session_profile_scope,
+            alpn: None,
+            versions: None,
+            verify: Some(verify.unwrap_or(&DEFAULT_VERIFY)),
+            keylog,
+            server_name: None,
+            store_chain: None,
+            client_auth,
+            server_cert_pins,
+            server_trust,
+            // A resumed TLS 1.2 session keeps its cipher, which the client rejects when its
+            // own list lacks it.
+            cipher_suites,
+            supported_groups: None,
+            key_shares: None,
+            signature_schemes: None,
+            grease: None,
+            grease_signature_schemes: None,
+            alps: None,
+            extension_order: None,
+            permute_extensions: None,
+            requested_trust_anchors: None,
+            cert_compression: None,
+            delegated_credentials: None,
+            record_size_limit: None,
+            encrypted_client_hello: None,
+            ocsp_stapling: None,
+            signed_cert_timestamps: None,
+            tls12_session_tickets: None,
+            verify_cert_store,
+            min_version: None,
+            max_version: None,
+        }
     }
 
     /// Whether a successful handshake establishes the configured server identity.
@@ -1096,17 +1173,7 @@ mod pool_tests {
             );
             if matches!(
                 *name,
-                "session_profile_scope"
-                    | "alpn"
-                    | "versions"
-                    | "verify"
-                    | "pins"
-                    | "trust"
-                    | "min_version"
-                    | "max_version"
-                    | "cipher_suites"
-                    | "supported_groups"
-                    | "signature_schemes"
+                "session_profile_scope" | "verify" | "pins" | "trust" | "cipher_suites"
             ) {
                 assert_eq!(
                     view.session_scope(),
@@ -1114,6 +1181,16 @@ mod pool_tests {
                     "{name}"
                 );
                 assert_ne!(
+                    view.session_scope(),
+                    BoringTlsConnectorConfig::from_extensions(&changed).session_scope(),
+                    "{name}"
+                );
+            } else if !matches!(
+                *name,
+                "keylog_environment_disabled" | "keylog" | "server_name" | "store_chain"
+            ) {
+                // Wire settings are per connection: sessions resume across them.
+                assert_eq!(
                     view.session_scope(),
                     BoringTlsConnectorConfig::from_extensions(&changed).session_scope(),
                     "{name}"

@@ -517,6 +517,49 @@ fn boring_requires_tls13() {
     }
 }
 
+/// QUIC is TLS 1.3 only (RFC 9001 §4.2): a configuration that also lists TLS 1.2 offers
+/// TLS 1.3 alone. BoringSSL enforces this for QUIC connections itself.
+#[test]
+fn a_quic_client_hello_offers_only_tls13() {
+    use rama_tls::{ProtocolVersion, TlsSupportedVersions, client::ClientHelloExtension};
+
+    let (client, _) = configs();
+    client.insert(TlsSupportedVersions(vec![
+        ProtocolVersion::TLSv1_2,
+        ProtocolVersion::TLSv1_3,
+    ]));
+    let config = Arc::new(QuicClientConfig::from_rama(&client, TlsOptions::default()).unwrap());
+    let mut session = config
+        .start_session(Version::V1, "localhost", &params(Side::Client))
+        .unwrap();
+    let mut hello = Vec::new();
+    while let Some(event) = session.poll_handshake().unwrap() {
+        let HandshakeEvent::Data(_, bytes) = event else {
+            panic!("unexpected client first-flight event");
+        };
+        hello.extend_from_slice(&bytes);
+    }
+    let ClientHelloHandshakePrefix::Complete(hello) = parse_client_hello_message_prefix(&hello)
+    else {
+        panic!("generated QUIC ClientHello is not complete");
+    };
+    let versions = hello
+        .extensions()
+        .iter()
+        .find_map(|ext| match ext {
+            ClientHelloExtension::SupportedVersions(versions) => Some(versions.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        versions
+            .into_iter()
+            .filter(|version| !version.is_grease())
+            .collect::<Vec<_>>(),
+        [ProtocolVersion::TLSv1_3]
+    );
+}
+
 /// RFC 9001 §5.8: a Retry packet carries an integrity tag over the original destination
 /// connection ID and the packet itself. A client that accepted one without checking would let
 /// any off-path observer redirect its handshake.
