@@ -59,6 +59,9 @@ mod option;
 #[doc(inline)]
 pub use option::{OptionalFromPartsStateRefPair, OptionalFromRequest, OptionalFromRequestBody};
 
+#[cfg(test)]
+mod test_support;
+
 /// Types that can be created from request parts.
 ///
 /// Extractors that implement [`FromPartsStateRefPair`] cannot consume the request body and can thus
