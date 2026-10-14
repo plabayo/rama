@@ -229,7 +229,9 @@ pub trait BoringClientConfigExt: Sized {
         fn alps(self, protocols: Vec<ApplicationProtocol>, new_codepoint: bool) -> Self;
     }
     generate_set_and_with! {
-        /// Set the ClientHello extension ordering.
+        /// Set the ClientHello extension prefix order. Unlisted extensions follow.
+        /// Its GREASE codepoints are the only GREASE extension slots; an empty
+        /// order selects canonical order without GREASE extensions.
         fn extension_order(self, order: Vec<ExtensionId>) -> Self;
     }
     generate_set_and_with! {
@@ -542,7 +544,9 @@ pub(crate) fn set_alpn_with_coupled_alps(
     set_alpn_list_with_coupled_alps(extensions, TlsAlpn(smallvec![protocol]))
 }
 
-/// ClientHello extension ordering.
+/// ClientHello extension prefix order; unlisted extensions follow.
+/// GREASE slots must be listed explicitly. An empty order selects canonical
+/// order without GREASE extensions. Permutation takes precedence over this order.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 pub struct BoringExtensionOrder(pub Vec<ExtensionId>);
