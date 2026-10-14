@@ -508,3 +508,83 @@ async fn shared_contexts_keep_connection_state_apart() {
         assert!(accepted.client_hello.is_some());
     }
 }
+
+/// A handshake between `server` and `client`, each side's outcome reported.
+async fn try_handshake(
+    server: TlsServerConfig,
+    client: SslConnectorBuilder,
+) -> (Result<(), String>, Result<(), String>) {
+    let acceptor = TlsAcceptorService::new(
+        server,
+        service_fn(|_: TlsStream<ServiceInput<DuplexStream>>| async move { Ok::<_, BoxError>(()) }),
+        false,
+    );
+    let config = client.build().configure().unwrap();
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let (client, server) = tokio::join!(
+        rama_boring_tokio::connect(config, Some("localhost"), client_io),
+        acceptor.serve(ServiceInput::new(server_io)),
+    );
+    (
+        client.map(drop).map_err(|error| error.to_string()),
+        server.map_err(|error| error.to_string()),
+    )
+}
+
+struct PanickingIssuer;
+
+impl DynamicCertIssuer for PanickingIssuer {
+    async fn issue_cert(&self, _: CertificateIssuanceContext) -> Result<ServerAuthData, BoxError> {
+        panic!("a certificate issuer bug")
+    }
+}
+
+/// User code BoringSSL runs inside a handshake (here a certificate issuer, polled from the
+/// select-certificate callback) that panics fails that handshake; the process lives on.
+#[tokio::test]
+async fn a_panicking_certificate_issuer_fails_only_its_handshake() {
+    for version in [SslVersion::TLS1_2, SslVersion::TLS1_3] {
+        let server =
+            TlsServerConfig::new().with_cert_issuer(ServerCertIssuerData::new(PanickingIssuer));
+        let (client, server) = try_handshake(server, client(version)).await;
+        client.unwrap_err();
+        server.unwrap_err();
+    }
+    // And the next handshake is unaffected.
+    let auth = server_auth(CertificateKeyKind::EcP256);
+    let server =
+        TlsServerConfig::new().with_cert_issuer(ServerCertIssuerData::new(FixedIssuer(auth)));
+    let (client, server) = try_handshake(server, client(SslVersion::TLS1_3)).await;
+    client.unwrap();
+    server.unwrap();
+}
+
+#[derive(Debug)]
+struct PanickingKeyLog;
+
+impl rama_tls::keylog::KeyLogSink for PanickingKeyLog {
+    fn write_line(&self, _line: &str) {
+        panic!("a keylog sink bug")
+    }
+}
+
+/// A custom keylog sink runs inside BoringSSL's keylog callback; its panic is contained and
+/// only loses that key line.
+#[tokio::test]
+async fn a_panicking_keylog_sink_does_not_abort_the_process() {
+    for version in [SslVersion::TLS1_2, SslVersion::TLS1_3] {
+        let config = TlsClientConfig::new()
+            .with_server_verify(ServerVerifyMode::Disable)
+            .with_keylog(rama_tls::KeyLogIntent::Custom(Arc::new(PanickingKeyLog)));
+        let mut client = crate::client::TlsConnectorContextBuilder::try_from(&config)
+            .unwrap()
+            .config;
+        client.set_max_proto_version(Some(version)).unwrap();
+        let auth = server_auth(CertificateKeyKind::EcP256);
+        let (client, server) =
+            try_handshake(TlsServerConfig::new().with_server_auth(auth), client).await;
+        // The callback returns nothing, so the contained panic leaves the handshake as it was.
+        client.unwrap();
+        server.unwrap();
+    }
+}

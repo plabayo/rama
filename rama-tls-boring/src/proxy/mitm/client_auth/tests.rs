@@ -1433,3 +1433,33 @@ async fn direct_connector_path_preserves_authentication_policy_and_upstream_trus
         }
     }
 }
+
+/// An ingress verifier a plan installs runs inside BoringSSL's handshake: its panic fails that
+/// relay handshake instead of aborting the process.
+#[tokio::test]
+async fn a_panicking_ingress_verifier_fails_only_its_handshake() {
+    for version in VERSIONS {
+        let policy = TlsMitmClientAuthPolicy::new(service_fn(|_: TlsMitmClientAuthInput| async {
+            Ok::<_, Infallible>(
+                TlsMitmClientAuthPlan::new(service_fn(|_: TlsMitmClientIdentity| async {
+                    Ok::<_, Infallible>(None)
+                }))
+                .with_ingress(|ssl| {
+                    ssl.set_custom_verify_callback(required(), |_| panic!("a verifier bug"));
+                    Ok(())
+                }),
+            )
+        }));
+        let result = run(
+            &relay().with_client_auth(policy),
+            version,
+            SslVerifyMode::NONE,
+            Some(material().guest.credential()),
+            None,
+            None,
+        )
+        .await;
+        result.client.unwrap_err();
+        result.relay.unwrap_err();
+    }
+}
