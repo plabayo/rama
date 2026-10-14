@@ -3,6 +3,9 @@
 import http.client
 import json
 import socket
+import subprocess
+import threading
+from types import SimpleNamespace
 import tempfile
 import unittest
 import zipfile
@@ -10,7 +13,7 @@ from urllib.parse import urlsplit
 from pathlib import Path
 from unittest.mock import patch
 
-from egress_proxy_policy import check_test_log, main, servers, settings_transaction
+from egress_proxy_policy import check_test_log, main, run_suite, servers, settings_transaction
 
 
 class SettingsTransactionTests(unittest.TestCase):
@@ -112,6 +115,23 @@ class FixtureTests(unittest.TestCase):
 
 
 class ReportTests(unittest.TestCase):
+    def test_failed_pac_test_preserves_server_counters(self):
+        proxy = SimpleNamespace(count_lock=threading.Lock(), contacts=2, pac_fetches=0)
+        report = {"checks": []}
+
+        def failed_test(*args, **kwargs):
+            proxy.contacts += 1
+            proxy.pac_fetches += 1
+            raise subprocess.CalledProcessError(1, ["swift", "test"])
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("egress_proxy_policy.run", side_effect=failed_test), \
+                self.assertRaises(subprocess.CalledProcessError):
+            run_suite(Path(directory), report, "system-pac-allowed", ["swift", "test"],
+                      {"testDeveloperSystemProxyScenario"}, proxy=proxy)
+        self.assertEqual(report["checks"], [{"name": "system-pac-allowed", "status": "failed",
+                                           "proxy_contacts": 1, "pac_fetches": 1}])
+
     def test_failure_produces_shareable_report_without_settings_snapshot(self):
         with tempfile.TemporaryDirectory() as directory:
             def fail_after_snapshot(args, destination, report):

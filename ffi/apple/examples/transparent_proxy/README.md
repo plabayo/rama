@@ -503,7 +503,8 @@ interrupts, and prints a recovery command for power loss or forced termination.
 Send back the printed `report.zip`; it excludes the saved settings snapshot.
 Skipped required tests fail validation. Signed NE interception and downstream
 identity stamping require a separate signed observer; this harness does not
-verify them.
+verify them. If the allowed case stalls, check the recorded connection path:
+a VPN may route outside the service whose PAC was configured.
 
 Promoted relays emit `transparent proxy tcp bridge handed off` with
 `mode=promoted`, `counters_scope=until_handoff`, and

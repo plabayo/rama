@@ -283,9 +283,28 @@ final class NativeTcpConnectionTests: XCTestCase {
         defer { connection.cancel() }
         let queue = DispatchQueue(label: "rama.test.exchange")
         let ready = expectation(description: "ready")
-        connection.stateUpdateHandler = { if case .ready = $0 { ready.fulfill() } }
+        let states = Locked<[String]>([])
+        let wasReady = Locked(false)
+        connection.stateUpdateHandler = { state in
+            states.withLock { $0.append(String(describing: state)) }
+            if case .ready = state,
+                !wasReady.withLock({ previous in
+                    let old = previous
+                    previous = true
+                    return old
+                })
+            {
+                ready.fulfill()
+            }
+        }
         connection.start(queue: queue)
-        wait(for: [ready], timeout: 10)
+        guard XCTWaiter.wait(for: [ready], timeout: 10) == .completed else {
+            let path =
+                nw_connection_copy_current_path(connection.native)
+                .map { String(describing: $0) } ?? "unavailable"
+            XCTFail("connection never ready: states=\(states.withLock { $0 }), path=\(path)")
+            return
+        }
         let reported = expectation(description: "report")
         connection.requestTcpEstablishmentReport(queue: queue) { report in
             XCTAssertNotNil(report)

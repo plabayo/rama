@@ -158,6 +158,24 @@ def swift_command(scratch):
             "-Xlinker", "-framework", "-Xlinker", "SystemConfiguration"]
 
 
+def run_suite(directory, report, name, command, expected, proxy=None, **kwargs):
+    check = {"name": name, "status": "failed"}
+    report["checks"].append(check)
+    if proxy:
+        with proxy.count_lock:
+            before = proxy.contacts
+    try:
+        log = directory / (name + ".log")
+        run(command, log_path=log, **kwargs)
+        check["passed"] = check_test_log(log, expected)
+        check["status"] = "passed"
+    finally:
+        if proxy:
+            with proxy.count_lock:
+                check.update(proxy_contacts=proxy.contacts - before, pac_fetches=proxy.pac_fetches)
+    return check
+
+
 def execute(args, directory, report):
     if args.system_pac_service:
         # Fail before expensive builds or mutations; the just target authenticates.
@@ -174,9 +192,7 @@ def execute(args, directory, report):
              "--target-dir", str(library / "target")])
 
     def suite(name, cmd, expected, **kwargs):
-        log = directory / (name + ".log")
-        run(cmd, log_path=log, **kwargs)
-        report["checks"].append({"name": name, "passed": check_test_log(log, expected)})
+        return run_suite(directory, report, name, cmd, expected, **kwargs)
 
     local = ["--filter", "NativeTcpConnectionTests", "--skip",
              "NativeTcpConnectionTests.testDeveloperSystemProxyScenario"]
@@ -215,24 +231,21 @@ def execute(args, directory, report):
                                              ("denied", False, False),
                                              ("missing-symbol", False, True)):
                     uses_proxy = allow or missing
-                    with proxy.count_lock:
-                        before = proxy.contacts
                     env = dict(os.environ, RAMA_EGRESS_TEST_HOST="rama-egress-test.invalid",
                                RAMA_EGRESS_TEST_PORT="443", RAMA_EGRESS_TEST_ALLOW_PROXY=str(int(allow)),
                                RAMA_EGRESS_TEST_MISSING_SYMBOL=str(int(missing)),
                                RAMA_EGRESS_TEST_USED_PROXY=str(int(uses_proxy)),
                                RAMA_EGRESS_TEST_EXPECT_FAILURE=str(int(not uses_proxy)))
-                    suite("system-pac-" + name,
+                    check = suite("system-pac-" + name,
                           [*command, "--skip-build", "--filter",
                            "NativeTcpConnectionTests.testDeveloperSystemProxyScenario"],
-                          {"testDeveloperSystemProxyScenario"}, env=env)
-                    with proxy.count_lock:
-                        contacts = proxy.contacts - before
-                        fetches = proxy.pac_fetches
-                    report["checks"][-1].update(proxy_contacts=contacts, pac_fetches=fetches)
+                          {"testDeveloperSystemProxyScenario"}, proxy=proxy, env=env)
+                    contacts = check["proxy_contacts"]
                     if (uses_proxy and contacts < 1) or (not uses_proxy and contacts != 0):
+                        check["status"] = "failed"
                         raise RuntimeError(f"{name}: unexpected proxy contacts={contacts}")
-                    if fetches < 1:
+                    if check["pac_fetches"] < 1:
+                        check["status"] = "failed"
                         raise RuntimeError("no PAC fetch observed; system configuration was not exercised")
         finally:
             # The transaction already restored; verify idempotently even after a test failure.
