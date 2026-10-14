@@ -799,16 +799,16 @@ protocol TcpFlowLike: TcpFlowReadable, TcpFlowWritable, AnyObject {
     func closeReadWithError(_ error: Error?)
     func closeWriteWithError(_ error: Error?)
     /// Stamp the intercepted flow's NEFlowMetaData (source app identifier,
-    /// audit token, …) onto the supplied egress `NWParameters`. Real
-    /// `NEAppProxyTCPFlow` calls into `applyFlowMetadata` here; tests
-    /// supply a no-op.
-    func applyMetadata(to params: NWParameters)
+    /// audit token, …) onto genuine native Network.framework parameters.
+    /// The public C overload is available on all supported macOS versions;
+    /// unlike the Swift NWParameters overload it needs no wrapper conversion.
+    func applyMetadata(to params: nw_parameters_t)
 }
 
 extension NEAppProxyTCPFlow: @unchecked @retroactive Sendable {}
 extension NEAppProxyTCPFlow: TcpFlowLike {
-    func applyMetadata(to params: NWParameters) {
-        applyFlowMetadata(self, params)
+    func applyMetadata(to params: nw_parameters_t) {
+        setMetadata(params)
     }
 }
 
@@ -1677,104 +1677,6 @@ extension RamaTransparentProxyProvider {
 }
 // ── NWConnection helpers ──────────────────────────────────────────────────────
 
-/// Creates TCP `NWParameters` from optional Rust-supplied egress options.
-///
-/// The `connect_timeout_ms` field intentionally does not propagate to
-/// `NWProtocolTCP.Options.connectionTimeout`. Apple's API takes seconds
-/// (Int), our FFI carries milliseconds, and the resulting ms→s round
-/// would silently change a 999ms cap into 1s. The dispatcher already
-/// enforces the timeout via a millisecond-precision DispatchWorkItem
-/// (see `handleTcpFlow`), so we have a single canonical timeout
-/// instead of two with mismatched precision.
-///
-/// Sets `preferNoProxies = true` to prefer a direct connection. Network.framework
-/// may still fall back to a system or PAC proxy, so local-proxy loops are less
-/// likely, not ruled out. `allow_system_proxy` only drops the preference.
-/// Other NE providers / VPNs are unaffected. See the SDK header comment for
-/// `nw_parameters_set_prefer_no_proxy` in <Network/parameters.h>:
-/// https://developer.apple.com/documentation/network/nw_parameters_set_prefer_no_proxy(_:_:)
-/// https://developer.apple.com/forums/thread/828775
-/// https://developer.apple.com/forums/thread/832291
-///
-/// Enables TCP keepalive on the egress connection by default (opt-out
-/// via `tcp_keepalive_enabled`) — see `applyTcpKeepalive`. Further TCP
-/// tuning (noDelay, MSS, …) is opt-in per field — see `applyTcpTuning`.
-func makeTcpNwParameters(_ opts: RamaTcpEgressConnectOptions?) -> NWParameters {
-    // Configure keepalive on the options before wrapping them, rather than
-    // extracting them back out of the constructed NWParameters.
-    let tcpOptions = NWProtocolTCP.Options()
-    applyTcpKeepalive(opts, to: tcpOptions)
-    applyTcpTuning(opts, to: tcpOptions)
-    let params = NWParameters(tls: nil, tcp: tcpOptions)
-    if let opts {
-        applyNwEgressParameters(opts.parameters, to: params)
-    }
-    // `opts == nil` matches Rust-side default (`allow_system_proxy: false`).
-    params.preferNoProxies = !(opts?.parameters.allow_system_proxy ?? false)
-    return params
-}
-
-// NOTE: Longer keepalive budgets also retain silent dead peers; validate paused-reader recovery and sleep/VPN cleanup before increasing this default.
-let defaultTcpKeepaliveIdleSec: Int = 15
-let defaultTcpKeepaliveIntervalSec: Int = 5
-let defaultTcpKeepaliveCount: Int = 3
-
-/// Apply TCP keepalive to the egress connection's `NWProtocolTCP.Options`.
-/// On by default (nil opts, or `tcp_keepalive_enabled`). Keeps idle NAT mappings
-/// alive and fails silent peers even when no writer has outstanding work.
-/// Explicit per-flow timing overrides are honored independently.
-/// Opt out with `tcp_keepalive_enabled = false`.
-private func applyTcpKeepalive(_ opts: RamaTcpEgressConnectOptions?, to tcp: NWProtocolTCP.Options)
-{
-    guard opts?.tcpKeepaliveEnabled ?? true else {
-        tcp.enableKeepalive = false
-        return
-    }
-    tcp.enableKeepalive = true
-    tcp.keepaliveIdle = opts?.tcpKeepaliveIdleSec ?? defaultTcpKeepaliveIdleSec
-    tcp.keepaliveInterval = opts?.tcpKeepaliveIntervalSec ?? defaultTcpKeepaliveIntervalSec
-    tcp.keepaliveCount = opts?.tcpKeepaliveCount ?? defaultTcpKeepaliveCount
-}
-
-/// Apply the handler's per-field TCP tuning to the egress connection's
-/// `NWProtocolTCP.Options`. `noDelay` is always applied and defaults ON
-/// (nil opts, or `tcp_no_delay`) — on a claimed flow the app has no real
-/// socket, so the egress connection is the only Nagle decision in the
-/// path, and leaving Nagle on adds delayed-ACK TTFB stalls the app never
-/// opted into. Every other field is opt-in (`has_*` false ⇒ the
-/// Network.framework default is left untouched).
-private func applyTcpTuning(_ opts: RamaTcpEgressConnectOptions?, to tcp: NWProtocolTCP.Options) {
-    tcp.noDelay = opts?.tcpNoDelay ?? true
-    guard let opts else { return }
-    if let noPush = opts.tcpNoPush {
-        tcp.noPush = noPush
-    }
-    if let noOptions = opts.tcpNoOptions {
-        tcp.noOptions = noOptions
-    }
-    if let retransmitFinDrop = opts.tcpRetransmitFinDrop {
-        tcp.retransmitFinDrop = retransmitFinDrop
-    }
-    if let disableAckStretching = opts.tcpDisableAckStretching {
-        tcp.disableAckStretching = disableAckStretching
-    }
-    if let enableFastOpen = opts.tcpEnableFastOpen {
-        tcp.enableFastOpen = enableFastOpen
-    }
-    if let disableEcn = opts.tcpDisableEcn {
-        tcp.disableECN = disableEcn
-    }
-    if let maximumSegmentSize = opts.tcpMaximumSegmentSize {
-        tcp.maximumSegmentSize = maximumSegmentSize
-    }
-    if let connectionDropTime = opts.tcpConnectionDropTimeSec {
-        tcp.connectionDropTime = connectionDropTime
-    }
-    if let persistTimeout = opts.tcpPersistTimeoutSec {
-        tcp.persistTimeout = persistTimeout
-    }
-}
-
 /// Capability `applyFlowMetadata` needs from a flow: stamp the source-app
 /// `NEFlowMetaData` onto egress `NWParameters` so a downstream proxy
 /// attributes the connection to the original app, not to this extension.
@@ -1809,16 +1711,16 @@ func isMacOS15OrLater() -> Bool {
 /// macOS 15+ only. The Obj-C method `-[NEAppProxyFlow setMetadata:]` takes an
 /// `nw_parameters_t`; the typed Swift overlay performs the `NWParameters ->
 /// nw_parameters_t` bridge for us. Before macOS 15 there is no public way to
-/// stamp: the overlay is 15.0-gated and there is no public `NWParameters ->
+/// stamp an existing Swift wrapper: the overlay is 15.0-gated and there is no public `NWParameters ->
 /// nw_parameters_t` accessor. A prior version invoked the raw `setMetadata:`
 /// selector via `perform(_:with:)` with the Swift `NWParameters` wrapper —
 /// unbridged — so Apple's `nw_parameters_set_metadata` read a
 /// `Network._NWParameters` as an `OS_nw_parameters` and corrupted the heap.
 /// That was the macOS-14 new-flow crashloop (over-release / dealloc faults
 /// inside `nw_parameters_set_metadata`). So before macOS 15 we omit the stamp
-/// rather than corrupt memory; egress source-app attribution is unavailable
-/// on hosts older than macOS 15 (the gate is the runtime OS, not the
-/// deployment target — the extension ships a macOS 12 target).
+/// rather than corrupt memory. TCP now constructs native parameters and calls
+/// the native overload directly on every supported macOS version; this helper
+/// only covers callers that still hold Swift NWParameters wrappers.
 func applyFlowMetadata(
     _ flow: EgressMetadataFlow,
     _ params: NWParameters,
@@ -1832,69 +1734,3 @@ func applyFlowMetadata(
     }
     flow.stampSourceAppMetadata(onto: params)
 }
-
-private func applyNwEgressParameters(_ p: RamaNwEgressParameters, to params: NWParameters) {
-    if p.has_service_class, let sc = nwServiceClass(p.service_class) {
-        params.serviceClass = sc
-    }
-    if p.has_multipath_service_type {
-        params.multipathServiceType = nwMultipathServiceType(p.multipath_service_type)
-    }
-    if p.has_required_interface_type {
-        params.requiredInterfaceType = nwInterfaceType(p.required_interface_type)
-    }
-    if #available(macOS 11.3, *), p.has_attribution {
-        params.attribution = p.attribution == 1 ? .user : .developer
-    }
-    var prohibited: [NWInterface.InterfaceType] = []
-    let mask = p.prohibited_interface_types_mask
-    if mask & (1 << 0) != 0 { prohibited.append(.cellular) }
-    if mask & (1 << 1) != 0 { prohibited.append(.loopback) }
-    if mask & (1 << 2) != 0 { prohibited.append(.other) }
-    if mask & (1 << 3) != 0 { prohibited.append(.wifi) }
-    if mask & (1 << 4) != 0 { prohibited.append(.wiredEthernet) }
-    if !prohibited.isEmpty {
-        params.prohibitedInterfaceTypes = prohibited
-    }
-}
-
-private func nwServiceClass(_ raw: UInt8) -> NWParameters.ServiceClass? {
-    switch raw {
-    case 0: return nil  // Default: don't override — omit the field entirely
-    case 1: return .background
-    case 2: return .interactiveVideo
-    case 3: return .interactiveVoice
-    case 4: return .responsiveData
-    case 5: return .signaling
-    default: return nil
-    }
-}
-
-private func nwMultipathServiceType(_ raw: UInt8) -> NWParameters.MultipathServiceType {
-    switch raw {
-    case 1: return .handover
-    case 2: return .interactive
-    case 3: return .aggregate
-    default: return .disabled
-    }
-}
-
-private func nwInterfaceType(_ raw: UInt8) -> NWInterface.InterfaceType {
-    switch raw {
-    case 0: return .cellular
-    case 1: return .loopback
-    case 3: return .wifi
-    case 4: return .wiredEthernet
-    default: return .other
-    }
-}
-
-/// Reads from a `NWConnection` in a loop and forwards data to a Rust TCP session.
-///
-/// Calls `session.onEgressBytes(_:)` for each received chunk and
-/// `session.onEgressEof()` when the connection closes or fails.
-///
-/// Honors backpressure: when `onEgressBytes` returns `false` the Rust side's
-/// per-flow egress channel is full, and we stop scheduling further
-/// `connection.receive` calls until the matching `onEgressReadDemand`
-/// callback flips `paused` back to `false` via `resume()`.

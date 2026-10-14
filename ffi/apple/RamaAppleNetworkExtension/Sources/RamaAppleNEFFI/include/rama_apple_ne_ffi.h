@@ -517,15 +517,14 @@ typedef struct {
     /// egress NWParameters via NEAppProxyFlow.setMetadata(_:) before
     /// constructing the NWConnection. Defaults to true on the Rust side.
     bool preserve_original_meta_data;
-    /// When false (Rust-side default), Swift sets preferNoProxies = true on
-    /// egress to prefer a direct connection. Network.framework may still fall
-    /// back to a system or PAC proxy; local-proxy loops remain possible.
-    /// True only drops the preference. Other NE providers / VPNs are unaffected.
-    /// See <Network/parameters.h>, nw_parameters_set_prefer_no_proxy:
-    /// https://developer.apple.com/documentation/network/nw_parameters_set_prefer_no_proxy(_:_:)
-    /// https://developer.apple.com/forums/thread/828775
-    /// https://developer.apple.com/forums/thread/832291
-    bool allow_system_proxy;
+    /// False (default): public direct preference plus dynamically resolved
+    /// private nw_parameters_set_no_proxy when available. If unavailable,
+    /// preference-only fallback can still use a system/PAC proxy.
+    /// True clears both controls and permits, but does not force, proxy use.
+    /// The establishment event records the requested/applied policy and result.
+    /// Private API behavior is unsupported; validate each deployed OS version.
+    /// Other NE providers / VPNs remain unaffected. TCP only; UDP is Rust-owned.
+    bool allow_proxy;
 } RamaNwEgressParameters;
 
 /// Options for the egress NWConnection on TCP flows.
@@ -869,6 +868,9 @@ typedef struct {
     bool report_available;
     bool used_proxy;
     bool proxy_configured;
+    bool allow_proxy;
+    /// 0: allowed, 1: private no-proxy applied, 2: public preference only.
+    uint8_t proxy_policy;
     uint64_t connect_duration_ms;
     double report_duration_ms;
     const char *proxy_endpoint_utf8;
@@ -876,6 +878,9 @@ typedef struct {
     const char *error_utf8;
     size_t error_utf8_len;
 } RamaTcpEgressReport;
+
+/// Filter check before requesting an establishment report; no session required.
+bool rama_transparent_proxy_tcp_egress_reporting_enabled(void);
 
 /// Read-only diagnostics are valid even after cancel, until session_free.
 /// Serialize these calls with all other entries on the same live session.

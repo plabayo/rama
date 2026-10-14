@@ -43,11 +43,13 @@ fn ffi_egress_report_logs_metadata_and_fields_after_activation_and_cancel() {
         ..TestHandler::passthrough()
     };
     let engine = build_engine(handler);
-    let meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
         .with_remote_endpoint(rama_net::address::HostWithPort::example_domain_with_port(
             443,
         ))
         .with_source_app_pid(42);
+    meta.source_app_bundle_identifier = Some("test.original.app".try_into().unwrap());
+    meta.source_app_signing_identifier = Some("TEAM.test.original.app".try_into().unwrap());
     let SessionFlowAction::Intercept(mut session) =
         engine.new_tcp_session(meta, |_| TcpDeliverStatus::Accepted, || {}, || {})
     else {
@@ -60,11 +62,13 @@ fn ffi_egress_report_logs_metadata_and_fields_after_activation_and_cancel() {
     assert_eq!(session.flow_id(), id);
     let endpoint = "127.0.0.1:8888";
     let error = "POSIXErrorCode: ECONNREFUSED";
-    let ffi = crate::ffi::tproxy::TcpEgressReport {
+    let mut ffi = crate::ffi::tproxy::TcpEgressReport {
         ready: false,
         report_available: true,
         used_proxy: true,
         proxy_configured: true,
+        allow_proxy: false,
+        proxy_policy: 1,
         connect_duration_ms: 250,
         report_duration_ms: 245.5,
         proxy_endpoint_utf8: endpoint.as_ptr().cast(),
@@ -74,8 +78,15 @@ fn ffi_egress_report_logs_metadata_and_fields_after_activation_and_cancel() {
     };
     let capture = Capture::default();
     tracing::subscriber::with_default(capture.clone(), || {
+        assert!(tcp_egress_reporting_enabled());
         // The exact decoder and session entry used by the exported C function.
         session.report_egress(&unsafe { ffi.to_rust_type() });
+        for (allow_proxy, proxy_policy) in [(true, 0), (false, 2), (false, 255)] {
+            ffi.allow_proxy = allow_proxy;
+            ffi.proxy_policy = proxy_policy;
+            ffi.report_available = false;
+            session.report_egress(&unsafe { ffi.to_rust_type() });
+        }
     });
     let events = capture.0.lock();
     let event = events.first().expect("establishment event");
@@ -84,6 +95,8 @@ fn ffi_egress_report_logs_metadata_and_fields_after_activation_and_cancel() {
     assert!(event.get("remote").unwrap().contains(":443"));
     for (key, expected) in [
         ("ready", "false"),
+        ("allow_proxy", "false"),
+        ("proxy_policy", "\"no_proxy_applied\""),
         ("report_available", "true"),
         ("used_proxy", "true"),
         ("proxy_configured", "true"),
@@ -93,6 +106,27 @@ fn ffi_egress_report_logs_metadata_and_fields_after_activation_and_cancel() {
         ("error", "\"POSIXErrorCode: ECONNREFUSED\""),
     ] {
         assert_eq!(event.get(key).map(String::as_str), Some(expected), "{key}");
+    }
+    for (event, policy) in events
+        .iter()
+        .skip(1)
+        .zip(["allowed", "prefer_direct_only", "unknown"])
+    {
+        assert_eq!(event.get("proxy_policy"), Some(&format!("{policy:?}")));
+        assert_eq!(
+            event.get("allow_proxy").map(String::as_str),
+            Some(if policy == "allowed" { "true" } else { "false" })
+        );
+        assert!(!event.contains_key("used_proxy"));
+        assert!(!event.contains_key("proxy_configured"));
+        assert_eq!(
+            event.get("bundle_id").map(String::as_str),
+            Some("\"test.original.app\"")
+        );
+        assert_eq!(
+            event.get("signing_id").map(String::as_str),
+            Some("\"TEAM.test.original.app\"")
+        );
     }
     engine.stop(0);
 }
@@ -136,4 +170,11 @@ fn promoted_close_names_handoff_counters_and_preserves_ordinary_close_fields() {
             assert!(event.get("message").unwrap().contains("flow closed"));
         }
     }
+}
+
+#[test]
+fn disabled_egress_reporting_skips_collection() {
+    tracing::subscriber::with_default(tracing::subscriber::NoSubscriber::default(), || {
+        assert!(!tcp_egress_reporting_enabled());
+    });
 }

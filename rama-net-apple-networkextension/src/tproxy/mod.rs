@@ -68,14 +68,25 @@
 //!
 //! ## System HTTP/SOCKS proxy loop
 //!
-//! With a system HTTP/SOCKS proxy enabled (Charles, Proxyman, corporate
-//! PAC, …) the kernel routes our egress back through it, the proxy
-//! re-emits, and we intercept again — a loop. By default Swift sets
-//! `NWParameters.preferNoProxies = true`: egress prefers a direct connection,
-//! but Network.framework may still fall back to a system or PAC proxy.
-//! This makes a local-proxy loop less likely; it does not rule one out.
-//! [`NwEgressParameters::allow_system_proxy`] only drops that preference.
-//! Other NE providers and VPN tunnels in the stack are unaffected.
+//! A system HTTP/SOCKS or PAC proxy can re-originate our TCP egress and
+//! cause another interception. [`NwEgressParameters::allow_proxy`] defaults
+//! to `false`: native Network.framework parameters receive the public
+//! `prefer_no_proxy` preference plus the private `nw_parameters_set_no_proxy`
+//! control when its symbol is available. Symbol lookup is cached per process.
+//! If unavailable, the public preference remains and proxy fallback is still
+//! possible. `allow_proxy=true` clears both controls and permits proxy use.
+//!
+//! The existing establishment log records the request (`allow_proxy`), the
+//! applied control (`proxy_policy=allowed|no_proxy_applied|prefer_direct_only`),
+//! and the observed `used_proxy` / `proxy_configured` / `proxy_endpoint` fields.
+//! An unavailable report means unknown, not direct. There is no extra per-flow
+//! warning. Report collection is skipped when this event is disabled.
+//!
+//! The private control is unsupported by Apple: symbol presence does not prove
+//! behavior on future OS releases or App Store eligibility. Validate deployed
+//! versions. Other NE providers and VPNs remain in the path. TCP still uses
+//! Network.framework with native `NEAppProxyFlow.setMetadata(_:)` stamping;
+//! there is no alternate socket backend or Swift object-layout cast.
 //!
 //! See the SDK's `<Network/parameters.h>` comment for
 //! [`nw_parameters_set_prefer_no_proxy`](https://developer.apple.com/documentation/network/nw_parameters_set_prefer_no_proxy(_:_:)),
@@ -112,7 +123,7 @@
 //!
 //! [`HostWithPort`]: rama_net::address::HostWithPort
 //! [`NwEgressParameters::preserve_original_meta_data`]: types::NwEgressParameters::preserve_original_meta_data
-//! [`NwEgressParameters::allow_system_proxy`]: types::NwEgressParameters::allow_system_proxy
+//! [`NwEgressParameters::allow_proxy`]: types::NwEgressParameters::allow_proxy
 
 #[cfg(feature = "dial9")]
 #[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
@@ -136,7 +147,7 @@ pub use self::{
         TransparentProxyAsyncRuntimeFactory, TransparentProxyEngine, TransparentProxyEngineBuilder,
         TransparentProxyHandler, TransparentProxyHandlerFactory, TransparentProxyServiceContext,
         TransparentProxyTcpSession, TransparentProxyUdpSession, log_engine_build_error,
-        log_engine_build_panic,
+        log_engine_build_panic, tcp_egress_reporting_enabled,
     },
     types::{
         DEFAULT_FLOW_PRESSURE_IDLE_FLOOR_MS, DEFAULT_FLOW_PRESSURE_LOW_WATER,

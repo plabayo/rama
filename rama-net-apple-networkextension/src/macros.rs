@@ -780,13 +780,19 @@ macro_rules! __transparent_proxy_ffi_emit {
             unsafe { &*session }.flow_id()
         }
 
-        /// Borrowed strings are copied synchronously; valid after cancel until free.
+        /// Whether the existing establishment event is enabled. No session is needed.
+        #[unsafe(no_mangle)]
+        pub extern "C" fn rama_transparent_proxy_tcp_egress_reporting_enabled() -> bool {
+            $crate::tproxy::tcp_egress_reporting_enabled()
+        }
+
+        /// Borrowed strings are logged synchronously; valid after cancel until free.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_report_egress(
             session: *mut RamaTransparentProxyTcpSession,
             report: *const $crate::ffi::tproxy::TcpEgressReport,
         ) {
-            if session.is_null() || report.is_null() {
+            if session.is_null() || report.is_null() || !$crate::tproxy::tcp_egress_reporting_enabled() {
                 return;
             }
             let report = unsafe { (&*report).to_rust_type() };

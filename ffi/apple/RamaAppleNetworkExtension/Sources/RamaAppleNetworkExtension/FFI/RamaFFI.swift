@@ -1071,8 +1071,9 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
     /// and cancellation does not free it or invalidate its immutable Rust metadata.
     func reportEgress(
         _ report: TcpEstablishmentReport?, ready: Bool, connectDurationMs: UInt64,
-        error: NWError?
+        error: NWError?, allowProxy: Bool = false, proxyPolicy: TcpProxyPolicy = .preferDirectOnly
     ) {
+        guard rama_transparent_proxy_tcp_egress_reporting_enabled() else { return }
         lock.lock()
         defer { lock.unlock() }
         guard let s = sessionPtr else { return }
@@ -1084,6 +1085,7 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
                     ready: ready, report_available: report != nil,
                     used_proxy: report?.usedProxy ?? false,
                     proxy_configured: report?.proxyConfigured ?? false,
+                    allow_proxy: allowProxy, proxy_policy: proxyPolicy.rawValue,
                     connect_duration_ms: connectDurationMs,
                     report_duration_ms: (report?.duration ?? 0) * 1_000,
                     proxy_endpoint_utf8: endpointPtr,

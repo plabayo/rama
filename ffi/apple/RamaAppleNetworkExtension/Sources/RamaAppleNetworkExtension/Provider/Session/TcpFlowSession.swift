@@ -42,6 +42,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     var egressReady = false
     private var egressStartedAt: DispatchTime?
     private var establishmentReportRequested = false
+    private let egressReportEnabled: @Sendable () -> Bool
+    private var allowProxy = false
+    private var proxyPolicy: TcpProxyPolicy = .preferDirectOnly
     var timeoutWork: DispatchWorkItem?
     var waitingWork: DispatchWorkItem?
     var terminalDrainBackstop: DispatchWorkItem?
@@ -96,10 +99,14 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     init(
         core: TransparentProxyCore, flow: F, meta: RamaTransparentProxyFlowMetaBridge,
         now: @escaping @Sendable () -> DispatchTime = { .now() },
+        egressReportEnabled: @escaping @Sendable () -> Bool = {
+            rama_transparent_proxy_tcp_egress_reporting_enabled()
+        },
         drainBackstopScheduler:
             (@Sendable (DispatchQueue, Int, DispatchWorkItem) -> Void)? = nil
     ) {
         self.now = now
+        self.egressReportEnabled = egressReportEnabled
         self.drainBackstopScheduler = drainBackstopScheduler
         self.core = core
         self.flow = flow
@@ -382,14 +389,12 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 engineGeneration: engineGeneration) ?? requestedConnectTimeoutMs
         configureDrainPolicy(egressOpts)
         egressEofGraceMs = egressOpts?.egressEofGraceMs ?? defaultEgressEofGraceMs
-        let nwParams = makeTcpNwParameters(egressOpts)
-
-        if egressOpts?.parameters.preserve_original_meta_data ?? true {
-            flow.applyMetadata(to: nwParams)
-        }
+        let nwParams = makeTcpNwParameters(egressOpts, stampMetadata: flow.applyMetadata)
+        allowProxy = egressOpts?.parameters.allow_proxy ?? false
+        proxyPolicy = nwParams.proxyPolicy
 
         guard let factory = core?.nwConnectionFactory,
-            let connection = factory(remoteHost, meta.remotePort, nwParams)
+            let connection = factory(remoteHost, meta.remotePort, nwParams.native)
         else {
             core?.logDebug(
                 "handleTcpFlow: invalid remote port \(meta.remotePort); rejecting flow")
@@ -645,12 +650,19 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     ) {
         guard !establishmentReportRequested else { return }
         establishmentReportRequested = true
+        // Consume the establishment event even when filtered out. Enabling logs
+        // later must not relabel a post-ready failure as establishment failure.
+        guard egressReportEnabled() else { return }
         let end = now().uptimeNanoseconds
         let start = egressStartedAt?.uptimeNanoseconds ?? end
         let elapsedMs = (end >= start ? end - start : 0) / 1_000_000
         let session = sessionHandle
+        let allowProxy = allowProxy
+        let proxyPolicy = proxyPolicy
         connection.requestTcpEstablishmentReport(queue: flowQueue) { report in
-            session?.reportEgress(report, ready: ready, connectDurationMs: elapsedMs, error: error)
+            session?.reportEgress(
+                report, ready: ready, connectDurationMs: elapsedMs, error: error,
+                allowProxy: allowProxy, proxyPolicy: proxyPolicy)
         }
     }
 

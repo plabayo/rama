@@ -9,7 +9,7 @@ def main():
     directory = Path(__file__).resolve().parent
     suite = unittest.TestSuite(
         unittest.defaultTestLoader.discover(str(directory), pattern=pattern)
-        for pattern in ("test_pressure_log.py", "test_udp_probe.py", "test_http_stress.py")
+        for pattern in ("test_pressure_log.py", "test_udp_probe.py", "test_http_stress.py", "test_egress_proxy_policy.py")
     )
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     return int(not result.wasSuccessful() or bool(result.skipped) or result.testsRun == 0)

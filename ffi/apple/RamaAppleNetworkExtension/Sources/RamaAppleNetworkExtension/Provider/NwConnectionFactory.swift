@@ -24,8 +24,8 @@ struct TcpEstablishmentReport: Sendable {
 ///
 /// Abstracted behind a protocol so `TcpFlowSession` / `UdpFlowSession`
 /// can be driven by `MockNwConnection` in unit tests instead of by
-/// a real `NWConnection`. Production maps establishment reports into a
-/// small value snapshot in the extension below.
+/// a real connection. Production uses NativeTcpConnection and reads only
+/// the establishment report fields needed by the existing diagnostic.
 protocol NwConnectionLike: AnyObject, Sendable {
     func requestTcpEstablishmentReport(
         queue: DispatchQueue,
@@ -79,22 +79,6 @@ protocol NwConnectionLike: AnyObject, Sendable {
 // `NWConnection` already exposes `stateUpdateHandler` / `viabilityUpdateHandler`
 // with matching signatures; only the report needs a value-snapshot adapter.
 extension NWConnection: @unchecked @retroactive Sendable {}
-extension NWConnection: NwConnectionLike {
-    func requestTcpEstablishmentReport(
-        queue: DispatchQueue,
-        completion: @escaping @Sendable (TcpEstablishmentReport?) -> Void
-    ) {
-        requestEstablishmentReport(queue: queue) { report in
-            completion(report.map {
-                TcpEstablishmentReport(
-                    usedProxy: $0.usedProxy, proxyConfigured: $0.proxyConfigured,
-                    proxyEndpoint: $0.proxyEndpoint.map { String(describing: $0) },
-                    duration: $0.duration)
-            })
-        }
-    }
-}
-
 extension NwConnectionLike {
     func requestTcpEstablishmentReport(
         queue: DispatchQueue,
@@ -145,22 +129,10 @@ extension NwConnectionLike {
 /// port). The provider treats `nil` as a connect failure and tears the
 /// session down.
 typealias NwConnectionFactoryFn = @Sendable
-    (_ host: String, _ port: UInt16, _ params: NWParameters) -> (any NwConnectionLike)?
+    (_ host: String, _ port: UInt16, _ params: nw_parameters_t) -> (any NwConnectionLike)?
 
-/// Default factory: produces a real `NWConnection`.
-///
-/// Returns `nil` when the port is invalid (`NWEndpoint.Port(rawValue:)` rejects 0).
-/// Callers must surface that as a connect failure rather than silently substituting
-/// a default port — connecting to the wrong destination is worse than not connecting.
-func makeNwConnection(host: String, port: UInt16, using params: NWParameters) -> NWConnection? {
-    guard let port = NWEndpoint.Port(rawValue: port) else {
-        return nil
-    }
-    return NWConnection(host: NWEndpoint.Host(host), port: port, using: params)
-}
-
-/// `NwConnectionFactoryFn`-typed adapter that returns the default
-/// `NWConnection` produced by `makeNwConnection`.
+/// Native Network.framework factory; parameters can be stamped directly using
+/// the public C overload of NEAppProxyFlow.setMetadata(_:).
 let defaultNwConnectionFactory: NwConnectionFactoryFn = { host, port, params in
-    makeNwConnection(host: host, port: port, using: params)
+    NativeTcpConnection(host: host, port: port, parameters: params)
 }

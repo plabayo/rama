@@ -729,19 +729,30 @@ struct TcpSessionPendingData {
 /// Snapshot of one TCP egress establishment attempt. Missing report fields
 /// mean Network.framework supplied no report, not that the path was direct.
 #[derive(Debug, PartialEq)]
-pub struct TcpEgressReport {
+pub struct TcpEgressReport<'a> {
     pub ready: bool,
+    pub allow_proxy: bool,
+    pub proxy_policy: u8,
     pub connect_duration_ms: u64,
     pub report_duration_ms: Option<f64>,
     pub used_proxy: Option<bool>,
     pub proxy_configured: Option<bool>,
-    pub proxy_endpoint: Option<Box<str>>,
-    pub error: Option<Box<str>>,
+    pub proxy_endpoint: Option<&'a str>,
+    pub error: Option<&'a str>,
+}
+
+/// Cheap filter check before requesting or converting establishment diagnostics.
+/// Keep the field names in sync with `report_egress` for field-aware filters.
+pub fn tcp_egress_reporting_enabled() -> bool {
+    tracing::event_enabled!(target: "rama_apple_ne::tproxy", tracing::Level::INFO,
+        flow_id, remote, pid, bundle_id, signing_id, ready, allow_proxy, proxy_policy,
+        connect_duration_ms, report_available, duration_ms, used_proxy,
+        proxy_configured, proxy_endpoint, error, message)
 }
 
 pub struct TransparentProxyTcpSession {
     /// Retained beyond activation so asynchronous diagnostics keep their join key.
-    diagnostic_meta: TransparentProxyFlowMeta,
+    diagnostic_meta: Arc<TransparentProxyFlowMeta>,
     // ingress data path
     //
     // Shared with `promote::PromoteRegistry` so the promote fire
@@ -793,7 +804,7 @@ impl TransparentProxyTcpSession {
 
     /// Log a Swift establishment snapshot at the same level/privacy as closure.
     /// This observes metadata only and remains valid after cancellation.
-    pub fn report_egress(&self, report: &TcpEgressReport) {
+    pub fn report_egress(&self, report: &TcpEgressReport<'_>) {
         let meta = &self.diagnostic_meta;
         tracing::info!(
             target: "rama_apple_ne::tproxy",
@@ -803,13 +814,20 @@ impl TransparentProxyTcpSession {
             bundle_id = meta.source_app_bundle_identifier.as_deref(),
             signing_id = meta.source_app_signing_identifier.as_deref(),
             ready = report.ready,
+            allow_proxy = report.allow_proxy,
+            proxy_policy = match report.proxy_policy {
+                0 => "allowed",
+                1 => "no_proxy_applied",
+                2 => "prefer_direct_only",
+                _ => "unknown",
+            },
             connect_duration_ms = report.connect_duration_ms,
             report_available = report.used_proxy.is_some(),
             duration_ms = report.report_duration_ms,
             used_proxy = report.used_proxy,
             proxy_configured = report.proxy_configured,
-            proxy_endpoint = report.proxy_endpoint.as_deref(),
-            error = report.error.as_deref(),
+            proxy_endpoint = report.proxy_endpoint,
+            error = report.error,
             "transparent proxy tcp egress establishment",
         );
     }
@@ -1411,7 +1429,8 @@ where
     // feature on the inner `tokio::spawn` is replaced by
     // `dial9::spawn` — giving per-future wake-event
     // tracking on this long-lived per-flow service task.
-    let meta_for_close = meta.clone();
+    let diagnostic_meta = Arc::new(meta.clone());
+    let meta_for_close = diagnostic_meta.clone();
     let counters_for_close = byte_counters.clone();
     let ingress_reason_cell = ingress_close_reason.clone();
     let egress_reason_cell = egress_close_reason.clone();
@@ -1633,14 +1652,14 @@ where
         ingress_close_reason,
         egress_close_reason,
         flow_close_reason,
-        meta: meta.clone(),
+        meta,
         flow_guard,
         rt_handle,
         egress_connect_options,
     };
 
     SessionFlowAction::Intercept(TransparentProxyTcpSession {
-        diagnostic_meta: meta,
+        diagnostic_meta,
         client_tx: client_tx_shared,
         saw_client_bytes: false,
         saw_server_bytes: false,

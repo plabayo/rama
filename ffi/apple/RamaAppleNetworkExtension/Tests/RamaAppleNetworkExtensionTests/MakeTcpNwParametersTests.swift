@@ -1,16 +1,18 @@
+import Darwin
 import Network
+import RamaAppleNetwork
 import XCTest
 
 @testable import RamaAppleNEFFI
 @testable import RamaAppleNetworkExtension
 
-/// Pin `preferNoProxies = true` as the default and `allow_system_proxy`
+/// Pin `preferNoProxies = true` as the default and `allow_proxy`
 /// as the opt-out — a regression in either polarity re-introduces the
 /// stacked-proxy loop or breaks the intentional opt-in.
 final class MakeTcpNwParametersTests: XCTestCase {
 
     private func makeOpts(
-        allowSystemProxy: Bool = false,
+        allowProxy: Bool = false,
         keepaliveEnabled: Bool = true,
         hasIdle: Bool = false, idle: UInt32 = 0,
         hasInterval: Bool = false, interval: UInt32 = 0,
@@ -34,7 +36,7 @@ final class MakeTcpNwParametersTests: XCTestCase {
                 has_attribution: false, attribution: 0,
                 prohibited_interface_types_mask: 0,
                 preserve_original_meta_data: true,
-                allow_system_proxy: allowSystemProxy
+                allow_proxy: allowProxy
             ),
             has_connect_timeout_ms: false,
             connect_timeout_ms: 0,
@@ -71,28 +73,29 @@ final class MakeTcpNwParametersTests: XCTestCase {
         )
     }
 
-    /// Extract the egress connection's `NWProtocolTCP.Options` from the
-    /// parameters `makeTcpNwParameters` produced, so keepalive settings
-    /// can be inspected the way the constructed `NWConnection` would see
-    /// them.
-    private func tcpOptions(_ params: NWParameters) -> NWProtocolTCP.Options? {
-        params.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options
+    private func tcpOptions(_ params: TcpNwParameters) -> NativeTcpOptions? {
+        let stack = nw_parameters_copy_default_protocol_stack(params.native)
+        return nw_protocol_stack_copy_transport_protocol(stack).map(NativeTcpOptions.init)
     }
 
     func testPreferNoProxiesIsTrueWhenOptsAreNil() {
-        XCTAssertTrue(makeTcpNwParameters(nil).preferNoProxies, "nil opts → loop guard active")
-    }
-
-    func testPreferNoProxiesIsTrueWhenAllowSystemProxyIsFalse() {
         XCTAssertTrue(
-            makeTcpNwParameters(makeOpts(allowSystemProxy: false)).preferNoProxies,
-            "allow_system_proxy=false → loop guard active")
+            nw_parameters_get_prefer_no_proxy(makeTcpNwParameters(nil).native),
+            "nil opts → loop guard active")
     }
 
-    func testPreferNoProxiesIsFalseWhenAllowSystemProxyIsTrue() {
+    func testPreferNoProxiesIsTrueWhenAllowProxyIsFalse() {
+        XCTAssertTrue(
+            nw_parameters_get_prefer_no_proxy(
+                makeTcpNwParameters(makeOpts(allowProxy: false)).native),
+            "allow_proxy=false → loop guard active")
+    }
+
+    func testPreferNoProxiesIsFalseWhenAllowProxyIsTrue() {
         XCTAssertFalse(
-            makeTcpNwParameters(makeOpts(allowSystemProxy: true)).preferNoProxies,
-            "allow_system_proxy=true → opt-in honoured")
+            nw_parameters_get_prefer_no_proxy(
+                makeTcpNwParameters(makeOpts(allowProxy: true)).native),
+            "allow_proxy=true → opt-in honoured")
     }
 
     // MARK: - Keepalive
@@ -187,7 +190,8 @@ final class MakeTcpNwParametersTests: XCTestCase {
     /// anyway fails loudly. (noDelay is exempt: it has no `has_` flag and
     /// is always applied.)
     func testTuningUnsetLeavesFrameworkDefaults() {
-        let fresh = NWProtocolTCP.Options()
+        let stack = nw_parameters_copy_default_protocol_stack(rama_nw_tcp_parameters())
+        let fresh = NativeTcpOptions(nw_protocol_stack_copy_transport_protocol(stack)!)
         let tcp = tcpOptions(
             makeTcpNwParameters(
                 makeOpts(
@@ -244,4 +248,48 @@ final class MakeTcpNwParametersTests: XCTestCase {
                 makeOpts(hasEnableFastOpen: true, enableFastOpen: false)))
         XCTAssertEqual(tcp?.enableFastOpen, false)
     }
+}
+
+// Test-only readers for the C options. They exercise the actual native parameters,
+// rather than maintaining a second Swift NWParameters implementation in production.
+private struct NativeTcpOptions {
+    let native: nw_protocol_options_t
+    init(_ native: nw_protocol_options_t) { self.native = native }
+    private func bool(_ suffix: String) -> Bool {
+        guard
+            let symbol = dlsym(
+                UnsafeMutableRawPointer(bitPattern: -2), "nw_tcp_options_get_" + suffix)
+        else {
+            XCTFail("missing TCP getter: \(suffix)")
+            return false
+        }
+        return unsafeBitCast(symbol, to: (@convention(c) (nw_protocol_options_t) -> Bool).self)(
+            native)
+    }
+    private func integer(_ suffix: String) -> Int {
+        guard
+            let symbol = dlsym(
+                UnsafeMutableRawPointer(bitPattern: -2), "nw_tcp_options_get_" + suffix)
+        else {
+            XCTFail("missing TCP getter: \(suffix)")
+            return 0
+        }
+        return Int(
+            unsafeBitCast(symbol, to: (@convention(c) (nw_protocol_options_t) -> UInt32).self)(
+                native))
+    }
+    var enableKeepalive: Bool { bool("enable_keepalive") }
+    var noDelay: Bool { bool("no_delay") }
+    var noPush: Bool { bool("no_push") }
+    var noOptions: Bool { bool("no_options") }
+    var retransmitFinDrop: Bool { bool("retransmit_fin_drop") }
+    var disableAckStretching: Bool { bool("disable_ack_stretching") }
+    var enableFastOpen: Bool { bool("enable_fast_open") }
+    var disableECN: Bool { bool("disable_ecn") }
+    var keepaliveIdle: Int { integer("keepalive_idle_time") }
+    var keepaliveInterval: Int { integer("keepalive_interval") }
+    var keepaliveCount: Int { integer("keepalive_count") }
+    var maximumSegmentSize: Int { integer("maximum_segment_size") }
+    var connectionDropTime: Int { integer("retransmit_connection_drop_time") }
+    var persistTimeout: Int { integer("persist_timeout") }
 }

@@ -35,8 +35,13 @@ let package = Package(
             ]
         ),
         .target(
+            name: "RamaAppleNetwork",
+            path: "ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNetwork",
+            linkerSettings: [.linkedFramework("Network")]
+        ),
+        .target(
             name: "RamaAppleNetworkExtension",
-            dependencies: ["RamaAppleNEFFI"],
+            dependencies: ["RamaAppleNEFFI", "RamaAppleNetwork"],
             path: "ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNetworkExtension",
             swiftSettings: strictConcurrency
         ),
@@ -63,6 +68,7 @@ let package = Package(
                 "RamaAppleNetworkExtension",
                 "RamaAppleSecureEnclave",
                 "RamaAppleNEFFI",
+                "RamaAppleNetwork",
                 "RamaAppleSEFFI",
             ],
             path: "ffi/apple/RamaAppleNetworkExtension/Tests/RamaAppleNetworkExtensionTests"

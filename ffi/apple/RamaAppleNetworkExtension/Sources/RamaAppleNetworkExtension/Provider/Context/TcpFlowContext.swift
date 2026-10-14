@@ -292,6 +292,11 @@ final class TcpFlowContext: @unchecked Sendable {
     /// Called only on the flow queue, like the close transitions it describes.
     /// Each event appears at most once, including a duplicate terminal callback.
     func logDiagnostic(_ event: DiagnosticEvent, error: Error? = nil) {
+        guard RamaLog.isEnabled(error == nil ? .debug : .default) else {
+            // Preserve once-only event consumption without building the string.
+            reportedDiagnosticEvents |= 1 << event.rawValue
+            return
+        }
         if let record = diagnosticRecord(for: event, error: error) {
             if error != nil { RamaLog.noticePublic(record) }
             else { RamaLog.debugPublic(record) }
