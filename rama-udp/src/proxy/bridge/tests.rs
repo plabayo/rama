@@ -9,7 +9,7 @@ use std::{
 };
 
 use rama_core::{extensions::Extension, service::service_fn};
-use rama_net::address::SocketAddress;
+use rama_net::{address::SocketAddress, stream::Socket as _};
 use tokio::time::timeout;
 
 use super::*;
@@ -165,39 +165,6 @@ async fn forwarding_takes_a_bridge_of_connected_sockets() {
         assert_eq!(&buffer[..metadata.len], b"through");
         forwarding.abort();
         let _cancelled = forwarding.await;
-    })
-    .await
-    .unwrap();
-}
-
-/// A transparent association is bridged to the address its client sent to: its local address.
-#[tokio::test]
-async fn the_local_target_is_the_address_the_client_sent_to() {
-    timeout(LIMIT, async {
-        let mut origin = UdpPacketSocket::bind(SocketAddress::local_ipv4(0))
-            .await
-            .unwrap();
-        let target = origin.local_addr().unwrap();
-        let (_client, ingress) = MemoryDatagramSocket::pair(
-            SocketAddress::local_ipv4(6000),
-            target,
-            NonZeroUsize::new(8).unwrap(),
-        );
-        let bridge = DatagramToProxyBridge::local_target(service_fn(
-            move |BridgeIo(_ingress, egress): BridgeIo<_, UdpPacketSocket>| async move {
-                assert_eq!(egress.peer_addr().unwrap(), target);
-                egress
-                    .create_sender()
-                    .send(SendDatagram::new(target, b"to the original destination"))
-                    .await
-                    .unwrap();
-                Ok::<_, BoxError>(())
-            },
-        ));
-        bridge.serve(ingress).await.unwrap();
-        let mut buffer = [0; 64];
-        let metadata = origin.recv(&mut buffer).await.unwrap();
-        assert_eq!(&buffer[..metadata.len], b"to the original destination");
     })
     .await
     .unwrap();

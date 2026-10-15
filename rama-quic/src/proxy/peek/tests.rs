@@ -6,7 +6,11 @@ use rama_core::{
     io::BridgeIo,
     service::service_fn,
 };
-use rama_net::{address::SocketAddress, stream::Socket as _};
+use rama_net::{
+    address::{HostWithPort, SocketAddress},
+    client::ConnectorTarget,
+    stream::Socket as _,
+};
 use rama_quic_proto::capture::{CaptureLimits, KeyProvider};
 use rama_udp::{
     DatagramMetadata, DatagramSenderExt as _, PrefixedDatagramSocket, SendDatagram,
@@ -415,19 +419,22 @@ async fn a_gro_receive_is_inspected_and_charged_per_segment() {
 }
 
 /// Peeking first and bridging after, a transparent proxy creates an egress only for what it
-/// routes on, to the address the client sent to, with the peeked ClientHello still in hand.
+/// routes on, to the association's original destination, with the peeked ClientHello in hand.
 #[tokio::test(start_paused = true)]
 async fn a_peeked_association_is_bridged_with_its_client_hello() {
     timeout(Duration::from_secs(20), async {
         let (client, ingress) = association();
         let destination = ingress.local_addr().unwrap();
+        ingress
+            .extensions()
+            .insert(ConnectorTarget(HostWithPort::from(destination)));
         let initials = chrome_initials();
         for bytes in &initials {
             deliver(&ingress, &client, bytes);
         }
         let peek = PeekQuicClientHelloService::new(
             keys(),
-            DatagramToProxyBridge::local_target(service_fn(
+            DatagramToProxyBridge::extension_connector_target(service_fn(
                 async |InputWithQuicClientHello {
                            input: BridgeIo(mut ingress, egress),
                            client_hello,

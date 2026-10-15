@@ -11,7 +11,6 @@ use rama_core::{
 use rama_net::{
     address::HostWithPort,
     client::{ConnectRequest, ConnectorService, ConnectorTarget, EstablishedClientConnection},
-    stream::Socket as _,
 };
 
 use crate::{DatagramSocket, UdpPacketSocket, UdpSocketConfig, bind_udp_socket_with_connect};
@@ -59,7 +58,6 @@ impl Service<ConnectRequest> for UdpConnector {
 enum AddressProvider {
     Static(HostWithPort),
     ExtensionConnectorTarget,
-    LocalAddress,
 }
 
 /// What a [`DatagramToProxyBridge`] bridges: an ingress socket, alone or with what an inspection
@@ -127,16 +125,6 @@ impl<S> DatagramToProxyBridge<S> {
         }
     }
 
-    /// Bridge every association to the address its client sent to (its local address), as a
-    /// transparent proxy does.
-    pub fn local_target(inner: S) -> Self {
-        Self {
-            inner,
-            connector: UdpConnector::new(),
-            address_provider: AddressProvider::LocalAddress,
-        }
-    }
-
     /// Create egress sockets with `connector` instead.
     pub fn with_connector<C>(self, connector: C) -> DatagramToProxyBridge<S, C> {
         DatagramToProxyBridge {
@@ -169,15 +157,6 @@ impl DatagramToProxyBridgeLayer {
         Self {
             connector: UdpConnector::new(),
             address_provider: AddressProvider::ExtensionConnectorTarget,
-        }
-    }
-
-    /// See [`DatagramToProxyBridge::local_target`].
-    #[must_use]
-    pub fn local_target() -> Self {
-        Self {
-            connector: UdpConnector::new(),
-            address_provider: AddressProvider::LocalAddress,
         }
     }
 
@@ -230,12 +209,6 @@ where
                     ));
                 };
                 target
-            }
-            AddressProvider::LocalAddress => {
-                let local = ingress
-                    .local_addr()
-                    .context("datagram bridge reads the association's local address")?;
-                HostWithPort::from(local)
             }
         };
         tracing::trace!("connect the egress of a datagram association: target = {target}");

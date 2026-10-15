@@ -1,4 +1,7 @@
-use std::net::{IpAddr, Ipv4Addr};
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    sync::atomic::{AtomicUsize, Ordering as AtomicOrdering},
+};
 
 use rama_core::{graceful::Shutdown, service::service_fn};
 use tokio::{
@@ -7,7 +10,13 @@ use tokio::{
 };
 
 use super::*;
-use crate::{DatagramSenderExt as _, test_utils::MemoryDatagramSocket};
+use rama_net::{address::HostWithPort, client::ConnectorTarget};
+
+use crate::{
+    DatagramSenderExt as _, UdpPacketSender, UdpPacketSocket,
+    proxy::{DatagramForwardService, DatagramToProxyBridge, EcnPolicy},
+    test_utils::MemoryDatagramSocket,
+};
 
 const LIMIT: Duration = Duration::from_secs(20);
 
@@ -424,6 +433,90 @@ async fn a_full_source_socket_answers_every_original_destination_from_it() {
             assert_eq!(metadata.peer, destination);
         }
         assert_eq!(stats.get().dropped_reply_source, 0);
+    })
+    .await
+    .unwrap();
+}
+
+/// A redirected association carries its original destination as its target; one sent to the
+/// proxy itself has none.
+#[tokio::test]
+async fn only_a_redirected_association_carries_a_target() {
+    timeout(LIMIT, async {
+        let (client, listener) = listener();
+        // Answerable from its original destination, as a transparent proxy flow is.
+        listener.set_send_source_port(true);
+        let client_address = client.local_addr().unwrap();
+        let elsewhere = SocketAddress::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)), 443);
+        let mut metadata = DatagramMetadata::empty();
+        metadata.peer = client_address;
+        metadata.local = SocketAddress::local_ipv4(443);
+        metadata.original_destination = Some(elsewhere);
+        listener
+            .inject_received(b"hello".to_vec(), metadata)
+            .unwrap();
+        let (mut sockets, _stats) = serve(listener, config());
+        let redirected = sockets.recv().await.unwrap();
+        assert_eq!(
+            redirected.extensions().get_ref::<ConnectorTarget>(),
+            Some(&ConnectorTarget(HostWithPort::from(elsewhere)))
+        );
+    })
+    .await
+    .unwrap();
+
+    timeout(LIMIT, async {
+        let (client, listener) = listener();
+        inject(&listener, client.local_addr().unwrap(), b"direct");
+        let (mut sockets, _stats) = serve(listener, config());
+        let direct = sockets.recv().await.unwrap();
+        assert!(direct.extensions().get_ref::<ConnectorTarget>().is_none());
+    })
+    .await
+    .unwrap();
+}
+
+/// A datagram sent to the listener itself is not bridged anywhere, so it cannot come back as
+/// a new association and fill the table.
+#[tokio::test]
+async fn a_datagram_to_the_proxy_itself_is_not_bridged_back_to_it() {
+    timeout(LIMIT, async {
+        let listener = UdpPacketSocket::bind(SocketAddress::local_ipv4(0))
+            .await
+            .unwrap();
+        let listening = listener.local_addr().unwrap();
+        let demux = DatagramDemux::new(
+            listener,
+            DemuxConfig {
+                associations: NonZeroUsize::new(16).unwrap(),
+                ..config()
+            },
+        );
+        let stats = demux.stats();
+        let associations = Arc::new(AtomicUsize::new(0));
+        let counted = associations.clone();
+        let bridge = DatagramToProxyBridge::extension_connector_target(
+            DatagramForwardService::new(NonZeroUsize::new(2048).unwrap(), EcnPolicy::Discard),
+        );
+        tokio::spawn(demux.serve(
+            Executor::new(),
+            service_fn(move |association: DemuxedSocket<UdpPacketSender>| {
+                counted.fetch_add(1, AtomicOrdering::SeqCst);
+                let bridge = bridge.clone();
+                async move { bridge.serve(association).await.map(drop) }
+            }),
+        ));
+        let client = UdpPacketSocket::bind(SocketAddress::local_ipv4(0))
+            .await
+            .unwrap();
+        client
+            .create_sender()
+            .send(SendDatagram::new(listening, b"loop?"))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(associations.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(stats.get().dropped_association_limit, 0);
     })
     .await
     .unwrap();

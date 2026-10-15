@@ -26,7 +26,8 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_net::{
-    address::{SocketAddress, ip::IntoCanonicalIpAddr as _},
+    address::{HostWithPort, SocketAddress, ip::IntoCanonicalIpAddr},
+    client::ConnectorTarget,
     stream::Socket,
 };
 use tokio::{
@@ -104,7 +105,9 @@ struct Registry {
 /// address, unless the socket selects a reply's whole source
 /// ([`DatagramCapabilities::send_source_port`] with `send_source_ip`), as a transparent proxy
 /// flow does: then every original destination is an association of its own, answered from
-/// that destination. Admission and inspection limits belong to the association's service.
+/// that destination. A redirected association carries its original destination as its
+/// [`ConnectorTarget`], which one sent to the proxy itself never has, so a bridge cannot loop
+/// it back. Admission and inspection limits belong to the association's service.
 pub struct DatagramDemux<S> {
     socket: S,
     config: DemuxConfig,
@@ -206,6 +209,11 @@ impl<S: DatagramSocket> DatagramDemux<S> {
                 local: local.into_canonical_ip_addr(),
                 peer: metadata.peer.into_canonical_ip_addr(),
             };
+            // Only a redirected datagram names a destination beyond this proxy.
+            let redirected = metadata
+                .original_destination
+                .map(IntoCanonicalIpAddr::into_canonical_ip_addr)
+                .filter(|destination| *destination != listening.into_canonical_ip_addr());
             let datagram = RetainedDatagram {
                 payload: Bytes::copy_from_slice(&buffer[..metadata.len]),
                 metadata,
@@ -246,6 +254,11 @@ impl<S: DatagramSocket> DatagramDemux<S> {
                 },
                 extensions: Extensions::new(),
             };
+            if let Some(destination) = redirected {
+                socket
+                    .extensions
+                    .insert(ConnectorTarget(HostWithPort::from(destination)));
+            }
             let service = service.clone();
             exec.spawn_task(async move {
                 if let Err(error) = service.serve(socket).await {
