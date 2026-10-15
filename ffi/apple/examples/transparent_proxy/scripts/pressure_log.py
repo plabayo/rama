@@ -694,10 +694,13 @@ def parse_oslog_timestamp(value):
     )
     for timestamp_format in formats:
         try:
-            parsed = datetime.strptime(value, timestamp_format).timestamp()
+            parsed = datetime.strptime(value, timestamp_format)
+            if parsed.tzinfo is None:
+                continue
+            epoch = parsed.timestamp()
         except (TypeError, ValueError, OverflowError):
             continue
-        return parse_epoch(f"{parsed:.6f}")
+        return parse_epoch(f"{epoch:.6f}")
     return None
 
 class DuplicateJsonKeyError(ValueError):
