@@ -34,13 +34,10 @@ pub struct PreparedConnectionComponents {
 }
 
 impl PreparedConnectionComponents {
-    /// Compile client SETTINGS, regenerating reserved entries at their captured
-    /// positions. Literal samples remain available in the capture for analysis.
-    /// The caller supplies an independently keyed connection draw.
-    pub fn h3_client_settings(
-        &self,
-        draw: &mut ProfileDraw,
-    ) -> Result<Option<ClientSettingsProfile>, ProfileDataError> {
+    /// Compile the selected complete SETTINGS tuple without rewriting its IDs,
+    /// values or order. A reserved numeric pattern alone does not authorize a
+    /// fresh draw: variance-derived generators belong to profile selection.
+    pub fn h3_client_settings(&self) -> Result<Option<ClientSettingsProfile>, ProfileDataError> {
         let Some(capture) = &self.h3_peer_settings else {
             return Ok(None);
         };
@@ -57,25 +54,8 @@ impl PreparedConnectionComponents {
                 .as_ref()
                 .try_into()
                 .map_err(|_error| ProfileDataError::Invalid("HTTP/3 SETTINGS value encoding"))?;
-            let mut id = SettingId::new(field.id);
-            let mut value = u64::from_be_bytes(encoded);
-            if id.is_reserved() {
-                // QUICHE's control stream uses independent 32-bit draws for
-                // the reserved ordinal and value. Do not freeze a sampled pair.
-                let mut ordinal = draw.next_u64() as u32;
-                loop {
-                    id = SettingId::reserved(ordinal);
-                    if settings.get(id).is_none()
-                        && !capture.fields.iter().any(|field| field.id == id.value())
-                    {
-                        break;
-                    }
-                    // At most the bounded captured and emitted entries collide;
-                    // advancing avoids an unbounded random-retry loop.
-                    ordinal = ordinal.wrapping_add(1);
-                }
-                value = u64::from(draw.next_u64() as u32);
-            }
+            let id = SettingId::new(field.id);
+            let value = u64::from_be_bytes(encoded);
             settings
                 .set(id, value)
                 .map_err(|_error| ProfileDataError::Invalid("HTTP/3 SETTINGS value"))?;

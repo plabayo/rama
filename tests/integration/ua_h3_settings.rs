@@ -15,8 +15,7 @@ use rama_tls::{
 use rama_ua::profile::{
     CaptureLevel, CapturedSlot, CapturedSlotKind, ConnectionContext, ConnectionSelection, DrawKey,
     JointCapture, JointCaptureLimits, OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture,
-    PreparedConnectionProfile, ProfileCaptureCompleteness, ProfileObservationScope, ProfileSeed,
-    ValueId,
+    PreparedConnectionProfile, ProfileCaptureCompleteness, ProfileObservationScope, ValueId,
 };
 use rama_udp::test_utils::MemoryDatagramSocket;
 use rama_utils::octets::{kib, kib_u64};
@@ -70,7 +69,7 @@ fn selection(key: u8) -> ConnectionSelection {
 }
 
 #[tokio::test(start_paused = true)]
-async fn selected_chrome_h3_settings_reach_peer_with_fresh_generated_entries() {
+async fn selected_chrome_h3_settings_reach_peer_as_captured_literals() {
     tokio::time::timeout(Duration::from_secs(20), async {
         let identity = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
         let server_tls = TlsServerConfig::new()
@@ -88,10 +87,7 @@ async fn selected_chrome_h3_settings_reach_peer_with_fresh_generated_entries() {
         for key in [11, 12] {
             let selected = selection(key);
             let prepared = selected.prepare_components().unwrap();
-            let settings = prepared
-                .h3_client_settings(&mut selected.h3_settings_draw(ProfileSeed([7; 32])))
-                .unwrap()
-                .unwrap();
+            let settings = prepared.h3_client_settings().unwrap().unwrap();
             Config::default()
                 .try_with_client_settings(settings.0.clone())
                 .unwrap_err();
@@ -146,10 +142,11 @@ async fn selected_chrome_h3_settings_reach_peer_with_fresh_generated_entries() {
         let first = observed[0].entries()[4];
         let second = observed[1].entries()[4];
         assert!(first.id.is_reserved() && second.id.is_reserved());
-        assert_ne!(first.id, second.id);
-        assert_ne!(first.value, second.value);
-        assert_ne!(first.id.value(), 0x1e00490b7);
-        assert_ne!(second.id.value(), 0x1e00490b7);
+        assert_eq!(first.id, second.id);
+        assert_eq!(first.value, second.value);
+        assert_eq!(first.id.value(), 0x1e00490b7);
+        assert_eq!(second.id.value(), 0x1e00490b7);
+        assert_eq!(first.value, 114_070_958);
     })
     .await
     .unwrap();

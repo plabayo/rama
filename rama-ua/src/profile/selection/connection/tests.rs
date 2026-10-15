@@ -162,7 +162,7 @@ fn request_capture_cannot_be_prepared_as_connection_components() {
 }
 
 #[test]
-fn selected_h3_settings_regenerate_reserved_entries_in_captured_order() {
+fn selected_h3_settings_keep_reserved_literals_and_order() {
     let fields = [
         (SettingId::FIRST_RESERVED.value(), 17u64),
         (SettingId::QPACK_BLOCKED_STREAMS.value(), 0),
@@ -196,25 +196,17 @@ fn selected_h3_settings_regenerate_reserved_entries_in_captured_order() {
         .unwrap()
         .canonical(OrderCaptureLimits::default())
         .unwrap();
-    let seed = ProfileSeed([7; 32]);
-    let settings = prepared
-        .h3_client_settings(&mut selection.h3_settings_draw(seed))
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        settings,
-        prepared
-            .h3_client_settings(&mut selection.h3_settings_draw(seed))
-            .unwrap()
-            .unwrap()
-    );
+    let settings = prepared.h3_client_settings().unwrap().unwrap();
+    assert_eq!(settings, prepared.h3_client_settings().unwrap().unwrap());
     selection.draw = DrawKey([9; 32]);
-    let second = prepared
-        .h3_client_settings(&mut selection.h3_settings_draw(seed))
+    let second = selection
+        .prepare_components()
+        .unwrap()
+        .h3_client_settings()
         .unwrap()
         .unwrap();
-    assert_ne!(settings.0.entries()[0].id, second.0.entries()[0].id);
-    assert_ne!(settings.0.entries()[0].value, second.0.entries()[0].value);
+    assert_eq!(settings.0.entries()[0].id, second.0.entries()[0].id);
+    assert_eq!(settings.0.entries()[0].value, second.0.entries()[0].value);
     assert_eq!(settings.0.entries()[1..], second.0.entries()[1..]);
     let unchanged = prepared
         .h3_peer_settings
@@ -231,7 +223,7 @@ fn selected_h3_settings_regenerate_reserved_entries_in_captured_order() {
         .map(|s| (s.id.value(), s.value))
         .collect();
     assert!(SettingId::new(actual[0].0).is_reserved());
-    assert_ne!(actual[0], fields[0]);
+    assert_eq!(actual[0], fields[0]);
     assert_eq!(&actual[1..], &fields[1..]);
     assert_eq!(settings.0.qpack_max_table_capacity(), 0);
 }
@@ -318,4 +310,46 @@ fn replay_preparation_reports_every_unconsumed_selected_component() {
             },
         ]
     );
+}
+
+#[test]
+fn literal_h3_reserved_settings_keep_full_varint_ids_and_values() {
+    let maximum = (1_u64 << 62) - 1;
+    let highest_reserved = 33 + 31 * ((maximum - 33) / 31);
+    for (id, value) in [(33, 17), (64, 29), (highest_reserved, maximum)] {
+        assert!(SettingId::new(id).is_reserved());
+        let capture = OrderedProtocolCapture::capture(
+            ProfileCaptureCompleteness::Complete,
+            OrderNamespace::Http3Setting,
+            [(id, value.to_be_bytes())],
+            OrderCaptureLimits::default(),
+        )
+        .unwrap()
+        .canonical(OrderCaptureLimits::default())
+        .unwrap();
+        let selected = selection(
+            JointCapture {
+                completeness: ProfileCaptureCompleteness::Complete,
+                level: CaptureLevel::Connection,
+                slots: vec![CapturedSlot {
+                    kind: CapturedSlotKind::Http3Settings,
+                    value: capture,
+                }]
+                .into(),
+            }
+            .canonical(JointCaptureLimits::default())
+            .unwrap(),
+        );
+        for mode in [
+            ProfilePreservationMode::Strict,
+            ProfilePreservationMode::BestEffort,
+        ] {
+            let prepared = selected.prepare_for_replay(mode).unwrap();
+            let compiled = prepared.h3_client_settings().unwrap().unwrap();
+            assert_eq!(compiled.0.entries().len(), 1);
+            assert_eq!(compiled.0.entries()[0].id.value(), id);
+            assert_eq!(compiled.0.entries()[0].value, value);
+            assert!(prepared.preservation_report.is_exact());
+        }
+    }
 }

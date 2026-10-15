@@ -900,8 +900,8 @@ async fn connect_modifier_applies_selected_h3_settings_before_connect() {
                 .unwrap();
             assert_eq!(settings.0.entries().len(), 1);
             assert!(settings.0.entries()[0].id.is_reserved());
-            assert_ne!(settings.0.entries()[0].id, SettingId::FIRST_RESERVED);
-            assert_ne!(settings.0.entries()[0].value, 17);
+            assert_eq!(settings.0.entries()[0].id, SettingId::FIRST_RESERVED);
+            assert_eq!(settings.0.entries()[0].value, 17);
             let conn = ServiceInput::new(());
             conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
             Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
@@ -925,7 +925,7 @@ async fn connect_modifier_applies_selected_h3_settings_before_connect() {
             let settings = selection
                 .prepare_components()
                 .unwrap()
-                .h3_client_settings(&mut selection.h3_settings_draw(context.seed))
+                .h3_client_settings()
                 .unwrap()
                 .unwrap();
             input.extensions().insert(settings);
