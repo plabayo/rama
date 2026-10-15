@@ -9,8 +9,8 @@ use rama_core::{
 use rama_net::{address::SocketAddress, stream::Socket as _};
 use rama_quic_proto::capture::{CaptureLimits, KeyProvider};
 use rama_udp::{
-    DatagramMetadata, DatagramSenderExt as _, DatagramSocket as _, PrefixedDatagramSocket,
-    SendDatagram, test_utils::MemoryDatagramSocket,
+    DatagramMetadata, DatagramSenderExt as _, PrefixedDatagramSocket, SendDatagram,
+    UdpPacketSocket, proxy::DatagramToProxyBridge, test_utils::MemoryDatagramSocket,
 };
 use rama_utils::{hex::decode, octets::kib};
 use tokio::time::{advance, timeout};
@@ -409,6 +409,46 @@ async fn a_gro_receive_is_inspected_and_charged_per_segment() {
                 drop(client);
             }
         }
+    })
+    .await
+    .unwrap();
+}
+
+/// Peeking first and bridging after, a transparent proxy creates an egress only for what it
+/// routes on, to the address the client sent to, with the peeked ClientHello still in hand.
+#[tokio::test(start_paused = true)]
+async fn a_peeked_association_is_bridged_with_its_client_hello() {
+    timeout(Duration::from_secs(20), async {
+        let (client, ingress) = association();
+        let destination = ingress.local_addr().unwrap();
+        let initials = chrome_initials();
+        for bytes in &initials {
+            deliver(&ingress, &client, bytes);
+        }
+        let peek = PeekQuicClientHelloService::new(
+            keys(),
+            DatagramToProxyBridge::local_target(service_fn(
+                async |InputWithQuicClientHello {
+                           input: BridgeIo(mut ingress, egress),
+                           client_hello,
+                       }: InputWithQuicClientHello<
+                    BridgeIo<PrefixedDatagramSocket<MemoryDatagramSocket>, UdpPacketSocket>,
+                >| {
+                    Ok::<_, BoxError>((
+                        client_hello.client_hello.ext_server_name().is_some(),
+                        egress.peer_addr().unwrap(),
+                        drain(&mut ingress).await,
+                    ))
+                },
+            )),
+        )
+        .with_fallback(service_fn(async |_: PrefixedDatagramSocket<_>| {
+            Err::<_, BoxError>(BoxError::from_static_str("unexpected fallback"))
+        }));
+        let (named, egress_peer, replayed) = peek.serve(ingress).await.unwrap();
+        assert!(named);
+        assert_eq!(egress_peer, destination);
+        assert_eq!(replayed, initials);
     })
     .await
     .unwrap();

@@ -141,6 +141,11 @@ impl<Issuer> TlsMitmRelay<Issuer> {
         }
     }
 
+    /// The certificate issuer, to share it (and its cache) with a QUIC relay.
+    pub fn issuer(&self) -> &Issuer {
+        &self.issuer
+    }
+
     rama_utils::macros::generate_set_and_with! {
         /// Opt into client-authentication policy. A flow policy overrides this default.
         /// Without one, upstream certificate requests are rejected.

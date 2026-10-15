@@ -11,6 +11,7 @@ use rama_core::{
 use rama_net::{
     address::HostWithPort,
     client::{ConnectRequest, ConnectorService, ConnectorTarget, EstablishedClientConnection},
+    stream::Socket as _,
 };
 
 use crate::{DatagramSocket, UdpPacketSocket, UdpSocketConfig, bind_udp_socket_with_connect};
@@ -58,6 +59,40 @@ impl Service<ConnectRequest> for UdpConnector {
 enum AddressProvider {
     Static(HostWithPort),
     ExtensionConnectorTarget,
+    LocalAddress,
+}
+
+/// What a [`DatagramToProxyBridge`] bridges: an ingress socket, alone or with what an inspection
+/// learned about it, handed on with its egress.
+pub trait DatagramBridgeInput: Send + 'static {
+    /// The ingress socket.
+    type Ingress: DatagramSocket + ExtensionsRef;
+    /// This input with its egress socket.
+    type Bridged<Egress>: Send + 'static
+    where
+        Egress: Send + 'static;
+
+    /// The ingress socket the egress is created for.
+    fn ingress(&self) -> &Self::Ingress;
+
+    /// This input with `egress` next to its ingress.
+    fn bridge<Egress: Send + 'static>(self, egress: Egress) -> Self::Bridged<Egress>;
+}
+
+impl<S: DatagramSocket + ExtensionsRef + Send + 'static> DatagramBridgeInput for S {
+    type Ingress = S;
+    type Bridged<Egress>
+        = BridgeIo<S, Egress>
+    where
+        Egress: Send + 'static;
+
+    fn ingress(&self) -> &Self::Ingress {
+        self
+    }
+
+    fn bridge<Egress: Send + 'static>(self, egress: Egress) -> Self::Bridged<Egress> {
+        BridgeIo(self, egress)
+    }
 }
 
 /// Connects an egress socket for each ingress association, with a pluggable connector, and
@@ -89,6 +124,16 @@ impl<S> DatagramToProxyBridge<S> {
             inner,
             connector: UdpConnector::new(),
             address_provider: AddressProvider::ExtensionConnectorTarget,
+        }
+    }
+
+    /// Bridge every association to the address its client sent to (its local address), as a
+    /// transparent proxy does.
+    pub fn local_target(inner: S) -> Self {
+        Self {
+            inner,
+            connector: UdpConnector::new(),
+            address_provider: AddressProvider::LocalAddress,
         }
     }
 
@@ -127,6 +172,15 @@ impl DatagramToProxyBridgeLayer {
         }
     }
 
+    /// See [`DatagramToProxyBridge::local_target`].
+    #[must_use]
+    pub fn local_target() -> Self {
+        Self {
+            connector: UdpConnector::new(),
+            address_provider: AddressProvider::LocalAddress,
+        }
+    }
+
     /// Create egress sockets with `connector` instead.
     pub fn with_connector<C>(self, connector: C) -> DatagramToProxyBridgeLayer<C> {
         DatagramToProxyBridgeLayer {
@@ -156,16 +210,17 @@ impl<S, C: Clone> Layer<S> for DatagramToProxyBridgeLayer<C> {
     }
 }
 
-impl<S, Ingress, C> Service<Ingress> for DatagramToProxyBridge<S, C>
+impl<S, Input, C> Service<Input> for DatagramToProxyBridge<S, C>
 where
-    S: Service<BridgeIo<Ingress, C::Connection>, Error: Into<BoxError>>,
-    Ingress: DatagramSocket + ExtensionsRef + Send + 'static,
-    C: ConnectorService<ConnectRequest, Connection: DatagramSocket>,
+    S: Service<Input::Bridged<C::Connection>, Error: Into<BoxError>>,
+    Input: DatagramBridgeInput,
+    C: ConnectorService<ConnectRequest, Connection: DatagramSocket + Send + 'static>,
 {
     type Output = S::Output;
     type Error = BoxError;
 
-    async fn serve(&self, ingress: Ingress) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let ingress = input.ingress();
         let target = match &self.address_provider {
             AddressProvider::Static(target) => target.clone(),
             AddressProvider::ExtensionConnectorTarget => {
@@ -175,6 +230,12 @@ where
                     ));
                 };
                 target
+            }
+            AddressProvider::LocalAddress => {
+                let local = ingress
+                    .local_addr()
+                    .context("datagram bridge reads the association's local address")?;
+                HostWithPort::from(local)
             }
         };
         tracing::trace!("connect the egress of a datagram association: target = {target}");
@@ -187,7 +248,7 @@ where
             .context("connect datagram egress")
             .context_field("target", target)?;
         self.inner
-            .serve(BridgeIo(ingress, egress))
+            .serve(input.bridge(egress))
             .await
             .into_box_error()
     }

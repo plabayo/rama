@@ -9,7 +9,9 @@
 use std::{error::Error, fmt, net::IpAddr, num::NonZeroUsize};
 
 mod bridge;
-pub use bridge::{DatagramToProxyBridge, DatagramToProxyBridgeLayer, UdpConnector};
+pub use bridge::{
+    DatagramBridgeInput, DatagramToProxyBridge, DatagramToProxyBridgeLayer, UdpConnector,
+};
 
 use rama_core::{Service, io::BridgeIo};
 use rama_utils::macros::generate_set_and_with;

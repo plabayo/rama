@@ -7,6 +7,7 @@ use rama_core::{
     bytes::Bytes,
     error::BoxError,
     extensions::{Extension, Extensions, ExtensionsRef},
+    io::BridgeIo,
     service::RejectService,
     telemetry::tracing,
 };
@@ -15,7 +16,8 @@ use rama_quic_proto::{
     peek::{InitialPeek, PeekError, PeekedClientHello},
 };
 use rama_udp::{
-    DatagramPeekInput, DatagramSocketExt as _, PrefixedDatagramSocket, RetainedDatagram,
+    DatagramPeekInput, DatagramSocket, DatagramSocketExt as _, PrefixedDatagramSocket,
+    RetainedDatagram, proxy::DatagramBridgeInput,
 };
 use rama_utils::octets::kib;
 use tokio::time::{Instant, timeout_at};
@@ -37,6 +39,30 @@ pub struct InputWithQuicClientHello<Input> {
 impl<Input: ExtensionsRef> ExtensionsRef for InputWithQuicClientHello<Input> {
     fn extensions(&self) -> &Extensions {
         self.input.extensions()
+    }
+}
+
+/// An association peeked before its egress exists keeps its ClientHello once bridged, so the
+/// egress is created only for the associations a policy routes on.
+impl<S> DatagramBridgeInput for InputWithQuicClientHello<S>
+where
+    S: DatagramSocket + ExtensionsRef + Send + 'static,
+{
+    type Ingress = S;
+    type Bridged<Egress>
+        = InputWithQuicClientHello<BridgeIo<S, Egress>>
+    where
+        Egress: Send + 'static;
+
+    fn ingress(&self) -> &Self::Ingress {
+        &self.input
+    }
+
+    fn bridge<Egress: Send + 'static>(self, egress: Egress) -> Self::Bridged<Egress> {
+        InputWithQuicClientHello {
+            input: BridgeIo(self.input, egress),
+            client_hello: self.client_hello,
+        }
     }
 }
 
