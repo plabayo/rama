@@ -279,3 +279,111 @@ async fn graceful_shutdown_stops_serving_and_ends_its_associations() {
     .await
     .unwrap();
 }
+
+/// A released association whose socket is dropped late leaves the peer's next association
+/// open: only its own entry is removed.
+#[tokio::test(start_paused = true)]
+async fn a_stale_association_dropped_late_leaves_its_successor_open() {
+    timeout(LIMIT, async {
+        let (client, listener) = listener();
+        let mut sender = client.create_sender();
+        let target = SocketAddress::local_ipv4(443);
+        sender
+            .send(SendDatagram::new(target, b"first"))
+            .await
+            .unwrap();
+        let config = DemuxConfig {
+            idle_timeout: Duration::from_secs(5),
+            ..config()
+        };
+        let (mut sockets, _stats) = serve(listener, config);
+        let mut stale = sockets.recv().await.unwrap();
+        assert_eq!(next(&mut stale).await, b"first");
+        let mut buffer = [0; 64];
+        assert!(matches!(
+            stale.recv(&mut buffer).await,
+            Err(DatagramError::Closed)
+        ));
+        sender
+            .send(SendDatagram::new(target, b"second"))
+            .await
+            .unwrap();
+        let mut current = sockets.recv().await.unwrap();
+        assert_eq!(next(&mut current).await, b"second");
+        drop(stale);
+        sender
+            .send(SendDatagram::new(target, b"third"))
+            .await
+            .unwrap();
+        assert_eq!(next(&mut current).await, b"third");
+        sockets.try_recv().unwrap_err();
+    })
+    .await
+    .unwrap();
+}
+
+/// Every received datagram restarts the idle timeout, so a busy association outlives it.
+#[tokio::test(start_paused = true)]
+async fn an_association_receiving_within_its_idle_timeout_stays_open() {
+    timeout(LIMIT, async {
+        let (client, listener) = listener();
+        let mut sender = client.create_sender();
+        let target = SocketAddress::local_ipv4(443);
+        sender
+            .send(SendDatagram::new(target, b"first"))
+            .await
+            .unwrap();
+        let config = DemuxConfig {
+            idle_timeout: Duration::from_secs(5),
+            ..config()
+        };
+        let (mut sockets, _stats) = serve(listener, config);
+        let mut association = sockets.recv().await.unwrap();
+        assert_eq!(next(&mut association).await, b"first");
+        // Three idle timeouts past its start, never idle for one.
+        for _ in 0..5 {
+            tokio::time::advance(Duration::from_secs(3)).await;
+            sender
+                .send(SendDatagram::new(target, b"more"))
+                .await
+                .unwrap();
+            assert_eq!(next(&mut association).await, b"more");
+        }
+        sockets.try_recv().unwrap_err();
+    })
+    .await
+    .unwrap();
+}
+
+/// A wildcard listener answers from the address each client sent to, which a multi-homed
+/// host would otherwise choose itself.
+#[tokio::test]
+async fn a_wildcard_listener_replies_from_the_address_the_client_sent_to() {
+    timeout(LIMIT, async {
+        let sent_to = SocketAddress::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)), 443);
+        let (mut client, listener) = MemoryDatagramSocket::pair(
+            peer(1),
+            SocketAddress::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 443),
+            NonZeroUsize::new(64).unwrap(),
+        );
+        let mut metadata = DatagramMetadata::empty();
+        metadata.peer = peer(1);
+        metadata.local = sent_to;
+        listener
+            .inject_received(b"hello".to_vec(), metadata)
+            .unwrap();
+        let (mut sockets, _stats) = serve(listener, config());
+        let association = sockets.recv().await.unwrap();
+        association
+            .create_sender()
+            .send(SendDatagram::new(peer(1), b"reply"))
+            .await
+            .unwrap();
+        let mut buffer = [0; 64];
+        let metadata = client.recv(&mut buffer).await.unwrap();
+        assert_eq!(&buffer[..metadata.len], b"reply");
+        assert_eq!(metadata.peer, sent_to);
+    })
+    .await
+    .unwrap();
+}

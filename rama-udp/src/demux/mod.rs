@@ -97,11 +97,11 @@ struct Registry {
 /// counterpart of accepting connections.
 ///
 /// Every association is bounded: by [`DemuxConfig::associations`], by its queue, and by its
-/// idle timeout, and all end when the demux stops serving. A reply leaves the listening socket for the association's peer only, from
-/// the address the client sent to. A transparently redirected datagram, whose original
-/// destination is not the listening address, cannot be answered from there; it is dropped
-/// and counted rather than answered from the wrong address. Admission and inspection
-/// limits belong to the association's service.
+/// idle timeout, and all end when the demux stops serving. A reply leaves the listening socket
+/// for the association's peer only, from the address the client sent to. A transparently
+/// redirected datagram, whose original destination is not the listening address, cannot be
+/// answered from there; it is dropped and counted rather than answered from the wrong
+/// address. Admission and inspection limits belong to the association's service.
 pub struct DatagramDemux<S> {
     socket: S,
     config: DemuxConfig,
