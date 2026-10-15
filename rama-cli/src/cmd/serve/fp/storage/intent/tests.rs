@@ -285,11 +285,14 @@ async fn real_auth_layer_runs_after_safe_capture_and_each_intent_submits_once() 
     .await
     .unwrap();
     let records = records.lock();
-    assert_eq!(records.len(), 1);
-    assert!(records[0].0.authorized);
+    assert_eq!(records.len(), 2);
+    assert!(records.iter().all(|(record, _)| record.authorized));
     assert_eq!(records[0].0.observation.sequence, 1);
-    let capture = &records[0].1;
-    assert!(matches!(capture.joint.level, CaptureLevel::Request));
+    assert_eq!(records[1].0.observation.sequence, 2);
+    assert_eq!(records[0].1.joint.level, CaptureLevel::Connection);
+    assert!(records[0].1.joint.slots.is_empty());
+    let capture = &records[1].1;
+    assert_eq!(capture.joint.level, CaptureLevel::Request);
     let policy = HeaderCapturePolicy {
         bytes: JointCaptureLimits::default().value_bytes,
         ..HeaderCapturePolicy::default()
@@ -303,7 +306,7 @@ async fn real_auth_layer_runs_after_safe_capture_and_each_intent_submits_once() 
             .count(),
         2
     );
-    assert_eq!(queue.counts().confirmed, 1);
+    assert_eq!(queue.counts().confirmed, 2);
     assert_eq!(queue.counts().invalid_capture, 0);
 }
 
@@ -521,8 +524,11 @@ async fn runtime_metadata_joins_the_reserved_request_and_is_submitted_once() {
     .await
     .unwrap();
     let records = records.lock();
-    assert_eq!(records.len(), 1);
-    let slot = records[0]
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].1.joint.level, CaptureLevel::Connection);
+    assert!(records[0].1.joint.slots.is_empty());
+    assert_eq!(records[1].1.joint.level, CaptureLevel::Request);
+    let slot = records[1]
         .1
         .joint
         .slots
@@ -538,7 +544,7 @@ async fn runtime_metadata_joins_the_reserved_request_and_is_submitted_once() {
         serde_json::to_value(decoded.runtime.source_info.unwrap()).unwrap(),
         serde_json::to_value(&source).unwrap()
     );
-    assert_eq!(queue.counts().confirmed, 1);
+    assert_eq!(queue.counts().confirmed, 2);
     assert_eq!(queue.counts().invalid_capture, 0);
 }
 

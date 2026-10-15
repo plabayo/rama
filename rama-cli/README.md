@@ -64,6 +64,17 @@ and restart-safe; source tables remain unchanged. Each non-null legacy field has
 conventional weight one and unknown history. Its day comes from the row's last
 update, which cannot recover individual fields' original capture times.
 
+`rama send --emulate=profiles.json --http1.1 http://localhost:8080/report`
+loads a counted export through strict captured-profile replay. Supply the
+request-owned fields required by the captured flow, for example
+`--header 'Connection: keep-alive'`; the destination supplies `Host`, and captured
+cookies or credentials are never copied. Fresh cleartext HTTP/1 captures retain
+an explicit empty connection tuple. Older header-only exports without that tuple
+need a fresh capture. Captured TLS, QUIC parameters/versions/first-flight layout,
+and H3 sequence replay currently fail with an unsupported-component error before
+connecting; their observation data does not imply an implemented wire compiler.
+Legacy profile files and the bare `--emulate` flag retain their existing path.
+
 ### Proxy interception
 
 Start the inspector with `rama serve proxy --mitm`. Forwarding is automatic by

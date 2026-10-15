@@ -36,7 +36,13 @@ impl ProfileCapture {
         authorized: bool,
         limits: JointCaptureLimits,
     ) -> Result<PreparedProfileCapture, ProfileDataError> {
-        if self.joint.slots.is_empty() {
+        // A complete empty connection tuple records cleartext HTTP/1: there
+        // are no connection-level protocol components to replay. An absent
+        // observation is still distinct from this explicit tuple.
+        if self.joint.slots.is_empty()
+            && !(self.joint.level == CaptureLevel::Connection
+                && self.joint.completeness == super::ProfileCaptureCompleteness::Complete)
+        {
             return Err(ProfileDataError::Incomplete("empty profile capture"));
         }
         match (self.joint.level, &self.flow) {

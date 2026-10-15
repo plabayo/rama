@@ -265,9 +265,8 @@ pub(super) fn connection_capture(
             value: captured.canonical(limits)?,
         });
     }
-    if slots.is_empty() {
-        return Ok(None);
-    }
+    // A complete empty tuple records the cleartext HTTP/1 connection.
+    // Dropping it would make an exported header-only profile unselectable.
     slots.sort_unstable_by_key(|slot| slot.kind);
     Ok(Some(ProfileCapture {
         profile,
@@ -543,6 +542,30 @@ mod tests {
             );
         }
         assert_eq!(structures[0], structures[1]);
+    }
+
+    #[test]
+    fn cleartext_h1_retains_an_explicit_empty_connection() {
+        let ext = Extensions::new();
+        let capture = connection_capture(
+            profile_key("synthetic/1").unwrap(),
+            connection_context(&ext),
+            Version::HTTP_11,
+            &ext,
+            None,
+        )
+        .unwrap()
+        .expect("cleartext connection evidence");
+        assert!(capture.joint.slots.is_empty());
+        assert_eq!(capture.joint.level, CaptureLevel::Connection);
+        assert_eq!(
+            capture
+                .prepare(false, JointCaptureLimits::default())
+                .unwrap()
+                .buckets
+                .len(),
+            1
+        );
     }
 
     #[test]

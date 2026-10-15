@@ -84,6 +84,7 @@ fn counted_capture_rejects_inconsistent_flow_and_context() {
     capture.joint.level = CaptureLevel::Connection;
     capture.prepare(false, limits).unwrap_err();
     capture.joint.slots = Box::default();
+    capture.joint.completeness = ProfileCaptureCompleteness::Incomplete;
     capture.prepare(false, limits).unwrap_err();
 }
 
@@ -110,4 +111,25 @@ fn canonical_domain_dispatch_preserves_all_content_guards() {
             truncated.validated_domain(limits.bytes).unwrap_err();
         }
     }
+}
+
+#[test]
+fn complete_empty_connection_is_counted_but_empty_requests_are_not() {
+    let mut capture = capture();
+    capture.flow = None;
+    capture.joint.level = CaptureLevel::Connection;
+    capture.joint.slots = Box::default();
+    let prepared = capture
+        .prepare(false, JointCaptureLimits::default())
+        .unwrap();
+    assert_eq!(prepared.buckets.len(), 1);
+    let joint =
+        JointCapture::from_canonical(&prepared.buckets[0].value, JointCaptureLimits::default())
+            .unwrap();
+    assert!(joint.slots.is_empty());
+    assert_eq!(joint.level, CaptureLevel::Connection);
+    capture.joint.level = CaptureLevel::Request;
+    capture
+        .prepare(false, JointCaptureLimits::default())
+        .unwrap_err();
 }

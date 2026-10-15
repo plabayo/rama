@@ -1,5 +1,7 @@
 use rama::{
     Layer, Service,
+    combinators::Either,
+    dns::client::DnsConnectorLayer,
     error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt, extra::OpaqueError},
     error_sink::TracingErrorSink,
     extensions::Extension,
@@ -39,7 +41,9 @@ use rama::{
         client::{ServerVerifyMode, TlsClientConfig},
     },
     ua::{
+        layer::classifier::UserAgentClassifierLayer,
         layer::emulate::{
+            ProfileEmulateHttpRequestModifierLayer, ProfileEmulateLayer,
             UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifierLayer,
             UserAgentEmulateLayer, UserAgentSelectFallback,
         },
@@ -135,18 +139,29 @@ where
     let writer = writer::try_new(cfg).await?;
     let json_selectors: Arc<[JsonPath]> = cfg.select_json.clone().into();
 
-    let inner_client = new_inner_client(cfg, executor).await?;
-    let emulation_layer = if let Some(profiles) = &cfg.emulate {
-        let database = load_emulation_database(profiles).await?;
-        Some((
-            UserAgentEmulateLayer::new(Arc::new(database))
-                .with_try_auto_detect_user_agent(true)
-                .with_select_fallback(UserAgentSelectFallback::Random),
-            EmulateTlsProfileLayer::new(),
-        ))
-    } else {
-        None
+    let database = match &cfg.emulate {
+        Some(profiles) => Some(Arc::new(load_emulation_database(profiles).await?)),
+        None => None,
     };
+    let captured = database
+        .as_ref()
+        .is_some_and(|database| database.iter().any(|profile| profile.captured.is_some()));
+    let inner_client = new_inner_client(cfg, executor, captured).await?;
+    let emulation_layer = database.map(|database| {
+        let select = if captured {
+            Either::A((
+                UserAgentClassifierLayer::new(),
+                ProfileEmulateLayer::new(database),
+            ))
+        } else {
+            Either::B(
+                UserAgentEmulateLayer::new(database)
+                    .with_try_auto_detect_user_agent(true)
+                    .with_select_fallback(UserAgentSelectFallback::Random),
+            )
+        };
+        (select, EmulateTlsProfileLayer::new())
+    });
     let har_layer = har_recorder.clone().map(|recorder| {
         let layer = HARExportLayer::new(recorder, true);
         if cfg.har_preserve_sensitive {
@@ -275,6 +290,7 @@ fn uses_quic(cfg: &SendCommand, uri: &Uri) -> bool {
 async fn new_inner_client(
     cfg: &SendCommand,
     executor: Executor,
+    captured: bool,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError> + Clone, BoxError> {
     let mut tls_config = if cfg.emulate.is_some() {
         TlsClientConfig::new()
@@ -345,7 +361,13 @@ async fn new_inner_client(
             .with_tls_config(tls_config)
             .build_lazy()?;
         builder
-            .with_http3_support(connector)
+            .with_http3_connector(
+                (
+                    UserAgentEmulateHttpConnectModifierLayer::default(),
+                    DnsConnectorLayer::new(),
+                )
+                    .into_layer(connector),
+            )
             .map_connector(|connector| connector.boxed())
     } else {
         builder.map_connector(|connector| connector.boxed())
@@ -375,7 +397,11 @@ async fn new_inner_client(
         .with_forward_proxy_auth(!cfg.no_proxy_forward_auth)
         .with_tunnel_plaintext_http(cfg.proxy_tunnel)
         .with_jit_layer((
-            UserAgentEmulateHttpRequestModifierLayer::default(),
+            if captured {
+                Either::A(ProfileEmulateHttpRequestModifierLayer)
+            } else {
+                Either::B(UserAgentEmulateHttpRequestModifierLayer::default())
+            },
             logger_headers_req::RequestHeaderLoggerLayer::default(),
         ));
 
@@ -420,6 +446,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    mod captured;
     use std::assert_matches;
     use std::{
         convert::Infallible,
@@ -485,7 +512,7 @@ mod tests {
     #[test]
     fn alt_svc_client_construction_needs_no_udp_socket_or_runtime() {
         let cfg = send_cfg(&["--alt-svc", "https://example.com/"]);
-        let _client = new_inner_client(&cfg, Executor::new())
+        let _client = new_inner_client(&cfg, Executor::new(), false)
             .now_or_never()
             .expect("construct the client without binding a QUIC endpoint")
             .unwrap();
