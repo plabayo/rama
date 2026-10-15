@@ -152,9 +152,12 @@ async fn main() -> Result<(), BoxError> {
     }
     let issuer = CachedBoringMitmCertIssuer::new(InMemoryBoringMitmCertIssuer::new(ca_crt, ca_key));
 
-    let upstream_ca = CertificateDer::from_pem_file(&args.upstream_ca)
-        .context("read the upstream certificate")?;
-    let egress_tls = TlsClientConfig::new().try_with_server_trust_anchors([upstream_ca])?;
+    // Every certificate in the file is a trust anchor, so a system bundle works too.
+    let upstream_anchors = CertificateDer::pem_file_iter(&args.upstream_ca)
+        .context("read the upstream trust anchors")?
+        .collect::<Result<Vec<_>, _>>()
+        .context("parse the upstream trust anchors")?;
+    let egress_tls = TlsClientConfig::new().try_with_server_trust_anchors(upstream_anchors)?;
 
     // HTTP/3 request by request, marking each response; anything else stream by stream.
     let h3 = Http3MitmRelay::new(exec.clone()).with_http_middleware((
