@@ -142,6 +142,47 @@ fn set_lists_without_grease_get_the_native_grease_slots() {
     }
 }
 
+/// An extension order naming no GREASE codepoint keeps the native GREASE slots, first and last
+/// of its prefix, instead of turning GREASE off; an order naming them places them itself.
+#[test]
+fn an_extension_order_without_grease_keeps_the_native_grease_slots() {
+    for order in [
+        vec![],
+        vec![43, 10, 13, 16],
+        vec![0x0a0a, 43, 10, 13, 16, 0x1a1a],
+    ] {
+        let config = TlsClientConfig::new()
+            .with_server_name(Host::try_from("example.test").unwrap())
+            .with_alpn(vec![ApplicationProtocol::HTTP_2].into())
+            .with_grease(true)
+            .with_extension_order(order.iter().copied().map(Into::into).collect());
+        let context = TlsConnectorContextBuilder::try_from(&config)
+            .unwrap()
+            .build();
+        let hello = first_flight(&context, None);
+        let actual: Vec<ExtensionId> = hello.extensions().iter().map(|ext| ext.id()).collect();
+        assert_eq!(
+            actual.iter().filter(|id| id.is_grease()).count(),
+            2,
+            "{order:?}: {actual:?}"
+        );
+        let names_grease = order.iter().any(|id| ExtensionId::from(*id).is_grease());
+        let prefix = if order.is_empty() || names_grease {
+            order.clone()
+        } else {
+            [vec![0x0a0a], order.clone(), vec![0x1a1a]].concat()
+        };
+        // GREASE values stay fresh; their positions follow the prefix.
+        for (actual, expected) in actual.iter().zip(prefix.into_iter().map(ExtensionId::from)) {
+            if expected.is_grease() {
+                assert!(actual.is_grease(), "{order:?}: {actual:?}");
+            } else {
+                assert_eq!(*actual, expected, "{order:?}");
+            }
+        }
+    }
+}
+
 #[test]
 fn mirrored_hello_does_not_inherit_base_shaping() {
     let minimal = ClientHello::new(
