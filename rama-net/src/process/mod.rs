@@ -40,6 +40,8 @@ pub struct ProcessSocket {
 /// The result is sorted and deduplicated (multiple descriptors can refer to the
 /// same endpoint). TCP connections and unbound UDP sockets are excluded. This
 /// does not follow child processes or identify the application role of a socket.
+/// Inherited sockets are included; during process startup, these can appear
+/// briefly before the child closes descriptors marked close-on-exec.
 ///
 /// Supported on Linux, macOS and Windows. Other platforms return
 /// [`io::ErrorKind::Unsupported`]. Access restrictions are returned as errors,

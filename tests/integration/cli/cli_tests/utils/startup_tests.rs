@@ -2,6 +2,10 @@ use super::*;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 fn fixture(mode: &str) -> RamaService {
+    RamaService::spawn(&mut fixture_command(mode), "127.0.0.1:0".parse().unwrap())
+}
+
+fn fixture_command(mode: &str) -> Command {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args([
@@ -13,7 +17,7 @@ fn fixture(mode: &str) -> RamaService {
         .env("RAMA_TEST_SERVICE_STARTUP", mode)
         .stdin(Stdio::piped())
         .stdout(Stdio::null());
-    RamaService::spawn(&mut command, "127.0.0.1:0".parse().unwrap())
+    command
 }
 
 #[test]
@@ -23,6 +27,21 @@ fn delayed_startup_drains_output_and_keeps_a_bounded_diagnostic_tail() {
     assert_ne!(service.port(), 0);
     assert!(service.diagnostics().contains("output drained before bind"));
     assert!(service.diagnostics.lock().len() <= 64 * 1024);
+}
+
+#[cfg(unix)]
+#[test]
+fn inherited_parent_listener_is_not_child_readiness() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let inherited_addr = listener.local_addr().unwrap();
+    let mut command = fixture_command("inherited");
+    command.stdin(Stdio::from(std::os::fd::OwnedFd::from(
+        listener.try_clone().unwrap(),
+    )));
+
+    let mut service = RamaService::spawn(&mut command, "127.0.0.1:0".parse().unwrap());
+    service.wait_for_endpoint(TransportProtocol::Tcp);
+    assert_ne!(service.address(), inherited_addr);
 }
 
 #[test]
@@ -100,6 +119,14 @@ fn child() {
         listeners.push(std::net::TcpListener::bind("127.0.0.1:0").unwrap());
         listeners.push(std::net::TcpListener::bind("127.0.0.1:0").unwrap());
         eprintln!("both listeners bound");
+    } else if mode == "inherited" {
+        thread::sleep(Duration::from_millis(100));
+        listeners.push(std::net::TcpListener::bind("127.0.0.1:0").unwrap());
+        // Stdin is the inherited listener, so keep both sockets alive until
+        // the parent kills and reaps this fixture through its owning guard.
+        loop {
+            thread::park();
+        }
     }
 
     let _eof = io::stdin().read(&mut [0]).unwrap();

@@ -130,6 +130,10 @@ impl RamaService {
         let deadline = self.startup_deadline;
         let mut delay = Duration::from_millis(25);
 
+        // A child can briefly inherit our listeners while exec closes its
+        // descriptors. These fixtures must bind their own endpoint.
+        let parent_sockets = listening_sockets(std::process::id()).expect("inspect parent sockets");
+
         loop {
             self.check_running();
             let sockets = listening_sockets(self.process.id());
@@ -146,7 +150,8 @@ impl RamaService {
             let candidates: Vec<_> = sockets
                 .iter()
                 .filter(|socket| {
-                    Some(socket.local_addr) != exclude
+                    !parent_sockets.contains(socket)
+                        && Some(socket.local_addr) != exclude
                         && socket.protocol == protocol
                         && socket.local_addr.ip() == self.address.ip()
                         && (self.address.port() == 0

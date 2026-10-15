@@ -83,7 +83,6 @@ impl Drop for ChildGuard {
 
 #[test]
 fn discovers_only_the_childs_ipv4_and_ipv6_sockets() {
-    let unrelated = TcpListener::bind("127.0.0.1:0").unwrap();
     let mut child = ChildGuard(
         Command::new(std::env::current_exe().unwrap())
             .args([
@@ -100,6 +99,9 @@ fn discovers_only_the_childs_ipv4_and_ipv6_sockets() {
             .unwrap(),
     );
 
+    // Open after spawning so this listener cannot be inherited, even briefly
+    // while the child is closing descriptors during exec.
+    let unrelated = TcpListener::bind("127.0.0.1:0").unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     let sockets = loop {
         assert!(child.0.try_wait().unwrap().is_none(), "socket child exited");
