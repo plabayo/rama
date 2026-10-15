@@ -79,7 +79,11 @@ use rama::{
     },
     rt::Executor,
     service::service_fn,
-    tcp::{TcpStream, client::service::TcpConnector, server::TcpListener},
+    tcp::{
+        TcpStream,
+        client::{TcpStreamConnector, service::TcpConnector},
+        server::TcpListener,
+    },
     tls::{
         KeyLogIntent, SecureTransport,
         client::{
@@ -351,8 +355,17 @@ fn client_with_attempt_timeout(
     cache: AltSvcCache,
     attempt_timeout: Option<Duration>,
 ) -> impl Service<Request, Output = Response, Error: Debug> {
+    client_with_transport(tls, cache, attempt_timeout, ())
+}
+
+fn client_with_transport(
+    tls: TlsClientConfig,
+    cache: AltSvcCache,
+    attempt_timeout: Option<Duration>,
+    transport: impl TcpStreamConnector<Error: Into<BoxError>> + Clone,
+) -> impl Service<Request, Output = Response, Error: Debug> {
     let builder = EasyHttpConnectorBuilder::new()
-        .with_default_transport_connector()
+        .with_custom_transport_connector(TcpConnector::new().with_connector(transport))
         .with_default_dns_connector()
         .without_tls_proxy_support()
         .with_http_proxy_support();
@@ -1207,11 +1220,24 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
         }
     });
     let task = spawn(listener.serve(HttpServer::auto(executor).service(service)));
-    let unavailable = TokioTcpListener::bind(SocketAddr::from(SocketAddress::local_ipv4(0)))
-        .await
-        .unwrap();
-    let unavailable_address = unavailable.local_addr().unwrap();
-    drop(unavailable);
+
+    // This address identifies a refused route without relying on an unowned
+    // port. Every other dial still uses real TCP, including the working proxy.
+    let unavailable_address = SocketAddr::from(([192, 0, 2, 1], 8080));
+    let refused_attempts = Arc::new(AtomicUsize::new(0));
+    let transport = {
+        let refused_attempts = refused_attempts.clone();
+        move |address| {
+            let refused_attempts = refused_attempts.clone();
+            async move {
+                if address == unavailable_address {
+                    refused_attempts.fetch_add(1, Ordering::SeqCst);
+                    return Err(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
+                }
+                ().connect(address).await
+            }
+        }
+    };
 
     let cache = AltSvcCache::default();
     seed(
@@ -1219,10 +1245,10 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
         &origin.origin(),
         &format!("h2=\"{}\"", alternative.address),
     );
-    // A refused TCP connect can take seconds on Windows. This checks route
-    // fallback, not the default 300 ms speculative deadline: allow the first
-    // proxy refusal and the second proxy's TLS handshake to finish.
-    let initial_client = client_with_attempt_timeout(tls.clone(), cache, Some(TEST_TIMEOUT / 2));
+    // Allow the working proxy's TLS handshake to finish under CI load while
+    // testing route fallback independently of the default speculative deadline.
+    let initial_client =
+        client_with_transport(tls.clone(), cache, Some(TEST_TIMEOUT / 2), transport);
     let request = origin.request();
     request.extensions().insert(ProxyRoutes::new([
         ProxyRoute::from(
@@ -1237,6 +1263,7 @@ async fn alternative_target_is_reached_through_selected_proxy_route() {
         ),
     ]));
     assert_eq!(complete(&initial_client, request).await.1, Version::HTTP_2);
+    assert!(refused_attempts.load(Ordering::SeqCst) > 0);
     assert_eq!(*targets.lock(), [alternative.address.to_string()]);
     assert_eq!(origin.request_count(), 0);
     assert_eq!(alternative.request_count(), 1);
