@@ -15,7 +15,11 @@ use rama_net::{
     tls::ApplicationProtocol,
 };
 use rama_quic_proto::peek::PeekedClientHello;
-use rama_tls::{alpn::AlpnRouter, client::TlsClientConfig, server::ServerAuthData};
+use rama_tls::{
+    alpn::AlpnRouter,
+    client::{ClientHelloExtension, TlsClientConfig},
+    server::ServerAuthData,
+};
 use rama_tls_boring::proxy::cert_issuer::{BoringMitmCertIssuer, StaticBoringMitmCertIssuer};
 use rama_udp::test_utils::MemoryDatagramSocket;
 use rama_utils::collections::NonEmptyVec;
@@ -522,56 +526,88 @@ async fn peeked_client_hello_for(
 
 #[tokio::test]
 async fn an_attempt_other_than_the_peeked_one_is_refused_without_origin_work() {
-    timeout(LIMIT, async {
-        let mitm_identity = identity();
-        let origin_identity = untrusted_identity();
-        let Sockets {
-            client,
-            ingress,
-            ingress_address,
-            egress,
-            origin,
-        } = sockets(&origin_identity, 24570);
-        let issued = Arc::new(AtomicUsize::new(0));
-        let issuer = CountingIssuer {
-            inner: issuer(&mitm_identity),
-            issued: issued.clone(),
-        };
-        let (reached, origin_task) = watch_origin(origin);
-        let config =
-            ClientConfig::try_from_rama_tls(&trusting(&mitm_identity), TlsOptions::default())
+    // The routing decision saw another server name, or another protocol list.
+    for other_name in [true, false] {
+        timeout(LIMIT, async {
+            let mitm_identity = identity();
+            let origin_identity = untrusted_identity();
+            let Sockets {
+                client,
+                ingress,
+                ingress_address,
+                egress,
+                origin,
+            } = sockets(&origin_identity, 24570);
+            let issued = Arc::new(AtomicUsize::new(0));
+            let issuer = CountingIssuer {
+                inner: issuer(&mitm_identity),
+                issued: issued.clone(),
+            };
+            let (reached, origin_task) = watch_origin(origin);
+            let config =
+                ClientConfig::try_from_rama_tls(&trusting(&mitm_identity), TlsOptions::default())
+                    .unwrap();
+            let connecting = client
+                .connect_with(config, ingress_address, "localhost")
                 .unwrap();
-        let connecting = client
-            .connect_with(config, ingress_address, "localhost")
+            let mut peeked = PeekQuicClientHelloService::new(
+                BoringTlsProvider,
+                service_fn(async |input: InputWithQuicClientHello<_>| Ok::<_, BoxError>(input)),
+            )
+            .with_fallback(service_fn(async |_: BridgeIo<_, _>| {
+                Err::<InputWithQuicClientHello<_>, _>(BoxError::from_static_str("no ClientHello"))
+            }))
+            .serve(BridgeIo(ingress, egress))
+            .await
             .unwrap();
-        let mut peeked = PeekQuicClientHelloService::new(
-            BoringTlsProvider,
-            service_fn(async |input: InputWithQuicClientHello<_>| Ok::<_, BoxError>(input)),
-        )
-        .with_fallback(service_fn(async |_: BridgeIo<_, _>| {
-            Err::<InputWithQuicClientHello<_>, _>(BoxError::from_static_str("no ClientHello"))
-        }))
-        .serve(BridgeIo(ingress, egress))
+            peeked.client_hello = if other_name {
+                peeked_client_hello_for("other.localhost", &mitm_identity).await
+            } else {
+                // Still within what the egress allows, so only the comparison refuses it.
+                PeekedClientHello {
+                    client_hello: with_extra_alpn(&peeked.client_hello.client_hello, b"other"),
+                    ..peeked.client_hello
+                }
+            };
+            let mitm = relay(issuer, &origin_identity)
+                .with_validate_address(false)
+                .into_layer(QuicRelay::new(VarInt::from_u32(0x0101)));
+            let error = mitm.serve(peeked).await.unwrap_err();
+            assert!(error.to_string().contains("refused"), "{error}");
+            // The client is refused at once rather than left to its own handshake timeout.
+            tokio::time::timeout(Duration::from_secs(2), connecting)
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(reached.load(Ordering::Relaxed), 0);
+            assert_eq!(issued.load(Ordering::Relaxed), 0);
+            origin_task.abort();
+        })
         .await
         .unwrap();
-        // The routing decision saw another attempt than the one now admitted.
-        peeked.client_hello = peeked_client_hello_for("other.localhost", &mitm_identity).await;
-        let mitm = relay(issuer, &origin_identity)
-            .with_validate_address(false)
-            .into_layer(QuicRelay::new(VarInt::from_u32(0x0101)));
-        let error = mitm.serve(peeked).await.unwrap_err();
-        assert!(error.to_string().contains("refused"), "{error}");
-        // The client is refused at once rather than left to its own handshake timeout.
-        tokio::time::timeout(Duration::from_secs(2), connecting)
-            .await
-            .unwrap()
-            .unwrap_err();
-        assert_eq!(reached.load(Ordering::Relaxed), 0);
-        assert_eq!(issued.load(Ordering::Relaxed), 0);
-        origin_task.abort();
-    })
-    .await
-    .unwrap();
+    }
+}
+
+/// `hello` also offering `protocol`, after its own.
+fn with_extra_alpn(hello: &ClientHello, protocol: &[u8]) -> ClientHello {
+    let extensions = hello
+        .extensions()
+        .iter()
+        .map(|ext| match ext {
+            ClientHelloExtension::ApplicationLayerProtocolNegotiation(offered) => {
+                let mut offered = offered.clone();
+                offered.push(ApplicationProtocol::from(protocol));
+                ClientHelloExtension::ApplicationLayerProtocolNegotiation(offered)
+            }
+            other => other.clone(),
+        })
+        .collect();
+    ClientHello::new(
+        hello.protocol_version(),
+        hello.cipher_suites().to_vec(),
+        hello.compression_algorithms().to_vec(),
+        extensions,
+    )
 }
 
 #[tokio::test]
