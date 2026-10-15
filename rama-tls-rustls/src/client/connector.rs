@@ -533,89 +533,101 @@ impl<S, K> TlsConnector<S, K> {
     where
         T: Io + ExtensionsRef + Unpin,
     {
-        #[cfg(feature = "dial9")]
-        let dial9_server_name = connector_data
-            .server_name
-            .clone()
-            .or_else(|| maybe_server_host.cloned())
-            .context("server identity missing")?;
+        let handshake = async {
+            #[cfg(feature = "dial9")]
+            let dial9_server_name = rama_core::telemetry::dial9::Dial9Handle::current()
+                .is_enabled()
+                .then(|| {
+                    connector_data
+                        .server_name
+                        .clone()
+                        .or_else(|| maybe_server_host.cloned())
+                })
+                .flatten();
 
-        let authenticated_identity = connector_data
-            .verification_enabled
-            .then(|| {
+            let authenticated_identity = connector_data
+                .verification_enabled
+                .then(|| {
+                    connector_data
+                        .server_name
+                        .clone()
+                        .or_else(|| maybe_server_host.cloned())
+                })
+                .flatten();
+            let server_name = rama_crypto::pki_types::ServerName::rama_try_from(
                 connector_data
                     .server_name
-                    .clone()
                     .or_else(|| maybe_server_host.cloned())
-            })
-            .flatten();
-        let server_name = rama_crypto::pki_types::ServerName::rama_try_from(
-            connector_data
-                .server_name
-                .or_else(|| maybe_server_host.cloned())
-                .context("server identity missing")?,
-        )?;
+                    .context("server identity missing")?,
+            )?;
 
-        let connector = RustlsConnector::from(connector_data.client_config);
+            let connector = RustlsConnector::from(connector_data.client_config);
 
-        #[cfg(feature = "dial9")]
-        crate::dial9::record_handshake_started(dial9_server_name.clone());
+            #[cfg(feature = "dial9")]
+            crate::dial9::record_handshake_started(dial9_server_name.as_ref());
 
-        let stream = match connector.connect(server_name, stream).await {
-            Ok(stream) => stream,
-            Err(err) => {
-                #[cfg(feature = "dial9")]
-                crate::dial9::record_handshake_failed(dial9_server_name.clone(), &err);
-                return Err(err.into());
+            let stream = match connector.connect(server_name, stream).await {
+                Ok(stream) => stream,
+                Err(err) => {
+                    #[cfg(feature = "dial9")]
+                    crate::dial9::record_handshake_failed(dial9_server_name.as_ref(), &err);
+                    return Err(err.into());
+                }
+            };
+
+            stream
+                .get_ref()
+                .0
+                .extensions()
+                .insert(rama_tls::client::TlsServerAuthentication(
+                    authenticated_identity,
+                ));
+            let (_, conn_data_ref) = stream.get_ref();
+
+            let server_certificate_chain = if connector_data.store_server_certificate_chain {
+                conn_data_ref.peer_certificates().map(RamaInto::rama_into)
+            } else {
+                None
+            };
+
+            let params = NegotiatedTlsParameters {
+                protocol_version: conn_data_ref
+                    .protocol_version()
+                    .context("no protocol version available")?
+                    .rama_into(),
+                application_layer_protocol: conn_data_ref
+                    .alpn_protocol()
+                    .map(ApplicationProtocol::from),
+                peer_certificate_chain: server_certificate_chain,
+                server_name: None,
+                resumed: conn_data_ref
+                    .handshake_kind()
+                    .map(|kind| kind == crate::dep::rustls::HandshakeKind::Resumed),
+                algorithms: NegotiatedTlsAlgorithms::rama_from(&***conn_data_ref),
+            };
+
+            #[cfg(feature = "dial9")]
+            {
+                let depth = params
+                    .peer_certificate_chain
+                    .as_ref()
+                    .map_or(0, |chain| chain.len());
+                crate::dial9::record_handshake_completed(
+                    dial9_server_name.as_ref(),
+                    params.protocol_version,
+                    conn_data_ref.alpn_protocol(),
+                    depth,
+                );
             }
+
+            Ok((stream, params))
         };
-
-        stream
-            .get_ref()
-            .0
-            .extensions()
-            .insert(rama_tls::client::TlsServerAuthentication(
-                authenticated_identity,
-            ));
-        let (_, conn_data_ref) = stream.get_ref();
-
-        let server_certificate_chain = if connector_data.store_server_certificate_chain {
-            conn_data_ref.peer_certificates().map(RamaInto::rama_into)
-        } else {
-            None
-        };
-
-        let params = NegotiatedTlsParameters {
-            protocol_version: conn_data_ref
-                .protocol_version()
-                .context("no protocol version available")?
-                .rama_into(),
-            application_layer_protocol: conn_data_ref
-                .alpn_protocol()
-                .map(ApplicationProtocol::from),
-            peer_certificate_chain: server_certificate_chain,
-            server_name: None,
-            resumed: conn_data_ref
-                .handshake_kind()
-                .map(|kind| kind == crate::dep::rustls::HandshakeKind::Resumed),
-            algorithms: NegotiatedTlsAlgorithms::rama_from(&***conn_data_ref),
-        };
-
         #[cfg(feature = "dial9")]
         {
-            let depth = params
-                .peer_certificate_chain
-                .as_ref()
-                .map_or(0, |chain| chain.len());
-            crate::dial9::record_handshake_completed(
-                dial9_server_name,
-                params.protocol_version,
-                conn_data_ref.alpn_protocol().map(ApplicationProtocol::from),
-                depth,
-            );
+            rama_core::telemetry::dial9::record_result("tls.rustls.client", handshake).await
         }
-
-        Ok((stream, params))
+        #[cfg(not(feature = "dial9"))]
+        handshake.await
     }
 }
 

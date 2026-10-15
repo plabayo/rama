@@ -111,135 +111,147 @@ where
     type Error = BoxError;
 
     async fn serve(&self, stream: IO) -> Result<Self::Output, Self::Error> {
-        let merged = stream.extensions().with_base(self.config.as_extensions());
+        let handshake = async {
+            let merged = stream.extensions().with_base(self.config.as_extensions());
 
-        let issuer_data = match BoringTlsAcceptorConfig::from_extensions(&merged).auth {
-            Some(BoringTlsAuth::CertIssuer(issuer)) => Some(issuer.0.clone()),
-            _ => None,
-        };
-        if let Some(issuer_data) = issuer_data {
-            prepare_server_cert_issuer(issuer_data)
+            let issuer_data = match BoringTlsAcceptorConfig::from_extensions(&merged).auth {
+                Some(BoringTlsAuth::CertIssuer(issuer)) => Some(issuer.0.clone()),
+                _ => None,
+            };
+            if let Some(issuer_data) = issuer_data {
+                prepare_server_cert_issuer(issuer_data)
+                    .await
+                    .context("boring acceptor: prepare certificate issuer")?;
+            }
+
+            let acceptor = self.connection_acceptor(stream.extensions(), &merged)?;
+
+            let target_identity = stream
+                .extensions()
+                .get_ref::<SecureTransport>()
+                .and_then(|t| t.client_hello())
+                .and_then(|c| c.ext_server_name().cloned())
+                .map(CertificateIdentity::from)
+                .or_else(|| {
+                    stream
+                        .extensions()
+                        .get_ref::<ConnectorTarget>()
+                        .and_then(|target| CertificateIdentity::try_from(&target.0.host).ok())
+                });
+
+            // Certificate callbacks may run more than once per handshake, so they share
+            // this slot rather than consuming a channel.
+            let maybe_client_hello = self.store_client_hello.then(|| Arc::new(Mutex::new(None)));
+
+            let mut ssl = Ssl::new(&acceptor.context).context("boring acceptor: create session")?;
+            bind_connection(
+                &mut ssl,
+                ConnectionState {
+                    client_hello: maybe_client_hello.clone(),
+                    target_identity: target_identity.clone(),
+                },
+            )?;
+
+            let stream = rama_boring_tokio::SslStreamBuilder::new(ssl, stream)
+                .accept()
                 .await
-                .context("boring acceptor: prepare certificate issuer")?;
-        }
+                .map_err(|err| {
+                    let maybe_ssl_code = err.code();
+                    if let Some(io_err) = err.as_io_error() {
+                        BoxError::from(format!(
+                            "boring ssl acceptor (accept): with io error: {io_err}"
+                        ))
+                        .context_debug_field("certificate_identity", target_identity.clone())
+                        .context_debug_field("code", maybe_ssl_code)
+                    } else if let Some(err) = err.as_ssl_error_stack() {
+                        err.context("boring ssl acceptor (accept): with ssl-error info")
+                            .context_debug_field("certificate_identity", target_identity.clone())
+                            .context_debug_field("code", maybe_ssl_code)
+                    } else {
+                        BoxError::from_static_str(
+                            "boring ssl acceptor (accept): without error info",
+                        )
+                        .context_debug_field("certificate_identity", target_identity.clone())
+                        .context_debug_field("code", maybe_ssl_code)
+                    }
+                })?;
 
-        let acceptor = self.connection_acceptor(stream.extensions(), &merged)?;
+            let negotiated_tls_params = match stream.ssl().session() {
+                Some(ssl_session) => {
+                    let protocol_version =
+                        ssl_session
+                            .protocol_version()
+                            .rama_try_into()
+                            .map_err(|v| {
+                                BoxError::from_static_str(
+                                    "boring ssl acceptor: cast min proto version",
+                                )
+                                .context_field("protocol_version", v)
+                            })?;
+                    let application_layer_protocol = stream
+                        .ssl()
+                        .selected_alpn_protocol()
+                        .map(ApplicationProtocol::from);
 
-        let target_identity = stream
-            .extensions()
-            .get_ref::<SecureTransport>()
-            .and_then(|t| t.client_hello())
-            .and_then(|c| c.ext_server_name().cloned())
-            .map(CertificateIdentity::from)
-            .or_else(|| {
-                stream
-                    .extensions()
-                    .get_ref::<ConnectorTarget>()
-                    .and_then(|target| CertificateIdentity::try_from(&target.0.host).ok())
+                    let client_certificate_chain = if let Some(certificate) = acceptor
+                        .store_client_certificate_chain
+                        .then(|| stream.ssl().peer_certificate())
+                        .flatten()
+                    {
+                        // peer_cert_chain doesn't contain the leaf certificate in a server ctx
+                        let mut chain = stream
+                            .ssl()
+                            .peer_cert_chain()
+                            .map_or(Ok(vec![]), RamaTryInto::rama_try_into)?;
+
+                        let certificate = certificate.as_ref().rama_try_into().context(
+                            "boring ssl session: failed to convert peer certificate to der",
+                        )?;
+                        chain.insert(0, certificate);
+                        Some(chain)
+                    } else {
+                        None
+                    };
+
+                    NegotiatedTlsParameters {
+                        protocol_version,
+                        application_layer_protocol,
+                        peer_certificate_chain: client_certificate_chain,
+                        server_name: stream
+                            .ssl()
+                            .servername(rama_boring::ssl::NameType::HOST_NAME)
+                            .map(rama_net::address::Domain::try_from)
+                            .transpose()?,
+                        resumed: Some(stream.ssl().session_reused()),
+                        algorithms: stream.ssl().rama_into(),
+                    }
+                }
+                None => {
+                    return Err(BoxError::from_static_str(
+                        "boring ssl acceptor: failed to establish session",
+                    ));
+                }
+            };
+
+            let secure_transport = maybe_client_hello
+                .and_then(|maybe_client_hello| maybe_client_hello.lock().take())
+                .map(SecureTransport::with_client_hello)
+                .unwrap_or_default();
+
+            let stream = TlsStream::new(stream);
+            stream.extensions().insert(secure_transport);
+            stream.extensions().insert(negotiated_tls_params);
+            stream.extensions().insert(StreamTransformed {
+                by: "rama-tls-boring::TlsAcceptor",
             });
 
-        // Certificate callbacks may run more than once per handshake, so they share
-        // this slot rather than consuming a channel.
-        let maybe_client_hello = self.store_client_hello.then(|| Arc::new(Mutex::new(None)));
-
-        let mut ssl = Ssl::new(&acceptor.context).context("boring acceptor: create session")?;
-        bind_connection(
-            &mut ssl,
-            ConnectionState {
-                client_hello: maybe_client_hello.clone(),
-                target_identity: target_identity.clone(),
-            },
-        )?;
-
-        let stream = rama_boring_tokio::SslStreamBuilder::new(ssl, stream)
-            .accept()
-            .await
-            .map_err(|err| {
-                let maybe_ssl_code = err.code();
-                if let Some(io_err) = err.as_io_error() {
-                    BoxError::from(format!(
-                        "boring ssl acceptor (accept): with io error: {io_err}"
-                    ))
-                    .context_debug_field("certificate_identity", target_identity.clone())
-                    .context_debug_field("code", maybe_ssl_code)
-                } else if let Some(err) = err.as_ssl_error_stack() {
-                    err.context("boring ssl acceptor (accept): with ssl-error info")
-                        .context_debug_field("certificate_identity", target_identity.clone())
-                        .context_debug_field("code", maybe_ssl_code)
-                } else {
-                    BoxError::from_static_str("boring ssl acceptor (accept): without error info")
-                        .context_debug_field("certificate_identity", target_identity.clone())
-                        .context_debug_field("code", maybe_ssl_code)
-                }
-            })?;
-
-        let negotiated_tls_params = match stream.ssl().session() {
-            Some(ssl_session) => {
-                let protocol_version =
-                    ssl_session
-                        .protocol_version()
-                        .rama_try_into()
-                        .map_err(|v| {
-                            BoxError::from_static_str("boring ssl acceptor: cast min proto version")
-                                .context_field("protocol_version", v)
-                        })?;
-                let application_layer_protocol = stream
-                    .ssl()
-                    .selected_alpn_protocol()
-                    .map(ApplicationProtocol::from);
-
-                let client_certificate_chain = if let Some(certificate) = acceptor
-                    .store_client_certificate_chain
-                    .then(|| stream.ssl().peer_certificate())
-                    .flatten()
-                {
-                    // peer_cert_chain doesn't contain the leaf certificate in a server ctx
-                    let mut chain = stream
-                        .ssl()
-                        .peer_cert_chain()
-                        .map_or(Ok(vec![]), RamaTryInto::rama_try_into)?;
-
-                    let certificate = certificate
-                        .as_ref()
-                        .rama_try_into()
-                        .context("boring ssl session: failed to convert peer certificate to der")?;
-                    chain.insert(0, certificate);
-                    Some(chain)
-                } else {
-                    None
-                };
-
-                NegotiatedTlsParameters {
-                    protocol_version,
-                    application_layer_protocol,
-                    peer_certificate_chain: client_certificate_chain,
-                    server_name: stream
-                        .ssl()
-                        .servername(rama_boring::ssl::NameType::HOST_NAME)
-                        .map(rama_net::address::Domain::try_from)
-                        .transpose()?,
-                    resumed: Some(stream.ssl().session_reused()),
-                    algorithms: stream.ssl().rama_into(),
-                }
-            }
-            None => {
-                return Err(BoxError::from_static_str(
-                    "boring ssl acceptor: failed to establish session",
-                ));
-            }
+            Ok::<_, BoxError>(stream)
         };
-
-        let secure_transport = maybe_client_hello
-            .and_then(|maybe_client_hello| maybe_client_hello.lock().take())
-            .map(SecureTransport::with_client_hello)
-            .unwrap_or_default();
-
-        let stream = TlsStream::new(stream);
-        stream.extensions().insert(secure_transport);
-        stream.extensions().insert(negotiated_tls_params);
-        stream.extensions().insert(StreamTransformed {
-            by: "rama-tls-boring::TlsAcceptor",
-        });
+        #[cfg(feature = "dial9")]
+        let stream =
+            rama_core::telemetry::dial9::record_result("tls.boring.server", handshake).await?;
+        #[cfg(not(feature = "dial9"))]
+        let stream = handshake.await?;
 
         // NOTE(#1014): graceful TLS `close_notify` on this stream relies on the
         // inner service driving `poll_shutdown` before `stream` is dropped here.

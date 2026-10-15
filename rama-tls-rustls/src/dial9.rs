@@ -34,6 +34,8 @@ impl TraceField for MaybeAlpnSelected {
 pub struct TlsHandshakeStarted {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
+    pub flow_id: u64,
+    pub operation_id: u64,
     /// Server certificate identity the client is negotiating against.
     pub server_name: Host,
 }
@@ -43,6 +45,8 @@ pub struct TlsHandshakeStarted {
 pub struct TlsHandshakeCompleted {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
+    pub flow_id: u64,
+    pub operation_id: u64,
     pub server_name: Host,
     pub protocol_version: ProtocolVersion,
     /// ALPN protocol the server selected, if any.
@@ -56,6 +60,8 @@ pub struct TlsHandshakeCompleted {
 pub struct TlsHandshakeFailed {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
+    pub flow_id: u64,
+    pub operation_id: u64,
     pub server_name: Host,
     /// Encoded `std::io::ErrorKind` per
     /// [`rama_net::dial9::io_error_kind_code`].
@@ -65,42 +71,54 @@ pub struct TlsHandshakeFailed {
 }
 
 #[inline]
-pub(crate) fn record_handshake_started(server_name: Host) {
+pub(crate) fn record_handshake_started(server_name: Option<&Host>) {
     let handle = Dial9Handle::current();
-    if handle.is_enabled() {
+    if handle.is_enabled()
+        && let Some(server_name) = server_name
+    {
         handle.record_event(TlsHandshakeStarted {
             timestamp_ns: clock_monotonic_ns(),
-            server_name,
+            flow_id: rama_core::telemetry::dial9::TraceContext::current().flow_id(),
+            operation_id: rama_core::telemetry::dial9::TraceContext::current().operation_id(),
+            server_name: server_name.clone(),
         });
     }
 }
 
 #[inline]
 pub(crate) fn record_handshake_completed(
-    server_name: Host,
+    server_name: Option<&Host>,
     protocol_version: ProtocolVersion,
-    alpn_selected: Option<ApplicationProtocol>,
+    alpn_selected: Option<&[u8]>,
     peer_cert_chain_depth: usize,
 ) {
     let handle = Dial9Handle::current();
-    if handle.is_enabled() {
+    if handle.is_enabled()
+        && let Some(server_name) = server_name
+    {
         handle.record_event(TlsHandshakeCompleted {
             timestamp_ns: clock_monotonic_ns(),
-            server_name,
+            flow_id: rama_core::telemetry::dial9::TraceContext::current().flow_id(),
+            operation_id: rama_core::telemetry::dial9::TraceContext::current().operation_id(),
+            server_name: server_name.clone(),
             protocol_version,
-            alpn_selected: MaybeAlpnSelected(alpn_selected),
+            alpn_selected: MaybeAlpnSelected(alpn_selected.map(ApplicationProtocol::from)),
             peer_cert_chain_depth: u32::try_from(peer_cert_chain_depth).unwrap_or(u32::MAX),
         });
     }
 }
 
 #[inline]
-pub(crate) fn record_handshake_failed(server_name: Host, error: &std::io::Error) {
+pub(crate) fn record_handshake_failed(server_name: Option<&Host>, error: &std::io::Error) {
     let handle = Dial9Handle::current();
-    if handle.is_enabled() {
+    if handle.is_enabled()
+        && let Some(server_name) = server_name
+    {
         handle.record_event(TlsHandshakeFailed {
             timestamp_ns: clock_monotonic_ns(),
-            server_name,
+            flow_id: rama_core::telemetry::dial9::TraceContext::current().flow_id(),
+            operation_id: rama_core::telemetry::dial9::TraceContext::current().operation_id(),
+            server_name: server_name.clone(),
             error_kind: io_error_kind_code(error.kind()),
             error_raw_os: io_error_raw_os_code(error),
         });

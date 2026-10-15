@@ -567,6 +567,8 @@ impl<Stream: ExtensionsRef> ExtensionsRef for WebSocket<Stream> {
 /// A context for managing WebSocket stream.
 #[derive(Debug)]
 pub struct WebSocketContext {
+    #[cfg(feature = "dial9")]
+    dial9: crate::dial9::Lifecycle,
     /// Server or client?
     role: Role,
     /// encoder/decoder of frame.
@@ -618,6 +620,8 @@ impl WebSocketContext {
         frame.set_max_out_buffer_len(config.max_write_buffer_size);
         frame.set_out_buffer_write_len(config.write_buffer_size);
         Self {
+            #[cfg(feature = "dial9")]
+            dial9: crate::dial9::Lifecycle::new(role),
             role,
             frame,
             state: WebSocketState::Active,
@@ -673,6 +677,17 @@ impl WebSocketContext {
     where
         Stream: Read + Write,
     {
+        let result = self.read_inner(stream);
+        #[cfg(feature = "dial9")]
+        self.dial9
+            .read(&result, self.state == WebSocketState::Terminated);
+        result
+    }
+
+    fn read_inner<Stream: Read + Write>(
+        &mut self,
+        stream: &mut Stream,
+    ) -> Result<Message, ProtocolError> {
         // Do not read from already closed connections.
         self.state.check_not_terminated()?;
 
@@ -722,6 +737,20 @@ impl WebSocketContext {
     where
         Stream: Read + Write,
     {
+        #[cfg(feature = "dial9")]
+        let size = self.dial9.message_size(&message);
+        let result = self.write_inner(stream, message);
+        #[cfg(feature = "dial9")]
+        self.dial9
+            .written(size, &result, self.state == WebSocketState::Terminated);
+        result
+    }
+
+    fn write_inner<Stream: Read + Write>(
+        &mut self,
+        stream: &mut Stream,
+        message: Message,
+    ) -> Result<(), ProtocolError> {
         // When terminated, return AlreadyClosed.
         self.state.check_not_terminated()?;
 
@@ -791,11 +820,19 @@ impl WebSocketContext {
     where
         Stream: Read + Write,
     {
-        self._write(stream, None)?;
-        self.frame.write_out_buffer(stream)?;
-        stream.flush()?;
-        self.unflushed_additional = false;
-        Ok(())
+        let result = (|| {
+            self._write(stream, None)?;
+            self.frame.write_out_buffer(stream)?;
+            stream.flush()?;
+            self.unflushed_additional = false;
+            Ok(())
+        })();
+        #[cfg(feature = "dial9")]
+        self.dial9.result(
+            result.as_ref().map(|_| ()),
+            self.state == WebSocketState::Terminated,
+        );
+        result
     }
 
     /// Writes any data in the out_buffer, `additional_send` and given `data`.
@@ -871,7 +908,25 @@ impl WebSocketContext {
     where
         Stream: Read + Write,
     {
+        let result = self.close_inner(stream, code);
+        #[cfg(feature = "dial9")]
+        self.dial9.result(
+            result.as_ref().map(|_| ()),
+            self.state == WebSocketState::Terminated,
+        );
+        result
+    }
+
+    fn close_inner<Stream: Read + Write>(
+        &mut self,
+        stream: &mut Stream,
+        code: Option<CloseFrame>,
+    ) -> Result<(), ProtocolError> {
         if self.state == WebSocketState::Active {
+            #[cfg(feature = "dial9")]
+            if let Some(frame) = &code {
+                self.dial9.sent_close_code = u32::from(u16::from(frame.code));
+            }
             self.state = WebSocketState::ClosedByUs;
             let frame = Frame::close(code);
             self._write(stream, Some(frame))?;
@@ -1147,6 +1202,10 @@ impl WebSocketContext {
                 });
 
                 let reply = Frame::close(close.clone());
+                #[cfg(feature = "dial9")]
+                if let Some(frame) = &close {
+                    self.dial9.sent_close_code = u32::from(u16::from(frame.code));
+                }
                 debug!("Replying to close with {reply:?}");
                 self.set_additional(reply);
 

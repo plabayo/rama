@@ -22,4 +22,4 @@ pub mod future;
 
 #[cfg(test)]
 #[cfg(feature = "dial9")]
-mod dial9_test_util;
+pub(crate) mod dial9_test_util;

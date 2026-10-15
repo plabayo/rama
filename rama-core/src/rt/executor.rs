@@ -140,7 +140,7 @@ where
 {
     #[cfg(feature = "dial9")]
     {
-        ::dial9::spawn(future)
+        ::dial9::spawn(crate::telemetry::dial9::inherit(future))
     }
     #[cfg(not(feature = "dial9"))]
     {

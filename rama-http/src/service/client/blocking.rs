@@ -563,6 +563,7 @@ mod tests {
     #[cfg(feature = "dial9")]
     #[test]
     fn client_request_runs_inside_dial9_session() {
+        let _slot = crate::layer::dial9::recorder_slot();
         let temp_dir = rama_utils::fs::tempdir().unwrap();
         let writer = rama_core::telemetry::dial9::DiskBuffer::builder()
             .base_path(temp_dir.path())

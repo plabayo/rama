@@ -19,6 +19,8 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
 pub mod client;
+#[cfg(feature = "dial9")]
+pub mod dial9;
 pub mod pool;
 pub mod posted_recv;
 pub mod proxy;

@@ -30,10 +30,11 @@ inspect = [
     "dep:base64",
 ]
 compression = ["dep:flate2"]
-dial9 = ["rama-core/dial9", "rama-http/dial9"]
+dial9 = ["rama-core/dial9", "rama-http/dial9", "dep:dial9-trace-format"]
 
 [dependencies]
 base64 = { workspace = true, optional = true, default-features = true }
+dial9-trace-format = { workspace = true, optional = true }
 flate2 = { workspace = true, features = ["zlib"], optional = true }
 jiff = { workspace = true, optional = true }
 parking_lot = { workspace = true, optional = true }

@@ -42,6 +42,7 @@ You can find these integration tests at [./tests/integration](./tests/integratio
 - [`http_rate_limit.rs`](./src/http_rate_limit.rs) - Rate limiting implementation
 - [`http_key_value_store.rs`](./src/http_key_value_store.rs) - Key-value store service
 - [`http_telemetry.rs`](./src/http_telemetry.rs) - Telemetry and monitoring
+- [`dial9_local.rs`](./src/dial9_local.rs) - Local Dial9 recording, application events and diagnostic exports
 - [`http_user_agent_classifier.rs`](./src/http_user_agent_classifier.rs) - User agent classification
 
 ### gRPC

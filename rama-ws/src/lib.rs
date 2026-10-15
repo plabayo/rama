@@ -32,6 +32,9 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
+#[cfg(feature = "dial9")]
+#[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
+pub mod dial9;
 pub mod handshake;
 pub mod layer;
 pub mod protocol;

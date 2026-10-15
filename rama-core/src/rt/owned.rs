@@ -15,6 +15,8 @@ use tokio::runtime::{EnterGuard, Handle, Runtime};
 #[derive(Clone, Debug)]
 pub struct OwnedRuntimeHandle {
     tokio: Handle,
+    #[cfg(feature = "dial9")]
+    dial9: Option<::dial9::Dial9Handle>,
 }
 
 impl OwnedRuntimeHandle {
@@ -27,11 +29,33 @@ impl OwnedRuntimeHandle {
     pub fn current() -> Self {
         Self {
             tokio: Handle::current(),
+            #[cfg(feature = "dial9")]
+            dial9: ::dial9::Dial9Handle::try_current_thread(),
         }
     }
 
     pub(crate) fn tokio_handle(&self) -> &Handle {
         &self.tokio
+    }
+
+    pub(crate) fn block_on<F: Future>(&self, future: F) -> F::Output {
+        #[cfg(feature = "dial9")]
+        let _scope = self.dial9.as_ref().map(|handle| {
+            struct Restore(Option<::dial9::Dial9Handle>);
+            impl Drop for Restore {
+                fn drop(&mut self) {
+                    if let Some(handle) = self.0.take() {
+                        ::dial9::core::set_tl_handle(handle);
+                    } else {
+                        ::dial9::core::clear_tl_handle();
+                    }
+                }
+            }
+            let restore = Restore(::dial9::Dial9Handle::try_current_thread());
+            ::dial9::core::set_tl_handle(handle.clone());
+            restore
+        });
+        self.tokio.block_on(future)
     }
 
     /// Enter the targeted Tokio runtime on the calling thread.
@@ -50,7 +74,7 @@ impl OwnedRuntimeHandle {
     {
         #[cfg(feature = "dial9")]
         {
-            ::dial9::spawn_in(&self.tokio, future)
+            ::dial9::spawn_in(&self.tokio, crate::telemetry::dial9::inherit(future))
         }
         #[cfg(not(feature = "dial9"))]
         {
@@ -82,7 +106,11 @@ impl OwnedRuntimeHandle {
 
 impl From<Handle> for OwnedRuntimeHandle {
     fn from(tokio: Handle) -> Self {
-        Self { tokio }
+        Self {
+            tokio,
+            #[cfg(feature = "dial9")]
+            dial9: None,
+        }
     }
 }
 
@@ -104,7 +132,8 @@ enum RuntimeInner {
     #[cfg(feature = "dial9")]
     Dial9 {
         runtime: Runtime,
-        recorder: ::dial9::Recorder,
+        recorder: Option<::dial9::Recorder>,
+        handle: ::dial9::Dial9Handle,
     },
 }
 
@@ -124,8 +153,31 @@ impl OwnedRuntime {
     pub fn from_dial9(attached: ::dial9::AttachedRuntime) -> Self {
         let (recorder, runtime) = attached;
         Self {
-            inner: RuntimeInner::Dial9 { runtime, recorder },
+            inner: RuntimeInner::Dial9 {
+                runtime,
+                handle: recorder.handle().clone(),
+                recorder: Some(recorder),
+            },
         }
+    }
+
+    /// Attach a runtime to an application-owned recorder. Retain the recorder
+    /// until all attached runtimes have shut down, then finalize it once.
+    #[cfg(feature = "dial9")]
+    pub fn attach_dial9(
+        handle: ::dial9::Dial9Handle,
+        builder: tokio::runtime::Builder,
+        options: ::dial9::TokioAttachOptions,
+    ) -> std::io::Result<Self> {
+        use ::dial9::Dial9HandleTokioExt as _;
+        let runtime = handle.attach_tokio_runtime(builder, options)?;
+        Ok(Self {
+            inner: RuntimeInner::Dial9 {
+                runtime,
+                recorder: None,
+                handle,
+            },
+        })
     }
 
     /// Return a cloneable handle targeting this runtime and telemetry session.
@@ -136,7 +188,12 @@ impl OwnedRuntime {
         match &self.inner {
             RuntimeInner::Tokio(runtime) => runtime.handle().clone().into(),
             #[cfg(feature = "dial9")]
-            RuntimeInner::Dial9 { runtime, .. } => runtime.handle().clone().into(),
+            RuntimeInner::Dial9 {
+                runtime, handle, ..
+            } => OwnedRuntimeHandle {
+                tokio: runtime.handle().clone(),
+                dial9: Some(handle.clone()),
+            },
         }
     }
 
@@ -167,7 +224,9 @@ impl OwnedRuntime {
         match &self.inner {
             RuntimeInner::Tokio(runtime) => runtime.block_on(future),
             #[cfg(feature = "dial9")]
-            RuntimeInner::Dial9 { runtime, recorder } => {
+            RuntimeInner::Dial9 {
+                runtime, handle, ..
+            } => {
                 // Runtime::block_on polls this future on the caller, which may
                 // be a foreign thread that never ran a runtime thread hook.
                 // Keep borrowed polling inline while selecting this recorder
@@ -185,7 +244,7 @@ impl OwnedRuntime {
                 }
 
                 let _restore = RestoreHandle(::dial9::Dial9Handle::try_current_thread());
-                ::dial9::core::set_tl_handle(recorder.handle().clone());
+                ::dial9::core::set_tl_handle(handle.clone());
                 runtime.block_on(future)
             }
         }
@@ -204,7 +263,9 @@ impl OwnedRuntime {
         match &self.inner {
             RuntimeInner::Tokio(runtime) => runtime.block_on(future),
             #[cfg(feature = "dial9")]
-            RuntimeInner::Dial9 { runtime, .. } => ::dial9::block_on(runtime, future),
+            RuntimeInner::Dial9 { runtime, .. } => {
+                ::dial9::block_on(runtime, crate::telemetry::dial9::inherit(future))
+            }
         }
     }
 
@@ -221,18 +282,24 @@ impl OwnedRuntime {
         self.shutdown_bounded(grace);
     }
 
-    /// Dispose of the runtime without blocking the caller indefinitely.
+    /// Shut down Tokio and drain the recorder's processing pipeline.
     ///
-    /// `grace` is the total budget: workers get it to stop, and with `dial9`
-    /// the trace pipeline drains within whatever of it remains.
+    /// Tokio workers get `grace` to stop. With `dial9`, the processing pipeline
+    /// gets the remaining budget. Dial9 0.5 also performs a synchronous final
+    /// flush before that drain; slow storage or source callbacks can exceed
+    /// the budget. This is not a hard deadline for recorder finalization.
     pub fn shutdown_bounded(self, grace: Duration) {
         match self.inner {
             RuntimeInner::Tokio(runtime) => runtime.shutdown_timeout(grace),
             #[cfg(feature = "dial9")]
-            RuntimeInner::Dial9 { runtime, recorder } => {
+            RuntimeInner::Dial9 {
+                runtime, recorder, ..
+            } => {
                 let started = std::time::Instant::now();
                 runtime.shutdown_timeout(grace);
-                recorder.graceful_shutdown(grace.saturating_sub(started.elapsed()));
+                if let Some(recorder) = recorder {
+                    recorder.graceful_shutdown(grace.saturating_sub(started.elapsed()));
+                }
             }
         }
     }
