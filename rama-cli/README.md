@@ -173,3 +173,13 @@ verify those runtime values. A mismatch's field report uses the first retained
 reference variant, and identifies both capture hashes. Truncated diagnostics never
 turn a mismatch into a match. The command reads at most 64 MiB per archive and
 compares at most 256 scopes/variants with a shared 16 MiB comparison-work budget.
+
+### Real Chrome HTTP/1 capture and replay
+
+`just test-browser-profile-h1 /path/to/new-evidence-directory` captures a real
+headless Chrome navigation, exports an isolated fp database, replays it with Rama,
+and compares both stored observations and tshark-decoded headers. The release
+variant is `just test-browser-profile-h1-release`. See the
+[browser proof prerequisites and limits](../examples/tests/browser_profile/README.md).
+This is a plaintext HTTP/1 navigation proof; the complete browser/protocol/flow
+matrix and deterministic CLI draw controls remain pending.

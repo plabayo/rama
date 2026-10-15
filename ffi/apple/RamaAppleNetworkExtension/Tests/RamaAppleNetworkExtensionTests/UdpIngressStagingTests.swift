@@ -504,6 +504,10 @@ final class UdpIngressStagingTests: XCTestCase {
             policy: UdpIngressStagingPolicy(
                 maxItemsPerFlow: 4, maxItemsPerGeneration: 16,
                 maxBytesPerFlow: 3, maxBytesPerGeneration: 3))
+        // This test holds the coordinator queue to exercise FIFO fairness.
+        // Lease expiry has separate tests; scheduler delays must not spend
+        // this fixture's grants before its callbacks consume them.
+        generation.testGrantLeaseNanoseconds = 60_000_000_000
         let holder = UdpIngressFlowStaging(generation: generation)
         var retained = holder.stage(datagrams: [Data(count: 2)], endpoints: nil).batch
         var released = holder.stage(datagrams: [Data(count: 1)], endpoints: nil).batch
@@ -520,6 +524,16 @@ final class UdpIngressStagingTests: XCTestCase {
                 fittingPayload.withLock { $0 = payload }
                 acceptedFittingGrants.withLock { $0 += 1 }
             }
+        }
+        // A descheduled callback can outlive the 10 ms provisional grant.
+        let delayedFirstWake = Locked(false)
+        generation.testAfterCapacityWakeScan = {
+            let delay = delayedFirstWake.withLock { delayed -> Bool in
+                guard !delayed else { return false }
+                delayed = true
+                return true
+            }
+            if delay { Thread.sleep(forTimeInterval: 0.02) }
         }
         XCTAssertTrue(large.waitForCapacity(
             reason: .generationBytes, neededItems: 1, neededBytes: 2

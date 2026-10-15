@@ -237,6 +237,9 @@ mod tests {
         compare_with_coverage(reference, observed, false)
     }
     fn archive(value: u64) -> Vec<u8> {
+        archive_for_connection(value, ConnectionContext::default())
+    }
+    fn archive_for_connection(value: u64, connection: ConnectionContext) -> Vec<u8> {
         let profile = ProfileKey::new("comparison-test");
         let settings = OrderedProtocolCapture::capture(
             ProfileCaptureCompleteness::Complete,
@@ -250,7 +253,7 @@ mod tests {
         let capture = ProfileCapture {
             profile: profile.clone(),
             flow: None,
-            connection: ConnectionContext::default(),
+            connection,
             joint: JointCapture {
                 completeness: ProfileCaptureCompleteness::Complete,
                 level: CaptureLevel::Connection,
@@ -352,6 +355,55 @@ mod tests {
         assert!(!report.literal_match);
         assert!(!report.unrecognized_observed_scopes.is_empty());
         assert!(!report.missing_reference_scopes.is_empty());
+    }
+
+    #[test]
+    fn compare_archives_rejects_unknown_context_beside_literal_matches() {
+        let reference = loaded(17);
+        let mut observed = loaded(17);
+        let unknown = load_profile_archive_snapshot(
+            &archive_for_connection(
+                17,
+                ConnectionContext {
+                    token_present: Some(true),
+                    ..Default::default()
+                },
+            ),
+            false,
+            ProfileArchiveLimits::default(),
+        )
+        .unwrap();
+        let unknown_scopes: Vec<_> = unknown[0]
+            .analysis
+            .scopes
+            .iter()
+            .map(|scope| scope.id)
+            .collect();
+        observed[0].analysis.scopes = observed[0]
+            .analysis
+            .scopes
+            .iter()
+            .chain(unknown[0].analysis.scopes.iter())
+            .cloned()
+            .collect();
+        for allow_partial_coverage in [false, true] {
+            let report =
+                compare_with_coverage(&reference, &observed, allow_partial_coverage).unwrap();
+            assert!(!report.comparisons.is_empty());
+            assert!(
+                report
+                    .comparisons
+                    .iter()
+                    .all(|item| item.comparison.literal_match)
+            );
+            assert!(report.missing_reference_scopes.is_empty());
+            assert!(report.reference_coverage_complete);
+            assert_eq!(report.unrecognized_observed_scopes, unknown_scopes);
+            assert!(
+                !report.literal_match,
+                "unknown contexts must fail even beside matching covered contexts"
+            );
+        }
     }
 
     #[test]
