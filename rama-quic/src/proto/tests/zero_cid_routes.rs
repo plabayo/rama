@@ -32,7 +32,7 @@ fn zero_cid_routes_reject_a_second_client_to_the_same_remote() {
     let Err(error) = result else {
         panic!("a second connection replaced a live zero-CID route");
     };
-    assert_eq!(error, ConnectError::CidsExhausted);
+    assert_eq!(error, ConnectError::EndpointInUse);
     assert_eq!(pair.client.endpoint.open_connections(), 1);
 
     // Distinct remote addresses still provide an unambiguous route.
@@ -55,7 +55,7 @@ fn zero_cid_routes_reject_client_server_overlap() {
     let Err(error) = result else {
         panic!("a client connection overlapped a server zero-CID route");
     };
-    assert_eq!(error, ConnectError::CidsExhausted);
+    assert_eq!(error, ConnectError::EndpointInUse);
     assert_eq!(pair.server.endpoint.open_connections(), 1);
 }
 
@@ -131,7 +131,7 @@ fn zero_cid_routes_reject_server_client_overlap() {
     pair.drive_server();
     let incoming = pair.server.waiting_incoming.pop().unwrap();
     let error = pair.server.try_accept(incoming, pair.time).unwrap_err();
-    assert!(matches!(error, ConnectionError::CidsExhausted));
+    assert!(matches!(error, ConnectionError::EndpointInUse));
     assert_eq!(pair.server.endpoint.open_connections(), 1);
 }
 
@@ -173,7 +173,7 @@ fn zero_cid_profile_reserves_endpoint_until_drained() {
             pair.client
                 .endpoint
                 .connect(pair.time, config, other, "localhost"),
-            Err(ConnectError::CidsExhausted)
+            Err(ConnectError::EndpointInUse)
         ));
     }
     assert_eq!(pair.client.endpoint.open_connections(), 1);
@@ -201,7 +201,7 @@ fn zero_cid_profile_cannot_take_an_occupied_endpoint() {
         pair.client
             .endpoint
             .connect(pair.time, dedicated_client(), other, "localhost"),
-        Err(ConnectError::CidsExhausted)
+        Err(ConnectError::EndpointInUse)
     ));
     assert_eq!(pair.client.endpoint.open_connections(), 1);
 }
@@ -243,7 +243,7 @@ fn zero_cid_profile_prevents_accept_on_another_route() {
     let incoming = pair.server.waiting_incoming.pop().unwrap();
     assert!(matches!(
         pair.server.try_accept(incoming, pair.time),
-        Err(ConnectionError::CidsExhausted)
+        Err(ConnectionError::EndpointInUse)
     ));
     assert_eq!(pair.server.endpoint.open_connections(), 1);
 
@@ -278,7 +278,7 @@ fn cid_retirement_keeps_established_zero_cid_routes_until_drained() {
             .endpoint
             .connect(now, dedicated_client(), address, "localhost")
             .err(),
-        Some(ConnectError::CidsExhausted)
+        Some(ConnectError::EndpointInUse)
     );
 }
 
@@ -296,4 +296,26 @@ fn cid_retirement_keeps_nonzero_cid_handshake_draining() {
     assert!(pair.client_conn_mut(client).is_closed());
     assert!(!pair.client_conn_mut(client).is_drained());
     assert_eq!(pair.client.endpoint.open_connections(), 1);
+}
+
+/// Running out of IDs is exhaustion, not an endpoint in use: a longer ID space is the remedy.
+#[test]
+fn a_full_cid_space_is_reported_exhausted_not_in_use() {
+    let endpoint = EndpointConfig::try_with_rand_key()
+        .unwrap()
+        .with_connection_id_generator_factory(Arc::new(|| {
+            Box::new(RandomConnectionIdGenerator::new(1).unwrap())
+        }));
+    let mut pair = Pair::new(Arc::new(endpoint), server_config());
+    let address = pair.server.addr;
+    let error = (1..=256)
+        .find_map(|port| {
+            let remote = SocketAddr::new(address.ip(), port);
+            pair.client
+                .endpoint
+                .connect(pair.time, client_config(), remote, "localhost")
+                .err()
+        })
+        .expect("a 1-byte ID space runs out");
+    assert_eq!(error, ConnectError::CidsExhausted);
 }

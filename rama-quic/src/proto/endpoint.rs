@@ -528,12 +528,14 @@ impl Endpoint {
             .map_err(ConnectError::ProfileEndpointMismatch)?;
 
         let dedicated = config.transport.wire.requires_dedicated_endpoint();
-        if self.cids_exhausted()
-            || self.zero_cid_route_in_use(remote)
+        if self.cids_exhausted() {
+            return Err(ConnectError::CidsExhausted);
+        }
+        if self.zero_cid_route_in_use(remote)
             || self.exclusive_connection.is_some()
             || (dedicated && !self.connections.is_empty())
         {
-            return Err(ConnectError::CidsExhausted);
+            return Err(ConnectError::EndpointInUse);
         }
         if remote.port() == 0 || remote.ip().is_unspecified() {
             return Err(ConnectError::InvalidRemoteAddress(remote));
@@ -946,11 +948,17 @@ impl Endpoint {
             return Err(self.reject_accept(incoming, ConnectionError::TimedOut, None));
         }
 
-        if self.cids_exhausted()
-            || self.zero_cid_client_route_in_use(incoming.addresses.remote)
+        let refusal = if self.cids_exhausted() {
+            Some(ConnectionError::CidsExhausted)
+        } else if self.zero_cid_client_route_in_use(incoming.addresses.remote)
             || self.zero_cid_incoming_route_in_use(&incoming.addresses)
             || self.exclusive_connection.is_some()
         {
+            Some(ConnectionError::EndpointInUse)
+        } else {
+            None
+        };
+        if let Some(refusal) = refusal {
             debug!("refusing connection");
             let response = self.initial_close(
                 wire_version,
@@ -960,7 +968,7 @@ impl Endpoint {
                 TransportError::CONNECTION_REFUSED(""),
                 buf,
             );
-            return Err(self.reject_accept(incoming, ConnectionError::CidsExhausted, response));
+            return Err(self.reject_accept(incoming, refusal, response));
         }
 
         if let Some(incoming_buffer) = self.incoming_buffers.get_mut(incoming.incoming_idx) {
@@ -2612,9 +2620,12 @@ pub enum ConnectError {
     EndpointStopping,
     /// The connection could not be created because not enough of the CID space is available
     ///
-    /// Try longer connection IDs or a separate endpoint. With zero-length IDs,
-    /// an existing connection's address route cannot be assigned to another one.
+    /// Try longer connection IDs or a separate endpoint.
     CidsExhausted,
+    /// This endpoint cannot take the connection, but another one can: it is reserved for a
+    /// connection that needs it alone, or, with zero-length IDs, its route to this address is
+    /// already in use.
+    EndpointInUse,
     /// The given server name was malformed
     InvalidServerName(String),
     /// The remote [`SocketAddr`] supplied was malformed
@@ -2638,6 +2649,7 @@ impl core::fmt::Display for ConnectError {
         match self {
             Self::EndpointStopping => f.write_str("endpoint stopping"),
             Self::CidsExhausted => f.write_str("CIDs exhausted"),
+            Self::EndpointInUse => f.write_str("endpoint in use"),
             Self::InvalidServerName(field0) => write!(f, "invalid server name: {field0}"),
             Self::InvalidRemoteAddress(field0) => write!(f, "invalid remote address: {field0}"),
             Self::NoDefaultClientConfig => f.write_str("no default client config"),

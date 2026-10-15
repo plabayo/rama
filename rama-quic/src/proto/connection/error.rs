@@ -40,6 +40,8 @@ pub enum ConnectionError {
     ///
     /// Try using longer connection IDs.
     CidsExhausted,
+    /// The endpoint was reserved, or its zero-length-ID route for these addresses was in use.
+    EndpointInUse,
 }
 
 impl core::fmt::Display for ConnectionError {
@@ -55,6 +57,7 @@ impl core::fmt::Display for ConnectionError {
             Self::TimedOut => f.write_str("timed out"),
             Self::LocallyClosed => f.write_str("closed"),
             Self::CidsExhausted => f.write_str("CIDs exhausted"),
+            Self::EndpointInUse => f.write_str("endpoint in use"),
         }
     }
 }
@@ -95,7 +98,8 @@ impl From<ConnectionError> for io::Error {
             ConnectionError::TransportError(_)
             | ConnectionError::VersionMismatch { .. }
             | ConnectionError::LocallyClosed
-            | ConnectionError::CidsExhausted => io::ErrorKind::Other,
+            | ConnectionError::CidsExhausted
+            | ConnectionError::EndpointInUse => io::ErrorKind::Other,
         };
         Self::new(kind, x)
     }

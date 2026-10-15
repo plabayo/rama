@@ -129,6 +129,11 @@ impl<'a> ConnectionClosed<'a> {
                 ConnectionClosedTrigger::Error,
                 "CIDs exhausted",
             ),
+            ConnectionError::EndpointInUse => Self::internal(
+                Initiator::Local,
+                ConnectionClosedTrigger::Error,
+                "endpoint in use",
+            ),
         }
     }
 }

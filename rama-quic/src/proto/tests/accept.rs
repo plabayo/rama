@@ -322,7 +322,7 @@ fn a_fresh_attempt_never_takes_over_an_established_zero_cid_route() {
     let incoming = pair.server.waiting_incoming.pop().unwrap();
     assert_matches!(
         pair.server.try_accept(incoming, pair.time),
-        Err(ConnectionError::CidsExhausted)
+        Err(ConnectionError::EndpointInUse)
     );
     assert_eq!(pair.server.open_connections(), 1);
     for _ in 0..40 {

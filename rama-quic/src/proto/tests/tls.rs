@@ -326,7 +326,7 @@ fn failed_fresh_handshake_preserves_established_zero_cid_route() {
         // Refused before its TLS runs: the addresses belong to the established connection.
         assert_matches!(
             pair.server.assert_accept_error(),
-            ConnectionError::CidsExhausted
+            ConnectionError::EndpointInUse
         );
         assert_eq!(pair.server.open_connections(), 1);
         assert_eq!(pair.server.pending_incoming(), 0);

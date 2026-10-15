@@ -737,9 +737,9 @@ fn classify_connect_error(
                     (Transport, Unavailable)
                 }
                 QuicConnectionError::ApplicationClosed(_) => (Application, Rejected),
-                QuicConnectionError::CidsExhausted | QuicConnectionError::LocallyClosed => {
-                    (Local, Unavailable)
-                }
+                QuicConnectionError::CidsExhausted
+                | QuicConnectionError::EndpointInUse
+                | QuicConnectionError::LocallyClosed => (Local, Unavailable),
                 QuicConnectionError::TransportError(error) => classify_transport_code(error.code),
                 QuicConnectionError::ConnectionClosed(error) => {
                     classify_transport_code(error.error_code)
@@ -748,9 +748,9 @@ fn classify_connect_error(
         }
         if let Some(error) = error.downcast_ref::<QuicConnectError>() {
             return match error {
-                QuicConnectError::EndpointStopping | QuicConnectError::CidsExhausted => {
-                    (Local, Unavailable)
-                }
+                QuicConnectError::EndpointStopping
+                | QuicConnectError::CidsExhausted
+                | QuicConnectError::EndpointInUse => (Local, Unavailable),
                 QuicConnectError::Crypto(error) => classify_transport_code(error.code),
                 QuicConnectError::InvalidRemoteAddress(address)
                     if address.port() != 0 && !address.ip().is_unspecified() =>
@@ -1330,6 +1330,7 @@ mod concrete_transport_tests {
             (QuicConnectionError::Reset, Transport, Unavailable),
             (QuicConnectionError::TimedOut, Transport, Timeout),
             (QuicConnectionError::CidsExhausted, Local, Unavailable),
+            (QuicConnectionError::EndpointInUse, Local, Unavailable),
             (QuicConnectionError::LocallyClosed, Local, Unavailable),
             (
                 QuicConnectionError::TransportError(TransportErrorCode::CONNECTION_REFUSED.into()),
@@ -1380,6 +1381,12 @@ mod concrete_transport_tests {
             classify_connect_error(&alpn),
             (Application, ConnectionErrorKind::Protocol)
         );
+        for error in [
+            QuicConnectError::CidsExhausted,
+            QuicConnectError::EndpointInUse,
+        ] {
+            assert_eq!(classify_connect_error(&error), (Local, Unavailable));
+        }
     }
 
     #[tokio::test]
