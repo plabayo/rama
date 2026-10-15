@@ -83,9 +83,12 @@ impl AssociationLimits {
         let tuples_needed = windows
             .saturating_mul(self.starts_per_window.get())
             .saturating_add(self.active.get());
+        // A source stays remembered for a window after its own start, into the next global
+        // window: two windows of new sources, plus the active ones.
         let sources_needed = self
             .starts_per_window
             .get()
+            .saturating_mul(2)
             .saturating_add(self.active.get());
         if self.active_per_source >= self.active
             || self.starts_per_source_window >= self.starts_per_window

@@ -18,7 +18,7 @@ fn limits() -> AssociationLimits {
     AssociationLimits {
         active: NonZeroUsize::new(4).unwrap(),
         active_per_source: NonZeroUsize::new(2).unwrap(),
-        sources: NonZeroUsize::new(12).unwrap(),
+        sources: NonZeroUsize::new(20).unwrap(),
         tuples: NonZeroUsize::new(20).unwrap(),
         starts_per_window: NonZeroUsize::new(8).unwrap(),
         starts_per_source_window: NonZeroUsize::new(4).unwrap(),
@@ -106,6 +106,45 @@ async fn the_global_rate_survives_source_churn() {
     admission.try_acquire(key(6, 1)).unwrap();
 }
 
+/// Sources that started just before a global window ends are still remembered in the next
+/// one; at the fewest sources the limits accept, every new source is admitted there until the
+/// global start cap refuses, never by a full history.
+#[tokio::test(start_paused = true)]
+async fn sources_started_at_a_window_boundary_never_fill_the_history() {
+    let base = AssociationLimits {
+        active_per_source: NonZeroUsize::new(1).unwrap(),
+        starts_per_source_window: NonZeroUsize::new(1).unwrap(),
+        quarantine: Duration::from_secs(1),
+        ..limits()
+    };
+    // The fewest sources the validation accepts.
+    let limits = (1..)
+        .map(|sources| AssociationLimits {
+            sources: NonZeroUsize::new(sources).unwrap(),
+            ..base
+        })
+        .find(|limits| QuicAssociationAdmission::try_new(*limits).is_ok())
+        .unwrap();
+    let admission = admission(limits);
+    tokio::time::advance(Duration::from_millis(9_900)).await;
+    for source in 1..=8 {
+        drop(admission.try_acquire(key(source, 1)).unwrap());
+    }
+    tokio::time::advance(Duration::from_millis(200)).await;
+    let mut admitted = 0;
+    let refusal = loop {
+        match admission.try_acquire(key(admitted + 9, 1)) {
+            Ok(held) => {
+                drop(held);
+                admitted += 1;
+            }
+            Err(error) => break error,
+        }
+    };
+    assert_eq!(refusal, AdmissionError::RateLimit);
+    assert_eq!(usize::from(admitted), limits.starts_per_window.get());
+}
+
 #[test]
 fn an_ipv6_source_is_its_64_and_ipv4_mapped_addresses_are_ipv4() {
     let admission = admission(limits());
@@ -180,9 +219,9 @@ fn limits_one_source_could_exhaust_are_refused() {
             starts_per_source_window: limits().starts_per_window,
             ..limits()
         },
-        // A window's starts from new sources, plus the active ones, need 12 sources.
+        // Two windows of starts from new sources, plus the active ones, need 20 sources.
         AssociationLimits {
-            sources: NonZeroUsize::new(11).unwrap(),
+            sources: NonZeroUsize::new(19).unwrap(),
             ..limits()
         },
         // Two windows of starts quarantined, plus the active associations, need 20 tuples.
