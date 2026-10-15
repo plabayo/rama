@@ -67,7 +67,10 @@ pub(super) fn make_runtime_factory() -> DefaultTransparentProxyAsyncRuntimeFacto
         .build();
 
     let recorder = ::dial9::recorder_or_disabled(writer).build();
-    tracing::info!(enabled = recorder.handle().is_enabled(), "rama-tproxy dial9: recorder configured");
+    tracing::info!(
+        enabled = recorder.handle().is_enabled(),
+        "rama-tproxy dial9: recorder configured"
+    );
     factory
         .with_dial9_recorder(recorder)
         // Name the runtime so a multi-extension dial9 trace can be
