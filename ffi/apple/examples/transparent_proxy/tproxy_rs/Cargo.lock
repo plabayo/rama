@@ -2526,6 +2526,7 @@ dependencies = [
  "dial9",
  "dial9-trace-format",
  "futures",
+ "metrique-writer-core",
  "parking_lot",
  "pin-project-lite",
  "rama-error",
@@ -2671,6 +2672,7 @@ dependencies = [
  "compression-core",
  "const_format",
  "csv",
+ "dial9-trace-format",
  "flate2",
  "http-range-header",
  "httpdate",
@@ -2935,6 +2937,7 @@ name = "rama-quic"
 version = "0.5.0"
 dependencies = [
  "ahash",
+ "dial9-trace-format",
  "fastbloom",
  "jiff",
  "lru-slab",
@@ -3151,6 +3154,7 @@ dependencies = [
 name = "rama-ws"
 version = "0.5.0"
 dependencies = [
+ "dial9-trace-format",
  "flate2",
  "rama-core",
  "rama-http",

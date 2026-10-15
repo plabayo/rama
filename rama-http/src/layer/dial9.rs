@@ -18,6 +18,10 @@ use rama_core::extensions::ExtensionsRef as _;
 use rama_core::{
     Layer, Service,
     bytes::Buf,
+    futures::{
+        FutureExt as _,
+        future::{Either, lazy},
+    },
     telemetry::dial9::{Operation, Outcome, TraceContext, core::clock_monotonic_ns},
 };
 use std::{
@@ -95,73 +99,85 @@ where
     type Output = Response;
     type Error = S::Error;
 
-    async fn serve(&self, request: Request<B>) -> Result<Response, S::Error> {
-        observe_request("http.request", request, |request| self.inner.serve(request)).await
+    fn serve(
+        &self,
+        request: Request<B>,
+    ) -> impl Future<Output = Result<Response, S::Error>> + Send {
+        observe_request("http.request", request, |request| self.inner.serve(request))
     }
 }
 
 /// Shared request boundary for protocol adapters. Response byte totals count
 /// data yielded to the consumer, not bytes acknowledged by the peer. HTTP error
 /// status codes are recorded separately from transport/body failures.
-pub async fn observe_request<B, R, E, F, Fut>(
+pub fn observe_request<B, R, E, F, Fut>(
     name: &'static str,
     request: Request<B>,
     serve: F,
-) -> Result<Response, E>
+) -> impl Future<Output = Result<Response, E>>
 where
     R: IntoResponse,
     F: FnOnce(Request<B>) -> Fut,
     Fut: Future<Output = Result<R, E>>,
 {
-    let operation = Operation::new(name);
-    if !operation.is_recorded() {
-        return serve(request).await.map(IntoResponse::into_response);
-    }
-    let context = operation.context();
-    request.extensions().insert(context);
-    let connect = request.method() == crate::Method::CONNECT;
-    operation.record_event_with(|context| HttpRequestStarted {
-        timestamp_ns: clock_monotonic_ns(),
-        flow_id: context.flow_id(),
-        operation_id: context.operation_id(),
-        method: request.method().as_str(),
-        version: version_code(request.version()),
-    });
-    let response = context.scope(serve(request)).await;
-    let response = match response {
-        Ok(response) => response.into_response(),
-        Err(error) => {
-            operation.finish(Outcome::Error);
-            return Err(error);
+    // Reuse the initial request's storage for the in-flight future. Recording
+    // still starts on the first poll, without allocating a boxed request future.
+    lazy(move |_| {
+        let operation = Operation::new(name);
+        if !operation.is_recorded() {
+            return Either::Left(
+                serve(request).map(|response| response.map(IntoResponse::into_response)),
+            );
         }
-    };
-    response.extensions().insert(context);
-    operation.record_event_with(|context| HttpResponseHeaders {
-        timestamp_ns: clock_monotonic_ns(),
-        flow_id: context.flow_id(),
-        operation_id: context.operation_id(),
-        status: u32::from(response.status().as_u16()),
-        version: version_code(response.version()),
-    });
-    // Upgraded traffic belongs to its own protocol lifecycle, including an
-    // extended CONNECT over HTTP/2 or HTTP/3.
-    if response.body().is_end_stream()
-        || response.status() == crate::StatusCode::SWITCHING_PROTOCOLS
-        || (connect && response.status().is_success())
-    {
-        operation.finish(Outcome::Success);
-        return Ok(response);
-    }
-    Ok(response.map(|body| {
-        Body::new(RecordedBody {
-            inner: body,
-            state: BodyState {
-                operation: Some(operation),
-                context,
-                bytes: 0,
-            },
-        })
-    }))
+        let context = operation.context();
+        request.extensions().insert(context);
+        let connect = request.method() == crate::Method::CONNECT;
+        operation.record_event_with(|context| HttpRequestStarted {
+            timestamp_ns: clock_monotonic_ns(),
+            flow_id: context.flow_id(),
+            operation_id: context.operation_id(),
+            method: request.method().as_str(),
+            version: version_code(request.version()),
+        });
+        let response = context.scope(serve(request));
+        Either::Right(response.map(move |response| {
+            let response = match response {
+                Ok(response) => response.into_response(),
+                Err(error) => {
+                    operation.finish(Outcome::Error);
+                    return Err(error);
+                }
+            };
+            response.extensions().insert(context);
+            operation.record_event_with(|context| HttpResponseHeaders {
+                timestamp_ns: clock_monotonic_ns(),
+                flow_id: context.flow_id(),
+                operation_id: context.operation_id(),
+                status: u32::from(response.status().as_u16()),
+                version: version_code(response.version()),
+            });
+            // Upgraded traffic belongs to its own protocol lifecycle, including an
+            // extended CONNECT over HTTP/2 or HTTP/3.
+            if response.body().is_end_stream()
+                || response.status() == crate::StatusCode::SWITCHING_PROTOCOLS
+                || (connect && response.status().is_success())
+            {
+                operation.finish(Outcome::Success);
+                return Ok(response);
+            }
+            Ok(response.map(|body| {
+                Body::new(RecordedBody {
+                    inner: body,
+                    state: BodyState {
+                        operation: Some(operation),
+                        context,
+                        bytes: 0,
+                    },
+                })
+            }))
+        }))
+    })
+    .flatten()
 }
 
 pin_project! {
@@ -268,6 +284,13 @@ mod tests {
                 ))]))
             };
             let request = || Request::new(Body::empty());
+            drop(observe_request(
+                "unpolled",
+                request(),
+                |_| -> std::future::Ready<Result<Response, Infallible>> {
+                    panic!("an unpolled request must not call the service")
+                },
+            ));
             let response = observe_request("complete", request(), |_| async {
                 Ok::<_, Infallible>(Response::new(body()))
             })
@@ -328,6 +351,7 @@ mod tests {
                 );
             })
             .unwrap();
+        assert_eq!(finished.len(), 4);
         assert_eq!(finished["complete"], (Outcome::Success as u64, 3));
         assert_eq!(finished["error"], (Outcome::Error as u64, 3));
         assert_eq!(finished["cancel"], (Outcome::Cancelled as u64, 3));

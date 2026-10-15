@@ -101,13 +101,16 @@ where
     type Output = Response;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
+    fn serve(
+        &self,
+        req: Request<Body>,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send {
         #[cfg(feature = "dial9")]
         {
-            rama_http::layer::dial9::observe_request("http.client", req, |req| self.send(req)).await
+            rama_http::layer::dial9::observe_request("http.client", req, |req| self.send(req))
         }
         #[cfg(not(feature = "dial9"))]
-        self.send(req).await
+        self.send(req)
     }
 }
 
