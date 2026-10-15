@@ -137,7 +137,11 @@ impl QuicMirrorCeiling {
 /// with it and the protocol the origin selected; a failure refuses the client. No origin
 /// handshake or issuance runs for an unvalidated address. The inner service owns both
 /// established connections; this service closes them only when establishment fails. Early
-/// data is disabled on both hops. All of it shares one deadline, fixed when `serve` is called.
+/// data is disabled on both hops, so a client's 0-RTT is rejected and resent after the
+/// handshake. All of it shares one deadline, fixed when `serve` is called.
+///
+/// The origin sees the egress configuration's first flight, with the client's server name and
+/// protocols, unless [`Self::with_mirror_client`] mirrors the client's own.
 ///
 /// An origin requesting a client certificate is answered by the [`TlsMitmClientAuthPolicy`]
 /// (a flow's own extension overrides the relay's): its plan configures the ingress handshake,

@@ -149,7 +149,9 @@ impl std::error::Error for QuicPeekRejectedError {}
 /// bounded by [`CaptureLimits`].
 ///
 /// Routing sees the outer ClientHello only: with ECH that is the public name, never the
-/// encrypted inner one.
+/// encrypted inner one. 0-RTT in the first flight is never decrypted: it is flagged as
+/// [`PeekedClientHello::early_data_observed`] and replayed untouched to a forwarding service,
+/// while a terminating relay rejects it and the client resends that data after the handshake.
 ///
 /// The fallback rejects by default; use [`Self::with_fallback`] to forward instead.
 pub struct PeekQuicClientHelloService<K, S, F = RejectService<(), NoQuicRejectError>> {
