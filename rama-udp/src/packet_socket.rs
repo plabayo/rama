@@ -203,6 +203,7 @@ fn common_capabilities(a: DatagramCapabilities, b: DatagramCapabilities) -> Data
         send_ecn: a.send_ecn && b.send_ecn,
         receive_ecn: a.receive_ecn && b.receive_ecn,
         send_source_ip: a.send_source_ip && b.send_source_ip,
+        send_source_port: a.send_source_port && b.send_source_port,
         receive_local_ip: a.receive_local_ip && b.receive_local_ip,
         receive_interface: a.receive_interface && b.receive_interface,
         receive_original_destination: a.receive_original_destination
@@ -537,6 +538,7 @@ fn capabilities(state: &sys::UdpSocketState) -> DatagramCapabilities {
         send_ecn: sys.send_ecn,
         receive_ecn: sys.receive_ecn,
         send_source_ip: sys.send_source_ip,
+        send_source_port: false,
         receive_local_ip: sys.receive_local_ip,
         receive_interface: sys.receive_interface,
         receive_original_destination: sys.receive_original_destination,

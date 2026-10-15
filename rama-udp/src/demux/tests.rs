@@ -387,3 +387,44 @@ async fn a_wildcard_listener_replies_from_the_address_the_client_sent_to() {
     .await
     .unwrap();
 }
+
+/// A socket that selects a reply's whole source answers every original destination: each is
+/// an association of its own for the same peer, and its replies leave from that destination.
+#[tokio::test]
+async fn a_full_source_socket_answers_every_original_destination_from_it() {
+    timeout(LIMIT, async {
+        let (mut client, listener) = listener();
+        listener.set_send_source_port(true);
+        let client_address = client.local_addr().unwrap();
+        let destinations = [
+            SocketAddress::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)), 443),
+            SocketAddress::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)), 8443),
+        ];
+        for destination in destinations {
+            let mut metadata = DatagramMetadata::empty();
+            metadata.peer = client_address;
+            metadata.local = SocketAddress::local_ipv4(443);
+            metadata.original_destination = Some(destination);
+            listener
+                .inject_received(b"hello".to_vec(), metadata)
+                .unwrap();
+        }
+        let (mut sockets, stats) = serve(listener, config());
+        for destination in destinations {
+            let mut association = sockets.recv().await.unwrap();
+            assert_eq!(association.local_addr().unwrap(), destination);
+            assert_eq!(next(&mut association).await, b"hello");
+            association
+                .create_sender()
+                .send(SendDatagram::new(client_address, b"reply"))
+                .await
+                .unwrap();
+            let mut buffer = [0; 64];
+            let metadata = client.recv(&mut buffer).await.unwrap();
+            assert_eq!(metadata.peer, destination);
+        }
+        assert_eq!(stats.get().dropped_reply_source, 0);
+    })
+    .await
+    .unwrap();
+}

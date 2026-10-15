@@ -101,7 +101,10 @@ struct Registry {
 /// for the association's peer only, from the address the client sent to. A transparently
 /// redirected datagram, whose original destination is not the listening address, cannot be
 /// answered from there; it is dropped and counted rather than answered from the wrong
-/// address. Admission and inspection limits belong to the association's service.
+/// address, unless the socket selects a reply's whole source
+/// ([`DatagramCapabilities::send_source_port`] with `send_source_ip`), as a transparent proxy
+/// flow does: then every original destination is an association of its own, answered from
+/// that destination. Admission and inspection limits belong to the association's service.
 pub struct DatagramDemux<S> {
     socket: S,
     config: DemuxConfig,
@@ -189,10 +192,12 @@ impl<S: DatagramSocket> DatagramDemux<S> {
                 None if metadata.local.ip_addr.is_unspecified() => listening,
                 None => metadata.local,
             };
-            let answerable = local.port == listening.port
-                && (local.ip_addr.into_canonical_ip_addr()
-                    == listening.ip_addr.into_canonical_ip_addr()
-                    || (listening.ip_addr.is_unspecified() && capabilities.send_source_ip));
+            // A socket that selects a reply's whole source answers every original destination.
+            let answerable = full_source(capabilities)
+                || (local.port == listening.port
+                    && (local.ip_addr.into_canonical_ip_addr()
+                        == listening.ip_addr.into_canonical_ip_addr()
+                        || (listening.ip_addr.is_unspecified() && capabilities.send_source_ip)));
             if !answerable {
                 self.counters.reply_source.fetch_add(1, Ordering::Relaxed);
                 continue;
@@ -324,14 +329,13 @@ impl<T: DatagramSender + Clone> DatagramSocket for DemuxedSocket<T> {
     type Sender = DemuxedSender<T>;
 
     fn create_sender(&self) -> Self::Sender {
+        let full_source = full_source(self.capabilities);
         DemuxedSender {
             inner: self.sender.lock().clone(),
             peer: self.addresses.peer,
-            source: self
-                .listening
-                .ip_addr
-                .is_unspecified()
+            source: (full_source || self.listening.ip_addr.is_unspecified())
                 .then_some(self.addresses.local.ip_addr),
+            source_port: full_source.then_some(self.addresses.local.port),
         }
     }
 
@@ -376,12 +380,18 @@ impl<T: DatagramSender + Clone> DatagramSocket for DemuxedSocket<T> {
     }
 }
 
+/// Whether `capabilities` let a reply leave from any address, port included.
+const fn full_source(capabilities: DatagramCapabilities) -> bool {
+    capabilities.send_source_ip && capabilities.send_source_port
+}
+
 /// Sends a [`DemuxedSocket`]'s replies through its listening socket, to its peer only.
 #[derive(Debug, Clone)]
 pub struct DemuxedSender<T> {
     inner: T,
     peer: SocketAddress,
     source: Option<IpAddr>,
+    source_port: Option<u16>,
 }
 
 impl<T: DatagramSender> DatagramSender for DemuxedSender<T> {
@@ -395,10 +405,13 @@ impl<T: DatagramSender> DatagramSender for DemuxedSender<T> {
                 datagram.destination(),
             )));
         }
-        let datagram = match (datagram.source_ip(), self.source) {
-            (None, Some(source)) => datagram.with_source_ip(source),
-            _ => *datagram,
-        };
+        let mut datagram = *datagram;
+        if let (None, Some(source)) = (datagram.source_ip(), self.source) {
+            datagram = datagram.with_source_ip(source);
+        }
+        if let (None, Some(port)) = (datagram.source_port(), self.source_port) {
+            datagram = datagram.with_source_port(port);
+        }
         self.inner.poll_send(cx, &datagram)
     }
 

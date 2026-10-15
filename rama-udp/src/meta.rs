@@ -220,6 +220,9 @@ pub struct DatagramCapabilities {
     pub receive_ecn: bool,
     /// Whether an outgoing source IP can be selected per datagram.
     pub send_source_ip: bool,
+    /// Whether an outgoing source port can be selected per datagram, as a transparent proxy
+    /// flow can that answers for every destination its app addressed.
+    pub send_source_port: bool,
     /// Whether the effective local destination IP is reported per datagram.
     pub receive_local_ip: bool,
     /// Whether the incoming interface index is reported.
@@ -250,6 +253,7 @@ impl DatagramCapabilities {
             DatagramFeature::SendEcn => self.send_ecn,
             DatagramFeature::ReceiveEcn => self.receive_ecn,
             DatagramFeature::SendSourceIp => self.send_source_ip,
+            DatagramFeature::SendSourcePort => self.send_source_port,
             DatagramFeature::ReceiveLocalIp => self.receive_local_ip,
             DatagramFeature::ReceiveInterface => self.receive_interface,
             DatagramFeature::ReceiveOriginalDestination => self.receive_original_destination,
@@ -274,6 +278,7 @@ impl DatagramCapabilities {
             send_ecn: false,
             receive_ecn: false,
             send_source_ip: false,
+            send_source_port: false,
             receive_local_ip: false,
             receive_interface: false,
             receive_original_destination: false,
@@ -299,6 +304,8 @@ pub enum DatagramFeature {
     ReceiveEcn,
     /// Selecting a source IP for one send.
     SendSourceIp,
+    /// Selecting a source port for one send.
+    SendSourcePort,
     /// Receiving the effective local destination IP.
     ReceiveLocalIp,
     /// Receiving the incoming interface index.
@@ -321,6 +328,7 @@ impl fmt::Display for DatagramFeature {
             Self::SendEcn => "send ECN",
             Self::ReceiveEcn => "receive ECN",
             Self::SendSourceIp => "source IP selection",
+            Self::SendSourcePort => "source port selection",
             Self::ReceiveLocalIp => "local destination metadata",
             Self::ReceiveInterface => "receive interface metadata",
             Self::ReceiveOriginalDestination => "original destination metadata",

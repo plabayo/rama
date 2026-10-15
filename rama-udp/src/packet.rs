@@ -20,6 +20,8 @@ pub struct SendDatagram<'a> {
     ecn: Option<EcnCodepoint>,
     /// Source IP to select for this datagram.
     source_ip: Option<IpAddr>,
+    /// Source port to select for this datagram.
+    source_port: Option<u16>,
     /// Size of each datagram except possibly the last when using segmentation.
     ///
     /// A segmented descriptor must represent at least two datagrams, so this
@@ -36,6 +38,7 @@ impl<'a> SendDatagram<'a> {
             payload,
             ecn: None,
             source_ip: None,
+            source_port: None,
             segment_size: None,
         }
     }
@@ -64,6 +67,12 @@ impl<'a> SendDatagram<'a> {
         self.source_ip
     }
 
+    /// Selected source port.
+    #[must_use]
+    pub const fn source_port(&self) -> Option<u16> {
+        self.source_port
+    }
+
     /// Configured segment size.
     #[must_use]
     pub const fn segment_size(&self) -> Option<NonZeroUsize> {
@@ -87,6 +96,14 @@ impl<'a> SendDatagram<'a> {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Select the outgoing source port.
+        pub fn source_port(mut self, source_port: Option<u16>) -> Self {
+            self.source_port = source_port;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Describe concatenated datagrams for a segmented send.
         ///
         /// The size must be smaller than the payload length. Callers adapting
@@ -105,12 +122,16 @@ impl<'a> SendDatagram<'a> {
             .map_or(1, |size| self.payload.len().div_ceil(size.get()).max(1))
     }
 
-    pub(crate) fn validate(self, capabilities: DatagramCapabilities) -> Result<(), DatagramError> {
+    /// Check this descriptor against what a socket with `capabilities` can send.
+    pub fn validate(self, capabilities: DatagramCapabilities) -> Result<(), DatagramError> {
         if self.ecn.is_some() && !capabilities.send_ecn {
             return Err(DatagramError::Unsupported(DatagramFeature::SendEcn));
         }
         if self.source_ip.is_some() && !capabilities.send_source_ip {
             return Err(DatagramError::Unsupported(DatagramFeature::SendSourceIp));
+        }
+        if self.source_port.is_some() && !capabilities.send_source_port {
+            return Err(DatagramError::Unsupported(DatagramFeature::SendSourcePort));
         }
         if let Some(source_ip) = self.source_ip
             && source_ip.is_ipv4() != self.destination.ip_addr.is_ipv4()

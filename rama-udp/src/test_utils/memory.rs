@@ -6,7 +6,7 @@ use std::{
     num::{NonZeroU64, NonZeroUsize},
     sync::{
         Arc, Weak,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker},
     time::Duration,
@@ -52,6 +52,7 @@ impl MemoryDatagramSocket {
             addresses: [first, second],
             capacity: capacity.get(),
             max_send_segments: AtomicUsize::new(64),
+            send_source_port: AtomicBool::new(false),
         });
         (
             Self {
@@ -137,6 +138,14 @@ impl MemoryDatagramSocket {
         self.shared
             .max_send_segments
             .store(value.get().min(64), Ordering::Relaxed);
+    }
+
+    /// Let both endpoints select a reply's source port too (off by default), as a
+    /// transparent proxy flow can.
+    pub fn set_send_source_port(&self, enabled: bool) {
+        self.shared
+            .send_source_port
+            .store(enabled, Ordering::Relaxed);
     }
 
     fn lock(&self) -> MutexGuard<'_, PairState> {
@@ -434,7 +443,9 @@ impl DatagramSender for MemoryDatagramSender {
             datagram
                 .source_ip()
                 .unwrap_or(self.shared.addresses[self.side].ip_addr),
-            self.shared.addresses[self.side].port,
+            datagram
+                .source_port()
+                .unwrap_or(self.shared.addresses[self.side].port),
         );
         // Slots left once every admitted original is placed: only these can hold copies.
         let mut spare = self.shared.capacity - (retained + incoming);
@@ -507,6 +518,7 @@ struct Shared {
     addresses: [SocketAddress; 2],
     capacity: usize,
     max_send_segments: AtomicUsize,
+    send_source_port: AtomicBool,
 }
 
 struct PairState {
@@ -619,6 +631,7 @@ fn memory_capabilities(shared: &Shared) -> DatagramCapabilities {
         send_ecn: true,
         receive_ecn: true,
         send_source_ip: true,
+        send_source_port: shared.send_source_port.load(Ordering::Relaxed),
         receive_local_ip: true,
         receive_interface: true,
         receive_original_destination: true,
