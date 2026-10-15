@@ -1,6 +1,6 @@
 //! Module in function of the [`Host`] extractor.
 
-use super::FromPartsStateRefPair;
+use super::{FromPartsStateRefPair, OptionalFromPartsStateRefPair};
 use crate::utils::macros::define_http_rejection;
 use rama_http_types::request::Parts;
 use rama_net::address;
@@ -35,33 +35,53 @@ where
     }
 }
 
+impl<State> OptionalFromPartsStateRefPair<State> for Host
+where
+    State: Send + Sync,
+{
+    type Rejection = MissingHost;
+
+    async fn from_parts_state_ref_pair(
+        parts: &Parts,
+        _state: &State,
+    ) -> Result<Option<Self>, Self::Rejection> {
+        Ok(parts.host().map(Self))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use crate::StatusCode;
-    use crate::body::util::BodyExt;
     use crate::header::X_FORWARDED_HOST;
     use crate::layer::forwarded::GetForwardedHeaderService;
     use crate::service::web::WebService;
-    use crate::{Body, HeaderName, Request};
-    use rama_core::Service;
+    use crate::service::web::endpoint::extract::test_support::serve_get;
+    use crate::{HeaderName, StatusCode};
+
+    async fn extract_required(Host(host): Host) -> String {
+        host.to_string()
+    }
+
+    async fn extract_optional(host: Option<Host>) -> String {
+        host.map_or_else(|| "none".to_owned(), |Host(host)| host.to_string())
+    }
 
     async fn test_host_from_request(uri: &str, host: &str, headers: Vec<(&HeaderName, &str)>) {
-        let svc = GetForwardedHeaderService::x_forwarded_host(
-            WebService::default().with_get("/", async |Host(host): Host| host.to_string()),
+        let required = GetForwardedHeaderService::x_forwarded_host(
+            WebService::default().with_get("/", extract_required),
+        );
+        let optional = GetForwardedHeaderService::x_forwarded_host(
+            WebService::default().with_get("/", extract_optional),
         );
 
-        let mut builder = Request::builder().method("GET").uri(uri);
-        for (header, value) in headers {
-            builder = builder.header(header, value);
+        for (status, body) in [
+            serve_get(&required, uri, &headers).await,
+            serve_get(&optional, uri, &headers).await,
+        ] {
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body, host);
         }
-        let req = builder.body(Body::empty()).unwrap();
-
-        let res = svc.serve(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, host);
     }
 
     #[tokio::test]
@@ -100,5 +120,20 @@ mod tests {
     #[tokio::test]
     async fn uri_host() {
         test_host_from_request("http://example.com", "example.com", vec![]).await;
+    }
+
+    #[tokio::test]
+    async fn missing_host() {
+        let required = WebService::default().with_get("/", extract_required);
+        let optional = WebService::default().with_get("/", extract_optional);
+
+        assert_eq!(
+            serve_get(&required, "/", &[]).await.0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            serve_get(&optional, "/", &[]).await,
+            (StatusCode::OK, "none".into())
+        );
     }
 }
