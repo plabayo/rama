@@ -267,6 +267,9 @@ pub(super) fn connection_capture(
     }
     // A complete empty tuple records the cleartext HTTP/1 connection.
     // Dropping it would make an exported header-only profile unselectable.
+    if slots.is_empty() && !ext.contains::<super::super::CleartextConnection>() {
+        return Err(ProfileDataError::Incomplete("cleartext connection provenance").into());
+    }
     slots.sort_unstable_by_key(|slot| slot.kind);
     Ok(Some(ProfileCapture {
         profile,
@@ -547,6 +550,21 @@ mod tests {
     #[test]
     fn cleartext_h1_retains_an_explicit_empty_connection() {
         let ext = Extensions::new();
+        let error = connection_capture(
+            profile_key("synthetic/1").unwrap(),
+            connection_context(&ext),
+            Version::HTTP_11,
+            &ext,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<ProfileDataError>(),
+            Some(ProfileDataError::Incomplete(
+                "cleartext connection provenance"
+            ))
+        ));
+        ext.insert(super::super::super::CleartextConnection);
         let capture = connection_capture(
             profile_key("synthetic/1").unwrap(),
             connection_context(&ext),

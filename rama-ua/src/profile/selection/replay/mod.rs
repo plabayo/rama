@@ -46,6 +46,8 @@ pub enum H2ClientParameter {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 /// One observable difference between the selected capture and emitted request.
 pub enum ProfilePreservationDifference {
+    /// Reserved SETTINGS were retained without classification evidence.
+    UnanalyzedHttp3ReservedSettings,
     /// No capture proves how to lay out several caller cookie pairs; retain
     /// the caller's fields without claiming an exact captured layout.
     UnknownCookieLayout,

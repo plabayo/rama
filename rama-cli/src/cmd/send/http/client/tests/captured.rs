@@ -119,6 +119,47 @@ fn captured_archive(unsupported_connection: bool) -> Vec<u8> {
         .unwrap()
 }
 
+#[derive(Debug)]
+struct AbortCapturedServer(tokio::task::AbortHandle);
+impl Drop for AbortCapturedServer {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+#[tokio::test]
+async fn captured_server_is_aborted_when_replay_panics() {
+    struct Finished(Option<tokio::sync::oneshot::Sender<()>>);
+    impl Drop for Finished {
+        fn drop(&mut self) {
+            if let Some(tx) = self.0.take() {
+                let _send_result = tx.send(());
+            }
+        }
+    }
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let _finished = Finished(Some(finished_tx));
+        let _send_result = started_tx.send(());
+        std::future::pending::<()>().await;
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), started_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    let result = std::panic::catch_unwind(|| {
+        let _abort = AbortCapturedServer(task.abort_handle());
+        panic!("simulated captured replay failure");
+    });
+    assert!(result.is_err());
+    tokio::time::timeout(std::time::Duration::from_secs(1), finished_rx)
+        .await
+        .expect("captured server reaped after panic")
+        .unwrap();
+    assert!(task.await.unwrap_err().is_cancelled());
+}
+
 #[tokio::test]
 async fn captured_archive_replays_headers_through_real_send_stack() {
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -130,14 +171,19 @@ async fn captured_archive_replays_headers_through_real_send_stack() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let head = read_http_head(&mut stream).await;
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-                .await
-                .unwrap();
-            head
+            tokio::time::timeout(std::time::Duration::from_secs(5), async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let head = read_http_head(&mut stream).await;
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await
+                    .unwrap();
+                head
+            })
+            .await
+            .expect("bounded captured replay server")
         });
+        let _abort_server = AbortCapturedServer(server.abort_handle());
         let uri = format!("http://{address}/replayed");
         let output = directory.path().join("response");
         let cfg = send_cfg(&[

@@ -71,12 +71,16 @@ fn queue(capacity: usize) -> (CollectionQueue, CollectionReceiver) {
 }
 
 fn request(path: &str) -> Request<()> {
-    Request::builder()
+    let request = Request::builder()
         .uri(path)
         .version(Version::HTTP_11)
         .header(USER_AGENT, "unknown-client/7")
         .body(())
-        .unwrap()
+        .unwrap();
+    request
+        .extensions()
+        .insert(super::super::super::CleartextConnection);
+    request
 }
 
 #[test]

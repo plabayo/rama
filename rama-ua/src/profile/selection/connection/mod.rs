@@ -1,3 +1,6 @@
+mod h3_settings;
+pub use h3_settings::H3SettingsReplayEvidence;
+
 use std::sync::Arc;
 
 use rama_core::extensions::Extension;
@@ -12,7 +15,7 @@ use crate::profile::{
     JointCaptureLimits, OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture,
     ProfileDataError, ProfileDraw, ProfileDrawContext, ProfilePreservationDifference,
     ProfilePreservationMode, ProfilePreservationReport, ProfileReplayError, ProfileSeed,
-    ProtocolValue, QuicFlightCapture, QuicFlightCaptureLimits,
+    QuicFlightCapture, QuicFlightCaptureLimits,
 };
 #[cfg(feature = "tls")]
 use crate::profile::{TlsCapture, TlsCaptureLimits};
@@ -25,6 +28,8 @@ pub struct PreparedConnectionComponents {
     pub tls: Option<TlsCapture>,
     pub quic_parameters: Option<OrderedProtocolCapture>,
     pub h3_peer_settings: Option<OrderedProtocolCapture>,
+    pub h3_settings_evidence: Option<H3SettingsReplayEvidence>,
+    allow_unanalyzed_h3_settings: bool,
     pub quic_versions: Option<OrderedProtocolCapture>,
     pub h2_early_frames: Option<Arc<[EarlyFrame]>>,
     pub quic_first_flight: Option<QuicFlightCapture>,
@@ -34,10 +39,12 @@ pub struct PreparedConnectionComponents {
 }
 
 impl PreparedConnectionComponents {
-    /// Compile the selected complete SETTINGS tuple without rewriting its IDs,
-    /// values or order. A reserved numeric pattern alone does not authorize a
-    /// fresh draw: variance-derived generators belong to profile selection.
-    pub fn h3_client_settings(&self) -> Result<Option<ClientSettingsProfile>, ProfileDataError> {
+    /// Compile literal or variance-derived SETTINGS using a connection-scoped draw.
+    /// Unanalyzed reserved fields require an explicit best-effort difference report.
+    pub fn h3_client_settings(
+        &self,
+        draw: &mut ProfileDraw,
+    ) -> Result<Option<ClientSettingsProfile>, ProfileDataError> {
         let Some(capture) = &self.h3_peer_settings else {
             return Ok(None);
         };
@@ -45,19 +52,29 @@ impl PreparedConnectionComponents {
             return Err(ProfileDataError::Invalid("HTTP/3 SETTINGS namespace"));
         }
         capture.validate_fields(OrderCaptureLimits::default())?;
+        let fields = if let Some(evidence) = &self.h3_settings_evidence {
+            evidence.compile(capture, draw)?
+        } else {
+            if !self.allow_unanalyzed_h3_settings
+                && capture
+                    .fields
+                    .iter()
+                    .any(|field| SettingId::new(field.id).is_reserved())
+            {
+                return Err(ProfileDataError::Incomplete(
+                    "HTTP/3 reserved SETTINGS analysis",
+                ));
+            }
+            capture
+                .fields
+                .iter()
+                .map(|field| Ok((field.id, h3_settings::setting_value(&field.value)?)))
+                .collect::<Result<Vec<_>, ProfileDataError>>()?
+        };
         let mut settings = Settings::new();
-        for field in &capture.fields {
-            let ProtocolValue::Literal(bytes) = &field.value else {
-                return Err(ProfileDataError::Invalid("HTTP/3 SETTINGS value ownership"));
-            };
-            let encoded = bytes
-                .as_ref()
-                .try_into()
-                .map_err(|_error| ProfileDataError::Invalid("HTTP/3 SETTINGS value encoding"))?;
-            let id = SettingId::new(field.id);
-            let value = u64::from_be_bytes(encoded);
+        for (id, value) in fields {
             settings
-                .set(id, value)
+                .set(SettingId::new(id), value)
                 .map_err(|_error| ProfileDataError::Invalid("HTTP/3 SETTINGS value"))?;
         }
         Ok(Some(ClientSettingsProfile(Arc::new(settings))))
@@ -79,7 +96,23 @@ impl ConnectionSelection {
             check_connection_component(slot.kind, mode, &mut report)?;
         }
 
-        let mut prepared = Self::prepare_joint(&joint)?;
+        let mut prepared = self.prepare_components()?;
+        if prepared.h3_settings_evidence.is_none()
+            && prepared.h3_peer_settings.as_ref().is_some_and(|capture| {
+                capture
+                    .fields
+                    .iter()
+                    .any(|field| SettingId::new(field.id).is_reserved())
+            })
+        {
+            if mode == ProfilePreservationMode::Strict {
+                return Err(ProfileReplayError::UnsupportedConnectionComponent(
+                    CapturedSlotKind::Http3Settings,
+                ));
+            }
+            report.push(ProfilePreservationDifference::UnanalyzedHttp3ReservedSettings);
+            prepared.allow_unanalyzed_h3_settings = true;
+        }
         prepared.preservation_report = report.followed_by(prepared.preservation_report);
         Ok(prepared)
     }
@@ -105,7 +138,9 @@ impl ConnectionSelection {
     pub fn prepare_components(&self) -> Result<PreparedConnectionComponents, ProfileDataError> {
         let limits = JointCaptureLimits::default();
         let joint = JointCapture::from_canonical(&self.effective.capture, limits)?;
-        Self::prepare_joint(&joint)
+        let mut prepared = Self::prepare_joint(&joint)?;
+        prepared.h3_settings_evidence = self.effective.h3_settings_evidence.clone();
+        Ok(prepared)
     }
 
     fn prepare_joint(
@@ -126,6 +161,8 @@ impl ConnectionSelection {
             tls: None,
             quic_parameters: None,
             h3_peer_settings: None,
+            h3_settings_evidence: None,
+            allow_unanalyzed_h3_settings: false,
             quic_versions: None,
             h2_early_frames: None,
             quic_first_flight: None,

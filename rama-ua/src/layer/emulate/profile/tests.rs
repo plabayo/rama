@@ -844,7 +844,7 @@ fn h3_emulation_context_with_extra_slot(mut extra: Option<CapturedSlot>) -> Emul
             0,
             CaptureLevel::Connection,
             CapturedSlotKind::Http3Settings,
-            settings,
+            settings.clone(),
         ),
         (1, CaptureLevel::Request, CapturedSlotKind::Headers, headers),
     ] {
@@ -869,6 +869,44 @@ fn h3_emulation_context_with_extra_slot(mut extra: Option<CapturedSlot>) -> Emul
             scope.context.flow = Some(flow.canonical(MAXIMUM_FETCH_CONTEXT_BYTES).unwrap().id);
         }
     }
+    let mut leaf = analyzed.scopes[0].clone();
+    leaf.structure =
+        OrderedProtocolCapture::from_canonical(&settings, OrderCaptureLimits::default())
+            .unwrap()
+            .structural(OrderCaptureLimits::default())
+            .unwrap();
+    leaf.context.structure = leaf.structure.id;
+    leaf.id = leaf
+        .context
+        .canonical(MAXIMUM_FETCH_CONTEXT_BYTES)
+        .unwrap()
+        .id;
+    let mut bucket = crate::profile::CountedObservationBucket::new(
+        CanonicalDomain::Order,
+        leaf.id,
+        [3; 32],
+        crate::profile::ProfileBucketLimits::default(),
+    )
+    .unwrap();
+    for sequence in 1..=64 {
+        bucket
+            .observe(
+                crate::profile::ObservationId {
+                    run: [1; 16],
+                    sequence,
+                },
+                &settings,
+            )
+            .unwrap();
+    }
+    leaf.observations = crate::profile::analyze_capture_bucket(
+        &bucket,
+        crate::profile::OrderAnalysisConfig::default(),
+    )
+    .unwrap();
+    let mut scopes = analyzed.scopes.to_vec();
+    scopes.push(leaf);
+    analyzed.scopes = scopes.into();
     let db: UserAgentDatabase = [UserAgentProfile::from_captured(analyzed)]
         .into_iter()
         .collect();
@@ -925,7 +963,7 @@ async fn connect_modifier_applies_selected_h3_settings_before_connect() {
             let settings = selection
                 .prepare_components()
                 .unwrap()
-                .h3_client_settings()
+                .h3_client_settings(&mut selection.h3_settings_draw(context.seed))
                 .unwrap()
                 .unwrap();
             input.extensions().insert(settings);

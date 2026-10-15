@@ -80,6 +80,10 @@ use crate::utils::{
 #[derive(Debug, Clone, Copy, Default, Extension)]
 pub struct StorageAuthorized;
 
+/// Positive provenance installed only by the plaintext TCP listener.
+#[derive(Debug, Clone, Copy, Extension)]
+struct CleartextConnection;
+
 fn redacted_storage_auth(storage_auth: Option<&str>) -> Option<&'static str> {
     storage_auth.map(|_| "<redacted>")
 }
@@ -422,6 +426,9 @@ where
         .local_addr()
         .context("get local addr of tcp listener")?;
 
+    let cleartext = maybe_tls_server_config
+        .is_none()
+        .then(|| rama::layer::AddInputExtensionLayer::new(CleartextConnection));
     let tcp_service_builder = (
         ConsumeErrLayer::trace_as(tracing::Level::WARN),
         maybe_ha_proxy_layer,
@@ -430,6 +437,7 @@ where
         throttle,
         body_limit,
         collection_layer,
+        cleartext,
         maybe_tls_server_config.map(|cfg| TlsAcceptorLayer::new(cfg).with_store_client_hello(true)),
     );
 
@@ -597,6 +605,59 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn plaintext_fp_listener_attaches_positive_connection_provenance() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let exec = Executor::new();
+            let cfg = CliCommandFingerprint {
+                bind: SocketAddress::local_ipv4(0),
+                concurrent: 0,
+                timeout: 2.,
+                rate: 0,
+                throttle: 0,
+                forward: None,
+                http_version: "h1".parse().unwrap(),
+                http3: Http3Args { h3_bind: None },
+                secure: false,
+            };
+            let listeners =
+                HttpListeners::bind(exec.clone(), cfg.bind, cfg.http_version, None, &cfg.http3)
+                    .await
+                    .unwrap();
+            let address = listeners.tcp.as_ref().unwrap().local_addr().unwrap();
+            serve_http(
+                exec,
+                &Http3Endpoints::default(),
+                &cfg,
+                listeners,
+                None,
+                service_fn(|request: Request| async move {
+                    Ok::<_, Infallible>(if request.extensions().contains::<CleartextConnection>() {
+                        "positive-cleartext-provenance"
+                    } else {
+                        "missing"
+                    })
+                }),
+                (None, None),
+            )
+            .unwrap();
+            let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+            stream
+                .write_all(b"GET /report HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).await.unwrap();
+            assert!(
+                response.contains("positive-cleartext-provenance"),
+                "{response}"
+            );
+        })
+        .await
+        .expect("bounded plaintext fp listener");
+    }
 
     #[test]
     fn storage_auth_layer_debug_redacts_secret() {

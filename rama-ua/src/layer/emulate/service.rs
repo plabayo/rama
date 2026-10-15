@@ -310,8 +310,14 @@ where
                 .map_err(|error| {
                     ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                 })?;
+            let context = EmulationContext::of(req.extensions()).ok_or_else(|| {
+                ConnectionError::local(
+                    BoxError::from_static_str("captured profile context is missing"),
+                    ConnectionErrorKind::Internal,
+                )
+            })?;
             if let Some(settings) = prepared
-                .h3_client_settings()
+                .h3_client_settings(&mut selection.h3_settings_draw(context.seed))
                 .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?
             {
                 if req

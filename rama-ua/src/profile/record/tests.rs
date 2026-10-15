@@ -129,7 +129,27 @@ fn complete_empty_connection_is_counted_but_empty_requests_are_not() {
     assert!(joint.slots.is_empty());
     assert_eq!(joint.level, CaptureLevel::Connection);
     capture.joint.level = CaptureLevel::Request;
+    capture.flow = Some(FlowKey::Http {
+        version: Version::HTTP_11,
+        method: Method::GET,
+        initiator: None,
+        fetch: None,
+        connection: ConnectionContext::default(),
+    });
     capture
         .prepare(false, JointCaptureLimits::default())
         .unwrap_err();
+}
+
+#[test]
+fn incomplete_empty_connections_are_rejected_before_recording() {
+    let mut capture = capture();
+    capture.flow = None;
+    capture.joint.level = CaptureLevel::Connection;
+    capture.joint.slots = Box::default();
+    capture.joint.completeness = ProfileCaptureCompleteness::Incomplete;
+    assert!(matches!(
+        capture.prepare(false, JointCaptureLimits::default()),
+        Err(ProfileDataError::Incomplete("empty profile capture"))
+    ));
 }

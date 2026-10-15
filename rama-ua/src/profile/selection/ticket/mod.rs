@@ -230,6 +230,7 @@ pub struct PreparedConnectionProfile {
     pub scope: ValueId,
     pub capture: CanonicalValue,
     pub context: ProfileObservationScope,
+    pub h3_settings_evidence: Option<super::H3SettingsReplayEvidence>,
 }
 
 #[derive(Debug, Clone, Serialize, Extension)]
@@ -585,6 +586,11 @@ impl SelectedProfile {
                 scope: scope.id,
                 capture: variant.value.clone(),
                 context: scope.context.clone(),
+                h3_settings_evidence: super::H3SettingsReplayEvidence::for_profile(
+                    analysis,
+                    scope,
+                    &variant.value,
+                )?,
             },
         })
     }

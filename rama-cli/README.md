@@ -140,3 +140,13 @@ Profile export and database viewing skip profiles that exceed the analysis limit
 and report the count. They also report when the profile or analysis-work budget is
 reached. Archive files remain strictly validated. Human-readable labels and errors
 escape terminal controls and invisible direction markers.
+
+Captured HTTP/3 SETTINGS use the selected profile's matching connection-context
+analysis. Constant reserved entries and insufficient-sample lists retain their
+selected literals. A classified varying reserved position gets a connection-keyed
+ID draw; high-distinctness values get an independent draw, while repeated values
+remain part of the weighted complete tuple. Generated widths are inferred from
+retained samples and capped at the QUIC varint limit; this is a bounded heuristic,
+not a browser-specific distribution claim. A sorted rule sorts the emitted IDs.
+Missing or ambiguous analysis rejects strict reserved-SETTINGS replay; best-effort
+mode retains the tuple and reports `UnanalyzedHttp3ReservedSettings`.
