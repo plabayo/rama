@@ -296,6 +296,23 @@ fn a_mirrored_client_cannot_lift_the_relays_egress_limits() {
     // A client cannot disable the relay's idle timeout, nor lift it.
     assert_eq!(greedy.max_idle_timeout, base.max_idle_timeout);
 
+    // A client may shorten the idle timeout, never lengthen it past the relay's.
+    let base_idle = base.max_idle_timeout.map(VarInt::into_inner);
+    for (idle_ms, expected) in [(600_000_u64, base_idle), (10_000, Some(10_000))] {
+        let mut sent = transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
+        for parameter in &mut sent {
+            if parameter.id == ParameterId::MAX_IDLE_TIMEOUT {
+                parameter.value = max(idle_ms);
+            }
+        }
+        let mirrored = mirrored_transport(&with_parameters(&chrome, &sent));
+        assert_eq!(
+            mirrored.max_idle_timeout.map(VarInt::into_inner),
+            expected,
+            "client idle {idle_ms} ms"
+        );
+    }
+
     // A browser stays under the ceiling and is mirrored exactly.
     let browser = transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
     let limits = TransportLimits::try_from_sent(&browser).unwrap();

@@ -3,6 +3,7 @@ use std::future::pending;
 use rama_crypto::dep::boring::ssl::{
     AsyncSelectCertError, BoxCertificateFinish, SslRef, SslVerifyMode,
 };
+use rama_tls::server::{CertificateIdentity, LeafCertRequest};
 use rama_utils::guard::DropGuard;
 use tokio::sync::oneshot;
 
@@ -190,12 +191,35 @@ async fn closing_drops_a_pending_certificate_policy_before_draining_ends() {
 /// both peers' probe timeouts lie far beyond the budget, so no retransmission can rescue it.
 #[tokio::test]
 async fn certificate_work_finishing_between_packets_resumes_the_handshake() {
-    for (server_delay, client_delay) in [(true, false), (false, true), (true, true)] {
+    // An IP-literal server name sends no SNI: the server learns nothing before its delayed
+    // certificate work, so only the resumed step can announce the handshake data.
+    for (server_delay, client_delay, server_name) in [
+        (true, false, "localhost"),
+        (false, true, "localhost"),
+        (true, true, "localhost"),
+        (true, false, "127.0.0.1"),
+    ] {
         for version in [Version::V1, Version::V2] {
-            let case = format!("{version:?} server {server_delay} client {client_delay}");
+            let case = format!(
+                "{version:?} server {server_delay} client {client_delay} name {server_name}"
+            );
             let client_done = Arc::new(Mutex::new(None));
-            let (client_config, server_config) =
-                delayed_policy(version, server_delay, client_delay, client_done.clone());
+            let identity = if server_name == "localhost" {
+                crate::test_helpers::identity()
+            } else {
+                ServerAuthData::new_self_signed_leaf(LeafCertRequest {
+                    config: Default::default(),
+                    identities: [CertificateIdentity::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST))].into(),
+                })
+                .unwrap()
+            };
+            let (client_config, server_config) = delayed_policy(
+                version,
+                identity,
+                server_delay,
+                client_delay,
+                client_done.clone(),
+            );
             let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
             let client = endpoint(None, Executor::new(), Duration::from_secs(1));
             let accepting_endpoint = server.clone();
@@ -206,7 +230,7 @@ async fn certificate_work_finishing_between_packets_resumes_the_handshake() {
                 (data_at, connecting.await.unwrap())
             };
             let connecting = client
-                .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+                .connect_with(client_config, server.local_addr().unwrap(), server_name)
                 .unwrap();
             let (connected, (data_at, accepted)) =
                 tokio::time::timeout(Duration::from_secs(3), async {
@@ -235,11 +259,11 @@ async fn certificate_work_finishing_between_packets_resumes_the_handshake() {
 /// away. `client_done` records when the client's work finished.
 fn delayed_policy(
     version: Version,
+    identity: ServerAuthData,
     server_delay: bool,
     client_delay: bool,
     client_done: Arc<Mutex<Option<Instant>>>,
 ) -> (ClientConfig, ServerConfig) {
-    let identity = crate::test_helpers::identity();
     let alpn = || {
         [b"rama-quic-callback-resume".as_slice().into()]
             .into_iter()
