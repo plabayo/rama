@@ -46,6 +46,10 @@ use crate::{
     DatagramSocketExt as _, RetainedDatagram, SendDatagram,
 };
 
+mod budget;
+use budget::Charge;
+pub use budget::SharedQueueBudget;
+
 mod reply;
 use reply::{Reader, ReplyLease, ReplySockets};
 
@@ -61,7 +65,8 @@ pub struct DemuxConfig {
     /// Receive buffer of the listening socket, including a coalesced group.
     pub receive_bytes: NonZeroUsize,
     /// Payload bytes queued across all associations; a datagram beyond it is dropped as if its
-    /// queue were full.
+    /// queue were full. Each association holds at most an equal share of it, or one datagram,
+    /// so a stalled one cannot keep the others from queueing.
     pub queued_bytes: NonZeroUsize,
 }
 
@@ -80,6 +85,9 @@ pub struct DemuxStats {
     /// Associations whose original destination is this listener itself, given no
     /// [`ConnectorTarget`].
     pub addressed_to_listener: u64,
+    /// Datagrams dropped because they were redirected from this host itself, where a reply
+    /// socket would catch the proxy's own forward.
+    pub dropped_addressed_to_host: u64,
     /// Payload bytes queued now, across all associations.
     pub queued_bytes: usize,
 }
@@ -91,6 +99,7 @@ struct Counters {
     reply_source: AtomicU64,
     invalid: AtomicU64,
     addressed_to_listener: AtomicU64,
+    addressed_to_host: AtomicU64,
     queued_bytes: AtomicUsize,
 }
 
@@ -98,44 +107,7 @@ struct Counters {
 #[derive(Debug)]
 struct Queued {
     datagram: RetainedDatagram,
-    _charge: Charge,
-}
-
-#[derive(Debug)]
-struct Charge {
-    counters: Arc<Counters>,
-    len: usize,
-}
-
-impl Charge {
-    /// Reserve `len` bytes within `budget`, or `None` when they do not fit.
-    fn try_new(counters: &Arc<Counters>, len: usize, budget: usize) -> Option<Self> {
-        let mut queued = counters.queued_bytes.load(Ordering::Acquire);
-        loop {
-            let total = queued.checked_add(len).filter(|total| *total <= budget)?;
-            match counters.queued_bytes.compare_exchange_weak(
-                queued,
-                total,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => break,
-                Err(current) => queued = current,
-            }
-        }
-        Some(Self {
-            counters: counters.clone(),
-            len,
-        })
-    }
-}
-
-impl Drop for Charge {
-    fn drop(&mut self) {
-        self.counters
-            .queued_bytes
-            .fetch_sub(self.len, Ordering::AcqRel);
-    }
+    charge: Charge,
 }
 
 /// How long the host's own addresses are trusted before they are enumerated again.
@@ -192,7 +164,13 @@ impl HostAddresses {
         let ip = destination.ip_addr.into_canonical_ip_addr();
         ip.is_unspecified()
             || ip == listening.ip_addr.into_canonical_ip_addr()
-            || (listening.ip_addr.is_unspecified() && (ip.is_loopback() || self.contains(ip)))
+            || (listening.ip_addr.is_unspecified() && self.is_host(ip))
+    }
+
+    /// Whether `ip` is this host itself, on any port.
+    fn is_host(&mut self, ip: IpAddr) -> bool {
+        let ip = ip.into_canonical_ip_addr();
+        ip.is_unspecified() || ip.is_loopback() || self.contains(ip)
     }
 }
 
@@ -207,6 +185,8 @@ struct Addresses {
 struct Entry {
     queue: mpsc::Sender<Queued>,
     generation: u64,
+    /// Bytes this association holds queued.
+    queued: Arc<AtomicUsize>,
 }
 
 #[derive(Debug, Default)]
@@ -240,6 +220,7 @@ pub struct DatagramDemux<S> {
     counters: Arc<Counters>,
     host: HostAddresses,
     reply_sockets: Option<BoxService<SocketAddress, S, BoxError>>,
+    shared_budget: Option<SharedQueueBudget>,
 }
 
 impl<S: fmt::Debug> fmt::Debug for DatagramDemux<S> {
@@ -271,6 +252,7 @@ impl DemuxStatsHandle {
             dropped_reply_source: self.0.reply_source.load(Ordering::Relaxed),
             dropped_invalid: self.0.invalid.load(Ordering::Relaxed),
             addressed_to_listener: self.0.addressed_to_listener.load(Ordering::Relaxed),
+            dropped_addressed_to_host: self.0.addressed_to_host.load(Ordering::Relaxed),
             queued_bytes: self.0.queued_bytes.load(Ordering::Relaxed),
         }
     }
@@ -285,7 +267,15 @@ impl<S: DatagramSocket> DatagramDemux<S> {
             counters: Arc::default(),
             host: HostAddresses::new(),
             reply_sockets: None,
+            shared_budget: None,
         }
+    }
+
+    /// Hold what this demux queues within `budget` too, which other demuxes may share.
+    #[must_use]
+    pub fn with_shared_budget(mut self, budget: SharedQueueBudget) -> Self {
+        self.shared_budget = Some(budget);
+        self
     }
 
     /// Answer a redirected datagram the listening socket cannot from a socket that `bind`
@@ -321,11 +311,13 @@ impl<S: DatagramSocket> DatagramDemux<S> {
         let listening = self.socket.local_addr().map_err(DatagramError::Io)?;
         let capabilities = self.socket.capabilities();
         let mut buffer = vec![0; self.config.receive_bytes.get()];
+        let share = self.config.queued_bytes.get() / self.config.associations.get();
         let (incoming, mut from_reply_sockets) = mpsc::channel(self.config.queue.get());
         let reply = self.reply_sockets.take().map(|bind| {
             let reader = Reader {
                 incoming,
                 counters: self.counters.clone(),
+                shared: self.shared_budget.clone(),
                 queued_bytes: self.config.queued_bytes.get(),
                 receive_bytes: self.config.receive_bytes.get(),
             };
@@ -339,7 +331,7 @@ impl<S: DatagramSocket> DatagramDemux<S> {
         };
         let mut cancelled = std::pin::pin!(cancelled);
         loop {
-            let (datagram, local, via_reply_socket) = tokio::select! {
+            let (mut datagram, local, via_reply_socket) = tokio::select! {
                 received = self.socket.recv(&mut buffer) => {
                     let metadata = received?;
                     if metadata.validate(buffer.len()).is_err() {
@@ -361,14 +353,24 @@ impl<S: DatagramSocket> DatagramDemux<S> {
                                 == listening.ip_addr.into_canonical_ip_addr()
                                 || (listening.ip_addr.is_unspecified()
                                     && capabilities.send_source_ip)));
-                    if !from_listener
-                        && (reply.is_none() || metadata.original_destination.is_none())
-                    {
-                        self.counters.reply_source.fetch_add(1, Ordering::Relaxed);
-                        continue;
+                    if !from_listener {
+                        let Some(destination) =
+                            metadata.original_destination.filter(|_| reply.is_some())
+                        else {
+                            self.counters.reply_source.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        };
+                        // The proxy's own forward to this host would reach a reply socket there.
+                        if self.host.is_host(destination.ip_addr) {
+                            self.counters
+                                .addressed_to_host
+                                .fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
                     }
                     let Some(charge) = Charge::try_new(
                         &self.counters,
+                        self.shared_budget.as_ref(),
                         metadata.len,
                         self.config.queued_bytes.get(),
                     ) else {
@@ -380,7 +382,7 @@ impl<S: DatagramSocket> DatagramDemux<S> {
                             payload: Bytes::copy_from_slice(&buffer[..metadata.len]),
                             metadata,
                         },
-                        _charge: charge,
+                        charge,
                     };
                     (datagram, local, !from_listener)
                 }
@@ -398,7 +400,9 @@ impl<S: DatagramSocket> DatagramDemux<S> {
             {
                 let registry = self.registry.lock();
                 if let Some(entry) = registry.associations.get(&addresses) {
-                    if entry.queue.try_send(datagram).is_err() {
+                    if !datagram.charge.try_assign(&entry.queued, share)
+                        || entry.queue.try_send(datagram).is_err()
+                    {
                         self.counters.queue_full.fetch_add(1, Ordering::Relaxed);
                     }
                     continue;
@@ -422,13 +426,21 @@ impl<S: DatagramSocket> DatagramDemux<S> {
                 _ => (self.socket.create_sender(), None),
             };
             let (queue, receiver) = mpsc::channel(self.config.queue.get());
+            let queued = Arc::new(AtomicUsize::new(0));
+            // An association's first datagram always fits its share.
+            let _assigned = datagram.charge.try_assign(&queued, share);
             let _first = queue.try_send(datagram);
             let mut registry = self.registry.lock();
             let generation = registry.next_generation;
             registry.next_generation += 1;
-            registry
-                .associations
-                .insert(addresses, Entry { queue, generation });
+            registry.associations.insert(
+                addresses,
+                Entry {
+                    queue,
+                    generation,
+                    queued,
+                },
+            );
             drop(registry);
             let socket = DemuxedSocket {
                 receiver,

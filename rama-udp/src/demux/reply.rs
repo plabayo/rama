@@ -15,7 +15,7 @@ use rama_core::{
 use rama_net::address::SocketAddress;
 use tokio::sync::{mpsc, oneshot};
 
-use super::{Charge, Counters, Queued};
+use super::{Charge, Counters, Queued, SharedQueueBudget};
 use crate::{DatagramSocket, DatagramSocketExt as _, RetainedDatagram};
 
 struct Bound<T> {
@@ -38,6 +38,7 @@ pub(super) struct ReplySockets<S: DatagramSocket> {
 pub(super) struct Reader {
     pub(super) incoming: mpsc::Sender<Queued>,
     pub(super) counters: Arc<Counters>,
+    pub(super) shared: Option<SharedQueueBudget>,
     pub(super) queued_bytes: usize,
     pub(super) receive_bytes: usize,
 }
@@ -128,8 +129,12 @@ async fn read<S: DatagramSocket>(
             reader.counters.invalid.fetch_add(1, Ordering::Relaxed);
             continue;
         }
-        let Some(charge) = Charge::try_new(&reader.counters, metadata.len, reader.queued_bytes)
-        else {
+        let Some(charge) = Charge::try_new(
+            &reader.counters,
+            reader.shared.as_ref(),
+            metadata.len,
+            reader.queued_bytes,
+        ) else {
             reader.counters.queue_full.fetch_add(1, Ordering::Relaxed);
             continue;
         };
@@ -140,7 +145,7 @@ async fn read<S: DatagramSocket>(
                 payload: Bytes::copy_from_slice(&buffer[..metadata.len]),
                 metadata,
             },
-            _charge: charge,
+            charge,
         };
         if reader.incoming.send(datagram).await.is_err() {
             return;

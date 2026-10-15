@@ -47,6 +47,7 @@ pub mod proxy;
 mod demux;
 pub use demux::{
     DatagramDemux, DemuxConfig, DemuxStats, DemuxStatsHandle, DemuxedSender, DemuxedSocket,
+    SharedQueueBudget,
 };
 
 mod peek;
