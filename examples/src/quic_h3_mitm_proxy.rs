@@ -35,7 +35,8 @@
 //! - `--listen <addr>`: where clients send. Default `127.0.0.1:62063`.
 //! - `--upstream <addr>`: the upstream every association goes to. Required.
 //! - `--upstream-ca <pem>`: the certificate the upstream presents. Required.
-//! - `--intercept <name>`: a server name to terminate; repeat it for more. Default none.
+//! - `--intercept <name>`: a server name to terminate, in any case; repeat it for more. Default
+//!   none.
 //! - `--ca-out <pem>`: where to write this proxy's CA certificate, which a client must trust
 //!   to talk to intercepted names.
 //!
@@ -71,7 +72,11 @@ use rama::{
     },
     io::BridgeIo,
     layer::{ArcLayer, ConsumeErrLayer},
-    net::{address::SocketAddress, stream::Socket as _, tls::ApplicationProtocol},
+    net::{
+        address::{Domain, SocketAddress},
+        stream::Socket as _,
+        tls::ApplicationProtocol,
+    },
     quic::{
         proto::VarInt,
         proxy::{
@@ -105,7 +110,7 @@ struct Args {
     #[arg(long)]
     upstream_ca: PathBuf,
     #[arg(long)]
-    intercept: Vec<String>,
+    intercept: Vec<Domain>,
     #[arg(long)]
     ca_out: Option<PathBuf>,
 }
@@ -169,20 +174,14 @@ async fn main() -> Result<(), BoxError> {
         EcnPolicy::Discard,
     );
 
-    let intercept: Arc<[String]> = args.intercept.into();
+    let intercept: Arc<[Domain]> = args.intercept.into();
     let route = service_fn(move |input: InputWithQuicClientHello<Association>| {
         let terminate = terminate.clone();
         let intercept = intercept.clone();
         async move {
-            let name = input
-                .client_hello
-                .client_hello
-                .ext_server_name()
-                .map(|name| name.to_string());
-            if name
-                .as_deref()
-                .is_some_and(|name| intercept.iter().any(|wanted| wanted == name))
-            {
+            // Domains compare case-insensitively, as DNS names do.
+            let name = input.client_hello.client_hello.ext_server_name().cloned();
+            if name.as_ref().is_some_and(|name| intercept.contains(name)) {
                 tracing::info!(?name, "intercepting");
                 terminate.serve(input).await
             } else {
@@ -200,7 +199,7 @@ async fn main() -> Result<(), BoxError> {
     let admission = QuicAssociationAdmission::try_new(AssociationLimits {
         active: NonZeroUsize::new(256).expect("nonzero"),
         active_per_source: NonZeroUsize::new(32).expect("nonzero"),
-        sources: NonZeroUsize::new(1024).expect("nonzero"),
+        sources: NonZeroUsize::new(1536).expect("nonzero"),
         tuples: NonZeroUsize::new(2048).expect("nonzero"),
         starts_per_window: NonZeroUsize::new(512).expect("nonzero"),
         starts_per_source_window: NonZeroUsize::new(64).expect("nonzero"),

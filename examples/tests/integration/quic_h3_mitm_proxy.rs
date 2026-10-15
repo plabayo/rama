@@ -117,7 +117,8 @@ async fn test_quic_h3_mitm_proxy() {
             mitm_ca.to_str().unwrap().to_owned(),
         ];
         if intercept {
-            args.extend(["--intercept".to_owned(), "localhost".to_owned()]);
+            // In another case than the client sends: names match case-insensitively.
+            args.extend(["--intercept".to_owned(), "LocalHost".to_owned()]);
         }
         let mut proxy = utils::ExampleRunner::capturing("quic_h3_mitm_proxy", Some("boring"), args);
         let proxy_address = listening(
