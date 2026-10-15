@@ -1,6 +1,8 @@
 use std::future::pending;
 
-use rama_crypto::dep::boring::ssl::{AsyncSelectCertError, BoxCertificateFinish, SslVerifyMode};
+use rama_crypto::dep::boring::ssl::{
+    AsyncSelectCertError, BoxCertificateFinish, SslRef, SslVerifyMode,
+};
 use rama_utils::guard::DropGuard;
 use tokio::sync::oneshot;
 
@@ -181,4 +183,117 @@ async fn closing_drops_a_pending_certificate_policy_before_draining_ends() {
     })
     .await
     .unwrap();
+}
+
+/// Certificate work that finishes between peer packets resumes the handshake at once, on the
+/// server (certificate selection) and on the client (its certificate for the server's request):
+/// both peers' probe timeouts lie far beyond the budget, so no retransmission can rescue it.
+#[tokio::test]
+async fn certificate_work_finishing_between_packets_resumes_the_handshake() {
+    for (server_delay, client_delay) in [(true, false), (false, true), (true, true)] {
+        for version in [Version::V1, Version::V2] {
+            let case = format!("{version:?} server {server_delay} client {client_delay}");
+            let client_done = Arc::new(Mutex::new(None));
+            let (client_config, server_config) =
+                delayed_policy(version, server_delay, client_delay, client_done.clone());
+            let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+            let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+            let accepting_endpoint = server.clone();
+            let accepting = async move {
+                let mut connecting = accepting_endpoint.accept().await.unwrap().accept().unwrap();
+                connecting.handshake_data().await.unwrap();
+                let data_at = Instant::now();
+                (data_at, connecting.await.unwrap())
+            };
+            let connecting = client
+                .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+                .unwrap();
+            let (connected, (data_at, accepted)) =
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    tokio::join!(connecting, accepting)
+                })
+                .await
+                .unwrap_or_else(|_elapsed| panic!("{case}: the handshake waited for a probe"));
+            connected.unwrap();
+            if server_delay && client_delay {
+                // The resumed server step announces its handshake data; the client's next
+                // packet only leaves once the client's own work is done.
+                let client_done = client_done.lock().expect("the client's work ran");
+                assert!(
+                    data_at < client_done,
+                    "{case}: handshake data waited for the client"
+                );
+            }
+            drop(accepted);
+            tokio::join!(client.shutdown(), server.shutdown());
+        }
+    }
+}
+
+/// Configurations whose certificate work (the server's selection, and the client's certificate
+/// for the server's request) finishes 200 ms after it starts, with both probe timeouts minutes
+/// away. `client_done` records when the client's work finished.
+fn delayed_policy(
+    version: Version,
+    server_delay: bool,
+    client_delay: bool,
+    client_done: Arc<Mutex<Option<Instant>>>,
+) -> (ClientConfig, ServerConfig) {
+    let identity = crate::test_helpers::identity();
+    let alpn = || {
+        [b"rama-quic-callback-resume".as_slice().into()]
+            .into_iter()
+            .collect()
+    };
+    let client_tls = TlsClientConfig::new()
+        .with_alpn(alpn())
+        .try_with_server_trust_anchors([identity.cert_chain.last().unwrap().clone()])
+        .unwrap();
+    let server_tls = TlsServerConfig::new()
+        .with_alpn(alpn())
+        .with_server_auth(identity);
+    let delayed = |done: Option<Arc<Mutex<Option<Instant>>>>| {
+        move |ssl: &mut SslRef| {
+            let done = done.clone();
+            ssl.set_async_certificate_callback(move |_| {
+                let done = done.clone();
+                Ok(Box::pin(async move {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    if let Some(done) = done {
+                        *done.lock() = Some(Instant::now());
+                    }
+                    Ok::<BoxCertificateFinish, AsyncSelectCertError>(Box::new(|_| Ok(())))
+                }))
+            });
+            Ok(())
+        }
+    };
+    if client_delay {
+        client_tls
+            .as_extensions()
+            .insert(HandshakeInitializer(Arc::new(delayed(Some(client_done)))));
+    }
+    let server_selects_late = server_delay.then(|| delayed(None));
+    server_tls
+        .as_extensions()
+        .insert(HandshakeInitializer(Arc::new(move |ssl: &mut SslRef| {
+            if client_delay {
+                ssl.set_verify(SslVerifyMode::PEER);
+            }
+            if let Some(delayed) = &server_selects_late {
+                delayed(ssl)?;
+            }
+            Ok(())
+        })));
+    let transport = Arc::new(TransportConfig::default().with_initial_rtt(Duration::from_secs(60)));
+    let mut client_config = BoringTlsProvider
+        .client_config(&client_tls, TlsOptions::default())
+        .unwrap()
+        .with_transport_config(transport.clone());
+    client_config.set_version(version).unwrap();
+    let server_config = BoringTlsProvider
+        .server_config(&server_tls, TlsOptions::default())
+        .unwrap()
+        .with_transport_config(transport);
+    (client_config, server_config)
 }
