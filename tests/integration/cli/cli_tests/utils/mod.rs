@@ -29,6 +29,7 @@ pub(super) enum EchoMode {
     Tls,
     Http,
     Https,
+    HttpsWithGeneratedCert,
     HttpsWithCertIssuer {
         remote_addr: String,
         remote_ca: Option<Vec<u8>>,
@@ -131,6 +132,13 @@ impl RamaService {
                 "RAMA_TLS_KEY",
                 BASE64.encode(include_bytes!("./example_tls.key")),
             );
+        } else if matches!(mode, EchoMode::HttpsWithGeneratedCert) {
+            // Exercise the CLI's generated P-256 certificate, independently of
+            // any certificate or remote issuer configured in the environment.
+            builder
+                .env_remove("RAMA_TLS_CRT")
+                .env_remove("RAMA_TLS_KEY")
+                .env_remove("RAMA_TLS_REMOTE");
         } else if let EchoMode::HttpsWithCertIssuer {
             remote_addr,
             remote_ca,
@@ -158,7 +166,9 @@ impl RamaService {
                 EchoMode::Udp => "udp",
                 EchoMode::Tls => "tls",
                 EchoMode::Http => "http",
-                EchoMode::Https | EchoMode::HttpsWithCertIssuer { .. } => "https",
+                EchoMode::Https
+                | EchoMode::HttpsWithGeneratedCert
+                | EchoMode::HttpsWithCertIssuer { .. } => "https",
             })
             .env(
                 "RUST_LOG",
@@ -167,7 +177,10 @@ impl RamaService {
 
         if matches!(
             &mode,
-            EchoMode::Http | EchoMode::Https | EchoMode::HttpsWithCertIssuer { .. }
+            EchoMode::Http
+                | EchoMode::Https
+                | EchoMode::HttpsWithGeneratedCert
+                | EchoMode::HttpsWithCertIssuer { .. }
         ) {
             builder.arg("--ws");
         }

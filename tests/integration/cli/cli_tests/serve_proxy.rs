@@ -138,7 +138,11 @@ async fn test_mitm_capture_export_and_direct_cli_emulation() {
     let origin_port = utils::reserve_loopback_port();
     let proxy_port = utils::reserve_loopback_port();
     let inspector_port = utils::reserve_loopback_port();
-    let _origin = utils::RamaService::serve_echo(origin_port, utils::EchoMode::Https);
+    // Mirroring the shared RSA-4096 fixture can outlast the origin's first-request
+    // idle deadline on Windows debug builds. This profile round trip needs TLS,
+    // not a newly generated RSA-4096 key between the upstream handshake and GET.
+    let _origin =
+        utils::RamaService::serve_echo(origin_port, utils::EchoMode::HttpsWithGeneratedCert);
     let (_proxy, inspector_token) =
         utils::RamaService::serve_proxy_mitm(proxy_port, inspector_port);
     let origin = format!("https://127.0.0.1:{origin_port}/profile");
