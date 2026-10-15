@@ -124,7 +124,7 @@ compression-core = "0.4"
 const_format = "0.2"
 core-foundation = "0.10"
 csv = "1.4"
-dial9 = { version = "0.5.3", default-features = false, features = ["tokio"] }
+dial9 = { version = "0.5.4", default-features = false, features = ["tokio"] }
 dial9-trace-format = "0.5.2"
 divan = "0.1"
 escargot = "0.5"
@@ -240,7 +240,7 @@ regex = { version = "1.13", default-features = false }
 regex-automata = { version = "0.4.18", default-features = false, features = ["hybrid", "meta", "perf", "std"] }
 ring = "0.17"
 rustc-hash = "2"
-rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12"] }
+rustls = { version = "0.23.46", default-features = false, features = ["logging", "std", "tls12"] }
 rustls-pki-types = "^1"
 rustversion = "1.0"
 ryu = "1"
@@ -262,7 +262,7 @@ syn = "3.0"
 sync_wrapper = "1.0"
 terminal-prompt = "0.2"
 time = "0.3.55"
-tokio = "1.53"
+tokio = "1.53.3"
 tokio-graceful = "0.2"
 tokio-postgres = "0.7"
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12"] }
@@ -281,10 +281,10 @@ trybuild = "1.0"
 tui-logger = { version = "0.18", features = ["tracing-support"] }
 turmoil = "0.7"
 unicode-normalization = "0.1"
-uuid = "1.27"
+uuid = "1.28"
 venndb = "0.6"
 want = "0.3.2"
-wasmtime = { version = "49.0.2", default-features = false }
+wasmtime = { version = "49.0.3", default-features = false }
 webpki-root-certs = "1.0"
 webpki-roots = "1.0"
 wildcard = "0.3"

@@ -51,10 +51,12 @@ struct TcpFlowMaintenanceState {
 /// by maintenance scans are mirrored through one locked snapshot.
 final class TcpFlowContext: @unchecked Sendable {
     enum DiagnosticEvent: UInt8 {
-        case kernelOpen, clientEof, rustServerClosed, kernelWriteClose, egressFin, forcedTeardown
+        case kernelOpen, clientEof, rustServerClosed, kernelWriteClose, egressFin, forcedTeardown,
+            egressFailure
 
         var name: String {
             switch self {
+            case .egressFailure: return "egress_failure"
             case .forcedTeardown: return "forced_teardown"
             case .kernelOpen: return "kernel_open_result"
             case .clientEof: return "client_read_eof"
@@ -72,6 +74,8 @@ final class TcpFlowContext: @unchecked Sendable {
         value &+= 1
         return value
     }
+    /// Rust's stable join key; independent of the Swift registry's ObjectIdentifier.
+    var rustFlowId: UInt64 = 0
     private var reportedDiagnosticEvents: UInt8 = 0
     private let maintenanceState = Locked(TcpFlowMaintenanceState())
     // Connection is held behind the injectable protocol so unit tests
@@ -288,8 +292,15 @@ final class TcpFlowContext: @unchecked Sendable {
     /// Called only on the flow queue, like the close transitions it describes.
     /// Each event appears at most once, including a duplicate terminal callback.
     func logDiagnostic(_ event: DiagnosticEvent, error: Error? = nil) {
+        // Ordinary connection failures keep their context at debug level.
+        let persist = error != nil && event != .egressFailure
+        guard RamaLog.isEnabled(persist ? .default : .debug) else {
+            // Preserve once-only event consumption without building the string.
+            reportedDiagnosticEvents |= 1 << event.rawValue
+            return
+        }
         if let record = diagnosticRecord(for: event, error: error) {
-            if error != nil { RamaLog.noticePublic(record) }
+            if persist { RamaLog.noticePublic(record) }
             else { RamaLog.debugPublic(record) }
         }
     }
@@ -325,7 +336,7 @@ final class TcpFlowContext: @unchecked Sendable {
         } else {
             (errorKind, errorCode) = ("none", 0)
         }
-        return "tcp_terminal diagnostic_id=\(diagnosticId) engine_generation=\(engineGeneration ?? 0) "
+        return "tcp_terminal flow_id=\(rustFlowId) diagnostic_id=\(diagnosticId) engine_generation=\(engineGeneration ?? 0) "
             + "event=\(event.name) mode=\(mode == .viaRust ? "via_rust" : "promoted") "
             + "egress_ready=\(egressReady ? 1 : 0) done=\(isDone ? 1 : 0) "
             + "error_kind=\(errorKind) error_code=\(errorCode)"

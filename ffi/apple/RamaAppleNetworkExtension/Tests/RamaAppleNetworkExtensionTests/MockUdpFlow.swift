@@ -27,7 +27,6 @@ final class MockUdpFlow: UdpFlowLike, @unchecked Sendable {
     private var _closeReadErrors: [Error?] = []
     private var _closeWriteErrors: [Error?] = []
     private var _writeAfterCloseCount: Int = 0
-    private var _applyMetadataCount: Int = 0
 
     // MARK: - UdpFlowLike
 
@@ -77,11 +76,6 @@ final class MockUdpFlow: UdpFlowLike, @unchecked Sendable {
         lock.unlock()
     }
 
-    func applyMetadata(to params: NWParameters) {
-        lock.lock()
-        _applyMetadataCount += 1
-        lock.unlock()
-    }
 
     // MARK: - Driving
 
@@ -172,10 +166,5 @@ final class MockUdpFlow: UdpFlowLike, @unchecked Sendable {
     var writeAfterCloseCount: Int {
         lock.lock(); defer { lock.unlock() }
         return _writeAfterCloseCount
-    }
-
-    var applyMetadataCallCount: Int {
-        lock.lock(); defer { lock.unlock() }
-        return _applyMetadataCount
     }
 }

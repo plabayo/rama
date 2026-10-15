@@ -18,8 +18,9 @@ final class TcpFlowSessionTests: XCTestCase {
         let flow: MockTcpFlow
         let conn: MockNwConnection
         let session: TcpFlowSession<MockTcpFlow>
+        let reportEnabled: Locked<Bool>
 
-        init() {
+        init(reportEnabled: Bool = true) {
             self.core = TransparentProxyCore()
             self.flow = MockTcpFlow()
             self.conn = MockNwConnection()
@@ -29,11 +30,53 @@ final class TcpFlowSessionTests: XCTestCase {
                 sourceAppSigningIdentifier: nil,
                 sourceAppBundleIdentifier: nil,
                 sourceAppAuditToken: nil, sourceAppPid: 4242)
-            self.session = TcpFlowSession(core: core, flow: flow, meta: meta)
+            let reportFlag = Locked(reportEnabled)
+            self.reportEnabled = reportFlag
+            self.session = TcpFlowSession(core: core, flow: flow, meta: meta,
+                                          egressReportEnabled: { reportFlag.withLock { $0 } })
             // Pre-wire the egress connection slot so tests of the
             // post-`.ready` phases have a connection to operate on.
             self.session.ctx.connection = self.conn
         }
+    }
+
+    func testEstablishmentReportRequestedOnceAcrossRecoveryAndFailure() {
+        let fx = Fixture()
+        fx.session.flowQueue.sync {
+            fx.session.handleEgressReady(connection: fx.conn)
+            fx.session.handleEgressReady(connection: fx.conn)
+            fx.session.handleEgressFailed(.posix(.ECONNRESET))
+        }
+        XCTAssertEqual(fx.conn.establishmentReportRequests, 1)
+    }
+
+    func testPreReadyFailureRequestsReportBeforeDetachingConnection() {
+        let fx = Fixture()
+        fx.session.flowQueue.sync {
+            fx.session.handleEgressFailed(.posix(.ECONNREFUSED))
+        }
+        XCTAssertEqual(fx.conn.establishmentReportRequests, 1)
+        XCTAssertNil(fx.session.ctx.connection)
+        XCTAssertTrue(fx.session.ctx.isDone)
+    }
+
+    func testDisabledEstablishmentLoggingDoesNotRequestReports() {
+        let fx = Fixture(reportEnabled: false)
+        fx.session.flowQueue.sync {
+            fx.session.handleEgressReady(connection: fx.conn)
+            fx.session.handleEgressFailed(.posix(.ECONNRESET))
+        }
+        XCTAssertEqual(fx.conn.establishmentReportRequests, 0)
+    }
+
+    func testEnablingLogsAfterReadyDoesNotRelabelLaterFailure() {
+        let fx = Fixture(reportEnabled: false)
+        fx.session.flowQueue.sync {
+            fx.session.handleEgressReady(connection: fx.conn)
+            fx.reportEnabled.withLock { $0 = true }
+            fx.session.handleEgressFailed(.posix(.ECONNRESET))
+        }
+        XCTAssertEqual(fx.conn.establishmentReportRequests, 0)
     }
 
     // MARK: - Construction

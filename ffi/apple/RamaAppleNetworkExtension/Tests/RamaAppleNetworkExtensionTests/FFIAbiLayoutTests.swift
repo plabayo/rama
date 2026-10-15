@@ -33,6 +33,14 @@ final class FFIAbiLayoutTests: XCTestCase {
     }
 
     func testEgressAndPeerStructLayouts() {
+        XCTAssertEqual(MemoryLayout<RamaTcpEgressReport>.size, 56)
+        XCTAssertEqual(MemoryLayout<RamaTcpEgressReport>.alignment, 8)
+        XCTAssertEqual(MemoryLayout<RamaTcpEgressReport>.offset(of: \.allow_proxy), 4)
+        XCTAssertEqual(MemoryLayout<RamaTcpEgressReport>.offset(of: \.proxy_policy), 5)
+        XCTAssertEqual(MemoryLayout<RamaTcpEgressReport>.offset(of: \.connect_duration_ms), 8)
+        XCTAssertEqual(MemoryLayout<RamaTcpEgressReport>.offset(of: \.report_duration_ms), 16)
+        XCTAssertEqual(MemoryLayout<RamaTcpEgressReport>.offset(of: \.proxy_endpoint_utf8), 24)
+        XCTAssertEqual(MemoryLayout<RamaTcpEgressReport>.offset(of: \.error_utf8), 40)
         XCTAssertEqual(MemoryLayout<RamaUdpPeerView>.size, 32)
         XCTAssertEqual(MemoryLayout<RamaUdpPeerView>.alignment, 8)
         XCTAssertEqual(MemoryLayout<RamaNwEgressParameters>.size, 11)

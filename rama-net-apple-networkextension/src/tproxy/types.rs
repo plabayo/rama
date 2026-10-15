@@ -165,9 +165,9 @@ pub enum NwAttribution {
     User = 1,
 }
 
-/// Non-protocol `NWParameters` settings that apply equally to TCP and UDP egress connections.
+/// Non-protocol Network.framework settings for Swift-owned TCP egress.
 ///
-/// All fields map directly to top-level `NWParameters` properties (not protocol-specific options).
+/// UDP egress is service-owned Rust I/O; these settings do not configure it.
 /// Only parameters meaningful for a `NETransparentProxyProvider` egress connection are included.
 #[derive(Clone, Debug)]
 pub struct NwEgressParameters {
@@ -197,11 +197,18 @@ pub struct NwEgressParameters {
     /// it if you need downstream observers to see this extension as the
     /// source.
     pub preserve_original_meta_data: bool,
-    /// Default `false` → Swift sets `preferNoProxies = true` on egress,
-    /// bypassing system / PAC HTTP/SOCKS proxies to break the stacked-proxy
-    /// loop (see [`crate::tproxy`]). Only scopes the SystemConfiguration
-    /// proxy table; other NE providers and VPNs are unaffected.
-    pub allow_system_proxy: bool,
+    /// Permit Network.framework to use an upstream system/PAC proxy.
+    /// Defaults to `false`: apply the public direct preference. Swift builds
+    /// opting into `PrivateNetworkProxyControl` also apply the private no-proxy
+    /// control when available. Otherwise proxy fallback remains possible.
+    /// `true` clears both controls; it does not force a proxy.
+    ///
+    /// The existing establishment event records `allow_proxy`, `proxy_policy`
+    /// (`allowed`, `no_proxy_applied`, or `prefer_direct_only`) and the actual
+    /// `used_proxy` result when available. The private control is unsupported
+    /// by Apple and needs validation on each deployed OS version. Neither
+    /// control bypasses other NE providers or VPNs. See [`crate::tproxy`].
+    pub allow_proxy: bool,
 }
 
 impl Default for NwEgressParameters {
@@ -213,7 +220,7 @@ impl Default for NwEgressParameters {
             required_interface_type: None,
             attribution: None,
             preserve_original_meta_data: true,
-            allow_system_proxy: false,
+            allow_proxy: false,
         }
     }
 }

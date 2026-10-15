@@ -35,7 +35,6 @@ check-features:
 test:
     uv run --frozen --project scripts/ci python -m unittest discover -s scripts/ci -p 'test_*.py'
 
-
 # Run a test command against an owned Unix-socket-only PostgreSQL cluster.
 [unix]
 fp-test-postgres +args:
@@ -45,3 +44,11 @@ fp-test-postgres +args:
 [linux]
 install-postgres:
     bash scripts/ci/install-postgres.sh
+
+# Newest standard Apple preview runner from GitHub's catalog.
+apple-preview-runner:
+    python3 scripts/ci/apple_preview_runner.py
+
+# Bound disk use across the disposable Apple preview runner’s checks.
+apple-preview-phase PHASE +COMMAND:
+    python3 scripts/ci/apple_preview_phase.py {{PHASE}} {{COMMAND}}

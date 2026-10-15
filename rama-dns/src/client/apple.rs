@@ -314,11 +314,12 @@ where
         // the socket is readable). When the stream is dropped, locals here
         // unwind in reverse declaration order:
         //
-        //   1. `service_ref: ServiceRef` (declared below) drops first and its
+        //   1. `async_fd` (declared last) deregisters the socket.
+        //   2. `service_ref: ServiceRef` drops next and its
         //      `Drop` impl calls `DNSServiceRefDeallocate`, which Apple
         //      documents as synchronously canceling any pending callbacks
         //      for this `DNSServiceRef`.
-        //   2. `state: Box<QueryState<T, P>>` drops afterwards, by which
+        //   3. `state: Box<QueryState<T, P>>` drops afterwards, by which
         //      point no further callbacks can fire.
         //
         // Do **not** reorder these declarations: the boxed state must outlive
@@ -379,7 +380,10 @@ where
             return;
         }
 
-        let async_fd = match AsyncFd::new(DnsServiceSocketFd(fd)) {
+        // SAFETY: `service_ref` owns this valid socket and outlives `async_fd`,
+        // including on cancellation. Neither the descriptor nor its owner is
+        // replaced or closed while registered; `as_raw_fd` always returns `fd`.
+        let async_fd = match unsafe { AsyncFd::register(DnsServiceSocketFd(fd)) } {
             Ok(async_fd) => async_fd,
             Err(err) => {
                 yielder

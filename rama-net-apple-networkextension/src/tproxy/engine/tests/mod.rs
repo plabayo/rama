@@ -6,6 +6,7 @@ mod decision;
 #[cfg(feature = "dial9")]
 mod dial9;
 mod e2e_loopback;
+mod egress_diagnostics;
 mod flow_meta;
 mod leak;
 mod lifecycle;

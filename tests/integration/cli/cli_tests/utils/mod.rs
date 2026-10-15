@@ -945,6 +945,14 @@ fn wait_for_udp_echo(process: &mut Child, port: u16, name: &str) {
     }
 }
 
+pub(super) fn reserve_loopback_udp_port() -> u16 {
+    UdpSocket::bind("127.0.0.1:0")
+        .expect("select available UDP port")
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
 pub(super) fn reserve_loopback_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()

@@ -23,6 +23,10 @@ enum RamaLog {
         Logger(subsystem: LifecycleLog.subsystem, category: category)
     }
 
+    static func isEnabled(_ type: OSLogType) -> Bool {
+        OSLog(subsystem: LifecycleLog.subsystem, category: category).isEnabled(type: type)
+    }
+
     static func log(_ level: Level, _ message: String) {
         let logger = logger()
         switch level {

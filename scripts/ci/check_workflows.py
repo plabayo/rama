@@ -43,6 +43,10 @@ def matrix_rows(matrix):
 
 
 def expression(value, matrix, job_index=0, run_id=1):
+    # The catalog resolver admits only xcode-<integer>. Account for it as macOS;
+    # all other dynamic runner expressions remain unsupported/fail closed.
+    if value == "${{ needs.apple-runner.outputs.runner }}":
+        return "xcode-preview"
     if not isinstance(value, str) or not value.startswith("${{"):
         return value
     assert value.endswith("}}"), value
@@ -140,12 +144,20 @@ def validate(workflow, path):
     validate_step_gates(workflow, path)
     jobs = workflow["jobs"]
     for name, job in jobs.items():
+        if job.get("runs-on") == "${{ needs.apple-runner.outputs.runner }}":
+            assert "apple-runner" in ancestors(jobs, name), "Dynamic Apple runner must depend on its resolver"
+            resolver = jobs["apple-runner"]
+            assert resolver.get("runs-on") == "ubuntu-latest", "Apple resolver must run on Linux"
+            assert resolver.get("outputs", {}).get("runner") == "${{ steps.apple_runner.outputs.runner }}", "Invalid Apple runner output"
+            steps = [step for step in resolver.get("steps", []) if step.get("id") == "apple_runner"]
+            assert len(steps) == 1 and steps[0].get("run") == "just scripts/ci/apple-preview-runner", "Unrecognized Apple runner resolver"
         ancestors(jobs, name)
         for index, row in enumerate(matrix_rows(job.get("strategy", {}).get("matrix", {}))):
             runner = expression(job.get("runs-on", ""), row)
             runners = [runner] if isinstance(runner, str) else runner
             for family, slots in SLOTS.items():
-                if not any(label.startswith(family) for label in runners):
+                prefixes = ("macos", "xcode-") if family == "macos" else (family,)
+                if not any(label.startswith(prefixes) for label in runners):
                     continue
                 concurrency = job.get("concurrency", {})
                 assert concurrency.get("cancel-in-progress") is False, (path, name, "cancellation")

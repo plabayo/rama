@@ -55,6 +55,7 @@ final class LifecycleLogTests: XCTestCase {
         for (error, kind, code) in cases {
             let context = TcpFlowContext()
             context.engineGeneration = 7
+            context.rustFlowId = 12345
             XCTAssertTrue(ids.insert(context.diagnosticId).inserted)
             for event in events {
                 guard let record = context.diagnosticRecord(for: event, error: error) else {
@@ -62,6 +63,7 @@ final class LifecycleLogTests: XCTestCase {
                 }
                 XCTAssertTrue(record.contains("diagnostic_id=\(context.diagnosticId) "))
                 XCTAssertTrue(record.contains("engine_generation=7 "))
+                XCTAssertTrue(record.contains("flow_id=12345 "))
                 XCTAssertTrue(record.contains("error_kind=\(kind) error_code=\(code)"))
                 XCTAssertFalse(record.contains("private"))
                 XCTAssertFalse(record.contains("secret"))

@@ -74,7 +74,7 @@ private final class BulkFlow: TcpFlowLike, @unchecked Sendable {
               completionHandler: @escaping @Sendable (Error?) -> Void) { completionHandler(nil) }
     func closeReadWithError(_ error: Error?) { base.closeReadWithError(error) }
     func closeWriteWithError(_ error: Error?) { base.closeWriteWithError(error) }
-    func applyMetadata(to params: NWParameters) {}
+    func applyMetadata(to params: nw_parameters_t) {}
 }
 
 private final class BulkForwarderRef: @unchecked Sendable {

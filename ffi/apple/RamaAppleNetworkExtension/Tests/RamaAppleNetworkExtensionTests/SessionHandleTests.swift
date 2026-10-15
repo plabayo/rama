@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import XCTest
 
 @testable import RamaAppleNetworkExtension
@@ -92,6 +93,43 @@ final class SessionHandleTests: XCTestCase {
             preconditionFailure()
         }
         return session
+    }
+
+    func testStartedFlowCarriesRustJoinKeyIntoTerminalRecord() throws {
+        let core = TransparentProxyCore()
+        core.attachEngine(makeEngine())
+        defer { core.detachEngine(reason: 0) }
+        let connection = MockNwConnection()
+        core.nwConnectionFactory = { _, _, _ in connection }
+        let session = TcpFlowSession(core: core, flow: MockTcpFlow(), meta: tcpMeta())
+        XCTAssertTrue(session.start())
+        let id = try XCTUnwrap(session.sessionHandle).flowId
+        XCTAssertNotEqual(id, 0)
+        session.flowQueue.sync {
+            XCTAssertEqual(session.ctx.rustFlowId, id)
+            let record = session.ctx.diagnosticRecord(for: .egressFailure, error: NWError.posix(.ECONNRESET))!
+            XCTAssertTrue(record.contains("tcp_terminal flow_id=\(id) "))
+            XCTAssertFalse(record.contains("example.com"))
+        }
+    }
+
+    func testEgressDiagnosticsKeepRustFlowIdAfterCancel() {
+        let engine = makeEngine()
+        defer { engine.stop(reason: 0) }
+        let session = newInterceptedTcpSession(on: engine)
+        let id = session.flowId
+        XCTAssertNotEqual(id, 0)
+        let ctx = TcpFlowContext()
+        ctx.rustFlowId = id
+        XCTAssertTrue(ctx.diagnosticRecord(for: .egressFailure, error: NWError.posix(.ECONNRESET))!
+            .contains("tcp_terminal flow_id=\(id) "))
+        session.cancel()
+        XCTAssertEqual(session.flowId, id)
+        session.reportEgress(
+            TcpEstablishmentReport(usedProxy: true, proxyConfigured: true,
+                proxyEndpoint: "127.0.0.1:8888", durationMs: 125),
+            ready: true, connectDurationMs: 130, error: nil)
+        session.reportEgress(nil, ready: false, connectDurationMs: 17, error: .posix(.ECONNREFUSED))
     }
 
     /// Post-cancel `onClientBytes` must return `.closed` instead of

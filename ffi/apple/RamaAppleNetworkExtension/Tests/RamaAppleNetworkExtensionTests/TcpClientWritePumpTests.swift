@@ -173,7 +173,7 @@ final class MockTcpFlow: TcpFlowLike, @unchecked Sendable {
         lock.unlock()
     }
 
-    func applyMetadata(to params: NWParameters) {
+    func applyMetadata(to params: nw_parameters_t) {
         lock.lock()
         _applyMetadataCount += 1
         lock.unlock()

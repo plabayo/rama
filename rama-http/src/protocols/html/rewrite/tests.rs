@@ -531,12 +531,17 @@ fn rewriting_time_is_linear_in_the_input() {
             let small = adversarial(id, 4_000);
             let large = adversarial(id, 16_000);
             // Retry once: a loaded machine can stall any single measurement.
+            let mut timings = Vec::new();
             let ok = (0..2).any(|_| {
-                let ratio = fastest(large.as_bytes(), mode).as_secs_f64()
-                    / fastest(small.as_bytes(), mode).as_secs_f64().max(1e-6);
-                ratio < 8.0
+                let large_time = fastest(large.as_bytes(), mode);
+                let small_time = fastest(small.as_bytes(), mode);
+                timings.push((small_time, large_time));
+                large_time.as_secs_f64() / small_time.as_secs_f64().max(1e-6) < 8.0
             });
-            assert!(ok, "pattern {id} in {mode:?} grows superlinearly");
+            assert!(
+                ok,
+                "pattern {id} in {mode:?} grows superlinearly (small, large): {timings:?}"
+            );
         }
     }
 }

@@ -35,6 +35,36 @@ class WorkflowPolicyTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate(self.workflow, self.path)
 
+    def test_xcode_runners_share_macos_budget(self):
+        path = self.path.with_name("CI-unstable.yml")
+        for runner in ("xcode-28", "${{ needs.apple-runner.outputs.runner }}"):
+            with self.subTest(runner=runner):
+                workflow = yaml.safe_load(path.read_text())
+                job = workflow["jobs"]["test-apple-preview"]
+                job["runs-on"] = runner
+                validate(workflow, path)
+                job["concurrency"]["group"] = "rama-macos-slot-5"
+                with self.assertRaisesRegex(AssertionError, "rama-macos-slot-5"):
+                    validate(workflow, path)
+
+    def test_dynamic_apple_runner_requires_known_resolver(self):
+        path = self.path.with_name("CI-unstable.yml")
+        workflow = yaml.safe_load(path.read_text())
+        resolver = workflow["jobs"]["apple-runner"]
+        step = next(step for step in resolver["steps"] if step.get("id") == "apple_runner")
+        step["run"] = "echo runner=arbitrary >> $GITHUB_OUTPUT"
+        with self.assertRaisesRegex(AssertionError, "Unrecognized Apple runner resolver"):
+            validate(workflow, path)
+
+    def test_apple_preview_jobs_do_not_share_pr_slots(self):
+        used = {expression(job.get("concurrency", {}).get("group"), row)
+                for job in self.workflow["jobs"].values()
+                for row in matrix_rows(job.get("strategy", {}).get("matrix", {}))
+                if str(expression(job.get("runs-on", ""), row)).startswith("macos")}
+        unstable = yaml.safe_load(self.path.with_name("CI-unstable.yml").read_text())
+        for name in ("test-apple-preview", "test-apple-private-api-stable"):
+            self.assertNotIn(unstable["jobs"][name]["concurrency"]["group"], used)
+
     def test_lossy_queue(self):
         self.workflow["jobs"]["test-rust-base"]["concurrency"]["queue"] = "single"
         with self.assertRaises(AssertionError):

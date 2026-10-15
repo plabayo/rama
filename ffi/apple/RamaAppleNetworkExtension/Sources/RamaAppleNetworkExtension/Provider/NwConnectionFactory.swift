@@ -11,14 +11,26 @@
 import Foundation
 import Network
 
+/// Value snapshot of the Network.framework establishment report.
+struct TcpEstablishmentReport: Sendable {
+    let usedProxy: Bool
+    let proxyConfigured: Bool
+    let proxyEndpoint: String?
+    let durationMs: UInt64
+}
+
 /// The surface of `NWConnection` that the per-flow code in
 /// `RamaTransparentProxyProvider` actually uses.
 ///
 /// Abstracted behind a protocol so `TcpFlowSession` / `UdpFlowSession`
 /// can be driven by `MockNwConnection` in unit tests instead of by
-/// a real `NWConnection`. Production conforms via the trivial
-/// extension below.
+/// a real connection. Production uses NativeTcpConnection and reads only
+/// the establishment report fields needed by the existing diagnostic.
 protocol NwConnectionLike: AnyObject, Sendable {
+    func requestTcpEstablishmentReport(
+        queue: DispatchQueue,
+        completion: @escaping @Sendable (TcpEstablishmentReport?) -> Void)
+
     var state: NWConnection.State { get }
 
     // Matches `NWConnection`'s real `@Sendable` declaration so the
@@ -65,32 +77,19 @@ protocol NwConnectionLike: AnyObject, Sendable {
 }
 
 // `NWConnection` already exposes `stateUpdateHandler` / `viabilityUpdateHandler`
-// with matching signatures, so the conformance is trivial.
+// with matching signatures; only the report needs a value-snapshot adapter.
 extension NWConnection: @unchecked @retroactive Sendable {}
-extension NWConnection: NwConnectionLike {}
-
 extension NwConnectionLike {
-    /// Cancel the connection AND release its `stateUpdateHandler` /
-    /// `viabilityUpdateHandler` in one step. Independently of object
-    /// lifetime, an attached handler keeps Apple's framework
-    /// `NWConnection` internals alive after `cancel()` — which observably
-    /// does NOT free for hundreds of connections under sustained churn
-    /// (heap audit: `__NWPath`, `MutableParametersStorage`,
-    /// `Endpoint.addressStorage` grow unboundedly; kernel emits 4,390
-    /// `nw_path_necp_check_for_updates Failed (22)` per 5 min of stress
-    /// while polling NECP sessions the kernel has already destroyed).
-    /// Detaching first releases that framework-internal graph promptly.
-    ///
-    /// Dropping the handlers before `cancel()` also suppresses Apple's
-    /// final `.cancelled` callback. No production teardown path depends on
-    /// observing it — they pivot to terminal on the synchronous initiator
-    /// side via `ctx.connection = nil` and registry removal.
-    ///
-    /// **Use everywhere a teardown path cancels an egress connection in
-    /// this crate**. Plain `cancel()` is for protocol conformance; the
-    /// per-flow teardown (`TcpFlowContext.applyX`) nils `ctx.connection`
-    /// after each call for idempotency, so the "already cancelled" log
-    /// noise (1,177 events / 5 min of stress pre-fix) stays at zero.
+    func requestTcpEstablishmentReport(
+        queue: DispatchQueue,
+        completion: @escaping @Sendable (TcpEstablishmentReport?) -> Void
+    ) {
+        queue.async { completion(nil) }
+    }
+
+    /// Release flow callbacks before cancellation so teardown cannot re-enter the
+    /// flow. NativeTcpConnection retains only weak native callbacks; these setters
+    /// detach the Swift handlers without reconfiguring the native connection.
     func cancelAndDetach() {
         self.stateUpdateHandler = nil
         self.viabilityUpdateHandler = nil
@@ -112,22 +111,10 @@ extension NwConnectionLike {
 /// port). The provider treats `nil` as a connect failure and tears the
 /// session down.
 typealias NwConnectionFactoryFn = @Sendable
-    (_ host: String, _ port: UInt16, _ params: NWParameters) -> (any NwConnectionLike)?
+    (_ host: String, _ port: UInt16, _ params: nw_parameters_t) -> (any NwConnectionLike)?
 
-/// Default factory: produces a real `NWConnection`.
-///
-/// Returns `nil` when the port is invalid (`NWEndpoint.Port(rawValue:)` rejects 0).
-/// Callers must surface that as a connect failure rather than silently substituting
-/// a default port — connecting to the wrong destination is worse than not connecting.
-func makeNwConnection(host: String, port: UInt16, using params: NWParameters) -> NWConnection? {
-    guard let port = NWEndpoint.Port(rawValue: port) else {
-        return nil
-    }
-    return NWConnection(host: NWEndpoint.Host(host), port: port, using: params)
-}
-
-/// `NwConnectionFactoryFn`-typed adapter that returns the default
-/// `NWConnection` produced by `makeNwConnection`.
+/// Native Network.framework factory; parameters can be stamped directly using
+/// the public C overload of NEAppProxyFlow.setMetadata(_:).
 let defaultNwConnectionFactory: NwConnectionFactoryFn = { host, port, params in
-    makeNwConnection(host: host, port: port, using: params)
+    NativeTcpConnection(host: host, port: port, parameters: params)
 }
