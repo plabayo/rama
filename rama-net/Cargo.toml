@@ -122,6 +122,9 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Network
 [target.'cfg(target_vendor = "apple")'.dependencies]
 core-foundation = { workspace = true, optional = true }
 
+[build-dependencies]
+cc = { workspace = true }
+
 [dev-dependencies]
 ahash = { workspace = true }
 itertools = { workspace = true, default-features = true }
@@ -130,9 +133,6 @@ quickcheck_macros = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
-
-[build-dependencies]
-cc = { workspace = true }
 
 [lints]
 workspace = true
