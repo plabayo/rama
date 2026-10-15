@@ -28,6 +28,14 @@ pub(crate) struct Endpoint {
 /// Function handlers enter a generic HTTP application context: HTTP/2 and HTTP/3
 /// Cookie fields are joined before extraction. Existing [`Service<Request>`]
 /// implementations retain their input unchanged, allowing transparent relays.
+///
+/// See [`EndpointServiceFn`] for the rules function handlers have to follow.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a valid web endpoint",
+    note = "An endpoint is a `Service<Request>`, a static response or an async function taking extractors.",
+    note = "A function returning `Result<O, E>` requires `E: From<Rejection>` for every extractor argument.",
+    note = "See `https://ramaproxy.org/docs/rama/http/service/web/trait.EndpointServiceFn.html` for details"
+)]
 pub trait IntoEndpointService<T>: private::Sealed<T, ()> {
     type Service: Service<Request>;
 
@@ -37,6 +45,12 @@ pub trait IntoEndpointService<T>: private::Sealed<T, ()> {
 
 /// Convert endpoints with state, using the same application boundary as
 /// [`IntoEndpointService`].
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a valid web endpoint",
+    note = "An endpoint is a `Service<Request>`, a static response or an async function taking extractors.",
+    note = "A function returning `Result<O, E>` requires `E: From<Rejection>` for every extractor argument.",
+    note = "See `https://ramaproxy.org/docs/rama/http/service/web/trait.EndpointServiceFn.html` for details"
+)]
 pub trait IntoEndpointServiceWithState<T, State>: private::Sealed<T, State> {
     type Service: Service<Request>;
 
@@ -67,6 +81,8 @@ where
     }
 }
 
+// Diagnostics would otherwise suggest this impl for any rejected function endpoint.
+#[diagnostic::do_not_recommend]
 impl<O> IntoEndpointService<()> for Result<O, Infallible>
 where
     O: Clone + Send + Sync + 'static,
@@ -89,6 +105,7 @@ where
     }
 }
 
+#[diagnostic::do_not_recommend]
 impl<O, State> IntoEndpointServiceWithState<(), State> for Result<O, Infallible>
 where
     O: Clone + Send + Sync + 'static,

@@ -23,6 +23,71 @@ use crate::{
 //      or ((FromPartsStateRefPair), FromOwnedRequestParts, FromRequestBody)
 
 /// [`rama_core::Service`] implemented for functions taking extractors.
+///
+/// # Rejections
+///
+/// An extractor that fails returns its `Rejection` instead of calling the function.
+/// How that rejection becomes a response depends on the return type:
+///
+/// - A function returning `impl IntoResponse` requires
+///   `ErrorResponse: From<Rejection>` for every extractor argument. This conversion
+///   is provided for any rejection implementing [`IntoResponse`].
+/// - A function returning `Result<O, E>` propagates rejections through `E`, so it
+///   requires `E: From<Rejection>` for every extractor argument.
+///   `Result` itself does not implement
+///   [`IntoResponse`], so there is no fallback when such a `From` impl is missing.
+///
+/// A function that breaks either rule does not implement this trait, which the compiler
+/// reports as an unsatisfied [`IntoEndpointService`] or [`IntoEndpointServiceWithState`]
+/// bound rather than naming the missing impl.
+///
+/// When registering a `Result<O, E>` handler with [`WebService`](super::super::WebService),
+/// response conversion additionally requires `O: IntoResponse` and `E: Into<ErrorResponse>`.
+/// Implementing [`IntoResponse`] for `E` provides the latter conversion, but is not
+/// required: [`ErrorResponse`] itself also satisfies it, as used by
+/// [`response::Result`](super::response::Result).
+///
+/// [`IntoEndpointService`]: super::IntoEndpointService
+/// [`IntoEndpointServiceWithState`]: super::IntoEndpointServiceWithState
+///
+/// # Example
+///
+/// ```
+/// use rama_http::Response;
+/// use rama_http::service::web::WebService;
+/// use rama_http::service::web::extract::{Query, query::FailedToDeserializeQueryString};
+/// use rama_http::service::web::response::IntoResponse;
+///
+/// #[derive(serde::Deserialize)]
+/// struct Params {
+///     page: u32,
+/// }
+///
+/// enum AppError {
+///     BadQuery(FailedToDeserializeQueryString),
+/// }
+///
+/// // required for `Query` to be usable in a function returning `Result<_, AppError>`
+/// impl From<FailedToDeserializeQueryString> for AppError {
+///     fn from(rejection: FailedToDeserializeQueryString) -> Self {
+///         Self::BadQuery(rejection)
+///     }
+/// }
+///
+/// impl IntoResponse for AppError {
+///     fn into_response(self) -> Response {
+///         match self {
+///             Self::BadQuery(rejection) => rejection.into_response(),
+///         }
+///     }
+/// }
+///
+/// async fn list(Query(params): Query<Params>) -> Result<String, AppError> {
+///     Ok(format!("page {}", params.page))
+/// }
+///
+/// let _service = WebService::default().with_get("/items", list);
+/// ```
 pub trait EndpointServiceFn<T, State>:
     private::Sealed<T, State> + Clone + Send + Sync + 'static
 {
