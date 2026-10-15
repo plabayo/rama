@@ -33,3 +33,11 @@ check-features:
 # The policy checker's own unit tests.
 test:
     uv run --frozen --project scripts/ci python -m unittest discover -s scripts/ci -p 'test_*.py'
+
+# Newest standard Apple preview runner from GitHub's catalog.
+apple-preview-runner:
+    python3 scripts/ci/apple_preview_runner.py
+
+# Bound disk use across the disposable Apple preview runner’s checks.
+apple-preview-phase PHASE +COMMAND:
+    python3 scripts/ci/apple_preview_phase.py {{PHASE}} {{COMMAND}}

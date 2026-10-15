@@ -517,10 +517,14 @@ typedef struct {
     /// egress NWParameters via NEAppProxyFlow.setMetadata(_:) before
     /// constructing the NWConnection. Defaults to true on the Rust side.
     bool preserve_original_meta_data;
-    /// When false (Rust-side default), Swift sets preferNoProxies = true on
-    /// egress to break the stacked-proxy loop. Scopes the SystemConfiguration
-    /// proxy table only — other NE providers / VPNs are unaffected.
-    bool allow_system_proxy;
+    /// False (default): prefer direct. The opt-in PrivateNetworkProxyControl
+    /// SwiftPM trait also enables the private no-proxy control when available.
+    /// Without that control, fallback can still use a system/PAC proxy.
+    /// True clears both controls and permits, but does not force, proxy use.
+    /// The establishment event records the requested/applied policy and result.
+    /// Private API behavior is unsupported; validate each deployed OS version.
+    /// Other NE providers / VPNs remain unaffected. TCP only; UDP is Rust-owned.
+    bool allow_proxy;
 } RamaNwEgressParameters;
 
 /// Options for the egress NWConnection on TCP flows.
@@ -856,6 +860,33 @@ void rama_transparent_proxy_tcp_session_on_client_eof(RamaTransparentProxyTcpSes
 
 /// Cancel TCP session and suppress any future server callbacks for this session.
 void rama_transparent_proxy_tcp_session_cancel(RamaTransparentProxyTcpSession* session);
+
+/// Borrowed diagnostic snapshot. String pointers are valid for their lengths
+/// during the call only. Unavailable reports leave proxy fields unknown.
+typedef struct {
+    bool ready;
+    bool report_available;
+    bool used_proxy;
+    bool proxy_configured;
+    bool allow_proxy;
+    /// 0: allowed, 1: private no-proxy applied, 2: public preference only.
+    uint8_t proxy_policy;
+    uint64_t connect_duration_ms;
+    uint64_t report_duration_ms;
+    const char *proxy_endpoint_utf8;
+    size_t proxy_endpoint_utf8_len;
+    const char *error_utf8;
+    size_t error_utf8_len;
+} RamaTcpEgressReport;
+
+/// Filter check before requesting an establishment report; no session required.
+bool rama_transparent_proxy_tcp_egress_reporting_enabled(void);
+
+/// Read-only diagnostics are valid even after cancel, until session_free.
+/// Serialize these calls with all other entries on the same live session.
+uint64_t rama_transparent_proxy_tcp_session_flow_id(RamaTransparentProxyTcpSession *session);
+void rama_transparent_proxy_tcp_session_report_egress(
+    RamaTransparentProxyTcpSession *session, const RamaTcpEgressReport *report);
 
 /// Query handler-supplied egress connect options for a TCP session.
 ///

@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.1
 
 import PackageDescription
 
@@ -25,6 +25,10 @@ let package = Package(
             targets: ["RamaAppleXpcClient"]
         ),
     ],
+    traits: [
+        .trait(name: "PrivateNetworkProxyControl",
+               description: "Use Apple's private no-proxy control when available.")
+    ],
     targets: [
         .target(
             name: "RamaAppleNEFFI",
@@ -35,8 +39,13 @@ let package = Package(
             ]
         ),
         .target(
+            name: "RamaAppleNetwork",
+            path: "ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNetwork",
+            linkerSettings: [.linkedFramework("Network")]
+        ),
+        .target(
             name: "RamaAppleNetworkExtension",
-            dependencies: ["RamaAppleNEFFI"],
+            dependencies: ["RamaAppleNEFFI", "RamaAppleNetwork"],
             path: "ffi/apple/RamaAppleNetworkExtension/Sources/RamaAppleNetworkExtension",
             swiftSettings: strictConcurrency
         ),
@@ -63,6 +72,7 @@ let package = Package(
                 "RamaAppleNetworkExtension",
                 "RamaAppleSecureEnclave",
                 "RamaAppleNEFFI",
+                "RamaAppleNetwork",
                 "RamaAppleSEFFI",
             ],
             path: "ffi/apple/RamaAppleNetworkExtension/Tests/RamaAppleNetworkExtensionTests"
@@ -72,5 +82,6 @@ let package = Package(
             dependencies: ["RamaAppleXpcClient"],
             path: "ffi/apple/RamaAppleXpcClient/Tests/RamaAppleXpcClientTests"
         ),
-    ]
+    ],
+    swiftLanguageModes: [.v5]
 )

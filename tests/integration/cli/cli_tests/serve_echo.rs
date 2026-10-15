@@ -235,14 +235,15 @@ async fn test_tls_tcp_echo() {
 async fn test_udp_echo() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_echo(63112, utils::EchoMode::Udp);
-    let socket = bind_udp_with_address(SocketAddress::local_ipv4(63113))
+    let port = utils::reserve_loopback_udp_port();
+    let _guard = utils::RamaService::serve_echo(port, utils::EchoMode::Udp);
+    let socket = bind_udp_with_address(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
 
     for i in 0..5 {
         match socket
-            .connect(SocketAddress::local_ipv4(63112).into_std())
+            .connect(SocketAddress::local_ipv4(port).into_std())
             .await
         {
             Ok(_) => break,

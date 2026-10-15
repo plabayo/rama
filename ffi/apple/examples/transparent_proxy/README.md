@@ -468,7 +468,78 @@ log show --last 8m --style ndjson --info --debug \
 echo "$DEST"
 ```
 
-Failure signature of intercept-but-no-forward:
+TCP establishment and close logs join on `flow_id`. Establishment records include
+`ready`, errors, requested `allow_proxy`, applied `proxy_policy`, and actual
+`used_proxy`. Failed establishment normally has no report: policy, timing, error
+and flow metadata remain available; proxy use stays unknown.
+
+`NwEgressParameters.allow_proxy` defaults to `false`:
+
+| Configuration | `proxy_policy` | Behavior |
+| --- | --- | --- |
+| Proxy allowed | `allowed` | System proxy selection permitted |
+| Proxy denied, trait enabled and symbol available | `no_proxy_applied` | Apply no-proxy and prefer-direct controls |
+| Proxy denied, trait disabled or symbol unavailable | `prefer_direct_only` | Prefer direct; proxy fallback remains possible |
+
+The example opts into the `PrivateNetworkProxyControl` SwiftPM trait. Library
+consumers must enable it explicitly (Swift 6.1+):
+
+```swift
+// Add to the existing Rama .package(...) dependency:
+traits: ["PrivateNetworkProxyControl"]
+```
+
+With XcodeGen 2.46+, add `traits: [PrivateNetworkProxyControl]` under the Rama
+package reference; direct SwiftPM builds use `--traits PrivateNetworkProxyControl`.
+Keep Rust and Swift dependencies on the same Rama revision. Traits are additive
+across the dependency graph: another dependency can enable this trait too.
+
+Without the trait, the private lookup and call are excluded from production code.
+`just test-private-api-trait` verifies both builds. The private control is
+unsupported by Apple and unsuitable for App Store submissions; validate deployed
+OS versions. Neither control bypasses VPNs or other NE providers.
+`preserve_original_meta_data` keeps stamping on by default. Disabled establishment
+logging skips report collection; enabled logging retains full flow metadata
+without separate per-flow warnings.
+
+Run from this directory:
+
+```sh
+just test-egress-policy
+just test-egress-policy-deep Wi-Fi
+```
+
+CI covers Debug, Release, ASan and TSan without system changes, reusing full-suite
+coverage. The focused harness rejects skipped required tests and uploads evidence.
+On macOS 12–13, it reports the proxy-configuration tests that require macOS 14.
+
+`just test-private-api-availability` checks private API exports in the newest
+installed Xcode's macOS/iOS SDKs and calls them on macOS and an iOS simulator.
+Pass `--stable` to use the runner’s system-selected Xcode. Daily unstable CI discovers GitHub's
+newest Xcode runner, selects its newest Xcode (including betas), and downloads a
+matching iOS runtime. It also runs
+Apple FFI/NE tests, Release and sanitizer egress tests, XPC checks, and an unsigned
+extension build. Reports name the exact versions; this follows GitHub's image
+updates, not Apple's release day. It does not verify physical iOS devices,
+system PAC behavior, or signed attribution.
+
+`test-egress-policy-deep` needs `sudo` on an isolated development Mac. It runs
+Debug, Release, ASan and TSan adapter tests, then verifies live PAC selection and proxy
+contacts for all three policies. It restores proxy settings after failures and
+interrupts, and prints a recovery command for power loss or forced termination.
+Send back the printed `report.zip`; it excludes the saved settings snapshot.
+Skipped required tests fail validation. Signed NE interception and downstream
+identity stamping require a separate signed observer; this harness does not
+verify them. If the allowed case stalls, check the recorded connection path:
+a VPN may route outside the service whose PAC was configured.
+
+Promoted relays emit `transparent proxy tcp bridge handed off` with
+`mode=promoted`, `counters_scope=until_handoff`, and
+`bytes_received_until_handoff` / `bytes_sent_until_handoff`. These describe the
+Rust bridge only, not final connection totals or the time of transport closure.
+Use Swift terminal diagnostics to investigate the relay's actual teardown.
+
+Failure signature of intercept-but-no-forward on the Rust data path:
 
 1. `transparent proxy tcp flow closed` with `bytes_sent=0` (client request
    received, nothing returned), and many closes with `age_ms < 50` (flows

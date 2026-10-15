@@ -34,12 +34,10 @@ fn permutation_is_per_handshake_and_takes_precedence_over_explicit_order() {
         let mut config = TlsClientConfig::new()
             .with_server_name(Host::try_from("example.test").unwrap())
             .with_alpn(vec![ApplicationProtocol::HTTP_2].into())
-            .with_grease(true)
-            .with_extension_order(if explicit {
-                declared.into_iter().map(Into::into).collect()
-            } else {
-                Vec::new()
-            });
+            .with_grease(true);
+        if explicit {
+            config.set_extension_order(declared.into_iter().map(Into::into).collect());
+        }
         if let Some(enabled) = permute {
             config.set_permute_extensions(enabled);
         }
@@ -50,13 +48,24 @@ fn permutation_is_per_handshake_and_takes_precedence_over_explicit_order() {
         let mut orders = BTreeSet::new();
         for _ in 0..20 {
             let hello = first_flight(&context, None);
-            assert!(hello.extensions().first().unwrap().id().is_grease());
-            assert!(hello.extensions().last().unwrap().id().is_grease());
+            if explicit && !permuted {
+                assert!(hello.extensions().iter().all(|ext| !ext.id().is_grease()));
+            } else {
+                assert!(hello.extensions().first().unwrap().id().is_grease());
+                assert!(hello.extensions().last().unwrap().id().is_grease());
+            }
+            // Native padding can appear when an unlisted, empty extension ends
+            // the shuffled tail. It must still be last (these are fresh sessions).
+            for (index, ext) in hello.extensions().iter().enumerate() {
+                if ext.id() == ExtensionId::PADDING {
+                    assert_eq!(index + 1, hello.extensions().len());
+                }
+            }
             let mut all_ids: Vec<u16> = hello
                 .extensions()
                 .iter()
                 .map(|ext| ext.id())
-                .filter(|id| !id.is_grease())
+                .filter(|id| !id.is_grease() && *id != ExtensionId::PADDING)
                 .map(Into::into)
                 .collect();
             all_ids.sort_unstable();
@@ -82,6 +91,46 @@ fn permutation_is_per_handshake_and_takes_precedence_over_explicit_order() {
             );
         } else {
             assert_eq!(orders.len(), 1);
+        }
+    }
+}
+
+#[test]
+fn explicit_extension_order_selects_grease_slots_including_when_empty() {
+    for (order, grease_count) in [
+        (vec![], 0),
+        (vec![43, 10, 13, 16], 0),
+        (vec![0x0a0a, 43, 10, 13, 16, 0x1a1a], 2),
+    ] {
+        let config = TlsClientConfig::new()
+            .with_server_name(Host::try_from("example.test").unwrap())
+            .with_alpn(vec![ApplicationProtocol::HTTP_2].into())
+            .with_grease(true)
+            .with_extension_order(order.iter().copied().map(Into::into).collect());
+        let context = TlsConnectorContextBuilder::try_from(&config)
+            .unwrap()
+            .build();
+        let hello = first_flight(&context, None);
+        let actual: Vec<ExtensionId> = hello
+            .extensions()
+            .iter()
+            .map(ClientHelloExtension::id)
+            .collect();
+        assert_eq!(
+            actual.iter().filter(|id| id.is_grease()).count(),
+            grease_count
+        );
+        assert!(actual.len() >= order.len());
+        // GREASE values remain fresh; their positions follow the declared prefix.
+        for (actual, expected) in actual
+            .iter()
+            .zip(order.iter().copied().map(ExtensionId::from))
+        {
+            if expected.is_grease() {
+                assert!(actual.is_grease());
+            } else {
+                assert_eq!(*actual, expected);
+            }
         }
     }
 }

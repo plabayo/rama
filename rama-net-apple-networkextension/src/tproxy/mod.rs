@@ -68,14 +68,30 @@
 //!
 //! ## System HTTP/SOCKS proxy loop
 //!
-//! With a system HTTP/SOCKS proxy enabled (Charles, Proxyman, corporate
-//! PAC, …) the kernel routes our egress back through it, the proxy
-//! re-emits, and we intercept again — a loop. Swift sets
-//! `NWParameters.preferNoProxies = true` on egress by default (see
-//! `makeTcpNwParameters` + Apple TN3134); opt back in via
-//! [`NwEgressParameters::allow_system_proxy`]. Scope is the
-//! SystemConfiguration proxy table only — other NE providers and VPN
-//! tunnels in the stack are unaffected.
+//! A system HTTP/SOCKS or PAC proxy can re-originate our TCP egress and
+//! cause another interception. [`NwEgressParameters::allow_proxy`] defaults
+//! to `false`: Network.framework receives the public direct preference. Swift
+//! builds with the opt-in `PrivateNetworkProxyControl` trait additionally use
+//! `nw_parameters_set_no_proxy` when available, resolving it once per process.
+//! Without the trait or symbol, proxy fallback remains possible.
+//! `allow_proxy=true` permits proxy use.
+//!
+//! The existing establishment log records the request (`allow_proxy`), the
+//! applied control (`proxy_policy=allowed|no_proxy_applied|prefer_direct_only`),
+//! and the observed `used_proxy` / `proxy_configured` / `proxy_endpoint` fields.
+//! Failed establishment normally has no report; proxy use stays unknown while
+//! policy, timing, errors and flow metadata remain available. Disabled logging
+//! skips report collection.
+//!
+//! The private control is unsupported by Apple: symbol presence does not prove
+//! behavior on future OS releases or App Store eligibility. Validate deployed
+//! versions. Other NE providers and VPNs remain in the path. TCP still uses
+//! Network.framework with native `NEAppProxyFlow.setMetadata(_:)` stamping.
+//!
+//! See the SDK's `<Network/parameters.h>` comment for
+//! [`nw_parameters_set_prefer_no_proxy`](https://developer.apple.com/documentation/network/nw_parameters_set_prefer_no_proxy(_:_:)),
+//! and Apple's [DTS clarification](https://developer.apple.com/forums/thread/828775)
+//! and [frameworks reply](https://developer.apple.com/forums/thread/832291).
 //!
 //! ## Declining a flow (`return false`) IS the per-flow passthrough mechanism
 //!
@@ -107,7 +123,7 @@
 //!
 //! [`HostWithPort`]: rama_net::address::HostWithPort
 //! [`NwEgressParameters::preserve_original_meta_data`]: types::NwEgressParameters::preserve_original_meta_data
-//! [`NwEgressParameters::allow_system_proxy`]: types::NwEgressParameters::allow_system_proxy
+//! [`NwEgressParameters::allow_proxy`]: types::NwEgressParameters::allow_proxy
 
 #[cfg(feature = "dial9")]
 #[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
@@ -127,11 +143,11 @@ pub use self::{
         DEFAULT_UDP_MAX_FLOW_LIFETIME, DecisionDeadlineAction,
         DefaultTransparentProxyAsyncRuntimeFactory, FlowAction, MAX_UDP_DATAGRAM_PAYLOAD_SIZE,
         MAX_UDP_INGRESS_PROBE_LEASE, Promote, PromoteError, PromoteHandle, PromoteLayer,
-        SessionFlowAction, TcpDeliverStatus, TransparentProxyAsyncRuntime,
-        TransparentProxyAsyncRuntimeFactory, TransparentProxyEngine, TransparentProxyEngineBuilder,
-        TransparentProxyHandler, TransparentProxyHandlerFactory, TransparentProxyServiceContext,
-        TransparentProxyTcpSession, TransparentProxyUdpSession, log_engine_build_error,
-        log_engine_build_panic,
+        SessionFlowAction, TcpDeliverStatus, TcpEgressReport, TcpProxyPolicy,
+        TransparentProxyAsyncRuntime, TransparentProxyAsyncRuntimeFactory, TransparentProxyEngine,
+        TransparentProxyEngineBuilder, TransparentProxyHandler, TransparentProxyHandlerFactory,
+        TransparentProxyServiceContext, TransparentProxyTcpSession, TransparentProxyUdpSession,
+        log_engine_build_error, log_engine_build_panic, tcp_egress_reporting_enabled,
     },
     types::{
         DEFAULT_FLOW_PRESSURE_IDLE_FLOOR_MS, DEFAULT_FLOW_PRESSURE_LOW_WATER,

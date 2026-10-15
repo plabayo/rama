@@ -145,7 +145,7 @@ run-tproxy-ffi-e2e:
 
 [working-directory: '.']
 run-tproxy-ffi-e2e-swift: build-tproxy-rs-debug
-    swift test \
+    swift test --traits PrivateNetworkProxyControl \
         -Xlinker -L$(pwd)/tproxy_rs/target/debug \
         -Xlinker -lrama_tproxy_example \
         -Xlinker -lz \
@@ -158,8 +158,8 @@ run-tproxy-ffi-e2e-swift: build-tproxy-rs-debug
 # Release app builds omit RAMA_TESTING and keep those seams compiled out.
 [working-directory: '.']
 run-tproxy-ffi-e2e-swift-release: build-tproxy-rs-debug
-    swift build -c release
-    swift test -c release -Xswiftc -DRAMA_TESTING \
+    swift build --traits PrivateNetworkProxyControl -c release
+    swift test --traits PrivateNetworkProxyControl -c release -Xswiftc -DRAMA_TESTING \
         -Xlinker -L$(pwd)/tproxy_rs/target/debug \
         -Xlinker -lrama_tproxy_example \
         -Xlinker -lz \
@@ -172,7 +172,7 @@ run-tproxy-ffi-e2e-swift-release: build-tproxy-rs-debug
 [working-directory: '.']
 run-tproxy-ffi-e2e-swift-tsan: build-tproxy-rs-debug
     TSAN_OPTIONS="halt_on_error=1:exitcode=66" \
-    swift test --sanitize=thread \
+    swift test --traits PrivateNetworkProxyControl --sanitize=thread \
         -Xlinker -L$(pwd)/tproxy_rs/target/debug \
         -Xlinker -lrama_tproxy_example \
         -Xlinker -lz \
@@ -229,3 +229,25 @@ test-e2e-sanitizers: test-e2e-asan run-tproxy-ffi-e2e-swift-tsan
 # Generate HTTP traffic through the running proxy; use --help for workload options.
 stress-traffic *ARGS:
     python3 ./scripts/stress_traffic.py {{ARGS}}
+
+# Private symbol exports and runtime calls with the newest installed Xcode.
+test-private-api-availability *ARGS:
+    python3 ./scripts/private_api_availability.py {{ARGS}}
+
+# Local production-adapter matrix; saves a shareable report without changing settings.
+test-egress-policy *ARGS:
+    python3 ./scripts/egress_proxy_policy.py {{ARGS}}
+
+# Isolated development Mac: Release/sanitizers plus live PAC; restores proxy settings.
+test-egress-policy-deep SERVICE="Wi-Fi" *ARGS:
+    sudo -v
+    python3 ./scripts/egress_proxy_policy.py --deep --system-pac-service "{{SERVICE}}" --allow-system-settings {{ARGS}}
+
+# Native Rust NE and XPC implementations.
+[working-directory: '../../../..']
+test-apple-crates:
+    cargo test -p rama-net-apple-networkextension -p rama-net-apple-xpc --all-features
+
+# Default production objects must exclude the private API; opt-in must include it.
+test-private-api-trait *ARGS:
+    python3 ./scripts/check_private_api_trait.py {{ARGS}}

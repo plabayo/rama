@@ -360,6 +360,8 @@ impl Extension for PromoteHandle {}
 /// ACK sender is dropped — the awaiting `fire` future then resolves
 /// with [`PromoteError::EngineShuttingDown`].
 pub(super) struct PromoteRegistry {
+    /// Published before ACK wakes the service's close epilogue.
+    pub(super) promoted: Arc<AtomicBool>,
     /// FFI-shape callback (Swift consumers). `None` until
     /// `register_promote_request_callback_raw` runs. Stored as
     /// `Copy` because the context pointer is owned by Swift —
@@ -423,6 +425,7 @@ impl PromoteRegistry {
         callback_active: Arc<parking_lot::Mutex<bool>>,
     ) -> Arc<Self> {
         Arc::new(Self {
+            promoted: Arc::new(AtomicBool::new(false)),
             raw_callback: parking_lot::Mutex::new(None),
             rust_callback: parking_lot::Mutex::new(None),
             shutdown: Arc::new(PromoteShutdown::new()),
@@ -484,6 +487,9 @@ impl PromoteRegistry {
         // The receiver may have been dropped (session cancelled
         // mid-ACK). Either way the result of `send` doesn't matter
         // — what matters is that we cleared `pending_ack`.
+        if result.is_ok() {
+            self.promoted.store(true, Ordering::Release);
+        }
         drop(tx.send(result));
         true
     }

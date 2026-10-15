@@ -15,6 +15,54 @@ use crate::tproxy::{
     TransparentProxyFlowAction as RustTransparentProxyFlowAction, TransparentProxyFlowProtocol,
 };
 
+/// Borrowed Swift establishment diagnostics; see the C header for ownership.
+#[repr(C)]
+pub struct TcpEgressReport {
+    pub ready: bool,
+    pub report_available: bool,
+    pub used_proxy: bool,
+    pub proxy_configured: bool,
+    pub allow_proxy: bool,
+    pub proxy_policy: u8,
+    pub connect_duration_ms: u64,
+    pub report_duration_ms: u64,
+    pub proxy_endpoint_utf8: *const c_char,
+    pub proxy_endpoint_utf8_len: usize,
+    pub error_utf8: *const c_char,
+    pub error_utf8_len: usize,
+}
+
+impl TcpEgressReport {
+    /// # Safety
+    /// Non-null string pointers must be readable for their lengths for the lifetime of the returned report.
+    pub unsafe fn to_rust_type(&self) -> crate::tproxy::TcpEgressReport<'_> {
+        crate::tproxy::TcpEgressReport {
+            ready: self.ready,
+            allow_proxy: self.allow_proxy,
+            proxy_policy: self.proxy_policy.into(),
+            connect_duration_ms: self.connect_duration_ms,
+            report_duration_ms: self.report_available.then_some(self.report_duration_ms),
+            used_proxy: self.report_available.then_some(self.used_proxy),
+            proxy_configured: self.report_available.then_some(self.proxy_configured),
+            // SAFETY: the caller guarantees the borrowed string ranges.
+            proxy_endpoint: unsafe {
+                opt_utf8_borrowed(self.proxy_endpoint_utf8, self.proxy_endpoint_utf8_len)
+            },
+            // SAFETY: the caller guarantees the borrowed string ranges.
+            error: unsafe { opt_utf8_borrowed(self.error_utf8, self.error_utf8_len) },
+        }
+    }
+}
+
+// Unlike retained flow metadata, these strings only live through a synchronous log.
+unsafe fn opt_utf8_borrowed<'a>(ptr: *const c_char, len: usize) -> Option<&'a str> {
+    if ptr.is_null() || len == 0 {
+        return None;
+    }
+    // SAFETY: the caller guarantees readable bytes for the returned borrow.
+    std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr.cast(), len) }).ok()
+}
+
 #[repr(C)]
 pub struct TransparentFlowEndpoint {
     pub host_utf8: *const c_char,
@@ -487,8 +535,8 @@ pub struct NwEgressParameters {
     ///
     /// See [`crate::tproxy::NwEgressParameters::preserve_original_meta_data`].
     pub preserve_original_meta_data: bool,
-    /// See [`crate::tproxy::NwEgressParameters::allow_system_proxy`].
-    pub allow_system_proxy: bool,
+    /// See [`crate::tproxy::NwEgressParameters::allow_proxy`].
+    pub allow_proxy: bool,
 }
 
 impl NwEgressParameters {
@@ -507,7 +555,7 @@ impl NwEgressParameters {
             attribution: p.attribution.map(attribution_to_u8).unwrap_or(0),
             prohibited_interface_types_mask: interface_types_to_mask(&p.prohibited_interface_types),
             preserve_original_meta_data: p.preserve_original_meta_data,
-            allow_system_proxy: p.allow_system_proxy,
+            allow_proxy: p.allow_proxy,
         }
     }
 }
@@ -850,8 +898,8 @@ mod tests {
     };
 
     use super::{
-        NwEgressParameters, PromoteConfirmStatus, TcpEgressConnectOptions, TransparentFlowEndpoint,
-        TransparentProxyConfig, TransparentProxyFlowMeta,
+        NwEgressParameters, PromoteConfirmStatus, TcpEgressConnectOptions, TcpEgressReport,
+        TransparentFlowEndpoint, TransparentProxyConfig, TransparentProxyFlowMeta,
         TransparentProxyInitConfig as FfiTransparentProxyInitConfig,
         TransparentProxyNetworkRule as FfiTransparentProxyNetworkRule, interface_type_from_u8,
     };
@@ -970,11 +1018,72 @@ mod tests {
     }
 
     #[test]
+    fn tcp_egress_report_decodes_borrowed_ffi_fields() {
+        // Exercise independent ABI fields; this is not a native connection scenario.
+        let endpoint = String::from("127.0.0.1:8888");
+        let error = String::from("POSIXErrorCode: ECONNREFUSED");
+        let mut ffi = TcpEgressReport {
+            ready: false,
+            report_available: true,
+            used_proxy: true,
+            proxy_configured: true,
+            allow_proxy: false,
+            proxy_policy: 1,
+            connect_duration_ms: 123,
+            report_duration_ms: 120,
+            proxy_endpoint_utf8: endpoint.as_ptr().cast(),
+            proxy_endpoint_utf8_len: endpoint.len(),
+            error_utf8: error.as_ptr().cast(),
+            error_utf8_len: error.len(),
+        };
+        let report = unsafe { ffi.to_rust_type() };
+        assert!(!report.ready);
+        assert_eq!(report.connect_duration_ms, 123);
+        assert_eq!(report.report_duration_ms, Some(120));
+        assert_eq!(report.used_proxy, Some(true));
+        assert_eq!(report.proxy_configured, Some(true));
+        assert_eq!(report.proxy_endpoint.unwrap().as_ptr(), endpoint.as_ptr());
+        assert_eq!(report.error.unwrap().as_ptr(), error.as_ptr());
+        assert!(!report.allow_proxy);
+        assert_eq!(
+            report.proxy_policy,
+            crate::tproxy::TcpProxyPolicy::NoProxyApplied
+        );
+        assert_eq!(report.proxy_endpoint, Some("127.0.0.1:8888"));
+        assert_eq!(report.error, Some("POSIXErrorCode: ECONNREFUSED"));
+        ffi.proxy_endpoint_utf8 = std::ptr::null();
+        ffi.error_utf8 = std::ptr::null();
+        ffi.report_available = false;
+        let report = unsafe { ffi.to_rust_type() };
+        assert_eq!(report.used_proxy, None);
+        assert_eq!(report.proxy_configured, None);
+        assert_eq!(report.report_duration_ms, None);
+        assert_eq!(report.proxy_endpoint, None);
+        assert_eq!(report.error, None);
+        ffi.ready = true;
+        ffi.report_available = true;
+        ffi.used_proxy = false;
+        ffi.proxy_configured = false;
+        let report = unsafe { ffi.to_rust_type() };
+        assert!(report.ready);
+        assert_eq!(report.used_proxy, Some(false));
+        assert_eq!(report.proxy_configured, Some(false));
+    }
+
+    #[test]
     fn ffi_struct_layout_matches_c_header_on_64_bit_targets() {
         if size_of::<usize>() != 8 {
             return;
         }
 
+        assert_eq!(size_of::<TcpEgressReport>(), 56);
+        assert_eq!(offset_of!(TcpEgressReport, allow_proxy), 4);
+        assert_eq!(offset_of!(TcpEgressReport, proxy_policy), 5);
+        assert_eq!(align_of::<TcpEgressReport>(), 8);
+        assert_eq!(offset_of!(TcpEgressReport, connect_duration_ms), 8);
+        assert_eq!(offset_of!(TcpEgressReport, report_duration_ms), 16);
+        assert_eq!(offset_of!(TcpEgressReport, proxy_endpoint_utf8), 24);
+        assert_eq!(offset_of!(TcpEgressReport, error_utf8), 40);
         assert_eq!(size_of::<BytesView>(), 16);
         assert_eq!(align_of::<BytesView>(), 8);
         assert_eq!(size_of::<BytesOwned>(), 24);
@@ -1207,25 +1316,25 @@ mod tests {
         assert!(ffi.preserve_original_meta_data);
     }
 
-    /// Pin `allow_system_proxy: false` default — flipping re-enables
+    /// Pin `allow_proxy: false` default — flipping re-enables
     /// the stacked-proxy loop.
     #[test]
-    fn ffi_egress_params_allow_system_proxy_default_round_trip() {
+    fn ffi_egress_params_allow_proxy_default_round_trip() {
         let rust = tproxy::NwEgressParameters::default();
-        assert!(!rust.allow_system_proxy);
+        assert!(!rust.allow_proxy);
         let ffi = NwEgressParameters::from_rust_type(&rust);
-        assert!(!ffi.allow_system_proxy);
+        assert!(!ffi.allow_proxy);
     }
 
     /// Opt-in round-trip — catches a regression that hard-codes `false`.
     #[test]
-    fn ffi_egress_params_allow_system_proxy_opt_in_round_trip() {
+    fn ffi_egress_params_allow_proxy_opt_in_round_trip() {
         let rust = tproxy::NwEgressParameters {
-            allow_system_proxy: true,
+            allow_proxy: true,
             ..tproxy::NwEgressParameters::default()
         };
         let ffi = NwEgressParameters::from_rust_type(&rust);
-        assert!(ffi.allow_system_proxy);
+        assert!(ffi.allow_proxy);
     }
 
     #[test]

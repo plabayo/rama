@@ -36,3 +36,8 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 # never completes should fail its test instead of holding the runner.
 filter = 'package(rama-tcp) & test(/^posted_recv::/)'
 slow-timeout = { period = "60s", terminate-after = 3 }
+
+[[profile.ci.overrides]]
+# Compare HTML rewrite timings without competing with other test processes.
+filter = 'package(rama-http) & test(/^protocols::html::rewrite::tests::rewriting_time_is_linear_in_the_input$/)'
+threads-required = "num-test-threads"

@@ -87,8 +87,11 @@ RUST_TARGET_DIR="$BUILD_ROOT/tproxy_rs/target"
     -output "$RUST_TARGET_DIR/universal/librama_tproxy_example.a" \
     "$RUST_TARGET_DIR/aarch64-apple-darwin/release/librama_tproxy_example.a" \
     "$RUST_TARGET_DIR/x86_64-apple-darwin/release/librama_tproxy_example.a"
-  /usr/bin/lipo "$RUST_TARGET_DIR/universal/librama_tproxy_example.a" \
-    -verify_arch arm64 x86_64
+  # Xcode 27 lipo accepts only one architecture per verification call.
+  for arch in arm64 x86_64; do
+    /usr/bin/lipo "$RUST_TARGET_DIR/universal/librama_tproxy_example.a" \
+      -verify_arch "$arch"
+  done
 )
 
 if [ -z "$workspace_version" ]; then
