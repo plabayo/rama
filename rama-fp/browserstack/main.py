@@ -25,11 +25,24 @@ desktop_permutations = [
     ["Chrome", "Edge", "Firefox", "Safari"],
     (
         [["Windows", v] for v in ["10", "11"]]
-        + [["OS X", v] for v in ["Ventura", "Sonoma", "Sequoia", "Tahoe"]]
+        + [
+            ["OS X", v]
+            for v in ["Ventura", "Sonoma", "Sequoia", "Tahoe", "Golden Gate"]
+        ]
     ),
 ]
 
 mobile_configs = [
+    ("Samsung Galaxy S26 Ultra", "16.0", "chrome"),
+    ("Samsung Galaxy S26", "16.0", "chrome"),
+    ("Samsung Galaxy S24", "16.0", "chrome"),
+    ("Samsung Galaxy Tab S11", "16.0", "chrome"),
+    ("Samsung Galaxy S25 Ultra", "15.0", "chrome"),
+    ("Samsung Galaxy S25", "15.0", "chrome"),
+    ("Samsung Galaxy Tab S10 Plus", "15.0", "chrome"),
+    ("Samsung Galaxy S24 Ultra", "14.0", "chrome"),
+    ("Samsung Galaxy S24", "14.0", "chrome"),
+    ("Samsung Galaxy Tab A9 Plus", "14.0", "chrome"),
     ("Samsung Galaxy S23 Ultra", "13.0", "chrome"),
     ("Samsung Galaxy S23", "13.0", "chrome"),
     ("Samsung Galaxy S22 Ultra", "12.0", "chrome"),
@@ -38,6 +51,14 @@ mobile_configs = [
     ("Samsung Galaxy Tab S8", "12.0", "chrome"),
     ("Samsung Galaxy A52", "11.0", "chrome"),
     ("Samsung Galaxy M52", "11.0", "chrome"),
+    ("Google Pixel 11 Pro XL", "17.0", "chrome"),
+    ("Google Pixel 11 Pro", "17.0", "chrome"),
+    ("Google Pixel 11", "17.0", "chrome"),
+    ("Google Pixel 9", "17.0", "chrome"),
+    ("Google Pixel 10 Pro XL", "16.0", "chrome"),
+    ("Google Pixel 10 Pro", "16.0", "chrome"),
+    ("Google Pixel 10", "16.0", "chrome"),
+    ("Google Pixel 9", "16.0", "chrome"),
     ("Google Pixel 9 Pro XL", "15.0", "chrome"),
     ("Google Pixel 9 Pro", "15.0", "chrome"),
     ("Google Pixel 9", "15.0", "chrome"),
@@ -52,6 +73,20 @@ mobile_configs = [
     ("OnePlus 11R", "13.0", "chrome"),
     ("OnePlus 12R", "14.0", "chrome"),
     ("Huawei P30", "9.0", "chrome"),
+    ("iPhone 18 Pro Max", "27", "safari"),
+    ("iPhone 18 Pro", "27", "safari"),
+    ("iPhone 16 Pro Max", "27", "safari"),
+    ("iPhone 15 Pro", "27", "safari"),
+    ("iPhone 15", "27", "safari"),
+    ("iPhone Air", "26", "safari"),
+    ("iPhone 17e", "26", "safari"),
+    ("iPhone 17 Pro Max", "26", "safari"),
+    ("iPhone 17 Pro", "26", "safari"),
+    ("iPhone 17", "26", "safari"),
+    ("iPhone 15 Pro Max", "26", "safari"),
+    ("iPhone 15", "26", "safari"),
+    ("iPhone 14 Pro", "26", "safari"),
+    ("iPhone 14", "26", "safari"),
     ("iPhone 16e", "18", "safari"),
     ("iPhone 16 Pro Max", "18", "safari"),
     ("iPhone 16 Pro", "18", "safari"),

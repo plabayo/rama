@@ -774,3 +774,165 @@ fn expanding_the_literal_horizon_does_not_expand_inferred_modes() {
         assert!(result.derived.is_none());
     }
 }
+
+#[test]
+fn comparison_constant_reserved_and_literal_orders_remain_exact() {
+    let result = analyze(&vec![vec![64, 8, 1]; 64]);
+    assert!(result.accepts_identifiers(&[64, 8, 1]).unwrap());
+    for wrong in [&[95, 8, 1][..], &[64, 1, 8], &[64, 8], &[64, 8, 1, 1]] {
+        assert!(!result.accepts_identifiers(wrong).unwrap());
+    }
+}
+
+#[test]
+fn comparison_sorted_generated_reserved_keeps_literal_values() {
+    let orders: Vec<_> = (0..64)
+        .map(|index| {
+            let mut ids = vec![1, 90, 33 + index * 31];
+            ids.sort_unstable();
+            ids
+        })
+        .collect();
+    let result = analyze(&orders);
+    assert!(result.accepts_identifiers(&[1, 90, 6233]).unwrap());
+    assert!(!result.accepts_identifiers(&[6233, 1, 90]).unwrap());
+    assert!(!result.accepts_identifiers(&[1, 90, 6234]).unwrap());
+    assert!(!result.accepts_identifiers(&[1, 91, 6233]).unwrap());
+}
+
+#[test]
+fn comparison_shuffled_order_requires_multiplicity_and_every_pin() {
+    let result = analyze(&permutations());
+    assert!(
+        result
+            .accepts_identifiers(&[90, 5, 4, 3, 2, 1, 91])
+            .unwrap()
+    );
+    for wrong in [
+        [91, 5, 4, 3, 2, 1, 90],
+        [90, 5, 4, 3, 2, 2, 91],
+        [5, 90, 4, 3, 2, 1, 91],
+    ] {
+        assert!(!result.accepts_identifiers(&wrong).unwrap());
+    }
+}
+
+#[test]
+fn comparison_relative_reserved_positions_remain_joint() {
+    let orders: Vec<_> = (0..64)
+        .map(|index| {
+            let first = 33 + index * 62;
+            if index % 4 == 0 {
+                vec![first, 8, 1, first + 31]
+            } else {
+                vec![8, first, first + 31, 1]
+            }
+        })
+        .collect();
+    let result = analyze(&orders);
+    assert!(result.accepts_identifiers(&[6233, 8, 1, 6264]).unwrap());
+    assert!(result.accepts_identifiers(&[8, 6233, 6264, 1]).unwrap());
+    assert!(!result.accepts_identifiers(&[6233, 8, 6264, 1]).unwrap());
+    assert!(!result.accepts_identifiers(&[6233, 1, 8, 6264]).unwrap());
+}
+
+#[test]
+fn comparison_mixture_cannot_cross_product_modes() {
+    let mut orders = permutations();
+    for mut other in permutations() {
+        other.push(92);
+        orders.push(other);
+    }
+    let result = analyze(&orders);
+    assert!(
+        result
+            .accepts_identifiers(&[90, 5, 4, 3, 2, 1, 91])
+            .unwrap()
+    );
+    assert!(
+        result
+            .accepts_identifiers(&[90, 5, 4, 3, 2, 1, 91, 92])
+            .unwrap()
+    );
+    assert!(
+        !result
+            .accepts_identifiers(&[90, 5, 4, 3, 2, 1, 92, 91])
+            .unwrap()
+    );
+    assert!(
+        !result
+            .accepts_identifiers(&[90, 5, 4, 3, 2, 1, 92])
+            .unwrap()
+    );
+}
+
+#[test]
+fn comparison_fixed_quic_reserved_identifier_is_not_generated() {
+    let mut original = CountedObservationBucket::new(
+        CanonicalDomain::Order,
+        ValueId([2; 32]),
+        [3; 32],
+        ProfileBucketLimits::default(),
+    )
+    .unwrap();
+    for index in 0..64 {
+        let value = value(
+            OrderNamespace::QuicParameter,
+            &[0xff02de1a, 27 + index * 31, 1],
+        );
+        original
+            .observe(
+                ObservationId {
+                    run: [1; 16],
+                    sequence: index + 1,
+                },
+                &value,
+            )
+            .unwrap();
+    }
+    let result = analyze_protocol_order(&original, OrderAnalysisConfig::default()).unwrap();
+    assert!(result.accepts_identifiers(&[0xff02de1a, 6227, 1]).unwrap());
+    assert!(!result.accepts_identifiers(&[0xff02de39, 6227, 1]).unwrap());
+    assert!(!result.accepts_identifiers(&[6227, 0xff02de1a, 1]).unwrap());
+}
+
+#[test]
+fn comparison_literal_mixture_uses_only_its_retained_samples() {
+    let orders: Vec<_> = (0..32)
+        .map(|sample| {
+            let mut literals = vec![1, 2, 3, 4, 5, 6, 7, 8];
+            if sample % 2 != 0 {
+                literals.swap(0, 1);
+            }
+            let placement = sample / 2;
+            literals.insert(placement / 4, 33 + sample as u64 * 62);
+            literals.insert(5 + placement % 4, 64 + sample as u64 * 62);
+            literals
+        })
+        .collect();
+    let result = analyze(&orders);
+    assert!(matches!(
+        result.derived,
+        Some(DerivedOrderRule::Mixture { .. })
+    ));
+    for order in &orders {
+        assert!(result.accepts_identifiers(order).unwrap());
+    }
+    let mut unobserved = orders[0].clone();
+    unobserved[0] = 6233;
+    assert!(!result.accepts_identifiers(&unobserved).unwrap());
+}
+
+#[test]
+fn comparison_input_budget_is_checked_before_normalization() {
+    let result = analyze(&vec![vec![8, 1]; 64]);
+    assert!(
+        !result
+            .accepts_identifiers(&vec![0; usize::from(u16::MAX)])
+            .unwrap()
+    );
+    assert!(matches!(
+        result.accepts_identifiers(&vec![0; usize::from(u16::MAX) + 1]),
+        Err(ProfileDataError::LimitExceeded("comparison order elements"))
+    ));
+}

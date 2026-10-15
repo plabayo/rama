@@ -157,11 +157,7 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, exec: Executor) {
             }
         })
     };
-    // Best-effort interception deliberately fails open for every peek rejection. A client
-    // can evade inspection with a malformed, oversized, or stalled flight; this demo is
-    // not an enforcement boundary. To reject those flights while permitting version
-    // negotiation, use { unsupported_version: true, ..QuicPeekFallbackPolicy::NOT_QUIC }.
-    // NOT_QUIC alone also rejects unsupported versions.
+    // Best-effort demo: fail open for every peek rejection (see README interception policy).
     let inspect = PeekQuicClientHelloService::new(BoringTlsProvider, route)
         .with_fallback_policy(QuicPeekFallbackPolicy::ALL)
         .with_fallback(service_fn(move |input: Association| {

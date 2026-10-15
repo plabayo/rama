@@ -452,28 +452,7 @@ fn analyze_identifiers_at_depth(
     let mut normalized_values = BTreeMap::new();
     for sample in unique {
         budget.charge(sample.len())?;
-        let mut occurrences = BTreeMap::<u64, u16>::new();
-        let mut reserved = 0_u16;
-        let mut order = Vec::new();
-        for &id in sample {
-            if reserved_candidate(id) && !constant_reserved.contains(&id) {
-                order.push(AnalyzedOrderElement::Reserved {
-                    occurrence: reserved,
-                });
-                reserved = reserved
-                    .checked_add(1)
-                    .ok_or(ProfileDataError::LimitExceeded("reserved occurrences"))?;
-            } else {
-                let occurrence = occurrences.entry(id).or_default();
-                order.push(AnalyzedOrderElement::Literal {
-                    id,
-                    occurrence: *occurrence,
-                });
-                *occurrence = occurrence
-                    .checked_add(1)
-                    .ok_or(ProfileDataError::LimitExceeded("literal occurrences"))?;
-            }
-        }
+        let order = normalize_identifiers(sample, &constant_reserved, reserved_candidate)?;
         normalized_values.insert(sample, Arc::<[AnalyzedOrderElement]>::from(order));
     }
 
@@ -754,4 +733,36 @@ pub(super) fn sampling_population(counts: &CounterSnapshot) -> Result<u64, Profi
         .checked_sub(counts.losses.oversize)
         .and_then(|total| total.checked_sub(counts.losses.retention))
         .ok_or(ProfileDataError::Invalid("sampling loss count"))
+}
+
+mod compare;
+
+fn normalize_identifiers(
+    sample: &[u64],
+    constant_reserved: &BTreeSet<u64>,
+    reserved_candidate: impl Fn(u64) -> bool,
+) -> Result<Vec<AnalyzedOrderElement>, ProfileDataError> {
+    let mut occurrences = BTreeMap::<u64, u16>::new();
+    let mut reserved = 0_u16;
+    let mut order = Vec::new();
+    for &id in sample {
+        if reserved_candidate(id) && !constant_reserved.contains(&id) {
+            order.push(AnalyzedOrderElement::Reserved {
+                occurrence: reserved,
+            });
+            reserved = reserved
+                .checked_add(1)
+                .ok_or(ProfileDataError::LimitExceeded("reserved occurrences"))?;
+        } else {
+            let occurrence = occurrences.entry(id).or_default();
+            order.push(AnalyzedOrderElement::Literal {
+                id,
+                occurrence: *occurrence,
+            });
+            *occurrence = occurrence
+                .checked_add(1)
+                .ok_or(ProfileDataError::LimitExceeded("literal occurrences"))?;
+        }
+    }
+    Ok(order)
 }

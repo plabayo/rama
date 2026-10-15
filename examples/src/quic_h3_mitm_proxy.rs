@@ -48,6 +48,52 @@
 //!
 //! An `http3_client_server` client pointed at the proxy, trusting `mitm-ca.pem`, gets the
 //! upstream's response with `x-rama-mitm: h3` for an intercepted name.
+//!
+//! # Policy and limits
+//!
+//! The default peek fallback forwards non-QUIC datagrams only. Unsupported QUIC versions,
+//! malformed flights, exhausted capture budgets and inspection timeouts are refused before
+//! any local QUIC response. A different application can set `QuicPeekFallbackPolicy`
+//! explicitly; forwarding every rejection is best-effort inspection that a client can evade.
+//! Once interception starts, handshake or relay failure closes that association: it cannot
+//! fall back to the original encrypted connection.
+//!
+//! The demultiplexer allows 1024 associations, 64 queued datagrams per association and
+//! 16 MiB queued overall, with a 30-second idle timeout. Admission further limits active
+//! associations to 256 overall and 32 per source, and starts to 512 overall and 64 per source
+//! per second. An IPv6 /64 is one source. The default peek deadline is two seconds; capture
+//! allows 32 datagrams, 256 KiB input, 128 Initial packets, 2048 frame classifications,
+//! 128 CRYPTO fragments, a 16 KiB ClientHello and 256 transport parameters.
+//!
+//! Association identity is the local/peer address pair, not a client-selected connection ID.
+//! A changed tuple starts a separate association; this composition does not promise seamless
+//! migration or NAT rebinding. Admission quarantine and idle expiry also apply to new tuples.
+//!
+//! # Trust and preservation boundaries
+//!
+//! The CA private key exists in memory for this process; `--ca-out` exports only its public
+//! certificate. Trust it in a disposable test client. Upstream certificates are verified
+//! against `--upstream-ca`, using the inspected server name. The configured upstream socket
+//! fixes the destination; an untrusted server name never chooses another target.
+//!
+//! This example uses the egress TLS/transport configuration, not a browser replay profile.
+//! `QuicMitmRelay::with_mirror_client(true)` opts into the bounded first-flight mirroring
+//! policy described by that API, including its fallback and provider limitations. It does
+//! not make the encrypted connections identical. Each hop creates fresh secrets, connection
+//! IDs and packet numbers; QPACK state, compressed header bytes, timing, ACK behavior and
+//! cross-path behavior are not preserved. Early data is disabled on both terminating hops;
+//! clients resend rejected 0-RTT after the handshake. HTTP/3 server push is unsupported.
+//!
+//! HTTP/3 negotiates each hop's SETTINGS before advertising dependent capabilities. Request
+//! and response metadata are relayed semantically, including trailers and supported tunnel
+//! semantics; request-owned values are not a license to replay captured credentials. The
+//! `x-rama-mitm` response field is an intentional visible difference. Generic non-H3 stream
+//! relaying cannot translate arbitrary application stream-ID or datagram references.
+//!
+//! `just test-quic-relay-wire OUTPUT` records direct, forwarded and terminated traffic and
+//! checks it with tshark. Its report proves the stated wire invariants, not full browser
+//! profile equivalence. TLS session-key logs are temporary decoding inputs and are deleted;
+//! retain decoded fields and ciphertext captures, never session keys in review evidence.
 
 #![expect(
     clippy::expect_used,

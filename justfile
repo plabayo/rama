@@ -570,7 +570,14 @@ miri-udp-cmsg:
     MIRIFLAGS="-Zmiri-strict-provenance -Zmiri-tree-borrows" cargo +"${MIRI_TOOLCHAIN:-nightly}" miri test --locked -p rama-udp --lib sys::cmsg
 
 # Independent loopback wire proof for direct, forwarded and terminated HTTP/3.
-# OUTPUT must be a new directory; captures and test TLS keys remain there.
+# OUTPUT must be a new directory; captures remain there; test TLS keys are deleted after decoding.
 test-quic-relay-wire OUTPUT:
+    python3 -m unittest discover -s examples/tests/wire -p "test_*.py"
     cargo build -p rama-examples --bin http3_client_server --bin quic_h3_mitm_proxy --features=http-full,boring
     python3 examples/tests/wire/quic_relay.py --bin-dir target/debug --output {{quote(OUTPUT)}}
+
+# The same independent wire oracle against optimized example binaries.
+test-quic-relay-wire-release OUTPUT:
+    python3 -m unittest discover -s examples/tests/wire -p "test_*.py"
+    cargo build --release -p rama-examples --bin http3_client_server --bin quic_h3_mitm_proxy --features=http-full,boring
+    python3 examples/tests/wire/quic_relay.py --bin-dir target/release --output {{quote(OUTPUT)}}

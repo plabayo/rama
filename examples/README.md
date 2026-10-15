@@ -280,10 +280,13 @@ Run `just test-quic-relay-wire /absolute/path/to/new-output` with `openssl`,
 The harness starts local test peers, waits for listener/capture readiness, performs
 one authenticated H3 request directly and through each relay mode, and shuts down
 all processes on success or failure. It does not enable the system proxy.
+Use `just test-quic-relay-wire-release /absolute/path/to/new-output` to run the same
+oracle against optimized binaries. Both recipes first run the decoder and key-cleanup
+regressions.
 
 Each mode retains a pcapng, decoded TSV and process logs; test TLS key logs are
-deleted after decoding. The
-JSON report requires independently decoded H3 SETTINGS, ALPN and HTTP 200.
+deleted after decoding, and the temporary origin private key is removed even on
+failure. The JSON report requires independently decoded H3 SETTINGS, ALPN and HTTP 200.
 Forwarded datagrams are checked byte-for-byte in both directions. Termination
 requires a separate upstream ClientHello and the decoded `x-rama-mitm: h3` header.
 Negative controls alter forwarded payloads and remove status, SETTINGS or marker
