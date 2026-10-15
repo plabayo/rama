@@ -484,6 +484,12 @@ mod tests {
                 "error",
                 "CIDs exhausted",
             ),
+            (
+                ConnectionError::EndpointInUse,
+                "local",
+                "error",
+                "endpoint in use",
+            ),
         ] {
             assert_eq!(
                 serde_json::to_value(Event::Closed(ConnectionClosed::error(&error))).unwrap(),

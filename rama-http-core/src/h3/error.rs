@@ -116,20 +116,19 @@ impl Error {
             }
             _ => Self::connection(Code::H3_GENERAL_PROTOCOL_ERROR, "QUIC connection failed"),
         };
-        if matches!(
-            error,
-            QuicConnectionError::LocallyClosed | QuicConnectionError::CidsExhausted
-        ) {
-            Self {
-                source: Source::LocalConnectionLost,
-                ..mapped
-            }
-        } else {
-            Self {
-                source: Source::ConnectionLost,
-                ..mapped
-            }
-        }
+        // No wildcard: each new cause must say whether this side lost the connection.
+        let source = match error {
+            QuicConnectionError::LocallyClosed
+            | QuicConnectionError::CidsExhausted
+            | QuicConnectionError::EndpointInUse => Source::LocalConnectionLost,
+            QuicConnectionError::VersionMismatch { .. }
+            | QuicConnectionError::TransportError(_)
+            | QuicConnectionError::ConnectionClosed(_)
+            | QuicConnectionError::ApplicationClosed(_)
+            | QuicConnectionError::Reset
+            | QuicConnectionError::TimedOut => Source::ConnectionLost,
+        };
+        Self { source, ..mapped }
     }
 
     /// Attribute a locally detected error to received peer data, keeping a more
@@ -291,6 +290,7 @@ mod tests {
         );
         assert!(!Error::from_transport(&QuicConnectionError::LocallyClosed).is_remote_failure());
         assert!(!Error::from_transport(&QuicConnectionError::CidsExhausted).is_remote_failure());
+        assert!(!Error::from_transport(&QuicConnectionError::EndpointInUse).is_remote_failure());
         assert!(Error::peer_stopped(Code::H3_REQUEST_CANCELLED).is_remote_failure());
         assert!(Error::from_transport(&QuicConnectionError::Reset).is_remote_failure());
         assert!(
