@@ -1,4 +1,4 @@
-use std::{cell::RefCell, convert::Infallible, io, net::SocketAddr};
+use std::{cell::RefCell, convert::Infallible, io, net::SocketAddr, sync::Arc};
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -27,6 +27,7 @@ use rama::net::apple::networkextension::tproxy::{
 use std::time::Duration;
 
 use super::UdpPolicyScope;
+use crate::state::SharedState;
 
 #[cfg(any(test, feature = "e2e"))]
 const E2E_PRESSURE_MARKER: &[u8] = b"rama-udp-e2e-pressure-v1 ";
@@ -79,10 +80,29 @@ static UDP_RECV_SCRATCH_PEAK: AtomicUsize = AtomicUsize::new(0);
 static UDP_RECV_WOULD_BLOCKS: AtomicUsize = AtomicUsize::new(0);
 
 pub(super) async fn try_new_service(
-    _: TransparentProxyServiceContext,
+    ctx: TransparentProxyServiceContext,
     udp_policy_scope: UdpPolicyScope,
+    state: SharedState,
+    quic_ports: Arc<[u16]>,
 ) -> Result<impl Service<UdpFlow, Output = (), Error = Infallible>, BoxError> {
-    Ok(service_fn(move |flow| service(flow, udp_policy_scope)))
+    let exec = ctx.executor;
+    Ok(service_fn(move |flow: UdpFlow| {
+        let state = state.clone();
+        let exec = exec.clone();
+        let quic_ports = quic_ports.clone();
+        async move {
+            let port = flow
+                .extensions()
+                .get_ref::<ConnectorTarget>()
+                .map(|ConnectorTarget(target)| target.port);
+            if crate::quic::serves_port(&quic_ports, port) {
+                crate::quic::serve(flow, state, exec).await;
+                Ok(())
+            } else {
+                service(flow, udp_policy_scope).await
+            }
+        }
+    }))
 }
 
 /// UDP flow handler used by the transparent proxy engine.
