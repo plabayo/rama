@@ -177,10 +177,14 @@ pub(crate) fn engine_with_udp_ingress_probe_lease_ms(
     Arc::new(EngineHandle::new_with_json(&config))
 }
 
-/// The example engine with `ports` served by its per-destination QUIC path.
-pub(crate) fn engine_with_udp_quic_ports(ports: &[u16]) -> Arc<EngineHandle> {
+/// The example engine with `ports` served by its per-destination QUIC path, and `settings`
+/// (a JSON object) overriding its configuration.
+pub(crate) fn engine_with_udp_quic_ports(
+    ports: &[u16],
+    settings: serde_json::Value,
+) -> Arc<EngineHandle> {
     let (cert_pem, key_pem) = get_or_generate_mitm_ca();
-    let config = serde_json::json!({
+    let mut config = serde_json::json!({
         "html_badge_enabled": true,
         "html_badge_label": BADGE_LABEL,
         "peek_duration_s": 0.5,
@@ -189,6 +193,10 @@ pub(crate) fn engine_with_udp_quic_ports(ports: &[u16]) -> Arc<EngineHandle> {
         "ca_key_pem": key_pem,
         "udp_quic_ports": ports,
     });
+    if let (Some(config), serde_json::Value::Object(settings)) = (config.as_object_mut(), settings)
+    {
+        config.extend(settings);
+    }
     Arc::new(EngineHandle::new_with_json(&config))
 }
 

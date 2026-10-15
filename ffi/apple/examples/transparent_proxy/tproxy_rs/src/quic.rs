@@ -5,10 +5,11 @@
 //! that is not excluded is terminated with the TCP relay's CA and its HTTP/3 relayed request by
 //! request; anything else is forwarded to its destination untouched.
 
-use std::{num::NonZeroUsize, time::Duration};
+use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 use rama::{
     Layer as _, Service,
+    extensions::ExtensionsRef as _,
     http::{
         HeaderName, HeaderValue,
         layer::set_header::SetResponseHeaderLayer,
@@ -16,9 +17,12 @@ use rama::{
     },
     layer::{ArcLayer, ConsumeErrLayer},
     net::{
+        address::Host,
         apple::networkextension::{
-            UdpFlow, UdpFlowSender, UdpFlowSocket, tproxy::DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES,
+            UdpFlow, UdpFlowSender, UdpFlowSocket,
+            tproxy::{DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES, TransparentProxyFlowMeta},
         },
+        stream::Socket as _,
         tls::ApplicationProtocol,
     },
     quic::{
@@ -40,7 +44,7 @@ use rama::{
     utils::octets::kib,
 };
 
-use crate::{policy::DomainExclusionList, state::SharedState};
+use crate::{concurrency::ConcurrencyLimiter, policy::DomainExclusionList, state::SharedState};
 
 /// The application error code closing both hops when an interception fails.
 const FAILURE: u32 = 0x0101;
@@ -58,7 +62,16 @@ const DEMUX: DemuxConfig = DemuxConfig {
 type Association = PrefixedDatagramSocket<DemuxedSocket<UdpFlowSender>>;
 
 /// Serve one UDP flow until it ends.
-pub(super) async fn serve(flow: UdpFlow, state: SharedState, exec: Executor) {
+pub(super) async fn serve(
+    flow: UdpFlow,
+    state: SharedState,
+    limiter: Arc<ConcurrencyLimiter>,
+    exec: Executor,
+) {
+    let bundle_identifier = flow
+        .extensions()
+        .get_arc::<TransparentProxyFlowMeta>()
+        .and_then(|meta| meta.source_app_bundle_identifier.clone());
     let settings = state.load();
     let exclusions = DomainExclusionList::new(settings.exclude_domains.iter());
     // As the TCP relay does: the app judges the mirrored certificate, not the relay.
@@ -97,11 +110,26 @@ pub(super) async fn serve(flow: UdpFlow, state: SharedState, exec: Executor) {
             let terminate = terminate.clone();
             let forward = forward.clone();
             let name = input.client_hello.client_hello.ext_server_name().cloned();
-            let intercept = name
+            // As TCP does: an intercept the limiter refuses passes through untouched.
+            let permit = name
                 .as_ref()
-                .is_some_and(|name| !exclusions.is_excluded(name));
+                .filter(|name| !exclusions.is_excluded(*name))
+                .and_then(|name| {
+                    let port = input.input.local_addr().map_or(0, |local| local.port);
+                    limiter
+                        .try_reserve(
+                            port,
+                            bundle_identifier.as_deref(),
+                            Some(&Host::Name(name.clone())),
+                        )
+                        .inspect_err(|reason| {
+                            tracing::debug!(?reason, ?name, "tproxy quic admission refused");
+                        })
+                        .ok()
+                })
+                .map(|reservation| reservation.activate());
             async move {
-                if intercept {
+                if let Some(_permit) = permit {
                     tracing::debug!(?name, "tproxy quic intercepting");
                     terminate.serve(input).await.map(drop)
                 } else {
