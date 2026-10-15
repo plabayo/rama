@@ -28,7 +28,7 @@ use rama::{
         proto::VarInt,
         proxy::{
             InputWithQuicClientHello, PeekQuicClientHelloService, QuicMitmRelay,
-            QuicPeekFallbackPolicy, QuicRelay,
+            QuicPeekFallbackPolicy, QuicPeekRejection, QuicRelay,
         },
         tls::BoringTlsProvider,
     },
@@ -157,12 +157,16 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, exec: Executor) {
             }
         })
     };
-    // As the TCP path passes through what it cannot peek: QUIC it cannot inspect is forwarded.
+    // Best-effort interception deliberately fails open for every peek rejection. A client
+    // can evade inspection with a malformed, oversized, or stalled flight; this demo is
+    // not an enforcement boundary. To reject those flights while permitting version
+    // negotiation, use { unsupported_version: true, ..QuicPeekFallbackPolicy::NOT_QUIC }.
+    // NOT_QUIC alone also rejects unsupported versions.
     let inspect = PeekQuicClientHelloService::new(BoringTlsProvider, route)
         .with_fallback_policy(QuicPeekFallbackPolicy::ALL)
         .with_fallback(service_fn(move |input: Association| {
             let forward = forward.clone();
-            async move { forward.serve(input).await.map(drop) }
+            async move { forward_uninspected(&forward, input).await.map(drop) }
         }));
     let demux = DatagramDemux::new(UdpFlowSocket::new(flow), demux_config(flow_bytes))
         .with_shared_budget(budget);
@@ -174,4 +178,73 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, exec: Executor) {
 /// Whether a flow to `port` is served by [`serve`] rather than the multi-peer loop.
 pub(super) fn serves_port(quic_ports: &[u16], port: Option<u16>) -> bool {
     port.is_some_and(|port| quic_ports.contains(&port))
+}
+
+/// Record only the bounded rejection class, never client identity or packet contents.
+async fn forward_uninspected<T, S>(forward: &S, input: T) -> Result<S::Output, S::Error>
+where
+    T: rama::extensions::ExtensionsRef + Send,
+    S: Service<T>,
+{
+    if let Some(rejection) = input.extensions().get_ref::<QuicPeekRejection>() {
+        // The class belongs in the public message: Apple logging keeps fields private.
+        tracing::info!("tproxy quic fail-open fallback: {rejection}");
+    }
+    forward.serve(input).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama::{extensions::Extensions, telemetry::tracing::instrument::WithSubscriber as _};
+    use std::{io::Write, sync::RwLock};
+
+    #[derive(Debug)]
+    struct PrivateClientMarker;
+    impl rama::extensions::Extension for PrivateClientMarker {}
+
+    #[derive(Clone)]
+    struct LogBuffer(Arc<RwLock<Vec<u8>>>);
+
+    impl Write for LogBuffer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.write().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn forwarded_rejections_are_observable_without_client_metadata() {
+        let output = Arc::new(RwLock::new(Vec::new()));
+        let writer = LogBuffer(output.clone());
+        let subscriber = tracing::subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        async {
+            for rejection in [
+                QuicPeekRejection::NotQuic,
+                QuicPeekRejection::UnsupportedVersion,
+                QuicPeekRejection::Malformed,
+                QuicPeekRejection::Budget,
+                QuicPeekRejection::Deadline,
+            ] {
+                let input = Extensions::new();
+                input.insert(rejection);
+                input.insert(PrivateClientMarker);
+                let forwarded = forward_uninspected(&(), input).await.unwrap();
+                assert_eq!(forwarded.get_ref::<QuicPeekRejection>(), Some(&rejection));
+                let log = String::from_utf8(output.read().unwrap().clone()).unwrap();
+                assert!(log.contains(&format!("tproxy quic fail-open fallback: {rejection}")));
+                assert!(!log.contains("PrivateClientMarker"));
+            }
+        }
+        .with_subscriber(subscriber)
+        .await;
+    }
 }

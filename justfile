@@ -568,3 +568,9 @@ qa-quic-interop:
 miri-udp-cmsg:
     MIRIFLAGS="-Zmiri-strict-provenance" cargo +"${MIRI_TOOLCHAIN:-nightly}" miri test --locked -p rama-udp --lib sys::cmsg
     MIRIFLAGS="-Zmiri-strict-provenance -Zmiri-tree-borrows" cargo +"${MIRI_TOOLCHAIN:-nightly}" miri test --locked -p rama-udp --lib sys::cmsg
+
+# Independent loopback wire proof for direct, forwarded and terminated HTTP/3.
+# OUTPUT must be a new directory; captures and test TLS keys remain there.
+test-quic-relay-wire OUTPUT:
+    cargo build -p rama-examples --bin http3_client_server --bin quic_h3_mitm_proxy --features=http-full,boring
+    python3 examples/tests/wire/quic_relay.py --bin-dir target/debug --output {{quote(OUTPUT)}}
