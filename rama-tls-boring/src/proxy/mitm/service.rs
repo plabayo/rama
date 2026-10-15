@@ -1300,6 +1300,68 @@ mod tests {
         }
     }
 
+    /// Without a ClientHello the client's ciphers are unknown, so the ingress never pins the
+    /// upstream's cipher: the client would fail when it did not offer that one.
+    #[tokio::test]
+    async fn an_unknown_client_is_not_held_to_the_upstream_cipher() {
+        let (cert_chain, private_key) = generate_server_auth(GeneratedServerAuthConfig::default())
+            .expect("generate private upstream identity");
+        let upstream = crate::server::TlsAcceptorData::try_from(
+            &TlsServerConfig::new().with_single_cert(ServerAuthData {
+                cert_chain,
+                private_key,
+                ocsp: None,
+            }),
+        )
+        .unwrap()
+        .into_static_acceptor_builder()
+        .unwrap()
+        .build();
+        let mut client = SslConnector::builder(SslMethod::tls_client()).unwrap();
+        client.set_verify(SslVerifyMode::NONE);
+        client
+            .set_max_proto_version(Some(SslVersion::TLS1_3))
+            .unwrap();
+        let mut client = client.build().configure().unwrap();
+        let offered = CipherSuite::TLS13_AES_128_GCM_SHA256;
+        client.set_raw_cipher_list(&[u16::from(offered)]).unwrap();
+
+        let relay = TlsMitmRelay::try_new_with_self_signed_issuer(&SelfSignedCaConfig::default())
+            .expect("build MITM relay");
+        let service = TlsMitmRelayService::new(
+            relay,
+            service_fn(|_: BridgeIo<_, _>| async { Ok::<(), BoxError>(()) }),
+        );
+        let (client_io, relay_ingress) = tokio::io::duplex(usize::MAX);
+        let (relay_egress, upstream_io) = tokio::io::duplex(usize::MAX);
+        let upstream_handle = tokio::spawn(async move {
+            let mut ssl = rama_boring::ssl::Ssl::new(upstream.context()).unwrap();
+            ssl.set_max_proto_version(Some(SslVersion::TLS1_3)).unwrap();
+            ssl.set_strict_tls13_server_ciphers(&[u16::from(
+                CipherSuite::TLS13_AES_256_GCM_SHA384,
+            )])
+            .unwrap();
+            drop(
+                rama_boring_tokio::SslStreamBuilder::new(ssl, upstream_io)
+                    .accept()
+                    .await
+                    .expect("upstream TLS"),
+            );
+        });
+        let (service_result, client_result) = tokio::join!(
+            service.serve(BridgeIo(
+                ServiceInput::new(relay_ingress),
+                ServiceInput::new(relay_egress)
+            )),
+            rama_boring_tokio::connect(client, Some("localhost"), client_io),
+        );
+        let client = client_result.expect("the client keeps a cipher it offered");
+        service_result.expect("relay");
+        upstream_handle.await.expect("upstream");
+        let negotiated = client.ssl().current_cipher().unwrap().protocol_id();
+        assert_eq!(negotiated, u16::from(offered));
+    }
+
     #[cfg(feature = "compression")]
     #[tokio::test]
     async fn ingress_compresses_the_certificate_exactly_as_the_upstream_did() {

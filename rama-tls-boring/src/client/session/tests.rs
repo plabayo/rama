@@ -1,7 +1,10 @@
 use std::{
     num::NonZeroUsize,
-    sync::{Arc, LazyLock},
-    time::Duration,
+    sync::{
+        Arc, LazyLock,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use parking_lot::Mutex;
@@ -22,11 +25,12 @@ use rama_net::{
     tls::TlsAlpn,
 };
 use rama_tls::{
-    ExtensionId,
+    ExtensionId, KeyLogIntent,
     client::{
         ClientAuth, ClientHello, NegotiatedTlsParameters, ServerVerifyMode, TlsClientAuth,
         TlsClientConfig, TlsServerCertPins, TlsServerVerify, TlsSessionProfileScope,
     },
+    keylog::KeyLogSink,
     server::{
         CertificateIdentity, GeneratedServerAuthConfig, LeafCertRequest, ServerAuthData,
         TlsServerConfig,
@@ -40,7 +44,7 @@ use crate::{
     TlsStream,
     client::{
         BoringClientConfigExt as _, BoringExtensionOrder, BoringPermuteExtensions,
-        ConnectorKindSecure, TlsConnector,
+        ConnectorKindSecure, TlsConnector, TlsConnectorData,
     },
     server::TlsAcceptorData,
 };
@@ -651,11 +655,8 @@ async fn a_generated_client_credential_is_shared_by_the_wire_variants_of_its_pol
 #[tokio::test]
 async fn a_pinned_session_resumes_only_while_its_chain_verifies() {
     // The test certificates live 90 days: a year on they have expired (and fit a 32-bit time_t).
-    let later = std::time::SystemTime::now() + Duration::from_hours(365 * 24);
-    let later = later
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let later = SystemTime::now() + Duration::from_hours(365 * 24);
+    let later = later.duration_since(UNIX_EPOCH).unwrap().as_secs();
     for version in VERSIONS {
         let server = Server::new(version);
         for (pinned, verify, expected_later) in [
@@ -705,4 +706,49 @@ async fn a_pinned_session_resumes_only_while_its_chain_verifies() {
             );
         }
     }
+}
+
+#[derive(Debug, Default)]
+struct CountingKeyLog(AtomicUsize);
+
+impl KeyLogSink for CountingKeyLog {
+    fn write_line(&self, _line: &str) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// Connections that did not opt into keylogging never share the context of those that did,
+/// so their secrets never reach that sink.
+#[tokio::test]
+async fn keylog_intent_keeps_contexts_apart() {
+    let sink = Arc::new(CountingKeyLog::default());
+    let logged = trusting_config().with_keylog(KeyLogIntent::Custom(sink.clone()));
+    let unlogged = trusting_config().with_keylog(KeyLogIntent::Disabled);
+    let server = Server::new(SslVersion::TLS1_3);
+    let mut lines = Vec::new();
+    for config in [&logged, &unlogged, &logged] {
+        let mut data = TlsConnectorData::try_from(config).unwrap();
+        data.server_name = Some(Host::from_static("a.test"));
+        let ssl = data.into_ssl().unwrap();
+        let (client_io, server_io) = tokio::io::duplex(1024);
+        let acceptor = server.acceptor.clone();
+        let accepted = tokio::spawn(async move {
+            let mut stream = rama_boring_tokio::accept(&acceptor, server_io).await.ok()?;
+            stream.write_all(b"x").await.ok()?;
+            Some(())
+        });
+        let mut stream = rama_boring_tokio::SslStreamBuilder::new(ssl, client_io)
+            .connect()
+            .await
+            .unwrap();
+        stream.read_exact(&mut [0]).await.unwrap();
+        drop(accepted.await);
+        lines.push(sink.0.load(Ordering::SeqCst));
+    }
+    assert!(lines[0] > 0, "the logged connection writes its secrets");
+    assert_eq!(
+        lines[1], lines[0],
+        "the unlogged connection wrote to the sink"
+    );
+    assert!(lines[2] > lines[1]);
 }

@@ -1303,6 +1303,11 @@ mod tests {
                 .server_hello
                 .clone();
             assert_eq!(hello.is_some(), stored);
+            // Unless asked, a connection does not even record the server's answer.
+            assert_eq!(
+                ServerAnswerRecorder::installed(established.conn.ssl_ref()).is_some(),
+                stored
+            );
             if stored {
                 let hello = hello.unwrap();
                 assert!(!hello.is_quic());
