@@ -99,9 +99,15 @@ pub(super) struct CollectionCounters {
 }
 
 fn increment(counter: &AtomicU64) {
-    _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-        Some(value.saturating_add(1))
-    });
+    let mut value = counter.load(Ordering::Relaxed);
+    while let Err(current) = counter.compare_exchange_weak(
+        value,
+        value.saturating_add(1),
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    ) {
+        value = current;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
