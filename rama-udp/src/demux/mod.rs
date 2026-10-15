@@ -9,7 +9,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     task::{Context, Poll, ready},
     time::Duration,
@@ -26,8 +26,12 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_net::{
-    address::{HostWithPort, SocketAddress, ip::IntoCanonicalIpAddr},
+    address::{
+        HostWithPort, SocketAddress,
+        ip::{IntoCanonicalIpAddr, IpScopes},
+    },
     client::ConnectorTarget,
+    socket::local_addresses,
     stream::Socket,
 };
 use tokio::{
@@ -51,12 +55,16 @@ pub struct DemuxConfig {
     pub idle_timeout: Duration,
     /// Receive buffer of the listening socket, including a coalesced group.
     pub receive_bytes: NonZeroUsize,
+    /// Payload bytes queued across all associations; a datagram beyond it is dropped as if its
+    /// queue were full.
+    pub queued_bytes: NonZeroUsize,
 }
 
 /// What a [`DatagramDemux`] dropped or refused since it started.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DemuxStats {
-    /// Datagrams dropped because their association's queue was full.
+    /// Datagrams dropped because their association's queue or [`DemuxConfig::queued_bytes`]
+    /// was full.
     pub dropped_queue_full: u64,
     /// Datagrams dropped because they would open an association beyond the limit.
     pub dropped_association_limit: u64,
@@ -64,6 +72,11 @@ pub struct DemuxStats {
     pub dropped_reply_source: u64,
     /// Datagrams dropped as invalid receives (see [`DatagramMetadata::validate`]).
     pub dropped_invalid: u64,
+    /// Associations whose original destination is this listener itself, given no
+    /// [`ConnectorTarget`].
+    pub addressed_to_listener: u64,
+    /// Payload bytes queued now, across all associations.
+    pub queued_bytes: usize,
 }
 
 #[derive(Debug, Default)]
@@ -72,6 +85,103 @@ struct Counters {
     association_limit: AtomicU64,
     reply_source: AtomicU64,
     invalid: AtomicU64,
+    addressed_to_listener: AtomicU64,
+    queued_bytes: AtomicUsize,
+}
+
+/// A queued datagram, charged against [`DemuxConfig::queued_bytes`] until it is read or dropped.
+#[derive(Debug)]
+struct Queued {
+    datagram: RetainedDatagram,
+    _charge: Charge,
+}
+
+#[derive(Debug)]
+struct Charge {
+    counters: Arc<Counters>,
+    len: usize,
+}
+
+impl Charge {
+    /// Reserve `len` bytes within `budget`, or `None` when they do not fit.
+    fn try_new(counters: &Arc<Counters>, len: usize, budget: usize) -> Option<Self> {
+        counters
+            .queued_bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+                queued.checked_add(len).filter(|total| *total <= budget)
+            })
+            .ok()?;
+        Some(Self {
+            counters: counters.clone(),
+            len,
+        })
+    }
+}
+
+impl Drop for Charge {
+    fn drop(&mut self) {
+        self.counters
+            .queued_bytes
+            .fetch_sub(self.len, Ordering::AcqRel);
+    }
+}
+
+/// How long the host's own addresses are trusted before they are enumerated again.
+const HOST_ADDRESSES_TTL: Duration = Duration::from_secs(5);
+
+/// The host's own addresses, enumerated only when a new association may be addressed to a
+/// wildcard listener itself.
+struct HostAddresses {
+    source: fn() -> io::Result<Vec<IpAddr>>,
+    /// `None` addresses: enumeration failed, and every address counts as the host's own.
+    cached: Option<(Instant, Option<Vec<IpAddr>>)>,
+}
+
+impl HostAddresses {
+    fn new() -> Self {
+        Self {
+            source: || local_addresses(IpScopes::all()),
+            cached: None,
+        }
+    }
+
+    fn contains(&mut self, ip: IpAddr) -> bool {
+        let now = Instant::now();
+        let stale = self
+            .cached
+            .as_ref()
+            .is_none_or(|(at, _)| now.duration_since(*at) >= HOST_ADDRESSES_TTL);
+        if stale {
+            // A short blocking call, at most once per TTL and only for a new association.
+            let addresses = match (self.source)() {
+                Ok(addresses) => Some(
+                    addresses
+                        .into_iter()
+                        .map(IntoCanonicalIpAddr::into_canonical_ip_addr)
+                        .collect(),
+                ),
+                Err(error) => {
+                    tracing::debug!(%error, "host addresses unavailable: treating all as own");
+                    None
+                }
+            };
+            self.cached = Some((now, addresses));
+        }
+        self.cached
+            .as_ref()
+            .is_none_or(|(_, addresses)| addresses.as_ref().is_none_or(|all| all.contains(&ip)))
+    }
+
+    /// Whether `destination` is `listening` itself, so that a bridge to it would loop back.
+    fn is_listener(&mut self, destination: SocketAddress, listening: SocketAddress) -> bool {
+        if destination.port != listening.port {
+            return false;
+        }
+        let ip = destination.ip_addr.into_canonical_ip_addr();
+        ip.is_unspecified()
+            || ip == listening.ip_addr.into_canonical_ip_addr()
+            || (listening.ip_addr.is_unspecified() && (ip.is_loopback() || self.contains(ip)))
+    }
 }
 
 /// The addresses an association is fixed to.
@@ -83,7 +193,7 @@ struct Addresses {
 
 #[derive(Debug)]
 struct Entry {
-    queue: mpsc::Sender<RetainedDatagram>,
+    queue: mpsc::Sender<Queued>,
     generation: u64,
 }
 
@@ -106,13 +216,16 @@ struct Registry {
 /// ([`DatagramCapabilities::send_source_port`] with `send_source_ip`), as a transparent proxy
 /// flow does: then every original destination is an association of its own, answered from
 /// that destination. A redirected association carries its original destination as its
-/// [`ConnectorTarget`], which one sent to the proxy itself never has, so a bridge cannot loop
-/// it back. Admission and inspection limits belong to the association's service.
+/// [`ConnectorTarget`], which one addressed to this listener itself never has (its port and
+/// its IP, or for a wildcard listener also loopback or any of the host's addresses), so a
+/// bridge cannot loop it back. Admission and inspection limits belong to the association's
+/// service.
 pub struct DatagramDemux<S> {
     socket: S,
     config: DemuxConfig,
     registry: Arc<Mutex<Registry>>,
     counters: Arc<Counters>,
+    host: HostAddresses,
 }
 
 impl<S: fmt::Debug> fmt::Debug for DatagramDemux<S> {
@@ -143,6 +256,8 @@ impl DemuxStatsHandle {
             dropped_association_limit: self.0.association_limit.load(Ordering::Relaxed),
             dropped_reply_source: self.0.reply_source.load(Ordering::Relaxed),
             dropped_invalid: self.0.invalid.load(Ordering::Relaxed),
+            addressed_to_listener: self.0.addressed_to_listener.load(Ordering::Relaxed),
+            queued_bytes: self.0.queued_bytes.load(Ordering::Relaxed),
         }
     }
 }
@@ -154,6 +269,7 @@ impl<S: DatagramSocket> DatagramDemux<S> {
             config,
             registry: Arc::default(),
             counters: Arc::default(),
+            host: HostAddresses::new(),
         }
     }
 
@@ -209,14 +325,19 @@ impl<S: DatagramSocket> DatagramDemux<S> {
                 local: local.into_canonical_ip_addr(),
                 peer: metadata.peer.into_canonical_ip_addr(),
             };
-            // Only a redirected datagram names a destination beyond this proxy.
-            let redirected = metadata
-                .original_destination
-                .map(IntoCanonicalIpAddr::into_canonical_ip_addr)
-                .filter(|destination| *destination != listening.into_canonical_ip_addr());
-            let datagram = RetainedDatagram {
-                payload: Bytes::copy_from_slice(&buffer[..metadata.len]),
-                metadata,
+            let Some(charge) =
+                Charge::try_new(&self.counters, metadata.len, self.config.queued_bytes.get())
+            else {
+                self.counters.queue_full.fetch_add(1, Ordering::Relaxed);
+                continue;
+            };
+            let original_destination = metadata.original_destination;
+            let datagram = Queued {
+                datagram: RetainedDatagram {
+                    payload: Bytes::copy_from_slice(&buffer[..metadata.len]),
+                    metadata,
+                },
+                _charge: charge,
             };
             let mut registry = self.registry.lock();
             if let Some(entry) = registry.associations.get(&addresses) {
@@ -254,10 +375,17 @@ impl<S: DatagramSocket> DatagramDemux<S> {
                 },
                 extensions: Extensions::new(),
             };
-            if let Some(destination) = redirected {
-                socket
-                    .extensions
-                    .insert(ConnectorTarget(HostWithPort::from(destination)));
+            // Only a redirected datagram names a destination beyond this proxy.
+            if let Some(destination) = original_destination {
+                if self.host.is_listener(destination, listening) {
+                    self.counters
+                        .addressed_to_listener
+                        .fetch_add(1, Ordering::Relaxed);
+                } else {
+                    socket.extensions.insert(ConnectorTarget(HostWithPort::from(
+                        destination.into_canonical_ip_addr(),
+                    )));
+                }
             }
             let service = service.clone();
             exec.spawn_task(async move {
@@ -301,7 +429,7 @@ impl Drop for Release {
 /// One association of a [`DatagramDemux`]: the datagrams one peer sent to one local
 /// address, and replies to that peer only.
 pub struct DemuxedSocket<T> {
-    receiver: mpsc::Receiver<RetainedDatagram>,
+    receiver: mpsc::Receiver<Queued>,
     /// Cloned for each send handle; never sends itself.
     sender: Mutex<T>,
     capabilities: DatagramCapabilities,
@@ -373,7 +501,7 @@ impl<T: DatagramSender + Clone> DatagramSocket for DemuxedSocket<T> {
             return Poll::Ready(Err(DatagramError::Closed));
         }
         // A queued datagram is never cut: too small a buffer leaves it queued.
-        let Some(datagram) = ready!(self.receiver.poll_recv(cx)) else {
+        let Some(Queued { datagram, .. }) = ready!(self.receiver.poll_recv(cx)) else {
             return Poll::Ready(Err(DatagramError::Closed));
         };
         if datagram.payload.len() > buffer.len() {

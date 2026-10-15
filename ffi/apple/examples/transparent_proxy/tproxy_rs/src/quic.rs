@@ -16,7 +16,9 @@ use rama::{
     },
     layer::{ArcLayer, ConsumeErrLayer},
     net::{
-        apple::networkextension::{UdpFlow, UdpFlowSender, UdpFlowSocket},
+        apple::networkextension::{
+            UdpFlow, UdpFlowSender, UdpFlowSocket, tproxy::DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES,
+        },
         tls::ApplicationProtocol,
     },
     quic::{
@@ -49,6 +51,8 @@ const DEMUX: DemuxConfig = DemuxConfig {
     queue: NonZeroUsize::new(64).unwrap(),
     idle_timeout: Duration::from_secs(30),
     receive_bytes: NonZeroUsize::new(kib(64)).unwrap(),
+    // What the engine lets one flow hold: the demux takes every datagram off the flow at once.
+    queued_bytes: NonZeroUsize::new(DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES).unwrap(),
 };
 
 type Association = PrefixedDatagramSocket<DemuxedSocket<UdpFlowSender>>;

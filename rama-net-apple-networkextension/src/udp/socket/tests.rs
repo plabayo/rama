@@ -6,6 +6,7 @@ use rama_udp::{
     DatagramDemux, DatagramSenderExt as _, DatagramSocketExt as _, DemuxConfig, DemuxStatsHandle,
     DemuxedSocket,
 };
+use rama_utils::octets::kib;
 use tokio::{
     sync::mpsc::{self, UnboundedReceiver},
     time::timeout,
@@ -60,6 +61,7 @@ fn demux_with_stats(socket: UdpFlowSocket) -> (Associations, DemuxStatsHandle) {
             queue: NonZeroUsize::new(8).unwrap(),
             idle_timeout: Duration::from_secs(30),
             receive_bytes: NonZeroUsize::new(2048).unwrap(),
+            queued_bytes: NonZeroUsize::new(kib(64)).unwrap(),
         },
     );
     let stats = demux.stats();

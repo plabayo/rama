@@ -99,6 +99,7 @@ use rama::{
         UdpPacketSocket,
         proxy::{DatagramForwardService, DatagramToProxyBridge, EcnPolicy},
     },
+    utils::octets::{kib, mib},
 };
 
 #[derive(Parser)]
@@ -217,7 +218,8 @@ async fn main() -> Result<(), BoxError> {
             associations: NonZeroUsize::new(1024).expect("nonzero"),
             queue: NonZeroUsize::new(64).expect("nonzero"),
             idle_timeout: Duration::from_secs(30),
-            receive_bytes: NonZeroUsize::new(65_536).expect("nonzero"),
+            receive_bytes: NonZeroUsize::new(kib(64)).expect("nonzero"),
+            queued_bytes: NonZeroUsize::new(mib(16)).expect("nonzero"),
         },
     );
     graceful.spawn_task(async move {

@@ -11,6 +11,7 @@ use tokio::{
 
 use super::*;
 use rama_net::{address::HostWithPort, client::ConnectorTarget};
+use rama_utils::octets::kib;
 
 use crate::{
     DatagramSenderExt as _, UdpPacketSender, UdpPacketSocket,
@@ -26,6 +27,7 @@ fn config() -> DemuxConfig {
         queue: NonZeroUsize::new(4).unwrap(),
         idle_timeout: Duration::from_secs(30),
         receive_bytes: NonZeroUsize::new(2048).unwrap(),
+        queued_bytes: NonZeroUsize::new(kib(64)).unwrap(),
     }
 }
 
@@ -55,7 +57,11 @@ type Sockets = UnboundedReceiver<DemuxedSocket<crate::test_utils::MemoryDatagram
 
 /// Serve `listener`, handing every association to the test.
 fn serve(listener: MemoryDatagramSocket, config: DemuxConfig) -> (Sockets, DemuxStatsHandle) {
-    let demux = DatagramDemux::new(listener, config);
+    serve_demux(DatagramDemux::new(listener, config))
+}
+
+/// Serve `demux`, handing every association to the test.
+fn serve_demux(demux: DatagramDemux<MemoryDatagramSocket>) -> (Sockets, DemuxStatsHandle) {
     let stats = demux.stats();
     let (sockets, received) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(demux.serve(
@@ -517,6 +523,197 @@ async fn a_datagram_to_the_proxy_itself_is_not_bridged_back_to_it() {
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(associations.load(AtomicOrdering::SeqCst), 1);
         assert_eq!(stats.get().dropped_association_limit, 0);
+    })
+    .await
+    .unwrap();
+}
+
+/// The target an association gets when its first datagram was redirected from `destination`
+/// to a listener at `listening`, on a host whose addresses `host` enumerates.
+async fn target_for(
+    listening: SocketAddress,
+    destination: SocketAddress,
+    host: fn() -> io::Result<Vec<IpAddr>>,
+) -> (Option<ConnectorTarget>, DemuxStats) {
+    let (client, listener) =
+        MemoryDatagramSocket::pair(peer(1), listening, NonZeroUsize::new(64).unwrap());
+    listener.set_send_source_port(true);
+    let mut metadata = DatagramMetadata::empty();
+    metadata.peer = client.local_addr().unwrap();
+    metadata.local = destination;
+    metadata.original_destination = Some(destination);
+    listener
+        .inject_received(b"hello".to_vec(), metadata)
+        .unwrap();
+    let mut demux = DatagramDemux::new(listener, config());
+    demux.host = HostAddresses {
+        source: host,
+        cached: None,
+    };
+    let (mut sockets, stats) = serve_demux(demux);
+    let association = sockets.recv().await.unwrap();
+    let target = association
+        .extensions()
+        .get_ref::<ConnectorTarget>()
+        .cloned();
+    (target, stats.get())
+}
+
+const HOST_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
+const OTHER_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10));
+
+fn host_addresses() -> io::Result<Vec<IpAddr>> {
+    Ok(vec![HOST_IP])
+}
+
+fn unknown_host_addresses() -> io::Result<Vec<IpAddr>> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
+/// A datagram addressed to the listener itself gets no target, so a bridge cannot send it
+/// back in as a new association; one redirected beyond this listener keeps its destination.
+#[tokio::test]
+async fn only_a_destination_beyond_this_listener_is_a_target() {
+    timeout(LIMIT, async {
+        let specific = SocketAddress::new(HOST_IP, 443);
+        let wildcard = SocketAddress::default_ipv4(443);
+        let wildcard_v6 = SocketAddress::default_ipv6(443);
+        let mapped_host: SocketAddress = "[::ffff:203.0.113.9]:443".parse().unwrap();
+        let own: [(
+            SocketAddress,
+            SocketAddress,
+            fn() -> io::Result<Vec<IpAddr>>,
+        ); 7] = [
+            (specific, specific, host_addresses),
+            (specific, SocketAddress::default_ipv4(443), host_addresses),
+            (wildcard, SocketAddress::local_ipv4(443), host_addresses),
+            (wildcard, SocketAddress::new(HOST_IP, 443), host_addresses),
+            (wildcard_v6, SocketAddress::local_ipv6(443), host_addresses),
+            (wildcard_v6, mapped_host, host_addresses),
+            // Unknown host addresses count as its own: a lost target beats a loop.
+            (
+                wildcard,
+                SocketAddress::new(OTHER_IP, 443),
+                unknown_host_addresses,
+            ),
+        ];
+        for (listening, destination, host) in own {
+            let (target, stats) = target_for(listening, destination, host).await;
+            assert_eq!(target, None, "{destination} to {listening}");
+            assert_eq!(
+                stats.addressed_to_listener, 1,
+                "{destination} to {listening}"
+            );
+        }
+        let beyond = [
+            (specific, SocketAddress::new(OTHER_IP, 443)),
+            (specific, SocketAddress::local_ipv4(443)),
+            (wildcard, SocketAddress::new(OTHER_IP, 443)),
+            (wildcard, SocketAddress::local_ipv4(8443)),
+            (wildcard, SocketAddress::new(HOST_IP, 8443)),
+        ];
+        for (listening, destination) in beyond {
+            let (target, stats) = target_for(listening, destination, host_addresses).await;
+            assert_eq!(
+                target,
+                Some(ConnectorTarget(HostWithPort::from(destination))),
+                "{destination} to {listening}"
+            );
+            assert_eq!(
+                stats.addressed_to_listener, 0,
+                "{destination} to {listening}"
+            );
+        }
+    })
+    .await
+    .unwrap();
+}
+
+/// On a wildcard listener that reports original destinations, as a transparent one does, a
+/// datagram sent straight to it is one association, not bridged back into the listener.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[tokio::test]
+async fn a_datagram_to_a_wildcard_listener_is_not_bridged_back_to_it() {
+    timeout(LIMIT, async {
+        let socket = crate::UdpSocketConfig::new().with_receive_original_destination(true);
+        let listener = crate::UdpSocketFactory::new(socket)
+            .bind(SocketAddress::default_ipv4(0))
+            .await
+            .unwrap();
+        assert!(listener.capabilities().receive_original_destination);
+        let port = listener.local_addr().unwrap().port;
+        let demux = DatagramDemux::new(
+            listener,
+            DemuxConfig {
+                associations: NonZeroUsize::new(16).unwrap(),
+                ..config()
+            },
+        );
+        let stats = demux.stats();
+        let associations = Arc::new(AtomicUsize::new(0));
+        let counted = associations.clone();
+        let bridge = DatagramToProxyBridge::extension_connector_target(
+            DatagramForwardService::new(NonZeroUsize::new(2048).unwrap(), EcnPolicy::Discard),
+        );
+        tokio::spawn(demux.serve(
+            Executor::new(),
+            service_fn(move |association| {
+                counted.fetch_add(1, AtomicOrdering::SeqCst);
+                let bridge = bridge.clone();
+                async move { bridge.serve(association).await.map(drop) }
+            }),
+        ));
+        let client = UdpPacketSocket::bind(SocketAddress::local_ipv4(0))
+            .await
+            .unwrap();
+        client
+            .create_sender()
+            .send(SendDatagram::new(SocketAddress::local_ipv4(port), b"loop?"))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(associations.load(AtomicOrdering::SeqCst), 1);
+        let stats = stats.get();
+        assert_eq!(stats.addressed_to_listener, 1);
+        assert_eq!(stats.dropped_association_limit, 0);
+    })
+    .await
+    .unwrap();
+}
+
+/// What all associations hold queued stays within the byte budget: a datagram beyond it is
+/// dropped, and reading or ending an association frees its share.
+#[tokio::test]
+async fn queued_bytes_stay_within_the_budget() {
+    timeout(LIMIT, async {
+        let (_client, listener) = listener();
+        for _ in 0..10 {
+            for last in 1..=4 {
+                inject(&listener, peer(last), &[7; 1000]);
+            }
+        }
+        let (mut sockets, stats) = serve(
+            listener,
+            DemuxConfig {
+                associations: NonZeroUsize::new(8).unwrap(),
+                queue: NonZeroUsize::new(64).unwrap(),
+                queued_bytes: NonZeroUsize::new(4096).unwrap(),
+                ..config()
+            },
+        );
+        let mut associations = Vec::new();
+        for _ in 0..4 {
+            associations.push(sockets.recv().await.unwrap());
+        }
+        while stats.get().dropped_queue_full < 36 {
+            tokio::task::yield_now().await;
+        }
+        let held = stats.get();
+        assert_eq!((held.queued_bytes, held.dropped_queue_full), (4000, 36));
+        assert_eq!(next(&mut associations[0]).await.len(), 1000);
+        assert_eq!(stats.get().queued_bytes, 3000);
+        drop(associations.pop());
+        assert_eq!(stats.get().queued_bytes, 2000);
     })
     .await
     .unwrap();
