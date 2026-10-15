@@ -3,7 +3,8 @@ use std::{num::NonZeroUsize, sync::atomic::AtomicUsize, time::Duration};
 use parking_lot::Mutex;
 use rama_core::{error::BoxError, rt::Executor, service::service_fn};
 use rama_udp::{
-    DatagramDemux, DatagramSenderExt as _, DatagramSocketExt as _, DemuxConfig, DemuxedSocket,
+    DatagramDemux, DatagramSenderExt as _, DatagramSocketExt as _, DemuxConfig, DemuxStatsHandle,
+    DemuxedSocket,
 };
 use tokio::{
     sync::mpsc::{self, UnboundedReceiver},
@@ -46,6 +47,10 @@ fn destination(last: u8, port: u16) -> SocketAddr {
 type Associations = UnboundedReceiver<DemuxedSocket<UdpFlowSender>>;
 
 fn demux(socket: UdpFlowSocket) -> Associations {
+    demux_with_stats(socket).0
+}
+
+fn demux_with_stats(socket: UdpFlowSocket) -> (Associations, DemuxStatsHandle) {
     let (associations, received) = mpsc::unbounded_channel();
     let demux = DatagramDemux::new(
         socket,
@@ -56,6 +61,7 @@ fn demux(socket: UdpFlowSocket) -> Associations {
             receive_bytes: NonZeroUsize::new(2048).unwrap(),
         },
     );
+    let stats = demux.stats();
     tokio::spawn(demux.serve(
         Executor::new(),
         service_fn(move |association| {
@@ -66,7 +72,7 @@ fn demux(socket: UdpFlowSocket) -> Associations {
             }
         }),
     ));
-    received
+    (received, stats)
 }
 
 /// Every destination of one flow is an association of its own, and each one's replies reach
@@ -140,13 +146,13 @@ async fn a_datagram_without_a_destination_is_dropped_and_counted() {
     .unwrap();
 }
 
-/// A datagram larger than the receive buffer is reported, never cut, and stays for the next
-/// receive.
+/// A datagram larger than the receive buffer is reported truncated, as a kernel socket does, and
+/// costs only itself: a demux counts it invalid and keeps serving the flow.
 #[tokio::test]
-async fn a_datagram_is_never_cut() {
+async fn an_oversized_datagram_costs_only_itself() {
     timeout(LIMIT, async {
-        let (flow, incoming, _written, _demands) = flow();
-        let mut socket = UdpFlowSocket::new(flow);
+        let (first, incoming, _written, _demands) = flow();
+        let mut socket = UdpFlowSocket::new(first);
         incoming
             .send(Datagram::new(
                 Bytes::from_static(b"twelve bytes"),
@@ -155,20 +161,76 @@ async fn a_datagram_is_never_cut() {
             .await
             .unwrap();
         let mut small = [0; 4];
-        assert!(matches!(
-            socket.recv(&mut small).await,
-            Err(DatagramError::PayloadTooLarge { len: 12, max: 4 })
-        ));
-        let mut buffer = [0; 64];
-        let metadata = socket.recv(&mut buffer).await.unwrap();
-        assert_eq!(&buffer[..metadata.len], b"twelve bytes");
+        let metadata = socket.recv(&mut small).await.unwrap();
+        assert_eq!((metadata.len, metadata.original_len), (4, 12));
+
+        let (second, incoming, _written, _demands) = flow();
+        let (mut associations, stats) = demux_with_stats(UdpFlowSocket::new(second));
+        incoming
+            .send(Datagram::new(
+                Bytes::from(vec![0; 4096]),
+                destination(1, 443),
+            ))
+            .await
+            .unwrap();
+        incoming
+            .send(Datagram::new(
+                Bytes::from_static(b"small"),
+                destination(2, 443),
+            ))
+            .await
+            .unwrap();
+        let mut association = associations.recv().await.unwrap();
         assert_eq!(
-            metadata.original_destination,
-            Some(destination(1, 443).into())
+            association.local_addr().unwrap(),
+            SocketAddress::from(destination(2, 443))
         );
+        let mut buffer = [0; 64];
+        let metadata = association.recv(&mut buffer).await.unwrap();
+        assert_eq!(&buffer[..metadata.len], b"small");
+        assert_eq!(stats.get().dropped_invalid, 1);
     })
     .await
     .unwrap();
+}
+
+/// A reply reaches the app as sent by its destination whatever the families of the two: the
+/// app endpoint labels the flow, and an IPv6 app socket gets an IPv4 source v4-mapped.
+#[tokio::test]
+async fn a_reply_crosses_families_as_the_app_addressed_it() {
+    let v4 = destination(1, 443);
+    let v6: SocketAddr = "[2001:db8::1]:443".parse().unwrap();
+    let mapped: SocketAddr = "[::ffff:198.51.100.1]:443".parse().unwrap();
+    let rows: [(&str, SocketAddr, SocketAddr); 7] = [
+        ("0.0.0.0:0", v4, v4),
+        ("0.0.0.0:0", v6, v6),
+        ("192.0.2.10:5000", v4, v4),
+        ("[2001:db8::10]:5000", v6, v6),
+        ("[::]:5000", v6, v6),
+        ("[::]:5000", v4, mapped),
+        ("[2001:db8::10]:5000", mapped, mapped),
+    ];
+    for (app, source, sent_by) in rows {
+        let app: SocketAddress = app.parse().unwrap();
+        let (app_flow, _incoming, written, _demands) = flow();
+        let socket = UdpFlowSocket::with_app(app_flow, app);
+        // As a demuxed association sends: its canonical local address as the source.
+        let source = SocketAddress::from(source).into_canonical_ip_addr();
+        socket
+            .create_sender()
+            .send(
+                SendDatagram::new(app, b"reply")
+                    .with_source_ip(source.ip_addr)
+                    .with_source_port(source.port),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("app {app}, source {source}: {error}"));
+        assert_eq!(
+            written.lock()[0].peer,
+            Some(sent_by),
+            "app {app}, source {source}"
+        );
+    }
 }
 
 /// A reply must name the destination it comes from, and go to the app only.
