@@ -1,11 +1,18 @@
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::{
+    future::poll_fn,
+    net::SocketAddr,
+    sync::Arc,
+    task::{Context, Poll, ready},
+};
 
 use rama_core::{
     bytes::Bytes,
     extensions::{Extensions, ExtensionsRef},
 };
 use tokio::sync::mpsc;
+
+mod socket;
+pub use socket::{UdpFlowSender, UdpFlowSocket};
 
 /// One UDP datagram together with its peer endpoint.
 ///
@@ -68,6 +75,8 @@ impl Datagram {
 pub struct UdpFlow {
     incoming: mpsc::Receiver<Datagram>,
     outgoing: Arc<dyn Fn(Datagram) + Send + Sync + 'static>,
+    /// Whether the kernel read for the receive in progress was already asked for.
+    demand_signalled: bool,
     extensions: Extensions,
     on_read_demand: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
     on_ingress_received: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
@@ -85,6 +94,7 @@ impl UdpFlow {
         Self {
             incoming,
             outgoing,
+            demand_signalled: false,
             extensions: Extensions::new(),
             on_read_demand,
             on_ingress_received,
@@ -103,14 +113,23 @@ impl UdpFlow {
     /// datagram's `peer` is the destination the originating app
     /// addressed it to.
     pub async fn recv(&mut self) -> Option<Datagram> {
+        poll_fn(|cx| self.poll_recv(cx)).await
+    }
+
+    /// [`Self::recv`], polled.
+    pub(crate) fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<Datagram>> {
         // Pull one kernel read for each service receive. The engine-side hook
         // suppresses this while count/byte pressure has the flow paused; the
         // matching capacity-release hook below is then the sole resume edge.
-        self.signal_read_demand();
-        let datagram = self.incoming.recv().await;
+        if !self.demand_signalled {
+            self.signal_read_demand();
+            self.demand_signalled = true;
+        }
+        let datagram = ready!(self.incoming.poll_recv(cx));
+        self.demand_signalled = false;
         if datagram.is_some() {
-            // `mpsc::Receiver::recv` has released the bounded channel slot by
-            // this point. Byte reservations deliberately remain attached to
+            // `mpsc::Receiver::poll_recv` has released the bounded channel slot
+            // by this point. Byte reservations deliberately remain attached to
             // the payload and survive any `Bytes` clones.
             if let Some(on_ingress_received) = &self.on_ingress_received {
                 on_ingress_received();
@@ -118,7 +137,7 @@ impl UdpFlow {
         } else {
             self.close_ingress();
         }
-        datagram
+        Poll::Ready(datagram)
     }
 
     /// Send one datagram back to the intercepted client flow. The

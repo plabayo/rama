@@ -39,6 +39,7 @@ parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-net = { workspace = true, features = ["std"] }
+rama-udp = { workspace = true }
 rama-utils = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread", "sync"] }
 tracing = { workspace = true, default-features = true }
