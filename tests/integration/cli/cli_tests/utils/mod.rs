@@ -1,16 +1,22 @@
 #![allow(dead_code)]
 
+#[cfg(test)]
+mod startup_tests;
+
 use std::{
-    io::{self, BufRead, BufReader, Write as _},
-    net::{SocketAddr, TcpStream, UdpSocket},
+    collections::VecDeque,
+    io::{self, BufRead, BufReader, Read as _, Write as _},
+    net::{SocketAddr, UdpSocket},
     path::PathBuf,
-    process::Child,
-    sync::Once,
+    process::{Child, Command, Stdio},
+    sync::{Arc, Once},
     thread,
     time::{Duration, Instant},
 };
 
 use base64::Engine;
+use parking_lot::Mutex;
+use rama::net::{process::listening_sockets, transport::TransportProtocol};
 use rama::telemetry::tracing::{
     level_filters::LevelFilter,
     subscriber::{self, EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
@@ -20,6 +26,10 @@ use rama::telemetry::tracing::{
 /// A wrapper around a rama service process.
 pub(super) struct RamaService {
     process: Child,
+    address: SocketAddr,
+    startup_deadline: Instant,
+    diagnostics: Arc<Mutex<VecDeque<u8>>>,
+    stderr_drained: std::sync::mpsc::Receiver<()>,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +54,133 @@ pub(super) enum IcapTlsMode {
 }
 
 impl RamaService {
+    pub(super) fn address(&self) -> SocketAddr {
+        self.address
+    }
+
+    pub(super) fn port(&self) -> u16 {
+        self.address.port()
+    }
+
+    // Own the child before taking pipes or performing any fallible readiness work.
+    fn spawn(builder: &mut Command, requested: SocketAddr) -> Self {
+        let (stderr_done, stderr_drained) = std::sync::mpsc::sync_channel(1);
+        let process = builder
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn rama service");
+        let mut service = Self {
+            process,
+            address: requested,
+            startup_deadline: Instant::now() + Duration::from_secs(10),
+            diagnostics: Arc::new(Mutex::new(VecDeque::new())),
+            stderr_drained,
+        };
+
+        let stderr = service.process.stderr.take().expect("service stderr");
+        let diagnostics = service.diagnostics.clone();
+        thread::spawn(move || {
+            let mut stderr = stderr;
+            let mut buffer = [0; 4096];
+
+            while let Ok(length) = stderr.read(&mut buffer) {
+                if length == 0 {
+                    break;
+                }
+
+                let mut tail = diagnostics.lock();
+                tail.extend(&buffer[..length]);
+                let excess = tail.len().saturating_sub(64 * 1024);
+                tail.drain(..excess);
+            }
+
+            let _sent = stderr_done.send(());
+        });
+
+        service
+    }
+
+    fn check_running(&mut self) {
+        if let Some(status) = self.process.try_wait().expect("check service status") {
+            // Include final diagnostics, while bounding the wait in case a
+            // descendant inherited stderr and keeps the pipe open.
+            let _drained = self.stderr_drained.recv_timeout(Duration::from_millis(200));
+            panic!(
+                "rama service {} exited during startup: {status}\n{}",
+                self.process.id(),
+                self.diagnostics()
+            );
+        }
+    }
+
+    fn diagnostics(&self) -> String {
+        let bytes: Vec<_> = self.diagnostics.lock().iter().copied().collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    fn wait_for_endpoint(&mut self, protocol: TransportProtocol) {
+        self.wait_for_endpoint_except(protocol, None);
+    }
+
+    fn wait_for_endpoint_except(
+        &mut self,
+        protocol: TransportProtocol,
+        exclude: Option<SocketAddr>,
+    ) {
+        let deadline = self.startup_deadline;
+        let mut delay = Duration::from_millis(25);
+
+        loop {
+            self.check_running();
+            let sockets = listening_sockets(self.process.id());
+            self.check_running();
+
+            let sockets = sockets.unwrap_or_else(|error| {
+                panic!(
+                    "inspect rama service {}: {error}\n{}",
+                    self.process.id(),
+                    self.diagnostics()
+                )
+            });
+
+            let candidates: Vec<_> = sockets
+                .iter()
+                .filter(|socket| {
+                    Some(socket.local_addr) != exclude
+                        && socket.protocol == protocol
+                        && socket.local_addr.ip() == self.address.ip()
+                        && (self.address.port() == 0
+                            || socket.local_addr.port() == self.address.port())
+                })
+                .collect();
+
+            match candidates.as_slice() {
+                [socket] => {
+                    self.address = socket.local_addr;
+                    return;
+                }
+                [] => {}
+                _ => panic!(
+                    "ambiguous {protocol:?} endpoints for rama service {}: {candidates:?}\n{}",
+                    self.process.id(),
+                    self.diagnostics()
+                ),
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "rama service {} did not bind {:?} before timeout; sockets: {sockets:?}\n{}",
+                self.process.id(),
+                self.address,
+                self.diagnostics()
+            );
+
+            thread::sleep(delay.min(remaining));
+            delay = (delay * 2).min(Duration::from_millis(200));
+        }
+    }
+
     /// Start the rama Ip service with the given port.
     pub(super) fn serve_ip(port: u16, transport: bool, secure: bool) -> Self {
         Self::serve_ip_with_args(port, transport, secure, &[])
@@ -65,7 +202,6 @@ impl RamaService {
             .command();
 
         builder
-            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("ip")
             .arg("--bind")
@@ -95,18 +231,9 @@ impl RamaService {
         }
         builder.args(args);
 
-        let mut process = builder.spawn().unwrap();
-
-        let stderr = process.stderr.take().unwrap();
-        thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
-                let line = line.unwrap();
-                eprintln!("rama ip >> {line}");
-            }
-        });
-        wait_for_tcp_listener(&mut process, port, "ip");
-
-        Self { process }
+        let mut service = Self::spawn(&mut builder, ([127, 0, 0, 1], port).into());
+        service.wait_for_endpoint(TransportProtocol::Tcp);
+        service
     }
 
     /// Start the rama echo service with the given port.
@@ -147,7 +274,6 @@ impl RamaService {
         }
 
         builder
-            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("echo")
             .arg("--bind")
@@ -172,21 +298,16 @@ impl RamaService {
             builder.arg("--ws");
         }
 
-        let mut process = builder.spawn().unwrap();
-
-        let stderr = process.stderr.take().unwrap();
-        match mode {
-            EchoMode::Udp => wait_for_udp_echo(&mut process, port, "echo"),
-            _ => wait_for_tcp_listener(&mut process, port, "echo"),
-        }
-        thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
-                let line = line.unwrap();
-                println!("rama echo >> {line}");
-            }
+        let mut service = Self::spawn(&mut builder, ([127, 0, 0, 1], port).into());
+        service.wait_for_endpoint(if matches!(mode, EchoMode::Udp) {
+            TransportProtocol::Udp
+        } else {
+            TransportProtocol::Tcp
         });
-
-        Self { process }
+        if matches!(mode, EchoMode::Udp) {
+            wait_for_udp_echo(&mut service);
+        }
+        service
     }
 
     /// Start the Rama ICAP echo service with the given port.
@@ -200,7 +321,6 @@ impl RamaService {
             .command();
 
         builder
-            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("icap")
             .arg("--bind")
@@ -226,16 +346,9 @@ impl RamaService {
             }
         }
 
-        let mut process = builder.spawn().unwrap();
-        let stderr = process.stderr.take().unwrap();
-        wait_for_tcp_listener(&mut process, port, "ICAP echo");
-        thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
-                println!("rama icap >> {}", line.unwrap());
-            }
-        });
-
-        Self { process }
+        let mut service = Self::spawn(&mut builder, ([127, 0, 0, 1], port).into());
+        service.wait_for_endpoint(TransportProtocol::Tcp);
+        service
     }
 
     // Start the rama fp service with the given port.
@@ -263,7 +376,6 @@ impl RamaService {
         }
 
         builder
-            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("fp")
             .arg("--bind")
@@ -277,18 +389,9 @@ impl RamaService {
             builder.arg("--secure");
         }
 
-        let mut process = builder.spawn().unwrap();
-
-        let stderr = process.stderr.take().unwrap();
-        thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
-                let line = line.unwrap();
-                println!("rama fp >> {line}");
-            }
-        });
-        wait_for_tcp_listener(&mut process, port, "fp");
-
-        Self { process }
+        let mut service = Self::spawn(&mut builder, ([127, 0, 0, 1], port).into());
+        service.wait_for_endpoint(TransportProtocol::Tcp);
+        service
     }
 
     /// Start the rama proxy service with the given port.
@@ -302,7 +405,6 @@ impl RamaService {
             .command();
 
         builder
-            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("proxy")
             .arg("--bind")
@@ -312,18 +414,9 @@ impl RamaService {
                 std::env::var("RUST_LOG").unwrap_or("info".into()),
             );
 
-        let mut process = builder.spawn().unwrap();
-
-        let stderr = process.stderr.take().unwrap();
-        thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
-                let line = line.unwrap();
-                println!("rama proxy >> {line}");
-            }
-        });
-        wait_for_tcp_listener(&mut process, port, "proxy");
-
-        Self { process }
+        let mut service = Self::spawn(&mut builder, ([127, 0, 0, 1], port).into());
+        service.wait_for_endpoint(TransportProtocol::Tcp);
+        service
     }
 
     /// Start the rama proxy service with ICAP request and response adaptation.
@@ -337,7 +430,6 @@ impl RamaService {
             .command();
 
         builder
-            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("proxy")
             .arg("--bind")
@@ -352,20 +444,13 @@ impl RamaService {
             builder.arg("--icap-insecure");
         }
 
-        let mut process = builder.spawn().unwrap();
-        let stderr = process.stderr.take().unwrap();
-        wait_for_tcp_listener(&mut process, port, "ICAP proxy");
-        thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
-                println!("rama ICAP proxy >> {}", line.unwrap());
-            }
-        });
-
-        Self { process }
+        let mut service = Self::spawn(&mut builder, ([127, 0, 0, 1], port).into());
+        service.wait_for_endpoint(TransportProtocol::Tcp);
+        service
     }
 
     /// Start the rama MITM proxy and inspector on separate loopback ports.
-    pub(super) fn serve_proxy_mitm(proxy_port: u16, inspector_port: u16) -> (Self, String) {
+    pub(super) fn serve_proxy_mitm() -> (Self, SocketAddr, String) {
         let mut builder = escargot::CargoBuild::new()
             .package("rama-cli")
             .bin("rama")
@@ -375,41 +460,85 @@ impl RamaService {
             .command();
 
         builder
-            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("proxy")
             .arg("--bind")
-            .arg(format!("127.0.0.1:{proxy_port}"))
-            .arg(format!("--mitm=127.0.0.1:{inspector_port}"))
-            .env("RUST_LOG", "info");
+            .arg("127.0.0.1:0")
+            .arg("--mitm=127.0.0.1:0")
+            .arg("--inspect-json")
+            .stdout(Stdio::piped());
 
-        let mut process = builder.spawn().unwrap();
-        let stderr = process.stderr.take().unwrap();
-        let mut stderr = BufReader::new(stderr).lines();
-        let inspector_token = stderr
-            .find_map(|line| {
-                let line = line.unwrap();
-                let token = line.split_once("?token=")?.1;
-                let token = token
-                    .chars()
-                    .take_while(char::is_ascii_hexdigit)
-                    .collect::<String>();
-                (token.len() == 64).then_some(token)
-            })
-            .expect("MITM inspector startup URL contains its authorization token");
-        wait_for_tcp_listener(&mut process, proxy_port, "MITM proxy");
-        wait_for_tcp_listener(&mut process, inspector_port, "MITM inspector");
+        let mut service = Self::spawn(&mut builder, ([127, 0, 0, 1], 0).into());
+        let stdout = service
+            .process
+            .stdout
+            .take()
+            .expect("inspector JSON output");
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
         thread::spawn(move || {
-            for line in stderr {
-                println!("rama MITM proxy >> {}", line.unwrap());
-            }
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+
+            // This is the existing machine interface for the capability token
+            // and inspector role, not human log parsing or socket readiness.
+            let record = (&mut reader)
+                .take(64 * 1024)
+                .read_line(&mut line)
+                .map_err(|error| error.to_string())
+                .and_then(|_| {
+                    serde_json::from_str::<serde_json::Value>(&line)
+                        .map_err(|error| error.to_string())
+                });
+
+            let _sent = tx.send(record);
+            let _drained = io::copy(&mut reader, &mut io::sink());
         });
 
-        (Self { process }, inspector_token)
+        let ready = loop {
+            service.check_running();
+
+            match rx.try_recv() {
+                Ok(record) => break record.expect("valid inspector readiness record"),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    panic!("inspector output closed\n{}", service.diagnostics())
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+
+            assert!(
+                Instant::now() < service.startup_deadline,
+                "inspector readiness timed out\n{}",
+                service.diagnostics()
+            );
+            thread::sleep(Duration::from_millis(25));
+        };
+
+        assert_eq!(ready["event"], "rama.inspector.ready");
+        assert_eq!(ready["version"], 1);
+        let inspector_address: SocketAddr = ready["api_url"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("http://")
+            .unwrap()
+            .strip_suffix("/api")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let inspector_token = ready["authorization"]["token"].as_str().unwrap().to_owned();
+        assert_eq!(inspector_token.len(), 64);
+
+        // Verify both sockets are owned by this child. The machine record gives
+        // the role of the second TCP listener, which PID alone cannot infer.
+        service.address = inspector_address;
+        service.wait_for_endpoint(TransportProtocol::Tcp);
+        service.address.set_port(0);
+        service.wait_for_endpoint_except(TransportProtocol::Tcp, Some(inspector_address));
+
+        (service, inspector_address, inspector_token)
     }
 
     /// Start the rama discard service with the given port.
-    pub(super) fn serve_discard(port: u16, mode: &'static str) -> Self {
+    pub(super) fn serve_discard(port: u16, mode: &str) -> Self {
         let mut builder = escargot::CargoBuild::new()
             .package("rama-cli")
             .bin("rama")
@@ -433,7 +562,6 @@ impl RamaService {
         }
 
         builder
-            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("discard")
             .arg("--bind")
@@ -445,22 +573,13 @@ impl RamaService {
                 std::env::var("RUST_LOG").unwrap_or("info".into()),
             );
 
-        let mut process = builder.spawn().unwrap();
-
-        let stderr = process.stderr.take().unwrap();
-        thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
-                let line = line.unwrap();
-                println!("rama discard >> {line}");
-            }
-        });
-        if mode.eq_ignore_ascii_case("udp") {
-            wait_for_udp_listener(&mut process, port, "discard");
+        let mut service = Self::spawn(&mut builder, ([127, 0, 0, 1], port).into());
+        service.wait_for_endpoint(if mode.eq_ignore_ascii_case("udp") {
+            TransportProtocol::Udp
         } else {
-            wait_for_tcp_listener(&mut process, port, "discard");
-        }
-
-        Self { process }
+            TransportProtocol::Tcp
+        });
+        service
     }
 
     // Start the rama http-test service with the given port.
@@ -493,7 +612,6 @@ impl RamaService {
         }
 
         builder
-            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("http-test")
             .arg("--bind")
@@ -508,24 +626,13 @@ impl RamaService {
         }
         builder.args(args);
 
-        let mut process = builder.spawn().unwrap();
-
-        let stderr = process.stderr.take().unwrap();
-        thread::spawn(move || {
-            let stderr = BufReader::new(stderr).lines();
-            for line in stderr {
-                let line = line.unwrap();
-                println!("rama http-test >> {line}");
-            }
-        });
-
-        wait_for_tcp_listener(&mut process, port, "http-test");
-
-        Self { process }
+        let mut service = Self::spawn(&mut builder, ([127, 0, 0, 1], port).into());
+        service.wait_for_endpoint(TransportProtocol::Tcp);
+        service
     }
 
     /// Run any rama cmd
-    pub(super) fn run(args: &[&'static str]) -> Result<String, Box<dyn std::error::Error>> {
+    pub(super) fn run(args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
         let child = escargot::CargoBuild::new()
             .package("rama-cli")
             .bin("rama")
@@ -673,30 +780,28 @@ impl RamaService {
     }
 
     /// Run the http command
-    pub(super) fn http(
-        input_args: Vec<&'static str>,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    pub(super) fn http(input_args: Vec<&str>) -> Result<String, Box<dyn std::error::Error>> {
         let mut args = vec!["--verbose", "-L", "-k"];
         args.extend(input_args);
         Self::run(&args)
     }
 
     /// Run the probe tls command
-    pub(super) fn probe_tls(addr: &'static str) -> Result<String, Box<dyn std::error::Error>> {
+    pub(super) fn probe_tls(addr: &str) -> Result<String, Box<dyn std::error::Error>> {
         let args = vec!["probe", "tls", "-k", addr];
         Self::run(&args)
     }
 
     /// Run the probe tcp command
-    pub(super) fn probe_tcp(addr: &'static str) -> Result<String, Box<dyn std::error::Error>> {
+    pub(super) fn probe_tcp(addr: &str) -> Result<String, Box<dyn std::error::Error>> {
         let args = vec!["probe", "tcp", addr];
         Self::run(&args)
     }
 
     /// Run the resolve command
     pub(super) fn resolve(
-        domain: &'static str,
-        record_type: Option<&'static str>,
+        domain: &str,
+        record_type: Option<&str>,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let mut args = vec!["resolve", domain];
         if let Some(rt) = record_type {
@@ -732,7 +837,6 @@ impl RamaService {
         }
 
         builder
-            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("fs")
             .arg("--bind")
@@ -750,21 +854,9 @@ impl RamaService {
             builder.arg(path);
         }
 
-        let mut process = builder.spawn().unwrap();
-
-        let stderr = process.stderr.take().unwrap();
-        thread::spawn(move || {
-            let stderr = BufReader::new(stderr).lines();
-            for line in stderr {
-                let line = line.unwrap();
-                println!("rama serve >> {line}");
-            }
-        });
-
-        // Readiness must not depend on an INFO log surviving RUST_LOG.
-        wait_for_tcp_listener(&mut process, port, "file");
-
-        Self { process }
+        let mut service = Self::spawn(&mut builder, ([127, 0, 0, 1], port).into());
+        service.wait_for_endpoint(TransportProtocol::Tcp);
+        service
     }
 
     // Start the rama stunnel exit node with the default port and the forward address.
@@ -779,7 +871,6 @@ impl RamaService {
             .command();
 
         builder
-            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("stunnel")
             .arg("exit")
@@ -792,18 +883,9 @@ impl RamaService {
                 std::env::var("RUST_LOG").unwrap_or("info".into()),
             );
 
-        let mut process = builder.spawn().unwrap();
-
-        let stderr = process.stderr.take().unwrap();
-        thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
-                let line = line.unwrap();
-                eprintln!("rama stunnel-server >> {line}");
-            }
-        });
-        wait_for_tcp_address(&mut process, bind, "stunnel exit");
-
-        Self { process }
+        let mut service = Self::spawn(&mut builder, bind.parse().unwrap());
+        service.wait_for_endpoint(TransportProtocol::Tcp);
+        service
     }
 
     /// Start the rama stunnel entry node in insecure mode (skip verification).
@@ -817,7 +899,6 @@ impl RamaService {
             .command();
 
         builder
-            .stderr(std::process::Stdio::piped())
             .arg("serve")
             .arg("stunnel")
             .arg("entry")
@@ -831,141 +912,58 @@ impl RamaService {
                 std::env::var("RUST_LOG").unwrap_or("info".into()),
             );
 
-        let mut process = builder.spawn().unwrap();
-
-        let stderr = process.stderr.take().unwrap();
-        thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
-                let line = line.unwrap();
-                eprintln!("rama stunnel-client >> {line}");
-            }
-        });
-        wait_for_tcp_address(&mut process, bind, "stunnel entry");
-
-        Self { process }
+        let mut service = Self::spawn(&mut builder, bind.parse().unwrap());
+        service.wait_for_endpoint(TransportProtocol::Tcp);
+        service
     }
 }
 
-fn wait_for_tcp_listener(process: &mut Child, port: u16, name: &str) {
-    wait_for_tcp_address(process, &format!("127.0.0.1:{port}"), name);
-}
-
-/// Readiness from the socket, not from a log line that the inherited `RUST_LOG` may hide.
-fn wait_for_tcp_address(process: &mut Child, addr: &str, name: &str) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-
-    loop {
-        if TcpStream::connect(addr).is_ok() {
-            return;
-        }
-
-        if let Some(status) = process.try_wait().expect("check service status") {
-            panic!("{name} service exited before listening on {addr}: {status}");
-        }
-
-        assert!(
-            Instant::now() < deadline,
-            "{name} service did not listen on {addr} before timeout"
-        );
-
-        thread::sleep(Duration::from_millis(25));
-    }
-}
-
-/// Wait until a UDP service that never answers has bound `port`: until then, loopback answers
-/// a datagram with port unreachable. Each probe uses a fresh socket, as a socket may not
-/// report a second unreachable, and two quiet probes in a row count as bound.
-fn wait_for_udp_listener(process: &mut Child, port: u16, name: &str) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let addr = format!("127.0.0.1:{port}");
-    let quiet = || {
-        let socket = UdpSocket::bind("127.0.0.1:0").expect("bind UDP readiness probe");
-        socket.connect(&addr).expect("connect UDP readiness probe");
-        socket
-            .set_read_timeout(Some(Duration::from_millis(100)))
-            .expect("set UDP readiness probe timeout");
-        socket.send(b"rama-ready").is_ok()
-            && socket.recv(&mut [0; 1]).is_err_and(|error| {
-                matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                )
-            })
-    };
-    let mut quiet_in_a_row = 0;
-
-    loop {
-        quiet_in_a_row = if quiet() { quiet_in_a_row + 1 } else { 0 };
-        if quiet_in_a_row == 2 {
-            return;
-        }
-
-        if let Some(status) = process.try_wait().expect("check service status") {
-            panic!("{name} service exited before listening on {addr}: {status}");
-        }
-
-        assert!(
-            Instant::now() < deadline,
-            "{name} service did not listen on {addr} before timeout"
-        );
-
-        thread::sleep(Duration::from_millis(25));
-    }
-}
-
-fn wait_for_udp_echo(process: &mut Child, port: u16, name: &str) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let addr: SocketAddr = format!("127.0.0.1:{port}")
-        .parse()
-        .expect("parse UDP echo address");
-    let socket = UdpSocket::bind("127.0.0.1:0").expect("bind UDP readiness probe");
+fn wait_for_udp_echo(service: &mut RamaService) {
+    let addr = service.address();
+    let socket = UdpSocket::bind("127.0.0.1:0").expect("bind UDP echo probe");
     socket
-        .set_read_timeout(Some(Duration::from_millis(100)))
-        .expect("set UDP readiness probe timeout");
+        .set_write_timeout(Some(Duration::from_millis(100)))
+        .expect("set UDP echo probe write timeout");
+
     let expected = b"rama-echo-ready";
-    let mut received = [0; 15];
+    let mut received = [0; 64];
 
     loop {
-        if socket.send_to(expected, addr).is_ok()
+        service.check_running();
+
+        let remaining = service
+            .startup_deadline
+            .saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "rama echo service at {addr} did not respond before timeout\n{}",
+            service.diagnostics()
+        );
+        socket
+            .set_read_timeout(Some(remaining.min(Duration::from_millis(100))))
+            .expect("set UDP echo probe read timeout");
+
+        let echoed = if socket.send_to(expected, addr).is_ok()
             && let Ok((length, source)) = socket.recv_from(&mut received)
-            && source == addr
-            && received[..length] == *expected
         {
+            source == addr && received[..length] == *expected
+        } else {
+            false
+        };
+
+        service.check_running();
+        if echoed {
             return;
         }
 
-        if let Some(status) = process.try_wait().expect("check service status") {
-            panic!("{name} service exited before listening on {addr}: {status}");
-        }
-
-        assert!(
-            Instant::now() < deadline,
-            "{name} service did not listen on {addr} before timeout"
-        );
+        thread::sleep(remaining.min(Duration::from_millis(25)));
     }
-}
-
-pub(super) fn reserve_loopback_udp_port() -> u16 {
-    UdpSocket::bind("127.0.0.1:0")
-        .expect("select available UDP port")
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-pub(super) fn reserve_loopback_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
 }
 
 impl Drop for RamaService {
     fn drop(&mut self) {
-        self.process.kill().expect("kill server process");
-        // Reaped, so no server outlives its test.
-        self.process.wait().expect("reap server process");
+        let _killed = self.process.kill();
+        let _reaped = self.process.wait();
     }
 }
 

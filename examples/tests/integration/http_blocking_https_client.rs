@@ -7,7 +7,6 @@ use rama::{
     tls::boring::server::TlsAcceptorLayer,
 };
 
-const ADDRESS: &str = "127.0.0.1:62073";
 const BODY: &str = "Hello from the blocking HTTPS client test.";
 
 #[tokio::test]
@@ -20,14 +19,15 @@ async fn test_http_blocking_https_client() {
         HttpServer::new_http1(Executor::default())
             .service(WebService::default().with_get("/", BODY)),
     );
-    let listener = TcpListener::bind_address(ADDRESS, Executor::default())
+    let listener = TcpListener::bind_address("127.0.0.1:0", Executor::default())
         .await
         .expect("bind HTTPS test server");
+    let address = listener.local_addr().unwrap();
     let server = tokio::spawn(listener.serve(service));
 
     let output = utils::ExampleRunner::run_with_args_and_envs_output(
         "http_blocking_https_client",
-        [format!("https://{ADDRESS}/"), "example.com".to_owned()],
+        [format!("https://{address}/"), "example.com".to_owned()],
         [(
             "SSL_CERT_FILE".to_owned(),
             tls.certificate_file_path().as_os_str().to_owned(),

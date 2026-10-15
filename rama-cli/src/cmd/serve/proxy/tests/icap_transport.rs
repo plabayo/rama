@@ -91,8 +91,8 @@ async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
         false,
     )));
 
-    let proxy_address = reserve_loopback_address();
-    let ui_address = reserve_loopback_address();
+    let proxy_address = loopback_bind_address();
+    let ui_address = loopback_bind_address();
     let proxy_arg = proxy_address.to_string();
     let mitm_arg = format!("--mitm={ui_address}");
     let icap_uri = format!("icap://{icap_address}/adapt");
@@ -108,7 +108,8 @@ async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
     let shutdown = rama::graceful::Shutdown::new(async move {
         _ = shutdown_rx.await;
     });
-    run(shutdown.guard(), cli.proxy).await.unwrap();
+    let (proxy_address, inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    assert!(inspector_address.is_some(), "inspector listener bound");
 
     let tls_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
     let client = EasyHttpWebClient::connector_builder()

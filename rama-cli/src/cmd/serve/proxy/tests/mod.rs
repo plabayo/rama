@@ -73,9 +73,17 @@ fn with_local_address(request: Request, local_address: &str) -> Request {
     request
 }
 
-fn reserve_loopback_address() -> std::net::SocketAddr {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap()
+fn loopback_bind_address() -> std::net::SocketAddr {
+    ([127, 0, 0, 1], 0).into()
+}
+
+async fn start_proxy(
+    guard: ShutdownGuard,
+    cfg: CliCommandProxy,
+) -> (std::net::SocketAddr, Option<std::net::SocketAddr>) {
+    let (addresses, inspector) = run_with_dashboard_token(guard, cfg, None).await.unwrap();
+    assert_eq!(addresses.len(), 1, "test expects one proxy listener");
+    (addresses[0], inspector)
 }
 
 async fn spawn_plain_origin(

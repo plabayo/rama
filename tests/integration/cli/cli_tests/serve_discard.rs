@@ -24,12 +24,13 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 async fn test_tcp_discard() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_discard(63114, "tcp");
+    let server = utils::RamaService::serve_discard(0, "tcp");
+    let port = server.port();
 
     let mut stream = None;
     for i in 0..5 {
         let extensions = Extensions::new();
-        match default_tcp_connect(&extensions, HostWithPort::local_ipv4(63114)).await {
+        match default_tcp_connect(&extensions, HostWithPort::local_ipv4(port)).await {
             Ok((s, _)) => {
                 stream = Some(s);
                 break;
@@ -63,14 +64,15 @@ async fn test_tcp_discard() {
 async fn test_tls_tcp_discard() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_discard(63115, "tls");
+    let server = utils::RamaService::serve_discard(0, "tls");
+    let port = server.port();
 
     let mut stream = None;
     for i in 0..5 {
         let connector = TlsConnector::secure(TcpConnector::new())
             .with_base_config(TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable));
         match connector
-            .connect(ConnectRequest::new(HostWithPort::local_ipv4(63115)))
+            .connect(ConnectRequest::new(HostWithPort::local_ipv4(port)))
             .await
         {
             Ok(EstablishedClientConnection { conn, .. }) => {
@@ -106,8 +108,8 @@ async fn test_tls_tcp_discard() {
 async fn test_udp_discard() {
     utils::init_tracing();
 
-    let port = utils::reserve_loopback_udp_port();
-    let _guard = utils::RamaService::serve_discard(port, "udp");
+    let server = utils::RamaService::serve_discard(0, "udp");
+    let port = server.port();
     let socket = bind_udp_with_address(SocketAddress::local_ipv4(0))
         .await
         .unwrap();

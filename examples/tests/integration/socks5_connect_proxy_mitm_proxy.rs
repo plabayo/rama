@@ -131,10 +131,9 @@ async fn spawn_http_server() -> SocketAddress {
 }
 
 async fn spawn_https_server() -> SocketAddress {
-    let tcp_service =
-        TcpListener::bind_address(SocketAddress::local_ipv4(63010), Executor::default())
-            .await
-            .expect("bind HTTP server on open port");
+    let tcp_service = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .expect("bind HTTP server on open port");
 
     let bind_addr = tcp_service
         .local_addr()

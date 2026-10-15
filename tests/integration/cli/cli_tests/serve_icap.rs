@@ -29,8 +29,8 @@ use super::utils::{self, IcapTlsMode};
 #[tokio::test]
 async fn test_icap_echo() {
     utils::init_tracing();
-    let port = utils::reserve_loopback_port();
-    let _service = utils::RamaService::serve_icap(port, IcapTlsMode::Plain);
+    let service = utils::RamaService::serve_icap(0, IcapTlsMode::Plain);
+    let port = service.port();
 
     let EstablishedClientConnection { conn, .. } = TcpConnector::new()
         .connect(ConnectRequest::new(HostWithPort::local_ipv4(port)))
@@ -44,8 +44,8 @@ async fn test_icap_echo() {
 #[tokio::test]
 async fn test_icap_echo_over_tls_with_self_signed_certificate() {
     utils::init_tracing();
-    let port = utils::reserve_loopback_port();
-    let _service = utils::RamaService::serve_icap(port, IcapTlsMode::SelfSigned);
+    let service = utils::RamaService::serve_icap(0, IcapTlsMode::SelfSigned);
+    let port = service.port();
 
     exercise_icap_echo(tls_connect(port).await, port).await;
 }
@@ -55,8 +55,8 @@ async fn test_icap_echo_over_tls_with_self_signed_certificate() {
 #[tokio::test]
 async fn test_icap_echo_over_tls_with_certificate_files() {
     utils::init_tracing();
-    let port = utils::reserve_loopback_port();
-    let _service = utils::RamaService::serve_icap(port, IcapTlsMode::Files);
+    let service = utils::RamaService::serve_icap(0, IcapTlsMode::Files);
+    let port = service.port();
 
     exercise_icap_echo(tls_connect(port).await, port).await;
 }

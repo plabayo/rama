@@ -1,3 +1,7 @@
+// Shared process socket inspection also works outside NetworkExtension hosts.
+#[doc(inline)]
+pub use rama_net::process::{ProcessSocket, listening_sockets};
+
 use std::{
     ffi::{OsString, c_int, c_void},
     io,

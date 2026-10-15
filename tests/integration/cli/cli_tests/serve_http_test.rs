@@ -29,9 +29,10 @@ use super::utils;
 #[tokio::test]
 async fn test_http_tests() {
     utils::init_tracing();
-    let _guard = utils::RamaService::serve_http_test(63133, false);
+    let server = utils::RamaService::serve_http_test(0, false);
+    let port = server.port();
     run_http_tests(
-        "http://127.0.0.1:63133",
+        &format!("http://127.0.0.1:{port}"),
         &[Version::HTTP_10, Version::HTTP_11, Version::HTTP_2],
     )
     .await;
@@ -41,9 +42,10 @@ async fn test_http_tests() {
 #[tokio::test]
 async fn test_http_tests_over_tls() {
     utils::init_tracing();
-    let _guard = utils::RamaService::serve_http_test(63134, true);
+    let server = utils::RamaService::serve_http_test(0, true);
+    let port = server.port();
     run_http_tests(
-        "https://127.0.0.1:63134",
+        &format!("https://127.0.0.1:{port}"),
         &[
             Version::HTTP_10,
             Version::HTTP_11,
@@ -59,13 +61,13 @@ async fn test_http_tests_over_tls() {
 #[tokio::test]
 async fn test_http_tests_throttled() {
     utils::init_tracing();
-    let _guard =
-        utils::RamaService::serve_http_test_with_args(63148, true, &["--throttle", "65536"]);
+    let server = utils::RamaService::serve_http_test_with_args(0, true, &["--throttle", "65536"]);
+    let port = server.port();
     let client = http_client().await;
     for version in [Version::HTTP_2, Version::HTTP_3] {
         let start = Instant::now();
         let resp = client
-            .get("https://127.0.0.1:63148/bytes?size=131072")
+            .get(format!("https://127.0.0.1:{port}/bytes?size=131072"))
             .version(version)
             .send()
             .await
@@ -100,7 +102,7 @@ async fn http_client() -> BoxService<Request, Response, OpaqueError> {
         .boxed()
 }
 
-async fn run_http_tests(base_uri: &'static str, versions: &[Version]) {
+async fn run_http_tests(base_uri: &str, versions: &[Version]) {
     let client = http_client().await;
     for &http_version in versions {
         run_http_test_endpoint_method(client.clone(), base_uri, http_version).await;
@@ -119,7 +121,7 @@ async fn run_http_tests(base_uri: &'static str, versions: &[Version]) {
 
 async fn run_http_test_endpoint_method(
     client: BoxService<Request, Response, OpaqueError>,
-    base_uri: &'static str,
+    base_uri: &str,
     http_version: Version,
 ) {
     for method in [
@@ -158,7 +160,7 @@ async fn run_http_test_endpoint_method(
 
 async fn run_http_test_endpoint_request_compression(
     client: BoxService<Request, Response, OpaqueError>,
-    base_uri: &'static str,
+    base_uri: &str,
     http_version: Version,
 ) {
     for method in [Method::POST, Method::PUT, Method::PATCH] {
@@ -204,7 +206,7 @@ async fn run_http_test_endpoint_request_compression(
 
 async fn run_http_test_endpoint_response_compression(
     client: BoxService<Request, Response, OpaqueError>,
-    base_uri: &'static str,
+    base_uri: &str,
     http_version: Version,
 ) {
     let client = DecompressionLayer::new().into_layer(client);
@@ -247,7 +249,7 @@ async fn run_http_test_endpoint_response_compression(
 
 async fn run_http_test_endpoint_response_stream(
     client: BoxService<Request, Response, OpaqueError>,
-    base_uri: &'static str,
+    base_uri: &str,
     http_version: Version,
 ) {
     let resp = client
@@ -269,7 +271,7 @@ async fn run_http_test_endpoint_response_stream(
 
 async fn run_http_test_endpoint_response_stream_compression(
     client: BoxService<Request, Response, OpaqueError>,
-    base_uri: &'static str,
+    base_uri: &str,
     http_version: Version,
 ) {
     let client = DecompressionLayer::new().into_layer(client);
@@ -314,7 +316,7 @@ async fn run_http_test_endpoint_response_stream_compression(
 
 async fn run_http_test_endpoint_sse(
     client: BoxService<Request, Response, OpaqueError>,
-    base_uri: &'static str,
+    base_uri: &str,
     http_version: Version,
 ) {
     let resp = client
@@ -344,7 +346,7 @@ async fn run_http_test_endpoint_sse(
 
 async fn run_http_test_endpoint_octet_stream(
     client: BoxService<Request, Response, OpaqueError>,
-    base_uri: &'static str,
+    base_uri: &str,
     http_version: Version,
 ) {
     let payload: Vec<u8> = (0u8..=200).collect();
@@ -369,7 +371,7 @@ async fn run_http_test_endpoint_octet_stream(
 
 async fn run_http_test_endpoint_multipart(
     client: BoxService<Request, Response, OpaqueError>,
-    base_uri: &'static str,
+    base_uri: &str,
     http_version: Version,
 ) {
     let form = multipart::Form::new().text("username", "glen").part(
@@ -448,7 +450,7 @@ async fn run_http_test_endpoint_multipart(
 
 async fn run_http_test_endpoint_bytes(
     client: BoxService<Request, Response, OpaqueError>,
-    base_uri: &'static str,
+    base_uri: &str,
     http_version: Version,
 ) {
     // default size (1 KiB)
@@ -514,7 +516,7 @@ async fn run_http_test_endpoint_bytes(
 
 async fn run_http_test_endpoint_sink(
     client: BoxService<Request, Response, OpaqueError>,
-    base_uri: &'static str,
+    base_uri: &str,
     http_version: Version,
 ) {
     // empty body

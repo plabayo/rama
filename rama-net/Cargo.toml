@@ -131,5 +131,8 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
 
+[build-dependencies]
+cc = { workspace = true }
+
 [lints]
 workspace = true

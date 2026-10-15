@@ -5,9 +5,10 @@ use super::utils;
 async fn test_probe_tls() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_discard(63124, "tls");
+    let server = utils::RamaService::serve_discard(0, "tls");
+    let port = server.port();
 
-    let output = utils::RamaService::probe_tls("127.0.0.1:63124").unwrap();
+    let output = utils::RamaService::probe_tls(&format!("127.0.0.1:{port}")).unwrap();
 
     assert!(output.contains("Certificate #1"), "output: {output}");
     assert!(output.contains("CN=plabayo.tech"), "output: {output}");
@@ -18,12 +19,13 @@ async fn test_probe_tls() {
 async fn test_probe_tcp() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_discard(63125, "tcp");
+    let server = utils::RamaService::serve_discard(0, "tcp");
+    let port = server.port();
 
-    let output = utils::RamaService::probe_tcp("127.0.0.1:63125").unwrap();
+    let output = utils::RamaService::probe_tcp(&format!("127.0.0.1:{port}")).unwrap();
 
     assert!(
-        output.contains("connected to: 127.0.0.1:63125"),
+        output.contains(&format!("connected to: 127.0.0.1:{port}")),
         "output: {output}"
     );
 }
