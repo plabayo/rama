@@ -3,7 +3,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering as AtomicOrdering},
 };
 
-use rama_core::{graceful::Shutdown, service::service_fn};
+use rama_core::{error::BoxErrorExt as _, graceful::Shutdown, service::service_fn};
 use tokio::{
     sync::{mpsc::UnboundedReceiver, oneshot},
     time::timeout,
@@ -717,4 +717,235 @@ async fn queued_bytes_stay_within_the_budget() {
     })
     .await
     .unwrap();
+}
+
+/// Binds memory sockets where the demux asks, each paired with `far`, the client side, which
+/// the test keeps; refuses every bind when `refuse` is set.
+#[derive(Clone)]
+struct MemoryBinder {
+    far: SocketAddress,
+    refuse: bool,
+    bound: Arc<Mutex<Vec<(SocketAddress, MemoryDatagramSocket)>>>,
+}
+
+impl MemoryBinder {
+    fn new(far: SocketAddress) -> Self {
+        Self {
+            far,
+            refuse: false,
+            bound: Arc::default(),
+        }
+    }
+
+    fn take(&self) -> Vec<(SocketAddress, MemoryDatagramSocket)> {
+        std::mem::take(&mut *self.bound.lock())
+    }
+}
+
+impl Service<SocketAddress> for MemoryBinder {
+    type Output = MemoryDatagramSocket;
+    type Error = BoxError;
+
+    async fn serve(&self, local: SocketAddress) -> Result<Self::Output, Self::Error> {
+        if self.refuse {
+            return Err(BoxError::from_static_str("bind refused"));
+        }
+        let (socket, far) =
+            MemoryDatagramSocket::pair(local, self.far, NonZeroUsize::new(64).unwrap());
+        self.bound.lock().push((local, far));
+        Ok(socket)
+    }
+}
+
+/// Queue `payload` on `listener` as a datagram from `from` redirected from `destination`.
+fn inject_redirected(
+    listener: &MemoryDatagramSocket,
+    from: SocketAddress,
+    destination: SocketAddress,
+    payload: &[u8],
+) {
+    let mut metadata = DatagramMetadata::empty();
+    metadata.peer = from;
+    metadata.local = destination;
+    metadata.original_destination = Some(destination);
+    listener
+        .inject_received(payload.to_vec(), metadata)
+        .unwrap();
+}
+
+/// A redirected datagram the listener cannot answer is answered from a socket bound at its
+/// destination, and what that socket receives joins the association.
+#[tokio::test]
+async fn a_redirected_association_replies_from_a_socket_bound_at_its_destination() {
+    timeout(LIMIT, async {
+        let (mut client, listener) = listener();
+        let client_address = client.local_addr().unwrap();
+        let destination = SocketAddress::new(OTHER_IP, 443);
+        inject_redirected(&listener, client_address, destination, b"hello");
+        let binder = MemoryBinder::new(client_address);
+        let (mut sockets, stats) =
+            serve_demux(DatagramDemux::new(listener, config()).with_reply_sockets(binder.clone()));
+        let mut association = sockets.recv().await.unwrap();
+        assert_eq!(next(&mut association).await, b"hello");
+        assert_eq!(association.local_addr().unwrap(), destination);
+        association
+            .create_sender()
+            .send(SendDatagram::new(client_address, b"reply"))
+            .await
+            .unwrap();
+        let mut bound = binder.take();
+        assert_eq!(bound.len(), 1);
+        let (bound_at, mut far) = bound.pop().unwrap();
+        assert_eq!(bound_at, destination);
+        let mut buffer = [0; 64];
+        let metadata = far.recv(&mut buffer).await.unwrap();
+        assert_eq!(&buffer[..metadata.len], b"reply");
+        assert_eq!(
+            metadata.peer, destination,
+            "the reply leaves from the destination"
+        );
+        timeout(Duration::from_millis(50), client.recv(&mut buffer))
+            .await
+            .expect_err("nothing leaves from the listener");
+        far.create_sender()
+            .send(SendDatagram::new(destination, b"again"))
+            .await
+            .unwrap();
+        assert_eq!(next(&mut association).await, b"again");
+        assert_eq!(stats.get().dropped_reply_source, 0);
+    })
+    .await
+    .unwrap();
+}
+
+/// Associations addressed to one destination share its socket, which closes with the last of
+/// them; one opened by a datagram that socket received is a redirected association too.
+#[tokio::test]
+async fn associations_share_their_destinations_reply_socket_until_the_last_ends() {
+    timeout(LIMIT, async {
+        let (client, listener) = listener();
+        let client_address = client.local_addr().unwrap();
+        let first = SocketAddress::new(OTHER_IP, 443);
+        let second = SocketAddress::new(OTHER_IP, 8443);
+        inject_redirected(&listener, peer(1), first, b"one");
+        inject_redirected(&listener, peer(2), first, b"two");
+        inject_redirected(&listener, peer(1), second, b"three");
+        let binder = MemoryBinder::new(client_address);
+        let (mut sockets, _stats) = serve_demux(
+            DatagramDemux::new(
+                listener,
+                DemuxConfig {
+                    associations: NonZeroUsize::new(8).unwrap(),
+                    ..config()
+                },
+            )
+            .with_reply_sockets(binder.clone()),
+        );
+        let mut associations = Vec::new();
+        for _ in 0..3 {
+            associations.push(sockets.recv().await.unwrap());
+        }
+        let bound = binder.take();
+        let bound_at: Vec<_> = bound.iter().map(|(local, _)| *local).collect();
+        assert_eq!(bound_at, [first, second], "one socket per destination");
+        let (_, far_first) = &bound[0];
+        far_first
+            .create_sender()
+            .send(SendDatagram::new(first, b"from the socket"))
+            .await
+            .unwrap();
+        let mut joined = sockets.recv().await.unwrap();
+        assert_eq!(joined.peer_addr().unwrap(), client_address);
+        assert_eq!(
+            joined.extensions().get_ref::<ConnectorTarget>(),
+            Some(&ConnectorTarget(HostWithPort::from(first)))
+        );
+        assert_eq!(next(&mut joined).await, b"from the socket");
+        assert!(
+            binder.take().is_empty(),
+            "the socket at its destination is reused"
+        );
+
+        associations.retain(|association| association.local_addr().unwrap() != first);
+        drop(joined);
+        let mut buffer = [0; 64];
+        let (_, mut far_first) = bound.into_iter().next().unwrap();
+        assert!(matches!(
+            far_first.recv(&mut buffer).await,
+            Err(DatagramError::Closed)
+        ));
+    })
+    .await
+    .unwrap();
+}
+
+/// A destination the demux cannot bind at is counted, not answered from the listener.
+#[tokio::test]
+async fn a_destination_without_a_reply_socket_is_dropped_and_counted() {
+    timeout(LIMIT, async {
+        let (client, listener) = listener();
+        let client_address = client.local_addr().unwrap();
+        inject_redirected(
+            &listener,
+            client_address,
+            SocketAddress::new(OTHER_IP, 443),
+            b"hello",
+        );
+        inject(&listener, client_address, b"direct");
+        let binder = MemoryBinder {
+            refuse: true,
+            ..MemoryBinder::new(client_address)
+        };
+        let (mut sockets, stats) =
+            serve_demux(DatagramDemux::new(listener, config()).with_reply_sockets(binder));
+        let mut direct = sockets.recv().await.unwrap();
+        assert_eq!(next(&mut direct).await, b"direct");
+        assert_eq!(stats.get().dropped_reply_source, 1);
+    })
+    .await
+    .unwrap();
+}
+
+/// Through a real TPROXY redirect of UDP/443 to port 15000, in a network namespace of its own:
+/// replies leave from the original destination, and the client's next datagrams reach its
+/// association whichever socket the host delivers them to.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[tokio::test]
+#[ignore = "needs CAP_NET_ADMIN and a TPROXY redirect of UDP/443 to port 15000"]
+async fn a_tproxy_listener_answers_from_the_original_destination() {
+    let listener = crate::TransparentUdpSocketFactory::new(
+        crate::UdpSocketConfig::new().with_receive_original_destination(true),
+    )
+    .serve(SocketAddress::default_ipv4(15000))
+    .await
+    .unwrap();
+    let echoed = Arc::new(AtomicUsize::new(0));
+    let counted = echoed.clone();
+    let demux = DatagramDemux::new(listener, config())
+        .with_reply_sockets(crate::TransparentUdpSocketFactory::default());
+    tokio::spawn(demux.serve(
+        Executor::new(),
+        service_fn(move |mut association: DemuxedSocket<UdpPacketSender>| {
+            let counted = counted.clone();
+            async move {
+                let peer = association.peer_addr()?;
+                let mut sender = association.create_sender();
+                let mut buffer = [0; 2048];
+                while let Ok(metadata) = association.recv(&mut buffer).await {
+                    sender
+                        .send(SendDatagram::new(peer, &buffer[..metadata.len]))
+                        .await?;
+                    counted.fetch_add(1, AtomicOrdering::SeqCst);
+                }
+                Ok::<_, BoxError>(())
+            }
+        }),
+    ));
+    timeout(Duration::from_secs(30), async {
+        while echoed.load(AtomicOrdering::SeqCst) < 3 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("three datagrams echoed from the original destination");
 }

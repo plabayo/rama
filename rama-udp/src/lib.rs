@@ -61,6 +61,12 @@ pub use packet_socket::{UdpPacketSender, UdpPacketSocket};
 mod service;
 pub use service::{UdpSocketConfig, UdpSocketFactory};
 
+#[cfg(any(target_os = "android", target_os = "linux"))]
+mod transparent;
+#[cfg(any(target_os = "android", target_os = "linux"))]
+#[cfg_attr(docsrs, doc(cfg(any(target_os = "android", target_os = "linux"))))]
+pub use transparent::TransparentUdpSocketFactory;
+
 mod sys;
 
 mod log {

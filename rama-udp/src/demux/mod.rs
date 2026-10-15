@@ -22,7 +22,9 @@ use rama_core::{
     bytes::Bytes,
     error::BoxError,
     extensions::{Extensions, ExtensionsRef},
+    layer::IntoErr,
     rt::Executor,
+    service::BoxService,
     telemetry::tracing,
 };
 use rama_net::{
@@ -43,6 +45,9 @@ use crate::{
     DatagramCapabilities, DatagramError, DatagramMetadata, DatagramSender, DatagramSocket,
     DatagramSocketExt as _, RetainedDatagram, SendDatagram,
 };
+
+mod reply;
+use reply::{Reader, ReplyLease, ReplySockets};
 
 /// Bounds of a [`DatagramDemux`].
 #[derive(Debug, Clone, Copy)]
@@ -105,12 +110,19 @@ struct Charge {
 impl Charge {
     /// Reserve `len` bytes within `budget`, or `None` when they do not fit.
     fn try_new(counters: &Arc<Counters>, len: usize, budget: usize) -> Option<Self> {
-        counters
-            .queued_bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
-                queued.checked_add(len).filter(|total| *total <= budget)
-            })
-            .ok()?;
+        let mut queued = counters.queued_bytes.load(Ordering::Acquire);
+        loop {
+            let total = queued.checked_add(len).filter(|total| *total <= budget)?;
+            match counters.queued_bytes.compare_exchange_weak(
+                queued,
+                total,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(current) => queued = current,
+            }
+        }
         Some(Self {
             counters: counters.clone(),
             len,
@@ -214,8 +226,9 @@ struct Registry {
 /// answered from there; it is dropped and counted rather than answered from the wrong
 /// address, unless the socket selects a reply's whole source
 /// ([`DatagramCapabilities::send_source_port`] with `send_source_ip`), as a transparent proxy
-/// flow does: then every original destination is an association of its own, answered from
-/// that destination. A redirected association carries its original destination as its
+/// flow does, or the demux can bind a socket at that destination
+/// ([`DatagramDemux::with_reply_sockets`]): then every original destination is an association
+/// of its own, answered from that destination. A redirected association carries its original destination as its
 /// [`ConnectorTarget`], which one addressed to this listener itself never has (its port and
 /// its IP, or for a wildcard listener also loopback or any of the host's addresses), so a
 /// bridge cannot loop it back. Admission and inspection limits belong to the association's
@@ -226,6 +239,7 @@ pub struct DatagramDemux<S> {
     registry: Arc<Mutex<Registry>>,
     counters: Arc<Counters>,
     host: HostAddresses,
+    reply_sockets: Option<BoxService<SocketAddress, S, BoxError>>,
 }
 
 impl<S: fmt::Debug> fmt::Debug for DatagramDemux<S> {
@@ -270,7 +284,24 @@ impl<S: DatagramSocket> DatagramDemux<S> {
             registry: Arc::default(),
             counters: Arc::default(),
             host: HostAddresses::new(),
+            reply_sockets: None,
         }
+    }
+
+    /// Answer a redirected datagram the listening socket cannot from a socket that `bind`
+    /// binds at its original destination, as a transparent proxy must for a client that
+    /// accepts replies only from where it sent to.
+    ///
+    /// Associations addressed to one destination share its socket, which closes with the
+    /// last of them and is read too, since redirection may deliver to it. On Linux, a
+    /// `TransparentUdpSocketFactory` binds such sockets.
+    #[must_use]
+    pub fn with_reply_sockets<B>(mut self, bind: B) -> Self
+    where
+        B: Service<SocketAddress, Output = S, Error: Into<BoxError>>,
+    {
+        self.reply_sockets = Some(IntoErr::<_, BoxError>::new(bind).boxed());
+        self
     }
 
     /// Read this demux's counters, also while it serves.
@@ -283,11 +314,23 @@ impl<S: DatagramSocket> DatagramDemux<S> {
     /// socket fails or `exec`'s graceful shutdown begins.
     pub async fn serve<Svc>(mut self, exec: Executor, service: Svc) -> Result<(), DatagramError>
     where
+        S: Send + 'static,
+        S::Sender: Clone,
         Svc: Service<DemuxedSocket<S::Sender>, Error: Into<BoxError>> + Clone,
     {
         let listening = self.socket.local_addr().map_err(DatagramError::Io)?;
         let capabilities = self.socket.capabilities();
         let mut buffer = vec![0; self.config.receive_bytes.get()];
+        let (incoming, mut from_reply_sockets) = mpsc::channel(self.config.queue.get());
+        let reply = self.reply_sockets.take().map(|bind| {
+            let reader = Reader {
+                incoming,
+                counters: self.counters.clone(),
+                queued_bytes: self.config.queued_bytes.get(),
+                receive_bytes: self.config.receive_bytes.get(),
+            };
+            ReplySockets::new(bind, reader)
+        });
         let cancelled = async {
             match exec.guard() {
                 Some(guard) => guard.cancelled().await,
@@ -296,64 +339,91 @@ impl<S: DatagramSocket> DatagramDemux<S> {
         };
         let mut cancelled = std::pin::pin!(cancelled);
         loop {
-            let metadata = tokio::select! {
-                received = self.socket.recv(&mut buffer) => received?,
+            let (datagram, local, via_reply_socket) = tokio::select! {
+                received = self.socket.recv(&mut buffer) => {
+                    let metadata = received?;
+                    if metadata.validate(buffer.len()).is_err() {
+                        self.counters.invalid.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                    // A reply must leave from where the client sent to: the listening port, and
+                    // its IP or, for a wildcard listener that can choose its source, the IP sent to.
+                    let local = match metadata.original_destination {
+                        Some(destination) => destination,
+                        None if metadata.local.ip_addr.is_unspecified() => listening,
+                        None => metadata.local,
+                    };
+                    // A socket that selects a reply's whole source answers every original
+                    // destination; otherwise a redirected one needs a socket bound there.
+                    let from_listener = full_source(capabilities)
+                        || (local.port == listening.port
+                            && (local.ip_addr.into_canonical_ip_addr()
+                                == listening.ip_addr.into_canonical_ip_addr()
+                                || (listening.ip_addr.is_unspecified()
+                                    && capabilities.send_source_ip)));
+                    if !from_listener
+                        && (reply.is_none() || metadata.original_destination.is_none())
+                    {
+                        self.counters.reply_source.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                    let Some(charge) = Charge::try_new(
+                        &self.counters,
+                        metadata.len,
+                        self.config.queued_bytes.get(),
+                    ) else {
+                        self.counters.queue_full.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    };
+                    let datagram = Queued {
+                        datagram: RetainedDatagram {
+                            payload: Bytes::copy_from_slice(&buffer[..metadata.len]),
+                            metadata,
+                        },
+                        _charge: charge,
+                    };
+                    (datagram, local, !from_listener)
+                }
+                Some(datagram) = from_reply_sockets.recv(), if reply.is_some() => {
+                    let local = datagram.datagram.metadata.local;
+                    (datagram, local, true)
+                }
                 () = &mut cancelled => return Ok(()),
             };
-            if metadata.validate(buffer.len()).is_err() {
-                self.counters.invalid.fetch_add(1, Ordering::Relaxed);
-                continue;
-            }
-            // A reply must leave from where the client sent to: the listening port, and its IP
-            // or, for a wildcard listener that can choose its source, the IP sent to.
-            let local = match metadata.original_destination {
-                Some(destination) => destination,
-                None if metadata.local.ip_addr.is_unspecified() => listening,
-                None => metadata.local,
-            };
-            // A socket that selects a reply's whole source answers every original destination.
-            let answerable = full_source(capabilities)
-                || (local.port == listening.port
-                    && (local.ip_addr.into_canonical_ip_addr()
-                        == listening.ip_addr.into_canonical_ip_addr()
-                        || (listening.ip_addr.is_unspecified() && capabilities.send_source_ip)));
-            if !answerable {
-                self.counters.reply_source.fetch_add(1, Ordering::Relaxed);
-                continue;
-            }
             let addresses = Addresses {
                 local: local.into_canonical_ip_addr(),
-                peer: metadata.peer.into_canonical_ip_addr(),
+                peer: datagram.datagram.metadata.peer.into_canonical_ip_addr(),
             };
-            let Some(charge) =
-                Charge::try_new(&self.counters, metadata.len, self.config.queued_bytes.get())
-            else {
-                self.counters.queue_full.fetch_add(1, Ordering::Relaxed);
-                continue;
-            };
-            let original_destination = metadata.original_destination;
-            let datagram = Queued {
-                datagram: RetainedDatagram {
-                    payload: Bytes::copy_from_slice(&buffer[..metadata.len]),
-                    metadata,
-                },
-                _charge: charge,
-            };
-            let mut registry = self.registry.lock();
-            if let Some(entry) = registry.associations.get(&addresses) {
-                if entry.queue.try_send(datagram).is_err() {
-                    self.counters.queue_full.fetch_add(1, Ordering::Relaxed);
+            let original_destination = datagram.datagram.metadata.original_destination;
+            {
+                let registry = self.registry.lock();
+                if let Some(entry) = registry.associations.get(&addresses) {
+                    if entry.queue.try_send(datagram).is_err() {
+                        self.counters.queue_full.fetch_add(1, Ordering::Relaxed);
+                    }
+                    continue;
                 }
-                continue;
+                if registry.associations.len() >= self.config.associations.get() {
+                    self.counters
+                        .association_limit
+                        .fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
             }
-            if registry.associations.len() >= self.config.associations.get() {
-                self.counters
-                    .association_limit
-                    .fetch_add(1, Ordering::Relaxed);
-                continue;
-            }
+            let (sender, reply_lease) = match &reply {
+                Some(reply) if via_reply_socket => match reply.lease(local, &exec).await {
+                    Ok((sender, lease)) => (sender, Some(lease)),
+                    Err(error) => {
+                        tracing::debug!(%error, %local, "no datagram reply socket at destination");
+                        self.counters.reply_source.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                },
+                _ => (self.socket.create_sender(), None),
+            };
             let (queue, receiver) = mpsc::channel(self.config.queue.get());
             let _first = queue.try_send(datagram);
+            let mut registry = self.registry.lock();
             let generation = registry.next_generation;
             registry.next_generation += 1;
             registry
@@ -362,7 +432,7 @@ impl<S: DatagramSocket> DatagramDemux<S> {
             drop(registry);
             let socket = DemuxedSocket {
                 receiver,
-                sender: Mutex::new(self.socket.create_sender()),
+                sender: Mutex::new(sender),
                 capabilities,
                 addresses,
                 listening,
@@ -373,6 +443,7 @@ impl<S: DatagramSocket> DatagramDemux<S> {
                     addresses,
                     generation,
                 },
+                reply: reply_lease,
                 extensions: Extensions::new(),
             };
             // Only a redirected datagram names a destination beyond this proxy.
@@ -438,6 +509,8 @@ pub struct DemuxedSocket<T> {
     idle: Pin<Box<Sleep>>,
     idle_timeout: Duration,
     release: Release,
+    /// The socket bound at this association's destination, when replies leave from there.
+    reply: Option<ReplyLease<T>>,
     extensions: Extensions,
 }
 
@@ -470,11 +543,13 @@ impl<T: DatagramSender + Clone> DatagramSocket for DemuxedSocket<T> {
     type Sender = DemuxedSender<T>;
 
     fn create_sender(&self) -> Self::Sender {
-        let full_source = full_source(self.capabilities);
+        // A socket bound at the destination already sends from it.
+        let listener = self.reply.is_none();
+        let full_source = listener && full_source(self.capabilities);
         DemuxedSender {
             inner: self.sender.lock().clone(),
             peer: self.addresses.peer,
-            source: (full_source || self.listening.ip_addr.is_unspecified())
+            source: (full_source || (listener && self.listening.ip_addr.is_unspecified()))
                 .then_some(self.addresses.local.ip_addr),
             source_port: full_source.then_some(self.addresses.local.port),
         }
