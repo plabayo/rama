@@ -212,6 +212,18 @@ mod tests {
     }
 
     #[test]
+    fn rejects_a_source_port_a_socket_cannot_select() {
+        let datagram = SendDatagram::new(([127, 0, 0, 1], 443), b"packet").with_source_port(8443);
+        assert_matches!(
+            datagram.validate(DatagramCapabilities::portable()),
+            Err(DatagramError::Unsupported(DatagramFeature::SendSourcePort)),
+        );
+        let mut capabilities = DatagramCapabilities::portable();
+        capabilities.send_source_port = true;
+        datagram.validate(capabilities).unwrap();
+    }
+
+    #[test]
     fn rejects_invalid_segmentation_and_unsupported_metadata() {
         let destination = SocketAddress::from(([127, 0, 0, 1], 443));
         assert_matches!(
