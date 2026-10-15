@@ -19,8 +19,7 @@ use rama::{
     net::{
         address::Host,
         apple::networkextension::{
-            UdpFlow, UdpFlowSender, UdpFlowSocket,
-            tproxy::{DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES, TransparentProxyFlowMeta},
+            UdpFlow, UdpFlowSender, UdpFlowSocket, tproxy::TransparentProxyFlowMeta,
         },
         stream::Socket as _,
         tls::ApplicationProtocol,
@@ -38,7 +37,7 @@ use rama::{
         client::{ServerVerifyMode, TlsClientConfig},
     },
     udp::{
-        DatagramDemux, DemuxConfig, DemuxedSocket, PrefixedDatagramSocket,
+        DatagramDemux, DemuxConfig, DemuxedSocket, PrefixedDatagramSocket, SharedQueueBudget,
         proxy::{DatagramForwardService, DatagramToProxyBridge, EcnPolicy},
     },
     utils::octets::kib,
@@ -49,25 +48,41 @@ use crate::{concurrency::ConcurrencyLimiter, policy::DomainExclusionList, state:
 /// The application error code closing both hops when an interception fails.
 const FAILURE: u32 = 0x0101;
 
+/// What every flow on the QUIC path shares.
+#[derive(Clone)]
+pub(super) struct QuicPath {
+    /// The live settings holding the TLS relay whose issuer QUIC interception shares.
+    pub(super) state: SharedState,
+    /// The intercept admission QUIC associations share with TCP flows.
+    pub(super) limiter: Arc<ConcurrencyLimiter>,
+    /// The engine's per-flow ingress bound: the demux takes every datagram off the flow at
+    /// once, so its queues hold no more than the engine would.
+    pub(super) flow_bytes: NonZeroUsize,
+    /// The engine's global ingress bound, shared by every flow's queues.
+    pub(super) budget: SharedQueueBudget,
+}
+
 /// One flow's associations, each a destination the app addressed.
-const DEMUX: DemuxConfig = DemuxConfig {
-    associations: NonZeroUsize::new(16).unwrap(),
-    queue: NonZeroUsize::new(64).unwrap(),
-    idle_timeout: Duration::from_secs(30),
-    receive_bytes: NonZeroUsize::new(kib(64)).unwrap(),
-    // What the engine lets one flow hold: the demux takes every datagram off the flow at once.
-    queued_bytes: NonZeroUsize::new(DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES).unwrap(),
-};
+fn demux_config(flow_bytes: NonZeroUsize) -> DemuxConfig {
+    DemuxConfig {
+        associations: NonZeroUsize::new(16).expect("nonzero"),
+        queue: NonZeroUsize::new(64).expect("nonzero"),
+        idle_timeout: Duration::from_secs(30),
+        receive_bytes: NonZeroUsize::new(kib(64)).expect("nonzero"),
+        queued_bytes: flow_bytes,
+    }
+}
 
 type Association = PrefixedDatagramSocket<DemuxedSocket<UdpFlowSender>>;
 
 /// Serve one UDP flow until it ends.
-pub(super) async fn serve(
-    flow: UdpFlow,
-    state: SharedState,
-    limiter: Arc<ConcurrencyLimiter>,
-    exec: Executor,
-) {
+pub(super) async fn serve(flow: UdpFlow, path: QuicPath, exec: Executor) {
+    let QuicPath {
+        state,
+        limiter,
+        flow_bytes,
+        budget,
+    } = path;
     let bundle_identifier = flow
         .extensions()
         .get_arc::<TransparentProxyFlowMeta>()
@@ -145,7 +160,8 @@ pub(super) async fn serve(
             async move { forward.serve(input).await.map(drop) }
         }),
     );
-    let demux = DatagramDemux::new(UdpFlowSocket::new(flow), DEMUX);
+    let demux = DatagramDemux::new(UdpFlowSocket::new(flow), demux_config(flow_bytes))
+        .with_shared_budget(budget);
     if let Err(error) = demux.serve(exec, inspect).await {
         tracing::debug!(%error, "tproxy quic flow ended");
     }

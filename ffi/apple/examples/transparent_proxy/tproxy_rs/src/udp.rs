@@ -1,11 +1,11 @@
-use std::{cell::RefCell, convert::Infallible, io, net::SocketAddr, sync::Arc};
+use std::{cell::RefCell, convert::Infallible, io, net::SocketAddr, num::NonZeroUsize, sync::Arc};
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rama::{
     Service,
-    error::BoxError,
+    error::{BoxError, BoxErrorExt as _},
     extensions::ExtensionsRef as _,
     net::{
         apple::networkextension::{Datagram, UdpFlow, tproxy::TransparentProxyServiceContext},
@@ -13,7 +13,7 @@ use rama::{
     },
     service::service_fn,
     telemetry::tracing,
-    udp::{UdpSocket, bind_udp_with_address},
+    udp::{SharedQueueBudget, UdpSocket, bind_udp_with_address},
     utils::octets::kib,
 };
 
@@ -79,7 +79,8 @@ static UDP_RECV_SCRATCH_PEAK: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static UDP_RECV_WOULD_BLOCKS: AtomicUsize = AtomicUsize::new(0);
 
-/// What the per-destination QUIC path of [`try_new_service`] needs.
+/// What the per-destination QUIC path of [`try_new_service`] needs, besides the engine's
+/// ingress budgets.
 pub(super) struct QuicFlows {
     /// The live settings holding the TLS relay whose issuer QUIC interception shares.
     pub(super) state: SharedState,
@@ -90,7 +91,7 @@ pub(super) struct QuicFlows {
 }
 
 pub(super) async fn try_new_service(
-    _: TransparentProxyServiceContext,
+    ctx: TransparentProxyServiceContext,
     udp_policy_scope: UdpPolicyScope,
     quic: QuicFlows,
 ) -> Result<impl Service<UdpFlow, Output = (), Error = Infallible>, BoxError> {
@@ -99,10 +100,19 @@ pub(super) async fn try_new_service(
         ports,
         limiter,
     } = quic;
+    let budget = |bytes| {
+        NonZeroUsize::new(bytes)
+            .ok_or_else(|| BoxError::from_static_str("zero engine UDP ingress budget"))
+    };
+    let path = crate::quic::QuicPath {
+        state,
+        limiter,
+        flow_bytes: budget(ctx.udp_ingress_per_flow_max_bytes())?,
+        budget: SharedQueueBudget::new(budget(ctx.udp_ingress_global_max_bytes())?),
+    };
     Ok(service_fn(move |flow: UdpFlow| {
-        let state = state.clone();
+        let path = path.clone();
         let quic_ports = ports.clone();
-        let limiter = limiter.clone();
         // The flow's own executor: one held by this long-lived service would stall shutdown.
         let exec = flow.executor().cloned().unwrap_or_default();
         async move {
@@ -111,7 +121,7 @@ pub(super) async fn try_new_service(
                 .get_ref::<ConnectorTarget>()
                 .map(|ConnectorTarget(target)| target.port);
             if crate::quic::serves_port(&quic_ports, port) {
-                crate::quic::serve(flow, state, limiter, exec).await;
+                crate::quic::serve(flow, path, exec).await;
                 Ok(())
             } else {
                 service(flow, udp_policy_scope).await
