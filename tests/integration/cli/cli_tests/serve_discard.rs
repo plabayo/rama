@@ -106,14 +106,15 @@ async fn test_tls_tcp_discard() {
 async fn test_udp_discard() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_discard(63116, "udp");
-    let socket = bind_udp_with_address(SocketAddress::local_ipv4(63117))
+    let port = utils::reserve_loopback_udp_port();
+    let _guard = utils::RamaService::serve_discard(port, "udp");
+    let socket = bind_udp_with_address(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
 
     for i in 0..5 {
         match socket
-            .connect(SocketAddress::local_ipv4(63116).into_std())
+            .connect(SocketAddress::local_ipv4(port).into_std())
             .await
         {
             Ok(_) => break,
