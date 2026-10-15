@@ -14,7 +14,7 @@ use rama_boring::{
 };
 use rama_core::{
     Service,
-    error::BoxError,
+    error::{BoxError, BoxErrorExt as _},
     extensions::{Extension, Extensions},
     layer::MapErr,
     service::{BoxService, service_fn},
@@ -120,19 +120,17 @@ impl TlsMitmClientIdentity {
         self.chain.first()
     }
 
-    /// The chain, leaf first, that a completed ingress handshake verified under the plan's
-    /// ingress setup, so the client also proved possession of the leaf's key. A relay builds
-    /// it only once that handshake completed.
-    pub fn from_authenticated_chain(chain: Vec<X509>) -> Self {
-        Self { chain }
-    }
-
-    pub(super) fn from_completed_handshake(ssl: &SslRef) -> Self {
+    /// The identity an ingress handshake proved, once it completed (the client's Finished
+    /// included, so it also proved possession of the leaf's key); `None` before that.
+    pub fn from_completed_handshake(ssl: &SslRef) -> Option<Self> {
+        if !ssl.is_init_finished() {
+            return None;
+        }
         let chain = ssl
             .peer_full_cert_chain()
             .map(|chain| chain.iter().map(ToOwned::to_owned).collect())
             .unwrap_or_default();
-        Self { chain }
+        Some(Self { chain })
     }
 }
 
@@ -144,6 +142,8 @@ type ConfigureIngress = Box<dyn FnOnce(&mut SslRef) -> Result<(), BoxError> + Se
 /// A credential returned when upstream requested none is rejected as a policy error.
 pub struct TlsMitmClientAuthPlan {
     pub(super) configure: Option<ConfigureIngress>,
+    /// Whether the plan configured an ingress connection already.
+    applied: bool,
     pub(super) resolve: BoxService<TlsMitmClientIdentity, Option<SslCredential>, BoxError>,
 }
 
@@ -156,8 +156,15 @@ impl fmt::Debug for TlsMitmClientAuthPlan {
 }
 
 impl TlsMitmClientAuthPlan {
-    /// Apply the plan's ingress TLS setup to this connection, once, before its handshake.
+    /// Apply the plan's ingress TLS setup to this connection, once, before its handshake; a
+    /// second connection is refused rather than left without the plan's requirements.
     pub fn configure_ingress(&mut self, ssl: &mut SslRef) -> Result<(), BoxError> {
+        if self.applied {
+            return Err(BoxError::from_static_str(
+                "tls mitm client auth: ingress plan already applied",
+            ));
+        }
+        self.applied = true;
         match self.configure.take() {
             Some(configure) => configure(ssl),
             None => Ok(()),
@@ -178,6 +185,7 @@ impl TlsMitmClientAuthPlan {
     {
         Self {
             configure: None,
+            applied: false,
             resolve: MapErr::new(resolver, Into::into).boxed(),
         }
     }

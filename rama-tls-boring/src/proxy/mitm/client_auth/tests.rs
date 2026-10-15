@@ -14,7 +14,7 @@ use rama_boring::{
     nid::Nid,
     pkey::{PKey, Private},
     ssl::{
-        ExtensionType, SelectCertError, SslAcceptor, SslMethod, SslSession, SslVerifyMode,
+        ExtensionType, SelectCertError, Ssl, SslAcceptor, SslMethod, SslSession, SslVerifyMode,
         SslVersion,
     },
     x509::{
@@ -1461,5 +1461,37 @@ async fn a_panicking_ingress_verifier_fails_only_its_handshake() {
         .await;
         result.client.unwrap_err();
         result.relay.unwrap_err();
+    }
+}
+
+/// An identity exists only for a handshake that completed; none can be built before.
+#[test]
+fn no_identity_before_the_ingress_handshake_completes() {
+    let acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())
+        .unwrap()
+        .build();
+    let ssl = Ssl::new(acceptor.context()).unwrap();
+    assert!(TlsMitmClientIdentity::from_completed_handshake(&ssl).is_none());
+}
+
+/// A plan configures one ingress connection: a second is refused, with or without an
+/// ingress requirement, so it can never run without the plan's requirements.
+#[test]
+fn a_plan_configures_one_ingress_connection() {
+    let acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())
+        .unwrap()
+        .build();
+    for requires in [false, true] {
+        let mut plan = TlsMitmClientAuthPlan::fixed(None);
+        if requires {
+            plan.set_ingress(|ssl| {
+                ssl.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
+                Ok(())
+            });
+        }
+        let mut first = Ssl::new(acceptor.context()).unwrap();
+        plan.configure_ingress(&mut first).unwrap();
+        let mut second = Ssl::new(acceptor.context()).unwrap();
+        plan.configure_ingress(&mut second).unwrap_err();
     }
 }

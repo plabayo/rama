@@ -321,8 +321,9 @@ where
         }
         let ingress_handshake = async move {
             let mut plan = plan;
-            if let Some(configure) = plan.as_mut().and_then(|plan| plan.configure.take()) {
-                configure(&mut ssl).map_err(TlsMitmRelayError::client_auth)?;
+            if let Some(plan) = plan.as_mut() {
+                plan.configure_ingress(&mut ssl)
+                    .map_err(TlsMitmRelayError::client_auth)?;
             }
             let stream = rama_boring_tokio::SslStreamBuilder::new(ssl, ingress)
                 .accept()
@@ -355,7 +356,12 @@ where
                 }
                 peer_chain =
                     peer_certificate_chain(stream.ssl()).map_err(TlsMitmRelayError::config)?;
-                let identity = TlsMitmClientIdentity::from_completed_handshake(stream.ssl());
+                let identity = TlsMitmClientIdentity::from_completed_handshake(stream.ssl())
+                    .ok_or_else(|| {
+                        TlsMitmRelayError::config(BoxError::from_static_str(
+                            "tls mitm client auth: ingress handshake incomplete",
+                        ))
+                    })?;
                 let credential = plan
                     .resolve
                     .serve(identity)

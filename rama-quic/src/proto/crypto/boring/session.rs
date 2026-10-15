@@ -34,7 +34,7 @@ use rama_tls_boring::{client::ServerAnswerRecorder, type_conversion::peer_certif
 use zeroize::Zeroizing;
 
 use super::{
-    config::HandshakeInitializer,
+    config::{HandshakeInitializer, handshake_completed_hook},
     packet::{self, Secret, Suite},
 };
 
@@ -138,6 +138,8 @@ pub(super) struct TlsSession {
     waker: Option<Waker>,
     server_name: Option<Domain>,
     certificates: Option<Vec<CertificateDer<'static>>>,
+    /// Whether the handshake-completed hook already ran.
+    completed: bool,
     remembered: Option<TransportParameters>,
     peer_params: Arc<Mutex<Option<TransportParameters>>>,
 }
@@ -217,6 +219,7 @@ impl TlsSession {
             waker: None,
             server_name: None,
             certificates: None,
+            completed: false,
             remembered,
             peer_params,
         };
@@ -375,6 +378,12 @@ impl TlsSession {
         }
         if self.certificates.is_none() {
             self.certificates = peer_certificate_chain(ssl).map_err(crypto_error)?;
+        }
+        if !self.completed && ssl.is_init_finished() {
+            self.completed = true;
+            if let Some(hook) = handshake_completed_hook(ssl) {
+                (hook.0)(ssl);
+            }
         }
         // The peer's parameters arrive once and never change, so they are parsed once: this runs
         // for every CRYPTO frame, and a large parameter list must not be re-read for each.

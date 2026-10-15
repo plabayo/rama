@@ -10,8 +10,8 @@ mod config;
 #[cfg(test)]
 pub(crate) use config::QuicServerConfig;
 pub(crate) use config::{
-    HandshakeInitializer, QuicClientConfig, SharedClientSessions, retry_tag,
-    server_config_from_rama, server_initial_keys,
+    HandshakeInitializer, QuicClientConfig, SharedClientSessions, on_handshake_completed,
+    retry_tag, server_config_from_rama, server_initial_keys,
 };
 mod packet;
 mod session;

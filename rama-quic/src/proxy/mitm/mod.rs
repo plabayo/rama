@@ -63,8 +63,8 @@ use crate::{
     proto::crypto::{
         self,
         boring::{
-            HandshakeInitializer, SharedClientSessions, retry_tag, server_config_from_rama,
-            server_initial_keys,
+            HandshakeInitializer, SharedClientSessions, on_handshake_completed, retry_tag,
+            server_config_from_rama, server_initial_keys,
         },
     },
     tls::{BoringTlsProvider, TlsOptions},
@@ -420,7 +420,7 @@ impl<Issuer: BoringMitmCertIssuer<Error: Into<BoxError>> + Clone> QuicMitmRelay<
             ));
         }
         if let Some(client_auth) = client_auth {
-            client_auth.release(&ingress_connection).await?;
+            client_auth.release().await?;
         }
         let Origin {
             connection,
@@ -479,22 +479,18 @@ struct CertificateRequested {
 struct ClientAuthExchange {
     plan: TlsMitmClientAuthPlan,
     reply: Option<oneshot::Sender<Option<SslCredential>>>,
+    /// Filled by the ingress handshake once it completed.
+    identity: Arc<Mutex<Option<TlsMitmClientIdentity>>>,
 }
 
 impl ClientAuthExchange {
     /// Resolve the egress credential for the identity the completed ingress handshake proved,
     /// and release it to the origin.
-    async fn release(self, ingress: &Connection) -> Result<(), BoxError> {
-        // An accepted connection completed its handshake, the client's Finished included, so
-        // the key of any certificate it presented was proven. Ingress contexts live for one
-        // association, so no session resumes into it.
-        let chain = ingress
-            .peer_identity()
-            .unwrap_or_default()
-            .iter()
-            .map(|cert| X509::from_der(cert))
-            .collect::<Result<Vec<_>, _>>()?;
-        let identity = TlsMitmClientIdentity::from_authenticated_chain(chain);
+    async fn release(self) -> Result<(), BoxError> {
+        // Ingress contexts live for one association, so no session resumes into it.
+        let identity = self.identity.lock().take().ok_or_else(|| {
+            BoxError::from_static_str("QUIC MITM ingress handshake has not completed")
+        })?;
         let credential = self.plan.into_resolver().serve(identity).await?;
         match self.reply {
             Some(reply) => reply.send(credential).map_err(|_credential| {
@@ -701,7 +697,11 @@ where
                 })
                 .await?;
             if let Some(origin) = self.origin.lock().as_mut() {
-                origin.client_auth = Some(ClientAuthExchange { plan, reply });
+                origin.client_auth = Some(ClientAuthExchange {
+                    plan,
+                    reply,
+                    identity: Arc::default(),
+                });
             }
             true
         } else {
@@ -715,15 +715,19 @@ where
             if !authenticates {
                 return Ok(());
             }
-            origin
-                .lock()
+            let mut origin = origin.lock();
+            let exchange = origin
                 .as_mut()
                 .and_then(|origin| origin.client_auth.as_mut())
                 .ok_or_else(|| {
                     BoxError::from_static_str("QUIC MITM client auth plan already released")
-                })?
-                .plan
-                .configure_ingress(ssl)
+                })?;
+            exchange.plan.configure_ingress(ssl)?;
+            // Only a completed handshake proves the identity the policy resolves.
+            let identity = exchange.identity.clone();
+            on_handshake_completed(ssl, move |ssl| {
+                *identity.lock() = TlsMitmClientIdentity::from_completed_handshake(ssl);
+            })
         })));
 
         let issued = self

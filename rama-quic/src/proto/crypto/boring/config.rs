@@ -59,6 +59,30 @@ impl fmt::Debug for HandshakeInitializer {
     }
 }
 
+/// Runs once on a connection whose TLS handshake completed, with its finished session: for
+/// state that may only be read once the peer proved what it presented.
+#[derive(Clone)]
+pub(crate) struct HandshakeCompleted(pub(crate) Arc<dyn Fn(&SslRef) + Send + Sync>);
+
+static HANDSHAKE_COMPLETED_INDEX: LazyLock<Result<Index<Ssl, HandshakeCompleted>, ErrorStack>> =
+    LazyLock::new(Ssl::new_ex_index::<HandshakeCompleted>);
+
+/// Run `hook` once this connection's handshake completes.
+pub(crate) fn on_handshake_completed(
+    ssl: &mut SslRef,
+    hook: impl Fn(&SslRef) + Send + Sync + 'static,
+) -> Result<(), BoxError> {
+    let index = HANDSHAKE_COMPLETED_INDEX.clone()?;
+    ssl.set_ex_data(index, HandshakeCompleted(Arc::new(hook)));
+    Ok(())
+}
+
+/// The hook [`on_handshake_completed`] installed on this connection, if any.
+pub(crate) fn handshake_completed_hook(ssl: &SslRef) -> Option<HandshakeCompleted> {
+    let index = HANDSHAKE_COMPLETED_INDEX.as_ref().ok()?;
+    ssl.ex_data(*index).cloned()
+}
+
 struct Ticket {
     session: TlsClientSession,
     params: TransportParameters,
