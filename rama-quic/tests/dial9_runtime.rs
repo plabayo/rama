@@ -107,11 +107,27 @@ fn an_endpoint_built_on_a_recorded_runtime_is_traced() {
     let mut driver_tasks = BTreeSet::new();
     let mut polled_tasks = BTreeSet::new();
     let mut parks = 0;
+    let mut connections_started = 0;
+    let mut handshakes_completed = 0;
+    let mut connections_closed = 0;
     for entry in &written {
         let data = std::fs::read(entry.path()).unwrap();
         Decoder::new(&data)
             .expect("a valid trace header")
             .for_each_event(|raw| {
+                match raw.name {
+                    "QuicConnectionStarted" => connections_started += 1,
+                    "QuicHandshakeCompleted" => handshakes_completed += 1,
+                    "QuicConnectionClosed" => {
+                        connections_closed += 1;
+                        for (name, value) in raw.field_names().zip(raw.fields.iter()) {
+                            if matches!(name, "bytes_sent" | "bytes_received") {
+                                assert!(matches!(value, dial9_trace_format::types::FieldValueRef::Varint(value) if *value > 0));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
                 match raw
                     .deserialize::<Dial9Event>()
                     .expect("a valid runtime event")
@@ -142,6 +158,9 @@ fn an_endpoint_built_on_a_recorded_runtime_is_traced() {
             .expect("the complete trace decodes");
     }
     assert!(parks > 0, "the runtime recorded worker park events");
+    assert_eq!(connections_started, 2);
+    assert_eq!(handshakes_completed, connections_started);
+    assert_eq!(connections_closed, connections_started);
     assert!(
         driver_tasks.len() >= 4,
         "both endpoint and connection drivers were identified: {driver_tasks:?}"

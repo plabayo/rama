@@ -1,3 +1,6 @@
+#[cfg(feature = "dial9")]
+pub mod dial9;
+
 use core::{fmt::Debug, hash::Hash};
 use std::time::Duration;
 
@@ -245,34 +248,35 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let conn_id = self.req_to_conn_id.id(&input).map_err(|error| {
-            ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
-                .context("pooled connector: derive connection id")
-        })?;
+        let checkout = async {
+            let conn_id = self.req_to_conn_id.id(&input).map_err(|error| {
+                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                    .context("pooled connector: derive connection id")
+            })?;
 
-        // Try to get connection from pool, if no connection is found, we will have to create a new
-        // one using the returned create permit
+            // Try to get connection from pool, if no connection is found, we will have to create a new
+            // one using the returned create permit
 
-        // Resolve once and keep an owned handle: the same pool that minted a
-        // create permit must also receive the created connection.
-        let input_pool = input.extensions().get_arc::<P>();
-        let pool = if let Some(pool) = input_pool.as_deref() {
-            trace!("pooled connector: using pool from ctx");
-            pool
-        } else {
-            trace!("pooled connector: using pool from connector");
-            &self.pool
-        };
-
-        let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
-            // A wait too long to have an instant is a wait without a deadline.
-            let deadline = Instant::now().checked_add(duration);
-            let checkout = pool.get_conn(&conn_id, input.extensions(), deadline);
-            let waited = match deadline {
-                Some(deadline) => timeout_at(deadline, checkout).await,
-                None => timeout(duration, checkout).await,
+            // Resolve once and keep an owned handle: the same pool that minted a
+            // create permit must also receive the created connection.
+            let input_pool = input.extensions().get_arc::<P>();
+            let pool = if let Some(pool) = input_pool.as_deref() {
+                trace!("pooled connector: using pool from ctx");
+                pool
+            } else {
+                trace!("pooled connector: using pool from connector");
+                &self.pool
             };
-            waited
+
+            let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
+                // A wait too long to have an instant is a wait without a deadline.
+                let deadline = Instant::now().checked_add(duration);
+                let checkout = pool.get_conn(&conn_id, input.extensions(), deadline);
+                let waited = match deadline {
+                    Some(deadline) => timeout_at(deadline, checkout).await,
+                    None => timeout(duration, checkout).await,
+                };
+                waited
                     .inspect_err(|err|{
                         trace!(%err, "pooled connector: timeout triggered while waiting for a connection (/w conn id: {conn_id:?}) from pool");
                     })
@@ -280,54 +284,66 @@ where
                         ConnectionError::local(error, ConnectionErrorKind::Timeout)
                             .context("pooled connector: wait for connection")
                     })?
-        } else {
-            pool.get_conn(&conn_id, input.extensions(), None).await
-        };
+            } else {
+                pool.get_conn(&conn_id, input.extensions(), None).await
+            };
 
-        match pool_result.map_err(|error| match error.downcast::<ConnectionError>() {
-            // Such as the connect it waited for failing: classified already.
-            Ok(error) => *error,
-            Err(error) => ConnectionError::local(error, ConnectionErrorKind::Internal)
-                .context("pooled connector: acquire connection"),
-        })? {
-            ConnectionResult::Connection(conn) => {
-                trace!(
-                    "pooled connector: got connection (w/ conn id: {conn_id:?}) from pool (running health checks now)"
-                );
+            match pool_result.map_err(|error| match error.downcast::<ConnectionError>() {
+                // Such as the connect it waited for failing: classified already.
+                Ok(error) => *error,
+                Err(error) => ConnectionError::local(error, ConnectionErrorKind::Internal)
+                    .context("pooled connector: acquire connection"),
+            })? {
+                ConnectionResult::Connection(conn) => {
+                    #[cfg(feature = "dial9")]
+                    dial9::selected(true);
+                    trace!(
+                        "pooled connector: got connection (w/ conn id: {conn_id:?}) from pool (running health checks now)"
+                    );
 
-                Ok(EstablishedClientConnection { conn, input })
-            }
-            ConnectionResult::CreatePermit(permit) => {
-                trace!(
-                    "pooled connector: no connection (w/ conn id: {conn_id:?}) found, received permit to create a new one"
-                );
-                let EstablishedClientConnection { input, conn } =
-                    match self.inner.connect(input).await {
-                        Ok(established) => established,
-                        Err(error) => {
-                            pool.abandon(permit, &error);
-                            return Err(error);
-                        }
-                    };
-
-                trace!(
-                    "pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}"
-                );
-                let admission = pool.create(conn_id, conn, permit, input.extensions());
-                let conn = if let Some(duration) = self.wait_for_pool_timeout {
-                    timeout(duration, admission).await.map_err(|error| {
-                        ConnectionError::local(error, ConnectionErrorKind::Timeout)
-                            .context("pooled connector: wait for new connection admission")
-                    })?
-                } else {
-                    admission.await
+                    Ok(EstablishedClientConnection { conn, input })
                 }
-                .map_err(|error| {
-                    ConnectionError::from(error).context("pooled connector: admit new connection")
-                })?;
-                Ok(EstablishedClientConnection { input, conn })
+                ConnectionResult::CreatePermit(permit) => {
+                    #[cfg(feature = "dial9")]
+                    dial9::selected(false);
+                    trace!(
+                        "pooled connector: no connection (w/ conn id: {conn_id:?}) found, received permit to create a new one"
+                    );
+                    let EstablishedClientConnection { input, conn } =
+                        match self.inner.connect(input).await {
+                            Ok(established) => established,
+                            Err(error) => {
+                                pool.abandon(permit, &error);
+                                return Err(error);
+                            }
+                        };
+
+                    trace!(
+                        "pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}"
+                    );
+                    let admission = pool.create(conn_id, conn, permit, input.extensions());
+                    let conn = if let Some(duration) = self.wait_for_pool_timeout {
+                        timeout(duration, admission).await.map_err(|error| {
+                            ConnectionError::local(error, ConnectionErrorKind::Timeout)
+                                .context("pooled connector: wait for new connection admission")
+                        })?
+                    } else {
+                        admission.await
+                    }
+                    .map_err(|error| {
+                        ConnectionError::from(error)
+                            .context("pooled connector: admit new connection")
+                    })?;
+                    Ok(EstablishedClientConnection { input, conn })
+                }
             }
+        };
+        #[cfg(feature = "dial9")]
+        {
+            rama_core::telemetry::dial9::record_result("pool.checkout", checkout).await
         }
+        #[cfg(not(feature = "dial9"))]
+        checkout.await
     }
 }
 

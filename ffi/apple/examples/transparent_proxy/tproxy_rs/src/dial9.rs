@@ -32,20 +32,8 @@ const MAX_FILE_BYTES: u64 = mib_u64(64);
 pub(super) fn make_runtime_factory() -> DefaultTransparentProxyAsyncRuntimeFactory {
     let factory = DefaultTransparentProxyAsyncRuntimeFactory::new();
 
-    // Opt-out escape hatch. Production wants dial9 enabled by
-    // default (when storage_dir is set); the e2e test harness
-    // wants it disabled because it creates ~50 engines per suite
-    // and dial9's writer task doesn't observe the engine's
-    // shutdown signal — when each engine's tokio runtime drops,
-    // dial9's task is still running, tokio's drop waits briefly
-    // then detaches the runtime threads, leaking their FDs.
-    // After ~38 engines on a 256-FD `ulimit` host (the macOS
-    // default), `TransparentProxyEngineBuilder::create async
-    // runtime` returns `Too many open files (os error 24)` and
-    // the rest of the suite cascades.
-    //
-    // The env var is opt-out (`=true` / `=1` disables); leaving
-    // it unset preserves the default-on behaviour for production.
+    // Example-specific opt-out for the test harness and local diagnostics.
+    // Applications should make this choice in their own configuration.
     if let Some("true" | "1") = std::env::var("RAMA_TPROXY_DIAL9_DISABLED").ok().as_deref() {
         tracing::debug!(
             "rama-tproxy dial9: explicitly disabled via RAMA_TPROXY_DIAL9_DISABLED env var",
@@ -70,11 +58,6 @@ pub(super) fn make_runtime_factory() -> DefaultTransparentProxyAsyncRuntimeFacto
         return factory.without_dial9_recorder();
     }
 
-    tracing::info!(
-        path = %trace_dir.display(),
-        "rama-tproxy dial9: telemetry enabled",
-    );
-
     // Segments land in `<trace_dir>/trace.{n}.bin`.
     let writer = DiskBuffer::builder()
         .base_path(trace_dir)
@@ -83,8 +66,10 @@ pub(super) fn make_runtime_factory() -> DefaultTransparentProxyAsyncRuntimeFacto
         .rotation_period(ROTATION_PERIOD)
         .build();
 
+    let recorder = ::dial9::recorder_or_disabled(writer).build();
+    tracing::info!(enabled = recorder.handle().is_enabled(), "rama-tproxy dial9: recorder configured");
     factory
-        .with_dial9_recorder(::dial9::recorder_or_disabled(writer).build())
+        .with_dial9_recorder(recorder)
         // Name the runtime so a multi-extension dial9 trace can be
         // disambiguated; cost is a small string in the trace header.
         .with_dial9_attach_options(

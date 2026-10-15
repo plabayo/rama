@@ -101,7 +101,28 @@ where
     type Output = Response;
     type Error = BoxError;
 
-    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
+        #[cfg(feature = "dial9")]
+        {
+            rama_http::layer::dial9::observe_request("http.client", req, |req| self.send(req)).await
+        }
+        #[cfg(not(feature = "dial9"))]
+        self.send(req).await
+    }
+}
+
+impl<Body> HttpClientService<Body>
+where
+    Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+{
+    async fn send(&self, mut req: Request<Body>) -> Result<Response, BoxError> {
+        #[cfg(feature = "dial9")]
+        if let Some(transport) = self
+            .extensions
+            .get_ref::<rama_core::telemetry::dial9::TraceContext>()
+        {
+            rama_core::telemetry::dial9::TraceContext::current().link(*transport, "http.transport");
+        }
         // counted up front: a dropped attempt may have been sent
         let attempts = req.extensions().get_arc::<SendAttempts>();
         if let Some(attempts) = &attempts {

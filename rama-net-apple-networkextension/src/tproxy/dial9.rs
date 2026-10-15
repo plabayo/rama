@@ -22,6 +22,8 @@ use rama_net::proxy::BridgeCloseReason;
 pub struct TproxyFlowOpened {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
+    pub trace_flow_id: u64,
+    pub operation_id: u64,
     /// PID of the Network Extension provider process.
     pub provider_pid: u32,
     /// Process-local immutable engine-generation identity.
@@ -39,6 +41,8 @@ pub struct TproxyFlowOpened {
 pub struct TproxyFlowClosed {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
+    pub trace_flow_id: u64,
+    pub operation_id: u64,
     pub provider_pid: u32,
     pub provider_generation: u64,
     pub flow_id: u64,
@@ -64,6 +68,10 @@ pub struct TproxyFlowClosed {
 pub struct TproxyHandlerDeadline {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
+    pub trace_flow_id: u64,
+    pub operation_id: u64,
+    pub provider_pid: u32,
+    pub provider_generation: u64,
     pub flow_id: u64,
     /// Configured deadline that elapsed, in milliseconds.
     pub deadline_ms: u64,
@@ -81,6 +89,8 @@ pub(crate) fn record_flow_opened(
     if handle.is_enabled() {
         handle.record_event(TproxyFlowOpened {
             timestamp_ns: clock_monotonic_ns(),
+            trace_flow_id: rama_core::telemetry::dial9::TraceContext::current().flow_id(),
+            operation_id: rama_core::telemetry::dial9::TraceContext::current().operation_id(),
             provider_pid,
             provider_generation,
             flow_id,
@@ -104,6 +114,8 @@ pub(crate) fn record_flow_closed(
     if handle.is_enabled() {
         handle.record_event(TproxyFlowClosed {
             timestamp_ns: clock_monotonic_ns(),
+            trace_flow_id: rama_core::telemetry::dial9::TraceContext::current().flow_id(),
+            operation_id: rama_core::telemetry::dial9::TraceContext::current().operation_id(),
             provider_pid,
             provider_generation,
             flow_id: meta.flow_id,
@@ -118,13 +130,71 @@ pub(crate) fn record_flow_closed(
 }
 
 #[inline]
-pub(crate) fn record_handler_deadline(flow_id: u64, deadline_ms: u64) {
+pub(crate) fn record_handler_deadline(
+    provider_pid: u32,
+    provider_generation: u64,
+    flow_id: u64,
+    deadline_ms: u64,
+) {
     let handle = Dial9Handle::current();
     if handle.is_enabled() {
         handle.record_event(TproxyHandlerDeadline {
             timestamp_ns: clock_monotonic_ns(),
+            trace_flow_id: rama_core::telemetry::dial9::TraceContext::current().flow_id(),
+            operation_id: rama_core::telemetry::dial9::TraceContext::current().operation_id(),
+            provider_pid,
+            provider_generation,
             flow_id,
             deadline_ms,
         });
     }
+}
+
+/// Policy result for every evaluated flow, including blocked and passthrough.
+#[derive(TraceEvent)]
+pub struct TproxyFlowDecision {
+    #[traceevent(timestamp)]
+    pub timestamp_ns: u64,
+    pub trace_flow_id: u64,
+    pub operation_id: u64,
+    pub provider_pid: u32,
+    pub provider_generation: u64,
+    pub flow_id: u64,
+    pub protocol: u32,
+    /// 0 intercept, 1 block, 2 passthrough.
+    pub action: u32,
+}
+
+pub(crate) async fn trace_decision<S>(
+    provider_pid: u32,
+    provider_generation: u64,
+    flow_id: u64,
+    protocol: u32,
+    future: impl Future<Output = super::engine::SessionFlowAction<S>>,
+) -> super::engine::SessionFlowAction<S> {
+    use super::engine::SessionFlowAction;
+    use rama_core::telemetry::dial9::{Operation, Outcome};
+    let operation = Operation::new("tproxy.decision");
+    let result = operation.context().scope(future).await;
+    let action = match &result {
+        SessionFlowAction::Intercept(_) => 0,
+        SessionFlowAction::Blocked => 1,
+        SessionFlowAction::Passthrough => 2,
+    };
+    operation.record_event_with(|context| TproxyFlowDecision {
+        timestamp_ns: clock_monotonic_ns(),
+        trace_flow_id: context.flow_id(),
+        operation_id: context.operation_id(),
+        provider_pid,
+        provider_generation,
+        flow_id,
+        protocol,
+        action,
+    });
+    operation.finish(if action == 1 {
+        Outcome::Rejected
+    } else {
+        Outcome::Success
+    });
+    result
 }

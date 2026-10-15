@@ -154,6 +154,7 @@ fn dial9_provider_identities(
     let bytes = std::fs::read(trace_dir.join("trace.0.bin")).expect("sealed dial9 trace");
     let mut decoder = Decoder::new(&bytes).expect("valid dial9 trace");
     let mut identities = Vec::new();
+    let mut context = None;
     decoder
         .for_each_event(|event| {
             if !matches!(event.name, "TproxyFlowOpened" | "TproxyFlowClosed") {
@@ -162,17 +163,32 @@ fn dial9_provider_identities(
             let mut provider_pid = None;
             let mut provider_generation = None;
             let mut flow_id = None;
+            let mut trace_flow_id = None;
+            let mut operation_id = None;
             for (name, value) in event.field_names().zip(event.fields.iter()) {
                 if let FieldValueRef::Varint(value) = value {
                     match name {
                         "provider_pid" => provider_pid = Some(*value),
                         "provider_generation" => provider_generation = Some(*value),
                         "flow_id" => flow_id = Some(*value),
+                        "trace_flow_id" => trace_flow_id = Some(*value),
+                        "operation_id" => operation_id = Some(*value),
                         _ => {}
                     }
                 }
             }
             if flow_id == Some(expected_flow_id) {
+                let recorded = (
+                    trace_flow_id.expect("trace_flow_id"),
+                    operation_id.expect("operation_id"),
+                );
+                assert_ne!(recorded.0, 0, "flow must have a trace context");
+                assert_ne!(recorded.1, 0, "flow must have an operation");
+                assert_eq!(
+                    *context.get_or_insert(recorded),
+                    recorded,
+                    "open and delayed close retain the same context"
+                );
                 identities.push((
                     event.name.to_owned(),
                     provider_pid.expect("provider_pid field"),
@@ -183,6 +199,61 @@ fn dial9_provider_identities(
         })
         .expect("decode dial9 identities");
     identities
+}
+
+#[test]
+fn blocked_and_passthrough_decisions_are_recorded_without_a_bridge() {
+    let _slot = recorder_slot();
+    let dir = rama_utils::fs::tempdir().unwrap();
+    let handler = TestHandler {
+        tcp_matcher: Arc::new(|_| FlowAction::Blocked),
+        ..TestHandler::passthrough()
+    };
+    let engine = build_dial9_engine(handler, dir.path());
+    let mut tcp = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp);
+    tcp.flow_id = 41;
+    assert!(matches!(
+        engine.new_tcp_session(tcp, |_| TcpDeliverStatus::Accepted, || {}, || {}),
+        SessionFlowAction::Blocked
+    ));
+    let mut udp = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
+    udp.flow_id = 42;
+    assert!(matches!(
+        engine.new_udp_session(udp, |_| {}, |_| {}, || {}),
+        SessionFlowAction::Passthrough
+    ));
+    engine.stop(0);
+    let bytes = std::fs::read(dir.path().join("trace.0.bin")).unwrap();
+    let mut decisions = Vec::new();
+    Decoder::new(&bytes)
+        .unwrap()
+        .for_each_event(|event| {
+            if event.name != "TproxyFlowDecision" {
+                return;
+            }
+            let value = |field| {
+                event
+                    .field_names()
+                    .zip(event.fields.iter())
+                    .find_map(|(name, value)| {
+                        if name == field
+                            && let FieldValueRef::Varint(value) = value
+                        {
+                            Some(*value)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap()
+            };
+            assert_ne!(value("trace_flow_id"), 0);
+            assert_ne!(value("operation_id"), 0);
+            decisions.push((value("flow_id"), value("action")));
+        })
+        .unwrap();
+    decisions.sort();
+    assert_eq!(decisions, [(41, 1), (42, 2)]);
+    assert_eq!(count_dial9_events(dir.path(), "TproxyFlowOpened"), 0);
 }
 
 #[test]

@@ -25,6 +25,7 @@ targets = [
 ]
 
 [features]
+dial9 = ["rama-http/dial9"]
 default = []
 # Synchronous bounded harnesses for the HTTP/3 state machines.
 fuzz-utils = []

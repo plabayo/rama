@@ -22,7 +22,7 @@ targets = ["x86_64-unknown-linux-gnu"]
 [features]
 default = []
 inspect = ["dep:rama-inspect", "dep:arc-swap", "rama-net/inspect"]
-dial9 = ["rama-core/dial9"]
+dial9 = ["rama-core/dial9", "dep:dial9-trace-format"]
 # Forward the typed header fuzz harnesses.
 fuzz-utils = ["rama-http-headers/fuzz-utils"]
 opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry"]
@@ -52,6 +52,7 @@ compression-codecs = { workspace = true, features = ["brotli", "deflate", "gzip"
 compression-core = { workspace = true, optional = true }
 const_format = { workspace = true }
 csv = { workspace = true }
+dial9-trace-format = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 http-range-header = { workspace = true }
 httpdate = { workspace = true }

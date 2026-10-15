@@ -51,11 +51,19 @@ where
             network.protocol.version = version_as_protocol_version(req.version()),
         );
 
-        let response = self.svc.serve(req).instrument(span).await?.into_response();
-        Ok(match body_limit.and_then(|limit| limit.response()) {
-            Some(limit) => response.map(|body| Body::new(Limited::new(body, limit))),
-            None => response,
-        })
+        let serve = |req| async move {
+            let response = self.svc.serve(req).instrument(span).await?.into_response();
+            Ok(match body_limit.and_then(|limit| limit.response()) {
+                Some(limit) => response.map(|body| Body::new(Limited::new(body, limit))),
+                None => response,
+            })
+        };
+        #[cfg(feature = "dial9")]
+        {
+            rama_http::layer::dial9::observe_request("http.server", req, serve).await
+        }
+        #[cfg(not(feature = "dial9"))]
+        serve(req).await
     }
 }
 

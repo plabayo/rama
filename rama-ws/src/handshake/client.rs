@@ -1096,20 +1096,28 @@ where
         let runtime = self.inner.mode.runtime.clone();
         let service = Arc::clone(&self.inner.mode.service);
         let prepared = self.prepare_handshake_inner(&extensions)?;
-        let completed = runtime.block_on_task(async move {
+        let io_runtime = runtime.clone();
+        runtime.block_on_task(async move {
             let handshake = prepared.send(service.as_ref()).await?;
-            handshake.complete_upgrade().await
-        })?;
-        let socket = WebSocket::from_raw_socket(
-            runtime.io(completed.stream),
-            Role::Client,
-            completed.config,
-        );
-
-        Ok(BlockingClientWebSocket {
-            socket,
-            response: completed.response,
-            accepted_protocol: completed.accepted_protocol,
+            let completed = handshake.complete_upgrade().await?;
+            #[cfg(feature = "dial9")]
+            let context = completed.trace_context();
+            let create = || {
+                WebSocket::from_raw_socket(
+                    io_runtime.io(completed.stream),
+                    Role::Client,
+                    completed.config,
+                )
+            };
+            #[cfg(feature = "dial9")]
+            let socket = context.scope_sync(create);
+            #[cfg(not(feature = "dial9"))]
+            let socket = create();
+            Ok(BlockingClientWebSocket {
+                socket,
+                response: completed.response,
+                accepted_protocol: completed.accepted_protocol,
+            })
         })
     }
 }
@@ -1199,6 +1207,17 @@ struct CompletedClientHandshake {
     config: Option<WebSocketConfig>,
 }
 
+#[cfg(feature = "dial9")]
+impl CompletedClientHandshake {
+    fn trace_context(&self) -> rama_core::telemetry::dial9::TraceContext {
+        self.response
+            .extensions
+            .get_ref()
+            .copied()
+            .unwrap_or_else(rama_core::telemetry::dial9::TraceContext::current)
+    }
+}
+
 impl<Body> NegotiatedHandshakeRequest<Body> {
     /// Fulfill the websocket handshake and return the upgraded [`ClientWebSocket`].
     pub async fn complete(self) -> Result<ClientWebSocket, HandshakeError>
@@ -1206,8 +1225,14 @@ impl<Body> NegotiatedHandshakeRequest<Body> {
         Body: Send + 'static,
     {
         let completed = self.complete_upgrade().await?;
-        let socket =
-            AsyncWebSocket::from_raw_socket(completed.stream, Role::Client, completed.config).await;
+        #[cfg(feature = "dial9")]
+        let context = completed.trace_context();
+        let create =
+            AsyncWebSocket::from_raw_socket(completed.stream, Role::Client, completed.config);
+        #[cfg(feature = "dial9")]
+        let socket = context.scope(create).await;
+        #[cfg(not(feature = "dial9"))]
+        let socket = create.await;
 
         Ok(ClientWebSocket {
             socket,
@@ -1998,6 +2023,7 @@ mod tests {
     #[cfg(feature = "dial9")]
     #[test]
     fn blocking_handshake_runs_inside_dial9_session() {
+        let _slot = crate::dial9::recorder_slot();
         let temp_dir = rama_utils::fs::tempdir().unwrap();
         let writer = rama_core::telemetry::dial9::DiskBuffer::builder()
             .base_path(temp_dir.path())
@@ -2022,7 +2048,7 @@ mod tests {
                 Bytes::new(),
             ));
 
-            let mut response = Response::new(());
+            let mut response = Response::new(rama_http::Body::empty());
             *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
             *response.version_mut() = Version::HTTP_11;
             response
@@ -2038,6 +2064,8 @@ mod tests {
             response.extensions().insert(on_upgrade);
             Ok::<_, BoxError>(response)
         });
+        use rama_core::Layer as _;
+        let service = rama_http::layer::dial9::Dial9Layer::new().layer(service);
         let client = BlockingHttpClient::with_runtime(service, &runtime);
 
         let socket = client
@@ -2045,6 +2073,30 @@ mod tests {
             .try_handshake()
             .unwrap();
         assert_eq!(socket.response().status, StatusCode::SWITCHING_PROTOCOLS);
+        let context = *socket
+            .response()
+            .extensions
+            .get_ref::<rama_core::telemetry::dial9::TraceContext>()
+            .unwrap();
+        drop((socket, client, runtime));
+        let bytes = std::fs::read(temp_dir.path().join("trace.0.bin")).unwrap();
+        let mut websocket = None;
+        dial9_trace_format::decoder::Decoder::new(&bytes)
+            .unwrap()
+            .for_each_event(|event| {
+                if event.name != "WebSocketOpened" {
+                    return;
+                }
+                for (name, value) in event.field_names().zip(event.fields.iter()) {
+                    if name == "flow_id"
+                        && let dial9_trace_format::types::FieldValueRef::Varint(value) = value
+                    {
+                        websocket = Some(*value);
+                    }
+                }
+            })
+            .unwrap();
+        assert_eq!(websocket, Some(context.flow_id()));
     }
 
     fn offered_pmd(raw: &str) -> Option<SecWebSocketExtensions> {

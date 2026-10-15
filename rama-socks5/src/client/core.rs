@@ -219,57 +219,64 @@ impl Client {
         stream: &mut S,
         destination: &HostWithPort,
     ) -> Result<HostWithPort, HandshakeError> {
-        let auth_outcome = match self.auth.as_ref() {
-            Some(auth) => self.handshake_headers_auth(stream, auth).await,
-            None => self.handshake_headers_no_auth(stream).await,
+        let handshake = async {
+            let auth_outcome = match self.auth.as_ref() {
+                Some(auth) => self.handshake_headers_auth(stream, auth).await,
+                None => self.handshake_headers_no_auth(stream).await,
+            };
+            #[cfg(feature = "dial9")]
+            crate::dial9::record_handshake_auth(
+                match &auth_outcome {
+                    Ok(m) => u8::from(*m),
+                    Err(_) => 0xff,
+                },
+                auth_outcome.is_ok(),
+            );
+            let selected_method = auth_outcome?;
+
+            let request = RequestRef::new(Command::Connect, destination);
+            request.write_to(stream).await.map_err(|err| {
+                HandshakeError::io(err).with_context("write client request: connect")
+            })?;
+
+            tracing::trace!(
+                "socks5 client: client request sent w/ {} towards {}",
+                selected_method,
+                destination,
+            );
+
+            let server_reply = server::Reply::read_from(stream)
+                .await
+                .map_err(|err| HandshakeError::protocol(err).with_context("read server reply"))?;
+
+            #[cfg(feature = "dial9")]
+            crate::dial9::record_handshake_connect(
+                &destination.host,
+                destination.port,
+                server_reply.reply.into(),
+            );
+
+            if server_reply.reply != ReplyKind::Succeeded {
+                return Err(HandshakeError::reply_kind(server_reply.reply)
+                    .with_context("server responded with non-success reply"));
+            }
+
+            tracing::trace!(
+                "socks5 client: connected w/ {} towards {}",
+                selected_method,
+                destination
+            );
+            stream.extensions().insert(StreamTransformed {
+                by: "rama-socks5::Socks5Client",
+            });
+            Ok(server_reply.bind_address)
         };
         #[cfg(feature = "dial9")]
-        crate::dial9::record_handshake_auth(
-            match &auth_outcome {
-                Ok(m) => u8::from(*m),
-                Err(_) => 0xff,
-            },
-            auth_outcome.is_ok(),
-        );
-        let selected_method = auth_outcome?;
-
-        let request = RequestRef::new(Command::Connect, destination);
-        request
-            .write_to(stream)
-            .await
-            .map_err(|err| HandshakeError::io(err).with_context("write client request: connect"))?;
-
-        tracing::trace!(
-            "socks5 client: client request sent w/ {} towards {}",
-            selected_method,
-            destination,
-        );
-
-        let server_reply = server::Reply::read_from(stream)
-            .await
-            .map_err(|err| HandshakeError::protocol(err).with_context("read server reply"))?;
-
-        #[cfg(feature = "dial9")]
-        crate::dial9::record_handshake_connect(
-            destination.host.clone(),
-            destination.port,
-            server_reply.reply.into(),
-        );
-
-        if server_reply.reply != ReplyKind::Succeeded {
-            return Err(HandshakeError::reply_kind(server_reply.reply)
-                .with_context("server responded with non-success reply"));
+        {
+            rama_core::telemetry::dial9::record_result("socks5.connect", handshake).await
         }
-
-        tracing::trace!(
-            "socks5 client: connected w/ {} towards {}",
-            selected_method,
-            destination
-        );
-        stream.extensions().insert(StreamTransformed {
-            by: "rama-socks5::Socks5Client",
-        });
-        Ok(server_reply.bind_address)
+        #[cfg(not(feature = "dial9"))]
+        handshake.await
     }
 
     /// Establish a connection with a Socks5 server making use of the [`Command::Bind`] flow.

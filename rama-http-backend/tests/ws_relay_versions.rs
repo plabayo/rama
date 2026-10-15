@@ -562,6 +562,239 @@ async fn relays_bridge_every_http_version_pair_over_real_engines() {
     }
 }
 
+#[cfg(feature = "dial9")]
+fn recorder_slot() -> parking_lot::MutexGuard<'static, ()> {
+    static SLOT: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    SLOT.lock()
+}
+
+#[cfg(feature = "dial9")]
+#[test]
+fn dial9_websocket_upgrade_keeps_http_context_without_an_application_scope() {
+    use rama_core::telemetry::dial9::{
+        DiskBuffer, TokioAttachOptions, TraceContext, recorder,
+        trace_format::{decoder::Decoder, types::FieldValueRef},
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+    let _slot = recorder_slot();
+    let dir = rama_utils::fs::tempdir().expect("trace directory");
+    let recorder = recorder(
+        DiskBuffer::builder()
+            .base_path(dir.path())
+            .max_total_size(16 << 20)
+            .build()
+            .expect("writer"),
+    )
+    .build();
+    assert!(recorder.handle().is_enabled());
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder.enable_all().worker_threads(2);
+    let runtime = rama_core::rt::OwnedRuntime::attach_dial9(
+        recorder.handle().clone(),
+        builder,
+        TokioAttachOptions::default(),
+    )
+    .expect("runtime");
+    let mut parents = BTreeMap::new();
+    runtime.block_on(async {
+        for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+            assert_eq!(TraceContext::current(), TraceContext::default());
+            let hop = Hop::start(
+                version,
+                ConsumeErrLayer::trace_as_debug()
+                    .into_layer(WebSocketAcceptor::new().into_echo_service()),
+            )
+            .await;
+            let builder = match version {
+                Version::HTTP_3 => hop.client.websocket_h3(URI),
+                Version::HTTP_2 => hop.client.websocket_h2(URI),
+                _ => hop.client.websocket(URI),
+            };
+            let socket = timeout(LIMIT, builder.handshake(Extensions::new()))
+                .await
+                .expect("handshake time")
+                .expect("handshake");
+            let context = *socket
+                .response()
+                .extensions
+                .get_ref::<TraceContext>()
+                .expect("HTTP context");
+            parents.insert(context.operation_id(), context.flow_id());
+            assert_eq!(TraceContext::current(), TraceContext::default());
+            drop(socket);
+            hop.close().await;
+        }
+    });
+    runtime.shutdown_bounded(Duration::from_secs(5));
+    recorder.graceful_shutdown(Duration::from_secs(5));
+    let mut linked = BTreeSet::new();
+    for entry in std::fs::read_dir(dir.path()).expect("segments") {
+        let bytes = std::fs::read(entry.expect("segment").path()).expect("bytes");
+        Decoder::new(&bytes)
+            .expect("header")
+            .for_each_event(|event| {
+                if event.name != "RamaOperationStarted" {
+                    return;
+                }
+                let fields: BTreeMap<_, _> = event.field_names().zip(event.fields.iter()).collect();
+                if !matches!(fields["name"], FieldValueRef::String("websocket")) {
+                    return;
+                }
+                let value = |name| match fields[name] {
+                    FieldValueRef::Varint(value) => *value,
+                    _ => panic!("integer field"),
+                };
+                let parent = value("parent_operation_id");
+                if let Some(flow) = parents.get(&parent) {
+                    assert_eq!(value("flow_id"), *flow);
+                    linked.insert(parent);
+                }
+            })
+            .expect("decode");
+    }
+    assert_eq!(
+        linked.len(),
+        3,
+        "each client's WebSocket must continue its HTTP request"
+    );
+}
+
+#[cfg(feature = "dial9")]
+#[test]
+fn dial9_correlates_websocket_relays_across_every_http_version_pair() {
+    use rama_core::telemetry::dial9::{
+        DiskBuffer, Operation, Outcome, TokioAttachOptions, recorder_or_disabled,
+        trace_format::{decoder::Decoder, types::FieldValueRef},
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+    let _slot = recorder_slot();
+    let dir = rama_utils::fs::tempdir().expect("trace directory");
+    let recorder = recorder_or_disabled(
+        DiskBuffer::builder()
+            .base_path(dir.path())
+            .max_total_size(32 << 20)
+            .max_file_size(8 << 20)
+            .build(),
+    )
+    .build();
+    assert!(recorder.handle().is_enabled());
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder.enable_all().worker_threads(2);
+    let runtime = rama_core::rt::OwnedRuntime::attach_dial9(
+        recorder.handle().clone(),
+        builder,
+        TokioAttachOptions::default(),
+    )
+    .expect("recorded runtime");
+    let mut roots = BTreeSet::new();
+    runtime.block_on(async {
+        let versions = [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3];
+        for ingress in versions {
+            for egress in versions {
+                let operation = Operation::new("test.relay");
+                roots.insert(operation.context().flow_id());
+                operation
+                    .context()
+                    .scope(assert_relay(ingress, egress, Closer::Client))
+                    .await;
+                operation.finish(Outcome::Success);
+            }
+        }
+    });
+    runtime.shutdown_bounded(Duration::from_secs(5));
+    recorder.graceful_shutdown(Duration::from_secs(5));
+    let mut versions = BTreeSet::new();
+    let mut websocket_flows = BTreeSet::new();
+    let mut closed_websockets = 0;
+    let mut quic_closed = 0;
+    let mut started = BTreeMap::new();
+    let mut finished = BTreeSet::new();
+    let mut transport_links = 0;
+    for entry in std::fs::read_dir(dir.path()).expect("traces") {
+        let bytes = std::fs::read(entry.expect("segment").path()).expect("trace data");
+        Decoder::new(&bytes)
+            .expect("trace header")
+            .for_each_event(|event| {
+                let value = |field| {
+                    event
+                        .field_names()
+                        .zip(event.fields.iter())
+                        .find_map(|(name, value)| {
+                            if name == field
+                                && let FieldValueRef::Varint(value) = value
+                            {
+                                Some(*value)
+                            } else {
+                                None
+                            }
+                        })
+                };
+                match event.name {
+                    "RamaOperationStarted" => {
+                        let id = value("operation_id").expect("operation");
+                        let parent = value("parent_operation_id").expect("parent");
+                        let flow = value("flow_id").expect("flow");
+                        assert!(started.insert(id, (parent, flow)).is_none());
+                    }
+                    "RamaOperationFinished" => {
+                        assert!(finished.insert(value("operation_id").expect("operation")));
+                    }
+                    "RamaOperationLink" => {
+                        transport_links += 1;
+                    }
+                    "HttpRequestStarted" => {
+                        versions.insert(value("version").expect("version"));
+                    }
+                    "WebSocketOpened" => {
+                        websocket_flows.insert(value("flow_id").expect("flow"));
+                    }
+                    "WebSocketClosed" => {
+                        closed_websockets += 1;
+                    }
+                    "QuicConnectionClosed" => {
+                        quic_closed += 1;
+                        assert!(value("bytes_sent").expect("sent bytes") > 0);
+                        assert!(value("bytes_received").expect("received bytes") > 0);
+                    }
+                    _ => {}
+                }
+            })
+            .expect("decode events");
+    }
+    assert_eq!(versions, BTreeSet::from([11, 20, 30]));
+    assert_eq!(
+        websocket_flows, roots,
+        "upgrades must retain their initiating flow"
+    );
+    assert!(
+        closed_websockets >= 18,
+        "both sides of each relay record a terminal event"
+    );
+    assert!(
+        quic_closed >= 4,
+        "QUIC summaries require no qlog configuration"
+    );
+    assert!(
+        transport_links > 0,
+        "requests link to the QUIC connection independently of their operation identity"
+    );
+    assert_eq!(
+        finished.len(),
+        started.len(),
+        "every lifecycle must finish exactly once"
+    );
+    for (id, (parent, flow)) in &started {
+        assert!(finished.contains(id));
+        assert!(roots.contains(flow));
+        if *parent != 0 {
+            assert_eq!(
+                started[parent].1, *flow,
+                "child operations retain their parent's flow"
+            );
+        }
+    }
+}
+
 /// A HAR recording of a relayed WebSocket keeps the exchange's HTTP version and its relayed
 /// messages, HTTP/3 (RFC 9220) included.
 #[tokio::test]

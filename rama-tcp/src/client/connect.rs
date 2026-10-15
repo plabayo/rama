@@ -252,9 +252,36 @@ where
         "tcp connect attempt",
     );
 
-    let stream = connector
-        .connect(addr)
-        .await
+    #[cfg(feature = "dial9")]
+    let operation = rama_core::telemetry::dial9::Operation::new("tcp.connect");
+    #[cfg(feature = "dial9")]
+    operation.record_event_with(|context| crate::dial9::TcpConnectAttempt {
+        timestamp_ns: rama_core::telemetry::dial9::core::clock_monotonic_ns(),
+        flow_id: context.flow_id(),
+        operation_id: context.operation_id(),
+        remote_ip: rama_net::address::Host::Address(ip),
+        remote_port: u32::from(port),
+    });
+    let connect = connector.connect(addr);
+    #[cfg(feature = "dial9")]
+    let result = operation.context().scope(connect).await;
+    #[cfg(not(feature = "dial9"))]
+    let result = connect.await;
+    #[cfg(feature = "dial9")]
+    {
+        if let Ok(stream) = &result
+            && operation.is_recorded()
+        {
+            use rama_core::extensions::ExtensionsRef as _;
+            stream.extensions().insert(operation.context());
+        }
+        operation.finish(if result.is_ok() {
+            rama_core::telemetry::dial9::Outcome::Success
+        } else {
+            rama_core::telemetry::dial9::Outcome::Error
+        });
+    }
+    let stream = result
         .into_box_error()
         .context("tcp connector failed to connect to IP address")?;
 
