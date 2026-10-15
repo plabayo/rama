@@ -120,10 +120,11 @@ impl TlsMitmClientIdentity {
         self.chain.first()
     }
 
-    /// The identity an ingress handshake proved, once it completed (the client's Finished
-    /// included, so it also proved possession of the leaf's key); `None` before that.
+    /// The identity an ingress (server) handshake proved, once it completed (the client's
+    /// Finished included, so it also proved possession of the leaf's key); `None` before that,
+    /// and for a client-side connection.
     pub fn from_completed_handshake(ssl: &SslRef) -> Option<Self> {
-        if !ssl.is_init_finished() {
+        if !ssl.is_server() || !ssl.is_init_finished() {
             return None;
         }
         let chain = ssl

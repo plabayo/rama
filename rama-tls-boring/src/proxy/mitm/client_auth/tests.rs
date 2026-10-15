@@ -5,6 +5,7 @@ use crate::{
         TlsMitmEgressServerAuth, TlsMitmRelay, TlsMitmRelayErrorKind,
         cert_issuer::StaticBoringMitmCertIssuer,
     },
+    server::TlsAcceptorData,
 };
 use rama_boring::{
     asn1::Asn1Time,
@@ -14,8 +15,8 @@ use rama_boring::{
     nid::Nid,
     pkey::{PKey, Private},
     ssl::{
-        ExtensionType, SelectCertError, Ssl, SslAcceptor, SslMethod, SslSession, SslVerifyMode,
-        SslVersion,
+        ExtensionType, SelectCertError, Ssl, SslAcceptor, SslConnector, SslMethod, SslSession,
+        SslVerifyMode, SslVersion,
     },
     x509::{
         X509Name,
@@ -24,9 +25,11 @@ use rama_boring::{
     },
 };
 use rama_core::{ServiceInput, extensions::ExtensionsRef, io::BridgeIo};
+use rama_crypto::cert::generate_server_auth;
 use rama_tls::{
     KeyLogIntent,
     client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
+    server::{ServerAuthData, TlsServerConfig},
 };
 use rama_utils::collections::NonEmptyVec;
 use std::{
@@ -1494,4 +1497,32 @@ fn a_plan_configures_one_ingress_connection() {
         let mut second = Ssl::new(acceptor.context()).unwrap();
         plan.configure_ingress(&mut second).unwrap_err();
     }
+}
+
+/// Only the ingress (server) side of a finished handshake yields an identity: the client side
+/// of a connection would offer its origin's chain as a client's.
+#[tokio::test]
+async fn only_a_finished_server_side_yields_an_identity() {
+    let (cert_chain, private_key) = generate_server_auth(Default::default()).unwrap();
+    let acceptor =
+        TlsAcceptorData::try_from(&TlsServerConfig::new().with_single_cert(ServerAuthData {
+            cert_chain,
+            private_key,
+            ocsp: None,
+        }))
+        .unwrap()
+        .into_static_acceptor_builder()
+        .unwrap()
+        .build();
+    let mut connector = SslConnector::builder(SslMethod::tls_client()).unwrap();
+    connector.set_verify(SslVerifyMode::NONE);
+    let config = connector.build().configure().unwrap();
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let (client, server) = tokio::join!(
+        rama_boring_tokio::connect(config, Some("localhost"), client_io),
+        rama_boring_tokio::accept(&acceptor, server_io),
+    );
+    let (client, server) = (client.unwrap(), server.unwrap());
+    assert!(TlsMitmClientIdentity::from_completed_handshake(client.ssl()).is_none());
+    assert!(TlsMitmClientIdentity::from_completed_handshake(server.ssl()).is_some());
 }
