@@ -105,6 +105,8 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: stable
       RUSTFLAGS: -D warnings
+      # Keep debug assertions; omit bulky Rust debug information on this runner.
+      CARGO_PROFILE_DEV_DEBUG: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -133,25 +135,25 @@ jobs:
           --download-ios-runtime --output "$RUNNER_TEMP/apple-private-api"
       - name: Apple example QA and unsigned extension build
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        run: just qa-ffi-apple
+        run: just scripts/ci/apple-preview-phase example just qa-ffi-apple
       - name: Rust and Swift NetworkExtension FFI tests
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        run: just test-e2e-ffi-apple
+        run: just scripts/ci/apple-preview-phase ffi just test-e2e-ffi-apple
       - name: Apple NetworkExtension and XPC crate tests
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        run: just ./ffi/apple/examples/transparent_proxy/test-apple-crates
+        run: just scripts/ci/apple-preview-phase crates just ./ffi/apple/examples/transparent_proxy/test-apple-crates
       - name: Verify private API compile-time opt-in
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: just ./ffi/apple/examples/transparent_proxy/test-private-api-trait
       - name: Optimized Swift FFI tests
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        run: just ./ffi/apple/examples/transparent_proxy/run-tproxy-ffi-e2e-swift-release
+        run: just scripts/ci/apple-preview-phase release just ./ffi/apple/examples/transparent_proxy/run-tproxy-ffi-e2e-swift-release
       - name: TCP egress sanitizer tests
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        run: just ./ffi/apple/examples/transparent_proxy/test-egress-policy --configuration asan --configuration tsan --scratch-path "$RUNNER_TEMP/egress-policy-build"
+        run: just scripts/ci/apple-preview-phase egress just ./ffi/apple/examples/transparent_proxy/test-egress-policy --configuration asan --configuration tsan --scratch-path "$RUNNER_TEMP/egress-policy-build"
       - name: Apple XPC checks and round trips
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        run: just qa-xpc-apple
+        run: just scripts/ci/apple-preview-phase xpc just qa-xpc-apple
       - name: Retain availability and TCP egress evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
