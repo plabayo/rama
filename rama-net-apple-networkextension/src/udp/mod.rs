@@ -8,6 +8,7 @@ use std::{
 use rama_core::{
     bytes::Bytes,
     extensions::{Extensions, ExtensionsRef},
+    rt::Executor,
 };
 use tokio::sync::mpsc;
 
@@ -78,6 +79,7 @@ pub struct UdpFlow {
     /// Whether the kernel read for the receive in progress was already asked for.
     demand_signalled: bool,
     extensions: Extensions,
+    executor: Option<Executor>,
     on_read_demand: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
     on_ingress_received: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
     on_ingress_closed: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
@@ -90,16 +92,25 @@ impl UdpFlow {
         on_read_demand: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
         on_ingress_received: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
         on_ingress_closed: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
+        executor: Option<Executor>,
     ) -> Self {
         Self {
             incoming,
             outgoing,
             demand_signalled: false,
             extensions: Extensions::new(),
+            executor,
             on_read_demand,
             on_ingress_received,
             on_ingress_closed,
         }
+    }
+
+    /// The executor for work this flow's service spawns: it ends with the flow, so an engine
+    /// stopping never waits on a service that outlives its flows.
+    #[must_use]
+    pub fn executor(&self) -> Option<&Executor> {
+        self.executor.as_ref()
     }
 
     #[inline(always)]

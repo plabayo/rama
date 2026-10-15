@@ -88,16 +88,16 @@ pub(super) struct QuicFlows {
 }
 
 pub(super) async fn try_new_service(
-    ctx: TransparentProxyServiceContext,
+    _: TransparentProxyServiceContext,
     udp_policy_scope: UdpPolicyScope,
     quic: QuicFlows,
 ) -> Result<impl Service<UdpFlow, Output = (), Error = Infallible>, BoxError> {
-    let exec = ctx.executor;
     let QuicFlows { state, ports } = quic;
     Ok(service_fn(move |flow: UdpFlow| {
         let state = state.clone();
-        let exec = exec.clone();
         let quic_ports = ports.clone();
+        // The flow's own executor: one held by this long-lived service would stall shutdown.
+        let exec = flow.executor().cloned().unwrap_or_default();
         async move {
             let port = flow
                 .extensions()
