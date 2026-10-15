@@ -321,3 +321,94 @@ impl H3SettingsReplayEvidence {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::profile::{
+        DrawDomain, DrawKey, ProfileCaptureCompleteness, ProfileDrawContext, ProfileSeed,
+    };
+
+    fn draw(seed: u8) -> ProfileDraw {
+        ProfileDraw::new(
+            ProfileSeed([seed; 32]),
+            ProfileDrawContext {
+                profile: ValueId([1; 32]),
+                analysis_revision: 1,
+                scope: ValueId([2; 32]),
+                key: DrawKey([3; 32]),
+                domain: DrawDomain::Http3Settings,
+                slot: 0,
+            },
+        )
+    }
+
+    fn bounded_plan(
+        fields: &[(u64, u64)],
+        ranges: &[Option<u64>],
+    ) -> (OrderedProtocolCapture, H3SettingsReplayEvidence) {
+        let capture = OrderedProtocolCapture::capture(
+            ProfileCaptureCompleteness::Complete,
+            OrderNamespace::Http3Setting,
+            fields.iter().map(|(id, value)| (*id, value.to_be_bytes())),
+            OrderCaptureLimits::default(),
+        )
+        .unwrap();
+        // Construct small private generator ranges to force the collision and
+        // exhaustion paths without relying on improbable 32-bit collisions.
+        let evidence = H3SettingsReplayEvidence {
+            capture: capture.canonical(OrderCaptureLimits::default()).unwrap().id,
+            sorted: false,
+            generators: ranges
+                .iter()
+                .map(|upper| {
+                    upper.map(|ordinal_upper| ReservedSettingGenerator {
+                        ordinal_upper,
+                        value_upper: None,
+                    })
+                })
+                .collect(),
+        };
+        (capture, evidence)
+    }
+
+    #[test]
+    fn h3_reserved_generation_rejects_exhausted_ranges() {
+        let (capture, evidence) = bounded_plan(&[(33, 3), (64, 4)], &[Some(1), Some(1)]);
+        assert!(matches!(
+            evidence.compile(&capture, &mut draw(0)),
+            Err(ProfileDataError::LimitExceeded(
+                "SETTINGS reserved identifier space"
+            ))
+        ));
+    }
+
+    #[test]
+    fn h3_reserved_generation_avoids_generated_and_literal_collisions() {
+        for (fields, ranges) in [
+            (vec![(33, 3), (64, 4)], vec![Some(2), Some(2)]),
+            (
+                vec![(64, 3), (95, 4), (33, 19)],
+                vec![Some(4), Some(4), None],
+            ),
+        ] {
+            let (capture, evidence) = bounded_plan(&fields, &ranges);
+            for seed in 0..32 {
+                let output = evidence.compile(&capture, &mut draw(seed)).unwrap();
+                let ids: BTreeSet<_> = output.iter().map(|(id, _)| *id).collect();
+                assert_eq!(
+                    ids.len(),
+                    output.len(),
+                    "duplicate SETTINGS for seed {seed}"
+                );
+                assert_eq!(
+                    output.iter().map(|(_, value)| *value).collect::<Vec<_>>(),
+                    fields.iter().map(|(_, value)| *value).collect::<Vec<_>>()
+                );
+                if ranges.last() == Some(&None) {
+                    assert_eq!(output.last(), Some(&(33, 19)));
+                }
+            }
+        }
+    }
+}

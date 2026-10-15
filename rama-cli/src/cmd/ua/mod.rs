@@ -7,6 +7,7 @@ use std::{
 
 use crate::utils::terminal::display_text;
 use clap::{Args, Subcommand};
+mod compare;
 mod view;
 
 use rama::{
@@ -35,6 +36,8 @@ enum UaSubcommand {
     Export(ExportProfilesCommand),
     /// Browse profiles from a JSON file or the fingerprint database.
     View(view::ViewCommand),
+    /// Compare complete retained captures from two counted archives.
+    Compare(compare::CompareCommand),
 }
 
 #[derive(Debug, Args)]
@@ -65,6 +68,7 @@ pub(crate) struct ExportProfilesCommand {
 pub async fn run(command: UaCommand) -> Result<(), BoxError> {
     match command.command {
         UaSubcommand::View(command) => view::run(command).await,
+        UaSubcommand::Compare(command) => compare::run(&command),
         UaSubcommand::Parse { user_agent, json } => {
             let user_agent = UserAgent::new(user_agent);
             let mut output = io::stdout().lock();

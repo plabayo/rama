@@ -122,3 +122,6 @@ mod legacy;
 pub use legacy::{
     LegacyField, LegacyFieldCapture, LegacyFieldValue, LegacyHeaderCapture, LegacyHttpProtocol,
 };
+
+mod compare;
+pub use compare::*;

@@ -150,3 +150,26 @@ retained samples and capped at the QUIC varint limit; this is a bounded heuristi
 not a browser-specific distribution claim. A sorted rule sorts the emitted IDs.
 Missing or ambiguous analysis rejects strict reserved-SETTINGS replay; best-effort
 mode retains the tuple and reports `UnanalyzedHttp3ReservedSettings`.
+
+### Literal retained-capture comparison
+
+`rama ua compare --literal reference.json replay.json` revalidates and reanalyzes
+both counted archives, then compares complete retained tuples in matching profile,
+flow and connection contexts. It prints JSON with field paths and exits nonzero on
+mismatches, missing contexts, empty evidence or exhausted limits. A reference
+context must be exercised, but each retained variant is an alternative: one replay
+need not exercise every variant. `--allow-partial-coverage` explicitly permits
+unexercised reference contexts while listing them and setting
+`reference_coverage_complete` to false in the report. Complete joint evidence is required; independent
+component matches cannot prove correlations. `--authorized` selects the authorized
+partition in both input archives.
+
+This explicitly selected literal mode checks captured IDs, values, ordering and
+layout against complete retained variants. It does not yet accept newly generated
+orders or values, test population frequencies, import pcaps or certify full wire
+equivalence. Connection secrets and request-owned values retain their canonical
+bindings rather than their original bytes; use independent packet decoding to
+verify those runtime values. A mismatch's field report uses the first retained
+reference variant, and identifies both capture hashes. Truncated diagnostics never
+turn a mismatch into a match. The command reads at most 64 MiB per archive and
+compares at most 256 scopes/variants with a shared 16 MiB comparison-work budget.
