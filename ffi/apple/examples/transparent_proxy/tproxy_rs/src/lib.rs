@@ -413,14 +413,13 @@ impl DemoTransparentProxyHandler {
         let (tcp_mitm_service, shared_state) =
             self::tcp::DemoTcpMitmService::try_new(ctx.clone()).await?;
         let udp_policy_scope = UdpPolicyScope::new(demo_config.udp_e2e_mode, Instant::now());
-        let udp_service = self::udp::try_new_service(
-            ctx.clone(),
-            udp_policy_scope,
-            shared_state.clone(),
-            demo_config.udp_quic_ports.clone().into(),
-        )
-        .await?
-        .boxed();
+        let quic = self::udp::QuicFlows {
+            state: shared_state.clone(),
+            ports: demo_config.udp_quic_ports.clone().into(),
+        };
+        let udp_service = self::udp::try_new_service(ctx.clone(), udp_policy_scope, quic)
+            .await?
+            .boxed();
 
         let udp_passthrough_ports: Arc<[u16]> = demo_config.udp_passthrough_ports.clone().into();
         let udp_blocked_endpoints = demo_config.udp_blocked_endpoints.clone().into();

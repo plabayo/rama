@@ -79,17 +79,25 @@ static UDP_RECV_SCRATCH_PEAK: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static UDP_RECV_WOULD_BLOCKS: AtomicUsize = AtomicUsize::new(0);
 
+/// What the per-destination QUIC path of [`try_new_service`] needs.
+pub(super) struct QuicFlows {
+    /// The live settings holding the TLS relay whose issuer QUIC interception shares.
+    pub(super) state: SharedState,
+    /// Remote ports of the flows that take the QUIC path.
+    pub(super) ports: Arc<[u16]>,
+}
+
 pub(super) async fn try_new_service(
     ctx: TransparentProxyServiceContext,
     udp_policy_scope: UdpPolicyScope,
-    state: SharedState,
-    quic_ports: Arc<[u16]>,
+    quic: QuicFlows,
 ) -> Result<impl Service<UdpFlow, Output = (), Error = Infallible>, BoxError> {
     let exec = ctx.executor;
+    let QuicFlows { state, ports } = quic;
     Ok(service_fn(move |flow: UdpFlow| {
         let state = state.clone();
         let exec = exec.clone();
-        let quic_ports = quic_ports.clone();
+        let quic_ports = ports.clone();
         async move {
             let port = flow
                 .extensions()
