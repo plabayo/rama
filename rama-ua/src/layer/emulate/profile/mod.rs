@@ -221,7 +221,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
-        if let Some(context) = req.extensions().get_ref::<EmulationContext>() {
+        if let Some(context) = EmulationContext::of(req.extensions()) {
             let connection = self
                 .inner
                 .extensions()

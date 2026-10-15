@@ -299,7 +299,7 @@ fn request_capabilities_follow_real_transport_and_alpn_inputs() {
 #[tokio::test]
 async fn profile_layer_selects_once_and_publishes_the_immutable_context() {
     let inner = service_fn(|req: Request<()>| async move {
-        let context = req.extensions().get_ref::<EmulationContext>().unwrap();
+        let context = EmulationContext::of(req.extensions()).unwrap();
         assert_eq!(
             context.selected.profile().key.client.as_ref(),
             "test-browser"
@@ -372,7 +372,7 @@ async fn connect_modifier_prepares_before_connect_and_publishes_reuse() {
     input
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
-    input.extensions().insert(emulation_context());
+    emulation_context().publish(input.extensions());
     input
         .extensions()
         .insert(ProfilePreservationMode::BestEffort);
@@ -448,9 +448,7 @@ async fn pooled_profile_reuse(clients: &[&str], best_effort: bool) {
             input
                 .extensions()
                 .insert(TargetHttpVersion(Version::HTTP_2));
-            request
-                .extensions()
-                .get_ref::<EmulationContext>()
+            EmulationContext::of(request.extensions())
                 .unwrap()
                 .clone()
                 .publish(input.extensions());
@@ -523,7 +521,7 @@ async fn strict_connect_rejects_caller_h2_connection_window_override() {
     input
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
-    input.extensions().insert(emulation_context());
+    emulation_context().publish(input.extensions());
     input.extensions().insert(H2ClientContextParams {
         init_connection_window_size: Some(1_000_000),
         ..H2ClientContextParams::default()
@@ -550,7 +548,7 @@ async fn connect_modifier_rejects_an_unadvertised_negotiated_protocol() {
     input
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
-    input.extensions().insert(emulation_context());
+    emulation_context().publish(input.extensions());
 
     let error = UserAgentEmulateHttpConnectModifier::new(inner)
         .serve(input)
@@ -581,7 +579,7 @@ async fn request_modifier_draws_from_the_actual_connection_ticket() {
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
     let request = h2_request();
-    request.extensions().insert(context);
+    context.publish(request.extensions());
 
     ProfileEmulateHttpRequestModifier::new(inner)
         .serve(request)
@@ -673,7 +671,7 @@ async fn repeated_connect_keeps_its_own_replay_but_rejects_caller_replacement() 
     input
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_2));
-    input.extensions().insert(emulation_context());
+    emulation_context().publish(input.extensions());
     let input = modifier.serve(input).await.unwrap().input;
     let input = modifier.serve(input).await.unwrap().input;
     assert!(
@@ -913,7 +911,7 @@ async fn connect_modifier_applies_selected_h3_settings_before_connect() {
         input
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
-        input.extensions().insert(h3_emulation_context());
+        h3_emulation_context().publish(input.extensions());
         if caller_profile {
             let context = h3_emulation_context();
             let selection = context
@@ -962,7 +960,7 @@ async fn connect_modifier_rejects_conflicting_h3_settings_before_connect() {
         input
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
-        input.extensions().insert(h3_emulation_context());
+        h3_emulation_context().publish(input.extensions());
         input.extensions().insert(mode);
         input
             .extensions()
@@ -1020,12 +1018,11 @@ async fn connect_modifier_enforces_selected_component_support_before_dial() {
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
         input.extensions().insert(mode);
-        input
-            .extensions()
-            .insert(h3_emulation_context_with_extra_slot(Some(CapturedSlot {
-                kind: CapturedSlotKind::QuicVersions,
-                value: capture.clone(),
-            })));
+        h3_emulation_context_with_extra_slot(Some(CapturedSlot {
+            kind: CapturedSlotKind::QuicVersions,
+            value: capture.clone(),
+        }))
+        .publish(input.extensions());
         let result = UserAgentEmulateHttpConnectModifier::new(inner)
             .serve(input)
             .await;
@@ -1048,4 +1045,14 @@ async fn connect_modifier_enforces_selected_component_support_before_dial() {
             );
         }
     }
+}
+
+/// Publishing is the only way in, and it always brings the pool partition along.
+#[test]
+fn a_published_context_always_carries_its_partition() {
+    let extensions = Extensions::new();
+    assert!(EmulationContext::of(&extensions).is_none());
+    emulation_context().publish(&extensions);
+    assert!(EmulationContext::of(&extensions).is_some());
+    assert!(extensions.get_ref::<PoolPartition>().is_some());
 }

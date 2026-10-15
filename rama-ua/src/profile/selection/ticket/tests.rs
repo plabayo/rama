@@ -738,7 +738,7 @@ fn reuse_matches_profile_protocol_and_optional_connection_pin() {
     ProfileConnectionReuse::new(&emulation, Version::HTTP_3).publish(&established);
 
     let input = Extensions::new();
-    input.insert(emulation);
+    emulation.publish(&input);
     assert!(
         established
             .get_ref::<ConnectionReuse>()
@@ -749,11 +749,9 @@ fn reuse_matches_profile_protocol_and_optional_connection_pin() {
     let mut incompatible = (*selected).clone();
     incompatible.pins.connection = Some(ValueId([99; 32]));
     let input = Extensions::new();
-    input.insert(Arc::new(incompatible).emulation_context(
-        ProfileSeed([31; 32]),
-        DrawKey([34; 32]),
-        DrawKey([35; 32]),
-    ));
+    Arc::new(incompatible)
+        .emulation_context(ProfileSeed([31; 32]), DrawKey([34; 32]), DrawKey([35; 32]))
+        .publish(&input);
     assert!(
         !established
             .get_ref::<ConnectionReuse>()
@@ -764,11 +762,9 @@ fn reuse_matches_profile_protocol_and_optional_connection_pin() {
     let mut other_profile = (*selected).clone();
     other_profile.id = ValueId([77; 32]);
     let input = Extensions::new();
-    input.insert(Arc::new(other_profile).emulation_context(
-        ProfileSeed([31; 32]),
-        DrawKey([34; 32]),
-        DrawKey([35; 32]),
-    ));
+    Arc::new(other_profile)
+        .emulation_context(ProfileSeed([31; 32]), DrawKey([34; 32]), DrawKey([35; 32]))
+        .publish(&input);
     assert!(
         !established
             .get_ref::<ConnectionReuse>()
@@ -788,7 +784,7 @@ fn reuse_matches_profile_protocol_and_optional_connection_pin() {
     ProfileConnectionReuse::new(&pinned_context, Version::HTTP_3).publish(&established);
 
     let input = Extensions::new();
-    input.insert(pinned_context);
+    pinned_context.publish(&input);
     assert!(
         established
             .get_ref::<ConnectionReuse>()
@@ -799,11 +795,9 @@ fn reuse_matches_profile_protocol_and_optional_connection_pin() {
     let mut different_pin = (*pinned).clone();
     different_pin.pins.connection = Some(ValueId([55; 32]));
     let input = Extensions::new();
-    input.insert(Arc::new(different_pin).emulation_context(
-        ProfileSeed([31; 32]),
-        DrawKey([34; 32]),
-        DrawKey([35; 32]),
-    ));
+    Arc::new(different_pin)
+        .emulation_context(ProfileSeed([31; 32]), DrawKey([34; 32]), DrawKey([35; 32]))
+        .publish(&input);
     assert!(
         !established
             .get_ref::<ConnectionReuse>()
@@ -841,7 +835,7 @@ fn equal_protocol_classifiers_derive_the_same_request_key_across_profiles() {
     assert_ne!(policies[0].connection_key(), policies[1].connection_key());
     for context in [first, second] {
         let input = Extensions::new();
-        input.insert(context);
+        context.publish(&input);
         assert!(policies[0].request_key(&input).is_some());
         assert_eq!(
             policies[0].request_key(&input),

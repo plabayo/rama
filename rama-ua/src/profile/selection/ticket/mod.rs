@@ -165,10 +165,29 @@ pub struct SelectedProfile {
     pins: VariantPins,
 }
 
-#[derive(Debug, Clone, Extension)]
-#[extension(tags(ua))]
+#[derive(Debug, Clone)]
 /// Immutable selection and draw coordinates shared by connection and request layers.
-/// Install with [`Self::publish`] so pool lookup also separates ordinary connections.
+/// Only [`Self::publish`] installs it, together with the pool partition that keeps ordinary
+/// connections apart; [`Self::of`] reads it back.
+///
+/// ```
+/// # use rama_core::extensions::Extensions;
+/// # use rama_ua::profile::EmulationContext;
+/// fn install(extensions: &Extensions, context: EmulationContext) {
+///     context.publish(extensions);
+///     assert!(EmulationContext::of(extensions).is_some());
+/// }
+/// ```
+///
+/// Inserting it directly, without its partition, does not compile:
+///
+/// ```compile_fail
+/// # use rama_core::extensions::Extensions;
+/// # use rama_ua::profile::EmulationContext;
+/// fn install(extensions: &Extensions, context: EmulationContext) {
+///     extensions.insert(context);
+/// }
+/// ```
 pub struct EmulationContext {
     pub selected: Arc<SelectedProfile>,
     pub seed: ProfileSeed,
@@ -176,6 +195,11 @@ pub struct EmulationContext {
     pub request_key: DrawKey,
     pub pins: VariantPins,
 }
+
+/// A published [`EmulationContext`]: private, so no context exists without its partition.
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(ua))]
+struct PublishedEmulation(EmulationContext);
 
 impl EmulationContext {
     /// Publish the selection and its pool partition before looking up a connection.
@@ -187,7 +211,15 @@ impl EmulationContext {
             None => profile_partition,
         };
         extensions.insert(partition);
-        extensions.insert(self);
+        extensions.insert(PublishedEmulation(self));
+    }
+
+    /// The context [`Self::publish`] installed on `extensions`, if any.
+    #[must_use]
+    pub fn of(extensions: &Extensions) -> Option<&Self> {
+        extensions
+            .get_ref::<PublishedEmulation>()
+            .map(|published| &published.0)
     }
 }
 
@@ -971,7 +1003,7 @@ impl ConnectionReusePolicy for ProfileConnectionReuse {
     }
 
     fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
-        let context = input.get_ref::<EmulationContext>()?;
+        let context = EmulationContext::of(input)?;
         // A pool may use any policy instance with this protocol classifier
         // to derive a request key, including one established for another profile.
         if !protocol_supported(context.selected.required, self.negotiated) {

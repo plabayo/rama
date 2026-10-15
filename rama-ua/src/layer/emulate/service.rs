@@ -291,9 +291,7 @@ where
             .get_ref::<ProfilePreservationMode>()
             .copied()
             .unwrap_or_default();
-        let connection_selection = req
-            .extensions()
-            .get_ref::<EmulationContext>()
+        let connection_selection = EmulationContext::of(req.extensions())
             .map(|context| {
                 let connection = req
                     .extensions()
@@ -312,15 +310,12 @@ where
                 .map_err(|error| {
                     ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                 })?;
-            let context = req
-                .extensions()
-                .get_ref::<EmulationContext>()
-                .ok_or_else(|| {
-                    ConnectionError::local(
-                        BoxError::from_static_str("captured profile context is missing"),
-                        ConnectionErrorKind::Internal,
-                    )
-                })?;
+            let context = EmulationContext::of(req.extensions()).ok_or_else(|| {
+                ConnectionError::local(
+                    BoxError::from_static_str("captured profile context is missing"),
+                    ConnectionErrorKind::Internal,
+                )
+            })?;
             if let Some(settings) = prepared
                 .h3_client_settings(&mut selection.h3_settings_draw(context.seed))
                 .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?
@@ -373,15 +368,12 @@ where
                         ConnectionErrorKind::Protocol,
                     )
                 })?;
-            let context = req
-                .extensions()
-                .get_ref::<EmulationContext>()
-                .ok_or_else(|| {
-                    ConnectionError::local(
-                        BoxError::from_static_str("captured profile emulation context is missing"),
-                        ConnectionErrorKind::Internal,
-                    )
-                })?;
+            let context = EmulationContext::of(req.extensions()).ok_or_else(|| {
+                ConnectionError::local(
+                    BoxError::from_static_str("captured profile emulation context is missing"),
+                    ConnectionErrorKind::Internal,
+                )
+            })?;
             context
                 .selected
                 .validate_negotiated_protocol(version)
