@@ -28,7 +28,10 @@ use windows as platform;
 pub struct ProcessSocket {
     /// The socket's transport protocol.
     pub protocol: TransportProtocol,
-    /// The local address, including the IPv6 scope when supplied by the OS.
+    /// The local address reported by the OS, including IPv6 scope when supplied.
+    ///
+    /// Windows may report a connected UDP socket's original wildcard bind
+    /// address, even after connecting selects a concrete local address.
     pub local_addr: SocketAddr,
 }
 

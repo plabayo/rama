@@ -45,13 +45,21 @@ fn reports_wildcard_listeners_and_connected_udp_endpoints() {
     let udp6 = UdpSocket::bind("[::]:0").unwrap();
     let udp_peer = UdpSocket::bind("127.0.0.1:0").unwrap();
     let udp4 = UdpSocket::bind("0.0.0.0:0").unwrap();
+    let udp4_bind_addr = udp4.local_addr().unwrap();
     udp4.connect(udp_peer.local_addr().unwrap()).unwrap();
+
+    // Windows IP Helper reports the original bind address after connect.
+    let udp4_addr = if cfg!(target_os = "windows") {
+        udp4_bind_addr
+    } else {
+        udp4.local_addr().unwrap()
+    };
 
     let sockets = listening_sockets(std::process::id()).unwrap();
     for (protocol, local_addr) in [
         (TransportProtocol::Tcp, tcp4.local_addr().unwrap()),
         (TransportProtocol::Tcp, tcp6.local_addr().unwrap()),
-        (TransportProtocol::Udp, udp4.local_addr().unwrap()),
+        (TransportProtocol::Udp, udp4_addr),
         (TransportProtocol::Udp, udp6.local_addr().unwrap()),
     ] {
         assert!(
