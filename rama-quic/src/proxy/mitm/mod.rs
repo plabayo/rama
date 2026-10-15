@@ -49,7 +49,7 @@ use rama_tls_boring::proxy::{
     },
 };
 use rama_udp::DatagramSocket;
-use rama_utils::guard::DropGuard;
+use rama_utils::{guard::DropGuard, octets};
 use tokio::{
     sync::oneshot,
     time::{Instant, timeout_at},
@@ -72,6 +72,59 @@ use crate::{
 
 /// The default for [`QuicMitmRelay::with_handshake_timeout`].
 pub const DEFAULT_QUIC_MITM_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// What a mirrored client may make the relay hold on its egress connection
+/// ([`QuicMitmRelay::with_mirror_client`]): receive windows and stream counts above these are
+/// clamped to them. The default sits above every captured browser, so browsers mirror exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuicMirrorCeiling {
+    /// The connection receive window (`initial_max_data`).
+    pub max_data: u64,
+    /// Each stream receive window (`initial_max_stream_data_*`).
+    pub max_stream_data: u64,
+    /// Each stream count (`initial_max_streams_*`).
+    pub max_streams: u64,
+}
+
+impl Default for QuicMirrorCeiling {
+    fn default() -> Self {
+        Self {
+            max_data: octets::mib_u64(32),
+            max_stream_data: octets::mib_u64(16),
+            max_streams: 256,
+        }
+    }
+}
+
+impl QuicMirrorCeiling {
+    /// Clamp `limits` to this ceiling, and its idle timeout to `idle` (the relay's own, which a
+    /// client may shorten but never lift or disable); whether anything changed.
+    fn bound(&self, limits: &mut TransportLimits, idle: Option<Duration>) -> bool {
+        let before = limits.clone();
+        let clamp = |value: &mut u64, ceiling: u64| *value = (*value).min(ceiling);
+        clamp(&mut limits.initial_max_data, self.max_data);
+        clamp(
+            &mut limits.initial_max_stream_data_bidi_local,
+            self.max_stream_data,
+        );
+        clamp(
+            &mut limits.initial_max_stream_data_bidi_remote,
+            self.max_stream_data,
+        );
+        clamp(
+            &mut limits.initial_max_stream_data_uni,
+            self.max_stream_data,
+        );
+        clamp(&mut limits.initial_max_streams_bidi, self.max_streams);
+        clamp(&mut limits.initial_max_streams_uni, self.max_streams);
+        if let Some(idle) = idle
+            && (limits.max_idle_timeout.is_zero() || limits.max_idle_timeout > idle)
+        {
+            limits.max_idle_timeout = idle;
+        }
+        *limits != before
+    }
+}
 
 /// Terminates a QUIC association whose ClientHello was peeked, using the egress socket the
 /// producer prepared for its origin: the QUIC counterpart of the TLS MITM relay.
@@ -106,6 +159,7 @@ pub struct QuicMitmRelay<Issuer> {
     failure_code: VarInt,
     client_auth: Option<TlsMitmClientAuthPolicy>,
     mirror_client: bool,
+    mirror_ceiling: QuicMirrorCeiling,
 }
 
 impl<Issuer> QuicMitmRelay<Issuer> {
@@ -133,6 +187,7 @@ impl<Issuer> QuicMitmRelay<Issuer> {
             failure_code,
             client_auth: None,
             mirror_client: false,
+            mirror_ceiling: QuicMirrorCeiling::default(),
         }
     }
 
@@ -144,9 +199,19 @@ impl<Issuer> QuicMitmRelay<Issuer> {
         /// parameters keep the client's order, greased parameter, extra parameters and
         /// limits, while connection IDs stay fresh and datagram support stays the relay's.
         /// What cannot be mirrored falls back to the configuration. An origin that selects or
-        /// answers a preserved value fails the handshake.
+        /// answers a preserved value fails the handshake. Receive windows, stream counts and
+        /// the idle timeout stay bounded by [`Self::with_mirror_ceiling`] and the egress
+        /// transport's idle timeout.
         pub fn mirror_client(mut self, mirror: bool) -> Self {
             self.mirror_client = mirror;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// The most a mirrored client may make the relay hold on its egress connection.
+        pub fn mirror_ceiling(mut self, ceiling: QuicMirrorCeiling) -> Self {
+            self.mirror_ceiling = ceiling;
             self
         }
     }
@@ -537,21 +602,25 @@ where
             .relay
             .mirror_client
             .then(|| {
-                mirrored_profile(&self.relay.egress_transport, &self.peeked.client_hello)
-                    .and_then(|profile| {
-                        let transport = TransportConfig::clone(&self.relay.egress_transport)
-                            .try_with_quic_profile(&profile)?;
-                        let mut endpoint = EndpointConfig::try_with_rand_key()?;
-                        endpoint.apply_quic_profile(&profile)?;
-                        Ok::<_, BoxError>((Arc::new(transport), endpoint))
-                    })
-                    .inspect_err(|error| {
-                        tracing::debug!(
-                            %error,
-                            "QUIC MITM: the client's transport parameters cannot be mirrored"
-                        );
-                    })
-                    .ok()
+                mirrored_profile(
+                    &self.relay.egress_transport,
+                    &self.relay.mirror_ceiling,
+                    &self.peeked.client_hello,
+                )
+                .and_then(|profile| {
+                    let transport = TransportConfig::clone(&self.relay.egress_transport)
+                        .try_with_quic_profile(&profile)?;
+                    let mut endpoint = EndpointConfig::try_with_rand_key()?;
+                    endpoint.apply_quic_profile(&profile)?;
+                    Ok::<_, BoxError>((Arc::new(transport), endpoint))
+                })
+                .inspect_err(|error| {
+                    tracing::debug!(
+                        %error,
+                        "QUIC MITM: the client's transport parameters cannot be mirrored"
+                    );
+                })
+                .ok()
             })
             .flatten();
         let (transport, endpoint_config) = match mirrored {
@@ -739,11 +808,18 @@ where
 /// `base`'s own, as the relay carries datagrams only when both of its transports do.
 fn mirrored_profile(
     base: &TransportConfig,
+    ceiling: &QuicMirrorCeiling,
     client_hello: &ClientHello,
 ) -> Result<QuicProfile, BoxError> {
     let sent = transport_parameters_from_hello(client_hello, &CaptureLimits::default())?;
     let mut parameters = TransportParameterProfile::try_from_sent(&sent)?;
     let mut limits = TransportLimits::try_from_sent(&sent)?;
+    let idle = base
+        .max_idle_timeout
+        .map(|millis| Duration::from_millis(millis.into_inner()));
+    if ceiling.bound(&mut limits, idle) {
+        tracing::debug!("QUIC MITM: the client's transport limits were clamped to the relay's");
+    }
     if base.datagram_receive_buffer_size.is_none() {
         parameters = parameters.try_with_max_datagram_frame_size(None)?;
     }

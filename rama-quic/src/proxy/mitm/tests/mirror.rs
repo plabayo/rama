@@ -2,7 +2,7 @@ use rama_crypto::dep::boring::ssl::SslContentType;
 use rama_quic_proto::{
     capture::{CaptureLimits, RawParameter, transport_parameters_from_hello},
     peek::InitialPeek,
-    profile::ParameterId,
+    profile::{ParameterId, TransportLimits},
 };
 use rama_tls::{
     client::{
@@ -206,4 +206,114 @@ async fn a_mirroring_relay_shows_the_origin_its_clients_first_flight() {
     })
     .await
     .unwrap();
+}
+
+/// `hello` with its transport parameters replaced by `parameters`.
+fn with_parameters(hello: &ClientHello, parameters: &[RawParameter]) -> ClientHello {
+    let var = |value: u64, out: &mut Vec<u8>| match value {
+        0..64 => out.push(value as u8),
+        64..16_384 => out.extend_from_slice(&(value as u16 | 0x4000).to_be_bytes()),
+        16_384..1_073_741_824 => out.extend_from_slice(&(value as u32 | 0x8000_0000).to_be_bytes()),
+        _ => out.extend_from_slice(&(value | 0xc000_0000_0000_0000).to_be_bytes()),
+    };
+    let mut body = Vec::new();
+    for parameter in parameters {
+        var(parameter.id.0, &mut body);
+        var(parameter.value.len() as u64, &mut body);
+        body.extend_from_slice(&parameter.value);
+    }
+    let extensions = hello
+        .extensions()
+        .iter()
+        .map(|ext| match ext {
+            ClientHelloExtension::Opaque { id, .. }
+                if *id == rama_tls::ExtensionId::QUIC_TRANSPORT_PARAMETERS =>
+            {
+                ClientHelloExtension::Opaque {
+                    id: *id,
+                    data: body.clone(),
+                }
+            }
+            other => other.clone(),
+        })
+        .collect();
+    ClientHello::new(
+        hello.protocol_version(),
+        hello.cipher_suites().to_vec(),
+        hello.compression_algorithms().to_vec(),
+        extensions,
+    )
+}
+
+/// The egress transport a relay with the default configuration builds for `hello`.
+fn mirrored_transport(hello: &ClientHello) -> TransportConfig {
+    let base = TransportConfig::default();
+    let profile = mirrored_profile(&base, &QuicMirrorCeiling::default(), hello).unwrap();
+    base.try_with_quic_profile(&profile).unwrap()
+}
+
+#[test]
+fn a_mirrored_client_cannot_lift_the_relays_egress_limits() {
+    let chrome = chrome_client_hello();
+    let mut sent = transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
+    let max = |value: u64| {
+        let mut out = Vec::new();
+        out.extend_from_slice(&(value | 0xc000_0000_0000_0000).to_be_bytes());
+        out
+    };
+    for parameter in &mut sent {
+        parameter.value = match parameter.id {
+            ParameterId::INITIAL_MAX_DATA
+            | ParameterId::INITIAL_MAX_STREAM_DATA_BIDI_LOCAL
+            | ParameterId::INITIAL_MAX_STREAM_DATA_BIDI_REMOTE
+            | ParameterId::INITIAL_MAX_STREAM_DATA_UNI => max((1 << 62) - 1),
+            ParameterId::INITIAL_MAX_STREAMS_BIDI | ParameterId::INITIAL_MAX_STREAMS_UNI => {
+                max(1 << 60)
+            }
+            ParameterId::MAX_IDLE_TIMEOUT => vec![0],
+            _ => continue,
+        };
+    }
+    let base = TransportConfig::default();
+    let ceiling = QuicMirrorCeiling::default();
+    let greedy = mirrored_transport(&with_parameters(&chrome, &sent));
+    assert_eq!(greedy.receive_window.into_inner(), ceiling.max_data);
+    for window in [
+        Some(greedy.stream_receive_window),
+        greedy.stream_receive_window_bidi_remote,
+        greedy.stream_receive_window_uni,
+    ] {
+        assert_eq!(window.unwrap().into_inner(), ceiling.max_stream_data);
+    }
+    assert_eq!(
+        greedy.max_concurrent_bidi_streams.into_inner(),
+        ceiling.max_streams
+    );
+    assert_eq!(
+        greedy.max_concurrent_uni_streams.into_inner(),
+        ceiling.max_streams
+    );
+    // A client cannot disable the relay's idle timeout, nor lift it.
+    assert_eq!(greedy.max_idle_timeout, base.max_idle_timeout);
+
+    // A browser stays under the ceiling and is mirrored exactly.
+    let browser = transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
+    let limits = TransportLimits::try_from_sent(&browser).unwrap();
+    let mirrored = mirrored_transport(&chrome);
+    assert_eq!(
+        mirrored.receive_window.into_inner(),
+        limits.initial_max_data
+    );
+    assert_eq!(
+        mirrored.stream_receive_window.into_inner(),
+        limits.initial_max_stream_data_bidi_local
+    );
+    assert_eq!(
+        mirrored.max_concurrent_uni_streams.into_inner(),
+        limits.initial_max_streams_uni
+    );
+    assert_eq!(
+        mirrored.max_idle_timeout.map(VarInt::into_inner),
+        Some(u64::try_from(limits.max_idle_timeout.as_millis()).unwrap())
+    );
 }
