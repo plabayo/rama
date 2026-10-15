@@ -381,7 +381,10 @@ impl RamaService {
             .arg("--bind")
             .arg(format!("127.0.0.1:{proxy_port}"))
             .arg(format!("--mitm=127.0.0.1:{inspector_port}"))
-            .env("RUST_LOG", "info");
+            .env(
+                "RUST_LOG",
+                "info,rama_core::layer::consume_err=debug,rama_http=debug,rama_tls_boring=debug",
+            );
 
         let mut process = builder.spawn().unwrap();
         let stderr = process.stderr.take().unwrap();
