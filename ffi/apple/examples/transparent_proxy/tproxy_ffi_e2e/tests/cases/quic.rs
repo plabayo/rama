@@ -188,33 +188,58 @@ async fn ffi_contract_quic_refused_by_admission_is_forwarded_untouched() {
     origin_task.abort();
 }
 
-#[tokio::test]
-#[serial]
-async fn ffi_contract_non_quic_on_a_quic_port_is_forwarded_untouched() {
+/// A UDP origin on loopback echoing every datagram back to its sender.
+async fn spawn_udp_echo() -> (SocketAddr, JoinHandle<()>) {
     let origin = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let address = origin.local_addr().unwrap();
-    let echo = tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let mut buffer = [0; 2048];
         loop {
             let (len, peer) = origin.recv_from(&mut buffer).await.unwrap();
             origin.send_to(&buffer[..len], peer).await.unwrap();
         }
     });
+    (address, handle)
+}
+
+/// `payload` sent to a UDP echo origin on the engine's QUIC port comes back untouched.
+async fn echoed_through_the_quic_path(payload: &[u8]) {
+    let (address, echo) = spawn_udp_echo().await;
     let engine = engine_for(address, serde_json::json!({})).await;
     let mut socket = UdpFfiSession::new(engine, address).into_datagram_socket(address);
     socket
         .create_sender()
-        .send(SendDatagram::new(address, b"not quic"))
+        .send(SendDatagram::new(address, payload))
         .await
         .unwrap();
-    let mut buffer = [0; 64];
+    let mut buffer = [0; 2048];
     let metadata = timeout(LIMIT, socket.recv(&mut buffer))
         .await
         .expect("the echo comes back through the engine")
         .unwrap();
-    assert_eq!(&buffer[..metadata.len], b"not quic");
+    assert_eq!(&buffer[..metadata.len], payload);
     assert_eq!(metadata.peer, SocketAddress::from(address));
     echo.abort();
+}
+
+#[tokio::test]
+#[serial]
+async fn ffi_contract_non_quic_on_a_quic_port_is_forwarded_untouched() {
+    echoed_through_the_quic_path(b"not quic").await;
+}
+
+/// QUIC the engine cannot inspect, such as a version it does not implement, is forwarded as
+/// the TCP path passes through what it cannot peek: the server's version negotiation must reach
+/// the client.
+#[tokio::test]
+#[serial]
+async fn ffi_contract_quic_of_an_unknown_version_is_forwarded_untouched() {
+    let mut packet = vec![0xc0, 0x1a, 0x2a, 0x3a, 0x4a, 8];
+    packet.extend_from_slice(&[1; 8]);
+    packet.push(8);
+    packet.extend_from_slice(&[2; 8]);
+    packet.resize(1200, 0);
+    echoed_through_the_quic_path(&packet).await;
 }
 
 /// An engine whose UDP flows took the QUIC path stops promptly: no long-lived service holds

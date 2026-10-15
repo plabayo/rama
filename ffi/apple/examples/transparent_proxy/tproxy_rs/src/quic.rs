@@ -26,7 +26,10 @@ use rama::{
     },
     quic::{
         proto::VarInt,
-        proxy::{InputWithQuicClientHello, PeekQuicClientHelloService, QuicMitmRelay, QuicRelay},
+        proxy::{
+            InputWithQuicClientHello, PeekQuicClientHelloService, QuicMitmRelay,
+            QuicPeekFallbackPolicy, QuicRelay,
+        },
         tls::BoringTlsProvider,
     },
     rt::Executor,
@@ -154,12 +157,13 @@ pub(super) async fn serve(flow: UdpFlow, path: QuicPath, exec: Executor) {
             }
         })
     };
-    let inspect = PeekQuicClientHelloService::new(BoringTlsProvider, route).with_fallback(
-        service_fn(move |input: Association| {
+    // As the TCP path passes through what it cannot peek: QUIC it cannot inspect is forwarded.
+    let inspect = PeekQuicClientHelloService::new(BoringTlsProvider, route)
+        .with_fallback_policy(QuicPeekFallbackPolicy::ALL)
+        .with_fallback(service_fn(move |input: Association| {
             let forward = forward.clone();
             async move { forward.serve(input).await.map(drop) }
-        }),
-    );
+        }));
     let demux = DatagramDemux::new(UdpFlowSocket::new(flow), demux_config(flow_bytes))
         .with_shared_budget(budget);
     if let Err(error) = demux.serve(exec, inspect).await {
