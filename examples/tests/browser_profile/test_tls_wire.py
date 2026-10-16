@@ -242,6 +242,70 @@ class TlsWireTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "lacks"):
             compare_tls_captures(forged, [hello], [request])
 
+    def test_reverse_coverage_preserves_user_agent_association(self):
+        archive, first_hello, first_request = comparison_fixture()
+        second_profile = copy.deepcopy(archive["profiles"][0])
+        second_profile["key"]["user_agent"] = "other"
+        second_variant = second_profile["scopes"][0]["variants"][0]
+        second_capture = second_variant["capture"]["slots"][0]["capture"]
+        second_capture["ciphers"] = [4866]
+        archive["profiles"].append(second_profile)
+        second_hello = replace(first_hello, connection=8, capture=second_capture)
+        second_request = SimpleNamespace(
+            connection=8, from_server=False, headers=(("user-agent", "other"),)
+        )
+        hellos = [first_hello, second_hello]
+        requests = [first_request, second_request]
+        self.assertEqual(
+            compare_tls_captures(archive, hellos, requests)["connections_checked"], 2
+        )
+
+        # The first browser's genuine metadata is not evidence for an extra
+        # retained observation attributed to the second browser.
+        forged = copy.deepcopy(archive)
+        variants = forged["profiles"][1]["scopes"][0]["variants"]
+        first_variant = archive["profiles"][0]["scopes"][0]["variants"][0]
+        variants.append(copy.deepcopy(first_variant))
+        with self.assertRaisesRegex(ValueError, "lacks"):
+            compare_tls_captures(forged, hellos, requests)
+
+        # Identical metadata remains valid when both browsers actually emit it.
+        shared = copy.deepcopy(archive)
+        shared["profiles"][1]["scopes"] = copy.deepcopy(
+            shared["profiles"][0]["scopes"]
+        )
+        shared_hello = replace(
+            second_hello, capture=copy.deepcopy(first_hello.capture)
+        )
+        self.assertEqual(
+            compare_tls_captures(shared, [first_hello, shared_hello], requests)[
+                "retained_observations"
+            ],
+            2,
+        )
+
+    def test_reverse_coverage_preserves_transport(self):
+        archive, hello, request = comparison_fixture()
+        variants = archive["profiles"][0]["scopes"][0]["variants"]
+        extra = copy.deepcopy(variants[0])
+        slot = extra["capture"]["slots"][0]
+        slot["kind"] = "QuicTls"
+        slot["capture"]["transport"] = "Quic"
+        variants.append(extra)
+        with self.assertRaisesRegex(ValueError, "lacks"):
+            compare_tls_captures(archive, [hello], [request])
+
+        quic_request = SimpleNamespace(
+            connection=8, from_server=False, headers=request.headers
+        )
+        quic_hello = replace(hello, connection=8, capture=slot["capture"])
+        self.assertEqual(
+            compare_tls_captures(archive, [hello, quic_hello], [request, quic_request])[
+                "retained_observations"
+            ],
+            2,
+        )
+
     def test_missing_or_mixed_user_agent_fails(self):
         archive, hello, request = comparison_fixture()
         for headers in [(), (("user-agent", "fixture"), ("user-agent", "fixture"))]:

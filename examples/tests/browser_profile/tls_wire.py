@@ -305,16 +305,19 @@ def compare_tls_captures(archive, hellos, requests):
         ]
         if hello.capture not in candidates:
             raise ValueError("no matching TLS capture for request connection")
-        matched.append(hello.capture)
+        agent = next(iter(user_agents[hello.connection]))
+        matched.append((agent, hello.capture))
         checked.add(hello.connection)
     if checked != set(user_agents):
         raise ValueError("incomplete request-bearing TLS connection coverage")
 
     # Exported observations must also have independent wire evidence. Checking
     # only wire-to-profile membership could conceal extra fabricated variants.
+    # Keep the User-Agent and the capture's transport in both directions: one
+    # browser connection cannot establish another browser's retained variant.
     agents = set().union(*user_agents.values())
     retained = [
-        slot["capture"]
+        (profile["key"]["user_agent"], slot["capture"])
         for profile in archive["profiles"]
         if profile["key"]["user_agent"] in agents
         for scope in profile["scopes"]
