@@ -28,9 +28,10 @@ fn assert_custom_profile_headers(headers: &[serde_json::Value]) {
     );
 }
 
-fn assert_custom_profile_at_origin(stdout: &str) {
-    let response: serde_json::Value = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|error| panic!("invalid echo response: {error}\n{stdout}"));
+fn assert_custom_profile_at_origin(stdout: &str, stderr: &str, phase: &str) {
+    let response: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|error| {
+        panic!("{phase}: invalid echo response: {error}\nstdout:\n{stdout}\nstderr:\n{stderr}")
+    });
     let headers = response["http"]["headers"]
         .as_array()
         .expect("echo response contains ordered headers");
@@ -138,7 +139,10 @@ async fn test_proxy_icaps_echo() {
 async fn test_mitm_capture_export_and_direct_cli_emulation() {
     utils::init_tracing();
 
-    let origin_server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
+    // Mirroring the shared RSA-4096 fixture can outlast the origin's first-request
+    // idle deadline on Windows debug builds. This profile round trip needs TLS,
+    // not a newly generated RSA-4096 key between the upstream handshake and GET.
+    let origin_server = utils::RamaService::serve_echo(0, utils::EchoMode::HttpsWithGeneratedCert);
     let (proxy_server, inspector_address, inspector_token) = utils::RamaService::serve_proxy_mitm();
     let origin_port = origin_server.port();
     let proxy_port = proxy_server.port();
@@ -152,6 +156,8 @@ async fn test_mitm_capture_export_and_direct_cli_emulation() {
         let (ok, stdout, stderr) = utils::RamaService::run_capture_isolated(
             &[
                 "send",
+                "--fail",
+                "--verbose",
                 "--max-time",
                 REQUEST_TIMEOUT_SECS,
                 "--insecure",
@@ -173,9 +179,9 @@ async fn test_mitm_capture_export_and_direct_cli_emulation() {
         .unwrap();
         assert!(
             ok,
-            "capture request failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+            "{version}: capture request failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
         );
-        assert_custom_profile_at_origin(&stdout);
+        assert_custom_profile_at_origin(&stdout, &stderr, version);
     }
 
     let directory = rama::utils::fs::tempdir().unwrap();
@@ -186,6 +192,8 @@ async fn test_mitm_capture_export_and_direct_cli_emulation() {
     let (ok, stdout, stderr) = utils::RamaService::run_capture_isolated(
         &[
             "send",
+            "--fail",
+            "--verbose",
             "--max-time",
             REQUEST_TIMEOUT_SECS,
             "--header",
@@ -219,6 +227,8 @@ async fn test_mitm_capture_export_and_direct_cli_emulation() {
     let (ok, stdout, stderr) = utils::RamaService::run_capture_isolated(
         &[
             "send",
+            "--fail",
+            "--verbose",
             "--max-time",
             REQUEST_TIMEOUT_SECS,
             "--insecure",
@@ -233,5 +243,5 @@ async fn test_mitm_capture_export_and_direct_cli_emulation() {
         ok,
         "custom-profile request failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    assert_custom_profile_at_origin(&stdout);
+    assert_custom_profile_at_origin(&stdout, &stderr, "direct emulation");
 }

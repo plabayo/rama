@@ -482,6 +482,9 @@ fn an_exhausted_key_budget_stops_the_answers() {
     let _guard = subscribe();
     let mut pair = Pair::default();
     let (client_ch, server_ch) = pair.connect();
+    // Keep queued peer packets in this key phase: a peer update would install fresh
+    // client keys and reset the packet budget this test is exhausting.
+    pair.server_conn_mut(server_ch).set_key_phase_size(u64::MAX);
     let mut held = closed_with_input_waiting(&mut pair, client_ch, server_ch, 8);
 
     let limit = pair.client_conn_mut(client_ch).confidentiality_limit();
