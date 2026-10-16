@@ -26,6 +26,7 @@ from capture_fields import compare_capture_fields
 from connection_fields import compare_connection_fields, h2_prefixes
 from fixture_process import running, wait_ready
 from replay import replay_environment, verify_tls_replay
+from quic_wire import client_settings, compare_quic_captures, first_flights
 from tls_wire import client_hellos, compare_tls_captures
 
 HERE = Path(__file__).resolve().parent
@@ -196,6 +197,15 @@ def capture_tls(args):
         data = (root / "headers.pdml").read_bytes()
         connection_fields = compare_connection_fields(
             inspected, client_hellos(data, "Tcp"), h2_prefixes(data, port), headers
+        )
+    else:
+        data = (root / "headers.pdml").read_bytes()
+        connection_fields = compare_quic_captures(
+            inspected,
+            first_flights(data, port),
+            client_hellos(data, "Quic"),
+            client_settings(data, port),
+            headers,
         )
     replay = None
     if args.protocol == "h2":

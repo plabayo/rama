@@ -207,7 +207,9 @@ def read_header_blocks(
         raise ValueError("capture byte limit exceeded")
     if not keylog.is_file():
         raise ValueError("missing TLS key log")
-    prefix = "http2" if protocol == "h2" else "http3"
+    # Fragment-only QUIC Initials precede the packet containing reassembled TLS.
+    # Keep them (and control/QPACK streams) for complete connection verification.
+    display_filter = "http2 or tls.handshake.type == 1" if protocol == "h2" else "quic"
     with output.open("xb") as decoded:
         subprocess.run(
             [
@@ -217,7 +219,7 @@ def read_header_blocks(
                 "-o",
                 "tls.keylog_file:" + str(keylog),
                 "-Y",
-                f"{prefix} or tls.handshake.type == 1",
+                display_filter,
                 "-T",
                 "pdml",
             ],

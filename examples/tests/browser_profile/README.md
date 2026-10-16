@@ -79,6 +79,15 @@ TLS versions, cipher and extension order, and extension metadata against each
 request-bearing connection; keys and ciphertext are excluded from the projection.
 Preconnections without requests are reported separately.
 
+For H3, `quic_wire.py` also compares the complete first flight, transport
+parameters and client SETTINGS together with TLS from the same retained joint.
+The decoder keeps fragment-only Initial packets, checks raw integer/frame
+extents, and verifies parameter order/literals or redacted binding lengths.
+Packet numbers are tshark's decrypted results; their encrypted bytes are not
+interpreted as plaintext. Reports explicitly leave the H3 control/QPACK sequence
+unverified. These checks prove retained capture dimensions, not replay support
+or every possible wire property.
+
 HTTP/2 also replays all six operations for every retained connection variant.
 Each CLI process uses the fixture CA through `--cacert` and explicit newly generated
 fixture trust IDs through `--tls-requested-trust-anchors` when the original browser
