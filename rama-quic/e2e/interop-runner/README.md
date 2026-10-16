@@ -2,9 +2,10 @@
 
 This standalone Rust endpoint runs against the independent
 [QUIC interop runner](https://github.com/quic-interop/quic-interop-runner).
-The default gate requires **24 explicit successes**: Rama in both roles against
-quic-go and ngtcp2 for `handshake`, `transfer`, `retry`, `multiplexing`, `longrtt`,
-and `transferloss`. Upstream checks packet traces and downloaded bytes through
+The default gate requires Rama in both roles against quic-go and ngtcp2 for
+`handshake`, `transfer`, `retry`, `multiplexing`, `longrtt`, `transferloss`, and
+`http3`, plus `v2` against ngtcp2 (both roles with Boring, server with Rustls).
+That is 30 required successes with Boring and 29 with either Rustls backend. Upstream checks packet traces and downloaded bytes through
 its simulator. Missing, failed, unsupported, duplicate, or malformed outcomes
 and nonzero runner exits fail the gate. Every expected Rama qlog must also be
 a complete JSON sequence containing `quic:connection_closed`; validation streams
@@ -45,16 +46,19 @@ the release tag for releases.
 ## Scope and artifacts
 
 The image selects `rama-quic-interop-client` or `rama-quic-interop-server` via
-`ROLE`. Endpoints speak QUIC v1 / HTTP/0.9 with ALPN `hq-interop`. The client
+`ROLE`. Endpoints speak HTTP/0.9 with ALPN `hq-interop`, or HTTP/3 with ALPN `h3`
+for the `http3` case. The client
 fetches space-separated `REQUESTS` URLs into `/downloads`; the server serves
 `/www` on UDP 443 with `/certs/cert.pem` and `/certs/priv.key`. Both honor
 `SSLKEYLOGFILE` and `QLOGDIR`. Recognized endpoint cases are `handshake`,
-`transfer`, `retry`, `multiconnect` and `v2`; unsupported cases exit 127. Upstream
+`transfer`, `retry`, `multiconnect`, `v2`, and `http3`; unsupported cases exit 127. Upstream
 maps `multiplexing`/`transferloss` to `transfer`, and `longrtt` to `handshake`.
 In `v2` the client starts in QUIC v1 offering v2 and the server moves the connection
 to v2 (RFC 9368 compatible version negotiation); a client built on Rustls cannot
 change version mid-handshake and reports the case unsupported, so the gate requires
-it from Boring clients and from servers of every backend. HTTP/3, resumption, 0-RTT,
+it from Boring clients and from servers of every backend. HTTP/3 transfers stream
+file bodies with bounded concurrency and validate response status and version.
+Resumption, 0-RTT,
 migration, and forced cipher/key-update cases are outside this gate.
 
 Artifacts remain in `target/quic-interop/<timestamp>-<run-id>/`, or a **new**
@@ -92,4 +96,4 @@ CI needs a Linux runner with the prerequisites above (Ubuntu's stock tshark
 may need upgrading). Build the image, invoke `run.sh --skip-build` with
 `--artifacts "$RUNNER_TEMP/quic-interop"`, and upload that directory with `if: always()`.
 When upgrading pins, review upstream topology, case mappings, JSON schema,
-and adapter compatibility; rerun the gate tests and full 24-outcome matrix.
+and adapter compatibility; rerun the gate tests and full backend-specific matrix.

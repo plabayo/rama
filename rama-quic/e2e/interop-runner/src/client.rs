@@ -1,7 +1,7 @@
 //! Runner client: bounded concurrent downloads over one connection, or one per request.
 
 use crate::{
-    ALPN, BUFFER_SIZE, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn, log_connection_stats,
+    BUFFER_SIZE, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn, log_connection_stats,
     relative_path, shutdown_endpoint, transport,
 };
 use clap::Parser;
@@ -42,11 +42,11 @@ pub struct Args {
 }
 
 #[derive(Debug)]
-struct Request {
-    host: String,
-    port: u16,
-    target: String,
-    filename: String,
+pub(crate) struct Request {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) target: String,
+    pub(crate) filename: String,
 }
 
 fn requests(input: &str) -> Result<Vec<Request>, BoxError> {
@@ -116,12 +116,12 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     // The interop runner supplies disposable test certificates without a client trust store.
     // This verifier is restricted to this test executable; it is not a production default.
     let tls = TlsClientConfig::new()
-        .with_alpn(smallvec![ApplicationProtocol::from(ALPN)])
+        .with_alpn(smallvec![ApplicationProtocol::from(testcase.alpn())])
         .with_keylog(KeyLogIntent::Environment)
         .with_server_verify(ServerVerifyMode::Disable);
     let mut config = crate::tls_provider()
         .client_config(&tls, crate::tls_options())?
-        .with_transport_config(transport(executor, "client").await?);
+        .with_transport_config(transport(executor.clone(), "client", testcase).await?);
     if testcase == TestCase::V2 {
         // A v1 first flight that prefers v2, for the server to move (RFC 9368 §2.3).
         config.set_versions(
@@ -137,7 +137,7 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
                 let connection = endpoint
                     .connect_with(config.clone(), address, &request.host)?
                     .await?;
-                check_alpn(&connection)?;
+                check_alpn(&connection, testcase)?;
                 download(connection.clone(), request, args.downloads.clone()).await?;
                 log_connection_stats(&connection);
                 connection.close(0_u32, b"done");
@@ -146,27 +146,44 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
             let connection = endpoint
                 .connect_with(config, address, &requests[0].host)?
                 .await?;
-            check_alpn(&connection)?;
-            let mut tasks = JoinSet::new();
-            for request in requests {
-                if tasks.len() >= STREAM_LIMIT {
-                    tasks
-                        .join_next()
-                        .await
-                        .ok_or("download task missing")?
-                        .context("download task failed")??;
-                }
-                tasks.spawn(download(
+            check_alpn(&connection, testcase)?;
+            if testcase == TestCase::Http3 {
+                crate::http3::download_batch(
                     connection.clone(),
-                    request,
+                    requests,
                     args.downloads.clone(),
-                ));
-            }
-            while let Some(result) = tasks.join_next().await {
-                result.context("download task failed")??;
+                    executor.clone(),
+                )
+                .await?;
+            } else {
+                let mut tasks = JoinSet::new();
+                for request in requests {
+                    if tasks.len() >= STREAM_LIMIT {
+                        tasks
+                            .join_next()
+                            .await
+                            .ok_or("download task missing")?
+                            .context("download task failed")??;
+                    }
+                    tasks.spawn(download(
+                        connection.clone(),
+                        request,
+                        args.downloads.clone(),
+                    ));
+                }
+                while let Some(result) = tasks.join_next().await {
+                    result.context("download task failed")??;
+                }
             }
             log_connection_stats(&connection);
-            connection.close(0_u32, b"done");
+            connection.close(
+                if testcase == TestCase::Http3 {
+                    0x100_u32
+                } else {
+                    0_u32
+                },
+                b"done",
+            );
         }
         Ok::<_, BoxError>(())
     });
@@ -174,7 +191,16 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
         result = batch => result.context("download batch timed out").and_then(|result| result),
         _ = default_signal() => Err(BoxError::from("download batch interrupted by shutdown signal")),
     };
-    endpoint.close(0_u32, b"client finished");
+    // Release our own shutdown guard before joining the remaining producers.
+    drop(executor);
+    endpoint.close(
+        if testcase == TestCase::Http3 {
+            0x100_u32
+        } else {
+            0_u32
+        },
+        b"client finished",
+    );
     let outcome = shutdown_endpoint(&endpoint, outcome).await;
     drop(endpoint);
     let _ = finished.send(());

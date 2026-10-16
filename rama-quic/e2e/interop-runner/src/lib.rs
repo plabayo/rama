@@ -1,4 +1,4 @@
-//! HTTP/0.9 file transfer endpoints for the QUIC interop runner, using `hq-interop`.
+//! HTTP/0.9 and HTTP/3 file transfer endpoints for the QUIC interop runner.
 
 #[cfg(feature = "boring")]
 use rama::quic::tls::BoringTlsProvider;
@@ -17,6 +17,7 @@ compile_error!("select exactly one Rama TLS backend: boring, rustls-ring or rust
 compile_error!("select a Rama TLS backend: boring, rustls-ring or rustls-aws-lc");
 
 pub mod client;
+mod http3;
 pub mod server;
 
 use rama::{
@@ -70,6 +71,7 @@ const BUFFER_SIZE: usize = octets::kib(256);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TestCase {
     Handshake,
+    Http3,
     Transfer,
     Retry,
     MultiConnect,
@@ -79,9 +81,17 @@ pub enum TestCase {
 }
 
 impl TestCase {
+    pub(crate) const fn alpn(self) -> &'static [u8] {
+        match self {
+            Self::Http3 => b"h3",
+            _ => ALPN,
+        }
+    }
+
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "handshake" => Some(Self::Handshake),
+            "http3" => Some(Self::Http3),
             "transfer" => Some(Self::Transfer),
             "retry" => Some(Self::Retry),
             "multiconnect" => Some(Self::MultiConnect),
@@ -95,7 +105,9 @@ impl TestCase {
     pub fn client_supported(self) -> bool {
         match self {
             Self::V2 => cfg!(feature = "boring"),
-            Self::Handshake | Self::Transfer | Self::Retry | Self::MultiConnect => true,
+            Self::Handshake | Self::Http3 | Self::Transfer | Self::Retry | Self::MultiConnect => {
+                true
+            }
         }
     }
 }
@@ -124,9 +136,16 @@ pub fn init_tracing() {
 /// are Rama's own, which is what a benchmark of this endpoint should see.
 pub const SMALL_WINDOWS: &str = "RAMA_INTEROP_SMALL_WINDOWS";
 
-async fn transport(executor: Executor, role: &str) -> Result<Arc<TransportConfig>, BoxError> {
+async fn transport(
+    executor: Executor,
+    role: &str,
+    testcase: TestCase,
+) -> Result<Arc<TransportConfig>, BoxError> {
     let mut config =
         TransportConfig::default().with_max_concurrent_bidi_streams(STREAM_LIMIT as u32);
+    if testcase == TestCase::Http3 {
+        http3::config().configure_transport(&mut config)?;
+    }
     if std::env::var_os(SMALL_WINDOWS).is_some() {
         config = config
             .with_stream_receive_window(octets::kib_u32(64))
@@ -196,13 +215,13 @@ async fn shutdown_endpoint(
     outcome
 }
 
-fn check_alpn(connection: &Connection) -> Result<(), BoxError> {
+fn check_alpn(connection: &Connection, testcase: TestCase) -> Result<(), BoxError> {
     if connection
         .handshake_data()
         .and_then(|data| data.application_layer_protocol)
-        != Some(ApplicationProtocol::from(ALPN))
+        != Some(ApplicationProtocol::from(testcase.alpn()))
     {
-        return Err("peer did not negotiate hq-interop".into());
+        return Err("peer did not negotiate the testcase ALPN".into());
     }
     Ok(())
 }
@@ -271,7 +290,6 @@ mod tests {
     fn unsupported_testcases_do_not_fall_back_to_transfer() {
         for value in [
             "",
-            "http3",
             "resumption",
             "zerortt",
             "chacha20",
@@ -281,6 +299,7 @@ mod tests {
         ] {
             assert_eq!(TestCase::parse(value), None);
         }
+        assert_eq!(TestCase::parse("http3"), Some(TestCase::Http3));
         assert_eq!(TestCase::parse("retry"), Some(TestCase::Retry));
         assert_eq!(TestCase::parse("v2"), Some(TestCase::V2));
     }

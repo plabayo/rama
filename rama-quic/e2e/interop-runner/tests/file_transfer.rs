@@ -13,8 +13,8 @@ use tokio::{
 };
 
 #[tokio::test]
-async fn runner_file_transfer_and_retry() {
-    for testcase in ["handshake", "transfer", "retry", "multiconnect"] {
+async fn runner_file_transfer_retry_and_http3() {
+    for testcase in ["handshake", "transfer", "retry", "multiconnect", "http3"] {
         let directory = TempDir::with_prefix("rama-runner-smoke-").unwrap();
         let root = directory.path();
         let www = root.join("www");
@@ -31,7 +31,11 @@ async fn runner_file_transfer_and_retry() {
         fs::write(www.join("empty.bin"), []).unwrap();
         // More than one advertised stream window catches missing MAX_STREAMS updates, and the
         // small byte windows force MAX_DATA and MAX_STREAM_DATA updates on a 2 MiB file.
-        let count = if testcase == "transfer" { 130 } else { 2 };
+        let count = if matches!(testcase, "transfer" | "http3") {
+            130
+        } else {
+            2
+        };
         let mut names = vec!["large.bin".to_owned(), "empty.bin".to_owned()];
         for index in 0..count {
             let name = format!("small-{index}.bin");

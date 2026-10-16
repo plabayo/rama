@@ -1,7 +1,7 @@
 //! Runner server: serve bounded HTTP/0.9 request lines from the mounted document root.
 
 use crate::{
-    ALPN, BUFFER_SIZE, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn, log_connection_stats,
+    BUFFER_SIZE, REQUEST_LIMIT, STREAM_LIMIT, TestCase, check_alpn, log_connection_stats,
     relative_path, shutdown_endpoint, transport,
 };
 use clap::Parser;
@@ -76,12 +76,12 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
     });
     let executor = Executor::graceful(shutdown.guard());
     let tls = TlsServerConfig::new()
-        .with_alpn(smallvec![ApplicationProtocol::from(ALPN)])
+        .with_alpn(smallvec![ApplicationProtocol::from(testcase.alpn())])
         .with_keylog(KeyLogIntent::Environment)
         .with_server_auth(auth);
     let mut config = crate::server_tls_provider()
         .server_config(&tls, crate::tls_options())?
-        .with_transport_config(transport(executor.clone(), "server").await?);
+        .with_transport_config(transport(executor.clone(), "server", testcase).await?);
     if testcase == TestCase::V2 {
         // Move a client that offers v2 to it (RFC 9368 §2.3).
         config.set_versions(
@@ -122,13 +122,20 @@ pub async fn run(args: Args, testcase: TestCase) -> Result<(), BoxError> {
                 let root = root.clone();
                 connections.spawn(async move {
                     let connection = incoming.await.context("accept handshake")?;
-                    check_alpn(&connection)?;
-                    serve_connection(connection, root).await
+                    check_alpn(&connection, testcase)?;
+                    if testcase == TestCase::Http3 { crate::http3::serve_connection(connection, root).await } else { serve_connection(connection, root).await }
                 });
             }
         }
     };
-    endpoint.close(0_u32, b"server stopping");
+    endpoint.close(
+        if testcase == TestCase::Http3 {
+            0x100_u32
+        } else {
+            0_u32
+        },
+        b"server stopping",
+    );
     connections.abort_all();
     while connections.join_next().await.is_some() {}
     let outcome = shutdown_endpoint(&endpoint, outcome).await;
