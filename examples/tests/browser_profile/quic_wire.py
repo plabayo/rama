@@ -284,8 +284,8 @@ def parameters_match(captured, observed):
     return True
 
 
-def client_settings(data, server_port):
-    """Read the browser's ordered SETTINGS from complete decrypted frame payloads."""
+def client_settings(data, server_port, *, from_server=False):
+    """Read one endpoint's ordered SETTINGS from decrypted frame payloads."""
     result = {}
     for packet in pdml_packets(data):
         frames = [
@@ -298,7 +298,7 @@ def client_settings(data, server_port):
         )
         if (source == server_port) == (destination == server_port):
             raise ValueError("ambiguous HTTP/3 fixture endpoint")
-        if source == server_port:
+        if (source == server_port) != from_server:
             continue
         connection = identity(packet, "quic.connection.number")
         for frame in frames:
@@ -331,8 +331,8 @@ def client_settings(data, server_port):
     return result
 
 
-def compare_quic_captures(archive, observed, hellos, settings, requests):
-    """Correlate retained TLS, parameters and flight; H3 control remains separate."""
+def compare_quic_captures(archive, observed, hellos, settings, requests, sequences):
+    """Correlate four complete slots and wire-backed sequence prefix contents."""
     if archive.get("format_version") != 1:
         raise ValueError("unsupported inspection format")
     agents = connection_user_agents(requests)
@@ -369,6 +369,7 @@ def compare_quic_captures(archive, observed, hellos, settings, requests):
             len(tls[connection]) != 1
             or len(flights[connection]) != 1
             or connection not in settings
+            or connection not in sequences
         ):
             raise ValueError("missing or ambiguous QUIC connection evidence")
         flight = flights[connection][0]
@@ -381,6 +382,7 @@ def compare_quic_captures(archive, observed, hellos, settings, requests):
             == {"completeness": "Complete", "flight": flight.flight}
             and parameters_match(slots["QuicParameters"], flight.parameters)
             and slots["Http3Settings"] == settings[connection]
+            and sequences[connection].matches(slots["Http3Sequence"])
         ]
         if not matches:
             raise ValueError(
@@ -400,5 +402,9 @@ def compare_quic_captures(archive, observed, hellos, settings, requests):
             "QuicFirstFlight",
             "Http3Settings",
         ],
+        partially_verified_slots={
+            "Http3Sequence": "local decoder context, stream identities/types and control prefix contents"
+        },
         unverified_slots=["Http3Sequence"],
+        sequence_limits="first-request freeze, cross-stream event order and nonempty QPACK instruction prefixes remain unverified",
     )

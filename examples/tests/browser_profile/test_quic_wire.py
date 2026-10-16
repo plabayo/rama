@@ -18,6 +18,7 @@ from quic_wire import (
     varint,
     varint_field,
 )
+from h3_sequence_wire import SequenceEvidence, StreamPrefix
 from tls_wire import Reader, TlsHello
 from wire import read_header_blocks
 
@@ -142,7 +143,25 @@ def comparison_fixture():
             "kind": "Http3Settings",
             "capture": client_settings(settings_document(), 443)[7],
         },
-        {"kind": "Http3Sequence", "capture": {}},
+        {
+            "kind": "Http3Sequence",
+            "capture": {
+                "completeness": "Complete",
+                "local_settings": {},
+                "events": [
+                    {"Stream": {"stream_id": 2, "stream_type": 0}},
+                    {
+                        "Control": {
+                            "frame_type": 4,
+                            "length": 0,
+                            "element_id": None,
+                            "value": [],
+                        }
+                    },
+                ],
+                "encoder_instructions": [],
+            },
+        },
     ]
     archive = dict(
         format_version=1,
@@ -160,6 +179,16 @@ def comparison_fixture():
         connection=7, from_server=False, headers=(("user-agent", "fixture"),)
     )
     return archive, observed, hello, request
+
+
+def sequence_fixture():
+    return {
+        7: SequenceEvidence(
+            (StreamPrefix(2, 0, b""),),
+            ({"frame_type": 4, "length": 0, "element_id": None, "value": []},),
+            {},
+        )
+    }
 
 
 class QuicWireTests(unittest.TestCase):
@@ -257,6 +286,7 @@ class QuicWireTests(unittest.TestCase):
             [hello],
             client_settings(settings_document(), 443),
             [request],
+            sequence_fixture(),
         )
         self.assertEqual(
             report["verified_slots"],
@@ -270,20 +300,31 @@ class QuicWireTests(unittest.TestCase):
                 [replace(hello, capture={"transport": "Quic", "ciphers": [4866]})],
                 client_settings(settings_document(), 443),
                 [request],
+                sequence_fixture(),
             )
         settings = client_settings(settings_document(), 443)
         wrong_settings = deepcopy(settings)
         wrong_settings[7]["fields"][0]["value"]["Literal"][-1] += 1
         with self.assertRaisesRegex(ValueError, "matching retained joint"):
             compare_quic_captures(
-                archive, [observed], [hello], wrong_settings, [request]
+                archive,
+                [observed],
+                [hello],
+                wrong_settings,
+                [request],
+                sequence_fixture(),
             )
         missing_fragment = first_flights(
             ("<pdml>" + datagram(2, complete=True) + "</pdml>").encode(), 443
         )
         with self.assertRaisesRegex(ValueError, "matching retained joint"):
             compare_quic_captures(
-                archive, missing_fragment, [hello], settings, [request]
+                archive,
+                missing_fragment,
+                [hello],
+                settings,
+                [request],
+                sequence_fixture(),
             )
         variants = archive["profiles"][0]["scopes"][0]["variants"]
         other = deepcopy(variants[0])
@@ -303,6 +344,7 @@ class QuicWireTests(unittest.TestCase):
                 [hello],
                 client_settings(settings_document(), 443),
                 [request],
+                sequence_fixture(),
             )
         with self.assertRaisesRegex(ValueError, "no wire observation"):
             compare_quic_captures(
@@ -311,6 +353,7 @@ class QuicWireTests(unittest.TestCase):
                 [hello],
                 client_settings(settings_document(), 443),
                 [request],
+                sequence_fixture(),
             )
 
     def test_settings_use_raw_ordered_values_and_complete_framing(self):
@@ -342,6 +385,7 @@ class QuicWireTests(unittest.TestCase):
                 [hello],
                 client_settings(settings_document(), 443),
                 [request],
+                sequence_fixture(),
             )
 
     def test_filter_keeps_fragment_only_packets_for_downstream_verification(self):

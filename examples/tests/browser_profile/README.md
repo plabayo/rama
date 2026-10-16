@@ -84,9 +84,23 @@ parameters and client SETTINGS together with TLS from the same retained joint.
 The decoder keeps fragment-only Initial packets, checks raw integer/frame
 extents, and verifies parameter order/literals or redacted binding lengths.
 Packet numbers are tshark's decrypted results; their encrypted bytes are not
-interpreted as plaintext. Reports explicitly leave the H3 control/QPACK sequence
-unverified. These checks prove retained capture dimensions, not replay support
-or every possible wire property.
+interpreted as plaintext.
+
+`h3_sequence_wire.py` checks the retained decoder context, unidirectional stream
+IDs/types and control-frame prefix contents against bounded reassembly of
+independently decoded QUIC STREAM payloads. It handles out-of-order fragments
+and retransmissions, and rejects gaps, conflicting overlaps and incomplete frame
+extents. The decoder context comes from the server's SETTINGS; the browser's
+own SETTINGS describe the other direction. Role/capability advertisements are
+separate from that decoder context.
+
+These sequence facts must match the same retained TLS/QUIC joint. Reports mark
+Http3Sequence as partially verified: packet arrival cannot establish the exact
+application first-request freeze or relative parser scheduling across streams.
+A later control frame does not invalidate an earlier captured prefix. Nonempty
+captured QPACK instruction prefixes currently reject explicitly until independent
+instruction verification is implemented. These checks establish retained capture
+dimensions, not native H3 replay support or every possible wire property.
 
 HTTP/2 also replays all six operations for every retained connection variant.
 Each CLI process uses the fixture CA through `--cacert` and explicit newly generated

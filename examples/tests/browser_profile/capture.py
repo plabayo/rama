@@ -25,6 +25,7 @@ import wire
 from capture_fields import compare_capture_fields
 from connection_fields import compare_connection_fields, h2_prefixes
 from fixture_process import running, wait_ready
+from h3_sequence_wire import sequence_evidence
 from replay import replay_environment, verify_tls_replay
 from quic_wire import client_settings, compare_quic_captures, first_flights
 from tls_wire import client_hellos, compare_tls_captures
@@ -206,6 +207,7 @@ def capture_tls(args):
             client_hellos(data, "Quic"),
             client_settings(data, port),
             headers,
+            sequence_evidence(data, port),
         )
     replay = None
     if args.protocol == "h2":
