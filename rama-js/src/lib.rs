@@ -35,6 +35,20 @@
 //! process starts from an application-selected directory confined to a trusted
 //! filesystem root.
 //!
+//! # Interpreter backend
+//!
+//! Enable `interpreter` to run the component with Wasmtime's Pulley bytecode
+//! interpreter. This avoids dynamically executable memory and the macOS
+//! hardened-runtime executable-memory entitlement required by the default Winch
+//! backend. iOS always uses Pulley. The feature applies process-wide through
+//! Cargo feature unification, including when another dependency enables Winch.
+//! JavaScript APIs and resource limits remain the same, but execution is slower.
+//!
+//! `disk-cache` remains useful with `interpreter`: Cranelift still compiles
+//! WebAssembly into Pulley bytecode. The cache reuses that bytecode across
+//! process starts; it does not cache PAC results or accelerate interpretation.
+//! Wasmtime distinguishes target/compiler configurations in its cache keys.
+//!
 //! # Isolation and limits
 //!
 //! The JavaScript engine runs inside a private WebAssembly component with no

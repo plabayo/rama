@@ -21,6 +21,7 @@ targets = ["x86_64-unknown-linux-gnu"]
 
 [features]
 disk-cache = ["wasmtime/cache"]
+interpreter = ["wasmtime/cranelift", "wasmtime/pulley"]
 
 [dependencies]
 ahash = { workspace = true }
