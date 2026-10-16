@@ -42,7 +42,7 @@ use rama_net::http::{TargetHttpVersion, Version};
 
 #[cfg(feature = "http")]
 pub(super) mod reuse;
-mod tls;
+pub mod tls;
 
 /// Backend compiler obtained from the TLS connector that will consume it.
 ///
@@ -138,7 +138,11 @@ impl ConnectionCompiler {
             .clone();
         let effective = effective(input.extensions(), self.base.as_ref());
         let current = BoringTlsConnectorConfig::from_extensions(&effective);
-        let wire = tls::compile(capture, current.requested_trust_anchors)?;
+        let wire = tls::compile(
+            tls::TransportBinding::Tcp,
+            capture,
+            current.requested_trust_anchors,
+        )?;
         let identity = current
             .server_name
             .map(|name| &name.0)

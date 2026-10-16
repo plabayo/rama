@@ -34,15 +34,40 @@ const NATIVE_RENEGOTIATION_INFO_LEN: u16 = 1;
 // Boring's GREASE key-share body is one byte; RFC 8701 does not fix its size.
 const NATIVE_GREASE_KEY_SHARE_LEN: u16 = 1;
 
-pub(super) fn compile(
+/// Current transport state against which a captured TLS offer is compiled.
+///
+/// QUIC parameters remain owned and encoded by the transport engine. The
+/// compiler checks their captured length without copying connection identities.
+#[derive(Debug, Clone, Copy)]
+pub enum TransportBinding<'a> {
+    /// A TLS connection over TCP.
+    Tcp,
+    /// A QUIC connection with its current, fully encoded transport parameters.
+    Quic {
+        /// Exact encoding the transport engine will install on its native session.
+        parameters: &'a [u8],
+    },
+}
+
+/// Compile native wire settings for the selected TLS capture.
+///
+/// `transport` must describe the connection that will consume these overrides;
+/// QUIC callers must install those same parameter bytes on their native session.
+/// `anchors` supplies current trust-anchor identifiers when the capture contains
+/// their advertisement. Captured parameter, ticket and secret bytes are never
+/// reused. This function does not prepare an SSL session or establish backend
+/// support for an entire captured connection: the owning connector must also
+/// bind the destination, caller policy, session state and other selected slots.
+pub fn compile(
+    transport: TransportBinding<'_>,
     capture: &TlsCapture,
     anchors: Option<&BoringRequestedTrustAnchors>,
 ) -> Result<TlsClientConfig, BoxError> {
     capture.validate_fields(TlsCaptureLimits::default())?;
     validate_native_lists(capture)?;
+    validate_transport(transport, capture)?;
     let mut config = TlsClientConfig::new();
-    if !matches!(capture.transport, TlsCaptureTransport::Tcp)
-        || capture.protocol_version != u16::from(ProtocolVersion::TLSv1_2)
+    if capture.protocol_version != u16::from(ProtocolVersion::TLSv1_2)
         || capture.compression.as_ref() != [u8::from(CompressionAlgorithm::Null)]
     {
         return Err(invalid("unsupported TLS transport or legacy fields"));
@@ -87,6 +112,10 @@ pub(super) fn compile(
     for extension in &capture.extensions {
         match (ExtensionId::from(extension.id), &extension.value) {
             (ExtensionId::SERVER_NAME, Value::ServerName { present: true }) => {}
+            // Only the QUIC engine supplies these bytes. Admission above checked
+            // their presence and length against this connection's actual encoding.
+            (ExtensionId::QUIC_TRANSPORT_PARAMETERS, Value::ConnectionLength(_))
+                if matches!(transport, TransportBinding::Quic { .. }) => {}
             (ExtensionId::STATUS_REQUEST, Value::ConnectionLength(NATIVE_OCSP_REQUEST_LEN)) => {
                 config.set_ocsp_stapling(true);
             }
@@ -214,6 +243,51 @@ pub(super) fn compile(
     config.set_legacy_extensions(extended_master_secret);
     config.set_extension_bodies(bodies);
     Ok(config)
+}
+
+// QUIC's native handshake filters non-TLS-1.3 offers. Reject such captures
+// instead of silently changing their version list during native preparation.
+fn validate_transport(
+    transport: TransportBinding<'_>,
+    capture: &TlsCapture,
+) -> Result<(), BoxError> {
+    match (transport, capture.transport) {
+        (TransportBinding::Tcp, TlsCaptureTransport::Tcp) => Ok(()),
+        (TransportBinding::Quic { parameters }, TlsCaptureTransport::Quic) => {
+            let parameter_length = capture.extensions.iter().find_map(|extension| {
+                match (ExtensionId::from(extension.id), &extension.value) {
+                    (ExtensionId::QUIC_TRANSPORT_PARAMETERS, Value::ConnectionLength(length)) => {
+                        Some(*length)
+                    }
+                    _ => None,
+                }
+            });
+            if parameter_length.map(usize::from) != Some(parameters.len()) {
+                return Err(invalid(
+                    "current QUIC transport-parameter length differs or is absent",
+                ));
+            }
+            let versions = capture
+                .extensions
+                .iter()
+                .find_map(
+                    |extension| match (ExtensionId::from(extension.id), &extension.value) {
+                        (ExtensionId::SUPPORTED_VERSIONS, Value::U16List(versions)) => {
+                            Some(versions.as_ref())
+                        }
+                        _ => None,
+                    },
+                )
+                .unwrap_or_default();
+            if versions.iter().any(|&version| {
+                !is_grease_u16(version) && version != u16::from(ProtocolVersion::TLSv1_3)
+            }) {
+                return Err(invalid("QUIC capture offers a version other than TLS 1.3"));
+            }
+            Ok(())
+        }
+        _ => Err(invalid("captured TLS transport and current binding differ")),
+    }
 }
 
 // Check backend capability separately from protocol encoding sizes. GREASE

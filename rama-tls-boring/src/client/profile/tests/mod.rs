@@ -11,6 +11,7 @@ use rama_ua::profile::capture::{
 };
 
 mod connection;
+mod quic;
 #[cfg(feature = "http")]
 mod reuse;
 mod wire;
