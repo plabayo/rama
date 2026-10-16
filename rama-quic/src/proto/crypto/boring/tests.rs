@@ -1,3 +1,5 @@
+mod fresh_sessions;
+
 use std::{
     assert_matches,
     sync::{

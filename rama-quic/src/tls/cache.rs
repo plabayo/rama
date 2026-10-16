@@ -6,7 +6,7 @@ use parking_lot::Mutex;
 use rama_core::extensions::Extensions;
 use rama_tls::client::{TlsClientConfig, TlsPoolId};
 
-use super::{QuicClientConfigProvider, TlsConfigError, TlsOptions};
+use super::{ClientSessionPolicy, QuicClientConfigProvider, TlsConfigError, TlsOptions};
 use crate::ClientConfig;
 
 // Keep native override configurations bounded alongside the protected default context.
@@ -25,6 +25,8 @@ const MAX_CACHED_OVERRIDES: usize = 64;
 /// on the returned [`ClientConfig`] as needed; each result is an independent clone
 /// sharing the native TLS configuration and its session state. Providers can also
 /// share a bounded, policy-keyed ticket store across sibling native configurations.
+/// Fresh client policies still cache native configurations, but skip provider
+/// ticket defaults and require the provider to disable ticket storage and offers.
 #[derive(Clone)]
 pub struct ClientConfigCache {
     provider: Arc<dyn QuicClientConfigProvider>,
@@ -44,7 +46,10 @@ impl fmt::Debug for ClientConfigCache {
 impl ClientConfigCache {
     /// Bind cached configurations to one provider and its QUIC TLS options.
     pub fn new(provider: Arc<dyn QuicClientConfigProvider>, options: TlsOptions) -> Self {
-        let session_defaults = provider.session_defaults();
+        let session_defaults = match options.client_sessions {
+            ClientSessionPolicy::Reuse => provider.session_defaults(),
+            ClientSessionPolicy::Fresh => None,
+        };
         Self {
             provider,
             options,
@@ -210,6 +215,7 @@ mod tests {
     #[derive(Default)]
     struct TestProvider {
         calls: AtomicUsize,
+        defaults_calls: AtomicUsize,
         fail_next: AtomicBool,
         rendezvous: Option<Barrier>,
         cache: Mutex<Weak<Mutex<Configs>>>,
@@ -243,6 +249,11 @@ mod tests {
     }
 
     impl QuicClientConfigProvider for TestProvider {
+        fn session_defaults(&self) -> Option<Extensions> {
+            self.defaults_calls.fetch_add(1, Ordering::Relaxed);
+            None
+        }
+
         fn client_config(
             &self,
             _: &TlsClientConfig,
@@ -269,6 +280,20 @@ mod tests {
     fn named(index: usize) -> TlsClientConfig {
         TlsClientConfig::new()
             .with_server_name(Host::try_from(format!("host-{index}.example")).unwrap())
+    }
+
+    #[test]
+    fn fresh_cache_skips_provider_session_defaults() {
+        let provider = Arc::new(TestProvider::default());
+        let _ordinary = ClientConfigCache::new(provider.clone(), TlsOptions::default());
+        assert_eq!(provider.defaults_calls.load(Ordering::Relaxed), 1);
+        for _ in 0..8 {
+            let _fresh = ClientConfigCache::new(
+                provider.clone(),
+                TlsOptions::default().with_client_sessions(ClientSessionPolicy::Fresh),
+            );
+        }
+        assert_eq!(provider.defaults_calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]

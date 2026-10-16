@@ -97,7 +97,7 @@ pub mod tls {
     }
 
     pub use crate::proto::crypto::config::{
-        AlpnPolicy, NoInitialCipherSuite, TlsConfigError, TlsOptions,
+        AlpnPolicy, ClientSessionPolicy, NoInitialCipherSuite, TlsConfigError, TlsOptions,
     };
 }
 

@@ -4,14 +4,36 @@ use rama_core::error::BoxError;
 pub use rama_tls::alpn::AlpnPolicy;
 use rama_utils::macros::generate_set_and_with;
 
+/// Client TLS ticket policy, independent of transport connection pooling.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ClientSessionPolicy {
+    /// Store and offer compatible tickets when the provider has a session cache.
+    #[default]
+    Reuse,
+    /// Always use a full handshake; do not read or retain session tickets.
+    /// This also prevents client 0-RTT, even when early application data is allowed.
+    Fresh,
+}
+
 /// QUIC requirements applied to the common Rama TLS configuration.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TlsOptions {
     pub(crate) alpn: AlpnPolicy,
     pub(crate) early_data: bool,
+    pub(crate) client_sessions: ClientSessionPolicy,
 }
 
 impl TlsOptions {
+    generate_set_and_with! {
+        /// Client ticket policy. Servers ignore this client-only option.
+        /// Connection pooling remains an independent application decision.
+        pub fn client_sessions(mut self, policy: ClientSessionPolicy) -> Self {
+            self.client_sessions = policy;
+            self
+        }
+    }
+
     generate_set_and_with! {
         /// How peers agree on their application protocol.
         pub fn alpn(mut self, policy: AlpnPolicy) -> Self {

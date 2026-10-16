@@ -7,7 +7,9 @@ use rama_tls_rustls::{client::RustlsTlsConnectorConfig, server::RustlsTlsAccepto
 
 use super::{QuicClientConfig, QuicDynamicServerConfig, QuicServerConfig, rustls};
 use crate::proto::ServerCrypto;
-pub(crate) use crate::proto::crypto::config::{AlpnPolicy, TlsConfigError, TlsOptions};
+pub(crate) use crate::proto::crypto::config::{
+    AlpnPolicy, ClientSessionPolicy, TlsConfigError, TlsOptions,
+};
 
 /// Carry a backend error as the cause, without that conversion being part of this crate's API.
 fn invalid_configuration(error: rustls::Error) -> TlsConfigError {
@@ -30,6 +32,10 @@ impl QuicClientConfig {
         if let Some(modify) = modify {
             native = (modify.0)(native)?;
         }
+        if options.client_sessions == ClientSessionPolicy::Fresh {
+            // Apply after the application's hook, including any custom store.
+            native.resumption = rustls::client::Resumption::disabled();
+        }
         validate_alpn(&native.alpn_protocols, options.alpn)?;
         if native.enable_early_data && !options.early_data {
             return Err(TlsConfigError::EarlyDataNotEnabled);
@@ -48,6 +54,7 @@ impl QuicClientConfig {
         .map_err(invalid_configuration)?;
         let mut config = Self::try_from(native)?;
         config.alpn_policy = options.alpn;
+        config.client_sessions = options.client_sessions;
         Ok(config)
     }
 }
@@ -434,6 +441,38 @@ mod tests {
             )
             .unwrap();
         assert!(store.reads.load(Ordering::Relaxed) > 0);
+    }
+
+    #[test]
+    fn fresh_sessions_ignore_stores_installed_by_native_hooks() {
+        use crate::proto::crypto::ClientConfig as _;
+        use std::sync::atomic::Ordering;
+
+        let (client, _) = configs();
+        let store = Arc::new(SessionStore::default());
+        let captured = store.clone();
+        let client = client.with_modify_rustls_config(move |mut native| {
+            native.resumption = rustls::client::Resumption::store(captured.clone());
+            Ok(native)
+        });
+        let client = Arc::new(
+            QuicClientConfig::from_rama(
+                &client,
+                configured_provider(),
+                TlsOptions::default().with_client_sessions(ClientSessionPolicy::Fresh),
+            )
+            .unwrap(),
+        );
+        for version in [rama_quic_proto::Version::V1, rama_quic_proto::Version::V2] {
+            for _ in 0..3 {
+                let mut session = client
+                    .clone()
+                    .start_session(version, "localhost", &TransportParameters::default())
+                    .unwrap();
+                assert!(session.poll_handshake().unwrap().is_some());
+            }
+        }
+        assert_eq!(store.reads.load(Ordering::Relaxed), 0);
     }
 
     #[test]

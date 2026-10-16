@@ -423,6 +423,7 @@ impl crypto::HeaderKey for RustlsHeaderKey {
 ///
 pub(crate) struct QuicClientConfig {
     alpn_policy: AlpnPolicy,
+    client_sessions: config::ClientSessionPolicy,
     pub(crate) inner: Arc<rustls::ClientConfig>,
     /// `inner` per version other than v1, each with its own session cache: a ticket must not
     /// resume a connection in another version (RFC 9369 §5), and rustls gives no way to scope
@@ -433,7 +434,9 @@ pub(crate) struct QuicClientConfig {
 
 impl QuicClientConfig {
     fn config_for(&self, version: rama_quic_proto::Version) -> Arc<rustls::ClientConfig> {
-        if version == rama_quic_proto::Version::V1 {
+        if version == rama_quic_proto::Version::V1
+            || self.client_sessions == config::ClientSessionPolicy::Fresh
+        {
             return self.inner.clone();
         }
         self.scoped
@@ -464,6 +467,7 @@ impl QuicClientConfig {
         let inner = Self::inner(verifier);
         Self {
             alpn_policy: AlpnPolicy::OutOfBandAgreement,
+            client_sessions: config::ClientSessionPolicy::Reuse,
             // We're confident that the *ring* default provider contains TLS13_AES_128_GCM_SHA256
             initial: initial_suite_from_provider(inner.crypto_provider())
                 .expect("no initial cipher suite found"),
@@ -485,6 +489,7 @@ impl QuicClientConfig {
                 inner,
                 initial,
                 alpn_policy: AlpnPolicy::OutOfBandAgreement,
+                client_sessions: config::ClientSessionPolicy::Reuse,
                 scoped: Mutex::new(HashMap::default()),
             }),
             _ => Err(NoInitialCipherSuite { specific: true }),
@@ -563,6 +568,7 @@ impl TryFrom<Arc<rustls::ClientConfig>> for QuicClientConfig {
     fn try_from(inner: Arc<rustls::ClientConfig>) -> Result<Self, Self::Error> {
         Ok(Self {
             alpn_policy: AlpnPolicy::OutOfBandAgreement,
+            client_sessions: config::ClientSessionPolicy::Reuse,
             initial: initial_suite_from_provider(inner.crypto_provider())
                 .ok_or(NoInitialCipherSuite { specific: false })?,
             inner,

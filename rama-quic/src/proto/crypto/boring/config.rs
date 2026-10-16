@@ -40,7 +40,7 @@ use crate::proto::{
     ConnectError, ServerCrypto,
     crypto::{
         self,
-        config::{TlsConfigError, TlsOptions},
+        config::{ClientSessionPolicy, TlsConfigError, TlsOptions},
     },
 };
 
@@ -130,10 +130,16 @@ static TICKET_INDEX: LazyLock<Result<Index<Ssl, TicketState>, ErrorStack>> =
 
 pub(crate) struct QuicClientConfig {
     context: TlsConnectorContext,
-    tickets: Arc<Tickets>,
-    ticket_index: Index<Ssl, TicketState>,
+    sessions: Option<ClientSessions>,
     early_data: bool,
     initializer: Option<HandshakeInitializer>,
+}
+
+// Keeping the cache and its callback index together makes a fresh configuration
+// incapable of consulting a cache or installing a ticket-retention callback.
+struct ClientSessions {
+    tickets: Arc<Tickets>,
+    ticket_index: Index<Ssl, TicketState>,
 }
 
 fn validate_versions(versions: Option<&TlsSupportedVersions>) -> Result<(), TlsConfigError> {
@@ -176,29 +182,36 @@ impl QuicClientConfig {
         {
             return Err(TlsConfigError::Tls13Required);
         }
-        let tickets = config
-            .as_extensions()
-            .get_ref::<SharedClientSessions>()
-            .map(|shared| shared.tickets.clone())
-            .unwrap_or_else(|| Arc::new(Tickets::new(MAX_TICKET_HOSTS, TICKETS_PER_HOST)));
-        let callback_tickets = tickets.clone();
-        let ticket_index = *TICKET_INDEX
-            .as_ref()
-            .map_err(|error| TlsConfigError::InvalidConfiguration(error.clone().into()))?;
-        builder.set_new_session_callback(move |ssl, session| {
-            if let Some(state) = ssl.ex_data(ticket_index)
-                && let Some(params) = state.params.lock().clone()
-            {
-                callback_tickets.insert(
-                    (session.key().clone(), *state.version.lock()),
-                    Ticket { session, params },
-                );
-            }
-        });
+        let sessions = if options.client_sessions == ClientSessionPolicy::Reuse {
+            let tickets = config
+                .as_extensions()
+                .get_ref::<SharedClientSessions>()
+                .map(|shared| shared.tickets.clone())
+                .unwrap_or_else(|| Arc::new(Tickets::new(MAX_TICKET_HOSTS, TICKETS_PER_HOST)));
+            let callback_tickets = tickets.clone();
+            let ticket_index = *TICKET_INDEX
+                .as_ref()
+                .map_err(|error| TlsConfigError::InvalidConfiguration(error.clone().into()))?;
+            builder.set_new_session_callback(move |ssl, session| {
+                if let Some(state) = ssl.ex_data(ticket_index)
+                    && let Some(params) = state.params.lock().clone()
+                {
+                    callback_tickets.insert(
+                        (session.key().clone(), *state.version.lock()),
+                        Ticket { session, params },
+                    );
+                }
+            });
+            Some(ClientSessions {
+                tickets,
+                ticket_index,
+            })
+        } else {
+            None
+        };
         Ok(Self {
             context: builder.build(),
-            tickets,
-            ticket_index,
+            sessions,
             early_data: options.early_data,
             initializer: config
                 .as_extensions()
@@ -228,21 +241,25 @@ impl crypto::ClientConfig for QuicClientConfig {
             .map_err(|error| ConnectError::Crypto(crypto_error(error)))?;
         let peer_params = Arc::new(Mutex::new(None));
         let negotiated = Arc::new(Mutex::new(version));
-        ssl.set_ex_data(
-            self.ticket_index,
-            TicketState {
-                version: negotiated.clone(),
-                params: peer_params.clone(),
-            },
-        );
-        let remembered = if let Some(key) = self.context.session_key(&host)
-            && let Some(ticket) = self.tickets.pop(&(key, version))
-        {
-            ticket
-                .session
-                .resume_on(&mut ssl)
-                .map_err(|error| ConnectError::Crypto(crypto_error(error)))?;
-            Some(ticket.params)
+        let remembered = if let Some(sessions) = &self.sessions {
+            ssl.set_ex_data(
+                sessions.ticket_index,
+                TicketState {
+                    version: negotiated.clone(),
+                    params: peer_params.clone(),
+                },
+            );
+            if let Some(key) = self.context.session_key(&host)
+                && let Some(ticket) = sessions.tickets.pop(&(key, version))
+            {
+                ticket
+                    .session
+                    .resume_on(&mut ssl)
+                    .map_err(|error| ConnectError::Crypto(crypto_error(error)))?;
+                Some(ticket.params)
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -265,10 +282,14 @@ impl crypto::ClientConfig for QuicClientConfig {
         true
     }
     fn resumable_version(&self, server_name: &str) -> Option<Version> {
+        let sessions = self.sessions.as_ref()?;
         let host = Host::try_from(server_name).ok()?;
         let key = self.context.session_key(&host)?;
         let keys = [Version::V1, Version::V2].map(|version| (key.clone(), version));
-        self.tickets.most_recent(&keys).map(|(_, version)| *version)
+        sessions
+            .tickets
+            .most_recent(&keys)
+            .map(|(_, version)| *version)
     }
 }
 
@@ -279,12 +300,13 @@ impl QuicClientConfig {
     pub(super) fn relabel_tickets(&self, server_name: &str, from: Version, to: Version) {
         let host = Host::try_from(server_name).unwrap();
         let key = self.context.session_key(&host).unwrap();
+        let sessions = self.sessions.as_ref().unwrap();
         let mut tickets = Vec::new();
-        while let Some(ticket) = self.tickets.pop(&(key.clone(), from)) {
+        while let Some(ticket) = sessions.tickets.pop(&(key.clone(), from)) {
             tickets.push(ticket);
         }
         for ticket in tickets.into_iter().rev() {
-            self.tickets.insert((key.clone(), to), ticket);
+            sessions.tickets.insert((key.clone(), to), ticket);
         }
     }
 }
@@ -555,6 +577,8 @@ mod tests {
         let first = QuicClientConfig::from_rama(&config, TlsOptions::default()).unwrap();
         for _ in 0..32 {
             let next = QuicClientConfig::from_rama(&config, TlsOptions::default()).unwrap();
+            let first = first.sessions.as_ref().unwrap();
+            let next = next.sessions.as_ref().unwrap();
             assert_eq!(next.ticket_index.as_raw(), first.ticket_index.as_raw());
             assert!(!Arc::ptr_eq(&next.tickets, &first.tickets));
         }

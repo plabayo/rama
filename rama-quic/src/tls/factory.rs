@@ -53,6 +53,9 @@ pub trait QuicClientConfigProvider: TlsClientConfigProvider {
         None
     }
 
+    /// Apply the final TLS settings and client handshake policy in `options`.
+    /// Fresh clients must neither consult nor populate session-ticket stores,
+    /// including stores supplied through native configuration hooks.
     fn client_config(
         &self,
         config: &TlsClientConfig,
