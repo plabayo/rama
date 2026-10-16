@@ -508,6 +508,12 @@ impl ClientAuthExchange {
     }
 }
 
+/// Apple keeps structured fields private; expose only a static refusal class.
+fn origin_refusal(class: &'static str, error: impl Into<BoxError>) -> BoxError {
+    tracing::warn!("QUIC MITM origin refused: {class}");
+    error.into()
+}
+
 /// Resolves the ingress configuration of one association. The endpoint asks only for the
 /// attempt it admits, and runs the work (the origin handshake and certificate issuance) only
 /// after any Retry validated the client's address.
@@ -526,11 +532,12 @@ where
     Egress: DatagramSocket,
 {
     async fn reach_origin(&self) -> Result<Arc<dyn crypto::ServerConfig>, BoxError> {
-        let egress = self
-            .egress
-            .lock()
-            .take()
-            .ok_or_else(|| BoxError::from_static_str("QUIC MITM origin already reached"))?;
+        let egress = self.egress.lock().take().ok_or_else(|| {
+            origin_refusal(
+                "egress-unavailable",
+                BoxError::from_static_str("QUIC MITM origin already reached"),
+            )
+        })?;
         let (exchange, requested) = if self.client_auth.is_some() {
             // A resumed origin session would reuse an earlier client's authentication.
             if self
@@ -540,8 +547,11 @@ where
                 .get_ref::<SharedClientSessions>()
                 .is_some()
             {
-                return Err(BoxError::from_static_str(
-                    "QUIC MITM client auth: shared egress sessions can bypass authentication",
+                return Err(origin_refusal(
+                    "client-auth-configuration",
+                    BoxError::from_static_str(
+                        "QUIC MITM client auth: shared egress sessions can bypass authentication",
+                    ),
                 ));
             }
             let (request_tx, request_rx) = oneshot::channel();
@@ -592,11 +602,13 @@ where
                 Ok(client) => client,
                 Err(error) => {
                     tracing::debug!(%error, "QUIC MITM: the client's ClientHello cannot be mirrored");
-                    client_config(self.relay.egress_tls.clone())?
+                    client_config(self.relay.egress_tls.clone())
+                        .map_err(|error| origin_refusal("egress-tls-configuration", error))?
                 }
             }
         } else {
-            client_config(self.relay.egress_tls.clone())?
+            client_config(self.relay.egress_tls.clone())
+                .map_err(|error| origin_refusal("egress-tls-configuration", error))?
         };
         let mirrored = self
             .relay
@@ -628,28 +640,34 @@ where
             None => (self.relay.egress_transport.clone(), None),
         };
         client.set_transport_config(transport);
-        client.set_version(self.peeked.version)?;
+        client
+            .set_version(self.peeked.version)
+            .map_err(|error| origin_refusal("transport-configuration", error))?;
 
-        let origin = egress.peer_addr()?;
+        let origin = egress
+            .peer_addr()
+            .map_err(|error| origin_refusal("origin-address", error))?;
         // QUIC bit greasing and the payload limit are endpoint-wide; a mirroring egress
         // advertises them as its client did.
         let endpoint = Endpoint::build(self.relay.exec.clone())
             .maybe_with_config(endpoint_config)
-            .with_datagram_socket(egress)?;
-        let mut connecting =
-            endpoint.connect_with(client, origin.into(), &self.server_name.to_string())?;
+            .with_datagram_socket(egress)
+            .map_err(|error| origin_refusal("origin-endpoint", error))?;
+        let mut connecting = endpoint
+            .connect_with(client, origin.into(), &self.server_name.to_string())
+            .map_err(|error| origin_refusal("origin-connect", error))?;
         let (connection, negotiated, origin_leaf, request) = if let Some(requested) = requested {
             tokio::select! {
                 biased;
                 // The callback can report a request and fail in the same poll.
                 connection = &mut connecting => {
-                    let connection = connection?;
-                    let (negotiated, leaf) = established_origin(&connection)?;
+                    let connection = connection.map_err(|error| origin_refusal("origin-handshake", error))?;
+                    let (negotiated, leaf) = established_origin(&connection).map_err(|error| origin_refusal("origin-certificate", error))?;
                     (OriginConnection::Established(connection), negotiated, leaf, None)
                 }
                 requested = requested => {
                     let requested = requested.map_err(|_closed| {
-                        BoxError::from_static_str("QUIC MITM origin handshake closed")
+                        origin_refusal("origin-handshake", BoxError::from_static_str("QUIC MITM origin handshake closed"))
                     })?;
                     (
                         OriginConnection::AwaitingCredential(Box::new(connecting)),
@@ -660,8 +678,11 @@ where
                 }
             }
         } else {
-            let connection = connecting.await?;
-            let (negotiated, leaf) = established_origin(&connection)?;
+            let connection = connecting
+                .await
+                .map_err(|error| origin_refusal("origin-handshake", error))?;
+            let (negotiated, leaf) = established_origin(&connection)
+                .map_err(|error| origin_refusal("origin-certificate", error))?;
             (
                 OriginConnection::Established(connection),
                 negotiated,
@@ -676,8 +697,12 @@ where
             negotiated: negotiated.clone(),
             client_auth: None,
         });
-        let negotiated = negotiated
-            .ok_or_else(|| BoxError::from_static_str("QUIC origin negotiated no ALPN"))?;
+        let negotiated = negotiated.ok_or_else(|| {
+            origin_refusal(
+                "origin-missing-alpn",
+                BoxError::from_static_str("QUIC origin negotiated no ALPN"),
+            )
+        })?;
 
         let mirror = answer
             .lock()
@@ -699,7 +724,8 @@ where
                     server_name: Some(self.server_name.clone()),
                     server_certificate: origin_leaf.clone(),
                 })
-                .await?;
+                .await
+                .map_err(|error| origin_refusal("client-auth-policy", error))?;
             if let Some(origin) = self.origin.lock().as_mut() {
                 origin.client_auth = Some(ClientAuthExchange {
                     plan,
@@ -739,23 +765,34 @@ where
             .issuer
             .issue_mitm_x509_cert(origin_leaf)
             .await
-            .map_err(Into::into)?;
+            .map_err(|error| {
+                origin_refusal("certificate-issuance", Into::<BoxError>::into(error))
+            })?;
         let mut identity = ServerAuthData::new(
             issued
                 .crt_chain
                 .iter()
                 .map(|cert| cert.to_der().map(CertificateDer::from))
-                .collect::<Result<_, _>>()?,
-            PrivateKeyDer::try_from(issued.key.private_key_to_der()?)
-                .map_err(BoxError::from_static_str)?,
+                .collect::<Result<_, _>>()
+                .map_err(|error| origin_refusal("issued-identity", error))?,
+            PrivateKeyDer::try_from(
+                issued
+                    .key
+                    .private_key_to_der()
+                    .map_err(|error| origin_refusal("issued-identity", error))?,
+            )
+            .map_err(|error| origin_refusal("issued-identity", BoxError::from_static_str(error)))?,
         );
         identity.ocsp = issued.ocsp_staple.map(|bytes| bytes.to_vec());
         server_tls.set_server_auth(identity);
         server_tls.set_alpn([negotiated].into_iter().collect());
-        match server_config_from_rama(&server_tls, TlsOptions::default())? {
+        match server_config_from_rama(&server_tls, TlsOptions::default())
+            .map_err(|error| origin_refusal("ingress-tls-configuration", error))?
+        {
             ServerCrypto::Fixed(config) => Ok(config),
-            ServerCrypto::Resolver(_) => Err(BoxError::from_static_str(
-                "QUIC MITM issued identity resolves per ClientHello",
+            ServerCrypto::Resolver(_) => Err(origin_refusal(
+                "ingress-tls-configuration",
+                BoxError::from_static_str("QUIC MITM issued identity resolves per ClientHello"),
             )),
         }
     }
@@ -800,8 +837,11 @@ where
             if attempt.ext_server_name() != peeked.ext_server_name()
                 || attempt.ext_alpn() != peeked.ext_alpn()
             {
-                return Err(BoxError::from_static_str(
-                    "QUIC MITM attempt differs from the peeked ClientHello",
+                return Err(origin_refusal(
+                    "attempt-mismatch",
+                    BoxError::from_static_str(
+                        "QUIC MITM attempt differs from the peeked ClientHello",
+                    ),
                 ));
             }
             Ok(crypto::ServerConfigResolution::Pending(Box::pin(

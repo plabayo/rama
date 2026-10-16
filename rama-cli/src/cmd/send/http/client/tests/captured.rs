@@ -285,6 +285,27 @@ fn captured_draw_cli_requires_complete_exact_width_coordinates() {
     for flag in flags {
         args.extend([flag, value.as_str()]);
     }
+    for pin in ["--emulate-connection-variant", "--emulate-request-variant"] {
+        for mask in 0..8 {
+            let mut pinned = vec![
+                "rama-send-test",
+                "--emulate=archive.json",
+                "http://example.test",
+                pin,
+                value.as_str(),
+            ];
+            for (index, flag) in flags.iter().enumerate() {
+                if mask & (1 << index) != 0 {
+                    pinned.extend([*flag, value.as_str()]);
+                }
+            }
+            assert_eq!(
+                TestCli::try_parse_from(pinned).is_ok(),
+                mask == 7,
+                "{pin} requires all three coordinates (mask={mask})"
+            );
+        }
+    }
     let cfg = TestCli::try_parse_from(&args).unwrap().send;
     assert_eq!(cfg.emulate_seed.unwrap().0, [0xab; 32]);
     assert_eq!(cfg.emulate_connection_key.unwrap().0, [0xab; 32]);

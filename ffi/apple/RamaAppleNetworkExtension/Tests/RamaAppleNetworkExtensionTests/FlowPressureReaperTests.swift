@@ -3670,7 +3670,9 @@ final class FlowPressureReaperTests: XCTestCase {
     func testAdmissionBelowCapIsProtectedDuringActiveRepair() {
         defaultFlowPressureSoftCap = 5
         defaultFlowPressureLowWater = 2
-        defaultFlowPressureIdleFloorMs = 0
+        // This fixture tests admission protection, not the zero-idle boundary.
+        // A recently active victim must remain ineligible after queue scheduling.
+        defaultFlowPressureIdleFloorMs = 5_000
         let core = makeCore()
         let (lateQueue, lateGate) = gatedQueue("below-cap-admission")
         defer { lateGate.signal() }
@@ -3694,6 +3696,8 @@ final class FlowPressureReaperTests: XCTestCase {
             4,
             "admission lands below the soft cap while the episode is active")
         late.markActiveNow()
+        // Cross a millisecond boundary before the flow queue re-checks activity.
+        Thread.sleep(forTimeInterval: 0.02)
         lateGate.signal()
 
         pollUntilPressure("late spare chooses only the older replacement") {

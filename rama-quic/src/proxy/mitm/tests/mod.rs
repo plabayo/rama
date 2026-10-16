@@ -750,3 +750,58 @@ async fn a_client_that_fails_its_handshake_closes_the_origin_with_the_failure_co
 mod answer;
 mod client_auth;
 mod mirror;
+
+#[test]
+fn origin_refusal_classes_are_public_without_private_error_details() {
+    use std::io::Write;
+    #[derive(Clone)]
+    struct LogBuffer(Arc<std::sync::RwLock<Vec<u8>>>);
+    impl Write for LogBuffer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.write().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let output = Arc::new(std::sync::RwLock::new(Vec::new()));
+    let writer = LogBuffer(output.clone());
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        for class in [
+            "attempt-mismatch",
+            "egress-unavailable",
+            "client-auth-configuration",
+            "egress-tls-configuration",
+            "transport-configuration",
+            "origin-address",
+            "origin-endpoint",
+            "origin-connect",
+            "origin-handshake",
+            "origin-certificate",
+            "origin-missing-alpn",
+            "client-auth-policy",
+            "certificate-issuance",
+            "issued-identity",
+            "ingress-tls-configuration",
+        ] {
+            let error = origin_refusal(
+                class,
+                BoxError::from_static_str("private-origin.example: secret certificate"),
+            );
+            assert!(error.to_string().contains("private-origin.example"));
+            let log = String::from_utf8(output.read().unwrap().clone()).unwrap();
+            assert!(
+                log.contains(&format!("QUIC MITM origin refused: {class}")),
+                "{log}"
+            );
+            assert!(!log.contains("private-origin.example"));
+            assert!(!log.contains("secret certificate"));
+        }
+    });
+}

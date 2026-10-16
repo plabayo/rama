@@ -14,7 +14,6 @@ use rama::{
     http::{
         Request, Response,
         layer::{
-            compression::{MirrorDecompressed, stream::StreamCompressionLayer},
             decompression::DecompressionLayer,
             dpi_proxy_credential::DpiProxyCredentialExtractorLayer,
             map_response_body::MapResponseBodyLayer,
@@ -232,9 +231,7 @@ impl DemoTcpMitmService {
             MapResponseBodyLayer::new_boxed_streaming_body(),
             // A MITM relay forwards whatever `Accept-Encoding` the client sends; it must not turn
             // an unsatisfiable negotiation into its own 406, so opt out of that enforcement.
-            StreamCompressionLayer::new()
-                .with_enforce_not_acceptable(false)
-                .with_compress_predicate(MirrorDecompressed::new()),
+            crate::http::html::response_compression_layer(),
             html_badge_layer,
             DecompressionLayer::new()
                 .with_insert_accept_encoding_header(false)
