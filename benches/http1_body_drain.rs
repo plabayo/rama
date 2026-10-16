@@ -1,5 +1,5 @@
 //! HTTP/1 connection reuse when callers drop response bodies unread or
-//! partially read, against a raw loopback origin (plain TCP and rustls with
+//! partially read, against a Rama HTTP/1 origin (plain TCP and rustls with
 //! ALPN `http/1.1`), with draining of abandoned bodies on and off.
 //!
 //! ```sh
@@ -36,23 +36,29 @@ use rama::{
     Layer as _, Service,
     bytes::Bytes,
     error::extra::OpaqueError,
+    futures::{StreamExt as _, stream},
     http::{
         Body, Request, Response, Version,
         body::{StreamingBody as _, util::BodyExt as _},
         client::{EasyHttpWebClient, Http1BodyDrainConfig, HttpPooledConnectorConfig},
+        header::CONTENT_LENGTH,
+        server::HttpServer,
     },
-    io::Io,
+    layer::MapInputLayer,
     net::{address::SocketAddress, client::pool::SaturationPolicy, tls::ApplicationProtocol},
     rt::Executor,
+    service::service_fn,
     tcp::{client::service::TcpConnector, server::TcpListener},
     tls::{
         client::{ServerVerifyMode, TlsClientConfig},
         rustls,
         server::{GeneratedServerAuthConfig, TlsServerConfig},
     },
-    utils::collections::smallvec::smallvec,
+    utils::{
+        collections::smallvec::smallvec,
+        octets::{kib, mib},
+    },
 };
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 mod bench_alloc;
 
@@ -63,19 +69,19 @@ fn main() {
 /// Longer than the default drain timeout (50 ms).
 const SETTLE: Duration = Duration::from_millis(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-const CHUNK: usize = 4 * 1024;
+const CHUNK: usize = kib(4);
 const CLIENT_WORKERS: usize = 2;
 const SERVER_WORKERS: usize = 2;
 const UNCAPPED_CONCURRENCY: usize = 4;
 
 /// The largest body served, generated once outside of any timing.
-static PAYLOAD: LazyLock<Bytes> = LazyLock::new(|| Bytes::from(vec![b'x'; 2 * 1024 * 1024]));
+static PAYLOAD: LazyLock<Bytes> = LazyLock::new(|| Bytes::from(vec![b'x'; mib(2)]));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Consume {
     /// Drop the response after its status.
     Unread,
-    /// Read one frame (a chunk of [`CHUNK`] bytes), drop the rest.
+    /// Read one response frame, drop the rest.
     Prefix,
     /// Read the whole body.
     Full,
@@ -123,43 +129,37 @@ const fn workload(
 
 const WORKLOADS: &[Workload] = &[
     workload("unread_2b", Framing::Sized, 2, Consume::Unread, 16),
-    workload("unread_4kib", Framing::Sized, 4 * 1024, Consume::Unread, 16),
-    workload(
-        "unread_64kib",
-        Framing::Sized,
-        64 * 1024,
-        Consume::Unread,
-        16,
-    ),
+    workload("unread_4kib", Framing::Sized, kib(4), Consume::Unread, 16),
+    workload("unread_64kib", Framing::Sized, kib(64), Consume::Unread, 16),
     workload(
         "prefix_64kib",
         Framing::Chunked,
-        64 * 1024,
+        kib(64),
         Consume::Prefix,
         16,
     ),
     workload(
         "prefix_512kib",
         Framing::Chunked,
-        512 * 1024,
+        kib(512),
         Consume::Prefix,
         16,
     ),
     workload("full_2b", Framing::Sized, 2, Consume::Full, 16),
-    workload("full_4kib", Framing::Sized, 4 * 1024, Consume::Full, 16),
-    workload("full_64kib", Framing::Sized, 64 * 1024, Consume::Full, 16),
+    workload("full_4kib", Framing::Sized, kib(4), Consume::Full, 16),
+    workload("full_64kib", Framing::Sized, kib(64), Consume::Full, 16),
     workload("empty", Framing::Sized, 0, Consume::Unread, 16),
     workload(
         "unread_2mib_over_budget",
         Framing::Sized,
-        2 * 1024 * 1024,
+        mib(2),
         Consume::Unread,
         16,
     ),
     workload(
         "unread_slow_over_deadline",
         Framing::Slow,
-        64 * 1024,
+        kib(64),
         Consume::Unread,
         4,
     ),
@@ -219,100 +219,32 @@ impl Stats {
     }
 }
 
-/// Counts the connections an inner service is handed.
-#[derive(Debug, Clone)]
-struct Count<S> {
-    inner: S,
-    count: Arc<Stats>,
-    tls: bool,
-}
-
-impl<S, Input> Service<Input> for Count<S>
-where
-    S: Service<Input>,
-    Input: Send + 'static,
-{
-    type Output = S::Output;
-    type Error = S::Error;
-
-    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let counter = if self.tls {
-            &self.count.tls
-        } else {
-            &self.count.tcp
-        };
-        counter.fetch_add(1, Ordering::Relaxed);
-        self.inner.serve(input).await
-    }
-}
-
-/// A raw HTTP/1 origin answering `/{sized|chunked|slow}/{size}` byte for byte.
-#[derive(Debug, Clone)]
-struct Origin;
-
-impl<S: Io> Service<S> for Origin {
-    type Output = ();
-    type Error = Infallible;
-
-    async fn serve(&self, stream: S) -> Result<(), Infallible> {
-        let mut stream = std::pin::pin!(stream);
-        let mut buf = Vec::with_capacity(1024);
-        loop {
-            let head_end = loop {
-                if let Some(at) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
-                    break at + 4;
-                }
-                let mut chunk = [0u8; 1024];
-                match stream.read(&mut chunk).await {
-                    Ok(0) | Err(_) => return Ok(()),
-                    Ok(read) => buf.extend_from_slice(&chunk[..read]),
-                }
-            };
-            let path = std::str::from_utf8(&buf[..head_end])
-                .ok()
-                .and_then(|head| head.split(' ').nth(1))
-                .unwrap_or("/")
-                .to_owned();
-            buf.drain(..head_end);
-            let mut parts = path.trim_start_matches('/').split('/');
-            let framing = parts.next().unwrap_or_default().to_owned();
-            let size: usize = parts.next().and_then(|size| size.parse().ok()).unwrap_or(0);
-            let body = PAYLOAD.slice(..size);
-            let written = match framing.as_str() {
-                "chunked" => {
-                    let mut out = Vec::with_capacity(size + size / CHUNK * 8 + 64);
-                    out.extend_from_slice(b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n");
-                    for chunk in body.chunks(CHUNK) {
-                        out.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
-                        out.extend_from_slice(chunk);
-                        out.extend_from_slice(b"\r\n");
-                    }
-                    out.extend_from_slice(b"0\r\n\r\n");
-                    stream.write_all(&out).await
-                }
-                "slow" => {
-                    let head = format!("HTTP/1.1 200 OK\r\ncontent-length: {size}\r\n\r\n");
-                    if stream.write_all(head.as_bytes()).await.is_err()
-                        || stream.write_all(&body[..1]).await.is_err()
-                    {
-                        return Ok(());
-                    }
+/// Typed responses for the sized, chunked and delayed-body workloads.
+async fn origin(request: Request) -> Result<Response, Infallible> {
+    let path = request.uri().path_or_root();
+    let mut parts = path.trim_start_matches('/').split('/');
+    let framing = parts.next().unwrap_or_default();
+    let size: usize = parts.next().and_then(|size| size.parse().ok()).unwrap_or(0);
+    let payload = PAYLOAD.slice(..size);
+    let body = match framing {
+        "chunked" => Body::from_stream(stream::iter((0..size).step_by(CHUNK).map(move |offset| {
+            Ok::<_, Infallible>(payload.slice(offset..(offset + CHUNK).min(size)))
+        }))),
+        "slow" => Body::from_stream(
+            stream::iter([Ok::<_, Infallible>(payload.slice(..1))]).chain(stream::once(
+                async move {
                     tokio::time::sleep(Duration::from_millis(200)).await;
-                    stream.write_all(&body[1..]).await
-                }
-                _ => {
-                    let head = format!("HTTP/1.1 200 OK\r\ncontent-length: {size}\r\n\r\n");
-                    match stream.write_all(head.as_bytes()).await {
-                        Ok(()) => stream.write_all(&body).await,
-                        Err(error) => Err(error),
-                    }
-                }
-            };
-            if written.is_err() {
-                return Ok(());
-            }
-        }
+                    Ok::<_, Infallible>(payload.slice(1..))
+                },
+            )),
+        ),
+        _ => Body::from(payload),
+    };
+    let mut response = Response::new(body);
+    if framing == "slow" {
+        response.headers_mut().insert(CONTENT_LENGTH, size.into());
     }
+    Ok(response)
 }
 
 /// A server runtime, shut down with its tasks and sockets on drop.
@@ -332,8 +264,6 @@ fn spawn_origin(transport: Transport, stats: Arc<Stats>) -> (SocketAddress, Serv
         .enable_all()
         .build()
         .unwrap();
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
     // certificates are generated before any timing
     let tls = (transport == Transport::Tls).then(|| {
         TlsServerConfig::new()
@@ -341,36 +271,45 @@ fn spawn_origin(transport: Transport, stats: Arc<Stats>) -> (SocketAddress, Serv
             .expect("self signed")
             .with_alpn_http_1()
     });
-    runtime.spawn(async move {
-        let listener =
-            TcpListener::try_from_std_tcp_listener(listener, Executor::default()).unwrap();
-        let origin = Count {
-            inner: Origin,
-            count: stats.clone(),
-            tls: true,
-        };
-        match tls {
-            None => {
-                listener
-                    .serve(Count {
-                        inner: Origin,
-                        count: stats,
-                        tls: false,
-                    })
-                    .await;
+    let addr = runtime.block_on(async {
+        let exec = Executor::new();
+        let listener = TcpListener::build(exec.clone())
+            .bind_address(SocketAddress::local_ipv4(0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap().into();
+        let http = HttpServer::new_http1(exec.clone()).service(service_fn(origin));
+        let count_tcp = MapInputLayer::new({
+            let stats = stats.clone();
+            move |stream| {
+                stats.tcp.fetch_add(1, Ordering::Relaxed);
+                stream
             }
-            Some(config) => {
-                listener
-                    .serve(Count {
-                        inner: rustls::server::TlsAcceptorLayer::new(config).into_layer(origin),
-                        count: stats,
-                        tls: false,
-                    })
-                    .await;
+        });
+        exec.spawn_task(async move {
+            match tls {
+                None => listener.serve(count_tcp.into_layer(http)).await,
+                Some(config) => {
+                    let count_tls = MapInputLayer::new(move |stream| {
+                        stats.tls.fetch_add(1, Ordering::Relaxed);
+                        stream
+                    });
+                    listener
+                        .serve(
+                            (
+                                count_tcp,
+                                rustls::server::TlsAcceptorLayer::new(config),
+                                count_tls,
+                            )
+                                .into_layer(http),
+                        )
+                        .await;
+                }
             }
-        }
+        });
+        addr
     });
-    (addr.into(), ServerRuntime(Some(runtime)))
+    (addr, ServerRuntime(Some(runtime)))
 }
 
 fn client(
