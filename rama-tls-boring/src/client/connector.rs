@@ -270,8 +270,10 @@ where
             input.target_protocol().is_some_and(Protocol::is_secure),
         )?;
         #[cfg(feature = "ua")]
-        self.check_profile_before_dial(&input)?;
+        self.check_prepared_profile(&input)?;
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
+        #[cfg(feature = "ua")]
+        self.check_prepared_profile(&input)?;
 
         let authority = input.target_authority().ok_or_else(|| {
             ConnectionError::local(
@@ -354,8 +356,10 @@ where
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         self.check_attempt_policy(&input, true)?;
         #[cfg(feature = "ua")]
-        self.check_profile_before_dial(&input)?;
+        self.check_prepared_profile(&input)?;
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
+        #[cfg(feature = "ua")]
+        self.check_prepared_profile(&input)?;
 
         let authority = input.target_authority().ok_or_else(|| {
             ConnectionError::local(
@@ -609,7 +613,7 @@ impl<S, K> TlsConnector<S, K> {
     }
 
     #[cfg(feature = "ua")]
-    fn check_profile_before_dial(
+    fn check_prepared_profile(
         &self,
         input: &(impl AuthorityInputExt + ProtocolInputExt + ExtensionsRef),
     ) -> Result<(), ConnectionError> {

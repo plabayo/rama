@@ -79,6 +79,78 @@ async fn changed_policy_after_transport_rejects_before_handshake() {
     );
 }
 
+#[tokio::test]
+async fn transport_cannot_change_or_remove_the_prepared_destination_or_protocol() {
+    for secure in [false, true] {
+        for (protocol, change_authority) in [
+            (Some(Protocol::HTTP), false),
+            (None, false),
+            (Some(Protocol::WSS), false),
+            (Some(Protocol::HTTPS), true),
+        ] {
+            let inner = service_fn(move |mut input: ConnectRequest| {
+                input.application_protocol = protocol.clone();
+                if change_authority {
+                    input.authority = "other.test:443".parse().unwrap();
+                }
+                async move {
+                    let (client, _server) = tokio::io::duplex(1024);
+                    Ok::<_, ConnectionError>(EstablishedClientConnection {
+                        input,
+                        conn: ServiceInput::new(client),
+                    })
+                }
+            });
+            let auto = TlsConnector::auto(inner.clone());
+            let forced = TlsConnector::secure(inner);
+            let compiler = if secure {
+                forced.profile_compiler()
+            } else {
+                auto.profile_compiler()
+            };
+            let request = input();
+            compiler
+                .prepare(&request, &capture())
+                .unwrap()
+                .apply(request.extensions());
+            let extensions = request.extensions().clone();
+            let result = if secure {
+                forced.serve(request).await.map(|_| ())
+            } else {
+                auto.serve(request).await.map(|_| ())
+            };
+            let error = result.unwrap_err();
+            assert!(error.to_string().contains("policy changed"), "{error}");
+            assert!(
+                extensions
+                    .get_ref::<PendingTlsProfile>()
+                    .unwrap()
+                    .prepared
+                    .lock()
+                    .is_some()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn ordinary_auto_connections_can_still_return_plaintext_after_transport() {
+    for protocol in [Some(Protocol::HTTP), None] {
+        let inner = service_fn(move |mut input: ConnectRequest| {
+            input.application_protocol = protocol.clone();
+            async move {
+                let (client, _server) = tokio::io::duplex(1024);
+                Ok::<_, ConnectionError>(EstablishedClientConnection {
+                    input,
+                    conn: ServiceInput::new(client),
+                })
+            }
+        });
+        let connection = TlsConnector::auto(inner).serve(input()).await.unwrap();
+        assert!(connection.conn.ssl_ref().is_none());
+    }
+}
+
 #[test]
 fn prepared_session_is_bound_and_can_only_be_consumed_once() {
     let connector = TlsConnector::auto(());
