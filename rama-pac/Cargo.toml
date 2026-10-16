@@ -24,6 +24,7 @@ default = []
 # the http-backed pac script fetcher (`FetchPacScript`)
 http = ["dep:rama-http"]
 js-disk-cache = ["rama-js/disk-cache"]
+js-interpreter = ["rama-js/interpreter"]
 
 [dependencies]
 ahash = { workspace = true }
@@ -44,3 +45,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "pac"
+harness = false

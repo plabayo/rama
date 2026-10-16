@@ -122,6 +122,72 @@ final class NativeTcpConnectionTests: XCTestCase {
             usedProxy: false)
     }
 
+    func testEchoServerDrainsCancelledSendCompletion() throws {
+        let pending = Locked<(@Sendable (NWError?) -> Void)?>(nil)
+        let queued = expectation(description: "echo send pending")
+        let server = try EchoServer(proxy: false) { _, _, _, completion in
+            pending.withLock { $0 = completion }
+            queued.fulfill()
+        }
+        defer {
+            server.beginCancellation()
+            // Also release an injected completion if an earlier assertion or
+            // unwrap fails, so the failure path cannot retain the fixture.
+            let completion = pending.withLock { value in
+                defer { value = nil }
+                return value
+            }
+            completion?(.posix(.ECANCELED))
+            server.cancel()
+        }
+        let connection = try XCTUnwrap(
+            NativeTcpConnection(
+                host: "127.0.0.1", port: server.port,
+                parameters: makeTcpNwParameters(nil).native))
+        defer { connection.cancelAndDetach() }
+        connection.start(queue: DispatchQueue(label: "rama.test.pending-echo"))
+        let sent = expectation(description: "client FIN sent")
+        let sendError = Locked<NWError?>(nil)
+        connection.send(
+            content: nil, contentContext: .finalMessage, isComplete: true,
+            completion: .contentProcessed { error in
+                sendError.withLock { $0 = error }
+                sent.fulfill()
+            })
+        wait(for: [queued, sent], timeout: 5)
+        XCTAssertNil(sendError.withLock { $0 })
+        let completion = try XCTUnwrap(
+            pending.withLock { value in
+                defer { value = nil }
+                return value
+            })
+        // Force the ordering seen in CI: cancellation occurs while a final send
+        // completion is still outstanding, then ECANCELED arrives asynchronously.
+        server.beginCancellation()
+        DispatchQueue.global().async { completion(.posix(.ECANCELED)) }
+        server.cancel()
+    }
+
+    func testEchoServerDrainsPendingReceivesAndRepeatedCancellation() throws {
+        for proxy in [false, true] {
+            let server = try EchoServer(proxy: proxy)
+            defer { server.cancel() }
+            let connection = try XCTUnwrap(
+                NativeTcpConnection(
+                    host: "127.0.0.1", port: server.port,
+                    parameters: makeTcpNwParameters(nil).native))
+            defer { connection.cancelAndDetach() }
+            let ready = expectation(description: "idle client ready")
+            connection.stateUpdateHandler = { if case .ready = $0 { ready.fulfill() } }
+            connection.start(queue: DispatchQueue(label: "rama.test.idle-echo"))
+            wait(for: [ready], timeout: 5)
+            XCTAssertEqual(server.receiveStarted.wait(timeout: .now() + 5), .success)
+            // The peer may be waiting for either CONNECT or application data.
+            server.cancel()
+            server.cancel()
+        }
+    }
+
     func testReportCallbackSurvivesCancellationAndRelease() throws {
         let server = try EchoServer(proxy: false)
         defer { server.cancel() }
@@ -271,19 +337,23 @@ final class NativeTcpConnectionTests: XCTestCase {
             NativeTcpConnection(
                 host: "rama-egress-test.invalid", port: 443,
                 parameters: proxiedParameters(port: server.port, allow: false)))
-        defer { connection.cancel() }
+        defer { connection.cancelAndDetach() }
         let failed = expectation(description: "direct DNS failure")
         let seen = Locked(false)
+        let failures = Locked<[String]>([])
         connection.stateUpdateHandler = { state in
             switch state {
-            case .ready: XCTFail("unexpected proxy fallback")
+            case .ready: failures.withLock { $0.append("unexpected proxy fallback") }
             case .waiting(let error), .failed(let error):
                 if !seen.withLock({ previous in
                     let old = previous
                     previous = true
                     return old
                 }) {
-                    if case .dns = error {} else { XCTFail("expected DNS failure, got \(error)") }
+                    if case .dns = error {
+                    } else {
+                        failures.withLock { $0.append("expected DNS failure, got \(error)") }
+                    }
                     failed.fulfill()
                 }
             default: break
@@ -292,17 +362,21 @@ final class NativeTcpConnectionTests: XCTestCase {
         connection.start(queue: DispatchQueue(label: "rama.test.deny"))
         wait(for: [failed], timeout: 10)
         let reportRead = expectation(description: "failed establishment has no report")
+        let reportValue = Locked<TcpEstablishmentReport?>(nil)
         connection.requestTcpEstablishmentReport(
             queue: DispatchQueue(label: "rama.test.failed-report")
         ) { report in
-            XCTAssertNil(report)
+            reportValue.withLock { $0 = report }
             reportRead.fulfill()
         }
         wait(for: [reportRead], timeout: 5)
+        XCTAssertNil(reportValue.withLock { $0 })
         let observed = expectation(description: "fallback observation window")
         DispatchQueue.global().asyncAfter(deadline: .now() + 2) { observed.fulfill() }
         wait(for: [observed], timeout: 3)
         XCTAssertEqual(server.contacts.withLock { $0 }, 0)
+        XCTAssertTrue(
+            failures.withLock { $0.isEmpty }, failures.withLock { $0.joined(separator: "\n") })
     }
 
     func testInvalidPortAndCancellation() throws {
@@ -342,19 +416,23 @@ final class NativeTcpConnectionTests: XCTestCase {
                 "PAC denial requires the private capability")
             let connection = try XCTUnwrap(
                 NativeTcpConnection(host: host, port: port, parameters: parameters.native))
-            defer { connection.cancel() }
+            defer { connection.cancelAndDetach() }
             let failed = expectation(description: "direct DNS failure")
             let seen = Locked(false)
+            let failures = Locked<[String]>([])
             connection.stateUpdateHandler = { state in
                 switch state {
-                case .ready: XCTFail("unexpected PAC fallback")
+                case .ready: failures.withLock { $0.append("unexpected PAC fallback") }
                 case .waiting(let error), .failed(let error):
                     if !seen.withLock({ previous in
                         let old = previous
                         previous = true
                         return old
                     }) {
-                        if case .dns = error {} else { XCTFail("expected DNS failure: \(error)") }
+                        if case .dns = error {
+                        } else {
+                            failures.withLock { $0.append("expected DNS failure: \(error)") }
+                        }
                         failed.fulfill()
                     }
                 default: break
@@ -365,6 +443,8 @@ final class NativeTcpConnectionTests: XCTestCase {
             let observed = expectation(description: "PAC fallback observation")
             DispatchQueue.global().asyncAfter(deadline: .now() + 10) { observed.fulfill() }
             wait(for: [observed], timeout: 11)
+            XCTAssertTrue(
+                failures.withLock { $0.isEmpty }, failures.withLock { $0.joined(separator: "\n") })
         } else {
             try exchange(
                 host: host, port: port, parameters: parameters.native,
@@ -380,7 +460,13 @@ final class NativeTcpConnectionTests: XCTestCase {
     {
         let connection = try XCTUnwrap(
             NativeTcpConnection(host: host, port: port, parameters: parameters))
-        defer { connection.cancel() }
+        let callbacks = DispatchGroup()
+        defer {
+            connection.cancelAndDetach()
+            XCTAssertEqual(
+                callbacks.wait(timeout: .now() + 5), .success,
+                "client callbacks did not drain")
+        }
         let queue = DispatchQueue(label: "rama.test.exchange")
         let ready = expectation(description: "ready")
         let states = Locked<[String]>([])
@@ -406,108 +492,191 @@ final class NativeTcpConnectionTests: XCTestCase {
             return
         }
         let reported = expectation(description: "report")
+        let reportValue = Locked<TcpEstablishmentReport?>(nil)
+        callbacks.enter()
         connection.requestTcpEstablishmentReport(queue: queue) { report in
-            XCTAssertNotNil(report)
-            XCTAssertEqual(report?.usedProxy, usedProxy)
-            if let proxyEndpoint { XCTAssertEqual(report?.proxyEndpoint, proxyEndpoint) }
-            if usedProxy {
-                XCTAssertEqual(report?.proxyConfigured, true)
-                XCTAssertNotNil(report?.proxyEndpoint)
-            }
+            defer { callbacks.leave() }
+            reportValue.withLock { $0 = report }
             reported.fulfill()
         }
         let payload = Data((0..<(512 * 1024)).map { UInt8(truncatingIfNeeded: $0) })
         let received = Locked(Data())
+        let errors = Locked<[String]>([])
         let eof = expectation(description: "response after client FIN")
         @Sendable func read() {
+            callbacks.enter()
             connection.receive(minimumIncompleteLength: 1, maximumLength: 32 * 1024) {
                 data, _, complete, error in
-                XCTAssertNil(error)
+                defer { callbacks.leave() }
+                if let error { errors.withLock { $0.append("receive: \(error)") } }
                 if let data { received.withLock { $0.append(data) } }
                 if complete || error != nil { eof.fulfill() } else { read() }
             }
         }
+        // EOF can precede send completions. Await every completion before
+        // cancelling, and keep assertions out of callbacks on timeout paths.
+        let sent = expectation(description: "all client sends completed")
+        sent.expectedFulfillmentCount = 2 + payload.count / 8192
+        @Sendable func send(_ content: Data?, final: Bool = false) {
+            callbacks.enter()
+            connection.send(
+                content: content, contentContext: final ? .finalMessage : .defaultMessage,
+                isComplete: true,
+                completion: .contentProcessed { error in
+                    defer { callbacks.leave() }
+                    if let error { errors.withLock { $0.append("send: \(error)") } }
+                    sent.fulfill()
+                })
+        }
         read()
-        connection.send(
-            content: Data(), contentContext: .defaultMessage, isComplete: true,
-            completion: .contentProcessed { XCTAssertNil($0) })
+        send(Data())
         // The server responds only after FIN: cancellation masquerading as a
         // half-close, dropped buffers, and final-context mistakes all fail this.
         for offset in stride(from: 0, to: payload.count, by: 8192) {
-            connection.send(
-                content: payload.subdata(in: offset..<(offset + 8192)),
-                contentContext: .defaultMessage,
-                isComplete: true, completion: .contentProcessed { XCTAssertNil($0) })
+            send(payload.subdata(in: offset..<(offset + 8192)))
         }
-        connection.send(
-            content: nil, contentContext: .finalMessage, isComplete: true,
-            completion: .contentProcessed { XCTAssertNil($0) })
-        wait(for: [eof, reported], timeout: 15)
+        send(nil, final: true)
+        wait(for: [eof, reported, sent], timeout: 15)
+        XCTAssertTrue(
+            errors.withLock { $0.isEmpty }, errors.withLock { $0.joined(separator: "\n") })
         XCTAssertEqual(received.withLock { $0 }, payload)
+        let report = try XCTUnwrap(reportValue.withLock { $0 })
+        XCTAssertEqual(report.usedProxy, usedProxy)
+        if let proxyEndpoint { XCTAssertEqual(report.proxyEndpoint, proxyEndpoint) }
+        if usedProxy {
+            XCTAssertEqual(report.proxyConfigured, true)
+            XCTAssertNotNil(report.proxyEndpoint)
+        }
     }
 }
 
 /// Loopback-only peer; optional HTTP CONNECT handshake, then echo after FIN.
 private final class EchoServer: @unchecked Sendable {
+    typealias Send =
+        @Sendable (
+            NWConnection, Data, NWConnection.ContentContext,
+            @escaping @Sendable (NWError?) -> Void
+        ) -> Void
     let listener: NWListener
     let queue = DispatchQueue(label: "rama.test.echo")
-    let connections = Locked<[NWConnection]>([])
     let contacts = Locked(0)
+    let receiveStarted = DispatchSemaphore(value: 0)
+    private let callbacks = DispatchGroup()
+    private let sendContent: Send
+    // All mutable fixture state and socket callbacks belong to queue.
+    private var connections: [NWConnection] = []
+    private var stopping = false
+    private var failures: [String] = []
     var port: UInt16 { listener.port!.rawValue }
 
-    init(proxy: Bool, ipv6: Bool = false) throws {
+    init(
+        proxy: Bool, ipv6: Bool = false,
+        send: @escaping Send = { connection, content, context, completion in
+            connection.send(
+                content: content, contentContext: context, isComplete: true,
+                completion: .contentProcessed(completion))
+        }
+    ) throws {
+        sendContent = send
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(
             host: ipv6 ? .ipv6(.loopback) : .ipv4(.loopback), port: .any)
         listener = try NWListener(using: parameters)
         let started = DispatchSemaphore(value: 0)
-        listener.stateUpdateHandler = { if case .ready = $0 { started.signal() } }
+        callbacks.enter()
+        listener.stateUpdateHandler = { [callbacks] state in
+            switch state {
+            case .ready: started.signal()
+            case .cancelled: callbacks.leave()
+            default: break
+            }
+        }
         listener.newConnectionHandler = { [weak self] connection in
-            guard let self else { return }
+            guard let self, !self.stopping else {
+                connection.cancel()
+                return
+            }
             self.contacts.withLock { $0 += 1 }
-            self.connections.withLock { $0.append(connection) }
+            self.connections.append(connection)
             connection.start(queue: self.queue)
             self.read(connection, buffer: Data(), handshake: proxy)
         }
         listener.start(queue: queue)
         guard started.wait(timeout: .now() + 5) == .success else {
-            listener.cancel()
+            cancel()
             throw NSError(domain: "rama.test.listener", code: 1)
         }
     }
 
     private func read(_ connection: NWConnection, buffer: Data, handshake: Bool) {
+        callbacks.enter()
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) {
-            [weak self] data, _, complete, error in
-            guard let self, error == nil else { return }
+            [self] data, _, complete, error in
+            defer { callbacks.leave() }
+            guard !stopping, error == nil else { return }
             var buffer = buffer
             if let data { buffer.append(data) }
             if handshake, let end = buffer.range(of: Data("\r\n\r\n".utf8)) {
-                XCTAssertTrue(
-                    String(decoding: buffer.prefix(8), as: UTF8.self).hasPrefix("CONNECT "))
+                guard String(decoding: buffer.prefix(8), as: UTF8.self).hasPrefix("CONNECT ")
+                else {
+                    failures.append("expected HTTP CONNECT request")
+                    return
+                }
                 let rest = Data(buffer[end.upperBound...])
-                connection.send(
-                    content: Data("HTTP/1.1 200 Connection Established\r\n\r\n".utf8),
-                    completion: .contentProcessed { error in
-                        XCTAssertNil(error)
-                        self.read(connection, buffer: rest, handshake: false)
-                    })
+                send(connection, content: Data("HTTP/1.1 200 Connection Established\r\n\r\n".utf8))
+                {
+                    self.read(connection, buffer: rest, handshake: false)
+                }
             } else if complete {
-                XCTAssertFalse(handshake)
-                connection.send(
-                    content: buffer, contentContext: .finalMessage, isComplete: true,
-                    completion: .contentProcessed { XCTAssertNil($0) })
+                guard !handshake else {
+                    failures.append("EOF during HTTP CONNECT request")
+                    return
+                }
+                send(connection, content: buffer, final: true)
             } else {
-                self.read(connection, buffer: buffer, handshake: handshake)
+                read(connection, buffer: buffer, handshake: handshake)
+            }
+        }
+        receiveStarted.signal()
+    }
+
+    private func send(
+        _ connection: NWConnection, content: Data, final: Bool = false,
+        then continuation: (@Sendable () -> Void)? = nil
+    ) {
+        callbacks.enter()
+        sendContent(connection, content, final ? .finalMessage : .defaultMessage) { [self] error in
+            queue.async { [self] in
+                defer { callbacks.leave() }
+                // Only our own teardown may cancel an outstanding send. Preserve
+                // other errors, but report them in the owning test after draining.
+                if let error, !(stopping && error == .posix(.ECANCELED)) {
+                    failures.append("echo send failed: \(error)")
+                }
+                guard !stopping, error == nil else { return }
+                continuation?()
             }
         }
     }
 
-    func cancel() {
-        listener.cancel()
-        connections.withLock {
-            $0.forEach { $0.cancel() }
-            $0.removeAll()
+    func beginCancellation() {
+        dispatchPrecondition(condition: .notOnQueue(queue))
+        queue.sync {
+            guard !stopping else { return }
+            stopping = true
+            listener.cancel()
+            for connection in connections { connection.cancel() }
+            connections.removeAll()
         }
+    }
+
+    func cancel(file: StaticString = #filePath, line: UInt = #line) {
+        beginCancellation()
+        // A queue barrier alone cannot drain callbacks that Network.framework
+        // has not submitted yet. Count every receive/send and listener shutdown.
+        let drained = callbacks.wait(timeout: .now() + 5) == .success
+        XCTAssertTrue(drained, "echo server callbacks did not drain", file: file, line: line)
+        let errors = queue.sync { failures }
+        XCTAssertTrue(errors.isEmpty, errors.joined(separator: "\n"), file: file, line: line)
     }
 }

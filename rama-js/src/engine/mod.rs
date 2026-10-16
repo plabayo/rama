@@ -6,7 +6,7 @@
 
 mod starling;
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(feature = "interpreter")))]
 mod macos;
 
 pub(crate) use starling::Engine;
