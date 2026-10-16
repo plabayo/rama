@@ -119,7 +119,7 @@ try:
                        stdout=output, stderr=subprocess.STDOUT, timeout=30)
     archive = json.loads((root/'profiles.json').read_text())
     require(archive['profiles'], 'reference profile not captured')
-    (root/'summary.json').write_text(json.dumps({'scope':'Chrome H1 capture/export and strict replay; see comparison.json for exact membership results', 'profiles':len(archive['profiles']), 'browser':result['browser']},indent=2)+'\n')
+    (root/'summary.json').write_text(json.dumps({'scope':'Chrome H1 capture/export and strict replay; see comparison.json for exact membership results', 'profiles':len(archive['profiles']), 'browser':result['browser'], 'draw':{'seed':'01'*32, 'connection_key':'02'*32, 'request_key':'03'*32}},indent=2)+'\n')
     print(f'Chrome H1 capture/export: {len(archive["profiles"])} profiles', flush=True)
     subprocess.run(['docker', 'exec', os.environ['PR10_TEST_PG_CONTAINER'], 'createdb', '-U', 'postgres', 'rama_fp_m5_replay'], check=True, timeout=10)
     source_dsn = os.environ['PR10_CAPTURE_DATABASE_URL']
@@ -131,7 +131,7 @@ try:
     replay_port = ready(replay, log, r'network\.local\.port[= ]+(\d+)')
     replay_wire = capture_wire(replay_port, 'replay-wire')
     with (root/'rama-replay.log').open('w') as output:
-        subprocess.run([str(rama), 'send', f'--emulate={root / "profiles.json"}', '--http1.1', '--header', 'Connection: keep-alive', '--output', str(root/'replay-body.bin'), f'http://127.0.0.1:{replay_port}/report'], check=True, stdout=output, stderr=subprocess.STDOUT, timeout=30)
+        subprocess.run([str(rama), 'send', f'--emulate={root / "profiles.json"}', '--emulate-seed', '01'*32, '--emulate-connection-key', '02'*32, '--emulate-request-key', '03'*32, '--http1.1', '--header', 'Connection: keep-alive', '--output', str(root/'replay-body.bin'), f'http://127.0.0.1:{replay_port}/report'], check=True, stdout=output, stderr=subprocess.STDOUT, timeout=30)
     stop(replay)
     finish_capture(replay_wire, 'replay-wire', replay_port)
     require(replay.returncode == 0, 'fp replay did not drain')

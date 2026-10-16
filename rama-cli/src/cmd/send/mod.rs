@@ -253,6 +253,58 @@ pub struct SendCommand {
     /// A random profile is selected when no User-Agent header is defined.
     emulate: Option<EmulationProfiles>,
 
+    #[arg(
+        long,
+        value_name = "HEX64",
+        requires = "emulate",
+        requires = "emulate_connection_key",
+        requires = "emulate_request_key"
+    )]
+    /// Fix the captured-profile selection seed. Each coordinate is 32 bytes in hexadecimal.
+    emulate_seed: Option<arg::EmulationHex>,
+
+    #[arg(
+        long,
+        value_name = "HEX64",
+        requires = "emulate",
+        requires = "emulate_seed",
+        requires = "emulate_request_key"
+    )]
+    /// Fix the logical connection draw key. Each coordinate is 32 bytes in hexadecimal.
+    emulate_connection_key: Option<arg::EmulationHex>,
+
+    #[arg(
+        long,
+        value_name = "HEX64",
+        requires = "emulate",
+        requires = "emulate_seed",
+        requires = "emulate_connection_key"
+    )]
+    /// Fix the logical request draw key. Each coordinate is 32 bytes in hexadecimal.
+    emulate_request_key: Option<arg::EmulationHex>,
+
+    #[arg(
+        long,
+        value_name = "HEX64",
+        requires = "emulate",
+        requires = "emulate_seed",
+        requires = "emulate_connection_key",
+        requires = "emulate_request_key"
+    )]
+    /// Pin the exact stored connection variant. Each coordinate is 32 bytes in hexadecimal.
+    emulate_connection_variant: Option<arg::EmulationHex>,
+
+    #[arg(
+        long,
+        value_name = "HEX64",
+        requires = "emulate",
+        requires = "emulate_seed",
+        requires = "emulate_connection_key",
+        requires = "emulate_request_key"
+    )]
+    /// Pin the exact stored request variant. Each coordinate is 32 bytes in hexadecimal.
+    emulate_request_variant: Option<arg::EmulationHex>,
+
     #[arg(long = "http0.9")]
     /// (HTTP) force http_version to http/0.9
     ///

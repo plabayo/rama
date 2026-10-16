@@ -268,3 +268,182 @@ async fn captured_http3_connector_checks_preservation_before_sending() {
         std::io::ErrorKind::WouldBlock
     );
 }
+
+#[test]
+fn captured_draw_cli_requires_complete_exact_width_coordinates() {
+    let value = "ab".repeat(32);
+    let flags = [
+        "--emulate-seed",
+        "--emulate-connection-key",
+        "--emulate-request-key",
+    ];
+    let mut args = vec![
+        "rama-send-test",
+        "--emulate=archive.json",
+        "http://example.test",
+    ];
+    for flag in flags {
+        args.extend([flag, value.as_str()]);
+    }
+    let cfg = TestCli::try_parse_from(&args).unwrap().send;
+    assert_eq!(cfg.emulate_seed.unwrap().0, [0xab; 32]);
+    assert_eq!(cfg.emulate_connection_key.unwrap().0, [0xab; 32]);
+    assert_eq!(cfg.emulate_request_key.unwrap().0, [0xab; 32]);
+    for flag in flags {
+        assert!(
+            TestCli::try_parse_from([
+                "rama-send-test",
+                "--emulate=archive.json",
+                flag,
+                &value,
+                "http://example.test"
+            ])
+            .is_err()
+        );
+    }
+    for invalid in [
+        "ab".repeat(31),
+        "ab".repeat(33),
+        "zz".repeat(32),
+        format!("0x{value}"),
+        format!(" {value}"),
+    ] {
+        let mut invalid_args = args.clone();
+        invalid_args[4] = &invalid;
+        assert!(TestCli::try_parse_from(invalid_args).is_err());
+    }
+    let without_emulate: Vec<_> = args
+        .iter()
+        .copied()
+        .filter(|value| !value.starts_with("--emulate="))
+        .collect();
+    assert!(TestCli::try_parse_from(without_emulate).is_err());
+}
+
+#[tokio::test]
+async fn captured_draw_cli_publishes_all_coordinates_and_variant_pins() {
+    let database =
+        Arc::new(UserAgentDatabase::try_from_json_slice(&captured_archive(false)).unwrap());
+    let captured = database.iter().next().unwrap().captured.as_ref().unwrap();
+    let mut pins = VariantPins::default();
+    for scope in &captured.scopes {
+        if scope.observations.domain != CanonicalDomain::Joint {
+            continue;
+        }
+        let value = &scope.observations.variants[0].value;
+        match JointCapture::from_canonical(value, JointCaptureLimits::default())
+            .unwrap()
+            .level
+        {
+            CaptureLevel::Connection => pins.connection = Some(value.id),
+            CaptureLevel::Request => pins.request = Some(value.id),
+            CaptureLevel::Legacy => panic!("fresh fixture must not contain legacy tuples"),
+        }
+    }
+    let connection = rama::utils::fmt::hex(&pins.connection.unwrap().0).to_string();
+    let request = rama::utils::fmt::hex(&pins.request.unwrap().0).to_string();
+    let cfg = send_cfg(&[
+        "--emulate=archive.json",
+        "--emulate-seed",
+        &"01".repeat(32),
+        "--emulate-connection-key",
+        &"02".repeat(32),
+        "--emulate-request-key",
+        &"03".repeat(32),
+        "--emulate-connection-variant",
+        &connection,
+        "--emulate-request-variant",
+        &request,
+        "http://example.test",
+    ]);
+    let service = captured_emulation_layer(&cfg, database).into_layer(service_fn(
+        move |req: Request<()>| async move {
+            let context = EmulationContext::of(req.extensions()).unwrap();
+            assert_eq!(context.seed, ProfileSeed([1; 32]));
+            assert_eq!(context.connection_key, DrawKey([2; 32]));
+            assert_eq!(context.request_key, DrawKey([3; 32]));
+            assert_eq!(context.pins, pins);
+            Ok::<_, Infallible>(())
+        },
+    ));
+    service
+        .serve(
+            Request::builder()
+                .uri("http://example.test")
+                .body(())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn captured_draw_cli_rejects_legacy_profile_coordinates() {
+    let cfg = send_cfg(&[
+        "--emulate",
+        "--emulate-seed",
+        &"01".repeat(32),
+        "--emulate-connection-key",
+        &"02".repeat(32),
+        "--emulate-request-key",
+        &"03".repeat(32),
+        "http://example.test",
+    ]);
+    let result = new_hermetic(&cfg).await;
+    assert!(matches!(result, Err(error) if error.to_string().contains("captured profile archive")));
+}
+
+#[tokio::test]
+async fn captured_draw_cli_real_stack_rejects_unknown_variant_pins() {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let directory = rama::utils::fs::tempdir().unwrap();
+        let archive = directory.path().join("captured.json");
+        tokio::fs::write(&archive, captured_archive(false))
+            .await
+            .unwrap();
+        for flag in ["--emulate-connection-variant", "--emulate-request-variant"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let _head = read_http_head(&mut stream).await;
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await
+                    .unwrap();
+            });
+            let _abort_server = AbortCapturedServer(server.abort_handle());
+            let uri = format!("http://{address}/");
+            let output = directory.path().join("response");
+            let cfg = send_cfg(&[
+                &format!("--emulate={}", archive.display()),
+                "--emulate-seed",
+                &"01".repeat(32),
+                "--emulate-connection-key",
+                &"02".repeat(32),
+                "--emulate-request-key",
+                &"03".repeat(32),
+                flag,
+                &"ff".repeat(32),
+                "--output",
+                output.to_str().unwrap(),
+                &uri,
+            ]);
+            let client = new_hermetic(&cfg).await.unwrap();
+            assert!(
+                client
+                    .serve(
+                        Request::builder()
+                            .uri(uri.as_str())
+                            .body(Body::empty())
+                            .unwrap()
+                    )
+                    .await
+                    .is_err(),
+                "{flag} was ignored"
+            );
+        }
+    })
+    .await
+    .expect("bounded unknown-pin check");
+}

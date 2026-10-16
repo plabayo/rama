@@ -221,3 +221,15 @@ mod tests {
         }
     }
 }
+
+/// Exact-width draw coordinate or canonical variant identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct EmulationHex(pub [u8; 32]);
+
+impl FromStr for EmulationHex {
+    type Err = rama::utils::hex::DecodeError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        rama::utils::hex::decode(value).map(Self)
+    }
+}

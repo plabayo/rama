@@ -75,6 +75,21 @@ and H3 sequence replay currently fail with an unsupported-component error before
 connecting; their observation data does not imply an implemented wire compiler.
 Legacy profile files and the bare `--emulate` flag retain their existing path.
 
+To reproduce captured-profile draws, pass all three 64-digit hexadecimal inputs:
+`--emulate-seed HEX64 --emulate-connection-key HEX64 --emulate-request-key HEX64`.
+Keep the archive, classifier/draw revision, flow, seed and keys unchanged for the
+same selection. Change the request key for an independent request draw, or the
+connection key for a new logical connection. Without these options, draws remain
+random. These options require a counted capture archive; legacy profiles reject
+them rather than silently ignoring them.
+
+Optionally add `--emulate-connection-variant HEX64` and/or
+`--emulate-request-variant HEX64` to pin exact canonical joint variant IDs.
+Pins require all three draw inputs and must belong to the selected compatible
+scope; unknown or incompatible pins fail. Pinning a tuple does not imply support
+for its TLS/QUIC wire compiler or freeze generated reserved values independently
+of the draw inputs. Automatic redirects reuse these explicit logical draw keys.
+
 ### Proxy interception
 
 Start the inspector with `rama serve proxy --mitm`. Forwarding is automatic by

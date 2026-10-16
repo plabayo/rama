@@ -50,3 +50,7 @@ and cleanup after failure. Run them with normal and optimized Python:
 python3 -m unittest discover -s examples/tests/browser_profile -p 'test_*.py'
 python3 -O -m unittest discover -s examples/tests/browser_profile -p 'test_*.py'
 ```
+
+The replay uses explicit fixed seed, connection and request draw keys, recorded
+in `summary.json`. These pin draws within the exported archive and flow; fresh
+browser captures can still produce different archives.

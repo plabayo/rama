@@ -47,7 +47,7 @@ use rama::{
             UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifierLayer,
             UserAgentEmulateLayer, UserAgentSelectFallback,
         },
-        profile::UserAgentDatabase,
+        profile::{DrawKey, ProfileSeed, UserAgentDatabase, ValueId, VariantPins},
     },
 };
 
@@ -146,12 +146,17 @@ where
     let captured = database
         .as_ref()
         .is_some_and(|database| database.iter().any(|profile| profile.captured.is_some()));
+    if !captured && cfg.emulate_seed.is_some() {
+        return Err(BoxError::from_static_str(
+            "deterministic emulation coordinates require a captured profile archive",
+        ));
+    }
     let inner_client = new_inner_client(cfg, executor, captured).await?;
     let emulation_layer = database.map(|database| {
         let select = if captured {
             Either::A((
                 UserAgentClassifierLayer::new(),
-                ProfileEmulateLayer::new(database),
+                captured_emulation_layer(cfg, database),
             ))
         } else {
             Either::B(
@@ -406,6 +411,20 @@ async fn new_inner_client(
         ));
 
     Ok(client)
+}
+
+fn captured_emulation_layer(
+    cfg: &SendCommand,
+    database: Arc<UserAgentDatabase>,
+) -> ProfileEmulateLayer {
+    ProfileEmulateLayer::new(database)
+        .maybe_with_seed(cfg.emulate_seed.map(|value| ProfileSeed(value.0)))
+        .maybe_with_connection_key(cfg.emulate_connection_key.map(|value| DrawKey(value.0)))
+        .maybe_with_request_key(cfg.emulate_request_key.map(|value| DrawKey(value.0)))
+        .with_pins(VariantPins {
+            connection: cfg.emulate_connection_variant.map(|value| ValueId(value.0)),
+            request: cfg.emulate_request_variant.map(|value| ValueId(value.0)),
+        })
 }
 
 async fn load_emulation_database(
