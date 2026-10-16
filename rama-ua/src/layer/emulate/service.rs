@@ -31,7 +31,10 @@ use crate::{
             runtime_hints::{PreserveHeaderUserAgent, RequestClientHints, RequestInitiator},
         },
         replay::{
-            connection::PreparedConnectionComponents,
+            connection::{
+                PreparedConnectionComponents,
+                compiler::{CompiledConnectionProfile as _, ConnectionProfileCompiler},
+            },
             request::{
                 H2ClientParameter, ProfilePreservationDifference, ProfilePreservationMode,
                 ProfilePreservationReport, ProfileReplayError,
@@ -269,12 +272,19 @@ where
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 // A connector which is to be used in combination
 // with the [`UserAgentEmulateService`] to facilitate the
 // http emulation based on the injected http profile.
-pub struct UserAgentEmulateHttpConnectModifier<S> {
+pub struct UserAgentEmulateHttpConnectModifier<S, C = ()> {
     inner: S,
+    compiler: C,
+}
+
+impl<S: Default> Default for UserAgentEmulateHttpConnectModifier<S> {
+    fn default() -> Self {
+        Self::new(S::default())
+    }
 }
 
 impl<S> UserAgentEmulateHttpConnectModifier<S> {
@@ -282,13 +292,31 @@ impl<S> UserAgentEmulateHttpConnectModifier<S> {
     /// Create a new [`UserAgentEmulateHttpConnectModifier`].
     #[must_use]
     pub fn new(inner: S) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            compiler: (),
+        }
     }
 }
 
-impl<S, Input> Service<Input> for UserAgentEmulateHttpConnectModifier<S>
+impl<S, C> UserAgentEmulateHttpConnectModifier<S, C> {
+    /// Register a backend that prepares additional captured connection components.
+    #[must_use]
+    pub fn with_connection_compiler<D>(
+        self,
+        compiler: D,
+    ) -> UserAgentEmulateHttpConnectModifier<S, D> {
+        UserAgentEmulateHttpConnectModifier {
+            inner: self.inner,
+            compiler,
+        }
+    }
+}
+
+impl<S, C, Input> Service<Input> for UserAgentEmulateHttpConnectModifier<S, C>
 where
     S: ConnectorService<Input>,
+    C: ConnectionProfileCompiler<Input>,
     Input: ExtensionsRef + HttpVersionInputExt + TargetHttpVersionInputExt + Send + 'static,
 {
     type Error = ConnectionError;
@@ -314,8 +342,11 @@ where
             .transpose()
             .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
         if let Some(selection) = &connection_selection {
-            let mut prepared = selection
-                .prepare_for_replay(preservation)
+            let (mut prepared, compiled) = selection
+                .prepare_for_replay_with(preservation, |components| {
+                    self.compiler
+                        .compile(&req, selection, components, preservation)
+                })
                 .map_err(|error| {
                     ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                 })?;
@@ -358,6 +389,7 @@ where
                 .insert(prepared.preservation_report.clone());
             req.extensions().insert(prepared);
             req.extensions().insert(selection.clone());
+            compiled.apply(req.extensions());
         }
 
         let EstablishedClientConnection { conn, input: req } = self.inner.connect(req).await?;
@@ -436,14 +468,36 @@ where
 }
 
 #[non_exhaustive]
-#[derive(Debug, Default, Clone)]
-pub struct UserAgentEmulateHttpConnectModifierLayer;
+#[derive(Debug, Clone)]
+pub struct UserAgentEmulateHttpConnectModifierLayer<C = ()> {
+    compiler: C,
+}
 
-impl<S> Layer<S> for UserAgentEmulateHttpConnectModifierLayer {
-    type Service = UserAgentEmulateHttpConnectModifier<S>;
+impl Default for UserAgentEmulateHttpConnectModifierLayer {
+    fn default() -> Self {
+        Self { compiler: () }
+    }
+}
+
+impl<C> UserAgentEmulateHttpConnectModifierLayer<C> {
+    /// Register the backend compiler used before opening a captured connection.
+    #[must_use]
+    pub fn with_connection_compiler<D>(
+        self,
+        compiler: D,
+    ) -> UserAgentEmulateHttpConnectModifierLayer<D> {
+        UserAgentEmulateHttpConnectModifierLayer { compiler }
+    }
+}
+
+impl<S, C: Clone> Layer<S> for UserAgentEmulateHttpConnectModifierLayer<C> {
+    type Service = UserAgentEmulateHttpConnectModifier<S, C>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        UserAgentEmulateHttpConnectModifier::new(inner)
+        UserAgentEmulateHttpConnectModifier {
+            inner,
+            compiler: self.compiler.clone(),
+        }
     }
 }
 

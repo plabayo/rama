@@ -64,6 +64,8 @@ use crate::{
     },
 };
 
+mod connection_compiler;
+
 fn counts(total: u64) -> CounterSnapshot {
     CounterSnapshot {
         total,
@@ -817,10 +819,13 @@ fn profile_pool_partition_preserves_application_boundaries_and_is_idempotent() {
 }
 
 fn h3_emulation_context() -> EmulationContext {
-    h3_emulation_context_with_extra_slot(None)
+    h3_emulation_context_with_extra_slots(None)
 }
 
-fn h3_emulation_context_with_extra_slot(mut extra: Option<CapturedSlot>) -> EmulationContext {
+fn h3_emulation_context_with_extra_slots(
+    extra: impl IntoIterator<Item = CapturedSlot>,
+) -> EmulationContext {
+    let mut extra = extra.into_iter();
     let original = emulation_context();
     let mut analyzed = original
         .selected
@@ -872,7 +877,7 @@ fn h3_emulation_context_with_extra_slot(mut extra: Option<CapturedSlot>) -> Emul
             slots: {
                 let mut slots = vec![CapturedSlot { kind, value }];
                 if level == CaptureLevel::Connection {
-                    slots.extend(extra.take());
+                    slots.extend(extra.by_ref());
                 }
                 slots.into()
             },
@@ -1074,7 +1079,7 @@ async fn connect_modifier_enforces_selected_component_support_before_dial() {
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
         input.extensions().insert(mode);
-        h3_emulation_context_with_extra_slot(Some(CapturedSlot {
+        h3_emulation_context_with_extra_slots(Some(CapturedSlot {
             kind: CapturedSlotKind::QuicVersions,
             value: capture.clone(),
         }))

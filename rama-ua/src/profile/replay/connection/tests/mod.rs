@@ -262,7 +262,7 @@ fn unsupported_connection_components_never_certify_exact_replay() {
     ] {
         let mut strict = ProfilePreservationReport::default();
         assert!(matches!(
-            check_connection_component(component, ProfilePreservationMode::Strict, &mut strict),
+            check_connection_component(component, ProfilePreservationMode::Strict, &mut strict, &()),
             Err(ProfileReplayError::UnsupportedConnectionComponent(actual)) if actual == component
         ));
         let mut best_effort = ProfilePreservationReport::default();
@@ -270,6 +270,7 @@ fn unsupported_connection_components_never_certify_exact_replay() {
             component,
             ProfilePreservationMode::BestEffort,
             &mut best_effort,
+            &(),
         )
         .unwrap();
         assert_eq!(

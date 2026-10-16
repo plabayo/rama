@@ -128,6 +128,8 @@ pub struct ReplayedRequestProfile {
 /// Failure to replay a selected profile under the requested preservation mode.
 pub enum ProfileReplayError {
     Data(ProfileDataError),
+    /// A registered backend could not prepare its selected native configuration.
+    ConnectionCompilation(rama_core::error::BoxError),
     IncompatibleHeaderVersion {
         captured: Version,
         requested: Version,
@@ -147,6 +149,9 @@ impl fmt::Display for ProfileReplayError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Data(error) => error.fmt(f),
+            Self::ConnectionCompilation(error) => {
+                write!(f, "compile captured connection: {error}")
+            }
             Self::UnsupportedConnectionComponent(component) => write!(
                 f,
                 "selected connection component {component:?} has no supported wire replay"
@@ -173,7 +178,14 @@ impl fmt::Display for ProfileReplayError {
     }
 }
 
-impl Error for ProfileReplayError {}
+impl Error for ProfileReplayError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::ConnectionCompilation(error) => Some(error.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 impl From<ProfileDataError> for ProfileReplayError {
     fn from(value: ProfileDataError) -> Self {

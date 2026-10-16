@@ -1,9 +1,11 @@
+pub mod compiler;
+
 mod h3_settings;
 pub use h3_settings::H3SettingsReplayEvidence;
 
 use std::sync::Arc;
 
-use rama_core::extensions::Extension;
+use rama_core::{error::BoxError, extensions::Extension};
 use rama_http::proto::{
     h2::frame::EarlyFrame,
     h3::{ClientSettingsProfile, SettingId, Settings},
@@ -98,14 +100,23 @@ impl ConnectionSelection {
         &self,
         mode: ProfilePreservationMode,
     ) -> Result<PreparedConnectionComponents, ProfileReplayError> {
+        self.prepare_for_replay_with(mode, |_| Ok(()))
+            .map(|(prepared, ())| prepared)
+    }
+
+    pub(crate) fn prepare_for_replay_with<C: compiler::CompiledConnectionProfile>(
+        &self,
+        mode: ProfilePreservationMode,
+        compile: impl FnOnce(&PreparedConnectionComponents) -> Result<C, BoxError>,
+    ) -> Result<(PreparedConnectionComponents, C), ProfileReplayError> {
         let joint =
             JointCapture::from_canonical(&self.effective.capture, JointCaptureLimits::default())?;
+        let mut prepared = self.prepare_from_joint(&joint)?;
+        let compiled = compile(&prepared).map_err(ProfileReplayError::ConnectionCompilation)?;
         let mut report = ProfilePreservationReport::default();
         for slot in &joint.slots {
-            check_connection_component(slot.kind, mode, &mut report)?;
+            check_connection_component(slot.kind, mode, &mut report, &compiled)?;
         }
-
-        let mut prepared = self.prepare_components()?;
         if prepared.h3_settings_evidence.is_none()
             && prepared.h3_peer_settings.as_ref().is_some_and(|capture| {
                 capture
@@ -123,7 +134,7 @@ impl ConnectionSelection {
             prepared.allow_unanalyzed_h3_settings = true;
         }
         prepared.preservation_report = report.followed_by(prepared.preservation_report);
-        Ok(prepared)
+        Ok((prepared, compiled))
     }
 
     /// Reproduce this connection's SETTINGS generation independently of request
@@ -147,7 +158,14 @@ impl ConnectionSelection {
     pub fn prepare_components(&self) -> Result<PreparedConnectionComponents, ProfileDataError> {
         let limits = JointCaptureLimits::default();
         let joint = JointCapture::from_canonical(&self.effective.capture, limits)?;
-        let mut prepared = Self::prepare_joint(&joint)?;
+        self.prepare_from_joint(&joint)
+    }
+
+    fn prepare_from_joint(
+        &self,
+        joint: &JointCapture,
+    ) -> Result<PreparedConnectionComponents, ProfileDataError> {
+        let mut prepared = Self::prepare_joint(joint)?;
         prepared.h3_settings_evidence = self.effective.h3_settings_evidence.clone();
         Ok(prepared)
     }
@@ -261,18 +279,24 @@ fn check_connection_component(
     component: CapturedSlotKind,
     mode: ProfilePreservationMode,
     report: &mut ProfilePreservationReport,
+    compiled: &impl compiler::CompiledConnectionProfile,
 ) -> Result<(), ProfileReplayError> {
-    // These captures contain observations, but no built-in compiler consumes
-    // them yet. Never let carrying decoded evidence masquerade as exact replay.
-    if matches!(
-        component,
+    // Make this exhaustive so a newly added protocol requires an explicit
+    // decision about which backend consumes it before it can be advertised.
+    let supported = match component {
+        CapturedSlotKind::Http2EarlyFrames | CapturedSlotKind::Http3Settings => true,
         CapturedSlotKind::TcpTls
-            | CapturedSlotKind::QuicTls
-            | CapturedSlotKind::QuicParameters
-            | CapturedSlotKind::QuicVersions
-            | CapturedSlotKind::QuicFirstFlight
-            | CapturedSlotKind::Http3Sequence
-    ) {
+        | CapturedSlotKind::QuicTls
+        | CapturedSlotKind::QuicParameters
+        | CapturedSlotKind::QuicVersions
+        | CapturedSlotKind::QuicFirstFlight
+        | CapturedSlotKind::Http3Sequence => compiled.supports(component),
+        CapturedSlotKind::Headers
+        | CapturedSlotKind::PseudoHeaders
+        | CapturedSlotKind::RuntimeMetadata
+        | CapturedSlotKind::LegacyField => false,
+    };
+    if !supported {
         if mode == ProfilePreservationMode::Strict {
             return Err(ProfileReplayError::UnsupportedConnectionComponent(
                 component,
