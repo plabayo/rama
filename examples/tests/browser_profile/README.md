@@ -24,7 +24,8 @@ would not independently establish accurate capture.
 Use Python 3.11 or newer, Docker with a locally cached `postgres:17-alpine` image,
 a supported browser, and tshark/dumpcap with loopback capture permission. Install
 `rama-fp/browser_automation/requirements.txt` into your Python environment.
-TLS fixtures also need OpenSSL. Selenium Manager discovers browser executables
+TLS fixtures also need OpenSSL; Firefox TLS needs NSS `certutil`. Selenium Manager
+discovers browser executables
 and compatible drivers; explicit binary paths remain optional. Node is unnecessary.
 
 Local packet/process integration currently supports macOS and Linux. Selenium's
@@ -63,7 +64,10 @@ python3 examples/tests/browser_profile/run.py \
   --rama target/debug/rama --protocol h3 --output /absolute/path/to/new-evidence
 ```
 
-Use `--protocol h2` for HTTP/2. The current TLS fixture supports Chrome and Edge
+Use `--protocol h2` for HTTP/2. The TLS H2 fixture supports Chrome, Edge and
+Firefox (`--browser firefox`).
+Firefox trusts only the fixture CA in a new NSS profile, which is removed after
+the run; certificate checks remain enabled. H3 currently supports Chrome and Edge
 (`--browser edge`). BrowserStack and these local runs share the journey and
 protocol assertions. The fixture uses a temporary certificate with a specific
 SPKI exception; it does not disable certificate verification globally. Configured
@@ -121,7 +125,18 @@ bindings to fail. Every replay request must match one complete original method,
 path, ordered-header and body tuple. TLS and H2 SETTINGS/WINDOW_UPDATE/PRIORITY
 prefixes must match the same retained connection joint; peer-driven SETTINGS ACKs
 are excluded from this fingerprint projection, as they are from native replay.
+The optional first-request stream WINDOW_UPDATE is checked against the same
+stream immediately after its complete HEADERS (including CONTINUATION), allowing
+intervening peer ACKs. It is a recorded per-request window policy; the exact
+application dispatch cutoff is not inferred from packet arrival. Requestless
+preconnections cannot contribute prefix evidence or invalidate used connections.
+Firefox's `TE: trailers` remains an explicit current request binding on every flow.
 The drain waits for every expected variant, not only one complete set of flows.
+TLS replay also runs `rama ua compare --replay` against separate replay storage.
+That mode excludes only H2 SETTINGS acknowledgements and reports the exclusion;
+all remaining retained fields and complete joint membership stay exact.
+`--literal` remains available for byte-exact retained tuples and can report a
+legitimate peer-ACK timing difference.
 
 **HTTP/3 still verifies original capture without native QUIC replay.** Its TLS,
 transport-parameter, first-flight and control/QPACK sequence compilation remains

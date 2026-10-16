@@ -37,6 +37,8 @@ def browser_options(browser, *, protocol=None):
         options = OPTION_TYPES[browser]()
     except KeyError as error:
         raise ValueError("unsupported browser: " + browser) from error
+    if protocol == "h2" and browser == "firefox":
+        options.set_preference("network.http.http3.enable", False)
     if protocol == "h3" and browser in ("chrome", "edge"):
         options.add_argument("--enable-features=EnableWebsocketsOverHttp3")
     return options

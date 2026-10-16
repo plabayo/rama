@@ -1,7 +1,8 @@
-//! Literal membership and bounded field diagnostics for complete captures.
+//! Retained tuple membership and bounded field diagnostics for complete captures.
 //!
-//! This is the conservative comparison boundary: a complete retained variant
-//! must match. Order-only rules never authorize mixing fields from different
+//! A complete retained tuple must match after the explicitly selected projection.
+//! Literal mode retains every event; replay mode excludes only peer-generated
+//! events documented by its policy. Order-only rules never authorize mixing fields from different
 //! variants. A mismatch can still be valid under an unimplemented generator;
 //! this API does not claim population or distribution equivalence.
 
@@ -17,6 +18,9 @@ use crate::profile::{
         decoded::{CaptureDecodeLimits, DecodedCapture},
     },
 };
+pub mod mode;
+
+use mode::ComparisonMode;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -52,7 +56,9 @@ pub struct CaptureFieldDifference {
 #[derive(Debug, Serialize)]
 pub struct RetainedCaptureComparison {
     pub work_units: usize,
-    pub literal_match: bool,
+    /// Equality after the explicitly selected projection.
+    pub matched: bool,
+    pub mode: ComparisonMode,
     pub observed: ValueId,
     /// The matching variant, or the first retained variant used for diagnostics.
     pub reference: ValueId,
@@ -62,10 +68,13 @@ pub struct RetainedCaptureComparison {
 
 /// Compare an observation with whole retained tuples, then diagnose the first
 /// reference if no tuple matches. Counts and derived rules are not compared.
-/// Both canonical bytes and digest are validated before matching.
+/// Both canonical bytes and digest are validated before matching. The selected
+/// mode controls only documented exclusions; reported identities always refer to
+/// the original captures, including when their comparison projections differ.
 pub fn compare_retained_captures(
     reference: &[CanonicalValue],
     observed: &CanonicalValue,
+    mode: ComparisonMode,
     limits: CaptureComparisonLimits,
 ) -> Result<RetainedCaptureComparison, ProfileDataError> {
     if reference.is_empty() {
@@ -82,6 +91,8 @@ pub fn compare_retained_captures(
         .work
         .checked_sub(observed.bytes.len())
         .ok_or(ProfileDataError::LimitExceeded("comparison work"))?;
+    let observed_projection = mode.project(observed, limits.bytes)?;
+    let mut first_projection = None;
     let mut matched = None;
     for candidate in reference {
         work = work
@@ -91,25 +102,38 @@ pub fn compare_retained_captures(
         if candidate.validated_domain(limits.bytes)? != domain {
             return Err(ProfileDataError::Invalid("comparison capture domain"));
         }
-        if candidate.bytes == observed.bytes {
+        let projected = mode.project(candidate, limits.bytes)?;
+        if projected.bytes == observed_projection.bytes {
             matched = Some(candidate.id);
+        }
+        if first_projection.is_none() {
+            first_projection = Some(projected);
         }
     }
     if let Some(reference) = matched {
         return Ok(RetainedCaptureComparison {
             work_units: limits.work - work,
-            literal_match: true,
+            matched: true,
+            mode,
             observed: observed.id,
             reference,
             differences: Vec::new(),
             truncated: false,
         });
     }
+    let actual = if mode == ComparisonMode::Literal {
+        actual
+    } else {
+        decode(&observed_projection, limits.bytes)?
+    };
     let actual = diagnostic(actual, limits.bytes)?;
-    let expected = diagnostic(decode(&reference[0], limits.bytes)?, limits.bytes)?;
+    let first_projection =
+        first_projection.ok_or(ProfileDataError::Incomplete("comparison reference"))?;
+    let expected = diagnostic(decode(&first_projection, limits.bytes)?, limits.bytes)?;
     let mut report = RetainedCaptureComparison {
         work_units: limits.work - work,
-        literal_match: false,
+        matched: false,
+        mode,
         observed: observed.id,
         reference: reference[0].id,
         differences: Vec::new(),
@@ -277,9 +301,9 @@ mod tests {
     fn literal_membership_does_not_materialize_field_diagnostics() {
         let value = settings(&[(33, 17)]);
         DIAGNOSTIC_SERIALIZATIONS.with(|count| count.set(0));
-        assert!(compare(std::slice::from_ref(&value), &value).literal_match);
+        assert!(compare(std::slice::from_ref(&value), &value).matched);
         assert_eq!(DIAGNOSTIC_SERIALIZATIONS.with(|count| count.get()), 0);
-        assert!(!compare(&[value], &settings(&[(33, 29)])).literal_match);
+        assert!(!compare(&[value], &settings(&[(33, 29)])).matched);
         assert!(DIAGNOSTIC_SERIALIZATIONS.with(|count| count.get()) > 0);
     }
 
@@ -296,14 +320,20 @@ mod tests {
     }
 
     fn compare(reference: &[CanonicalValue], actual: &CanonicalValue) -> RetainedCaptureComparison {
-        compare_retained_captures(reference, actual, CaptureComparisonLimits::default()).unwrap()
+        compare_retained_captures(
+            reference,
+            actual,
+            ComparisonMode::Literal,
+            CaptureComparisonLimits::default(),
+        )
+        .unwrap()
     }
 
     #[test]
     fn retained_comparison_preserves_fields_values_order_and_correlations() {
         let one = settings(&[(33, 17), (64, 29)]);
         let two = settings(&[(33, 29), (64, 17)]);
-        assert!(compare(&[one.clone(), two.clone()], &two).literal_match);
+        assert!(compare(&[one.clone(), two.clone()], &two).matched);
         for actual in [
             settings(&[(33, 17), (64, 17)]),
             settings(&[(64, 29), (33, 17)]),
@@ -311,7 +341,7 @@ mod tests {
             settings(&[(33, 17)]),
         ] {
             let result = compare(&[one.clone(), two.clone()], &actual);
-            assert!(!result.literal_match);
+            assert!(!result.matched);
             assert!(!result.differences.is_empty());
         }
     }
@@ -347,9 +377,9 @@ mod tests {
             .unwrap()
         };
         let reference = [joint(17, 1), joint(29, 2)];
-        assert!(compare(&reference, &reference[1]).literal_match);
+        assert!(compare(&reference, &reference[1]).matched);
         let report = compare(&reference, &joint(17, 2));
-        assert!(!report.literal_match);
+        assert!(!report.matched);
         assert!(
             report
                 .differences
@@ -361,18 +391,26 @@ mod tests {
     #[test]
     fn retained_comparison_rejects_invalid_empty_structural_and_over_budget_inputs() {
         let one = settings(&[(33, 17)]);
-        compare_retained_captures(&[], &one, CaptureComparisonLimits::default()).unwrap_err();
+        compare_retained_captures(
+            &[],
+            &one,
+            ComparisonMode::Literal,
+            CaptureComparisonLimits::default(),
+        )
+        .unwrap_err();
         let mut invalid = one.clone();
         invalid.id.0[0] ^= 1;
         compare_retained_captures(
             &[one.clone(), invalid.clone()],
             &one,
+            ComparisonMode::Literal,
             CaptureComparisonLimits::default(),
         )
         .unwrap_err();
         compare_retained_captures(
             std::slice::from_ref(&one),
             &invalid,
+            ComparisonMode::Literal,
             CaptureComparisonLimits::default(),
         )
         .unwrap_err();
@@ -383,6 +421,7 @@ mod tests {
         compare_retained_captures(
             std::slice::from_ref(&structure),
             &structure,
+            ComparisonMode::Literal,
             CaptureComparisonLimits::default(),
         )
         .unwrap_err();
@@ -404,7 +443,13 @@ mod tests {
                 ..Default::default()
             },
         ] {
-            compare_retained_captures(std::slice::from_ref(&one), &one, limits).unwrap_err();
+            compare_retained_captures(
+                std::slice::from_ref(&one),
+                &one,
+                ComparisonMode::Literal,
+                limits,
+            )
+            .unwrap_err();
         }
     }
 
@@ -415,13 +460,14 @@ mod tests {
         let report = compare_retained_captures(
             &[one],
             &two,
+            ComparisonMode::Literal,
             CaptureComparisonLimits {
                 differences: 1,
                 ..Default::default()
             },
         )
         .unwrap();
-        assert!(!report.literal_match);
+        assert!(!report.matched);
         assert!(report.truncated);
         assert_eq!(report.differences.len(), 1);
         assert!(report.differences[0].path.starts_with("/fields/0/value/"));

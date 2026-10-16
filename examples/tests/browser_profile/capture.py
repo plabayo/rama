@@ -7,9 +7,9 @@ Wire decoding and checks live in wire.py; replay inputs live in flows.py.
 """
 
 import base64
-import hashlib
 import json
 import os
+from functools import partial
 from pathlib import Path
 import re
 import shutil
@@ -25,6 +25,7 @@ import wire
 from capture_fields import compare_capture_fields
 from connection_fields import compare_connection_fields, h2_prefixes
 from fixture_process import running, wait_ready
+from fixture_tls import fixture_certificate, prepare_nss_trust
 from h3_sequence_wire import sequence_evidence
 from replay import replay_environment, verify_tls_replay
 from quic_wire import client_settings, compare_quic_captures, first_flights
@@ -39,44 +40,6 @@ from browser_automation.workflow import run_capture_flow
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
-
-
-def fixture_certificate(root):
-    """Trust only this one ephemeral certificate through its SPKI exception."""
-    key, certificate = root / "key.pem", root / "cert.pem"
-    with (root / "certificate.log").open("w") as log:
-        subprocess.run(
-            [
-                "openssl",
-                "req",
-                "-x509",
-                "-newkey",
-                "rsa:2048",
-                "-nodes",
-                "-days",
-                "1",
-                "-subj",
-                "/CN=localhost",
-                "-addext",
-                "subjectAltName=DNS:localhost,IP:127.0.0.1",
-                "-keyout",
-                str(key),
-                "-out",
-                str(certificate),
-            ],
-            check=True,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            timeout=30,
-        )
-    key.chmod(0o600)
-    public = subprocess.check_output(
-        ["openssl", "x509", "-in", str(certificate), "-pubkey", "-noout"], timeout=10
-    )
-    der = subprocess.check_output(
-        ["openssl", "pkey", "-pubin", "-outform", "DER"], input=public, timeout=10
-    )
-    return key, certificate, base64.b64encode(hashlib.sha256(der).digest()).decode()
 
 
 def capture_tls(args):
@@ -126,8 +89,15 @@ def capture_tls(args):
 
     # Trust only this fixture certificate and record protocol-forcing options.
     options = browser_options(args.browser, protocol=args.protocol)
-    options.add_argument("--ignore-certificate-errors-spki-list=" + spki)
-    options.add_argument("--host-resolver-rules=MAP localhost 127.0.0.1")
+    prepare_profile = None
+    if args.browser == "firefox":
+        options.set_preference("network.proxy.type", 0)
+        prepare_profile = partial(
+            prepare_nss_trust, certificate=certificate, log=root / "nss-setup.log"
+        )
+    else:
+        options.add_argument("--ignore-certificate-errors-spki-list=" + spki)
+        options.add_argument("--host-resolver-rules=MAP localhost 127.0.0.1")
     if args.protocol == "h3":
         options.add_argument(f"--origin-to-force-quic-on=localhost:{port}")
 
@@ -148,6 +118,7 @@ def capture_tls(args):
                 binary=args.browser_binary,
                 keylog=root / "browser.keys",
                 options=options,
+                prepare_profile=prepare_profile,
             ) as browser:
                 result = run_capture_flow(
                     browser,
@@ -197,7 +168,12 @@ def capture_tls(args):
     if args.protocol == "h2":
         data = (root / "headers.pdml").read_bytes()
         connection_fields = compare_connection_fields(
-            inspected, client_hellos(data, "Tcp"), h2_prefixes(data, port), headers
+            inspected,
+            client_hellos(data, "Tcp"),
+            h2_prefixes(
+                data, port, connections={block.connection for block in headers}
+            ),
+            headers,
         )
     else:
         data = (root / "headers.pdml").read_bytes()
@@ -225,6 +201,7 @@ def capture_tls(args):
         "version": result.browser_version,
         "protocols": dict(result.protocols),
         "browser_arguments": options.arguments,
+        "browser_preferences": options.preferences if args.browser == "firefox" else {},
         "fields": fields,
         "connection_fields": connection_fields,
         "tls": tls,

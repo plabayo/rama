@@ -26,6 +26,17 @@ class SessionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             browser_options("chrome", protocol="h4")
 
+    def test_explicit_firefox_h2_does_not_probe_http3(self):
+        self.assertIs(
+            browser_options("firefox", protocol="h2").preferences[
+                "network.http.http3.enable"
+            ],
+            False,
+        )
+        self.assertNotIn(
+            "network.http.http3.enable", browser_options("firefox").preferences
+        )
+
     def test_remote_session_quits_after_flow_failure(self):
         driver = MagicMock()
         with patch("browser_automation.drivers.webdriver.Remote", return_value=driver):

@@ -46,12 +46,18 @@ def requests_from_wire(frames):
             if name in (
                 "content-type",
                 "content-length",
+                "te",
                 "origin",
                 "referer",
                 "sec-websocket-protocol",
                 "sec-websocket-extensions",
             ):
                 require(name not in bindings, "ambiguous current request binding")
+                if name == "te":
+                    require(
+                        value.lower() == "trailers",
+                        "only TE trailers is valid in H2/H3",
+                    )
                 bindings[name] = value
         # WebSocket DATA contains frames, not an HTTP request body. The shared
         # journey/decoder checks its greeting separately from HTTP body replay.
@@ -289,7 +295,9 @@ def verify_tls_replay(
     connection_fields = compare_connection_fields(
         inspected,
         client_hellos(data, transport),
-        h2_prefixes(data, port),
+        h2_prefixes(
+            data, port, connections={block.connection for block in replay.headers}
+        ),
         replay.headers,
         expected_per_variant_flow=1,
     )
@@ -314,7 +322,7 @@ def verify_tls_replay(
                 str(args.rama),
                 "ua",
                 "compare",
-                "--literal",
+                "--replay",
                 str(root / "profiles.json"),
                 str(root / "replay-profiles.json"),
             ],
@@ -330,5 +338,5 @@ def verify_tls_replay(
         "connection_fields": connection_fields,
         "tls": tls,
         "bodies": replay.bodies,
-        "scope": "six CLI operations, independent retained TLS/header membership and body semantics, separate literal archive comparison",
+        "scope": "six CLI operations, independent retained TLS/header membership and body semantics, separate replay-projection archive comparison",
     }

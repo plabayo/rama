@@ -16,6 +16,9 @@ H2_HEADERS = 1
 H2_PRIORITY = 2
 H2_SETTINGS = 4
 H2_WINDOW_UPDATE = 8
+H2_CONTINUATION = 9
+H2_ACK = 1
+H2_END_HEADERS = 4
 
 
 def field(node, name):
@@ -39,11 +42,18 @@ def integer(node, name, width, mask=None):
     return value
 
 
-def h2_prefixes(data, server_port):
-    """Read complete client SETTINGS/WINDOW_UPDATE/PRIORITY before first HEADERS."""
+def h2_prefixes(data, server_port, *, connections=None):
+    """Read the pre-HEADERS prefix and optional first-stream window policy.
+
+    A recorded stream WINDOW_UPDATE can follow the first complete HEADERS;
+    Rama replays that as a per-request window policy. Keep its independent wire
+    witness separate: application dispatch can freeze before it arrives.
+    Supplying request-bearing connections excludes abandoned preconnections.
+    """
     prefixes = defaultdict(list)
     prefaces = defaultdict(int)
     completed = set()
+    first_streams, header_open, stream_windows = {}, {}, {}
     for packet in pdml_packets(data):
         frames = [
             node for node in packet.iter("field") if node.get("name") == "http2.stream"
@@ -58,6 +68,8 @@ def h2_prefixes(data, server_port):
         if source == server_port:
             continue
         connection = int(one(packet, "tcp.stream"))
+        if connections is not None and connection not in connections:
+            continue
         for frame in frames:
             if connection in completed:
                 continue
@@ -65,12 +77,35 @@ def h2_prefixes(data, server_port):
                 prefaces[connection] += 1
                 continue
             kind = integer(frame, "http2.type", 1)
-            if (
-                kind == H2_HEADERS
-            ):  # HEADERS is the capture boundary, not an early frame.
+            if connection in first_streams:
+                # CONTINUATION frames complete one header block. A fragmented
+                # first HEADERS must not hide the immediately following policy.
+                stream = integer(frame, "http2.streamid", 4, 0x7FFFFFFF)
+                if header_open[connection]:
+                    if kind != H2_CONTINUATION or stream != first_streams[connection]:
+                        raise ValueError("invalid first HEADERS continuation")
+                    header_open[connection] = not bool(
+                        integer(frame, "http2.flags", 1) & H2_END_HEADERS
+                    )
+                    continue
+                if kind == H2_SETTINGS and integer(frame, "http2.flags", 1) & H2_ACK:
+                    if stream != 0 or integer(frame, "http2.length", 3) != 0:
+                        raise ValueError("invalid SETTINGS acknowledgement")
+                    continue
+                if kind == H2_WINDOW_UPDATE and stream == first_streams[connection]:
+                    stream_windows[connection] = window_update(frame, stream)
+                completed.add(connection)
+                continue
+            if kind == H2_HEADERS:
                 if prefaces[connection] != 1 or not prefixes[connection]:
                     raise ValueError("incomplete HTTP/2 prefix before HEADERS")
-                completed.add(connection)
+                stream = integer(frame, "http2.streamid", 4, 0x7FFFFFFF)
+                if not stream or not stream & 1:
+                    raise ValueError("invalid client request stream")
+                first_streams[connection] = stream
+                header_open[connection] = not bool(
+                    integer(frame, "http2.flags", 1) & H2_END_HEADERS
+                )
                 continue
             stream = integer(frame, "http2.streamid", 4, 0x7FFFFFFF)
             length = integer(frame, "http2.length", 3)
@@ -94,25 +129,19 @@ def h2_prefixes(data, server_port):
                             "value": integer(setting, children[1].get("name"), 4),
                         }
                     )
-                if stream != 0 or length != 6 * len(entries) or (flags & 1 and entries):
+                if (
+                    stream != 0
+                    or length != 6 * len(entries)
+                    or (flags & H2_ACK and entries)
+                ):
                     raise ValueError("invalid SETTINGS framing")
-                observed = {"Settings": {"ack": bool(flags & 1), "entries": entries}}
-            elif kind == H2_WINDOW_UPDATE:  # WINDOW_UPDATE.
-                if length != 4:
-                    raise ValueError("invalid WINDOW_UPDATE length")
                 observed = {
-                    "WindowUpdate": {
-                        "stream": stream,
-                        "increment": integer(
-                            frame,
-                            "http2.window_update.window_size_increment",
-                            4,
-                            0x7FFFFFFF,
-                        ),
-                    }
+                    "Settings": {"ack": bool(flags & H2_ACK), "entries": entries}
                 }
+            elif kind == H2_WINDOW_UPDATE:
+                observed = window_update(frame, stream)
             elif (
-                kind == 2
+                kind == H2_PRIORITY
             ):  # Standalone PRIORITY; HEADERS priority is outside this slot.
                 if length != 5:
                     raise ValueError("invalid PRIORITY length")
@@ -136,10 +165,27 @@ def h2_prefixes(data, server_port):
             prefixes[connection].append(observed)
             if len(prefixes[connection]) > 16:
                 raise ValueError("HTTP/2 prefix frame limit")
+    if any(header_open.values()):
+        raise ValueError("incomplete first HEADERS continuation")
     return {
-        connection: {"completeness": "Complete", "frames": prefixes[connection]}
-        for connection in completed
+        connection: {
+            "completeness": "Complete",
+            "frames": prefixes[connection],
+            "first_request_window": stream_windows.get(connection),
+        }
+        for connection in first_streams
     }
+
+
+def window_update(frame, stream):
+    if integer(frame, "http2.length", 3) != 4:
+        raise ValueError("invalid WINDOW_UPDATE length")
+    increment = integer(
+        frame, "http2.window_update.window_size_increment", 4, 0x7FFFFFFF
+    )
+    if increment == 0:
+        raise ValueError("invalid zero WINDOW_UPDATE increment")
+    return {"WindowUpdate": {"stream": stream, "increment": increment}}
 
 
 def fingerprint_prefix(capture):
@@ -201,10 +247,20 @@ def compare_connection_fields(
             "TcpTls": tls[connection][0],
             "Http2EarlyFrames": fingerprint_prefix(prefixes[connection]),
         }
+        projections = [observed]
+        if window := prefixes[connection].get("first_request_window"):
+            with_window = {
+                **observed,
+                "Http2EarlyFrames": {
+                    **observed["Http2EarlyFrames"],
+                    "frames": [*observed["Http2EarlyFrames"]["frames"], window],
+                },
+            }
+            projections.append(with_window)
         matches = [
             index
             for index, (identity, _variant, slots) in enumerate(candidates)
-            if identity == agent and slots == observed
+            if identity == agent and slots in projections
         ]
         if not matches:
             raise ValueError("TLS and HTTP/2 prefix have no matching retained joint")
@@ -232,6 +288,7 @@ def compare_connection_fields(
         "retained_joints_checked": len(checked),
         "scope": "correlated retained TLS and HTTP/2 SETTINGS/WINDOW_UPDATE/PRIORITY prefix",
         "excluded": "peer-driven SETTINGS acknowledgements",
+        "window_policy": "recorded first-stream update must immediately follow its complete header block, allowing peer ACKs; exact dispatch cutoff is not inferred",
     }
 
 

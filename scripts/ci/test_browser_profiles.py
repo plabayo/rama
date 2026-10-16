@@ -24,6 +24,7 @@ class BrowserProfileWorkflowTests(unittest.TestCase):
             for browser, protocol in [
                 ("chrome", "h1"),
                 ("firefox", "h1"),
+                ("firefox", "h2"),
                 ("chrome", "h2"),
                 ("chrome", "h3"),
             ]

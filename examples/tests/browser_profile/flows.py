@@ -116,6 +116,7 @@ def replay_args(
         "connection",
         "content-type",
         "content-length",
+        "te",
         "origin",
         "referer",
         "sec-websocket-extensions",

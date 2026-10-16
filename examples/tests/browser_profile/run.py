@@ -47,8 +47,8 @@ def parse_args(argv=None):
     if args.protocol == "h1" and args.browser == "edge":
         parser.error("the H1 replay fixture currently supports Chrome and Firefox")
     if args.protocol != "h1":
-        if args.browser == "firefox":
-            parser.error("the H2/H3 TLS fixture currently supports Chrome and Edge")
+        if args.browser == "firefox" and args.protocol == "h3":
+            parser.error("the H3 TLS fixture currently supports Chrome and Edge")
         if args.flows != "all":
             parser.error("H2/H3 verification requires all six operations")
     args.rama = args.rama.resolve(strict=True)
@@ -58,6 +58,8 @@ def parse_args(argv=None):
     programs = ["docker", "dumpcap", "tshark"]
     if args.protocol != "h1":
         programs.append("openssl")
+    if args.browser == "firefox" and args.protocol == "h2":
+        programs.append("certutil")
     for program in programs:
         if shutil.which(program) is None:
             parser.error("required executable not found: " + program)

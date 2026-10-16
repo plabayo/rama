@@ -35,6 +35,55 @@ class ReplayTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "coverage"):
                 requests_from_wire(frames[2:])
 
+    def test_te_trailers_is_a_current_binding_on_every_multiplexed_flow(self):
+        for protocol in ("h2", "h3"):
+            frames = fixture(protocol)
+            frames = [
+                (
+                    replace(frame, headers=frame.headers + (("te", "trailers"),))
+                    if frame.headers and not frame.from_server
+                    else frame
+                )
+                for frame in frames
+            ]
+            requests = requests_from_wire(frames)
+            for flow, rows in requests.items():
+                with self.subTest(protocol=protocol, flow=flow):
+                    request = rows[0]
+                    if flow == "ws":
+                        request.bindings["sec-websocket-protocol"] = "a,b"
+                    self.assertEqual(request.bindings.get("te"), "trailers")
+                    args = replay_args(
+                        Path("rama"),
+                        Path("profiles.json"),
+                        Path("response"),
+                        ReplayTarget(protocol, "https://localhost:4433"),
+                        flow,
+                        request,
+                    )
+                    self.assertIn("te: trailers", args)
+            invalid = list(frames)
+            first = next(
+                index
+                for index, frame in enumerate(invalid)
+                if frame.headers and not frame.from_server
+            )
+            for changed in [
+                (("te", "gzip"),),
+                (("te", "trailers"), ("te", "trailers")),
+            ]:
+                invalid[first] = replace(
+                    frames[first],
+                    headers=tuple(
+                        (key, value)
+                        for key, value in frames[first].headers
+                        if key != "te"
+                    )
+                    + changed,
+                )
+                with self.subTest(changed=changed), self.assertRaises(ValueError):
+                    requests_from_wire(invalid)
+
     def test_tls_replay_preserves_protocol_and_current_bindings(self):
         request = requests_from_wire(fixture("h2"))["ws"][0]
         request.bindings["sec-websocket-protocol"] = "a, b"

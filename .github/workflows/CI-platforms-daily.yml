@@ -721,6 +721,8 @@ jobs:
         include:
           - {browser: firefox, protocol: h1, mode: debug}
           - {browser: firefox, protocol: h1, mode: release}
+          - {browser: firefox, protocol: h2, mode: debug}
+          - {browser: firefox, protocol: h2, mode: release}
     env:
       BROWSER: ${{ matrix.browser }}
       PROTOCOL: ${{ matrix.protocol }}
@@ -745,7 +747,7 @@ jobs:
         run: |
           echo 'wireshark-common wireshark-common/install-setuid boolean false' | sudo debconf-set-selections
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin libclang-dev cmake ninja-build
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin libclang-dev cmake ninja-build libnss3-tools
           sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
           python -m pip install -r rama-fp/browser_automation/requirements.txt
           docker pull postgres:17-alpine
