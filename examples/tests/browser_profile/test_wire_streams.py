@@ -1,6 +1,7 @@
 """Regression fixtures deliberately put different streams in the same packet."""
 
 import unittest
+from unittest.mock import patch
 from wire import parse_pdml
 
 
@@ -37,6 +38,35 @@ def packet(protocol, streams):
 
 
 class MultiplexedTests(unittest.TestCase):
+    def test_pdml_byte_limit_is_enforced_before_decoding(self):
+        for protocol in ("h2", "h3"):
+            data = packet(protocol, [(0, [(":method", "GET")])])
+            with patch("wire.MAX_PDML_BYTES", len(data)):
+                self.assertEqual(len(parse_pdml(data, protocol, 443)), 1)
+            with patch("wire.MAX_PDML_BYTES", len(data) - 1):
+                with self.assertRaisesRegex(ValueError, "decoded byte limit"):
+                    parse_pdml(data, protocol, 443)
+
+    def test_pdml_packet_limit_is_enforced(self):
+        for protocol in ("h2", "h3"):
+            data = packet(protocol, [(0, [(":method", "GET")])])
+            with patch("wire.MAX_PACKETS", 1):
+                self.assertEqual(len(parse_pdml(data, protocol, 443)), 1)
+                doubled = data.replace(b"</packet>", b"</packet><packet/>")
+                with self.assertRaisesRegex(ValueError, "decoded packet limit"):
+                    parse_pdml(doubled, protocol, 443)
+
+    def test_pdml_declarations_are_rejected(self):
+        for protocol in ("h2", "h3"):
+            data = packet(protocol, [(0, [(":method", "GET")])])
+            for declaration in (
+                b"<!DOCTYPE pdml>",
+                b'<!DOCTYPE pdml [<!ENTITY harmless "ok">]>',
+            ):
+                with self.subTest(protocol=protocol, declaration=declaration):
+                    with self.assertRaisesRegex(ValueError, "declarations"):
+                        parse_pdml(declaration + data, protocol, 443)
+
     def test_coalesced_streams_keep_header_order_and_repeats(self):
         for protocol in ["h2", "h3"]:
             first = [

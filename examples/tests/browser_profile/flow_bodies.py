@@ -11,6 +11,31 @@ import json
 from flows import FLOW_NAMES, flow_name
 
 
+def unique_object(pairs):
+    """Reject duplicate members at every nesting level instead of taking the last."""
+    result = {}
+    for name, value in pairs:
+        if name in result:
+            raise ValueError("duplicate JSON object member: " + name)
+        result[name] = value
+    return result
+
+
+def invalid_constant(value):
+    """Python accepts these tokens by default, but they are not JSON numbers."""
+    raise ValueError("non-finite JSON constant: " + value)
+
+
+def json_object(data):
+    """Decode an unambiguous object for the fp endpoint's JSON contract."""
+    value = json.loads(
+        data, object_pairs_hook=unique_object, parse_constant=invalid_constant
+    )
+    if not isinstance(value, dict):
+        raise ValueError("expected a JSON object")
+    return value
+
+
 def check_original_bodies(blocks):
     streams = defaultdict(list)
     for block in blocks:
@@ -44,9 +69,14 @@ def check_original_bodies(blocks):
 
         # Each browser operation has a distinct payload contract.
         if flow in ("fetch", "xhr"):
-            payload = json.loads(body)
+            payload = json_object(body)
             expected = int(headers[":path"].rsplit("/", 1)[1])
-            if payload.get("number") != expected:
+            # bool and float compare equal to integers in Python, but the
+            # endpoint deserializes this field as an unsigned integer.
+            number = payload.get("number")
+            if type(number) is not int or not 0 <= number <= (1 << 64) - 1:
+                raise ValueError(flow + " body number is not an unsigned integer")
+            if number != expected:
                 raise ValueError(flow + " body number differs from request path")
             if flow == "fetch" and payload.get("jsWebApis", {}).get(
                 "navigator", {}
@@ -66,7 +96,7 @@ def check_original_bodies(blocks):
             ]
             if len(messages) != 1:
                 raise ValueError("WebSocket greeting missing or repeated")
-            greeting = json.loads(messages[0])
+            greeting = json_object(messages[0])
             expected_version = {"h2": "HTTP/2.0", "h3": "HTTP/3.0"}[request.protocol]
             if (
                 greeting.get("initiator") != "ws"

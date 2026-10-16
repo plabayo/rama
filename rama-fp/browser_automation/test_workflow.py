@@ -59,6 +59,17 @@ class FlowProtocolTests(unittest.TestCase):
             with self.subTest(lines=lines), self.assertRaises(ValueError):
                 parse_protocol_report(lines)
 
+    def test_duplicate_flow_with_complete_coverage_is_rejected(self):
+        lines = [
+            f"{name}: h3"
+            for name in ("Navigation", "Fetch", "XMLHttpRequest", "WebSocket")
+        ]
+        for duplicate in lines:
+            with self.subTest(duplicate=duplicate), self.assertRaisesRegex(
+                ValueError, "ambiguous"
+            ):
+                parse_protocol_report(lines + [duplicate])
+
     def test_each_flow_including_websocket_and_form_rejects_fallback(self):
         for failed in ["navigate", "fetch", "xhr", "ws", "form", "form_get"]:
             protocols = dict.fromkeys(
