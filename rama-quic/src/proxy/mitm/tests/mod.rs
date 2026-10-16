@@ -1,8 +1,9 @@
 use std::{
+    io::{self, Write},
     net::SocketAddr,
     num::NonZeroUsize,
     sync::{
-        Arc,
+        Arc, RwLock,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -14,7 +15,11 @@ use rama_net::{
     http::{TargetHttpVersion, Version},
     tls::ApplicationProtocol,
 };
-use rama_quic_proto::peek::PeekedClientHello;
+use rama_quic_proto::{
+    TransportError, TransportErrorCode,
+    frame::{ApplicationClose, ConnectionClose},
+    peek::PeekedClientHello,
+};
 use rama_tls::{
     alpn::AlpnRouter,
     client::{ClientHelloExtension, TlsClientConfig},
@@ -32,6 +37,46 @@ use crate::{
     test_helpers::{identity, untrusted_identity},
     tls::{BoringTlsProvider, TlsOptions},
 };
+
+#[derive(Clone, Default)]
+struct RefusalLog(Arc<RwLock<Vec<u8>>>);
+
+impl Write for RefusalLog {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.write().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl RefusalLog {
+    fn text(&self) -> String {
+        String::from_utf8(self.0.read().unwrap().clone()).unwrap()
+    }
+
+    fn assert_class(&self, class: &str) {
+        let log = self.text();
+        assert!(
+            log.contains(&format!("QUIC MITM origin refused: {class}")),
+            "{log}"
+        );
+    }
+}
+
+// These tests use Tokio's current-thread runtime, so spawned resolver work uses
+// the same thread-local subscriber throughout the awaited test.
+fn capture_refusals() -> (RefusalLog, tracing::subscriber::DefaultGuard) {
+    let log = RefusalLog::default();
+    let writer = log.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    (log, tracing::subscriber::set_default(subscriber))
+}
 
 const ALPN: &[u8] = b"rama-quic-test";
 const LIMIT: Duration = Duration::from_secs(20);
@@ -180,6 +225,7 @@ impl BoringMitmCertIssuer for CountingIssuer {
 
 #[tokio::test]
 async fn an_unverified_origin_is_never_mirrored_to_the_client() {
+    let (log, _subscriber) = capture_refusals();
     timeout(LIMIT, async {
         let mitm_identity = identity();
         let origin_identity = untrusted_identity();
@@ -222,6 +268,7 @@ async fn an_unverified_origin_is_never_mirrored_to_the_client() {
         connecting.await.unwrap_err();
         assert_eq!(issued.load(Ordering::Relaxed), 0);
         drop(origin_task.await.unwrap());
+        log.assert_class("origin-handshake:transport-crypto-0x130");
     })
     .await
     .unwrap();
@@ -528,6 +575,7 @@ async fn peeked_client_hello_for(
 async fn an_attempt_other_than_the_peeked_one_is_refused_without_origin_work() {
     // The routing decision saw another server name, or another protocol list.
     for other_name in [true, false] {
+        let (log, _subscriber) = capture_refusals();
         timeout(LIMIT, async {
             let mitm_identity = identity();
             let origin_identity = untrusted_identity();
@@ -582,6 +630,7 @@ async fn an_attempt_other_than_the_peeked_one_is_refused_without_origin_work() {
             assert_eq!(reached.load(Ordering::Relaxed), 0);
             assert_eq!(issued.load(Ordering::Relaxed), 0);
             origin_task.abort();
+            log.assert_class("attempt-mismatch");
         })
         .await
         .unwrap();
@@ -753,55 +802,114 @@ mod mirror;
 
 #[test]
 fn origin_refusal_classes_are_public_without_private_error_details() {
-    use std::io::Write;
-    #[derive(Clone)]
-    struct LogBuffer(Arc<std::sync::RwLock<Vec<u8>>>);
-    impl Write for LogBuffer {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.write().unwrap().extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
+    let (output, _subscriber) = capture_refusals();
+    for class in [
+        "attempt-mismatch",
+        "egress-unavailable",
+        "client-auth-configuration",
+        "egress-tls-configuration",
+        "transport-configuration",
+        "origin-address",
+        "origin-endpoint",
+        "origin-connect",
+        "origin-handshake",
+        "origin-certificate",
+        "origin-missing-alpn",
+        "client-auth-policy",
+        "certificate-issuance",
+        "issued-identity",
+        "ingress-tls-configuration",
+    ] {
+        let error = origin_refusal(
+            class,
+            BoxError::from_static_str("private-origin.example: secret certificate"),
+        );
+        assert!(error.to_string().contains("private-origin.example"));
+        let log = output.text();
+        assert!(
+            log.contains(&format!("QUIC MITM origin refused: {class}")),
+            "{log}"
+        );
+        assert!(!log.contains("private-origin.example"));
+        assert!(!log.contains("secret certificate"));
     }
-    let output = Arc::new(std::sync::RwLock::new(Vec::new()));
-    let writer = LogBuffer(output.clone());
-    let subscriber = tracing_subscriber::fmt()
-        .without_time()
-        .with_ansi(false)
-        .with_writer(move || writer.clone())
-        .finish();
-    tracing::subscriber::with_default(subscriber, || {
-        for class in [
-            "attempt-mismatch",
-            "egress-unavailable",
-            "client-auth-configuration",
-            "egress-tls-configuration",
-            "transport-configuration",
-            "origin-address",
-            "origin-endpoint",
-            "origin-connect",
-            "origin-handshake",
-            "origin-certificate",
-            "origin-missing-alpn",
-            "client-auth-policy",
-            "certificate-issuance",
-            "issued-identity",
-            "ingress-tls-configuration",
-        ] {
-            let error = origin_refusal(
-                class,
-                BoxError::from_static_str("private-origin.example: secret certificate"),
-            );
-            assert!(error.to_string().contains("private-origin.example"));
-            let log = String::from_utf8(output.read().unwrap().clone()).unwrap();
-            assert!(
-                log.contains(&format!("QUIC MITM origin refused: {class}")),
-                "{log}"
-            );
-            assert!(!log.contains("private-origin.example"));
-            assert!(!log.contains("secret certificate"));
-        }
-    });
+}
+
+#[tokio::test]
+async fn origin_connect_failure_logs_its_public_class() {
+    let (log, _subscriber) = capture_refusals();
+    timeout(LIMIT, async {
+        let identity = identity();
+        let peeked = peeked_client_hello_for("localhost", &identity).await;
+        let (egress, _peer) = MemoryDatagramSocket::pair(
+            SocketAddr::from(([127, 0, 0, 1], 24610)),
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            NonZeroUsize::new(64).unwrap(),
+        );
+        let resolver = OriginResolver {
+            relay: relay(issuer(&identity), &identity),
+            peeked,
+            server_name: "localhost".parse().unwrap(),
+            client_auth: None,
+            egress: Mutex::new(Some(egress)),
+            origin: Arc::new(Mutex::new(None)),
+        };
+        assert!(resolver.reach_origin().await.is_err());
+        log.assert_class("origin-connect");
+    })
+    .await
+    .unwrap();
+}
+
+#[test]
+fn origin_handshake_kinds_exclude_private_reasons() {
+    let (log, _subscriber) = capture_refusals();
+    for (error, class) in [
+        (
+            ConnectionError::ConnectionClosed(ConnectionClose {
+                error_code: TransportErrorCode::crypto(40),
+                frame_type: None,
+                reason: b"secret origin.example peer reason".as_slice().into(),
+            }),
+            "peer-transport-crypto-0x128",
+        ),
+        (
+            ConnectionError::ApplicationClosed(ApplicationClose {
+                error_code: VarInt::from_u32(12345),
+                reason: b"secret origin.example application reason"
+                    .as_slice()
+                    .into(),
+            }),
+            "application-closed",
+        ),
+        (ConnectionError::TimedOut, "timed-out"),
+        (ConnectionError::LocallyClosed, "locally-closed"),
+        (ConnectionError::Reset, "reset"),
+        (ConnectionError::CidsExhausted, "cids-exhausted"),
+        (ConnectionError::EndpointInUse, "endpoint-in-use"),
+        (
+            ConnectionError::VersionMismatch { offered: vec![] },
+            "version-mismatch",
+        ),
+        (
+            ConnectionError::TransportError(TransportError::new(
+                TransportErrorCode::crypto(48),
+                "secret origin.example certificate",
+            )),
+            "transport-crypto-0x130",
+        ),
+        (
+            ConnectionError::TransportError(TransportError::INTERNAL_ERROR(
+                "secret origin.example runtime",
+            )),
+            "transport-0x1",
+        ),
+    ] {
+        let expected = error.to_string();
+        let returned = origin_handshake_refusal(error);
+        assert_eq!(returned.to_string(), expected);
+        log.assert_class(&format!("origin-handshake:{class}"));
+        assert!(!log.text().contains("secret"));
+        assert!(!log.text().contains("origin.example"));
+    }
 }

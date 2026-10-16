@@ -57,8 +57,8 @@ use tokio::{
 
 use super::InputWithQuicClientHello;
 use crate::{
-    ClientConfig, Connecting, Connection, Endpoint, EndpointConfig, IncomingOutcome, ServerConfig,
-    TransportConfig,
+    ClientConfig, Connecting, Connection, ConnectionError, Endpoint, EndpointConfig,
+    IncomingOutcome, ServerConfig, TransportConfig,
     proto::ServerCrypto,
     proto::crypto::{
         self,
@@ -514,6 +514,35 @@ fn origin_refusal(class: &'static str, error: impl Into<BoxError>) -> BoxError {
     error.into()
 }
 
+/// Only protocol-defined codes and static kinds are public, never peer reasons.
+fn origin_handshake_refusal(error: ConnectionError) -> BoxError {
+    let (kind, code) = match &error {
+        ConnectionError::VersionMismatch { .. } => ("version-mismatch", None),
+        ConnectionError::TransportError(error) => ("transport", Some(u64::from(error.code))),
+        ConnectionError::ConnectionClosed(error) => {
+            ("peer-transport", Some(u64::from(error.error_code)))
+        }
+        ConnectionError::ApplicationClosed(_) => ("application-closed", None),
+        ConnectionError::Reset => ("reset", None),
+        ConnectionError::TimedOut => ("timed-out", None),
+        ConnectionError::LocallyClosed => ("locally-closed", None),
+        ConnectionError::CidsExhausted => ("cids-exhausted", None),
+        ConnectionError::EndpointInUse => ("endpoint-in-use", None),
+    };
+    match code {
+        Some(code) if (0x100..0x200).contains(&code) => {
+            tracing::warn!("QUIC MITM origin refused: origin-handshake:{kind}-crypto-0x{code:x}");
+        }
+        Some(code) => {
+            tracing::warn!("QUIC MITM origin refused: origin-handshake:{kind}-0x{code:x}");
+        }
+        None => {
+            tracing::warn!("QUIC MITM origin refused: origin-handshake:{kind}");
+        }
+    }
+    error.into()
+}
+
 /// Resolves the ingress configuration of one association. The endpoint asks only for the
 /// attempt it admits, and runs the work (the origin handshake and certificate issuance) only
 /// after any Retry validated the client's address.
@@ -661,13 +690,13 @@ where
                 biased;
                 // The callback can report a request and fail in the same poll.
                 connection = &mut connecting => {
-                    let connection = connection.map_err(|error| origin_refusal("origin-handshake", error))?;
+                    let connection = connection.map_err(origin_handshake_refusal)?;
                     let (negotiated, leaf) = established_origin(&connection).map_err(|error| origin_refusal("origin-certificate", error))?;
                     (OriginConnection::Established(connection), negotiated, leaf, None)
                 }
                 requested = requested => {
                     let requested = requested.map_err(|_closed| {
-                        origin_refusal("origin-handshake", BoxError::from_static_str("QUIC MITM origin handshake closed"))
+                        origin_refusal("origin-handshake:credential-channel-closed", BoxError::from_static_str("QUIC MITM origin handshake closed"))
                     })?;
                     (
                         OriginConnection::AwaitingCredential(Box::new(connecting)),
@@ -678,9 +707,7 @@ where
                 }
             }
         } else {
-            let connection = connecting
-                .await
-                .map_err(|error| origin_refusal("origin-handshake", error))?;
+            let connection = connecting.await.map_err(origin_handshake_refusal)?;
             let (negotiated, leaf) = established_origin(&connection)
                 .map_err(|error| origin_refusal("origin-certificate", error))?;
             (

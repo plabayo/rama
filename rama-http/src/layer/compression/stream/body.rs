@@ -168,43 +168,22 @@ impl CompressData {
                 }
 
                 CompressState::Finishing => {
-                    self.output_buffer.reserve(Self::INTERNAL_BUF_CAPACITY);
-                    let mut output = util::WriteBuffer::new_uninitialized(
-                        self.output_buffer.spare_capacity_mut(),
-                    );
-
-                    match self.encoder.finish(&mut output) {
-                        Ok(done) => {
-                            let written = output.written_len();
-                            // Commit the bytes written to spare capacity
-                            unsafe {
-                                self.output_buffer
-                                    .set_len(self.output_buffer.len() + written);
-                            }
-
-                            if written > 0 {
-                                let data = self.output_buffer.split().freeze();
-                                if done {
-                                    self.state = if self.pending_trailers.is_some() {
-                                        CompressState::Trailers
-                                    } else {
-                                        CompressState::Done
-                                    };
-                                }
-                                return Poll::Ready(Some(Ok(Frame::data(data))));
-                            } else if done {
+                    match drain_step(&mut self.encoder, &mut self.output_buffer, true) {
+                        Ok((done, written)) => {
+                            if done {
                                 self.state = if self.pending_trailers.is_some() {
                                     CompressState::Trailers
                                 } else {
                                     CompressState::Done
                                 };
-                            } else {
-                                // If not done and nothing written, we must yield to avoid busy-looping
-                                // though finish() usually finishes or writes.
-                                return Poll::Pending;
+                            }
+                            if written > 0 {
+                                return Poll::Ready(Some(Ok(Frame::data(
+                                    self.output_buffer.split().freeze(),
+                                ))));
                             }
                         }
-                        Err(e) => return Poll::Ready(Some(Err(io::Error::other(e)))),
+                        Err(error) => return Poll::Ready(Some(Err(error))),
                     }
                 }
 
@@ -254,22 +233,7 @@ impl CompressData {
         encode_all(&mut self.encoder, input, &mut self.output_buffer)?;
 
         if self.always_flush {
-            // A full output buffer can leave the codec in its flush operation.
-            // Complete that operation before accepting another input chunk.
-            loop {
-                self.output_buffer.reserve(Self::INTERNAL_BUF_CAPACITY);
-                let mut output =
-                    util::WriteBuffer::new_uninitialized(self.output_buffer.spare_capacity_mut());
-                let done = self.encoder.flush(&mut output)?;
-                let written = output.written_len();
-                unsafe {
-                    self.output_buffer
-                        .set_len(self.output_buffer.len() + written);
-                }
-                if done {
-                    break;
-                }
-            }
+            flush_all(&mut self.encoder, &mut self.output_buffer)?;
         }
 
         if self.output_buffer.is_empty() {
@@ -278,6 +242,38 @@ impl CompressData {
             Ok(Some(Frame::data(self.output_buffer.split().freeze())))
         }
     }
+}
+
+/// Complete flushing before accepting another input chunk.
+fn flush_all(encoder: &mut impl EncodeV2, output: &mut BytesMut) -> io::Result<()> {
+    while !drain_step(encoder, output, false)?.0 {}
+    Ok(())
+}
+
+/// A synchronous codec has no waker: an unfinished drain must emit bytes.
+fn drain_step(
+    encoder: &mut impl EncodeV2,
+    output_buffer: &mut BytesMut,
+    finish: bool,
+) -> io::Result<(bool, usize)> {
+    output_buffer.reserve(CompressData::INTERNAL_BUF_CAPACITY);
+    let mut output = util::WriteBuffer::new_uninitialized(output_buffer.spare_capacity_mut());
+    let done = if finish {
+        encoder.finish(&mut output)?
+    } else {
+        encoder.flush(&mut output)?
+    };
+    let written = output.written_len();
+    // The codec initialized exactly these additional bytes.
+    unsafe {
+        output_buffer.set_len(output_buffer.len() + written);
+    }
+    if !done && written == 0 {
+        return Err(io::Error::other(
+            "compression encoder made no drain progress",
+        ));
+    }
+    Ok((done, written))
 }
 
 /// Consume every input byte, including codecs that buffer without emitting output.
@@ -449,6 +445,7 @@ mod tests {
     use super::*;
     use std::assert_matches;
     use std::collections::VecDeque;
+    use std::io::Read;
 
     /// A test body that yields predefined frames.
     struct TestBody {
@@ -491,8 +488,6 @@ mod tests {
 
     #[test]
     fn empty_data_frames() {
-        use std::io::Read;
-
         // Exercise initialization, interleaved empties, EOF, and trailer delivery,
         // both with normal buffering and the per-chunk flushing used for SSE.
         for chunks in [
@@ -607,10 +602,46 @@ mod tests {
             Ok(())
         }
         fn flush(&mut self, _output: &mut util::WriteBuffer<'_>) -> io::Result<bool> {
-            Ok(true)
+            self.consumed += 1;
+            // Bound a reverted flush loop so the regression fails instead of hanging.
+            if self.consumed > 1 {
+                return Err(io::Error::other("probe repeated without progress"));
+            }
+            Ok(!self.stalled)
         }
-        fn finish(&mut self, _output: &mut util::WriteBuffer<'_>) -> io::Result<bool> {
-            Ok(true)
+        fn finish(&mut self, output: &mut util::WriteBuffer<'_>) -> io::Result<bool> {
+            self.flush(output)
+        }
+    }
+
+    #[test]
+    fn encoder_drain_stalls_error_before_retry_or_pending() {
+        for finish in [false, true] {
+            let mut encoder = ProgressProbe {
+                stalled: true,
+                consumed: 0,
+            };
+            let mut output = BytesMut::new();
+            let error = if finish {
+                drain_step(&mut encoder, &mut output, true).unwrap_err()
+            } else {
+                flush_all(&mut encoder, &mut output).unwrap_err()
+            };
+            assert_eq!(
+                error.to_string(),
+                "compression encoder made no drain progress"
+            );
+            assert_eq!(encoder.consumed, 1);
+            assert!(output.is_empty());
+
+            let mut encoder = ProgressProbe {
+                stalled: false,
+                consumed: 0,
+            };
+            assert_eq!(
+                drain_step(&mut encoder, &mut output, finish).unwrap(),
+                (true, 0)
+            );
         }
     }
 
@@ -638,8 +669,6 @@ mod tests {
 
     #[test]
     fn large_streaming_frames_round_trip() {
-        use std::io::Read;
-
         // Incompressible input makes a flush exceed the codec's output buffer.
         // Use generated bytes, independent of any captured site's content.
         let mut state = 0x1234_5678_u32;
