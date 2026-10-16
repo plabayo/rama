@@ -10,6 +10,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field as data_field
 
 from quic_wire import H3_SETTINGS, client_settings, varint, varint_field
+from qpack_wire import ENCODER_STREAM, encoder_instructions
 from tls_wire import Reader, byte_span, identity
 from wire import one, pdml_packets
 
@@ -154,6 +155,7 @@ class SequenceEvidence:
     streams: tuple[StreamPrefix, ...]
     controls: tuple[dict, ...]
     local_settings: dict
+    encoder_instructions: tuple[dict, ...] = ()
 
     def matches(self, capture):
         return sequence_matches(capture, self)
@@ -163,6 +165,7 @@ def sequence_evidence(data, server_port):
     """Associate browser prefixes and server decoder context with one connection."""
     streams = stream_prefixes(data, server_port)
     settings = client_settings(data, server_port, from_server=True)
+    instructions = encoder_instructions(data, server_port, streams)
     result = {}
     for (connection, from_server), prefixes in streams.items():
         if from_server:
@@ -179,7 +182,10 @@ def sequence_evidence(data, server_port):
             if entry["id"] not in (ENABLE_CONNECT_PROTOCOL, H3_DATAGRAM)
         ]
         result[connection] = SequenceEvidence(
-            tuple(prefixes), tuple(control_frames(control[0])), context
+            tuple(prefixes),
+            tuple(control_frames(control[0])),
+            context,
+            instructions.get(connection, ()),
         )
     return result
 
@@ -187,19 +193,18 @@ def sequence_evidence(data, server_port):
 def sequence_matches(capture, evidence):
     """Require one wire-backed prefix; cross-stream freeze order stays unverified.
 
-    Nonempty QPACK instruction captures need an independent instruction decoder
-    before this verifier can accept them. Empty instruction prefixes are valid
-    regardless of later dynamic-table activity; they do not prove freeze timing.
+    Empty instruction prefixes remain valid despite later table activity. A
+    nonempty prefix must match decoded encoder metadata in its own stream order;
+    this still does not establish the recorder's exact first-request cutoff.
     """
     if (
         capture.get("completeness") != "Complete"
         or capture.get("local_settings") != evidence.local_settings
     ):
         return False
-    if capture.get("encoder_instructions"):
-        raise ValueError(
-            "nonempty captured QPACK prefix requires instruction verification"
-        )
+    instructions = capture.get("encoder_instructions", [])
+    if instructions != list(evidence.encoder_instructions[: len(instructions)]):
+        return False
     observed = {stream.stream_id: stream.stream_type for stream in evidence.streams}
     seen, controls = set(), []
     control_seen = False
@@ -217,4 +222,8 @@ def sequence_matches(capture, evidence):
             controls.append(event["Control"])
         else:
             raise ValueError("unknown captured HTTP/3 sequence event")
+    if instructions and not any(
+        observed[identifier] == ENCODER_STREAM for identifier in seen
+    ):
+        return False
     return bool(controls) and controls == list(evidence.controls[: len(controls)])

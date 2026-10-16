@@ -403,8 +403,8 @@ def compare_quic_captures(archive, observed, hellos, settings, requests, sequenc
             "Http3Settings",
         ],
         partially_verified_slots={
-            "Http3Sequence": "local decoder context, stream identities/types and control prefix contents"
+            "Http3Sequence": "local decoder context, stream identities/types, control and QPACK encoder prefix contents"
         },
         unverified_slots=["Http3Sequence"],
-        sequence_limits="first-request freeze, cross-stream event order and nonempty QPACK instruction prefixes remain unverified",
+        sequence_limits="first-request freeze and cross-stream event order remain unverified",
     )

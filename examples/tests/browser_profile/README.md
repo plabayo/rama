@@ -97,10 +97,20 @@ separate from that decoder context.
 These sequence facts must match the same retained TLS/QUIC joint. Reports mark
 Http3Sequence as partially verified: packet arrival cannot establish the exact
 application first-request freeze or relative parser scheduling across streams.
-A later control frame does not invalidate an earlier captured prefix. Nonempty
-captured QPACK instruction prefixes currently reject explicitly until independent
-instruction verification is implemented. These checks establish retained capture
-dimensions, not native H3 replay support or every possible wire property.
+A later control frame does not invalidate an earlier captured prefix.
+
+`qpack_wire.py` verifies encoder instruction prefixes too. Raw prefixes determine
+instruction kinds, indices, capacities and Huffman flags; tshark independently
+decodes Huffman names. Its instruction bytes must reconstruct the entire decoded
+encoder stream exactly, preventing missing, duplicated or reordered dissection
+from proving a match. Inserted values remain discarded, and names contribute only
+their decoded lengths. A nonempty retained instruction prefix also requires its
+encoder stream in the captured stream events. Instructions retain their own
+stream order; no order relative to control events is invented.
+
+These checks establish retained capture dimensions, not native H3 replay support
+or every possible wire property. The exact recorder cutoff remains unverified
+for both control frames and encoder instructions.
 
 HTTP/2 also replays all six operations for every retained connection variant.
 Each CLI process uses the fixture CA through `--cacert` and explicit newly generated

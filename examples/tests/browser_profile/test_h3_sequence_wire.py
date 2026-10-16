@@ -245,11 +245,10 @@ class H3SequenceWireTests(unittest.TestCase):
             with self.subTest(label=label):
                 self.assertFalse(sequence.sequence_matches(retained, evidence()))
 
-    def test_nonempty_qpack_is_explicitly_unsupported(self):
+    def test_nonempty_qpack_needs_matching_instruction_evidence(self):
         retained = capture()
         retained["encoder_instructions"] = [{"Capacity": {"capacity": 4096}}]
-        with self.assertRaisesRegex(ValueError, "instruction verification"):
-            sequence.sequence_matches(retained, evidence())
+        self.assertFalse(sequence.sequence_matches(retained, evidence()))
 
     def test_server_settings_supply_decoder_context_without_role_capabilities(self):
         # The browser's own capacity is 100; the receiving server's is 4096.
