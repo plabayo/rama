@@ -38,7 +38,6 @@ use rama_core::io::BridgeIo;
 use rama_core::service::service_fn;
 use rama_net::address::HostWithPort;
 use rama_utils::octets::kib;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -55,12 +54,16 @@ enum PeerBehavior {
     EchoThenAbort,
 }
 
-async fn run_peer_listener(addr: SocketAddr, behavior: PeerBehavior) {
-    let listener = TcpListener::bind(addr).await.expect("bind peer listener");
+async fn run_peer_listener(
+    listener: TcpListener,
+    behavior: PeerBehavior,
+    observed: std::sync::mpsc::Sender<()>,
+) {
     loop {
         let Ok((mut socket, _)) = listener.accept().await else {
             return;
         };
+        let observed = observed.clone();
         tokio::spawn(async move {
             match behavior {
                 PeerBehavior::EchoAndClose => {
@@ -68,7 +71,11 @@ async fn run_peer_listener(addr: SocketAddr, behavior: PeerBehavior) {
                     if let Ok(n) = socket.read(&mut buf).await
                         && n > 0
                     {
-                        _ = socket.write_all(&buf[..n]).await;
+                        socket
+                            .write_all(&buf[..n])
+                            .await
+                            .expect("echo upstream bytes");
+                        observed.send(()).expect("report upstream exchange");
                     }
                     _ = socket.shutdown().await;
                 }
@@ -77,7 +84,11 @@ async fn run_peer_listener(addr: SocketAddr, behavior: PeerBehavior) {
                     if let Ok(n) = socket.read(&mut buf).await
                         && n > 0
                     {
-                        _ = socket.write_all(&buf[..n]).await;
+                        socket
+                            .write_all(&buf[..n])
+                            .await
+                            .expect("echo upstream bytes");
+                        observed.send(()).expect("report upstream exchange");
                     }
                     // Half-close the write side — read side stays
                     // open. This is the failure shape the
@@ -98,6 +109,7 @@ async fn run_peer_listener(addr: SocketAddr, behavior: PeerBehavior) {
                     // Mirror of a wedged server loop — accept, do
                     // nothing. The proxy must rely on its idle /
                     // cancel paths to recover.
+                    observed.send(()).expect("report upstream connection");
                     let _hold = socket;
                     tokio::time::sleep(Duration::from_secs(60)).await;
                 }
@@ -106,7 +118,11 @@ async fn run_peer_listener(addr: SocketAddr, behavior: PeerBehavior) {
                     if let Ok(n) = socket.read(&mut buf).await
                         && n > 0
                     {
-                        _ = socket.write_all(&buf[..n]).await;
+                        socket
+                            .write_all(&buf[..n])
+                            .await
+                            .expect("echo upstream bytes");
+                        observed.send(()).expect("report upstream exchange");
                     }
                     // Drop without a clean shutdown — closer to a
                     // mid-stream RST than a graceful close.
@@ -124,14 +140,10 @@ fn run_one(behavior: PeerBehavior) {
     // acquisition but don't await, so they're safe from a
     // non-runtime thread.
     let rt = tokio::runtime::Runtime::new().expect("rt");
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let listener = rt.block_on(TcpListener::bind("127.0.0.1:0")).expect("bind");
     let addr = listener.local_addr().expect("addr");
-    drop(listener); // free the bind, hand the port to the async listener
-    let _peer = rt.spawn(run_peer_listener(addr, behavior));
-
-    // Give the listener a moment to come up before the engine's
-    // service tries to connect.
-    std::thread::sleep(Duration::from_millis(20));
+    let (observed_tx, observed_rx) = std::sync::mpsc::channel();
+    let _peer = rt.spawn(run_peer_listener(listener, behavior, observed_tx));
 
     let handler = TestHandler {
         app_message_handler: Arc::new(|_| None),
@@ -143,9 +155,9 @@ fn run_one(behavior: PeerBehavior) {
                     // Connect to the loopback peer — this is real
                     // kernel-mediated I/O, unlike every other test
                     // module that uses an in-memory duplex.
-                    let Ok(mut upstream) = TcpStream::connect(addr).await else {
-                        return Ok(());
-                    };
+                    let mut upstream = TcpStream::connect(addr)
+                        .await
+                        .expect("connect retained loopback listener");
                     // Forward bytes between the client-facing
                     // ingress (a `TcpFlow`) and the real upstream
                     // socket. `copy_bidirectional` returns when
@@ -178,6 +190,10 @@ fn run_one(behavior: PeerBehavior) {
 
     session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
     _ = session.on_client_bytes(b"hello e2e\n");
+
+    observed_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("peer must receive the connection/echo bytes before lifecycle assertions");
 
     // Give the service time to forward → peer to react → bridge to
     // observe. Each scenario completes within a few hundred ms; the

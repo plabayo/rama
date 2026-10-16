@@ -487,8 +487,8 @@ fn l4_socket_defaults_match_the_terminating_proxy_policy() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mitm_certificate_portal_is_hijacked_over_http_and_https() {
-    let proxy_address = reserve_loopback_address();
-    let ui_address = reserve_loopback_address();
+    let proxy_address = loopback_bind_address();
+    let ui_address = loopback_bind_address();
     let directory = rama::utils::fs::tempdir().unwrap();
     let ca_path = directory.path().join("proxy-ca.pem");
     let proxy_arg = proxy_address.to_string();
@@ -506,7 +506,8 @@ async fn mitm_certificate_portal_is_hijacked_over_http_and_https() {
     let shutdown = rama::graceful::Shutdown::new(async move {
         _ = shutdown_rx.await;
     });
-    run(shutdown.guard(), cli.proxy).await.unwrap();
+    let (proxy_address, inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    assert!(inspector_address.is_some(), "inspector listener bound");
 
     let ca_pem = tokio::fs::read(&ca_path).await.unwrap();
     let trust_anchor = CertificateDer::from_pem_slice(&ca_pem).unwrap();

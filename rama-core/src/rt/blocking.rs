@@ -75,6 +75,7 @@ enum RuntimeDial9Recorder {
     FromEnv,
     Disabled,
     Custom(Box<::dial9::Recorder>),
+    Shared(::dial9::Dial9Handle),
 }
 
 impl Default for RuntimeBuilder {
@@ -85,11 +86,11 @@ impl Default for RuntimeBuilder {
             flavor: RuntimeFlavor::CurrentThread,
             flavor_explicit: false,
             #[cfg(feature = "dial9")]
-            dial9_recorder: RuntimeDial9Recorder::FromEnv,
+            dial9_recorder: RuntimeDial9Recorder::Disabled,
             #[cfg(feature = "dial9")]
             dial9_attach_options: None,
             #[cfg(feature = "dial9")]
-            dial9_may_be_enabled: implicit_dial9_may_be_enabled(),
+            dial9_may_be_enabled: false,
         }
     }
 }
@@ -109,6 +110,26 @@ fn implicit_dial9_may_be_enabled() -> bool {
 }
 
 impl RuntimeBuilder {
+    /// Attach to the application's recorder without taking ownership of it.
+    /// The application must keep its recorder alive through runtime shutdown.
+    #[cfg(feature = "dial9")]
+    #[must_use]
+    pub fn with_dial9_handle(mut self, handle: ::dial9::Dial9Handle) -> Self {
+        self.dial9_recorder = RuntimeDial9Recorder::Shared(handle);
+        self
+    }
+
+    /// Explicitly configure dial9 from the process environment when built.
+    /// By default, building a runtime does not read dial9 environment variables.
+    /// Prefer supplying an application-configured recorder.
+    #[cfg(feature = "dial9")]
+    #[must_use]
+    pub fn with_dial9_from_env(mut self) -> Self {
+        self.dial9_recorder = RuntimeDial9Recorder::FromEnv;
+        self.dial9_may_be_enabled = implicit_dial9_may_be_enabled();
+        self
+    }
+
     /// Create a runtime builder with default settings.
     #[must_use]
     pub fn new() -> Self {
@@ -135,7 +156,7 @@ impl RuntimeBuilder {
     rama_utils::macros::generate_set_and_with! {
         /// Use a current-thread Tokio scheduler.
         ///
-        /// With the `dial9` feature, this overrides the implicit environment
+        /// With the `dial9` feature, this overrides any explicit environment
         /// config when telemetry is disabled. Enabled telemetry needs the
         /// multi-thread scheduler and conflicts with this setting.
         pub fn current_thread(mut self) -> Self {
@@ -148,7 +169,7 @@ impl RuntimeBuilder {
     rama_utils::macros::generate_set_and_with! {
         /// Use a multi-thread Tokio scheduler.
         ///
-        /// With the `dial9` feature, this overrides the implicit environment
+        /// With the `dial9` feature, this overrides any explicit environment
         /// config when telemetry is disabled, and its worker count applies to
         /// the instrumented runtime otherwise.
         pub fn worker_threads(mut self, worker_threads: usize) -> Self {
@@ -162,11 +183,10 @@ impl RuntimeBuilder {
     rama_utils::macros::generate_set_and_with! {
         /// Set the [`Recorder`] this runtime records into.
         ///
-        /// With the `dial9` feature, this defaults to resolving the `DIAL9_*`
-        /// environment when the runtime is built. Combining an enabled recorder
+        /// No recorder is attached by default. Combining a connected recorder
         /// with [`with_current_thread`](Self::with_current_thread) is rejected
-        /// by [`try_build`](Self::try_build). An implicit environment config
-        /// yields to an explicit Rama scheduler when telemetry is disabled. Use
+        /// by [`try_build`](Self::try_build). A paused recorder remains attached
+        /// so the application can enable it later. Use
         /// [`without_dial9_recorder`](Self::without_dial9_recorder) to
         /// explicitly select a Rama-configured scheduler without dial9.
         ///
@@ -263,8 +283,23 @@ impl RuntimeBuilder {
                 };
 
                 match dial9_recorder {
+                    RuntimeDial9Recorder::Shared(handle) => {
+                        if !handle.is_connected() {
+                            return plain();
+                        }
+                        require_multi_thread(flavor, flavor_explicit)?;
+                        let mut builder = tokio::runtime::Builder::new_multi_thread();
+                        builder.enable_all();
+                        configure_dial9_builder(&mut builder, flavor, &runtime_thread_name);
+                        let options = dial9_attach_options.unwrap_or_else(|| {
+                            ::dial9::TokioAttachOptions::builder()
+                                .runtime_name(runtime_thread_name.as_str())
+                                .build()
+                        });
+                        OwnedRuntime::attach_dial9(handle, builder, options)
+                    }
                     RuntimeDial9Recorder::Disabled => plain(),
-                    // An unset `DIAL9_ENABLED` means the implicit environment is
+                    // An unset `DIAL9_ENABLED` means environment recording is
                     // off, so skip dial9 and leave Rama's scheduler in charge.
                     RuntimeDial9Recorder::FromEnv if !dial9_may_be_enabled => plain(),
                     RuntimeDial9Recorder::FromEnv => {
@@ -273,7 +308,7 @@ impl RuntimeBuilder {
                         })?;
                         // The environment resolved to telemetry-off after all;
                         // hand the scheduler choice back to Rama.
-                        if !recorder.handle().is_enabled() {
+                        if !recorder.handle().is_connected() {
                             drop((runtime, recorder));
                             return plain();
                         }
@@ -283,7 +318,7 @@ impl RuntimeBuilder {
                     RuntimeDial9Recorder::Custom(recorder) => {
                         // A disabled recorder records nothing, so it does not
                         // constrain the scheduler.
-                        if !recorder.handle().is_enabled() {
+                        if !recorder.handle().is_connected() {
                             return plain();
                         }
                         require_multi_thread(flavor, flavor_explicit)?;
@@ -463,7 +498,7 @@ impl Runtime {
     where
         F: Future,
     {
-        self.inner.handle.tokio_handle().block_on(future)
+        self.inner.handle.block_on(future)
     }
 
     /// Run an owned future as a task on this runtime and block until it
@@ -1109,8 +1144,11 @@ mod tests {
 
     #[cfg(feature = "dial9")]
     #[test]
-    fn default_builder_defers_dial9_environment_resolution() {
+    fn default_builder_requires_explicit_dial9_configuration() {
         let builder = Runtime::builder();
+        assert_matches!(builder.dial9_recorder, RuntimeDial9Recorder::Disabled);
+
+        let builder = builder.with_dial9_from_env();
         assert_matches!(builder.dial9_recorder, RuntimeDial9Recorder::FromEnv);
 
         let builder = builder.without_dial9_recorder();
@@ -1199,6 +1237,7 @@ mod tests {
     #[test]
     fn dial9_attach_options_require_an_explicit_recorder() {
         let err = Runtime::builder()
+            .with_dial9_from_env()
             .with_dial9_attach_options(::dial9::TokioAttachOptions::default())
             .try_build()
             .unwrap_err();

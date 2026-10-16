@@ -1,65 +1,24 @@
 # 🐕 dial9
 
-[dial9] is a Tokio runtime telemetry crate by Russell Cohen and Jess
-Izen at AWS. It records poll / wake / scheduling-delay events plus
-application-defined events into a binary trace you can analyse offline.
+[dial9] records Tokio scheduling and rama protocol activity for offline diagnostics.
+Enable rama’s optional Dial9 support and attach an application-owned recorder.
+One recorder can serve multiple runtimes; the application chooses storage,
+profiling sources and when recording starts or stops.
 
-## How rama exposes dial9
+The [local recording example] shows bounded disk storage, application events,
+recorder health and copying completed segments into a diagnostics bundle.
+Segment size, total size and rotation are configurable. Retained history depends
+on traffic; leave disk headroom around the retention budget.
 
-Rama crates that emit events or expose runtime boundaries have an opt-in
-`dial9` cargo feature. Event-producing crates emit their predefined events at
-the matching lifecycle hooks; recording becomes a no-op when no [`dial9`]
-recorder is wired into the application.
-The `rama` mono-crate has a bundled `dial9` feature that activates the same on every enabled sub-crate.
+Rama correlates protocol operations across task boundaries, including HTTP
+requests and streaming responses, WebSockets and QUIC. Applications can add
+their own events to the same flow. The [Apple transparent proxy example] shows
+an integration at a synchronous runtime boundary.
 
-Library code that wants its own events alongside rama's predefined
-sets can depend on `dial9-trace-format` directly and derive
-`TraceEvent` on its types.
-
-The `rama` crate's `dial9` feature also exposes it through
-`rama::telemetry::dial9`.
-Runtime-owning integrations can use `rama::rt::OwnedRuntime`. Blocking
-runtimes resolve the `DIAL9_*` environment when built if the feature is enabled;
-call `with_dial9_recorder(...)` to supply your own `dial9::Recorder` or
-`without_dial9_recorder()` to opt out explicitly. Tasks crossing those
-boundaries remain associated with that runtime's trace.
-
-### tokio_unstable
-
-`--cfg tokio_unstable` can be used to widen dial9's task coverage.
-Without it, poll events come from dial9's own spawn helpers, so the task timeline covers what rama routes through `rama_core::rt::Executor` and `rama_core::rt::spawn`; task spawn/terminate events and per-worker queue depth are unavailable.
-Set it to get the full timeline:
-
-```toml
-# .cargo/config.toml
-[build]
-rustflags = ["--cfg", "tokio_unstable"]
-```
-
-## Caveats
-
-- dial9 allows a single recorder per process: a second enabled recorder
-  (a second blocking runtime with `DIAL9_ENABLED`, or one built next to
-  your own) silently records nothing, with an error log. Only the first
-  runtime gets traced.
-- A misconfigured `DIAL9_*` environment (e.g. an unwritable trace
-  directory) no longer fails runtime construction: dial9 logs an error
-  and the runtime comes up untraced.
-- macOS only captures runtime-level + application events; Linux gets
-  kernel scheduling delays and CPU profiling samples too.
-- ~1 MiB trace buffer per OS thread.
-- dial9 is young — treat it as a diagnostics tool, not a production
-  metrics replacement.
-
-## Going further
-
-For the design and motivation, see [ Netstack.FM episode 37], the
-[Tokio blog post], and the [dial9 README]. A working integration in
-the rama tree:
-[`ffi/apple/examples/transparent_proxy/`](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy).
+Recording has a cost. Start with lifecycle events and measure your workload
+before adding profiling sources. Tokio’s unstable instrumentation expands task
+coverage; platform support and further options are described [upstream][dial9].
 
 [dial9]: https://github.com/dial9-rs/dial9
-[`dial9`]: https://github.com/dial9-rs/dial9
-[Netstack.FM episode 37]: https://netstack.fm/episodes/dial9-from-black-box-to-insight-in-tokio
-[Tokio blog post]: https://tokio.rs/blog/2026-03-18-dial9
-[dial9 README]: https://github.com/dial9-rs/dial9
+[local recording example]: https://github.com/plabayo/rama/blob/main/examples/src/dial9_local.rs
+[Apple transparent proxy example]: https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy

@@ -4,6 +4,8 @@
 pub(super) mod reset_response;
 
 use parking_lot::Mutex;
+#[cfg(any(feature = "http-full", feature = "tcp", feature = "udp"))]
+use rama::net::{process::ProcessSocket, transport::TransportProtocol};
 use rama::telemetry::tracing::{
     self,
     level_filters::LevelFilter,
@@ -124,6 +126,19 @@ pub(super) struct ExampleRunner {
 }
 
 impl ExampleRunner {
+    /// Wait for this example to own its expected TCP listener, retaining its fixed demo port.
+    #[cfg(any(feature = "http-full", feature = "tcp", feature = "udp"))]
+    pub(super) async fn wait_for_tcp(&mut self, address: impl Into<std::net::SocketAddr>) {
+        let expected = ProcessSocket {
+            protocol: TransportProtocol::Tcp,
+            local_addr: address.into(),
+        };
+
+        if let Err(error) = wait_for_socket(&mut self.server_process, expected).await {
+            panic!("{error}{}", self.said());
+        }
+    }
+
     /// Run an example with its output captured, for a test that needs to read something the
     /// example reports, such as the address it bound.
     pub(super) fn capturing(
@@ -240,6 +255,57 @@ impl ExampleRunner {
             .spawn()
             .expect("the ctrl-c helper starts"),
         )
+    }
+}
+
+/// Inspect an owned child without connecting to its listener or reading its log output.
+#[cfg(any(feature = "http-full", feature = "tcp", feature = "udp"))]
+pub(super) async fn wait_for_socket(
+    child: &mut Child,
+    expected: ProcessSocket,
+) -> Result<(), String> {
+    let pid = child.id();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut delay = Duration::from_millis(25);
+
+    loop {
+        check_child_running(child)?;
+        let sockets = tokio::time::timeout_at(
+            deadline,
+            tokio::task::spawn_blocking(move || rama::net::process::listening_sockets(pid)),
+        )
+        .await
+        .map_err(|_elapsed| format!("timed out inspecting child {pid} for {expected:?}"))?
+        .map_err(|error| format!("child {pid} inspection task failed: {error}"))?
+        .map_err(|error| format!("cannot inspect child {pid}: {error}"))?;
+        check_child_running(child)?;
+
+        if sockets.contains(&expected) {
+            return Ok(());
+        }
+
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(format!(
+                "child {pid} did not bind {expected:?} within 10s; owned sockets: {sockets:?}"
+            ));
+        }
+        tokio::time::sleep(delay.min(remaining)).await;
+        delay = (delay * 2).min(Duration::from_millis(200));
+    }
+}
+
+fn check_child_running(child: &mut Child) -> Result<(), String> {
+    match child.try_wait() {
+        Ok(None) => Ok(()),
+        Ok(Some(status)) => Err(format!(
+            "child {} exited with {status} before binding",
+            child.id()
+        )),
+        Err(error) => Err(format!(
+            "cannot inspect child {} status: {error}",
+            child.id()
+        )),
     }
 }
 

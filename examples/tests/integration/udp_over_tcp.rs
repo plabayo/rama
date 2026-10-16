@@ -1,6 +1,6 @@
 use super::utils;
-use std::io::{BufRead, BufReader};
-use std::process::{Child, Command, Stdio};
+use rama::net::{process::ProcessSocket, transport::TransportProtocol};
+use std::process::{Child, Command};
 use std::time::Duration;
 use tokio::net::UdpSocket;
 
@@ -46,12 +46,18 @@ async fn test_udp_over_tcp() {
             &format!("127.0.0.1:{LISTENER_UDP_BIND}"),
             &format!("127.0.0.1:{SERVER_APP_PORT}"),
         ])
-        .env("RUST_LOG", "info")
-        .stdout(Stdio::piped())
         .spawn()
         .unwrap();
     let mut kids = Kids(vec![listener]);
-    wait_for_listener(&mut kids.0[0]).await;
+    utils::wait_for_socket(
+        &mut kids.0[0],
+        ProcessSocket {
+            protocol: TransportProtocol::Tcp,
+            local_addr: ([127, 0, 0, 1], TCP_PORT).into(),
+        },
+    )
+    .await
+    .unwrap();
     let connector = Command::new(&bin)
         .args([
             "connect",
@@ -62,9 +68,15 @@ async fn test_udp_over_tcp() {
         .spawn()
         .unwrap();
     kids.0.push(connector);
-    let _kids = kids;
-    // Let both bridge halves settle.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    utils::wait_for_socket(
+        &mut kids.0[1],
+        ProcessSocket {
+            protocol: TransportProtocol::Udp,
+            local_addr: ([127, 0, 0, 1], CONNECTOR_UDP_BIND).into(),
+        },
+    )
+    .await
+    .unwrap();
 
     // Two UDP apps, one on each side of the tunnel.
     let server_app = UdpSocket::bind(("127.0.0.1", SERVER_APP_PORT))
@@ -85,6 +97,7 @@ async fn test_udp_over_tcp() {
         &mut buf,
         b"hello",
         "server app did not see datagram",
+        &mut kids.0,
     )
     .await;
     assert_eq!(&buf[..n], b"hello");
@@ -99,30 +112,11 @@ async fn test_udp_over_tcp() {
         &mut buf,
         b"world",
         "client app did not see reply",
+        &mut kids.0,
     )
     .await;
     assert_eq!(&buf[..n], b"world");
     assert_eq!(src.port(), CONNECTOR_UDP_BIND);
-}
-
-async fn wait_for_listener(listener: &mut Child) {
-    let stdout = listener.stdout.take().unwrap();
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-    let _stdout_task = tokio::task::spawn_blocking(move || {
-        let mut ready_tx = Some(ready_tx);
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if line.contains("tcp listening on")
-                && let Some(ready_tx) = ready_tx.take()
-            {
-                let _send_result = ready_tx.send(());
-            }
-        }
-    });
-
-    tokio::time::timeout(Duration::from_secs(10), ready_rx)
-        .await
-        .unwrap_or_else(|_| panic!("TCP listener did not become ready within 10s"))
-        .unwrap_or_else(|_| panic!("TCP listener exited before becoming ready"));
 }
 
 async fn send_until_recv(
@@ -132,9 +126,17 @@ async fn send_until_recv(
     buf: &mut [u8],
     payload: &[u8],
     timeout_message: &str,
+    children: &mut [Child],
 ) -> (usize, std::net::SocketAddr) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
+        for child in &mut *children {
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "bridge process {} exited before forwarding the datagram",
+                child.id(),
+            );
+        }
         sender.send_to(payload, target.clone()).await.unwrap();
 
         match tokio::time::timeout(Duration::from_millis(100), receiver.recv_from(buf)).await {

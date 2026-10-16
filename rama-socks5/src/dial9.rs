@@ -12,6 +12,8 @@ use rama_net::address::Host;
 pub struct Socks5HandshakeAuth {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
+    pub flow_id: u64,
+    pub operation_id: u64,
     /// Negotiated auth method code, per RFC 1928 §3. See
     /// [`crate::proto::SocksMethod`] for the canonical name → byte
     /// mapping.
@@ -25,6 +27,8 @@ pub struct Socks5HandshakeAuth {
 pub struct Socks5HandshakeConnect {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
+    pub flow_id: u64,
+    pub operation_id: u64,
     /// Destination host the client requested.
     pub destination_host: Host,
     /// Destination port the client requested.
@@ -41,6 +45,8 @@ pub(crate) fn record_handshake_auth(auth_method: u8, success: bool) {
     if handle.is_enabled() {
         handle.record_event(Socks5HandshakeAuth {
             timestamp_ns: clock_monotonic_ns(),
+            flow_id: rama_core::telemetry::dial9::TraceContext::current().flow_id(),
+            operation_id: rama_core::telemetry::dial9::TraceContext::current().operation_id(),
             auth_method: auth_method as u32,
             success,
         });
@@ -48,12 +54,14 @@ pub(crate) fn record_handshake_auth(auth_method: u8, success: bool) {
 }
 
 #[inline]
-pub(crate) fn record_handshake_connect(host: Host, port: u16, reply_kind: u8) {
+pub(crate) fn record_handshake_connect(host: &Host, port: u16, reply_kind: u8) {
     let handle = Dial9Handle::current();
     if handle.is_enabled() {
         handle.record_event(Socks5HandshakeConnect {
             timestamp_ns: clock_monotonic_ns(),
-            destination_host: host,
+            flow_id: rama_core::telemetry::dial9::TraceContext::current().flow_id(),
+            operation_id: rama_core::telemetry::dial9::TraceContext::current().operation_id(),
+            destination_host: host.clone(),
             destination_port: port as u32,
             reply_kind: reply_kind as u32,
         });

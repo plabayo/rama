@@ -20,29 +20,19 @@ async fn test_tcp_nd_json() {
     let (exit_tx, exit_rx) = oneshot::channel::<()>();
     let shutdown = Shutdown::new(exit_rx);
 
+    let mut runner = utils::ExampleRunner::interactive("tcp_nd_json", None);
+    runner.wait_for_tcp(([0, 0, 0, 0], 62042)).await;
+
     shutdown.spawn_task_fn(async move |guard| {
-        let runner = utils::ExampleRunner::interactive("tcp_nd_json", None);
         guard.cancelled().await;
         tracing::info!("exit runner");
         drop(runner);
         tracing::info!("runner dropped");
     });
 
-    let mut try_count = 0;
-    let stream = loop {
-        tokio::time::sleep(Duration::from_secs(try_count * 2)).await;
-        match default_tcp_connect(&Extensions::default(), HostWithPort::local_ipv4(62042)).await {
-            Ok((stream, _)) => break stream,
-            Err(err) => tracing::error!(
-                "#{}: failed to connect to example listener: {err}",
-                try_count + 1
-            ),
-        }
-        try_count += 1;
-        if try_count >= 12 {
-            panic!("failed to connect to example listener: try loop exhausted");
-        }
-    };
+    let (stream, _) = default_tcp_connect(&Extensions::default(), HostWithPort::local_ipv4(62042))
+        .await
+        .unwrap();
 
     tracing::info!("Connection Established");
 

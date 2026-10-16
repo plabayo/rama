@@ -3,8 +3,6 @@
     reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
 )]
 
-use std::time::Duration;
-
 use crate::utils::ExampleRunner;
 
 use super::utils;
@@ -35,13 +33,12 @@ use rama::{
 async fn test_socks5_connect_proxy_mitm_proxy() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive(
+    let mut runner = utils::ExampleRunner::interactive(
         "socks5_connect_proxy_mitm_proxy",
         Some("socks5,boring,dns"),
     );
 
-    // wait for example to run... this is dirty
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    runner.wait_for_tcp(([127, 0, 0, 1], 62022)).await;
 
     let http_socket_addr = spawn_http_server().await;
     let https_socket_addr = spawn_https_server().await;
@@ -131,10 +128,9 @@ async fn spawn_http_server() -> SocketAddress {
 }
 
 async fn spawn_https_server() -> SocketAddress {
-    let tcp_service =
-        TcpListener::bind_address(SocketAddress::local_ipv4(63010), Executor::default())
-            .await
-            .expect("bind HTTP server on open port");
+    let tcp_service = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .expect("bind HTTP server on open port");
 
     let bind_addr = tcp_service
         .local_addr()

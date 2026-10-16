@@ -2171,9 +2171,18 @@ impl ConnectionRef {
         receive_queue: PacketBudget,
         admission: Option<AdmissionLease>,
     ) -> Self {
+        let extensions = Extensions::new();
+        #[cfg(feature = "dial9")]
+        let dial9 = crate::dial9::Lifecycle::new(&conn);
+        #[cfg(feature = "dial9")]
+        if dial9.context().operation_id() != 0 {
+            extensions.insert(dial9.context());
+        }
         Self(Arc::new(ConnectionInner {
-            extensions: Extensions::new(),
+            extensions,
             state: Mutex::new(State {
+                #[cfg(feature = "dial9")]
+                dial9,
                 inner: conn,
                 driver: None,
                 handle,
@@ -2546,6 +2555,8 @@ impl BudgetChange {
 }
 
 pub(crate) struct State {
+    #[cfg(feature = "dial9")]
+    dial9: crate::dial9::Lifecycle,
     pub(crate) inner: crate::proto::Connection,
     driver: Option<Waker>,
     handle: ConnectionHandle,
@@ -3377,6 +3388,8 @@ impl State {
                     }
                 }
                 Event::Connected => {
+                    #[cfg(feature = "dial9")]
+                    self.dial9.connected(&self.inner);
                     self.connected = true;
                     if let Some(admission) = self.admission.take() {
                         admission.complete(now());
@@ -3532,6 +3545,14 @@ impl State {
 
     /// Used to wake up all blocked futures when the connection becomes closed for any reason
     fn terminate(&mut self, reason: ConnectionError, shared: &Shared) {
+        #[cfg(feature = "dial9")]
+        self.dial9.finish(
+            &self.inner,
+            Some(&reason),
+            self.connected,
+            self.send_failures,
+            self.oversized_sends,
+        );
         let reason = self.error.get_or_insert(reason).clone();
         // A handshake that ends here leaves the attempts in progress.
         self.admission = None;
@@ -3618,6 +3639,14 @@ impl State {
 
 impl Drop for State {
     fn drop(&mut self) {
+        #[cfg(feature = "dial9")]
+        self.dial9.finish(
+            &self.inner,
+            self.error.as_ref(),
+            self.connected,
+            self.send_failures,
+            self.oversized_sends,
+        );
         // The driver's Drop already delivered Drained; this only covers a state that was never
         // driven. No lock is held here, so delivering to the endpoint is safe.
         if !self.endpoint_drained {

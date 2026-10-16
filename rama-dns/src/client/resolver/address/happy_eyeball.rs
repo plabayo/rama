@@ -183,7 +183,7 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
         }
 
         let make_ipv4_stream = || {
-            stream::StreamExt::flatten(stream::iter(
+            let stream = stream::StreamExt::flatten(stream::iter(
                 maybe_dns_overwrite
                     .as_ref()
                     .map(|resolver| resolver.lookup_ipv4(domain.clone())),
@@ -197,11 +197,14 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
                         .map(|result| result.map_err(ErrorExt::into_opaque_error)),
                 )
             })
-            .map(|result| result.map(IpAddr::V4))
+            .map(|result| result.map(IpAddr::V4));
+            #[cfg(feature = "dial9")]
+            let stream = crate::dial9::wrap(&domain, 4, stream);
+            stream
         };
 
         let make_ipv6_stream = || {
-            stream::StreamExt::flatten(stream::iter(
+            let stream = stream::StreamExt::flatten(stream::iter(
                 maybe_dns_overwrite
                     .as_ref()
                     .map(|resolver| resolver.lookup_ipv6(domain.clone())),
@@ -216,7 +219,10 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
                 )
             })
             // AAAA records can carry v4-mapped addresses too — same fold-down
-            .map(|result| result.map(|ip| IpAddr::V6(ip).into_canonical_ip_addr()))
+            .map(|result| result.map(|ip| IpAddr::V6(ip).into_canonical_ip_addr()));
+            #[cfg(feature = "dial9")]
+            let stream = crate::dial9::wrap(&domain, 6, stream);
+            stream
         };
 
         let source = match dns_mode {

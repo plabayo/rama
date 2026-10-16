@@ -686,8 +686,7 @@ The test harness wires no storage directory through, so it stays plain.
 
 The trace is a self-describing binary stream from
 [`dial9`](https://github.com/dial9-rs/dial9).
-Triage with `dial9-viewer` (GUI timeline), `dial9` /  `dial9-cli` (grep
-+ JSON; pipe into an LLM for triage), or deserialise programmatically
+Triage with `dial9-viewer` (GUI timeline), or decode programmatically
 with [`dial9-trace-format`](https://docs.rs/dial9-trace-format). Follow
 the upstream docs for current install + command surface.
 
@@ -714,13 +713,18 @@ log show --predicate '(subsystem BEGINSWITH "org.ramaproxy.example.tproxy") || \
 
 ### Bundle everything for offline triage
 
+For an application-integrated export, use the completed-segment copy shown in
+[the local recording example](../../../../examples/src/dial9_local.rs). It reports
+files missed during eviction and omits active files. The manual live-directory
+copy below can race rotation and include an incomplete active segment.
+
 Hand a single tmp dir to a teammate, an LLM, or `dial9-viewer` —
-pulls the dial9 traces from the sysext storage (sudo), the last hour
+pulls the dial9 traces from the sysext storage (sudo), the last fifteen minutes
 of relevant `log show` output, and any recent provider crash reports:
 
 ```sh
 DEST=$(mktemp -d /tmp/rama-tproxy-bundle.XXXXXX) && \
-sudo cp -R "/var/root/Library/Application Support/rama/tproxy/dial9-traces" "$DEST/" 2>/dev/null || true
+sudo cp -R "/var/root/Library/Application Support/rama/tproxy/dial9-traces" "$DEST/"
 
 log show --last 15m --style ndjson --info --debug \
   --predicate 'subsystem BEGINSWITH "org.ramaproxy.example.tproxy" OR subsystem == "com.apple.networkextension"' \
@@ -737,19 +741,18 @@ sudo chown -R "$(id -u):$(id -g)" "$DEST"
 echo "$DEST"
 ```
 
-Open the directory with `dial9-viewer "$DEST/dial9-traces"`, point an
+Open the directory with `dial9-viewer serve --local-dir "$DEST/dial9-traces"`, point an
 agent at it, or grep the NDJSON log alongside the binary trace.
 
 ### Caveats
 
 - ~1 MiB buffer per OS thread. Fine for this demo; reconsider for
   high-thread workloads.
-- macOS only captures runtime-level + application events; Linux gets
-  kernel scheduling delays and CPU profiling samples too.
-- The two ingress/egress bridge tasks are spawned from a Swift dispatch
-  queue, so dial9's thread-local handle is inert there — per-future
-  wake graphs are missing for those two tasks. Runtime-level events
-  still fire on every poll.
+- Profiling sources are configured separately. Linux supports additional kernel
+  and CPU diagnostics; consult dial9 for platform requirements.
+- Runtime handles preserve telemetry when spawning from Swift dispatch queues.
+  The provider identity and flow id identify the native flow; trace flow and
+  operation ids connect its policy and protocol work.
 
 ### See also
 

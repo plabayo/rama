@@ -5,19 +5,24 @@ use std::assert_matches;
 async fn live_interception_holds_upgrade_and_websocket_data_but_not_control_frames() {
     use serde_json::json;
     let (origin, origin_task) = spawn_websocket_origin().await;
-    let address = reserve_loopback_address();
+    let address = loopback_bind_address();
     let cli = TestCli::parse_from([
         "test",
         "--bind",
         &address.to_string(),
-        &format!("--mitm={address}"),
+        "--mitm",
         "--intercept",
     ]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let shutdown = rama::graceful::Shutdown::new(async move {
         _ = shutdown_rx.await;
     });
-    run(shutdown.guard(), cli.proxy).await.unwrap();
+    let (address, inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    assert_eq!(
+        inspector_address,
+        Some(address),
+        "inspector shares the proxy listener"
+    );
     let dashboard = EasyHttpWebClient::default();
     let response = dashboard
         .serve(dashboard_request(
