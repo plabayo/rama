@@ -23,8 +23,8 @@ async fn pausing_inspector_tunnels_origin_tls_without_capturing_until_resumed() 
         false,
     )));
 
-    let proxy_address = reserve_loopback_address();
-    let ui_address = reserve_loopback_address();
+    let proxy_address = loopback_bind_address();
+    let ui_address = loopback_bind_address();
     let directory = rama::utils::fs::tempdir().unwrap();
     let ca_path = directory.path().join("pause-proxy-ca.pem");
     let proxy_arg = proxy_address.to_string();
@@ -42,7 +42,8 @@ async fn pausing_inspector_tunnels_origin_tls_without_capturing_until_resumed() 
     let shutdown = rama::graceful::Shutdown::new(async move {
         _ = shutdown_rx.await;
     });
-    run(shutdown.guard(), cli.proxy).await.unwrap();
+    let (proxy_address, inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    let ui_address = inspector_address.expect("inspector listener bound");
 
     let dashboard_client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()

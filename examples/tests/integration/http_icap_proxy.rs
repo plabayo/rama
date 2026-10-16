@@ -15,12 +15,12 @@ use rama::{
         server::HttpServer,
     },
     net::{
-        address::{HostWithPort, ProxyAddress, SocketAddress},
-        client::{ConnectRequest, ConnectorService as _, ProxyRoute},
+        address::{ProxyAddress, SocketAddress},
+        client::ProxyRoute,
     },
     rt::Executor,
     service::service_fn,
-    tcp::{client::service::TcpConnector, server::TcpListener},
+    tcp::server::TcpListener,
     tls::{
         boring::server::TlsAcceptorLayer,
         server::{GeneratedServerAuthConfig, TlsServerConfig},
@@ -37,12 +37,13 @@ async fn test_http_icap_proxy() {
     utils::init_tracing();
 
     let (http_port, https_port, expected) = spawn_origins().await;
-    let runner = ExampleRunner::interactive_with_args(
+    let mut runner = ExampleRunner::interactive_with_args(
         "http_icap_proxy",
         Some("icap,boring"),
         ["--target-host", "localhost"],
     );
-    wait_for_proxy().await;
+    runner.wait_for_tcp(([127, 0, 0, 1], 62061)).await;
+    runner.wait_for_tcp(([127, 0, 0, 1], 62062)).await;
     let proxy = ProxyAddress::try_from(PROXY_URI).unwrap();
 
     for version in [Version::HTTP_11, Version::HTTP_2] {
@@ -125,21 +126,6 @@ async fn proxy_get(
         .await
         .unwrap_or_else(|_elapsed| panic!("{version:?} proxy request timed out for {path}"))
         .unwrap_or_else(|error| panic!("proxy request failed: {error:?}"))
-}
-
-async fn wait_for_proxy() {
-    let connector = TcpConnector::new();
-    for _attempt in 0..40 {
-        if connector
-            .connect(ConnectRequest::new(HostWithPort::local_ipv4(62061)))
-            .await
-            .is_ok()
-        {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("proxy did not start");
 }
 
 async fn spawn_origins() -> (u16, u16, Bytes) {

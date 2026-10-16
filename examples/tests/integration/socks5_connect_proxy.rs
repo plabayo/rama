@@ -3,8 +3,6 @@
     reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
 )]
 
-use std::time::Duration;
-
 use crate::utils::ExampleRunner;
 
 use super::utils;
@@ -33,10 +31,8 @@ use rama::{
 async fn test_socks5_connect_proxy() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("socks5_connect_proxy", Some("socks5,dns"));
-
-    // wait for example to run... this is dirty
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    let mut runner = utils::ExampleRunner::interactive("socks5_connect_proxy", Some("socks5,dns"));
+    runner.wait_for_tcp(([127, 0, 0, 1], 62021)).await;
 
     let http_socket_addr = spawn_http_server().await;
 

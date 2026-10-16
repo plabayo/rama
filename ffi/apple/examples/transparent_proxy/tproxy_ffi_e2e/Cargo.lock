@@ -2388,6 +2388,7 @@ dependencies = [
  "arc-swap",
  "base64",
  "bitflags 2.13.2",
+ "cc",
  "const_format",
  "core-foundation",
  "csv",

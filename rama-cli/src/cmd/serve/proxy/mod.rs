@@ -1376,14 +1376,16 @@ fn build_icap_adaptation(
 
 /// Run the Rama proxy service.
 pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), BoxError> {
-    run_with_dashboard_token(graceful, cfg, None).await
+    run_with_dashboard_token(graceful, cfg, None)
+        .await
+        .map(|_| ())
 }
 
 async fn run_with_dashboard_token(
     graceful: ShutdownGuard,
     cfg: CliCommandProxy,
     dashboard_token_override: Option<Arc<str>>,
-) -> Result<(), BoxError> {
+) -> Result<(Vec<std::net::SocketAddr>, Option<std::net::SocketAddr>), BoxError> {
     #[cfg(test)]
     let dashboard_token_override =
         dashboard_token_override.or_else(|| Some(Arc::from(TEST_DASHBOARD_TOKEN)));
@@ -1535,14 +1537,16 @@ async fn run_with_dashboard_token(
     }
     upstream.set_listener_addresses(bound.iter().map(|(_, address, _)| *address));
 
+    let bound_addresses = bound
+        .iter()
+        .map(|(_, address, _)| *address)
+        .collect::<Vec<_>>();
     let mitm_address = resolve_bound_mitm_address(
         requested_mitm_address,
         inherited_mitm_listener,
-        &bound
-            .iter()
-            .map(|(_, address, _)| *address)
-            .collect::<Vec<_>>(),
+        &bound_addresses,
     );
+    let mut inspector_address = mitm_address.map(SocketAddress::into_std);
 
     if let (Some(ui_address), Some(dashboard), Some(auth_token)) = (
         mitm_address,
@@ -1564,6 +1568,7 @@ async fn run_with_dashboard_token(
             network.local.port = %local_address.port(),
             "MITM inspector ready: http://{local_address}/?token={auth_token}"
         );
+        inspector_address = Some(local_address);
         print_inspector_ready(local_address, &auth_token, cfg.inspect_json);
         let dashboard = standalone_dashboard_service(dashboard, local_address.into());
         let ui_exec = exec.clone();
@@ -1808,7 +1813,7 @@ async fn run_with_dashboard_token(
         });
     }
 
-    Ok(())
+    Ok((bound_addresses, inspector_address))
 }
 
 fn resolve_listeners(cfg: &CliCommandProxy) -> Vec<(SocketAddress, BTreeSet<ProxyProtocol>)> {

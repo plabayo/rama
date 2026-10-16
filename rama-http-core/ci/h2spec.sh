@@ -1,5 +1,23 @@
 #!/bin/bash
 LOGFILE="/tmp/h2server.log"
+SERVER_PID=
+LOGGER_PID=
+
+# shellcheck disable=SC2329 # Called by the EXIT trap; exec below only opens fd 3.
+cleanup() {
+    if [[ -n "$SERVER_PID" ]]; then
+        kill "$SERVER_PID" 2>/dev/null || true
+        wait "$SERVER_PID" 2>/dev/null || true
+    fi
+    if [[ -n "$LOGGER_PID" ]]; then
+        kill "$LOGGER_PID" 2>/dev/null || true
+        wait "$LOGGER_PID" 2>/dev/null || true
+    fi
+}
+trap 'cleanup' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 override_h2spec=false
 
@@ -22,13 +40,14 @@ if ! [ -e "/tmp/h2spec" ] || $override_h2spec ; then
     fi
 fi
 
-cargo build -p rama-http-core --example h2_server
-exec 3< <(./target/debug/examples/h2_server);
+cargo build -p rama-http-core --example h2_server || exit "$?"
+exec 3< <(exec ./target/debug/examples/h2_server)
 SERVER_PID=$!
 
 # wait 'til the server is listening before running h2spec, and pipe server's
 # stdout to a log file.
 sed '/listening on Ok(127.0.0.1:5928)/q' <&3 ; cat <&3 > "${LOGFILE}" &
+LOGGER_PID=$!
 
 # run h2spec against the server, printing the server log if h2spec failed
 /tmp/h2spec -p 5928
@@ -39,5 +58,4 @@ else
     echo "h2spec failed! server logs:"
     cat "${LOGFILE}"
 fi
-kill "${SERVER_PID}"
 exit "${H2SPEC_STATUS}"

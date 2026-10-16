@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use super::utils;
 
 use rama::{
@@ -32,13 +30,12 @@ use rama::{
 async fn test_http_https_socks5_and_socks5h_connect_proxy() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive(
+    let mut runner = utils::ExampleRunner::interactive(
         "http_https_socks5_and_socks5h_connect_proxy",
         Some("socks5,dns,boring"),
     );
 
-    // wait for example to run... this is dirty
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    runner.wait_for_tcp(([127, 0, 0, 1], 62029)).await;
 
     let http_socket_addr = spawn_http_server().await;
     let https_socket_addr = spawn_https_server().await;

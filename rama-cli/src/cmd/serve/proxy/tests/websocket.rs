@@ -9,7 +9,7 @@ async fn websocket_handshakes_support_each_icap_direction() {
     let (origin, origin_task) = spawn_websocket_origin().await;
 
     for (reqmod, respmod) in [(true, false), (false, true), (true, true)] {
-        let proxy_address = reserve_loopback_address();
+        let proxy_address = loopback_bind_address();
         let proxy_arg = proxy_address.to_string();
         let icap_uri = format!("icap://{icap_address}/adapt");
         let reqmod_arg = format!("--icap-reqmod={reqmod}");
@@ -27,7 +27,7 @@ async fn websocket_handshakes_support_each_icap_direction() {
         let shutdown = rama::graceful::Shutdown::new(async move {
             _ = shutdown_rx.await;
         });
-        run(shutdown.guard(), cli.proxy).await.unwrap();
+        let (proxy_address, _inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
 
         let reqmod_before = icap_state.reqmod_calls.load(Ordering::SeqCst);
         let respmod_before = icap_state.respmod_calls.load(Ordering::SeqCst);
@@ -90,8 +90,8 @@ async fn websocket_handshakes_support_each_icap_direction() {
 async fn socks5_mitm_websocket_handshake_supports_icap() {
     let (icap_address, icap_task, icap_state) = spawn_proxy_test_icap().await;
     let (origin, origin_task) = spawn_tls_websocket_origin().await;
-    let proxy_address = reserve_loopback_address();
-    let ui_address = reserve_loopback_address();
+    let proxy_address = loopback_bind_address();
+    let ui_address = loopback_bind_address();
     let proxy_arg = proxy_address.to_string();
     let mitm_arg = format!("--mitm={ui_address}");
     let icap_uri = format!("icap://{icap_address}/adapt");
@@ -107,7 +107,8 @@ async fn socks5_mitm_websocket_handshake_supports_icap() {
     let shutdown = rama::graceful::Shutdown::new(async move {
         _ = shutdown_rx.await;
     });
-    run(shutdown.guard(), cli.proxy).await.unwrap();
+    let (proxy_address, inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    assert!(inspector_address.is_some(), "inspector listener bound");
 
     let client = proxy_websocket_client();
     let extensions = Extensions::new();
@@ -223,15 +224,19 @@ async fn websocket_inspector_records_and_relays_messages() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shared_proxy_inspector_exposes_and_replays_live_websocket_messages() {
     let (origin, origin_task) = spawn_websocket_origin().await;
-    let proxy_address = reserve_loopback_address();
+    let proxy_address = loopback_bind_address();
     let proxy_arg = proxy_address.to_string();
-    let mitm_arg = format!("--mitm={proxy_address}");
-    let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str(), mitm_arg.as_str()]);
+    let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str(), "--mitm"]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let shutdown = rama::graceful::Shutdown::new(async move {
         _ = shutdown_rx.await;
     });
-    run(shutdown.guard(), cli.proxy).await.unwrap();
+    let (proxy_address, inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    assert_eq!(
+        inspector_address,
+        Some(proxy_address),
+        "inspector shares the proxy listener"
+    );
 
     let insecure = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
     let client = EasyHttpWebClient::connector_builder()
@@ -365,8 +370,8 @@ async fn shared_proxy_inspector_exposes_and_replays_live_websocket_messages() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mitm_wss_inspector_captures_first_message_in_both_directions() {
     let (origin, origin_task) = spawn_tls_websocket_origin().await;
-    let proxy_address = reserve_loopback_address();
-    let ui_address = reserve_loopback_address();
+    let proxy_address = loopback_bind_address();
+    let ui_address = loopback_bind_address();
     let proxy_arg = proxy_address.to_string();
     let mitm_arg = format!("--mitm={ui_address}");
     let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str(), mitm_arg.as_str()]);
@@ -374,7 +379,8 @@ async fn mitm_wss_inspector_captures_first_message_in_both_directions() {
     let shutdown = rama::graceful::Shutdown::new(async move {
         _ = shutdown_rx.await;
     });
-    run(shutdown.guard(), cli.proxy).await.unwrap();
+    let (proxy_address, inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    let ui_address = inspector_address.expect("inspector listener bound");
 
     let insecure = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
     let client = EasyHttpWebClient::connector_builder()

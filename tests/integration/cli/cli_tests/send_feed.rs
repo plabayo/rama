@@ -16,10 +16,11 @@ use std::path::PathBuf;
 async fn test_send_rss_feed_piped_is_raw_not_tui() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_fs(63140, Some(PathBuf::from("test-files")));
+    let server = utils::RamaService::serve_fs(0, Some(PathBuf::from("test-files")));
+    let port = server.port();
 
     let (ok, stdout, stderr) =
-        utils::RamaService::run_capture(&["-k", "https://127.0.0.1:63140/feed.xml"])
+        utils::RamaService::run_capture(&["-k", &format!("https://127.0.0.1:{port}/feed.xml")])
             .expect("spawn rama send");
     assert!(ok, "rama send failed; stderr:\n{stderr}");
 
@@ -48,10 +49,11 @@ async fn test_send_rss_feed_piped_is_raw_not_tui() {
 async fn test_send_atom_feed_piped_is_raw_not_tui() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_fs(63141, Some(PathBuf::from("test-files")));
+    let server = utils::RamaService::serve_fs(0, Some(PathBuf::from("test-files")));
+    let port = server.port();
 
     let (ok, stdout, stderr) =
-        utils::RamaService::run_capture(&["-k", "https://127.0.0.1:63141/atom.xml"])
+        utils::RamaService::run_capture(&["-k", &format!("https://127.0.0.1:{port}/atom.xml")])
             .expect("spawn rama send");
     assert!(ok, "rama send failed; stderr:\n{stderr}");
 

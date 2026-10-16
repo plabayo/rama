@@ -6,8 +6,9 @@ use std::path::PathBuf;
 async fn test_http_serve_placeholder() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_fs(63109, None);
-    let lines = utils::RamaService::http(vec!["https://127.0.0.1:63109"]).unwrap();
+    let server = utils::RamaService::serve_fs(0, None);
+    let port = server.port();
+    let lines = utils::RamaService::http(vec![&format!("https://127.0.0.1:{port}")]).unwrap();
 
     assert!(lines.contains("GET /"), "req method, lines: {lines:?}",);
     assert!(
@@ -29,8 +30,9 @@ async fn test_http_serve_placeholder() {
 async fn test_http_serve_file() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_fs(63105, Some(PathBuf::from("test-files/hello.txt")));
-    let lines = utils::RamaService::http(vec!["https://127.0.0.1:63105"]).unwrap();
+    let server = utils::RamaService::serve_fs(0, Some(PathBuf::from("test-files/hello.txt")));
+    let port = server.port();
+    let lines = utils::RamaService::http(vec![&format!("https://127.0.0.1:{port}")]).unwrap();
 
     assert!(lines.contains("GET /"), "req method, lines: {lines:?}",);
     assert!(
@@ -52,8 +54,10 @@ async fn test_http_serve_file() {
 async fn test_http_serve_dir() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_fs(63106, Some(PathBuf::from("test-files")));
-    let lines = utils::RamaService::http(vec!["https://127.0.0.1:63106/hello.txt"]).unwrap();
+    let server = utils::RamaService::serve_fs(0, Some(PathBuf::from("test-files")));
+    let port = server.port();
+    let lines =
+        utils::RamaService::http(vec![&format!("https://127.0.0.1:{port}/hello.txt")]).unwrap();
 
     assert!(
         lines.contains("GET /hello.txt"),
@@ -78,11 +82,12 @@ async fn test_http_serve_dir() {
 async fn test_http_serve_dir_index() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_fs(63107, Some(PathBuf::from("test-files")));
+    let server = utils::RamaService::serve_fs(0, Some(PathBuf::from("test-files")));
+    let port = server.port();
 
     // root (dir)
     {
-        let lines = utils::RamaService::http(vec!["https://127.0.0.1:63107"]).unwrap();
+        let lines = utils::RamaService::http(vec![&format!("https://127.0.0.1:{port}")]).unwrap();
         assert!(lines.contains("GET /"), "req method, lines: {lines:?}",);
         assert!(
             lines.contains("HTTP/2.0 200 OK"),
@@ -104,7 +109,8 @@ async fn test_http_serve_dir_index() {
 
     // index.html
     {
-        let lines = utils::RamaService::http(vec!["https://127.0.0.1:63107/index.html"]).unwrap();
+        let lines = utils::RamaService::http(vec![&format!("https://127.0.0.1:{port}/index.html")])
+            .unwrap();
         assert!(lines.contains("GET /"), "req method, lines: {lines:?}",);
         assert!(
             lines.contains("HTTP/2.0 200 OK"),
@@ -126,8 +132,10 @@ async fn test_http_serve_dir_index() {
 async fn test_http_serve_dir_404() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_fs(63108, Some(PathBuf::from("test-files")));
-    let lines = utils::RamaService::http(vec!["https://127.0.0.1:63108/missing.txt"]).unwrap();
+    let server = utils::RamaService::serve_fs(0, Some(PathBuf::from("test-files")));
+    let port = server.port();
+    let lines =
+        utils::RamaService::http(vec![&format!("https://127.0.0.1:{port}/missing.txt")]).unwrap();
     assert!(
         lines.contains("GET /missing.txt"),
         "req method, lines: {lines:?}",
