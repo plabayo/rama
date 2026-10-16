@@ -518,27 +518,33 @@ where
         let provider_pid = self.provider_pid;
         let provider_generation = self.provider_generation;
 
-        match try_block_on_async_task(
-            rt,
-            new_tcp_session_flow_action(
-                guard,
-                exec,
-                meta,
-                provider_pid,
-                provider_generation,
-                tcp_write_chunk_limit,
-                tcp_channel_capacity,
-                tcp_idle_timeout,
-                tcp_paused_drain_max_wait,
-                decision_deadline,
-                decision_deadline_action,
-                decision_permit,
-                on_server_bytes,
-                on_client_read_demand,
-                on_server_closed,
-                handler,
-            ),
-        ) {
+        let future = new_tcp_session_flow_action(
+            guard,
+            exec,
+            meta,
+            provider_pid,
+            provider_generation,
+            tcp_write_chunk_limit,
+            tcp_channel_capacity,
+            tcp_idle_timeout,
+            tcp_paused_drain_max_wait,
+            decision_deadline,
+            decision_deadline_action,
+            decision_permit,
+            on_server_bytes,
+            on_client_read_demand,
+            on_server_closed,
+            handler,
+        );
+        #[cfg(feature = "dial9")]
+        let future = crate::tproxy::dial9::trace_decision(
+            provider_pid,
+            provider_generation,
+            flow_id,
+            protocol.as_u32(),
+            future,
+        );
+        match try_block_on_async_task(rt, future) {
             Ok(action) => action,
             Err(panic) => {
                 tracing::error!(
@@ -600,28 +606,34 @@ where
         let provider_pid = self.provider_pid;
         let provider_generation = self.provider_generation;
 
-        match try_block_on_async_task(
-            rt,
-            new_udp_session_flow_action(
-                guard,
-                exec,
-                meta,
-                provider_pid,
-                provider_generation,
-                udp_channel_capacity,
-                udp_ingress_per_flow_max_bytes,
-                udp_ingress_budget,
-                udp_max_flow_lifetime,
-                udp_idle_timeout,
-                decision_deadline,
-                decision_deadline_action,
-                decision_permit,
-                on_server_datagram,
-                on_client_read_demand,
-                on_server_closed,
-                handler,
-            ),
-        ) {
+        let future = new_udp_session_flow_action(
+            guard,
+            exec,
+            meta,
+            provider_pid,
+            provider_generation,
+            udp_channel_capacity,
+            udp_ingress_per_flow_max_bytes,
+            udp_ingress_budget,
+            udp_max_flow_lifetime,
+            udp_idle_timeout,
+            decision_deadline,
+            decision_deadline_action,
+            decision_permit,
+            on_server_datagram,
+            on_client_read_demand,
+            on_server_closed,
+            handler,
+        );
+        #[cfg(feature = "dial9")]
+        let future = crate::tproxy::dial9::trace_decision(
+            provider_pid,
+            provider_generation,
+            flow_id,
+            protocol.as_u32(),
+            future,
+        );
+        match try_block_on_async_task(rt, future) {
             Ok(action) => action,
             Err(panic) => {
                 tracing::error!(
@@ -1374,6 +1386,8 @@ where
         );
         #[cfg(feature = "dial9")]
         crate::tproxy::dial9::record_handler_deadline(
+            _provider_pid,
+            _provider_generation,
             flow_id,
             u64::try_from(decision_deadline.as_millis()).unwrap_or(u64::MAX),
         );
@@ -2019,6 +2033,8 @@ where
         );
         #[cfg(feature = "dial9")]
         crate::tproxy::dial9::record_handler_deadline(
+            _provider_pid,
+            _provider_generation,
             flow_id,
             u64::try_from(decision_deadline.as_millis()).unwrap_or(u64::MAX),
         );

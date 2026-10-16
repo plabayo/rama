@@ -6,11 +6,18 @@ SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "${SOURCE_DIR}/.."
 
 AUTOBAHN_IMAGE="crossbario/autobahn-testsuite:25.10.1@sha256:519915fb568b04c9383f70a1c405ae3ff44ab9e35835b085239c258b6fac3074"
+WSSERVER_PID=
 
 cleanup() {
-    kill -9 ${WSSERVER_PID}
+    if [[ -n "$WSSERVER_PID" ]]; then
+        kill "$WSSERVER_PID" 2>/dev/null || true
+        wait "$WSSERVER_PID" 2>/dev/null || true
+    fi
 }
-trap cleanup TERM EXIT
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 test_diff() {
   echo "Comparing server Autobahn results…"
@@ -52,7 +59,9 @@ case "$(uname -s)" in
 esac
 
 cargo build --release -p rama-cli
-cargo run --release -p rama-cli -- serve echo --ws --bind "$ECHO_BIND_ADDR" & WSSERVER_PID=$!
+target_dir=$(cargo metadata --no-deps --format-version 1 | jq -r .target_directory)
+"$target_dir/release/rama" serve echo --ws --bind "$ECHO_BIND_ADDR" &
+WSSERVER_PID=$!
 
 sleep 5
 

@@ -830,7 +830,13 @@ class PressureLogTests(unittest.TestCase):
         self.assertIsNone(
             parse_oslog_timestamp("1970-01-01 00:01:40-0700-malformed")
         )
-        self.assertIsNone(parse_oslog_timestamp("1970-01-01 00:01:40"))
+        for timestamp in (
+            "1970-01-01 00:01:40",
+            "2026-10-15 12:00:00",
+            "2026-10-15 12:00:00.123456",
+        ):
+            with self.subTest(timestamp=timestamp):
+                self.assertIsNone(parse_oslog_timestamp(timestamp))
 
     def test_provider_records_require_numeric_matching_pid_and_subsystem(self):
         valid = {

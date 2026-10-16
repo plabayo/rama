@@ -234,14 +234,17 @@ where
         BridgeIo(left, right): BridgeIo<S, T>,
     ) -> Result<Self::Output, Self::Error> {
         #[cfg(feature = "dial9")]
+        let operation = rama_core::telemetry::dial9::Operation::new("proxy.forward");
+        #[cfg(feature = "dial9")]
         super::dial9::record_bridge_opened(
+            operation.context(),
             self.idle_timeout
                 .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
                 .unwrap_or(0),
             self.executor.guard().is_some(),
         );
 
-        let outcome = run_bridge(
+        let bridge = run_bridge(
             left,
             right,
             self.shutdown_guard(),
@@ -251,8 +254,11 @@ where
             self.shutdown_grace,
             self.buf_size,
             self.lingering_close,
-        )
-        .await;
+        );
+        #[cfg(feature = "dial9")]
+        let outcome = operation.context().scope(bridge).await;
+        #[cfg(not(feature = "dial9"))]
+        let outcome = bridge.await;
 
         emit_close_event(&outcome);
 
@@ -260,11 +266,33 @@ where
         {
             let age_ms = u64::try_from(outcome.age.as_millis()).unwrap_or(u64::MAX);
             super::dial9::record_bridge_closed(
+                operation.context(),
                 outcome.reason,
                 age_ms,
                 outcome.bytes_l_to_r,
                 outcome.bytes_r_to_l,
                 outcome.fatal_error.as_ref(),
+            );
+            operation.finish_with_bytes(
+                match outcome.reason {
+                    BridgeCloseReason::IdleTimeout
+                    | BridgeCloseReason::FirstByteTimeout
+                    | BridgeCloseReason::PeekTimeout
+                    | BridgeCloseReason::HandlerDeadline
+                    | BridgeCloseReason::PausedTimeout
+                    | BridgeCloseReason::MaxLifetime => {
+                        rama_core::telemetry::dial9::Outcome::Timeout
+                    }
+                    BridgeCloseReason::Shutdown | BridgeCloseReason::Aborted => {
+                        rama_core::telemetry::dial9::Outcome::Cancelled
+                    }
+                    BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight => {
+                        rama_core::telemetry::dial9::Outcome::Success
+                    }
+                    _ => rama_core::telemetry::dial9::Outcome::Error,
+                },
+                outcome.bytes_l_to_r,
+                outcome.bytes_r_to_l,
             );
         }
 

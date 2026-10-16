@@ -107,7 +107,19 @@ impl HttpListeners {
             ),
             None => None,
         };
-        let http3 = match tls.filter(|_| serve_http3) {
+
+        Self::bind_with_tcp(tcp, bind, versions, tls.filter(|_| serve_http3), http3).await
+    }
+
+    /// Complete setup while retaining the TCP listener, including when HTTP/3 cannot bind.
+    async fn bind_with_tcp(
+        tcp: Option<TcpListener>,
+        bind: SocketAddress,
+        versions: HttpVersions,
+        http3_tls: Option<&TlsServerConfig>,
+        http3: &Http3Args,
+    ) -> Result<Self, BoxError> {
+        let http3 = match http3_tls {
             Some(tls) => {
                 let addr = match (http3.h3_bind, &tcp) {
                     (Some(addr), _) => addr,
@@ -329,22 +341,39 @@ mod tests {
         assert!(error.to_string().contains("--h3-bind"), "{error}");
     }
 
-    /// A port free for TCP whose UDP side is held, so that only HTTP/3 fails to bind it.
-    fn occupied_udp_port() -> (std::net::UdpSocket, SocketAddress) {
-        loop {
+    /// Retain both transports so that only the subsequent HTTP/3 bind can fail.
+    fn occupied_udp_port() -> (TcpListener, std::net::UdpSocket, SocketAddress) {
+        let mut last_conflict = None;
+
+        for _ in 0..100 {
             let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = tcp.local_addr().unwrap();
-            if let Ok(socket) = std::net::UdpSocket::bind(addr) {
-                return (socket, addr.into());
+            match std::net::UdpSocket::bind(addr) {
+                Ok(udp) => {
+                    let tcp = TcpListener::try_from_std_tcp_listener(tcp, Executor::new()).unwrap();
+                    return (tcp, udp, addr.into());
+                }
+                // Windows can exclude a UDP port that TCP was allowed to use.
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
+                    ) =>
+                {
+                    last_conflict = Some(error);
+                }
+                Err(error) => panic!("bind UDP conflict fixture: {error}"),
             }
         }
+
+        panic!("could not bind a shared TCP/UDP port within 100 attempts: {last_conflict:?}");
     }
 
     #[tokio::test]
     async fn implied_http3_that_cannot_bind_leaves_h1_and_h2_serving() {
-        let (_held, addr) = occupied_udp_port();
-        let listeners = HttpListeners::bind(
-            Executor::new(),
+        let (tcp, _held, addr) = occupied_udp_port();
+        let listeners = HttpListeners::bind_with_tcp(
+            Some(tcp),
             addr,
             HttpVersions::AUTO,
             Some(&tls()),
@@ -360,14 +389,15 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_http3_that_cannot_bind_is_an_error() {
-        let (_held, addr) = occupied_udp_port();
-        let explicit: [(HttpVersions, Option<SocketAddress>); 2] = [
-            ("h1,h2,h3".parse().unwrap(), None),
-            (HttpVersions::AUTO, Some(addr)),
-        ];
-        for (versions, h3_bind) in explicit {
-            let result = HttpListeners::bind(
-                Executor::new(),
+        for explicit_bind in [false, true] {
+            let (tcp, _held, addr) = occupied_udp_port();
+            let (versions, h3_bind) = if explicit_bind {
+                (HttpVersions::AUTO, Some(addr))
+            } else {
+                ("h1,h2,h3".parse().unwrap(), None)
+            };
+            let result = HttpListeners::bind_with_tcp(
+                Some(tcp),
                 addr,
                 versions,
                 Some(&tls()),

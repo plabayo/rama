@@ -30,6 +30,13 @@ targets = [
 ]
 
 [features]
+dial9 = [
+    "rama-http-core/dial9",
+    "rama-http/dial9",
+    "rama-quic/dial9",
+    "rama-tcp/dial9",
+    "rama-ws/dial9",
+]
 default = []
 opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry"]
 # `rama-http-types/tls` is required so its `input_ext` protocol resolution sees the

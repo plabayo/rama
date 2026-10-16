@@ -8,7 +8,6 @@ use std::time::Duration;
 use parking_lot::Mutex;
 #[cfg(feature = "disk-cache")]
 use rama_utils::fs::{safe_canonicalize_in_sync, safe_create_dir_all_in_sync};
-#[cfg(not(target_os = "ios"))]
 use wasmtime::Strategy;
 use wasmtime::component::{Component, HasSelf, Linker};
 #[cfg(feature = "disk-cache")]
@@ -148,28 +147,45 @@ fn resolve_cache_dir(cache_root: &Path, cache_dir: &Path) -> Result<PathBuf, JsE
     })
 }
 
-fn build_shared_engine(
-    #[cfg(feature = "disk-cache")] cache_dir: Option<PathBuf>,
-) -> Result<SharedEngine, JsError> {
-    #[cfg(target_os = "macos")]
-    super::macos::require_executable_memory_entitlement()?;
-
+fn wasm_config() -> Result<Config, JsError> {
     let mut config = Config::new();
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(any(target_os = "ios", feature = "interpreter")))]
     config.strategy(Strategy::Winch);
-    #[cfg(target_os = "ios")]
-    config
-        .target(if cfg!(target_endian = "little") {
-            "pulley64"
-        } else {
-            "pulley64be"
-        })
-        .map_err(|err| setup_engine_error("failed to configure the target", &err))?;
+    #[cfg(any(target_os = "ios", feature = "interpreter"))]
+    {
+        // Cranelift produces interpreted bytecode here, not native code. Select
+        // it explicitly even when Cargo feature unification also enables Winch.
+        config.strategy(Strategy::Cranelift);
+        config
+            .target(
+                match (
+                    cfg!(target_pointer_width = "64"),
+                    cfg!(target_endian = "little"),
+                ) {
+                    (true, true) => "pulley64",
+                    (true, false) => "pulley64be",
+                    (false, true) => "pulley32",
+                    (false, false) => "pulley32be",
+                },
+            )
+            .map_err(|err| setup_engine_error("failed to configure the target", &err))?;
+    }
     config
         .consume_fuel(true)
         .epoch_interruption(true)
         .max_wasm_stack(WASM_STACK_SIZE);
     configure_wasm_features(&mut config);
+    Ok(config)
+}
+
+fn build_shared_engine(
+    #[cfg(feature = "disk-cache")] cache_dir: Option<PathBuf>,
+) -> Result<SharedEngine, JsError> {
+    #[cfg(all(target_os = "macos", not(feature = "interpreter")))]
+    super::macos::require_executable_memory_entitlement()?;
+
+    #[cfg_attr(not(feature = "disk-cache"), expect(unused_mut))]
+    let mut config = wasm_config()?;
 
     #[cfg(feature = "disk-cache")]
     if let Some(cache_dir) = cache_dir.as_ref() {
@@ -1202,7 +1218,65 @@ fn decode_arguments(input: &[u8], limits: JsSnapshotLimits) -> Result<Vec<JsValu
 #[cfg(test)]
 mod tests {
     use super::{COMPONENT, configure_wasm_features, required_wasm_features, shared_engine};
-    use wasmtime::{Config, Engine, Module, WasmFeatures, component::Component};
+    use wasmtime::{Engine, Module, WasmFeatures, component::Component};
+
+    #[cfg(any(target_os = "ios", feature = "interpreter"))]
+    #[derive(Default)]
+    struct DenyExecutableMemory(std::sync::atomic::AtomicUsize);
+
+    #[cfg(any(target_os = "ios", feature = "interpreter"))]
+    impl wasmtime::CustomCodeMemory for DenyExecutableMemory {
+        fn required_alignment(&self) -> usize {
+            // No mappings are ever published, so impose no extra alignment.
+            1
+        }
+
+        fn publish_executable(&self, _: *const u8, _: usize) -> wasmtime::Result<()> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            wasmtime::error::bail!("executable memory forbidden by test")
+        }
+
+        fn unpublish_executable(&self, _: *const u8, _: usize) -> wasmtime::Result<()> {
+            // Wasmtime also calls this when cleaning up a rejected publication.
+            // Nothing became executable, so there is nothing to undo.
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "ios", feature = "interpreter"))]
+    fn component_does_not_require_executable_memory() {
+        let mut config = super::wasm_config().unwrap();
+        let memory = std::sync::Arc::new(DenyExecutableMemory::default());
+        config.with_custom_code_memory(Some(memory.clone()));
+        let engine = Engine::new(&config).unwrap();
+        // Compile the actual embedded JS component, including its trampolines.
+        // The publisher rejects every executable mapping rather than granting
+        // permissions and merely checking which backend was selected.
+        let component = Component::from_binary(&engine, COMPONENT).unwrap();
+        let serialized = component.serialize().unwrap();
+        // SAFETY: these unmodified bytes were just serialized by this engine.
+        let reloaded = unsafe { Component::deserialize(&engine, &serialized) }.unwrap();
+        drop((component, reloaded, engine));
+        assert_eq!(memory.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    #[cfg(all(
+        feature = "interpreter",
+        not(target_os = "ios"),
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    fn executable_memory_guard_rejects_native_code() {
+        let mut config = wasmtime::Config::new();
+        config.strategy(wasmtime::Strategy::Winch);
+        configure_wasm_features(&mut config);
+        config.with_custom_code_memory(Some(std::sync::Arc::new(DenyExecutableMemory::default())));
+        let engine = Engine::new(&config).unwrap();
+        let error = Component::from_binary(&engine, COMPONENT).unwrap_err();
+        assert!(format!("{error:#}").contains("executable memory forbidden by test"));
+    }
 
     #[test]
     fn embedded_component_resource_shape_is_stable() {
@@ -1217,10 +1291,11 @@ mod tests {
         // A minimal core module exporting one mutable i32 global. Confirm the
         // fixture itself is valid before checking the restricted engine.
         let module = b"\0asm\x01\0\0\0\x06\x06\x01\x7f\x01\x41\0\x0b\x07\x05\x01\x01g\x03\0";
-        let result = Module::from_binary(&Engine::default(), module);
+        let mut config = super::wasm_config().unwrap();
+        config.wasm_features(WasmFeatures::MUTABLE_GLOBAL, true);
+        let result = Module::from_binary(&Engine::new(&config).unwrap(), module);
         assert!(result.is_ok(), "fixture: {result:?}");
 
-        let mut config = Config::new();
         configure_wasm_features(&mut config);
         let engine = Engine::new(&config).unwrap();
         Module::from_binary(&engine, module).unwrap_err();
@@ -1238,7 +1313,7 @@ mod tests {
             ("floats", WasmFeatures::FLOATS),
             ("component model", WasmFeatures::COMPONENT_MODEL),
         ] {
-            let mut config = Config::new();
+            let mut config = super::wasm_config().unwrap();
             config
                 .wasm_features(WasmFeatures::all(), false)
                 .wasm_features(required_wasm_features().difference(omitted), true);

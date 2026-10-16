@@ -19,7 +19,10 @@ cleanup() {
   [[ -z "${SHARD_SPEC}" ]] || rm -f "${SHARD_SPEC}"
   [[ -z "${MERGED_REPORT}" ]] || rm -f "${MERGED_REPORT}" "${MERGED_REPORT}.next"
 }
-trap cleanup TERM EXIT
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 container_is_running() {
   [[ "$(docker inspect --format '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null)" == "true" ]]

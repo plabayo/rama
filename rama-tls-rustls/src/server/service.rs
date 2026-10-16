@@ -50,56 +50,65 @@ where
     type Error = BoxError;
 
     async fn serve(&self, stream: IO) -> Result<Self::Output, Self::Error> {
-        let merged = stream.extensions().with_base(self.config.as_extensions());
-        let tls_acceptor_data =
-            TlsAcceptorData::try_from(RustlsTlsAcceptorConfig::from_extensions(&merged))
-                .context("rustls acceptor: build acceptor data from config")?;
+        let handshake = async {
+            let merged = stream.extensions().with_base(self.config.as_extensions());
+            let tls_acceptor_data =
+                TlsAcceptorData::try_from(RustlsTlsAcceptorConfig::from_extensions(&merged))
+                    .context("rustls acceptor: build acceptor data from config")?;
 
-        let acceptor = LazyConfigAcceptor::new(Acceptor::default(), stream);
+            let acceptor = LazyConfigAcceptor::new(Acceptor::default(), stream);
 
-        let start = acceptor.await?;
+            let start = acceptor.await?;
 
-        let secure_transport = if self.store_client_hello {
-            SecureTransport::with_client_hello(start.client_hello().rama_into())
-        } else {
-            SecureTransport::default()
+            let secure_transport = if self.store_client_hello {
+                SecureTransport::with_client_hello(start.client_hello().rama_into())
+            } else {
+                SecureTransport::default()
+            };
+
+            let server_config = match &tls_acceptor_data.server_config {
+                ServerConfig::Stored(server_config) => server_config.clone(),
+                ServerConfig::Async(dynamic) => dynamic.get_config(start.client_hello()).await?,
+            };
+
+            let stream = start.into_stream(server_config).await?;
+            let stream = TlsStream::new(stream);
+
+            let (_, conn_data_ref) = stream.stream.get_ref();
+            let negotiated_tls_params = NegotiatedTlsParameters {
+                protocol_version: conn_data_ref
+                    .protocol_version()
+                    .context("no protocol version available")?
+                    .rama_into(),
+                application_layer_protocol: conn_data_ref
+                    .alpn_protocol()
+                    .map(ApplicationProtocol::from),
+                // Currently not supported as this would mean we need to wrap rustls config
+                peer_certificate_chain: None,
+                server_name: conn_data_ref
+                    .server_name()
+                    .map(rama_net::address::Domain::try_from)
+                    .transpose()?,
+                resumed: conn_data_ref
+                    .handshake_kind()
+                    .map(|kind| kind == crate::dep::rustls::HandshakeKind::Resumed),
+                algorithms: NegotiatedTlsAlgorithms::rama_from(&***conn_data_ref),
+                server_hello: None,
+            };
+
+            stream.extensions().insert(negotiated_tls_params);
+            stream.extensions().insert(secure_transport);
+            stream.extensions().insert(StreamTransformed {
+                by: "rama-tls-rustls::TlsAcceptor",
+            });
+
+            Ok::<_, BoxError>(stream)
         };
-
-        let server_config = match &tls_acceptor_data.server_config {
-            ServerConfig::Stored(server_config) => server_config.clone(),
-            ServerConfig::Async(dynamic) => dynamic.get_config(start.client_hello()).await?,
-        };
-
-        let stream = start.into_stream(server_config).await?;
-        let stream = TlsStream::new(stream);
-
-        let (_, conn_data_ref) = stream.stream.get_ref();
-        let negotiated_tls_params = NegotiatedTlsParameters {
-            protocol_version: conn_data_ref
-                .protocol_version()
-                .context("no protocol version available")?
-                .rama_into(),
-            application_layer_protocol: conn_data_ref
-                .alpn_protocol()
-                .map(ApplicationProtocol::from),
-            // Currently not supported as this would mean we need to wrap rustls config
-            peer_certificate_chain: None,
-            server_name: conn_data_ref
-                .server_name()
-                .map(rama_net::address::Domain::try_from)
-                .transpose()?,
-            resumed: conn_data_ref
-                .handshake_kind()
-                .map(|kind| kind == crate::dep::rustls::HandshakeKind::Resumed),
-            algorithms: NegotiatedTlsAlgorithms::rama_from(&***conn_data_ref),
-            server_hello: None,
-        };
-
-        stream.extensions().insert(negotiated_tls_params);
-        stream.extensions().insert(secure_transport);
-        stream.extensions().insert(StreamTransformed {
-            by: "rama-tls-rustls::TlsAcceptor",
-        });
+        #[cfg(feature = "dial9")]
+        let stream =
+            rama_core::telemetry::dial9::record_result("tls.rustls.server", handshake).await?;
+        #[cfg(not(feature = "dial9"))]
+        let stream = handshake.await?;
 
         // NOTE(#1014): graceful TLS `close_notify` on this stream relies on the
         // inner service driving `poll_shutdown` before `stream` is dropped here.

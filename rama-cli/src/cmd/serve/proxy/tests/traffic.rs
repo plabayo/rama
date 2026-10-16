@@ -42,14 +42,14 @@ fn default_is_shared_http_and_socks5_on_loopback_8080() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shared_http_and_socks5_listener_forwards_end_to_end() {
     let (origin, origin_task) = spawn_plain_origin("shared-proxy-ok").await;
-    let proxy_address = reserve_loopback_address();
+    let proxy_address = loopback_bind_address();
     let proxy_arg = proxy_address.to_string();
     let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str()]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let shutdown = rama::graceful::Shutdown::new(async move {
         _ = shutdown_rx.await;
     });
-    run(shutdown.guard(), cli.proxy).await.unwrap();
+    let (proxy_address, _inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
 
     for scheme in ["http", "socks5h"] {
         let proxy = format!("{scheme}://{proxy_address}");
@@ -86,14 +86,14 @@ async fn http_proxy_forwards_trailers_as_received() {
             },
         ))),
     );
-    let proxy_address = reserve_loopback_address();
+    let proxy_address = loopback_bind_address();
     let proxy_arg = proxy_address.to_string();
     let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str()]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let shutdown = rama::graceful::Shutdown::new(async move {
         _ = shutdown_rx.await;
     });
-    run(shutdown.guard(), cli.proxy).await.unwrap();
+    let (proxy_address, _inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
 
     let request = Request::builder()
         .uri(format!("http://{origin}/trailers"))
@@ -131,14 +131,14 @@ async fn http_proxy_forwards_trailers_as_received() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn https_proxy_listener_forwards_end_to_end() {
     let (origin, origin_task) = spawn_plain_origin("https-proxy-ok").await;
-    let proxy_address = reserve_loopback_address();
+    let proxy_address = loopback_bind_address();
     let proxy_arg = proxy_address.to_string();
     let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str(), "--protocol", "https"]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let shutdown = rama::graceful::Shutdown::new(async move {
         _ = shutdown_rx.await;
     });
-    run(shutdown.guard(), cli.proxy).await.unwrap();
+    let (proxy_address, _inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
 
     let proxy = format!("https://{proxy_address}");
     let (status, body) = get_via_proxy(origin, &proxy).await;
@@ -152,14 +152,14 @@ async fn https_proxy_listener_forwards_end_to_end() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn default_mitm_dashboard_http_and_socks5_share_a_listener_end_to_end() {
     let (origin, origin_task) = spawn_plain_origin("shared-dashboard-ok").await;
-    let proxy_address = reserve_loopback_address();
+    let proxy_address = loopback_bind_address();
     let proxy_arg = proxy_address.to_string();
     let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str(), "--mitm"]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let shutdown = rama::graceful::Shutdown::new(async move {
         _ = shutdown_rx.await;
     });
-    run(shutdown.guard(), cli.proxy).await.unwrap();
+    let (proxy_address, _inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
 
     for scheme in ["http", "socks5h"] {
         let (status, body) = get_via_proxy(origin, &format!("{scheme}://{proxy_address}")).await;
@@ -341,8 +341,8 @@ async fn https_connect_is_mitm_relayed_end_to_end() {
         false,
     )));
 
-    let proxy_address = reserve_loopback_address();
-    let ui_address = reserve_loopback_address();
+    let proxy_address = loopback_bind_address();
+    let ui_address = loopback_bind_address();
     let proxy_arg = proxy_address.to_string();
     let mitm_arg = format!("--mitm={ui_address}");
     let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str(), mitm_arg.as_str()]);
@@ -350,7 +350,8 @@ async fn https_connect_is_mitm_relayed_end_to_end() {
     let shutdown = rama::graceful::Shutdown::new(async move {
         _ = shutdown_rx.await;
     });
-    run(shutdown.guard(), cli.proxy).await.unwrap();
+    let (proxy_address, inspector_address) = start_proxy(shutdown.guard(), cli.proxy).await;
+    assert!(inspector_address.is_some(), "inspector listener bound");
 
     let tls_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
     let client = EasyHttpWebClient::connector_builder()

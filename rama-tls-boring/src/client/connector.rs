@@ -789,147 +789,159 @@ async fn handshake<T>(
 where
     T: Io + Unpin + ExtensionsRef,
 {
-    // High-level connectors always resolve an identity. Treat its absence as
-    // invalid connector state even when low-level verification is disabled.
-    if connector_data.server_name.is_none() {
-        return Err(BoxError::from_static_str("server identity missing"));
-    }
+    let handshake = async {
+        // High-level connectors always resolve an identity. Treat its absence as
+        // invalid connector state even when low-level verification is disabled.
+        if connector_data.server_name.is_none() {
+            return Err(BoxError::from_static_str("server identity missing"));
+        }
 
-    let authenticated_identity = (connector_data.server_verify_mode != ServerVerifyMode::Disable)
-        .then(|| connector_data.server_name.clone())
-        .flatten();
-    let store_server_certificate_chain = connector_data.store_server_certificate_chain;
-    let store_server_hello = connector_data.store_server_hello;
-    #[cfg(feature = "dial9")]
-    let dial9_server_name = connector_data.server_name.clone();
-    #[cfg(feature = "dial9")]
-    crate::dial9::record_handshake_started(dial9_server_name.clone());
-    let TlsStream { inner: stream } = match tls_connect(stream, Some(connector_data)).await {
-        Ok(s) => s,
-        Err(err) => {
-            #[cfg(feature = "dial9")]
-            {
-                use crate::dial9::tls_handshake_error_kind as kind;
-                let (error_kind, io_error_kind) = match &err {
-                    TlsConnectError::Builder(_) => (kind::BUILDER, None),
-                    TlsConnectError::Handshake { error, .. } => {
-                        let io_error_kind = error
-                            .as_io_error()
-                            .map(|error| rama_net::dial9::io_error_kind_code(error.kind()));
-                        let error_kind = if io_error_kind.is_some() {
-                            kind::HANDSHAKE_IO
-                        } else if error.as_ssl_error_stack().is_some() {
-                            kind::HANDSHAKE_SSL_STACK
-                        } else {
-                            kind::HANDSHAKE_OTHER
-                        };
-                        (error_kind, io_error_kind)
-                    }
-                };
-                crate::dial9::record_handshake_failed(
-                    dial9_server_name.clone(),
-                    error_kind,
-                    io_error_kind,
-                );
-            }
-            return Err(match err {
-                TlsConnectError::Builder(error) => error.context("tls connect builder error"),
-                TlsConnectError::Handshake { error, server_name } => {
-                    let maybe_ssl_code = error.code();
-                    if let Some(io_err) = error.as_io_error() {
-                        BoxError::from(format!(
-                            "boring ssl connector (connect): with io error: {io_err}"
-                        ))
-                        .context_debug_field("server_identity", server_name)
-                        .context_debug_field("code", maybe_ssl_code)
-                    } else if let Some(ssl_error) = error.as_ssl_error_stack() {
-                        ssl_error
-                            .context("boring ssl connector (connect): with ssl-error info")
+        let authenticated_identity = (connector_data.server_verify_mode
+            != ServerVerifyMode::Disable)
+            .then(|| connector_data.server_name.clone())
+            .flatten();
+        let store_server_certificate_chain = connector_data.store_server_certificate_chain;
+        let store_server_hello = connector_data.store_server_hello;
+        #[cfg(feature = "dial9")]
+        let dial9_server_name = rama_core::telemetry::dial9::Dial9Handle::current()
+            .is_enabled()
+            .then(|| connector_data.server_name.clone())
+            .flatten();
+        #[cfg(feature = "dial9")]
+        crate::dial9::record_handshake_started(dial9_server_name.as_ref());
+        let TlsStream { inner: stream } = match tls_connect(stream, Some(connector_data)).await {
+            Ok(s) => s,
+            Err(err) => {
+                #[cfg(feature = "dial9")]
+                {
+                    use crate::dial9::tls_handshake_error_kind as kind;
+                    let (error_kind, io_error_kind) = match &err {
+                        TlsConnectError::Builder(_) => (kind::BUILDER, None),
+                        TlsConnectError::Handshake { error, .. } => {
+                            let io_error_kind = error
+                                .as_io_error()
+                                .map(|error| rama_net::dial9::io_error_kind_code(error.kind()));
+                            let error_kind = if io_error_kind.is_some() {
+                                kind::HANDSHAKE_IO
+                            } else if error.as_ssl_error_stack().is_some() {
+                                kind::HANDSHAKE_SSL_STACK
+                            } else {
+                                kind::HANDSHAKE_OTHER
+                            };
+                            (error_kind, io_error_kind)
+                        }
+                    };
+                    crate::dial9::record_handshake_failed(
+                        dial9_server_name.as_ref(),
+                        error_kind,
+                        io_error_kind,
+                    );
+                }
+                return Err(match err {
+                    TlsConnectError::Builder(error) => error.context("tls connect builder error"),
+                    TlsConnectError::Handshake { error, server_name } => {
+                        let maybe_ssl_code = error.code();
+                        if let Some(io_err) = error.as_io_error() {
+                            BoxError::from(format!(
+                                "boring ssl connector (connect): with io error: {io_err}"
+                            ))
                             .context_debug_field("server_identity", server_name)
                             .context_debug_field("code", maybe_ssl_code)
-                    } else {
-                        BoxError::from_static_str(
-                            "boring ssl connector (connect): without error info",
-                        )
-                        .context_debug_field("server_identity", server_name)
-                        .context_debug_field("code", maybe_ssl_code)
+                        } else if let Some(ssl_error) = error.as_ssl_error_stack() {
+                            ssl_error
+                                .context("boring ssl connector (connect): with ssl-error info")
+                                .context_debug_field("server_identity", server_name)
+                                .context_debug_field("code", maybe_ssl_code)
+                        } else {
+                            BoxError::from_static_str(
+                                "boring ssl connector (connect): without error info",
+                            )
+                            .context_debug_field("server_identity", server_name)
+                            .context_debug_field("code", maybe_ssl_code)
+                        }
                     }
-                }
-            });
-        }
-    };
-
-    stream
-        .get_ref()
-        .extensions()
-        .insert(rama_tls::client::TlsServerAuthentication(
-            authenticated_identity,
-        ));
-    let params = match stream.ssl().session() {
-        Some(ssl_session) => {
-            let protocol_version = ssl_session
-                .protocol_version()
-                .rama_try_into()
-                .map_err(|v| {
-                    BoxError::from_static_str("boring ssl connector: cast min proto version")
-                        .context_field("protocol_version", v)
-                })?;
-            let application_layer_protocol = stream
-                .ssl()
-                .selected_alpn_protocol()
-                .map(ApplicationProtocol::from);
-            if let Some(ref proto) = application_layer_protocol {
-                tracing::trace!("boring client (connector) has selected ALPN {proto}");
+                });
             }
+        };
 
-            let server_certificate_chain = if store_server_certificate_chain {
-                peer_certificate_chain(stream.ssl())?
-            } else {
-                None
-            };
-
-            NegotiatedTlsParameters {
-                protocol_version,
-                application_layer_protocol,
-                peer_certificate_chain: server_certificate_chain,
-                server_name: None,
-                resumed: Some(stream.ssl().session_reused()),
-                algorithms: stream.ssl().rama_into(),
-                server_hello: store_server_hello
-                    .then(|| ServerAnswerRecorder::installed(stream.ssl()))
-                    .flatten()
-                    .and_then(|recorder| recorder.server_hello(false)),
-            }
-        }
-        None => {
-            return Err(BoxError::from_static_str(
-                "boring ssl connector: failed to establish session...",
+        stream
+            .get_ref()
+            .extensions()
+            .insert(rama_tls::client::TlsServerAuthentication(
+                authenticated_identity,
             ));
-        }
-    };
+        let params = match stream.ssl().session() {
+            Some(ssl_session) => {
+                let protocol_version =
+                    ssl_session
+                        .protocol_version()
+                        .rama_try_into()
+                        .map_err(|v| {
+                            BoxError::from_static_str(
+                                "boring ssl connector: cast min proto version",
+                            )
+                            .context_field("protocol_version", v)
+                        })?;
+                let application_layer_protocol = stream
+                    .ssl()
+                    .selected_alpn_protocol()
+                    .map(ApplicationProtocol::from);
+                if let Some(ref proto) = application_layer_protocol {
+                    tracing::trace!("boring client (connector) has selected ALPN {proto}");
+                }
 
+                let server_certificate_chain = if store_server_certificate_chain {
+                    peer_certificate_chain(stream.ssl())?
+                } else {
+                    None
+                };
+
+                NegotiatedTlsParameters {
+                    protocol_version,
+                    application_layer_protocol,
+                    peer_certificate_chain: server_certificate_chain,
+                    server_name: None,
+                    resumed: Some(stream.ssl().session_reused()),
+                    algorithms: stream.ssl().rama_into(),
+                    server_hello: store_server_hello
+                        .then(|| ServerAnswerRecorder::installed(stream.ssl()))
+                        .flatten()
+                        .and_then(|recorder| recorder.server_hello(false)),
+                }
+            }
+            None => {
+                return Err(BoxError::from_static_str(
+                    "boring ssl connector: failed to establish session...",
+                ));
+            }
+        };
+
+        #[cfg(feature = "dial9")]
+        {
+            // Approximate cert-chain depth: opaque single Der/Pem counts as
+            // 1 (we don't parse PEM here), an explicit DerStack contributes
+            // its real length, no chain stored yields 0. Used for telemetry
+            // bucketing only — exact length lives in the structured chain.
+            let depth = params
+                .peer_certificate_chain
+                .as_ref()
+                .map_or(0, |chain| chain.len());
+            crate::dial9::record_handshake_completed(
+                dial9_server_name.as_ref(),
+                params.protocol_version,
+                stream.ssl().selected_alpn_protocol(),
+                depth,
+            );
+        }
+
+        Ok((stream, params))
+    };
     #[cfg(feature = "dial9")]
     {
-        // Approximate cert-chain depth: opaque single Der/Pem counts as
-        // 1 (we don't parse PEM here), an explicit DerStack contributes
-        // its real length, no chain stored yields 0. Used for telemetry
-        // bucketing only — exact length lives in the structured chain.
-        let depth = params
-            .peer_certificate_chain
-            .as_ref()
-            .map_or(0, |chain| chain.len());
-        crate::dial9::record_handshake_completed(
-            dial9_server_name,
-            params.protocol_version,
-            stream
-                .ssl()
-                .selected_alpn_protocol()
-                .map(rama_net::tls::ApplicationProtocol::from),
-            depth,
-        );
+        rama_core::telemetry::dial9::record_result("tls.boring.client", handshake).await
     }
-
-    Ok((stream, params))
+    #[cfg(not(feature = "dial9"))]
+    handshake.await
 }
 
 #[non_exhaustive]

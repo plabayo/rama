@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use rama_boring::ssl::{
-    SslConnector, SslConnectorBuilder, SslMethod, SslVerifyMode, SslVersion, UnknownValues,
-};
+#[cfg(feature = "compression")]
+use rama_boring::ssl::UnknownValues;
+use rama_boring::ssl::{SslConnector, SslConnectorBuilder, SslMethod, SslVerifyMode, SslVersion};
 use rama_boring_tokio::{SslStream, SslStreamBuilder};
 use rama_core::{
     Layer as _, Service, ServiceInput,
@@ -18,18 +18,20 @@ use rama_net::{
     client::ConnectorTarget,
     tls::TlsAlpn,
 };
+#[cfg(feature = "compression")]
+use rama_tls::fingerprint::{Ja3, Ja4, PeetPrint};
 use rama_tls::{
     CipherSuite, SignatureScheme, SupportedGroup,
     client::{
         ClientHello, NegotiatedTlsAlgorithms, NegotiatedTlsParameters, ServerVerifyMode,
         TlsClientConfig,
     },
-    fingerprint::{Ja3, Ja4, PeetPrint},
     server::{
         CertificateIssuanceContext, DynamicCertIssuer, GeneratedServerAuthConfig, LeafCertRequest,
         ServerAuthData, TlsServerConfig,
     },
 };
+#[cfg(feature = "compression")]
 use rama_ua::profile::selection::database::UserAgentDatabase;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
 
@@ -630,6 +632,8 @@ async fn a_server_connection_carries_data_after_shedding_its_handshake_configura
 
 /// Every embedded browser profile, replayed by the emulating client, reaches a Rama acceptor
 /// with the fingerprints of its capture.
+// Embedded browser profiles require the certificate compressors.
+#[cfg(feature = "compression")]
 #[tokio::test]
 async fn embedded_profiles_reach_the_acceptor_with_their_fingerprints() {
     let server = TlsAcceptorService::new(

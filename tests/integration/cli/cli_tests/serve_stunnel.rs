@@ -5,19 +5,16 @@ use super::utils;
 async fn test_stunnel_full() {
     utils::init_tracing();
 
-    let _echo = utils::RamaService::serve_echo(63121, utils::EchoMode::Http);
+    let echo = utils::RamaService::serve_echo(0, utils::EchoMode::Http);
+    let exit = utils::RamaService::serve_stunnel_exit("127.0.0.1:0", &echo.address().to_string());
+    let entry = utils::RamaService::serve_stunnel_entry_insecure(
+        "127.0.0.1:0",
+        &exit.address().to_string(),
+    );
 
-    // stunnel exit node on 63122 (TLS termination -> forwards to localhost:63121)
-    let _stunnel_exit_node =
-        utils::RamaService::serve_stunnel_exit("127.0.0.1:63122", "127.0.0.1:63121");
-
-    // stunnel entry node on 63123 (TLS origination -> connects to 63122)
-    let _stunnel_entry_node =
-        utils::RamaService::serve_stunnel_entry_insecure("127.0.0.1:63123", "127.0.0.1:63122");
-
-    // Test: rama http client -> stunnel entry node (63123) -> stunnel exit node (63122) -> http server (63121)
+    // Client -> entry -> exit -> HTTP origin, each retaining its own socket.
     let lines = utils::RamaService::http(vec![
-        "127.0.0.1:63123",
+        &entry.address().to_string(),
         "-d",
         r##"{"message":"Hello through tunnel!""##,
         "--json",

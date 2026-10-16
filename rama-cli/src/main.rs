@@ -89,7 +89,7 @@ fn build_runtime() -> std::io::Result<OwnedRuntime> {
         let (recorder, runtime) = dial9::recorder_from_env_with(|builder| {
             builder.enable_all().thread_name(WORKER_THREAD_NAME);
         })?;
-        if recorder.handle().is_enabled() {
+        if recorder.handle().is_connected() {
             return Ok(OwnedRuntime::from_dial9((recorder, runtime)));
         }
         // the environment resolved to telemetry-off after all
@@ -139,7 +139,11 @@ fn main() -> Result<(), BoxError> {
     // Keep command futures off Windows' smaller process-main stack.
     let result = runtime
         .block_on(async { rama::rt::spawn(run(cmds)).await })
-        .context("join CLI command task")?;
+        .context("join CLI command task");
+
+    // Finalize traces on both successful and explicit error-code exits.
+    runtime.shutdown_bounded(std::time::Duration::from_secs(5));
+    let result = result?;
 
     #[allow(clippy::exit, reason = "CLI: explicit exit code propagation")]
     if let Err(err) = result {

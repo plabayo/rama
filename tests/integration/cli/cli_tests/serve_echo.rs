@@ -30,13 +30,15 @@ use super::utils;
 async fn test_http_echo() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_echo(63101, utils::EchoMode::Http);
+    let server = utils::RamaService::serve_echo(0, utils::EchoMode::Http);
+    let port = server.port();
 
-    let lines = utils::RamaService::http(vec!["--http1.1", "http://127.0.0.1:63101"]).unwrap();
+    let lines =
+        utils::RamaService::http(vec!["--http1.1", &format!("http://127.0.0.1:{port}")]).unwrap();
     assert!(lines.contains("HTTP/1.1 200 OK"), "lines: {lines:?}");
 
     let lines = utils::RamaService::http(vec![
-        "http://127.0.0.1:63101?q=1",
+        &format!("http://127.0.0.1:{port}?q=1"),
         "-H",
         "foo: bar",
         "-d",
@@ -63,7 +65,7 @@ async fn test_http_echo() {
     let client = EasyHttpWebClient::default();
 
     let mut ws = client
-        .websocket("ws://127.0.0.1:63101")
+        .websocket(format!("ws://127.0.0.1:{port}"))
         .handshake(Extensions::default())
         .await
         .expect("ws handshake to work");
@@ -83,7 +85,7 @@ async fn test_http_echo() {
     // and also one of the other protocols
 
     let mut ws = client
-        .websocket("ws://127.0.0.1:63101")
+        .websocket(format!("ws://127.0.0.1:{port}"))
         .with_protocols(SecWebSocketProtocol::new(non_empty_str!("echo-upper")))
         .handshake(Extensions::default())
         .await
@@ -107,10 +109,11 @@ async fn test_http_echo() {
 async fn test_http_multipart_form() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_echo(63102, utils::EchoMode::Http);
+    let server = utils::RamaService::serve_echo(0, utils::EchoMode::Http);
+    let port = server.port();
 
     let lines = utils::RamaService::http(vec![
-        "http://127.0.0.1:63102",
+        &format!("http://127.0.0.1:{port}"),
         "-F",
         "username=glen",
         "-F",
@@ -141,10 +144,11 @@ async fn test_http_data_inmemory_emits_content_length() {
     // Content-Length, not chunked, so middleware/peers see exact framing.
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_echo(63135, utils::EchoMode::Http);
+    let server = utils::RamaService::serve_echo(0, utils::EchoMode::Http);
+    let port = server.port();
 
     let lines = utils::RamaService::http(vec![
-        "http://127.0.0.1:63135",
+        &format!("http://127.0.0.1:{port}"),
         "-d",
         "name=John",
         "-d",
@@ -171,12 +175,13 @@ async fn test_http_data_inmemory_emits_content_length() {
 async fn test_tcp_echo() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_echo(63110, utils::EchoMode::Tcp);
+    let server = utils::RamaService::serve_echo(0, utils::EchoMode::Tcp);
+    let port = server.port();
 
     let mut stream = None;
     for i in 0..5 {
         let extensions = Extensions::new();
-        match default_tcp_connect(&extensions, HostWithPort::local_ipv4(63110)).await {
+        match default_tcp_connect(&extensions, HostWithPort::local_ipv4(port)).await {
             Ok((s, _)) => {
                 stream = Some(s);
                 break;
@@ -201,14 +206,15 @@ async fn test_tcp_echo() {
 async fn test_tls_tcp_echo() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_echo(63111, utils::EchoMode::Tls);
+    let server = utils::RamaService::serve_echo(0, utils::EchoMode::Tls);
+    let port = server.port();
 
     let mut stream = None;
     for i in 0..5 {
         let connector = TlsConnector::secure(TcpConnector::new())
             .with_base_config(TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable));
         match connector
-            .connect(ConnectRequest::new(HostWithPort::local_ipv4(63111)))
+            .connect(ConnectRequest::new(HostWithPort::local_ipv4(port)))
             .await
         {
             Ok(EstablishedClientConnection { conn, .. }) => {
@@ -235,8 +241,8 @@ async fn test_tls_tcp_echo() {
 async fn test_udp_echo() {
     utils::init_tracing();
 
-    let port = utils::reserve_loopback_udp_port();
-    let _guard = utils::RamaService::serve_echo(port, utils::EchoMode::Udp);
+    let server = utils::RamaService::serve_echo(0, utils::EchoMode::Udp);
+    let port = server.port();
     let socket = bind_udp_with_address(SocketAddress::local_ipv4(0))
         .await
         .unwrap();
@@ -268,10 +274,11 @@ async fn test_https_echo() {
 
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_echo(63103, utils::EchoMode::Https);
+    let server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
+    let port = server.port();
 
     let lines = utils::RamaService::http(vec![
-        "https://127.0.0.1:63103?q=1",
+        &format!("https://127.0.0.1:{port}?q=1"),
         "-H",
         "foo: bar",
         "-d",
@@ -316,7 +323,7 @@ async fn test_https_echo() {
         .build_client();
 
     let mut ws = client
-        .websocket("wss://127.0.0.1:63103")
+        .websocket(format!("wss://127.0.0.1:{port}"))
         .handshake(Extensions::default())
         .await
         .expect("ws handshake to work");
@@ -336,7 +343,7 @@ async fn test_https_echo() {
     // and also one of the other protocols
 
     let mut ws = client
-        .websocket("wss://127.0.0.1:63103")
+        .websocket(format!("wss://127.0.0.1:{port}"))
         .with_protocols(SecWebSocketProtocol::new(non_empty_str!("echo-upper")))
         .handshake(Extensions::default())
         .await
@@ -367,11 +374,12 @@ async fn test_http3_echo() {
 
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_echo(63144, utils::EchoMode::Https);
+    let server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
+    let port = server.port();
 
     let lines = utils::RamaService::http(vec![
         "--http3",
-        "https://127.0.0.1:63144?q=1",
+        &format!("https://127.0.0.1:{port}?q=1"),
         "-H",
         "foo: bar",
         "-d",
@@ -386,9 +394,10 @@ async fn test_http3_echo() {
     assert!(lines.contains(r##""query":"q=1""##), "lines: {lines:?}");
 
     // TCP responses advertise HTTP/3 on the same port.
-    let lines = utils::RamaService::http(vec!["--http2", "https://127.0.0.1:63144"]).unwrap();
+    let lines =
+        utils::RamaService::http(vec!["--http2", &format!("https://127.0.0.1:{port}")]).unwrap();
     assert!(
-        lines.contains(r#"alt-svc: h3=":63144"; ma=86400"#),
+        lines.contains(&format!(r#"alt-svc: h3=":{port}"; ma=86400"#)),
         "lines: {lines:?}"
     );
 
@@ -410,7 +419,7 @@ async fn test_http3_echo() {
         .without_connection_pool()
         .build_client();
     let mut ws = client
-        .websocket_h3("wss://127.0.0.1:63144")
+        .websocket_h3(format!("wss://127.0.0.1:{port}"))
         .handshake(Extensions::default())
         .await
         .expect("ws over h3 handshake to work");
@@ -501,7 +510,8 @@ fn assert_contains_tls_alpn(lines: &str, alpn: &str, cli_flag: &str) {
 async fn test_https_forced_version() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_echo(63104, utils::EchoMode::Https);
+    let server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
+    let port = server.port();
 
     struct Test {
         cli_flag: &'static str,
@@ -530,7 +540,7 @@ async fn test_https_forced_version() {
     for test in tests.iter() {
         let lines = utils::RamaService::http(vec![
             test.cli_flag,
-            "https://127.0.0.1:63104?q=1",
+            &format!("https://127.0.0.1:{port}?q=1"),
             "-H",
             "foo: bar",
             "-d",
@@ -700,24 +710,27 @@ async fn test_https_with_remote_tls_cert_issuer() {
 
     tracing::info!("spawning tcp listener for remote tls issuer");
 
-    let tpc_listener = TcpListener::bind_address("[::1]:63132", Executor::default())
+    let tpc_listener = TcpListener::bind_address("[::1]:0", Executor::default())
         .await
         .unwrap();
 
     tracing::info!("spawning tokio task for remote tls https");
 
+    let issuer_port = tpc_listener.local_addr().unwrap().port();
     tokio::spawn(tpc_listener.serve(crt_issuer_https_svc));
 
     tracing::info!("start echo service via rama cli");
 
-    let _guard = utils::RamaService::serve_echo(
-        63131,
+    let server = utils::RamaService::serve_echo(
+        0,
         utils::EchoMode::HttpsWithCertIssuer {
-            remote_addr: format!("https://{DOMAIN_TLS_ECHO_CERTS}:63132/order"),
+            remote_addr: format!("https://{DOMAIN_TLS_ECHO_CERTS}:{issuer_port}/order"),
             remote_ca: Some(rama_remote_tls_ca),
             remote_auth: None, // please use proper authentication in production, even for internal networks
         },
     );
+
+    let port = server.port();
 
     #[derive(Debug)]
     struct Test {
@@ -750,7 +763,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
 
             let lines = utils::RamaService::http(vec![
                 test.cli_flag,
-                "https://localhost:63131?q=1",
+                &format!("https://localhost:{port}?q=1"),
                 "-H",
                 "foo: bar",
                 "-d",

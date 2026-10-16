@@ -40,6 +40,7 @@ fuzz-utils = ["dep:arbitrary", "rama-quic-proto/fuzz-utils"]
 #
 # [dial9]: https://github.com/dial9-rs/dial9
 dial9 = [
+    "dep:dial9-trace-format",
     "rama-core/dial9",
     "rama-net/dial9",
     "rama-tls-rustls?/dial9",
@@ -49,6 +50,7 @@ dial9 = [
 [dependencies]
 ahash = { workspace = true }
 arbitrary = { workspace = true, optional = true }
+dial9-trace-format = { workspace = true, optional = true }
 fastbloom = { workspace = true }
 jiff = { workspace = true }
 lru-slab = { workspace = true }

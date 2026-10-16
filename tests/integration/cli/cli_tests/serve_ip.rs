@@ -17,8 +17,9 @@ use super::utils;
 #[ignore]
 async fn test_http_ip() {
     utils::init_tracing();
-    let _guard = utils::RamaService::serve_ip(63100, false, false);
-    test_http_ip_inner("http://127.0.0.1:63100");
+    let server = utils::RamaService::serve_ip(0, false, false);
+    let port = server.port();
+    test_http_ip_inner(&format!("http://127.0.0.1:{port}"));
 }
 
 #[ignore]
@@ -26,8 +27,9 @@ async fn test_http_ip() {
 #[cfg(feature = "boring")]
 async fn test_https_ip() {
     utils::init_tracing();
-    let _guard = utils::RamaService::serve_ip(63118, false, true);
-    test_http_ip_inner("https://127.0.0.1:63118");
+    let server = utils::RamaService::serve_ip(0, false, true);
+    let port = server.port();
+    test_http_ip_inner(&format!("https://127.0.0.1:{port}"));
 }
 
 #[ignore]
@@ -35,9 +37,11 @@ async fn test_https_ip() {
 #[cfg(feature = "boring")]
 async fn test_http3_ip() {
     utils::init_tracing();
-    let _guard = utils::RamaService::serve_ip(63143, false, true);
+    let server = utils::RamaService::serve_ip(0, false, true);
+    let port = server.port();
 
-    let lines = utils::RamaService::http(vec!["--http3", "https://127.0.0.1:63143"]).unwrap();
+    let lines =
+        utils::RamaService::http(vec!["--http3", &format!("https://127.0.0.1:{port}")]).unwrap();
     assert!(lines.contains("* using HTTP/3.0"), "lines: {lines}");
     assert!(lines.contains("HTTP/3.0 200 OK"), "lines: {lines}");
     assert!(
@@ -46,10 +50,11 @@ async fn test_http3_ip() {
     );
 
     // TCP responses advertise HTTP/3 on the same port.
-    let lines = utils::RamaService::http(vec!["--http2", "https://127.0.0.1:63143"]).unwrap();
+    let lines =
+        utils::RamaService::http(vec!["--http2", &format!("https://127.0.0.1:{port}")]).unwrap();
     assert!(lines.contains("HTTP/2.0 200 OK"), "lines: {lines}");
     assert!(
-        lines.contains(r#"alt-svc: h3=":63143"; ma=86400"#),
+        lines.contains(&format!(r#"alt-svc: h3=":{port}"; ma=86400"#)),
         "lines: {lines}"
     );
 }
@@ -59,10 +64,12 @@ async fn test_http3_ip() {
 #[cfg(feature = "boring")]
 async fn test_https_ip_without_http3() {
     utils::init_tracing();
-    let _guard =
-        utils::RamaService::serve_ip_with_args(63147, false, true, &["--http-version", "h1,h2"]);
+    let server =
+        utils::RamaService::serve_ip_with_args(0, false, true, &["--http-version", "h1,h2"]);
+    let port = server.port();
 
-    let lines = utils::RamaService::http(vec!["--http2", "https://127.0.0.1:63147"]).unwrap();
+    let lines =
+        utils::RamaService::http(vec!["--http2", &format!("https://127.0.0.1:{port}")]).unwrap();
     assert!(lines.contains("HTTP/2.0 200 OK"), "lines: {lines}");
     assert!(!lines.contains("alt-svc"), "lines: {lines}");
 
@@ -71,13 +78,13 @@ async fn test_https_ip_without_http3() {
         "--http3",
         "--connect-timeout",
         "2",
-        "https://127.0.0.1:63147",
+        &format!("https://127.0.0.1:{port}"),
     ])
     .unwrap();
     assert!(!success, "no HTTP/3 without h3 in --http-version: {stderr}");
 }
 
-fn test_http_ip_inner(addr: &'static str) {
+fn test_http_ip_inner(addr: &str) {
     // default: txt
     let lines = utils::RamaService::http(vec!["--http1.1", addr]).unwrap();
     assert!(lines.contains("HTTP/1.1 200 OK"));
@@ -110,12 +117,13 @@ fn test_http_ip_inner(addr: &'static str) {
 async fn test_tcp_ip() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_ip(63119, true, false);
+    let server = utils::RamaService::serve_ip(0, true, false);
+    let port = server.port();
 
     let mut stream = None;
     for i in 0..5 {
         let extensions = Extensions::new();
-        match default_tcp_connect(&extensions, HostWithPort::local_ipv4(63119)).await {
+        match default_tcp_connect(&extensions, HostWithPort::local_ipv4(port)).await {
             Ok((s, _)) => {
                 stream = Some(s);
                 break;
@@ -139,14 +147,15 @@ async fn test_tcp_ip() {
 async fn test_tls_tcp_ip() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_ip(63120, true, true);
+    let server = utils::RamaService::serve_ip(0, true, true);
+    let port = server.port();
 
     let mut stream = None;
     for i in 0..5 {
         let connector = TlsConnector::secure(TcpConnector::new())
             .with_base_config(TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable));
         match connector
-            .connect(ConnectRequest::new(HostWithPort::local_ipv4(63120)))
+            .connect(ConnectRequest::new(HostWithPort::local_ipv4(port)))
             .await
         {
             Ok(EstablishedClientConnection { conn, .. }) => {

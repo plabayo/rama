@@ -8,7 +8,8 @@ use std::process::Command;
 async fn test_send_select_json_response() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_http_test(63142, false);
+    let server = utils::RamaService::serve_http_test(0, false);
+    let port = server.port();
 
     let (ok, stdout, stderr) = run_built_rama_capture(&[
         "send",
@@ -19,7 +20,7 @@ async fn test_send_select_json_response() {
         "hello",
         "--select-json",
         "$.bytes",
-        "http://127.0.0.1:63142/sink",
+        &format!("http://127.0.0.1:{port}/sink"),
     ]);
 
     assert!(ok, "rama send failed; stderr:\n{stderr}");

@@ -28,9 +28,10 @@ fn assert_custom_profile_headers(headers: &[serde_json::Value]) {
     );
 }
 
-fn assert_custom_profile_at_origin(stdout: &str) {
-    let response: serde_json::Value = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|error| panic!("invalid echo response: {error}\n{stdout}"));
+fn assert_custom_profile_at_origin(stdout: &str, stderr: &str, phase: &str) {
+    let response: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|error| {
+        panic!("{phase}: invalid echo response: {error}\nstdout:\n{stdout}\nstderr:\n{stderr}")
+    });
     let headers = response["http"]["headers"]
         .as_array()
         .expect("echo response contains ordered headers");
@@ -42,13 +43,15 @@ fn assert_custom_profile_at_origin(stdout: &str) {
 async fn test_http_proxy_echo() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_echo(63125, utils::EchoMode::Http);
-    let _guard = utils::RamaService::serve_proxy(63126);
+    let origin_server = utils::RamaService::serve_echo(0, utils::EchoMode::Http);
+    let proxy_server = utils::RamaService::serve_proxy(0);
+    let origin_port = origin_server.port();
+    let proxy_port = proxy_server.port();
 
     let lines = utils::RamaService::http(vec![
-        "http://127.0.0.1:63125",
+        &format!("http://127.0.0.1:{origin_port}"),
         "-x",
-        "http://127.0.0.1:63126",
+        &format!("http://127.0.0.1:{proxy_port}"),
     ])
     .unwrap();
     assert!(lines.contains("HTTP/1.1 200 OK"), "lines: {lines:?}");
@@ -60,13 +63,15 @@ async fn test_http_proxy_echo() {
 async fn test_https_proxy_echo() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_echo(63127, utils::EchoMode::Https);
-    let _guard = utils::RamaService::serve_proxy(63128);
+    let origin_server = utils::RamaService::serve_echo(0, utils::EchoMode::Https);
+    let proxy_server = utils::RamaService::serve_proxy(0);
+    let origin_port = origin_server.port();
+    let proxy_port = proxy_server.port();
 
     let lines = utils::RamaService::http(vec![
-        "https://127.0.0.1:63127",
+        &format!("https://127.0.0.1:{origin_port}"),
         "-x",
-        "http://127.0.0.1:63128",
+        &format!("http://127.0.0.1:{proxy_port}"),
     ])
     .unwrap();
     assert!(lines.contains("HTTP/2.0 200 OK"), "lines: {lines:?}");
@@ -78,21 +83,21 @@ async fn test_https_proxy_echo() {
 }
 
 async fn assert_icap_proxy_echo(tls: utils::IcapTlsMode) {
-    let origin_port = utils::reserve_loopback_port();
-    let icap_port = utils::reserve_loopback_port();
-    let proxy_port = utils::reserve_loopback_port();
-    let _origin = utils::RamaService::serve_echo(origin_port, utils::EchoMode::Http);
-    let _icap = utils::RamaService::serve_icap(icap_port, tls);
+    let origin_server = utils::RamaService::serve_echo(0, utils::EchoMode::Http);
+    let icap_server = utils::RamaService::serve_icap(0, tls);
+    let origin_port = origin_server.port();
+    let icap_port = icap_server.port();
     let scheme = match tls {
         utils::IcapTlsMode::Plain => "icap",
         utils::IcapTlsMode::SelfSigned | utils::IcapTlsMode::Files => "icaps",
     };
     let icap_uri = format!("{scheme}://127.0.0.1:{icap_port}/echo");
-    let _proxy = utils::RamaService::serve_proxy_icap(
-        proxy_port,
+    let proxy_server = utils::RamaService::serve_proxy_icap(
+        0,
         &icap_uri,
         !matches!(tls, utils::IcapTlsMode::Plain),
     );
+    let proxy_port = proxy_server.port();
     let origin = format!("http://127.0.0.1:{origin_port}/icap-e2e");
     let proxy = format!("http://127.0.0.1:{proxy_port}");
     let (ok, stdout, stderr) = utils::RamaService::run_capture_isolated(
@@ -134,12 +139,13 @@ async fn test_proxy_icaps_echo() {
 async fn test_mitm_capture_export_and_direct_cli_emulation() {
     utils::init_tracing();
 
-    let origin_port = utils::reserve_loopback_port();
-    let proxy_port = utils::reserve_loopback_port();
-    let inspector_port = utils::reserve_loopback_port();
-    let _origin = utils::RamaService::serve_echo(origin_port, utils::EchoMode::Https);
-    let (_proxy, inspector_token) =
-        utils::RamaService::serve_proxy_mitm(proxy_port, inspector_port);
+    // Mirroring the shared RSA-4096 fixture can outlast the origin's first-request
+    // idle deadline on Windows debug builds. This profile round trip needs TLS,
+    // not a newly generated RSA-4096 key between the upstream handshake and GET.
+    let origin_server = utils::RamaService::serve_echo(0, utils::EchoMode::HttpsWithGeneratedCert);
+    let (proxy_server, inspector_address, inspector_token) = utils::RamaService::serve_proxy_mitm();
+    let origin_port = origin_server.port();
+    let proxy_port = proxy_server.port();
     let origin = format!("https://127.0.0.1:{origin_port}/profile");
     let proxy = format!("http://127.0.0.1:{proxy_port}");
     let user_agent_header = format!("User-Agent: {CUSTOM_PROFILE_USER_AGENT}");
@@ -150,6 +156,8 @@ async fn test_mitm_capture_export_and_direct_cli_emulation() {
         let (ok, stdout, stderr) = utils::RamaService::run_capture_isolated(
             &[
                 "send",
+                "--fail",
+                "--verbose",
                 "--max-time",
                 REQUEST_TIMEOUT_SECS,
                 "--insecure",
@@ -171,19 +179,21 @@ async fn test_mitm_capture_export_and_direct_cli_emulation() {
         .unwrap();
         assert!(
             ok,
-            "capture request failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+            "{version}: capture request failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
         );
-        assert_custom_profile_at_origin(&stdout);
+        assert_custom_profile_at_origin(&stdout, &stderr, version);
     }
 
     let directory = rama::utils::fs::tempdir().unwrap();
     let profile_path = directory.path().join("captured-profiles.json");
     let profile_path_arg = profile_path.to_string_lossy().into_owned();
-    let export_uri = format!("http://127.0.0.1:{inspector_port}/api/profiles.json?ids=1,2");
+    let export_uri = format!("http://{inspector_address}/api/profiles.json?ids=1,2");
     let inspector_cookie = format!("Cookie: rama-inspector={inspector_token}");
     let (ok, stdout, stderr) = utils::RamaService::run_capture_isolated(
         &[
             "send",
+            "--fail",
+            "--verbose",
             "--max-time",
             REQUEST_TIMEOUT_SECS,
             "--header",
@@ -217,6 +227,8 @@ async fn test_mitm_capture_export_and_direct_cli_emulation() {
     let (ok, stdout, stderr) = utils::RamaService::run_capture_isolated(
         &[
             "send",
+            "--fail",
+            "--verbose",
             "--max-time",
             REQUEST_TIMEOUT_SECS,
             "--insecure",
@@ -231,5 +243,5 @@ async fn test_mitm_capture_export_and_direct_cli_emulation() {
         ok,
         "custom-profile request failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    assert_custom_profile_at_origin(&stdout);
+    assert_custom_profile_at_origin(&stdout, &stderr, "direct emulation");
 }

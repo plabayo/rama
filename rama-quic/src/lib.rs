@@ -39,6 +39,9 @@ pub mod benchmarks;
 ))]
 mod test_helpers;
 
+#[cfg(feature = "dial9")]
+#[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
+pub mod dial9;
 pub mod profile;
 mod proto;
 pub mod proxy;

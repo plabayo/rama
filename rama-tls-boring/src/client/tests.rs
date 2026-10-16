@@ -1,10 +1,14 @@
+#[cfg(feature = "compression")]
+use rama_boring::ssl::SslSignatureAlgorithm;
+#[cfg(feature = "compression")]
+use std::fmt;
+
 use std::{
     collections::BTreeSet,
-    fmt,
     io::{self, Read, Write},
 };
 
-use rama_boring::ssl::{HandshakeError, SslCurve, SslSignatureAlgorithm, UnknownValues};
+use rama_boring::ssl::{HandshakeError, SslCurve, UnknownValues};
 use rama_core::conversion::RamaTryInto as _;
 use rama_net::{address::Host, tls::ApplicationProtocol};
 use rama_tls::{
@@ -255,8 +259,10 @@ fn mirrored_hello_does_not_inherit_base_shaping() {
 
 /// Native BoringSSL limits which no client configuration can lift today. Each
 /// rule documents one, so lifting it makes this test fail and then shrink.
+#[cfg(feature = "compression")]
 struct NativeLimits;
 
+#[cfg(feature = "compression")]
 impl NativeLimits {
     /// Without `Preserve`, signature schemes BoringSSL does not implement are left out.
     fn signature_schemes(captured: &[SignatureScheme]) -> Vec<String> {
@@ -291,6 +297,8 @@ impl NativeLimits {
     }
 }
 
+// Embedded browser profiles require the certificate compressors.
+#[cfg(feature = "compression")]
 #[test]
 fn embedded_profiles_are_mirrored_on_the_wire() {
     let db = UserAgentDatabase::try_embedded().unwrap();
@@ -412,6 +420,7 @@ fn embedded_chromium_profile_emits_per_connection_extension_orders() {
     assert!(orders.len() > 1);
 }
 
+#[cfg(feature = "compression")]
 fn normalized_ciphers(hello: &ClientHello) -> Vec<String> {
     hello
         .cipher_suites()
@@ -420,6 +429,7 @@ fn normalized_ciphers(hello: &ClientHello) -> Vec<String> {
         .collect()
 }
 
+#[cfg(feature = "compression")]
 fn grease_or(is_grease: bool, value: impl fmt::Debug) -> String {
     if is_grease {
         "GREASE".to_owned()
@@ -430,6 +440,7 @@ fn grease_or(is_grease: bool, value: impl fmt::Debug) -> String {
 
 /// Compare-ready form of an extension. GREASE values are random per handshake;
 /// `captured` applies [`NativeLimits`] to the side that was recorded.
+#[cfg(feature = "compression")]
 fn normalized_extension(ext: &ClientHelloExtension, captured: bool) -> String {
     match ext {
         ClientHelloExtension::SupportedGroups(groups) if captured => {
@@ -606,13 +617,20 @@ fn wire_variants_of_one_policy_share_a_context_and_keep_their_own_hellos() {
     for present in [
         ExtensionId::STATUS_REQUEST,
         ExtensionId::SIGNED_CERTIFICATE_TIMESTAMP,
-        ExtensionId::COMPRESS_CERTIFICATE,
     ] {
         assert!(
             second.extensions().iter().any(|ext| ext.id() == present),
             "{present:?}"
         );
     }
+    assert_eq!(
+        second
+            .extensions()
+            .iter()
+            .any(|ext| ext.id() == ExtensionId::COMPRESS_CERTIFICATE),
+        cfg!(feature = "compression"),
+        "certificate compression follows the enabled codecs",
+    );
     for ext in second.extensions() {
         match ext {
             ClientHelloExtension::SupportedGroups(groups) => {

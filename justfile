@@ -337,9 +337,10 @@ qa: qq test test-no-default-features test-doc deny
 # covers it. CI runs it as its own job.
 qa-dial9:
     @just _ensure-installed cargo-nextest cargo-nextest
-    cargo check -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-tcp -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
-    cargo clippy -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-tcp -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
-    cargo nextest run -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-tcp -p rama-net-apple-networkextension -p rama-dns -p rama-socks5 --features dial9
+    cargo check -p rama-core -p rama-http -p rama-http-core -p rama-http-backend -p rama-ws -p rama-net -p rama-tcp -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
+    cargo clippy -p rama-core -p rama-http -p rama-http-core -p rama-http-backend -p rama-ws -p rama-net -p rama-tcp -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
+    cargo nextest run -p rama-core -p rama-http -p rama-http-core -p rama-http-backend -p rama-ws -p rama-net -p rama-tcp -p rama-net-apple-networkextension -p rama-dns -p rama-socks5 --features dial9
+    cargo check -p rama-examples --features dial9,http-full --bin dial9_local
     just rama-quic/qa-dial9
 
 # `qa-dial9` under `--cfg tokio_unstable`, where dial9 gets its full task coverage.
