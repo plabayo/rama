@@ -1,4 +1,5 @@
 use std::{
+    future::ready,
     io::{self, Write},
     net::SocketAddr,
     num::NonZeroUsize,
@@ -225,6 +226,18 @@ impl BoringMitmCertIssuer for CountingIssuer {
 
 #[tokio::test]
 async fn an_unverified_origin_is_never_mirrored_to_the_client() {
+    unverified_origin_is_refused(None).await;
+}
+
+#[tokio::test]
+async fn an_unverified_origin_with_client_auth_logs_its_handshake_kind() {
+    let policy = TlsMitmClientAuthPolicy::new(service_fn(|_: TlsMitmClientAuthInput| {
+        ready(Ok::<_, BoxError>(TlsMitmClientAuthPlan::fixed(None)))
+    }));
+    unverified_origin_is_refused(Some(policy)).await;
+}
+
+async fn unverified_origin_is_refused(client_auth: Option<TlsMitmClientAuthPolicy>) {
     let (log, _subscriber) = capture_refusals();
     timeout(LIMIT, async {
         let mitm_identity = identity();
@@ -244,9 +257,11 @@ async fn an_unverified_origin_is_never_mirrored_to_the_client() {
         // Egress trusts some other identity, so the origin fails verification.
         let service = PeekQuicClientHelloService::new(
             BoringTlsProvider,
-            relay(issuer, &mitm_identity).into_layer(service_fn(
-                async |_: BridgeIo<Connection, Connection>| Ok::<_, BoxError>(()),
-            )),
+            relay(issuer, &mitm_identity)
+                .maybe_with_client_auth(client_auth)
+                .into_layer(service_fn(async |_: BridgeIo<Connection, Connection>| {
+                    Ok::<_, BoxError>(())
+                })),
         );
         let relaying = tokio::spawn(async move { service.serve(BridgeIo(ingress, egress)).await });
         let origin_task = tokio::spawn(async move {

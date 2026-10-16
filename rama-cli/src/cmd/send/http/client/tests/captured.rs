@@ -1,4 +1,5 @@
 use super::*;
+use crate::cmd::send::http::request::build as build_request;
 use rama::{
     extensions::ExtensionsRef as _,
     http::{HeaderMap, HeaderValue, Method, Version},
@@ -6,6 +7,14 @@ use rama::{
 };
 
 fn captured_archive(unsupported_connection: bool) -> Vec<u8> {
+    captured_archive_for_flow(unsupported_connection, None, Method::GET)
+}
+
+fn captured_archive_for_flow(
+    unsupported_connection: bool,
+    initiator: Option<RequestInitiator>,
+    method: Method,
+) -> Vec<u8> {
     let profile = ProfileKey::from_user_agent(&UserAgent::new(CUSTOM_PROFILE_USER_AGENT));
     let mut headers = HeaderMap::new();
     headers.insert("host", HeaderValue::from_static("capture.invalid"));
@@ -20,8 +29,8 @@ fn captured_archive(unsupported_connection: bool) -> Vec<u8> {
         profile: profile.clone(),
         flow: Some(FlowKey::Http {
             version: Version::HTTP_11,
-            method: Method::GET,
-            initiator: None,
+            method,
+            initiator,
             fetch: None,
             connection: ConnectionContext::default(),
         }),
@@ -467,4 +476,162 @@ async fn captured_draw_cli_real_stack_rejects_unknown_variant_pins() {
     })
     .await
     .expect("bounded unknown-pin check");
+}
+
+#[test]
+fn captured_flow_cli_rejects_unknown_and_unscoped_initiators() {
+    for flow in ["navigate", "fetch", "xhr", "form", "ws", " FETCH "] {
+        assert!(
+            TestCli::try_parse_from([
+                "rama-send-test",
+                "--emulate-initiator",
+                flow,
+                "http://example.test"
+            ])
+            .is_err()
+        );
+        TestCli::try_parse_from([
+            "rama-send-test",
+            "--emulate=archive.json",
+            "--emulate-initiator",
+            flow,
+            "http://example.test",
+        ])
+        .unwrap();
+    }
+    for flow in ["", "unknown", "fetch,xhr"] {
+        assert!(
+            TestCli::try_parse_from([
+                "rama-send-test",
+                "--emulate=archive.json",
+                "--emulate-initiator",
+                flow,
+                "http://example.test"
+            ])
+            .is_err()
+        );
+    }
+}
+
+#[tokio::test]
+async fn captured_flow_cli_binds_websocket_scheme_and_default() {
+    for version in ["--http1.1", "--http2", "--http3"] {
+        for scheme in ["ws", "wss"] {
+            if scheme == "ws" && version == "--http3" {
+                continue;
+            }
+            let uri = format!("{scheme}://example.test/socket");
+            let cfg = send_cfg(&["--emulate=archive.json", version, &uri]);
+            let request = build_request(&cfg, true).await.unwrap();
+            assert_eq!(
+                request.extensions().get_ref::<RequestInitiator>().copied(),
+                Some(RequestInitiator::Ws)
+            );
+            for flow in ["navigate", "fetch", "xhr", "form"] {
+                let cfg = send_cfg(&[
+                    "--emulate=archive.json",
+                    "--emulate-initiator",
+                    flow,
+                    version,
+                    &uri,
+                ]);
+                build_request(&cfg, true).await.unwrap_err();
+            }
+        }
+        let cfg = send_cfg(&[
+            "--emulate=archive.json",
+            "--emulate-initiator",
+            "ws",
+            version,
+            "https://example.test/socket",
+        ]);
+        build_request(&cfg, false).await.unwrap_err();
+    }
+    let cfg = send_cfg(&["--emulate=archive.json", "http://example.test"]);
+    assert!(
+        build_request(&cfg, false)
+            .await
+            .unwrap()
+            .extensions()
+            .get_ref::<RequestInitiator>()
+            .is_none()
+    );
+    let cfg = send_cfg(&["ws://example.test/socket"]);
+    assert!(
+        build_request(&cfg, true)
+            .await
+            .unwrap()
+            .extensions()
+            .get_ref::<RequestInitiator>()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn captured_flow_cli_replays_each_selected_http_flow() {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        for (flow, method) in [
+            (RequestInitiator::Navigate, Method::GET),
+            (RequestInitiator::Fetch, Method::POST),
+            (RequestInitiator::Xhr, Method::POST),
+            (RequestInitiator::Form, Method::POST),
+        ] {
+            let directory = rama::utils::fs::tempdir().unwrap();
+            let archive = directory.path().join("captured.json");
+            tokio::fs::write(
+                &archive,
+                captured_archive_for_flow(false, Some(flow), method.clone()),
+            )
+            .await
+            .unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                tokio::time::timeout(std::time::Duration::from_secs(5), async move {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let head = read_http_head(&mut stream).await;
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await
+                        .unwrap();
+                    head
+                })
+                .await
+                .expect("bounded flow replay server")
+            });
+            let _abort_server = AbortCapturedServer(server.abort_handle());
+            let uri = format!("http://{address}/replayed");
+            let output = directory.path().join("response");
+            let cfg = send_cfg(&[
+                &format!("--emulate={}", archive.display()),
+                "--emulate-initiator",
+                flow.as_str(),
+                "--http1.1",
+                "--request",
+                method.as_str(),
+                "--output",
+                output.to_str().unwrap(),
+                &uri,
+            ]);
+            let client = new_hermetic(&cfg).await.unwrap();
+            let request = build_request(&cfg, false).await.unwrap();
+            let response = client.serve(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let head = server.await.unwrap();
+            assert!(
+                head.starts_with(&format!("{method} /replayed HTTP/1.1\r\n")),
+                "{flow}: {head}"
+            );
+            assert!(head.contains("application/pr10-test"), "{flow}: {head}");
+            assert!(
+                head.to_ascii_lowercase()
+                    .contains(&format!("host: {address}\r\n")),
+                "{flow}: {head}"
+            );
+        }
+    })
+    .await
+    .expect("bounded CLI flow matrix");
 }

@@ -75,6 +75,28 @@ and H3 sequence replay currently fail with an unsupported-component error before
 connecting; their observation data does not imply an implemented wire compiler.
 Legacy profile files and the bare `--emulate` flag retain their existing path.
 
+Select a request flow with `--emulate-initiator navigate|fetch|xhr|form|ws`.
+For example, `--emulate-initiator form --request POST` selects a captured POST
+form flow; it does not synthesize form data or bypass method, protocol, or
+connection-context matching. Captured HTTP profiles default to navigation; legacy
+profiles retain their method/header-based inference. When emulation
+is enabled, `ws://` and `wss://` requests default to the WebSocket flow; an explicit
+initiator must agree with whether the URI is WebSocket. The option requires
+`--emulate` and works with captured and legacy profiles.
+
+Body metadata remains request-owned. An explicit `Content-Type` overrides the
+`--data`, `--json`, and `--binary` defaults; multipart retains its generated
+boundary. File and stdin data stream without a promised `Content-Length`, so
+strict replay needs a capture with compatible framing.
+
+Explicit `Sec-WebSocket-Extensions` and `Sec-WebSocket-Protocol` headers are
+retained by the WebSocket handshake builder; `--subprotocol` overrides a protocol
+header. Invalid offers fail before sending. Without an explicit extension offer,
+the CLI keeps its default permessage-deflate offer. When replaying a captured
+WebSocket profile, supply its extension offer explicitly so response negotiation
+uses the same offer as the emulated wire request.
+
+
 To reproduce captured-profile draws, pass all three 64-digit hexadecimal inputs:
 `--emulate-seed HEX64 --emulate-connection-key HEX64 --emulate-request-key HEX64`.
 Keep the archive, classifier/draw revision, flow, seed and keys unchanged for the
@@ -189,12 +211,13 @@ reference variant, and identifies both capture hashes. Truncated diagnostics nev
 turn a mismatch into a match. The command reads at most 64 MiB per archive and
 compares at most 256 scopes/variants with a shared 16 MiB comparison-work budget.
 
-### Real Chrome HTTP/1 capture and replay
+### Real-browser HTTP/1 capture and replay
 
-`just test-browser-profile-h1 /path/to/new-evidence-directory` captures a real
-headless Chrome navigation, exports an isolated fp database, replays it with Rama,
-and compares both stored observations and tshark-decoded headers. The release
-variant is `just test-browser-profile-h1-release`. See the
-[browser proof prerequisites and limits](../examples/tests/browser_profile/README.md).
-This is a plaintext HTTP/1 navigation proof; the complete browser/protocol/flow
-matrix and deterministic CLI draw controls remain pending.
+`just test-browser-profile-h1 /path/to/new-evidence-directory all` captures
+headless Chrome navigation, fetch, XHR, WebSocket and form flows, exports an
+isolated fp database, replays them with fixed draw keys, and compares complete
+stored observations and independently decoded request headers and bodies.
+Use `test-firefox-profile-h1` for Firefox, or append `-release` to either recipe
+for the optimized CLI. Omitting `all` retains the partial navigation-only proof.
+See the [browser proof prerequisites and limits](../examples/tests/browser_profile/README.md).
+The broader TLS/H2/H3/Safari matrix and modeled distribution comparison remain pending.

@@ -12,6 +12,7 @@ use rama::{
     },
     net::mode::{ConnectIpMode, DnsResolveIpMode},
     stream::io::ReaderStream,
+    ua::profile::RequestInitiator,
     utils::str::NATIVE_NEWLINE,
 };
 
@@ -19,6 +20,18 @@ use super::SendCommand;
 
 pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, BoxError> {
     let mut request = Request::new(Body::empty());
+
+    let initiator = cfg
+        .emulate_initiator
+        .or_else(|| (is_ws && cfg.emulate.is_some()).then_some(RequestInitiator::Ws));
+    if let Some(initiator) = initiator {
+        if is_ws != matches!(initiator, RequestInitiator::Ws) {
+            return Err(BoxError::from_static_str(
+                "WebSocket emulation requires a ws flow and a ws:// or wss:// URI",
+            ));
+        }
+        request.extensions().insert(initiator);
+    }
 
     let input = build_data_input(cfg).await?;
     if input.is_some() && is_ws {
@@ -101,7 +114,9 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
     if let Some(input) = input {
         match input {
             DataInput::Body { body, content_type } => {
-                request.headers_mut().typed_insert(content_type);
+                if !request.headers().contains_key(CONTENT_TYPE) {
+                    request.headers_mut().typed_insert(content_type);
+                }
                 // Re-sync Content-Length with the body we're about to
                 // ship. Pure in-memory `--data` items take the fast path
                 // in `build_data_input` and arrive here as a sized
@@ -259,4 +274,92 @@ async fn build_data_input(cfg: &SendCommand) -> Result<Option<DataInput>, BoxErr
         body,
         content_type: ct,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        cfg: SendCommand,
+    }
+
+    fn config(args: &[&str]) -> SendCommand {
+        TestCli::try_parse_from(
+            ["rama-request-test"]
+                .into_iter()
+                .chain(args.iter().copied())
+                .chain(["http://example.test/body"]),
+        )
+        .unwrap()
+        .cfg
+    }
+
+    #[tokio::test]
+    async fn request_content_type_explicit_header_survives_data_sources_and_defaults() {
+        let directory = rama::utils::fs::tempdir().unwrap();
+        let file = directory.path().join("payload");
+        tokio::fs::write(&file, b"payload").await.unwrap();
+        for input in [
+            String::from("payload"),
+            format!("@{}", file.display()),
+            String::from("@-"),
+        ] {
+            for shorthand in [None, Some("--json"), Some("--binary")] {
+                let mut args = vec![
+                    "--data",
+                    input.as_str(),
+                    "--header",
+                    "Content-Type: text/plain;charset=UTF-8",
+                    "--header",
+                    "Content-Length: 99",
+                ];
+                if let Some(flag) = shorthand {
+                    args.push(flag);
+                }
+                let request = build(&config(&args), false).await.unwrap();
+                assert_eq!(request.headers()[CONTENT_TYPE], "text/plain;charset=UTF-8");
+                if input.starts_with('@') {
+                    assert!(!request.headers().contains_key(CONTENT_LENGTH));
+                } else {
+                    assert_eq!(request.headers()[CONTENT_LENGTH], "7");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn request_content_type_defaults_and_multipart_boundary_remain_generated() {
+        for (shorthand, expected) in [
+            (None, "application/x-www-form-urlencoded"),
+            (Some("--json"), "application/json"),
+            (Some("--binary"), "application/octet-stream"),
+        ] {
+            let mut args = vec!["--data", "payload"];
+            if let Some(flag) = shorthand {
+                args.push(flag);
+            }
+            let request = build(&config(&args), false).await.unwrap();
+            assert_eq!(request.headers()[CONTENT_TYPE], expected);
+        }
+        let request = build(
+            &config(&[
+                "--form-data",
+                "field=value",
+                "--header",
+                "Content-Type: text/plain",
+            ]),
+            false,
+        )
+        .await
+        .unwrap();
+        let content_type = request.headers()[CONTENT_TYPE].to_str().unwrap();
+        assert!(
+            content_type.starts_with("multipart/form-data; boundary="),
+            "{content_type}"
+        );
+    }
 }

@@ -2,6 +2,7 @@ use rama::{
     error::{BoxError, BoxErrorExt as _, ErrorExt as _},
     json::path::JsonPath,
     net::{Protocol, address::ProxyAddress, user::Basic},
+    ua::profile::RequestInitiator,
     utils::str::NonEmptyStr,
 };
 
@@ -93,6 +94,7 @@ pub struct SendCommand {
     /// If you want the data to be treated as arbitrary binary data by the server then
     /// set the content-type to octet-stream: -H "Content-Type: application/octet-stream"
     /// or use --binary flag. There is also the --json flag for -H "Content-Type: application/json".
+    /// An explicit Content-Type header takes precedence over these defaults.
     ///
     /// If this option is used several times, the ones following the first append data.
     ///
@@ -252,6 +254,11 @@ pub struct SendCommand {
     /// Pass `--emulate=profiles.json` to use a custom exported profile database.
     /// A random profile is selected when no User-Agent header is defined.
     emulate: Option<EmulationProfiles>,
+
+    /// Request flow to replay: navigate, fetch, xhr, form, or ws.
+    /// WebSocket URIs select ws automatically when emulation is enabled.
+    #[arg(long, requires = "emulate")]
+    emulate_initiator: Option<RequestInitiator>,
 
     #[arg(
         long,
