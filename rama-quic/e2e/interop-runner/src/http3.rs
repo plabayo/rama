@@ -1,10 +1,12 @@
 //! Bounded HTTP/3 file transfers for the independent interop runner.
 
 use crate::{
-    BUFFER_SIZE, REQUEST_LIMIT, STREAM_LIMIT, client::Request as DownloadRequest, relative_path,
+    BUFFER_SIZE, REQUEST_LIMIT, STREAM_LIMIT, client::Request as DownloadRequest,
+    server::open_confined,
 };
 use rama::{
     error::{BoxError, ErrorContext as _},
+    futures::{Stream, StreamExt as _, stream},
     http::{
         Body, Method, Request, Response, StatusCode, Version,
         body::util::BodyExt as _,
@@ -16,7 +18,12 @@ use rama::{
     stream::io::ReaderStream,
     telemetry::tracing,
 };
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::{io::AsyncWriteExt as _, task::JoinSet};
 
 fn clean_close(error: H3Error) -> bool {
@@ -29,6 +36,36 @@ pub(crate) fn config() -> Config {
         max_pushes: 0,
         ..Config::default()
     }
+}
+
+async fn store_response(
+    response: Response<Body>,
+    directory: &Path,
+    filename: &str,
+) -> Result<(), BoxError> {
+    if response.status() != StatusCode::OK || response.version() != Version::HTTP_3 {
+        return Err(BoxError::from("HTTP/3 download status or version mismatch"));
+    }
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(directory.join(filename))
+        .await
+        .context("create download file")?;
+    let mut body = response.into_body();
+    let mut bytes = 0_u64;
+    while let Some(frame) = body.frame().await {
+        let frame = frame?;
+        if let Some(data) = frame.data_ref() {
+            file.write_all(data).await.context("write download file")?;
+            bytes = bytes
+                .checked_add(data.len() as u64)
+                .ok_or("download byte count overflow")?;
+        }
+    }
+    file.flush().await.context("flush download file")?;
+    tracing::info!(file = filename, bytes, "HTTP/3 download complete");
+    Ok(())
 }
 
 pub(crate) async fn download_batch(
@@ -64,29 +101,7 @@ pub(crate) async fn download_batch(
                             .body(Body::empty())?,
                     )
                     .await?;
-                if response.status() != StatusCode::OK || response.version() != Version::HTTP_3 {
-                    return Err(BoxError::from("HTTP/3 download status or version mismatch"));
-                }
-                let mut file = tokio::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(directory.join(&request.filename))
-                    .await
-                    .context("create download file")?;
-                let mut body = response.into_body();
-                let mut bytes = 0_u64;
-                while let Some(frame) = body.frame().await {
-                    let frame = frame?;
-                    if let Some(data) = frame.data_ref() {
-                        file.write_all(data).await.context("write download file")?;
-                        bytes = bytes
-                            .checked_add(data.len() as u64)
-                            .ok_or("download byte count overflow")?;
-                    }
-                }
-                file.flush().await.context("flush download file")?;
-                tracing::info!(file = request.filename, bytes, "HTTP/3 download complete");
-                Ok::<_, BoxError>(())
+                store_response(response.map(Body::new), &directory, &request.filename).await
             });
         }
         while let Some(result) = tasks.join_next().await {
@@ -103,12 +118,17 @@ pub(crate) async fn download_batch(
     outcome
 }
 
-pub(crate) async fn serve_connection(
-    connection: Connection,
-    root: Arc<PathBuf>,
-) -> Result<(), BoxError> {
-    let (mut server, driver) = server::handshake(connection.clone(), config())?;
-    let mut driver = std::pin::pin!(driver.run());
+// Keep application admission independent of the transport and H3 queue limits. Tests feed
+// more ready requests than those lower layers normally permit, exercising this exact loop.
+async fn run_requests<T, S, D, F, R>(requests: S, driver: D, mut serve: F) -> Result<(), BoxError>
+where
+    S: Stream<Item = Result<T, H3Error>>,
+    D: Future<Output = Result<(), H3Error>>,
+    F: FnMut(T) -> R,
+    R: Future<Output = Result<(), BoxError>> + Send + 'static,
+{
+    let mut requests = std::pin::pin!(requests);
+    let mut driver = std::pin::pin!(driver);
     let mut tasks: JoinSet<Result<(), BoxError>> = JoinSet::new();
     let outcome = async {
         loop {
@@ -123,41 +143,70 @@ pub(crate) async fn serve_connection(
                         return Err(error);
                     }
                 }
-                request = server.accept(), if tasks.len() < STREAM_LIMIT => {
+                request = requests.next(), if tasks.len() < STREAM_LIMIT => {
                     let request = match request {
-                        Ok(request) => request,
-                        Err(error) => {
-                            if clean_close(error) { break; }
-                            return Err(BoxError::from(error));
-                        }
+                        Some(Ok(request)) => request,
+                        Some(Err(error)) if clean_close(error) => break,
+                        Some(Err(error)) => return Err(BoxError::from(error)),
+                        None => break,
                     };
-                    let root = root.clone();
-                    tasks.spawn(async move {
-                        tokio::time::timeout(Duration::from_secs(180), async move {
-                            let (request, response) = request.resolve().await?;
-                            if request.method() != Method::GET { return Err(BoxError::from("only HTTP/3 GET is supported")); }
-                            let target = request.uri().path_or_root();
-                            if target.len() > REQUEST_LIMIT { return Err(BoxError::from("HTTP/3 request path exceeds limit")); }
-                            let relative = relative_path(&target)?;
-                            let path = tokio::fs::canonicalize(root.join(relative)).await.context("resolve requested file")?;
-                            if !path.starts_with(root.as_path()) { return Err(BoxError::from("requested file escapes document root")); }
-                            let file = tokio::fs::File::open(path).await.context("open requested file")?;
-                            let metadata = file.metadata().await?;
-                            if !metadata.is_file() { return Err(BoxError::from("requested path is not a regular file")); }
-                            let body = Body::from_stream(ReaderStream::with_capacity(file, BUFFER_SIZE));
-                            response.send_response(Response::builder().status(StatusCode::OK).header("content-length", metadata.len()).body(body)?).await?;
-                            Ok::<_, BoxError>(())
-                        }).await.context("HTTP/3 request timed out")?
-                    });
+                    tasks.spawn(serve(request));
                 }
             }
         }
         Ok(())
     }.await;
-    if outcome.is_err() {
-        connection.close(0x102_u32, b"HTTP/3 request failed");
-    }
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
     outcome
 }
+
+pub(crate) async fn serve_connection(
+    connection: Connection,
+    root: Arc<PathBuf>,
+) -> Result<(), BoxError> {
+    let (server, driver) = server::handshake(connection.clone(), config())?;
+    let requests = stream::unfold(server, |mut server| async {
+        Some((server.accept().await, server))
+    });
+    let outcome = run_requests(
+        requests,
+        driver.run(),
+        move |request: server::RequestStream| {
+            let root = root.clone();
+            async move {
+                tokio::time::timeout(Duration::from_secs(180), async move {
+                    let (request, response) = request.resolve().await?;
+                    if request.method() != Method::GET {
+                        return Err(BoxError::from("only HTTP/3 GET is supported"));
+                    }
+                    let target = request.uri().path_or_root();
+                    if target.len() > REQUEST_LIMIT {
+                        return Err(BoxError::from("HTTP/3 request path exceeds limit"));
+                    }
+                    let (file, metadata) = open_confined(&root, &target).await?;
+                    let body = Body::from_stream(ReaderStream::with_capacity(file, BUFFER_SIZE));
+                    response
+                        .send_response(
+                            Response::builder()
+                                .status(StatusCode::OK)
+                                .header("content-length", metadata.len())
+                                .body(body)?,
+                        )
+                        .await?;
+                    Ok::<_, BoxError>(())
+                })
+                .await
+                .context("HTTP/3 request timed out")?
+            }
+        },
+    )
+    .await;
+    if outcome.is_err() {
+        connection.close(0x102_u32, b"HTTP/3 request failed");
+    }
+    outcome
+}
+
+#[cfg(test)]
+mod tests;

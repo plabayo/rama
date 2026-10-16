@@ -23,7 +23,7 @@ rustls-aws-lc = ["rama/rustls", "rama/aws-lc", "interop-common/rustls-aws-lc"]
 
 [dependencies]
 clap = { version = "4.6", features = ["derive", "env"] }
-rama = { path = "../../..", default-features = false, features = ["std", "quic", "http-full"] }
+rama = { path = "../../..", default-features = false, features = ["std", "quic", "http-backend"] }
 tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]
