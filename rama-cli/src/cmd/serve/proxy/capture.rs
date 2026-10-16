@@ -12,13 +12,12 @@ use rama::{
     Layer,
     crypto::inspect::EncryptStorageLayer,
     error::BoxError,
-    http,
-    http::ws::inspect::WebSocketLimits,
+    http::{self, ws::inspect::WebSocketLimits},
     inspect::storage::{FileStore, Storage, StorageLimits},
     tls::inspect::TlsObservation,
     ua::{
         inspect::{ProfileInspector, UserAgentObservation},
-        profile::{RequestInitiator, UserAgentDatabase},
+        profile::{model::runtime_hints::RequestInitiator, selection::database::UserAgentDatabase},
     },
 };
 

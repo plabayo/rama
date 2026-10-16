@@ -3,7 +3,16 @@
 use clap::Args;
 use rama::{
     error::{BoxError, BoxErrorExt as _},
-    ua::profile::*,
+    ua::profile::{
+        analysis::profile::AnalyzedProfileScope,
+        compare::{CaptureComparisonLimits, RetainedCaptureComparison, compare_retained_captures},
+        format::{
+            archive::{
+                CompiledProfileArchiveEntry, ProfileArchiveLimits, load_profile_archive_snapshot,
+            },
+            canonical::{CanonicalDomain, ValueId},
+        },
+    },
 };
 use serde::Serialize;
 use std::{
@@ -230,6 +239,23 @@ fn compare_with_coverage(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama::ua::profile::{
+        capture::{
+            completeness::ProfileCaptureCompleteness,
+            joint::{
+                CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits,
+            },
+            observation::ProfileCapture,
+            order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+        },
+        evidence::{
+            ProfileEvidence, ProfileScopeEvidence,
+            ingestion::ObservationId,
+            window::{ProfileWindowLimits, RetainedBucketWindow},
+        },
+        format::archive::{ProfileArchiveEntry, ProfileArchiveWriter},
+        model::identity::{ConnectionContext, ProfileKey},
+    };
     fn compare(
         reference: &[CompiledProfileArchiveEntry],
         observed: &[CompiledProfileArchiveEntry],

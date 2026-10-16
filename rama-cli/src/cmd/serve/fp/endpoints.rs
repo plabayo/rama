@@ -21,7 +21,7 @@ use rama::{
     net::address::ip::geo::IpGeoInfo,
     quic::proto::capture::QuicObservation,
     telemetry::tracing,
-    ua::profile::{Http2Settings, JsProfileWebApis, UserAgentSourceInfo},
+    ua::profile::model::{http::Http2Settings, js::JsProfileWebApis, ua::UserAgentSourceInfo},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;

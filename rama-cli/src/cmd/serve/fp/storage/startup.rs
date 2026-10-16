@@ -7,7 +7,10 @@ use rama::{
     rt::Executor,
     telemetry::tracing,
     tls::boring::core::rand::rand_bytes,
-    ua::profile::{IngestionBatchLimits, JointCaptureLimits, profile_utc_day},
+    ua::profile::{
+        capture::joint::JointCaptureLimits, evidence::transaction::IngestionBatchLimits,
+        model::time::profile_utc_day,
+    },
     utils::octets::{gib, kib},
 };
 

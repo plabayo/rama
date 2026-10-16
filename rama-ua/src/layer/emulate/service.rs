@@ -25,10 +25,19 @@ use rama_utils::str::{starts_with_ignore_ascii_case, submatch_ignore_ascii_case}
 use crate::{
     HttpAgent, UserAgent,
     profile::{
-        CUSTOM_HEADER_MARKER, ConnectionContext, EmulationContext, H2ClientParameter,
-        HttpHeadersProfile, HttpProfile, PreparedConnectionComponents, PreserveHeaderUserAgent,
-        ProfileConnectionReuse, ProfilePreservationDifference, ProfilePreservationMode,
-        ProfilePreservationReport, ProfileReplayError, RequestClientHints, RequestInitiator,
+        model::{
+            http::{CUSTOM_HEADER_MARKER, HttpHeadersProfile, HttpProfile},
+            identity::ConnectionContext,
+            runtime_hints::{PreserveHeaderUserAgent, RequestClientHints, RequestInitiator},
+        },
+        replay::{
+            connection::PreparedConnectionComponents,
+            request::{
+                H2ClientParameter, ProfilePreservationDifference, ProfilePreservationMode,
+                ProfilePreservationReport, ProfileReplayError,
+            },
+        },
+        selection::variants::{EmulationContext, ProfileConnectionReuse},
     },
 };
 
@@ -44,7 +53,7 @@ use super::{SelectedUserAgentProfile, UserAgentProvider, UserAgentSelectFallback
 /// See the implementation of[`EasyHttpWebClient`] for the reference implementation of how
 /// one can make use of this profile to emulate a user agent on the tls layer.
 ///
-/// [`UserAgentProfile`]: crate::profile::UserAgentProfile
+/// [`UserAgentProfile`]: crate::profile::model::ua::UserAgentProfile
 /// [`Extensions`]: rama_core::extensions::Extensions
 /// [`EasyHttpWebClient`]: https://ramaproxy.org/docs/rama/http/client/struct.EasyHttpWebClient.html
 #[derive(Debug, Clone)]
@@ -1056,7 +1065,7 @@ fn compute_sec_fetch_site_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profile::ProfileKey;
+    use crate::profile::model::identity::ProfileKey;
 
     use std::{convert::Infallible, str::FromStr, sync::Arc};
 
@@ -1068,9 +1077,12 @@ mod tests {
     use rama_utils::octets::kib;
 
     use crate::layer::emulate::UserAgentEmulateLayer;
-    use crate::profile::{
-        Http1Profile, Http1Settings, Http2Profile, Http2Settings, HttpHeadersProfile, HttpProfile,
-        UserAgentProfile,
+    use crate::profile::model::{
+        http::{
+            Http1Profile, Http1Settings, Http2Profile, Http2Settings, HttpHeadersProfile,
+            HttpProfile,
+        },
+        ua::UserAgentProfile,
     };
 
     #[cfg(feature = "tls")]
@@ -1869,7 +1881,7 @@ mod tests {
                 }),
             })),
             #[cfg(feature = "tls")]
-            tls: Some(Arc::new(crate::profile::TlsProfile {
+            tls: Some(Arc::new(crate::profile::model::tls::TlsProfile {
                 client_hello: rama_tls::client::ClientHello::new(
                     rama_tls::ProtocolVersion::TLSv1_3,
                     Vec::new(),
@@ -1948,7 +1960,7 @@ mod tests {
                 }),
             })),
             #[cfg(feature = "tls")]
-            tls: Some(Arc::new(crate::profile::TlsProfile {
+            tls: Some(Arc::new(crate::profile::model::tls::TlsProfile {
                 client_hello: rama_tls::client::ClientHello::new(
                     rama_tls::ProtocolVersion::TLSv1_3,
                     Vec::new(),
@@ -2025,7 +2037,7 @@ mod tests {
                 }),
             })),
             #[cfg(feature = "tls")]
-            tls: Some(Arc::new(crate::profile::TlsProfile {
+            tls: Some(Arc::new(crate::profile::model::tls::TlsProfile {
                 client_hello: rama_tls::client::ClientHello::new(
                     rama_tls::ProtocolVersion::TLSv1_3,
                     Vec::new(),
@@ -2102,7 +2114,7 @@ mod tests {
                 }),
             })),
             #[cfg(feature = "tls")]
-            tls: Some(Arc::new(crate::profile::TlsProfile {
+            tls: Some(Arc::new(crate::profile::model::tls::TlsProfile {
                 client_hello: rama_tls::client::ClientHello::new(
                     rama_tls::ProtocolVersion::TLSv1_3,
                     Vec::new(),
@@ -2204,7 +2216,7 @@ mod tests {
                 }),
             })),
             #[cfg(feature = "tls")]
-            tls: Some(Arc::new(crate::profile::TlsProfile {
+            tls: Some(Arc::new(crate::profile::model::tls::TlsProfile {
                 client_hello: rama_tls::client::ClientHello::new(
                     rama_tls::ProtocolVersion::TLSv1_3,
                     Vec::new(),

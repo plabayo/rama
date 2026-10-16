@@ -8,19 +8,27 @@ use rama_tls::is_grease_u16;
 use serde::Serialize;
 
 use super::{
-    AnalyzedOrderWeight, CaptureNumericDistribution, OrderAnalysisConfig, OrderAnalysisDisposition,
-    OrderRuleEvidence,
-    numeric::analyze_numeric_variants,
-    order::{OrderWorkBudget, analyze_identifiers_with_budget, sampling_population},
-};
-use crate::profile::{
-    CanonicalDomain, CanonicalValue, CountedObservationBucket, CounterSnapshot, H2Capture,
-    H2CaptureLimits, H2CapturedFrame, HeaderCapture, HeaderCapturePolicy, ObservationWeight,
-    OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture, ProfileDataError,
-    PseudoHeaderCapture, ValueId,
+    numeric::{CaptureNumericDistribution, analyze_numeric_variants},
+    order::{
+        AnalyzedOrderWeight, OrderAnalysisConfig, OrderAnalysisDisposition, OrderRuleEvidence,
+        OrderWorkBudget, analyze_identifiers_with_budget, sampling_population,
+    },
 };
 #[cfg(feature = "tls")]
-use crate::profile::{TlsCapture, TlsCaptureLimits, TlsCapturedExtensionValue};
+use crate::profile::capture::tls::{TlsCapture, TlsCaptureLimits, TlsCapturedExtensionValue};
+use crate::profile::{
+    capture::{
+        headers::{HeaderCapture, HeaderCapturePolicy},
+        http2::{H2Capture, H2CaptureLimits, H2CapturedFrame},
+        order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+        pseudo_headers::PseudoHeaderCapture,
+    },
+    evidence::{
+        bucket::CountedObservationBucket,
+        counts::{CounterSnapshot, ObservationWeight},
+    },
+    format::canonical::{CanonicalDomain, CanonicalValue, ProfileDataError, ValueId},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 /// An ordered field extracted from a complete protocol capture.

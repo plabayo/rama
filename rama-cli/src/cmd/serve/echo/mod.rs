@@ -28,7 +28,7 @@ use rama::{
     tcp::server::TcpListener,
     telemetry::tracing::{self, Instrument},
     tls::{boring::server::TlsAcceptorLayer, server::TlsServerConfig},
-    ua::profile::UserAgentDatabase,
+    ua::profile::selection::database::UserAgentDatabase,
     udp::bind_udp_with_address,
 };
 use tokio::sync::mpsc::Sender;

@@ -1,5 +1,5 @@
 use super::*;
-use rama::ua::profile::{ProfileEvidence, ProfileKey};
+use rama::ua::profile::{evidence::ProfileEvidence, model::identity::ProfileKey};
 
 #[test]
 fn export_publishes_complete_json_and_does_not_clobber_without_replace() {

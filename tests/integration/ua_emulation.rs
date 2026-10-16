@@ -19,12 +19,12 @@ use rama::ua::layer::emulate::{
     SelectedUserAgentProfile, UserAgentEmulateHttpConnectModifier,
     UserAgentEmulateHttpRequestModifierLayer, UserAgentEmulateLayer,
 };
-use rama::ua::profile::HttpProfile;
-use rama::ua::profile::UserAgentDatabase;
-use rama::ua::profile::{
+use rama::ua::profile::model::http::HttpProfile;
+use rama::ua::profile::model::http::{
     Http1Profile, Http1Settings, Http2Profile, Http2Settings, HttpHeadersProfile,
 };
-use rama::ua::profile::{ProfileKey, TlsProfile, UserAgentProfile};
+use rama::ua::profile::model::{identity::ProfileKey, tls::TlsProfile, ua::UserAgentProfile};
+use rama::ua::profile::selection::database::UserAgentDatabase;
 use rama::ua::{PlatformKind, UserAgentKind};
 use rama::{Layer, Service};
 use rama_http::layer::version_adapter::RequestVersionAdapter;

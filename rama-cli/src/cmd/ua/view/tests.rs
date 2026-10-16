@@ -1,6 +1,6 @@
 use super::*;
 use rama::{
-    ua::profile::{ProfileKey, UserAgentProfileInput},
+    ua::profile::{format::input::UserAgentProfileInput, model::identity::ProfileKey},
     utils::fs::TempDir,
 };
 use ratatui::{Terminal, backend::TestBackend};

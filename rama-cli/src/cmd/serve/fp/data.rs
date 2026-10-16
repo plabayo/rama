@@ -35,7 +35,7 @@ use rama::{
         client::{ClientHello, ClientHelloExtension, ECHClientHello},
         fingerprint::{Ja3, Ja4, PeetPrint},
     },
-    ua::{UserAgent, profile::Http2Settings},
+    ua::{UserAgent, profile::model::http::Http2Settings},
 };
 use serde::Serialize;
 

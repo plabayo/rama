@@ -11,8 +11,13 @@ use rama::{
     layer::Layer,
     net::uri::Uri,
     ua::profile::{
-        CapturedSlot, CapturedSlotKind, FlowKey, JointCaptureLimits, JsProfileWebApis,
-        ProfileCapture, ProfileDataError, RuntimeProfileCapture, UserAgentSourceInfo,
+        capture::{
+            joint::{CapturedSlot, CapturedSlotKind, JointCaptureLimits},
+            observation::ProfileCapture,
+            runtime::RuntimeProfileCapture,
+        },
+        format::canonical::ProfileDataError,
+        model::{identity::FlowKey, js::JsProfileWebApis, ua::UserAgentSourceInfo},
     },
 };
 use tokio::{

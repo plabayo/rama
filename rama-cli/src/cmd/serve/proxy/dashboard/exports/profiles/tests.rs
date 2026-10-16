@@ -23,8 +23,10 @@ use rama::{
         server::{GeneratedServerAuthConfig, TlsServerConfig},
     },
     ua::profile::{
-        CanonicalDomain, ProfileEvidence, ProfileKey, UserAgentDatabase,
-        load_profile_archive_snapshot,
+        evidence::ProfileEvidence,
+        format::{archive::load_profile_archive_snapshot, canonical::CanonicalDomain},
+        model::identity::ProfileKey,
+        selection::database::UserAgentDatabase,
     },
 };
 use std::{convert::Infallible, time::Duration};

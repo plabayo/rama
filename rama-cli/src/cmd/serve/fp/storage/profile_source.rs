@@ -3,8 +3,11 @@
 use rama::{
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     ua::profile::{
-        ProfileAnalysisLimits, ProfileArchiveEntry, ProfileArchiveLimits, ProfileDataError,
-        ValueId, analyze_profile_evidence,
+        analysis::profile::{ProfileAnalysisLimits, analyze_profile_evidence},
+        format::{
+            archive::{ProfileArchiveEntry, ProfileArchiveLimits},
+            canonical::{ProfileDataError, ValueId},
+        },
     },
 };
 
@@ -149,9 +152,18 @@ mod tests {
     use rama::{
         http::{HeaderMap, HeaderName, HeaderValue, Method, Version},
         ua::profile::{
-            CaptureLevel, CaptureRunId, CapturedSlot, CapturedSlotKind, ConnectionContext, FlowKey,
-            HeaderCapturePolicy, IngestionAttempt, JointCapture, ObservationId, ProfileCapture,
-            ProfileCaptureCompleteness, ProfileKey, load_profile_archive_snapshot,
+            capture::{
+                completeness::ProfileCaptureCompleteness,
+                headers::HeaderCapturePolicy,
+                joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture},
+                observation::ProfileCapture,
+            },
+            evidence::{
+                ingestion::ObservationId,
+                transaction::{CaptureRunId, IngestionAttempt},
+            },
+            format::archive::load_profile_archive_snapshot,
+            model::identity::{ConnectionContext, FlowKey, ProfileKey},
         },
         utils::{fs::TempDir, octets::kib},
     };

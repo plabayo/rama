@@ -1,7 +1,7 @@
 //! Atomic, restart-safe conversion of one legacy row into independent field counts.
 
 use super::*;
-use rama::ua::profile::{LegacyFieldCapture, UserAgentProfileInput};
+use rama::ua::profile::format::{input::UserAgentProfileInput, legacy::LegacyFieldCapture};
 use std::time::Duration;
 use tokio::time::{Instant, timeout_at};
 

@@ -8,7 +8,9 @@ use std::{
 use rama::{
     error::{BoxError, BoxErrorExt as _},
     tls::boring::core::rand::rand_bytes,
-    ua::profile::{ProfileArchiveEntry, ProfileArchiveLimits, ProfileArchiveWriter},
+    ua::profile::format::archive::{
+        ProfileArchiveEntry, ProfileArchiveLimits, ProfileArchiveWriter,
+    },
     utils::{
         fs::{CreatedFilePermissions, OpenOptionsSync, TempDir},
         octets::kib,

@@ -4,13 +4,25 @@ use rama::{
     http::{HeaderMap, HeaderName, HeaderValue, Method, Version},
     quic::proto::{Version as QuicVersion, version::VersionInformation},
     ua::profile::{
-        CanonicalDomain, CaptureLevel, CapturedSlot, CapturedSlotKind, ConnectionContext, FlowKey,
-        H2Capture, H2CaptureLimits, H2CapturedFrame, H2CapturedSetting, HeaderCapture,
-        HeaderCapturePolicy, Http1Settings, JointCapture, ObservationWeight, OrderCaptureLimits,
-        OrderNamespace, OrderedProtocolCapture, ProfileAnalysisLimits, ProfileCaptureCompleteness,
-        ProfileKey, ProtocolValue, RequestInitiator, TlsCapture, TlsCaptureLimits,
-        TlsCaptureTransport, TlsCapturedExtension, TlsCapturedExtensionValue,
-        UntrackedDistinctSnapshot, UserAgentProfileInput, analyze_profile_evidence,
+        analysis::profile::{ProfileAnalysisLimits, analyze_profile_evidence},
+        capture::{
+            completeness::ProfileCaptureCompleteness,
+            headers::{HeaderCapture, HeaderCapturePolicy},
+            http2::{H2Capture, H2CaptureLimits, H2CapturedFrame, H2CapturedSetting},
+            joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture},
+            order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture, ProtocolValue},
+            tls::{
+                TlsCapture, TlsCaptureLimits, TlsCaptureTransport, TlsCapturedExtension,
+                TlsCapturedExtensionValue,
+            },
+        },
+        evidence::{UntrackedDistinctSnapshot, counts::ObservationWeight},
+        format::{canonical::CanonicalDomain, input::UserAgentProfileInput},
+        model::{
+            http::Http1Settings,
+            identity::{ConnectionContext, FlowKey, ProfileKey},
+            runtime_hints::RequestInitiator,
+        },
     },
     utils::octets::{kib, mib},
 };

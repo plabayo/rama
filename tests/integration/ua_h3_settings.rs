@@ -13,10 +13,17 @@ use rama_tls::{
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
 use rama_ua::profile::{
-    CaptureLevel, CapturedSlot, CapturedSlotKind, ConnectionContext, ConnectionSelection, DrawKey,
-    JointCapture, JointCaptureLimits, OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture,
-    PreparedConnectionProfile, ProfileCaptureCompleteness, ProfileObservationScope, ProfileSeed,
-    ValueId,
+    capture::{
+        completeness::ProfileCaptureCompleteness,
+        joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits},
+        order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+    },
+    format::canonical::ValueId,
+    model::{identity::ConnectionContext, scope::ProfileObservationScope},
+    selection::{
+        DrawKey, ProfileSeed,
+        variants::{ConnectionSelection, PreparedConnectionProfile},
+    },
 };
 use rama_udp::test_utils::MemoryDatagramSocket;
 use rama_utils::octets::{kib, kib_u64};
@@ -50,11 +57,11 @@ fn selection(key: u8) -> ConnectionSelection {
     }
     .canonical(JointCaptureLimits::default())
     .unwrap();
-    let mut bucket = rama_ua::profile::CountedObservationBucket::new(
-        rama_ua::profile::CanonicalDomain::Order,
+    let mut bucket = rama_ua::profile::evidence::bucket::CountedObservationBucket::new(
+        rama_ua::profile::format::canonical::CanonicalDomain::Order,
         ValueId([4; 32]),
         [3; 32],
-        rama_ua::profile::ProfileBucketLimits::default(),
+        rama_ua::profile::evidence::bucket::ProfileBucketLimits::default(),
     )
     .unwrap();
     for index in 0..64_u64 {
@@ -76,7 +83,7 @@ fn selection(key: u8) -> ConnectionSelection {
         .unwrap();
         bucket
             .observe(
-                rama_ua::profile::ObservationId {
+                rama_ua::profile::evidence::ingestion::ObservationId {
                     run: [1; 16],
                     sequence: index + 1,
                 },
@@ -85,15 +92,16 @@ fn selection(key: u8) -> ConnectionSelection {
             .unwrap();
     }
     let joint = JointCapture::from_canonical(&capture, JointCaptureLimits::default()).unwrap();
-    let h3_settings_evidence = rama_ua::profile::H3SettingsReplayEvidence::from_analysis(
-        &rama_ua::profile::analyze_capture_bucket(
-            &bucket,
-            rama_ua::profile::OrderAnalysisConfig::default(),
+    let h3_settings_evidence =
+        rama_ua::profile::replay::connection::H3SettingsReplayEvidence::from_analysis(
+            &rama_ua::profile::analysis::capture::analyze_capture_bucket(
+                &bucket,
+                rama_ua::profile::analysis::order::OrderAnalysisConfig::default(),
+            )
+            .unwrap(),
+            &joint.slots[0].value,
         )
-        .unwrap(),
-        &joint.slots[0].value,
-    )
-    .unwrap();
+        .unwrap();
     ConnectionSelection {
         profile: ValueId([1; 32]),
         variant: capture.id,

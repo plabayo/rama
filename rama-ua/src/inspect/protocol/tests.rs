@@ -1,7 +1,10 @@
 use super::*;
 use crate::{
     inspect::{ProfileExport, tests::store},
-    profile::{CanonicalDomain, ProfileAnalysisLimits, UserAgentDatabase},
+    profile::{
+        analysis::profile::ProfileAnalysisLimits, format::canonical::CanonicalDomain,
+        selection::database::UserAgentDatabase,
+    },
 };
 use rama_core::{Layer, Service, extensions::ExtensionsRef, service::service_fn};
 use rama_http::{

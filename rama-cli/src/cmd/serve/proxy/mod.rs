@@ -123,7 +123,7 @@ use rama::{
             TlsServerConfig,
         },
     },
-    ua::profile::UserAgentDatabase,
+    ua::profile::selection::database::UserAgentDatabase,
     utils::{
         fs::OpenOptions,
         octets::{kib_u64, mib_u64},

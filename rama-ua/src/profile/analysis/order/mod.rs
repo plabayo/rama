@@ -10,9 +10,14 @@ use rama_utils::octets::mib;
 use serde::Serialize;
 
 use crate::profile::{
-    CanonicalDomain, CountedObservationBucket, CounterSnapshot, ObservationLosses,
-    ObservationWeight, OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture,
-    OrderedProtocolField, ProfileDataError, ValueId,
+    capture::order::{
+        OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture, OrderedProtocolField,
+    },
+    evidence::{
+        bucket::CountedObservationBucket,
+        counts::{CounterSnapshot, ObservationLosses, ObservationWeight},
+    },
+    format::canonical::{CanonicalDomain, ProfileDataError, ValueId},
 };
 
 #[derive(Debug, Clone, Copy)]

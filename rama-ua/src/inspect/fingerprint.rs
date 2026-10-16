@@ -13,7 +13,7 @@ use rama_tls::{
 };
 
 use super::{KnownFingerprint, UserAgentDatabase};
-use crate::profile::UserAgentProfile;
+use crate::profile::model::ua::UserAgentProfile;
 
 #[derive(Debug)]
 pub(super) struct FingerprintCache(BTreeMap<String, Expected>);

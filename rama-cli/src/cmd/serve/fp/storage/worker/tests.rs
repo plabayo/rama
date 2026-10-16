@@ -5,10 +5,15 @@ use parking_lot::Mutex;
 use rama::{
     http::{HeaderMap, HeaderValue, Method, Version},
     ua::profile::{
-        CapturedSlot, CapturedSlotKind, ConnectionContext, ConnectionIpFamily, FlowKey,
-        HeaderCapturePolicy, IngestionBatchLimits, JointCapture, JointCaptureLimits,
-        OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture, ProfileCaptureCompleteness,
-        ProfileKey, ValueId,
+        capture::{
+            completeness::ProfileCaptureCompleteness,
+            headers::HeaderCapturePolicy,
+            joint::{CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits},
+            order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+        },
+        evidence::transaction::IngestionBatchLimits,
+        format::canonical::ValueId,
+        model::identity::{ConnectionContext, ConnectionIpFamily, FlowKey, ProfileKey},
     },
 };
 use std::{collections::VecDeque, env, future::pending, io};

@@ -7,7 +7,11 @@ use parking_lot::RwLock;
 use rama::{
     error::BoxError,
     telemetry::tracing,
-    ua::profile::{CaptureLevel, IngestionAttempt, ProfileCapture, ProfileDataError},
+    ua::profile::{
+        capture::{joint::CaptureLevel, observation::ProfileCapture},
+        evidence::transaction::IngestionAttempt,
+        format::canonical::ProfileDataError,
+    },
     utils::octets::{kib, mib},
 };
 use std::{

@@ -3,7 +3,11 @@
 use rama::{
     error::BoxError,
     ua::profile::{
-        CaptureRunId, IngestionAttempt, ObservationId, ProfileDataError, RetentionWindow,
+        evidence::{
+            ingestion::{ObservationId, RetentionWindow},
+            transaction::{CaptureRunId, IngestionAttempt},
+        },
+        format::canonical::ProfileDataError,
     },
 };
 

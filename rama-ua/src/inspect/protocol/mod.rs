@@ -9,10 +9,16 @@ use rama_http::{
 use rama_quic_proto::capture::QuicObservation;
 
 use crate::profile::{
-    CaptureLevel, CapturedSlot, CapturedSlotKind, H3ClientSequenceCapture, H3SequenceCaptureLimits,
-    HeaderCapturePolicy, JointCapture, JointCaptureLimits, OrderCaptureLimits, OrderNamespace,
-    OrderedProtocolCapture, ProfileCaptureCompleteness, ProfileDataError, PseudoHeaderCapture,
-    QuicFlightCapture, QuicFlightCaptureLimits,
+    capture::{
+        completeness::ProfileCaptureCompleteness,
+        headers::HeaderCapturePolicy,
+        http3::{H3ClientSequenceCapture, H3SequenceCaptureLimits},
+        joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits},
+        order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+        pseudo_headers::PseudoHeaderCapture,
+        quic::{QuicFlightCapture, QuicFlightCaptureLimits},
+    },
+    format::canonical::ProfileDataError,
 };
 
 #[derive(Debug, Extension)]

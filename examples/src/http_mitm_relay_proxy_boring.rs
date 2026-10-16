@@ -59,11 +59,13 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::boring::proxy::TlsMitmRelay,
-    tls::server::{CertificateSubject, PeekTlsClientHelloService, SelfSignedCaConfig},
+    tls::{
+        boring::proxy::TlsMitmRelay,
+        server::{CertificateSubject, PeekTlsClientHelloService, SelfSignedCaConfig},
+    },
     ua::{
         layer::emulate::{UserAgentEmulateHttpRequestModifierLayer, UserAgentEmulateLayer},
-        profile::UserAgentDatabase,
+        profile::selection::database::UserAgentDatabase,
     },
     utils::octets::mib,
 };

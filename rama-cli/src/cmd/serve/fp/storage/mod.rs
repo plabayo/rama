@@ -6,7 +6,7 @@ use rama::{
     net::uri::Uri,
     rt::Executor,
     telemetry::tracing,
-    ua::profile::{JsProfileWebApis, UserAgentSourceInfo},
+    ua::profile::model::{js::JsProfileWebApis, ua::UserAgentSourceInfo},
 };
 
 mod profile_source;

@@ -1,8 +1,11 @@
 //! Bounded, read-only profile snapshots for the common Rust analyzer.
 
 use rama::ua::profile::{
-    DayBucketSnapshot, ProfileAnalysisLimits, ProfileEvidence, ProfileScopeEvidence,
-    RetainedBucketsSnapshot,
+    analysis::profile::ProfileAnalysisLimits,
+    evidence::{
+        ProfileEvidence, ProfileScopeEvidence,
+        window::{DayBucketSnapshot, RetainedBucketsSnapshot},
+    },
 };
 use tokio_postgres::IsolationLevel;
 

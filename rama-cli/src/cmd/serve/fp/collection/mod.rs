@@ -7,7 +7,7 @@ use rama::{
     Service,
     extensions::{Extension, ExtensionsRef},
     layer::Layer,
-    ua::profile::ValueId,
+    ua::profile::format::canonical::ValueId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

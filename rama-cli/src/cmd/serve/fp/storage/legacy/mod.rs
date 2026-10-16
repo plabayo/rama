@@ -6,7 +6,9 @@ use rama::{
     error::{BoxError, ErrorContext as _},
     telemetry::tracing,
     tls::boring::core::{rand::rand_bytes, sha::sha256},
-    ua::profile::{LegacyFieldCapture, ProfileDataError, UserAgentProfileInput},
+    ua::profile::format::{
+        canonical::ProfileDataError, input::UserAgentProfileInput, legacy::LegacyFieldCapture,
+    },
     utils::octets::kib,
 };
 use tokio_postgres::Client;

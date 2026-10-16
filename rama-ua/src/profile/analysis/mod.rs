@@ -1,11 +1,12 @@
-mod order;
-pub use order::*;
+//! Derive bounded distributions and ordering rules from retained evidence.
+//!
+//! Analysis is reproducible from evidence; it does not create new observations
+//! or establish that a provider can replay every observed component.
 
-mod capture;
-pub use capture::*;
+pub mod order;
 
-mod numeric;
-pub use numeric::*;
+pub mod capture;
 
-mod profile;
-pub use profile::*;
+pub mod numeric;
+
+pub mod profile;

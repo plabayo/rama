@@ -12,7 +12,7 @@ use rama::{
     },
     net::mode::{ConnectIpMode, DnsResolveIpMode},
     stream::io::ReaderStream,
-    ua::profile::RequestInitiator,
+    ua::profile::model::runtime_hints::RequestInitiator,
     utils::str::NATIVE_NEWLINE,
 };
 

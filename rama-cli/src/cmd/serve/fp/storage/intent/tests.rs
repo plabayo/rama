@@ -39,8 +39,11 @@ use rama::{
         server::{GeneratedServerAuthConfig, TlsServerConfig},
     },
     ua::profile::{
-        CaptureLevel, CapturedSlotKind, HeaderCapture, HeaderCapturePolicy, HeaderValueSource,
-        IngestionAttempt, IngestionBatchLimits, RequestBinding,
+        capture::{
+            headers::{HeaderCapture, HeaderCapturePolicy, HeaderValueSource, RequestBinding},
+            joint::{CaptureLevel, CapturedSlotKind},
+        },
+        evidence::transaction::{IngestionAttempt, IngestionBatchLimits},
     },
     utils::octets::{kib, mib},
 };

@@ -14,8 +14,13 @@ use jiff::{Timestamp, tz::TimeZone};
 use rama::{
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     ua::profile::{
-        FlowKey, ObservationWeight, ProfileAnalysisLimits, ProfileArchiveLimits, UserAgentProfile,
-        load_profile_archive_snapshot, try_load_profiles_json,
+        analysis::profile::ProfileAnalysisLimits,
+        evidence::counts::ObservationWeight,
+        format::{
+            archive::{ProfileArchiveLimits, load_profile_archive_snapshot},
+            input::try_load_profiles_json,
+        },
+        model::{identity::FlowKey, ua::UserAgentProfile},
     },
     utils::octets::{kib, mib},
 };

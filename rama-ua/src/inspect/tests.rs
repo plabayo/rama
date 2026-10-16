@@ -1,6 +1,10 @@
 use crate::profile::{
-    CanonicalDomain, ProfileAnalysisLimits, ProfileArchiveLimits, ProfileArchiveWriter,
-    load_profile_archive_snapshot, profile_utc_day,
+    analysis::profile::ProfileAnalysisLimits,
+    format::{
+        archive::{ProfileArchiveLimits, ProfileArchiveWriter, load_profile_archive_snapshot},
+        canonical::CanonicalDomain,
+    },
+    model::time::profile_utc_day,
 };
 use rama_core::{Layer, Service, service::service_fn};
 use rama_http::{

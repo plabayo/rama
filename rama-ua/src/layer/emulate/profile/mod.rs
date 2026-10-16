@@ -16,10 +16,20 @@ use rand::RngExt as _;
 use crate::{
     UserAgent,
     profile::{
-        CapabilitySet, ConnectionContext, ConnectionSelection, DrawKey, EmulationContext,
-        FetchContext, FlowKey, ProfilePreservationMode, ProfilePreservationReport, ProfileSeed,
-        ProfileSelector, RequestInitiator, SelectionRequest, SelectionTransport, UserAgentDatabase,
-        VariantPins,
+        model::{
+            identity::{ConnectionContext, FetchContext, FlowKey},
+            runtime_hints::RequestInitiator,
+        },
+        replay::request::{ProfilePreservationMode, ProfilePreservationReport},
+        selection::{
+            DrawKey, ProfileSeed,
+            capabilities::{CapabilitySet, SelectionTransport},
+            database::UserAgentDatabase,
+            variants::{
+                ConnectionSelection, EmulationContext, ProfileSelector, SelectionRequest,
+                VariantPins,
+            },
+        },
     },
 };
 
@@ -319,7 +329,7 @@ fn request_flow<Body>(
 
 fn required_capabilities<Body>(
     req: &Request<Body>,
-) -> Result<CapabilitySet, crate::profile::SelectionError> {
+) -> Result<CapabilitySet, crate::profile::selection::variants::SelectionError> {
     let explicit = req
         .extensions()
         .get_ref::<TargetHttpVersion>()

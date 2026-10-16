@@ -12,8 +12,11 @@ use rama::{
     ua::{
         inspect::ProfileExport,
         profile::{
-            ProfileArchiveEntry, ProfileArchiveLimits, ProfileArchiveWriter, ProfileDataError,
-            profile_utc_day,
+            format::{
+                archive::{ProfileArchiveEntry, ProfileArchiveLimits, ProfileArchiveWriter},
+                canonical::ProfileDataError,
+            },
+            model::time::profile_utc_day,
         },
     },
     utils::{

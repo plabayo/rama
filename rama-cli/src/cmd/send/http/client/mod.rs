@@ -35,19 +35,24 @@ use rama::{
     proxy::socks5::Socks5ProxyConnectorLayer,
     quic::tls::BoringTlsProvider,
     rt::Executor,
-    tls::boring::client::{BoringClientConfigExt, EmulateTlsProfileLayer},
     tls::{
         ProtocolVersion,
+        boring::client::{BoringClientConfigExt, EmulateTlsProfileLayer},
         client::{ServerVerifyMode, TlsClientConfig},
     },
     ua::{
-        layer::classifier::UserAgentClassifierLayer,
-        layer::emulate::{
-            ProfileEmulateHttpRequestModifierLayer, ProfileEmulateLayer,
-            UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifierLayer,
-            UserAgentEmulateLayer, UserAgentSelectFallback,
+        layer::{
+            classifier::UserAgentClassifierLayer,
+            emulate::{
+                ProfileEmulateHttpRequestModifierLayer, ProfileEmulateLayer,
+                UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifierLayer,
+                UserAgentEmulateLayer, UserAgentSelectFallback,
+            },
         },
-        profile::{DrawKey, ProfileSeed, UserAgentDatabase, ValueId, VariantPins},
+        profile::{
+            format::canonical::ValueId,
+            selection::{DrawKey, ProfileSeed, database::UserAgentDatabase, variants::VariantPins},
+        },
     },
 };
 
@@ -487,7 +492,7 @@ mod tests {
         },
         service::service_fn,
         tcp::server::TcpListener,
-        ua::profile::UserAgentProfileInput,
+        ua::profile::format::input::UserAgentProfileInput,
     };
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -554,7 +559,7 @@ mod tests {
 
     fn minimal_custom_emulation_profile_json() -> Vec<u8> {
         let mut profiles: Vec<UserAgentProfileInput> = serde_json::from_slice(include_bytes!(
-            "../../../../../../rama-ua/src/profile/embed_profiles.json"
+            "../../../../../../rama-ua/src/profile/format/embed_profiles.json"
         ))
         .unwrap();
         let mut profile = profiles.remove(0);

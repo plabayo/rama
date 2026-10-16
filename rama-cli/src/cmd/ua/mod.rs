@@ -12,7 +12,7 @@ mod view;
 
 use rama::{
     error::BoxError,
-    ua::{UserAgent, profile::ProfileArchiveLimits},
+    ua::{UserAgent, profile::format::archive::ProfileArchiveLimits},
 };
 
 #[derive(Debug, Args)]

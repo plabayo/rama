@@ -5,7 +5,21 @@
 //! variants. A mismatch can still be valid under an unimplemented generator;
 //! this API does not claim population or distribution equivalence.
 
-use super::*;
+#[cfg(feature = "tls")]
+use crate::profile::capture::tls::{TlsCapture, TlsCaptureLimits};
+use crate::profile::{
+    capture::{
+        headers::{HeaderCapture, HeaderCapturePolicy},
+        http2::{H2Capture, H2CaptureLimits},
+        http3::{H3ClientSequenceCapture, H3SequenceCaptureLimits},
+        joint::{JointCapture, JointCaptureLimits},
+        order::{OrderCaptureLimits, OrderedProtocolCapture},
+        pseudo_headers::PseudoHeaderCapture,
+        quic::{QuicFlightCapture, QuicFlightCaptureLimits},
+        runtime::RuntimeProfileCapture,
+    },
+    format::canonical::{CanonicalDomain, CanonicalValue, ProfileDataError, ValueId},
+};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -247,6 +261,11 @@ fn differences(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::profile::capture::{
+        completeness::ProfileCaptureCompleteness,
+        joint::{CaptureLevel, CapturedSlot, CapturedSlotKind},
+        order::OrderNamespace,
+    };
     fn settings(fields: &[(u64, u64)]) -> CanonicalValue {
         OrderedProtocolCapture::capture(
             ProfileCaptureCompleteness::Complete,

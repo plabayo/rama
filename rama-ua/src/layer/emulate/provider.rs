@@ -5,7 +5,10 @@ use std::sync::Arc;
 
 use crate::{
     PlatformKind, UserAgentKind,
-    profile::{UserAgentDatabase, UserAgentProfile, UserAgentRuntimeProfile},
+    profile::{
+        model::ua::{UserAgentProfile, UserAgentRuntimeProfile},
+        selection::database::UserAgentDatabase,
+    },
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Extension)]
@@ -76,8 +79,8 @@ pub enum UserAgentSelectFallback {
 /// This trait is typically used by [`UserAgentEmulateService`] to select an appropriate
 /// user agent profile for HTTP request emulation.
 ///
-/// [`UserAgentProfile`]: crate::profile::UserAgentProfile
-/// [`UserAgentDatabase`]: crate::profile::UserAgentDatabase
+/// [`UserAgentProfile`]: crate::profile::model::ua::UserAgentProfile
+/// [`UserAgentDatabase`]: crate::profile::selection::database::UserAgentDatabase
 /// [`UserAgent`]: crate::UserAgent
 /// [`UserAgentSelectFallback::Random`]: UserAgentSelectFallback::Random
 /// [`UserAgentEmulateService`]: crate::layer::emulate::UserAgentEmulateService

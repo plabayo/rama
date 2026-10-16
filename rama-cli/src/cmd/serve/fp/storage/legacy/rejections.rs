@@ -3,7 +3,7 @@
 use std::error::Error;
 
 use super::*;
-use rama::ua::profile::ProfileDataError;
+use rama::ua::profile::format::canonical::ProfileDataError;
 
 #[derive(Clone, Copy)]
 pub(super) enum Rejection {

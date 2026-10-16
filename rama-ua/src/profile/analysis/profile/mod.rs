@@ -2,37 +2,38 @@
 
 use std::collections::BTreeSet;
 
-use crate::profile::joint::normalize_stored_structure;
+use crate::profile::capture::joint::normalize_stored_structure;
 
 use rama_http::Version;
 use rama_utils::octets::{kib, mib};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-use super::{CountedCaptureAnalysis, OrderAnalysisConfig, analyze_capture_bucket};
-use crate::profile::{
-    CanonicalDomain, CanonicalValue, CaptureLevel, CapturedSlot, CapturedSlotKind, FlowKey,
-    JointCapture, JointCaptureLimits, LegacyField, LegacyFieldCapture, LegacyHttpProtocol,
-    OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture, ProfileCapture,
-    ProfileCaptureCompleteness, ProfileDataError, ProfileKey, ProfileObservationScope,
-    ProfileWindowLimits, RetainedBucketWindow, RetainedBucketsSnapshot, ValueId,
+use crate::profile::analysis::{
+    capture::{CountedCaptureAnalysis, analyze_capture_bucket},
+    order::OrderAnalysisConfig,
 };
 #[cfg(feature = "tls")]
-use crate::profile::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProfileScopeEvidence {
-    pub scope: CanonicalValue,
-    pub flow: Option<CanonicalValue>,
-    pub structure: CanonicalValue,
-    pub window: RetainedBucketsSnapshot,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProfileEvidence {
-    pub format_version: u16,
-    pub profile: CanonicalValue,
-    pub scopes: Box<[ProfileScopeEvidence]>,
-}
+use crate::profile::capture::tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport};
+use crate::profile::{
+    capture::{
+        completeness::ProfileCaptureCompleteness,
+        joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits},
+        observation::ProfileCapture,
+        order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+    },
+    evidence::{
+        ProfileEvidence,
+        window::{ProfileWindowLimits, RetainedBucketWindow},
+    },
+    format::{
+        canonical::{CanonicalDomain, CanonicalValue, ProfileDataError, ValueId},
+        legacy::{LegacyField, LegacyFieldCapture, LegacyHttpProtocol},
+    },
+    model::{
+        identity::{FlowKey, ProfileKey},
+        scope::ProfileObservationScope,
+    },
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProfileAnalysisLimits {

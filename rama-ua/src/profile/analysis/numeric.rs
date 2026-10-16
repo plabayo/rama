@@ -2,10 +2,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use super::{AnalyzedCaptureVariant, AnalyzedOrderWeight, OrderAnalysisConfig};
+use crate::profile::analysis::{
+    capture::AnalyzedCaptureVariant,
+    order::{AnalyzedOrderWeight, OrderAnalysisConfig},
+};
 use crate::profile::{
-    CanonicalDomain, ObservationWeight, ProfileDataError, QuicFlightCapture,
-    QuicFlightCaptureLimits, ValueId,
+    capture::quic::{QuicFlightCapture, QuicFlightCaptureLimits},
+    evidence::counts::ObservationWeight,
+    format::canonical::{CanonicalDomain, ProfileDataError, ValueId},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -184,8 +188,12 @@ pub(super) fn analyze_numeric_variants(
 mod tests {
     use super::*;
     use crate::profile::{
-        CountedObservationBucket, ObservationId, ProfileBucketLimits, ProfileCaptureCompleteness,
-        analyze_capture_bucket,
+        analysis::capture::analyze_capture_bucket,
+        capture::completeness::ProfileCaptureCompleteness,
+        evidence::{
+            bucket::{CountedObservationBucket, ProfileBucketLimits},
+            ingestion::ObservationId,
+        },
     };
     use rama_quic_proto::{
         Version,

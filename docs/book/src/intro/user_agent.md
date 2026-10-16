@@ -99,7 +99,7 @@ each connection draw while their captured positions are retained.
 
 Rama includes an `embed-profiles` feature flag that, when enabled, embeds a collection of pre-configured user agent profiles directly into the binary. This eliminates the need for external profile files and ensures that Rama has immediate access to a variety of emulation profiles.
 
-The embedded profiles are stored in the source file at [`rama-ua/src/profile/embed_profiles.json`](https://raw.githubusercontent.com/plabayo/rama/refs/heads/main/rama-ua/src/profile/embed_profiles.json) and include detailed fingerprinting data for various browsers and platforms. This JSON file contains:
+The embedded profiles are stored in the source file at [`rama-ua/src/profile/format/embed_profiles.json`](https://raw.githubusercontent.com/plabayo/rama/refs/heads/main/rama-ua/src/profile/format/embed_profiles.json) and include detailed fingerprinting data for various browsers and platforms. This JSON file contains:
 
 - Multiple browser profiles (Chrome, Firefox, Safari, Edge, etc.)
 - Different versions of each browser

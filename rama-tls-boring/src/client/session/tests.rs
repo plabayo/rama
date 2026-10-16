@@ -36,7 +36,7 @@ use rama_tls::{
         TlsServerConfig,
     },
 };
-use rama_ua::profile::UserAgentDatabase;
+use rama_ua::profile::selection::database::UserAgentDatabase;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
 
 use super::*;

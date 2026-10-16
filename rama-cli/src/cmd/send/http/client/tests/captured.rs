@@ -3,7 +3,39 @@ use crate::cmd::send::http::request::build as build_request;
 use rama::{
     extensions::ExtensionsRef as _,
     http::{HeaderMap, HeaderValue, Method, Version},
-    ua::{UserAgent, profile::*},
+    ua::{
+        UserAgent,
+        profile::{
+            capture::{
+                completeness::ProfileCaptureCompleteness,
+                headers::HeaderCapturePolicy,
+                joint::{
+                    CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits,
+                },
+                observation::ProfileCapture,
+                order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+            },
+            evidence::{
+                ProfileEvidence, ProfileScopeEvidence,
+                ingestion::ObservationId,
+                window::{ProfileWindowLimits, RetainedBucketWindow},
+            },
+            format::{
+                archive::{ProfileArchiveEntry, ProfileArchiveLimits, ProfileArchiveWriter},
+                canonical::CanonicalDomain,
+            },
+            model::{
+                identity::{ConnectionContext, FlowKey, ProfileKey},
+                runtime_hints::RequestInitiator,
+            },
+            selection::{
+                DrawKey, ProfileSeed,
+                capabilities::CapabilitySet,
+                database::UserAgentDatabase,
+                variants::{EmulationContext, ProfileSelector, SelectionRequest, VariantPins},
+            },
+        },
+    },
 };
 
 fn captured_archive(unsupported_connection: bool) -> Vec<u8> {

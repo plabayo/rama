@@ -59,7 +59,10 @@ use crate::{
     rt::Executor,
     tcp::TcpStream,
     telemetry::tracing,
-    ua::{UserAgent, layer::classifier::UserAgentClassifierLayer, profile::UserAgentDatabase},
+    ua::{
+        UserAgent, layer::classifier::UserAgentClassifierLayer,
+        profile::selection::database::UserAgentDatabase,
+    },
     utils::{octets::mib, rate::Rate},
 };
 
@@ -74,12 +77,11 @@ core::cfg_select! {
 }
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use crate::{
-    tls::fingerprint::{Ja3, Ja4, PeetPrint},
-    tls::{
-        SecureTransport, client::ClientHelloExtension, client::ECHClientHello,
-        server::TlsServerConfig,
-    },
+use crate::tls::{
+    SecureTransport,
+    client::{ClientHelloExtension, ECHClientHello},
+    fingerprint::{Ja3, Ja4, PeetPrint},
+    server::TlsServerConfig,
 };
 
 #[derive(Debug, Clone)]

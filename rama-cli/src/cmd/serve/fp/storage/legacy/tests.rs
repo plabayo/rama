@@ -7,9 +7,17 @@ use rama::{
     http::{HeaderMap, HeaderValue},
     rt::Executor,
     ua::profile::{
-        CanonicalDomain, Http1Settings, Http2Settings, ObservationWeight, ProfileAnalysisLimits,
-        ProfileArchiveLimits, UserAgentDatabase, UserAgentProfile, analyze_profile_evidence,
-        load_profile_archive_snapshot,
+        analysis::profile::{ProfileAnalysisLimits, analyze_profile_evidence},
+        evidence::counts::ObservationWeight,
+        format::{
+            archive::{ProfileArchiveLimits, load_profile_archive_snapshot},
+            canonical::CanonicalDomain,
+        },
+        model::{
+            http::{Http1Settings, Http2Settings},
+            ua::UserAgentProfile,
+        },
+        selection::database::UserAgentDatabase,
     },
     utils::fs::TempDir,
 };

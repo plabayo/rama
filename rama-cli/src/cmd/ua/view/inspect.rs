@@ -8,11 +8,21 @@
 use rama::{
     error::{BoxError, BoxErrorExt as _},
     ua::profile::{
-        CanonicalDomain, CanonicalValue, H2Capture, H2CaptureLimits, H3ClientSequenceCapture,
-        H3SequenceCaptureLimits, HeaderCapture, HeaderCapturePolicy, JointCapture,
-        JointCaptureLimits, OrderCaptureLimits, OrderedProtocolCapture, ProfileArchiveLimits,
-        PseudoHeaderCapture, QuicFlightCapture, QuicFlightCaptureLimits, RuntimeProfileCapture,
-        TlsCapture, TlsCaptureLimits, load_profile_archive_snapshot,
+        capture::{
+            headers::{HeaderCapture, HeaderCapturePolicy},
+            http2::{H2Capture, H2CaptureLimits},
+            http3::{H3ClientSequenceCapture, H3SequenceCaptureLimits},
+            joint::{JointCapture, JointCaptureLimits},
+            order::{OrderCaptureLimits, OrderedProtocolCapture},
+            pseudo_headers::PseudoHeaderCapture,
+            quic::{QuicFlightCapture, QuicFlightCaptureLimits},
+            runtime::RuntimeProfileCapture,
+            tls::{TlsCapture, TlsCaptureLimits},
+        },
+        format::{
+            archive::{ProfileArchiveLimits, load_profile_archive_snapshot},
+            canonical::{CanonicalDomain, CanonicalValue},
+        },
     },
 };
 use serde_json::{Value, json};
@@ -140,8 +150,13 @@ mod tests {
     use rama::{
         http::{HeaderName, Version},
         ua::profile::{
-            HeaderOccurrence, HeaderValueSource, ProfileArchiveEntry, ProfileArchiveWriter,
-            ProfileCaptureCompleteness, ProfileEvidence, ProfileKey,
+            capture::{
+                completeness::ProfileCaptureCompleteness,
+                headers::{HeaderOccurrence, HeaderValueSource},
+            },
+            evidence::ProfileEvidence,
+            format::archive::{ProfileArchiveEntry, ProfileArchiveWriter},
+            model::identity::ProfileKey,
         },
     };
 

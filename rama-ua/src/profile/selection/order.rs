@@ -1,9 +1,9 @@
 use std::{error::Error, fmt, num::NonZeroU64};
 
-use super::{ProfileDraw, ProfileDrawError};
-use crate::profile::{
+use crate::profile::analysis::order::{
     AnalyzedOrderElement, AnalyzedOrderWeight, DerivedOrderRule, OrderAnalysis, OrderModeEvidence,
 };
+use crate::profile::selection::{ProfileDraw, ProfileDrawError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OrderDrawError {
@@ -219,12 +219,14 @@ fn draw_observed(
         .iter()
         .map(|order| match order.weight {
             AnalyzedOrderWeight::Counted(weight) => match weight {
-                crate::profile::ObservationWeight::Exact(value)
-                | crate::profile::ObservationWeight::UnknownHistory {
-                    observed: value, ..
+                crate::profile::evidence::counts::ObservationWeight::Exact(value)
+                | crate::profile::evidence::counts::ObservationWeight::UnknownHistory {
+                    observed: value,
+                    ..
                 }
-                | crate::profile::ObservationWeight::LowerBound {
-                    observed: value, ..
+                | crate::profile::evidence::counts::ObservationWeight::LowerBound {
+                    observed: value,
+                    ..
                 } => value,
             },
             AnalyzedOrderWeight::Sample { observed, .. } => observed as u64,

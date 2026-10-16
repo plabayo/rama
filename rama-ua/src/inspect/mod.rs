@@ -16,7 +16,12 @@ use rama_tls::inspect::TlsObservation;
 use crate::{
     UserAgent,
     profile::{
-        Http1Settings, Http2Settings, RequestInitiator, UserAgentDatabase, UserAgentProfileInput,
+        format::input::UserAgentProfileInput,
+        model::{
+            http::{Http1Settings, Http2Settings},
+            runtime_hints::RequestInitiator,
+        },
+        selection::database::UserAgentDatabase,
     },
 };
 

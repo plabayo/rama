@@ -10,19 +10,15 @@ use rama_core::extensions::Extension;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::ValueId;
+use crate::profile::format::canonical::ValueId;
 
-mod order;
-pub use order::OrderDrawError;
+pub mod order;
 
-mod connection;
-pub use connection::*;
+pub mod capabilities;
 
-mod replay;
-pub use replay::*;
+pub mod variants;
 
-mod ticket;
-pub use ticket::*;
+pub mod database;
 
 const DRAW_PREFIX: &[u8] = b"rama-profile-draw\0";
 

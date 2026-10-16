@@ -1,7 +1,7 @@
 //! Decode and validate each overwrite field without discarding its neighbours.
 
 use super::*;
-use rama::ua::profile::ProfileDataError;
+use rama::ua::profile::format::canonical::ProfileDataError;
 use serde_json::{Map, Value};
 
 pub(super) struct DecodedFields {

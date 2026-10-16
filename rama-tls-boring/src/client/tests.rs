@@ -14,7 +14,7 @@ use rama_tls::{
 };
 use rama_ua::{
     UserAgentKind,
-    profile::{TlsProfile, UserAgentDatabase},
+    profile::{model::tls::TlsProfile, selection::database::UserAgentDatabase},
 };
 
 use super::{

@@ -2,7 +2,7 @@ use rama::{
     error::{BoxError, BoxErrorExt as _, ErrorExt as _},
     json::path::JsonPath,
     net::{Protocol, address::ProxyAddress, user::Basic},
-    ua::profile::RequestInitiator,
+    ua::profile::model::runtime_hints::RequestInitiator,
     utils::str::NonEmptyStr,
 };
 

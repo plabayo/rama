@@ -34,15 +34,33 @@ use super::*;
 use crate::{
     layer::emulate::UserAgentEmulateHttpConnectModifier,
     profile::{
-        AnalyzedCaptureVariant, AnalyzedOrderWeight, AnalyzedProfile, AnalyzedProfileComponents,
-        AnalyzedProfileScope, CanonicalDomain, CanonicalValue, CaptureLevel, CapturedSlot,
-        CapturedSlotKind, CountedCaptureAnalysis, CounterSnapshot, H2Capture, H2CaptureLimits,
-        H2CapturedFrame, H2CapturedSetting, H2ClientParameter, HeaderCapture, HeaderCapturePolicy,
-        HeaderOccurrence, HeaderValueSource, JointCapture, JointCaptureLimits, ObservationLosses,
-        ObservationWeight, OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture,
-        PreparedConnectionComponents, ProfileCaptureCompleteness, ProfileKey,
-        ProfileObservationScope, ProfilePreservationDifference, ProfilePreservationReport,
-        RequestSelection, UntrackedDistinctSnapshot, UserAgentProfile, ValueId,
+        analysis::{
+            capture::{AnalyzedCaptureVariant, CountedCaptureAnalysis},
+            order::AnalyzedOrderWeight,
+            profile::{AnalyzedProfile, AnalyzedProfileComponents, AnalyzedProfileScope},
+        },
+        capture::{
+            completeness::ProfileCaptureCompleteness,
+            headers::{HeaderCapture, HeaderCapturePolicy, HeaderOccurrence, HeaderValueSource},
+            http2::{H2Capture, H2CaptureLimits, H2CapturedFrame, H2CapturedSetting},
+            joint::{
+                CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits,
+            },
+            order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+        },
+        evidence::{
+            UntrackedDistinctSnapshot,
+            counts::{CounterSnapshot, ObservationLosses, ObservationWeight},
+        },
+        format::canonical::{CanonicalDomain, CanonicalValue, ValueId},
+        model::{identity::ProfileKey, scope::ProfileObservationScope, ua::UserAgentProfile},
+        replay::{
+            connection::PreparedConnectionComponents,
+            request::{
+                H2ClientParameter, ProfilePreservationDifference, ProfilePreservationReport,
+            },
+        },
+        selection::variants::RequestSelection,
     },
 };
 
@@ -185,7 +203,7 @@ fn database_for_clients(clients: &[&str]) -> Arc<UserAgentDatabase> {
         key.version = Some("1".into());
         let canonical = key.canonical(MAXIMUM_FETCH_CONTEXT_BYTES).unwrap();
         let flow = flow().canonical(MAXIMUM_FETCH_CONTEXT_BYTES).unwrap();
-        crate::profile::UserAgentProfile::from_captured(AnalyzedProfile {
+        crate::profile::model::ua::UserAgentProfile::from_captured(AnalyzedProfile {
             work_units: 0,
             format_version: 1,
             classifier_revision: 2,
@@ -292,7 +310,7 @@ fn request_capabilities_follow_real_transport_and_alpn_inputs() {
         .insert(TlsAlpn([ApplicationProtocol::HTTP_3].into_iter().collect()));
     assert!(matches!(
         required_capabilities(&incompatible),
-        Err(crate::profile::SelectionError::IncompatibleTransport)
+        Err(crate::profile::selection::variants::SelectionError::IncompatibleTransport)
     ));
 }
 
@@ -881,17 +899,17 @@ fn h3_emulation_context_with_extra_slot(mut extra: Option<CapturedSlot>) -> Emul
         .canonical(MAXIMUM_FETCH_CONTEXT_BYTES)
         .unwrap()
         .id;
-    let mut bucket = crate::profile::CountedObservationBucket::new(
+    let mut bucket = crate::profile::evidence::bucket::CountedObservationBucket::new(
         CanonicalDomain::Order,
         leaf.id,
         [3; 32],
-        crate::profile::ProfileBucketLimits::default(),
+        crate::profile::evidence::bucket::ProfileBucketLimits::default(),
     )
     .unwrap();
     for sequence in 1..=64 {
         bucket
             .observe(
-                crate::profile::ObservationId {
+                crate::profile::evidence::ingestion::ObservationId {
                     run: [1; 16],
                     sequence,
                 },
@@ -899,9 +917,9 @@ fn h3_emulation_context_with_extra_slot(mut extra: Option<CapturedSlot>) -> Emul
             )
             .unwrap();
     }
-    leaf.observations = crate::profile::analyze_capture_bucket(
+    leaf.observations = crate::profile::analysis::capture::analyze_capture_bucket(
         &bucket,
-        crate::profile::OrderAnalysisConfig::default(),
+        crate::profile::analysis::order::OrderAnalysisConfig::default(),
     )
     .unwrap();
     let mut scopes = analyzed.scopes.to_vec();

@@ -16,13 +16,27 @@ use rama::{
     ua::{
         UserAgent,
         profile::{
-            CaptureLevel, CapturedSlot, CapturedSlotKind, ConnectionContext, ConnectionIpFamily,
-            FetchContext, FlowKey, H2Capture, H2CaptureLimits, H3ClientSequenceCapture,
-            H3SequenceCaptureLimits, HeaderCapturePolicy, JointCapture, JointCaptureLimits,
-            OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture, ProfileCapture,
-            ProfileCaptureCompleteness, ProfileDataError, ProfileKey, PseudoHeaderCapture,
-            QuicFlightCapture, QuicFlightCaptureLimits, RequestInitiator, TlsCapture,
-            TlsCaptureLimits, TlsCaptureTransport,
+            capture::{
+                completeness::ProfileCaptureCompleteness,
+                headers::HeaderCapturePolicy,
+                http2::{H2Capture, H2CaptureLimits},
+                http3::{H3ClientSequenceCapture, H3SequenceCaptureLimits},
+                joint::{
+                    CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits,
+                },
+                observation::ProfileCapture,
+                order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
+                pseudo_headers::PseudoHeaderCapture,
+                quic::{QuicFlightCapture, QuicFlightCaptureLimits},
+                tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport},
+            },
+            format::canonical::ProfileDataError,
+            model::{
+                identity::{
+                    ConnectionContext, ConnectionIpFamily, FetchContext, FlowKey, ProfileKey,
+                },
+                runtime_hints::RequestInitiator,
+            },
         },
     },
     utils::octets::kib,
@@ -287,12 +301,12 @@ pub(super) fn connection_capture(
 mod tests {
     use super::*;
     use rama::{
-        http::proto::h2::frame::{
-            EarlyFrameStreamContext, Head, Kind, Settings, StreamId, WindowUpdate,
-        },
-        http::proto::h3::observation::{
-            H3ObservationSnapshot, ObservationCompleteness, ObservedControlFrame,
-            ObservedEncoderInstruction, ObservedSetting, ObservedUniStream, SettingsStatus,
+        http::proto::{
+            h2::frame::{EarlyFrameStreamContext, Head, Kind, Settings, StreamId, WindowUpdate},
+            h3::observation::{
+                H3ObservationSnapshot, ObservationCompleteness, ObservedControlFrame,
+                ObservedEncoderInstruction, ObservedSetting, ObservedUniStream, SettingsStatus,
+            },
         },
         quic::proto::{
             Version as QuicVersion,

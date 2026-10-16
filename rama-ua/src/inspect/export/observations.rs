@@ -5,15 +5,25 @@ use sha2::{Digest as _, Sha256};
 
 use super::super::protocol::{H3ProfileConnection, H3ProfileRequest};
 use super::*;
-use crate::profile::{
-    CaptureLevel, CaptureRunId, CapturedSlot, CapturedSlotKind, ConnectionContext,
-    ConnectionIpFamily, FetchContext, FlowKey, H2Capture, H2CaptureLimits, HeaderCapturePolicy,
-    JointCapture, ProfileAnalysisLimits, ProfileArchiveEntry, ProfileCapture,
-    ProfileCaptureCompleteness, ProfileDataError, ProfileEvidenceCollector, ProfileKey,
-    PseudoHeaderCapture, profile_utc_day,
-};
 #[cfg(feature = "tls")]
-use crate::profile::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport};
+use crate::profile::capture::tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport};
+use crate::profile::{
+    analysis::profile::ProfileAnalysisLimits,
+    capture::{
+        completeness::ProfileCaptureCompleteness,
+        headers::HeaderCapturePolicy,
+        http2::{H2Capture, H2CaptureLimits},
+        joint::{CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture},
+        observation::ProfileCapture,
+        pseudo_headers::PseudoHeaderCapture,
+    },
+    evidence::{collector::ProfileEvidenceCollector, transaction::CaptureRunId},
+    format::{archive::ProfileArchiveEntry, canonical::ProfileDataError},
+    model::{
+        identity::{ConnectionContext, ConnectionIpFamily, FetchContext, FlowKey, ProfileKey},
+        time::profile_utc_day,
+    },
+};
 
 fn day(summary: &HttpExchangeSummary) -> Result<u32, BoxError> {
     let seconds = u64::try_from(summary.started_at.as_second())?;

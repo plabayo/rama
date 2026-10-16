@@ -14,12 +14,22 @@ use std::{
 use rama::{
     error::BoxError,
     ua::profile::{
-        CanonicalDomain, CanonicalValue, CaptureRunCheckpoint, CaptureRunId, CountedBucketSnapshot,
-        CountedObservationBucket, CounterSnapshot, IngestionAttempt, IngestionBatchLimits,
-        JointCaptureLimits, LiteralCount, ObservationId, ObservationLosses,
-        PendingBucketObservation, PreparedIngestion, PreparedProfileCapture, ProfileBucketInput,
-        ProfileCapture, ProfileDataError, ProfileObservationScope, ReservoirEntry,
-        StoredObservationBucket, ValueId,
+        capture::{
+            joint::JointCaptureLimits,
+            observation::{PreparedProfileCapture, ProfileBucketInput, ProfileCapture},
+        },
+        evidence::{
+            bucket::{CountedBucketSnapshot, CountedObservationBucket},
+            counts::{CounterSnapshot, LiteralCount, ObservationLosses},
+            ingestion::ObservationId,
+            reservoir::ReservoirEntry,
+            transaction::{
+                CaptureRunCheckpoint, CaptureRunId, IngestionAttempt, IngestionBatchLimits,
+                PendingBucketObservation, PreparedIngestion, StoredObservationBucket,
+            },
+        },
+        format::canonical::{CanonicalDomain, CanonicalValue, ProfileDataError, ValueId},
+        model::scope::ProfileObservationScope,
     },
     utils::octets::kib,
 };
