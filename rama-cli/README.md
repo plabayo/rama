@@ -211,13 +211,24 @@ reference variant, and identifies both capture hashes. Truncated diagnostics nev
 turn a mismatch into a match. The command reads at most 64 MiB per archive and
 compares at most 256 scopes/variants with a shared 16 MiB comparison-work budget.
 
-### Real-browser HTTP/1 capture and replay
+### Real-browser capture and replay
 
-`just test-browser-profile-h1 /path/to/new-evidence-directory all` captures
-headless Chrome navigation, fetch, XHR, WebSocket and form flows, exports an
-isolated fp database, replays them with fixed draw keys, and compares complete
-stored observations and independently decoded request headers and bodies.
-Use `test-firefox-profile-h1` for Firefox, or append `-release` to either recipe
-for the optimized CLI. Omitting `all` retains the partial navigation-only proof.
-See the [browser proof prerequisites and limits](../examples/tests/browser_profile/README.md).
-The broader TLS/H2/H3/Safari matrix and modeled distribution comparison remain pending.
+`just test-browser-profile /path/to/new-evidence-directory h1 chrome` runs all
+six operations: navigation, fetch, XHR, WebSocket, POST form and GET form. It
+exports an isolated fp database, replays requests with fixed draw keys, and
+compares stored observations and independently decoded request headers and bodies.
+Use `firefox` instead of `chrome` for the Firefox H1 fixture, or use the
+`test-browser-profile-release` recipe for the optimized CLI. An optional fourth
+argument, `navigate`, limits H1 coverage to navigation; all flows are the default.
+
+The same runner accepts `h2` and `h3` with Chrome or Edge. These TLS fixtures
+currently verify original capture, including per-flow protocol, retained headers,
+request bodies and WebSocket Extended CONNECT; strict TLS/QUIC replay remains
+unfinished. The browser journey is shared with nightly BrowserStack collection.
+See the [browser prerequisites and coverage limits](../examples/tests/browser_profile/README.md).
+
+`rama ua view --json profiles.json` provides validated, decoded retained captures
+for packet comparisons or offline diagnostics. It reanalyzes the archive's
+capture evidence, requires a file, and cannot be combined with `--summary`.
+The full browser/version matrix, transport fingerprint replay and modeled
+distribution comparison remain pending.

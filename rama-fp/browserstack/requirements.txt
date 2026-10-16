@@ -1,1 +1,1 @@
-selenium==4.45.0
+-r ../browser_automation/requirements.txt

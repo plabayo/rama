@@ -695,9 +695,81 @@ jobs:
       - test-rust-linux-gnu-cross-macos
       - test-rust-linux-gnu-cross-windows
       - test-rust-linux-gnu-cross-smoke
+      - test-browser-profiles
     steps:
       - name: Require every daily check to succeed
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -e 'all(.[]; .result == "success")'
+
+  test-browser-profiles:
+    needs: precheck-rust
+    name: browser-${{ matrix.browser }}-${{ matrix.protocol }}-${{ matrix.mode }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chrome]
+        protocol: [h1, h2, h3]
+        mode: [debug, release]
+        include:
+          - {browser: firefox, protocol: h1, mode: debug}
+          - {browser: firefox, protocol: h1, mode: release}
+    env:
+      BROWSER: ${{ matrix.browser }}
+      PROTOCOL: ${{ matrix.protocol }}
+      MODE: ${{ matrix.mode }}
+      SE_SKIP_DRIVER_IN_PATH: 'true'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: browser-profiles-${{ matrix.mode }}
+          shared-key: linux-stable-browser-profiles-${{ matrix.mode }}
+      - name: Install packet tools and shared browser dependencies
+        run: |
+          echo 'wireshark-common wireshark-common/install-setuid boolean false' | sudo debconf-set-selections
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark libcap2-bin libclang-dev cmake ninja-build
+          sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)"
+          python -m pip install -r rama-fp/browser_automation/requirements.txt
+          docker pull postgres:17-alpine
+      - name: Shared journey and verifier regressions
+        run: python scripts/ci/check_browser_automation.py
+      - name: Build the same CLI used by local tests
+        run: |
+          if [ "$MODE" = release ]; then
+            cargo build --locked --release -p rama-cli --all-features --bin rama
+          else
+            cargo build --locked -p rama-cli --all-features --bin rama
+          fi
+      - name: Capture and verify all six operations
+        run: |
+          # H2/H3 currently verify original capture; strict replay remains open.
+          python examples/tests/browser_profile/run.py \
+            --rama "target/${MODE}/rama" --browser "$BROWSER" \
+            --protocol "$PROTOCOL" --flows all --interface lo \
+            --output "$RUNNER_TEMP/browser-evidence"
+      - name: Preserve comparison reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-${{ matrix.browser }}-${{ matrix.protocol }}-${{ matrix.mode }}
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/browser-evidence/comparison.json
+            ${{ runner.temp }}/browser-evidence/summary.json
+            ${{ runner.temp }}/browser-evidence/wire-comparison.json

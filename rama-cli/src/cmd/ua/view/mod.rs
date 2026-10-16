@@ -1,5 +1,7 @@
 //! A bounded, read-only overview of captured user-agent profiles.
 
+mod inspect;
+
 use std::{
     fmt::Write as _,
     fs::File,
@@ -40,6 +42,9 @@ pub(super) struct ViewCommand {
     /// Print a text summary; also used automatically outside a terminal.
     #[arg(short = 's', long)]
     summary: bool,
+    /// Print validated, decoded retained captures as JSON for an archive file.
+    #[arg(long, requires = "path", conflicts_with = "summary")]
+    json: bool,
 }
 
 #[derive(Debug)]
@@ -160,7 +165,7 @@ fn push_row(rows: &mut Vec<Row>, remaining: &mut usize, row: Row) -> Result<(), 
     Ok(())
 }
 
-fn file_rows(path: PathBuf, authorized: bool) -> Result<Vec<Row>, BoxError> {
+fn read_profile_file(path: PathBuf) -> Result<Vec<u8>, BoxError> {
     let limits = ProfileArchiveLimits::default();
     let mut bytes = Vec::new();
     File::open(path)?
@@ -171,6 +176,12 @@ fn file_rows(path: PathBuf, authorized: bool) -> Result<Vec<Row>, BoxError> {
             "profile input byte limit exceeded",
         ));
     }
+    Ok(bytes)
+}
+
+fn file_rows(path: PathBuf, authorized: bool) -> Result<Vec<Row>, BoxError> {
+    let limits = ProfileArchiveLimits::default();
+    let bytes = read_profile_file(path)?;
     let profiles = if bytes.iter().find(|byte| !byte.is_ascii_whitespace()) == Some(&b'{') {
         load_profile_archive_snapshot(&bytes, authorized, limits)?
             .into_vec()
@@ -189,6 +200,17 @@ fn file_rows(path: PathBuf, authorized: bool) -> Result<Vec<Row>, BoxError> {
 }
 
 pub(super) async fn run(command: ViewCommand) -> Result<(), BoxError> {
+    if command.json {
+        let path = command
+            .path
+            .ok_or_else(|| BoxError::from_static_str("JSON inspection requires an archive file"))?;
+        let bytes = tokio::task::spawn_blocking(move || {
+            inspect::archive_json(&read_profile_file(path)?, command.authorized)
+        })
+        .await??;
+        io::stdout().lock().write_all(&bytes)?;
+        return Ok(());
+    }
     let mut source_label = command.path.as_ref().map_or_else(
         || {
             format!(

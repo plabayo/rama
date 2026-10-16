@@ -582,30 +582,14 @@ test-quic-relay-wire-release OUTPUT:
     cargo build --release -p rama-examples --bin http3_client_server --bin quic_h3_mitm_proxy --features=http-full,boring
     python3 examples/tests/wire/quic_relay.py --bin-dir target/release --output {{quote(OUTPUT)}}
 
-# Real Chrome H1 navigation or all five flows -> isolated archive and wire proof.
-# Requires a cached PostgreSQL image, Chrome, Node, and loopback capture rights.
-test-browser-profile-h1 OUTPUT FLOWS="navigate":
-    python3 -m unittest discover -s examples/tests/browser_profile -p "test_*.py"
-    python3 -O -m unittest discover -s examples/tests/browser_profile -p "test_*.py"
+# Same shared journey and wire checks locally and in daily CI.
+# H1 includes strict replay; H2/H3 currently check original capture only.
+test-browser-profile OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all":
+    python3 scripts/ci/check_browser_automation.py
     cargo build -p rama-cli --all-features --bin rama
-    python3 examples/tests/browser_profile/chrome_h1.py --rama target/debug/rama --output {{quote(OUTPUT)}} --flows {{quote(FLOWS)}}
+    python3 examples/tests/browser_profile/run.py --rama target/debug/rama --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --browser {{quote(BROWSER)}} --flows {{quote(FLOWS)}}
 
-# Same real-browser proof using the optimized Rama CLI.
-test-browser-profile-h1-release OUTPUT FLOWS="navigate":
-    python3 -m unittest discover -s examples/tests/browser_profile -p "test_*.py"
-    python3 -O -m unittest discover -s examples/tests/browser_profile -p "test_*.py"
+test-browser-profile-release OUTPUT PROTOCOL="h1" BROWSER="chrome" FLOWS="all":
+    python3 scripts/ci/check_browser_automation.py
     cargo build --release -p rama-cli --all-features --bin rama
-    python3 examples/tests/browser_profile/chrome_h1.py --rama target/release/rama --output {{quote(OUTPUT)}} --flows {{quote(FLOWS)}}
-
-# Firefox navigation or all five flows through the same isolated wire proof.
-test-firefox-profile-h1 OUTPUT FLOWS="navigate":
-    python3 -m unittest discover -s examples/tests/browser_profile -p "test_*.py"
-    python3 -O -m unittest discover -s examples/tests/browser_profile -p "test_*.py"
-    cargo build -p rama-cli --all-features --bin rama
-    python3 examples/tests/browser_profile/firefox_h1.py --rama target/debug/rama --output {{quote(OUTPUT)}} --flows {{quote(FLOWS)}}
-
-test-firefox-profile-h1-release OUTPUT FLOWS="navigate":
-    python3 -m unittest discover -s examples/tests/browser_profile -p "test_*.py"
-    python3 -O -m unittest discover -s examples/tests/browser_profile -p "test_*.py"
-    cargo build --release -p rama-cli --all-features --bin rama
-    python3 examples/tests/browser_profile/firefox_h1.py --rama target/release/rama --output {{quote(OUTPUT)}} --flows {{quote(FLOWS)}}
+    python3 examples/tests/browser_profile/run.py --rama target/release/rama --output {{quote(OUTPUT)}} --protocol {{quote(PROTOCOL)}} --browser {{quote(BROWSER)}} --flows {{quote(FLOWS)}}
