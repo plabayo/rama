@@ -4,6 +4,7 @@ use std::ptr;
 
 use rama_http::{HeaderMap, HeaderName, HeaderValue, Method, Version};
 
+use super::shapes::request_header_shape;
 use super::*;
 use crate::profile::{
     analysis::{
@@ -24,6 +25,7 @@ use crate::profile::{
     },
     model::identity::{ConnectionIpFamily, FetchContext, ProfileKey, ResumptionContext},
 };
+use rama_http::header::COOKIE;
 
 fn flow(context: ConnectionContext, version: Version) -> FlowKey {
     FlowKey::Http {

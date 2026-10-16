@@ -6,19 +6,16 @@
 //! this API does not claim population or distribution equivalence.
 
 #[cfg(feature = "tls")]
-use crate::profile::capture::tls::{TlsCapture, TlsCaptureLimits};
+use crate::profile::capture::tls::TlsCaptureLimits;
 use crate::profile::{
     capture::{
-        headers::{HeaderCapture, HeaderCapturePolicy},
-        http2::{H2Capture, H2CaptureLimits},
-        http3::{H3ClientSequenceCapture, H3SequenceCaptureLimits},
-        joint::{JointCapture, JointCaptureLimits},
-        order::{OrderCaptureLimits, OrderedProtocolCapture},
-        pseudo_headers::PseudoHeaderCapture,
-        quic::{QuicFlightCapture, QuicFlightCaptureLimits},
-        runtime::RuntimeProfileCapture,
+        headers::HeaderCapturePolicy, http2::H2CaptureLimits, http3::H3SequenceCaptureLimits,
+        joint::JointCaptureLimits, order::OrderCaptureLimits, quic::QuicFlightCaptureLimits,
     },
-    format::canonical::{CanonicalDomain, CanonicalValue, ProfileDataError, ValueId},
+    format::{
+        canonical::{CanonicalValue, ProfileDataError, ValueId},
+        decoded::{CaptureDecodeLimits, DecodedCapture},
+    },
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -79,8 +76,8 @@ pub fn compare_retained_captures(
             "comparison candidates or differences",
         ));
     }
-    let domain = observed.validated_domain(limits.bytes)?;
-    let actual = decode(observed, domain, limits.bytes)?;
+    let domain = observed.domain_tag(limits.bytes)?;
+    let actual = decode(observed, limits.bytes)?;
     let mut work = limits
         .work
         .checked_sub(observed.bytes.len())
@@ -108,7 +105,8 @@ pub fn compare_retained_captures(
             truncated: false,
         });
     }
-    let expected = decode(&reference[0], domain, limits.bytes)?;
+    let actual = diagnostic(actual, limits.bytes)?;
+    let expected = diagnostic(decode(&reference[0], limits.bytes)?, limits.bytes)?;
     let mut report = RetainedCaptureComparison {
         work_units: limits.work - work,
         literal_match: false,
@@ -128,85 +126,89 @@ pub fn compare_retained_captures(
 }
 
 fn json(value: impl Serialize) -> Result<Value, ProfileDataError> {
+    #[cfg(test)]
+    tests::DIAGNOSTIC_SERIALIZATIONS.with(|count| count.set(count.get() + 1));
     serde_json::to_value(value)
         .map_err(|_error| ProfileDataError::Invalid("comparison decoded value"))
 }
 
-fn decode(
-    value: &CanonicalValue,
-    domain: CanonicalDomain,
-    bytes: usize,
-) -> Result<Value, ProfileDataError> {
-    match domain {
-        CanonicalDomain::Headers => json(HeaderCapture::from_canonical(
-            value,
-            &HeaderCapturePolicy {
-                bytes,
-                fields: bytes,
-                overrides: Box::default(),
-            },
-        )?),
-        CanonicalDomain::Order => json(OrderedProtocolCapture::from_canonical(
-            value,
-            OrderCaptureLimits {
-                bytes,
-                elements: bytes,
-            },
-        )?),
-        CanonicalDomain::H2 => json(H2Capture::from_canonical(
-            value,
-            H2CaptureLimits {
-                bytes,
-                frames: bytes,
-                settings: bytes,
-            },
-        )?),
-        CanonicalDomain::PseudoHeaders => json(PseudoHeaderCapture::from_canonical(value, bytes)?),
-        CanonicalDomain::RuntimeMetadata => {
-            json(RuntimeProfileCapture::from_canonical(value, bytes)?)
-        }
+fn decode(value: &CanonicalValue, bytes: usize) -> Result<DecodedCapture<'_>, ProfileDataError> {
+    let limits = CaptureDecodeLimits {
+        bytes,
+        headers: HeaderCapturePolicy {
+            bytes,
+            fields: bytes,
+            overrides: Box::default(),
+        },
+        order: OrderCaptureLimits {
+            bytes,
+            elements: bytes,
+        },
+        h2: H2CaptureLimits {
+            bytes,
+            frames: bytes,
+            settings: bytes,
+        },
+        h3: H3SequenceCaptureLimits {
+            bytes,
+            ..H3SequenceCaptureLimits::default()
+        },
+        quic: QuicFlightCaptureLimits {
+            bytes,
+            ..QuicFlightCaptureLimits::default()
+        },
+        joint: JointCaptureLimits {
+            value_bytes: bytes,
+            ..JointCaptureLimits::default()
+        },
         #[cfg(feature = "tls")]
-        CanonicalDomain::Tls => json(TlsCapture::from_canonical(
-            value,
-            TlsCaptureLimits {
-                bytes,
-                elements: bytes,
-            },
-        )?),
-        CanonicalDomain::QuicFlight => json(QuicFlightCapture::from_canonical(
-            value,
-            QuicFlightCaptureLimits {
-                bytes,
-                ..QuicFlightCaptureLimits::default()
-            },
-        )?),
-        CanonicalDomain::H3Sequence => json(H3ClientSequenceCapture::from_canonical(
-            value,
-            H3SequenceCaptureLimits {
-                bytes,
-                ..H3SequenceCaptureLimits::default()
-            },
-        )?),
-        CanonicalDomain::Joint => {
-            let joint = JointCapture::from_canonical(
-                value,
-                JointCaptureLimits {
-                    value_bytes: bytes,
-                    ..JointCaptureLimits::default()
-                },
-            )?;
+        tls: TlsCaptureLimits {
+            bytes,
+            elements: bytes,
+        },
+    };
+    let decoded = DecodedCapture::from_canonical(value, &limits)?;
+    if matches!(decoded, DecodedCapture::Canonical { .. }) {
+        return Err(ProfileDataError::Unsupported("comparison capture domain"));
+    }
+    if let DecodedCapture::Joint(joint) = &decoded {
+        // Exact matches must reject unsupported component domains too. Their
+        // field diagnostics used to enforce this before the membership result.
+        for slot in &joint.slots {
+            decode(&slot.value, bytes)?;
+        }
+    }
+    Ok(decoded)
+}
+
+// Only mismatches need a JSON tree. Exact membership still validates all inputs,
+// but does not allocate diagnostic objects or serialize their captured fields.
+fn diagnostic(value: DecodedCapture<'_>, bytes: usize) -> Result<Value, ProfileDataError> {
+    match value {
+        DecodedCapture::Headers(value) => json(value),
+        DecodedCapture::Order(value) => json(value),
+        DecodedCapture::H2(value) => json(value),
+        DecodedCapture::H3(value) => json(value),
+        DecodedCapture::PseudoHeaders(value) => json(value),
+        DecodedCapture::Runtime(value) => json(value),
+        DecodedCapture::Quic(value) => json(value),
+        #[cfg(feature = "tls")]
+        DecodedCapture::Tls(value) => json(value),
+        DecodedCapture::Joint(joint) => {
             let mut slots = serde_json::Map::new();
             for slot in joint.slots.iter() {
                 slots.insert(
                     format!("{:?}", slot.kind),
-                    decode(&slot.value, slot.value.validated_domain(bytes)?, bytes)?,
+                    diagnostic(decode(&slot.value, bytes)?, bytes)?,
                 );
             }
             Ok(
                 serde_json::json!({"level": joint.level, "completeness": joint.completeness, "slots": slots}),
             )
         }
-        _ => Err(ProfileDataError::Unsupported("comparison capture domain")),
+        DecodedCapture::Canonical { .. } => {
+            Err(ProfileDataError::Unsupported("comparison capture domain"))
+        }
     }
 }
 
@@ -266,6 +268,21 @@ mod tests {
         joint::{CaptureLevel, CapturedSlot, CapturedSlotKind},
         order::OrderNamespace,
     };
+    use crate::profile::capture::{joint::JointCapture, order::OrderedProtocolCapture};
+    std::thread_local! {
+        pub(super) static DIAGNOSTIC_SERIALIZATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    #[test]
+    fn literal_membership_does_not_materialize_field_diagnostics() {
+        let value = settings(&[(33, 17)]);
+        DIAGNOSTIC_SERIALIZATIONS.with(|count| count.set(0));
+        assert!(compare(std::slice::from_ref(&value), &value).literal_match);
+        assert_eq!(DIAGNOSTIC_SERIALIZATIONS.with(|count| count.get()), 0);
+        assert!(!compare(&[value], &settings(&[(33, 29)])).literal_match);
+        assert!(DIAGNOSTIC_SERIALIZATIONS.with(|count| count.get()) > 0);
+    }
+
     fn settings(fields: &[(u64, u64)]) -> CanonicalValue {
         OrderedProtocolCapture::capture(
             ProfileCaptureCompleteness::Complete,
@@ -277,9 +294,11 @@ mod tests {
         .canonical(OrderCaptureLimits::default())
         .unwrap()
     }
+
     fn compare(reference: &[CanonicalValue], actual: &CanonicalValue) -> RetainedCaptureComparison {
         compare_retained_captures(reference, actual, CaptureComparisonLimits::default()).unwrap()
     }
+
     #[test]
     fn retained_comparison_preserves_fields_values_order_and_correlations() {
         let one = settings(&[(33, 17), (64, 29)]);
@@ -296,6 +315,7 @@ mod tests {
             assert!(!result.differences.is_empty());
         }
     }
+
     #[test]
     fn retained_comparison_does_not_cross_product_connection_components() {
         let joint = |setting, parameter| {
@@ -337,6 +357,7 @@ mod tests {
                 .any(|difference| difference.path.starts_with("/slots/QuicParameters/"))
         );
     }
+
     #[test]
     fn retained_comparison_rejects_invalid_empty_structural_and_over_budget_inputs() {
         let one = settings(&[(33, 17)]);
@@ -386,6 +407,7 @@ mod tests {
             compare_retained_captures(std::slice::from_ref(&one), &one, limits).unwrap_err();
         }
     }
+
     #[test]
     fn retained_comparison_reports_bounded_field_paths_without_hiding_failure() {
         let one = settings(&[(33, 17), (64, 29)]);

@@ -270,3 +270,58 @@ fn never_index_metadata_prevents_literal_retention_even_without_header_flag() {
         )
         .unwrap_err();
 }
+
+#[test]
+fn header_ordinals_reject_nonzero_duplicate_and_gapped_occurrences() {
+    let policy = HeaderCapturePolicy::default();
+    for version in [Version::HTTP_11, Version::HTTP_2, Version::HTTP_3] {
+        let fields = ["X-Ordinal", "x-ORDINAL", "X-ordinal"]
+            .into_iter()
+            .enumerate()
+            .map(|(occurrence, name)| HeaderOccurrence {
+                name: HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                occurrence: occurrence as u32,
+                sensitive: false,
+                representation: None,
+                value: HeaderValueSource::Profile(b"value".as_slice().into()),
+            })
+            .collect();
+        let valid = HeaderCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            version,
+            fields,
+        };
+        let canonical = valid.canonical(&policy).unwrap();
+        HeaderCapture::from_canonical(&canonical, &policy).unwrap();
+
+        // Locate each encoded name, whose next four bytes are its ordinal.
+        // Case-insensitive names must share one sequence for every HTTP version.
+        let offsets: Vec<_> = canonical
+            .bytes
+            .windows(b"x-ordinal".len())
+            .enumerate()
+            .filter_map(|(offset, name)| {
+                name.eq_ignore_ascii_case(b"x-ordinal")
+                    .then_some(offset + name.len())
+            })
+            .collect();
+        assert_eq!(offsets.len(), 3);
+        for ordinals in [[1_u32, 1, 2], [0, 0, 2], [0, 2, 2], [0, 1, 1], [0, 1, 3]] {
+            let mut invalid = valid.clone();
+            let mut forged = canonical.clone();
+            for ((field, offset), ordinal) in invalid.fields.iter_mut().zip(&offsets).zip(ordinals)
+            {
+                field.occurrence = ordinal;
+                forged.bytes[*offset..*offset + 4].copy_from_slice(&ordinal.to_be_bytes());
+            }
+            invalid.canonical(&policy).unwrap_err();
+            invalid.structural(&policy).unwrap_err();
+
+            // Recompute identity so rejection proves semantic validation, not a
+            // digest mismatch or a truncated envelope.
+            forged.id.0 = Sha256::digest(&forged.bytes).into();
+            forged.verify(HEADER_DOMAIN, policy.bytes).unwrap();
+            HeaderCapture::from_canonical(&forged, &policy).unwrap_err();
+        }
+    }
+}

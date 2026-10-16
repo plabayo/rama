@@ -179,6 +179,16 @@ impl CanonicalValue {
         &self,
         maximum_bytes: usize,
     ) -> Result<CanonicalDomain, ProfileDataError> {
+        let domain = self.domain_tag(maximum_bytes)?;
+        self.validate_content(domain, maximum_bytes)?;
+        Ok(domain)
+    }
+
+    /// Read a dispatch tag only; the selected decoder must validate the payload.
+    pub(in crate::profile) fn domain_tag(
+        &self,
+        maximum_bytes: usize,
+    ) -> Result<CanonicalDomain, ProfileDataError> {
         if self.bytes.len() > maximum_bytes {
             return Err(ProfileDataError::LimitExceeded("canonical bytes"));
         }
@@ -187,9 +197,7 @@ impl CanonicalValue {
             .bytes
             .get(offset..offset + 2)
             .ok_or(ProfileDataError::Invalid("truncated canonical domain"))?;
-        let domain = CanonicalDomain::try_from(u16::from_be_bytes([tag[0], tag[1]]))?;
-        self.validate_content(domain, maximum_bytes)?;
-        Ok(domain)
+        CanonicalDomain::try_from(u16::from_be_bytes([tag[0], tag[1]]))
     }
 
     /// An envelope and digest do not establish the payload's ownership or semantics.

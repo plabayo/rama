@@ -5,7 +5,7 @@ use crate::profile::{
         archive::{ProfileArchiveLimits, load_profile_archive},
         canonical::ProfileDataError,
     },
-    selection::variants::RequestShapeCache,
+    selection::variants::shapes::RequestShapeCache,
 };
 use ahash::HashMap;
 use index::ProfileVersionIndex;

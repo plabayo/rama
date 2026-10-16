@@ -6,26 +6,23 @@
 //! independent (for example, tshark in the browser integration tests).
 
 use rama::{
-    error::{BoxError, BoxErrorExt as _},
+    error::BoxError,
     ua::profile::{
-        capture::{
-            headers::{HeaderCapture, HeaderCapturePolicy},
-            http2::{H2Capture, H2CaptureLimits},
-            http3::{H3ClientSequenceCapture, H3SequenceCaptureLimits},
-            joint::{JointCapture, JointCaptureLimits},
-            order::{OrderCaptureLimits, OrderedProtocolCapture},
-            pseudo_headers::PseudoHeaderCapture,
-            quic::{QuicFlightCapture, QuicFlightCaptureLimits},
-            runtime::RuntimeProfileCapture,
-            tls::{TlsCapture, TlsCaptureLimits},
-        },
+        analysis::{capture::AnalyzedCaptureVariant, profile::AnalyzedProfileScope},
+        capture::joint::CapturedSlot,
         format::{
-            archive::{ProfileArchiveLimits, load_profile_archive_snapshot},
-            canonical::{CanonicalDomain, CanonicalValue},
+            archive::{
+                CompiledProfileArchiveEntry, ProfileArchiveLimits, load_profile_archive_snapshot,
+            },
+            canonical::CanonicalValue,
+            decoded::{CaptureDecodeLimits, DecodedCapture},
         },
     },
 };
-use serde_json::{Value, json};
+use serde::{
+    Serialize, Serializer,
+    ser::{Error as _, SerializeStruct as _},
+};
 use std::io::{self, Write};
 
 /// Refuse an expanded diagnostic that exceeds the archive's output budget.
@@ -48,56 +45,164 @@ impl Write for BoundedOutput {
     }
 }
 
-fn decode(value: &CanonicalValue, maximum: usize, nested: bool) -> Result<Value, BoxError> {
-    let domain = value.validated_domain(maximum)?;
-    Ok(match domain {
-        CanonicalDomain::Headers => serde_json::to_value(HeaderCapture::from_canonical(
-            value,
-            &HeaderCapturePolicy::default(),
-        )?)?,
-        CanonicalDomain::PseudoHeaders => {
-            serde_json::to_value(PseudoHeaderCapture::from_canonical(value, maximum)?)?
-        }
-        CanonicalDomain::Tls => serde_json::to_value(TlsCapture::from_canonical(
-            value,
-            TlsCaptureLimits::default(),
-        )?)?,
-        CanonicalDomain::H2 => serde_json::to_value(H2Capture::from_canonical(
-            value,
-            H2CaptureLimits::default(),
-        )?)?,
-        CanonicalDomain::Order => serde_json::to_value(OrderedProtocolCapture::from_canonical(
-            value,
-            OrderCaptureLimits::default(),
-        )?)?,
-        CanonicalDomain::RuntimeMetadata => {
-            serde_json::to_value(RuntimeProfileCapture::from_canonical(value, maximum)?)?
-        }
-        CanonicalDomain::QuicFlight => serde_json::to_value(QuicFlightCapture::from_canonical(
-            value,
-            QuicFlightCaptureLimits::default(),
-        )?)?,
-        CanonicalDomain::H3Sequence => serde_json::to_value(
-            H3ClientSequenceCapture::from_canonical(value, H3SequenceCaptureLimits::default())?,
-        )?,
-        CanonicalDomain::Joint => {
-            if nested {
-                return Err(BoxError::from_static_str("nested joint capture"));
+/// Serialize mapped iterators without retaining an intermediate collection.
+struct Sequence<I>(I);
+
+impl<I> Serialize for Sequence<I>
+where
+    I: Clone + IntoIterator,
+    I::Item: Serialize,
+{
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.clone())
+    }
+}
+
+struct CaptureView<'a> {
+    value: &'a CanonicalValue,
+    maximum: usize,
+    nested: bool,
+}
+
+impl Serialize for CaptureView<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let limits = CaptureDecodeLimits {
+            bytes: self.maximum,
+            ..CaptureDecodeLimits::default()
+        };
+        let decoded =
+            DecodedCapture::from_canonical(self.value, &limits).map_err(S::Error::custom)?;
+        match decoded {
+            DecodedCapture::Headers(value) => value.serialize(serializer),
+            DecodedCapture::PseudoHeaders(value) => value.serialize(serializer),
+            DecodedCapture::Tls(value) => value.serialize(serializer),
+            DecodedCapture::H2(value) => value.serialize(serializer),
+            DecodedCapture::Order(value) => value.serialize(serializer),
+            DecodedCapture::Runtime(value) => value.serialize(serializer),
+            DecodedCapture::Quic(value) => value.serialize(serializer),
+            DecodedCapture::H3(value) => value.serialize(serializer),
+            DecodedCapture::Joint(joint) => {
+                if self.nested {
+                    return Err(S::Error::custom("nested joint capture"));
+                }
+                let mut output = serializer.serialize_struct("JointCapture", 3)?;
+                output.serialize_field("completeness", &joint.completeness)?;
+                output.serialize_field("level", &joint.level)?;
+                output.serialize_field(
+                    "slots",
+                    &Sequence(joint.slots.iter().map(|slot| SlotView {
+                        slot,
+                        maximum: self.maximum,
+                    })),
+                )?;
+                output.end()
             }
-            let joint = JointCapture::from_canonical(value, JointCaptureLimits::default())?;
-            let slots = joint
-                .slots
-                .iter()
-                .map(|slot| {
-                    Ok(json!({"kind": slot.kind, "capture": decode(&slot.value, maximum, true)?}))
-                })
-                .collect::<Result<Vec<_>, BoxError>>()?;
-            json!({"completeness": joint.completeness, "level": joint.level, "slots": slots})
+            DecodedCapture::Canonical { domain, value } => {
+                let mut output = serializer.serialize_struct("CanonicalCapture", 2)?;
+                output.serialize_field("domain", &domain)?;
+                output.serialize_field("canonical", value)?;
+                output.end()
+            }
         }
-        // Retain valid legacy/structural domains explicitly, without inventing a
-        // decoded representation or silently omitting observations.
-        _ => json!({"domain": domain, "canonical": value}),
-    })
+    }
+}
+
+struct SlotView<'a> {
+    slot: &'a CapturedSlot,
+    maximum: usize,
+}
+
+impl Serialize for SlotView<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut output = serializer.serialize_struct("Slot", 2)?;
+        output.serialize_field("kind", &self.slot.kind)?;
+        output.serialize_field(
+            "capture",
+            &CaptureView {
+                value: &self.slot.value,
+                maximum: self.maximum,
+                nested: true,
+            },
+        )?;
+        output.end()
+    }
+}
+
+struct VariantView<'a> {
+    variant: &'a AnalyzedCaptureVariant,
+    maximum: usize,
+}
+
+impl Serialize for VariantView<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut output = serializer.serialize_struct("Variant", 3)?;
+        output.serialize_field("id", &self.variant.value.id)?;
+        output.serialize_field("weight", &self.variant.weight)?;
+        output.serialize_field(
+            "capture",
+            &CaptureView {
+                value: &self.variant.value,
+                maximum: self.maximum,
+                nested: false,
+            },
+        )?;
+        output.end()
+    }
+}
+
+struct ScopeView<'a> {
+    scope: &'a AnalyzedProfileScope,
+    maximum: usize,
+}
+
+impl Serialize for ScopeView<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut output = serializer.serialize_struct("Scope", 5)?;
+        output.serialize_field("id", &self.scope.id)?;
+        output.serialize_field("flow", &self.scope.flow)?;
+        output.serialize_field("context", &self.scope.context)?;
+        output.serialize_field("domain", &self.scope.observations.domain)?;
+        output.serialize_field(
+            "variants",
+            &Sequence(
+                self.scope
+                    .observations
+                    .variants
+                    .iter()
+                    .map(|variant| VariantView {
+                        variant,
+                        maximum: self.maximum,
+                    }),
+            ),
+        )?;
+        output.end()
+    }
+}
+
+struct ProfileView<'a> {
+    profile: &'a CompiledProfileArchiveEntry,
+    maximum: usize,
+}
+
+impl Serialize for ProfileView<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut output = serializer.serialize_struct("Profile", 2)?;
+        output.serialize_field("key", &self.profile.analysis.key)?;
+        output.serialize_field(
+            "scopes",
+            &Sequence(self.profile.analysis.scopes.iter().map(|scope| ScopeView {
+                scope,
+                maximum: self.maximum,
+            })),
+        )?;
+        output.end()
+    }
+}
+
+#[derive(Serialize)]
+struct ArchiveView<P> {
+    format_version: u16,
+    profiles: P,
 }
 
 pub(super) fn archive_json(bytes: &[u8], authorized: bool) -> Result<Vec<u8>, BoxError> {
@@ -107,40 +212,17 @@ pub(super) fn archive_json(bytes: &[u8], authorized: bool) -> Result<Vec<u8>, Bo
         bytes: Vec::new(),
         maximum: limits.bytes,
     };
-    output.write_all(b"{\"format_version\":1,\"profiles\":[")?;
-    for (index, profile) in profiles.iter().enumerate() {
-        if index != 0 {
-            output.write_all(b",")?;
-        }
-        let scopes = profile
-            .analysis
-            .scopes
-            .iter()
-            .map(|scope| {
-                let variants = scope
-                    .observations
-                    .variants
-                    .iter()
-                    .map(|variant| {
-                        Ok(json!({
-                            "id": variant.value.id,
-                            "weight": variant.weight,
-                            "capture": decode(&variant.value, limits.bytes, false)?,
-                        }))
-                    })
-                    .collect::<Result<Vec<_>, BoxError>>()?;
-                Ok(json!({
-                    "id": scope.id, "flow": scope.flow, "context": scope.context,
-                    "domain": scope.observations.domain, "variants": variants,
-                }))
-            })
-            .collect::<Result<Vec<_>, BoxError>>()?;
-        serde_json::to_writer(
-            &mut output,
-            &json!({"key": profile.analysis.key, "scopes": scopes}),
-        )?;
-    }
-    output.write_all(b"]}\n")?;
+    let archive = ArchiveView {
+        format_version: 1,
+        profiles: Sequence(profiles.iter().map(|profile| ProfileView {
+            profile,
+            maximum: limits.bytes,
+        })),
+    };
+    // Keep the final byte buffer private until every capture has validated and
+    // serialized successfully. Stdout never receives a partial JSON document.
+    serde_json::to_writer(&mut output, &archive)?;
+    output.write_all(b"\n")?;
     Ok(output.bytes)
 }
 
@@ -152,13 +234,16 @@ mod tests {
         ua::profile::{
             capture::{
                 completeness::ProfileCaptureCompleteness,
-                headers::{HeaderOccurrence, HeaderValueSource},
+                headers::{
+                    HeaderCapture, HeaderCapturePolicy, HeaderOccurrence, HeaderValueSource,
+                },
             },
             evidence::ProfileEvidence,
             format::archive::{ProfileArchiveEntry, ProfileArchiveWriter},
             model::identity::ProfileKey,
         },
     };
+    use serde_json::{Value, json};
 
     #[test]
     fn inspection_preserves_order_values_and_repeated_headers() {
@@ -178,14 +263,24 @@ mod tests {
                 .collect(),
         };
         let canonical = capture.canonical(&HeaderCapturePolicy::default()).unwrap();
-        let decoded = decode(&canonical, 65536, false).unwrap();
+        let decoded = serde_json::to_value(CaptureView {
+            value: &canonical,
+            maximum: 65536,
+            nested: false,
+        })
+        .unwrap();
         assert_eq!(decoded["fields"].as_array().unwrap().len(), 2);
         assert_eq!(decoded["fields"][0]["value"]["Profile"], json!(b"first"));
         assert_eq!(decoded["fields"][1]["value"]["Profile"], json!(b"second"));
         assert_eq!(decoded["fields"][1]["occurrence"], 1);
         let mut corrupt = canonical;
         corrupt.bytes[0] ^= 1;
-        decode(&corrupt, 65536, false).unwrap_err();
+        serde_json::to_value(CaptureView {
+            value: &corrupt,
+            maximum: 65536,
+            nested: false,
+        })
+        .unwrap_err();
     }
 
     #[test]
@@ -212,6 +307,64 @@ mod tests {
         )
         .unwrap();
         assert_eq!(inspected["profiles"][0]["key"]["client"], "real-client");
+    }
+
+    #[test]
+    fn streamed_sequences_stop_visiting_values_at_the_output_budget() {
+        let visited = std::cell::Cell::new(0);
+        let sequence = Sequence((0..100).inspect(|_| {
+            visited.set(visited.get() + 1);
+        }));
+        let mut output = BoundedOutput {
+            bytes: Vec::new(),
+            maximum: 3,
+        };
+        serde_json::to_writer(&mut output, &sequence).unwrap_err();
+        assert!(visited.get() < 100);
+        assert!(output.bytes.len() <= 3);
+    }
+
+    #[test]
+    fn streamed_joint_preserves_slot_shape_and_canonical_fallback() {
+        use rama::ua::profile::capture::joint::{
+            CaptureLevel, CapturedSlot, CapturedSlotKind, JointCapture, JointCaptureLimits,
+        };
+        let capture = HeaderCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            version: Version::HTTP_2,
+            fields: Box::default(),
+        };
+        let expected = serde_json::to_value(&capture).unwrap();
+        let joint = JointCapture {
+            completeness: ProfileCaptureCompleteness::Complete,
+            level: CaptureLevel::Request,
+            slots: vec![CapturedSlot {
+                kind: CapturedSlotKind::Headers,
+                value: capture.canonical(&HeaderCapturePolicy::default()).unwrap(),
+            }]
+            .into(),
+        }
+        .canonical(JointCaptureLimits::default())
+        .unwrap();
+        let actual = serde_json::to_value(CaptureView {
+            value: &joint,
+            maximum: 65536,
+            nested: false,
+        })
+        .unwrap();
+        assert_eq!(
+            actual,
+            json!({"completeness": "Complete", "level": "Request", "slots": [{"kind": "Headers", "capture": expected}]})
+        );
+        let value = ProfileKey::new("test-client").canonical(65536).unwrap();
+        let actual = serde_json::to_value(CaptureView {
+            value: &value,
+            maximum: 65536,
+            nested: false,
+        })
+        .unwrap();
+        assert_eq!(actual["canonical"], serde_json::to_value(&value).unwrap());
+        assert_eq!(actual["domain"], 2);
     }
 
     #[test]

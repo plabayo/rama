@@ -11,3 +11,6 @@ pub mod archive;
 pub mod input;
 
 pub mod legacy;
+
+/// Typed decoding for inspection and comparison of retained captures.
+pub mod decoded;

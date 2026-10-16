@@ -221,7 +221,7 @@ fn repeated_profile_selection_shares_lazy_request_shape_cache() {
         .unwrap();
 
     assert!(Arc::ptr_eq(&first.request_shapes, &second.request_shapes));
-    assert!(first.request_shapes.shapes.get().is_none());
+    assert!(!first.request_shapes.is_initialized());
     let analysis = first.profile.captured.as_ref().unwrap();
     let scope = analysis
         .scopes
@@ -237,7 +237,7 @@ fn repeated_profile_selection_shares_lazy_request_shape_cache() {
         .shape(analysis, scope, 0, Version::HTTP_3)
         .unwrap();
     assert!(ptr::eq(first_shape, second_shape));
-    assert!(first.request_shapes.shapes.get().is_some());
+    assert!(first.request_shapes.is_initialized());
 }
 
 #[test]
