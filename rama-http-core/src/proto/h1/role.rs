@@ -1143,8 +1143,12 @@ impl Http1Transaction for Client {
                     decode,
                     expect_continue: false,
                     // a client upgrade means the connection can't be used
-                    // again, as it is definitely upgrading.
-                    keep_alive: keep_alive && !is_upgrade,
+                    // again, as it is definitely upgrading; nor can it after
+                    // a body delimited by the connection closing (no length
+                    // and no chunked final transfer coding).
+                    keep_alive: keep_alive
+                        && !is_upgrade
+                        && decode != DecodedLength::CLOSE_DELIMITED,
                     wants_upgrade: is_upgrade,
                 }));
             }
@@ -2879,6 +2883,18 @@ mod tests {
             assert!(!msg.keep_alive, "should be last");
             assert!(msg.wants_upgrade, "should be upgrade");
         }
+
+        // a close-delimited body is the last of its connection, also when its
+        // final transfer coding is not chunked
+        for head in [
+            "HTTP/1.1 200 OK\r\n\r\n",
+            "HTTP/1.1 200 OK\r\ntransfer-encoding: gzip\r\n\r\n",
+        ] {
+            let msg = parse(head);
+            assert_eq!(msg.decode, DecodedLength::CLOSE_DELIMITED, "{head:?}");
+            assert!(!msg.keep_alive, "{head:?}");
+        }
+        assert!(parse("HTTP/1.1 200 OK\r\ntransfer-encoding: gzip, chunked\r\n\r\n").keep_alive);
 
         // http/1.0
         assert_eq!(
