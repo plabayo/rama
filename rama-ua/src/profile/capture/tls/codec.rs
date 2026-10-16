@@ -220,7 +220,8 @@ impl TlsCapturedExtension {
 }
 
 impl TlsCapture {
-    pub(super) fn validate(&self, limits: TlsCaptureLimits) -> Result<(), ProfileDataError> {
+    /// Validate completeness, ownership and resource limits without serialization.
+    pub fn validate_fields(&self, limits: TlsCaptureLimits) -> Result<(), ProfileDataError> {
         self.completeness
             .require_complete("TLS ClientHello observation")?;
         let mut budget = InputBudget {
@@ -260,7 +261,7 @@ impl TlsCapture {
     }
 
     pub fn canonical(&self, limits: TlsCaptureLimits) -> Result<CanonicalValue, ProfileDataError> {
-        self.validate(limits)?;
+        self.validate_fields(limits)?;
         let mut writer = CanonicalWriter::new(CanonicalDomain::Tls, limits.bytes)?;
         writer.u8(match self.transport {
             TlsCaptureTransport::Tcp => 0,

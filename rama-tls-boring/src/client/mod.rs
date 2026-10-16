@@ -51,6 +51,9 @@ pub use connector_data::{
 };
 
 #[cfg(feature = "ua")]
+pub mod profile;
+
+#[cfg(feature = "ua")]
 mod emulate_ua;
 
 #[cfg(feature = "ua")]

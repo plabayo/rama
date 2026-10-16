@@ -706,6 +706,17 @@ enum_builder! {
 impl_u16_is_grease!(ExtensionId);
 
 enum_builder! {
+    /// TLS 1.3 PSK key-exchange mode (RFC 8446, section 4.2.9).
+    @U8
+    pub enum PskKeyExchangeMode {
+        /// PSK authentication without an ephemeral key exchange.
+        PskKe => 0,
+        /// PSK authentication with an ephemeral (EC)DHE key exchange.
+        PskDheKe => 1,
+    }
+}
+
+enum_builder! {
     /// The `CompressionAlgorithm` TLS protocol enum.  Values in this enum are taken
     /// from the various RFCs covering TLS, and are listed by IANA.
     /// The `Unknown` item is used when processing unrecognised ordinals.

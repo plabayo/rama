@@ -509,7 +509,7 @@ fn plain_variant() -> TlsClientConfig {
 }
 
 /// Every other wire option set, on the same security policy.
-fn wire_variant() -> TlsClientConfig {
+pub(super) fn wire_variant() -> TlsClientConfig {
     plain_variant()
         .with_grease(true)
         .with_supported_groups(vec![SupportedGroup::SECP256R1, SupportedGroup::X25519])
@@ -530,7 +530,7 @@ fn wire_variant() -> TlsClientConfig {
         )
 }
 
-fn hello_from_data(mut data: TlsConnectorData) -> ClientHello {
+pub(super) fn hello_from_data(mut data: TlsConnectorData) -> ClientHello {
     data.server_name = Some(Host::try_from("example.test").unwrap());
     let ssl = data.into_ssl().unwrap();
     let Err(HandshakeError::WouldBlock(stream)) = ssl.connect(HelloSink::default()) else {

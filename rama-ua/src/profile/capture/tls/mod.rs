@@ -408,7 +408,7 @@ impl TlsCapture {
                 .collect(),
             extensions: extensions.into(),
         };
-        capture.validate(limits)?;
+        capture.validate_fields(limits)?;
         Ok(capture)
     }
 }

@@ -47,7 +47,7 @@ impl TlsCapture {
     /// Groups order and reserved-value variation without assigning replay behavior.
     /// Complete captures retain the literal values and correlated original orders.
     pub fn structural(&self, limits: TlsCaptureLimits) -> Result<CanonicalValue, ProfileDataError> {
-        self.validate(limits)?;
+        self.validate_fields(limits)?;
         let mut normalized = self.clone();
 
         for value in &mut normalized.ciphers {
