@@ -55,7 +55,7 @@ async fn abandoned_push_stream_releases_peer_qpack_sections_in_both_arrival_orde
             if !cancel_before_stream {
                 shared.cancel_push(0, true).unwrap();
             }
-            let feedback = shared.take_output(false).unwrap();
+            let feedback = shared.take_decoder_output().unwrap();
             assert!(!feedback.is_empty());
             encoder.feed_decoder_stream(&feedback).unwrap();
             assert_eq!(encoder.tracked_section_count(), 0);
@@ -64,7 +64,7 @@ async fn abandoned_push_stream_releases_peer_qpack_sections_in_both_arrival_orde
                 Some(Code::H3_REQUEST_CANCELLED.value())
             );
             shared.cancel_push(0, true).unwrap();
-            assert!(shared.take_output(false).unwrap().is_empty());
+            assert!(shared.take_decoder_output().unwrap().is_empty());
             pair.close().await;
         })
         .await
@@ -123,7 +123,7 @@ async fn dropping_unread_request_body_cancels_peer_qpack_sections() {
         reader.phase = Phase::Body;
         let permit = Arc::new(Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap());
         drop(body::Body::new(reader, None, permit));
-        let feedback = shared.take_output(false).unwrap();
+        let feedback = shared.take_decoder_output().unwrap();
         assert!(!feedback.is_empty());
         encoder.feed_decoder_stream(&feedback).unwrap();
         assert_eq!(encoder.tracked_section_count(), 0);

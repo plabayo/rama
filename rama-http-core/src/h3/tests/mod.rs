@@ -2,6 +2,7 @@
 mod cancellation;
 mod close;
 mod credit;
+mod critical_streams;
 mod datagram;
 mod demux;
 mod extended_connect;
@@ -769,68 +770,99 @@ struct ConnectionMetadata(u8);
 
 #[tokio::test]
 async fn tiny_windows_fall_back_without_qpack_deadlock() {
-    tokio::time::timeout(LIMIT, async {
-        let transport = || {
-            let mut transport = TransportConfig::default();
-            transport.set_stream_receive_window_uni(1u32.into());
-            transport.set_stream_receive_window(32u32);
-            transport.set_receive_window(128u32);
-            transport
-        };
-        let pair = Pair::new(Some(transport()), Some(transport())).await;
-        let (mut client, client_driver) =
-            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
-                .unwrap();
-        let (mut server, server_driver) =
-            server::handshake(pair.server.clone(), Config::default()).unwrap();
-        let client_driver = spawn(client_driver.run());
-        let server_driver = spawn(server_driver.run());
-        let serve = spawn(async move {
-            for _ in 0..4 {
-                let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
-                let body = request.into_body().collect().await.unwrap().to_bytes();
-                assert_eq!(body.len(), rama_utils::octets::kib(4));
-                response
-                    .send_response(Response::new(Body::from(body)))
-                    .await
-                    .unwrap();
-            }
-        });
-        for _ in 0..4 {
-            let response = client
-                .send_request(
-                    Request::builder()
-                        .method("POST")
-                        .uri("https://localhost/tiny-window")
-                        .header(
-                            "x-long-field",
-                            "this dynamic insertion cannot fit the encoder stream credit",
-                        )
-                        .body(Body::from(vec![b'x'; rama_utils::octets::kib(4)]))
-                        .unwrap(),
+    use super::connection::critical_streams::{Order, Profile, Startup};
+
+    for window in [1u32, 3] {
+        for critical_streams in [
+            Profile::default(),
+            Profile {
+                order: Order::DecoderFirst,
+                encoder: Startup::OnDemand,
+                decoder: Startup::OnDemand,
+            },
+        ] {
+            tokio::time::timeout(LIMIT, async {
+                let transport = || {
+                    let mut transport = TransportConfig::default();
+                    transport.set_stream_receive_window_uni(window.into());
+                    transport.set_stream_receive_window(32u32);
+                    transport.set_receive_window(128u32);
+                    transport
+                };
+                let pair = Pair::new(Some(transport()), Some(transport())).await;
+                let (mut client, client_driver) = client::handshake::<Body>(
+                    pair.client.clone(),
+                    Config {
+                        critical_streams,
+                        ..Config::default()
+                    },
+                    Executor::new(),
                 )
-                .await
                 .unwrap();
-            assert_eq!(
-                response
-                    .into_body()
-                    .collect()
-                    .await
-                    .unwrap()
-                    .to_bytes()
-                    .len(),
-                rama_utils::octets::kib(4)
-            );
+                let (mut server, server_driver) = server::handshake(
+                    pair.server.clone(),
+                    Config {
+                        critical_streams,
+                        ..Config::default()
+                    },
+                )
+                .unwrap();
+                let client_driver = spawn(client_driver.run());
+                let server_driver = spawn(server_driver.run());
+                if critical_streams.encoder == Startup::OnDemand {
+                    // Exercise the exact prefix-credit boundary after the peer
+                    // has enabled dynamic compression, rather than racing SETTINGS.
+                    client.peer_settings().await.unwrap();
+                }
+                let serve = spawn(async move {
+                    for _ in 0..4 {
+                        let (request, response) =
+                            server.accept().await.unwrap().resolve().await.unwrap();
+                        let body = request.into_body().collect().await.unwrap().to_bytes();
+                        assert_eq!(body.len(), rama_utils::octets::kib(4));
+                        response
+                            .send_response(Response::new(Body::from(body)))
+                            .await
+                            .unwrap();
+                    }
+                });
+                for _ in 0..4 {
+                    let response = client
+                        .send_request(
+                            Request::builder()
+                                .method("POST")
+                                .uri("https://localhost/tiny-window")
+                                .header(
+                                    "x-long-field",
+                                    "this dynamic insertion cannot fit the encoder stream credit",
+                                )
+                                .body(Body::from(vec![b'x'; rama_utils::octets::kib(4)]))
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        response
+                            .into_body()
+                            .collect()
+                            .await
+                            .unwrap()
+                            .to_bytes()
+                            .len(),
+                        rama_utils::octets::kib(4)
+                    );
+                }
+                assert_eq!(client.dynamic_insert_count(), 0);
+                serve.await.unwrap();
+                pair.client.close(0u32, b"test complete");
+                _ = client_driver.await.unwrap();
+                _ = server_driver.await.unwrap();
+                pair.close().await;
+            })
+            .await
+            .unwrap();
         }
-        assert_eq!(client.dynamic_insert_count(), 0);
-        serve.await.unwrap();
-        pair.client.close(0u32, b"test complete");
-        _ = client_driver.await.unwrap();
-        _ = server_driver.await.unwrap();
-        pair.close().await;
-    })
-    .await
-    .unwrap();
+    }
 }
 
 #[tokio::test]

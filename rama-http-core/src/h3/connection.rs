@@ -48,6 +48,8 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 
+pub mod critical_streams;
+
 /// Local HTTP/3 connection budgets. Peer limits are negotiated independently.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -61,6 +63,8 @@ pub struct Config {
     /// role and negotiated capabilities. Incompatible profiles fail before any
     /// HTTP/3 control bytes are emitted. Ordinary connections allocate no profile.
     pub settings_profile: Option<Arc<Settings>>,
+    /// QPACK stream allocation order and whether idle type prefixes are sent.
+    pub critical_streams: critical_streams::Profile,
     /// Local QPACK decoder limits, advertised where the protocol defines settings.
     pub decoder: DecoderConfig,
     /// Local encoder budgets. Peer capacity/blocked-stream settings override those fields.
@@ -105,6 +109,7 @@ impl Default for Config {
         Self {
             observation: None,
             settings_profile: None,
+            critical_streams: critical_streams::Profile::default(),
             decoder: DecoderConfig::default(),
             encoder: EncoderConfig::default(),
             max_requests: 128,
@@ -330,9 +335,9 @@ pub(crate) struct Shared {
     pub(crate) push_ready: Notify,
     pub(crate) transport_extensions: Extensions,
     state: Mutex<State>,
-    encoder_stream: Mutex<Option<QuicSendStream>>,
+    encoder_stream: Mutex<Option<critical_streams::EncoderStream>>,
     pub(crate) config: Config,
-    output: [Notify; 2],
+    decoder_output_ready: Notify,
     progress: Notify,
     request_rejected: Notify,
     /// Pushed with `request_rejected`: a GOAWAY or a failure ends admission.
@@ -529,7 +534,7 @@ impl Shared {
                 config.max_requests.saturating_add(config.max_pushes),
             ),
             config,
-            output: [Notify::new(), Notify::new()],
+            decoder_output_ready: Notify::new(),
             progress: Notify::new(),
             request_rejected: Notify::new(),
             admission_ended: ChangeSignal::new(),
@@ -601,9 +606,7 @@ impl Shared {
         self.request_rejected.notify_waiters();
         self.admission_ended.notify(Change::Other);
         self.settings_ready.notify_waiters();
-        for output in &self.output {
-            output.notify_one();
-        }
+        self.decoder_output_ready.notify_one();
     }
 
     pub(crate) async fn failed(&self) -> Error {
@@ -966,7 +969,7 @@ impl Shared {
         if let Some(error) = error {
             self.fail(error);
         }
-        self.output[1].notify_one();
+        self.decoder_output_ready.notify_one();
     }
 
     pub(crate) async fn decode(&self, id: u64, bytes: Bytes) -> Decoded {
@@ -1026,7 +1029,7 @@ impl Shared {
                 }
                 match state.decoder.decode_field_section(id, bytes.clone()) {
                     Ok(Some(fields)) => {
-                        self.output[1].notify_one();
+                        self.decoder_output_ready.notify_one();
                         return Ok(fields);
                     }
                     Ok(None) => {
@@ -1043,7 +1046,7 @@ impl Shared {
                     Err(error) => return Err(compression_error(error).remote()),
                 }
             };
-            self.output[1].notify_one();
+            self.decoder_output_ready.notify_one();
             if let Some(receiver) = receiver {
                 return receiver.await.unwrap_or(Err(Error::stream(
                     Code::H3_REQUEST_CANCELLED,
@@ -1067,17 +1070,7 @@ impl Shared {
         }
         let mut stream = self.encoder_stream.lock();
         if let Some(stream) = stream.as_mut() {
-            stream
-                .try_write_generated(CRITICAL_SEND_RESERVE, |credit| {
-                    let result = state
-                        .encoder
-                        .encode_with_credit(id, fields, credit)
-                        .map_err(compression_error);
-                    (state.encoder.take_encoder_stream(), result)
-                })
-                .map_err(|_error| {
-                    Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "encoder stream closed")
-                })?
+            stream.encode(&mut state.encoder, id, fields)
         } else {
             state
                 .encoder
@@ -1165,7 +1158,7 @@ impl Shared {
             Err(error) => return Err(compression_error(error)),
         };
         drop(state);
-        self.output[1].notify_one();
+        self.decoder_output_ready.notify_one();
         Ok(blocked)
     }
 
@@ -1187,16 +1180,12 @@ impl Shared {
         Ok(())
     }
 
-    pub(super) fn take_output(&self, encoder: bool) -> Result<Bytes, Error> {
+    pub(super) fn take_decoder_output(&self) -> Result<Bytes, Error> {
         let mut state = self.state.lock();
         if let Some(error) = state.error {
             return Err(error);
         }
-        let output = if encoder {
-            state.encoder.take_encoder_stream()
-        } else {
-            state.decoder.take_output_for_write()
-        };
+        let output = state.decoder.take_output_for_write();
         drop(state);
         self.progress.notify_waiters();
         Ok(output)
@@ -1208,56 +1197,6 @@ fn compression_error(error: QpackError) -> Error {
         Code::H3_INTERNAL_ERROR,
         "unexpected local QPACK backpressure",
     ))
-}
-
-pub(crate) async fn write_instructions(
-    shared: Arc<Shared>,
-    mut stream: QuicSendStream,
-    encoder: bool,
-) -> Result<(), Error> {
-    stream.set_priority(i32::MAX).map_err(|_error| {
-        Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "critical stream closed")
-    })?;
-    let ty = if encoder {
-        StreamType::QPACK_ENCODER
-    } else {
-        StreamType::QPACK_DECODER
-    };
-    let mut bytes = BytesMut::with_capacity(1);
-    VarInt::from_u32(ty.value() as u32).encode(&mut bytes);
-    let mut output = [bytes.freeze()];
-    let mut instructions = false;
-    loop {
-        while !output[0].is_empty() {
-            let before = output[0].len();
-            stream.write_chunks(&mut output).await.map_err(|_error| {
-                Error::connection(
-                    Code::H3_CLOSED_CRITICAL_STREAM,
-                    "critical send stream closed",
-                )
-            })?;
-            if instructions {
-                shared.decoder_output_written(before - output[0].len())?;
-            }
-        }
-        if encoder {
-            let stopped = stream.stopped();
-            *shared.encoder_stream.lock() = Some(stream);
-            _ = stopped.await;
-            return Err(Error::connection(
-                Code::H3_CLOSED_CRITICAL_STREAM,
-                "encoder stream stopped",
-            ));
-        }
-        output[0] = shared.take_output(encoder)?;
-        instructions = true;
-        if output[0].is_empty() {
-            tokio::select! {
-                _ = shared.output[usize::from(!encoder)].notified() => (),
-                _ = stream.stopped() => return Err(Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "critical stream stopped")),
-            }
-        }
-    }
 }
 
 pub(crate) async fn receive_uni(
@@ -1564,7 +1503,13 @@ impl Driver {
                     )
                 })
             };
-            let (mut control, encoder, decoder) = tokio::try_join!(open(), open(), open())?;
+            let mut control = open().await?;
+            let (first, second) = tokio::try_join!(open(), open())?;
+            let (encoder, decoder) = match self.shared.config.critical_streams.order {
+                critical_streams::Order::EncoderFirst => (first, second),
+                critical_streams::Order::DecoderFirst => (second, first),
+            };
+            let encoder_task = critical_streams::encoder_task(self.shared.clone(), encoder)?;
             let control_task = async {
                 control.set_priority(i32::MAX).map_err(|_error| {
                     Error::connection(Code::H3_CLOSED_CRITICAL_STREAM, "control stream closed")
@@ -1699,8 +1644,8 @@ impl Driver {
                 error = self.shared.failed() => Err(error),
                 result = datagrams => result,
                 result = control_task => result,
-                result = write_instructions(self.shared.clone(), encoder, true) => result,
-                result = write_instructions(self.shared.clone(), decoder, false) => result,
+                result = encoder_task => result,
+                result = critical_streams::write_decoder(self.shared.clone(), decoder) => result,
                 result = receive => result,
                 result = reject_server_bidi => result,
                 error = self.connection.closed() => {
@@ -1968,7 +1913,7 @@ mod tests {
             assert!(waiter.as_mut().poll(&mut cx).is_pending());
         }
         for _ in 0..128 {
-            shared.take_output(false).unwrap();
+            shared.take_decoder_output().unwrap();
             shared.decoder_output_written(0).unwrap();
         }
         assert_eq!(wakes.0.load(Ordering::Relaxed), 0);
@@ -2004,7 +1949,7 @@ mod tests {
         }
         assert!(!shared.state.lock().cancelled.is_empty());
         while encoder.tracked_section_count() != 0 {
-            let output = shared.take_output(false).unwrap();
+            let output = shared.take_decoder_output().unwrap();
             assert!(
                 !output.is_empty(),
                 "queued cancellations must eventually drain"

@@ -219,7 +219,7 @@ fn compression_schedule(input: &[u8]) {
             }
             2 => {
                 if feedback.is_empty() {
-                    feedback = shared.take_output(false).unwrap();
+                    feedback = shared.take_decoder_output().unwrap();
                 }
                 let len = feedback.len().min(usize::from((operation >> 2) & 7) + 1);
                 encoder
@@ -265,7 +265,7 @@ fn compression_schedule(input: &[u8]) {
     // drain releases the exact reservation held by the live connection code.
     loop {
         if feedback.is_empty() {
-            feedback = shared.take_output(false).unwrap();
+            feedback = shared.take_decoder_output().unwrap();
         }
         if feedback.is_empty() {
             break;
