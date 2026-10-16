@@ -6,9 +6,10 @@ connection identity used by TLS and request observations; matching isolated
 components from different joint variants must never prove a connection match.
 """
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from capture_fields import connection_user_agents
+from flows import FLOWS, flow_name
 from wire import one, pdml_packets, values
 
 H2_HEADERS = 1
@@ -154,8 +155,14 @@ def fingerprint_prefix(capture):
     }
 
 
-def compare_connection_fields(inspected, hellos, prefixes, requests):
-    """Require TLS and HTTP/2 prefix from one retained connection joint."""
+def compare_connection_fields(
+    inspected, hellos, prefixes, requests, *, expected_per_variant_flow=None
+):
+    """Require TLS and HTTP/2 prefix from one retained connection joint.
+
+    Replay supplies expected_per_variant_flow to require the full cross product.
+    Original browser traffic need not draw every variant for every operation.
+    """
     if inspected.get("format_version") != 1:
         raise ValueError("unsupported inspection format")
     agents = connection_user_agents(requests)
@@ -177,8 +184,16 @@ def compare_connection_fields(inspected, hellos, prefixes, requests):
                 slots["Http2EarlyFrames"] = fingerprint_prefix(
                     slots["Http2EarlyFrames"]
                 )
-                candidates.append((profile["key"]["user_agent"], slots))
+                raw_id = variant["id"]
+                if len(raw_id) != 32 or any(
+                    type(value) is not int or not 0 <= value <= 255 for value in raw_id
+                ):
+                    raise ValueError("invalid retained connection variant ID")
+                candidates.append(
+                    (profile["key"]["user_agent"], bytes(raw_id).hex(), slots)
+                )
     checked = set()
+    connections = {}
     for connection, agent in agents.items():
         if len(tls[connection]) != 1 or connection not in prefixes:
             raise ValueError("incomplete or ambiguous connection evidence")
@@ -188,17 +203,41 @@ def compare_connection_fields(inspected, hellos, prefixes, requests):
         }
         matches = [
             index
-            for index, (identity, slots) in enumerate(candidates)
+            for index, (identity, _variant, slots) in enumerate(candidates)
             if identity == agent and slots == observed
         ]
         if not matches:
             raise ValueError("TLS and HTTP/2 prefix have no matching retained joint")
+        if len(matches) != 1:
+            raise ValueError("ambiguous retained connection joint projection")
         checked.update(matches)
+        connections[connection] = candidates[matches[0]][1]
     if len(checked) != len(candidates):
         raise ValueError("retained connection joint has no wire observation")
+    matrix = Counter(
+        (connections[request.connection], flow)
+        for request in requests
+        if not request.from_server and (flow := flow_name(request.headers)) is not None
+    )
+    variants = {variant for _identity, variant, _slots in candidates}
+    if expected_per_variant_flow is not None:
+        check_variant_flow_matrix(matrix, variants, expected_per_variant_flow)
     return {
+        "variant_flow_counts": {
+            variant: {flow: matrix[variant, flow] for flow in FLOWS}
+            for variant in sorted(variants)
+        },
+        "expected_per_variant_flow": expected_per_variant_flow,
         "connections_checked": len(agents),
         "retained_joints_checked": len(checked),
         "scope": "correlated retained TLS and HTTP/2 SETTINGS/WINDOW_UPDATE/PRIORITY prefix",
         "excluded": "peer-driven SETTINGS acknowledgements",
     }
+
+
+def check_variant_flow_matrix(matrix, variants, expected):
+    """Prove the cross product, not separate flow and variant marginals."""
+    if type(expected) is not int or expected < 1:
+        raise ValueError("positive per-variant flow count required")
+    if any(matrix[variant, flow] != expected for variant in variants for flow in FLOWS):
+        raise ValueError("incomplete or duplicated connection variant/flow matrix")

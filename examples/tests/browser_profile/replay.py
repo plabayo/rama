@@ -291,6 +291,7 @@ def verify_tls_replay(
         client_hellos(data, transport),
         h2_prefixes(data, port),
         replay.headers,
+        expected_per_variant_flow=1,
     )
     with (root / "export-replay.log").open("w") as log:
         subprocess.run(

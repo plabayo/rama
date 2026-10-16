@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import unittest
 
 from connection_fields import compare_connection_fields, h2_prefixes
+from flows import FLOWS
 
 
 def scalar(name, value, size):
@@ -60,7 +61,7 @@ def fixture():
         "profiles": [
             {
                 "key": {"user_agent": "fixture"},
-                "scopes": [{"variants": [{"capture": joint}]}],
+                "scopes": [{"variants": [{"id": [1] * 32, "capture": joint}]}],
             }
         ],
     }
@@ -97,6 +98,7 @@ class ConnectionFieldTests(unittest.TestCase):
         )
         variants = archive["profiles"][0]["scopes"][0]["variants"]
         other = deepcopy(variants[0])
+        other["id"] = [2] * 32
         other["capture"]["slots"][0]["capture"]["ciphers"] = [4866]
         other["capture"]["slots"][1]["capture"] = h2_prefixes(
             document(setting=8192), 443
@@ -126,6 +128,77 @@ class ConnectionFieldTests(unittest.TestCase):
             compare_connection_fields(archive, [hello, hello], {7: prefix}, [request])
         captured["slots"].append({"kind": "FutureProtocol", "capture": {}})
         with self.assertRaisesRegex(ValueError, "unverified slots"):
+            compare_connection_fields(archive, [hello], {7: prefix}, [request])
+
+    def test_each_variant_must_cover_every_flow_not_only_both_marginals(self):
+        archive, hello, request, prefix = fixture()
+        variants = archive["profiles"][0]["scopes"][0]["variants"]
+        other = deepcopy(variants[0])
+        other["id"] = [2] * 32
+        other["capture"]["slots"][0]["capture"]["ciphers"] = [4866]
+        variants.append(other)
+        operations = [
+            ((":method", "GET"), (":path", "/report")),
+            ((":method", "POST"), (":path", "/api/fetch/number/7")),
+            ((":method", "POST"), (":path", "/api/xml/number/7")),
+            ((":method", "CONNECT"), (":path", "/api/ws"), (":protocol", "websocket")),
+            ((":method", "POST"), (":path", "/form")),
+            ((":method", "GET"), (":path", "/form?source=web&turtles=yes")),
+        ]
+
+        def observations(crossed):
+            hellos, prefixes, requests = [], {}, []
+            for variant in range(2):
+                for flow, operation in enumerate(operations):
+                    connection = variant * len(FLOWS) + flow
+                    selected = variant if crossed else int(flow >= 3)
+                    captured = variants[selected]["capture"]["slots"][0]["capture"]
+                    hellos.append(
+                        SimpleNamespace(connection=connection, capture=captured)
+                    )
+                    prefixes[connection] = prefix
+                    requests.append(
+                        SimpleNamespace(
+                            connection=connection,
+                            from_server=False,
+                            headers=operation + request.headers,
+                        )
+                    )
+            return hellos, prefixes, requests
+
+        complete = compare_connection_fields(
+            archive, *observations(True), expected_per_variant_flow=1
+        )
+        self.assertTrue(
+            all(
+                count == 1
+                for row in complete["variant_flow_counts"].values()
+                for count in row.values()
+            )
+        )
+        # Both variants and every flow still occur globally, but half the cells
+        # are absent and the other half repeat. Each TLS/prefix pair remains valid.
+        incomplete = observations(False)
+        compare_connection_fields(archive, *incomplete)
+        with self.assertRaisesRegex(ValueError, "variant/flow matrix"):
+            compare_connection_fields(archive, *incomplete, expected_per_variant_flow=1)
+        hellos, prefixes, requests = observations(True)
+        with self.assertRaisesRegex(ValueError, "variant/flow matrix"):
+            compare_connection_fields(
+                archive,
+                hellos,
+                prefixes,
+                requests + requests[:1],
+                expected_per_variant_flow=1,
+            )
+
+    def test_indistinguishable_joint_ids_cannot_both_get_credit(self):
+        archive, hello, request, prefix = fixture()
+        variants = archive["profiles"][0]["scopes"][0]["variants"]
+        other = deepcopy(variants[0])
+        other["id"] = [2] * 32
+        variants.append(other)
+        with self.assertRaisesRegex(ValueError, "ambiguous retained connection"):
             compare_connection_fields(archive, [hello], {7: prefix}, [request])
 
 
