@@ -295,6 +295,8 @@ impl provider::Session for Session {
             application_layer_protocol: Some(ApplicationProtocol::from(alpn.as_slice())),
             peer_certificate_chain: None,
             server_name: None,
+            // This independent fixture does not retain the parsed ServerHello.
+            server_hello: None,
             resumed: self.complete.then_some(false),
             algorithms: Default::default(),
         })
