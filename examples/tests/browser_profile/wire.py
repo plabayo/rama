@@ -65,6 +65,16 @@ def pdml_packets(data, *, byte_limit=None, packet_limit=None):
     packet_limit = MAX_PACKETS if packet_limit is None else packet_limit
     if len(data) > byte_limit:
         raise ValueError("decoded byte limit exceeded")
+    # Tshark emits UTF-8. NUL bytes must be rejected separately: an ASCII
+    # UTF-16 document also decodes as UTF-8, but XML parsers detect its encoding
+    # from those NULs and could expand declarations hidden from the byte scan.
+    if b"\0" in data:
+        raise ValueError("PDML must use UTF-8 without NUL bytes")
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("PDML must use UTF-8") from error
+
     if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
         raise ValueError("external/entity declarations are not valid tshark output")
     root = ET.fromstring(data)

@@ -2,7 +2,7 @@
 
 import unittest
 from unittest.mock import patch
-from wire import parse_pdml
+from wire import parse_pdml, pdml_packets
 
 
 def field(name, value):
@@ -35,6 +35,49 @@ def packet(protocol, streams):
             content += "</field>"
         content += "</field>"
     return ("<pdml><packet>" + content + "</packet></pdml>").encode()
+
+
+class PdmlAdmissionTests(unittest.TestCase):
+    def test_utf16_declarations_cannot_bypass_admission(self):
+        document = (
+            '<?xml version="1.0" encoding="UTF-16"?>'
+            '<!DOCTYPE pdml [<!ENTITY small "expanded">]>'
+            '<pdml><packet><field name="fixture" show="&small;"/></packet></pdml>'
+        )
+        for encoding in ("utf-16", "utf-16-le", "utf-16-be"):
+            with self.subTest(encoding=encoding):
+                with self.assertRaisesRegex(ValueError, "UTF-8"):
+                    pdml_packets(document.encode(encoding))
+
+    def test_utf32_fails_before_xml_parsing(self):
+        document = '<pdml><packet><field show="café"/></packet></pdml>'
+        alternatives = [
+            document.encode(encoding)
+            for encoding in ("utf-32", "utf-32-le", "utf-32-be")
+        ]
+        for data in alternatives:
+            with self.subTest(data=data[:16]), patch("wire.ET.fromstring") as parse:
+                with self.assertRaisesRegex(ValueError, "UTF-8"):
+                    pdml_packets(data)
+                parse.assert_not_called()
+
+    def test_non_utf8_text_is_rejected(self):
+        document = (
+            '<?xml version="1.0" encoding="ISO-8859-1"?>'
+            '<pdml><packet><field show="café"/></packet></pdml>'
+        )
+        with self.assertRaisesRegex(ValueError, "UTF-8"):
+            pdml_packets(document.encode("latin-1"))
+
+    def test_utf8_and_its_bom_preserve_non_ascii_fields(self):
+        document = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<pdml><packet><field show="café"/></packet></pdml>'
+        )
+        for encoding in ("utf-8", "utf-8-sig"):
+            with self.subTest(encoding=encoding):
+                packets = pdml_packets(document.encode(encoding))
+                self.assertEqual(packets[0].find("field").get("show"), "café")
 
 
 class MultiplexedTests(unittest.TestCase):
