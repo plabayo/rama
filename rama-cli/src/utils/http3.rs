@@ -108,7 +108,15 @@ impl HttpListeners {
             None => None,
         };
 
-        Self::bind_with_tcp(tcp, bind, versions, tls.filter(|_| serve_http3), http3).await
+        Self::bind_with_tcp(
+            tcp,
+            bind,
+            versions,
+            tls.filter(|_| serve_http3),
+            http3,
+            capture,
+        )
+        .await
     }
 
     /// Complete setup while retaining the TCP listener, including when HTTP/3 cannot bind.
@@ -118,6 +126,7 @@ impl HttpListeners {
         versions: HttpVersions,
         http3_tls: Option<&TlsServerConfig>,
         http3: &Http3Args,
+        capture: bool,
     ) -> Result<Self, BoxError> {
         let http3 = match http3_tls {
             Some(tls) => {
@@ -264,7 +273,8 @@ mod tests {
     use std::convert::Infallible;
 
     use rama::{
-        quic::{ClientConfig, ConnectionError},
+        extensions::ExtensionsRef as _,
+        quic::{ClientConfig, ConnectionError, proto::capture::QuicObservation},
         service::service_fn,
         tls::{
             client::{ServerVerifyMode, TlsClientConfig},
@@ -302,6 +312,63 @@ mod tests {
             listeners.alt_svc().unwrap(),
             Some(alt_svc(quic.port()).unwrap())
         );
+    }
+
+    #[tokio::test]
+    async fn listener_capture_is_explicit_and_survives_tcp_setup() {
+        for capture in [false, true] {
+            let versions = "h1,h2,h3".parse().unwrap();
+            let tls = tls();
+            let http3 = Http3Args { h3_bind: None };
+            let listeners = if capture {
+                HttpListeners::bind_observed(
+                    Executor::new(),
+                    localhost(),
+                    versions,
+                    Some(&tls),
+                    &http3,
+                )
+                .await
+            } else {
+                HttpListeners::bind(Executor::new(), localhost(), versions, Some(&tls), &http3)
+                    .await
+            }
+            .unwrap();
+            let server = listeners.http3.as_ref().unwrap();
+            let client = Endpoint::build(Executor::new())
+                .bind_address(localhost())
+                .await
+                .unwrap();
+            let config = ClientConfig::try_from_rama_tls_with_provider(
+                &TlsClientConfig::new()
+                    .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
+                    .with_server_verify(ServerVerifyMode::Disable),
+                TlsOptions::default(),
+                &BoringTlsProvider,
+            )
+            .unwrap();
+            let connecting = client
+                .connect_with(config, server.local_addr().unwrap(), "localhost")
+                .unwrap();
+            let (client_connection, server_connection) =
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    tokio::join!(connecting, async { server.accept().await.unwrap().await })
+                })
+                .await
+                .unwrap();
+            let client_connection = client_connection.unwrap();
+            let server_connection = server_connection.unwrap();
+            assert_eq!(
+                server_connection
+                    .extensions()
+                    .get_ref::<QuicObservation>()
+                    .is_some(),
+                capture
+            );
+            client_connection.close(0u8, b"done");
+            server_connection.close(0u8, b"done");
+            tokio::join!(client.shutdown(), server.shutdown());
+        }
     }
 
     #[tokio::test]
@@ -378,6 +445,7 @@ mod tests {
             HttpVersions::AUTO,
             Some(&tls()),
             &Http3Args { h3_bind: None },
+            false,
         )
         .await
         .unwrap();
@@ -402,6 +470,7 @@ mod tests {
                 versions,
                 Some(&tls()),
                 &Http3Args { h3_bind },
+                false,
             )
             .await;
             let Err(error) = result else {
@@ -429,6 +498,7 @@ mod tests {
             Some(alt_svc(quic.port()).unwrap())
         );
     }
+
     /// Shutting the served endpoints down tells their peers at once, instead of leaving them to
     /// their idle timeout.
     #[tokio::test]

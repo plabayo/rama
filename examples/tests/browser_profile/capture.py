@@ -25,6 +25,7 @@ import wire
 from capture_fields import compare_capture_fields
 from fixture_process import running, wait_ready
 from flow_bodies import check_original_bodies
+from tls_wire import client_hellos, compare_tls_captures
 from wire import parse_pdml, read_header_blocks
 
 HERE = Path(__file__).resolve().parent
@@ -207,8 +208,15 @@ def capture_tls(args):
             check=True,
             timeout=30,
         )
-    fields = compare_capture_fields(
-        json.loads((root / "inspected.json").read_text()), headers
+    inspected = json.loads((root / "inspected.json").read_text())
+    fields = compare_capture_fields(inspected, headers)
+    tls = compare_tls_captures(
+        inspected,
+        client_hellos(
+            (root / "headers.pdml").read_bytes(),
+            "Tcp" if args.protocol == "h2" else "Quic",
+        ),
+        headers,
     )
     report = {
         "browser": result.browser_name,
@@ -216,6 +224,7 @@ def capture_tls(args):
         "protocols": dict(result.protocols),
         "browser_arguments": options.arguments,
         "fields": fields,
+        "tls": tls,
         "bodies": bodies,
         "scope": "original traffic capture checks; strict replay remains separate",
     }

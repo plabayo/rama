@@ -28,7 +28,7 @@ use std::sync::Arc;
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
 
-use super::{BoringRequestedTrustAnchors, TlsClientSessionDomain};
+use super::{BoringRequestedTrustAnchors, TlsClientSessionDomain, ech::EchGrease};
 use crate::RamaTlsBoringCrateMarker;
 
 /// Gather all the TLS extensions supported by boringssl
@@ -64,6 +64,7 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub delegated_credentials: Option<&'a BoringDelegatedCredentials>,
     pub record_size_limit: Option<&'a BoringRecordSizeLimit>,
     pub encrypted_client_hello: Option<&'a BoringEncryptedClientHello>,
+    pub ech_grease: Option<&'a EchGrease>,
     pub ocsp_stapling: Option<&'a BoringOcspStapling>,
     pub signed_cert_timestamps: Option<&'a BoringSignedCertTimestamps>,
     pub tls12_session_tickets: Option<&'a BoringTls12SessionTickets>,
@@ -115,6 +116,7 @@ impl BoringTlsConnectorConfig<'_> {
             delegated_credentials,
             record_size_limit,
             encrypted_client_hello,
+            ech_grease,
             ocsp_stapling,
             signed_cert_timestamps,
             tls12_session_tickets,
@@ -150,6 +152,9 @@ impl BoringTlsConnectorConfig<'_> {
             .maybe_with_tls12_session_tickets(tls12_session_tickets.map(|value| value.0))
             .maybe_with_min_version(min_version.map(|value| value.0))
             .maybe_with_max_version(max_version.map(|value| value.0));
+        if let Some(shape) = ech_grease {
+            builder.set_component(*shape);
+        }
         if let Some(domain) = session_domain {
             builder.set_component(*domain);
         }
@@ -238,6 +243,7 @@ impl BoringTlsConnectorConfig<'_> {
             delegated_credentials: _,
             record_size_limit: _,
             encrypted_client_hello: _,
+            ech_grease: _,
             ocsp_stapling: _,
             signed_cert_timestamps: _,
             tls12_session_tickets: _,
@@ -280,6 +286,7 @@ impl BoringTlsConnectorConfig<'_> {
             delegated_credentials: None,
             record_size_limit: None,
             encrypted_client_hello: None,
+            ech_grease: None,
             ocsp_stapling: None,
             signed_cert_timestamps: None,
             tls12_session_tickets: None,
@@ -323,6 +330,7 @@ impl BoringTlsConnectorConfig<'_> {
             delegated_credentials: _,
             record_size_limit: _,
             encrypted_client_hello: _,
+            ech_grease: _,
             ocsp_stapling: _,
             signed_cert_timestamps: _,
             tls12_session_tickets: _,
@@ -437,6 +445,11 @@ pub trait BoringClientConfigExt: Sized {
     generate_set_and_with! {
         /// Enable/disable Encrypted ClientHello (ECH) GREASE.
         fn encrypted_client_hello(self, enabled: bool) -> Self;
+    }
+    generate_set_and_with! {
+        /// Select the algorithms and lengths of ECH GREASE. Enable emission with
+        /// `encrypted_client_hello`; invalid shapes fail when building a connector.
+        fn ech_grease(self, shape: EchGrease) -> Self;
     }
     generate_set_and_with! {
         /// Enable/disable OCSP stapling request.
@@ -591,6 +604,12 @@ impl BoringClientConfigExt for TlsClientConfig {
     generate_set_and_with! {
         fn encrypted_client_hello(mut self, enabled: bool) -> Self {
             self.insert(BoringEncryptedClientHello(enabled));
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn ech_grease(mut self, shape: EchGrease) -> Self {
+            self.insert(shape);
             self
         }
     }
@@ -888,6 +907,7 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         let mut delegated_credentials = Vec::new();
         let mut record_size_limit = 0;
         let mut encrypted_client_hello = false;
+        let mut ech_grease = EchGrease::Native;
         let mut ocsp_stapling = false;
         let mut signed_cert_timestamps = false;
         let mut tls12_session_tickets = false;
@@ -929,8 +949,16 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
                 ClientHelloExtension::RecordSizeLimit(limit) => {
                     record_size_limit = *limit;
                 }
-                ClientHelloExtension::EncryptedClientHello(_) => {
+                ClientHelloExtension::EncryptedClientHello(ech) => {
                     encrypted_client_hello = true;
+                    if let rama_tls::client::ECHClientHello::Outer(outer) = ech {
+                        ech_grease = EchGrease::Shape {
+                            kdf_id: outer.cipher_suite.kdf_id.into(),
+                            aead_id: outer.cipher_suite.aead_id.into(),
+                            encapsulated_key_len: outer.enc.len(),
+                            payload_len: outer.payload.len(),
+                        };
+                    }
                 }
                 ClientHelloExtension::ApplicationSettings {
                     protocols,
@@ -988,6 +1016,7 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         config.set_delegated_credentials(delegated_credentials);
         config.set_record_size_limit(record_size_limit);
         config.set_encrypted_client_hello(encrypted_client_hello);
+        config.set_ech_grease(ech_grease);
         config.set_ocsp_stapling(ocsp_stapling);
         config.set_signed_cert_timestamps(signed_cert_timestamps);
         config.set_tls12_session_tickets(tls12_session_tickets);
@@ -1292,6 +1321,14 @@ mod pool_tests {
             }),
             ("encrypted_client_hello", |ext, value| {
                 ext.insert(BoringEncryptedClientHello(value != 0));
+            }),
+            ("ech_grease", |ext, value| {
+                ext.insert(EchGrease::Shape {
+                    kdf_id: 1,
+                    aead_id: 1,
+                    encapsulated_key_len: 32,
+                    payload_len: 144 + usize::from(value),
+                });
             }),
             ("ocsp_stapling", |ext, value| {
                 ext.insert(BoringOcspStapling(value != 0));

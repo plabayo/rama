@@ -1,5 +1,7 @@
 //! TLS (Boring) client support for Rama.
 
+pub mod ech;
+
 mod tls_stream_auto;
 pub use tls_stream_auto::AutoTlsStream;
 

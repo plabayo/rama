@@ -745,7 +745,7 @@ fn hello_with_unknown_values() -> ClientHello {
     )
 }
 
-fn emitted_with(config: &TlsClientConfig) -> ClientHello {
+pub(super) fn emitted_with(config: &TlsClientConfig) -> ClientHello {
     hello_from_data(TlsConnectorData::try_from(config).unwrap())
 }
 

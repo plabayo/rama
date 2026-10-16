@@ -18,9 +18,10 @@ use rama_boring::{
     rsa::Rsa,
     sha::sha256,
     ssl::{
-        ClientHelloShape, ConnectConfiguration, ExtensionType, GreaseLists, GreaseValues,
-        SslConnector, SslConnectorBuilder, SslCredential, SslCurve, SslMethod, SslOptions, SslRef,
-        SslSessionCacheMode, SslSignatureAlgorithm, SslVerifyMode, SslVersion, UnknownValues,
+        ClientHelloShape, ConnectConfiguration, EchGreaseShape, ExtensionType, GreaseLists,
+        GreaseValues, SslConnector, SslConnectorBuilder, SslCredential, SslCurve, SslMethod,
+        SslOptions, SslRef, SslSessionCacheMode, SslSignatureAlgorithm, SslVerifyMode, SslVersion,
+        UnknownValues,
     },
     x509::{
         X509,
@@ -127,6 +128,7 @@ struct WirePlan {
     record_size_limit: Option<u16>,
     delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
     encrypted_client_hello: bool,
+    ech_grease: Option<EchGreaseShape>,
 }
 
 /// A list set natively (typed, GREASE from the connection's GREASE lists), or exactly as
@@ -145,7 +147,8 @@ impl WirePlan {
             && self.grease_values == GreaseValues::Fresh
             && !self.legacy_extensions
             && self.unknown_values == UnknownValues::Drop
-            && self.extension_bodies.is_none();
+            && self.extension_bodies.is_none()
+            && self.ech_grease.is_none();
         if defaults {
             return None;
         }
@@ -156,7 +159,8 @@ impl WirePlan {
         shape
             .set_grease_values(self.grease_values)
             .set_unknown_values(self.unknown_values)
-            .set_legacy_extensions(self.legacy_extensions);
+            .set_legacy_extensions(self.legacy_extensions)
+            .set_ech_grease(self.ech_grease);
         for (id, body) in self
             .extension_bodies
             .iter()
@@ -677,6 +681,11 @@ impl TryFrom<&BoringTlsConnectorConfig<'_>> for ConnectorOptions {
             alps: value.alps.map(|p| (p.protocols.clone(), p.new_codepoint)),
             record_size_limit: value.record_size_limit.map(|p| p.0),
             delegated_credential_schemes,
+            ech_grease: value
+                .ech_grease
+                .map(|shape| shape.native_shape())
+                .transpose()?
+                .flatten(),
             encrypted_client_hello: value
                 .encrypted_client_hello
                 .map(|p| p.0)

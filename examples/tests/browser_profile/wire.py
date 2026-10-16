@@ -59,11 +59,11 @@ def one(node, name):
     return found[0]
 
 
-def parse_pdml(data, protocol, server_port, *, include_data=False):
-    """Reject ambiguous frame identity; preserve duplicate header names and order."""
-    if protocol not in ("h2", "h3"):
-        raise ValueError("expected h2 or h3")
-    if len(data) > MAX_PDML_BYTES:
+def pdml_packets(data, *, byte_limit=None, packet_limit=None):
+    """Admit one bounded tshark document before protocol-specific decoding."""
+    byte_limit = MAX_PDML_BYTES if byte_limit is None else byte_limit
+    packet_limit = MAX_PACKETS if packet_limit is None else packet_limit
+    if len(data) > byte_limit:
         raise ValueError("decoded byte limit exceeded")
     if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
         raise ValueError("external/entity declarations are not valid tshark output")
@@ -71,8 +71,16 @@ def parse_pdml(data, protocol, server_port, *, include_data=False):
     if root.tag != "pdml":
         raise ValueError("expected tshark PDML")
     packets = root.findall("packet")
-    if len(packets) > MAX_PACKETS:
+    if len(packets) > packet_limit:
         raise ValueError("decoded packet limit exceeded")
+    return packets
+
+
+def parse_pdml(data, protocol, server_port, *, include_data=False):
+    """Reject ambiguous frame identity; preserve duplicate header names and order."""
+    if protocol not in ("h2", "h3"):
+        raise ValueError("expected h2 or h3")
+    packets = pdml_packets(data)
     blocks = []
     for packet in packets:
         containers = [
@@ -195,7 +203,7 @@ def read_header_blocks(capture, keylog, protocol, server_port, output):
                 "-o",
                 "tls.keylog_file:" + str(keylog),
                 "-Y",
-                prefix,
+                f"{prefix} or tls.handshake.type == 1",
                 "-T",
                 "pdml",
             ],

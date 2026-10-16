@@ -73,7 +73,11 @@ Browser SSLKEYLOGFILE output lets tshark decrypt TLS/QUIC. The runner waits unti
 all operations are independently decoded before stopping capture. It checks
 joint regular/pseudo-header order, multiplicity, retained literal values, request
 body semantics, final successful responses, and the decoded WebSocket greeting.
-Request-bound values are counted separately because profiles do not retain them.
+Request-bound values are counted separately because profiles do not retain them. The same
+bounded PDML output includes ClientHello evidence. `tls_wire.py` checks retained
+TLS versions, cipher and extension order, and extension metadata against each
+request-bearing connection; keys and ciphertext are excluded from the projection.
+Preconnections without requests are reported separately.
 
 **This TLS command currently verifies original capture, not strict replay.**
 TLS/QUIC connection compilation, complete compression/connection comparisons and
