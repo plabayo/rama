@@ -19,9 +19,9 @@ use rama_boring::{
     sha::sha256,
     ssl::{
         ClientHelloShape, ConnectConfiguration, EchGreaseShape, ExtensionType, GreaseLists,
-        GreaseValues, SslConnector, SslConnectorBuilder, SslCredential, SslCurve, SslMethod,
-        SslOptions, SslRef, SslSessionCacheMode, SslSignatureAlgorithm, SslVerifyMode, SslVersion,
-        UnknownValues,
+        GreaseValues, Padding, SslConnector, SslConnectorBuilder, SslCredential, SslCurve,
+        SslMethod, SslOptions, SslRef, SslSessionCacheMode, SslSignatureAlgorithm, SslVerifyMode,
+        SslVersion, UnknownValues,
     },
     x509::{
         X509,
@@ -117,6 +117,7 @@ struct WirePlan {
     requested_trust_anchors: Option<Vec<u8>>,
     grease: GreaseLists,
     grease_values: GreaseValues,
+    client_hello_padding: Padding,
     legacy_extensions: bool,
     unknown_values: UnknownValues,
     extension_bodies: Option<Arc<[(ExtensionId, Bytes)]>>,
@@ -145,6 +146,7 @@ impl WirePlan {
     fn shape(&self) -> Option<ClientHelloShape> {
         let defaults = self.grease.is_empty()
             && self.grease_values == GreaseValues::Fresh
+            && self.client_hello_padding == Padding::Native
             && !self.legacy_extensions
             && self.unknown_values == UnknownValues::Drop
             && self.extension_bodies.is_none()
@@ -158,6 +160,7 @@ impl WirePlan {
         }
         shape
             .set_grease_values(self.grease_values)
+            .set_padding(self.client_hello_padding)
             .set_unknown_values(self.unknown_values)
             .set_legacy_extensions(self.legacy_extensions)
             .set_ech_grease(self.ech_grease);
@@ -665,6 +668,7 @@ impl TryFrom<&BoringTlsConnectorConfig<'_>> for ConnectorOptions {
             requested_trust_anchors,
             grease,
             grease_values: value.grease_values.map(|p| p.0).unwrap_or_default(),
+            client_hello_padding: value.client_hello_padding.map(|p| p.0).unwrap_or_default(),
             legacy_extensions: value.legacy_extensions.is_some_and(|p| p.0),
             unknown_values: value.unknown_values.map(|p| p.0).unwrap_or_default(),
             extension_bodies: value.extension_bodies.map(|p| p.0.clone()),

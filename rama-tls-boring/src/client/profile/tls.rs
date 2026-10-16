@@ -3,7 +3,9 @@
 //! Captured secrets are never available here. Connection-owned advertisements
 //! need current application bindings; unsupported native shapes fail explicitly.
 
-use rama_boring::ssl::{GreaseValues, SslCipher, SslCurve, SslSignatureAlgorithm, UnknownValues};
+use rama_boring::ssl::{
+    GreaseValues, Padding, SslCipher, SslCurve, SslSignatureAlgorithm, UnknownValues,
+};
 use rama_core::{bytes::Bytes, conversion::RamaTryInto as _, error::BoxError};
 use rama_net::tls::ApplicationProtocol;
 use rama_tls::{
@@ -68,6 +70,7 @@ pub(super) fn compile(
     config.set_grease(false);
     config.set_grease_signature_schemes(false);
     config.set_grease_values(GreaseValues::Pinned);
+    config.set_client_hello_padding(Padding::Off);
     config.set_unknown_values(UnknownValues::Preserve);
     config.set_extension_order(
         capture
@@ -109,7 +112,9 @@ pub(super) fn compile(
             (ExtensionId::COMPRESS_CERTIFICATE, Value::U16List(algorithms)) => {
                 config.set_cert_compression(algorithms.iter().copied().map(Into::into).collect());
             }
-            (ExtensionId::RECORD_SIZE_LIMIT, Value::U16List(limit)) if limit.len() == 1 => {
+            (ExtensionId::RECORD_SIZE_LIMIT, Value::U16List(limit))
+                if limit.len() == 1 && limit[0] != 0 =>
+            {
                 config.set_record_size_limit(limit[0]);
             }
             (ExtensionId::DELEGATED_CREDENTIAL, Value::U16List(schemes)) => {
@@ -122,6 +127,20 @@ pub(super) fn compile(
                 if values.contains(&u16::from(ProtocolVersion::TLSv1_3)) =>
             {
                 config.set_supported_versions(values.iter().copied().map(Into::into).collect());
+                // Restrict native negotiation to this admitted offer. Explicit
+                // caller bounds are checked before these overrides are applied.
+                let mut offered = values
+                    .iter()
+                    .copied()
+                    .filter(|value| !is_grease_u16(*value));
+                let first = offered
+                    .next()
+                    .ok_or_else(|| invalid("missing negotiable TLS version"))?;
+                let (min, max) = offered.fold((first, first), |(min, max), value| {
+                    (min.min(value), max.max(value))
+                });
+                config.set_min_version(min.into());
+                config.set_max_version(max.into());
                 versions = true;
             }
             (ExtensionId::PSK_KEY_EXCHANGE_MODES, Value::U8List(modes))
@@ -232,6 +251,30 @@ fn validate_native_lists(capture: &TlsCapture) -> Result<(), BoxError> {
             _ => None,
         })
         .unwrap_or_default();
+    let offers_tls12 = capture.extensions.iter().any(|extension| {
+        extension.id == u16::from(ExtensionId::SUPPORTED_VERSIONS)
+            && matches!(&extension.value, Value::U16List(values)
+                if values.contains(&u16::from(ProtocolVersion::TLSv1_2)))
+    });
+    let has_point_formats = capture
+        .extensions
+        .iter()
+        .any(|extension| extension.id == u16::from(ExtensionId::EC_POINT_FORMATS));
+    if offers_tls12 != has_point_formats {
+        return Err(invalid(
+            "captured EC point formats differ from native version policy",
+        ));
+    }
+    if !offers_tls12
+        && capture
+            .extensions
+            .iter()
+            .any(|extension| extension.id == u16::from(ExtensionId::SESSION_TICKET))
+    {
+        return Err(invalid(
+            "captured session-ticket extension requires a TLS 1.2 offer",
+        ));
+    }
     let mut alps_seen = false;
     for extension in &capture.extensions {
         if matches!(
@@ -346,6 +389,33 @@ fn validate_native_lists(capture: &TlsCapture) -> Result<(), BoxError> {
                     }
                     previous = Some(position);
                 }
+            }
+        }
+    }
+    Ok(())
+}
+
+// A captured offer may narrow caller policy, but must never broaden it. Check
+// every negotiable version before installing the offer's own native bounds.
+pub(super) fn validate_version_bounds(
+    capture: &TlsCapture,
+    min: Option<ProtocolVersion>,
+    max: Option<ProtocolVersion>,
+) -> Result<(), BoxError> {
+    for extension in &capture.extensions {
+        if extension.id != u16::from(ExtensionId::SUPPORTED_VERSIONS) {
+            continue;
+        }
+        let Value::U16List(versions) = &extension.value else {
+            return Err(invalid("captured TLS version list is malformed"));
+        };
+        for &version in versions.iter().filter(|&&version| !is_grease_u16(version)) {
+            if min.is_some_and(|min| version < u16::from(min))
+                || max.is_some_and(|max| version > u16::from(max))
+            {
+                return Err(invalid(
+                    "caller TLS version bounds conflict with captured offer",
+                ));
             }
         }
     }

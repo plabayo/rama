@@ -258,3 +258,179 @@ fn key_share_sizes_follow_native_emission_and_compile_back_to_the_same_shape() {
         );
     }
 }
+
+// Exercise the actual SSL retained by the compiler, including caller policy.
+// A mismatch is a bug even when the generic wire overrides look correct.
+fn prepared_hello(mut compiled: CompiledConnection) -> rama_tls::client::ClientHello {
+    #[derive(Default)]
+    struct Sink(Vec<u8>);
+
+    impl std::io::Read for Sink {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::WouldBlock.into())
+        }
+    }
+
+    impl std::io::Write for Sink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let prepared = compiled
+        .tls
+        .as_mut()
+        .unwrap()
+        .1
+        .prepared
+        .get_mut()
+        .take()
+        .unwrap();
+    let ssl = prepared.client.into_ssl_for_test();
+    let Err(rama_boring::ssl::HandshakeError::WouldBlock(stream)) = ssl.connect(Sink::default())
+    else {
+        panic!("native first flight must precede reading a server response");
+    };
+    rama_tls::client::parse_client_hello_handshake(&stream.get_ref().0).unwrap()
+}
+
+fn mixed_version_capture() -> TlsCapture {
+    let source = wire_variant()
+        .with_grease(false)
+        .with_supported_versions(vec![ProtocolVersion::TLSv1_3, ProtocolVersion::TLSv1_2])
+        .with_encrypted_client_hello(true)
+        .with_ech_grease(EchGrease::Shape {
+            kdf_id: 1,
+            aead_id: 1,
+            encapsulated_key_len: 32,
+            payload_len: 320,
+        });
+    TlsCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        TlsCaptureTransport::Tcp,
+        &hello_from_data(TlsConnectorData::try_from(&source).unwrap()),
+        TlsCaptureLimits::default(),
+    )
+    .unwrap()
+}
+
+fn remove_extension(captured: &mut TlsCapture, id: ExtensionId) {
+    captured.extensions = std::mem::take(&mut captured.extensions)
+        .into_vec()
+        .into_iter()
+        .filter(|extension| extension.id != u16::from(id))
+        .collect();
+}
+
+fn assert_admitted_emission_matches(
+    captured: &TlsCapture,
+    policy: TlsClientConfig,
+    must_admit: bool,
+) {
+    let connector = TlsConnector::auto(()).with_base_config(policy);
+    let compiled = match connector.profile_compiler().prepare(&input(), captured) {
+        Ok(compiled) => compiled,
+        Err(error) => {
+            assert!(!must_admit, "control shape must remain supported: {error}");
+            return;
+        }
+    };
+    assert!(compiled.supports(CapturedSlotKind::TcpTls));
+    let actual = TlsCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        TlsCaptureTransport::Tcp,
+        &prepared_hello(compiled),
+        TlsCaptureLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        captured
+            .canonical(TlsCaptureLimits::default())
+            .unwrap()
+            .bytes,
+        actual.canonical(TlsCaptureLimits::default()).unwrap().bytes,
+        "admitted capture must match the actual prepared native first flight"
+    );
+}
+
+#[test]
+fn prepared_native_control_preserves_the_selected_first_flight() {
+    assert_admitted_emission_matches(&mixed_version_capture(), TlsClientConfig::new(), true);
+}
+
+#[test]
+fn caller_version_floor_cannot_silently_change_the_selected_first_flight() {
+    // The captured TLS 1.2 offer must not weaken a TLS 1.3 caller floor.
+    let connector = TlsConnector::auto(())
+        .with_base_config(TlsClientConfig::new().with_min_version(ProtocolVersion::TLSv1_3));
+    let error = connector
+        .profile_compiler()
+        .prepare(&input(), &mixed_version_capture())
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("caller TLS version bounds conflict")
+    );
+}
+
+#[test]
+fn automatic_padding_cannot_silently_change_the_selected_first_flight() {
+    let mut captured = mixed_version_capture();
+    remove_extension(&mut captured, ExtensionId::ENCRYPTED_CLIENT_HELLO);
+    assert_admitted_emission_matches(&captured, TlsClientConfig::new(), true);
+}
+
+#[test]
+fn automatic_point_formats_cannot_silently_change_the_selected_first_flight() {
+    let mut captured = mixed_version_capture();
+    remove_extension(&mut captured, ExtensionId::EC_POINT_FORMATS);
+    assert_admitted_emission_matches(&captured, TlsClientConfig::new(), false);
+}
+
+#[test]
+fn zero_record_limit_cannot_silently_disappear_from_the_selected_first_flight() {
+    let mut captured = mixed_version_capture();
+    let mut extensions = captured.extensions.into_vec();
+    extensions.push(TlsCapturedExtension {
+        id: ExtensionId::RECORD_SIZE_LIMIT.into(),
+        value: TlsCapturedExtensionValue::U16List(vec![0].into()),
+    });
+    captured.extensions = extensions.into();
+    assert_admitted_emission_matches(&captured, TlsClientConfig::new(), false);
+}
+
+#[test]
+fn broader_caller_version_bounds_do_not_expand_the_selected_first_flight() {
+    assert_admitted_emission_matches(
+        &capture(),
+        TlsClientConfig::new().with_min_version(ProtocolVersion::TLSv1_2),
+        true,
+    );
+}
+
+#[test]
+fn explicit_legacy_extension_pair_can_remain_in_a_tls13_only_first_flight() {
+    let source = wire_variant()
+        .with_legacy_extensions(true)
+        .with_encrypted_client_hello(true)
+        .with_ech_grease(EchGrease::Shape {
+            kdf_id: 1,
+            aead_id: 1,
+            encapsulated_key_len: 32,
+            payload_len: 320,
+        });
+    let captured = TlsCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        TlsCaptureTransport::Tcp,
+        &hello_from_data(TlsConnectorData::try_from(&source).unwrap()),
+        TlsCaptureLimits::default(),
+    )
+    .unwrap();
+    assert_admitted_emission_matches(&captured, TlsClientConfig::new(), true);
+}

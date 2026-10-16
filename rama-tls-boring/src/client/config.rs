@@ -1,6 +1,6 @@
 use itertools::Itertools;
 use rama_boring::{
-    ssl::{GreaseValues, UnknownValues},
+    ssl::{GreaseValues, Padding, UnknownValues},
     x509::store::X509Store,
 };
 use rama_core::bytes::Bytes;
@@ -57,6 +57,7 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub permute_extensions: Option<&'a BoringPermuteExtensions>,
     pub unknown_values: Option<&'a BoringUnknownValues>,
     pub grease_values: Option<&'a BoringGreaseValues>,
+    pub client_hello_padding: Option<&'a BoringClientHelloPadding>,
     pub legacy_extensions: Option<&'a BoringLegacyExtensions>,
     pub extension_bodies: Option<&'a BoringExtensionBodies>,
     pub requested_trust_anchors: Option<&'a BoringRequestedTrustAnchors>,
@@ -109,6 +110,7 @@ impl BoringTlsConnectorConfig<'_> {
             permute_extensions,
             unknown_values,
             grease_values,
+            client_hello_padding,
             legacy_extensions,
             extension_bodies,
             requested_trust_anchors,
@@ -169,6 +171,9 @@ impl BoringTlsConnectorConfig<'_> {
         }
         if let Some(values) = grease_values {
             builder.set_component(*values);
+        }
+        if let Some(padding) = client_hello_padding {
+            builder.set_component(*padding);
         }
         if let Some(legacy) = legacy_extensions {
             builder.set_component(*legacy);
@@ -236,6 +241,7 @@ impl BoringTlsConnectorConfig<'_> {
             permute_extensions: _,
             unknown_values: _,
             grease_values: _,
+            client_hello_padding: _,
             legacy_extensions: _,
             extension_bodies: _,
             requested_trust_anchors: _,
@@ -279,6 +285,7 @@ impl BoringTlsConnectorConfig<'_> {
             permute_extensions: None,
             unknown_values: None,
             grease_values: None,
+            client_hello_padding: None,
             legacy_extensions: None,
             extension_bodies: None,
             requested_trust_anchors: None,
@@ -323,6 +330,7 @@ impl BoringTlsConnectorConfig<'_> {
             permute_extensions: _,
             unknown_values: _,
             grease_values: _,
+            client_hello_padding: _,
             legacy_extensions: _,
             extension_bodies: _,
             requested_trust_anchors: _,
@@ -415,6 +423,11 @@ pub trait BoringClientConfigExt: Sized {
         /// or exactly the listed codepoints ([`GreaseValues::Pinned`], for a relay that
         /// mirrors its client).
         fn grease_values(self, values: GreaseValues) -> Self;
+    }
+    generate_set_and_with! {
+        /// Control ClientHello padding independently of extension order.
+        /// Native padding is the default; explicit modes affect connection reuse.
+        fn client_hello_padding(self, padding: Padding) -> Self;
     }
     generate_set_and_with! {
         /// Send extended_master_secret and renegotiation_info even when the minimum version is
@@ -562,6 +575,12 @@ impl BoringClientConfigExt for TlsClientConfig {
     generate_set_and_with! {
         fn grease_values(mut self, values: GreaseValues) -> Self {
             self.insert(BoringGreaseValues(values));
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn client_hello_padding(mut self, padding: Padding) -> Self {
+            self.insert(BoringClientHelloPadding(padding));
             self
         }
     }
@@ -791,6 +810,19 @@ impl TlsPoolComponent for BoringUnknownValues {
 pub struct BoringGreaseValues(pub GreaseValues);
 
 impl TlsPoolComponent for BoringGreaseValues {
+    type Identity = Self;
+
+    fn pool_component_identity(&self) -> Self {
+        *self
+    }
+}
+
+/// ClientHello padding policy; native behavior is used when absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(tls))]
+pub struct BoringClientHelloPadding(pub Padding);
+
+impl TlsPoolComponent for BoringClientHelloPadding {
     type Identity = Self;
 
     fn pool_component_identity(&self) -> Self {
@@ -1265,6 +1297,13 @@ mod pool_tests {
             }),
             ("signature_schemes", |ext, value| {
                 ext.insert(BoringSignatureSchemes(vec![u16::from(value).into()]));
+            }),
+            ("client_hello_padding", |ext, value| {
+                ext.insert(BoringClientHelloPadding(if value == 0 {
+                    Padding::Native
+                } else {
+                    Padding::Off
+                }));
             }),
             ("grease", |ext, value| {
                 ext.insert(BoringGrease(value != 0));

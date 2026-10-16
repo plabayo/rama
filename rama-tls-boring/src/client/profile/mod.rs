@@ -15,10 +15,7 @@ use rama_net::{
     AuthorityInputExt, Protocol, ProtocolInputExt,
     address::{Host, HostWithOptPort},
 };
-use rama_tls::{
-    ProtocolVersion,
-    client::{TlsClientConfig, TlsPoolId},
-};
+use rama_tls::client::{TlsClientConfig, TlsPoolId};
 use rama_ua::profile::{
     capture::{
         joint::CapturedSlotKind,
@@ -50,7 +47,8 @@ mod tls;
 /// Backend compiler obtained from the TLS connector that will consume it.
 ///
 /// Supports fresh TCP TLS 1.3 first hellos. QUIC captures remain unsupported;
-/// selected PSK shapes and configured session stores are rejected.
+/// selected PSK shapes and configured session stores are rejected. Captures
+/// containing explicit padding extensions remain unsupported.
 ///
 /// Existing certificate verification, client credentials and key logging remain
 /// application policy. Captured keys, tickets and ciphertext are never reused.
@@ -157,14 +155,11 @@ impl ConnectionCompiler {
                 "destination identity and captured SNI presence differ",
             ));
         }
-        if current
-            .max_version
-            .is_some_and(|version| u16::from(version.0) < u16::from(ProtocolVersion::TLSv1_3))
-        {
-            return Err(invalid(
-                "caller TLS version limit conflicts with captured TLS 1.3",
-            ));
-        }
+        tls::validate_version_bounds(
+            capture,
+            current.min_version.map(|version| version.0),
+            current.max_version.map(|version| version.0),
+        )?;
         if let Some(ciphers) = current.cipher_suites
             && !ciphers
                 .0
