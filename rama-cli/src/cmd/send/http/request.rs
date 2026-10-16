@@ -90,7 +90,7 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
     for header in &cfg.header {
         request
             .headers_mut()
-            .insert(header.name.clone(), header.value.clone());
+            .append(header.name.clone(), header.value.clone());
     }
     if cfg.verbose {
         request.extensions().insert(super::client::VerboseLogs);
@@ -299,6 +299,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repeated_request_headers_preserve_each_value_in_order() {
+        for version in ["--http1.0", "--http1.1", "--http2", "--http3"] {
+            for is_ws in [false, true] {
+                let mut cfg = config(&[
+                    version,
+                    "--header",
+                    "X-Repeat: first",
+                    "--header",
+                    "X-Other: between",
+                    "--header",
+                    "x-repeat: second",
+                    "--header",
+                    "X-Repeat: third",
+                    "--header",
+                    "x-other: last",
+                ]);
+                if is_ws {
+                    cfg.uri = "wss://example.test/socket".into();
+                }
+                let request = build(&cfg, is_ws).await.unwrap();
+                for (name, expected) in [
+                    ("x-repeat", vec!["first", "second", "third"]),
+                    ("x-other", vec!["between", "last"]),
+                ] {
+                    let actual: Vec<_> = request
+                        .headers()
+                        .get_all(name)
+                        .iter()
+                        .map(|value| value.to_str().unwrap())
+                        .collect();
+                    assert_eq!(actual, expected, "{version}, ws={is_ws}, {name}");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn request_content_type_explicit_header_survives_data_sources_and_defaults() {
         let directory = rama::utils::fs::tempdir().unwrap();
         let file = directory.path().join("payload");
@@ -316,6 +353,8 @@ mod tests {
                     "Content-Type: text/plain;charset=UTF-8",
                     "--header",
                     "Content-Length: 99",
+                    "--header",
+                    "Content-Length: 100",
                 ];
                 if let Some(flag) = shorthand {
                     args.push(flag);
@@ -326,6 +365,7 @@ mod tests {
                     assert!(!request.headers().contains_key(CONTENT_LENGTH));
                 } else {
                     assert_eq!(request.headers()[CONTENT_LENGTH], "7");
+                    assert_eq!(request.headers().get_all(CONTENT_LENGTH).iter().count(), 1);
                 }
             }
         }
@@ -351,11 +391,14 @@ mod tests {
                 "field=value",
                 "--header",
                 "Content-Type: text/plain",
+                "--header",
+                "Content-Type: application/json",
             ]),
             false,
         )
         .await
         .unwrap();
+        assert_eq!(request.headers().get_all(CONTENT_TYPE).iter().count(), 1);
         let content_type = request.headers()[CONTENT_TYPE].to_str().unwrap();
         assert!(
             content_type.starts_with("multipart/form-data; boundary="),

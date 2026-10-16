@@ -1212,13 +1212,9 @@ mod tests {
             let mut complete_args = vec!["--curl", "--output", output_path.as_str()];
             complete_args.extend_from_slice(args);
             let cfg = send_cfg(&complete_args);
-            let uri = args.last().expect("target URI");
-            let mut request = Request::builder().uri(*uri).body(Body::empty()).unwrap();
-            for header in &cfg.header {
-                request
-                    .headers_mut()
-                    .insert(header.name.clone(), header.value.clone());
-            }
+            let request = crate::cmd::send::http::request::build(&cfg, false)
+                .await
+                .unwrap();
             new_hermetic(&cfg)
                 .await
                 .unwrap()
