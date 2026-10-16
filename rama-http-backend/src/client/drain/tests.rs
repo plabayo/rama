@@ -796,6 +796,62 @@ fn pending_body() -> Body {
     Body::from_stream(stream::pending::<Result<Bytes, Infallible>>())
 }
 
+#[tokio::test(start_paused = true)]
+async fn deadline_elapsed_before_first_poll_closes_without_draining() {
+    let events = Arc::default();
+    drop(recorded(
+        Body::from("unread"),
+        &events,
+        &Executor::new(),
+        &Http1BodyDrainConfig::default(),
+    ));
+    // Advance before the spawned drain gets its first poll. Even a body
+    // whose final frame is ready must not be read after the deadline.
+    tokio::time::advance(Duration::from_millis(100)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(*events.lock(), ["invalidate", "release"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn deadline_elapsed_between_polls_stops_before_reading_more() {
+    let mut body = GuardedBody::new(
+        Body::from_stream(stream::iter(
+            (0..=FRAMES_PER_POLL).map(|_| Ok::<_, Infallible>(Bytes::from_static(b"x"))),
+        )),
+        (),
+    );
+    let deadline = Instant::now() + Duration::from_millis(50);
+    let mut discarded = 0;
+    {
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        assert_eq!(
+            poll_drain(
+                &mut body,
+                &mut cx,
+                &mut discarded,
+                usize::MAX,
+                Some(deadline)
+            ),
+            Poll::Pending,
+        );
+    }
+    assert_eq!(discarded, FRAMES_PER_POLL);
+
+    tokio::time::advance(Duration::from_millis(50)).await;
+    let mut cx = Context::from_waker(std::task::Waker::noop());
+    assert_eq!(
+        poll_drain(
+            &mut body,
+            &mut cx,
+            &mut discarded,
+            usize::MAX,
+            Some(deadline)
+        ),
+        Poll::Ready(DrainOutcome::Deadline),
+    );
+    assert_eq!(discarded, FRAMES_PER_POLL, "no frame read at the deadline");
+}
+
 async fn recorded_until(events: &Arc<Mutex<Vec<&'static str>>>, len: usize) {
     timeout(LIMIT, async {
         while events.lock().len() < len {

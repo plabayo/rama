@@ -157,7 +157,7 @@ impl Http1BodyDrain {
     fn try_acquire(self: &Arc<Self>) -> Option<DrainPermit> {
         let max = self.config.max_concurrent.get();
         self.active
-            .fetch_update(Ordering::Acquire, Ordering::Relaxed, |active| {
+            .try_update(Ordering::Acquire, Ordering::Relaxed, |active| {
                 (active < max).then_some(active + 1)
             })
             .ok()?;
@@ -317,7 +317,7 @@ thread_local! {
     static DRAINS_STARTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Frames read before a drain yields to the executor (and checks its deadline).
+/// Maximum frames read in one drain poll before yielding to the executor.
 const FRAMES_PER_POLL: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -394,6 +394,11 @@ fn poll_drain<C>(
     max_bytes: usize,
     deadline: Option<Instant>,
 ) -> Poll<DrainOutcome> {
+    // Tokio polls the inner future before its timeout. Check before reading,
+    // also when a drain first starts or resumes after its deadline.
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return Poll::Ready(DrainOutcome::Deadline);
+    }
     for _ in 0..FRAMES_PER_POLL {
         let frame = match Pin::new(&mut *body).poll_frame(cx) {
             Poll::Pending => return Poll::Pending,
@@ -419,10 +424,7 @@ fn poll_drain<C>(
             return Poll::Ready(DrainOutcome::Complete);
         }
     }
-    // An always-ready body must neither hold the worker nor outlive its deadline.
-    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-        return Poll::Ready(DrainOutcome::Deadline);
-    }
+    // An always-ready body must not hold the worker indefinitely.
     cx.waker().wake_by_ref();
     Poll::Pending
 }
