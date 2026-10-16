@@ -101,6 +101,30 @@ class H3SequenceWireTests(unittest.TestCase):
             with self.subTest(packets=packets), self.assertRaises(ValueError):
                 sequence.stream_prefixes(document(*packets), 443)
 
+    def test_empty_stream_fin_without_data_field_preserves_existing_prefix(self):
+        prefix = b"\x00" + frame(4, b"")
+        empty = stream_packet(2, b"", offset=len(prefix))
+        empty = empty.replace(scalar("quic.stream_data", b"", show="payload"), "")
+        empty = empty.replace('value="0e" show="14"', 'value="0f" show="15"')
+        try:
+            decoded = sequence.stream_prefixes(
+                document(stream_packet(2, prefix), empty), 443
+            )
+        except ValueError:
+            decoded = None
+        self.assertIsNotNone(
+            decoded, "a valid empty FIN must not erase or reject its stream prefix"
+        )
+        self.assertEqual(decoded[(7, False)][0].payload, frame(4, b""))
+
+    def test_missing_nonempty_or_duplicated_stream_payload_rejects(self):
+        prefix = b"\x00" + frame(4, b"")
+        raw = scalar("quic.stream_data", prefix, show="payload")
+        packet = stream_packet(2, prefix)
+        for changed in [packet.replace(raw, ""), packet.replace(raw, raw + raw)]:
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                sequence.stream_prefixes(document(changed), 443)
+
     def test_direction_and_connection_ids_do_not_share_reassembly(self):
         with self.assertRaisesRegex(ValueError, "wrong endpoint"):
             sequence.stream_prefixes(

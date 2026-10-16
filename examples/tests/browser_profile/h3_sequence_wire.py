@@ -9,7 +9,6 @@ No request values or QPACK strings are returned in reports.
 from collections import defaultdict
 from dataclasses import dataclass, field as data_field
 
-from connection_fields import field
 from quic_wire import H3_SETTINGS, client_settings, varint, varint_field
 from tls_wire import Reader, byte_span, identity
 from wire import one, pdml_packets
@@ -76,7 +75,16 @@ def stream_prefixes(data, server_port):
             if kind & 4:
                 offset, size = varint_field(frame, "quic.stream.offset")
                 width += size
-            payload = byte_span(field(frame, "quic.stream_data"))
+            payloads = [
+                node
+                for node in frame.iter("field")
+                if node.get("name") == "quic.stream_data"
+            ]
+            if len(payloads) > 1:
+                raise ValueError("ambiguous QUIC STREAM payload")
+            # A zero-length STREAM/FIN may have no data field. The declared
+            # length and parent extent below still reject missing nonempty data.
+            payload = byte_span(payloads[0]) if payloads else b""
             if kind & 2:
                 length, size = varint_field(frame, "quic.stream.length")
                 width += size
