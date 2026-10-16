@@ -26,10 +26,21 @@ def invalid_constant(value):
     raise ValueError("non-finite JSON constant: " + value)
 
 
+def json_integer(token):
+    """Preserve negative zero so unsigned fields cannot mistake it for zero.
+
+    Other signed integers remain available to unrelated browser metadata.
+    """
+    return -0.0 if token == "-0" else int(token)
+
+
 def json_object(data):
     """Decode an unambiguous object for the fp endpoint's JSON contract."""
     value = json.loads(
-        data, object_pairs_hook=unique_object, parse_constant=invalid_constant
+        data,
+        object_pairs_hook=unique_object,
+        parse_constant=invalid_constant,
+        parse_int=json_integer,
     )
     if not isinstance(value, dict):
         raise ValueError("expected a JSON object")

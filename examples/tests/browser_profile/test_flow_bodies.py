@@ -97,6 +97,42 @@ class FlowBodyTests(unittest.TestCase):
                     ), self.assertRaises(ValueError):
                         check_original_bodies(rows)
 
+    def test_negative_zero_is_rejected_without_rejecting_unsigned_zero(self):
+        # Complete journeys isolate number validation from flow coverage.
+        for protocol in ("h2", "h3"):
+            for index, initiator in ((2, "fetch"), (4, "xml")):
+                for token in ("0", "-0", "0.0", "-0.0", "0e0", "-0e0"):
+                    rows = fixture(protocol)
+                    body = '{"number":' + token
+                    if initiator == "fetch":
+                        body += ',"jsWebApis":{"navigator":{"userAgent":"fixture"}}'
+                    body += "}"
+                    headers = tuple(
+                        (
+                            name,
+                            f"/api/{initiator}/number/0" if name == ":path" else value,
+                        )
+                        for name, value in rows[index].headers
+                    )
+                    rows[index] = replace(
+                        rows[index], headers=headers, data=body.encode()
+                    )
+                    with self.subTest(
+                        protocol=protocol, initiator=initiator, token=token
+                    ):
+                        if token == "0":
+                            self.assertEqual(
+                                len(check_original_bodies(rows)["flows"]), 6
+                            )
+                        else:
+                            with self.assertRaisesRegex(ValueError, "unsigned integer"):
+                                check_original_bodies(rows)
+
+    def test_signed_metadata_remains_decodable(self):
+        metadata = json_object('{"nested":{"offset":-7,"zero":-0}}')["nested"]
+        self.assertEqual(metadata["offset"], -7)
+        self.assertEqual(metadata["zero"], 0)
+
     def test_json_objects_and_nested_members_are_unambiguous(self):
         for protocol in ("h2", "h3"):
             for body in (b"[]", b"null", b"8", b'{"number":8,"extra":{"a":1,"a":2}}'):
