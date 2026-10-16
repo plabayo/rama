@@ -760,7 +760,7 @@ jobs:
           fi
       - name: Capture and verify all six operations
         run: |
-          # H2/H3 currently verify original capture; strict replay remains open.
+          # H2 replays every connection variant; H3 native replay remains open.
           python examples/tests/browser_profile/run.py \
             --rama "target/${MODE}/rama" --browser "$BROWSER" \
             --protocol "$PROTOCOL" --flows all --interface lo \

@@ -6,7 +6,10 @@ This checks retained TLS metadata; other connection slots have separate checks.
 """
 
 from dataclasses import dataclass
+from capture_fields import connection_user_agents
 from wire import MAX_PDML_BYTES, MAX_PACKETS, pdml_packets
+
+TRUST_ANCHORS_EXTENSION = 51764
 
 
 # Match the capture policy in rama_tls::client::client_hello_extension_is_connection_bound.
@@ -40,7 +43,7 @@ CONNECTION_BOUND = {
     56,  # external_session_id
     57,  # quic_transport_parameters
     59,  # dnssec_chain
-    51764,  # trust_anchors
+    TRUST_ANCHORS_EXTENSION,  # trust_anchors
     65281,  # renegotiation_info
     0xFFCE,  # historical encrypted_server_name
     0xFFA5,  # historical QUIC transport parameters
@@ -276,16 +279,7 @@ def compare_tls_captures(archive, hellos, requests):
     """
     if archive.get("format_version") != 1:
         raise ValueError("unsupported inspection format")
-    user_agents = {}
-    for request in requests:
-        if request.from_server:
-            continue
-        agents = [value for name, value in request.headers if name == "user-agent"]
-        if len(agents) != 1:
-            raise ValueError("missing or ambiguous request user agent")
-        user_agents.setdefault(request.connection, set()).update(agents)
-    if not user_agents or any(len(agents) != 1 for agents in user_agents.values()):
-        raise ValueError("missing or mixed connection user agent")
+    user_agents = connection_user_agents(requests)
 
     checked = set()
     matched = []
@@ -297,7 +291,7 @@ def compare_tls_captures(archive, hellos, requests):
         candidates = [
             slot["capture"]
             for profile in archive["profiles"]
-            if profile["key"]["user_agent"] in user_agents[hello.connection]
+            if profile["key"]["user_agent"] == user_agents[hello.connection]
             for scope in profile["scopes"]
             for variant in scope["variants"]
             for slot in variant["capture"].get("slots", [])
@@ -305,7 +299,7 @@ def compare_tls_captures(archive, hellos, requests):
         ]
         if hello.capture not in candidates:
             raise ValueError("no matching TLS capture for request connection")
-        agent = next(iter(user_agents[hello.connection]))
+        agent = user_agents[hello.connection]
         matched.append((agent, hello.capture))
         checked.add(hello.connection)
     if checked != set(user_agents):
@@ -315,7 +309,7 @@ def compare_tls_captures(archive, hellos, requests):
     # only wire-to-profile membership could conceal extra fabricated variants.
     # Keep the User-Agent and the capture's transport in both directions: one
     # browser connection cannot establish another browser's retained variant.
-    agents = set().union(*user_agents.values())
+    agents = set(user_agents.values())
     retained = [
         (profile["key"]["user_agent"], slot["capture"])
         for profile in archive["profiles"]

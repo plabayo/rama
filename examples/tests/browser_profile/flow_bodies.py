@@ -47,7 +47,7 @@ def json_object(data):
     return value
 
 
-def check_original_bodies(blocks):
+def check_flow_bodies(blocks):
     streams = defaultdict(list)
     for block in blocks:
         streams[(block.connection, block.stream)].append(block)
@@ -123,6 +123,6 @@ def check_original_bodies(blocks):
         raise ValueError("incomplete body flow coverage")
     return {
         "flows": sorted(checked),
-        "scope": "original request body semantics, final 200 responses and WebSocket greeting",
-        "limits": "not replay fidelity or long-lived bidirectional WebSocket coverage",
+        "scope": "request body semantics, final 200 responses and WebSocket greeting",
+        "limits": "request tuple comparison is separate; not long-lived bidirectional WebSocket coverage",
     }

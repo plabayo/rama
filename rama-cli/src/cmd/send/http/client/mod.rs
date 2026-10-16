@@ -1,6 +1,7 @@
 use rama::{
     Layer, Service,
     combinators::Either,
+    crypto::pki_types::{CertificateDer, pem::PemObject as _},
     dns::client::DnsConnectorLayer,
     error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt, extra::OpaqueError},
     error_sink::TracingErrorSink,
@@ -311,6 +312,19 @@ async fn new_inner_client(
 
     if cfg.verbose {
         tls_config.set_store_server_cert_chain(true);
+    }
+
+    if let Some(path) = &cfg.cacert {
+        let pem = tokio::fs::read(path)
+            .await
+            .context("read destination CA bundle")?;
+        let certificates = CertificateDer::pem_slice_iter(&pem)
+            .collect::<Result<Vec<_>, _>>()
+            .context("parse destination CA bundle")?;
+        tls_config = tls_config.try_with_server_trust_anchors(certificates)?;
+    }
+    if let Some(anchors) = &cfg.tls_requested_trust_anchors {
+        tls_config.set_requested_trust_anchors(anchors.clone());
     }
 
     if let Some(min_ssl_version) = match (cfg.tls_v10, cfg.tls_v11, cfg.tls_v12, cfg.tls_v13) {

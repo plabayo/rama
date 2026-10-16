@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Run the shared browser journey, capture profiles, and verify packet evidence.
 
-H1 currently includes strict replay. H2/H3 currently verify original capture;
-connection-profile replay remains unfinished. Protocol-specific verifiers live
+H1 and TLS H2 include strict replay. H3 currently verifies original capture;
+native QUIC connection-profile replay remains unfinished. Protocol-specific verifiers live
 behind this common local/CI entry point.
 """
 

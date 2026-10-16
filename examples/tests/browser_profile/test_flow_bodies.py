@@ -2,7 +2,7 @@ from dataclasses import replace
 import json
 import unittest
 
-from flow_bodies import check_original_bodies, json_object
+from flow_bodies import check_flow_bodies, json_object
 from wire import HeaderBlock
 
 
@@ -59,7 +59,7 @@ class FlowBodyTests(unittest.TestCase):
 
     def test_all_operations_and_greeting(self):
         for protocol in ("h2", "h3"):
-            self.assertEqual(len(check_original_bodies(fixture(protocol))["flows"]), 6)
+            self.assertEqual(len(check_flow_bodies(fixture(protocol))["flows"]), 6)
 
     def test_invalid_json_number_and_duplicate_members_are_rejected(self):
         # Keep every other flow valid so no later coverage check masks failure.
@@ -95,7 +95,7 @@ class FlowBodyTests(unittest.TestCase):
                     with self.subTest(
                         protocol=protocol, initiator=initiator, literal=literal
                     ), self.assertRaises(ValueError):
-                        check_original_bodies(rows)
+                        check_flow_bodies(rows)
 
     def test_negative_zero_is_rejected_without_rejecting_unsigned_zero(self):
         # Complete journeys isolate number validation from flow coverage.
@@ -121,12 +121,10 @@ class FlowBodyTests(unittest.TestCase):
                         protocol=protocol, initiator=initiator, token=token
                     ):
                         if token == "0":
-                            self.assertEqual(
-                                len(check_original_bodies(rows)["flows"]), 6
-                            )
+                            self.assertEqual(len(check_flow_bodies(rows)["flows"]), 6)
                         else:
                             with self.assertRaisesRegex(ValueError, "unsigned integer"):
-                                check_original_bodies(rows)
+                                check_flow_bodies(rows)
 
     def test_signed_metadata_remains_decodable(self):
         metadata = json_object('{"nested":{"offset":-7,"zero":-0}}')["nested"]
@@ -141,7 +139,7 @@ class FlowBodyTests(unittest.TestCase):
                 with self.subTest(protocol=protocol, body=body), self.assertRaises(
                     ValueError
                 ):
-                    check_original_bodies(rows)
+                    check_flow_bodies(rows)
             rows = fixture(protocol)
             version = {"h2": "HTTP/2.0", "h3": "HTTP/3.0"}[protocol]
             greeting = (
@@ -149,7 +147,7 @@ class FlowBodyTests(unittest.TestCase):
             )
             rows[7] = replace(rows[7], websocket_text=(greeting,))
             with self.assertRaisesRegex(ValueError, "duplicate"):
-                check_original_bodies(rows)
+                check_flow_bodies(rows)
 
     def test_wrong_body_response_or_greeting_cannot_pass(self):
         mutations = [
@@ -174,9 +172,9 @@ class FlowBodyTests(unittest.TestCase):
                 with self.subTest(
                     protocol=protocol, index=index, changes=changes
                 ), self.assertRaises(ValueError):
-                    check_original_bodies(rows)
+                    check_flow_bodies(rows)
         with self.assertRaisesRegex(ValueError, "coverage"):
-            check_original_bodies(fixture("h3")[:-2])
+            check_flow_bodies(fixture("h3")[:-2])
 
 
 if __name__ == "__main__":

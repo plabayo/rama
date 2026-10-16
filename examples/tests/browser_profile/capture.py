@@ -2,7 +2,7 @@
 """Protocol fixtures behind the common browser runner.
 
 All protocols use the shared Selenium journey and isolated CLI fp database.
-H1 captures and strictly replays; TLS H2/H3 currently verify original capture.
+H1 and TLS H2 capture and strictly replay; H3 currently verifies original capture.
 Wire decoding and checks live in wire.py; replay inputs live in flows.py.
 """
 
@@ -23,10 +23,10 @@ import flows
 import wire
 
 from capture_fields import compare_capture_fields
+from connection_fields import compare_connection_fields, h2_prefixes
 from fixture_process import running, wait_ready
-from flow_bodies import check_original_bodies
+from replay import replay_environment, verify_tls_replay
 from tls_wire import client_hellos, compare_tls_captures
-from wire import parse_pdml, read_header_blocks
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[2] / "rama-fp"))
@@ -75,41 +75,6 @@ def fixture_certificate(root):
         ["openssl", "pkey", "-pubin", "-outform", "DER"], input=public, timeout=10
     )
     return key, certificate, base64.b64encode(hashlib.sha256(der).digest()).decode()
-
-
-def drain_capture(process, root, protocol, port, timeout=15):
-    """Wait for independently decoded complete flows before closing BPF capture.
-
-    dumpcap's file announcement is readiness, not a flush barrier. In particular,
-    macOS can still buffer the final QUIC datagrams after the browser has quit.
-    """
-    deadline = time.monotonic() + timeout
-    last_error = None
-    while time.monotonic() < deadline:
-        (root / "headers.pdml").unlink(missing_ok=True)
-        try:
-            headers = read_header_blocks(
-                root / "reference.pcapng",
-                root / "browser.keys",
-                protocol,
-                port,
-                root / "headers.pdml",
-            )
-            bodies = check_original_bodies(
-                parse_pdml(
-                    (root / "headers.pdml").read_bytes(),
-                    protocol,
-                    port,
-                    include_data=True,
-                )
-            )
-            return headers, bodies
-        except (OSError, ValueError, subprocess.CalledProcessError) as error:
-            last_error = error
-        if process.poll() is not None:
-            break
-        time.sleep(0.1)
-    raise RuntimeError("incomplete independently decoded capture") from last_error
 
 
 def capture_tls(args):
@@ -187,7 +152,15 @@ def capture_tls(args):
                     f"https://localhost:{port}",
                     expected_protocol=args.protocol,
                 )
-            headers, bodies = drain_capture(packets, root, args.protocol, port)
+            traffic = wire.drain_capture(
+                packets,
+                capture=root / "reference.pcapng",
+                keylog=root / "browser.keys",
+                protocol=args.protocol,
+                server_port=port,
+                output=root / "headers.pdml",
+            )
+    headers, bodies = traffic.headers, traffic.bodies
     if server.returncode or packets.returncode:
         raise RuntimeError("fixture process failed; see logs")
 
@@ -218,15 +191,38 @@ def capture_tls(args):
         ),
         headers,
     )
+    connection_fields = None
+    if args.protocol == "h2":
+        data = (root / "headers.pdml").read_bytes()
+        connection_fields = compare_connection_fields(
+            inspected, client_hellos(data, "Tcp"), h2_prefixes(data, port), headers
+        )
+    replay = None
+    if args.protocol == "h2":
+        replay = verify_tls_replay(
+            args,
+            traffic=traffic,
+            inspected=inspected,
+            server_command=server_command,
+            environment=environment,
+            certificate=certificate,
+            port=port,
+        )
     report = {
         "browser": result.browser_name,
         "version": result.browser_version,
         "protocols": dict(result.protocols),
         "browser_arguments": options.arguments,
         "fields": fields,
+        "connection_fields": connection_fields,
         "tls": tls,
         "bodies": bodies,
-        "scope": "original traffic capture checks; strict replay remains separate",
+        "replay": replay,
+        "scope": (
+            "original capture and strict replay checks"
+            if replay is not None
+            else "original capture checks; native QUIC replay remains unfinished"
+        ),
     }
     (root / "comparison.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report))
@@ -237,7 +233,7 @@ def capture(args):
         return capture_plaintext(args) if args.protocol == "h1" else capture_tls(args)
     finally:
         shutil.rmtree(args.output / "browser-profile", ignore_errors=True)
-        for name in ("key.pem", "server.keys", "browser.keys"):
+        for name in ("key.pem", "server.keys", "browser.keys", "replay.keys"):
             (args.output / name).unlink(missing_ok=True)
 
 
@@ -448,30 +444,7 @@ def capture_plaintext(args):
         )
 
         # Replay into a second database so reference observations cannot mask failure.
-        subprocess.run(
-            [
-                "docker",
-                "exec",
-                os.environ["RAMA_BROWSER_TEST_PG_CONTAINER"],
-                "createdb",
-                "-U",
-                "postgres",
-                "rama_fp_replay",
-            ],
-            check=True,
-            timeout=10,
-        )
-        source_dsn = os.environ["RAMA_BROWSER_CAPTURE_DATABASE_URL"]
-        require("dbname=rama_fp_capture" in source_dsn, "unexpected database identity")
-        replay_dsn = source_dsn.replace(
-            "dbname=rama_fp_capture", "dbname=rama_fp_replay"
-        )
-        for key in [
-            "DATABASE_URL",
-            "RAMA_FP_DATABASE_URL",
-            "RAMA_BROWSER_CAPTURE_DATABASE_URL",
-        ]:
-            os.environ[key] = replay_dsn
+        os.environ.update(replay_environment(os.environ))
         replay, log = start(
             [str(rama), "serve", "fp", "--bind", "127.0.0.1:0", "--http-version", "h1"],
             "fp-replay.log",
@@ -487,7 +460,7 @@ def capture_plaintext(args):
                     rama,
                     root / "profiles.json",
                     root / (flow + ".response"),
-                    replay_port,
+                    flows.ReplayTarget("h1", f"http://127.0.0.1:{replay_port}"),
                     flow,
                     reference_flows[flow][0],
                 )

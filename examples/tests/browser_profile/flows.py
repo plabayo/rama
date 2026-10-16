@@ -1,6 +1,10 @@
 """Match the six browser operations to captured HTTP flow contexts."""
 
+import difflib
+from dataclasses import dataclass
+from pathlib import Path
 import re
+from urllib.parse import urlsplit
 
 FLOWS = ("navigate", "fetch", "xhr", "ws", "form", "form_get")
 FLOW_NAMES = set(FLOWS)
@@ -56,7 +60,35 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def replay_args(rama, archive, output, port, flow, request):
+@dataclass(frozen=True)
+class ReplayTarget:
+    """Current destination and TLS policy, independently of captured metadata."""
+
+    protocol: str
+    origin: str
+    certificate: Path | None = None
+    trust_anchors: str | None = None
+
+
+def replay_args(
+    rama, archive, output, target, flow, request, *, connection_variant=None
+):
+    flags = {"h1": "--http1.1", "h2": "--http2", "h3": "--http3"}
+    require(target.protocol in flags, "unsupported replay protocol")
+    destination = urlsplit(target.origin)
+    require(
+        destination.scheme in ("http", "https")
+        and destination.hostname is not None
+        and not destination.path
+        and not destination.query
+        and not destination.fragment
+        and destination.username is None,
+        "replay target must be an HTTP(S) origin",
+    )
+    require(
+        target.protocol == "h1" or destination.scheme == "https",
+        "H2/H3 fixture replay requires TLS",
+    )
     args = [
         str(rama),
         "send",
@@ -69,22 +101,30 @@ def replay_args(rama, archive, output, port, flow, request):
         "02" * 32,
         "--emulate-request-key",
         "03" * 32,
-        "--http1.1",
+        flags[target.protocol],
         "--request",
         request.method,
     ]
+    if connection_variant is not None:
+        args += ["--emulate-connection-variant", connection_variant]
+    if target.certificate is not None:
+        args += ["--cacert", str(target.certificate)]
+    if target.trust_anchors is not None:
+        args += ["--tls-requested-trust-anchors", target.trust_anchors]
+
     for name in (
         "connection",
         "content-type",
         "content-length",
         "origin",
+        "referer",
         "sec-websocket-extensions",
     ):
         if name not in request.bindings:
             continue
         value = request.bindings[name]
         if name == "origin" and value != "null":
-            value = f"http://127.0.0.1:{port}"
+            value = target.origin
         args += ["--header", name + ": " + value]
     if request.body:
         body = request.body.decode("utf-8")
@@ -101,5 +141,51 @@ def replay_args(rama, archive, output, port, flow, request):
         args += ["--subprotocol", ",".join(protocols)]
     else:
         args += ["--fail", "--output", str(output)]
-    scheme = "ws" if flow == "ws" else "http"
-    return args + [f"{scheme}://127.0.0.1:{port}" + request.uri]
+    origin = target.origin
+    if flow == "ws":
+        scheme = "wss" if destination.scheme == "https" else "ws"
+        origin = scheme + "://" + destination.netloc
+    return args + [origin + request.uri]
+
+
+def compare_requests(reference, replay, *, expected_per_flow=1):
+    require(
+        set(reference) == set(FLOWS) == set(replay), "six-operation comparison coverage"
+    )
+    reports = []
+    for flow in FLOWS:
+        require(
+            len(replay[flow]) == expected_per_flow,
+            "expected replay request count per flow",
+        )
+        observed = replay[flow][0]
+        matched = all(
+            any(
+                actual.wire_tuple() == candidate.wire_tuple()
+                for candidate in reference[flow]
+            )
+            for actual in replay[flow]
+        )
+        reports.append(
+            {
+                "flow": flow,
+                "match": matched,
+                "requests_checked": len(replay[flow]),
+                "body_match": all(
+                    any(actual.body == candidate.body for candidate in reference[flow])
+                    for actual in replay[flow]
+                ),
+                "differences": (
+                    []
+                    if matched
+                    else list(
+                        difflib.unified_diff(
+                            tuple(map(str, reference[flow][0].headers)),
+                            tuple(map(str, observed.headers)),
+                            lineterm="",
+                        )
+                    )
+                ),
+            }
+        )
+    return reports

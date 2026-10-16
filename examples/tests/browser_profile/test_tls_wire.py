@@ -242,6 +242,12 @@ class TlsWireTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "lacks"):
             compare_tls_captures(forged, [hello], [request])
 
+    def test_forward_coverage_requires_the_entire_user_agent(self):
+        archive, hello, request = comparison_fixture()
+        request.headers = (("user-agent", "fixture-extra"),)
+        with self.assertRaisesRegex(ValueError, "no matching"):
+            compare_tls_captures(archive, [hello], [request])
+
     def test_reverse_coverage_preserves_user_agent_association(self):
         archive, first_hello, first_request = comparison_fixture()
         second_profile = copy.deepcopy(archive["profiles"][0])
@@ -271,12 +277,8 @@ class TlsWireTests(unittest.TestCase):
 
         # Identical metadata remains valid when both browsers actually emit it.
         shared = copy.deepcopy(archive)
-        shared["profiles"][1]["scopes"] = copy.deepcopy(
-            shared["profiles"][0]["scopes"]
-        )
-        shared_hello = replace(
-            second_hello, capture=copy.deepcopy(first_hello.capture)
-        )
+        shared["profiles"][1]["scopes"] = copy.deepcopy(shared["profiles"][0]["scopes"])
+        shared_hello = replace(second_hello, capture=copy.deepcopy(first_hello.capture))
         self.assertEqual(
             compare_tls_captures(shared, [first_hello, shared_hello], requests)[
                 "retained_observations"

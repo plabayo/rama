@@ -54,7 +54,7 @@ WebSocket nonce are normalized only after checking their request bindings.
 and replay inputs, and `capture.py` owns the protocol fixtures. Protocol-specific
 functions preserve the distinct H1 Upgrade and H2/H3 stream semantics.
 
-## H2/H3 original-traffic capture
+## TLS H2 replay and H3 original-traffic capture
 
 With a CLI containing the JSON profile viewer:
 
@@ -79,10 +79,21 @@ TLS versions, cipher and extension order, and extension metadata against each
 request-bearing connection; keys and ciphertext are excluded from the projection.
 Preconnections without requests are reported separately.
 
-**This TLS command currently verifies original capture, not strict replay.**
-TLS/QUIC connection compilation, complete compression/connection comparisons and
-the full replay matrix remain unfinished. Neither command proves long-lived
-bidirectional WebSocket traffic or distribution fidelity.
+HTTP/2 also replays all six operations for every retained connection variant.
+Each CLI process uses the fixture CA through `--cacert` and explicit newly generated
+fixture trust IDs through `--tls-requested-trust-anchors` when the original browser
+advertised them. These IDs replace discarded per-connection identifiers; they do
+not configure certificate verification. Negative probes require missing CA/ID
+bindings to fail. Every replay request must match one complete original method,
+path, ordered-header and body tuple. TLS and H2 SETTINGS/WINDOW_UPDATE/PRIORITY
+prefixes must match the same retained connection joint; peer-driven SETTINGS ACKs
+are excluded from this fingerprint projection, as they are from native replay.
+The drain waits for every expected variant, not only one complete set of flows.
+
+**HTTP/3 still verifies original capture without native QUIC replay.** Its TLS,
+transport-parameter, first-flight and control/QPACK sequence compilation remains
+unfinished. The full protocol matrix, compression comparisons, long-lived
+bidirectional WebSocket traffic and distribution fidelity remain separate work.
 
 ## Evidence and maintenance
 
@@ -92,7 +103,9 @@ decoding, including failures; private browser profiles are removed. Keep output
 private: decoded packets contain fixture traffic. No transparent proxy is enabled.
 
 Fixed seed, connection and request keys make profile draws reproducible within an
-archive. They do not make independently collected browser profiles identical.
+archive. TLS H2 tests also pin each retained connection variant explicitly, so a
+fixed draw cannot silently miss a different GREASE order or ECH shape. These keys
+do not make independently collected browser profiles identical.
 
 Run the shared journey, BrowserStack collector and packet-verifier unit checks:
 

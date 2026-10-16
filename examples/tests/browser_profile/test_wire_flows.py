@@ -5,8 +5,8 @@ import hashlib
 from pathlib import Path
 import unittest
 
-from wire import FLOWS, GUID, compare_h1 as compare, decode_rows
-from flows import replay_args
+from wire import FLOWS, GUID, decode_rows
+from flows import ReplayTarget, compare_requests as compare, replay_args
 
 
 def fixture():
@@ -73,7 +73,7 @@ class FlowWireTests(unittest.TestCase):
             Path("rama"),
             Path("archive"),
             Path("output"),
-            5678,
+            ReplayTarget("h1", "http://127.0.0.1:5678"),
             "fetch",
             flows["fetch"][0],
         )
@@ -88,7 +88,12 @@ class FlowWireTests(unittest.TestCase):
             self.assertIn(value, args)
         self.assertEqual(args[-1], "http://127.0.0.1:5678/api/fetch/number/1")
         ws_args = replay_args(
-            Path("rama"), Path("archive"), Path("output"), 5678, "ws", flows["ws"][0]
+            Path("rama"),
+            Path("archive"),
+            Path("output"),
+            ReplayTarget("h1", "http://127.0.0.1:5678"),
+            "ws",
+            flows["ws"][0],
         )
         self.assertIn(
             "sec-websocket-extensions: permessage-deflate; client_max_window_bits",

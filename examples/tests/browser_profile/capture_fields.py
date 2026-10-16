@@ -101,3 +101,20 @@ def compare_capture_fields(inspected, blocks):
         "literal_values_checked": literal,
         "request_bound_values_not_retained": bound,
     }
+
+
+def connection_user_agents(requests):
+    """Require one unambiguous browser identity on each request-bearing connection."""
+    user_agents = {}
+    for request in requests:
+        if request.from_server:
+            continue
+        agents = [value for name, value in request.headers if name == "user-agent"]
+        if len(agents) != 1:
+            raise ValueError("missing or ambiguous request user agent")
+        user_agents.setdefault(request.connection, set()).update(agents)
+    if not user_agents or any(len(agents) != 1 for agents in user_agents.values()):
+        raise ValueError("missing or mixed connection user agent")
+    return {
+        connection: next(iter(agents)) for connection, agents in user_agents.items()
+    }

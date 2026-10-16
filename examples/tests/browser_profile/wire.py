@@ -5,20 +5,22 @@ stream identity and Extended CONNECT. Protocol-specific decoding lives here;
 browser journeys and replay inputs are shared elsewhere.
 """
 
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 import subprocess
+import time
 import xml.etree.ElementTree as ET
 import base64
 import csv
-import difflib
 import hashlib
 import io
 import json
 import re
 import sys
 
-from flows import FLOWS
+from flow_bodies import check_flow_bodies
+from flows import FLOWS, compare_requests, flow_name
 
 MAX_CAPTURE_BYTES = 40 * 1024 * 1024
 
@@ -196,7 +198,9 @@ def parse_pdml(data, protocol, server_port, *, include_data=False):
     return blocks
 
 
-def read_header_blocks(capture, keylog, protocol, server_port, output):
+def read_header_blocks(
+    capture, keylog, protocol, server_port, output, *, include_data=False
+):
     """Decode into a caller-owned temporary file; never embed TLS keys in captures."""
     capture, keylog, output = map(Path, (capture, keylog, output))
     if capture.stat().st_size > MAX_CAPTURE_BYTES:
@@ -224,7 +228,62 @@ def read_header_blocks(capture, keylog, protocol, server_port, output):
         )
     if output.stat().st_size > MAX_PDML_BYTES:
         raise ValueError("decoded byte limit exceeded")
-    return parse_pdml(output.read_bytes(), protocol, server_port)
+    return parse_pdml(
+        output.read_bytes(), protocol, server_port, include_data=include_data
+    )
+
+
+@dataclass(frozen=True)
+class Traffic:
+    headers: tuple[HeaderBlock, ...]
+    frames: tuple[HeaderBlock, ...]
+    bodies: dict
+
+
+def drain_capture(
+    process,
+    *,
+    capture,
+    keylog,
+    protocol,
+    server_port,
+    output,
+    timeout=15,
+    expected_per_flow=None,
+):
+    """Wait for all decoded flows, including responses and WebSocket greeting.
+
+    A dumpcap file announcement proves readiness, not that BPF has flushed the
+    final packets. Keep decoding until full body coverage is visible.
+    """
+    deadline = time.monotonic() + timeout
+    last_error = None
+    while time.monotonic() < deadline:
+        output.unlink(missing_ok=True)
+        try:
+            frames = read_header_blocks(
+                capture, keylog, protocol, server_port, output, include_data=True
+            )
+            bodies = check_flow_bodies(frames)
+            if expected_per_flow is not None:
+                counts = Counter(
+                    flow_name(frame.headers)
+                    for frame in frames
+                    if frame.headers and not frame.from_server
+                )
+                if None in counts or any(
+                    counts[flow] != expected_per_flow for flow in FLOWS
+                ):
+                    raise ValueError("incomplete or unexpected replay request counts")
+            return Traffic(
+                tuple(frame for frame in frames if frame.headers), tuple(frames), bodies
+            )
+        except (OSError, ValueError, subprocess.CalledProcessError) as error:
+            last_error = error
+        if process.poll() is not None:
+            break
+        time.sleep(0.1)
+    raise RuntimeError("incomplete independently decoded capture") from last_error
 
 
 # H1 decoding preserves request lines, repeated headers and Upgrade bindings.
@@ -431,41 +490,8 @@ def read_capture(path, port, reference):
     return decode_rows(requests, responses, port, reference)
 
 
-def compare_h1(reference, replay):
-    require(
-        set(reference) == set(FLOWS) == set(replay), "six-operation comparison coverage"
-    )
-    reports = []
-    for flow in FLOWS:
-        require(len(replay[flow]) == 1, "one replay request per flow")
-        observed = replay[flow][0]
-        matched = any(
-            observed.wire_tuple() == candidate.wire_tuple()
-            for candidate in reference[flow]
-        )
-        reports.append(
-            {
-                "flow": flow,
-                "match": matched,
-                "body_match": any(
-                    observed.body == candidate.body for candidate in reference[flow]
-                ),
-                "differences": (
-                    []
-                    if matched
-                    else list(
-                        difflib.unified_diff(
-                            reference[flow][0].headers, observed.headers, lineterm=""
-                        )
-                    )
-                ),
-            }
-        )
-    return reports
-
-
 def verify_h1_flows(root, reference_port, replay_port):
-    reports = compare_h1(
+    reports = compare_requests(
         read_capture(root / "reference-wire.pcapng", reference_port, True),
         read_capture(root / "replay-wire.pcapng", replay_port, False),
     )

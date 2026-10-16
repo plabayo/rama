@@ -2,6 +2,7 @@ use rama::{
     error::{BoxError, BoxErrorExt as _, ErrorExt as _},
     json::path::JsonPath,
     net::{Protocol, address::ProxyAddress, user::Basic},
+    tls::boring::client::BoringRequestedTrustAnchors,
     ua::profile::model::runtime_hints::RequestInitiator,
     utils::str::NonEmptyStr,
 };
@@ -161,6 +162,16 @@ pub struct SendCommand {
     #[arg(short = 'k', long)]
     /// (HTTP) skip Tls certificate verification
     insecure: bool,
+
+    #[arg(long)]
+    /// PEM CA bundle used to verify the destination server instead of system roots.
+    /// Does not change HTTPS proxy trust.
+    cacert: Option<PathBuf>,
+
+    #[arg(long, value_parser = arg::requested_trust_anchors)]
+    /// Advertise current requested trust-anchor IDs as comma-separated hexadecimal values.
+    /// An empty value advertises an empty list. This does not configure certificate trust.
+    tls_requested_trust_anchors: Option<BoringRequestedTrustAnchors>,
 
     #[arg(long)]
     /// same as `--insecure` but for tls proxies
