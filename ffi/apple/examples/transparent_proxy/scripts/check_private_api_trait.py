@@ -9,7 +9,11 @@ ROOT = Path(__file__).resolve().parents[5]
 SYMBOL = b"nw_parameters_set_no_proxy"
 
 
-def production_objects(scratch):
+def production_objects(scratch, bin_path=None):
+    if bin_path is not None:
+        product = bin_path / "RamaAppleNetworkExtension.o"
+        if product.is_file():
+            return [product]
     objects = []
     for path in scratch.rglob("*.o"):
         parts = path.relative_to(scratch).parts
@@ -28,9 +32,13 @@ def check(output):
         if enabled:
             command += ["--traits", "PrivateNetworkProxyControl"]
         subprocess.run(command, check=True)
-        objects = production_objects(scratch)
+        bin_path = Path(subprocess.check_output(
+            [*command, "--show-bin-path"], text=True).strip())
+        objects = production_objects(scratch, bin_path)
         if not objects:
-            raise RuntimeError("No production objects found")
+            candidates = sorted(str(path.relative_to(scratch)) for path in scratch.rglob("*.o"))
+            raise RuntimeError(f"No production objects found; bin path: {bin_path}; "
+                               f"scratch objects: {candidates}")
         found = any(SYMBOL in path.read_bytes() for path in objects)
         if found != enabled:
             raise RuntimeError(f"Private symbol presence={found}, trait enabled={enabled}")
