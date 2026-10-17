@@ -3,7 +3,11 @@ use crate::h3::qpack::{Decoder, DecoderConfig, ErrorScope, QpackError};
 use rama_core::bytes::{Bytes, BytesMut};
 use rama_http_types::proto::h3::{
     Code, Setting, SettingId, Settings,
-    qpack::{DecoderInstruction, EncoderPreferences, FieldLine, FieldSectionBase, HeaderPrefix},
+    observation::ObservedFieldRepresentation,
+    qpack::{
+        DecoderInstruction, EncoderPreferences, FieldLine, FieldSectionBase, HeaderPrefix,
+        encoding::{FieldPreferences, Representation},
+    },
 };
 use rama_utils::octets::kib;
 use std::assert_matches;
@@ -150,11 +154,13 @@ fn sensitive_fields_survive_forwarding_and_static_or_dynamic_matches() {
                     name: &b"x"[..],
                     value: &b"y"[..],
                     never_index: true,
+                    preferences: None,
                 },
                 EncodeField {
                     name: b":method",
                     value: b"GET",
                     never_index: true,
+                    preferences: None,
                 },
             ],
         )
@@ -308,6 +314,7 @@ fn adaptive_huffman_preserves_sensitive_literals_and_plain_mode() {
                             name,
                             value,
                             never_index: true,
+                            preferences: None,
                         }],
                     )
                     .unwrap();
@@ -788,5 +795,210 @@ fn section_base_preferences_rebase_real_references_without_changing_table_policy
             .unwrap()
             .unwrap();
         assert!(encoder.take_encoder_stream().is_empty());
+    }
+}
+
+#[test]
+fn field_preferences_preserve_literal_choices_and_regenerate_dynamic_name_indexes() {
+    let mut encoder = Encoder::new(EncoderConfig::default());
+    let mut decoder = Decoder::new(DecoderConfig::default());
+    let seed = encoder.encode(0, [("custom", "cached")]).unwrap();
+    decoder
+        .feed_encoder_stream(&encoder.take_encoder_stream())
+        .unwrap();
+    decoder.decode_field_section(0, seed).unwrap().unwrap();
+    encoder
+        .feed_decoder_stream(&decoder.take_decoder_stream())
+        .unwrap();
+
+    let source = [
+        FieldLine::LiteralWithLiteralName {
+            name: Bytes::from_static(b"custom"),
+            value: Bytes::from_static(b"old"),
+            name_huffman: false,
+            value_huffman: false,
+            never_index: true,
+        },
+        FieldLine::LiteralWithNameRef {
+            is_static: false,
+            name_index: 27,
+            value: Bytes::from_static(b"old"),
+            value_huffman: false,
+            never_index: false,
+        },
+        FieldLine::LiteralWithNameRef {
+            is_static: true,
+            name_index: 95,
+            value: Bytes::from_static(b"old"),
+            value_huffman: false,
+            never_index: false,
+        },
+    ];
+    let mut preferences = source
+        .iter()
+        .map(|line| {
+            FieldPreferences::from_observed(&ObservedFieldRepresentation::from(line)).unwrap()
+        })
+        .collect::<Vec<_>>();
+    preferences.push(FieldPreferences::default());
+    let fields = [
+        ("custom", "cached"),
+        ("custom", "fresh"),
+        ("user-agent", "new agent"),
+        ("custom", "cached"),
+    ];
+    let section = encoder
+        .encode(
+            4,
+            fields.iter().zip(&preferences).enumerate().map(
+                |(index, ((name, value), preferences))| EncodeField {
+                    name: name.as_bytes(),
+                    value: value.as_bytes(),
+                    never_index: index == 3,
+                    preferences: Some(preferences),
+                },
+            ),
+        )
+        .unwrap();
+    assert_eq!(
+        encoder.insert_count(),
+        1,
+        "literal preferences must not insert"
+    );
+    assert!(encoder.take_encoder_stream().is_empty());
+    let mut cursor = &section[..];
+    HeaderPrefix::decode(&mut cursor, 128, 1).unwrap();
+    assert_matches!(
+        FieldLine::decode(&mut cursor, 4096).unwrap(),
+        FieldLine::LiteralWithLiteralName {
+            name_huffman: false,
+            value_huffman: false,
+            never_index: true,
+            ..
+        }
+    );
+    assert_matches!(
+        FieldLine::decode(&mut cursor, 4096).unwrap(),
+        FieldLine::LiteralWithNameRef {
+            is_static: false,
+            name_index: 0,
+            value_huffman: false,
+            never_index: false,
+            ..
+        }
+    );
+    assert_matches!(
+        FieldLine::decode(&mut cursor, 4096).unwrap(),
+        FieldLine::LiteralWithNameRef {
+            is_static: true,
+            name_index: 95,
+            value_huffman: false,
+            ..
+        }
+    );
+    assert_matches!(
+        FieldLine::decode(&mut cursor, 4096).unwrap(),
+        FieldLine::LiteralWithNameRef {
+            is_static: false,
+            never_index: true,
+            ..
+        }
+    );
+    assert!(cursor.is_empty());
+    let decoded = decoder.decode_field_section(4, section).unwrap().unwrap();
+    for ((name, value), actual) in fields.iter().zip(&decoded) {
+        assert_eq!(actual.name.as_ref(), name.as_bytes());
+        assert_eq!(actual.value.as_ref(), value.as_bytes());
+    }
+    assert!(decoded[0].never_index);
+    assert!(
+        decoded[3].never_index,
+        "preferences cannot weaken caller sensitivity"
+    );
+}
+
+#[test]
+fn invalid_static_name_preference_leaves_initial_deferral_and_output_unchanged() {
+    let mut encoder = Encoder::new(EncoderConfig {
+        defer_dynamic_first_section: true,
+        ..EncoderConfig::default()
+    });
+    for index in [0, 99, u64::MAX] {
+        let preferences = FieldPreferences {
+            representation: Representation::LiteralStaticName(index),
+            ..FieldPreferences::default()
+        };
+        encoder
+            .encode(
+                0,
+                [EncodeField {
+                    name: "custom",
+                    value: "value",
+                    never_index: false,
+                    preferences: Some(&preferences),
+                }],
+            )
+            .unwrap_err();
+        assert_eq!(encoder.insert_count(), 0);
+        assert!(encoder.take_encoder_stream().is_empty());
+    }
+    let first = encoder.encode(0, [("custom", "value")]).unwrap();
+    assert_eq!(encoder.insert_count(), 0);
+    assert!(encoder.take_encoder_stream().is_empty());
+    let mut decoder = Decoder::new(DecoderConfig::default());
+    let decoded = decoder.decode_field_section(0, first).unwrap().unwrap();
+    assert_eq!(decoded[0].value.as_ref(), b"value");
+}
+
+#[test]
+fn field_preferences_force_huffman_for_ties_and_expansions() {
+    let preferences = FieldPreferences {
+        representation: Representation::LiteralName,
+        name_huffman: Some(true),
+        value_huffman: Some(true),
+        ..FieldPreferences::default()
+    };
+    let mut encoder = Encoder::new(EncoderConfig {
+        max_table_capacity: 0,
+        ..EncoderConfig::default()
+    });
+    let values: [&[u8]; 2] = [b"a", &[0x80]];
+    let section = encoder
+        .encode(
+            0,
+            values.into_iter().map(|value| EncodeField {
+                name: b"a".as_slice(),
+                value,
+                never_index: false,
+                preferences: Some(&preferences),
+            }),
+        )
+        .unwrap();
+    assert!(encoder.take_encoder_stream().is_empty());
+
+    let mut cursor = &section[..];
+    HeaderPrefix::decode(&mut cursor, 128, 0).unwrap();
+    for value in values {
+        match FieldLine::decode(&mut cursor, 4096).unwrap() {
+            FieldLine::LiteralWithLiteralName {
+                name,
+                value: decoded,
+                name_huffman,
+                value_huffman,
+                ..
+            } => {
+                assert_eq!(name.as_ref(), b"a");
+                assert_eq!(decoded.as_ref(), value);
+                assert!(name_huffman && value_huffman);
+            }
+            other => panic!("expected literal fields, got {other:?}"),
+        }
+    }
+    assert!(cursor.is_empty());
+    let mut decoder = Decoder::new(DecoderConfig::default());
+    let decoded = decoder.decode_field_section(0, section).unwrap().unwrap();
+    for (field, value) in decoded.iter().zip(values) {
+        assert_eq!(field.name.as_ref(), b"a");
+        assert_eq!(field.value.as_ref(), value);
     }
 }

@@ -5,7 +5,7 @@ use super::{
     control::{Control, Role},
     frame::{FrameDecoder, FrameEvent},
     observation::{H3Observer, Recorder, SettingsObservation},
-    qpack::{Decoder, DecoderConfig, Encoder, EncoderConfig, FieldPair, QpackError},
+    qpack::{Decoder, DecoderConfig, EncodeField, Encoder, EncoderConfig, FieldPair, QpackError},
 };
 use crate::server::conn::{HeaderReadTimeout, IdleTimeout};
 use parking_lot::Mutex;
@@ -1125,7 +1125,7 @@ impl Shared {
         }
     }
 
-    pub(crate) fn encode<I, F, N, V>(
+    pub(crate) fn encode<'a, I, F, N, V>(
         &self,
         id: u64,
         fields: I,
@@ -1133,7 +1133,7 @@ impl Shared {
     ) -> Result<Bytes, Error>
     where
         I: IntoIterator<Item = F>,
-        F: Into<super::qpack::EncodeField<N, V>>,
+        F: Into<EncodeField<'a, N, V>>,
         N: AsRef<[u8]>,
         V: AsRef<[u8]>,
     {

@@ -10,6 +10,7 @@ use rama_http_types::proto::h3::{
     VarInt,
     qpack::{
         DecoderInstruction, EncoderPreferences, FieldSectionBase, HeaderPrefix, PrefixError,
+        encoding::{FieldPreferences, Representation},
         prefix::{StringEncoder, encode_int, int_encoded_len},
         static_table,
     },
@@ -25,16 +26,18 @@ const STREAM_CLASS_COUNT: usize = (STREAM_CLASS_MASK + 1) as usize;
 
 /// Encoder input preserving the never-index requirement across intermediary hops.
 #[derive(Clone, Debug)]
-pub struct EncodeField<N, V> {
+pub struct EncodeField<'a, N, V> {
     /// Field name bytes.
     pub name: N,
     /// Field value bytes.
     pub value: V,
     /// Always emit a literal with N=1; never insert or fully index this field.
     pub never_index: bool,
+    /// Borrowed field choices, consumed during encoding and never retained by the connection.
+    pub preferences: Option<&'a FieldPreferences>,
 }
 
-impl<'a> EncodeField<Cow<'a, [u8]>, &'a [u8]> {
+impl<'a> EncodeField<'a, Cow<'a, [u8]>, &'a [u8]> {
     /// Encode a lowercase name and preserve [`rama_http_types::HeaderValue::is_sensitive`].
     /// Values and already-lowercase names remain borrowed. Mixed-case custom names
     /// are normalized only for the wire, without changing the original header map.
@@ -50,26 +53,29 @@ impl<'a> EncodeField<Cow<'a, [u8]>, &'a [u8]> {
             },
             value: value.as_bytes(),
             never_index: value.is_sensitive(),
+            preferences: None,
         }
     }
 }
 
-impl<N, V> From<(N, V)> for EncodeField<N, V> {
+impl<'a, N, V> From<(N, V)> for EncodeField<'a, N, V> {
     fn from((name, value): (N, V)) -> Self {
         Self {
             name,
             value,
             never_index: false,
+            preferences: None,
         }
     }
 }
 
-impl From<FieldPair> for EncodeField<Bytes, Bytes> {
+impl<'a> From<FieldPair> for EncodeField<'a, Bytes, Bytes> {
     fn from(field: FieldPair) -> Self {
         Self {
             name: field.name,
             value: field.value,
             never_index: field.never_index,
+            preferences: None,
         }
     }
 }
@@ -321,7 +327,7 @@ impl Encoder {
 
     /// Bound newly generated instructions by credit atomically reserved by the transport.
     /// Existing synchronous users retain their configured output budget.
-    pub(crate) fn encode_with_credit<I, F, N, V>(
+    pub(crate) fn encode_with_credit<'a, I, F, N, V>(
         &mut self,
         stream_id: u64,
         fields: I,
@@ -330,7 +336,7 @@ impl Encoder {
     ) -> Result<Bytes, QpackError>
     where
         I: IntoIterator<Item = F>,
-        F: Into<EncodeField<N, V>>,
+        F: Into<EncodeField<'a, N, V>>,
         N: AsRef<[u8]>,
         V: AsRef<[u8]>,
     {
@@ -380,10 +386,10 @@ impl Encoder {
     /// After stream cancellation, this stream and older IDs in the same QUIC stream class use
     /// static/literal representations. Later IDs can still use dynamic compression. This bounded
     /// bookkeeping leaves previously outstanding references on other streams intact.
-    pub fn encode<I, F, N, V>(&mut self, stream_id: u64, fields: I) -> Result<Bytes, QpackError>
+    pub fn encode<'a, I, F, N, V>(&mut self, stream_id: u64, fields: I) -> Result<Bytes, QpackError>
     where
         I: IntoIterator<Item = F>,
-        F: Into<EncodeField<N, V>>,
+        F: Into<EncodeField<'a, N, V>>,
         N: AsRef<[u8]>,
         V: AsRef<[u8]>,
     {
@@ -391,7 +397,7 @@ impl Encoder {
     }
 
     /// Encode with a section-local Base choice, retaining connection table policy.
-    pub fn encode_with_base<I, F, N, V>(
+    pub fn encode_with_base<'a, I, F, N, V>(
         &mut self,
         stream_id: u64,
         fields: I,
@@ -399,7 +405,7 @@ impl Encoder {
     ) -> Result<Bytes, QpackError>
     where
         I: IntoIterator<Item = F>,
-        F: Into<EncodeField<N, V>>,
+        F: Into<EncodeField<'a, N, V>>,
         N: AsRef<[u8]>,
         V: AsRef<[u8]>,
     {
@@ -413,7 +419,19 @@ impl Encoder {
         let mut input = Vec::new();
         let mut size = 0usize;
         for field in fields {
-            let field = field.into();
+            let mut field = field.into();
+            if let Some(preferences) = field.preferences {
+                if let Representation::LiteralStaticName(index) = preferences.representation {
+                    let name = usize::try_from(index)
+                        .ok()
+                        .and_then(static_table::get)
+                        .map(|entry| entry.0);
+                    if name != Some(field.name.as_ref()) {
+                        return Err(QpackError::ResourceLimit("invalid static-name preference"));
+                    }
+                }
+                field.never_index |= preferences.never_index;
+            }
             size = size
                 .checked_add(field.name.as_ref().len())
                 .and_then(|n| n.checked_add(field.value.as_ref().len()))
@@ -441,7 +459,11 @@ impl Encoder {
                 may_track && self.reference_count < self.config.max_outstanding_references;
             let referenceable =
                 |abs: u64| can_track && (abs < self.known_received_count || may_block);
-            if !field.never_index {
+            let preference = field
+                .preferences
+                .map(|p| p.representation)
+                .unwrap_or_default();
+            if !field.never_index && preference == Representation::Automatic {
                 if let Some(index) = static_table::find(name, value) {
                     *encoding = FieldEncoding::StaticIndex(index as u64);
                     continue;
@@ -462,9 +484,21 @@ impl Encoder {
                     continue;
                 }
             }
-            if let Some(index) = static_table::find_name(name) {
-                *encoding = FieldEncoding::LiteralStaticName(index as u64);
-            } else if let Some(abs) = self
+            match preference {
+                Representation::LiteralName => continue,
+                Representation::LiteralStaticName(index) => {
+                    *encoding = FieldEncoding::LiteralStaticName(index);
+                    continue;
+                }
+                Representation::Automatic => {
+                    if let Some(index) = static_table::find_name(name) {
+                        *encoding = FieldEncoding::LiteralStaticName(index as u64);
+                        continue;
+                    }
+                }
+                Representation::LiteralDynamicName => (),
+            }
+            if let Some(abs) = self
                 .table
                 .find_name(name)
                 .filter(|abs| can_track && (*abs < self.known_received_count || may_block))
@@ -517,11 +551,20 @@ impl Encoder {
                     }
                 }
                 FieldEncoding::LiteralName => {
-                    StringEncoder::new(field.name.as_ref(), 3, self.config.huffman)
-                        .encode(&mut out, 0x20 | if field.never_index { 0x10 } else { 0 });
+                    self.literal_string(
+                        field.name.as_ref(),
+                        3,
+                        field.preferences.and_then(|p| p.name_huffman),
+                    )
+                    .encode(&mut out, 0x20 | if field.never_index { 0x10 } else { 0 });
                 }
             }
-            StringEncoder::new(field.value.as_ref(), 7, self.config.huffman).encode(&mut out, 0);
+            self.literal_string(
+                field.value.as_ref(),
+                7,
+                field.preferences.and_then(|p| p.value_huffman),
+            )
+            .encode(&mut out, 0);
         }
         let mut prefix = [0u8; PREFIX_HEADROOM];
         let mut cursor = &mut prefix[..];
@@ -555,6 +598,19 @@ impl Encoder {
         *ric = (*ric).max(abs + 1);
         self.table.add_ref(abs);
         self.reference_count += 1;
+    }
+
+    fn literal_string<'a>(
+        &self,
+        data: &'a [u8],
+        prefix_bits: u8,
+        huffman: Option<bool>,
+    ) -> StringEncoder<'a> {
+        match huffman {
+            Some(true) => StringEncoder::new_huffman(data, prefix_bits),
+            Some(false) => StringEncoder::new(data, prefix_bits, false),
+            None => StringEncoder::new(data, prefix_bits, self.config.huffman),
+        }
     }
 
     fn try_insert(&mut self, name: &[u8], value: &[u8]) -> bool {

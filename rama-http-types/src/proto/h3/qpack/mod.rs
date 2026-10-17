@@ -6,6 +6,8 @@
 //! connection-scoped dynamic table, the stateful encoder/decoder and blocked-section accounting
 //! live in `rama-http-core`'s `h3::qpack` module.
 
+pub mod encoding;
+
 pub mod prefix;
 pub use prefix::{DecodedString, PrefixError};
 

@@ -19,7 +19,7 @@ pub(super) struct EncoderStream {
 }
 
 impl EncoderStream {
-    pub(super) fn encode<I, F, N, V>(
+    pub(super) fn encode<'a, I, F, N, V>(
         &mut self,
         encoder: &mut Encoder,
         id: u64,
@@ -28,7 +28,7 @@ impl EncoderStream {
     ) -> Result<Bytes, Error>
     where
         I: IntoIterator<Item = F>,
-        F: Into<EncodeField<N, V>>,
+        F: Into<EncodeField<'a, N, V>>,
         N: AsRef<[u8]>,
         V: AsRef<[u8]>,
     {
