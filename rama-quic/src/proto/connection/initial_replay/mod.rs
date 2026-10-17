@@ -79,9 +79,9 @@ impl Connection {
                 number,
                 version: self.wire_version,
             })
-            .encode_with_max_packet_len(&mut header_bytes, usize::from(size));
+            .encode_with_max_packet_len(&mut header_bytes, usize::from(packet.packet_size()));
             if header_bytes.len() + packet.payload_len() + keys.local.packet.tag_len()
-                != usize::from(size)
+                != usize::from(packet.packet_size())
             {
                 return Err(TransportError::INTERNAL_ERROR(
                     "recorded Initial frame geometry does not fit",

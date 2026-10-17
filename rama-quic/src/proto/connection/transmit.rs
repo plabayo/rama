@@ -328,7 +328,8 @@ impl Connection {
 
                 // Finish current packet
                 if let Some(mut builder) = builder_storage.take() {
-                    if pad_datagram {
+                    let recorded = self.recorded_initial(builder.space, builder.exact_number);
+                    if pad_datagram && recorded.is_none() {
                         builder.pad_to(self.config.min_mtu);
                     }
 
@@ -346,9 +347,13 @@ impl Connection {
                         // MTU. Loss probes are the only packets for which we might grow
                         // `buf_capacity` by less than `segment_size`.
                         const MAX_PADDING: usize = 16;
-                        let packet_len_unpadded = cmp::max(builder.min_size, buf.len())
-                            - datagram_start
-                            + builder.tag_len;
+                        let packet_len_unpadded = recorded.map_or_else(
+                            || {
+                                cmp::max(builder.min_size, buf.len()) - datagram_start
+                                    + builder.tag_len
+                            },
+                            |packet| usize::from(packet.datagram_size()),
+                        );
                         if (packet_len_unpadded + MAX_PADDING < segment_size
                             && !pad_datagram_to_mtu)
                             || datagram_start + segment_size > buf_capacity
@@ -363,7 +368,9 @@ impl Connection {
 
                         // Pad the current datagram to GSO segment size so it can be included in the
                         // GSO batch.
-                        builder.pad_to(segment_size as u16);
+                        if recorded.is_none() {
+                            builder.pad_to(segment_size as u16);
+                        }
                     }
 
                     builder.finish_and_track(now, self, sent_frames.take(), buf)?;
@@ -623,7 +630,10 @@ impl Connection {
         // Finish the last packet
         if let Some(mut builder) = builder_storage {
             let mut tail_to = None;
-            if pad_datagram {
+            let recorded = self
+                .recorded_initial(builder.space, builder.exact_number)
+                .is_some();
+            if pad_datagram && !recorded {
                 let size = self
                     .config
                     .wire
@@ -649,7 +659,7 @@ impl Connection {
             // path MTU.
             // Loss probes are the only packets for which we might grow `buf_capacity`
             // by less than `segment_size`.
-            if pad_datagram_to_mtu && buf_capacity >= datagram_start + segment_size {
+            if pad_datagram_to_mtu && buf_capacity >= datagram_start + segment_size && !recorded {
                 builder.pad_to(segment_size as u16);
             }
 

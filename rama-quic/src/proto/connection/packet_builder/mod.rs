@@ -122,9 +122,11 @@ impl PacketBuilder {
             }
         }
 
-        let recorded_width = conn
-            .recorded_initial(space_id, conn.spaces[space_id].next_packet_number)
-            .map(|packet| packet.number_len());
+        let recorded = conn.recorded_initial(space_id, conn.spaces[space_id].next_packet_number);
+        let recorded_width = recorded.map(|packet| packet.number_len());
+        let buffer_capacity = recorded.map_or(buffer_capacity, |packet| {
+            buffer_capacity.min(datagram_start + usize::from(packet.packet_size()))
+        });
         let grease_quic_bit = conn.may_grease_quic_bit();
         let space = &mut conn.spaces[space_id];
         let exact_number = match space_id {
@@ -425,9 +427,12 @@ impl PacketBuilder {
         now: Instant,
         buffer: &mut Vec<u8>,
     ) -> Option<(usize, bool)> {
-        if let Some(packet) = conn.recorded_initial(self.space, self.exact_number)
+        let recorded = conn
+            .recorded_initial(self.space, self.exact_number)
+            .map(|packet| (packet.packet_size(), packet.trailing_bytes()));
+        if let Some((packet_size, _)) = recorded
             && (buffer.len().saturating_sub(self.datagram_start) + self.tag_len
-                != usize::from(packet.datagram_size())
+                != usize::from(packet_size)
                 || buffer.len() < self.min_size)
         {
             conn.kill(
@@ -504,7 +509,14 @@ impl PacketBuilder {
             conn.trace_cid,
         );
 
-        Some((len, pad))
+        // Only the protected packet is authenticated and logged above. The
+        // ignored tail belongs to this one-packet datagram and still consumes
+        // congestion credit, pacing and recovery bytes until its packet is ACKed.
+        let tail = recorded.map_or(0, |(_, tail)| usize::from(tail));
+        if tail != 0 {
+            buffer.resize(buffer.len() + tail, 0);
+        }
+        Some((len + tail, pad || tail != 0))
     }
 }
 

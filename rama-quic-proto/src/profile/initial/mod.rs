@@ -34,13 +34,14 @@ pub enum InitialFrame {
     },
 }
 
-/// One original Initial packet, alone in its datagram.
+/// One original Initial packet and any ignored zero tail in its datagram.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "PacketData")]
 pub struct InitialPacket {
     number: u64,
     number_len: u8,
     datagram_size: u16,
+    trailing_bytes: u16,
     frames: Vec<InitialFrame>,
 }
 
@@ -49,6 +50,7 @@ struct PacketData {
     number: u64,
     number_len: u8,
     datagram_size: u16,
+    trailing_bytes: u16,
     #[serde(deserialize_with = "bounded_sequence::<_, _, MAX_FRAMES>")]
     frames: Vec<InitialFrame>,
 }
@@ -61,6 +63,7 @@ impl TryFrom<PacketData> for InitialPacket {
         if PacketNumber::new(data.number, 0).is_none()
             || !(1..=4).contains(&data.number_len)
             || data.frames.len() > MAX_FRAMES
+            || data.trailing_bytes >= data.datagram_size
         {
             return Err(ProfileError::InitialFlight(
                 "packet geometry or frame budget",
@@ -89,9 +92,10 @@ impl TryFrom<PacketData> for InitialPacket {
             number: data.number,
             number_len: data.number_len,
             datagram_size: data.datagram_size,
+            trailing_bytes: data.trailing_bytes,
             frames: data.frames,
         };
-        if !crypto || packet.payload_len() >= usize::from(packet.datagram_size) {
+        if !crypto || packet.payload_len() >= usize::from(packet.packet_size()) {
             return Err(ProfileError::InitialFlight(
                 "packet must carry CRYPTO within its datagram",
             ));
@@ -103,16 +107,20 @@ impl TryFrom<PacketData> for InitialPacket {
 impl InitialPacket {
     /// Admit one packet's metadata; native preparation later checks its exact
     /// header and protection overhead against the current connection.
+    /// `datagram_size` includes `trailing_bytes`; those bytes follow encryption
+    /// and are not PADDING frames inside the protected packet.
     pub fn try_new(
         number: u64,
         number_len: u8,
         datagram_size: u16,
+        trailing_bytes: u16,
         frames: Vec<InitialFrame>,
     ) -> Result<Self, ProfileError> {
         PacketData {
             number,
             number_len,
             datagram_size,
+            trailing_bytes,
             frames,
         }
         .try_into()
@@ -134,6 +142,18 @@ impl InitialPacket {
     #[must_use]
     pub fn datagram_size(&self) -> u16 {
         self.datagram_size
+    }
+
+    /// Bytes after the protected Initial packet, ignored by the receiver.
+    #[must_use]
+    pub fn trailing_bytes(&self) -> u16 {
+        self.trailing_bytes
+    }
+
+    /// Protected packet size, excluding the ignored datagram tail.
+    #[must_use]
+    pub fn packet_size(&self) -> u16 {
+        self.datagram_size - self.trailing_bytes
     }
 
     /// Frame shapes in their retained wire order.
@@ -285,7 +305,7 @@ impl RecordedInitialFlight {
                     _ => {}
                 }
             }
-            if ranges.len() == previous || packet.payload_len() >= usize::from(packet.datagram_size)
+            if ranges.len() == previous || packet.payload_len() >= usize::from(packet.packet_size())
             {
                 return Err(ProfileError::InitialFlight(
                     "packet must carry CRYPTO within its datagram",
@@ -331,14 +351,18 @@ impl TryFrom<&crate::capture::FirstFlight> for RecordedInitialFlight {
         if !flight.complete
             || flight.token_len != 0
             || flight.coalesced
-            || flight.padding != PaddingPlacement::Frames
+            || flight.padding
+                != if flight.trailing_bytes.iter().any(|tail| *tail != 0) {
+                    PaddingPlacement::DatagramTail
+                } else {
+                    PaddingPlacement::Frames
+                }
             || flight.frames.is_empty()
             || flight.frames.len() > MAX_PACKETS
             || flight.frames.len() != flight.datagram_sizes.len()
             || flight.frames.len() != flight.packet_numbers.len()
             || flight.frames.len() != flight.packet_number_lengths.len()
             || flight.trailing_bytes.len() != flight.datagram_sizes.len()
-            || flight.trailing_bytes.iter().any(|tail| *tail != 0)
             || flight.packet_numbers.first() != Some(&flight.first_packet_number)
             || flight.packet_number_lengths.first() != Some(&flight.packet_number_len)
         {
@@ -373,6 +397,8 @@ impl TryFrom<&crate::capture::FirstFlight> for RecordedInitialFlight {
                 number_len: flight.packet_number_lengths[index],
                 datagram_size: u16::try_from(flight.datagram_sizes[index])
                     .map_err(|_error| ProfileError::InitialFlight("datagram size"))?,
+                trailing_bytes: u16::try_from(flight.trailing_bytes[index])
+                    .map_err(|_error| ProfileError::InitialFlight("datagram tail"))?,
                 frames,
             })?);
         }

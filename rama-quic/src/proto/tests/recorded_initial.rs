@@ -52,7 +52,7 @@ fn flight(pair: &Pair) -> FirstFlight {
     capture::first_flight(&buffers, &*server_config().crypto.into_fixed()).unwrap()
 }
 
-fn recorded_profile(version: Version) -> QuicProfile {
+fn recorded_profile(version: Version, trailing_bytes: [u16; 2]) -> QuicProfile {
     // Learn the actual provider's fresh ClientHello extent. The target handshake
     // has different random/key-share bytes but the same configured wire shape.
     let base = base_profile(version);
@@ -84,6 +84,8 @@ fn recorded_profile(version: Version) -> QuicProfile {
         .enumerate()
         .map(|(index, (offset, len))| {
             let number = index as u64 + 1;
+            let tail = trailing_bytes[index];
+            let packet_size = 1252 - usize::from(tail);
             let width = index as u8 + 1;
             let mut header = Vec::new();
             Header::Initial(InitialHeader {
@@ -93,7 +95,7 @@ fn recorded_profile(version: Version) -> QuicProfile {
                 number: PacketNumber::new_at_least(number, 0, width).unwrap(),
                 version: version.to_wire().unwrap(),
             })
-            .encode_with_max_packet_len(&mut header, 1250);
+            .encode_with_max_packet_len(&mut header, packet_size);
             let frames = vec![
                 InitialFrame::Ping,
                 InitialFrame::Crypto {
@@ -101,11 +103,12 @@ fn recorded_profile(version: Version) -> QuicProfile {
                     len,
                 },
             ];
-            let unpadded = InitialPacket::try_new(number, width, 1250, frames.clone()).unwrap();
-            let padding = 1250 - header.len() - tag_len - unpadded.payload_len();
+            let unpadded =
+                InitialPacket::try_new(number, width, 1252, tail, frames.clone()).unwrap();
+            let padding = packet_size - header.len() - tag_len - unpadded.payload_len();
             let mut frames = frames;
             frames.insert(1, InitialFrame::Padding { len: padding });
-            InitialPacket::try_new(number, width, 1250, frames).unwrap()
+            InitialPacket::try_new(number, width, 1252, tail, frames).unwrap()
         })
         .collect();
     let layout = RecordedInitialFlight::try_new(
@@ -123,7 +126,7 @@ fn recorded_profile(version: Version) -> QuicProfile {
 #[test]
 fn recorded_initial_emits_exact_frames_and_widths_then_completes() {
     for version in [Version::V1, Version::V2] {
-        let profile = recorded_profile(version);
+        let profile = recorded_profile(version, [0, 0]);
         let InitialFlightLayout::Recorded(expected) = profile.packetization().layout() else {
             panic!("the test constructs a recorded layout with PADDING then CRYPTO")
         };
@@ -134,7 +137,7 @@ fn recorded_initial_emits_exact_frames_and_widths_then_completes() {
         let actual = RecordedInitialFlight::try_from(&observed).unwrap();
         assert_eq!(&actual, expected);
         assert_eq!(observed.packet_number_lengths, [1, 2]);
-        assert_eq!(observed.datagram_sizes, [1250, 1250]);
+        assert_eq!(observed.datagram_sizes, [1252, 1252]);
         assert!(pair.client_sent.iter().all(|sent| sent.packets.len() == 1));
         pair.drive();
         let server = pair.server.assert_accept();
@@ -145,7 +148,7 @@ fn recorded_initial_emits_exact_frames_and_widths_then_completes() {
 
 #[test]
 fn recorded_initial_loss_recovers_through_normal_crypto_retransmission() {
-    let profile = recorded_profile(Version::V1);
+    let profile = recorded_profile(Version::V1, [0, 0]);
     let (mut pair, client) = pair(&profile);
     let client = pair.begin_connect(client);
     pair.drive_client();
@@ -161,7 +164,7 @@ fn recorded_initial_loss_recovers_through_normal_crypto_retransmission() {
 
 #[test]
 fn recorded_initial_rejects_wrong_fresh_extent_or_geometry_before_output() {
-    let valid = recorded_profile(Version::V1);
+    let valid = recorded_profile(Version::V1, [0, 0]);
     let InitialFlightLayout::Recorded(layout) = valid.packetization().layout() else {
         panic!("the test constructs a recorded layout with PADDING then CRYPTO")
     };
@@ -177,6 +180,7 @@ fn recorded_initial_rejects_wrong_fresh_extent_or_geometry_before_output() {
             packet.number(),
             packet.number_len(),
             packet.datagram_size(),
+            packet.trailing_bytes(),
             frames,
         )
         .unwrap();
@@ -193,6 +197,7 @@ fn recorded_initial_rejects_wrong_fresh_extent_or_geometry_before_output() {
                 first.number(),
                 first.number_len(),
                 first.datagram_size(),
+                first.trailing_bytes(),
                 frames,
             )
             .unwrap();
@@ -217,5 +222,47 @@ fn recorded_initial_rejects_wrong_fresh_extent_or_geometry_before_output() {
         );
         assert!(pair.client.outbound.is_empty());
         assert_eq!(pair.client.endpoint.open_connections(), 0);
+    }
+}
+
+#[test]
+fn recorded_initial_tails_stay_outside_protection_and_recovery_counts_them() {
+    for version in [Version::V1, Version::V2] {
+        for dropped in [None, Some(0), Some(1)] {
+            // Firefox's observed 1252-byte UDP shape includes a 997-byte
+            // protected Initial plus a 255-byte ignored tail. The second
+            // packet uses another tail length to prevent a burst-wide shortcut.
+            let profile = recorded_profile(version, [255, 31]);
+            let InitialFlightLayout::Recorded(expected) = profile.packetization().layout() else {
+                panic!("the fixture supplies a recorded Initial layout")
+            };
+            let (mut pair, client) = pair(&profile);
+            let client = pair.begin_connect(client);
+            pair.drive_client();
+            let observed = flight(&pair);
+            assert_eq!(observed.trailing_bytes, [255, 31]);
+            assert_eq!(observed.datagram_sizes, [1252, 1252]);
+            assert_eq!(
+                &RecordedInitialFlight::try_from(&observed).unwrap(),
+                expected
+            );
+            assert_eq!(pair.client_conn_mut(client).bytes_in_flight(), 2504);
+
+            for (datagram, tail) in pair.server.inbound.iter().zip([255, 31]) {
+                assert!(
+                    datagram.packet[datagram.packet.len() - tail..]
+                        .iter()
+                        .all(|byte| *byte == 0)
+                );
+            }
+            if let Some(index) = dropped {
+                pair.server.inbound.remove(index).unwrap();
+            }
+            pair.drive();
+            let server = pair.server.assert_accept();
+            assert!(!pair.client_conn_mut(client).is_handshaking());
+            assert!(!pair.server_conn_mut(server).is_handshaking());
+            assert_eq!(pair.client_conn_mut(client).bytes_in_flight(), 0);
+        }
     }
 }

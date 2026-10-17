@@ -8,6 +8,7 @@ fn flight() -> RecordedInitialFlight {
                 index + 1,
                 1 + index as u8,
                 1250,
+                0,
                 vec![
                     InitialFrame::Crypto {
                         offset: index * 100,
@@ -93,5 +94,23 @@ fn standalone_packet_decoding_cannot_bypass_geometry_validation() {
             _ => value["frames"][0]["Crypto"]["len"] = json!(u64::MAX),
         }
         serde_json::from_value::<InitialPacket>(value).unwrap_err();
+    }
+}
+
+#[test]
+fn decoded_tails_are_bounded_by_the_packet_and_datagram_geometry() {
+    let mut value = serde_json::to_value(flight()).unwrap();
+    value["packets"][0]["trailing_bytes"] = json!(31);
+    let decoded: RecordedInitialFlight = serde_json::from_value(value.clone()).unwrap();
+    let packet = &decoded.packets()[0];
+    assert_eq!(packet.datagram_size(), 1250);
+    assert_eq!(packet.packet_size(), 1219);
+    assert_eq!(packet.trailing_bytes(), 31);
+    assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+
+    for tail in [1250, 1251, 65535, 1000] {
+        let mut invalid = value.clone();
+        invalid["packets"][0]["trailing_bytes"] = json!(tail);
+        serde_json::from_value::<RecordedInitialFlight>(invalid).unwrap_err();
     }
 }
