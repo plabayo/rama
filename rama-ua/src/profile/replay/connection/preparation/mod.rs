@@ -29,22 +29,28 @@ use std::sync::Arc;
 /// Locally owned result of one connection draw and whole-profile admission.
 #[derive(Debug)]
 pub struct ConnectionPreparation {
+    admission: ConnectionAdmission,
+    components: PreparedConnectionComponents,
+}
+
+/// Selection bindings retained locally while decoded recipes move to consumers.
+#[derive(Debug)]
+pub(crate) struct ConnectionAdmission {
     selection: ConnectionSelection,
     // Selection happens before inner transport I/O. Retain only the remaining
     // draw inputs needed to reject a changed seed or connection scope afterward.
     seed: ProfileSeed,
     connection: ConnectionContext,
-    components: PreparedConnectionComponents,
 }
 
 impl ConnectionPreparation {
     /// The connection variant that passed whole-profile admission.
     pub fn selection(&self) -> &ConnectionSelection {
-        &self.selection
+        &self.admission.selection
     }
 
-    pub(crate) fn into_parts(self) -> (ConnectionSelection, PreparedConnectionComponents) {
-        (self.selection, self.components)
+    pub(crate) fn into_parts(self) -> (ConnectionAdmission, PreparedConnectionComponents) {
+        (self.admission, self.components)
     }
 
     /// Decode once and compile against the consumer's current input. Ordinary
@@ -87,9 +93,11 @@ impl ConnectionPreparation {
             .prepare_for_replay_with(mode, |components| compile(&selection, components, mode))?;
         Ok(Some((
             Self {
-                selection,
-                seed: context.seed,
-                connection,
+                admission: ConnectionAdmission {
+                    selection,
+                    seed: context.seed,
+                    connection,
+                },
                 components,
             },
             compiled,
@@ -103,7 +111,7 @@ impl ConnectionPreparation {
             .ok_or_else(|| BoxError::from_static_str("captured profile context is missing"))?;
         if let Some(settings) = self
             .components
-            .h3_client_settings(&mut self.selection.h3_settings_draw(context.seed))?
+            .h3_client_settings(&mut self.admission.selection.h3_settings_draw(context.seed))?
         {
             if input
                 .extensions()
@@ -138,26 +146,7 @@ impl ConnectionPreparation {
         &self,
         input: &'a Extensions,
     ) -> Result<&'a EmulationContext, BoxError> {
-        let context = EmulationContext::of(input)
-            .ok_or_else(|| BoxError::from_static_str("captured profile context is missing"))?;
-        if context.selected.profile_id() != self.selection.profile
-            || context.seed != self.seed
-            || input
-                .get_ref::<ConnectionContext>()
-                .cloned()
-                .unwrap_or_default()
-                != self.connection
-            || context.connection_key != self.selection.draw
-            || context
-                .pins
-                .connection
-                .is_some_and(|pin| pin != self.selection.variant)
-        {
-            return Err(BoxError::from_static_str(
-                "connection context differs from its admitted selection",
-            ));
-        }
-        Ok(context)
+        self.admission.check_context(input)
     }
 
     /// Publish the admitted selection and report. A negotiated HTTP version also
@@ -181,11 +170,47 @@ impl ConnectionPreparation {
             None => self.components.preservation_report,
         };
         connection.insert(report);
-        connection.insert(self.selection);
+        connection.insert(self.admission.selection);
         if let Some(version) = version {
             ProfileConnectionReuse::new(context, version).publish(connection);
         }
         Ok(())
+    }
+}
+
+impl ConnectionAdmission {
+    pub(crate) fn selection(&self) -> &ConnectionSelection {
+        &self.selection
+    }
+
+    pub(crate) fn into_selection(self) -> ConnectionSelection {
+        self.selection
+    }
+
+    pub(crate) fn check_context<'a>(
+        &self,
+        input: &'a Extensions,
+    ) -> Result<&'a EmulationContext, BoxError> {
+        let context = EmulationContext::of(input)
+            .ok_or_else(|| BoxError::from_static_str("captured profile context is missing"))?;
+        if context.selected.profile_id() != self.selection.profile
+            || context.seed != self.seed
+            || input
+                .get_ref::<ConnectionContext>()
+                .cloned()
+                .unwrap_or_default()
+                != self.connection
+            || context.connection_key != self.selection.draw
+            || context
+                .pins
+                .connection
+                .is_some_and(|pin| pin != self.selection.variant)
+        {
+            return Err(BoxError::from_static_str(
+                "connection context differs from its admitted selection",
+            ));
+        }
+        Ok(context)
     }
 }
 

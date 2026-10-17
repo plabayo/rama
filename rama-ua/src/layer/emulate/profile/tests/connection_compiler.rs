@@ -247,3 +247,95 @@ async fn best_effort_reports_only_uncompiled_components() {
         ]
     );
 }
+
+#[tokio::test]
+async fn admitted_connection_bindings_survive_inner_connector_io() {
+    #[derive(Clone, Copy, Debug)]
+    enum Change {
+        None,
+        RequestDraw,
+        Seed,
+        ConnectionDraw,
+        ConnectionScope,
+        Pin,
+    }
+
+    for mode in [
+        ProfilePreservationMode::Strict,
+        ProfilePreservationMode::BestEffort,
+    ] {
+        for change in [
+            Change::None,
+            Change::RequestDraw,
+            Change::Seed,
+            Change::ConnectionDraw,
+            Change::ConnectionScope,
+            Change::Pin,
+        ] {
+            let applied = Arc::new(AtomicUsize::new(0));
+            let request = input(false);
+            request.extensions().insert(mode);
+            let published = Extensions::new();
+            let observed = published.clone();
+            let service = service_fn(move |input: ConnectRequest| {
+                let extensions = published.clone();
+                async move {
+                    let mut context = EmulationContext::of(input.extensions()).unwrap().clone();
+                    match change {
+                        Change::None => {}
+                        Change::RequestDraw => context.request_key = DrawKey([17; 32]),
+                        Change::Seed => context.seed = ProfileSeed([18; 32]),
+                        Change::ConnectionDraw => context.connection_key = DrawKey([19; 32]),
+                        Change::ConnectionScope => {
+                            input.extensions().insert(ConnectionContext {
+                                token_present: Some(true),
+                                ..ConnectionContext::default()
+                            });
+                        }
+                        Change::Pin => context.pins.connection = Some(ValueId([20; 32])),
+                    }
+                    context.publish(input.extensions());
+                    let conn = ServiceInput {
+                        input: (),
+                        extensions,
+                    };
+                    conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
+                    Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn })
+                }
+            });
+            let result = UserAgentEmulateHttpConnectModifier::new(service)
+                .with_connection_compiler(TestCompiler {
+                    fail: false,
+                    supports_versions: true,
+                    applied: applied.clone(),
+                })
+                .serve(request)
+                .await;
+            assert_eq!(applied.load(Ordering::Relaxed), 1);
+            if matches!(change, Change::None | Change::RequestDraw) {
+                let connection = result.unwrap();
+                assert!(
+                    connection
+                        .conn
+                        .extensions()
+                        .contains::<ConnectionSelection>()
+                );
+            } else {
+                let error = result.unwrap_err();
+                assert!(!observed.contains::<ConnectionSelection>());
+                assert!(!observed.contains::<ProfilePreservationReport>());
+                assert_eq!(
+                    error.kind(),
+                    ConnectionErrorKind::InvalidInput,
+                    "{mode:?}: {change:?}"
+                );
+                assert!(
+                    error
+                        .to_string()
+                        .contains("connection context differs from its admitted selection"),
+                    "{mode:?}: {change:?}: {error}"
+                );
+            }
+        }
+    }
+}

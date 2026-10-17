@@ -36,7 +36,7 @@ use crate::{
             },
             request::ProfilePreservationReport,
         },
-        selection::variants::{EmulationContext, ProfileConnectionReuse},
+        selection::variants::ProfileConnectionReuse,
     },
 };
 
@@ -324,24 +324,27 @@ where
             self.compiler.compile(&req, selection, components, mode)
         })
         .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
-        let connection_selection = if let Some((mut prepared, compiled)) = prepared {
+        let connection_admission = if let Some((mut prepared, compiled)) = prepared {
             prepared.apply_http(&req).map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
             })?;
-            let (selection, components) = prepared.into_parts();
+            let (admission, components) = prepared.into_parts();
             req.extensions()
                 .insert(components.preservation_report.clone());
             req.extensions().insert(components);
-            req.extensions().insert(selection.clone());
+            req.extensions().insert(admission.selection().clone());
             compiled.apply(req.extensions());
-            Some(selection)
+            Some(admission)
         } else {
             None
         };
 
         let EstablishedClientConnection { conn, input: req } = self.inner.connect(req).await?;
 
-        if let Some(selection) = connection_selection {
+        if let Some(admission) = connection_admission {
+            let context = admission.check_context(req.extensions()).map_err(|error| {
+                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+            })?;
             let version = conn
                 .extensions()
                 .get_ref::<TargetHttpVersion>()
@@ -356,12 +359,6 @@ where
                         ConnectionErrorKind::Protocol,
                     )
                 })?;
-            let context = EmulationContext::of(req.extensions()).ok_or_else(|| {
-                ConnectionError::local(
-                    BoxError::from_static_str("captured profile emulation context is missing"),
-                    ConnectionErrorKind::Internal,
-                )
-            })?;
             context
                 .selected
                 .validate_negotiated_protocol(version)
@@ -376,7 +373,7 @@ where
                 };
                 conn.extensions().insert(report);
             }
-            conn.extensions().insert(selection);
+            conn.extensions().insert(admission.into_selection());
             ProfileConnectionReuse::new(context, version).publish(conn.extensions());
         }
 

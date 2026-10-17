@@ -44,6 +44,11 @@ pub trait CompiledConnectionProfile: Send + 'static {
 }
 
 /// Installation hook for a compiler used by an outer emulation layer.
+///
+/// Install ordinary native configuration extensions. The outer layer retains
+/// admission bindings locally and checks them after its inner connector returns,
+/// before publishing profile selection or reuse information. Place that layer
+/// around the transport step when bindings must be checked before TLS output.
 /// Native connectors consume their compiled output locally instead.
 pub trait InstalledConnectionProfile: CompiledConnectionProfile {
     /// Install configuration after all preservation checks have passed.
