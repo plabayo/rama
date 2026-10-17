@@ -127,9 +127,9 @@ Most organisations running rama in production do so on a variety of Linux system
 
 GNU/Linux binaries can also be cross-compiled from macOS and Windows using
 [`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild). This is tested
-in CI for `x86_64-unknown-linux-gnu` with Rama's native system DNS resolver and
-native TLS backends enabled. Cross-built binaries must be run on a compatible
-Linux system, not on the macOS or Windows build host.
+in CI for `x86_64-unknown-linux-gnu` with Rama's native system DNS resolver
+(`dns-libresolv`) and native TLS backends enabled. Cross-built binaries must be
+run on a compatible Linux system, not on the macOS or Windows build host.
 On Windows, install the `x86_64-pc-windows-gnu` variant of the stable Rust
 toolchain; the `just` recipes select it automatically.
 

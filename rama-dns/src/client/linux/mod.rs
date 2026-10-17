@@ -6,13 +6,15 @@
 //! daemon is unavailable (see [`super::systemd_resolved`]). The builder may
 //! explicitly enable or disable this path regardless of the NSS configuration.
 //!
-//! With glibc, `A` / `AAAA` / `CNAME` / `TXT` / `SVCB` / `HTTPS` lookups are
-//! backed by the native resolver stub. Each name is asked with `res_nquery`
-//! while walking the `search` list from `/etc/resolv.conf` and its `ndots`
-//! as `res_nsearch` would, so every name's own answer and timing count, and
-//! a truncated answer is asked again over TCP within the lookup's timeout.
+//! With glibc and the `libresolv` feature, `A` / `AAAA` / `CNAME` / `TXT` /
+//! `SVCB` / `HTTPS` lookups are backed by the native resolver stub. Each name
+//! is asked with `res_nquery` while walking the `search` list from
+//! `/etc/resolv.conf` and its `ndots` as `res_nsearch` would, so every name's
+//! own answer and timing count, and a truncated answer is asked again over TCP
+//! within the lookup's timeout.
 //!
-//! On other Linux libc environments, address lookups fall back to
+//! Without that feature (it needs a C compiler and libclang at build time), and
+//! on other Linux libc environments, address lookups fall back to
 //! `getaddrinfo`, while non-address lookups return stable unsupported errors
 //! when systemd-resolved is unavailable.
 //!
@@ -52,20 +54,10 @@ use crate::wire::{Name, ServiceBinding, Txt};
 
 mod cache;
 
-#[cfg(not(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-)))]
+#[cfg(not(rama_dns_libresolv))]
 mod legacy;
 
-#[cfg(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
+#[cfg(rama_dns_libresolv)]
 mod res_nsearch;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -80,12 +72,7 @@ const DEFAULT_CACHE_CAPACITY: u64 = 65_536;
 const DEFAULT_RESPONSE_BUFFER_SIZE: usize = u16::MAX as usize;
 const NSSWITCH_CONF_PATH: &str = "/etc/nsswitch.conf";
 /// Whether libc here serves CNAME, TXT, SVCB and HTTPS lookups.
-const NATIVE_RECORD_LOOKUPS: bool = cfg!(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-));
+const NATIVE_RECORD_LOOKUPS: bool = cfg!(rama_dns_libresolv);
 
 #[derive(Debug, Clone)]
 /// Used to build a [`LinuxDnsResolver`] instance.
@@ -161,6 +148,8 @@ impl LinuxDnsResolverBuilder {
 
     generate_set_and_with! {
         /// Maximum per-query allocation and positive response size for glibc lookups.
+        ///
+        /// Only used by the `libresolv` backend; `getaddrinfo` lookups ignore it.
         ///
         /// The initial allocation remains modest and grows on demand. Responses
         /// exceeding this bound are errors when libc reports their required size;
@@ -934,12 +923,7 @@ where
     })
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
+#[cfg(rama_dns_libresolv)]
 fn native_lookup_ipv4_stream(
     domain: Domain,
     timeout: Duration,
@@ -948,12 +932,7 @@ fn native_lookup_ipv4_stream(
     res_nsearch::lookup_ipv4_stream(domain, timeout, native)
 }
 
-#[cfg(not(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-)))]
+#[cfg(not(rama_dns_libresolv))]
 fn native_lookup_ipv4_stream(
     domain: Domain,
     timeout: Duration,
@@ -962,12 +941,7 @@ fn native_lookup_ipv4_stream(
     legacy::lookup_ipv4_stream(domain, timeout, native)
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
+#[cfg(rama_dns_libresolv)]
 fn native_lookup_ipv6_stream(
     domain: Domain,
     timeout: Duration,
@@ -976,12 +950,7 @@ fn native_lookup_ipv6_stream(
     res_nsearch::lookup_ipv6_stream(domain, timeout, native)
 }
 
-#[cfg(not(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-)))]
+#[cfg(not(rama_dns_libresolv))]
 fn native_lookup_ipv6_stream(
     domain: Domain,
     timeout: Duration,
@@ -990,12 +959,7 @@ fn native_lookup_ipv6_stream(
     legacy::lookup_ipv6_stream(domain, timeout, native)
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
+#[cfg(rama_dns_libresolv)]
 fn native_lookup_txt_stream(
     domain: Domain,
     timeout: Duration,
@@ -1004,12 +968,7 @@ fn native_lookup_txt_stream(
     res_nsearch::lookup_txt_stream(domain, timeout, native)
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
+#[cfg(rama_dns_libresolv)]
 fn native_lookup_cname_stream(
     domain: Domain,
     timeout: Duration,
@@ -1018,12 +977,7 @@ fn native_lookup_cname_stream(
     res_nsearch::lookup_cname_stream(domain, timeout, native)
 }
 
-#[cfg(not(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-)))]
+#[cfg(not(rama_dns_libresolv))]
 fn native_lookup_cname_stream(
     _domain: Domain,
     _timeout: Duration,
@@ -1034,12 +988,7 @@ fn native_lookup_cname_stream(
     ))))
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
+#[cfg(rama_dns_libresolv)]
 fn native_lookup_svcb_stream(
     domain: Domain,
     timeout: Duration,
@@ -1048,12 +997,7 @@ fn native_lookup_svcb_stream(
     res_nsearch::lookup_svcb_stream(domain, timeout, native)
 }
 
-#[cfg(not(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-)))]
+#[cfg(not(rama_dns_libresolv))]
 fn native_lookup_svcb_stream(
     _domain: Domain,
     _timeout: Duration,
@@ -1062,12 +1006,7 @@ fn native_lookup_svcb_stream(
     unsupported_service_binding_stream()
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
+#[cfg(rama_dns_libresolv)]
 fn native_lookup_https_stream(
     domain: Domain,
     timeout: Duration,
@@ -1076,12 +1015,7 @@ fn native_lookup_https_stream(
     res_nsearch::lookup_https_stream(domain, timeout, native)
 }
 
-#[cfg(not(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-)))]
+#[cfg(not(rama_dns_libresolv))]
 fn native_lookup_https_stream(
     _domain: Domain,
     _timeout: Duration,
@@ -1090,12 +1024,7 @@ fn native_lookup_https_stream(
     unsupported_service_binding_stream()
 }
 
-#[cfg(not(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-)))]
+#[cfg(not(rama_dns_libresolv))]
 fn unsupported_service_binding_stream()
 -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
     rama_core::futures::stream::once(std::future::ready(Err(BoxError::from(
@@ -1103,12 +1032,7 @@ fn unsupported_service_binding_stream()
     ))))
 }
 
-#[cfg(not(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-)))]
+#[cfg(not(rama_dns_libresolv))]
 fn native_lookup_txt_stream(
     _domain: Domain,
     _timeout: Duration,
@@ -1581,12 +1505,7 @@ mod tests {
         assert_eq!(resolver.native_max_concurrency(), Some(3));
     }
 
-    #[cfg(not(any(
-        all(target_os = "linux", target_env = "gnu"),
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-    )))]
+    #[cfg(not(rama_dns_libresolv))]
     #[tokio::test]
     async fn unsupported_record_lookups_keep_their_typed_error() {
         async fn first_error<T>(items: impl Stream<Item = Result<T, BoxError>>) -> BoxError {

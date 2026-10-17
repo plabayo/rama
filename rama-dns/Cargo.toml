@@ -30,6 +30,14 @@ ignored = ["bindgen", "cc"]
 [features]
 default = []
 hickory = ["dep:hickory-resolver"]
+# Back `LinuxDnsResolver` on GNU/Linux with glibc's libresolv stub
+# (`res_nquery` walking the `/etc/resolv.conf` search list), which also serves
+# CNAME, TXT, SVCB and HTTPS lookups without systemd-resolved.
+#
+# This compiles a small C shim and runs bindgen at build time, so it needs a
+# C compiler and libclang. Without it, GNU/Linux uses `getaddrinfo` for
+# address lookups, as on other Linux libc environments. No effect elsewhere.
+libresolv = ["dep:bindgen", "dep:cc"]
 # Optional [dial9] runtime telemetry support.
 #
 # [dial9]: https://github.com/dial9-rs/dial9
@@ -64,8 +72,8 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Network
 libc = { workspace = true }
 
 [build-dependencies]
-bindgen = { workspace = true }
-cc = { workspace = true }
+bindgen = { workspace = true, optional = true }
+cc = { workspace = true, optional = true }
 
 [dev-dependencies]
 ahash = { workspace = true }

@@ -44,6 +44,7 @@ rama = { workspace = true, features = [
     "boring",
     "cli",
     "dns-hickory",
+    "dns-libresolv",
     "tcp",
     "udp",
     "http-full",

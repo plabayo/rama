@@ -42,8 +42,8 @@
 //! `LinuxDnsResolver` first tries systemd-resolved's varlink socket, which is
 //! likewise fully asynchronous. This path can also be enabled or disabled
 //! explicitly through `LinuxDnsResolver::builder()`. Where the daemon is not
-//! selected or available it falls back to glibc's resolver / `getaddrinfo`, and
-//! there — as with [`client::TokioDnsResolver`] (via `getaddrinfo`) — each
+//! selected or available it falls back to glibc's resolver (with the
+//! `libresolv` feature, see below) or `getaddrinfo`, and there — as with [`client::TokioDnsResolver`] (via `getaddrinfo`) — each
 //! lookup occupies a tokio blocking-pool thread for the duration of the libc
 //! call. Those resolvers bound how many such calls run at once (384 by
 //! default, 64 on Apple platforms) and how many queries a burst may leave
@@ -62,6 +62,19 @@
 //! to one host costs one lookup rather than one per connection. A lookup is
 //! shared within the tokio runtime that started it, between clones with the
 //! same timeout.
+//!
+//! ### GNU/Linux and the `libresolv` feature
+//!
+//! Without systemd-resolved, `LinuxDnsResolver` serves address lookups
+//! through `getaddrinfo`, which honours `/etc/hosts`, NSS and the
+//! `/etc/resolv.conf` search list, and returns typed unsupported errors for
+//! CNAME, TXT, SVCB and HTTPS lookups.
+//!
+//! Enable the `libresolv` feature to back it on GNU/Linux with glibc's
+//! libresolv stub instead, which also serves those record types. That
+//! compiles a small C shim and generates bindings with bindgen at build time,
+//! so it needs a C compiler and libclang (e.g. `clang` / `libclang-dev`).
+//! The feature has no effect on other targets.
 //!
 //! ## Global DNS resolver
 //!

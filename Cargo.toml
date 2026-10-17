@@ -485,6 +485,10 @@ idna = ["net", "rama-net?/idna"]
 mmap = ["std", "rama-net?/mmap"]
 dns = ["std", "net", "dep:rama-dns", "rama-socks5?/dns"]
 dns-hickory = ["dns", "rama-dns/hickory"]
+# Back the GNU/Linux native DNS resolver with glibc's libresolv stub, adding
+# CNAME, TXT, SVCB and HTTPS lookups without systemd-resolved. Needs a C
+# compiler and libclang at build time; see the `rama-dns` docs.
+dns-libresolv = ["dns", "rama-dns/libresolv"]
 tcp = ["std", "net", "dep:rama-tcp"]
 udp = ["std", "net", "dep:rama-udp"]
 # QUIC v1 transport over `udp`, with backend-neutral TLS types. Select a built-in

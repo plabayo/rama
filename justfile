@@ -141,7 +141,7 @@ _zigbuild-linux-gnu-sentinels TARGET:
 # Link the focused downstream path that originally exposed the glibc resolver
 # symbol mismatch. This is also the inexpensive AArch64 CI gate.
 test-zigbuild-linux-gnu-native-dns TARGET="x86_64-unknown-linux-gnu.2.17":
-    cargo zigbuild --locked -p rama-examples --bin native_dns --features dns --target {{TARGET}}
+    cargo zigbuild --locked -p rama-examples --bin native_dns --features dns,dns-libresolv --target {{TARGET}}
 
 # Build the real CLI with its curated distribution features, independently of
 # workspace-wide feature unification.

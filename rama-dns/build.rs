@@ -1,51 +1,70 @@
-#![expect(
-    clippy::expect_used,
-    reason = "build script: panicking on env/codegen failure aborts the build, which is the desired behavior"
+#![cfg_attr(
+    feature = "libresolv",
+    expect(
+        clippy::expect_used,
+        reason = "build script: panicking on env/codegen failure aborts the build, which is the desired behavior"
+    )
 )]
 
-use std::{env, path::PathBuf};
+use std::env;
+
+/// Set when `LinuxDnsResolver` is backed by libresolv's `res_nquery`
+/// (the `libresolv` feature on a target that has it), rather than `getaddrinfo`.
+const LIBRESOLV_CFG: &str = "rama_dns_libresolv";
 
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
-    println!("cargo::rerun-if-changed=src/client/linux/resolv_wrapper.c");
-    println!("cargo::rerun-if-changed=src/client/linux/resolv_wrapper.h");
+    println!("cargo::rustc-check-cfg=cfg({LIBRESOLV_CFG})");
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").ok();
     let target_env = env::var("CARGO_CFG_TARGET_ENV").ok();
-    let uses_res_nsearch = matches!(
+    let target_has_libresolv = matches!(
         (target_os.as_deref(), target_env.as_deref()),
         (Some("linux"), Some("gnu")) | (Some("freebsd" | "openbsd" | "netbsd"), _)
     );
 
-    if !uses_res_nsearch {
+    if !(target_has_libresolv && env::var_os("CARGO_FEATURE_LIBRESOLV").is_some()) {
         return;
     }
 
-    if matches!(
-        (target_os.as_deref(), target_env.as_deref()),
-        (Some("linux"), Some("gnu"))
-    ) {
-        // Dev/CI only: downstream toolchains can emit warnings we don't control.
-        println!("cargo::rerun-if-env-changed=RAMA_DEV_DENY_C_WARNINGS");
-        cc::Build::new()
-            .file("src/client/linux/resolv_wrapper.c")
-            .warnings_into_errors(env::var("RAMA_DEV_DENY_C_WARNINGS").as_deref() == Ok("1"))
-            .cargo_warnings(false)
-            .compile("rama_dns_resolv");
+    println!("cargo::rustc-cfg={LIBRESOLV_CFG}");
+
+    #[cfg(feature = "libresolv")]
+    libresolv::build(target_os.as_deref(), target_env.as_deref());
+}
+
+#[cfg(feature = "libresolv")]
+mod libresolv {
+    use std::{env, path::PathBuf};
+
+    pub(super) fn build(target_os: Option<&str>, target_env: Option<&str>) {
+        println!("cargo::rerun-if-changed=src/client/linux/resolv_wrapper.c");
+        println!("cargo::rerun-if-changed=src/client/linux/resolv_wrapper.h");
+
+        if matches!((target_os, target_env), (Some("linux"), Some("gnu"))) {
+            // Dev/CI only: downstream toolchains can emit warnings we don't control.
+            println!("cargo::rerun-if-env-changed=RAMA_DEV_DENY_C_WARNINGS");
+            cc::Build::new()
+                .file("src/client/linux/resolv_wrapper.c")
+                .warnings_into_errors(env::var("RAMA_DEV_DENY_C_WARNINGS").as_deref() == Ok("1"))
+                .cargo_warnings(false)
+                .compile("rama_dns_resolv");
+        }
+
+        let out_path =
+            PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("resolv_bindings.rs");
+
+        let bindings = bindgen::Builder::default()
+            .header("src/client/linux/resolv_wrapper.h")
+            .allowlist_type("__res_state")
+            .generate_comments(true)
+            .derive_default(true)
+            .layout_tests(false)
+            .generate()
+            .expect("generate libresolv bindings");
+
+        bindings
+            .write_to_file(out_path)
+            .expect("write libresolv bindings");
     }
-
-    let out_path = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("resolv_bindings.rs");
-
-    let bindings = bindgen::Builder::default()
-        .header("src/client/linux/resolv_wrapper.h")
-        .allowlist_type("__res_state")
-        .generate_comments(true)
-        .derive_default(true)
-        .layout_tests(false)
-        .generate()
-        .expect("generate libresolv bindings");
-
-    bindings
-        .write_to_file(out_path)
-        .expect("write libresolv bindings");
 }

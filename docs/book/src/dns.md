@@ -21,6 +21,11 @@ Dns is essential to most of Rama, as it is what:
 
 See [rama-dns](https://ramaproxy.org/docs/rama/tcp/index.html) for more information.
 
+On GNU/Linux the native resolver uses systemd-resolved when NSS selects it and
+`getaddrinfo` otherwise. Enable `dns-libresolv` to back it with glibc's libresolv stub instead, which
+also answers CNAME, TXT, SVCB and HTTPS lookups without systemd-resolved; this
+needs a C compiler and libclang at build time.
+
 ## Examples
 
 
