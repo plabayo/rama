@@ -1,6 +1,6 @@
 use std::fmt;
 
-use rama_core::error::BoxError;
+use rama_core::{error::BoxError, extensions::Extension};
 pub use rama_tls::alpn::AlpnPolicy;
 use rama_utils::macros::generate_set_and_with;
 
@@ -20,7 +20,11 @@ pub enum ClientSessionPolicy {
 ///
 /// This controls the offer, independently of ticket retention. Full handshakes
 /// may retain new tickets unless [`ClientSessionPolicy::Fresh`] forbids it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Install this extension in the final TLS configuration to require a particular
+/// offer when [`crate::tls::ClientConfigCache`] opens a connection. It contains
+/// no prepared session and does not affect reuse of an established connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Extension)]
+#[extension(tags(tls))]
 pub enum ClientHandshake {
     /// Do not offer an existing session ticket.
     Full,

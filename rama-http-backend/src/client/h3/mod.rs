@@ -493,13 +493,13 @@ impl Http3Connector {
             Some(config) => config,
             None => self
                 .tls_configs
-                .client_config(&tls, input.extensions())
+                .client_config_for_peer(&tls, input.extensions(), &server_identity)
                 .map_err(|error| ConnectionError::local(error, InvalidInput))?,
         };
         #[cfg(not(feature = "ua"))]
         let mut config = self
             .tls_configs
-            .client_config(&tls, input.extensions())
+            .client_config_for_peer(&tls, input.extensions(), &server_identity)
             .map_err(|error| ConnectionError::local(error, InvalidInput))?;
         if let Some(profile) = &profile {
             config

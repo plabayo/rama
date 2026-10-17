@@ -220,13 +220,13 @@ fn native_handshake_requirements_preserve_tickets_without_ua_profiles() {
             .into_fixed();
 
         // An empty ticket domain cannot satisfy a resumed handshake.
+        policy.as_extensions().insert(ClientHandshake::Resumed);
         let resumed = cache
-            .prepare_client_config(
+            .client_config_for_peer(
                 &policy,
-                Host::try_from("localhost").unwrap(),
-                ClientHandshake::Resumed,
+                policy.as_extensions(),
+                &Host::try_from("localhost").unwrap(),
             )
-            .unwrap()
             .unwrap();
         assert!(
             resumed
@@ -237,13 +237,13 @@ fn native_handshake_requirements_preserve_tickets_without_ua_profiles() {
 
         // Full means no ticket offer even after the first exchange warms the store.
         for _ in 0..2 {
+            policy.as_extensions().insert(ClientHandshake::Full);
             let full = cache
-                .prepare_client_config(
+                .client_config_for_peer(
                     &policy,
-                    Host::try_from("localhost").unwrap(),
-                    ClientHandshake::Full,
+                    policy.as_extensions(),
+                    &Host::try_from("localhost").unwrap(),
                 )
-                .unwrap()
                 .unwrap();
             assert_eq!(full.crypto.resumable_version("localhost"), None);
             let mut client = full
@@ -258,13 +258,13 @@ fn native_handshake_requirements_preserve_tickets_without_ua_profiles() {
         }
 
         // Tickets from those full offers remain usable by a subsequent resumed offer.
+        policy.as_extensions().insert(ClientHandshake::Resumed);
         let resumed = cache
-            .prepare_client_config(
+            .client_config_for_peer(
                 &policy,
-                Host::try_from("localhost").unwrap(),
-                ClientHandshake::Resumed,
+                policy.as_extensions(),
+                &Host::try_from("localhost").unwrap(),
             )
-            .unwrap()
             .unwrap();
         assert_eq!(resumed.crypto.resumable_version("localhost"), Some(version));
         let mut client = resumed
@@ -281,10 +281,10 @@ fn native_handshake_requirements_preserve_tickets_without_ua_profiles() {
             TlsOptions::default().with_client_sessions(ClientSessionPolicy::Fresh),
         );
         fresh
-            .prepare_client_config(
+            .client_config_for_peer(
                 &policy,
-                Host::try_from("localhost").unwrap(),
-                ClientHandshake::Resumed,
+                policy.as_extensions(),
+                &Host::try_from("localhost").unwrap(),
             )
             .unwrap_err();
     }
