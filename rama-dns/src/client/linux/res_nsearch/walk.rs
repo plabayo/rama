@@ -7,10 +7,9 @@ use std::{
     ffi::{CStr, CString, OsString},
     fs,
     io::{self, BufRead, Read as _, Write as _},
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, TcpStream},
+    net::{SocketAddr, TcpStream},
     os::unix::{ffi::OsStrExt as _, fs::MetadataExt as _},
     path::{Path, PathBuf},
-    ptr,
     sync::Arc,
     time::{Duration, Instant, SystemTime},
 };
@@ -22,8 +21,7 @@ use rama_net::address::Domain;
 
 use super::{
     DNS_HEADER_SIZE, INITIAL_RESPONSE_BUFFER_SIZE, LinuxDnsResolverError, MAX_NAMESERVERS,
-    clear_errno, dns_name_from_domain, ffi, fit_retransmits, grow_response_buffer, try_secs,
-    whole_secs,
+    dns_name_from_domain, ffi, fit_retransmits, grow_response_buffer, try_secs, whole_secs,
 };
 use crate::{
     client::limit::DnsTimeoutError,
@@ -96,7 +94,8 @@ impl Walk {
     /// The names `__res_context_search` asks for `name`, with `alias` its
     /// HOSTALIASES entry, if any, and `full_search` the whole search list.
     pub(super) fn new(
-        state: &ffi::ResState,
+        state: &ffi::Config,
+        search: &[CString],
         name: &str,
         alias: Option<CString>,
         full_search: impl FnOnce() -> Arc<[Box<[u8]>]>,
@@ -119,7 +118,7 @@ impl Walk {
             return Ok(walk);
         }
 
-        let as_is_first = dots >= state.ndots() as usize;
+        let as_is_first = dots >= state.ndots as usize;
         if as_is_first {
             walk.push(as_is.clone(), Kind::AsIsFirst);
         }
@@ -129,14 +128,7 @@ impl Walk {
             ffi::RES_DNSRCH
         };
         if state.options & flag != 0 {
-            let kept: Vec<&[u8]> = state
-                .dnsrch
-                .iter()
-                .take_while(|domain| !domain.is_null())
-                // SAFETY: `res_ninit` points each set entry at a NUL-terminated
-                // domain living as long as `state`, and nulls the rest
-                .map(|&domain| unsafe { CStr::from_ptr(domain) }.to_bytes())
-                .collect();
+            let kept: Vec<&[u8]> = search.iter().map(|domain| domain.as_bytes()).collect();
             let mut domains = search_domains(&kept, full_search);
             // without DNSRCH only the default domain is asked
             if state.options & ffi::RES_DNSRCH == 0 {
@@ -448,29 +440,20 @@ pub(super) fn ask(
             max_response_size,
         );
     }
-    (state.retrans, state.retry, state.nscount) = (tries.retrans, tries.retry, tries.nscount);
-    fit_retransmits(state, budget);
+    (
+        state.config.retrans,
+        state.config.retry,
+        state.config.nscount,
+    ) = (tries.retrans, tries.retry, tries.nscount);
+    fit_retransmits(&mut state.config, budget);
 
     let mut buffer = vec![0_u8; INITIAL_RESPONSE_BUFFER_SIZE.min(max_response_size)];
     loop {
-        clear_errno();
         // a failure's header then shows whether, and how, a server answered
         buffer[..DNS_HEADER_SIZE].fill(0);
         let called = Instant::now();
-        // SAFETY:
-        // - `state` is initialized by `res_ninit`.
-        // - `name` is a valid NUL-terminated DNS name.
-        // - `buffer` is writable response storage of the given length.
-        let len = unsafe {
-            ffi::res_nquery(
-                state,
-                name.as_ptr(),
-                c_int::from(ffi::NS_C_IN),
-                rrtype,
-                buffer.as_mut_ptr(),
-                c_int::try_from(buffer.len()).unwrap_or(c_int::MAX),
-            )
-        };
+        let result = state.query(name, rrtype, &mut buffer);
+        let len = result.len;
         let header = MessageHeader::parse(&buffer)
             .ok()
             .filter(MessageHeader::is_response);
@@ -495,8 +478,12 @@ pub(super) fn ask(
             };
         }
 
-        let errno = io::Error::last_os_error().raw_os_error();
-        return failed(state.res_h_errno, buffer, errno, called.elapsed());
+        return failed(
+            result.resolver_error,
+            buffer,
+            Some(result.system_error),
+            called.elapsed(),
+        );
     }
 }
 
@@ -563,7 +550,7 @@ fn failure(h_errno: c_int, errno: Option<c_int>) -> BoxError {
 /// `deadline`: libc waits at least a second per nameserver. Like the budget
 /// itself, it rounds to the nearest second, so a try may end half a second
 /// late.
-pub(super) fn another_try(state: &ffi::ResState, deadline: Instant, names: usize) -> bool {
+pub(super) fn another_try(state: &ffi::Config, deadline: Instant, names: usize) -> bool {
     let left = deadline.saturating_duration_since(Instant::now());
     let shortest = try_secs(1, state.nscount.clamp(1, MAX_NAMESERVERS));
     let names = c_int::try_from(names.max(1)).unwrap_or(c_int::MAX);
@@ -586,7 +573,7 @@ fn ask_over_tcp(
         Ok(query) => query,
         Err(err) => return Asked::Failed(err),
     };
-    let servers: Vec<_> = nameservers(state, nscount).collect();
+    let servers = state.nameservers(nscount);
     let mut asked = Asked::Unreachable;
     for (i, &server) in servers.iter().enumerate() {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -697,46 +684,6 @@ impl TcpQuery {
     }
 }
 
-/// The first `nscount` nameservers `res_ninit` read, as glibc's
-/// `__res_get_nsaddr` picks them: once used, `_ext` holds a copy of each,
-/// also of an IPv4 one.
-fn nameservers(state: &ffi::ResState, nscount: c_int) -> impl Iterator<Item = SocketAddr> + '_ {
-    let count = usize::try_from(nscount.clamp(0, MAX_NAMESERVERS)).unwrap_or(0);
-    (0..count).filter_map(|ns| {
-        // SAFETY: `res_ninit` initialized `_ext`, the variant glibc uses
-        let copy = unsafe { state._u._ext.nsaddrs[ns] };
-        if copy.is_null() {
-            return v4(&state.nsaddr_list[ns]);
-        }
-        // SAFETY: a set entry points at a `sockaddr_in6`-sized copy the state
-        // owns, whose family says which address it holds
-        let copy = unsafe { &*copy };
-        if c_int::from(copy.sin6_family) == libc::AF_INET {
-            // SAFETY: an IPv4 copy starts with a whole `sockaddr_in`
-            return v4(unsafe { &*ptr::from_ref(copy).cast() });
-        }
-        (c_int::from(copy.sin6_family) == libc::AF_INET6).then(|| {
-            // SAFETY: each variant of the address union is plain octets
-            let octets = unsafe { copy.sin6_addr.__in6_u.__u6_addr8 };
-            SocketAddr::V6(SocketAddrV6::new(
-                Ipv6Addr::from(octets),
-                u16::from_be(copy.sin6_port),
-                0,
-                copy.sin6_scope_id,
-            ))
-        })
-    })
-}
-
-fn v4(address: &ffi::SockaddrIn) -> Option<SocketAddr> {
-    (c_int::from(address.sin_family) == libc::AF_INET).then(|| {
-        SocketAddr::V4(SocketAddrV4::new(
-            Ipv4Addr::from(u32::from_be(address.sin_addr.s_addr)),
-            u16::from_be(address.sin_port),
-        ))
-    })
-}
-
 /// One TCP exchange with `server`, every step of it within `deadline`.
 fn exchange(
     server: SocketAddr,
@@ -789,22 +736,22 @@ fn read_full(stream: &mut TcpStream, buffer: &mut [u8], deadline: Instant) -> io
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
-    use std::mem;
 
     use super::*;
 
     const CORP: &CStr = c"corp.test";
     const ROOT: &CStr = c".";
 
-    fn state(search: &[&CStr], ndots: u32, options: libc::c_ulong) -> ffi::ResState {
-        // SAFETY: `__res_state` is plain old data; zeroed is a valid value.
-        let mut state: ffi::ResState = unsafe { mem::zeroed() };
-        state.options = options;
-        state.set_ndots(ndots);
-        for (entry, domain) in state.dnsrch.iter_mut().zip(search) {
-            *entry = domain.as_ptr().cast_mut();
+    fn config(ndots: u32, options: libc::c_ulong) -> ffi::Config {
+        ffi::Config {
+            ndots,
+            options,
+            ..ffi::Config::default()
         }
-        state
+    }
+
+    fn suffixes(search: &[&CStr]) -> Vec<CString> {
+        search.iter().map(|domain| (*domain).to_owned()).collect()
     }
 
     const SEARCH: libc::c_ulong = ffi::RES_DEFNAMES | ffi::RES_DNSRCH;
@@ -833,7 +780,16 @@ mod tests {
     }
 
     fn walk(name: &str, search: &[&CStr], ndots: u32, options: libc::c_ulong) -> Vec<String> {
-        names(&Walk::new(&state(search, ndots, options), name, None, kept_only).unwrap())
+        names(
+            &Walk::new(
+                &config(ndots, options),
+                &suffixes(search),
+                name,
+                None,
+                kept_only,
+            )
+            .unwrap(),
+        )
     }
 
     #[test]
@@ -898,9 +854,10 @@ mod tests {
         );
         assert_eq!(walk("intranet", &[CORP], 1, 0), ["last:intranet"]);
         // a HOSTALIASES alias is asked alone
-        let state = state(&[CORP], 1, SEARCH);
+        let state = config(1, SEARCH);
         let aliased = Walk::new(
             &state,
+            &suffixes(&[CORP]),
             "intranet",
             Some(c"real.example".to_owned()),
             kept_only,
@@ -926,7 +883,14 @@ mod tests {
     }
 
     fn walk_of(name: &str, search: &[&CStr], ndots: u32, options: libc::c_ulong) -> Walk {
-        Walk::new(&state(search, ndots, options), name, None, kept_only).unwrap()
+        Walk::new(
+            &config(ndots, options),
+            &suffixes(search),
+            name,
+            None,
+            kept_only,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -934,23 +898,26 @@ mod tests {
         let kept = [
             c"s1.test", c"s2.test", c"s3.test", c"s4.test", c"s5.test", c"s6.test",
         ];
-        let six = state(&kept, 1, SEARCH);
+        let six = config(1, SEARCH);
         let full: Arc<[Box<[u8]>]> = (1..=8)
             .map(|i| format!("s{i}.test").into_bytes().into_boxed_slice())
             .collect();
-        let walk = Walk::new(&six, "intranet", None, || full.clone()).unwrap();
+        let walk = Walk::new(&six, &suffixes(&kept), "intranet", None, || full.clone()).unwrap();
         // eight domains, then the name as is
         assert_eq!(walk.steps.len(), 9);
         assert_eq!(walk.steps[7].name.to_bytes(), b"intranet.s8.test");
 
         // a list that does not extend what glibc kept is not the one it read
         let other: Arc<[Box<[u8]>]> = Arc::new([Box::from(&b"other.test"[..])]);
-        let walk = Walk::new(&six, "intranet", None, || other).unwrap();
+        let walk = Walk::new(&six, &suffixes(&kept), "intranet", None, || other).unwrap();
         assert_eq!(walk.steps.len(), 7);
 
         // `search .` leaves room for any other domain: nothing was cut
-        let root = state(&[ROOT], 1, SEARCH);
-        let walk = Walk::new(&root, "intranet", None, || panic!("read again")).unwrap();
+        let root = config(1, SEARCH);
+        let walk = Walk::new(&root, &suffixes(&[ROOT]), "intranet", None, || {
+            panic!("read again")
+        })
+        .unwrap();
         assert_eq!(walk.steps.len(), 2);
     }
 
@@ -1240,8 +1207,7 @@ mod tests {
 
     #[test]
     fn another_try_needs_a_second_per_nameserver() {
-        // SAFETY: `__res_state` is plain old data; zeroed is a valid value.
-        let mut state: ffi::ResState = unsafe { mem::zeroed() };
+        let mut state = ffi::Config::default();
         let after = |millis| Instant::now() + Duration::from_millis(millis);
         state.nscount = 1;
         assert!(!another_try(&state, after(400), 1));
