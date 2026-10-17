@@ -38,6 +38,7 @@ env:
 permissions: {}
 jobs:
   resolve-release:
+    timeout-minutes: 10
     permissions:
       contents: read
     runs-on: ubuntu-latest

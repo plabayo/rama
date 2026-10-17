@@ -42,6 +42,7 @@ jobs:
         run: bash scripts/ci/check-format.sh
 
   apple-runner:
+    timeout-minutes: 10
     permissions:
       contents: read
     needs: precheck
@@ -240,9 +241,10 @@ jobs:
       group: ${{ startsWith(matrix.os, 'macos') && (matrix.profile == 'debug' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.profile == 'debug' && 'rama-windows-slot-0' || 'rama-windows-slot-1') || format('rama-linux-beta-test-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
-    # Cover all three step budgets plus at least 20m for setup and cleanup, within the
-    # 360m ceiling of hosted runners.
-    timeout-minutes: ${{ matrix.os == 'macos-latest' && matrix.profile == 'release' && 360 || matrix.os == 'windows-latest' && 340 || 310 }}
+    # Cold builds and the ordinary/ignored suites share the hosted-runner
+    # six-hour ceiling. Individual step limits bound a stalled phase; their
+    # worst cases cannot all fit, so the job remains the overall backstop.
+    timeout-minutes: 360
     env:
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
       RUSTFLAGS: -D warnings
@@ -308,8 +310,9 @@ jobs:
             ${{ matrix.cargo_profile_args }} ${{ matrix.cargo_build_args }}
       - name: Run tests (${{ matrix.profile }})
         if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
-        # Compilation has its own budget; ordinary tests typically take <10m.
-        timeout-minutes: 20
+        # Windows and macOS exceeded 20m; a successful stable Windows run took
+        # 47m even after compilation. Keep room for slower hosted runners.
+        timeout-minutes: 60
         run: >-
           cargo nextest run --profile ci --all-features ${{ matrix.cargo_profile_args }}
           ${{ matrix.cargo_build_args }} --workspace

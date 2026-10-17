@@ -12,6 +12,7 @@ permissions: {}
 
 jobs:
   retry-infra-failures:
+    timeout-minutes: 10
     permissions:
       actions: write
       checks: read
