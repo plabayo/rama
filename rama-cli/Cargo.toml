@@ -47,6 +47,7 @@ rama = { workspace = true, features = [
     "tcp",
     "udp",
     "http-full",
+    "ua-embed-profiles",
     "inspect",
     "icap",
     "grpc",

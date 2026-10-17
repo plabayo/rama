@@ -12,7 +12,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run -p rama-examples --bin http_mitm_relay_proxy_boring --features=http-full,boring
+//! cargo run -p rama-examples --bin http_mitm_relay_proxy_boring --features=http-full,boring,ua-embed-profiles
 //! ```
 //!
 //! ## Expected output

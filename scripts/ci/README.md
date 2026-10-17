@@ -35,3 +35,9 @@ just scripts/ci/fp-test-postgres cargo test -p rama-cli --bin rama cmd::serve::f
 
 CI runs these tests on Linux. The storage-sizing test runs separately without
 competing builds, since its timings describe the local fixture.
+
+`python3 scripts/ci/check_http_features.py` checks the resolved normal dependency
+graphs for HTTP, the native relay examples, and explicit UA selections. Neither
+`http` nor `http-full` enables UA support or embedded profiles. The CLI and UA
+examples request those features explicitly. The daily Linux Boring job runs this
+check; it performs no compilation or network access.

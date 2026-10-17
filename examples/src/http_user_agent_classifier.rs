@@ -3,7 +3,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run -p rama-examples --bin http_user_agent_classifier --features=http-full
+//! cargo run -p rama-examples --bin http_user_agent_classifier --features=http-full,ua
 //! ```
 //!
 //! # Expected output

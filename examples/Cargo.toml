@@ -139,7 +139,7 @@ required-features = ["http-full", "boring"]
 [[bin]]
 name = "http_mitm_relay_proxy_boring"
 path = "src/http_mitm_relay_proxy_boring.rs"
-required-features = ["http-full", "boring"]
+required-features = ["ua-embed-profiles", "http-full", "boring"]
 
 [[bin]]
 name = "mitm_ocsp_relay_gate"
@@ -196,7 +196,7 @@ required-features = ["http-full", "grpc", "opentelemetry"]
 [[bin]]
 name = "http_user_agent_classifier"
 path = "src/http_user_agent_classifier.rs"
-required-features = ["http-full"]
+required-features = ["ua", "http-full"]
 
 [[bin]]
 name = "http_rama_tower"
@@ -221,7 +221,7 @@ required-features = ["http-full"]
 [[bin]]
 name = "http_anti_bot_zip_bomb"
 path = "src/http_anti_bot_zip_bomb.rs"
-required-features = ["http-full"]
+required-features = ["ua", "http-full"]
 
 [[bin]]
 name = "http_web_service_dir_and_api"
@@ -558,6 +558,8 @@ quic = ["rama/quic", "tls"]
 dns = ["rama/dns"]
 unix = ["rama/unix"]
 http-full = ["rama/http-full", "dns", "compression"]
+ua = ["rama/ua"]
+ua-embed-profiles = ["ua", "rama/ua-embed-profiles"]
 icap = ["rama/icap"]
 tls = ["rama/tls"]
 boring = ["rama/boring"]

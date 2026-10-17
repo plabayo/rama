@@ -44,7 +44,7 @@ mod http_abort;
 mod http_advanced_router;
 #[cfg(feature = "http-full")]
 mod http_anti_bot_infinite_resource;
-#[cfg(feature = "http-full")]
+#[cfg(all(feature = "http-full", feature = "ua"))]
 mod http_anti_bot_zip_bomb;
 #[cfg(all(feature = "http-full", feature = "boring"))]
 mod http_blocking_https_client;
@@ -95,7 +95,8 @@ mod http_mitm_proxy_rustls;
     feature = "http-full",
     feature = "rustls",
     feature = "aws-lc",
-    feature = "boring"
+    feature = "boring",
+    feature = "ua-embed-profiles"
 ))]
 mod http_mitm_relay_proxy_boring;
 #[cfg(feature = "http-full")]
@@ -134,7 +135,7 @@ mod http_sse_datastar_test_suite;
 mod http_sse_json;
 #[cfg(all(feature = "http-full", feature = "opentelemetry"))]
 mod http_telemetry;
-#[cfg(feature = "http-full")]
+#[cfg(all(feature = "http-full", feature = "ua"))]
 mod http_user_agent_classifier;
 #[cfg(feature = "http-full")]
 mod http_web_router;
