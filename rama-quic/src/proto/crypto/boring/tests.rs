@@ -1,4 +1,5 @@
 mod fresh_sessions;
+mod prepared_sessions;
 
 use std::{
     assert_matches,

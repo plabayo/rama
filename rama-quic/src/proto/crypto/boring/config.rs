@@ -21,7 +21,7 @@ use rama_quic_proto::{
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions,
     alpn::{AlpnError, AlpnPolicy},
-    client::TlsClientConfig,
+    client::{ClientHello, TlsClientConfig},
     server::TlsServerConfig,
 };
 use rama_tls_boring::{
@@ -133,7 +133,19 @@ pub(crate) struct QuicClientConfig {
     sessions: Option<ClientSessions>,
     early_data: bool,
     initializer: Option<HandshakeInitializer>,
+    prepared: Option<PreparedClient>,
 }
+
+/// Preparation retains the first native SSL object; retries use the same context
+/// and initializer but obtain their own ephemeral handshake state.
+struct PreparedClient {
+    peer: Host,
+    first: Mutex<Option<Ssl>>,
+    check: Box<ClientHelloCheck>,
+}
+
+pub(super) type ClientHelloCheck =
+    dyn Fn(&ClientHello, &[u8]) -> Result<(), BoxError> + Send + Sync;
 
 // Keeping the cache and its callback index together makes a fresh configuration
 // incapable of consulting a cache or installing a ticket-retention callback.
@@ -211,6 +223,7 @@ impl QuicClientConfig {
         };
         Ok(Self {
             context: builder.build(),
+            prepared: None,
             sessions,
             early_data: options.early_data,
             initializer: config
@@ -218,6 +231,35 @@ impl QuicClientConfig {
                 .get_ref::<HandshakeInitializer>()
                 .cloned(),
         })
+    }
+}
+
+impl QuicClientConfig {
+    pub(crate) fn prepare_fresh(
+        config: &TlsClientConfig,
+        peer: Host,
+        check: impl Fn(&ClientHello, &[u8]) -> Result<(), BoxError> + Send + Sync + 'static,
+    ) -> Result<Self, TlsConfigError> {
+        let mut config = Self::from_rama(
+            config,
+            TlsOptions::default().with_client_sessions(ClientSessionPolicy::Fresh),
+        )?;
+        let (_, mut ssl) = config.configure_ssl(peer.clone())?;
+        if let Some(initializer) = &config.initializer {
+            (initializer.0)(&mut ssl)?;
+        }
+        config.prepared = Some(PreparedClient {
+            peer,
+            first: Mutex::new(Some(ssl)),
+            check: Box::new(check),
+        });
+        Ok(config)
+    }
+
+    fn configure_ssl(&self, peer: Host) -> Result<(Host, Ssl), BoxError> {
+        let mut data = self.context.configure()?;
+        let host = data.server_name.get_or_insert(peer).clone();
+        Ok((host, data.into_ssl()?))
     }
 }
 
@@ -231,14 +273,31 @@ impl crypto::ClientConfig for QuicClientConfig {
         let wire = packet::wire(version).ok_or(ConnectError::UnsupportedVersion)?;
         let host = Host::try_from(server_name)
             .map_err(|_error| ConnectError::InvalidServerName(server_name.into()))?;
-        let mut data = self
-            .context
-            .configure()
-            .map_err(|error| ConnectError::Crypto(crypto_error(error)))?;
-        let host = data.server_name.get_or_insert(host).clone();
-        let mut ssl = data
-            .into_ssl()
-            .map_err(|error| ConnectError::Crypto(crypto_error(error)))?;
+        // Reject another destination before consuming the prepared session.
+        let (host, mut ssl, initializer) = if let Some(prepared) = &self.prepared {
+            if host != prepared.peer {
+                return Err(ConnectError::InvalidServerName(server_name.into()));
+            }
+            let first = prepared.first.lock().take();
+            let ssl = if let Some(ssl) = first {
+                ssl
+            } else {
+                let (_, mut ssl) = self
+                    .configure_ssl(host.clone())
+                    .map_err(|error| ConnectError::Crypto(crypto_error(error)))?;
+                if let Some(initializer) = &self.initializer {
+                    (initializer.0)(&mut ssl)
+                        .map_err(|error| ConnectError::Crypto(crypto_error(error)))?;
+                }
+                ssl
+            };
+            (host, ssl, None)
+        } else {
+            let (host, ssl) = self
+                .configure_ssl(host)
+                .map_err(|error| ConnectError::Crypto(crypto_error(error)))?;
+            (host, ssl, self.initializer.as_ref())
+        };
         let peer_params = Arc::new(Mutex::new(None));
         let negotiated = Arc::new(Mutex::new(version));
         let remembered = if let Some(sessions) = &self.sessions {
@@ -270,9 +329,12 @@ impl crypto::ClientConfig for QuicClientConfig {
             wire,
             params,
             self.early_data,
-            self.initializer.as_ref(),
+            initializer,
             remembered,
             peer_params,
+            self.prepared
+                .as_ref()
+                .map(|prepared| prepared.check.as_ref()),
         )
         .map_err(ConnectError::Crypto)?;
         session.track_version(negotiated);
@@ -560,6 +622,7 @@ impl QuicServerConfig {
             self.initializer.as_ref(),
             None,
             Arc::new(Mutex::new(None)),
+            None,
         )?))
     }
 }

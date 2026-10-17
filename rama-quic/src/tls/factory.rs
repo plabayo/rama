@@ -21,7 +21,8 @@ use rama_tls::{
 };
 #[cfg(feature = "boring")]
 use {
-    crate::proto::crypto::boring as boring_crypto,
+    crate::proto::crypto::boring as boring_crypto, rama_core::error::BoxError,
+    rama_net::address::Host, rama_tls::client::ClientHello,
     rama_tls_boring::client::BoringTlsConnectorConfig,
 };
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
@@ -182,6 +183,30 @@ impl KeyProvider for RustlsTlsProvider {
 #[cfg(feature = "boring")]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BoringTlsProvider;
+
+#[cfg(feature = "boring")]
+impl BoringTlsProvider {
+    /// Prepare the first native TLS session for `peer` without sending packets.
+    ///
+    /// Each dial, including address retries, calls `check` with its generated
+    /// ClientHello and the exact encoded local QUIC transport parameters before
+    /// releasing handshake output. A failed check rejects that dial. The first
+    /// dial consumes the prepared SSL object; retries create fresh sibling sessions.
+    /// All sessions use full handshakes, without reading or retaining tickets.
+    ///
+    /// This configuration is bound to `peer` and must not be shared through a
+    /// configuration cache that does not account for the supplied check.
+    pub fn prepare_fresh_client_config(
+        &self,
+        config: &TlsClientConfig,
+        peer: Host,
+        check: impl Fn(&ClientHello, &[u8]) -> Result<(), BoxError> + Send + Sync + 'static,
+    ) -> Result<ClientConfig, TlsConfigError> {
+        Ok(ClientConfig::new(Arc::new(
+            boring_crypto::QuicClientConfig::prepare_fresh(config, peer, check)?,
+        )))
+    }
+}
 
 #[cfg(feature = "boring")]
 impl TlsClientConfigProvider for BoringTlsProvider {
