@@ -2,7 +2,9 @@
 
 use std::sync::atomic::AtomicBool;
 
+use crate::tls::{ClientHandshake, ClientSessionPolicy};
 use rama_core::error::{BoxError, BoxErrorExt};
+use rama_net::address::Host;
 use rama_tls::client::ClientHelloExtension;
 
 use super::*;
@@ -162,19 +164,22 @@ fn failed_native_check_cannot_admit_a_connection_and_retry_can_succeed() {
     let rejected = reject.clone();
     let checks = Arc::new(AtomicUsize::new(0));
     let seen = checks.clone();
-    let client = BoringTlsProvider
-        .prepare_fresh_client_config(
+    let cache = ClientConfigCache::new(Arc::new(BoringTlsProvider), TlsOptions::default());
+    let client = cache
+        .prepare_client_config(
             &client,
-            rama_net::address::Host::try_from("localhost").unwrap(),
-            move |_, _| {
+            Host::try_from("localhost").unwrap(),
+            ClientHandshake::Full,
+            Box::new(move |_, _| {
                 seen.fetch_add(1, Ordering::SeqCst);
                 if rejected.load(Ordering::SeqCst) {
                     Err(BoxError::from_static_str("reject this native first flight"))
                 } else {
                     Ok(())
                 }
-            },
+            }),
         )
+        .unwrap()
         .unwrap();
     let mut endpoint = crate::proto::Endpoint::new(
         Arc::new(crate::EndpointConfig::try_with_rand_key().unwrap()),
@@ -265,4 +270,92 @@ fn racing_attempts_own_distinct_sessions_and_initialize_each_once() {
     });
     assert_eq!(count.load(Ordering::SeqCst), 4);
     assert_eq!(checks.load(Ordering::SeqCst), 4);
+}
+
+/// The native seam is also useful to relays which do not depend on rama-ua.
+/// Full offers retain live tickets; resumed offers require one for this peer/version.
+#[test]
+fn native_handshake_requirements_preserve_tickets_without_ua_profiles() {
+    for version in [Version::V1, Version::V2] {
+        let (policy, server) = configs();
+        let cache = ClientConfigCache::new(Arc::new(BoringTlsProvider), TlsOptions::default());
+        let server = BoringTlsProvider
+            .server_config(&server, TlsOptions::default())
+            .unwrap()
+            .crypto
+            .into_fixed();
+
+        // An empty ticket domain cannot satisfy a resumed handshake.
+        let resumed = cache
+            .prepare_client_config(
+                &policy,
+                Host::try_from("localhost").unwrap(),
+                ClientHandshake::Resumed,
+                Box::new(|_, _| Ok(())),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(
+            resumed
+                .crypto
+                .start_session(version, "localhost", &params(Side::Client))
+                .is_err()
+        );
+
+        // Full means no ticket offer even after the first exchange warms the store.
+        for _ in 0..2 {
+            let full = cache
+                .prepare_client_config(
+                    &policy,
+                    Host::try_from("localhost").unwrap(),
+                    ClientHandshake::Full,
+                    Box::new(|_, _| Ok(())),
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(full.crypto.resumable_version("localhost"), None);
+            let mut client = full
+                .crypto
+                .start_session(version, "localhost", &params(Side::Client))
+                .unwrap();
+            let mut peer = server
+                .clone()
+                .start_session(version, &params(Side::Server))
+                .unwrap();
+            check_session(&mut *client, &mut *peer, false);
+        }
+
+        // Tickets from those full offers remain usable by a subsequent resumed offer.
+        let resumed = cache
+            .prepare_client_config(
+                &policy,
+                Host::try_from("localhost").unwrap(),
+                ClientHandshake::Resumed,
+                Box::new(|_, _| Ok(())),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(resumed.crypto.resumable_version("localhost"), Some(version));
+        let mut client = resumed
+            .crypto
+            .start_session(version, "localhost", &params(Side::Client))
+            .unwrap();
+        let mut peer = server
+            .start_session(version, &params(Side::Server))
+            .unwrap();
+        check_session(&mut *client, &mut *peer, true);
+
+        let fresh = ClientConfigCache::new(
+            Arc::new(BoringTlsProvider),
+            TlsOptions::default().with_client_sessions(ClientSessionPolicy::Fresh),
+        );
+        fresh
+            .prepare_client_config(
+                &policy,
+                Host::try_from("localhost").unwrap(),
+                ClientHandshake::Resumed,
+                Box::new(|_, _| Ok(())),
+            )
+            .unwrap_err();
+    }
 }

@@ -8,7 +8,9 @@ use rama_quic_proto::{
         ConnectionIdProfile, ParameterId, ParameterOrder, QuicProfile, RawParameter,
         TransportLimits, TransportParameterProfile,
     },
-    version::{ClientVersionPolicy, ReservedVersion, ReservedVersionGrease, VersionInformation},
+    version::{
+        ClientVersionPolicy, ReservedQuicVersion, ReservedVersionGrease, VersionInformation,
+    },
 };
 use rama_ua::profile::capture::{
     order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture, ProtocolValue},
@@ -112,7 +114,7 @@ fn version_policy(information: &VersionInformation) -> Result<ClientVersionPolic
                     "multiple captured reserved QUIC versions are not implemented",
                 ));
             }
-            let literal = ReservedVersion::try_from(version)?;
+            let literal = ReservedQuicVersion::try_from(version)?;
             reserved = Some(if index == 0 {
                 ReservedVersionGrease::FixedFirst(literal)
             } else if index + 1 == information.available().len() {

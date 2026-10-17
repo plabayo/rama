@@ -7,8 +7,6 @@ use rama_quic_proto::{
 use crate::{profile::capture, tls::BoringTlsProvider};
 
 mod config;
-#[cfg(feature = "ua")]
-pub(crate) use config::PreparedClientHandshake;
 #[cfg(test)]
 pub(crate) use config::QuicServerConfig;
 pub(crate) use config::{

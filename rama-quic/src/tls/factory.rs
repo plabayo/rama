@@ -1,16 +1,11 @@
-#[cfg(feature = "ua")]
-use crate::profile::replay::parameters::ParameterExpectation;
-#[cfg(any(feature = "boring", feature = "ua"))]
 use rama_net::address::Host;
-#[cfg(feature = "ua")]
-use rama_ua::profile::capture::tls::TlsCapture;
 
 use rama_core::extensions::Extensions;
 use std::{fmt, sync::Arc};
 
 use crate::{
     ClientConfig, ServerConfig,
-    tls::{TlsConfigError, TlsOptions},
+    tls::{ClientHandshake, ClientHelloCheck, TlsConfigError, TlsOptions},
 };
 #[cfg(any(
     feature = "boring",
@@ -60,26 +55,20 @@ pub trait QuicClientConfigProvider: TlsClientConfigProvider {
         None
     }
 
-    /// Prepare owned native state for the selected captured TLS shape, without
-    /// connection I/O. The result must remain bound to `peer` and check its
-    /// generated handshake before exposing output. It must bypass ordinary
-    /// configuration caches which do not classify those capture bindings.
+    /// Prepare peer-bound native TLS state and validate its generated handshake
+    /// before output. Configuration bypasses ordinary caches because the check
+    /// belongs to this dial; retries must obtain fresh ephemeral state.
     ///
-    /// Return `None` when this provider does not implement captured TLS replay.
-    /// Errors reject the selected shape or current caller policy. Returning an
-    /// actual prepared configuration establishes support; input flags do not.
-    /// Honor the connector's `options`, including Fresh's ban on ticket use/storage.
-    /// When `parameters` is present, validate that correlated projection against
-    /// the actual generated ClientHello before output. Return `None` if this
-    /// provider cannot implement the requested TLS/parameter tuple.
-    #[cfg(feature = "ua")]
-    fn captured_client_config(
+    /// `handshake` controls ticket offers; `options` still controls ticket
+    /// retention and early data. Authentication and credentials remain `policy`.
+    /// Return `None` if this provider cannot prepare and check native sessions.
+    fn prepare_client_config(
         &self,
         _policy: &TlsClientConfig,
         _options: TlsOptions,
         _peer: Host,
-        _capture: TlsCapture,
-        _parameters: Option<ParameterExpectation>,
+        _handshake: ClientHandshake,
+        _check: Box<ClientHelloCheck>,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
         Ok(None)
     }
@@ -255,18 +244,16 @@ impl TlsClientConfigProvider for BoringTlsProvider {
 
 #[cfg(feature = "boring")]
 impl QuicClientConfigProvider for BoringTlsProvider {
-    #[cfg(feature = "ua")]
-    fn captured_client_config(
+    fn prepare_client_config(
         &self,
         policy: &TlsClientConfig,
         options: TlsOptions,
         peer: Host,
-        capture: TlsCapture,
-        parameters: Option<ParameterExpectation>,
+        handshake: ClientHandshake,
+        check: Box<ClientHelloCheck>,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
-        super::profile::boring::prepare(policy, options, peer, capture, parameters)
-            .map(Some)
-            .map_err(TlsConfigError::InvalidConfiguration)
+        boring_crypto::QuicClientConfig::prepare_client(policy, options, peer, handshake, check)
+            .map(|config| Some(ClientConfig::new(Arc::new(config))))
     }
 
     fn session_defaults(&self) -> Option<Extensions> {

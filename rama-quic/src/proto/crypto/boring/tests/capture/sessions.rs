@@ -1,8 +1,8 @@
 //! Captured native TLS shape checks, with real ephemeral keys and current policy.
 
-use super::{capture_fixture::*, *};
+use super::{fixture::*, *};
 use crate::profile::replay::parameters::ParameterExpectation;
-use crate::tls::profile::boring;
+
 use rama_net::address::Host;
 use rama_quic_proto::{
     capture::{CaptureLimits, transport_parameters_from_hello},
@@ -20,7 +20,7 @@ fn captured_quic_tls_preparation_authenticates_with_fresh_native_sessions() {
     for version in [Version::V1, Version::V2] {
         let (policy, server) = policy();
         let source = reference(&policy, version);
-        let prepared = boring::prepare(
+        let prepared = prepare_tls(
             &policy,
             TlsOptions::default(),
             Host::try_from("localhost").unwrap(),
@@ -58,7 +58,7 @@ fn captured_tls_shape_is_checked_against_actual_native_output() {
             ssl.set_alpn_protos(b"\x05other")?;
             Ok(())
         })));
-    let prepared = boring::prepare(
+    let prepared = prepare_tls(
         &policy,
         TlsOptions::default(),
         Host::try_from("localhost").unwrap(),
@@ -78,7 +78,7 @@ fn captured_tls_shape_is_checked_against_actual_native_output() {
 fn captured_parameter_length_cannot_replace_current_connection_parameters() {
     let (policy, _) = policy();
     let source = reference(&policy, Version::V1);
-    let prepared = boring::prepare(
+    let prepared = prepare_tls(
         &policy,
         TlsOptions::default(),
         Host::try_from("localhost").unwrap(),
@@ -101,7 +101,7 @@ fn captured_wire_choices_cannot_override_explicit_cipher_policy() {
     let (mut policy, _) = policy();
     let source = reference(&policy, Version::V1);
     policy.set_cipher_suites(vec![CipherSuite::TLS13_AES_128_GCM_SHA256]);
-    boring::prepare(
+    prepare_tls(
         &policy,
         TlsOptions::default(),
         Host::try_from("localhost").unwrap(),
@@ -139,7 +139,7 @@ fn a_real_resumed_capture_requires_current_ticket_support() {
             .any(|extension| extension.id == u16::from(ExtensionId::PRE_SHARED_KEY))
     );
     assert!(
-        boring::prepare(
+        prepare_tls(
             &policy,
             TlsOptions::default(),
             Host::try_from("localhost").unwrap(),
@@ -170,7 +170,7 @@ fn checked_parameters(
         OrderCaptureLimits::default(),
     )
     .unwrap();
-    boring::prepare(
+    prepare_tls(
         &policy,
         TlsOptions::default(),
         Host::try_from("localhost").unwrap(),

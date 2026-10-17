@@ -72,9 +72,6 @@ pub mod tls {
     mod cache;
     pub use cache::ClientConfigCache;
 
-    #[cfg(feature = "ua")]
-    pub(crate) mod profile;
-
     mod factory;
     pub use factory::*;
 
@@ -100,7 +97,8 @@ pub mod tls {
     }
 
     pub use crate::proto::crypto::config::{
-        AlpnPolicy, ClientSessionPolicy, NoInitialCipherSuite, TlsConfigError, TlsOptions,
+        AlpnPolicy, ClientHandshake, ClientHelloCheck, ClientSessionPolicy, NoInitialCipherSuite,
+        TlsConfigError, TlsOptions,
     };
 }
 

@@ -570,9 +570,9 @@ impl TryFrom<ClientVersionPolicyRepr> for ClientVersionPolicy {
 /// generated choice. Construction and deserialization enforce the reserved pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "Version", into = "Version")]
-pub struct ReservedVersion(Version);
+pub struct ReservedQuicVersion(Version);
 
-impl TryFrom<Version> for ReservedVersion {
+impl TryFrom<Version> for ReservedQuicVersion {
     type Error = VersionPolicyError;
 
     fn try_from(version: Version) -> Result<Self, Self::Error> {
@@ -584,13 +584,13 @@ impl TryFrom<Version> for ReservedVersion {
     }
 }
 
-impl From<ReservedVersion> for Version {
-    fn from(version: ReservedVersion) -> Self {
+impl From<ReservedQuicVersion> for Version {
+    fn from(version: ReservedQuicVersion) -> Self {
         version.0
     }
 }
 
-impl ReservedVersion {
+impl ReservedQuicVersion {
     /// The exact reserved value to put on the wire.
     #[must_use]
     pub const fn as_version(self) -> Version {
@@ -604,15 +604,15 @@ impl ReservedVersion {
 pub enum ReservedVersionGrease {
     /// No reserved version.
     None,
-    /// Before the real versions.
+    /// Put the GREASE value supplied to `information` before the real versions.
     First,
-    /// After them.
+    /// Put the GREASE value supplied to `information` after the real versions.
     #[default]
     Last,
     /// Retain this literal reserved value before the real versions.
-    FixedFirst(ReservedVersion),
+    FixedFirst(ReservedQuicVersion),
     /// Retain this literal reserved value after the real versions.
-    FixedLast(ReservedVersion),
+    FixedLast(ReservedQuicVersion),
 }
 
 impl Default for ClientVersionPolicy {

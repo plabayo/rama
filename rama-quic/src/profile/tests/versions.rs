@@ -3,12 +3,12 @@
 use super::*;
 use crate::tls::{QuicClientConfigProvider, TlsOptions};
 use rama_net::tls::ApplicationProtocol;
-use rama_quic_proto::version::{ReservedVersion, ReservedVersionGrease};
+use rama_quic_proto::version::{ReservedQuicVersion, ReservedVersionGrease};
 use rama_tls::client::ServerVerifyMode;
 
 fn verify_literal_versions(provider: &dyn QuicClientConfigProvider) {
     let literal = Version::from_u32(0x1a2a_3a4a);
-    let reserved = ReservedVersion::try_from(literal).unwrap();
+    let reserved = ReservedQuicVersion::try_from(literal).unwrap();
     let tls = TlsClientConfig::new()
         .with_server_verify(ServerVerifyMode::Disable)
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
@@ -77,7 +77,7 @@ fn rustls_emits_literal_reserved_versions_in_v1_and_v2() {
 
 #[test]
 fn serialized_literal_reserved_choices_cannot_smuggle_usable_versions() {
-    let reserved = ReservedVersion::try_from(Version::from_u32(0x1a2a_3a4a)).unwrap();
+    let reserved = ReservedQuicVersion::try_from(Version::from_u32(0x1a2a_3a4a)).unwrap();
     let policy = ClientVersionPolicy::new(Version::V1)
         .unwrap()
         .with_reserved_version_grease(ReservedVersionGrease::FixedFirst(reserved));

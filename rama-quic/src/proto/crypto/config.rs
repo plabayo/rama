@@ -2,6 +2,7 @@ use std::fmt;
 
 use rama_core::error::BoxError;
 pub use rama_tls::alpn::AlpnPolicy;
+use rama_tls::client::ClientHello;
 use rama_utils::macros::generate_set_and_with;
 
 /// Client TLS ticket policy, independent of transport connection pooling.
@@ -15,6 +16,22 @@ pub enum ClientSessionPolicy {
     /// This also prevents client 0-RTT, even when early application data is allowed.
     Fresh,
 }
+
+/// Require a full handshake or a current peer-issued resumption ticket.
+///
+/// This controls the offer, independently of ticket retention. Full handshakes
+/// may retain new tickets unless [`ClientSessionPolicy::Fresh`] forbids it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClientHandshake {
+    /// Do not offer an existing session ticket.
+    Full,
+    /// Fail before handshake output unless a compatible ticket is available.
+    Resumed,
+}
+
+/// Validate the generated ClientHello and its engine-owned QUIC parameters
+/// before any handshake output is released. A failure rejects that session.
+pub type ClientHelloCheck = dyn Fn(&ClientHello, &[u8]) -> Result<(), BoxError> + Send + Sync;
 
 /// QUIC requirements applied to the common Rama TLS configuration.
 #[derive(Clone, Copy, Debug, Default)]

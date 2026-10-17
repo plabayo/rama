@@ -37,12 +37,13 @@ use rama_tls_boring::{client::ServerAnswerRecorder, type_conversion::peer_certif
 use zeroize::Zeroizing;
 
 use super::{
-    config::{ClientHelloCheck, HandshakeInitializer, handshake_completed_hook},
+    config::{HandshakeInitializer, handshake_completed_hook},
     packet::{self, Secret, Suite},
 };
 
-use crate::proto::crypto::{
-    self, DirectionalKeys, HandshakeEvent, KeyPair, Keys, UnsupportedVersion,
+use crate::{
+    proto::crypto::{self, DirectionalKeys, HandshakeEvent, KeyPair, Keys, UnsupportedVersion},
+    tls::ClientHelloCheck,
 };
 
 #[cfg(test)]

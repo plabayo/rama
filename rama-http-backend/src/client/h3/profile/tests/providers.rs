@@ -2,10 +2,9 @@ use super::*;
 use parking_lot::Mutex;
 use rama_core::extensions::Extensions;
 use rama_net::address::Host;
-use rama_quic::profile::replay::parameters::ParameterExpectation;
 use rama_quic::{
     ClientConfig,
-    tls::{QuicClientConfigProvider, TlsConfigError},
+    tls::{ClientHandshake, ClientHelloCheck, QuicClientConfigProvider, TlsConfigError},
 };
 use rama_tls::client::{TlsClientConfig, TlsClientConfigProvider, TlsSessionProfileScope};
 use rama_ua::profile::selection::DrawKey;
@@ -98,13 +97,13 @@ impl QuicClientConfigProvider for CaptureAware {
         self.ordinary.client_config(policy, options)
     }
 
-    fn captured_client_config(
+    fn prepare_client_config(
         &self,
         policy: &TlsClientConfig,
         options: TlsOptions,
         peer: Host,
-        capture: TlsCapture,
-        parameters: Option<ParameterExpectation>,
+        handshake: ClientHandshake,
+        check: Box<ClientHelloCheck>,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
         self.captured_calls.fetch_add(1, Ordering::SeqCst);
         self.scopes.lock().push(
@@ -116,7 +115,7 @@ impl QuicClientConfigProvider for CaptureAware {
         );
         self.ordinary
             .inner
-            .captured_client_config(policy, options, peer, capture, parameters)
+            .prepare_client_config(policy, options, peer, handshake, check)
     }
 }
 

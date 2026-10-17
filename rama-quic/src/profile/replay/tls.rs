@@ -22,10 +22,8 @@ use rama_ua::profile::capture::{
 use crate::profile::replay::parameters::ParameterExpectation;
 use crate::{
     ClientConfig,
-    proto::crypto::boring::{PreparedClientHandshake, QuicClientConfig},
-    tls::TlsOptions,
+    tls::{ClientConfigCache, ClientHandshake},
 };
-use std::sync::Arc;
 
 /// Prepare the captured TLS offer for the current `peer` and `policy`.
 ///
@@ -41,12 +39,12 @@ use std::sync::Arc;
 /// Optional parameter expectations validate the generated body from the same
 /// selected tuple. First-flight layout and HTTP/3 state need separate compilers.
 pub(crate) fn prepare(
+    cache: &ClientConfigCache,
     policy: &TlsClientConfig,
-    options: TlsOptions,
     peer: Host,
     capture: TlsCapture,
     expected_parameters: Option<ParameterExpectation>,
-) -> Result<ClientConfig, BoxError> {
+) -> Result<Option<ClientConfig>, BoxError> {
     if !matches!(capture.transport, TlsCaptureTransport::Quic) {
         return Err(BoxError::from_static_str(
             "QUIC TLS replay requires a QUIC capture",
@@ -73,52 +71,49 @@ pub(crate) fn prepare(
         .iter()
         .any(|extension| extension.id == u16::from(ExtensionId::PRE_SHARED_KEY))
     {
-        PreparedClientHandshake::Resumed
+        ClientHandshake::Resumed
     } else {
-        PreparedClientHandshake::Full
+        ClientHandshake::Full
     };
     let expected = capture;
     let effective = policy.clone().with_overrides(wire.as_extensions());
 
-    Ok(ClientConfig::new(Arc::new(
-        QuicClientConfig::prepare_captured(
-            &effective,
-            options,
-            peer,
-            handshake,
-            move |hello, parameters| {
-                let installed = hello
-                    .extensions()
-                    .iter()
-                    .find_map(|extension| match extension {
-                        ClientHelloExtension::Opaque { id, data }
-                            if *id == ExtensionId::QUIC_TRANSPORT_PARAMETERS =>
-                        {
-                            Some(data.as_slice())
-                        }
-                        _ => None,
-                    });
-                if installed != Some(parameters) {
-                    return Err(BoxError::from_static_str(
-                        "native QUIC TLS parameters differ from the engine binding",
-                    ));
-                }
-                if let Some(expected) = &expected_parameters {
-                    expected.validate(hello)?;
-                }
-                let actual = TlsCapture::capture(
-                    ProfileCaptureCompleteness::Complete,
-                    TlsCaptureTransport::Quic,
-                    hello,
-                    TlsCaptureLimits::default(),
-                )?;
-                if actual != expected {
-                    return Err(BoxError::from_static_str(
-                        "native QUIC ClientHello differs from the captured TLS shape",
-                    ));
-                }
-                Ok(())
-            },
-        )?,
-    )))
+    Ok(cache.prepare_client_config(
+        &effective,
+        peer,
+        handshake,
+        Box::new(move |hello, parameters| {
+            let installed = hello
+                .extensions()
+                .iter()
+                .find_map(|extension| match extension {
+                    ClientHelloExtension::Opaque { id, data }
+                        if *id == ExtensionId::QUIC_TRANSPORT_PARAMETERS =>
+                    {
+                        Some(data.as_slice())
+                    }
+                    _ => None,
+                });
+            if installed != Some(parameters) {
+                return Err(BoxError::from_static_str(
+                    "native QUIC TLS parameters differ from the engine binding",
+                ));
+            }
+            if let Some(expected) = &expected_parameters {
+                expected.validate(hello)?;
+            }
+            let actual = TlsCapture::capture(
+                ProfileCaptureCompleteness::Complete,
+                TlsCaptureTransport::Quic,
+                hello,
+                TlsCaptureLimits::default(),
+            )?;
+            if actual != expected {
+                return Err(BoxError::from_static_str(
+                    "native QUIC ClientHello differs from the captured TLS shape",
+                ));
+            }
+            Ok(())
+        }),
+    )?)
 }

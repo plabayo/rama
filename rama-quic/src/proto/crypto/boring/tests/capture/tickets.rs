@@ -1,7 +1,7 @@
 //! Captured full-to-resumed handshakes use tickets from the live peer only.
 
-use super::{capture_fixture::*, *};
-use crate::{ClientConfig, ConnectError, tls::ClientSessionPolicy};
+use super::{fixture::*, *};
+use crate::{ClientConfig, ConnectError, profile::replay::tls, tls::ClientSessionPolicy};
 use rama_net::address::Host;
 use rama_ua::profile::capture::tls::{TlsCapture, TlsCapturedExtensionValue};
 
@@ -10,10 +10,15 @@ fn prepared(
     policy: &TlsClientConfig,
     source: TlsCapture,
 ) -> ClientConfig {
-    cache
-        .captured_client_config(policy, Host::try_from("localhost").unwrap(), source, None)
-        .unwrap()
-        .unwrap()
+    tls::prepare(
+        cache,
+        policy,
+        Host::try_from("localhost").unwrap(),
+        source,
+        None,
+    )
+    .unwrap()
+    .unwrap()
 }
 
 fn exchange(
@@ -126,16 +131,16 @@ fn captured_resumed_offers_require_the_current_peer_version_and_policy() {
                 .start_session(other_version, "localhost", &params(Side::Client))
                 .is_err()
         );
-        let client = cache
-            .captured_client_config(
-                &policy,
-                Host::try_from("other.invalid").unwrap(),
-                resumed.clone(),
-                None,
-            )
-            .unwrap()
-            .unwrap()
-            .crypto;
+        let client = tls::prepare(
+            &cache,
+            &policy,
+            Host::try_from("other.invalid").unwrap(),
+            resumed.clone(),
+            None,
+        )
+        .unwrap()
+        .unwrap()
+        .crypto;
         assert!(
             client
                 .start_session(version, "other.invalid", &params(Side::Client))
@@ -190,9 +195,14 @@ fn fresh_capture_cache_neither_retains_tickets_nor_allows_a_resumed_offer() {
                 false,
             );
         }
-        fresh
-            .captured_client_config(&policy, Host::try_from("localhost").unwrap(), resumed, None)
-            .unwrap_err();
+        tls::prepare(
+            &fresh,
+            &policy,
+            Host::try_from("localhost").unwrap(),
+            resumed,
+            None,
+        )
+        .unwrap_err();
 
         // A sibling cache has its own domain, including when policy is identical.
         let empty = ClientConfigCache::new(Arc::new(BoringTlsProvider), TlsOptions::default());

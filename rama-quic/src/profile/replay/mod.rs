@@ -5,6 +5,8 @@
 //! HTTP consumer. Preparing transport rules does not claim first-flight scheduling.
 
 pub mod parameters;
+#[cfg(feature = "boring")]
+pub(crate) mod tls;
 mod transport;
 
 use crate::{ClientConfig, tls::ClientConfigCache};
@@ -91,7 +93,13 @@ pub fn prepare(
     let scoped = policy
         .clone()
         .with_session_profile_scope(TlsSessionProfileScope(scope.into()));
-    let client = cache.captured_client_config(&scoped, peer, capture, expected_parameters)?;
+    #[cfg(feature = "boring")]
+    let client = tls::prepare(cache, &scoped, peer, capture, expected_parameters)?;
+    #[cfg(not(feature = "boring"))]
+    let client = {
+        let _ = (cache, scoped, peer, capture, expected_parameters);
+        None
+    };
     let transport = client.as_ref().and(transport);
     Ok(PreparedConfig { client, transport })
 }

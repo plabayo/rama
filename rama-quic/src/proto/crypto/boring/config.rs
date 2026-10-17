@@ -36,6 +36,8 @@ use super::{
     packet,
     session::{TlsSession, crypto_error},
 };
+use crate::tls::{ClientHandshake, ClientHelloCheck};
+
 use crate::proto::{
     ConnectError, ServerCrypto,
     crypto::{
@@ -144,28 +146,15 @@ struct PreparedClient {
     check: Box<ClientHelloCheck>,
 }
 
-pub(super) type ClientHelloCheck =
-    dyn Fn(&ClientHello, &[u8]) -> Result<(), BoxError> + Send + Sync;
-
-/// The selected capture requires either a full offer or a current ticket.
-#[cfg(feature = "ua")]
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum PreparedClientHandshake {
-    Full,
-    Resumed,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TicketOffer {
     IfAvailable,
-    #[cfg(feature = "ua")]
     Never,
-    #[cfg(feature = "ua")]
     Required,
 }
 
 // Keeping the cache and callback together makes Fresh incapable of consulting
-// a ticket store or retaining new tickets. Captured full offers can retain new
+// a ticket store or retaining new tickets. Full offers can retain new
 // tickets while suppressing lookup of older ones.
 struct ClientSessions {
     tickets: Arc<Tickets>,
@@ -183,9 +172,7 @@ impl ClientSessions {
     ) -> Result<Option<TransportParameters>, BoxError> {
         let required = match self.offer {
             TicketOffer::IfAvailable => false,
-            #[cfg(feature = "ua")]
             TicketOffer::Never => return Ok(None),
-            #[cfg(feature = "ua")]
             TicketOffer::Required => true,
         };
         if let Some(key) = context.session_key(host)
@@ -196,7 +183,7 @@ impl ClientSessions {
         }
         if required {
             return Err(BoxError::from(
-                "captured resumed TLS requires a current peer-issued ticket",
+                "resumed TLS requires a current peer-issued ticket",
             ));
         }
         Ok(None)
@@ -291,27 +278,24 @@ impl QuicClientConfig {
             config,
             TlsOptions::default().with_client_sessions(ClientSessionPolicy::Fresh),
         )?
-        .prepare_ssl(peer, check)
+        .prepare_ssl(peer, Box::new(check))
     }
 
-    #[cfg(feature = "ua")]
-    pub(crate) fn prepare_captured(
+    pub(crate) fn prepare_client(
         config: &TlsClientConfig,
         options: TlsOptions,
         peer: Host,
-        handshake: PreparedClientHandshake,
-        check: impl Fn(&ClientHello, &[u8]) -> Result<(), BoxError> + Send + Sync + 'static,
+        handshake: ClientHandshake,
+        check: Box<ClientHelloCheck>,
     ) -> Result<Self, TlsConfigError> {
         let mut config = Self::from_rama(config, options)?;
         match (&mut config.sessions, handshake) {
-            (Some(sessions), PreparedClientHandshake::Full) => sessions.offer = TicketOffer::Never,
-            (Some(sessions), PreparedClientHandshake::Resumed) => {
-                sessions.offer = TicketOffer::Required
-            }
-            (None, PreparedClientHandshake::Full) => {}
-            (None, PreparedClientHandshake::Resumed) => {
+            (Some(sessions), ClientHandshake::Full) => sessions.offer = TicketOffer::Never,
+            (Some(sessions), ClientHandshake::Resumed) => sessions.offer = TicketOffer::Required,
+            (None, ClientHandshake::Full) => {}
+            (None, ClientHandshake::Resumed) => {
                 return Err(TlsConfigError::InvalidConfiguration(BoxError::from(
-                    "captured resumed TLS conflicts with the fresh client policy",
+                    "resumed TLS conflicts with the fresh client policy",
                 )));
             }
         }
@@ -321,7 +305,7 @@ impl QuicClientConfig {
     fn prepare_ssl(
         mut self,
         peer: Host,
-        check: impl Fn(&ClientHello, &[u8]) -> Result<(), BoxError> + Send + Sync + 'static,
+        check: Box<ClientHelloCheck>,
     ) -> Result<Self, TlsConfigError> {
         let (_, mut ssl) = self.configure_ssl(peer.clone())?;
         if let Some(initializer) = &self.initializer {
@@ -330,7 +314,7 @@ impl QuicClientConfig {
         self.prepared = Some(Box::new(PreparedClient {
             peer,
             first: Mutex::new(Some(ssl)),
-            check: Box::new(check),
+            check,
         }));
         Ok(self)
     }
@@ -416,7 +400,6 @@ impl crypto::ClientConfig for QuicClientConfig {
     }
     fn resumable_version(&self, server_name: &str) -> Option<Version> {
         let sessions = self.sessions.as_ref()?;
-        #[cfg(feature = "ua")]
         if sessions.offer == TicketOffer::Never {
             return None;
         }

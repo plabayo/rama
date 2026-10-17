@@ -1,7 +1,13 @@
 //! Native TLS offers with stable optional layout and real authentication.
 
 use super::*;
+use crate::{
+    ClientConfig,
+    profile::replay::{parameters::ParameterExpectation, tls},
+};
+use rama_core::error::{BoxError, BoxErrorExt as _};
 use rama_crypto::dep::boring::ssl::Padding;
+use rama_net::address::Host;
 use rama_tls::client::ClientHello;
 use rama_tls_boring::client::BoringClientConfigExt as _;
 use rama_ua::profile::capture::{
@@ -59,4 +65,17 @@ pub(super) fn policy() -> (TlsClientConfig, TlsServerConfig) {
     client.set_grease(false);
     client.set_permute_extensions(false);
     (client, server)
+}
+
+/// Prepare through the UA adapter and the actual configured native provider.
+pub(super) fn prepare_tls(
+    policy: &TlsClientConfig,
+    options: TlsOptions,
+    peer: Host,
+    capture: TlsCapture,
+    parameters: Option<ParameterExpectation>,
+) -> Result<ClientConfig, BoxError> {
+    let cache = ClientConfigCache::new(Arc::new(BoringTlsProvider), options);
+    tls::prepare(&cache, policy, peer, capture, parameters)?
+        .ok_or_else(|| BoxError::from_static_str("native preparation unavailable"))
 }
