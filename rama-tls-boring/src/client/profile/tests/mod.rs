@@ -4,13 +4,17 @@ use crate::client::{
     ech::EchGrease,
     tests::{hello_from_data, wire_variant},
 };
+use parking_lot::Mutex;
 use rama_net::client::ConnectRequest;
 use rama_ua::profile::capture::{
     completeness::ProfileCaptureCompleteness,
     tls::{TlsCapture, TlsCaptureLimits},
 };
+use rama_ua::profile::selection::variants::ConnectionSelection;
+use std::sync::Arc;
 
 mod connection;
+mod fixture;
 mod offer;
 mod quic;
 #[cfg(feature = "http")]

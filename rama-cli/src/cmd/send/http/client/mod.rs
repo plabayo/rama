@@ -46,8 +46,8 @@ use rama::{
             classifier::UserAgentClassifierLayer,
             emulate::{
                 ProfileEmulateHttpRequestModifierLayer, ProfileEmulateLayer,
-                UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifierLayer,
-                UserAgentEmulateLayer, UserAgentSelectFallback,
+                UserAgentEmulateHttpRequestModifierLayer, UserAgentEmulateLayer,
+                UserAgentSelectFallback,
             },
         },
         profile::{
@@ -372,10 +372,6 @@ async fn new_inner_client(
         .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
         .with_custom_proxy_connector(proxy_connector)
         .with_tls_support_using_boringssl(tls_config.clone())
-        .map_connector(|connector| {
-            let compiler = connector.profile_compiler();
-            UserAgentEmulateHttpConnectModifier::new(connector).with_connection_compiler(compiler)
-        })
         .with_default_http_connector(executor.clone());
 
     let uri = parse_user_uri(&cfg.uri)?;

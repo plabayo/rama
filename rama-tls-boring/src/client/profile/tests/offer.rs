@@ -105,7 +105,7 @@ fn caller_version_and_cipher_restrictions_are_not_broadened() {
     ] {
         let connector = TlsConnector::auto(()).with_base_config(policy);
         connector
-            .profile_compiler()
+            .profile_preparation()
             .prepare(&input(), &capture)
             .unwrap_err();
     }
@@ -165,7 +165,7 @@ fn required_http_version_must_be_in_the_captured_offer() {
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_11));
     connector
-        .profile_compiler()
+        .profile_preparation()
         .prepare(&request, &capture())
         .unwrap_err();
 }
@@ -261,7 +261,7 @@ fn key_share_sizes_follow_native_emission_and_compile_back_to_the_same_shape() {
 
 // Exercise the actual SSL retained by the compiler, including caller policy.
 // A mismatch is a bug even when the generic wire overrides look correct.
-fn prepared_hello(mut compiled: CompiledConnection) -> rama_tls::client::ClientHello {
+fn prepared_hello(compiled: CompiledConnection) -> rama_tls::client::ClientHello {
     #[derive(Default)]
     struct Sink(Vec<u8>);
 
@@ -282,15 +282,7 @@ fn prepared_hello(mut compiled: CompiledConnection) -> rama_tls::client::ClientH
         }
     }
 
-    let prepared = compiled
-        .tls
-        .as_mut()
-        .unwrap()
-        .1
-        .prepared
-        .get_mut()
-        .take()
-        .unwrap();
+    let prepared = compiled.tls.unwrap().prepared;
     let ssl = prepared.client.into_ssl_for_test();
     let Err(rama_boring::ssl::HandshakeError::WouldBlock(stream)) = ssl.connect(Sink::default())
     else {
@@ -333,7 +325,7 @@ fn assert_admitted_emission_matches(
     must_admit: bool,
 ) {
     let connector = TlsConnector::auto(()).with_base_config(policy);
-    let compiled = match connector.profile_compiler().prepare(&input(), captured) {
+    let compiled = match connector.profile_preparation().prepare(&input(), captured) {
         Ok(compiled) => compiled,
         Err(error) => {
             assert!(!must_admit, "control shape must remain supported: {error}");
@@ -369,7 +361,7 @@ fn caller_version_floor_cannot_silently_change_the_selected_first_flight() {
     let connector = TlsConnector::auto(())
         .with_base_config(TlsClientConfig::new().with_min_version(ProtocolVersion::TLSv1_3));
     let error = connector
-        .profile_compiler()
+        .profile_preparation()
         .prepare(&input(), &mixed_version_capture())
         .unwrap_err();
     assert!(

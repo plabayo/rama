@@ -170,6 +170,14 @@ fn connector_sessions(store: Option<SessionStore>) -> Option<Arc<ConnectorSessio
 }
 
 impl<S, K> TlsConnector<S, K> {
+    #[cfg(feature = "ua")]
+    pub(super) fn profile_preparation(&self) -> super::profile::Compiler<'_> {
+        super::profile::Compiler {
+            base: self.base_config.as_ref(),
+            has_sessions: self.sessions.is_some(),
+        }
+    }
+
     /// Creates a new [`TlsConnector`].
     const fn new(inner: S, kind: K) -> Self {
         Self {
@@ -209,16 +217,6 @@ impl<S, K> TlsConnector<S, K> {
 }
 
 impl<S> TlsConnector<S, ConnectorKindAuto> {
-    /// Prepare captured connections with this connector's TLS policy.
-    #[cfg(feature = "ua")]
-    #[must_use]
-    pub fn profile_compiler(&self) -> super::profile::ConnectionCompiler {
-        super::profile::ConnectionCompiler {
-            base: self.base_config.clone(),
-            sessions: self.sessions.clone(),
-        }
-    }
-
     /// Creates a new [`TlsConnector`] which will establish
     /// a secure connection when the input protocol is secure. Otherwise it
     /// forwards the inner connection. The logical authority remains the default
@@ -229,16 +227,6 @@ impl<S> TlsConnector<S, ConnectorKindAuto> {
 }
 
 impl<S> TlsConnector<S, ConnectorKindSecure> {
-    /// Prepare captured connections with this connector's TLS policy.
-    #[cfg(feature = "ua")]
-    #[must_use]
-    pub fn profile_compiler(&self) -> super::profile::ConnectionCompiler {
-        super::profile::ConnectionCompiler {
-            base: self.base_config.clone(),
-            sessions: self.sessions.clone(),
-        }
-    }
-
     /// Creates a new [`TlsConnector`] which will always
     /// establish a secure connection regardless of the request it is for.
     pub const fn secure(inner: S) -> Self {
@@ -270,10 +258,24 @@ where
             input.target_protocol().is_some_and(Protocol::is_secure),
         )?;
         #[cfg(feature = "ua")]
-        self.check_prepared_profile(&input)?;
+        let prepared = self
+            .profile_preparation()
+            .prepare_profile(&input)
+            .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
         #[cfg(feature = "ua")]
-        self.check_prepared_profile(&input)?;
+        let (prepared, publication) = match prepared {
+            Some(prepared) => {
+                prepared
+                    .check(&input, self.base_config.as_ref())
+                    .map_err(|error| {
+                        ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                    })?;
+                let (native, publication) = prepared.into_parts();
+                (native, Some(publication))
+            }
+            None => (None, None),
+        };
 
         let authority = input.target_authority().ok_or_else(|| {
             ConnectionError::local(
@@ -290,15 +292,33 @@ where
                 server.port = authority.port_u16(),
                 "TlsConnector(auto): protocol not secure, return inner connection",
             );
-            return Ok(EstablishedClientConnection {
-                input,
-                conn: AutoTlsStream::plain(conn),
-            });
+            let conn = AutoTlsStream::plain(conn);
+            #[cfg(all(feature = "ua", feature = "http"))]
+            super::profile::apply_plaintext_http(input.extensions(), conn.extensions()).map_err(
+                |error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput),
+            )?;
+            #[cfg(feature = "ua")]
+            if let Some(publication) = publication {
+                let caller =
+                    TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions());
+                publication
+                    .publish(input.extensions(), conn.extensions(), caller)
+                    .map_err(|error| {
+                        ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                    })?;
+            }
+            return Ok(EstablishedClientConnection { input, conn });
         }
 
         // Use the authority host as the certificate identity unless overridden.
         let connector_data = self
-            .connection_handshake(&input, app_protocol, &authority.host)
+            .connection_handshake(
+                &input,
+                app_protocol,
+                &authority.host,
+                #[cfg(feature = "ua")]
+                prepared,
+            )
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                     .context("TlsConnector(auto): build connector configuration")
@@ -307,7 +327,7 @@ where
         let (verify_mode, server_name) = connector_data.identity();
         let scope =
             Self::check_connection_identity(&input, verify_mode, server_name, &authority.host)?;
-        let (connector_data, reuse) = connector_data.with_reuse(input.extensions());
+        let reuse = TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions());
 
         let (stream, negotiated_params) =
             handshake(connector_data, conn).await.map_err(|error| {
@@ -335,6 +355,20 @@ where
                 .context("TlsConnector(auto): validate negotiated HTTP version")
         })?;
 
+        #[cfg(all(feature = "ua", feature = "http"))]
+        super::profile::apply_legacy_http(input.extensions(), conn.extensions())
+            .map_err(|error| ConnectionError::application(error, ConnectionErrorKind::Protocol))?;
+        #[cfg(feature = "ua")]
+        if let Some(publication) = publication {
+            publication
+                .publish(input.extensions(), conn.extensions(), reuse)
+                .map_err(|error| {
+                    ConnectionError::application(error, ConnectionErrorKind::Protocol)
+                })?;
+        } else {
+            reuse.publish(conn.extensions());
+        }
+        #[cfg(not(feature = "ua"))]
         reuse.publish(conn.extensions());
         conn.extensions().insert(scope);
         conn.extensions().insert(negotiated_params);
@@ -356,10 +390,24 @@ where
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         self.check_attempt_policy(&input, true)?;
         #[cfg(feature = "ua")]
-        self.check_prepared_profile(&input)?;
+        let prepared = self
+            .profile_preparation()
+            .prepare_profile(&input)
+            .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
         let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
         #[cfg(feature = "ua")]
-        self.check_prepared_profile(&input)?;
+        let (prepared, publication) = match prepared {
+            Some(prepared) => {
+                prepared
+                    .check(&input, self.base_config.as_ref())
+                    .map_err(|error| {
+                        ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                    })?;
+                let (native, publication) = prepared.into_parts();
+                (native, Some(publication))
+            }
+            None => (None, None),
+        };
 
         let authority = input.target_authority().ok_or_else(|| {
             ConnectionError::local(
@@ -376,7 +424,13 @@ where
 
         let app_protocol = input.target_protocol();
         let connector_data = self
-            .connection_handshake(&input, app_protocol, &authority.host)
+            .connection_handshake(
+                &input,
+                app_protocol,
+                &authority.host,
+                #[cfg(feature = "ua")]
+                prepared,
+            )
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                     .context("TlsConnector(secure): build connector configuration")
@@ -385,7 +439,7 @@ where
         let (verify_mode, server_name) = connector_data.identity();
         let scope =
             Self::check_connection_identity(&input, verify_mode, server_name, &authority.host)?;
-        let (connector_data, reuse) = connector_data.with_reuse(input.extensions());
+        let reuse = TlsConnectionReuse::new(BoringTlsClientConfigProvider, input.extensions());
 
         let (conn, negotiated_params) = handshake(connector_data, conn).await.map_err(|error| {
             ConnectionError::application(error, ConnectionErrorKind::Protocol)
@@ -405,6 +459,20 @@ where
                 .context("TlsConnector(secure): validate negotiated HTTP version")
         })?;
 
+        #[cfg(all(feature = "ua", feature = "http"))]
+        super::profile::apply_legacy_http(input.extensions(), conn.extensions())
+            .map_err(|error| ConnectionError::application(error, ConnectionErrorKind::Protocol))?;
+        #[cfg(feature = "ua")]
+        if let Some(publication) = publication {
+            publication
+                .publish(input.extensions(), conn.extensions(), reuse)
+                .map_err(|error| {
+                    ConnectionError::application(error, ConnectionErrorKind::Protocol)
+                })?;
+        } else {
+            reuse.publish(conn.extensions());
+        }
+        #[cfg(not(feature = "ua"))]
         reuse.publish(conn.extensions());
         conn.extensions().insert(scope);
         conn.extensions().insert(negotiated_params);
@@ -612,43 +680,16 @@ impl<S, K> TlsConnector<S, K> {
         Ok(scope)
     }
 
-    #[cfg(feature = "ua")]
-    fn check_prepared_profile(
-        &self,
-        input: &(impl AuthorityInputExt + ProtocolInputExt + ExtensionsRef),
-    ) -> Result<(), ConnectionError> {
-        if let Some(profile) = input
-            .extensions()
-            .get_ref::<super::profile::PendingTlsProfile>()
-        {
-            profile
-                .check(input, self.base_config.as_ref())
-                .map_err(|error| {
-                    ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
-                })?;
-        }
-        Ok(())
-    }
-
     fn connection_handshake(
         &self,
         input: &(impl AuthorityInputExt + ProtocolInputExt + ExtensionsRef),
         application_protocol: Option<&Protocol>,
         server_host: &Host,
+        #[cfg(feature = "ua")] prepared: Option<PreparedHandshake>,
     ) -> Result<HandshakeInput, BoxError> {
         #[cfg(feature = "ua")]
-        if let Some(profile) = input
-            .extensions()
-            .get_ref::<super::profile::PendingTlsProfile>()
-        {
-            profile.check(input, self.base_config.as_ref())?;
-            Self::check_connection_identity(
-                input,
-                profile.metadata().server_verify_mode,
-                profile.metadata().server_name.as_ref(),
-                server_host,
-            )?;
-            return profile.take().map(HandshakeInput::Prepared);
+        if let Some(prepared) = prepared {
+            return Ok(HandshakeInput::Prepared(prepared));
         }
         self.connector_data(input.extensions(), application_protocol, Some(server_host))
             .map(HandshakeInput::Configuration)
@@ -873,8 +914,6 @@ impl From<&TlsConnectorData> for HandshakeMetadata {
 pub(super) struct PreparedHandshake {
     pub(super) metadata: HandshakeMetadata,
     pub(super) client: super::handshake::PreparedClient,
-    #[cfg(feature = "http")]
-    pub(super) reuse: Option<Box<super::profile::reuse::CapturedReuse>>,
 }
 
 #[cfg(feature = "ua")]
@@ -887,12 +926,7 @@ impl TryFrom<TlsConnectorData> for PreparedHandshake {
         }
         let metadata = HandshakeMetadata::from(&data);
         let client = super::handshake::PreparedClient::try_from(data)?;
-        Ok(Self {
-            metadata,
-            client,
-            #[cfg(feature = "http")]
-            reuse: None,
-        })
+        Ok(Self { metadata, client })
     }
 }
 
@@ -915,25 +949,6 @@ impl From<PreparedHandshake> for HandshakeInput {
     }
 }
 
-/// Request policy before captured wire overrides, plus the profile that supplied
-/// them. Ordinary connections retain the usual TLS reuse policy.
-struct HandshakeReuse {
-    tls: TlsConnectionReuse<BoringTlsClientConfigProvider>,
-    #[cfg(all(feature = "ua", feature = "http"))]
-    captured: Option<Box<super::profile::reuse::CapturedReuse>>,
-}
-
-impl HandshakeReuse {
-    fn publish(self, connection: &Extensions) {
-        #[cfg(all(feature = "ua", feature = "http"))]
-        if let Some(captured) = self.captured {
-            captured.publish(connection, self.tls);
-            return;
-        }
-        self.tls.publish(connection);
-    }
-}
-
 impl HandshakeInput {
     fn identity(&self) -> (ServerVerifyMode, Option<&Host>) {
         match self {
@@ -944,25 +959,6 @@ impl HandshakeInput {
                 prepared.metadata.server_name.as_ref(),
             ),
         }
-    }
-
-    fn with_reuse(self, request: &Extensions) -> (Self, HandshakeReuse) {
-        #[cfg(all(feature = "ua", feature = "http"))]
-        let (configuration, captured) = match self {
-            Self::Prepared(mut prepared) => {
-                let captured = prepared.reuse.take();
-                (Self::Prepared(prepared), captured)
-            }
-            configuration @ Self::Configuration(_) => (configuration, None),
-        };
-        #[cfg(not(all(feature = "ua", feature = "http")))]
-        let configuration = self;
-        let reuse = HandshakeReuse {
-            tls: TlsConnectionReuse::new(BoringTlsClientConfigProvider, request),
-            #[cfg(all(feature = "ua", feature = "http"))]
-            captured,
-        };
-        (configuration, reuse)
     }
 
     fn metadata(&self) -> HandshakeMetadata {

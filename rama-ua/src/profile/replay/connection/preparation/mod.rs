@@ -14,7 +14,7 @@ use crate::profile::{
 };
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
-    extensions::{Extensions, ExtensionsRef},
+    extensions::{Extension, Extensions, ExtensionsRef},
 };
 use rama_http::{
     Version,
@@ -123,14 +123,12 @@ impl ConnectionPreparation {
         Ok(())
     }
 
-    /// Publish only the selection actually admitted by this connection. Request
-    /// variants use it together with the negotiated protocol, preserving correlation.
-    pub fn publish(
-        self,
-        input: &Extensions,
-        connection: &Extensions,
-        version: Version,
-    ) -> Result<(), BoxError> {
+    /// Validate the admitted selection again after an inner transport returns.
+    /// A changed context must be rejected before any prepared native output.
+    pub fn check_context<'a>(
+        &self,
+        input: &'a Extensions,
+    ) -> Result<&'a EmulationContext, BoxError> {
         let context = EmulationContext::of(input)
             .ok_or_else(|| BoxError::from_static_str("captured profile context is missing"))?;
         if context.selected.profile_id() != self.selection.profile
@@ -144,7 +142,22 @@ impl ConnectionPreparation {
                 "connection context differs from its admitted selection",
             ));
         }
-        context.selected.validate_negotiated_protocol(version)?;
+        Ok(context)
+    }
+
+    /// Publish the admitted selection and report. A negotiated HTTP version also
+    /// validates protocol support and installs the profile's HTTP reuse witness.
+    /// Other consumers must supply their own conservative transport reuse policy.
+    pub fn publish(
+        self,
+        input: &Extensions,
+        connection: &Extensions,
+        version: Option<Version>,
+    ) -> Result<(), BoxError> {
+        let context = self.check_context(input)?;
+        if let Some(version) = version {
+            context.selected.validate_negotiated_protocol(version)?;
+        }
         let report = match connection.get_ref::<ProfilePreservationReport>() {
             Some(inner) => self
                 .components
@@ -154,10 +167,15 @@ impl ConnectionPreparation {
         };
         connection.insert(report);
         connection.insert(self.selection);
-        ProfileConnectionReuse::new(context, version).publish(connection);
+        if let Some(version) = version {
+            ProfileConnectionReuse::new(context, version).publish(connection);
+        }
         Ok(())
     }
 }
+
+#[derive(Debug, Clone, Extension)]
+struct AppliedH2Replay(Arc<[EarlyFrame]>);
 
 fn apply_profile_h2_replay(
     input: &impl ExtensionsRef,
@@ -173,8 +191,8 @@ fn apply_profile_h2_replay(
 
     let installed_replay = input
         .extensions()
-        .get_ref::<PreparedConnectionComponents>()
-        .and_then(|prepared| prepared.h2_early_frames.as_ref())
+        .get_ref::<AppliedH2Replay>()
+        .map(|applied| &applied.0)
         .zip(params.replay_early_frames.as_ref())
         .is_some_and(|(installed, current)| Arc::ptr_eq(installed, current));
 
@@ -190,7 +208,8 @@ fn apply_profile_h2_replay(
         report.push(ProfilePreservationDifference::RetainedH2ClientParameter { parameter });
     }
 
-    params.replay_early_frames = Some(replay);
+    params.replay_early_frames = Some(replay.clone());
+    input.extensions().insert(AppliedH2Replay(replay));
     input.extensions().insert(params);
     Ok(())
 }
@@ -245,3 +264,6 @@ fn h2_wire_parameters(params: &H2ClientContextParams) -> impl Iterator<Item = H2
     .into_iter()
     .flatten()
 }
+
+#[cfg(test)]
+mod tests;

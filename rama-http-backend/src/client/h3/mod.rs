@@ -653,7 +653,7 @@ impl Http3Connector {
         #[cfg(feature = "ua")]
         if let Some(preparation) = prepared.profile_preparation {
             preparation
-                .publish(input.extensions(), extensions, Version::HTTP_3)
+                .publish(input.extensions(), extensions, Some(Version::HTTP_3))
                 .map_err(|error| {
                     ConnectionError::application(error, ConnectionErrorKind::Protocol)
                 })?;

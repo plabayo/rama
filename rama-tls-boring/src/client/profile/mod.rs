@@ -1,80 +1,71 @@
 //! Compile captured TLS connections for this connector's native backend.
 //!
-//! The compiler prepares fresh native state before transport I/O. Its output
-//! carries only wire overrides and a one-use session bound to the current
-//! destination and effective TLS policy.
+//! Preparation borrows the consuming connector's policy before transport I/O.
+//! The connector future owns the native session; caller TLS extensions retain
+//! their original meaning throughout selection, dialing and pool reuse.
 
-use std::sync::Arc;
-
-use parking_lot::Mutex;
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
-    extensions::{Extension, Extensions, ExtensionsRef},
+    extensions::{Extensions, ExtensionsRef},
 };
 use rama_net::{
     AuthorityInputExt, Protocol, ProtocolInputExt,
     address::{Host, HostWithOptPort},
 };
-use rama_tls::client::{TlsClientConfig, TlsPoolId};
+use rama_tls::client::{TlsClientConfig, TlsConnectionReuse, TlsPoolId};
 use rama_ua::profile::{
     capture::{
         joint::CapturedSlotKind,
         tls::{TlsCapture, TlsCaptureTransport, TlsCapturedExtensionValue},
     },
-    replay::{
-        connection::{
-            PreparedConnectionComponents,
-            compiler::{
-                CompiledConnectionProfile, ConnectionProfileCompiler, InstalledConnectionProfile,
-            },
-        },
-        request::ProfilePreservationMode,
-    },
-    selection::variants::ConnectionSelection,
+    replay::connection::{compiler::CompiledConnectionProfile, preparation::ConnectionPreparation},
 };
 
 use super::{
-    BoringTlsConnectorConfig,
-    connector::{HandshakeMetadata, PreparedHandshake},
-    session::ConnectorSessions,
+    BoringTlsClientConfigProvider, BoringTlsConnectorConfig, connector::PreparedHandshake,
 };
 
 #[cfg(feature = "http")]
-use rama_net::http::{TargetHttpVersion, Version};
-
+use rama_net::http::{FallbackHttpVersion, HttpRequestVersion, TargetHttpVersion, Version};
 #[cfg(feature = "http")]
-pub(super) mod reuse;
+use rama_ua::profile::{model::http::HttpProfile, replay::connection::http::apply_legacy_settings};
+
 pub mod wire;
 
-/// Backend compiler obtained from the TLS connector that will consume it.
-///
-/// Supports fresh TCP TLS 1.3 first hellos. QUIC captures remain unsupported;
-/// selected PSK shapes and configured session stores are rejected. Captures
-/// containing explicit padding extensions remain unsupported.
-///
-/// Existing certificate verification, client credentials and key logging remain
-/// application policy. Captured keys, tickets and ciphertext are never reused.
-#[derive(Debug, Clone)]
-pub struct ConnectionCompiler {
-    pub(super) base: Option<TlsClientConfig>,
-    pub(super) sessions: Option<Arc<ConnectorSessions>>,
-}
-
-/// Validated compiler output; only the registered connector installs it.
+/// Borrows the policy of the connector that will consume the native session.
 #[derive(Debug)]
-pub struct CompiledConnection {
-    tls: Option<(TlsClientConfig, PendingTlsProfile)>,
+pub(super) struct Compiler<'a> {
+    pub(super) base: Option<&'a TlsClientConfig>,
+    pub(super) has_sessions: bool,
 }
 
-#[derive(Debug, Extension)]
-pub(super) struct PendingTlsProfile {
+#[derive(Debug)]
+struct CompiledConnection {
+    tls: Option<NativeConnection>,
+}
+
+/// Held by the connector future, never installed in request extensions.
+#[derive(Debug)]
+pub(super) struct PreparedProfile {
+    preparation: ConnectionPreparation,
+    native: CompiledConnection,
+}
+
+#[derive(Debug)]
+struct NativeConnection {
     authority: HostWithOptPort,
     protocol: Protocol,
     #[cfg(feature = "http")]
     target_version: Option<Version>,
-    policy: TlsPoolId,
-    metadata: HandshakeMetadata,
-    prepared: Mutex<Option<PreparedHandshake>>,
+    caller_policy: Option<TlsPoolId>,
+    fallback: TlsConnectionReuse<BoringTlsClientConfigProvider>,
+    prepared: PreparedHandshake,
+}
+
+/// Selection publication outlives the move of the native handshake into TLS.
+pub(super) struct Publication {
+    preparation: ConnectionPreparation,
+    fallback: Option<TlsConnectionReuse<BoringTlsClientConfigProvider>>,
 }
 
 fn effective(extensions: &Extensions, base: Option<&TlsClientConfig>) -> Extensions {
@@ -85,32 +76,28 @@ fn effective(extensions: &Extensions, base: Option<&TlsClientConfig>) -> Extensi
     }
 }
 
-impl<Input> ConnectionProfileCompiler<Input> for ConnectionCompiler
-where
-    Input: AuthorityInputExt + ProtocolInputExt + ExtensionsRef,
-{
-    type Compiled = CompiledConnection;
-
-    fn compile(
+impl Compiler<'_> {
+    pub(super) fn prepare_profile(
         &self,
-        input: &Input,
-        selection: &ConnectionSelection,
-        components: &PreparedConnectionComponents,
-        _mode: ProfilePreservationMode,
-    ) -> Result<CompiledConnection, BoxError> {
-        let Some(capture) = &components.tls else {
-            return Ok(CompiledConnection { tls: None });
+        input: &(impl AuthorityInputExt + ProtocolInputExt + ExtensionsRef),
+    ) -> Result<Option<PreparedProfile>, BoxError> {
+        let Some((mut preparation, native)) =
+            ConnectionPreparation::prepare(input, |_, components, _| {
+                match components.tls.take() {
+                    Some(capture) => self.prepare(input, &capture),
+                    None => Ok(CompiledConnection { tls: None }),
+                }
+            })?
+        else {
+            return Ok(None);
         };
-        let compiled = self.prepare(input, capture)?;
-        #[cfg(feature = "http")]
-        let compiled = reuse::bind(compiled, input.extensions(), selection)?;
-        #[cfg(not(feature = "http"))]
-        let _ = selection;
-        Ok(compiled)
+        preparation.apply_http(input)?;
+        Ok(Some(PreparedProfile {
+            preparation,
+            native,
+        }))
     }
-}
 
-impl ConnectionCompiler {
     fn prepare(
         &self,
         input: &(impl AuthorityInputExt + ProtocolInputExt + ExtensionsRef),
@@ -121,7 +108,7 @@ impl ConnectionCompiler {
         }
         // A fresh-only compiler cannot silently ignore a configured session
         // store, or offer a ticket absent from the selected captured variant.
-        if self.sessions.is_some() {
+        if self.has_sessions {
             return Err(BoxError::from_static_str(
                 "captured TLS replay with a session store is not implemented",
             ));
@@ -136,7 +123,7 @@ impl ConnectionCompiler {
                 BoxError::from_static_str("captured TLS replay requires a secure protocol")
             })?
             .clone();
-        let effective = effective(input.extensions(), self.base.as_ref());
+        let effective = effective(input.extensions(), self.base);
         let current = BoringTlsConnectorConfig::from_extensions(&effective);
         let wire = wire::compile_for_policy(wire::TransportShape::Tcp, capture, &current)?;
         let identity = current
@@ -177,31 +164,39 @@ impl ConnectionCompiler {
                 ));
             }
         }
+        let caller_policy = current.pool_id();
+        if caller_policy
+            .as_ref()
+            .is_some_and(|policy| !policy.is_reusable())
+        {
+            return Err(BoxError::from_static_str(
+                "captured TLS caller policy cannot be compared safely",
+            ));
+        }
         wire.write_to(&effective);
         let native = BoringTlsConnectorConfig::from_extensions(&effective);
-        let policy = native
+        native
             .pool_id()
             .filter(TlsPoolId::is_reusable)
             .ok_or_else(|| {
                 BoxError::from_static_str("captured TLS policy cannot be compared safely")
             })?;
+        let fallback = TlsConnectionReuse::new(BoringTlsClientConfigProvider, &effective);
         let mut data = super::TlsConnectorData::try_from(native)?;
         if data.server_name.is_none() {
             data.server_name = Some(authority.host.clone());
         }
         let prepared = PreparedHandshake::try_from(data)?;
-        let pending = PendingTlsProfile {
+        let native = NativeConnection {
             authority,
             protocol,
             #[cfg(feature = "http")]
             target_version,
-            policy,
-            metadata: prepared.metadata.clone(),
-            prepared: Mutex::new(Some(prepared)),
+            caller_policy,
+            fallback,
+            prepared,
         };
-        Ok(CompiledConnection {
-            tls: Some((wire, pending)),
-        })
+        Ok(CompiledConnection { tls: Some(native) })
     }
 }
 
@@ -211,26 +206,21 @@ impl CompiledConnectionProfile for CompiledConnection {
     }
 }
 
-impl InstalledConnectionProfile for CompiledConnection {
-    fn apply(self, extensions: &Extensions) {
-        if let Some((wire, pending)) = self.tls {
-            wire.write_to(extensions);
-            extensions.insert(pending);
-        }
-    }
-}
-
-impl PendingTlsProfile {
+impl PreparedProfile {
     pub(super) fn check(
         &self,
         input: &(impl AuthorityInputExt + ProtocolInputExt + ExtensionsRef),
         base: Option<&TlsClientConfig>,
     ) -> Result<(), BoxError> {
+        self.preparation.check_context(input.extensions())?;
+        let Some(native) = &self.native.tls else {
+            return Ok(());
+        };
         let effective = effective(input.extensions(), base);
         let policy = BoringTlsConnectorConfig::from_extensions(&effective).pool_id();
-        if input.target_authority().as_ref() != Some(&self.authority)
-            || input.target_protocol() != Some(&self.protocol)
-            || policy.as_ref() != Some(&self.policy)
+        if input.target_authority().as_ref() != Some(&native.authority)
+            || input.target_protocol() != Some(&native.protocol)
+            || policy != native.caller_policy
         {
             return Err(BoxError::from_static_str(
                 "prepared TLS destination or policy changed before handshake",
@@ -241,30 +231,102 @@ impl PendingTlsProfile {
             .extensions()
             .get_ref::<TargetHttpVersion>()
             .map(|version| version.0)
-            != self.target_version
+            != native.target_version
         {
             return Err(BoxError::from_static_str(
                 "prepared TLS target HTTP version changed before handshake",
             ));
         }
-        if self.prepared.lock().is_none() {
-            return Err(BoxError::from_static_str(
-                "prepared TLS session was already consumed",
-            ));
-        }
         Ok(())
     }
 
-    pub(super) fn metadata(&self) -> &HandshakeMetadata {
-        &self.metadata
+    pub(super) fn into_parts(self) -> (Option<PreparedHandshake>, Publication) {
+        let (prepared, fallback) = match self.native.tls {
+            Some(native) => (Some(native.prepared), Some(native.fallback)),
+            None => (None, None),
+        };
+        (
+            prepared,
+            Publication {
+                preparation: self.preparation,
+                fallback,
+            },
+        )
     }
+}
 
-    pub(super) fn take(&self) -> Result<PreparedHandshake, BoxError> {
-        self.prepared
-            .lock()
-            .take()
-            .ok_or_else(|| BoxError::from_static_str("prepared TLS session was already consumed"))
+impl Publication {
+    pub(super) fn publish(
+        self,
+        input: &Extensions,
+        connection: &Extensions,
+        caller: TlsConnectionReuse<BoringTlsClientConfigProvider>,
+    ) -> Result<(), BoxError> {
+        #[cfg(feature = "http")]
+        let version = connection
+            .get_ref::<TargetHttpVersion>()
+            .map(|version| version.0);
+        #[cfg(not(feature = "http"))]
+        let version = None;
+        if version.is_none() && self.fallback.is_none() {
+            return Err(BoxError::from_static_str(
+                "captured connection without native TLS requires an HTTP version",
+            ));
+        }
+        self.preparation.publish(input, connection, version)?;
+        if version.is_none()
+            && let Some(fallback) = self.fallback
+        {
+            fallback.publish(connection);
+            return Ok(());
+        }
+        caller.publish(connection);
+        Ok(())
     }
+}
+
+#[cfg(feature = "http")]
+pub(super) fn apply_legacy_http(
+    input: &Extensions,
+    connection: &Extensions,
+) -> Result<(), BoxError> {
+    if let Some(profile) = input.clone_to_if_absent::<HttpProfile>(connection)
+        && let Some(version) = connection.get_ref::<TargetHttpVersion>()
+    {
+        apply_legacy_settings(input, version.0, &profile)?;
+    }
+    Ok(())
+}
+
+/// Plain streams have no ALPN. Follow the HTTP connector's established,
+/// explicit-target, fallback, then initiating-request version precedence.
+#[cfg(feature = "http")]
+pub(super) fn apply_plaintext_http(
+    input: &Extensions,
+    connection: &Extensions,
+) -> Result<(), BoxError> {
+    let version = connection
+        .get_ref::<TargetHttpVersion>()
+        .map(|version| version.0)
+        .or_else(|| {
+            input
+                .get_ref::<TargetHttpVersion>()
+                .map(|version| version.0)
+        })
+        .or_else(|| {
+            input
+                .get_ref::<FallbackHttpVersion>()
+                .map(|version| version.0)
+        })
+        .or_else(|| {
+            input
+                .get_ref::<HttpRequestVersion>()
+                .map(|version| version.0)
+        });
+    if let Some(version) = version {
+        connection.insert(TargetHttpVersion(version));
+    }
+    apply_legacy_http(input, connection)
 }
 
 #[cfg(test)]
