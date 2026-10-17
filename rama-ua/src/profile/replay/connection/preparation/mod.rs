@@ -10,7 +10,10 @@ use crate::profile::{
         H2ClientParameter, ProfilePreservationDifference, ProfilePreservationMode,
         ProfilePreservationReport, ProfileReplayError,
     },
-    selection::variants::{ConnectionSelection, EmulationContext, ProfileConnectionReuse},
+    selection::{
+        ProfileSeed,
+        variants::{ConnectionSelection, EmulationContext, ProfileConnectionReuse},
+    },
 };
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
@@ -27,6 +30,10 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub struct ConnectionPreparation {
     selection: ConnectionSelection,
+    // Selection happens before inner transport I/O. Retain only the remaining
+    // draw inputs needed to reject a changed seed or connection scope afterward.
+    seed: ProfileSeed,
+    connection: ConnectionContext,
     components: PreparedConnectionComponents,
 }
 
@@ -81,6 +88,8 @@ impl ConnectionPreparation {
         Ok(Some((
             Self {
                 selection,
+                seed: context.seed,
+                connection,
                 components,
             },
             compiled,
@@ -132,6 +141,12 @@ impl ConnectionPreparation {
         let context = EmulationContext::of(input)
             .ok_or_else(|| BoxError::from_static_str("captured profile context is missing"))?;
         if context.selected.profile_id() != self.selection.profile
+            || context.seed != self.seed
+            || input
+                .get_ref::<ConnectionContext>()
+                .cloned()
+                .unwrap_or_default()
+                != self.connection
             || context.connection_key != self.selection.draw
             || context
                 .pins

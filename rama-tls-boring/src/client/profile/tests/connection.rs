@@ -18,6 +18,10 @@ use rama_tls::{
         TlsServerConfig,
     },
 };
+use rama_ua::profile::{
+    model::identity::{ConnectionContext, ConnectionIpFamily, ResumptionContext},
+    selection::ProfileSeed,
+};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -409,4 +413,73 @@ async fn a_plain_profile_without_http_cannot_publish_an_unrestricted_socket() {
         error.to_string().contains("requires an HTTP version"),
         "{error}"
     );
+}
+
+#[tokio::test]
+async fn transport_cannot_change_connection_seed_before_native_output() {
+    reject_changed_draw_input(Some(ProfileSeed([88; 32])), ConnectionContext::default()).await;
+}
+
+#[tokio::test]
+async fn transport_cannot_change_connection_scope_before_native_output() {
+    for connection in [
+        ConnectionContext {
+            resumption: ResumptionContext::Resumed,
+            ..Default::default()
+        },
+        ConnectionContext {
+            early_data: Some(true),
+            ..Default::default()
+        },
+        ConnectionContext {
+            token_present: Some(true),
+            ..Default::default()
+        },
+        ConnectionContext {
+            ip_family: Some(ConnectionIpFamily::V4),
+            ..Default::default()
+        },
+    ] {
+        reject_changed_draw_input(None, connection).await;
+    }
+}
+
+async fn reject_changed_draw_input(seed: Option<ProfileSeed>, connection: ConnectionContext) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let request = input();
+        let (context, _) = selected("draw-input-binding");
+        context.clone().publish(request.extensions());
+        let (client, mut peer) = tokio::io::duplex(32768);
+        let client = Arc::new(Mutex::new(Some(client)));
+        let inner = service_fn(move |input: ConnectRequest| {
+            let io = client.lock().take().unwrap();
+            if let Some(seed) = seed {
+                let mut changed = context.clone();
+                changed.seed = seed;
+                changed.publish(input.extensions());
+            } else {
+                input.extensions().insert(connection.clone());
+            }
+            async move {
+                Ok::<_, ConnectionError>(EstablishedClientConnection {
+                    input,
+                    conn: ServiceInput::new(io),
+                })
+            }
+        });
+        let attempt = TlsConnector::secure(inner);
+        let peer = async move {
+            let mut first = [0u8];
+            assert_eq!(
+                peer.read(&mut first).await.unwrap(),
+                0,
+                "native TLS bytes escaped after the connection draw inputs changed"
+            );
+        };
+        let (result, ()) = tokio::join!(attempt.serve(request), peer);
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("context differs"), "{error}");
+    })
+    .await
+    .unwrap();
 }
