@@ -7,6 +7,7 @@ use rama_core::{
     Layer,
     extensions::{Extensions, ExtensionsRef},
 };
+use rama_http_core::h3::connection::critical_streams::Profile as CriticalStreamProfile;
 use rama_http_types::{
     Version,
     conn::{FallbackHttpVersion, TargetHttpVersion},
@@ -62,7 +63,8 @@ impl HttpConnIdentifier {
 /// Connection identity produced by [`HttpConnIdentifier`].
 ///
 /// Besides physical route and HTTP-version requirements, this identity keeps
-/// explicit QUIC profiles distinct by value. It also keeps
+/// explicit QUIC profiles and HTTP/3 SETTINGS/startup preferences distinct by
+/// value. It also keeps
 /// plaintext forward-proxy connections separate from plaintext CONNECT
 /// tunnels. Those connections address the same proxy socket but use different
 /// HTTP request semantics.
@@ -72,6 +74,7 @@ pub struct HttpConnId {
     tls: Option<TlsPoolId>,
     quic_profile: Option<Arc<QuicProfile>>,
     h3_settings: Option<Arc<ClientSettingsProfile>>,
+    h3_startup: Option<CriticalStreamProfile>,
     network: BasicConnId,
     required_version: Option<Version>,
     http_proxy_mode: Option<HttpProxyModeRequirement>,
@@ -116,6 +119,10 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
             tls,
             quic_profile: input.extensions().get_arc::<QuicProfile>(),
             h3_settings: input.extensions().get_arc::<ClientSettingsProfile>(),
+            h3_startup: input
+                .extensions()
+                .get_ref::<CriticalStreamProfile>()
+                .copied(),
             network,
             required_version: connection_version_requirement(input),
             http_proxy_mode: http_proxy_mode_requirement(input),
@@ -428,6 +435,9 @@ mod tests {
     use rama_core::rt::Executor;
     use rama_core::service::service_fn;
     use rama_core::{Layer, Service, ServiceInput};
+    use rama_http_core::h3::connection::critical_streams::{
+        Profile as CriticalStreamProfile, Startup,
+    };
     use rama_http_types::body::util::BodyExt as _;
     use rama_http_types::proto::h3::{ClientSettingsProfile, SettingId, Settings};
     use rama_http_types::proxy::PlaintextHttpProxyMode;
@@ -2001,6 +2011,49 @@ mod tests {
                 input
                     .extensions()
                     .insert(ClientSettingsProfile(Arc::new(settings)));
+            }
+            let _connection = connector.serve(input).await.unwrap();
+            assert_eq!(attempts.load(Ordering::Relaxed), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_h3_startup_partitions_http_pool_connections_by_value() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let inner = service_fn({
+            let attempts = attempts.clone();
+            move |input: ConnectRequest| {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    Ok::<_, ConnectionError>(EstablishedClientConnection {
+                        input,
+                        conn: ServiceInput::new(()),
+                    })
+                }
+            }
+        });
+        let connector =
+            PooledConnector::new(inner, MultiplexPool::new(), HttpConnIdentifier::new());
+        let eager = CriticalStreamProfile::default();
+        let deferred = CriticalStreamProfile {
+            encoder: Startup::OnDemand,
+            ..eager
+        };
+        for (preferences, expected) in [
+            (None, 1),
+            (Some(eager), 2),
+            (Some(eager), 2),
+            (Some(deferred), 3),
+            (Some(eager), 3),
+            (None, 3),
+        ] {
+            let input = ConnectRequest::new("example.com:443".parse().unwrap())
+                .with_application_protocol(Protocol::HTTPS);
+            input
+                .extensions()
+                .insert(TargetHttpVersion(Version::HTTP_3));
+            if let Some(preferences) = preferences {
+                input.extensions().insert(preferences);
             }
             let _connection = connector.serve(input).await.unwrap();
             assert_eq!(attempts.load(Ordering::Relaxed), expected);

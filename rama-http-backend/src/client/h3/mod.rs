@@ -13,7 +13,7 @@ use rama_core::{
     rt::Executor,
     telemetry::tracing,
 };
-use rama_http_core::h3::connection::Config;
+use rama_http_core::h3::connection::{Config, critical_streams::Profile as CriticalStreamProfile};
 use rama_http_types::{Version, conn::TargetHttpVersion, proto::h3::ClientSettingsProfile};
 use rama_net::{
     ConnectorTargetInputExt, ProtocolInputExt,
@@ -425,7 +425,7 @@ impl Http3Connector {
             ));
         }
 
-        let h3_config = match input.extensions().get_ref::<ClientSettingsProfile>() {
+        let mut h3_config = match input.extensions().get_ref::<ClientSettingsProfile>() {
             Some(profile) => Arc::new(
                 self.config
                     .try_with_client_settings(profile.0.clone())
@@ -433,6 +433,9 @@ impl Http3Connector {
             ),
             None => self.config.clone(),
         };
+        if let Some(preferences) = input.extensions().get_ref::<CriticalStreamProfile>() {
+            Arc::make_mut(&mut h3_config).critical_streams = *preferences;
+        }
         // A captured H3 DATAGRAM promise requires a nonzero local QUIC receive
         // limit. Check known configuration before TLS setup, socket binding or
         // dialing; the HTTP/3 handshake still validates the resulting transport.

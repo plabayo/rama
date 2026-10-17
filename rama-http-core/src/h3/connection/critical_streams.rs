@@ -6,13 +6,16 @@
 
 use super::{CRITICAL_SEND_RESERVE, Encoder, Error, QuicSendStream, Shared, compression_error};
 use crate::h3::qpack::EncodeField;
-use rama_core::bytes::{Bytes, BytesMut};
+use rama_core::{
+    bytes::{Bytes, BytesMut},
+    extensions::Extension,
+};
 use rama_http_types::proto::h3::{Code, StreamType, VarInt};
 use rama_quic_proto::coding::Codec as _;
 use std::{future::Future, sync::Arc};
 
 /// When a QPACK stream's type prefix is sent.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Startup {
     /// Advertise the stream as soon as the HTTP/3 driver starts.
     #[default]
@@ -22,7 +25,7 @@ pub enum Startup {
 }
 
 /// QPACK stream allocation after the control stream reserves the first ID.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Order {
     #[default]
     EncoderFirst,
@@ -33,7 +36,9 @@ pub enum Order {
 ///
 /// This controls stream IDs and whether idle QPACK prefixes are emitted. It does
 /// not prescribe instruction contents or scheduling between independent streams.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// As a connection extension it overrides a client connector's fixed startup
+/// preferences; absent extensions retain the connector's configuration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Extension)]
 pub struct Profile {
     /// Which QPACK stream reserves the lower ID after the control stream.
     pub order: Order,
