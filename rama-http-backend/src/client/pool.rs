@@ -24,7 +24,7 @@ use rama_net::{HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt}
 use rama_quic_proto::profile::QuicProfile;
 use rama_tls::client::TlsPoolId;
 
-use super::{BindBodyToConnLayer, BindBodyToConnector};
+use super::{BindBodyToConnLayer, BindBodyToConnector, Http1BodyDrainConfig};
 
 /// Default HTTP pooled connector assembled by
 /// [`HttpPooledConnectorConfig::build_connector`].
@@ -260,6 +260,12 @@ pub struct HttpPooledConnectorConfig {
     /// it. A request's own timeout applies by dropping the request, which
     /// leaves nothing behind in the pool.
     pub wait_for_pool_timeout: Option<Duration>,
+    /// Drain HTTP/1 response bodies dropped before their end, within these
+    /// limits, so their connection can be reused instead of closed: see
+    /// [`Http1BodyDrainConfig`]. Enabled with its defaults; `None` closes such
+    /// connections right away. Applied by [`Self::build_connector`] (or a
+    /// [`BindBodyToConnLayer`] of one's own), not by [`Self::build_pool`].
+    pub http1_body_drain: Option<Http1BodyDrainConfig>,
 }
 
 /// Streams to expect of a connection before the pool saw any multiplex: the
@@ -323,6 +329,7 @@ impl Default for HttpPooledConnectorConfig {
             selection: MuxSelection::default(),
             idle_timeout: Some(Duration::from_secs(90)),
             wait_for_pool_timeout: Some(Duration::from_mins(2)),
+            http1_body_drain: Some(Http1BodyDrainConfig::default()),
         }
     }
 }
@@ -333,6 +340,11 @@ impl HttpPooledConnectorConfig {
     /// opaque, its streams hint goes only by the version a request targets or
     /// speaks; [`Self::build_connector`] also expects a secure HTTP origin to
     /// multiplex, as its TLS offers `h2`.
+    ///
+    /// This is the generic pool only: binding response bodies to their
+    /// connection, and draining abandoned HTTP/1 bodies (`http1_body_drain`),
+    /// is done by [`Self::build_connector`] or a [`BindBodyToConnLayer`]
+    /// placed directly above the pooled connector.
     #[must_use]
     pub fn build_pool<C, ID>(&self) -> MultiplexPool<C, ID> {
         MultiplexPool::new()
@@ -367,7 +379,10 @@ impl HttpPooledConnectorConfig {
     /// The returned connector wraps each pooled connection in
     /// [`BindBodyToConn`](super::BindBodyToConn), so the pool only frees/reuses a
     /// connection once its response body has been consumed, not at response
-    /// headers.
+    /// headers. An HTTP/1 response body dropped before its end is drained in
+    /// the background as `http1_body_drain` allows, keeping its connection
+    /// checked out until then; all clones of the returned connector share
+    /// its limit of concurrent drains.
     ///
     /// Warning: the connection returned by this pool should only be used for a single
     /// request. Every request should go through the connector stack again, and will
@@ -392,7 +407,9 @@ impl HttpPooledConnectorConfig {
         let pool = self.build_pool().with_streams_hint(expected_streams);
         let connector = PooledConnector::new(inner, pool, identifier)
             .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout);
-        BindBodyToConnLayer::new().into_layer(connector)
+        BindBodyToConnLayer::new()
+            .maybe_with_http1_body_drain(self.http1_body_drain)
+            .into_layer(connector)
     }
 }
 
@@ -441,9 +458,9 @@ mod tests {
     use tokio::time::sleep;
 
     use super::{
-        FallbackHttpVersion, HttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig,
-        HttpProxyModeRequirement, connection_version_requirement, expected_streams,
-        http_proxy_mode_requirement,
+        FallbackHttpVersion, Http1BodyDrainConfig, HttpConnIdentifier, HttpPooledConnector,
+        HttpPooledConnectorConfig, HttpProxyModeRequirement, connection_version_requirement,
+        expected_streams, http_proxy_mode_requirement,
     };
     use crate::client::proxy::layer::HttpProxyConnectorLayer;
     use crate::client::{HttpConnectRequestAdapter, HttpConnectorLayer};
@@ -1288,18 +1305,25 @@ mod tests {
     }
 
     /// An h1 response body abandoned before end-of-stream leaves the connection
-    /// mid-message, the pool must not reuse it. Uses a large body so the response is
-    /// genuinely still on the wire when dropped (a tiny fully-buffered body could be
-    /// drained and legitimately reused).
+    /// mid-message, the pool must not reuse it. Uses a body larger than the drain
+    /// budget so it can neither be drained nor be fully buffered when dropped.
     #[tokio::test(start_paused = true)]
     async fn pool_does_not_reuse_h1_connection_after_body_dropped_early() {
+        for drain in [None, Some(Http1BodyDrainConfig::default())] {
+            h1_connection_not_reused_after_body_dropped_early(drain).await;
+        }
+    }
+
+    async fn h1_connection_not_reused_after_body_dropped_early(
+        drain: Option<Http1BodyDrainConfig>,
+    ) {
         let conns = Arc::new(AtomicUsize::new(0));
         let inner =
             HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
                 let conn_id = conns.fetch_add(1, Ordering::Relaxed);
                 HttpServer::auto(Executor::default()).service(service_fn(
                     move |_req: Request| async move {
-                        let mut resp = Response::new(Body::from(vec![0u8; kib(1024)]));
+                        let mut resp = Response::new(Body::from(vec![0u8; kib(2048)]));
                         resp.headers_mut()
                             .insert("x-conn-id", HeaderValue::from(conn_id as u64));
                         Ok::<_, Infallible>(resp)
@@ -1309,6 +1333,7 @@ mod tests {
         let connector = build_test_connector(
             HttpPooledConnectorConfig {
                 max_connections_total: NonZeroUsize::new(4),
+                http1_body_drain: drain,
                 ..Default::default()
             },
             inner,
@@ -1342,8 +1367,15 @@ mod tests {
     /// follow-up request used to win that race and get handed the dead connection,
     /// failing with a closed-channel error. Eviction must be synchronous with
     /// abandoning the body: no sleeps/yields between the drop and the next request.
+    /// A drained body keeps the connection checked out until its drain gives up.
     #[tokio::test]
     async fn pool_evicts_h1_connection_the_moment_its_streaming_body_is_abandoned() {
+        for drain in [None, Some(Http1BodyDrainConfig::default())] {
+            h1_streaming_body_abandoned_is_not_handed_out(drain).await;
+        }
+    }
+
+    async fn h1_streaming_body_abandoned_is_not_handed_out(drain: Option<Http1BodyDrainConfig>) {
         let conns = Arc::new(AtomicUsize::new(0));
         let inner =
             HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
@@ -1364,6 +1396,7 @@ mod tests {
         let connector = build_test_connector(
             HttpPooledConnectorConfig {
                 max_connections_total: NonZeroUsize::new(4),
+                http1_body_drain: drain,
                 ..Default::default()
             },
             inner,
@@ -1863,6 +1896,7 @@ mod tests {
             selection: MuxSelection::RoundRobin,
             idle_timeout: Some(Duration::from_secs(9)),
             wait_for_pool_timeout: Some(Duration::from_secs(10)),
+            http1_body_drain: None,
         };
         let pool = format!("{:?}", config.build_pool::<(), u8>());
         for field in [
@@ -1900,6 +1934,10 @@ mod tests {
         assert_eq!(config.max_connecting_per_id, None);
         assert_eq!(config.idle_timeout, Some(Duration::from_secs(90)));
         assert_eq!(config.wait_for_pool_timeout, Some(Duration::from_mins(2)));
+        assert_eq!(
+            config.http1_body_drain,
+            Some(Http1BodyDrainConfig::default())
+        );
     }
 
     #[tokio::test]

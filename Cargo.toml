@@ -860,3 +860,9 @@ name = "tls_mitm_issue"
 path = "benches/tls_mitm_issue.rs"
 required-features = ["boring", "crypto"]
 harness = false
+
+[[bench]]
+name = "http1_body_drain"
+path = "benches/http1_body_drain.rs"
+required-features = ["http-full", "rustls", "ring"]
+harness = false

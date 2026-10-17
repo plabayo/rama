@@ -1,5 +1,6 @@
 use super::{
-    HttpClientService, HttpTransport, HttpTransportConnector, IntoHttpTransport, svc::SendRequest,
+    HttpClientService, HttpTransport, HttpTransportConnector, IntoHttpTransport,
+    drain::Http1DrainRuntime, svc::SendRequest,
 };
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
@@ -604,6 +605,8 @@ where
             }
             let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
             let conn = conn.with_upgrades();
+            // Lets a pooled connector drain abandoned response bodies on it.
+            extensions.insert(Http1DrainRuntime::new(&exec));
 
             let conn_span = tracing::trace_root_span!(
                 "h1::conn::serve",

@@ -17,6 +17,10 @@ mod bind_body;
 #[doc(inline)]
 pub use bind_body::{BindBodyToConn, BindBodyToConnLayer, BindBodyToConnector};
 
+mod drain;
+#[doc(inline)]
+pub use drain::Http1BodyDrainConfig;
+
 mod pool;
 #[doc(inline)]
 pub use pool::{HttpConnId, HttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig};

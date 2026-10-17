@@ -41,3 +41,9 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 # Compare HTML rewrite timings without competing with other test processes.
 filter = 'package(rama-http) & test(/^protocols::html::rewrite::tests::rewriting_time_is_linear_in_the_input$/)'
 threads-required = "num-test-threads"
+
+[[profile.ci.overrides]]
+# Keep the deadline success case's workload and time limit intact, but avoid
+# competing with other processes compiling or interpreting the JS engine.
+filter = 'package(rama-js) & test(/^a_slow_but_legitimate_script_completes_under_a_generous_limit$/)'
+threads-required = "num-test-threads"

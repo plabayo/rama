@@ -36,6 +36,8 @@ LOCAL_TESTS = {
     "testNoProxyDoesNotFallBackAfterDnsFailure", "testInvalidPortAndCancellation",
     "testRepeatedCancellationAndDetachment", "testReleaseCancelsLiveConnection",
     "testFrameworkCancellationAndConcurrentTeardown",
+    "testEchoServerDrainsCancelledSendCompletion",
+    "testEchoServerDrainsPendingReceivesAndRepeatedCancellation",
 }
 
 
