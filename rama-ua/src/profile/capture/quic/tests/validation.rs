@@ -130,7 +130,7 @@ fn flight_limits_apply_before_retention_to_each_nested_collection() {
 #[test]
 fn flight_rejects_inconsistent_lengths_numbers_and_version_context() {
     let limits = QuicFlightCaptureLimits::default();
-    for case in 0..14 {
+    for case in 0..15 {
         let mut capture = capture();
         let flight = &mut capture.flight;
         match case {
@@ -153,9 +153,10 @@ fn flight_rejects_inconsistent_lengths_numbers_and_version_context() {
             }
             9 => flight.frames[0][0] = ObservedFrame::Other { ty: 1 << 62 },
             10 => flight.frames[0][0] = ObservedFrame::Padding { len: 0 },
-            11 => flight.parameters.push(ParameterId(1)),
-            12 => flight.parameters[0] = ParameterId(1 << 62),
-            _ => flight.chosen_version = Some(Version::V2),
+            11 => flight.parameters.push(TransportParameterId::from(1)),
+            12 => flight.parameters[0] = TransportParameterId::from(1 << 62),
+            13 => flight.chosen_version = Some(Version::V2),
+            _ => flight.parameters.push(TransportParameterId::Unknown(1)),
         }
         capture.canonical(limits).unwrap_err();
     }
@@ -173,7 +174,7 @@ fn flight_rejects_inconsistent_lengths_numbers_and_version_context() {
     capture
         .flight
         .parameters
-        .push(ParameterId::VERSION_INFORMATION);
+        .push(TransportParameterId::VersionInformation);
     capture.flight.chosen_version = Some(Version::V1);
     capture.flight.available_versions = vec![Version::V2, Version::V1];
     capture.canonical(limits).unwrap();

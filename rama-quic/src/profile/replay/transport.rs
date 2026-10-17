@@ -5,9 +5,10 @@ use rama_core::error::{BoxError, BoxErrorExt as _};
 use rama_quic_proto::{
     capture::version_information,
     profile::{
-        ConnectionIdProfile, ParameterId, ParameterOrder, QuicProfile, RawParameter,
-        TransportLimits, TransportParameterProfile,
+        ConnectionIdProfile, ParameterOrder, QuicProfile, TransportLimits,
+        TransportParameterProfile,
     },
+    transport_parameters::{RawParameter, TransportParameterId},
     version::{
         ClientVersionPolicy, ReservedQuicVersion, ReservedVersionGrease, VersionInformation,
     },
@@ -28,7 +29,7 @@ pub(super) fn prepare(
     let mut order = Vec::with_capacity(parameters.fields.len());
     let mut local_cid_len = None;
     for field in &parameters.fields {
-        let id = ParameterId(field.id);
+        let id = TransportParameterId::from(field.id);
         order.push(id);
         match &field.value {
             ProtocolValue::Literal(value) => literals.push(RawParameter {
@@ -36,7 +37,7 @@ pub(super) fn prepare(
                 value: value.to_vec(),
             }),
             ProtocolValue::ConnectionLength(length)
-                if id == ParameterId::INITIAL_SOURCE_CONNECTION_ID =>
+                if id == TransportParameterId::InitialSourceConnectionId =>
             {
                 local_cid_len = Some(u8::try_from(*length).map_err(|_error| {
                     BoxError::from_static_str("captured QUIC source CID is too long")
@@ -89,7 +90,7 @@ pub(super) fn prepare(
         }
     }
     let layout = TransportParameterProfile::try_from_sent(&literals)?
-        .try_with_order(ParameterOrder::FixedWithExplicitDefaults(order))?;
+        .try_with_order(ParameterOrder::fixed_with_explicit_defaults(order))?;
     let limits = TransportLimits::try_from_sent(&literals)?;
     let profile = QuicProfile::standard()
         .with_versions(version_policy)
@@ -98,7 +99,7 @@ pub(super) fn prepare(
         .with_grease_quic_bit(
             literals
                 .iter()
-                .any(|parameter| parameter.id == ParameterId::GREASE_QUIC_BIT),
+                .any(|parameter| parameter.id == TransportParameterId::GreaseQuicBit),
         )
         .try_with_limits(limits)?;
     Ok((profile, expectation))

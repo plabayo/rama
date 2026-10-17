@@ -28,9 +28,9 @@ fn ten_thousand_flights_share_structures_without_discarding_raw_draws() {
             },
         ];
         flight.parameters = vec![
-            ParameterId(1),
-            ParameterId::VERSION_INFORMATION,
-            ParameterId(31 * (index + 1) + 27),
+            TransportParameterId::from(1),
+            TransportParameterId::VersionInformation,
+            TransportParameterId::from(31 * (index + 1) + 27),
         ];
         flight.parameters.rotate_left((index % 3) as usize);
         flight.chosen_version = Some(Version::V1);
@@ -84,7 +84,7 @@ fn flight_structures_keep_client_choices_and_known_version_preference() {
     versions
         .flight
         .parameters
-        .push(ParameterId::VERSION_INFORMATION);
+        .push(TransportParameterId::VersionInformation);
     versions.flight.chosen_version = Some(Version::V1);
     versions.flight.available_versions = vec![Version::V1, Version::V2];
     let ordered = versions.structural(limits).unwrap();

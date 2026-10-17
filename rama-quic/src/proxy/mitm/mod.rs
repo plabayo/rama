@@ -32,9 +32,8 @@ use rama_quic_proto::{
     capture::{CaptureLimits, transport_parameters_from_hello},
     crypto::CryptoError,
     peek::PeekedClientHello,
-    profile::{
-        PacketizationProfile, ParameterId, QuicProfile, TransportLimits, TransportParameterProfile,
-    },
+    profile::{PacketizationProfile, QuicProfile, TransportLimits, TransportParameterProfile},
+    transport_parameters::TransportParameterId,
 };
 use rama_tls::{
     client::{ClientHello, TlsClientConfig},
@@ -907,7 +906,7 @@ fn mirrored_profile(
         .try_with_limits(limits)?
         .with_grease_quic_bit(
             sent.iter()
-                .any(|parameter| parameter.id == ParameterId::GREASE_QUIC_BIT),
+                .any(|parameter| parameter.id == TransportParameterId::GreaseQuicBit),
         ))
 }
 

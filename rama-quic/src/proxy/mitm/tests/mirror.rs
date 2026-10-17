@@ -2,7 +2,8 @@ use rama_crypto::dep::boring::ssl::SslContentType;
 use rama_quic_proto::{
     capture::{CaptureLimits, RawParameter, transport_parameters_from_hello},
     peek::InitialPeek,
-    profile::{ParameterId, TransportLimits},
+    profile::TransportLimits,
+    transport_parameters::TransportParameterId,
 };
 use rama_tls::{
     client::{
@@ -63,7 +64,8 @@ fn parameters(hello: &ClientHello) -> Vec<RawParameter> {
     for parameter in &mut parameters {
         if matches!(
             parameter.id,
-            ParameterId::INITIAL_SOURCE_CONNECTION_ID | ParameterId::VERSION_INFORMATION
+            TransportParameterId::InitialSourceConnectionId
+                | TransportParameterId::VersionInformation
         ) {
             parameter.value.clear();
         }
@@ -194,7 +196,7 @@ async fn a_mirroring_relay_shows_the_origin_its_clients_first_flight() {
         let mut expected = parameters(&sent);
         let datagrams = expected
             .iter()
-            .position(|p| p.id == ParameterId::MAX_DATAGRAM_FRAME_SIZE)
+            .position(|p| p.id == TransportParameterId::MaxDatagramFrameSize)
             .expect("Chrome advertises datagrams");
         expected.remove(datagrams);
         assert_eq!(parameters(&received), expected);
@@ -218,7 +220,7 @@ fn with_parameters(hello: &ClientHello, parameters: &[RawParameter]) -> ClientHe
     };
     let mut body = Vec::new();
     for parameter in parameters {
-        var(parameter.id.0, &mut body);
+        var(u64::from(parameter.id), &mut body);
         var(parameter.value.len() as u64, &mut body);
         body.extend_from_slice(&parameter.value);
     }
@@ -263,14 +265,13 @@ fn a_mirrored_client_cannot_lift_the_relays_egress_limits() {
     };
     for parameter in &mut sent {
         parameter.value = match parameter.id {
-            ParameterId::INITIAL_MAX_DATA
-            | ParameterId::INITIAL_MAX_STREAM_DATA_BIDI_LOCAL
-            | ParameterId::INITIAL_MAX_STREAM_DATA_BIDI_REMOTE
-            | ParameterId::INITIAL_MAX_STREAM_DATA_UNI => max((1 << 62) - 1),
-            ParameterId::INITIAL_MAX_STREAMS_BIDI | ParameterId::INITIAL_MAX_STREAMS_UNI => {
-                max(1 << 60)
-            }
-            ParameterId::MAX_IDLE_TIMEOUT => vec![0],
+            TransportParameterId::InitialMaxData
+            | TransportParameterId::InitialMaxStreamDataBidiLocal
+            | TransportParameterId::InitialMaxStreamDataBidiRemote
+            | TransportParameterId::InitialMaxStreamDataUni => max((1 << 62) - 1),
+            TransportParameterId::InitialMaxStreamsBidi
+            | TransportParameterId::InitialMaxStreamsUni => max(1 << 60),
+            TransportParameterId::MaxIdleTimeout => vec![0],
             _ => continue,
         };
     }
@@ -301,7 +302,7 @@ fn a_mirrored_client_cannot_lift_the_relays_egress_limits() {
     for (idle_ms, expected) in [(600_000_u64, base_idle), (10_000, Some(10_000))] {
         let mut sent = transport_parameters_from_hello(&chrome, &CaptureLimits::default()).unwrap();
         for parameter in &mut sent {
-            if parameter.id == ParameterId::MAX_IDLE_TIMEOUT {
+            if parameter.id == TransportParameterId::MaxIdleTimeout {
                 parameter.value = max(idle_ms);
             }
         }

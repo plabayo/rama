@@ -23,138 +23,11 @@ use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    MAX_CID_SIZE, VarInt, coding::BufExt as _, transport_parameters::TransportParameters,
+    MAX_CID_SIZE, VarInt,
+    coding::BufExt as _,
+    transport_parameters::{RawParameter, TransportParameterId, TransportParameters},
     version::ClientVersionPolicy,
 };
-
-/// The identifier of a transport parameter (RFC 9000 §18.2 and the QUIC transport parameter
-/// registry), including ones this crate does not otherwise know.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ParameterId(pub u64);
-
-impl ParameterId {
-    /// `original_destination_connection_id` (RFC 9000 section 18.2).
-    pub const ORIGINAL_DESTINATION_CONNECTION_ID: Self = Self(0x00);
-    /// `max_idle_timeout` (RFC 9000 section 18.2).
-    pub const MAX_IDLE_TIMEOUT: Self = Self(0x01);
-    /// `stateless_reset_token` (RFC 9000 section 18.2).
-    pub const STATELESS_RESET_TOKEN: Self = Self(0x02);
-    /// `max_udp_payload_size` (RFC 9000 section 18.2).
-    pub const MAX_UDP_PAYLOAD_SIZE: Self = Self(0x03);
-    /// `initial_max_data` (RFC 9000 section 18.2).
-    pub const INITIAL_MAX_DATA: Self = Self(0x04);
-    /// `initial_max_stream_data_bidi_local` (RFC 9000 section 18.2).
-    pub const INITIAL_MAX_STREAM_DATA_BIDI_LOCAL: Self = Self(0x05);
-    /// `initial_max_stream_data_bidi_remote` (RFC 9000 section 18.2).
-    pub const INITIAL_MAX_STREAM_DATA_BIDI_REMOTE: Self = Self(0x06);
-    /// `initial_max_stream_data_uni` (RFC 9000 section 18.2).
-    pub const INITIAL_MAX_STREAM_DATA_UNI: Self = Self(0x07);
-    /// `initial_max_streams_bidi` (RFC 9000 section 18.2).
-    pub const INITIAL_MAX_STREAMS_BIDI: Self = Self(0x08);
-    /// `initial_max_streams_uni` (RFC 9000 section 18.2).
-    pub const INITIAL_MAX_STREAMS_UNI: Self = Self(0x09);
-    /// `ack_delay_exponent` (RFC 9000 section 18.2).
-    pub const ACK_DELAY_EXPONENT: Self = Self(0x0a);
-    /// `max_ack_delay` (RFC 9000 section 18.2).
-    pub const MAX_ACK_DELAY: Self = Self(0x0b);
-    /// `disable_active_migration` (RFC 9000 section 18.2).
-    pub const DISABLE_ACTIVE_MIGRATION: Self = Self(0x0c);
-    /// `preferred_address` (RFC 9000 section 18.2).
-    pub const PREFERRED_ADDRESS: Self = Self(0x0d);
-    /// `active_connection_id_limit` (RFC 9000 section 18.2).
-    pub const ACTIVE_CONNECTION_ID_LIMIT: Self = Self(0x0e);
-    /// `initial_source_connection_id` (RFC 9000 section 18.2).
-    pub const INITIAL_SOURCE_CONNECTION_ID: Self = Self(0x0f);
-    /// `retry_source_connection_id` (RFC 9000 section 18.2).
-    pub const RETRY_SOURCE_CONNECTION_ID: Self = Self(0x10);
-    /// RFC 9368.
-    pub const VERSION_INFORMATION: Self = Self(0x11);
-    /// Reliable stream reset.
-    pub const RELIABLE_STREAM_RESET: Self = Self(0x1b);
-    /// RFC 9221.
-    pub const MAX_DATAGRAM_FRAME_SIZE: Self = Self(0x20);
-    /// QUICHE's discard parameter for quantum-readiness tests.
-    pub const DISCARD: Self = Self(0x173e);
-    /// SCONE protocol support.
-    pub const SCONE_SUPPORTED: Self = Self(0x219e);
-    /// QUICHE's opaque handshake message.
-    pub const GOOGLE_HANDSHAKE_MESSAGE: Self = Self(0x26ab);
-    /// QUICHE's cached initial round-trip-time measurement.
-    pub const INITIAL_ROUND_TRIP_TIME: Self = Self(0x3127);
-    /// QUICHE's connection-option tags.
-    pub const GOOGLE_CONNECTION_OPTIONS: Self = Self(0x3128);
-    /// QUICHE's debugging server name.
-    pub const DEBUGGING_SNI: Self = Self(0x219b_bcd0);
-    /// Legacy QUICHE custom parameters encoded as a Google QUIC_CRYPTO CHLO.
-    pub const GOOGLE_LEGACY_CUSTOM_PARAMETERS: Self = Self(0x4751);
-    /// RFC 9287.
-    pub const GREASE_QUIC_BIT: Self = Self(0x2ab2);
-    /// draft-ietf-quic-ack-frequency-07.
-    pub const MIN_ACK_DELAY: Self = Self(0xff04_de1b);
-    /// Not a parameter: where the greased parameter goes in a fixed order.
-    pub const GREASE: Self = Self(u64::MAX);
-
-    fn check_wire_range(self) -> Result<(), ProfileError> {
-        if self.0 > VarInt::MAX.into_inner() {
-            return Err(ProfileError::ParameterIdOutOfRange(self));
-        }
-        Ok(())
-    }
-
-    /// Whether this identifier is one reserved for greasing (RFC 9000 §18.1): `31 * N + 27`.
-    #[must_use]
-    pub const fn is_reserved(self) -> bool {
-        self.0 % 31 == 27
-    }
-
-    /// Whether the value identifies this connection or contains connection-specific material.
-    /// Capture may retain its length, but it must not copy the value into a reusable profile.
-    #[must_use]
-    pub const fn has_connection_specific_value(self) -> bool {
-        matches!(
-            self,
-            Self::ORIGINAL_DESTINATION_CONNECTION_ID
-                | Self::STATELESS_RESET_TOKEN
-                | Self::PREFERRED_ADDRESS
-                | Self::INITIAL_SOURCE_CONNECTION_ID
-                | Self::RETRY_SOURCE_CONNECTION_ID
-                | Self::GOOGLE_HANDSHAKE_MESSAGE
-                | Self::GOOGLE_LEGACY_CUSTOM_PARAMETERS
-                | Self::DEBUGGING_SNI
-        )
-    }
-
-    /// Whether the value describes a measured path or padding rather than reusable configuration.
-    #[must_use]
-    pub const fn is_observation_only(self) -> bool {
-        matches!(self, Self::INITIAL_ROUND_TRIP_TIME | Self::DISCARD)
-    }
-
-    /// Whether this crate writes this parameter itself: the RFC 9000 §18.2 registry entries plus
-    /// the extensions rama supports. Mirrors the engine's transport-parameter table.
-    #[must_use]
-    pub fn is_known(self) -> bool {
-        self.0 <= Self::VERSION_INFORMATION.0
-            || matches!(
-                self,
-                Self::RELIABLE_STREAM_RESET
-                    | Self::MAX_DATAGRAM_FRAME_SIZE
-                    | Self::GREASE_QUIC_BIT
-                    | Self::MIN_ACK_DELAY
-            )
-    }
-}
-
-impl fmt::Display for ParameterId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if *self == Self::GREASE {
-            f.write_str("grease")
-        } else {
-            write!(f, "{:#x}", self.0)
-        }
-    }
-}
 
 /// The order transport parameters are written in.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -163,14 +36,50 @@ pub enum ParameterOrder {
     /// A fresh random order per connection.
     Shuffled,
     /// This order; parameters not listed follow in this crate's canonical order.
-    /// [`ParameterId::GREASE`] names the greased parameter's place.
-    Fixed(Vec<ParameterId>),
+    /// [`ParameterOrderEntry::Grease`] names the greased parameter's place.
+    Fixed(Vec<ParameterOrderEntry>),
     /// Fixed order that also emits listed integer parameters at their protocol defaults.
     ///
     /// This preserves explicit defaults in a capture. Unlisted parameters still follow
     /// in canonical order; absent optional parameters are not created. Connection-bound
     /// values continue to come from the current connection.
-    FixedWithExplicitDefaults(Vec<ParameterId>),
+    FixedWithExplicitDefaults(Vec<ParameterOrderEntry>),
+}
+
+impl ParameterOrder {
+    /// Order concrete wire identifiers; unlisted parameters follow canonically.
+    pub fn fixed(ids: impl IntoIterator<Item = TransportParameterId>) -> Self {
+        Self::Fixed(
+            ids.into_iter()
+                .map(ParameterOrderEntry::Parameter)
+                .collect(),
+        )
+    }
+
+    /// Also retain explicitly listed integer parameters at their default values.
+    pub fn fixed_with_explicit_defaults(
+        ids: impl IntoIterator<Item = TransportParameterId>,
+    ) -> Self {
+        Self::FixedWithExplicitDefaults(
+            ids.into_iter()
+                .map(ParameterOrderEntry::Parameter)
+                .collect(),
+        )
+    }
+}
+
+/// One position in a fixed transport-parameter emission order.
+/// The GREASE marker is profile policy, never a wire identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ParameterOrderEntry {
+    Parameter(TransportParameterId),
+    Grease,
+}
+
+impl From<TransportParameterId> for ParameterOrderEntry {
+    fn from(id: TransportParameterId) -> Self {
+        Self::Parameter(id)
+    }
 }
 
 /// The reserved parameter written to exercise the peer's tolerance (RFC 9000 §18.1).
@@ -183,20 +92,16 @@ pub enum GreaseParameter {
     /// `value_len` bytes when given.
     Random { value_len: Option<usize> },
     /// This identifier and value on every connection.
-    Fixed { id: ParameterId, value: Vec<u8> },
-}
-
-/// A transport parameter as it was sent: identifier and raw value, in wire order.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RawParameter {
-    pub id: ParameterId,
-    pub value: Vec<u8>,
+    Fixed {
+        id: TransportParameterId,
+        value: Vec<u8>,
+    },
 }
 
 /// A transport parameter this crate does not interpret, written as given.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OpaqueParameter {
-    pub id: ParameterId,
+    pub id: TransportParameterId,
     pub value: Vec<u8>,
 }
 
@@ -239,16 +144,20 @@ impl TryFrom<TransportParameterProfileRepr> for TransportParameterProfile {
 #[non_exhaustive]
 pub enum ProfileError {
     InitialFlight(&'static str),
+    /// A fixed order repeats the GREASE marker.
+    DuplicateGrease,
+    /// A generated reserved parameter value exceeds the profile budget.
+    GreaseValueTooLong,
     /// A literal parameter identifier does not fit a QUIC variable-length integer.
-    ParameterIdOutOfRange(ParameterId),
+    ParameterIdOutOfRange(TransportParameterId),
     /// A parameter identifier appears twice.
-    DuplicateParameter(ParameterId),
+    DuplicateParameter(TransportParameterId),
     /// An extra parameter uses an identifier this crate writes itself.
-    KnownParameter(ParameterId),
+    KnownParameter(TransportParameterId),
     /// A greased parameter's identifier is not of the reserved form.
-    NotReserved(ParameterId),
+    NotReserved(TransportParameterId),
     /// A value is longer than a parameter may carry here.
-    ValueTooLong(ParameterId),
+    ValueTooLong(TransportParameterId),
     /// A connection ID length outside what QUIC allows.
     ConnectionIdLength(u8),
     /// An Initial datagram below QUIC's minimum or above what UDP carries.
@@ -270,6 +179,10 @@ impl From<crate::version::VersionPolicyError> for ProfileError {
 impl fmt::Display for ProfileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::DuplicateGrease => f.write_str("duplicate GREASE ordering marker"),
+            Self::GreaseValueTooLong => {
+                f.write_str("GREASE parameter value exceeds profile budget")
+            }
             Self::InitialFlight(reason) => write!(f, "invalid recorded Initial flight: {reason}"),
             Self::ParameterIdOutOfRange(id) => {
                 write!(f, "transport parameter {id} exceeds the QUIC integer range")
@@ -320,6 +233,14 @@ impl Default for TransportParameterProfile {
     }
 }
 
+/// Profile builders validate numeric range even for explicitly constructed Unknown values.
+fn check_parameter_id(id: TransportParameterId) -> Result<(), ProfileError> {
+    if u64::from(id) > VarInt::MAX.into_inner() {
+        return Err(ProfileError::ParameterIdOutOfRange(id));
+    }
+    Ok(())
+}
+
 impl TransportParameterProfile {
     /// This crate's own layout: shuffled, one random greased parameter, the ACK frequency
     /// extension advertised.
@@ -338,20 +259,21 @@ impl TransportParameterProfile {
         let mut min_ack_delay = false;
         let mut max_datagram_frame_size = None;
         for RawParameter { id, value } in parameters {
-            order.push(*id);
-            if *id == ParameterId::MIN_ACK_DELAY {
+            let id = TransportParameterId::from(u64::from(*id));
+            order.push(id);
+            if id == TransportParameterId::MinAckDelayDraft07 {
                 min_ack_delay = true;
-            } else if *id == ParameterId::MAX_DATAGRAM_FRAME_SIZE {
-                max_datagram_frame_size = Some(sent_integer(*id, value)?);
-            } else if !id.is_known() {
+            } else if id == TransportParameterId::MaxDatagramFrameSize {
+                max_datagram_frame_size = Some(sent_integer(id, value)?);
+            } else if !id.is_implemented() {
                 extra.push(OpaqueParameter {
-                    id: *id,
+                    id,
                     value: value.clone(),
                 });
             }
         }
         Self::standard()
-            .try_with_order(ParameterOrder::FixedWithExplicitDefaults(order))?
+            .try_with_order(ParameterOrder::fixed_with_explicit_defaults(order))?
             .try_with_grease(GreaseParameter::None)?
             .try_with_extra(extra)?
             .with_min_ack_delay(min_ack_delay)
@@ -389,13 +311,26 @@ impl TransportParameterProfile {
     pub fn try_with_order(mut self, order: ParameterOrder) -> Result<Self, ProfileError> {
         if let ParameterOrder::Fixed(ids) | ParameterOrder::FixedWithExplicitDefaults(ids) = &order
         {
-            for (index, id) in ids.iter().enumerate() {
-                // GREASE is a layout marker here, never a literal wire identifier.
-                if *id != ParameterId::GREASE {
-                    id.check_wire_range()?;
-                }
-                if ids[..index].contains(id) {
-                    return Err(ProfileError::DuplicateParameter(*id));
+            let mut grease_seen = false;
+            for (index, entry) in ids.iter().enumerate() {
+                match entry {
+                    ParameterOrderEntry::Grease => {
+                        if grease_seen {
+                            return Err(ProfileError::DuplicateGrease);
+                        }
+                        grease_seen = true;
+                    }
+                    ParameterOrderEntry::Parameter(id) => {
+                        check_parameter_id(*id)?;
+                        if ids[..index].iter().any(|other| match other {
+                            ParameterOrderEntry::Parameter(other) => {
+                                u64::from(*other) == u64::from(*id)
+                            }
+                            ParameterOrderEntry::Grease => false,
+                        }) {
+                            return Err(ProfileError::DuplicateParameter(*id));
+                        }
+                    }
                 }
             }
         }
@@ -407,7 +342,7 @@ impl TransportParameterProfile {
     pub fn try_with_grease(mut self, grease: GreaseParameter) -> Result<Self, ProfileError> {
         match &grease {
             GreaseParameter::Fixed { id, value } => {
-                id.check_wire_range()?;
+                check_parameter_id(*id)?;
                 if !id.is_reserved() {
                     return Err(ProfileError::NotReserved(*id));
                 }
@@ -418,7 +353,7 @@ impl TransportParameterProfile {
             GreaseParameter::Random {
                 value_len: Some(len),
             } if *len > MAX_EXTRA_VALUE => {
-                return Err(ProfileError::ValueTooLong(ParameterId::GREASE));
+                return Err(ProfileError::GreaseValueTooLong);
             }
             GreaseParameter::None | GreaseParameter::Random { .. } => {}
         }
@@ -430,11 +365,14 @@ impl TransportParameterProfile {
     /// identifier appears once.
     pub fn try_with_extra(mut self, extra: Vec<OpaqueParameter>) -> Result<Self, ProfileError> {
         for (index, parameter) in extra.iter().enumerate() {
-            parameter.id.check_wire_range()?;
-            if parameter.id.is_known() || parameter.id == ParameterId::GREASE {
+            check_parameter_id(parameter.id)?;
+            if parameter.id.is_implemented() {
                 return Err(ProfileError::KnownParameter(parameter.id));
             }
-            if extra[..index].iter().any(|other| other.id == parameter.id) {
+            if extra[..index]
+                .iter()
+                .any(|other| u64::from(other.id) == u64::from(parameter.id))
+            {
                 return Err(ProfileError::DuplicateParameter(parameter.id));
             }
             if parameter.value.len() > MAX_EXTRA_VALUE {
@@ -797,31 +735,33 @@ impl TransportLimits {
         for RawParameter { id, value } in parameters {
             let integer = || sent_integer(*id, value);
             match *id {
-                ParameterId::MAX_IDLE_TIMEOUT => {
+                TransportParameterId::MaxIdleTimeout => {
                     limits.max_idle_timeout = Duration::from_millis(integer()?);
                 }
-                ParameterId::MAX_UDP_PAYLOAD_SIZE => limits.max_udp_payload_size = integer()?,
-                ParameterId::INITIAL_MAX_DATA => limits.initial_max_data = integer()?,
-                ParameterId::INITIAL_MAX_STREAM_DATA_BIDI_LOCAL => {
+                TransportParameterId::MaxUdpPayloadSize => limits.max_udp_payload_size = integer()?,
+                TransportParameterId::InitialMaxData => limits.initial_max_data = integer()?,
+                TransportParameterId::InitialMaxStreamDataBidiLocal => {
                     limits.initial_max_stream_data_bidi_local = integer()?;
                 }
-                ParameterId::INITIAL_MAX_STREAM_DATA_BIDI_REMOTE => {
+                TransportParameterId::InitialMaxStreamDataBidiRemote => {
                     limits.initial_max_stream_data_bidi_remote = integer()?;
                 }
-                ParameterId::INITIAL_MAX_STREAM_DATA_UNI => {
+                TransportParameterId::InitialMaxStreamDataUni => {
                     limits.initial_max_stream_data_uni = integer()?;
                 }
-                ParameterId::INITIAL_MAX_STREAMS_BIDI => {
+                TransportParameterId::InitialMaxStreamsBidi => {
                     limits.initial_max_streams_bidi = integer()?;
                 }
-                ParameterId::INITIAL_MAX_STREAMS_UNI => limits.initial_max_streams_uni = integer()?,
-                ParameterId::MAX_ACK_DELAY => {
+                TransportParameterId::InitialMaxStreamsUni => {
+                    limits.initial_max_streams_uni = integer()?
+                }
+                TransportParameterId::MaxAckDelay => {
                     limits.max_ack_delay = Duration::from_millis(integer()?);
                 }
-                ParameterId::ACTIVE_CONNECTION_ID_LIMIT => {
+                TransportParameterId::ActiveConnectionIdLimit => {
                     limits.active_connection_id_limit = Some(integer()?);
                 }
-                ParameterId::MAX_DATAGRAM_FRAME_SIZE => {
+                TransportParameterId::MaxDatagramFrameSize => {
                     limits.datagram_receive_buffer_size = Some(
                         usize::try_from(integer()?)
                             .map_err(|_error| ProfileError::Limit("max_datagram_frame_size"))?,
@@ -1037,7 +977,7 @@ impl QuicProfile {
 impl Extension for QuicProfile {}
 
 /// The integer value of a sent transport parameter, which must fill its value exactly.
-fn sent_integer(id: ParameterId, value: &[u8]) -> Result<u64, ProfileError> {
+fn sent_integer(id: TransportParameterId, value: &[u8]) -> Result<u64, ProfileError> {
     let mut reader = value;
     let integer = reader
         .get_var()
@@ -1055,26 +995,29 @@ mod tests {
     #[test]
     fn parameter_value_classification_is_protocol_owned() {
         for id in [
-            ParameterId::ORIGINAL_DESTINATION_CONNECTION_ID,
-            ParameterId::STATELESS_RESET_TOKEN,
-            ParameterId::PREFERRED_ADDRESS,
-            ParameterId::INITIAL_SOURCE_CONNECTION_ID,
-            ParameterId::RETRY_SOURCE_CONNECTION_ID,
-            ParameterId::GOOGLE_HANDSHAKE_MESSAGE,
-            ParameterId::GOOGLE_LEGACY_CUSTOM_PARAMETERS,
-            ParameterId::DEBUGGING_SNI,
+            TransportParameterId::OriginalDestinationConnectionId,
+            TransportParameterId::StatelessResetToken,
+            TransportParameterId::PreferredAddress,
+            TransportParameterId::InitialSourceConnectionId,
+            TransportParameterId::RetrySourceConnectionId,
+            TransportParameterId::GoogleHandshakeMessage,
+            TransportParameterId::GoogleLegacyCustomParameters,
+            TransportParameterId::DebuggingSni,
         ] {
             assert!(id.has_connection_specific_value(), "{id}");
             assert!(!id.is_observation_only(), "{id}");
         }
 
-        for id in [ParameterId::INITIAL_ROUND_TRIP_TIME, ParameterId::DISCARD] {
+        for id in [
+            TransportParameterId::InitialRoundTripTime,
+            TransportParameterId::Discard,
+        ] {
             assert!(id.is_observation_only(), "{id}");
             assert!(!id.has_connection_specific_value(), "{id}");
         }
 
-        assert!(!ParameterId::GOOGLE_CONNECTION_OPTIONS.has_connection_specific_value());
-        assert!(!ParameterId::GOOGLE_CONNECTION_OPTIONS.is_observation_only());
+        assert!(!TransportParameterId::GoogleConnectionOptions.has_connection_specific_value());
+        assert!(!TransportParameterId::GoogleConnectionOptions.is_observation_only());
     }
 
     /// The first packet number stays below what the initial packet's truncated number can encode
@@ -1121,7 +1064,7 @@ mod tests {
         rejected(&TransportParameterProfile {
             // An extra parameter may not reuse an identifier this crate writes itself.
             extra: alloc::vec![OpaqueParameter {
-                id: ParameterId::MAX_IDLE_TIMEOUT,
+                id: TransportParameterId::MaxIdleTimeout,
                 value: Vec::new(),
             }],
             ..TransportParameterProfile::standard()
@@ -1184,17 +1127,18 @@ mod tests {
         let json = serde_json::to_string(&bad).unwrap();
         serde_json::from_str::<QuicProfile>(&json).unwrap_err();
     }
+
     #[test]
     fn profile_parameter_ids_order_stays_within_wire_range() {
-        let invalid = ParameterId(VarInt::MAX.into_inner() + 1);
+        let invalid = TransportParameterId::from(VarInt::MAX.into_inner() + 1);
         assert_eq!(
             TransportParameterProfile::standard()
-                .try_with_order(ParameterOrder::Fixed(vec![invalid]))
+                .try_with_order(ParameterOrder::fixed(vec![invalid]))
                 .unwrap_err(),
             ProfileError::ParameterIdOutOfRange(invalid),
         );
         let invalid_profile = TransportParameterProfile {
-            order: ParameterOrder::Fixed(vec![invalid]),
+            order: ParameterOrder::fixed(vec![invalid]),
             ..TransportParameterProfile::standard()
         };
         serde_json::from_str::<TransportParameterProfile>(
@@ -1203,18 +1147,58 @@ mod tests {
         .unwrap_err();
         TransportParameterProfile::standard()
             .try_with_order(ParameterOrder::Fixed(vec![
-                ParameterId(VarInt::MAX.into_inner()),
-                ParameterId::GREASE,
+                TransportParameterId::from(VarInt::MAX.into_inner()).into(),
+                ParameterOrderEntry::Grease,
             ]))
             .unwrap();
     }
 
     #[test]
+    fn order_and_extra_validation_use_wire_identity_for_unknown_aliases() {
+        let id = TransportParameterId::MaxAckDelay;
+        let alias = TransportParameterId::Unknown(u64::from(id));
+        for order in [
+            ParameterOrder::fixed([id, alias]),
+            ParameterOrder::fixed_with_explicit_defaults([id, alias]),
+        ] {
+            assert!(matches!(
+                TransportParameterProfile::standard().try_with_order(order),
+                Err(ProfileError::DuplicateParameter(_))
+            ));
+        }
+        let id = TransportParameterId::GoogleConnectionOptions;
+        let alias = TransportParameterId::Unknown(u64::from(id));
+        assert!(matches!(
+            TransportParameterProfile::standard().try_with_extra(vec![
+                OpaqueParameter { id, value: vec![] },
+                OpaqueParameter {
+                    id: alias,
+                    value: vec![]
+                }
+            ]),
+            Err(ProfileError::DuplicateParameter(_))
+        ));
+        // Known bindings cannot evade typed native ownership through Unknown.
+        assert!(matches!(
+            TransportParameterProfile::standard().try_with_extra(vec![OpaqueParameter {
+                id: TransportParameterId::Unknown(u64::from(
+                    TransportParameterId::InitialSourceConnectionId
+                )),
+                value: vec![1]
+            }]),
+            Err(ProfileError::KnownParameter(_))
+        ));
+    }
+
+    #[test]
     fn explicit_default_order_rejects_invalid_and_duplicate_identifiers() {
         for ids in [
-            vec![ParameterId(VarInt::MAX.into_inner() + 1)],
-            vec![ParameterId::MAX_ACK_DELAY, ParameterId::MAX_ACK_DELAY],
-            vec![ParameterId::GREASE, ParameterId::GREASE],
+            vec![TransportParameterId::from(VarInt::MAX.into_inner() + 1).into()],
+            vec![
+                TransportParameterId::MaxAckDelay.into(),
+                TransportParameterId::MaxAckDelay.into(),
+            ],
+            vec![ParameterOrderEntry::Grease, ParameterOrderEntry::Grease],
         ] {
             TransportParameterProfile::standard()
                 .try_with_order(ParameterOrder::FixedWithExplicitDefaults(ids.clone()))
@@ -1230,8 +1214,8 @@ mod tests {
         }
         let profile = TransportParameterProfile::standard()
             .try_with_order(ParameterOrder::FixedWithExplicitDefaults(vec![
-                ParameterId::MAX_ACK_DELAY,
-                ParameterId::GREASE,
+                TransportParameterId::MaxAckDelay.into(),
+                ParameterOrderEntry::Grease,
             ]))
             .unwrap();
         let roundtrip: TransportParameterProfile =
@@ -1242,8 +1226,8 @@ mod tests {
     #[test]
     fn profile_parameter_ids_extra_stays_within_wire_range() {
         for id in [
-            ParameterId(VarInt::MAX.into_inner() + 1),
-            ParameterId(u64::MAX),
+            TransportParameterId::from(VarInt::MAX.into_inner() + 1),
+            TransportParameterId::from(u64::MAX),
         ] {
             let extra = vec![OpaqueParameter {
                 id,
@@ -1266,7 +1250,7 @@ mod tests {
         }
         TransportParameterProfile::standard()
             .try_with_extra(vec![OpaqueParameter {
-                id: ParameterId(VarInt::MAX.into_inner()),
+                id: TransportParameterId::from(VarInt::MAX.into_inner()),
                 value: Vec::new(),
             }])
             .unwrap();
@@ -1275,8 +1259,9 @@ mod tests {
     #[test]
     fn profile_parameter_ids_grease_stays_within_wire_range() {
         // The first reserved (31*N+27) identifier above the wire limit.
-        let last_reserved = ParameterId((VarInt::MAX.into_inner() - 27) / 31 * 31 + 27);
-        let id = ParameterId(last_reserved.0 + 31);
+        let last_reserved =
+            TransportParameterId::from((VarInt::MAX.into_inner() - 27) / 31 * 31 + 27);
+        let id = TransportParameterId::from(u64::from(last_reserved) + 31);
         assert!(id.is_reserved());
         let grease = GreaseParameter::Fixed {
             id,
@@ -1296,7 +1281,7 @@ mod tests {
             &serde_json::to_string(&invalid_profile).unwrap(),
         )
         .unwrap_err();
-        assert!(last_reserved.0 <= VarInt::MAX.into_inner());
+        assert!(u64::from(last_reserved) <= VarInt::MAX.into_inner());
         TransportParameterProfile::standard()
             .try_with_grease(GreaseParameter::Fixed {
                 id: last_reserved,
@@ -1305,5 +1290,3 @@ mod tests {
             .unwrap();
     }
 }
-
-// A profile is a value-only input. Runtime application remains in rama-quic.

@@ -1,7 +1,7 @@
 use super::*;
 use rama_quic_proto::{
-    capture::version_information,
-    profile::{ParameterId, RawParameter},
+    capture::version_information, transport_parameters::RawParameter,
+    transport_parameters::TransportParameterId,
 };
 use rama_ua::profile::capture::order::ProtocolValue;
 use rama_ua::profile::{
@@ -80,7 +80,7 @@ pub(super) fn selected(
                             .iter()
                             .filter_map(|field| match &field.value {
                                 ProtocolValue::Literal(value) => Some(RawParameter {
-                                    id: ParameterId(field.id),
+                                    id: TransportParameterId::from(field.id),
                                     value: value.to_vec(),
                                 }),
                                 ProtocolValue::ConnectionLength(_) => None,

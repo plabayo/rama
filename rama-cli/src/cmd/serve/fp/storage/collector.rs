@@ -196,7 +196,7 @@ pub(super) fn connection_capture(
             observed
                 .transport_parameters
                 .iter()
-                .map(|parameter| (parameter.id.0, parameter.value.as_slice())),
+                .map(|parameter| (u64::from(parameter.id), parameter.value.as_slice())),
             orders,
         )?;
         slots.push(CapturedSlot {
@@ -311,7 +311,8 @@ mod tests {
         quic::proto::{
             Version as QuicVersion,
             capture::{CaptureCompleteness, FirstFlight, ObservedFrame, RawParameter},
-            profile::{PaddingPlacement, ParameterId},
+            profile::PaddingPlacement,
+            transport_parameters::TransportParameterId,
         },
     };
     use std::sync::{Arc, OnceLock};
@@ -330,20 +331,21 @@ mod tests {
                 token_len: 0,
                 first_packet_number: 0,
                 packet_number_len: 1,
+                packet_number_lengths: vec![1],
                 frames: vec![vec![ObservedFrame::Crypto {
                     offset: 0,
                     len: 100,
                 }]],
                 padding: PaddingPlacement::Frames,
                 coalesced: false,
-                parameters: vec![ParameterId(1)],
+                parameters: vec![TransportParameterId::from(1)],
                 chosen_version: None,
                 available_versions: vec![],
                 packet_numbers: vec![0],
                 complete: true,
             }),
             transport_parameters: vec![RawParameter {
-                id: ParameterId(1),
+                id: TransportParameterId::from(1),
                 value: vec![1],
             }],
             client_hello_message: b"hello-canary".to_vec(),

@@ -6,7 +6,7 @@ use crate::profile::replay::parameters::ParameterExpectation;
 use rama_net::address::Host;
 use rama_quic_proto::{
     capture::{CaptureLimits, transport_parameters_from_hello},
-    profile::ParameterId,
+    transport_parameters::TransportParameterId,
 };
 use rama_tls::CipherSuite;
 use rama_tls_boring::client::BoringClientConfigExt as _;
@@ -166,7 +166,8 @@ fn checked_parameters(
     let expected = OrderedProtocolCapture::capture(
         ProfileCaptureCompleteness::Complete,
         OrderNamespace::QuicParameter,
-        raw.iter().map(|field| (field.id.0, field.value.as_slice())),
+        raw.iter()
+            .map(|field| (u64::from(field.id), field.value.as_slice())),
         OrderCaptureLimits::default(),
     )
     .unwrap();
@@ -185,9 +186,10 @@ fn checked_parameters(
 fn captured_parameter_literals_are_checked_even_when_the_body_length_matches() {
     for version in [Version::V1, Version::V2] {
         let mut current = params(Side::Client);
-        current
-            .extra
-            .push((ParameterId::GOOGLE_CONNECTION_OPTIONS.0, vec![1, 2, 3, 4]));
+        current.extra.push((
+            u64::from(TransportParameterId::GoogleConnectionOptions),
+            vec![1, 2, 3, 4],
+        ));
         let prepared = checked_parameters(&current, version);
         prepared
             .clone()
@@ -210,7 +212,7 @@ fn captured_parameter_binding_lengths_are_checked_independently_of_the_body_leng
         let mut current = params(Side::Client);
         current
             .extra
-            .push((ParameterId::DEBUGGING_SNI.0, vec![1, 2]));
+            .push((u64::from(TransportParameterId::DebuggingSni), vec![1, 2]));
         let prepared = checked_parameters(&current, version);
         prepared
             .clone()

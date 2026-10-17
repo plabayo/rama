@@ -906,9 +906,9 @@ mod concrete_transport_tests {
         TransportError,
         frame::ApplicationClose,
         profile::{
-            ConnectionIdProfile, ParameterId, ParameterOrder, TransportLimits,
-            TransportParameterProfile,
+            ConnectionIdProfile, ParameterOrder, TransportLimits, TransportParameterProfile,
         },
+        transport_parameters::TransportParameterId,
     };
     use rama_quic_proto::{
         VarInt,
@@ -1474,7 +1474,9 @@ mod concrete_transport_tests {
             profile
                 .transport_parameters()
                 .clone()
-                .try_with_order(ParameterOrder::Fixed(vec![ParameterId::MAX_IDLE_TIMEOUT]))
+                .try_with_order(ParameterOrder::fixed(vec![
+                    TransportParameterId::MaxIdleTimeout,
+                ]))
                 .unwrap(),
         );
         let same = connector
@@ -1739,12 +1741,12 @@ mod concrete_transport_tests {
                     !observed
                         .transport_parameters
                         .iter()
-                        .any(|parameter| parameter.id == ParameterId::GREASE_QUIC_BIT)
+                        .any(|parameter| parameter.id == TransportParameterId::GreaseQuicBit)
                 );
                 let max_udp = observed
                     .transport_parameters
                     .iter()
-                    .find(|parameter| parameter.id == ParameterId::MAX_UDP_PAYLOAD_SIZE)
+                    .find(|parameter| parameter.id == TransportParameterId::MaxUdpPayloadSize)
                     .unwrap();
                 assert_eq!(
                     VarInt::decode(&mut max_udp.value.as_slice())
@@ -1755,7 +1757,7 @@ mod concrete_transport_tests {
                 let max_data = observed
                     .transport_parameters
                     .iter()
-                    .find(|parameter| parameter.id == ParameterId::INITIAL_MAX_DATA)
+                    .find(|parameter| parameter.id == TransportParameterId::InitialMaxData)
                     .unwrap();
                 assert_eq!(
                     VarInt::decode(&mut max_data.value.as_slice())

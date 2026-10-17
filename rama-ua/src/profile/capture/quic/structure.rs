@@ -25,7 +25,7 @@ impl Shape {
         let mut parameters: Vec<_> = flight
             .parameters
             .iter()
-            .map(|id| (!id.is_reserved()).then_some(id.0))
+            .map(|id| (!id.is_reserved()).then_some(u64::from(*id)))
             .collect();
         parameters.sort_unstable();
         let mut versions: Vec<_> = flight
@@ -170,7 +170,7 @@ impl Shape {
                 .parameters
                 .iter()
                 .flatten()
-                .any(|id| *id >= (1 << 62) || ParameterId(*id).is_reserved())
+                .any(|id| *id >= (1 << 62) || TransportParameterId::from(*id).is_reserved())
         {
             return Err(ProfileDataError::Invalid("QUIC structural parameters"));
         }
@@ -192,12 +192,12 @@ impl Shape {
                 if chosen == self.version
                     && self
                         .parameters
-                        .contains(&Some(ParameterId::VERSION_INFORMATION.0))
+                        .contains(&Some(u64::from(TransportParameterId::VersionInformation)))
                     && self.versions.contains(&Some(chosen)) => {}
             None if self.versions.is_empty()
                 && !self
                     .parameters
-                    .contains(&Some(ParameterId::VERSION_INFORMATION.0)) => {}
+                    .contains(&Some(u64::from(TransportParameterId::VersionInformation))) => {}
             _ => return Err(ProfileDataError::Invalid("QUIC structural version context")),
         }
         Ok(())

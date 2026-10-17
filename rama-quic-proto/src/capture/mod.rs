@@ -43,7 +43,8 @@ use crate::{
     crypto::{HeaderKey, PacketKey},
     frame::{self, Frame},
     packet::{FixedLengthConnectionIdParser, PartialDecode},
-    profile::{PaddingPlacement, ParameterId},
+    profile::PaddingPlacement,
+    transport_parameters::TransportParameterId,
     version::{LongKind, VersionInformation},
 };
 
@@ -669,7 +670,7 @@ pub fn client_hello_with_limits(
     Ok(assembly.client_hello().map(<[u8]>::to_vec))
 }
 
-pub use crate::profile::RawParameter;
+pub use crate::transport_parameters::RawParameter;
 
 /// The transport parameters of a ClientHello handshake message, in the order they were sent.
 pub fn transport_parameters(client_hello: &[u8]) -> Result<Vec<RawParameter>, CaptureError> {
@@ -735,7 +736,7 @@ pub fn transport_parameters_from_hello(
         let value = reader[..len].to_vec();
         reader.advance(len);
         parameters.push(RawParameter {
-            id: ParameterId(id),
+            id: TransportParameterId::from(id),
             value,
         });
     }
@@ -747,7 +748,7 @@ pub fn transport_parameters_from_hello(
 pub fn version_information(parameters: &[RawParameter]) -> Option<VersionInformation> {
     let raw = parameters
         .iter()
-        .find(|parameter| parameter.id == ParameterId::VERSION_INFORMATION)?;
+        .find(|parameter| parameter.id == TransportParameterId::VersionInformation)?;
     VersionInformation::read(true, raw.value.len(), &mut &raw.value[..]).ok()
 }
 
@@ -771,7 +772,7 @@ pub struct FirstFlight {
     pub padding: PaddingPlacement,
     /// Whether the datagram coalesces packets of different kinds.
     pub coalesced: bool,
-    pub parameters: Vec<ParameterId>,
+    pub parameters: Vec<TransportParameterId>,
     pub chosen_version: Option<Version>,
     pub available_versions: Vec<Version>,
     /// Packet numbers in observed order; duplicates are retained as retransmission evidence.
@@ -906,15 +907,18 @@ mod tests {
     fn observation_output_omits_connection_material() {
         let sensitive = vec![211, 212, 213, 214, 215];
         let connection_parameters = [
-            ParameterId::ORIGINAL_DESTINATION_CONNECTION_ID,
-            ParameterId::STATELESS_RESET_TOKEN,
-            ParameterId::PREFERRED_ADDRESS,
-            ParameterId::INITIAL_SOURCE_CONNECTION_ID,
-            ParameterId::RETRY_SOURCE_CONNECTION_ID,
-            ParameterId::GOOGLE_HANDSHAKE_MESSAGE,
-            ParameterId::GOOGLE_LEGACY_CUSTOM_PARAMETERS,
-            ParameterId::DEBUGGING_SNI,
-        ];
+            TransportParameterId::OriginalDestinationConnectionId,
+            TransportParameterId::StatelessResetToken,
+            TransportParameterId::PreferredAddress,
+            TransportParameterId::InitialSourceConnectionId,
+            TransportParameterId::RetrySourceConnectionId,
+            TransportParameterId::GoogleHandshakeMessage,
+            TransportParameterId::GoogleLegacyCustomParameters,
+            TransportParameterId::DebuggingSni,
+        ]
+        .into_iter()
+        .flat_map(|id| [id, TransportParameterId::Unknown(u64::from(id))])
+        .collect::<Vec<_>>();
         let mut parameters: Vec<_> = connection_parameters
             .iter()
             .map(|&id| RawParameter {
@@ -923,7 +927,7 @@ mod tests {
             })
             .collect();
         parameters.push(RawParameter {
-            id: ParameterId::INITIAL_MAX_DATA,
+            id: TransportParameterId::InitialMaxData,
             value: vec![42],
         });
         let observation = QuicObservation {
@@ -952,12 +956,12 @@ mod tests {
         for (parameter, id) in parameters.iter().zip(connection_parameters) {
             assert_eq!(
                 parameter,
-                &serde_json::json!({"id": id.0, "length": sensitive.len()})
+                &serde_json::json!({"id": u64::from(id), "length": sensitive.len()})
             );
         }
         assert_eq!(
             parameters.last().unwrap(),
-            &serde_json::json!({"id": ParameterId::INITIAL_MAX_DATA.0, "value": [42]})
+            &serde_json::json!({"id": u64::from(TransportParameterId::InitialMaxData), "value": [42]})
         );
         // Explicit consumers still receive the original capture; formatting and
         // serialization neither mutate nor erase the in-memory evidence.
@@ -991,7 +995,7 @@ mod tests {
             let parameters =
                 transport_parameters(&hello_with_parameter_len(value.len() as u64, value)).unwrap();
             assert_eq!(parameters.len(), 1);
-            assert_eq!(parameters[0].id.0, 0x21);
+            assert_eq!(u64::from(parameters[0].id), 0x21);
             assert_eq!(parameters[0].value, value);
         }
     }

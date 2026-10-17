@@ -89,7 +89,7 @@ fn connection(parts: &Parts) -> Result<ConnectionFacts, ProfileDataError> {
         OrderNamespace::QuicParameter,
         quic.transport_parameters
             .iter()
-            .map(|parameter| (parameter.id.0, parameter.value.as_slice())),
+            .map(|parameter| (u64::from(parameter.id), parameter.value.as_slice())),
         orders,
     )?;
     let sequence_limits = H3SequenceCaptureLimits {

@@ -62,7 +62,7 @@ pub(crate) fn new(
             }
             // An id that does not fit a varint cannot be greased, so it greases nothing.
             GreaseParameter::Fixed { id, value } => {
-                ReservedTransportParameter::fixed(id.0, value).ok()
+                ReservedTransportParameter::fixed(u64::from(*id), value).ok()
             }
             // `None`, and any future greasing mode this engine does not know, grease nothing.
             _ => None,
@@ -71,7 +71,7 @@ pub(crate) fn new(
             .parameters
             .extra()
             .iter()
-            .map(|parameter| (parameter.id.0, parameter.value.clone()))
+            .map(|parameter| (u64::from(parameter.id), parameter.value.clone()))
             .collect(),
         write_plan: None,
         ..TransportParameters::default()

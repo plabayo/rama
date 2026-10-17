@@ -23,7 +23,8 @@ use rama_net::Protocol;
 use rama_quic_proto::{
     Version as QuicVersion,
     capture::{CaptureCompleteness, FirstFlight, ObservedFrame, RawParameter},
-    profile::{PaddingPlacement, ParameterId},
+    profile::PaddingPlacement,
+    transport_parameters::TransportParameterId,
 };
 use std::{
     collections::BTreeSet,
@@ -63,14 +64,14 @@ fn observed() -> QuicObservation {
             }]],
             padding: PaddingPlacement::Frames,
             coalesced: false,
-            parameters: vec![ParameterId(1)],
+            parameters: vec![TransportParameterId::from(1)],
             chosen_version: None,
             available_versions: vec![],
             packet_numbers: vec![0],
             complete: true,
         }),
         transport_parameters: vec![RawParameter {
-            id: ParameterId(1),
+            id: TransportParameterId::from(1),
             value: vec![1],
         }],
         client_hello_message: b"hello-canary".to_vec(),

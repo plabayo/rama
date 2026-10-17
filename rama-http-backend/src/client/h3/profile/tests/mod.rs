@@ -164,7 +164,7 @@ async fn fixture_with_profile(profile: QuicProfile) -> Fixture {
                 ProfileCaptureCompleteness::Complete,
                 OrderNamespace::QuicParameter,
                 raw.iter()
-                    .map(|parameter| (parameter.id.0, parameter.value.as_slice())),
+                    .map(|parameter| (u64::from(parameter.id), parameter.value.as_slice())),
                 OrderCaptureLimits::default(),
             )
             .unwrap();

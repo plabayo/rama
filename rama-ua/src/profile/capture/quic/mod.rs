@@ -11,7 +11,8 @@ use rama_quic_proto::{
     Version,
     capture::{FirstFlight, ObservedFrame, QuicObservation},
     frame::FrameType,
-    profile::{PaddingPlacement, ParameterId},
+    profile::PaddingPlacement,
+    transport_parameters::TransportParameterId,
     version::VersionInformation,
 };
 use rama_utils::octets::kib;
@@ -160,7 +161,7 @@ impl QuicFlightCapture {
         let coalesced = flag(&mut reader)?;
         let mut parameters = Vec::new();
         for _ in 0..reader.count(limits.parameters)? {
-            parameters.push(ParameterId(reader.u64()?));
+            parameters.push(TransportParameterId::from(reader.u64()?));
         }
         let chosen_version = if flag(&mut reader)? {
             Some(Version::from_u32(reader.u32()?))
@@ -343,7 +344,11 @@ fn validate(flight: &FirstFlight, limits: QuicFlightCaptureLimits) -> Result<(),
         return Err(ProfileDataError::Invalid("QUIC Initial packet shape count"));
     }
     for (i, id) in flight.parameters.iter().enumerate() {
-        if id.0 >= (1 << 62) || flight.parameters[..i].contains(id) {
+        if u64::from(*id) >= (1 << 62)
+            || flight.parameters[..i]
+                .iter()
+                .any(|other| u64::from(*other) == u64::from(*id))
+        {
             return Err(ProfileDataError::Invalid("QUIC parameter identity"));
         }
     }
@@ -352,7 +357,7 @@ fn validate(flight: &FirstFlight, limits: QuicFlightCaptureLimits) -> Result<(),
             if chosen != flight.version
                 || !flight
                     .parameters
-                    .contains(&ParameterId::VERSION_INFORMATION)
+                    .contains(&TransportParameterId::VersionInformation)
             {
                 return Err(ProfileDataError::Invalid(
                     "QUIC version information context",
@@ -366,7 +371,7 @@ fn validate(flight: &FirstFlight, limits: QuicFlightCaptureLimits) -> Result<(),
         None if !flight.available_versions.is_empty()
             || flight
                 .parameters
-                .contains(&ParameterId::VERSION_INFORMATION) =>
+                .contains(&TransportParameterId::VersionInformation) =>
         {
             return Err(ProfileDataError::Invalid(
                 "missing QUIC version information",
@@ -429,7 +434,7 @@ fn encode(
     writer.u8(u8::from(flight.coalesced))?;
     writer.u64(flight.parameters.len() as u64)?;
     for id in &flight.parameters {
-        writer.u64(id.0)?;
+        writer.u64(u64::from(*id))?;
     }
     writer.u8(u8::from(flight.chosen_version.is_some()))?;
     if let Some(version) = flight.chosen_version {

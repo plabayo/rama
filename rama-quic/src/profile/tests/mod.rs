@@ -11,6 +11,9 @@
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use std::assert_matches;
 
+#[cfg(feature = "boring")]
+use rama_quic_proto::profile::ParameterOrderEntry;
+
 use rama_core::{bytes::BytesMut, rt::Executor};
 use rama_crypto::hmac::HmacSha2;
 use rama_quic_proto::{
@@ -21,6 +24,7 @@ use rama_quic_proto::{
     },
     crypto::{HeaderKey as _, PacketKey as _},
     peek::{InitialPeek, PeekError},
+    transport_parameters::TransportParameterId,
     version::{ClientVersionPolicy, LongKind, Version},
 };
 use rama_tls::client::TlsClientConfig;
@@ -71,7 +75,7 @@ fn provider() -> std::sync::Arc<dyn crate::proto::crypto::ServerConfig> {
 }
 
 /// The parameter identifiers a capture carried, in order.
-fn observed_parameters(datagrams: &[&[u8]]) -> Vec<ParameterId> {
+fn observed_parameters(datagrams: &[&[u8]]) -> Vec<TransportParameterId> {
     let flight = capture::first_flight(datagrams, &*provider()).expect("a readable first flight");
     flight.parameters
 }
@@ -255,14 +259,14 @@ fn a_profile_shapes_ramas_first_flight() {
 #[test]
 fn a_fixed_parameter_order_is_reproduced() {
     let order = vec![
-        ParameterId::MAX_IDLE_TIMEOUT,
-        ParameterId::INITIAL_SOURCE_CONNECTION_ID,
-        ParameterId::INITIAL_MAX_DATA,
-        ParameterId::VERSION_INFORMATION,
+        TransportParameterId::MaxIdleTimeout,
+        TransportParameterId::InitialSourceConnectionId,
+        TransportParameterId::InitialMaxData,
+        TransportParameterId::VersionInformation,
     ];
     let profile = QuicProfile::standard().with_transport_parameters(
         TransportParameterProfile::standard()
-            .try_with_order(ParameterOrder::Fixed(order.clone()))
+            .try_with_order(ParameterOrder::fixed(order.clone()))
             .unwrap()
             .try_with_grease(GreaseParameter::None)
             .unwrap(),
@@ -278,18 +282,22 @@ fn extra_and_greased_parameters_are_written() {
     let profile = QuicProfile::standard().with_transport_parameters(
         TransportParameterProfile::standard()
             .try_with_extra(vec![OpaqueParameter {
-                id: ParameterId(0x3128),
+                id: TransportParameterId::from(0x3128),
                 value: b"TEST".to_vec(),
             }])
             .unwrap()
             .try_with_grease(GreaseParameter::Fixed {
-                id: ParameterId(27),
+                id: TransportParameterId::from(27),
                 value: vec![1, 2, 3],
             })
             .unwrap(),
     );
     let (flight, _capable_flight) = rama_first_flight(&profile);
-    assert!(flight.parameters.contains(&ParameterId(0x3128)));
+    assert!(
+        flight
+            .parameters
+            .contains(&TransportParameterId::from(0x3128))
+    );
     assert!(flight.parameters.iter().any(|id| id.is_reserved()));
 }
 
@@ -303,13 +311,18 @@ fn a_browser_profile_offers_the_parameters_its_capture_did() {
     let (chrome, _capable_chrome) = rama_first_flight(&chrome_153());
     for id in &chrome_capture {
         assert!(
-            chrome.parameters.contains(id) || *id == ParameterId(0x13c2_9813_4672_b34f),
+            chrome.parameters.contains(id)
+                || *id == TransportParameterId::from(0x13c2_9813_4672_b34f),
             "chrome profile is missing parameter {id}"
         );
     }
     // Chrome's greased four-byte parameter, its google_connection_options and its lack of an
     // Initial source CID (empty SCID) are all reproduced.
-    assert!(chrome.parameters.contains(&ParameterId(0x3128)));
+    assert!(
+        chrome
+            .parameters
+            .contains(&TransportParameterId::from(0x3128))
+    );
     assert!(chrome.parameters.iter().any(|id| id.is_reserved()));
 
     let firefox_capture = observed_parameters(&[
@@ -422,14 +435,14 @@ fn invalid_profiles_are_refused() {
     // An extra parameter may not shadow a known one.
     TransportParameterProfile::standard()
         .try_with_extra(vec![OpaqueParameter {
-            id: ParameterId::MAX_IDLE_TIMEOUT,
+            id: TransportParameterId::MaxIdleTimeout,
             value: Vec::new(),
         }])
         .unwrap_err();
     // A greased parameter must use a reserved identifier.
     TransportParameterProfile::standard()
         .try_with_grease(GreaseParameter::Fixed {
-            id: ParameterId(0x28),
+            id: TransportParameterId::from(0x28),
             value: Vec::new(),
         })
         .unwrap_err();
@@ -1426,10 +1439,13 @@ fn sent_transport_parameters_compile_to_the_captured_layouts() {
     };
     assert_eq!(
         parameters.order(),
-        &ParameterOrder::FixedWithExplicitDefaults(sent.iter().map(|p| p.id).collect())
+        &ParameterOrder::fixed_with_explicit_defaults(sent.iter().map(|p| p.id))
     );
     assert_eq!(
-        &sent.iter().map(|p| p.id).collect::<Vec<_>>(),
+        &sent
+            .iter()
+            .map(|p| ParameterOrderEntry::Parameter(p.id))
+            .collect::<Vec<_>>(),
         expected_order
     );
     assert_eq!(parameters.grease(), &GreaseParameter::None);
@@ -1454,7 +1470,7 @@ fn sent_transport_parameters_compile_to_the_captured_layouts() {
     assert_eq!(parameters.grease(), &GreaseParameter::None);
     assert_eq!(
         parameters.order(),
-        &ParameterOrder::FixedWithExplicitDefaults(sent.iter().map(|p| p.id).collect())
+        &ParameterOrder::fixed_with_explicit_defaults(sent.iter().map(|p| p.id))
     );
     assert!(
         parameters

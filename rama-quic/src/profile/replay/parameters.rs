@@ -44,7 +44,7 @@ impl ParameterExpectation {
                 .iter()
                 .zip(self.0.fields.iter())
                 .all(|(actual, expected)| {
-                    actual.id.0 == expected.id
+                    u64::from(actual.id) == expected.id
                         && match &expected.value {
                             ProtocolValue::Literal(value) => {
                                 actual.value.as_slice() == value.as_ref()

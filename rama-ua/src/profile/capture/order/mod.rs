@@ -1,7 +1,9 @@
 //! Protocol-owned order normalization precedes statistical classification.
 
 use rama_http::proto::h3::SettingId;
-use rama_quic_proto::{Version, profile::ParameterId, version::VersionInformation};
+use rama_quic_proto::{
+    Version, transport_parameters::TransportParameterId, version::VersionInformation,
+};
 use rama_utils::octets::kib;
 use serde::Serialize;
 
@@ -46,7 +48,7 @@ impl OrderNamespace {
     #[must_use]
     pub fn reserved_candidate(self, id: u64) -> bool {
         match self {
-            Self::QuicParameter => id < (1 << 62) && ParameterId(id).is_reserved(),
+            Self::QuicParameter => id < (1 << 62) && TransportParameterId::from(id).is_reserved(),
             Self::Http3Setting => id < (1 << 62) && SettingId::new(id).is_reserved(),
             Self::QuicVersion => {
                 u32::try_from(id).is_ok_and(|id| Version::from_u32(id).is_reserved())
@@ -55,11 +57,12 @@ impl OrderNamespace {
     }
 
     fn connection_owned(self, id: u64) -> bool {
-        matches!(self, Self::QuicParameter) && ParameterId(id).has_connection_specific_value()
+        matches!(self, Self::QuicParameter)
+            && TransportParameterId::from(id).has_connection_specific_value()
     }
 
     fn connection_value(self, id: u64) -> bool {
-        matches!(self, Self::QuicParameter) && ParameterId(id).is_observation_only()
+        matches!(self, Self::QuicParameter) && TransportParameterId::from(id).is_observation_only()
     }
 
     fn validate_field(
@@ -96,7 +99,8 @@ impl OrderNamespace {
                 }
             }
             (Self::QuicParameter, ProtocolValue::Literal(bytes))
-                if ParameterId(field.id) == ParameterId::VERSION_INFORMATION =>
+                if TransportParameterId::from(field.id)
+                    == TransportParameterId::VersionInformation =>
             {
                 version_information(bytes, limits)?;
             }
@@ -408,7 +412,8 @@ fn normalized_field(
         }
         ProtocolValue::Literal(bytes)
             if matches!(namespace, OrderNamespace::QuicParameter)
-                && ParameterId(field.id) == ParameterId::VERSION_INFORMATION =>
+                && TransportParameterId::from(field.id)
+                    == TransportParameterId::VersionInformation =>
         {
             let versions = version_information(bytes, limits)?;
             let chosen = versions.chosen();

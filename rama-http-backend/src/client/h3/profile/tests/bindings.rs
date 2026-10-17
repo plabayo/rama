@@ -1,6 +1,6 @@
 use super::*;
 use rama_quic::profile::replay;
-use rama_quic_proto::profile::ParameterId;
+use rama_quic_proto::transport_parameters::TransportParameterId;
 use rama_tls::client::{ServerVerifyMode, TlsServerVerify};
 use rama_ua::profile::capture::order::ProtocolValue;
 
@@ -81,7 +81,7 @@ async fn captured_quic_limits_must_admit_all_h3_critical_streams() {
     let streams = parameters
         .fields
         .iter_mut()
-        .find(|field| field.id == ParameterId::INITIAL_MAX_STREAMS_UNI.0)
+        .find(|field| field.id == u64::from(TransportParameterId::InitialMaxStreamsUni))
         .unwrap();
     streams.value = ProtocolValue::Literal(vec![2].into());
     let (context, _) = selection::selected("parameter-limits", &fixture.capture, Some(&parameters));
