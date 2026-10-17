@@ -246,3 +246,48 @@ fn a_failed_captured_ticket_shape_consumes_only_its_own_ticket() {
         );
     }
 }
+
+#[test]
+fn captured_cipher_grease_draws_share_current_tickets() {
+    for version in [Version::V1, Version::V2] {
+        let (policy, server) = policy();
+        let server = BoringTlsProvider
+            .server_config(&server, TlsOptions::default())
+            .unwrap()
+            .crypto
+            .into_fixed();
+        let (mut full, mut resumed) = sources(&policy, server.clone(), version);
+        full.ciphers = std::iter::once(0x0a0a)
+            .chain(full.ciphers.iter().copied())
+            .collect();
+        resumed.ciphers = std::iter::once(0x1a1a)
+            .chain(resumed.ciphers.iter().copied())
+            .collect();
+        let cache = ClientConfigCache::new(Arc::new(BoringTlsProvider), TlsOptions::default());
+
+        // Each generated offer is checked against its selected literal cipher
+        // draw. Only the peer-issued session state carries across the draws.
+        exchange(
+            prepared(&cache, &policy, full).crypto,
+            server.clone(),
+            version,
+            false,
+        );
+        // A changed real cipher policy still gets no access to this ticket.
+        // Its failed lookup must not consume the compatible draw's session.
+        let mut restricted = resumed.clone();
+        restricted.ciphers = restricted.ciphers[..restricted.ciphers.len() - 1].into();
+        let client = prepared(&cache, &policy, restricted).crypto;
+        assert!(
+            client
+                .start_session(version, "localhost", &params(Side::Client))
+                .is_err()
+        );
+        exchange(
+            prepared(&cache, &policy, resumed).crypto,
+            server,
+            version,
+            true,
+        );
+    }
+}

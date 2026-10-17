@@ -8,7 +8,7 @@ use std::{
 };
 
 use parking_lot::Mutex;
-use rama_boring::ssl::{SslAcceptor, SslVersion};
+use rama_boring::ssl::{GreaseValues, SslAcceptor, SslVersion};
 use rama_core::{
     Service, ServiceInput,
     conversion::RamaTryFrom as _,
@@ -25,7 +25,7 @@ use rama_net::{
     tls::TlsAlpn,
 };
 use rama_tls::{
-    ExtensionId, KeyLogIntent,
+    CipherSuite, ExtensionId, KeyLogIntent,
     client::{
         ClientAuth, ClientHello, NegotiatedTlsParameters, ServerVerifyMode, TlsClientAuth,
         TlsClientConfig, TlsServerCertPins, TlsServerVerify, TlsSessionProfileScope,
@@ -43,8 +43,9 @@ use super::*;
 use crate::{
     TlsStream,
     client::{
-        BoringClientConfigExt as _, BoringExtensionOrder, BoringPermuteExtensions,
-        ConnectorKindSecure, TlsConnector, TlsConnectorData,
+        BoringCipherSuites, BoringClientConfigExt as _, BoringExtensionOrder,
+        BoringPermuteExtensions, ConnectorKindSecure, TlsConnector, TlsConnectorData,
+        config::BoringGreaseValues,
     },
     server::TlsAcceptorData,
 };
@@ -588,6 +589,42 @@ async fn different_drawn_orders_resume_within_one_profile_scope() {
                 Some(ExtensionId::PRE_SHARED_KEY)
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn cipher_grease_draws_resume_without_losing_their_wire_values() {
+    for version in VERSIONS {
+        let server = Server::new(version);
+        let connector = connector(&server, Some(cache()));
+        for (index, grease) in [0x0a0a, 0x1a1a].into_iter().enumerate() {
+            let actual = connect(&connector, &server, "a.test", |extensions| {
+                extensions.insert(BoringGreaseValues(GreaseValues::Pinned));
+                extensions.insert(BoringCipherSuites(vec![
+                    CipherSuite::from(grease),
+                    CipherSuite::TLS13_AES_128_GCM_SHA256,
+                    CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+                    CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+                ]));
+            })
+            .await;
+            assert_eq!(actual, if index == 0 { FULL } else { RESUMED });
+        }
+
+        // Native output keeps the next literal GREASE draw while offering the
+        // current peer's ticket under the unchanged negotiable cipher policy.
+        let hello = connect_hello(&connector, &server, |extensions| {
+            extensions.insert(BoringGreaseValues(GreaseValues::Pinned));
+            extensions.insert(BoringCipherSuites(vec![
+                CipherSuite::from(0x2a2a),
+                CipherSuite::TLS13_AES_128_GCM_SHA256,
+                CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+                CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+            ]));
+        })
+        .await;
+        assert!(offers_session(&hello));
+        assert_eq!(u16::from(hello.cipher_suites()[0]), 0x2a2a);
     }
 }
 

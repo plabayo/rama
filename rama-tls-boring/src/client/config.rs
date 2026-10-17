@@ -83,6 +83,10 @@ impl BoringTlsConnectorConfig<'_> {
     /// Connector defaults are fixed for the lifetime of the pool and must not
     /// be layered onto this request-only view.
     pub fn pool_id(&self) -> Option<TlsPoolId> {
+        self.pool_id_with_cipher_suites(self.cipher_suites.map(|value| value.0.as_slice()))
+    }
+
+    fn pool_id_with_cipher_suites(&self, ciphers: Option<&[CipherSuite]>) -> Option<TlsPoolId> {
         if self.is_empty() {
             return None;
         }
@@ -99,7 +103,7 @@ impl BoringTlsConnectorConfig<'_> {
             client_auth,
             server_cert_pins,
             server_trust,
-            cipher_suites,
+            cipher_suites: _,
             supported_groups,
             key_shares,
             signature_schemes,
@@ -137,7 +141,7 @@ impl BoringTlsConnectorConfig<'_> {
             .maybe_with_client_auth(*client_auth)
             .maybe_with_server_cert_pins(*server_cert_pins)
             .maybe_with_server_trust(*server_trust)
-            .maybe_with_cipher_suites(cipher_suites.map(|value| value.0.as_slice()))
+            .maybe_with_cipher_suites(ciphers)
             .maybe_with_supported_groups(supported_groups.map(|value| value.0.as_slice()))
             .maybe_with_key_shares(key_shares.map(|value| value.0.as_slice()))
             .maybe_with_signature_schemes(signature_schemes.map(|value| value.0.as_slice()))
@@ -194,18 +198,36 @@ impl BoringTlsConnectorConfig<'_> {
         builder.build()
     }
 
-    /// Identity of compatible client sessions: security settings, the cipher list, the session
-    /// domain and the optional profile scope. Other wire settings, diagnostic sinks, chain
-    /// retention and the separately keyed server name are not part of it, so sessions resume
-    /// across those variants.
+    /// Identity of compatible client sessions: security settings, the non-GREASE
+    /// cipher list, the session domain and the optional profile scope. Other wire
+    /// settings, diagnostic sinks, chain retention and the separately keyed server
+    /// name are not part of it, so sessions resume across those variants.
     pub fn session_scope(&self) -> Option<TlsPoolId> {
-        self.security_policy(None).pool_id()
+        self.security_pool_id(None)
     }
 
     /// What a native context is keyed by: the session scope and the keylog, the only
     /// context-level setting outside it. Wire settings are applied per connection.
     pub(crate) fn context_scope(&self) -> Option<TlsPoolId> {
-        self.security_policy(self.keylog).pool_id()
+        self.security_pool_id(self.keylog)
+    }
+
+    fn security_pool_id(&self, keylog: Option<&TlsKeyLog>) -> Option<TlsPoolId> {
+        let security = self.security_policy(keylog);
+        let ciphers = security.cipher_suites.map(|value| value.0.as_slice());
+        // GREASE cannot be negotiated. Its literal draw affects the wire and
+        // connection-pool identity, but not a ticket's compatible cipher policy.
+        // Ordinary lists borrow directly; only GREASE lists need a filtered copy.
+        let filtered = ciphers
+            .filter(|values| values.iter().any(CipherSuite::is_grease))
+            .map(|values| {
+                values
+                    .iter()
+                    .copied()
+                    .filter(|value| !value.is_grease())
+                    .collect::<Vec<_>>()
+            });
+        security.pool_id_with_cipher_suites(filtered.as_deref().or(ciphers))
     }
 
     /// The security part only: wire settings are per connection, so sessions and native
@@ -1589,6 +1611,7 @@ mod pool_tests {
         )));
         assert_ne!(identity, BoringTlsClientConfigProvider.pool_id(&same));
     }
+
     #[test]
     fn session_scope_normalizes_default_verification_and_ignores_drawn_order() {
         let empty = Extensions::new();
