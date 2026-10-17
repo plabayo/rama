@@ -1,5 +1,7 @@
 use super::*;
-use rama_tls::client::TlsClientConfigProvider;
+use rama_core::extensions::Extensions;
+use rama_quic::{ClientConfig, tls::QuicClientConfigProvider};
+use rama_tls::client::{TlsClientConfig, TlsClientConfigProvider};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug)]
@@ -47,11 +49,82 @@ async fn ordinary_provider_support_cannot_grant_captured_tls_support() {
             .build_lazy()
             .unwrap();
         let input = fixture.input();
-        let compiled = fixture.compile(&input);
-        assert!(!compiled.supports(CapturedSlotKind::QuicTls));
+        fixture.install(&input);
+        rejected(fixture.connector.prepare_connection(&input));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
-        compiled.apply(input.extensions());
-        assert!(!input.extensions().contains::<Pending>());
+    })
+    .await
+    .unwrap();
+}
+
+#[derive(Debug)]
+struct CaptureAware {
+    ordinary: OrdinaryOnly,
+    captured_calls: Arc<AtomicUsize>,
+}
+
+impl TlsClientConfigProvider for CaptureAware {
+    fn pool_id(&self, extensions: &Extensions) -> Option<TlsPoolId> {
+        self.ordinary.pool_id(extensions)
+    }
+
+    fn pool_classifier(&self) -> ReuseKey {
+        self.ordinary.pool_classifier()
+    }
+
+    fn authenticates_server(&self, extensions: &Extensions) -> bool {
+        self.ordinary.authenticates_server(extensions)
+    }
+}
+
+impl QuicClientConfigProvider for CaptureAware {
+    fn client_config(
+        &self,
+        policy: &TlsClientConfig,
+        options: TlsOptions,
+    ) -> Result<ClientConfig, rama_quic::tls::TlsConfigError> {
+        self.ordinary.client_config(policy, options)
+    }
+
+    fn captured_client_config(
+        &self,
+        policy: &TlsClientConfig,
+        peer: rama_net::address::Host,
+        capture: TlsCapture,
+    ) -> Result<Option<ClientConfig>, rama_quic::tls::TlsConfigError> {
+        self.captured_calls.fetch_add(1, Ordering::SeqCst);
+        self.ordinary
+            .inner
+            .captured_client_config(policy, peer, capture)
+    }
+}
+
+#[tokio::test]
+async fn ordinary_requests_skip_native_capture_preparation() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let mut fixture = fixture().await;
+        let ordinary_calls = Arc::new(AtomicUsize::new(0));
+        let captured_calls = Arc::new(AtomicUsize::new(0));
+        fixture.connector = Http3Connector::builder(Executor::new())
+            .with_tls_config(fixture.connector.tls.clone())
+            .with_tls_provider(Arc::new(CaptureAware {
+                ordinary: OrdinaryOnly {
+                    inner: fixture.connector.tls_provider().clone(),
+                    calls: ordinary_calls.clone(),
+                },
+                captured_calls: captured_calls.clone(),
+            }))
+            .build_lazy()
+            .unwrap();
+        let input = fixture.input();
+        fixture.connector.prepare_connection(&input).unwrap();
+        assert_eq!(ordinary_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(captured_calls.load(Ordering::SeqCst), 0);
+
+        fixture.install(&input);
+        fixture.connector.prepare_connection(&input).unwrap();
+        assert_eq!(ordinary_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(captured_calls.load(Ordering::SeqCst), 1);
     })
     .await
     .unwrap();

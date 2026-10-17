@@ -1,0 +1,247 @@
+//! Select, admit and publish one connection's captured profile.
+//!
+//! Native state stays with its consuming connector. Only the admitted selection
+//! and preservation report become connection facts for later request emulation.
+
+use super::{PreparedConnectionComponents, compiler::CompiledConnectionProfile};
+use crate::profile::{
+    model::identity::ConnectionContext,
+    replay::request::{
+        H2ClientParameter, ProfilePreservationDifference, ProfilePreservationMode,
+        ProfilePreservationReport, ProfileReplayError,
+    },
+    selection::variants::{ConnectionSelection, EmulationContext, ProfileConnectionReuse},
+};
+use rama_core::{
+    error::{BoxError, BoxErrorExt as _},
+    extensions::{Extensions, ExtensionsRef},
+};
+use rama_http::{
+    Version,
+    conn::H2ClientContextParams,
+    proto::{h2::frame::EarlyFrame, h3::ClientSettingsProfile},
+};
+use std::sync::Arc;
+
+/// Locally owned result of one connection draw and whole-profile admission.
+#[derive(Debug)]
+pub struct ConnectionPreparation {
+    selection: ConnectionSelection,
+    components: PreparedConnectionComponents,
+}
+
+impl ConnectionPreparation {
+    /// The connection variant that passed whole-profile admission.
+    pub fn selection(&self) -> &ConnectionSelection {
+        &self.selection
+    }
+
+    pub(crate) fn into_parts(self) -> (ConnectionSelection, PreparedConnectionComponents) {
+        (self.selection, self.components)
+    }
+
+    /// Decode once and compile against the consumer's current input. Ordinary
+    /// traffic returns `None` without drawing, decoding or invoking `compile`.
+    pub fn prepare<C: CompiledConnectionProfile>(
+        input: &impl ExtensionsRef,
+        compile: impl FnOnce(
+            &ConnectionSelection,
+            &mut PreparedConnectionComponents,
+            ProfilePreservationMode,
+        ) -> Result<C, BoxError>,
+    ) -> Result<Option<(Self, C)>, BoxError> {
+        let Some(context) = EmulationContext::of(input.extensions()) else {
+            return Ok(None);
+        };
+        let connection = input
+            .extensions()
+            .get_ref::<ConnectionContext>()
+            .cloned()
+            .unwrap_or_default();
+        let selection =
+            context
+                .selected
+                .connection(&connection, context.seed, context.connection_key)?;
+        if context
+            .pins
+            .connection
+            .is_some_and(|pin| pin != selection.variant)
+        {
+            return Err(BoxError::from_static_str(
+                "connection pin differs from its selected profile",
+            ));
+        }
+        let mode = input
+            .extensions()
+            .get_ref::<ProfilePreservationMode>()
+            .copied()
+            .unwrap_or_default();
+        let (components, compiled) = selection
+            .prepare_for_replay_with(mode, |components| compile(&selection, components, mode))?;
+        Ok(Some((
+            Self {
+                selection,
+                components,
+            },
+            compiled,
+        )))
+    }
+
+    /// Apply admitted HTTP recipes before the HTTP connector reads them. Native
+    /// TLS/QUIC configuration is deliberately absent from the request store.
+    pub fn apply_http(&mut self, input: &impl ExtensionsRef) -> Result<(), BoxError> {
+        let context = EmulationContext::of(input.extensions())
+            .ok_or_else(|| BoxError::from_static_str("captured profile context is missing"))?;
+        if let Some(settings) = self
+            .components
+            .h3_client_settings(&mut self.selection.h3_settings_draw(context.seed))?
+        {
+            if input
+                .extensions()
+                .get_ref::<ClientSettingsProfile>()
+                .is_some_and(|caller| caller != &settings)
+            {
+                return Err(BoxError::from_static_str(
+                    "caller and selected HTTP/3 SETTINGS profiles conflict",
+                ));
+            }
+            input.extensions().insert(settings);
+        }
+        if let Some(frames) = &self.components.h2_early_frames {
+            let mode = input
+                .extensions()
+                .get_ref::<ProfilePreservationMode>()
+                .copied()
+                .unwrap_or_default();
+            apply_profile_h2_replay(
+                input,
+                frames.clone(),
+                mode,
+                &mut self.components.preservation_report,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Publish only the selection actually admitted by this connection. Request
+    /// variants use it together with the negotiated protocol, preserving correlation.
+    pub fn publish(
+        self,
+        input: &Extensions,
+        connection: &Extensions,
+        version: Version,
+    ) -> Result<(), BoxError> {
+        let context = EmulationContext::of(input)
+            .ok_or_else(|| BoxError::from_static_str("captured profile context is missing"))?;
+        if context.selected.profile_id() != self.selection.profile
+            || context.connection_key != self.selection.draw
+            || context
+                .pins
+                .connection
+                .is_some_and(|pin| pin != self.selection.variant)
+        {
+            return Err(BoxError::from_static_str(
+                "connection context differs from its admitted selection",
+            ));
+        }
+        context.selected.validate_negotiated_protocol(version)?;
+        let report = match connection.get_ref::<ProfilePreservationReport>() {
+            Some(inner) => self
+                .components
+                .preservation_report
+                .followed_by(inner.clone()),
+            None => self.components.preservation_report,
+        };
+        connection.insert(report);
+        connection.insert(self.selection);
+        ProfileConnectionReuse::new(context, version).publish(connection);
+        Ok(())
+    }
+}
+
+fn apply_profile_h2_replay(
+    input: &impl ExtensionsRef,
+    replay: Arc<[EarlyFrame]>,
+    preservation: ProfilePreservationMode,
+    report: &mut ProfilePreservationReport,
+) -> Result<(), ProfileReplayError> {
+    let mut params = input
+        .extensions()
+        .get_ref::<H2ClientContextParams>()
+        .cloned()
+        .unwrap_or_default();
+
+    let installed_replay = input
+        .extensions()
+        .get_ref::<PreparedConnectionComponents>()
+        .and_then(|prepared| prepared.h2_early_frames.as_ref())
+        .zip(params.replay_early_frames.as_ref())
+        .is_some_and(|(installed, current)| Arc::ptr_eq(installed, current));
+
+    for parameter in h2_wire_parameters(&params) {
+        // A repeated connection attempt may retain our previous replay input.
+        // A caller replacement, even with equal contents, is still an override.
+        if parameter == H2ClientParameter::ReplayEarlyFrames && installed_replay {
+            continue;
+        }
+        if preservation == ProfilePreservationMode::Strict {
+            return Err(ProfileReplayError::IncompatibleH2ClientParameter(parameter));
+        }
+        report.push(ProfilePreservationDifference::RetainedH2ClientParameter { parameter });
+    }
+
+    params.replay_early_frames = Some(replay);
+    input.extensions().insert(params);
+    Ok(())
+}
+
+fn h2_wire_parameters(params: &H2ClientContextParams) -> impl Iterator<Item = H2ClientParameter> {
+    [
+        params
+            .early_frames
+            .is_some()
+            .then_some(H2ClientParameter::EarlyFrames),
+        params
+            .replay_early_frames
+            .is_some()
+            .then_some(H2ClientParameter::ReplayEarlyFrames),
+        params
+            .init_stream_window_size
+            .is_some()
+            .then_some(H2ClientParameter::InitialStreamWindowSize),
+        params
+            .init_connection_window_size
+            .is_some()
+            .then_some(H2ClientParameter::InitialConnectionWindowSize),
+        params
+            .keep_alive_interval
+            .is_some()
+            .then_some(H2ClientParameter::KeepAliveInterval),
+        params
+            .keep_alive_timeout
+            .is_some()
+            .then_some(H2ClientParameter::KeepAliveTimeout),
+        params
+            .keep_alive_while_idle
+            .is_some()
+            .then_some(H2ClientParameter::KeepAliveWhileIdle),
+        params
+            .max_header_list_size
+            .is_some()
+            .then_some(H2ClientParameter::MaximumHeaderListSize),
+        params
+            .max_frame_size
+            .is_some()
+            .then_some(H2ClientParameter::MaximumFrameSize),
+        params
+            .max_concurrent_streams
+            .is_some()
+            .then_some(H2ClientParameter::MaximumConcurrentStreams),
+        params
+            .adaptive_window
+            .is_some()
+            .then_some(H2ClientParameter::AdaptiveWindow),
+    ]
+    .into_iter()
+    .flatten()
+}

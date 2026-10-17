@@ -1,7 +1,9 @@
 use super::*;
 use crate::{
     layer::emulate::UserAgentEmulateHttpConnectModifierLayer,
-    profile::replay::connection::compiler::{CompiledConnectionProfile, ConnectionProfileCompiler},
+    profile::replay::connection::compiler::{
+        CompiledConnectionProfile, ConnectionProfileCompiler, InstalledConnectionProfile,
+    },
 };
 
 #[derive(Clone)]
@@ -44,7 +46,9 @@ impl CompiledConnectionProfile for Compiled {
     fn supports(&self, component: CapturedSlotKind) -> bool {
         self.supports_versions && component == CapturedSlotKind::QuicVersions
     }
+}
 
+impl InstalledConnectionProfile for Compiled {
     fn apply(self, extensions: &Extensions) {
         self.applied.fetch_add(1, Ordering::Relaxed);
         extensions.insert(Applied);

@@ -46,9 +46,8 @@ use rama::{
             classifier::UserAgentClassifierLayer,
             emulate::{
                 ProfileEmulateHttpRequestModifierLayer, ProfileEmulateLayer,
-                UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpConnectModifierLayer,
-                UserAgentEmulateHttpRequestModifierLayer, UserAgentEmulateLayer,
-                UserAgentSelectFallback,
+                UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifierLayer,
+                UserAgentEmulateLayer, UserAgentSelectFallback,
             },
         },
         profile::{
@@ -388,16 +387,8 @@ async fn new_inner_client(
             .with_tls_provider(Arc::new(BoringTlsProvider))
             .with_tls_config(tls_config)
             .build_lazy()?;
-        let compiler = connector.profile_compiler();
         builder
-            .with_http3_connector(
-                (
-                    UserAgentEmulateHttpConnectModifierLayer::default()
-                        .with_connection_compiler(compiler),
-                    DnsConnectorLayer::new(),
-                )
-                    .into_layer(connector),
-            )
+            .with_http3_connector(DnsConnectorLayer::new().into_layer(connector))
             .map_connector(|connector| connector.boxed())
     } else {
         builder.map_connector(|connector| connector.boxed())

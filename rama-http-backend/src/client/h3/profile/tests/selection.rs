@@ -17,15 +17,20 @@ use rama_ua::profile::{
     },
     model::identity::{FlowKey, ProfileKey},
     selection::{
-        ProfileSeed,
+        DrawKey, ProfileSeed,
         capabilities::CapabilitySet,
         database::UserAgentDatabase,
-        variants::{EmulationContext, ProfileSelector, SelectionRequest, VariantPins},
+        variants::{
+            ConnectionSelection, EmulationContext, ProfileSelector, SelectionRequest, VariantPins,
+        },
     },
 };
 
 // Build real counted evidence and draw through the public archive/selection API.
-fn selected(client: &str, capture: &TlsCapture) -> (EmulationContext, ConnectionSelection) {
+pub(super) fn selected(
+    client: &str,
+    capture: &TlsCapture,
+) -> (EmulationContext, ConnectionSelection) {
     let flow = FlowKey::Http {
         version: Version::HTTP_3,
         method: "GET".parse().unwrap(),
@@ -159,65 +164,28 @@ fn selected(client: &str, capture: &TlsCapture) -> (EmulationContext, Connection
 }
 
 #[tokio::test]
-async fn changing_connection_draw_rejects_without_consuming_the_native_plan() {
+async fn current_context_supplies_selection_and_request_draws_share_the_connection_offer() {
     tokio::time::timeout(Duration::from_secs(15), async {
         let fixture = fixture().await;
         let input = fixture.input();
-        let (context, selection) = selected("native-h3-selection", &fixture.capture);
-        let mut wrong_draw = context.clone();
-        wrong_draw.connection_key = DrawKey([8; 32]);
+        let (context, selected) = selected("native-h3-selection", &fixture.capture);
         let mut wrong_pin = context.clone();
         wrong_pin.pins.connection = Some(ValueId([8; 32]));
-        let (wrong_profile, _) = selected("other-native-h3-selection", &fixture.capture);
-        for mismatched in [wrong_draw, wrong_pin, wrong_profile] {
-            mismatched.publish(input.extensions());
-            fixture
-                .connector
-                .profile_compiler()
-                .compile(
-                    &input,
-                    &selection,
-                    &selection.prepare_components().unwrap(),
-                    ProfilePreservationMode::Strict,
-                )
-                .unwrap_err();
-        }
-        context.clone().publish(input.extensions());
-        fixture
-            .connector
-            .profile_compiler()
-            .compile(
-                &input,
-                &selection,
-                &selection.prepare_components().unwrap(),
-                ProfilePreservationMode::Strict,
-            )
-            .unwrap()
-            .apply(input.extensions());
+        wrong_pin.publish(input.extensions());
+        rejected(fixture.connector.prepare_connection(&input));
 
-        let mut changes = Vec::new();
-        let mut changed = context.clone();
-        changed.seed = ProfileSeed([8; 32]);
-        changes.push(changed);
-        let mut changed = context.clone();
-        changed.connection_key = DrawKey([8; 32]);
-        changes.push(changed);
-        let mut changed = context.clone();
-        changed.pins.connection = Some(ValueId([8; 32]));
-        changes.push(changed);
-        let mut changed = context.clone();
-        changed.selected = Arc::new((*changed.selected).clone());
-        changes.push(changed);
-        for changed in changes {
-            changed.publish(input.extensions());
-            rejected(fixture.connector.prepare_tls(&input));
+        // There is no earlier native plan: each preparation reads current context.
+        // Changing a request draw must not change the admitted connection variant.
+        for key in [DrawKey([7; 32]), DrawKey([9; 32])] {
+            let mut context = context.clone();
+            context.request_key = key;
+            context.publish(input.extensions());
+            let (prepared, _) = fixture.connector.prepare_connection(&input).unwrap();
+            assert_eq!(
+                prepared.profile_preparation.unwrap().selection().variant,
+                selected.variant
+            );
         }
-        // Request draws can change without changing this connection's TLS offer.
-        let mut next_request = context;
-        next_request.request_key = DrawKey([9; 32]);
-        next_request.publish(input.extensions());
-        fixture.connector.prepare_tls(&input).unwrap();
-        rejected(fixture.connector.prepare_tls(&input));
     })
     .await
     .unwrap();

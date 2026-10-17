@@ -58,10 +58,10 @@ fn captured_quic_tls_preparation_authenticates_with_fresh_native_sessions() {
     for version in [Version::V1, Version::V2] {
         let (policy, server) = policy();
         let source = reference(&policy, version);
-        let prepared = crate::tls::profile::prepare(
+        let prepared = crate::tls::profile::boring::prepare(
             &policy,
             rama_net::address::Host::try_from("localhost").unwrap(),
-            &source,
+            source.clone(),
         )
         .unwrap()
         .crypto;
@@ -94,10 +94,10 @@ fn captured_tls_shape_is_checked_against_actual_native_output() {
             ssl.set_alpn_protos(b"\x05other")?;
             Ok(())
         })));
-    let prepared = crate::tls::profile::prepare(
+    let prepared = crate::tls::profile::boring::prepare(
         &policy,
         rama_net::address::Host::try_from("localhost").unwrap(),
-        &source,
+        source,
     )
     .unwrap()
     .crypto;
@@ -112,10 +112,10 @@ fn captured_tls_shape_is_checked_against_actual_native_output() {
 fn captured_parameter_length_cannot_replace_current_connection_parameters() {
     let (policy, _) = policy();
     let source = reference(&policy, Version::V1);
-    let prepared = crate::tls::profile::prepare(
+    let prepared = crate::tls::profile::boring::prepare(
         &policy,
         rama_net::address::Host::try_from("localhost").unwrap(),
-        &source,
+        source,
     )
     .unwrap()
     .crypto;
@@ -133,10 +133,10 @@ fn captured_wire_choices_cannot_override_explicit_cipher_policy() {
     let (mut policy, _) = policy();
     let source = reference(&policy, Version::V1);
     policy.set_cipher_suites(vec![rama_tls::CipherSuite::TLS13_AES_128_GCM_SHA256]);
-    crate::tls::profile::prepare(
+    crate::tls::profile::boring::prepare(
         &policy,
         rama_net::address::Host::try_from("localhost").unwrap(),
-        &source,
+        source,
     )
     .unwrap_err();
 }
@@ -168,10 +168,10 @@ fn a_real_resumed_capture_requires_current_ticket_support() {
             .iter()
             .any(|extension| extension.id == u16::from(ExtensionId::PRE_SHARED_KEY))
     );
-    crate::tls::profile::prepare(
+    crate::tls::profile::boring::prepare(
         &policy,
         rama_net::address::Host::try_from("localhost").unwrap(),
-        &resumed,
+        resumed,
     )
     .unwrap_err();
 }

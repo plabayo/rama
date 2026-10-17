@@ -71,7 +71,7 @@ pub trait QuicClientConfigProvider: TlsClientConfigProvider {
         &self,
         _policy: &TlsClientConfig,
         _peer: Host,
-        _capture: &TlsCapture,
+        _capture: TlsCapture,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
         Ok(None)
     }
@@ -252,9 +252,9 @@ impl QuicClientConfigProvider for BoringTlsProvider {
         &self,
         policy: &TlsClientConfig,
         peer: Host,
-        capture: &TlsCapture,
+        capture: TlsCapture,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
-        super::profile::prepare(policy, peer, capture)
+        super::profile::boring::prepare(policy, peer, capture)
             .map(Some)
             .map_err(TlsConfigError::InvalidConfiguration)
     }

@@ -24,7 +24,9 @@ use rama_ua::profile::{
     replay::{
         connection::{
             PreparedConnectionComponents,
-            compiler::{CompiledConnectionProfile, ConnectionProfileCompiler},
+            compiler::{
+                CompiledConnectionProfile, ConnectionProfileCompiler, InstalledConnectionProfile,
+            },
         },
         request::ProfilePreservationMode,
     },
@@ -207,7 +209,9 @@ impl CompiledConnectionProfile for CompiledConnection {
     fn supports(&self, component: CapturedSlotKind) -> bool {
         self.tls.is_some() && component == CapturedSlotKind::TcpTls
     }
+}
 
+impl InstalledConnectionProfile for CompiledConnection {
     fn apply(self, extensions: &Extensions) {
         if let Some((wire, pending)) = self.tls {
             wire.write_to(extensions);

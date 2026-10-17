@@ -1,4 +1,5 @@
 pub mod compiler;
+pub mod preparation;
 
 mod h3_settings;
 pub use h3_settings::H3SettingsReplayEvidence;
@@ -104,15 +105,15 @@ impl ConnectionSelection {
             .map(|(prepared, ())| prepared)
     }
 
-    pub(crate) fn prepare_for_replay_with<C: compiler::CompiledConnectionProfile>(
+    pub fn prepare_for_replay_with<C: compiler::CompiledConnectionProfile>(
         &self,
         mode: ProfilePreservationMode,
-        compile: impl FnOnce(&PreparedConnectionComponents) -> Result<C, BoxError>,
+        compile: impl FnOnce(&mut PreparedConnectionComponents) -> Result<C, BoxError>,
     ) -> Result<(PreparedConnectionComponents, C), ProfileReplayError> {
         let joint =
             JointCapture::from_canonical(&self.effective.capture, JointCaptureLimits::default())?;
         let mut prepared = self.prepare_from_joint(&joint)?;
-        let compiled = compile(&prepared).map_err(ProfileReplayError::ConnectionCompilation)?;
+        let compiled = compile(&mut prepared).map_err(ProfileReplayError::ConnectionCompilation)?;
         let mut report = ProfilePreservationReport::default();
         for slot in &joint.slots {
             check_connection_component(slot.kind, mode, &mut report, &compiled)?;

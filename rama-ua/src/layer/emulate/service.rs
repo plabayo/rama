@@ -1,5 +1,5 @@
 use rama_core::error::BoxErrorExt as _;
-use std::{borrow::Cow, sync::Arc};
+use std::borrow::Cow;
 
 use rama_core::{
     Layer, Service,
@@ -12,7 +12,6 @@ use rama_http::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Version,
     conn::{H2ClientContextParams, Http1ClientContextParams, TargetHttpVersion},
     header::{CONTENT_TYPE, REFERER, SEC_WEBSOCKET_VERSION, USER_AGENT},
-    proto::{h2::frame::EarlyFrame, h3::ClientSettingsProfile},
 };
 use rama_net::{
     AuthorityInputExt, HttpVersionInputExt, Protocol, ProtocolInputExt, TargetHttpVersionInputExt,
@@ -27,18 +26,14 @@ use crate::{
     profile::{
         model::{
             http::{CUSTOM_HEADER_MARKER, HttpHeadersProfile, HttpProfile},
-            identity::ConnectionContext,
             runtime_hints::{PreserveHeaderUserAgent, RequestClientHints, RequestInitiator},
         },
         replay::{
             connection::{
-                PreparedConnectionComponents,
-                compiler::{CompiledConnectionProfile as _, ConnectionProfileCompiler},
+                compiler::{ConnectionProfileCompiler, InstalledConnectionProfile as _},
+                preparation::ConnectionPreparation,
             },
-            request::{
-                H2ClientParameter, ProfilePreservationDifference, ProfilePreservationMode,
-                ProfilePreservationReport, ProfileReplayError,
-            },
+            request::ProfilePreservationReport,
         },
         selection::variants::{EmulationContext, ProfileConnectionReuse},
     },
@@ -317,80 +312,31 @@ impl<S, C, Input> Service<Input> for UserAgentEmulateHttpConnectModifier<S, C>
 where
     S: ConnectorService<Input>,
     C: ConnectionProfileCompiler<Input>,
+    C::Compiled: crate::profile::replay::connection::compiler::InstalledConnectionProfile,
     Input: ExtensionsRef + HttpVersionInputExt + TargetHttpVersionInputExt + Send + 'static,
 {
     type Error = ConnectionError;
     type Output = EstablishedClientConnection<S::Connection, Input>;
 
     async fn serve(&self, req: Input) -> Result<Self::Output, Self::Error> {
-        let preservation = req
-            .extensions()
-            .get_ref::<ProfilePreservationMode>()
-            .copied()
-            .unwrap_or_default();
-        let connection_selection = EmulationContext::of(req.extensions())
-            .map(|context| {
-                let connection = req
-                    .extensions()
-                    .get_ref::<ConnectionContext>()
-                    .cloned()
-                    .unwrap_or_default();
-                context
-                    .selected
-                    .connection(&connection, context.seed, context.connection_key)
-            })
-            .transpose()
-            .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
-        if let Some(selection) = &connection_selection {
-            let (mut prepared, compiled) = selection
-                .prepare_for_replay_with(preservation, |components| {
-                    self.compiler
-                        .compile(&req, selection, components, preservation)
-                })
-                .map_err(|error| {
-                    ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
-                })?;
-            let context = EmulationContext::of(req.extensions()).ok_or_else(|| {
-                ConnectionError::local(
-                    BoxError::from_static_str("captured profile context is missing"),
-                    ConnectionErrorKind::Internal,
-                )
+        let prepared = ConnectionPreparation::prepare(&req, |selection, components, mode| {
+            self.compiler.compile(&req, selection, components, mode)
+        })
+        .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?;
+        let connection_selection = if let Some((mut prepared, compiled)) = prepared {
+            prepared.apply_http(&req).map_err(|error| {
+                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
             })?;
-            if let Some(settings) = prepared
-                .h3_client_settings(&mut selection.h3_settings_draw(context.seed))
-                .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?
-            {
-                if req
-                    .extensions()
-                    .get_ref::<ClientSettingsProfile>()
-                    .is_some_and(|caller| caller != &settings)
-                {
-                    return Err(ConnectionError::local(
-                        BoxError::from_static_str(
-                            "caller and selected HTTP/3 SETTINGS profiles conflict",
-                        ),
-                        ConnectionErrorKind::InvalidInput,
-                    ));
-                }
-                req.extensions().insert(settings);
-            }
-            if let Some(h2_early_frames) = &prepared.h2_early_frames {
-                apply_profile_h2_replay(
-                    &req,
-                    h2_early_frames.clone(),
-                    preservation,
-                    &mut prepared.preservation_report,
-                )
-                .map_err(|error| {
-                    ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
-                })?;
-            }
+            let (selection, components) = prepared.into_parts();
             req.extensions()
-                .insert(prepared.preservation_report.clone());
-            req.extensions().insert(prepared);
+                .insert(components.preservation_report.clone());
+            req.extensions().insert(components);
             req.extensions().insert(selection.clone());
             compiled.apply(req.extensions());
-        }
+            Some(selection)
+        } else {
+            None
+        };
 
         let EstablishedClientConnection { conn, input: req } = self.inner.connect(req).await?;
 
@@ -564,93 +510,6 @@ fn emulate_http_connect_settings(
         ),
     }
     Ok(())
-}
-
-fn apply_profile_h2_replay(
-    input: &impl ExtensionsRef,
-    replay: Arc<[EarlyFrame]>,
-    preservation: ProfilePreservationMode,
-    report: &mut ProfilePreservationReport,
-) -> Result<(), ProfileReplayError> {
-    let mut params = input
-        .extensions()
-        .get_ref::<H2ClientContextParams>()
-        .cloned()
-        .unwrap_or_default();
-
-    let installed_replay = input
-        .extensions()
-        .get_ref::<PreparedConnectionComponents>()
-        .and_then(|prepared| prepared.h2_early_frames.as_ref())
-        .zip(params.replay_early_frames.as_ref())
-        .is_some_and(|(installed, current)| Arc::ptr_eq(installed, current));
-
-    for parameter in h2_wire_parameters(&params) {
-        // A repeated connection attempt may retain our previous replay input.
-        // A caller replacement, even with equal contents, is still an override.
-        if parameter == H2ClientParameter::ReplayEarlyFrames && installed_replay {
-            continue;
-        }
-        if preservation == ProfilePreservationMode::Strict {
-            return Err(ProfileReplayError::IncompatibleH2ClientParameter(parameter));
-        }
-        report.push(ProfilePreservationDifference::RetainedH2ClientParameter { parameter });
-    }
-
-    params.replay_early_frames = Some(replay);
-    input.extensions().insert(params);
-    Ok(())
-}
-
-fn h2_wire_parameters(params: &H2ClientContextParams) -> impl Iterator<Item = H2ClientParameter> {
-    [
-        params
-            .early_frames
-            .is_some()
-            .then_some(H2ClientParameter::EarlyFrames),
-        params
-            .replay_early_frames
-            .is_some()
-            .then_some(H2ClientParameter::ReplayEarlyFrames),
-        params
-            .init_stream_window_size
-            .is_some()
-            .then_some(H2ClientParameter::InitialStreamWindowSize),
-        params
-            .init_connection_window_size
-            .is_some()
-            .then_some(H2ClientParameter::InitialConnectionWindowSize),
-        params
-            .keep_alive_interval
-            .is_some()
-            .then_some(H2ClientParameter::KeepAliveInterval),
-        params
-            .keep_alive_timeout
-            .is_some()
-            .then_some(H2ClientParameter::KeepAliveTimeout),
-        params
-            .keep_alive_while_idle
-            .is_some()
-            .then_some(H2ClientParameter::KeepAliveWhileIdle),
-        params
-            .max_header_list_size
-            .is_some()
-            .then_some(H2ClientParameter::MaximumHeaderListSize),
-        params
-            .max_frame_size
-            .is_some()
-            .then_some(H2ClientParameter::MaximumFrameSize),
-        params
-            .max_concurrent_streams
-            .is_some()
-            .then_some(H2ClientParameter::MaximumConcurrentStreams),
-        params
-            .adaptive_window
-            .is_some()
-            .then_some(H2ClientParameter::AdaptiveWindow),
-    ]
-    .into_iter()
-    .flatten()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1126,7 +985,9 @@ mod tests {
     use itertools::Itertools as _;
     use rama_core::extensions::Extensions;
     use rama_core::{Layer, ServiceInput, service::service_fn};
-    use rama_http::{Body, HeaderMap, HeaderName, HeaderValue, header::ETAG};
+    use rama_http::{
+        Body, HeaderMap, HeaderName, HeaderValue, header::ETAG, proto::h2::frame::EarlyFrame,
+    };
     use rama_net::address::{Domain, Host};
     use rama_utils::octets::kib;
 

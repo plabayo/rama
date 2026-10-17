@@ -10,8 +10,12 @@ use rama_core::{
 use rama_http_core::h3::{client as h3_client, connection::Config, server as h3_server};
 use rama_http_types::{Body, Request, Response};
 use rama_net::{
+    Protocol,
     address::{HostWithPort, SocketAddress},
-    client::ConnectorTarget,
+    client::{
+        ConnectorTarget,
+        pool::{ConnectionReuse, ReuseKey},
+    },
 };
 use rama_quic::{
     Endpoint, ServerConfig,
@@ -22,18 +26,19 @@ use rama_quic_proto::{
     capture::CaptureLimits,
     profile::{GreaseParameter, QuicProfile, TransportParameterProfile},
 };
-use rama_tls::server::{LeafCertRequest, ServerAuthData, TlsServerConfig};
+use rama_tls::{
+    client::TlsPoolId,
+    server::{LeafCertRequest, ServerAuthData, TlsServerConfig},
+};
 use rama_ua::profile::{
     capture::{
         completeness::ProfileCaptureCompleteness,
-        joint::{CaptureLevel, CapturedSlot, JointCapture, JointCaptureLimits},
+        joint::CapturedSlotKind,
         tls::{TlsCapture, TlsCaptureLimits},
     },
-    format::canonical::ValueId,
-    model::{identity::ConnectionContext, scope::ProfileObservationScope},
-    selection::{DrawKey, variants::PreparedConnectionProfile},
+    model::identity::ConnectionContext,
 };
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use tokio::{sync::oneshot, task::JoinHandle};
 
 mod bindings;
@@ -76,45 +81,9 @@ impl Fixture {
         input
     }
 
-    fn compile(&self, input: &ConnectRequest) -> CompiledConnection {
-        let joint = JointCapture {
-            completeness: ProfileCaptureCompleteness::Complete,
-            level: CaptureLevel::Connection,
-            slots: vec![CapturedSlot {
-                kind: CapturedSlotKind::QuicTls,
-                value: self.capture.canonical(TlsCaptureLimits::default()).unwrap(),
-            }]
-            .into(),
-        }
-        .canonical(JointCaptureLimits::default())
-        .unwrap();
-        let selection = ConnectionSelection {
-            profile: ValueId([1; 32]),
-            variant: joint.id,
-            draw: DrawKey([2; 32]),
-            analysis_revision: 2,
-            effective: PreparedConnectionProfile {
-                scope: ValueId([3; 32]),
-                capture: joint,
-                h3_settings_evidence: None,
-                context: ProfileObservationScope {
-                    authorized: false,
-                    profile: ValueId([1; 32]),
-                    flow: None,
-                    connection: ConnectionContext::default(),
-                    structure: ValueId([4; 32]),
-                },
-            },
-        };
-        self.connector
-            .profile_compiler()
-            .compile(
-                input,
-                &selection,
-                &selection.prepare_components().unwrap(),
-                ProfilePreservationMode::Strict,
-            )
-            .unwrap()
+    fn install(&self, input: &ConnectRequest) {
+        let (context, _) = selection::selected("native-h3-selection", &self.capture);
+        context.publish(input.extensions());
     }
 }
 
@@ -140,9 +109,11 @@ async fn request(transport: crate::client::Http3Transport) {
     connection.close(VarInt::from_u32(0), b"request complete");
 }
 
-fn rejected(result: Result<super::super::PreparedTls, rama_net::client::ConnectionError>) {
+fn rejected(
+    result: Result<(super::super::PreparedTls, Arc<Config>), rama_net::client::ConnectionError>,
+) {
     let Err(error) = result else {
-        panic!("changed binding consumed native TLS state");
+        panic!("invalid captured connection was accepted");
     };
     assert_eq!(
         error.kind(),

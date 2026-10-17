@@ -1,7 +1,7 @@
 //! HTTP/3 establishment using Rama DNS candidates and the existing multiplex pool.
 
 #[cfg(feature = "ua")]
-pub mod profile;
+mod profile;
 
 use super::Http3Transport;
 use parking_lot::Mutex;
@@ -181,16 +181,6 @@ impl Http3Connector {
     pub fn tls_provider(&self) -> &Arc<dyn QuicClientConfigProvider> {
         self.tls_configs.provider()
     }
-
-    /// Compile captured TLS using this connector's actual provider and defaults.
-    /// Unsupported providers decline the capture; ordinary requests do not compile it.
-    #[cfg(feature = "ua")]
-    pub fn profile_compiler(&self) -> profile::ConnectionCompiler {
-        profile::ConnectionCompiler {
-            tls: self.tls.clone(),
-            provider: self.tls_provider().clone(),
-        }
-    }
 }
 
 impl Http3ConnectorBuilder {
@@ -279,7 +269,8 @@ struct PreparedTls {
     policy_scope: ConnectionPolicyScope,
     reuse: TlsConnectionReuse<Arc<dyn QuicClientConfigProvider>>,
     #[cfg(feature = "ua")]
-    profile_reuse: Option<Box<profile::ReusePolicy>>,
+    profile_preparation:
+        Option<rama_ua::profile::replay::connection::preparation::ConnectionPreparation>,
 }
 
 impl Http3Connector {
@@ -389,7 +380,10 @@ impl Http3Connector {
         }
     }
 
-    fn prepare_tls(&self, input: &ConnectRequest) -> Result<PreparedTls, ConnectionError> {
+    fn prepare_connection(
+        &self,
+        input: &ConnectRequest,
+    ) -> Result<(PreparedTls, Arc<Config>), ConnectionError> {
         let profile = input.extensions().get_arc::<QuicProfile>();
         if let Some(profile) = &profile
             && profile.limits().initial_max_streams_uni < 3
@@ -435,22 +429,56 @@ impl Http3Connector {
             .get_ref::<TlsStoreServerCertChain>()
             .is_some_and(|capture| capture.0);
         #[cfg(feature = "ua")]
-        let captured = input
-            .extensions()
-            .get_arc::<profile::Pending>()
-            .map(|pending| pending.take(input, &tls, self.tls_provider()))
-            .transpose()
+        let captured = profile::prepare(input, &tls, self.tls_provider().as_ref())
             .map_err(|error| ConnectionError::local(error, InvalidInput))?;
         #[cfg(feature = "ua")]
-        let (mut config, profile_reuse) = if let Some(prepared) = captured {
-            (prepared.config, Some(prepared.reuse))
-        } else {
-            (
-                self.tls_configs
-                    .client_config(&tls, input.extensions())
+        let captured = {
+            let mut captured = captured;
+            if let Some((preparation, _)) = &mut captured {
+                preparation
+                    .apply_http(input)
+                    .map_err(|error| ConnectionError::local(error, InvalidInput))?;
+            }
+            captured
+        };
+        let h3_config = match input.extensions().get_ref::<ClientSettingsProfile>() {
+            Some(profile) => Arc::new(
+                self.config
+                    .try_with_client_settings(profile.0.clone())
                     .map_err(|error| ConnectionError::local(error, InvalidInput))?,
-                None,
-            )
+            ),
+            None => self.config.clone(),
+        };
+        // A captured H3 DATAGRAM promise requires a nonzero local QUIC receive
+        // limit. Check known configuration before TLS setup, socket binding or
+        // dialing; the HTTP/3 handshake still validates the resulting transport.
+        if h3_config
+            .settings_profile
+            .as_ref()
+            .is_some_and(|settings| settings.h3_datagram())
+        {
+            let datagrams = match input.extensions().get_ref::<QuicProfile>() {
+                Some(profile) => TransportConfig::from_quic_profile(profile)
+                    .map_err(|error| ConnectionError::local(error, InvalidInput))?
+                    .datagram_receive_enabled(),
+                None => self.transport.datagram_receive_enabled(),
+            };
+            if !datagrams {
+                return Err(invalid("HTTP/3 SETTINGS require QUIC DATAGRAM reception"));
+            }
+        }
+        #[cfg(feature = "ua")]
+        let (profile_preparation, config) = match captured {
+            Some((preparation, config)) => (Some(preparation), config.into_config()),
+            None => (None, None),
+        };
+        #[cfg(feature = "ua")]
+        let mut config = match config {
+            Some(config) => config,
+            None => self
+                .tls_configs
+                .client_config(&tls, input.extensions())
+                .map_err(|error| ConnectionError::local(error, InvalidInput))?,
         };
         #[cfg(not(feature = "ua"))]
         let mut config = self
@@ -472,17 +500,20 @@ impl Http3Connector {
                 .map_err(|_error| invalid("invalid TLS origin host"))?
                 .to_string()
         };
-        Ok(PreparedTls {
-            profile,
-            config,
-            server_name,
-            authenticated_identity,
-            capture_chain,
-            policy_scope,
-            reuse: TlsConnectionReuse::new(self.tls_provider().clone(), input.extensions()),
-            #[cfg(feature = "ua")]
-            profile_reuse,
-        })
+        Ok((
+            PreparedTls {
+                profile,
+                config,
+                server_name,
+                authenticated_identity,
+                capture_chain,
+                policy_scope,
+                reuse: TlsConnectionReuse::new(self.tls_provider().clone(), input.extensions()),
+                #[cfg(feature = "ua")]
+                profile_preparation,
+            },
+            h3_config,
+        ))
     }
 
     async fn connect(
@@ -611,16 +642,23 @@ impl Http3Connector {
         endpoint: &Endpoint,
         connection: &Connection,
         prepared: PreparedTls,
-    ) {
+        input: &ConnectRequest,
+    ) -> Result<(), ConnectionError> {
         // Populate only connection facts: inheriting the request store here would
         // retain request metadata and could create a cycle through Egress.
         let extensions = connection.extensions();
         prepared.reuse.publish(extensions);
         extensions.insert(TargetHttpVersion(Version::HTTP_3));
         #[cfg(feature = "ua")]
-        if let Some(reuse) = prepared.profile_reuse {
-            reuse.publish(extensions);
+        if let Some(preparation) = prepared.profile_preparation {
+            preparation
+                .publish(input.extensions(), extensions, Version::HTTP_3)
+                .map_err(|error| {
+                    ConnectionError::application(error, ConnectionErrorKind::Protocol)
+                })?;
         }
+        #[cfg(not(feature = "ua"))]
+        let _ = input;
 
         extensions.insert(TlsServerAuthentication(prepared.authenticated_identity));
         extensions.insert(prepared.policy_scope);
@@ -635,6 +673,7 @@ impl Http3Connector {
             }
             extensions.insert(parameters);
         }
+        Ok(())
     }
 }
 
@@ -672,38 +711,12 @@ impl Service<ConnectRequest> for Http3Connector {
         }
         validate_version(&input)?;
 
-        let h3_config = match input.extensions().get_ref::<ClientSettingsProfile>() {
-            Some(profile) => Arc::new(
-                self.config
-                    .try_with_client_settings(profile.0.clone())
-                    .map_err(|error| ConnectionError::local(error, InvalidInput))?,
-            ),
-            None => self.config.clone(),
-        };
-        // A captured H3 DATAGRAM promise requires a nonzero local QUIC receive
-        // limit. Check known configuration before TLS setup, socket binding or
-        // dialing; the HTTP/3 handshake still validates the resulting transport.
-        if h3_config
-            .settings_profile
-            .as_ref()
-            .is_some_and(|settings| settings.h3_datagram())
-        {
-            let datagrams = match input.extensions().get_ref::<QuicProfile>() {
-                Some(profile) => TransportConfig::from_quic_profile(profile)
-                    .map_err(|error| ConnectionError::local(error, InvalidInput))?
-                    .datagram_receive_enabled(),
-                None => self.transport.datagram_receive_enabled(),
-            };
-            if !datagrams {
-                return Err(invalid("HTTP/3 SETTINGS require QUIC DATAGRAM reception"));
-            }
-        }
-        let prepared = self.prepare_tls(&input)?;
+        let (prepared, h3_config) = self.prepare_connection(&input)?;
         // Keep QUIC address-race and handshake state out of enclosing pool and
         // service-selection futures. Allocate only when opening a connection;
         // either transport's pool hits bypass this boundary entirely.
         let (endpoint, connection) = Box::pin(self.connect(&input, &prepared)).await?;
-        Self::set_connection_extensions(&endpoint, &connection, prepared);
+        Self::set_connection_extensions(&endpoint, &connection, prepared, &input)?;
         input
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
