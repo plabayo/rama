@@ -469,6 +469,12 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_factory_calls_share_one_resolver() {
+        // Compile the process-wide engine before timing resolver construction.
+        // The factory cache stays empty, so all callers still race to build it.
+        tokio::task::spawn_blocking(rama_js::JsRuntime::warm_up)
+            .await
+            .unwrap()
+            .unwrap();
         let factory = SystemPacProxy::new(crate::StaticPacScript::new(
             "function FindProxyForURL(url, host) { return 'DIRECT'; }",
         ));
