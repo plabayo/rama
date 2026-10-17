@@ -3,7 +3,7 @@
 //! malicious actors.
 //!
 //! ```sh
-//! cargo run -p rama-examples --bin http_anti_bot_zip_bomb --features=http-full,ua
+//! cargo run -p rama-examples --bin http_anti_bot_zip_bomb --features=http-full
 //! ```
 //!
 //! # Expected output

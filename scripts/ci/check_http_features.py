@@ -12,12 +12,14 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def check(package, features, *, ua=False, embedded=False):
+def check(package, features=None, *, manifest=None, ua=False, embedded=False):
     command = [
-        "cargo", "tree", "--locked", "--offline",
-        "-p", package, "--no-default-features", "--features", features,
+        "cargo", "tree", "--locked",
         "--edges", "normal", "--prefix", "none", "--format", "{p} features={f}",
     ]
+    command += ["--manifest-path", manifest] if manifest else ["-p", package]
+    if features is not None:
+        command += ["--no-default-features", "--features", features]
     graph = subprocess.run(
         command, cwd=ROOT, check=True, text=True, capture_output=True,
     ).stdout
@@ -39,6 +41,17 @@ def main():
     for features in ("http", "http,boring", "http-full,boring"):
         check("rama", features)
     check("rama-examples", "http-full,boring")
+
+    # The excluded Apple engine and harness have their own lockfiles. Cargo can
+    # inspect their native dependency graphs on any host, without building Swift.
+    for project, package in (
+        ("tproxy_rs", "rama_tproxy_example"),
+        ("tproxy_ffi_e2e", "rama_tproxy_ffi_e2e"),
+    ):
+        check(
+            package,
+            manifest=f"ffi/apple/examples/transparent_proxy/{project}/Cargo.toml",
+        )
 
     # Classification and embedded datasets are separate, explicit selections.
     check("rama", "http-full,boring,ua", ua=True)

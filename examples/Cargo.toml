@@ -221,7 +221,7 @@ required-features = ["http-full"]
 [[bin]]
 name = "http_anti_bot_zip_bomb"
 path = "src/http_anti_bot_zip_bomb.rs"
-required-features = ["ua", "http-full"]
+required-features = ["http-full"]
 
 [[bin]]
 name = "http_web_service_dir_and_api"

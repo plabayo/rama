@@ -44,7 +44,7 @@ mod http_abort;
 mod http_advanced_router;
 #[cfg(feature = "http-full")]
 mod http_anti_bot_infinite_resource;
-#[cfg(all(feature = "http-full", feature = "ua"))]
+#[cfg(feature = "http-full")]
 mod http_anti_bot_zip_bomb;
 #[cfg(all(feature = "http-full", feature = "boring"))]
 mod http_blocking_https_client;
