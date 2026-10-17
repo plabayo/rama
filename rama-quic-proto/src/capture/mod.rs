@@ -762,6 +762,9 @@ pub struct FirstFlight {
     pub token_len: usize,
     pub first_packet_number: u64,
     pub packet_number_len: u8,
+    /// Encoded widths in observed packet order, including retransmissions.
+    /// The first entry equals `packet_number_len`.
+    pub packet_number_lengths: Vec<u8>,
     /// Frames per Initial packet, in order.
     pub frames: Vec<Vec<ObservedFrame>>,
     /// Where padding went.
@@ -868,6 +871,10 @@ pub fn first_flight_with_limits<P: KeyProvider>(
         token_len: lead.token.as_ref().map_or(0, Vec::len),
         first_packet_number: first_initial.packet_number,
         packet_number_len: first_initial.packet_number_len,
+        packet_number_lengths: initials
+            .iter()
+            .map(|packet| packet.packet_number_len)
+            .collect(),
         frames: initials
             .iter()
             .enumerate()

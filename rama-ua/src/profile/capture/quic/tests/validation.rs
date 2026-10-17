@@ -31,22 +31,15 @@ fn flight_roundtrip_retains_layout_without_connection_secrets() {
     }
     assert_ne!(canonical.id, capture.structural(limits).unwrap().id);
     let structure = capture.structural(limits).unwrap();
-    assert_eq!(
-        structure.id.0,
-        [
-            183, 115, 0, 156, 201, 184, 78, 200, 115, 134, 248, 59, 135, 111, 8, 72, 117, 91, 184,
-            108, 172, 227, 189, 222, 189, 255, 186, 158, 49, 21, 190, 61
-        ]
-    );
-    assert_eq!(structure.bytes.as_ref(), b"\x72\x61\x6d\x61\x2d\x70\x72\x6f\x66\x69\x6c\x65\x00\x00\x01\x00\x15\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x06\x00\x00\x00\x00\x00\x00\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00");
-    assert_eq!(canonical.bytes.len(), 172);
-    assert_eq!(
-        canonical.id.0,
-        [
-            1, 237, 112, 216, 8, 96, 212, 129, 1, 57, 234, 121, 151, 226, 123, 201, 163, 24, 246,
-            91, 51, 192, 149, 123, 247, 200, 75, 154, 252, 75, 85, 179
-        ]
-    );
+    let expected: Vec<u8> = rama_utils::hex::decode(
+        include_str!("fixtures/flight-structure-v2.hex")
+            .split_whitespace()
+            .collect::<String>(),
+    )
+    .unwrap();
+    assert_eq!(structure.bytes.as_ref(), expected.as_slice());
+    assert_eq!(structure.id.0, <[u8; 32]>::from(Sha256::digest(&expected)));
+    assert_eq!(canonical.bytes.len(), 182);
 }
 
 #[test]
@@ -168,6 +161,7 @@ fn flight_rejects_inconsistent_lengths_numbers_and_version_context() {
     }
     let mut capture = capture();
     capture.flight.packet_numbers.push(3);
+    capture.flight.packet_number_lengths.push(2);
     let value = capture.canonical(limits).unwrap();
     assert_eq!(
         QuicFlightCapture::from_canonical(&value, limits)

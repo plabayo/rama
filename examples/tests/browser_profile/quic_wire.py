@@ -211,6 +211,7 @@ def first_flights(data, server_port):
                     token_len=token_length,
                     first_packet_number=number,
                     packet_number_len=width,
+                    packet_number_lengths=[],
                     frames=[],
                     padding="Frames",
                     coalesced=False,
@@ -224,6 +225,7 @@ def first_flights(data, server_port):
                 )
             flight = flights[connection]
             flight["packet_numbers"].append(number)
+            flight["packet_number_lengths"].append(width)
             if number not in seen_numbers[connection]:
                 flight["frames"].append(frames)
                 seen_numbers[connection].add(number)

@@ -52,6 +52,8 @@ fn hex(name: &str) -> Vec<u8> {
 
 fn include_fixture(name: &str) -> &'static str {
     match name {
+        "chrome-155-initial-1.hex" => include_fixture!("chrome-155-initial-1.hex"),
+        "chrome-155-initial-2.hex" => include_fixture!("chrome-155-initial-2.hex"),
         "chrome-153-initial-1.hex" => include_fixture!("chrome-153-initial-1.hex"),
         "chrome-153-initial-2.hex" => include_fixture!("chrome-153-initial-2.hex"),
         "firefox-156-initial-1.hex" => include_fixture!("firefox-156-initial-1.hex"),
@@ -1494,3 +1496,19 @@ fn sent_transport_parameters_compile_to_the_captured_layouts() {
 }
 
 mod versions;
+
+#[test]
+fn capture_retains_each_authenticated_packet_number_width() {
+    // Owned Chrome155 loopback Initials: the second number grows to two bytes
+    // even though its numeric value still fits in one. Do not infer widths.
+    let datagrams = [
+        hex("chrome-155-initial-1.hex"),
+        hex("chrome-155-initial-2.hex"),
+    ];
+    let flight =
+        capture::first_flight(&datagrams.each_ref().map(Vec::as_slice), &*provider()).unwrap();
+    assert!(flight.complete);
+    assert_eq!(flight.packet_numbers, [1, 2]);
+    assert_eq!(flight.packet_number_lengths, [1, 2]);
+    assert_eq!(flight.packet_number_len, flight.packet_number_lengths[0]);
+}

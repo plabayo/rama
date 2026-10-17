@@ -45,7 +45,7 @@ def parameter_extension():
     )
 
 
-def datagram(number, *, complete=False):
+def datagram(number, *, complete=False, number_width=1):
     # Two authenticated Initial payloads. Only packet 2 contains the dissector's
     # reassembled ClientHello node; packet 1 still belongs to the first flight.
     crypto = (
@@ -56,9 +56,9 @@ def datagram(number, *, complete=False):
         + "</field>"
     )
     padding = (
-        '<field name="quic.frame" size="1180">'
+        f'<field name="quic.frame" size="{1181 - number_width}">'
         + scalar("quic.frame_type", b"\x00")
-        + computed("quic.padding_length", 1180)
+        + computed("quic.padding_length", 1181 - number_width)
         + "</field>"
     )
     hello = (
@@ -85,7 +85,7 @@ def datagram(number, *, complete=False):
         + scalar("quic.token_length", b"\x00")
         + scalar("quic.length", b"\x44\xd0", show=1232, position=48)
         # Raw PN bytes are protected; the displayed PN and extent are decoded.
-        + scalar("quic.packet_number", b"\xab", show=number)
+        + scalar("quic.packet_number", b"\xab" * number_width, show=number)
         + crypto
         + padding
         + hello
@@ -192,6 +192,16 @@ def sequence_fixture():
 
 
 class QuicWireTests(unittest.TestCase):
+    def test_packet_number_widths_come_from_each_authenticated_extent(self):
+        data = (
+            "<pdml>"
+            + datagram(1)
+            + datagram(2, complete=True, number_width=2)
+            + "</pdml>"
+        ).encode()
+        flight = first_flights(data, 443)[0].flight
+        self.assertEqual(flight["packet_number_lengths"], [1, 2])
+
     def test_fragment_only_initials_remain_in_the_complete_first_flight(self):
         flight = first_flights(document(), 443)[0].flight
         self.assertEqual(flight["datagram_sizes"], [1250, 1250])
@@ -227,6 +237,7 @@ class QuicWireTests(unittest.TestCase):
         repeated = document().replace(datagram(1).encode(), (datagram(1) * 2).encode())
         flight = first_flights(repeated, 443)[0].flight
         self.assertEqual(flight["packet_numbers"], [1, 1, 2])
+        self.assertEqual(flight["packet_number_lengths"], [1, 1, 1])
         self.assertEqual(len(flight["frames"]), 2)
         for budget in ("MAX_FRAMES", "MAX_PACKETS", "MAX_DATAGRAMS"):
             with self.subTest(budget=budget), patch("quic_wire." + budget, 1):

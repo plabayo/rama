@@ -14,6 +14,10 @@
     "token_len": 0,
     "first_packet_number": 30,
     "packet_number_len": 1,
+    "packet_number_lengths": [
+      1,
+      1
+    ],
     "frames": [
       [
         {
@@ -83,6 +87,10 @@
     "token_len": 0,
     "first_packet_number": 32,
     "packet_number_len": 1,
+    "packet_number_lengths": [
+      1,
+      1
+    ],
     "frames": [
       [
         {
@@ -152,6 +160,10 @@
     "token_len": 0,
     "first_packet_number": 5,
     "packet_number_len": 1,
+    "packet_number_lengths": [
+      1,
+      1
+    ],
     "frames": [
       [
         {
@@ -221,6 +233,10 @@
     "token_len": 0,
     "first_packet_number": 23,
     "packet_number_len": 1,
+    "packet_number_lengths": [
+      1,
+      1
+    ],
     "frames": [
       [
         {

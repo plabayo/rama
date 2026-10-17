@@ -9,7 +9,7 @@ struct Shape {
     version: u32,
     dcid: usize,
     scid: usize,
-    pn_width: u8,
+    pn_widths: Vec<u8>,
     token: bool,
     padding: u8,
     coalesced: bool,
@@ -45,7 +45,13 @@ impl Shape {
             dcid: flight.dcid_len.min(8),
             // Zero-length CIDs disable CID-based routing; nonzero lengths can vary.
             scid: usize::from(flight.scid_len != 0),
-            pn_width: flight.packet_number_len,
+            pn_widths: flight
+                .packet_numbers
+                .iter()
+                .enumerate()
+                .filter(|(index, number)| !flight.packet_numbers[..*index].contains(number))
+                .map(|(index, _)| flight.packet_number_lengths[index])
+                .collect(),
             token: flight.token_len != 0,
             padding: match flight.padding {
                 PaddingPlacement::Frames => 0,
@@ -81,10 +87,14 @@ impl Shape {
     fn encode(&self, limits: QuicFlightCaptureLimits) -> Result<CanonicalValue, ProfileDataError> {
         self.validate(limits)?;
         let mut writer = CanonicalWriter::new(CanonicalDomain::QuicFlightStructure, limits.bytes)?;
+        writer.u8(FLIGHT_SCHEMA_REVISION)?;
         writer.u32(self.version)?;
         writer.u64(self.dcid as u64)?;
         writer.u64(self.scid as u64)?;
-        writer.u8(self.pn_width)?;
+        writer.u64(self.pn_widths.len() as u64)?;
+        for width in &self.pn_widths {
+            writer.u8(*width)?;
+        }
         writer.u8(u8::from(self.token))?;
         writer.u8(self.padding)?;
         writer.u8(u8::from(self.coalesced))?;
@@ -121,7 +131,8 @@ impl Shape {
         if self.version == 0
             || self.dcid > 8
             || self.scid > 1
-            || !(1..=4).contains(&self.pn_width)
+            || self.pn_widths.len() != self.frames.len()
+            || self.pn_widths.iter().any(|width| !(1..=4).contains(width))
             || self.padding > 1
             || self.frames.is_empty()
             || self.datagrams == 0
@@ -207,10 +218,18 @@ pub(super) fn validate(
 ) -> Result<(), ProfileDataError> {
     value.verify(CanonicalDomain::QuicFlightStructure, limits.bytes)?;
     let mut reader = CanonicalReader::new(&value.bytes, CanonicalDomain::QuicFlightStructure)?;
+    if reader.u8()? != FLIGHT_SCHEMA_REVISION {
+        return Err(ProfileDataError::Unsupported(
+            "QUIC flight structure revision",
+        ));
+    }
     let version = reader.u32()?;
     let dcid = reader.count(20)?;
     let scid = reader.count(20)?;
-    let pn_width = reader.u8()?;
+    let mut pn_widths = Vec::new();
+    for _ in 0..reader.count(limits.packets)? {
+        pn_widths.push(reader.u8()?);
+    }
     let token = flag(&mut reader)?;
     let padding = reader.u8()?;
     let coalesced = flag(&mut reader)?;
@@ -252,7 +271,7 @@ pub(super) fn validate(
         version,
         dcid,
         scid,
-        pn_width,
+        pn_widths,
         token,
         padding,
         coalesced,
@@ -281,7 +300,7 @@ mod tests {
             version: 1,
             dcid: 8,
             scid: 0,
-            pn_width: 1,
+            pn_widths: vec![1],
             token: false,
             padding: 0,
             coalesced: false,

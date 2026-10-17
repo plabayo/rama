@@ -17,6 +17,9 @@ use rama_quic_proto::{
 use rama_utils::octets::kib;
 use serde::Serialize;
 
+// Both literal and structural encodings gain per-packet widths in revision2.
+const FLIGHT_SCHEMA_REVISION: u8 = 2;
+
 #[derive(Debug, Clone, Copy)]
 /// Resource limits for one retained QUIC first flight.
 pub struct QuicFlightCaptureLimits {
@@ -115,6 +118,11 @@ impl QuicFlightCapture {
     ) -> Result<Self, ProfileDataError> {
         value.verify(CanonicalDomain::QuicFlight, limits.bytes)?;
         let mut reader = CanonicalReader::new(&value.bytes, CanonicalDomain::QuicFlight)?;
+        if reader.u8()? != FLIGHT_SCHEMA_REVISION {
+            return Err(ProfileDataError::Unsupported(
+                "QUIC flight capture revision",
+            ));
+        }
         let completeness = ProfileCaptureCompleteness::from_tag(reader.u8()?)?;
         completeness.require_complete("QUIC first flight")?;
         let datagram_sizes = read_sizes(&mut reader, limits.datagrams, 65_527)?;
@@ -125,6 +133,10 @@ impl QuicFlightCapture {
         let token_len = reader.count(limits.observed_bytes)?;
         let first_packet_number = reader.u64()?;
         let packet_number_len = reader.u8()?;
+        let mut packet_number_lengths = Vec::new();
+        for _ in 0..reader.count(limits.packets)? {
+            packet_number_lengths.push(reader.u8()?);
+        }
         let mut frames = Vec::new();
         let mut remaining = limits.frames;
         for _ in 0..reader.count(limits.packets)? {
@@ -183,6 +195,7 @@ impl QuicFlightCapture {
                 token_len,
                 first_packet_number,
                 packet_number_len,
+                packet_number_lengths,
                 frames,
                 padding,
                 coalesced,
@@ -234,6 +247,7 @@ fn validate(flight: &FirstFlight, limits: QuicFlightCaptureLimits) -> Result<(),
     }
     if flight.datagram_sizes.len() > limits.datagrams
         || flight.packet_numbers.len() > limits.packets
+        || flight.packet_number_lengths.len() > limits.packets
         || flight.frames.len() > limits.packets
         || flight.parameters.len() > limits.parameters
         || flight.available_versions.len() > limits.parameters
@@ -247,6 +261,12 @@ fn validate(flight: &FirstFlight, limits: QuicFlightCaptureLimits) -> Result<(),
         || flight.frames.is_empty()
         || flight.packet_numbers.first() != Some(&flight.first_packet_number)
         || !(1..=4).contains(&flight.packet_number_len)
+        || flight.packet_number_lengths.len() != flight.packet_numbers.len()
+        || flight.packet_number_lengths.first() != Some(&flight.packet_number_len)
+        || flight
+            .packet_number_lengths
+            .iter()
+            .any(|width| !(1..=4).contains(width))
         || flight.dcid_len > 20
         || flight.scid_len > 20
         || flight.token_len > limits.observed_bytes
@@ -373,6 +393,8 @@ fn encode(
     completeness.require_complete("QUIC first flight")?;
     validate(flight, limits)?;
     let mut writer = CanonicalWriter::new(CanonicalDomain::QuicFlight, limits.bytes)?;
+    // Revision2 retains every Initial's packet-number width.
+    writer.u8(FLIGHT_SCHEMA_REVISION)?;
     writer.u8(completeness.tag())?;
     write_sizes(&mut writer, &flight.datagram_sizes)?;
     write_sizes(&mut writer, &flight.trailing_bytes)?;
@@ -382,6 +404,10 @@ fn encode(
     writer.u64(flight.token_len as u64)?;
     writer.u64(flight.first_packet_number)?;
     writer.u8(flight.packet_number_len)?;
+    writer.u64(flight.packet_number_lengths.len() as u64)?;
+    for width in &flight.packet_number_lengths {
+        writer.u8(*width)?;
+    }
     writer.u64(flight.frames.len() as u64)?;
     for packet in &flight.frames {
         writer.u64(packet.len() as u64)?;

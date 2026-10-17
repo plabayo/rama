@@ -13,6 +13,7 @@ fn ten_thousand_flights_share_structures_without_discarding_raw_draws() {
         flight.token_len = 1 + (index % 32) as usize;
         flight.first_packet_number = index + 3;
         flight.packet_numbers = vec![index + 3; 1 + (index % 3) as usize];
+        flight.packet_number_lengths = vec![flight.packet_number_len; flight.packet_numbers.len()];
         flight.frames[0] = vec![
             ObservedFrame::Crypto {
                 offset: 0,
@@ -69,7 +70,10 @@ fn flight_structures_keep_client_choices_and_known_version_preference() {
             0 => changed.flight.version = Version::V2,
             1 => changed.flight.dcid_len = 7,
             2 => changed.flight.scid_len += 1,
-            3 => changed.flight.packet_number_len += 1,
+            3 => {
+                changed.flight.packet_number_len += 1;
+                changed.flight.packet_number_lengths[0] += 1;
+            }
             4 => changed.flight.token_len = 1,
             5 => changed.flight.coalesced = true,
             _ => changed.flight.frames[0].push(ObservedFrame::Ping),
@@ -142,7 +146,7 @@ fn flight_structure_import_rejects_unclassified_cid_lengths() {
     let limits = QuicFlightCaptureLimits::default();
     let value = capture().structural(limits).unwrap();
     // The canonical domain/version prefix is followed by QUIC version and CID classes.
-    for (offset, lengths) in [(21, 9..=20u64), (29, 2..=20u64)] {
+    for (offset, lengths) in [(22, 9..=20u64), (30, 2..=20u64)] {
         for length in lengths {
             let mut bytes = value.bytes.to_vec();
             bytes[offset..offset + 8].copy_from_slice(&length.to_be_bytes());
@@ -430,6 +434,7 @@ fn chromium_chaos_layouts_share_structure_without_losing_frame_evidence() {
         captured.flight.first_packet_number = 1;
         captured.flight.packet_numbers = vec![1, 2];
         captured.flight.packet_number_len = 1;
+        captured.flight.packet_number_lengths = vec![1, 2];
         captured.flight.frames = packets
             .iter()
             .map(|packet| {

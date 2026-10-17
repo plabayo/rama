@@ -155,6 +155,7 @@ impl ServerObservation {
             token_len: header.token.len(),
             first_packet_number: number,
             packet_number_len: header.number.len() as u8,
+            packet_number_lengths: Vec::new(),
             frames: Vec::new(),
             padding: PaddingPlacement::Frames,
             coalesced: false,
@@ -179,6 +180,7 @@ impl ServerObservation {
         }
         let duplicate = flight.packet_numbers.contains(&number);
         flight.packet_numbers.push(number);
+        flight.packet_number_lengths.push(header.number.len() as u8);
         if duplicate {
             return;
         }
@@ -368,6 +370,11 @@ pub(crate) mod fuzzing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_core::bytes::Bytes;
+    use rama_quic_proto::{
+        Version,
+        packet::{InitialHeader, PacketNumber},
+    };
     use rama_utils::octets;
 
     #[test]
@@ -436,5 +443,48 @@ mod tests {
         assert!(!recorder.value.completeness.datagrams);
         assert_eq!(recorder.datagrams, 2);
         assert_eq!(recorder.bytes, 2);
+    }
+
+    #[test]
+    fn incremental_capture_retains_packet_number_widths_including_duplicates() {
+        let wire: Vec<u8> = rama_utils::hex::decode(
+            include_str!("../profile/fixtures/chrome-155-initial-1.hex")
+                .split_whitespace()
+                .collect::<String>(),
+        )
+        .unwrap();
+        let mut recorder = ServerObservation::new(CaptureLimits::default(), &wire, None);
+        for (index, (number, encoded)) in [
+            (7, PacketNumber::U8(7)),
+            (8, PacketNumber::U16(8)),
+            (7, PacketNumber::U24(7)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if index != 0 {
+                recorder.begin_datagram(&wire, None);
+            }
+            recorder.packet(
+                &Packet {
+                    header: Header::Initial(InitialHeader {
+                        dst_cid: ConnectionId::new(&[]),
+                        src_cid: ConnectionId::new(&[]),
+                        token: Bytes::new(),
+                        number: encoded,
+                        version: Version::V1.to_wire().unwrap(),
+                    }),
+                    header_data: Bytes::new(),
+                    payload: BytesMut::from(&[1][..]),
+                    allocated: 1,
+                },
+                number,
+            );
+            recorder.end_datagram();
+        }
+        let flight = recorder.value.first_flight.unwrap();
+        assert_eq!(flight.packet_numbers, [7, 8, 7]);
+        assert_eq!(flight.packet_number_lengths, [1, 2, 3]);
+        assert_eq!(flight.frames.len(), 2, "frame contents remain deduplicated");
     }
 }

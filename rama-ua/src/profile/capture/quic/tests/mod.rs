@@ -23,6 +23,8 @@ fn observation() -> QuicObservation {
             token_len: 0,
             first_packet_number: 3,
             packet_number_len: 2,
+
+            packet_number_lengths: vec![2],
             frames: vec![vec![
                 ObservedFrame::Crypto {
                     offset: 0,

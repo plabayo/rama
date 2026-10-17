@@ -11,6 +11,9 @@
   "token_len": 0,
   "first_packet_number": 0,
   "packet_number_len": 1,
+  "packet_number_lengths": [
+    1
+  ],
   "frames": [
     [
       {
