@@ -29,7 +29,9 @@ jobs:
           cd rama-fp/browserstack
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Run your tests
+      - name: Check shared browser automation
+        run: python scripts/ci/check_browser_automation.py
+      - name: Run browser journeys
         run: |
           cd rama-fp/browserstack
           python main.py

@@ -10,6 +10,25 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class BrowserProfileWorkflowTests(unittest.TestCase):
+    def test_browserstack_checks_shared_automation_before_remote_sessions(self):
+        path = ROOT / ".github/workflows/BrowserStack.yml"
+        workflow = yaml.safe_load(path.read_text())
+        validate(workflow, path)
+        steps = workflow["jobs"]["run"]["steps"]
+        preflight = next(
+            index
+            for index, step in enumerate(steps)
+            if step.get("run") == "python scripts/ci/check_browser_automation.py"
+        )
+        journey = next(
+            index
+            for index, step in enumerate(steps)
+            if "python main.py" in step.get("run", "")
+        )
+        self.assertLess(preflight, journey)
+        self.assertFalse(steps[preflight].get("continue-on-error", False))
+        self.assertNotIn("env", steps[preflight])
+
     def test_daily_covers_both_cli_modes_and_every_implemented_protocol(self):
         path = ROOT / ".github/workflows/CI-platforms-daily.yml"
         workflow = yaml.safe_load(path.read_text())
