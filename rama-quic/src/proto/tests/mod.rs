@@ -51,6 +51,7 @@ mod qlog_drops;
 mod qlog_lifecycle;
 mod qlog_negotiation;
 mod qlog_paths;
+mod recorded_initial;
 mod tls;
 mod token;
 mod validation;

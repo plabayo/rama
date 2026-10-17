@@ -11,6 +11,8 @@
 //! taken from captures of the named browser versions and are verified against those captures
 //! in this crate's tests; [`crate::capture`] is the parser that reads a first flight back.
 
+pub mod initial;
+
 #[cfg(feature = "std")]
 use rama_core::extensions::Extension;
 
@@ -236,6 +238,7 @@ impl TryFrom<TransportParameterProfileRepr> for TransportParameterProfile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ProfileError {
+    InitialFlight(&'static str),
     /// A literal parameter identifier does not fit a QUIC variable-length integer.
     ParameterIdOutOfRange(ParameterId),
     /// A parameter identifier appears twice.
@@ -267,6 +270,7 @@ impl From<crate::version::VersionPolicyError> for ProfileError {
 impl fmt::Display for ProfileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InitialFlight(reason) => write!(f, "invalid recorded Initial flight: {reason}"),
             Self::ParameterIdOutOfRange(id) => {
                 write!(f, "transport parameter {id} exceeds the QUIC integer range")
             }
@@ -475,9 +479,12 @@ pub enum PacketNumberLength {
 }
 
 /// How the frames of a client's Initial packets are arranged.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum InitialFlightLayout {
+    /// Reproduce validated original frame shapes with fresh handshake bytes.
+    /// Later packets retain the ordinary packetization policy.
+    Recorded(initial::RecordedInitialFlight),
     /// CRYPTO frames in order, padding after them.
     Ordered,
     /// The CRYPTO data split into fragments of random size in random order, with PING and
@@ -555,7 +562,10 @@ impl PacketizationProfile {
     /// The size Initial datagrams are padded to (RFC 9000 §14.1 requires at least 1200).
     #[must_use]
     pub fn initial_datagram_size(&self) -> u16 {
-        self.initial_datagram_size
+        match &self.layout {
+            InitialFlightLayout::Recorded(flight) => flight.packets()[0].datagram_size(),
+            _ => self.initial_datagram_size,
+        }
     }
 
     #[must_use]
@@ -570,8 +580,8 @@ impl PacketizationProfile {
     }
 
     #[must_use]
-    pub fn layout(&self) -> InitialFlightLayout {
-        self.layout
+    pub fn layout(&self) -> &InitialFlightLayout {
+        &self.layout
     }
 
     #[must_use]

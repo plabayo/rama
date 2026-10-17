@@ -122,6 +122,9 @@ impl PacketBuilder {
             }
         }
 
+        let recorded_width = conn
+            .recorded_initial(space_id, conn.spaces[space_id].next_packet_number)
+            .map(|packet| packet.number_len());
         let grease_quic_bit = conn.may_grease_quic_bit();
         let space = &mut conn.spaces[space_id];
         let exact_number = match space_id {
@@ -134,12 +137,20 @@ impl PacketBuilder {
         let Some(number) = PacketNumber::new_at_least(
             exact_number,
             space.largest_acked_packet.unwrap_or(0),
-            conn.config.wire.packetization.min_packet_number_len(),
+            recorded_width
+                .unwrap_or_else(|| conn.config.wire.packetization.min_packet_number_len()),
         ) else {
             // Even the margin above is used up: nothing more can be numbered on this connection.
             conn.kill(now, packet_numbers_outran_acknowledgements().into());
             return None;
         };
+        if recorded_width.is_some_and(|width| usize::from(width) != number.len()) {
+            conn.kill(
+                now,
+                TransportError::INTERNAL_ERROR("recorded Initial number width changed").into(),
+            );
+            return None;
+        }
         let header = match space_id {
             SpaceId::Data if space.crypto.is_some() => Header::Short {
                 dst_cid,
@@ -414,6 +425,18 @@ impl PacketBuilder {
         now: Instant,
         buffer: &mut Vec<u8>,
     ) -> Option<(usize, bool)> {
+        if let Some(packet) = conn.recorded_initial(self.space, self.exact_number)
+            && (buffer.len().saturating_sub(self.datagram_start) + self.tag_len
+                != usize::from(packet.datagram_size())
+                || buffer.len() < self.min_size)
+        {
+            conn.kill(
+                now,
+                TransportError::INTERNAL_ERROR("recorded Initial geometry changed").into(),
+            );
+            buffer.clear();
+            return None;
+        }
         let pad = buffer.len() < self.min_size;
         if pad {
             trace!("PADDING * {}", self.min_size - buffer.len());
@@ -423,7 +446,10 @@ impl PacketBuilder {
         // are protected (the same bytes, differently laid out).
         if self.space == SpaceId::Initial
             && conn.side.is_client()
-            && conn.config.wire.packetization.layout() == InitialFlightLayout::Chaos
+            && matches!(
+                conn.config.wire.packetization.layout(),
+                InitialFlightLayout::Chaos
+            )
         {
             let payload_start = self.partial_encode.start + self.partial_encode.header_len;
             chaos::scramble(&mut buffer[payload_start..], &mut conn.rng);

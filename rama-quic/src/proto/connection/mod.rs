@@ -48,6 +48,7 @@ mod error;
 mod events;
 mod frames;
 mod handshake;
+mod initial_replay;
 mod lifecycle;
 mod migration;
 mod mtud;
@@ -525,6 +526,9 @@ impl Connection {
         if side.is_client() {
             // Kick off the connection
             this.write_crypto(now);
+            if this.error.is_none() {
+                this.prepare_recorded_initial()?;
+            }
             this.init_0rtt(now);
         }
         Ok(this)

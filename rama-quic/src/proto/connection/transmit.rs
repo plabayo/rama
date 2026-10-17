@@ -471,8 +471,12 @@ impl Connection {
             // The builder closes the connection when this is the last packet its keys may
             // protect (RFC 9001 §6.6). That packet then says why, instead of what was pending.
             let close = close || self.close;
-            coalesce =
-                coalesce && !builder.short_header && self.config.wire.packetization.coalesces();
+            coalesce = coalesce
+                && !builder.short_header
+                && self.config.wire.packetization.coalesces()
+                && self
+                    .recorded_initial(space_id, builder.exact_number)
+                    .is_none();
 
             // https://tools.ietf.org/html/draft-ietf-quic-transport-34#section-14.1
             pad_datagram |=
@@ -564,14 +568,28 @@ impl Connection {
             // Whether this datagram can still reach `MIN_INITIAL_SIZE`, which decides whether
             // a challenge written into it can prove the path's minimum MTU (RFC 9000 §8.2.1).
             let expands = buf_capacity - builder.datagram_start >= usize::from(MIN_INITIAL_SIZE);
-            let sent = self.populate_packet(
-                now,
-                space_id,
-                buf,
-                builder.max_size,
-                builder.exact_number,
-                expands,
-            );
+            let sent = if self
+                .recorded_initial(space_id, builder.exact_number)
+                .is_some()
+            {
+                match self.populate_recorded_initial(buf, builder.max_size, builder.exact_number) {
+                    Ok(sent) => sent,
+                    Err(error) => {
+                        self.kill(now, error.into());
+                        buf.clear();
+                        return None;
+                    }
+                }
+            } else {
+                self.populate_packet(
+                    now,
+                    space_id,
+                    buf,
+                    builder.max_size,
+                    builder.exact_number,
+                    expands,
+                )
+            };
 
             // ACK-only packets should only be sent when explicitly allowed. If we write them due to
             // any other reason, there is a bug which leads to one component announcing write
