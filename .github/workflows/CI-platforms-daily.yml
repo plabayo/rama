@@ -145,8 +145,10 @@ jobs:
       group: ${{ startsWith(matrix.os, 'macos') && (matrix.os == 'macos-15-intel' && 'rama-macos-slot-0' || 'rama-macos-slot-1') || startsWith(matrix.os, 'windows') && (matrix.os == 'windows-11-arm' && 'rama-windows-slot-1' || 'rama-windows-slot-6') || format('rama-linux-native-{0}-{1}', github.run_id, strategy.job-index) }}
       cancel-in-progress: false
       queue: max
-    # Intel macOS needs more time to compile both feature sets and examples.
-    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 360 || 240 }}
+    # Cold builds plus successive feature, crypto and integration suites exceed
+    # four hours on Windows and macOS. Keep Linux at four hours and allow the
+    # hosted-runner maximum for both Windows architectures and both Macs.
+    timeout-minutes: ${{ startsWith(matrix.os, 'windows') && 360 || startsWith(matrix.os, 'macos') && 360 || 240 }}
     needs: precheck-rust
     env:
       RUSTFLAGS: -D warnings
@@ -688,6 +690,7 @@ jobs:
         run: just test-zigbuild-linux-gnu-smoke
 
   ci-success:
+    timeout-minutes: 10
     name: Daily platforms success
     runs-on: ubuntu-latest
     if: ${{ !cancelled() }}

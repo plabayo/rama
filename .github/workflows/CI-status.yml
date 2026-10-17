@@ -18,6 +18,7 @@ concurrency:
 
 jobs:
   ci-status:
+    timeout-minutes: 10
     name: CI status
     permissions:
       actions: read
