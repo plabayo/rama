@@ -54,10 +54,33 @@ impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
     /// Capture request overrides relative to this connector's fixed defaults.
     pub fn new(provider: P, request: &Extensions) -> Self {
         Self {
-            key: origin_key(provider.pool_id(request)),
+            key: origin_request_key(&provider, request),
             provider,
             scope: ReuseScope::Origin,
         }
+    }
+
+    /// Keep the caller's reuse identity when a layer derives TLS settings on a
+    /// pool miss. Call this after installing those settings, then insert the
+    /// returned extension in the same request.
+    ///
+    /// The scope is bound to this provider and the actual derived settings.
+    /// Later changes invalidate it. It retains only policy keys, not settings,
+    /// sessions or the provider. Opaque derived settings and tunnel policies
+    /// cannot be scoped; their existing reuse behavior remains authoritative.
+    ///
+    /// This does not establish compatibility between derived configurations.
+    /// The deriving layer must also partition its configurations or publish its
+    /// own [`ConnectionReusePolicy`], while retaining inner restrictions.
+    pub fn for_derived_settings(self, request: &Extensions) -> Option<TlsDerivedPolicy> {
+        if !matches!(self.scope, ReuseScope::Origin) {
+            return None;
+        }
+        Some(TlsDerivedPolicy {
+            provider: self.provider.pool_classifier(),
+            caller: self.key,
+            derived: origin_key(self.provider.pool_id(request))?,
+        })
     }
 
     /// Capture fixed proxy TLS policy, independently of origin TLS overrides.
@@ -88,6 +111,35 @@ impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
             policy
         });
     }
+}
+
+/// Caller policy for settings derived while opening an origin connection.
+///
+/// Construct with [`TlsConnectionReuse::for_derived_settings`]. Native connectors
+/// use the caller's key only while the provider and derived settings still match.
+/// Existing connection, tunnel and producer restrictions remain in force.
+/// This extension contains no TLS configuration or profile information.
+#[derive(Clone, Debug, Extension)]
+#[extension(tags(tls))]
+pub struct TlsDerivedPolicy {
+    provider: ReuseKey,
+    caller: Option<ReuseKey>,
+    derived: ReuseKey,
+}
+
+fn origin_request_key(
+    provider: &impl TlsClientConfigProvider,
+    request: &Extensions,
+) -> Option<ReuseKey> {
+    let actual = origin_key(provider.pool_id(request));
+    if let Some(scope) = request.get_ref::<TlsDerivedPolicy>()
+        && scope.provider == provider.pool_classifier()
+    {
+        return (actual.as_ref() == Some(&scope.derived))
+            .then(|| scope.caller.clone())
+            .flatten();
+    }
+    actual
 }
 
 fn origin_key(identity: Option<TlsPoolId>) -> Option<ReuseKey> {
@@ -127,7 +179,7 @@ impl<P: TlsClientConfigProvider + 'static> ConnectionReusePolicy for TlsConnecti
 
     fn request_key(&self, input: &Extensions) -> Option<ReuseKey> {
         match self.scope {
-            ReuseScope::Origin => origin_key(self.provider.pool_id(input)),
+            ReuseScope::Origin => origin_request_key(&self.provider, input),
             ReuseScope::Tunnel => Some(tunnel_key(input)),
         }
     }
