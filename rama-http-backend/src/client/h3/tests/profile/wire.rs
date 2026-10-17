@@ -1,4 +1,5 @@
 use super::*;
+use rama_net::client::ConnectionPolicyScope;
 use rama_quic_proto::profile::{
     ConnectionIdProfile, InitialFlightLayout, PacketNumberLength, PacketizationProfile,
     TransportLimits, initial::RecordedInitialFlight,
@@ -13,10 +14,10 @@ async fn captured_tls_reaches_a_rustls_h3_peer_with_the_admitted_selection() {
         // reaches the dial; rebuilding the ordinary default cannot pass.
         fixture.capture.ciphers.reverse();
         let input = fixture.input();
-        let before = fixture.connector.tls_provider().pool_id(input.extensions());
         fixture.install(&input);
-        let caller = input.extensions().clone();
-        let transport = fixture.connector.serve(input).await.unwrap().conn;
+        let caller = Extensions::new();
+        caller.extend(input.extensions());
+        let transport = fixture.serve(input).await.unwrap().conn;
         assert!(
             transport
                 .connection
@@ -25,7 +26,21 @@ async fn captured_tls_reaches_a_rustls_h3_peer_with_the_admitted_selection() {
                 .unwrap()
                 .is_reusable()
         );
-        assert_eq!(before, fixture.connector.tls_provider().pool_id(&caller));
+        assert!(
+            transport
+                .connection
+                .extensions()
+                .get_ref::<ConnectionReuse>()
+                .unwrap()
+                .matches(&caller)
+        );
+        assert_eq!(
+            transport
+                .connection
+                .extensions()
+                .get_ref::<ConnectionPolicyScope>(),
+            Some(&ConnectionPolicyScope::Connector)
+        );
         assert!(
             transport
                 .connection
@@ -53,9 +68,9 @@ async fn captured_parameters_reach_the_h3_peer_without_caller_wire_settings() {
         let input = fixture.target();
         let (context, _) = selection::selected("native-parameter-tuple", &fixture.capture, Some(&fixture.parameters), None);
         context.publish(input.extensions());
-        let before = fixture.connector.tls_provider().pool_id(input.extensions());
-        let caller = input.extensions().clone();
-        let transport = fixture.connector.serve(input).await.unwrap().conn;
+        let caller = Extensions::new();
+        caller.extend(input.extensions());
+        let transport = fixture.serve(input).await.unwrap().conn;
         request(transport).await;
         let captures = fixture.task.take().unwrap().await.unwrap();
         assert_eq!(captures[1].0, fixture.capture);
@@ -64,8 +79,7 @@ async fn captured_parameters_reach_the_h3_peer_without_caller_wire_settings() {
             fixture.parameters.canonical(OrderCaptureLimits::default()).unwrap().bytes,
             "the peer must observe the correlated parameter tuple, including order and literal versions",
         );
-        assert_eq!(fixture.connector.tls_provider().pool_id(&caller), before);
-        assert!(!caller.contains::<QuicProfile>(), "compiled wire settings stay local to the consumer");
+        assert!(!caller.contains::<QuicProfile>(), "producer settings must not change an independent caller snapshot");
     }).await.unwrap();
 }
 
@@ -95,8 +109,9 @@ async fn counted_initial_layout_reaches_the_peer_with_fresh_tls() {
             Some(&fixture.flight),
         );
         context.publish(input.extensions());
-        let caller = input.extensions().clone();
-        let transport = fixture.connector.serve(input).await.unwrap().conn;
+        let caller = Extensions::new();
+        caller.extend(input.extensions());
+        let transport = fixture.serve(input).await.unwrap().conn;
         request(transport).await;
         let captures = fixture.task.take().unwrap().await.unwrap();
         let actual = RecordedInitialFlight::try_from(&captures[1].2.flight).unwrap();
@@ -119,7 +134,7 @@ async fn counted_initial_layout_reaches_the_peer_with_fresh_tls() {
         );
         assert!(
             !caller.contains::<QuicProfile>(),
-            "native layout state stays in the consuming connector"
+            "native layout is installed only on the prepared request"
         );
     })
     .await

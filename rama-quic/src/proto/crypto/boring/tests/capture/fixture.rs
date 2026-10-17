@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{ClientConfig, profile::replay::tls};
-use rama_core::error::{BoxError, BoxErrorExt as _};
+use rama_core::error::BoxError;
 use rama_crypto::dep::boring::ssl::Padding;
 use rama_net::address::Host;
 use rama_tls::client::ClientHello;
@@ -68,10 +68,21 @@ pub(super) fn policy() -> (TlsClientConfig, TlsServerConfig) {
 pub(super) fn prepare_tls(
     policy: &TlsClientConfig,
     options: TlsOptions,
-    peer: Host,
+    peer: &Host,
     capture: &TlsCapture,
 ) -> Result<ClientConfig, BoxError> {
     let cache = ClientConfigCache::new(Arc::new(BoringTlsProvider), options);
-    tls::prepare(&cache, policy, peer, capture)?
-        .ok_or_else(|| BoxError::from_static_str("native preparation unavailable"))
+    prepare_with_cache(&cache, policy, peer, capture)
+}
+
+/// Compile ordinary options, then let the native cache own peer-bound sessions.
+pub(super) fn prepare_with_cache(
+    cache: &ClientConfigCache,
+    policy: &TlsClientConfig,
+    peer: &Host,
+    capture: &TlsCapture,
+) -> Result<ClientConfig, BoxError> {
+    let wire = tls::compile(policy, capture)?;
+    let effective = policy.clone().with_overrides(wire.as_extensions());
+    Ok(cache.client_config_for_peer(&effective, effective.as_extensions(), peer)?)
 }

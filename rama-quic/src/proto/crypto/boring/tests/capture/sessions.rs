@@ -23,7 +23,7 @@ fn captured_quic_tls_preparation_authenticates_with_fresh_native_sessions() {
         let prepared = prepare_tls(
             &policy,
             TlsOptions::default(),
-            Host::try_from("localhost").unwrap(),
+            &Host::try_from("localhost").unwrap(),
             &source,
         )
         .unwrap()
@@ -60,7 +60,7 @@ fn wire_comparison_detects_native_tls_overrides() {
     let prepared = prepare_tls(
         &policy,
         TlsOptions::default(),
-        Host::try_from("localhost").unwrap(),
+        &Host::try_from("localhost").unwrap(),
         &source,
     )
     .unwrap()
@@ -75,7 +75,7 @@ fn captured_parameter_length_cannot_replace_current_connection_parameters() {
     let prepared = prepare_tls(
         &policy,
         TlsOptions::default(),
-        Host::try_from("localhost").unwrap(),
+        &Host::try_from("localhost").unwrap(),
         &source,
     )
     .unwrap()
@@ -100,7 +100,7 @@ fn captured_wire_choices_cannot_override_explicit_cipher_policy() {
     prepare_tls(
         &policy,
         TlsOptions::default(),
-        Host::try_from("localhost").unwrap(),
+        &Host::try_from("localhost").unwrap(),
         &source,
     )
     .unwrap_err();
@@ -137,7 +137,7 @@ fn a_real_resumed_capture_requires_current_ticket_support() {
         prepare_tls(
             &policy,
             TlsOptions::default(),
-            Host::try_from("localhost").unwrap(),
+            &Host::try_from("localhost").unwrap(),
             &resumed,
         )
         .unwrap()
@@ -168,7 +168,7 @@ fn checked_parameters(
     let client = prepare_tls(
         &policy,
         TlsOptions::default(),
-        Host::try_from("localhost").unwrap(),
+        &Host::try_from("localhost").unwrap(),
         &capture(&hello),
     )
     .unwrap()

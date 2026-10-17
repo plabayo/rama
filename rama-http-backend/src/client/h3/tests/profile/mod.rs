@@ -2,9 +2,10 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use super::*;
-use crate::client::{Http3Connector, h3::PreparedTls};
+use crate::client::{Http3Connector, Http3Transport, h3::PreparedTls};
 use rama_core::{
     Service,
+    extensions::Extensions,
     rt::{Executor, spawn},
 };
 use rama_http_core::h3::{client as h3_client, connection::Config, server as h3_server};
@@ -13,13 +14,14 @@ use rama_net::{
     Protocol,
     address::{HostWithPort, SocketAddress},
     client::{
-        ConnectionError, ConnectionErrorKind, ConnectorTarget,
+        ConnectionError, ConnectionErrorKind, ConnectorTarget, EstablishedClientConnection,
         pool::{ConnectionReuse, ReuseKey},
     },
 };
 use rama_quic::{
     Endpoint, ServerConfig,
-    tls::{BoringTlsProvider, TlsOptions},
+    profile::replay::{CompiledConnection, ConnectionProfileCompiler},
+    tls::{BoringTlsProvider, ClientConfigCache, TlsOptions},
 };
 use rama_quic_proto::{
     VarInt,
@@ -27,7 +29,9 @@ use rama_quic_proto::{
     profile::{GreaseParameter, OpaqueParameter, QuicProfile, TransportParameterProfile},
     transport_parameters::TransportParameterId,
 };
+use rama_tls::client::TlsClientConfig;
 use rama_tls::{
+    ExtensionId,
     client::TlsPoolId,
     server::{LeafCertRequest, ServerAuthData, TlsServerConfig},
 };
@@ -37,9 +41,16 @@ use rama_ua::profile::{
         joint::CapturedSlotKind,
         order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
         quic::{QuicFlightCapture, QuicFlightCaptureLimits},
-        tls::{TlsCapture, TlsCaptureLimits},
+        tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport},
     },
     model::identity::ConnectionContext,
+};
+use rama_ua::{
+    layer::emulate::UserAgentEmulateHttpConnectModifier,
+    profile::replay::connection::{
+        compiler::{ConnectionProfileCompiler as _, InstalledConnectionProfile as _},
+        preparation::ConnectionPreparation,
+    },
 };
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::oneshot, task::JoinHandle};
@@ -73,6 +84,41 @@ impl Drop for Fixture {
 }
 
 impl Fixture {
+    fn compiler(&self) -> ConnectionProfileCompiler {
+        ConnectionProfileCompiler::new(
+            self.connector.tls.clone(),
+            self.connector.tls_provider().clone(),
+        )
+    }
+
+    fn prepare_connection(
+        &self,
+        input: &ConnectRequest,
+    ) -> Result<(PreparedTls, Arc<Config>), ConnectionError> {
+        validate_version(input)?;
+        if let Some((mut preparation, compiled)) =
+            prepare(input, &self.connector.tls, &self.connector.tls_configs)
+                .map_err(|error| ConnectionError::local(error, ConnectionErrorKind::InvalidInput))?
+        {
+            preparation.apply_http(input).map_err(|error| {
+                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+            })?;
+            input.extensions().insert(preparation.selection().clone());
+            compiled.apply(input.extensions());
+        }
+        self.connector.prepare_connection(input)
+    }
+
+    async fn serve(
+        &self,
+        input: ConnectRequest,
+    ) -> Result<EstablishedClientConnection<Http3Transport, ConnectRequest>, ConnectionError> {
+        UserAgentEmulateHttpConnectModifier::new(self.connector.clone())
+            .with_connection_compiler(self.compiler())
+            .serve(input)
+            .await
+    }
+
     fn target(&self) -> ConnectRequest {
         let input = ConnectRequest::new(HostWithPort::localhost_domain_with_port(self.port))
             .with_application_protocol(Protocol::HTTPS);
@@ -97,7 +143,7 @@ impl Fixture {
     }
 }
 
-async fn request(transport: crate::client::Http3Transport) {
+async fn request(transport: Http3Transport) {
     let connection = transport.connection.clone();
     let (mut sender, driver) = h3_client::handshake::<Body>(
         transport.connection,
@@ -250,4 +296,15 @@ async fn fixture_with_profile(profile: QuicProfile) -> Fixture {
         port,
         profile,
     }
+}
+
+fn prepare(
+    input: &ConnectRequest,
+    tls: &TlsClientConfig,
+    cache: &ClientConfigCache,
+) -> Result<Option<(ConnectionPreparation, CompiledConnection)>, BoxError> {
+    let compiler = ConnectionProfileCompiler::new(tls.clone(), cache.provider().clone());
+    ConnectionPreparation::prepare(input, |selection, components, mode| {
+        compiler.compile(input, selection, components, mode)
+    })
 }

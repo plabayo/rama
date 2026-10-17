@@ -1,7 +1,7 @@
 //! HTTP/3 establishment using Rama DNS candidates and the existing multiplex pool.
 
-#[cfg(feature = "ua")]
-mod profile;
+#[cfg(test)]
+mod tests;
 
 use super::Http3Transport;
 use parking_lot::Mutex;
@@ -43,8 +43,6 @@ use rama_tls::{
         TlsStoreServerCertChain,
     },
 };
-#[cfg(feature = "ua")]
-use rama_ua::profile::replay::connection::preparation::ConnectionPreparation;
 use rama_utils::macros::generate_set_and_with;
 use std::{
     collections::VecDeque,
@@ -267,8 +265,6 @@ struct PreparedTls {
     capture_chain: bool,
     policy_scope: ConnectionPolicyScope,
     reuse: TlsConnectionReuse<Arc<dyn QuicClientConfigProvider>>,
-    #[cfg(feature = "ua")]
-    profile_preparation: Option<ConnectionPreparation>,
 }
 
 impl Http3Connector {
@@ -400,12 +396,8 @@ impl Http3Connector {
             .tls_provider()
             .authenticates_server(tls.as_extensions())
             .then(|| server_identity.clone());
-        let request_policy = self.tls_provider().pool_id(input.extensions());
-        let policy_scope = if request_policy.is_some() {
-            ConnectionPolicyScope::Request
-        } else {
-            ConnectionPolicyScope::Connector
-        };
+        let reuse = TlsConnectionReuse::new(self.tls_provider().clone(), input.extensions());
+        let policy_scope = reuse.policy_scope();
         let policy_scope = if let Some(attempt) = input.extensions().get_ref::<ConnectionAttempt>()
         {
             let identity = self
@@ -422,44 +414,6 @@ impl Http3Connector {
             .as_extensions()
             .get_ref::<TlsStoreServerCertChain>()
             .is_some_and(|capture| capture.0);
-        #[cfg(feature = "ua")]
-        let captured = profile::prepare(input, &tls, &self.tls_configs)
-            .map_err(|error| ConnectionError::local(error, InvalidInput))?;
-        #[cfg(feature = "ua")]
-        let captured = {
-            let mut captured = captured;
-            if let Some((preparation, _)) = &mut captured {
-                preparation
-                    .apply_http(input)
-                    .map_err(|error| ConnectionError::local(error, InvalidInput))?;
-            }
-            captured
-        };
-        #[cfg(feature = "ua")]
-        let (profile_preparation, config, profile) = match captured {
-            Some((preparation, config)) => {
-                let (config, transport) = config.into_parts();
-                let profile = match transport {
-                    Some(transport) => {
-                        if profile
-                            .as_ref()
-                            .is_some_and(|caller| caller.as_ref() != &transport)
-                        {
-                            return Err(ConnectionError::local(
-                                BoxError::from_static_str(
-                                    "caller and captured QUIC profiles conflict",
-                                ),
-                                InvalidInput,
-                            ));
-                        }
-                        Some(Arc::new(transport))
-                    }
-                    None => profile,
-                };
-                (Some(preparation), config, profile)
-            }
-            None => (None, None, profile),
-        };
         if let Some(profile) = &profile
             && profile.limits().initial_max_streams_uni < 3
         {
@@ -500,15 +454,6 @@ impl Http3Connector {
                 ));
             }
         }
-        #[cfg(feature = "ua")]
-        let mut config = match config {
-            Some(config) => config,
-            None => self
-                .tls_configs
-                .client_config_for_peer(&tls, input.extensions(), &server_identity)
-                .map_err(|error| ConnectionError::local(error, InvalidInput))?,
-        };
-        #[cfg(not(feature = "ua"))]
         let mut config = self
             .tls_configs
             .client_config_for_peer(&tls, input.extensions(), &server_identity)
@@ -541,9 +486,7 @@ impl Http3Connector {
                 authenticated_identity,
                 capture_chain,
                 policy_scope,
-                reuse: TlsConnectionReuse::new(self.tls_provider().clone(), input.extensions()),
-                #[cfg(feature = "ua")]
-                profile_preparation,
+                reuse,
             },
             h3_config,
         ))
@@ -687,24 +630,12 @@ impl Http3Connector {
         endpoint: &Endpoint,
         connection: &Connection,
         prepared: PreparedTls,
-        input: &ConnectRequest,
-    ) -> Result<(), ConnectionError> {
+    ) {
         // Populate only connection facts: inheriting the request store here would
         // retain request metadata and could create a cycle through Egress.
         let extensions = connection.extensions();
         prepared.reuse.publish(extensions);
         extensions.insert(TargetHttpVersion(Version::HTTP_3));
-        #[cfg(feature = "ua")]
-        if let Some(preparation) = prepared.profile_preparation {
-            preparation
-                .publish(input.extensions(), extensions, Some(Version::HTTP_3))
-                .map_err(|error| {
-                    ConnectionError::application(error, ConnectionErrorKind::Protocol)
-                })?;
-        }
-        #[cfg(not(feature = "ua"))]
-        let _ = input;
-
         extensions.insert(TlsServerAuthentication(prepared.authenticated_identity));
         extensions.insert(prepared.policy_scope);
         extensions.insert(EstablishedProxyRoute::Direct);
@@ -718,7 +649,6 @@ impl Http3Connector {
             }
             extensions.insert(parameters);
         }
-        Ok(())
     }
 }
 
@@ -764,7 +694,7 @@ impl Service<ConnectRequest> for Http3Connector {
         // service-selection futures. Allocate only when opening a connection;
         // either transport's pool hits bypass this boundary entirely.
         let (endpoint, connection) = Box::pin(self.connect(&input, &prepared)).await?;
-        Self::set_connection_extensions(&endpoint, &connection, prepared, &input)?;
+        Self::set_connection_extensions(&endpoint, &connection, prepared);
         input
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));

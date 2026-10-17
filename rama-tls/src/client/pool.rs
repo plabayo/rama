@@ -12,7 +12,10 @@ use rama_core::extensions::{Extension, Extensions};
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_net::{
     address::Host,
-    client::pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
+    client::{
+        ConnectionPolicyScope,
+        pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
+    },
     tls::{ApplicationProtocol, TlsAlpn},
 };
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
@@ -57,6 +60,18 @@ impl<P: TlsClientConfigProvider + 'static> TlsConnectionReuse<P> {
             key: origin_request_key(&provider, request),
             provider,
             scope: ReuseScope::Origin,
+        }
+    }
+
+    /// Classify the original caller policy, including validated derived settings.
+    /// Tunnel policies do not describe the origin and remain unclassified here.
+    pub fn policy_scope(&self) -> ConnectionPolicyScope {
+        match self.scope {
+            ReuseScope::Origin if self.key == Some(ReuseKey::of::<NoOverrides>()) => {
+                ConnectionPolicyScope::Connector
+            }
+            ReuseScope::Origin => ConnectionPolicyScope::Request,
+            ReuseScope::Tunnel => ConnectionPolicyScope::Unknown,
         }
     }
 

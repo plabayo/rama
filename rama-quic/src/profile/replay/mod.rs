@@ -1,111 +1,278 @@
-//! Prepare a selected QUIC tuple with its consuming provider and current policy.
+//! Compile a selected QUIC tuple into ordinary native configuration extensions.
 //!
-//! Prepared native state stays local to the dial. TLS and transport settings
-//! come from the same selected tuple; HTTP/3 stays with its HTTP consumer.
-//! Native engines enforce their protocol invariants; wire tests verify fidelity.
+//! The outer UA connect modifier selects and admits a complete connection tuple,
+//! then this compiler supplies `TlsClientConfig` and `QuicProfile` extensions.
+//! The native connector consumes those settings exactly as it would settings from
+//! a custom layer or relay. It owns the endpoint, configuration cache, peer-bound
+//! TLS session and connection I/O; it never receives a counted profile.
+//!
+//! Supply the same fixed policy and provider to the compiler and native connector.
+//! Current request overrides retain their ordinary precedence. The common UA
+//! modifier applies admitted HTTP settings before connecting and publishes profile
+//! facts only after its inner connector succeeds. Its context check is at that
+//! boundary; this compiler introduces no native callback or generated-hello check.
+//!
+//! The ticket namespace combines the stable profile identity with the caller's
+//! scope, independently of each connection draw. A private UA marker shares the
+//! installed and original scope values so a repeated preparation cannot wrap the
+//! namespace again. It holds no native session, provider or TLS configuration.
+//!
+//! Capability admission covers only the native subset actually compiled here.
+//! In particular, HTTP/3 startup/QPACK sequences need their own implementation;
+//! a decoded capture alone does not grant replay support.
 
 #[cfg(feature = "boring")]
 pub(crate) mod tls;
+#[cfg(feature = "boring")]
 mod transport;
 
-use crate::{ClientConfig, tls::ClientConfigCache};
-use rama_core::error::BoxError;
-use rama_net::address::Host;
-use rama_quic_proto::profile::{InitialFlightLayout, QuicProfile};
-use rama_tls::client::{TlsClientConfig, TlsSessionProfileScope};
-use rama_ua::profile::{
-    capture::{joint::CapturedSlotKind, tls::TlsCaptureTransport},
-    format::canonical::ValueId,
-    replay::connection::{PreparedConnectionComponents, compiler::CompiledConnectionProfile},
-};
-use rama_utils::fmt::hex;
+use std::sync::Arc;
 
-/// Native configuration prepared by the configured provider, if supported.
-#[derive(Debug)]
-pub struct PreparedConfig {
-    client: Option<ClientConfig>,
-    transport: Option<QuicProfile>,
+use crate::tls::QuicClientConfigProvider;
+use rama_core::{
+    error::BoxError,
+    extensions::{Extensions, ExtensionsRef},
+};
+use rama_net::{AuthorityInputExt, ProtocolInputExt};
+use rama_quic_proto::profile::{InitialFlightLayout, QuicProfile};
+use rama_tls::client::{TlsClientConfig, TlsDerivedPolicy};
+use rama_ua::profile::{
+    capture::joint::CapturedSlotKind,
+    replay::{
+        connection::{
+            PreparedConnectionComponents,
+            compiler::{
+                CompiledConnectionProfile, ConnectionProfileCompiler as Compiler,
+                InstalledConnectionProfile,
+            },
+        },
+        request::ProfilePreservationMode,
+    },
+    selection::variants::ConnectionSelection,
+};
+
+#[cfg(feature = "boring")]
+use {
+    crate::tls::BoringTlsProvider,
+    rama_core::{error::BoxErrorExt as _, extensions::Extension},
+    rama_net::address::Host,
+    rama_tls::client::{
+        TlsClientConfigProvider as _, TlsConnectionReuse, TlsServerName, TlsSessionProfileScope,
+    },
+    rama_ua::profile::capture::tls::{TlsCaptureTransport, TlsCapturedExtensionValue},
+    rama_utils::fmt::hex,
+};
+
+/// Register with the outer UA connect modifier around a native QUIC connector.
+///
+/// Supply the same fixed TLS policy and provider as that connector. Request
+/// overrides retain their normal precedence. Compile once for each connection
+/// input; use a fresh input to select a different native recipe. Captured TLS
+/// currently requires BoringSSL; other providers report unsupported components
+/// during admission.
+#[derive(Debug, Clone)]
+pub struct ConnectionProfileCompiler {
+    policy: TlsClientConfig,
+    provider: Arc<dyn QuicClientConfigProvider>,
 }
 
-impl PreparedConfig {
-    /// Consume the admitted native TLS configuration and optional QUIC recipe.
-    /// The consumer applies the same recipe to its client, transport and endpoint.
-    pub fn into_parts(self) -> (Option<ClientConfig>, Option<QuicProfile>) {
-        (self.client, self.transport)
+impl ConnectionProfileCompiler {
+    pub fn new(policy: TlsClientConfig, provider: Arc<dyn QuicClientConfigProvider>) -> Self {
+        Self { policy, provider }
     }
 }
 
-impl CompiledConnectionProfile for PreparedConfig {
+impl<Input> Compiler<Input> for ConnectionProfileCompiler
+where
+    Input: AuthorityInputExt + ProtocolInputExt + ExtensionsRef,
+{
+    type Compiled = CompiledConnection;
+
+    fn compile(
+        &self,
+        input: &Input,
+        selection: &ConnectionSelection,
+        components: &mut PreparedConnectionComponents,
+        _mode: ProfilePreservationMode,
+    ) -> Result<CompiledConnection, BoxError> {
+        self.compile_recipe(input, selection, components)
+    }
+}
+
+/// Admitted settings moved into the request before the native connector runs.
+#[derive(Debug)]
+pub struct CompiledConnection {
+    native: Option<CompiledQuic>,
+}
+
+#[derive(Debug)]
+struct CompiledQuic {
+    tls: TlsClientConfig,
+    transport: Option<QuicProfile>,
+    reuse: TlsDerivedPolicy,
+    #[cfg(feature = "boring")]
+    scope: AppliedSessionScope,
+}
+
+// Retry the same request without treating our installed scope as new caller
+// input. Arc identity also distinguishes a later caller replacement. Both values
+// share their existing storage; no native session or copied settings are kept.
+#[cfg(feature = "boring")]
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(ua))]
+struct AppliedSessionScope {
+    caller: Option<Arc<TlsSessionProfileScope>>,
+    installed: Arc<TlsSessionProfileScope>,
+}
+
+impl CompiledConnectionProfile for CompiledConnection {
     fn supports(&self, component: CapturedSlotKind) -> bool {
+        let Some(native) = &self.native else {
+            return false;
+        };
         match component {
-            CapturedSlotKind::QuicTls => self.client.is_some(),
-            CapturedSlotKind::QuicFirstFlight => {
-                self.client.is_some()
-                    && self.transport.as_ref().is_some_and(|profile| {
-                        matches!(
-                            profile.packetization().layout(),
-                            InitialFlightLayout::Recorded(_)
-                        )
-                    })
-            }
+            CapturedSlotKind::QuicTls => true,
+            CapturedSlotKind::QuicFirstFlight => native.transport.as_ref().is_some_and(|profile| {
+                matches!(
+                    profile.packetization().layout(),
+                    InitialFlightLayout::Recorded(_)
+                )
+            }),
             CapturedSlotKind::QuicParameters | CapturedSlotKind::QuicVersions => {
-                self.transport.is_some()
+                native.transport.is_some()
             }
             _ => false,
         }
     }
 }
 
-/// Prepare correlated TLS and transport rules for the final peer and security policy.
-///
-/// `profile` is the stable client identity, independent of connection draws.
-/// Tickets remain isolated by it and the caller's existing session scope. Parameter replay currently requires version_information and
-/// supports at most one literal reserved version at an end of the offered list.
-/// Unsupported bindings or original-flight layouts fail before dialing. Recorded
-/// layouts contain only metadata; the native engine validates fresh TLS output and
-/// current connection geometry before emission. HTTP state needs its own admission.
-pub fn prepare(
-    cache: &ClientConfigCache,
-    policy: &TlsClientConfig,
-    peer: Host,
-    profile: ValueId,
-    components: &mut PreparedConnectionComponents,
-) -> Result<PreparedConfig, BoxError> {
-    let Some(capture) = components.tls.take() else {
-        return Ok(PreparedConfig {
-            client: None,
-            transport: None,
-        });
-    };
-    if !matches!(capture.transport, TlsCaptureTransport::Quic) {
-        return Ok(PreparedConfig {
-            client: None,
-            transport: None,
-        });
+impl InstalledConnectionProfile for CompiledConnection {
+    fn apply(self, extensions: &Extensions) {
+        if let Some(native) = self.native {
+            native.tls.write_to(extensions);
+            if let Some(transport) = native.transport {
+                extensions.insert(transport);
+            }
+            extensions.insert(native.reuse);
+            #[cfg(feature = "boring")]
+            extensions.insert(native.scope);
+        }
     }
-    let flight = components.quic_first_flight.take();
-    let transport = match components.quic_parameters.take() {
-        Some(parameters) => Some(transport::prepare(
-            &parameters,
-            components.quic_versions.take().as_ref(),
-            flight.as_ref(),
-        )?),
-        None => None,
-    };
-    let scope = match policy.as_extensions().get_ref::<TlsSessionProfileScope>() {
-        Some(caller) => format!("rama-quic-profile:{}:scope:{}", hex(&profile.0), caller.0),
-        None => format!("rama-quic-profile:{}:none", hex(&profile.0)),
-    };
-    let scoped = policy
-        .clone()
-        .with_session_profile_scope(TlsSessionProfileScope(scope.into()));
-    #[cfg(feature = "boring")]
-    let client = tls::prepare(cache, &scoped, peer, &capture)?;
+}
+
+impl ConnectionProfileCompiler {
     #[cfg(not(feature = "boring"))]
-    let client = {
-        let _ = (cache, scoped, peer, capture);
-        None
-    };
-    let transport = client.as_ref().and(transport);
-    Ok(PreparedConfig { client, transport })
+    fn compile_recipe(
+        &self,
+        _input: &(impl AuthorityInputExt + ProtocolInputExt + ExtensionsRef),
+        _selection: &ConnectionSelection,
+        _components: &mut PreparedConnectionComponents,
+    ) -> Result<CompiledConnection, BoxError> {
+        let _ = (&self.policy, &self.provider);
+        Ok(CompiledConnection { native: None })
+    }
+
+    #[cfg(feature = "boring")]
+    fn compile_recipe(
+        &self,
+        input: &(impl AuthorityInputExt + ProtocolInputExt + ExtensionsRef),
+        selection: &ConnectionSelection,
+        components: &mut PreparedConnectionComponents,
+    ) -> Result<CompiledConnection, BoxError> {
+        let unsupported = || CompiledConnection { native: None };
+        if self.provider.pool_classifier() != BoringTlsProvider.pool_classifier() {
+            return Ok(unsupported());
+        }
+        let Some(capture) = components.tls.take() else {
+            return Ok(unsupported());
+        };
+        if !matches!(capture.transport, TlsCaptureTransport::Quic) {
+            return Ok(unsupported());
+        }
+        if input
+            .target_protocol()
+            .is_none_or(|protocol| !protocol.is_secure())
+        {
+            return Err(BoxError::from_static_str(
+                "captured QUIC requires a secure origin",
+            ));
+        }
+        let authority = input
+            .target_authority()
+            .ok_or_else(|| BoxError::from_static_str("captured QUIC requires a destination"))?;
+        let policy = self.policy.clone().with_overrides(input.extensions());
+        let identity = policy
+            .as_extensions()
+            .get_ref::<TlsServerName>()
+            .map_or(&authority.host, |name| &name.0);
+        let captured_sni = capture.extensions.iter().any(|extension| {
+            matches!(
+                extension.value,
+                TlsCapturedExtensionValue::ServerName { present: true }
+            )
+        });
+        if captured_sni != matches!(identity, Host::Name(_)) {
+            return Err(BoxError::from_static_str(
+                "destination identity and captured SNI presence differ",
+            ));
+        }
+        let flight = components.quic_first_flight.take();
+        let transport = match components.quic_parameters.take() {
+            Some(parameters) => Some(transport::prepare(
+                &parameters,
+                components.quic_versions.take().as_ref(),
+                flight.as_ref(),
+            )?),
+            None => None,
+        };
+        if let Some(transport) = &transport
+            && input
+                .extensions()
+                .get_ref::<QuicProfile>()
+                .is_some_and(|caller| caller != transport)
+        {
+            return Err(BoxError::from_static_str(
+                "caller and captured QUIC profiles conflict",
+            ));
+        }
+        let wire = tls::compile(&policy, &capture)?;
+        let current_scope = policy.as_extensions().get_arc::<TlsSessionProfileScope>();
+        let caller_scope = match input.extensions().get_ref::<AppliedSessionScope>() {
+            Some(previous)
+                if current_scope
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, &previous.installed)) =>
+            {
+                previous.caller.clone()
+            }
+            _ => current_scope,
+        };
+        let scope = match &caller_scope {
+            Some(caller) => format!(
+                "rama-quic-profile:{}:scope:{}",
+                hex(&selection.profile.0),
+                caller.0
+            ),
+            None => format!("rama-quic-profile:{}:none", hex(&selection.profile.0)),
+        };
+        let installed = Arc::new(TlsSessionProfileScope(scope.into()));
+        wire.as_extensions().insert_arc(installed.clone());
+        let caller = TlsConnectionReuse::new(self.provider.clone(), input.extensions());
+        let derived = input.extensions().fork();
+        wire.write_to(&derived);
+        let reuse = caller.for_derived_settings(&derived).ok_or_else(|| {
+            BoxError::from_static_str("captured QUIC TLS policy cannot be compared safely")
+        })?;
+        Ok(CompiledConnection {
+            native: Some(CompiledQuic {
+                tls: wire,
+                transport,
+                reuse,
+                scope: AppliedSessionScope {
+                    caller: caller_scope,
+                    installed,
+                },
+            }),
+        })
+    }
 }

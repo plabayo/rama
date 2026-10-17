@@ -1,7 +1,7 @@
 //! Captured full-to-resumed handshakes use tickets from the live peer only.
 
 use super::{fixture::*, *};
-use crate::{ClientConfig, ConnectError, profile::replay::tls, tls::ClientSessionPolicy};
+use crate::{ClientConfig, ConnectError, tls::ClientSessionPolicy};
 use rama_net::address::Host;
 use rama_ua::profile::capture::tls::{TlsCapture, TlsCapturedExtensionValue};
 
@@ -10,9 +10,7 @@ fn prepared(
     policy: &TlsClientConfig,
     source: &TlsCapture,
 ) -> ClientConfig {
-    tls::prepare(cache, policy, Host::try_from("localhost").unwrap(), source)
-        .unwrap()
-        .unwrap()
+    prepare_with_cache(cache, policy, &Host::try_from("localhost").unwrap(), source).unwrap()
 }
 
 fn exchange(
@@ -125,13 +123,12 @@ fn captured_resumed_offers_require_the_current_peer_version_and_policy() {
                 .start_session(other_version, "localhost", &params(Side::Client))
                 .is_err()
         );
-        let client = tls::prepare(
+        let client = prepare_with_cache(
             &cache,
             &policy,
-            Host::try_from("other.invalid").unwrap(),
+            &Host::try_from("other.invalid").unwrap(),
             &resumed,
         )
-        .unwrap()
         .unwrap()
         .crypto;
         assert!(
@@ -188,10 +185,10 @@ fn fresh_capture_cache_neither_retains_tickets_nor_allows_a_resumed_offer() {
                 false,
             );
         }
-        tls::prepare(
+        prepare_with_cache(
             &fresh,
             &policy,
-            Host::try_from("localhost").unwrap(),
+            &Host::try_from("localhost").unwrap(),
             &resumed,
         )
         .unwrap_err();

@@ -4,7 +4,10 @@
 use rama_core::extensions::{Extension, Extensions};
 use rama_net::{
     address::Host,
-    client::pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
+    client::{
+        ConnectionPolicyScope,
+        pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
+    },
     tls::TlsAlpn,
 };
 use rama_tls::{
@@ -188,4 +191,33 @@ fn derived_origin_policy_retains_producer_and_proxy_restrictions() {
         alpn: None,
     });
     assert!(!policy.matches(&next));
+}
+
+#[test]
+fn policy_scope_follows_the_original_caller_and_rejects_stale_derivation() {
+    let input = Extensions::new();
+    assert_eq!(
+        TlsConnectionReuse::new(Provider::<1>, &input).policy_scope(),
+        ConnectionPolicyScope::Connector
+    );
+    derive(&input, TlsAlpn::http_2()).unwrap();
+    assert_eq!(
+        TlsConnectionReuse::new(Provider::<1>, &input).policy_scope(),
+        ConnectionPolicyScope::Connector
+    );
+    input.insert(TlsServerVerify(ServerVerifyMode::Disable));
+    assert_eq!(
+        TlsConnectionReuse::new(Provider::<1>, &input).policy_scope(),
+        ConnectionPolicyScope::Request
+    );
+    assert_eq!(
+        TlsConnectionReuse::tunnel(Provider::<1>, &input).policy_scope(),
+        ConnectionPolicyScope::Unknown
+    );
+    let input = caller();
+    derive(&input, TlsAlpn::http_2()).unwrap();
+    assert_eq!(
+        TlsConnectionReuse::new(Provider::<1>, &input).policy_scope(),
+        ConnectionPolicyScope::Request
+    );
 }
