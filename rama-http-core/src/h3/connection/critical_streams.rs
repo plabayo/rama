@@ -7,7 +7,9 @@
 use super::{CRITICAL_SEND_RESERVE, Encoder, Error, QuicSendStream, Shared, compression_error};
 use crate::h3::qpack::EncodeField;
 use rama_core::bytes::{Bytes, BytesMut};
-use rama_http_types::proto::h3::{Code, StreamType, VarInt, critical_streams::Startup};
+use rama_http_types::proto::h3::{
+    Code, StreamType, VarInt, critical_streams::Startup, qpack::FieldSectionBase,
+};
 use rama_quic_proto::coding::Codec as _;
 use std::{future::Future, sync::Arc};
 
@@ -22,6 +24,7 @@ impl EncoderStream {
         encoder: &mut Encoder,
         id: u64,
         fields: I,
+        base: Option<FieldSectionBase>,
     ) -> Result<Bytes, Error>
     where
         I: IntoIterator<Item = F>,
@@ -37,7 +40,7 @@ impl EncoderStream {
                 // Admit the type and its first instructions atomically. If they
                 // cannot fit together, the encoder keeps its literal fallback.
                 let result = encoder
-                    .encode_with_credit(id, fields, credit.saturating_sub(prefix_size))
+                    .encode_with_credit(id, fields, credit.saturating_sub(prefix_size), base)
                     .map_err(compression_error);
                 let mut output = encoder.take_encoder_stream();
                 if !*started && !output.is_empty() {

@@ -18,4 +18,4 @@ pub mod instruction;
 pub use instruction::{DecoderInstruction, EncoderInstruction};
 
 mod preferences;
-pub use preferences::EncoderPreferences;
+pub use preferences::{EncoderPreferences, FieldSectionBase};

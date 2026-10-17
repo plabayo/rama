@@ -19,6 +19,8 @@ use rama_http_types::{
         Code, StreamType,
         control::{ClientControlFrame, ClientControlPreferences},
         critical_streams::{Order, Preferences, Startup},
+        observation::{FieldRepresentation, H3RequestObservation},
+        qpack::FieldSectionBase,
     },
 };
 use rama_quic::TransportConfig;
@@ -257,6 +259,79 @@ async fn startup_priority_targets_respect_cumulative_peer_credit() {
             drop(held);
             pair.close().await;
         }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn request_base_preferences_reach_the_peer_without_changing_connection_defaults() {
+    timeout(LIMIT, async {
+        let pair = Pair::in_memory(None, None).await;
+        let (mut server, driver) = server::handshake(
+            pair.server.clone(),
+            Config {
+                observation: Some(Default::default()),
+                ..Config::default()
+            },
+        )
+        .unwrap();
+        let server_driver = spawn(driver.run());
+        let (mut client, driver) =
+            client::handshake::<Body>(pair.client.clone(), Config::default(), Executor::new())
+                .unwrap();
+        let client_driver = spawn(driver.run());
+        client.peer_settings().await.unwrap();
+        let serve = spawn(async move {
+            let mut representations = Vec::new();
+            for _ in 0..2 {
+                let (request, response) = server.accept().await.unwrap().resolve().await.unwrap();
+                let observed = request
+                    .extensions()
+                    .get_ref::<H3RequestObservation>()
+                    .unwrap();
+                assert!(observed.fields_complete);
+                representations.push(observed.fields.last().unwrap().representation);
+                assert!(request.headers().contains_key("x-base-probe"));
+                response
+                    .send_response(Response::new(Body::empty()))
+                    .await
+                    .unwrap();
+            }
+            representations
+        });
+        for (index, value) in ["first value", "second value"].into_iter().enumerate() {
+            let request = Request::builder()
+                .uri("https://localhost/")
+                .header("x-base-probe", value)
+                .body(Body::empty())
+                .unwrap();
+            if index == 0 {
+                request
+                    .extensions()
+                    .insert(FieldSectionBase::RequiredInsertCount);
+            }
+            client
+                .send_request(request)
+                .await
+                .unwrap()
+                .into_body()
+                .collect()
+                .await
+                .unwrap();
+        }
+        let representations = serve.await.unwrap();
+        pair.client.close(0u32, b"test complete");
+        _ = client_driver.await.unwrap();
+        _ = server_driver.await.unwrap();
+        pair.close().await;
+        assert_eq!(
+            representations,
+            [
+                FieldRepresentation::DynamicIndex,
+                FieldRepresentation::DynamicPostBaseIndex
+            ]
+        );
     })
     .await
     .unwrap();

@@ -399,5 +399,6 @@ pub(crate) fn encode_trailers(
         id,
         super::headers::outgoing_trailer_fields(headers, allowed)
             .map(|(name, value)| super::qpack::EncodeField::from_header(name, value)),
+        None,
     )
 }

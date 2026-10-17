@@ -16,4 +16,21 @@ pub struct EncoderPreferences {
     pub huffman: Option<bool>,
     /// Keep the first field section static/literal, then use the normal dynamic policy.
     pub defer_dynamic_first_section: Option<bool>,
+    /// Choose relative or post-base indexing without changing table policy.
+    pub field_section_base: Option<FieldSectionBase>,
+}
+
+/// Base used to encode dynamic references within a field section.
+///
+/// Both choices refer to the current connection's table. They never reuse a
+/// captured table index or change which fields are inserted or referenced.
+/// On an HTTP/3 request or response this extension selects its section's Base;
+/// absent extensions retain the connection's configured choice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Extension)]
+pub enum FieldSectionBase {
+    /// Entries inserted in this section use post-base references.
+    #[default]
+    BeforeSection,
+    /// All references are relative to the highest referenced insertion count.
+    RequiredInsertCount,
 }

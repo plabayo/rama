@@ -15,7 +15,9 @@ use rama_http_types::{
     },
     proto::{
         ext,
-        h3::{Code, PseudoHeader, PseudoHeaderOrder, PseudoHeaderSensitivity},
+        h3::{
+            Code, PseudoHeader, PseudoHeaderOrder, PseudoHeaderSensitivity, qpack::FieldSectionBase,
+        },
     },
 };
 use rama_net::{Protocol, address::AuthorityRef, uri::Uri};
@@ -634,6 +636,7 @@ pub(crate) fn encode_request_fields<B>(
                 .inspect(|_| sent.set(sent.get() + 1))
                 .map(|(name, value)| EncodeField::from_header(name, value)),
         ),
+        request.extensions().get_ref::<FieldSectionBase>().copied(),
     )?;
     // Every field went out, and `TE` only as the `trailers` it is rewritten to.
     let unchanged = sent.get() == request.headers().len()
@@ -677,6 +680,7 @@ pub(crate) fn encode_response<B>(
             outgoing_fields(response.headers(), Outgoing::Response)
                 .map(|(name, value)| EncodeField::from_header(name, value)),
         ),
+        response.extensions().get_ref::<FieldSectionBase>().copied(),
     )
 }
 

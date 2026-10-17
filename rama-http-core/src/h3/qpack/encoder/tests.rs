@@ -3,7 +3,7 @@ use crate::h3::qpack::{Decoder, DecoderConfig, ErrorScope, QpackError};
 use rama_core::bytes::{Bytes, BytesMut};
 use rama_http_types::proto::h3::{
     Code, Setting, SettingId, Settings,
-    qpack::{DecoderInstruction, EncoderPreferences, FieldLine, HeaderPrefix},
+    qpack::{DecoderInstruction, EncoderPreferences, FieldLine, FieldSectionBase, HeaderPrefix},
 };
 use rama_utils::octets::kib;
 use std::assert_matches;
@@ -726,5 +726,67 @@ fn deferred_first_section_preserves_later_dynamic_compression_and_input_atomicit
         decoder.feed_encoder_stream(&instructions).unwrap();
         let second_fields = decoder.decode_field_section(4, second).unwrap().unwrap();
         assert_eq!(first_fields, second_fields);
+    }
+}
+
+#[test]
+fn section_base_preferences_rebase_real_references_without_changing_table_policy() {
+    let fields = [
+        (b"custom".as_slice(), b"one".as_slice()),
+        (b"custom", b"two"),
+    ];
+    for base in [
+        FieldSectionBase::BeforeSection,
+        FieldSectionBase::RequiredInsertCount,
+    ] {
+        let mut config = EncoderConfig::default();
+        config.apply_preferences(EncoderPreferences {
+            field_section_base: Some(base),
+            ..EncoderPreferences::default()
+        });
+        let mut encoder = Encoder::new(config);
+        let mut decoder = Decoder::new(DecoderConfig::default());
+        let section = encoder.encode(0, fields).unwrap();
+        let instructions = encoder.take_encoder_stream();
+        let mut cursor = &section[..];
+        let prefix = HeaderPrefix::decode(&mut cursor, 128, 2).unwrap();
+        assert_eq!(prefix.required_insert_count, 2);
+        for _ in 0..2 {
+            let field = FieldLine::decode(&mut cursor, 4096).unwrap();
+            match base {
+                FieldSectionBase::BeforeSection => {
+                    assert_matches!(field, FieldLine::IndexedPostBase { .. })
+                }
+                FieldSectionBase::RequiredInsertCount => assert_matches!(
+                    field,
+                    FieldLine::Indexed {
+                        is_static: false,
+                        ..
+                    }
+                ),
+            }
+        }
+        assert!(cursor.is_empty());
+        decoder.feed_encoder_stream(&instructions).unwrap();
+        let decoded = decoder.decode_field_section(0, section).unwrap().unwrap();
+        assert_eq!(decoded.len(), fields.len());
+        for (actual, (name, value)) in decoded.iter().zip(fields) {
+            assert_eq!(actual.name.as_ref(), name);
+            assert_eq!(actual.value.as_ref(), value);
+        }
+        encoder
+            .feed_decoder_stream(&decoder.take_decoder_stream())
+            .unwrap();
+        let subsequent = encoder.encode(4, fields).unwrap();
+        assert_eq!(
+            encoder.insert_count(),
+            2,
+            "rebasing never reinserts existing values"
+        );
+        decoder
+            .decode_field_section(4, subsequent)
+            .unwrap()
+            .unwrap();
+        assert!(encoder.take_encoder_stream().is_empty());
     }
 }

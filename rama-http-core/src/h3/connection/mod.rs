@@ -25,6 +25,7 @@ use rama_http_types::proto::h3::{
     observation::{
         H3ObservationSnapshot, H3RequestObservation, ObservationLimits, ObservedFieldRepresentation,
     },
+    qpack::FieldSectionBase,
 };
 use rama_net::{stream::SocketInfo, tls::ApplicationProtocol};
 use rama_quic::{
@@ -1124,7 +1125,12 @@ impl Shared {
         }
     }
 
-    pub(crate) fn encode<I, F, N, V>(&self, id: u64, fields: I) -> Result<Bytes, Error>
+    pub(crate) fn encode<I, F, N, V>(
+        &self,
+        id: u64,
+        fields: I,
+        base: Option<FieldSectionBase>,
+    ) -> Result<Bytes, Error>
     where
         I: IntoIterator<Item = F>,
         F: Into<super::qpack::EncodeField<N, V>>,
@@ -1137,11 +1143,11 @@ impl Shared {
         }
         let mut stream = self.encoder_stream.lock();
         if let Some(stream) = stream.as_mut() {
-            stream.encode(&mut state.encoder, id, fields)
+            stream.encode(&mut state.encoder, id, fields, base)
         } else {
             state
                 .encoder
-                .encode_with_credit(id, fields, 0)
+                .encode_with_credit(id, fields, 0, base)
                 .map_err(compression_error)
         }
     }
@@ -1853,10 +1859,6 @@ mod tests {
                 frame_type: FrameType::new(1 << 62),
                 payload: Bytes::new(),
             },
-            ClientControlFrame::RequestPriority {
-                request: StreamId::new(Side::Server, Dir::Bi, 0),
-                value: Bytes::new(),
-            },
         ] {
             assert!(
                 config
@@ -1868,6 +1870,36 @@ mod tests {
             assert!(Arc::ptr_eq(config.client_control.as_ref().unwrap(), &valid));
         }
         config.max_frame_size = 1024;
+        // Role admission must fail on its own, without a masking byte limit.
+        for (side, dir) in [
+            (Side::Server, Dir::Bi),
+            (Side::Client, Dir::Uni),
+            (Side::Server, Dir::Uni),
+        ] {
+            let frame = ClientControlFrame::RequestPriority {
+                request: StreamId::new(side, dir, 0),
+                value: Bytes::from_static(b"u=1"),
+            };
+            let mut output = vec![0xaa];
+            assert!(frame.encode(&mut output).is_none());
+            assert_eq!(output, [0xaa]);
+            config
+                .try_set_client_controls(Some(Arc::new(ClientControlPreferences {
+                    frames: vec![frame].into(),
+                })))
+                .unwrap_err();
+            assert!(Arc::ptr_eq(config.client_control.as_ref().unwrap(), &valid));
+        }
+        config
+            .try_set_client_controls(Some(Arc::new(ClientControlPreferences {
+                frames: vec![ClientControlFrame::RequestPriority {
+                    request: StreamId::new(Side::Client, Dir::Bi, 0),
+                    value: Bytes::from_static(b"u=1"),
+                }]
+                .into(),
+            })))
+            .unwrap();
+        config.try_set_client_controls(Some(valid.clone())).unwrap();
         config.max_requests = 0;
         config.max_pushes = 0;
         let too_many = ClientControlPreferences {

@@ -6,13 +6,13 @@ use std::{
 };
 
 use rama_core::bytes::{Bytes, BytesMut};
-use rama_http_types::proto::h3::qpack::{
-    EncoderPreferences,
-    prefix::{StringEncoder, encode_int, int_encoded_len},
-};
 use rama_http_types::proto::h3::{
     VarInt,
-    qpack::{DecoderInstruction, HeaderPrefix, PrefixError, static_table},
+    qpack::{
+        DecoderInstruction, EncoderPreferences, FieldSectionBase, HeaderPrefix, PrefixError,
+        prefix::{StringEncoder, encode_int, int_encoded_len},
+        static_table,
+    },
 };
 use rama_utils::octets::{kib, kib_u64};
 
@@ -87,6 +87,8 @@ pub struct EncoderConfig {
     pub huffman: bool,
     /// Start with a static/literal section, then permit ordinary dynamic compression.
     pub defer_dynamic_first_section: bool,
+    /// Coordinate system for dynamic references; table contents remain independent.
+    pub field_section_base: FieldSectionBase,
     /// Maximum uncompressed section size, including 32 bytes per field.
     pub max_field_section_size: usize,
     /// Maximum queued encoder-stream bytes. When full, encoding falls back to literals.
@@ -109,6 +111,9 @@ impl EncoderConfig {
         if let Some(defer) = preferences.defer_dynamic_first_section {
             self.defer_dynamic_first_section = defer;
         }
+        if let Some(base) = preferences.field_section_base {
+            self.field_section_base = base;
+        }
     }
 }
 
@@ -120,12 +125,24 @@ impl Default for EncoderConfig {
             target_capacity: kib_u64(4),
             huffman: true,
             defer_dynamic_first_section: false,
+            field_section_base: FieldSectionBase::default(),
             max_field_section_size: kib(64),
             max_encoder_stream_bytes: kib(64),
             max_outstanding_sections: 1024,
             max_outstanding_references: 16_384,
         }
     }
+}
+
+// Plans share the already-required preflight allocation with their input fields.
+// Absolute references stay protected until the final section Base is chosen.
+#[derive(Clone, Copy)]
+enum FieldEncoding {
+    StaticIndex(u64),
+    DynamicIndex(u64),
+    LiteralStaticName(u64),
+    LiteralDynamicName(u64),
+    LiteralName,
 }
 
 struct Section {
@@ -309,6 +326,7 @@ impl Encoder {
         stream_id: u64,
         fields: I,
         credit: usize,
+        base: Option<FieldSectionBase>,
     ) -> Result<Bytes, QpackError>
     where
         I: IntoIterator<Item = F>,
@@ -318,7 +336,11 @@ impl Encoder {
     {
         let configured = self.config.max_encoder_stream_bytes;
         self.config.max_encoder_stream_bytes = configured.min(credit);
-        let result = self.encode(stream_id, fields);
+        let result = self.encode_with_base(
+            stream_id,
+            fields,
+            base.unwrap_or(self.config.field_section_base),
+        );
         self.config.max_encoder_stream_bytes = configured;
         result
     }
@@ -365,6 +387,22 @@ impl Encoder {
         N: AsRef<[u8]>,
         V: AsRef<[u8]>,
     {
+        self.encode_with_base(stream_id, fields, self.config.field_section_base)
+    }
+
+    /// Encode with a section-local Base choice, retaining connection table policy.
+    pub fn encode_with_base<I, F, N, V>(
+        &mut self,
+        stream_id: u64,
+        fields: I,
+        base_policy: FieldSectionBase,
+    ) -> Result<Bytes, QpackError>
+    where
+        I: IntoIterator<Item = F>,
+        F: Into<EncodeField<N, V>>,
+        N: AsRef<[u8]>,
+        V: AsRef<[u8]>,
+    {
         if VarInt::from_u64(stream_id).is_err() {
             return Err(QpackError::ResourceLimit(
                 "stream ID exceeds QUIC integer range",
@@ -384,10 +422,10 @@ impl Encoder {
                 .ok_or(QpackError::EncodeFieldSectionLimit(
                     "field section too large",
                 ))?;
-            input.push(field);
+            input.push((field, FieldEncoding::LiteralName));
         }
         self.ensure_capacity();
-        let base = self.table.insert_count();
+        let previous_base = self.table.insert_count();
         let was_blocking = self.is_stream_blocking(stream_id);
         let may_block = was_blocking || self.blocking_streams < self.config.max_blocked_streams;
         let cancelled_through = self.cancelled_through[(stream_id & STREAM_CLASS_MASK) as usize];
@@ -396,12 +434,7 @@ impl Encoder {
             && cancelled_through.is_none_or(|cancelled| stream_id > cancelled);
         let mut refs = Vec::new();
         let mut ric = 0;
-        // Two u64 prefixed integers need at most 22 bytes. Backfill the prefix into this headroom
-        // after the body is encoded; slicing it away avoids moving or copying the body.
-        const PREFIX_HEADROOM: usize = 22;
-        let mut out = BytesMut::with_capacity(PREFIX_HEADROOM + size.min(kib(1)));
-        out.resize(PREFIX_HEADROOM, 0);
-        for field in input {
+        for (field, encoding) in &mut input {
             let name = field.name.as_ref();
             let value = field.value.as_ref();
             let can_track =
@@ -410,7 +443,7 @@ impl Encoder {
                 |abs: u64| can_track && (abs < self.known_received_count || may_block);
             if !field.never_index {
                 if let Some(index) = static_table::find(name, value) {
-                    encode_int(&mut out, index as u64, 6, 0xc0);
+                    *encoding = FieldEncoding::StaticIndex(index as u64);
                     continue;
                 }
                 if let Some(abs) = self
@@ -419,49 +452,76 @@ impl Encoder {
                     .filter(|abs| referenceable(*abs))
                 {
                     self.reference(abs, &mut refs, &mut ric);
-                    encode_dynamic_index(&mut out, abs, base);
+                    *encoding = FieldEncoding::DynamicIndex(abs);
                     continue;
                 }
                 if can_track && may_block && self.try_insert(name, value) {
                     let abs = self.table.insert_count() - 1;
                     self.reference(abs, &mut refs, &mut ric);
-                    encode_dynamic_index(&mut out, abs, base);
+                    *encoding = FieldEncoding::DynamicIndex(abs);
                     continue;
                 }
             }
             if let Some(index) = static_table::find_name(name) {
-                encode_int(
-                    &mut out,
-                    index as u64,
-                    4,
-                    0x50 | if field.never_index { 0x20 } else { 0 },
-                );
+                *encoding = FieldEncoding::LiteralStaticName(index as u64);
             } else if let Some(abs) = self
                 .table
                 .find_name(name)
                 .filter(|abs| can_track && (*abs < self.known_received_count || may_block))
             {
                 self.reference(abs, &mut refs, &mut ric);
-                if abs < base {
+                *encoding = FieldEncoding::LiteralDynamicName(abs);
+            }
+        }
+        let base = match base_policy {
+            FieldSectionBase::BeforeSection => previous_base,
+            FieldSectionBase::RequiredInsertCount => ric,
+        };
+        // Reserve prefix headroom to avoid moving the body after its final RIC is known.
+        const PREFIX_HEADROOM: usize = 22;
+        let mut out = BytesMut::with_capacity(PREFIX_HEADROOM + size.min(kib(1)));
+        out.resize(PREFIX_HEADROOM, 0);
+        for (field, encoding) in input {
+            match encoding {
+                FieldEncoding::StaticIndex(index) => {
+                    encode_int(&mut out, index, 6, 0xc0);
+                    continue;
+                }
+                FieldEncoding::DynamicIndex(abs) => {
+                    encode_dynamic_index(&mut out, abs, base);
+                    continue;
+                }
+                FieldEncoding::LiteralStaticName(index) => {
                     encode_int(
                         &mut out,
-                        base - abs - 1,
+                        index,
                         4,
-                        0x40 | if field.never_index { 0x20 } else { 0 },
-                    );
-                } else {
-                    encode_int(
-                        &mut out,
-                        abs - base,
-                        3,
-                        if field.never_index { 0x08 } else { 0 },
+                        0x50 | if field.never_index { 0x20 } else { 0 },
                     );
                 }
-            } else {
-                StringEncoder::new(name, 3, self.config.huffman)
-                    .encode(&mut out, 0x20 | if field.never_index { 0x10 } else { 0 });
+                FieldEncoding::LiteralDynamicName(abs) => {
+                    if abs < base {
+                        encode_int(
+                            &mut out,
+                            base - abs - 1,
+                            4,
+                            0x40 | if field.never_index { 0x20 } else { 0 },
+                        );
+                    } else {
+                        encode_int(
+                            &mut out,
+                            abs - base,
+                            3,
+                            if field.never_index { 0x08 } else { 0 },
+                        );
+                    }
+                }
+                FieldEncoding::LiteralName => {
+                    StringEncoder::new(field.name.as_ref(), 3, self.config.huffman)
+                        .encode(&mut out, 0x20 | if field.never_index { 0x10 } else { 0 });
+                }
             }
-            StringEncoder::new(value, 7, self.config.huffman).encode(&mut out, 0);
+            StringEncoder::new(field.value.as_ref(), 7, self.config.huffman).encode(&mut out, 0);
         }
         let mut prefix = [0u8; PREFIX_HEADROOM];
         let mut cursor = &mut prefix[..];

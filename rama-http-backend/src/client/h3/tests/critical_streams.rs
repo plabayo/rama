@@ -110,6 +110,7 @@ async fn request_startup_preferences_reach_the_peer_without_ua() {
                 target_capacity: Some(128),
                 huffman: Some(false),
                 defer_dynamic_first_section: Some(true),
+                ..EncoderPreferences::default()
             });
             let (transport, peer) = tokio::join!(connector.serve(input), async {
                 server
