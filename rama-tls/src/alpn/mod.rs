@@ -1,5 +1,8 @@
 //! Application protocol agreement and ALPN wire validation.
 
+use rama_core::error::{BoxError, BoxErrorExt as _};
+use rama_net::tls::{ApplicationProtocol, TlsAlpn};
+
 /// How peers agree on their application protocol.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AlpnPolicy {
@@ -29,6 +32,25 @@ impl std::fmt::Display for AlpnError {
 }
 
 impl std::error::Error for AlpnError {}
+
+/// Supply a required protocol only when the caller supplied no ALPN offer.
+///
+/// An explicit offer remains unchanged, including its order and other protocols.
+/// It must contain `required`; an empty or conflicting offer is an error. The
+/// consumer still checks the protocol selected by the peer after the handshake.
+/// Connector defaults are not explicit offers and should be passed as `None`.
+pub fn required_alpn_override(
+    required: ApplicationProtocol,
+    offered: Option<&TlsAlpn>,
+) -> Result<Option<ApplicationProtocol>, BoxError> {
+    match offered {
+        Some(offer) if offer.0.contains(&required) => Ok(None),
+        Some(_) => Err(BoxError::from_static_str(
+            "explicit ALPN offer excludes the required application protocol",
+        )),
+        None => Ok(Some(required)),
+    }
+}
 
 /// Validate the protocol entries and the complete TLS extension body length.
 pub fn validate_alpn<'a>(

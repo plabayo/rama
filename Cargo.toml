@@ -668,6 +668,11 @@ mimalloc = { workspace = true }
 workspace = true
 
 [[test]]
+name = "tls-offers"
+path = "tests/tls-offers/main.rs"
+required-features = ["http"]
+
+[[test]]
 name = "http-core"
 path = "tests/http-core/main.rs"
 required-features = ["http-full"]

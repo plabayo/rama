@@ -41,7 +41,10 @@ use rama_net::http::TargetHttpVersion;
 #[cfg(all(test, feature = "http"))]
 use rama_net::http::Version;
 #[cfg(feature = "http")]
-use rama_tls::client::{http_alpn_override, negotiated_http_version};
+use rama_tls::{
+    alpn::required_alpn_override,
+    client::{http_alpn_override, negotiated_http_version},
+};
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
 ///
@@ -711,10 +714,14 @@ impl<S, K> TlsConnector<S, K> {
 
         apply_default_alpn(&extensions, application_protocol);
 
-        // When HTTP pins a concrete target version, force the TLS ALPN to match
-        // it before the handshake
+        // A request-owned offer is authoritative. Otherwise narrow defaults to
+        // the required HTTP protocol before starting the handshake.
         #[cfg(feature = "http")]
-        resolve_http_alpn(&extensions, application_protocol)?;
+        resolve_http_alpn(
+            &extensions,
+            application_protocol,
+            request_extensions.get_ref::<TlsAlpn>(),
+        )?;
 
         let config = BoringTlsConnectorConfig::from_extensions(&extensions);
         let mut data = self.build_connector_data(config)?;
@@ -744,18 +751,22 @@ fn apply_default_alpn(effective_extensions: &Extensions, application_protocol: O
     }
 }
 
-/// Force the TLS ALPN to match a concrete [`TargetHttpVersion`] when HTTP pins
-/// one. Otherwise protocols like WebSocket can negotiate `h2` even though the
-/// request requires an HTTP/1.1 upgrade.
+/// Resolve the required HTTP protocol without rewriting an explicit request offer.
+/// Connector defaults are narrowed so, for example, a WebSocket upgrade cannot
+/// negotiate HTTP/2 accidentally. A conflicting explicit offer fails instead.
 #[cfg(feature = "http")]
 fn resolve_http_alpn(
     ext: &Extensions,
     application_protocol: Option<&Protocol>,
+    offered: Option<&TlsAlpn>,
 ) -> Result<(), BoxError> {
     let target_version = ext.get_ref::<TargetHttpVersion>();
     let Some(target_alpn) =
         http_alpn_override(application_protocol, target_version.map(|target| target.0))?
     else {
+        return Ok(());
+    };
+    let Some(target_alpn) = required_alpn_override(target_alpn, offered)? else {
         return Ok(());
     };
     tracing::trace!(
@@ -1987,7 +1998,7 @@ mod tests {
         extensions.insert(TlsAlpn::http_auto());
         extensions.insert(FallbackHttpVersion(Version::HTTP_11));
 
-        resolve_http_alpn(&extensions, Some(&Protocol::HTTPS)).unwrap();
+        resolve_http_alpn(&extensions, Some(&Protocol::HTTPS), None).unwrap();
         assert_eq!(
             extensions.get_ref::<TlsAlpn>().map(|alpn| alpn.0.clone()),
             Some(TlsAlpn::http_auto().0),
@@ -2011,7 +2022,7 @@ mod tests {
             });
             extensions.insert(TargetHttpVersion(version));
 
-            resolve_http_alpn(&extensions, Some(&Protocol::HTTPS))
+            resolve_http_alpn(&extensions, Some(&Protocol::HTTPS), None)
                 .expect("resolve concrete HTTP ALPN");
 
             let expected_alpn = ApplicationProtocol::try_from(version).unwrap();
@@ -2172,7 +2183,7 @@ mod tests {
         extensions.insert(TlsAlpn::empty());
         extensions.insert(TargetHttpVersion(Version::HTTP_2));
 
-        resolve_http_alpn(&extensions, Some(&Protocol::ICAPS)).unwrap();
+        resolve_http_alpn(&extensions, Some(&Protocol::ICAPS), None).unwrap();
 
         assert_eq!(
             extensions

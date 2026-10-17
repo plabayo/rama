@@ -28,7 +28,7 @@ use rama_net::{
     },
     mode::ConnectIpMode,
     stream::SocketInfo,
-    tls::ApplicationProtocol,
+    tls::{ApplicationProtocol, TlsAlpn},
 };
 use rama_quic::{
     ClientConfig, ConnectError as QuicConnectError, Connection,
@@ -36,9 +36,12 @@ use rama_quic::{
     tls::{ClientConfigCache, QuicClientConfigProvider, TlsOptions, default_tls_provider},
 };
 use rama_quic_proto::{TransportErrorCode, profile::QuicProfile};
-use rama_tls::client::{
-    TlsClientConfig, TlsConnectionReuse, TlsServerAuthentication, TlsServerName,
-    TlsStoreServerCertChain,
+use rama_tls::{
+    alpn::required_alpn_override,
+    client::{
+        TlsClientConfig, TlsConnectionReuse, TlsServerAuthentication, TlsServerName,
+        TlsStoreServerCertChain,
+    },
 };
 #[cfg(feature = "ua")]
 use rama_ua::profile::replay::connection::preparation::ConnectionPreparation;
@@ -62,7 +65,8 @@ const MAX_CACHED_PROFILE_ENDPOINTS: usize = 8;
 /// Wrap this connector with Rama's DNS connector and HTTP connection pool,
 /// which checks the reuse policy published by this connector. TLS overrides
 /// are classified by the same provider that configures the handshake.
-/// The connector selects `h3` ALPN; the origin hostname remains the TLS
+/// Requests may supply an explicit ALPN offer containing `h3`; otherwise the
+/// connector offers `h3` alone. The origin hostname remains the TLS
 /// verification target even when routing selects a different physical address.
 /// This direct UDP connector rejects proxy routes before any connection attempt.
 /// Proxy-capable QUIC connectors can be injected separately.
@@ -254,13 +258,6 @@ impl Http3ConnectorBuilder {
     }
 }
 
-fn invalid(message: &'static str) -> ConnectionError {
-    ConnectionError::local(
-        BoxError::from_static_str(message),
-        ConnectionErrorKind::InvalidInput,
-    )
-}
-
 /// Values derived once from the effective TLS configuration for one dial.
 struct PreparedTls {
     profile: Option<Arc<QuicProfile>>,
@@ -386,11 +383,15 @@ impl Http3Connector {
         input: &ConnectRequest,
     ) -> Result<(PreparedTls, Arc<Config>), ConnectionError> {
         let profile = input.extensions().get_arc::<QuicProfile>();
-        let tls = self
-            .tls
-            .clone()
-            .with_overrides(input.extensions())
-            .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect());
+        let mut tls = self.tls.clone().with_overrides(input.extensions());
+        if let Some(required) = required_alpn_override(
+            ApplicationProtocol::HTTP_3,
+            input.extensions().get_ref::<TlsAlpn>(),
+        )
+        .map_err(|error| ConnectionError::local(error, InvalidInput))?
+        {
+            tls.set_alpn([required].into_iter().collect());
+        }
         let server_identity = tls
             .as_extensions()
             .get_ref::<TlsServerName>()
@@ -444,7 +445,12 @@ impl Http3Connector {
                             .as_ref()
                             .is_some_and(|caller| caller.as_ref() != &transport)
                         {
-                            return Err(invalid("caller and captured QUIC profiles conflict"));
+                            return Err(ConnectionError::local(
+                                BoxError::from_static_str(
+                                    "caller and captured QUIC profiles conflict",
+                                ),
+                                InvalidInput,
+                            ));
                         }
                         Some(Arc::new(transport))
                     }
@@ -457,8 +463,11 @@ impl Http3Connector {
         if let Some(profile) = &profile
             && profile.limits().initial_max_streams_uni < 3
         {
-            return Err(invalid(
-                "HTTP/3 profiles must permit the peer's three critical streams",
+            return Err(ConnectionError::local(
+                BoxError::from_static_str(
+                    "HTTP/3 profiles must permit the peer's three critical streams",
+                ),
+                InvalidInput,
             ));
         }
 
@@ -485,7 +494,10 @@ impl Http3Connector {
                 None => self.transport.datagram_receive_enabled(),
             };
             if !datagrams {
-                return Err(invalid("HTTP/3 SETTINGS require QUIC DATAGRAM reception"));
+                return Err(ConnectionError::local(
+                    BoxError::from_static_str("HTTP/3 SETTINGS require QUIC DATAGRAM reception"),
+                    InvalidInput,
+                ));
             }
         }
         #[cfg(feature = "ua")]
@@ -513,7 +525,12 @@ impl Http3Connector {
         } else {
             server_identity
                 .try_as_domain()
-                .map_err(|_error| invalid("invalid TLS origin host"))?
+                .map_err(|_error| {
+                    ConnectionError::local(
+                        BoxError::from_static_str("invalid TLS origin host"),
+                        InvalidInput,
+                    )
+                })?
                 .to_string()
         };
         Ok((
@@ -539,9 +556,12 @@ impl Http3Connector {
     ) -> Result<(Endpoint, Connection), ConnectionError> {
         let tls = &prepared.config;
         let server_name = prepared.server_name.as_str();
-        let target = input
-            .connector_target()
-            .ok_or_else(|| invalid("HTTP/3 connector target is missing"))?;
+        let target = input.connector_target().ok_or_else(|| {
+            ConnectionError::local(
+                BoxError::from_static_str("HTTP/3 connector target is missing"),
+                InvalidInput,
+            )
+        })?;
         let attempt = input
             .extensions()
             .get_arc::<ConnectionAttempt>()
@@ -615,15 +635,24 @@ impl Http3Connector {
             )
             .await
         } else {
-            let domain = target
-                .host
-                .try_as_domain()
-                .map_err(|_error| invalid("unsupported HTTP/3 target host"))?;
+            let domain = target.host.try_as_domain().map_err(|_error| {
+                ConnectionError::local(
+                    BoxError::from_static_str("unsupported HTTP/3 target host"),
+                    InvalidInput,
+                )
+            })?;
             let candidates = input
                 .extensions()
                 .get_ref::<ConnectorTargetStream>()
                 .filter(|c| c.domain() == domain.as_ref())
-                .ok_or_else(|| invalid("HTTP/3 domain targets require an outer DNS connector"))?;
+                .ok_or_else(|| {
+                    ConnectionError::local(
+                        BoxError::from_static_str(
+                            "HTTP/3 domain targets require an outer DNS connector",
+                        ),
+                        InvalidInput,
+                    )
+                })?;
             // Resolution policy chooses which records to query; connection
             // policy independently constrains every result, including custom
             // candidate sources and IPv4-mapped IPv6 answers.
@@ -723,7 +752,10 @@ impl Service<ConnectRequest> for Http3Connector {
             ));
         }
         if input.target_protocol().is_none_or(|p| !p.is_secure()) {
-            return Err(invalid("HTTP/3 requires a secure origin"));
+            return Err(ConnectionError::local(
+                BoxError::from_static_str("HTTP/3 requires a secure origin"),
+                InvalidInput,
+            ));
         }
         validate_version(&input)?;
 
@@ -751,8 +783,9 @@ fn validate_version(input: &ConnectRequest) -> Result<(), ConnectionError> {
         .get_ref::<TargetHttpVersion>()
         .is_some_and(|version| version.0 != Version::HTTP_3)
     {
-        return Err(invalid(
-            "explicit HTTP version conflicts with HTTP/3 connector",
+        return Err(ConnectionError::local(
+            BoxError::from_static_str("explicit HTTP version conflicts with HTTP/3 connector"),
+            InvalidInput,
         ));
     }
     Ok(())
@@ -978,6 +1011,31 @@ mod concrete_transport_tests {
             Err(TlsConfigError::InvalidConfiguration(
                 BoxError::from_static_str("custom factory invoked"),
             ))
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_alpn_conflicts_fail_before_provider_or_endpoint_setup() {
+        for offer in [TlsAlpn::empty(), TlsAlpn::http_auto()] {
+            let provider = Arc::new(CustomProvider::default());
+            let connector = Http3Connector::builder(Executor::new())
+                .with_tls_provider(provider.clone())
+                .build_lazy()
+                .unwrap();
+            let input = ConnectRequest::new(HostWithPort::local_ipv4(443))
+                .with_application_protocol(Protocol::HTTPS);
+            input.extensions().insert(offer);
+            // Keep the provider fixture valid if a reversion reaches it: the
+            // regression must fail on call counts, not a missing test setting.
+            input
+                .extensions()
+                .insert(TlsServerVerify(ServerVerifyMode::Disable));
+            let error = connector.serve(input).await.err().unwrap();
+            assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
+            assert_eq!(provider.calls.load(Ordering::Relaxed), 0);
+            assert_eq!(provider.authenticated_checks.load(Ordering::Relaxed), 0);
+            assert_matches!(connector.endpoint.as_ref(), ConnectorEndpoint::Managed(endpoint)
+                if endpoint.try_lock().unwrap().default.is_none());
         }
     }
 

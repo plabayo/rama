@@ -31,7 +31,10 @@ use rama_net::http::TargetHttpVersion;
 #[cfg(all(test, feature = "http"))]
 use rama_net::http::Version;
 #[cfg(feature = "http")]
-use rama_tls::client::{http_alpn_override, negotiated_http_version};
+use rama_tls::{
+    alpn::required_alpn_override,
+    client::{http_alpn_override, negotiated_http_version},
+};
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
 ///
@@ -515,10 +518,14 @@ impl<S, K> TlsConnector<S, K> {
 
         apply_default_alpn(&extensions, application_protocol);
 
-        // When HTTP pins a concrete target version, force the TLS ALPN to match
-        // it before the handshake
+        // A request-owned offer is authoritative. Otherwise narrow defaults to
+        // the required HTTP protocol before starting the handshake.
         #[cfg(feature = "http")]
-        resolve_http_alpn(&extensions, application_protocol)?;
+        resolve_http_alpn(
+            &extensions,
+            application_protocol,
+            request_extensions.get_ref::<TlsAlpn>(),
+        )?;
 
         let config = RustlsTlsConnectorConfig::from_extensions(&extensions);
         TlsConnectorData::try_from(config)
@@ -645,18 +652,22 @@ fn apply_default_alpn(effective_extensions: &Extensions, application_protocol: O
     effective_extensions.insert(default_tls_alpn(protocol).unwrap_or_else(TlsAlpn::empty));
 }
 
-/// Force the TLS ALPN to match a concrete [`TargetHttpVersion`] when HTTP pins
-/// one. Otherwise protocols like WebSocket can negotiate `h2` even though the
-/// request requires an HTTP/1.1 upgrade.
+/// Resolve the required HTTP protocol without rewriting an explicit request offer.
+/// Connector defaults are narrowed so, for example, a WebSocket upgrade cannot
+/// negotiate HTTP/2 accidentally. A conflicting explicit offer fails instead.
 #[cfg(feature = "http")]
 fn resolve_http_alpn(
     ext: &Extensions,
     application_protocol: Option<&Protocol>,
+    offered: Option<&TlsAlpn>,
 ) -> Result<(), BoxError> {
     let target_version = ext.get_ref::<TargetHttpVersion>();
     let Some(target_alpn) =
         http_alpn_override(application_protocol, target_version.map(|target| target.0))?
     else {
+        return Ok(());
+    };
+    let Some(target_alpn) = required_alpn_override(target_alpn, offered)? else {
         return Ok(());
     };
     tracing::trace!(
@@ -1408,7 +1419,7 @@ mod tests {
             let ext = Extensions::new();
             ext.insert(TargetHttpVersion(Version::HTTP_11));
 
-            resolve_http_alpn(&ext, Some(&Protocol::HTTPS)).unwrap();
+            resolve_http_alpn(&ext, Some(&Protocol::HTTPS), None).unwrap();
             assert_eq!(alpn_of(&ext), Some(vec![ApplicationProtocol::HTTP_11]));
         }
 
@@ -1417,14 +1428,14 @@ mod tests {
             let ext = Extensions::new();
             ext.insert(TargetHttpVersion(Version::HTTP_2));
 
-            resolve_http_alpn(&ext, Some(&Protocol::HTTPS)).unwrap();
+            resolve_http_alpn(&ext, Some(&Protocol::HTTPS), None).unwrap();
             assert_eq!(alpn_of(&ext), Some(vec![ApplicationProtocol::HTTP_2]));
         }
 
         #[test]
         fn leaves_alpn_untouched_without_target_version() {
             let ext = Extensions::new();
-            resolve_http_alpn(&ext, Some(&Protocol::HTTPS)).unwrap();
+            resolve_http_alpn(&ext, Some(&Protocol::HTTPS), None).unwrap();
             assert_eq!(alpn_of(&ext), None);
         }
 
@@ -1434,7 +1445,7 @@ mod tests {
             ext.insert(TlsAlpn::http_auto());
             ext.insert(FallbackHttpVersion(Version::HTTP_11));
 
-            resolve_http_alpn(&ext, Some(&Protocol::HTTPS)).unwrap();
+            resolve_http_alpn(&ext, Some(&Protocol::HTTPS), None).unwrap();
             assert_eq!(
                 alpn_of(&ext),
                 Some(vec![
@@ -1450,7 +1461,7 @@ mod tests {
             ext.insert(TlsAlpn::http_auto());
             ext.insert(TargetHttpVersion(Version::HTTP_11));
 
-            resolve_http_alpn(&ext, Some(&Protocol::HTTPS)).unwrap();
+            resolve_http_alpn(&ext, Some(&Protocol::HTTPS), None).unwrap();
             assert_eq!(alpn_of(&ext), Some(vec![ApplicationProtocol::HTTP_11]));
         }
 
@@ -1547,7 +1558,7 @@ mod tests {
             ext.insert(TlsAlpn::empty());
             ext.insert(TargetHttpVersion(Version::HTTP_2));
 
-            resolve_http_alpn(&ext, Some(&Protocol::ICAPS)).unwrap();
+            resolve_http_alpn(&ext, Some(&Protocol::ICAPS), None).unwrap();
 
             assert_eq!(alpn_of(&ext), Some(Vec::new()));
         }
