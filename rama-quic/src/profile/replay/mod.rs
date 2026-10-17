@@ -1,10 +1,9 @@
 //! Prepare a selected QUIC tuple with its consuming provider and current policy.
 //!
-//! Prepared native state stays local to the dial. TLS and transport parameters
-//! are validated together before native handshake output; HTTP/3 stays with its
-//! HTTP consumer. Recorded first-flight support requires the actual native layout.
+//! Prepared native state stays local to the dial. TLS and transport settings
+//! come from the same selected tuple; HTTP/3 stays with its HTTP consumer.
+//! Native engines enforce their protocol invariants; wire tests verify fidelity.
 
-pub mod parameters;
 #[cfg(feature = "boring")]
 pub(crate) mod tls;
 mod transport;
@@ -87,15 +86,11 @@ pub fn prepare(
     let flight = components.quic_first_flight.take();
     let transport = match components.quic_parameters.take() {
         Some(parameters) => Some(transport::prepare(
-            parameters,
+            &parameters,
             components.quic_versions.take().as_ref(),
             flight.as_ref(),
         )?),
         None => None,
-    };
-    let (transport, expected_parameters) = match transport {
-        Some((transport, expected)) => (Some(transport), Some(expected)),
-        None => (None, None),
     };
     let scope = match policy.as_extensions().get_ref::<TlsSessionProfileScope>() {
         Some(caller) => format!("rama-quic-profile:{}:scope:{}", hex(&profile.0), caller.0),
@@ -105,10 +100,10 @@ pub fn prepare(
         .clone()
         .with_session_profile_scope(TlsSessionProfileScope(scope.into()));
     #[cfg(feature = "boring")]
-    let client = tls::prepare(cache, &scoped, peer, capture, expected_parameters)?;
+    let client = tls::prepare(cache, &scoped, peer, &capture)?;
     #[cfg(not(feature = "boring"))]
     let client = {
-        let _ = (cache, scoped, peer, capture, expected_parameters);
+        let _ = (cache, scoped, peer, capture);
         None
     };
     let transport = client.as_ref().and(transport);

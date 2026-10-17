@@ -1,7 +1,7 @@
 //! Captured native TLS shape checks, with real ephemeral keys and current policy.
 
+use super::parameters::ParameterExpectation;
 use super::{fixture::*, *};
-use crate::profile::replay::parameters::ParameterExpectation;
 
 use rama_net::address::Host;
 use rama_quic_proto::{
@@ -24,8 +24,7 @@ fn captured_quic_tls_preparation_authenticates_with_fresh_native_sessions() {
             &policy,
             TlsOptions::default(),
             Host::try_from("localhost").unwrap(),
-            source.clone(),
-            None,
+            &source,
         )
         .unwrap()
         .crypto;
@@ -49,7 +48,7 @@ fn captured_quic_tls_preparation_authenticates_with_fresh_native_sessions() {
 }
 
 #[test]
-fn captured_tls_shape_is_checked_against_actual_native_output() {
+fn wire_comparison_detects_native_tls_overrides() {
     let (policy, _) = policy();
     let source = reference(&policy, Version::V1);
     policy
@@ -62,16 +61,11 @@ fn captured_tls_shape_is_checked_against_actual_native_output() {
         &policy,
         TlsOptions::default(),
         Host::try_from("localhost").unwrap(),
-        source,
-        None,
+        &source,
     )
     .unwrap()
     .crypto;
-    assert!(
-        prepared
-            .start_session(Version::V1, "localhost", &params(Side::Client))
-            .is_err()
-    );
+    assert_ne!(first_capture(prepared, Version::V1), source);
 }
 
 #[test]
@@ -82,18 +76,20 @@ fn captured_parameter_length_cannot_replace_current_connection_parameters() {
         &policy,
         TlsOptions::default(),
         Host::try_from("localhost").unwrap(),
-        source,
-        None,
+        &source,
     )
     .unwrap()
     .crypto;
     let mut actual = params(Side::Client);
     actual.initial_src_cid = Some(ConnectionId::new(&[1, 2]));
-    assert!(
-        prepared
-            .start_session(Version::V1, "localhost", &actual)
-            .is_err()
-    );
+    let hello = first_hello(prepared, Version::V1, &actual);
+    let emitted = transport_parameters_from_hello(&hello, &CaptureLimits::default()).unwrap();
+    let cid = emitted
+        .iter()
+        .find(|parameter| parameter.id == TransportParameterId::InitialSourceConnectionId)
+        .unwrap();
+    assert_eq!(cid.value, [1, 2]);
+    assert_ne!(capture(&hello), source);
 }
 
 #[test]
@@ -105,8 +101,7 @@ fn captured_wire_choices_cannot_override_explicit_cipher_policy() {
         &policy,
         TlsOptions::default(),
         Host::try_from("localhost").unwrap(),
-        source,
-        None,
+        &source,
     )
     .unwrap_err();
 }
@@ -143,8 +138,7 @@ fn a_real_resumed_capture_requires_current_ticket_support() {
             &policy,
             TlsOptions::default(),
             Host::try_from("localhost").unwrap(),
-            resumed,
-            None
+            &resumed,
         )
         .unwrap()
         .crypto
@@ -156,7 +150,7 @@ fn a_real_resumed_capture_requires_current_ticket_support() {
 fn checked_parameters(
     parameters: &TransportParameters,
     version: Version,
-) -> Arc<dyn crypto::ClientConfig> {
+) -> (Arc<dyn crypto::ClientConfig>, ParameterExpectation) {
     let (policy, _) = policy();
     let client = BoringTlsProvider
         .client_config(&policy, TlsOptions::default())
@@ -171,61 +165,49 @@ fn checked_parameters(
         OrderCaptureLimits::default(),
     )
     .unwrap();
-    prepare_tls(
+    let client = prepare_tls(
         &policy,
         TlsOptions::default(),
         Host::try_from("localhost").unwrap(),
-        capture(&hello),
-        Some(ParameterExpectation::try_from(expected).unwrap()),
+        &capture(&hello),
     )
     .unwrap()
-    .crypto
+    .crypto;
+    (client, ParameterExpectation::try_from(expected).unwrap())
 }
 
 #[test]
-fn captured_parameter_literals_are_checked_even_when_the_body_length_matches() {
+fn emitted_parameter_literals_are_compared_even_when_the_body_length_matches() {
     for version in [Version::V1, Version::V2] {
         let mut current = params(Side::Client);
         current.extra.push((
             u64::from(TransportParameterId::GoogleConnectionOptions),
             vec![1, 2, 3, 4],
         ));
-        let prepared = checked_parameters(&current, version);
-        prepared
-            .clone()
-            .start_session(version, "localhost", &current)
+        let (prepared, expected) = checked_parameters(&current, version);
+        expected
+            .validate(&first_hello(prepared.clone(), version, &current))
             .unwrap();
         current.extra[0].1[0] = 5;
-        let Err(error) = prepared.start_session(version, "localhost", &current) else {
-            panic!("same-sized parameter substitution must fail before output");
-        };
-        assert!(
-            format!("{error:?}").contains("native QUIC parameters differ"),
-            "{error:?}"
-        );
+        let actual = first_hello(prepared, version, &current);
+        expected.validate(&actual).unwrap_err();
     }
 }
 
 #[test]
-fn captured_parameter_binding_lengths_are_checked_independently_of_the_body_length() {
+fn emitted_parameter_binding_lengths_are_compared_independently_of_body_length() {
     for version in [Version::V1, Version::V2] {
         let mut current = params(Side::Client);
         current
             .extra
             .push((u64::from(TransportParameterId::DebuggingSni), vec![1, 2]));
-        let prepared = checked_parameters(&current, version);
-        prepared
-            .clone()
-            .start_session(version, "localhost", &current)
+        let (prepared, expected) = checked_parameters(&current, version);
+        expected
+            .validate(&first_hello(prepared.clone(), version, &current))
             .unwrap();
         current.initial_src_cid = Some(ConnectionId::new(&[7, 8]));
         current.extra[0].1.truncate(1);
-        let Err(error) = prepared.start_session(version, "localhost", &current) else {
-            panic!("binding lengths cannot trade bytes while preserving the aggregate length");
-        };
-        assert!(
-            format!("{error:?}").contains("native QUIC parameters differ"),
-            "{error:?}"
-        );
+        let actual = first_hello(prepared, version, &current);
+        expected.validate(&actual).unwrap_err();
     }
 }

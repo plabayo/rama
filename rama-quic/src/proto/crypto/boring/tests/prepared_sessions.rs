@@ -1,9 +1,6 @@
 //! Native session ownership, engine parameters and failure before connection admission.
 
-use std::sync::atomic::AtomicBool;
-
 use crate::tls::{ClientHandshake, ClientSessionPolicy};
-use rama_core::error::{BoxError, BoxErrorExt};
 use rama_net::address::Host;
 use rama_tls::client::ClientHelloExtension;
 
@@ -25,6 +22,8 @@ fn count_initializations(config: &TlsClientConfig) -> Arc<AtomicUsize> {
 fn prepared_ssl_is_consumed_once_and_retries_keep_fresh_native_state() {
     for version in [Version::V1, Version::V2] {
         let (client, server) = configs();
+        let observed = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let seen = observed.clone();
         let initializations = Arc::new(AtomicUsize::new(0));
         let initialized = initializations.clone();
         let completed = Arc::new(AtomicUsize::new(0));
@@ -33,6 +32,21 @@ fn prepared_ssl_is_consumed_once_and_retries_keep_fresh_native_state() {
             .as_extensions()
             .insert(HandshakeInitializer(Arc::new(move |ssl| {
                 initialized.fetch_add(1, Ordering::SeqCst);
+                let seen = seen.clone();
+                ssl.set_msg_callback(move |_, message| {
+                    if message.is_written()
+                        && message.content_type()
+                            == rama_crypto::dep::boring::ssl::SslContentType::HANDSHAKE
+                        && message.bytes().first() == Some(&1)
+                    {
+                        let ClientHelloHandshakePrefix::Complete(hello) =
+                            parse_client_hello_message_prefix(message.bytes())
+                        else {
+                            panic!("native ClientHello must be complete");
+                        };
+                        seen.lock().push(hello);
+                    }
+                });
                 let finished = finished.clone();
                 // This native hook must survive preparation into the actual session.
                 // Counting construction alone would miss discarding the prepared SSL.
@@ -40,30 +54,8 @@ fn prepared_ssl_is_consumed_once_and_retries_keep_fresh_native_state() {
                     finished.fetch_add(1, Ordering::SeqCst);
                 })
             })));
-        let observed = Arc::new(parking_lot::Mutex::new(Vec::new()));
-        let seen = observed.clone();
         let client = BoringTlsProvider
-            .prepare_fresh_client_config(
-                &client,
-                rama_net::address::Host::try_from("localhost").unwrap(),
-                move |hello, encoded| {
-                    let actual = hello
-                        .extensions()
-                        .iter()
-                        .find_map(|extension| match extension {
-                            ClientHelloExtension::Opaque { id, data }
-                                if *id == ExtensionId::QUIC_TRANSPORT_PARAMETERS =>
-                            {
-                                Some(data)
-                            }
-                            _ => None,
-                        })
-                        .expect("native QUIC ClientHello includes transport parameters");
-                    assert_eq!(actual.as_slice(), encoded);
-                    seen.lock().push(hello.clone());
-                    Ok(())
-                },
-            )
+            .prepare_fresh_client_config(&client, Host::try_from("localhost").unwrap())
             .unwrap()
             .crypto;
         assert_eq!(initializations.load(Ordering::SeqCst), 1);
@@ -89,9 +81,27 @@ fn prepared_ssl_is_consumed_once_and_retries_keep_fresh_native_state() {
                 .clone()
                 .start_session(version, &params(Side::Server))
                 .unwrap();
-            // Authentication, ALPN, exporters and packet keys still work; the
-            // validation hook must not consume or rewrite native handshake output.
+            // Complete an authenticated exchange before comparing the test-only
+            // observation with this connection's transport parameters.
             check_session(&mut *c, &mut *s, false);
+            let mut encoded = Vec::new();
+            parameters.write(&mut encoded);
+            let observed = observed.lock();
+            let actual = observed
+                .last()
+                .unwrap()
+                .extensions()
+                .iter()
+                .find_map(|extension| match extension {
+                    ClientHelloExtension::Opaque { id, data }
+                        if *id == ExtensionId::QUIC_TRANSPORT_PARAMETERS =>
+                    {
+                        Some(data)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(actual.as_slice(), encoded);
             assert_eq!(completed.load(Ordering::SeqCst), usize::from(attempt) + 1);
         }
         let observed = observed.lock();
@@ -120,16 +130,10 @@ fn prepared_ssl_is_consumed_once_and_retries_keep_fresh_native_state() {
 fn wrong_peer_does_not_consume_the_prepared_ssl() {
     let (client, server) = configs();
     let count = count_initializations(&client);
-    let checks = Arc::new(AtomicUsize::new(0));
-    let seen = checks.clone();
     let client = BoringTlsProvider
         .prepare_fresh_client_config(
             &client,
             rama_net::address::Host::try_from("localhost").unwrap(),
-            move |_, _| {
-                seen.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            },
         )
         .unwrap()
         .crypto;
@@ -139,13 +143,11 @@ fn wrong_peer_does_not_consume_the_prepared_ssl() {
             .start_session(Version::V1, "other.invalid", &params(Side::Client))
             .is_err()
     );
-    assert_eq!(checks.load(Ordering::SeqCst), 0);
     assert_eq!(count.load(Ordering::SeqCst), 1);
     let mut c = client
         .start_session(Version::V1, "localhost", &params(Side::Client))
         .unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 1);
-    assert_eq!(checks.load(Ordering::SeqCst), 1);
     let mut s = BoringTlsProvider
         .server_config(&server, TlsOptions::default())
         .unwrap()
@@ -157,80 +159,13 @@ fn wrong_peer_does_not_consume_the_prepared_ssl() {
 }
 
 #[test]
-fn failed_native_check_cannot_admit_a_connection_and_retry_can_succeed() {
-    let (client, _) = configs();
-    let count = count_initializations(&client);
-    let reject = Arc::new(AtomicBool::new(true));
-    let rejected = reject.clone();
-    let checks = Arc::new(AtomicUsize::new(0));
-    let seen = checks.clone();
-    let cache = ClientConfigCache::new(Arc::new(BoringTlsProvider), TlsOptions::default());
-    let client = cache
-        .prepare_client_config(
-            &client,
-            Host::try_from("localhost").unwrap(),
-            ClientHandshake::Full,
-            Box::new(move |_, _| {
-                seen.fetch_add(1, Ordering::SeqCst);
-                if rejected.load(Ordering::SeqCst) {
-                    Err(BoxError::from_static_str("reject this native first flight"))
-                } else {
-                    Ok(())
-                }
-            }),
-        )
-        .unwrap()
-        .unwrap();
-    let mut endpoint = crate::proto::Endpoint::new(
-        Arc::new(crate::EndpointConfig::try_with_rand_key().unwrap()),
-        None,
-        true,
-        None,
-    );
-    let remote = "127.0.0.1:443".parse().unwrap();
-    let error = endpoint
-        .connect(
-            crate::proto::Instant::now(),
-            client.clone(),
-            remote,
-            "localhost",
-        )
-        .unwrap_err();
-    assert_matches!(error, crate::ConnectError::Crypto(_));
-    assert_eq!(endpoint.open_connections(), 0);
-    assert_eq!(endpoint.known_cids(), 0);
-    assert_eq!(checks.load(Ordering::SeqCst), 1);
-    assert_eq!(count.load(Ordering::SeqCst), 1);
-    reject.store(false, Ordering::SeqCst);
-    let (_, mut connection) = endpoint
-        .connect(crate::proto::Instant::now(), client, remote, "localhost")
-        .unwrap();
-    assert_eq!(endpoint.open_connections(), 1);
-    assert_eq!(checks.load(Ordering::SeqCst), 2);
-    assert_eq!(count.load(Ordering::SeqCst), 2);
-    let mut buffer = Vec::new();
-    assert!(
-        connection
-            .poll_transmit(crate::proto::Instant::now(), 1, &mut buffer)
-            .is_some()
-    );
-    assert!(!buffer.is_empty());
-}
-
-#[test]
 fn racing_attempts_own_distinct_sessions_and_initialize_each_once() {
     let (client, server) = configs();
     let count = count_initializations(&client);
-    let checks = Arc::new(AtomicUsize::new(0));
-    let seen = checks.clone();
     let client = BoringTlsProvider
         .prepare_fresh_client_config(
             &client,
             rama_net::address::Host::try_from("localhost").unwrap(),
-            move |_, _| {
-                seen.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            },
         )
         .unwrap()
         .crypto;
@@ -269,7 +204,6 @@ fn racing_attempts_own_distinct_sessions_and_initialize_each_once() {
         }
     });
     assert_eq!(count.load(Ordering::SeqCst), 4);
-    assert_eq!(checks.load(Ordering::SeqCst), 4);
 }
 
 /// The native seam is also useful to relays which do not depend on rama-ua.
@@ -291,7 +225,6 @@ fn native_handshake_requirements_preserve_tickets_without_ua_profiles() {
                 &policy,
                 Host::try_from("localhost").unwrap(),
                 ClientHandshake::Resumed,
-                Box::new(|_, _| Ok(())),
             )
             .unwrap()
             .unwrap();
@@ -309,7 +242,6 @@ fn native_handshake_requirements_preserve_tickets_without_ua_profiles() {
                     &policy,
                     Host::try_from("localhost").unwrap(),
                     ClientHandshake::Full,
-                    Box::new(|_, _| Ok(())),
                 )
                 .unwrap()
                 .unwrap();
@@ -331,7 +263,6 @@ fn native_handshake_requirements_preserve_tickets_without_ua_profiles() {
                 &policy,
                 Host::try_from("localhost").unwrap(),
                 ClientHandshake::Resumed,
-                Box::new(|_, _| Ok(())),
             )
             .unwrap()
             .unwrap();
@@ -354,7 +285,6 @@ fn native_handshake_requirements_preserve_tickets_without_ua_profiles() {
                 &policy,
                 Host::try_from("localhost").unwrap(),
                 ClientHandshake::Resumed,
-                Box::new(|_, _| Ok(())),
             )
             .unwrap_err();
     }

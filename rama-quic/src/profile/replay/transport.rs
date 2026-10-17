@@ -1,6 +1,5 @@
 //! Compile a retained parameter tuple using the engine's typed profile builders.
 
-use super::parameters::ParameterExpectation;
 use rama_core::error::{BoxError, BoxErrorExt as _};
 use rama_quic_proto::{
     capture::version_information,
@@ -19,12 +18,16 @@ use rama_ua::profile::capture::{
 };
 
 pub(super) fn prepare(
-    parameters: OrderedProtocolCapture,
+    parameters: &OrderedProtocolCapture,
     versions: Option<&OrderedProtocolCapture>,
     flight: Option<&QuicFlightCapture>,
-) -> Result<(QuicProfile, ParameterExpectation), BoxError> {
-    let expectation = ParameterExpectation::try_from(parameters)?;
-    let parameters = expectation.capture();
+) -> Result<QuicProfile, BoxError> {
+    parameters.canonical(OrderCaptureLimits::default())?;
+    if !matches!(parameters.namespace, OrderNamespace::QuicParameter) {
+        return Err(BoxError::from_static_str(
+            "captured QUIC parameters have the wrong namespace",
+        ));
+    }
     let mut literals = Vec::with_capacity(parameters.fields.len());
     let mut order = Vec::with_capacity(parameters.fields.len());
     let mut local_cid_len = None;
@@ -108,7 +111,7 @@ pub(super) fn prepare(
             PacketizationProfile::standard().with_layout(InitialFlightLayout::Recorded(layout)),
         );
     }
-    Ok((profile, expectation))
+    Ok(profile)
 }
 
 fn version_policy(information: &VersionInformation) -> Result<ClientVersionPolicy, BoxError> {

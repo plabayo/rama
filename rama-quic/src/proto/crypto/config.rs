@@ -2,7 +2,6 @@ use std::fmt;
 
 use rama_core::error::BoxError;
 pub use rama_tls::alpn::AlpnPolicy;
-use rama_tls::client::ClientHello;
 use rama_utils::macros::generate_set_and_with;
 
 /// Client TLS ticket policy, independent of transport connection pooling.
@@ -28,10 +27,6 @@ pub enum ClientHandshake {
     /// Fail before handshake output unless a compatible ticket is available.
     Resumed,
 }
-
-/// Validate the generated ClientHello and its engine-owned QUIC parameters
-/// before any handshake output is released. A failure rejects that session.
-pub type ClientHelloCheck = dyn Fn(&ClientHello, &[u8]) -> Result<(), BoxError> + Send + Sync;
 
 /// QUIC requirements applied to the common Rama TLS configuration.
 #[derive(Clone, Copy, Debug, Default)]

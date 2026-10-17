@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     collections::VecDeque,
     sync::Arc,
     task::{Context, Poll, Waker},
@@ -8,7 +7,7 @@ use std::{
 use parking_lot::Mutex;
 use rama_core::{
     conversion::RamaFrom as _,
-    error::{ArcError, BoxError, BoxErrorExt},
+    error::{ArcError, BoxError},
     telemetry::tracing::debug,
 };
 use rama_crypto::{
@@ -30,9 +29,7 @@ use rama_quic_proto::{
     transport_parameters::TransportParameters,
     version::Wire,
 };
-use rama_tls::client::{
-    ClientHelloHandshakePrefix, NegotiatedTlsAlgorithms, parse_client_hello_message_prefix,
-};
+use rama_tls::client::NegotiatedTlsAlgorithms;
 use rama_tls_boring::{client::ServerAnswerRecorder, type_conversion::peer_certificate_chain};
 use zeroize::Zeroizing;
 
@@ -41,9 +38,8 @@ use super::{
     packet::{self, Secret, Suite},
 };
 
-use crate::{
-    proto::crypto::{self, DirectionalKeys, HandshakeEvent, KeyPair, Keys, UnsupportedVersion},
-    tls::ClientHelloCheck,
+use crate::proto::crypto::{
+    self, DirectionalKeys, HandshakeEvent, KeyPair, Keys, UnsupportedVersion,
 };
 
 #[cfg(test)]
@@ -164,7 +160,6 @@ impl TlsSession {
         initializer: Option<&HandshakeInitializer>,
         remembered: Option<TransportParameters>,
         peer_params: Arc<Mutex<Option<TransportParameters>>>,
-        check: Option<&ClientHelloCheck>,
     ) -> Result<Self, TransportError> {
         if let Some(initializer) = initializer {
             (initializer.0)(&mut ssl).map_err(crypto_error)?;
@@ -229,40 +224,7 @@ impl TlsSession {
             peer_params,
         };
         session.drive(None)?;
-        if let Some(check) = check {
-            session.check_client_hello(check, &encoded)?;
-        }
         Ok(session)
-    }
-
-    /// Inspect the native first flight without consuming queued output. Ordinary
-    /// sessions skip this parsing; a prepared session cannot escape a failed check.
-    fn check_client_hello(
-        &self,
-        check: &ClientHelloCheck,
-        parameters: &[u8],
-    ) -> Result<(), TransportError> {
-        let mut bytes = Cow::Borrowed(&[][..]);
-        for event in &self.output {
-            if let HandshakeEvent::Data(SpaceId::Initial, data) = event {
-                if bytes.is_empty() {
-                    bytes = Cow::Borrowed(data.as_slice());
-                } else {
-                    let bytes = bytes.to_mut();
-                    bytes
-                        .try_reserve(data.len())
-                        .map_err(|error| crypto_error(error.into()))?;
-                    bytes.extend_from_slice(data);
-                }
-            }
-        }
-        let ClientHelloHandshakePrefix::Complete(hello) = parse_client_hello_message_prefix(&bytes)
-        else {
-            return Err(crypto_error(BoxError::from_static_str(
-                "prepared QUIC session did not generate a complete ClientHello",
-            )));
-        };
-        check(&hello, parameters).map_err(crypto_error)
     }
 
     pub(super) fn track_version(&mut self, negotiated: Arc<Mutex<Version>>) {

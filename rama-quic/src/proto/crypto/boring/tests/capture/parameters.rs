@@ -1,4 +1,4 @@
-//! Bounded parameter expectations for a prepared native QUIC handshake.
+//! Test oracle for emitted native QUIC transport parameters.
 
 use rama_core::error::{BoxError, BoxErrorExt as _};
 use rama_quic_proto::capture::{CaptureLimits, transport_parameters_from_hello};
@@ -10,10 +10,9 @@ use rama_ua::profile::capture::order::{
 /// A validated QUIC parameter projection from one selected connection tuple.
 ///
 /// Literals must be emitted unchanged. Redacted connection bindings require
-/// fresh values of the retained length. Providers validate the actual generated
-/// ClientHello before exposing handshake output; this is not a capability flag.
+/// fresh values of the retained length.
 #[derive(Debug)]
-pub struct ParameterExpectation(OrderedProtocolCapture);
+pub(super) struct ParameterExpectation(OrderedProtocolCapture);
 
 impl TryFrom<OrderedProtocolCapture> for ParameterExpectation {
     type Error = BoxError;
@@ -30,14 +29,8 @@ impl TryFrom<OrderedProtocolCapture> for ParameterExpectation {
 }
 
 impl ParameterExpectation {
-    /// Validated source fields, in their retained wire order.
-    #[must_use]
-    pub fn capture(&self) -> &OrderedProtocolCapture {
-        &self.0
-    }
-
     /// Check the native parameter body using the same bounded parser as capture.
-    pub fn validate(&self, hello: &ClientHello) -> Result<(), BoxError> {
+    pub(super) fn validate(&self, hello: &ClientHello) -> Result<(), BoxError> {
         let actual = transport_parameters_from_hello(hello, &CaptureLimits::default())?;
         if actual.len() != self.0.fields.len()
             || !actual

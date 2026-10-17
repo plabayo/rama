@@ -7,8 +7,7 @@ use rama_core::extensions::Extensions;
 use rama_tls::client::{TlsClientConfig, TlsPoolId};
 
 use super::{
-    ClientHandshake, ClientHelloCheck, ClientSessionPolicy, QuicClientConfigProvider,
-    TlsConfigError, TlsOptions,
+    ClientHandshake, ClientSessionPolicy, QuicClientConfigProvider, TlsConfigError, TlsOptions,
 };
 use crate::ClientConfig;
 use rama_net::address::Host;
@@ -71,13 +70,12 @@ impl ClientConfigCache {
 
     /// Prepare a peer-bound handshake with this connector's ticket domain and
     /// options. Prepared state bypasses the ordinary configuration cache; only
-    /// backend session metadata is shared. The check runs before native output.
+    /// backend session metadata is shared.
     pub fn prepare_client_config(
         &self,
         config: &TlsClientConfig,
         peer: Host,
         handshake: ClientHandshake,
-        check: Box<ClientHelloCheck>,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
         let defaults = self.configs.lock().session_defaults.clone();
         let scoped;
@@ -89,7 +87,7 @@ impl ClientConfigCache {
             config
         };
         self.provider
-            .prepare_client_config(config, self.options, peer, handshake, check)
+            .prepare_client_config(config, self.options, peer, handshake)
     }
 
     /// Build or reuse the final TLS configuration, classified by this cache's provider.

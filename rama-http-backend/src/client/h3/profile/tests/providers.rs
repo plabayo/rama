@@ -4,7 +4,7 @@ use rama_core::extensions::Extensions;
 use rama_net::address::Host;
 use rama_quic::{
     ClientConfig,
-    tls::{ClientHandshake, ClientHelloCheck, QuicClientConfigProvider, TlsConfigError},
+    tls::{ClientHandshake, QuicClientConfigProvider, TlsConfigError},
 };
 use rama_tls::client::{TlsClientConfig, TlsClientConfigProvider, TlsSessionProfileScope};
 use rama_ua::profile::{
@@ -105,7 +105,6 @@ impl QuicClientConfigProvider for CaptureAware {
         options: TlsOptions,
         peer: Host,
         handshake: ClientHandshake,
-        check: Box<ClientHelloCheck>,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
         self.captured_calls.fetch_add(1, Ordering::SeqCst);
         self.scopes.lock().push(
@@ -117,7 +116,7 @@ impl QuicClientConfigProvider for CaptureAware {
         );
         self.ordinary
             .inner
-            .prepare_client_config(policy, options, peer, handshake, check)
+            .prepare_client_config(policy, options, peer, handshake)
     }
 }
 
