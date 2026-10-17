@@ -22,11 +22,13 @@ pub trait ConnectionProfileCompiler<Input>: Send + Sync + 'static {
 
     /// Prepare `selection` from its decoded `components`. Current connection
     /// bindings come from `input`; `mode` determines permitted differences.
+    /// Move consumed components into the compiled output instead of cloning them.
+    /// Admission still checks every slot in the original selection.
     fn compile(
         &self,
         input: &Input,
         selection: &ConnectionSelection,
-        components: &PreparedConnectionComponents,
+        components: &mut PreparedConnectionComponents,
         mode: ProfilePreservationMode,
     ) -> Result<Self::Compiled, BoxError>;
 }
@@ -55,7 +57,7 @@ impl<Input> ConnectionProfileCompiler<Input> for () {
         &self,
         _input: &Input,
         _selection: &ConnectionSelection,
-        _components: &PreparedConnectionComponents,
+        _components: &mut PreparedConnectionComponents,
         _mode: ProfilePreservationMode,
     ) -> Result<(), BoxError> {
         Ok(())

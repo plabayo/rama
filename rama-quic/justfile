@@ -225,8 +225,10 @@ qa-gnutls-isolation:
 fmt-interop *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
+    # The root formatter covers the workspace. These standalone packages must
+    # not traverse their path dependencies and format that workspace six more times.
     for dir in {{interop-dirs}}; do
-        cargo fmt --manifest-path "$dir/Cargo.toml" --all {{ARGS}}
+        cargo fmt --manifest-path "$dir/Cargo.toml" {{ARGS}}
     done
 
 fmt-check-interop: (fmt-interop "--check")

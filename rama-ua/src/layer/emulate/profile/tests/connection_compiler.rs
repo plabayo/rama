@@ -14,12 +14,12 @@ struct TestCompiler {
 }
 
 struct Compiled {
-    supports_versions: bool,
+    versions: Option<OrderedProtocolCapture>,
     applied: Arc<AtomicUsize>,
 }
 
 #[derive(Debug, Clone, Extension)]
-struct Applied;
+struct Applied(Option<OrderedProtocolCapture>);
 
 impl ConnectionProfileCompiler<ConnectRequest> for TestCompiler {
     type Compiled = Compiled;
@@ -28,7 +28,7 @@ impl ConnectionProfileCompiler<ConnectRequest> for TestCompiler {
         &self,
         _input: &ConnectRequest,
         _selection: &ConnectionSelection,
-        components: &PreparedConnectionComponents,
+        components: &mut PreparedConnectionComponents,
         _mode: ProfilePreservationMode,
     ) -> Result<Compiled, BoxError> {
         assert!(components.quic_versions.is_some());
@@ -36,7 +36,11 @@ impl ConnectionProfileCompiler<ConnectRequest> for TestCompiler {
             return Err(BoxError::from_static_str("fixture compilation error"));
         }
         Ok(Compiled {
-            supports_versions: self.supports_versions,
+            versions: if self.supports_versions {
+                components.quic_versions.take()
+            } else {
+                None
+            },
             applied: self.applied.clone(),
         })
     }
@@ -44,14 +48,14 @@ impl ConnectionProfileCompiler<ConnectRequest> for TestCompiler {
 
 impl CompiledConnectionProfile for Compiled {
     fn supports(&self, component: CapturedSlotKind) -> bool {
-        self.supports_versions && component == CapturedSlotKind::QuicVersions
+        self.versions.is_some() && component == CapturedSlotKind::QuicVersions
     }
 }
 
 impl InstalledConnectionProfile for Compiled {
     fn apply(self, extensions: &Extensions) {
         self.applied.fetch_add(1, Ordering::Relaxed);
-        extensions.insert(Applied);
+        extensions.insert(Applied(self.versions));
     }
 }
 
@@ -103,7 +107,20 @@ fn connector(
     service_fn(move |input: ConnectRequest| {
         calls.fetch_add(1, Ordering::Relaxed);
         async move {
-            assert!(input.extensions().contains::<Applied>());
+            let installed = input.extensions().get_ref::<Applied>().unwrap();
+            let versions = installed.0.as_ref().unwrap();
+            assert!(matches!(versions.namespace, OrderNamespace::QuicVersion));
+            assert_eq!(versions.fields.len(), 1);
+            assert_eq!(versions.fields[0].id, 1);
+            // The compiler owns the recipe; the request must not retain a copy.
+            assert!(
+                input
+                    .extensions()
+                    .get_ref::<PreparedConnectionComponents>()
+                    .unwrap()
+                    .quic_versions
+                    .is_none()
+            );
             let conn = ServiceInput::new(());
             conn.extensions().insert(TargetHttpVersion(Version::HTTP_3));
             Ok(EstablishedClientConnection { input, conn })
