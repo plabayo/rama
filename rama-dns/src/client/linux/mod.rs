@@ -52,20 +52,11 @@ use crate::wire::{Name, ServiceBinding, Txt};
 
 mod cache;
 
-#[cfg(not(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-)))]
+// This module is Linux-only; non-glibc targets use the legacy backend.
+#[cfg(not(target_env = "gnu"))]
 mod legacy;
 
-#[cfg(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
+#[cfg(target_env = "gnu")]
 mod res_nsearch;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -80,12 +71,7 @@ const DEFAULT_CACHE_CAPACITY: u64 = 65_536;
 const DEFAULT_RESPONSE_BUFFER_SIZE: usize = u16::MAX as usize;
 const NSSWITCH_CONF_PATH: &str = "/etc/nsswitch.conf";
 /// Whether libc here serves CNAME, TXT, SVCB and HTTPS lookups.
-const NATIVE_RECORD_LOOKUPS: bool = cfg!(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-));
+const NATIVE_RECORD_LOOKUPS: bool = cfg!(target_env = "gnu");
 
 #[derive(Debug, Clone)]
 /// Used to build a [`LinuxDnsResolver`] instance.
@@ -934,12 +920,7 @@ where
     })
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
+#[cfg(target_env = "gnu")]
 fn native_lookup_ipv4_stream(
     domain: Domain,
     timeout: Duration,
@@ -948,12 +929,7 @@ fn native_lookup_ipv4_stream(
     res_nsearch::lookup_ipv4_stream(domain, timeout, native)
 }
 
-#[cfg(not(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-)))]
+#[cfg(not(target_env = "gnu"))]
 fn native_lookup_ipv4_stream(
     domain: Domain,
     timeout: Duration,
@@ -962,12 +938,7 @@ fn native_lookup_ipv4_stream(
     legacy::lookup_ipv4_stream(domain, timeout, native)
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
+#[cfg(target_env = "gnu")]
 fn native_lookup_ipv6_stream(
     domain: Domain,
     timeout: Duration,
@@ -976,12 +947,7 @@ fn native_lookup_ipv6_stream(
     res_nsearch::lookup_ipv6_stream(domain, timeout, native)
 }
 
-#[cfg(not(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-)))]
+#[cfg(not(target_env = "gnu"))]
 fn native_lookup_ipv6_stream(
     domain: Domain,
     timeout: Duration,
@@ -990,12 +956,7 @@ fn native_lookup_ipv6_stream(
     legacy::lookup_ipv6_stream(domain, timeout, native)
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
+#[cfg(target_env = "gnu")]
 fn native_lookup_txt_stream(
     domain: Domain,
     timeout: Duration,
@@ -1004,12 +965,7 @@ fn native_lookup_txt_stream(
     res_nsearch::lookup_txt_stream(domain, timeout, native)
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
+#[cfg(target_env = "gnu")]
 fn native_lookup_cname_stream(
     domain: Domain,
     timeout: Duration,
@@ -1018,12 +974,7 @@ fn native_lookup_cname_stream(
     res_nsearch::lookup_cname_stream(domain, timeout, native)
 }
 
-#[cfg(not(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-)))]
+#[cfg(not(target_env = "gnu"))]
 fn native_lookup_cname_stream(
     _domain: Domain,
     _timeout: Duration,
@@ -1034,12 +985,7 @@ fn native_lookup_cname_stream(
     ))))
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
+#[cfg(target_env = "gnu")]
 fn native_lookup_svcb_stream(
     domain: Domain,
     timeout: Duration,
@@ -1048,12 +994,7 @@ fn native_lookup_svcb_stream(
     res_nsearch::lookup_svcb_stream(domain, timeout, native)
 }
 
-#[cfg(not(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-)))]
+#[cfg(not(target_env = "gnu"))]
 fn native_lookup_svcb_stream(
     _domain: Domain,
     _timeout: Duration,
@@ -1062,12 +1003,7 @@ fn native_lookup_svcb_stream(
     unsupported_service_binding_stream()
 }
 
-#[cfg(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
+#[cfg(target_env = "gnu")]
 fn native_lookup_https_stream(
     domain: Domain,
     timeout: Duration,
@@ -1076,12 +1012,7 @@ fn native_lookup_https_stream(
     res_nsearch::lookup_https_stream(domain, timeout, native)
 }
 
-#[cfg(not(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-)))]
+#[cfg(not(target_env = "gnu"))]
 fn native_lookup_https_stream(
     _domain: Domain,
     _timeout: Duration,
@@ -1090,12 +1021,7 @@ fn native_lookup_https_stream(
     unsupported_service_binding_stream()
 }
 
-#[cfg(not(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-)))]
+#[cfg(not(target_env = "gnu"))]
 fn unsupported_service_binding_stream()
 -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
     rama_core::futures::stream::once(std::future::ready(Err(BoxError::from(
@@ -1103,12 +1029,7 @@ fn unsupported_service_binding_stream()
     ))))
 }
 
-#[cfg(not(any(
-    all(target_os = "linux", target_env = "gnu"),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-)))]
+#[cfg(not(target_env = "gnu"))]
 fn native_lookup_txt_stream(
     _domain: Domain,
     _timeout: Duration,

@@ -38,6 +38,7 @@ members = [
     "rama-core",
     "rama-crypto",
     "rama-dns",
+    "rama-dns/tests/native",
     "rama-error",
     "rama-fastcgi",
     "rama-grpc",
