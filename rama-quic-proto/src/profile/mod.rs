@@ -734,7 +734,7 @@ impl TransportLimits {
         let mut limits = Self::protocol_defaults();
         for RawParameter { id, value } in parameters {
             let integer = || sent_integer(*id, value);
-            match *id {
+            match TransportParameterId::from(u64::from(*id)) {
                 TransportParameterId::MaxIdleTimeout => {
                     limits.max_idle_timeout = Duration::from_millis(integer()?);
                 }
@@ -991,6 +991,43 @@ fn sent_integer(id: TransportParameterId, value: &[u8]) -> Result<u64, ProfileEr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coding::Codec as _;
+
+    #[test]
+    fn sent_limit_aliases_preserve_values_and_integer_validation() {
+        // Compare complete limits after encoding real TLV integer bodies, so a
+        // missing dispatch arm cannot silently replace an advertised value.
+        for (id, value) in [
+            (TransportParameterId::MaxIdleTimeout, 42),
+            (TransportParameterId::MaxUdpPayloadSize, 1300),
+            (TransportParameterId::InitialMaxData, 42),
+            (TransportParameterId::InitialMaxStreamDataBidiLocal, 42),
+            (TransportParameterId::InitialMaxStreamDataBidiRemote, 42),
+            (TransportParameterId::InitialMaxStreamDataUni, 42),
+            (TransportParameterId::InitialMaxStreamsBidi, 42),
+            (TransportParameterId::InitialMaxStreamsUni, 42),
+            (TransportParameterId::MaxAckDelay, 42),
+            (TransportParameterId::ActiveConnectionIdLimit, 42),
+            (TransportParameterId::MaxDatagramFrameSize, 42),
+        ] {
+            let alias = TransportParameterId::Unknown(u64::from(id));
+            let mut body = Vec::new();
+            VarInt::from_u32(value).encode(&mut body);
+            let sent = |id, value| RawParameter { id, value };
+            let known = TransportLimits::try_from_sent(&[sent(id, body.clone())]).unwrap();
+            assert_ne!(known, TransportLimits::protocol_defaults(), "{id}");
+            assert_eq!(
+                TransportLimits::try_from_sent(&[sent(alias, body.clone())]).unwrap(),
+                known,
+                "{id}",
+            );
+
+            for malformed in [Vec::new(), alloc::vec![0x40], alloc::vec![0, 0]] {
+                TransportLimits::try_from_sent(&[sent(id, malformed.clone())]).unwrap_err();
+                TransportLimits::try_from_sent(&[sent(alias, malformed)]).unwrap_err();
+            }
+        }
+    }
 
     #[test]
     fn parameter_value_classification_is_protocol_owned() {

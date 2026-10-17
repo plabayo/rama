@@ -746,9 +746,10 @@ pub fn transport_parameters_from_hello(
 /// The `version_information` parameter among `parameters`, decoded as a client's.
 #[must_use]
 pub fn version_information(parameters: &[RawParameter]) -> Option<VersionInformation> {
-    let raw = parameters
-        .iter()
-        .find(|parameter| parameter.id == TransportParameterId::VersionInformation)?;
+    let raw = parameters.iter().find(|parameter| {
+        TransportParameterId::from(u64::from(parameter.id))
+            == TransportParameterId::VersionInformation
+    })?;
     VersionInformation::read(true, raw.value.len(), &mut &raw.value[..]).ok()
 }
 
@@ -902,6 +903,34 @@ mod tests {
     use crate::VarInt;
     use rama_core::bytes::BufMut;
     use std::slice;
+
+    #[test]
+    fn sent_version_information_alias_preserves_decode_and_validation() {
+        for version in [Version::V1, Version::V2] {
+            let expected = VersionInformation::new(version, vec![Version::V2, Version::V1]);
+            let mut value = Vec::new();
+            expected.write(&mut value);
+            for id in [
+                TransportParameterId::VersionInformation,
+                TransportParameterId::Unknown(u64::from(TransportParameterId::VersionInformation)),
+            ] {
+                let raw = RawParameter {
+                    id,
+                    value: value.clone(),
+                };
+                let decoded = version_information(slice::from_ref(&raw)).unwrap();
+                assert_eq!(decoded.chosen(), expected.chosen());
+                assert_eq!(decoded.available(), expected.available());
+                for end in 0..4 {
+                    let malformed = RawParameter {
+                        id,
+                        value: value[..end].to_vec(),
+                    };
+                    assert!(version_information(&[malformed]).is_none());
+                }
+            }
+        }
+    }
 
     #[test]
     fn observation_output_omits_connection_material() {

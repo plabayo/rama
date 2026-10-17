@@ -257,3 +257,77 @@ fn cid_length_classes_preserve_literal_draws_and_routing_choices() {
         }
     }
 }
+
+#[test]
+fn version_information_alias_requires_context_and_round_trips() {
+    let limits = QuicFlightCaptureLimits::default();
+    let mut expected = None;
+    for id in [
+        TransportParameterId::VersionInformation,
+        TransportParameterId::Unknown(u64::from(TransportParameterId::VersionInformation)),
+    ] {
+        let mut capture = capture();
+        capture.flight.parameters.push(id);
+        capture.canonical(limits).unwrap_err();
+
+        capture.flight.chosen_version = Some(Version::V1);
+        capture.flight.available_versions = vec![Version::V2, Version::V1];
+        let value = capture.canonical(limits).unwrap();
+        let imported = QuicFlightCapture::from_canonical(&value, limits).unwrap();
+        let round_trip = imported.canonical(limits).unwrap();
+        assert_eq!(round_trip.id, value.id);
+        assert_eq!(round_trip.bytes, value.bytes);
+        let structural = capture.structural(limits).unwrap();
+        let identities = (value.id, value.bytes, structural.id, structural.bytes);
+        if let Some(expected) = &expected {
+            assert_eq!(&identities, expected);
+        } else {
+            expected = Some(identities);
+        }
+
+        // Presence by wire identity must not weaken the version relationship.
+        capture.flight.available_versions = vec![Version::V2];
+        capture.canonical(limits).unwrap_err();
+    }
+}
+
+#[test]
+fn parameter_observation_matching_uses_numeric_identity() {
+    let limits = QuicFlightCaptureLimits::default();
+    let mut source = observation();
+    let expected = QuicFlightCapture::capture(&source, limits)
+        .unwrap()
+        .canonical(limits)
+        .unwrap()
+        .bytes;
+    source.first_flight.as_mut().unwrap().parameters[0] = TransportParameterId::Unknown(1);
+    assert_eq!(
+        QuicFlightCapture::capture(&source, limits)
+            .unwrap()
+            .canonical(limits)
+            .unwrap()
+            .bytes,
+        expected
+    );
+    source.transport_parameters[0].id = TransportParameterId::Unknown(1);
+    assert_eq!(
+        QuicFlightCapture::capture(&source, limits)
+            .unwrap()
+            .canonical(limits)
+            .unwrap()
+            .bytes,
+        expected
+    );
+    source.first_flight.as_mut().unwrap().parameters[0] = TransportParameterId::MaxIdleTimeout;
+    assert_eq!(
+        QuicFlightCapture::capture(&source, limits)
+            .unwrap()
+            .canonical(limits)
+            .unwrap()
+            .bytes,
+        expected
+    );
+
+    source.transport_parameters[0].id = TransportParameterId::InitialMaxData;
+    QuicFlightCapture::capture(&source, limits).unwrap_err();
+}

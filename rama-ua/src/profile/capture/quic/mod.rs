@@ -72,10 +72,10 @@ impl QuicFlightCapture {
             .as_ref()
             .ok_or(ProfileDataError::Incomplete("missing QUIC first flight"))?;
         encode(ProfileCaptureCompleteness::Complete, flight, limits)?;
-        if !flight.parameters.iter().copied().eq(observed
+        if !flight.parameters.iter().copied().map(u64::from).eq(observed
             .transport_parameters
             .iter()
-            .map(|parameter| parameter.id))
+            .map(|parameter| u64::from(parameter.id)))
         {
             return Err(ProfileDataError::Invalid(
                 "QUIC parameter observation mismatch",
@@ -352,13 +352,12 @@ fn validate(flight: &FirstFlight, limits: QuicFlightCaptureLimits) -> Result<(),
             return Err(ProfileDataError::Invalid("QUIC parameter identity"));
         }
     }
+    let has_version_information = flight.parameters.iter().any(|id| {
+        TransportParameterId::from(u64::from(*id)) == TransportParameterId::VersionInformation
+    });
     match flight.chosen_version {
         Some(chosen) => {
-            if chosen != flight.version
-                || !flight
-                    .parameters
-                    .contains(&TransportParameterId::VersionInformation)
-            {
+            if chosen != flight.version || !has_version_information {
                 return Err(ProfileDataError::Invalid(
                     "QUIC version information context",
                 ));
@@ -368,11 +367,7 @@ fn validate(flight: &FirstFlight, limits: QuicFlightCaptureLimits) -> Result<(),
             VersionInformation::read(true, bytes.len(), &mut bytes.as_slice())
                 .map_err(|_error| ProfileDataError::Invalid("QUIC available versions"))?;
         }
-        None if !flight.available_versions.is_empty()
-            || flight
-                .parameters
-                .contains(&TransportParameterId::VersionInformation) =>
-        {
+        None if !flight.available_versions.is_empty() || has_version_information => {
             return Err(ProfileDataError::Invalid(
                 "missing QUIC version information",
             ));
