@@ -1,4 +1,4 @@
-"""Validate the fp page's request bodies and decoded WebSocket greeting.
+"""Validate the fp page's request bodies and bidirectional WebSocket text probe.
 
 Tshark supplies decryption, HTTP stream reassembly and WebSocket decompression.
 We compare fixture semantics here, not a second implementation of those protocols.
@@ -9,6 +9,9 @@ from collections import defaultdict
 import json
 
 from flows import FLOW_NAMES, flow_name
+
+# Same application payload as rama-cli/assets/script.js; never stored in profiles.
+WEBSOCKET_PROBE = "rama-fp echo: " + "🐢" * 32
 
 
 def unique_object(pairs):
@@ -105,8 +108,18 @@ def check_flow_bodies(blocks):
                 if frame.from_server
                 for text in frame.websocket_text
             ]
-            if len(messages) != 1:
-                raise ValueError("WebSocket greeting missing or repeated")
+            incoming = [
+                text
+                for frame in frames
+                if not frame.from_server
+                for text in frame.websocket_text
+            ]
+            if incoming != [WEBSOCKET_PROBE] or len(messages) != 2:
+                raise ValueError(
+                    "WebSocket round trip missing, repeated or misdirected"
+                )
+            if messages[1] != WEBSOCKET_PROBE:
+                raise ValueError("WebSocket echo differs from the client probe")
             greeting = json_object(messages[0])
             expected_version = {"h2": "HTTP/2.0", "h3": "HTTP/3.0"}[request.protocol]
             if (
@@ -123,6 +136,6 @@ def check_flow_bodies(blocks):
         raise ValueError("incomplete body flow coverage")
     return {
         "flows": sorted(checked),
-        "scope": "request body semantics, final 200 responses and WebSocket greeting",
-        "limits": "request tuple comparison is separate; not long-lived bidirectional WebSocket coverage",
+        "scope": "request body semantics, final 200 responses and bidirectional WebSocket text",
+        "limits": "request tuple comparison is separate; one text round trip; not long-lived, binary or fragmentation coverage",
     }

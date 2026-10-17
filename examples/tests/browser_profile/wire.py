@@ -253,7 +253,7 @@ def drain_capture(
     timeout=15,
     expected_per_flow=None,
 ):
-    """Wait for all decoded flows, including responses and WebSocket greeting.
+    """Wait for all decoded flows, including responses and both WebSocket directions.
 
     A dumpcap file announcement proves readiness, not that BPF has flushed the
     final packets. Keep decoding until full body coverage is visible.

@@ -10,7 +10,7 @@ not recreate fetch, XHR, WebSocket or form requests in Python: the browser runs
 | Navigation | GET /report | Navigate |
 | Fetch | POST /api/fetch/number/{number}, JSON body | Fetch |
 | XMLHttpRequest | POST /api/xml/number/{number}, JSON body | Xhr |
-| WebSocket | /api/ws, requested subprotocols a and b, server greeting | Ws |
+| WebSocket | /api/ws, requested subprotocols a and b, greeting, UTF-8 echo and normal close | Ws |
 | POST form | POST /form, URL-encoded body | Form |
 | GET form | GET /form?source=web&turtles=yes | Form |
 
@@ -18,8 +18,10 @@ WebSockets use HTTP/1 Upgrade with a 101 response or HTTP/2/3 Extended CONNECT
 with a successful 2xx response. An H3 page does not establish an H3 WebSocket:
 the workflow checks each reported protocol separately and rejects fallback.
 The POST form response contains a second GET form; both submissions are required.
-The page currently closes the WebSocket after the server greeting, so this journey
-alone does not test long-lived bidirectional WebSocket traffic.
+The page requires one browser-to-server UTF-8 message and its exact server echo,
+then a clean normal close, before reporting success. This tests one bidirectional
+text round trip; sustained traffic, binary messages and compression comparisons
+remain separate coverage.
 
 ## Responsibilities
 
@@ -43,7 +45,8 @@ do not expose a browser key-log launch option.
 ## Local driver configuration
 
 Install `requirements.txt` using Python 3.11 or newer. Selenium manages a matching
-driver. If an old driver in PATH overrides it, `SE_SKIP_DRIVER_IN_PATH=true` asks
+driver. Node 18+ runs the page-script regressions in the common test checker.
+If an old driver in PATH overrides it, `SE_SKIP_DRIVER_IN_PATH=true` asks
 Selenium Manager to resolve a compatible driver instead. Explicit browser paths
 are optional; a fresh profile is mandatory for Chrome, Edge and Firefox. Safari
 uses SafariDriver's isolated Automation windows and requires Remote Automation to
@@ -60,16 +63,19 @@ presented as an unmodified-default-browser profile.
 ## Current implementation status
 
 The shared journey is integrated with BrowserStack and the common local/CI
-`examples/tests/browser_profile/run.py` entry point. H1 verifies strict replay;
-H2/H3 currently verify original capture only. Full CLI validation is ongoing.
-Real Chrome smoke runs pass all six operations over plain H1, TLS H1, H2 and H3.
-Tshark decrypts the TLS H1/H2/H3 captures; H2/H3 show CONNECT /api/ws with
-:protocol=websocket and 200 responses. H2/H3 joint capture header order and retained literal values also match tshark
-for all six operations. Request-bound values are reported separately because the
-profile does not retain them. TLS/QUIC fields, compression, bodies, full replay,
-portability of capture/process control, and CI wiring remain unfinished. These
-checks do not establish complete capture/emulation fidelity. Existing H1 packet validators retain their name
-because their header parsing and Upgrade rules are specific to HTTP/1.
+`examples/tests/browser_profile/run.py` entry point. The runner implements
+plaintext H1 and TLS H2 capture plus strict CLI replay; H3 verifies original
+capture and still needs native replay. Each supported run requires all six
+operations. H1 checks Upgrade/accept; H2/H3 require Extended CONNECT and verify
+both directions of the text probe against decrypted packet evidence. The page
+and CLI also check the H1 echo, which has no independent H1 frame decoder yet.
+
+The local verifier checks ordered request fields and bodies, retained TLS/QUIC
+properties and correlated connection tuples. Its H3 control/QPACK prefix checks
+remain partial: exact application freeze and scheduling are not inferred from
+packet arrival. TLS H1, native H3 replay, sustained/binary WebSocket traffic,
+compression comparisons, the complete platform matrix and final branch
+acceptance remain open. See the local runner's README for precise current scope.
 
 Unit checks run identically in normal and optimized Python; use unittest checks,
 not Python `assert`, for required validation. Guard experiments cover missing-flow

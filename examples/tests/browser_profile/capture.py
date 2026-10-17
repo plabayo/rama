@@ -27,7 +27,7 @@ from connection_fields import compare_connection_fields, h2_prefixes
 from fixture_process import running, wait_ready
 from fixture_tls import fixture_certificate, prepare_nss_trust
 from h3_sequence_wire import sequence_evidence
-from replay import replay_environment, verify_tls_replay
+from replay import replay_environment, run_replay, verify_tls_replay
 from quic_wire import client_settings, compare_quic_captures, first_flights
 from tls_wire import client_hellos, compare_tls_captures
 
@@ -453,15 +453,7 @@ def capture_plaintext(args):
                     flow,
                     reference_flows[flow][0],
                 )
-                with (root / (flow + "-replay.log")).open("w") as output:
-                    subprocess.run(
-                        args,
-                        stdin=subprocess.DEVNULL,
-                        stdout=output,
-                        stderr=subprocess.STDOUT,
-                        check=True,
-                        timeout=30,
-                    )
+                run_replay(args, flow=flow, log=root / (flow + "-replay.log"))
         else:
             with (root / "rama-replay.log").open("w") as output:
                 subprocess.run(

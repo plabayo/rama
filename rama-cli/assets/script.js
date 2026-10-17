@@ -123,30 +123,61 @@ function makeRequestWithXHR(url, method, number) {
   });
 }
 
-// Function to open a WebSocket connection to /api/ws
+// A greeting alone proves only server-to-browser delivery. Require a UTF-8
+// round trip and a clean close before reporting this flow as successful.
 function connectWebSocket() {
   return new Promise((completed, reject) => {
     const socket = new WebSocket(
       `ws${location.protocol === "https:" ? "s" : ""}://${location.host}/api/ws`,
       ["a", "b"],
     );
+    // Keep this fixture payload in sync with browser_profile/flow_bodies.py.
+    const probe = "rama-fp echo: " + "🐢".repeat(32);
+    let greeting;
+    let echoed = false;
+    let settled = false;
 
+    function fail(error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      reject(error);
+      socket.close();
+    }
+
+    const deadline = setTimeout(
+      () => fail(new Error("WebSocket round trip timed out")),
+      10000,
+    );
     socket.onmessage = function (event) {
-      const result = JSON.parse(event.data);
-      showProtocol("WebSocket", result.version, result.h3);
-    };
-
-    socket.onerror = function () {
-      reject(new Error("WebSocket connection error"));
-    };
-
-    socket.onclose = function (event) {
-      // The server closes /api/ws right after a greeting; through a
-      // proxy/MITM that can surface as non-clean. We already connected,
-      // so don't treat the close itself as a failure.
-      if (!event.wasClean) {
-        console.warn("WebSocket closed without a clean handshake:", event);
+      if (settled) return;
+      try {
+        if (!greeting) {
+          const result = JSON.parse(event.data);
+          if (result.initiator !== "ws" || typeof result.version !== "string") {
+            throw new Error("Invalid WebSocket greeting");
+          }
+          greeting = result;
+          socket.send(probe);
+        } else if (!echoed && event.data === probe) {
+          echoed = true;
+        } else {
+          throw new Error("Unexpected WebSocket echo");
+        }
+      } catch (error) {
+        fail(error);
       }
+    };
+    socket.onerror = () => fail(new Error("WebSocket connection error"));
+    socket.onclose = function (event) {
+      if (settled) return;
+      if (!echoed || !event.wasClean || event.code !== 1000) {
+        fail(new Error("WebSocket closed before a successful round trip"));
+        return;
+      }
+      settled = true;
+      clearTimeout(deadline);
+      showProtocol("WebSocket", greeting.version, greeting.h3);
       completed();
     };
   });

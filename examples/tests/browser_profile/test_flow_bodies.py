@@ -2,7 +2,7 @@ from dataclasses import replace
 import json
 import unittest
 
-from flow_bodies import check_flow_bodies, json_object
+from flow_bodies import WEBSOCKET_PROBE, check_flow_bodies, json_object
 from wire import HeaderBlock
 
 
@@ -33,9 +33,19 @@ def fixture(protocol):
                         "version": {"h2": "HTTP/2.0", "h3": "HTTP/3.0"}[protocol],
                     }
                 ),
+                WEBSOCKET_PROBE,
             )
         rows += [
-            HeaderBlock(protocol, stream + 1, 0, stream, False, headers, body),
+            HeaderBlock(
+                protocol,
+                stream + 1,
+                0,
+                stream,
+                False,
+                headers,
+                body,
+                websocket_text=(WEBSOCKET_PROBE,) if method == "CONNECT" else (),
+            ),
             HeaderBlock(
                 protocol,
                 stream + 1,
@@ -145,9 +155,26 @@ class FlowBodyTests(unittest.TestCase):
             greeting = (
                 '{"initiator":"wrong","initiator":"ws","version":"' + version + '"}'
             )
-            rows[7] = replace(rows[7], websocket_text=(greeting,))
+            rows[7] = replace(rows[7], websocket_text=(greeting, WEBSOCKET_PROBE))
             with self.assertRaisesRegex(ValueError, "duplicate"):
                 check_flow_bodies(rows)
+
+    def test_round_trip_requires_exact_payload_in_both_directions(self):
+        for protocol in ("h2", "h3"):
+            for index, messages in (
+                (6, ()),
+                (6, ("wrong",)),
+                (6, (WEBSOCKET_PROBE, WEBSOCKET_PROBE)),
+                (7, ()),
+                (7, ("wrong", WEBSOCKET_PROBE)),
+                (7, (fixture(protocol)[7].websocket_text[0], "wrong")),
+                (7, fixture(protocol)[7].websocket_text + (WEBSOCKET_PROBE,)),
+            ):
+                rows = fixture(protocol)
+                rows[index] = replace(rows[index], websocket_text=messages)
+                with self.subTest(protocol=protocol, index=index, messages=messages):
+                    with self.assertRaises(ValueError):
+                        check_flow_bodies(rows)
 
     def test_wrong_body_response_or_greeting_cannot_pass(self):
         mutations = [

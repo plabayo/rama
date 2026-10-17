@@ -10,7 +10,7 @@ reimplement fetch, XHR or WebSocket requests in Python.
 | Navigation | GET `/report` |
 | Fetch | POST `/api/fetch/number/{number}` with JSON and browser API observations |
 | XHR | POST `/api/xml/number/{number}` with JSON |
-| WebSocket | `/api/ws`, subprotocol offers `a,b`, server greeting and close |
+| WebSocket | `/api/ws`, subprotocol offers `a,b`, greeting, browser UTF-8 text, exact server echo and normal close |
 | POST form | POST `/form`, `source=web&rating=3` |
 | GET form | GET `/form?source=web&turtles=yes` |
 
@@ -26,7 +26,7 @@ a supported browser, and tshark/dumpcap with loopback capture permission. Instal
 `rama-fp/browser_automation/requirements.txt` into your Python environment.
 TLS fixtures also need OpenSSL; Firefox TLS needs NSS `certutil`. Selenium Manager
 discovers browser executables
-and compatible drivers; explicit binary paths remain optional. Node is unnecessary.
+and compatible drivers; explicit binary paths remain optional. Node 18+ runs the shared page-script regressions.
 
 Local packet/process integration currently supports macOS and Linux. Selenium's
 shared journey is portable, but Windows packet/process integration has not been
@@ -76,7 +76,8 @@ Chromium H3 runs explicitly enable its WebSocket-over-H3 feature and record flag
 Browser SSLKEYLOGFILE output lets tshark decrypt TLS/QUIC. The runner waits until
 all operations are independently decoded before stopping capture. It checks
 joint regular/pseudo-header order, multiplicity, retained literal values, request
-body semantics, final successful responses, and the decoded WebSocket greeting.
+body semantics, final successful responses, and the decoded WebSocket greeting
+and bidirectional text payloads.
 Request-bound values are counted separately because profiles do not retain them. The same
 bounded PDML output includes ClientHello evidence. `tls_wire.py` checks retained
 TLS versions, cipher and extension order, and extension metadata against each
@@ -164,3 +165,18 @@ python3 scripts/ci/check_browser_automation.py
 This runs normal and optimized Python so required checks cannot disappear under
 `-O`. The local integration recipes use this same prerequisite. Reversion guards
 must demonstrate that changing a check makes its regression fail in both modes.
+
+## WebSocket application data
+
+The page reports WebSocket success only after its greeting, one UTF-8 text
+round trip and a clean normal close. Both nightly BrowserStack and local tests
+drive this same page. The endpoint imposes a deadline so a silent client cannot
+hold a probe open. CLI replay keeps stdin open while waiting for the echo;
+closing stdin immediately would race the CLI's close handshake.
+
+H2/H3 packet checks independently require one client probe and its exact server
+echo on the same HTTP stream, as well as the protocol-bearing greeting. The H1
+packet verifier currently covers Upgrade and request tuples; its application
+echo is checked by the browser and CLI output, not an independent H1 frame
+decoder. This is one text exchange: binary messages, sustained traffic, deliberate
+fragmentation and negotiated compression remain separate coverage work.

@@ -14,6 +14,7 @@ import subprocess
 from capture_fields import compare_capture_fields
 from connection_fields import compare_connection_fields, h2_prefixes
 from fixture_process import running, wait_ready
+from flow_bodies import WEBSOCKET_PROBE
 from flows import FLOWS, ReplayTarget, compare_requests, flow_name, replay_args, require
 from tls_wire import TRUST_ANCHORS_EXTENSION, client_hellos, compare_tls_captures
 from wire import Request, drain_capture
@@ -60,7 +61,7 @@ def requests_from_wire(frames):
                     )
                 bindings[name] = value
         # WebSocket DATA contains frames, not an HTTP request body. The shared
-        # journey/decoder checks its greeting separately from HTTP body replay.
+        # journey/decoder checks both message directions separately from HTTP bodies.
         body = (
             b""
             if flow == "ws"
@@ -135,6 +136,40 @@ def replay_environment(parent):
     for key in keys:
         replay[key] = source.replace("dbname=rama_fp_capture", "dbname=rama_fp_replay")
     return replay
+
+
+def run_replay(command, *, flow, log, environment=None, timeout=30):
+    """Keep WebSocket stdin open until the peer echoes and completes its close.
+
+    Immediate stdin EOF starts the CLI close handshake, which can race the echo.
+    Other HTTP operations have no stdin and use the ordinary command runner.
+    """
+    if flow != "ws":
+        with log.open("w") as output:
+            subprocess.run(
+                command,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                check=True,
+                timeout=timeout,
+            )
+        return
+
+    with running(command, log, environment, stdin=subprocess.PIPE) as process:
+        try:
+            process.stdin.write((WEBSOCKET_PROBE + "\n").encode())
+            process.stdin.flush()
+            code = process.wait(timeout=timeout)
+            if code:
+                raise subprocess.CalledProcessError(code, command)
+        finally:
+            process.stdin.close()
+    require(
+        log.read_text().splitlines().count(WEBSOCKET_PROBE) == 1,
+        "CLI WebSocket echo missing or repeated",
+    )
 
 
 def connection_variants(inspected):
@@ -247,16 +282,12 @@ def verify_tls_replay(
                         reference[flow][0],
                         connection_variant=variant,
                     )
-                    with (root / (label + "-replay.log")).open("w") as log:
-                        subprocess.run(
-                            command,
-                            env=environment,
-                            stdin=subprocess.DEVNULL,
-                            stdout=log,
-                            stderr=subprocess.STDOUT,
-                            check=True,
-                            timeout=30,
-                        )
+                    run_replay(
+                        command,
+                        flow=flow,
+                        log=root / (label + "-replay.log"),
+                        environment=environment,
+                    )
             replay = drain_capture(
                 packets,
                 capture=root / "replay.pcapng",

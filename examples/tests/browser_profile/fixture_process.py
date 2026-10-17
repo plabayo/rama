@@ -27,11 +27,12 @@ def stop(process):
 
 
 @contextmanager
-def running(command, log, environment=None):
+def running(command, log, environment=None, *, stdin=None):
     """Always stop our process group, including when readiness or a check fails."""
     with log.open("w") as output:
         process = subprocess.Popen(
             command,
+            stdin=stdin,
             stdout=output,
             stderr=subprocess.STDOUT,
             env=environment,

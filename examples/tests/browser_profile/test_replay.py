@@ -4,10 +4,14 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+import subprocess
+import sys
+import tempfile
 from unittest.mock import patch
 
 from flows import ReplayTarget, compare_requests, replay_args
 from replay import (
+    run_replay,
     connection_variants,
     current_trust_ids,
     replay_environment,
@@ -18,6 +22,33 @@ from wire import HeaderBlock
 
 
 class ReplayTests(unittest.TestCase):
+    def test_websocket_replay_keeps_input_open_and_checks_the_echo(self):
+        # This peer responds before EOF, like the CLI's actual line-based socket.
+        peer = (
+            "import sys, select; line=sys.stdin.readline(); "
+            "sys.exit(9) if select.select([sys.stdin], [], [], .05)[0] else None; "
+            "print(line, end='', flush=True)"
+        )
+        with tempfile.TemporaryDirectory() as root:
+            log = Path(root) / "replay.log"
+            run_replay([sys.executable, "-c", peer], flow="ws", log=log)
+            for peer in (
+                "import sys; sys.stdin.readline(); print('wrong')",
+                "import sys; line=sys.stdin.readline(); print(line*2, end='')",
+            ):
+                with self.assertRaisesRegex(ValueError, "echo"):
+                    run_replay([sys.executable, "-c", peer], flow="ws", log=log)
+            with self.assertRaises(subprocess.CalledProcessError):
+                run_replay(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import sys; sys.stdin.readline(); sys.exit(7)",
+                    ],
+                    flow="ws",
+                    log=log,
+                )
+
     def test_body_fragments_are_bound_to_their_connection_and_stream(self):
         for protocol in ("h2", "h3"):
             frames = fixture(protocol)

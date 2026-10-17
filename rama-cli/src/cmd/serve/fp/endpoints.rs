@@ -1,6 +1,8 @@
+mod websocket;
+
 use itertools::Itertools as _;
 use rama::{
-    error::{BoxError, ErrorContext},
+    error::BoxError,
     extensions::ExtensionsRef,
     http::{
         BodyExtractExt, Response, StatusCode, Version,
@@ -12,11 +14,7 @@ use rama::{
             extract::{Body, Path, State as StateParam},
             response::{self, AppendHeaders, ErrorResponse, IntoResponse, Json},
         },
-        ws::{
-            Utf8Bytes,
-            handshake::server::ServerWebSocket,
-            protocol::{CloseFrame, frame::coding::CloseCode},
-        },
+        ws::handshake::server::ServerWebSocket,
     },
     net::address::ip::geo::IpGeoInfo,
     quic::proto::capture::QuicObservation,
@@ -762,7 +760,7 @@ fn form_top(show_form: bool) -> impl IntoHtml {
 pub(super) async fn ws_api(state: State, ws: ServerWebSocket) -> Result<(), BoxError> {
     tracing::debug!("ws api called");
     let ServerWebSocket {
-        socket: mut ws,
+        socket: ws,
         request: parts,
     } = ws;
 
@@ -776,23 +774,7 @@ pub(super) async fn ws_api(state: State, ws: ServerWebSocket) -> Result<(), BoxE
     .await?;
     tracing::debug!("ws api: request observation submitted");
 
-    ws.send_message(json!({ "initiator": "ws", "version": format!("{:?}", parts.version), "h3": if parts.version == Version::HTTP_3 { "negotiated" } else { "unsupported_or_not_negotiated" } }).to_string().into())
-        .await
-        .context("send hello msg")?;
-
-    tracing::debug!("ws api: hello sent");
-
-    ws.close(Some(CloseFrame {
-        code: CloseCode::Normal,
-        reason: Utf8Bytes::from_static("finished"),
-    }))
-    .await
-    .context("close ws frame")?;
-
-    let result = ws.recv_message().await;
-    tracing::debug!("ws api: socket closed with result: {result:?}");
-
-    Ok(())
+    websocket::exchange(ws, parts.version).await
 }
 
 //------------------------------------------

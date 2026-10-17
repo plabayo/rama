@@ -31,6 +31,12 @@ def main():
                 "test_*.py",
             ]
             subprocess.run(command, cwd=root / "rama-fp", check=True)
+    # Test the actual page function driven by local and remote browser journeys.
+    subprocess.run(
+        ["node", "--test", "rama-fp/browser_automation/test_websocket.mjs"],
+        cwd=root,
+        check=True,
+    )
     return 0
 
 
