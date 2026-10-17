@@ -22,6 +22,28 @@ use crate::{
     },
 };
 
+/// The HTTP/3 half of a service pair built for both TCP and QUIC.
+///
+/// With the `quic` feature this is a [`Service`] for accepted QUIC connections;
+/// without it, it carries no bound, so the TCP half can be built from one code path.
+#[cfg(feature = "quic")]
+trait MaybeHttp3Service:
+    crate::Service<crate::quic::Connection, Output = (), Error = std::convert::Infallible>
+{
+}
+
+#[cfg(feature = "quic")]
+impl<S> MaybeHttp3Service for S where
+    S: crate::Service<crate::quic::Connection, Output = (), Error = std::convert::Infallible>
+{
+}
+
+#[cfg(not(feature = "quic"))]
+trait MaybeHttp3Service {}
+
+#[cfg(not(feature = "quic"))]
+impl<S> MaybeHttp3Service for S {}
+
 /// The forwarded-header extraction layer selected by a [`ForwardKind`].
 ///
 /// `None` means no extraction: the default, and `HaProxy` (which forwards at

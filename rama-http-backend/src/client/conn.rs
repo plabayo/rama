@@ -1,6 +1,7 @@
+#[cfg(feature = "http3")]
+use super::HttpTransportConnector;
 use super::{
-    HttpClientService, HttpTransport, HttpTransportConnector, IntoHttpTransport,
-    drain::Http1DrainRuntime, svc::SendRequest,
+    HttpClientService, HttpTransport, IntoHttpTransport, drain::Http1DrainRuntime, svc::SendRequest,
 };
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
@@ -24,9 +25,10 @@ use rama_net::client::{
     pool::{ConnectionReuse, ConnectionReusePolicy, ReuseKey},
 };
 use rama_net::conn::is_connection_error;
+#[cfg(feature = "http3")]
+use rama_net::tls::ApplicationProtocol;
 use rama_net::{
     AuthorityInputExt, HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt,
-    tls::ApplicationProtocol,
 };
 use rama_tls::client::NegotiatedTlsParameters;
 use tokio::sync::Mutex;
@@ -374,6 +376,8 @@ impl<S, Body> HttpConnector<S, Body> {
 impl<S, Body> HttpConnector<S, Body> {
     /// Add a QUIC transport connector below the common HTTP handshake.
     /// The connector returns [`super::Http3Transport`], without starting HTTP/3.
+    #[cfg(feature = "http3")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "http3")))]
     pub fn with_http3_connector<Q>(
         self,
         quic: Q,
@@ -433,8 +437,11 @@ where
         .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
     // A secure (or unknown) origin needs rules from its own TLS connector;
     // proxy-leg rules alone cannot establish whether origin TLS can be reused.
-    let endpoint_policy_required =
-        matches!(&transport, HttpTransport::Quic(_)) || !plaintext_origin;
+    let endpoint_policy_required = match &transport {
+        HttpTransport::Stream(_) => !plaintext_origin,
+        #[cfg(feature = "http3")]
+        HttpTransport::Quic(_) => true,
+    };
     let reuse = transport.extensions().get_ref::<ConnectionReuse>();
     let classified = if endpoint_policy_required {
         reuse.is_some_and(ConnectionReuse::is_complete)
@@ -451,6 +458,7 @@ where
     }
     let version = match &transport {
         HttpTransport::Stream(io) => resolve_target_http_version(io, &input),
+        #[cfg(feature = "http3")]
         HttpTransport::Quic(_) => Some(Version::HTTP_3),
     };
     let required = required_transport_http_version(&input);
@@ -471,6 +479,7 @@ where
             }
             http_stream_connect(io, input, exec).await
         }
+        #[cfg(feature = "http3")]
         HttpTransport::Quic(quic) => {
             quic.connection
                 .handshake_confirmed()
@@ -791,16 +800,22 @@ impl<S, Body> Layer<S> for HttpConnectorLayer<Body> {
 #[cfg(test)]
 mod http3_dispatch_tests {
     use super::*;
-    use crate::client::Http3Transport;
     use rama_core::{ServiceInput, service::service_fn};
     use rama_http_types::Body;
     use rama_net::{
         Protocol as ApplicationProtocol,
-        client::{ConnectRequest, ConnectionErrorDomain, ConnectorTarget, ProxyRoute},
-        http::HttpRequestVersion,
+        client::{ConnectRequest, ConnectionErrorDomain},
     };
     use rama_tls::ProtocolVersion;
-    use std::assert_matches;
+    #[cfg(feature = "http3")]
+    use {
+        crate::client::Http3Transport,
+        rama_net::{
+            client::{ConnectorTarget, ProxyRoute},
+            http::HttpRequestVersion,
+        },
+        std::assert_matches,
+    };
 
     fn stream_connector_must_not_connect()
     -> impl ConnectorService<ConnectRequest, Connection = ServiceInput<tokio::io::DuplexStream>>
@@ -828,6 +843,7 @@ mod http3_dispatch_tests {
         assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
     }
 
+    #[cfg(feature = "http3")]
     #[tokio::test]
     async fn quic_only_connector_rejects_h2_before_dialing() {
         let connector = HttpConnector::<_, Body>::new(
@@ -850,6 +866,7 @@ mod http3_dispatch_tests {
         assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
     }
 
+    #[cfg(feature = "http3")]
     #[tokio::test]
     async fn quic_only_connector_allows_implicit_input_versions() {
         let connector = HttpConnector::<_, Body>::new(
@@ -994,6 +1011,7 @@ mod http3_dispatch_tests {
         assert!(error.to_string().contains("unsupported Http version"));
     }
 
+    #[cfg(feature = "http3")]
     #[tokio::test]
     async fn http1_and_http2_use_stream_connector() {
         for version in [Version::HTTP_11, Version::HTTP_2] {
@@ -1030,6 +1048,7 @@ mod http3_dispatch_tests {
         }
     }
 
+    #[cfg(feature = "http3")]
     #[tokio::test]
     async fn custom_http3_owns_route_capability_and_preserves_origin_and_target() {
         let http3 = service_fn(

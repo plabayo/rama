@@ -489,7 +489,16 @@ tcp = ["std", "net", "dep:rama-tcp"]
 udp = ["std", "net", "dep:rama-udp"]
 # QUIC v1 transport over `udp`, with backend-neutral TLS types. Select a built-in
 # TLS/crypto backend explicitly, or supply an external provider.
-quic = ["std", "udp", "tls", "dep:rama-quic", "dep:rama-quic-proto"]
+# Combined with `http-backend` this also enables HTTP/3 (client and server).
+quic = [
+    "std",
+    "udp",
+    "tls",
+    "dep:rama-quic",
+    "dep:rama-quic-proto",
+    "rama-http-core?/http3",
+    "rama-http-backend?/http3",
+]
 ws = ["std", "dep:rama-ws", "http"]
 js = ["std", "dep:rama-js"]
 js-disk-cache = ["js", "rama-js/disk-cache", "rama-pac?/js-disk-cache"]
@@ -516,9 +525,12 @@ http = [
 # committing to client, proxy or server specifics: those feature-gate
 # their own extra requirements (e.g. `EasyHttpWebClient` also needs
 # `tcp` + `dns`) on top of this.
-http-backend = ["http", "quic", "dep:rama-http-backend", "dep:rama-http-core", "dep:tokio"]
+# HTTP/1.1 and HTTP/2 only: add `quic` for HTTP/3 support.
+http-backend = ["http", "dep:rama-http-backend", "dep:rama-http-core", "dep:tokio"]
 http-full = [
     "http-backend",
+    # HTTP/3 (client and server) over QUIC.
+    "quic",
     # `EasyHttpWebClient` (see `http::client`) needs these on top of
     # `http-backend`; kept here so `http-full` stays a strict superset.
     "tcp",

@@ -52,7 +52,6 @@ use crate::{
         },
     },
     proxy::haproxy::server::HaProxyLayer,
-    quic,
     rt::Executor,
     tcp::TcpStream,
     telemetry::tracing,
@@ -302,7 +301,7 @@ where
         self,
         exec: Executor,
     ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
-        self.build_with_http3(exec).map(|(tcp, _)| tcp)
+        self.build_services(exec).map(|(tcp, _)| tcp)
     }
 
     /// build a tcp service and an HTTP/3 service, for accepted QUIC connections, ready to
@@ -311,13 +310,28 @@ where
     /// Both serve one http service: they share its rate limit, the connection limit,
     /// the connection timeout and the per-connection throttle. TLS for QUIC is
     /// configured on its endpoint.
+    #[cfg(feature = "quic")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
     pub fn build_with_http3(
         self,
         exec: Executor,
     ) -> Result<
         (
             impl Service<TcpStream, Output = (), Error = Infallible>,
-            impl Service<quic::Connection, Output = (), Error = Infallible>,
+            impl Service<crate::quic::Connection, Output = (), Error = Infallible>,
+        ),
+        BoxError,
+    > {
+        self.build_services(exec)
+    }
+
+    fn build_services(
+        self,
+        exec: Executor,
+    ) -> Result<
+        (
+            impl Service<TcpStream, Output = (), Error = Infallible>,
+            impl super::MaybeHttp3Service,
         ),
         BoxError,
     > {
@@ -379,17 +393,29 @@ where
             }),
         };
 
-        let mut http3 = HttpServer::new_http3(exec);
-        // RFC 9220: WebSockets over HTTP/3 use Extended CONNECT.
-        http3.http3_mut().extended_connect = self.ws_support;
+        #[cfg(feature = "quic")]
+        let http3_service = {
+            let mut http3 = HttpServer::new_http3(exec);
+            // RFC 9220: WebSockets over HTTP/3 use Extended CONNECT.
+            http3.http3_mut().extended_connect = self.ws_support;
+            (
+                ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
+                connection_limit,
+                connection_timeout,
+                throttle,
+                BodyLimitLayer::request_only(self.body_limit),
+            )
+                .into_layer(http3.service(http_service))
+        };
+        // Without HTTP/3 the shared per-connection state only serves TCP.
+        #[cfg(not(feature = "quic"))]
         let http3_service = (
-            ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
             connection_limit,
             connection_timeout,
             throttle,
-            BodyLimitLayer::request_only(self.body_limit),
-        )
-            .into_layer(http3.service(http_service));
+            http_service,
+            exec,
+        );
 
         Ok((
             tcp_service_builder.into_layer(http_transport_service),

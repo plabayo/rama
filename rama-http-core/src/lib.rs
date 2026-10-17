@@ -65,6 +65,8 @@ mod error;
 pub use self::error::{Error, Result};
 
 pub mod h2;
+#[cfg(feature = "http3")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http3")))]
 pub mod h3;
 
 pub mod service;

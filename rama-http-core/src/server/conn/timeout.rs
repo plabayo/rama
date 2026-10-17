@@ -478,6 +478,7 @@ impl ConnTimer {
         self.deadlines.start_drain();
     }
 
+    #[cfg(feature = "http3")]
     pub(crate) fn drain_budget(&self) -> Duration {
         self.deadlines.drain_budget()
     }

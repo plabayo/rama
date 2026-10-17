@@ -2091,7 +2091,8 @@ where
     }
 }
 
-#[cfg(test)]
+// Only the HTTP/3 cross-protocol conformance tests use this.
+#[cfg(all(test, feature = "http3"))]
 pub(crate) mod test_util {
     use super::*;
 

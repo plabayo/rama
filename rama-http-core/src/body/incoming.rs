@@ -37,10 +37,12 @@ enum Kind {
     // H2's receive stream is a handle into its connection driver. H3 owns its
     // frame reader, QUIC stream, and trailer decoding state here. Keep that
     // larger state off the enum so HTTP/1 and HTTP/2 bodies retain their size.
+    #[cfg(feature = "http3")]
     H3(Box<crate::h3::body::Body>),
 }
 
 impl Incoming {
+    #[cfg(feature = "http3")]
     pub(crate) fn h3(body: crate::h3::body::Body) -> Self {
         Self::new(Kind::H3(Box::new(body)))
     }
@@ -96,6 +98,7 @@ impl StreamingBody for Incoming {
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         match &mut self.kind {
+            #[cfg(feature = "http3")]
             Kind::H3(body) => Pin::new(body.as_mut()).poll_frame(cx),
             Kind::Empty => Poll::Ready(None),
             Kind::Chan {
@@ -162,6 +165,7 @@ impl StreamingBody for Incoming {
 
     fn is_end_stream(&self) -> bool {
         match &self.kind {
+            #[cfg(feature = "http3")]
             Kind::H3(body) => body.is_end_stream(),
             Kind::Empty => true,
             Kind::Chan { content_length, .. } => *content_length == DecodedLength::ZERO,
@@ -179,6 +183,7 @@ impl StreamingBody for Incoming {
         }
 
         match self.kind {
+            #[cfg(feature = "http3")]
             Kind::H3(ref body) => body.size_hint(),
             Kind::Empty => SizeHint::with_exact(0),
             Kind::Chan { content_length, .. } | Kind::H2 { content_length, .. } => {

@@ -38,11 +38,10 @@ use rama_http::{
 #[cfg(any(feature = "boring", feature = "rustls"))]
 use crate::tls::client::TlsClientConfig;
 
+#[cfg(all(feature = "boring", feature = "quic"))]
+use crate::quic::tls::BoringTlsProvider;
 #[cfg(feature = "boring")]
-use {
-    crate::{quic::tls::BoringTlsProvider, tls::boring::client::TlsClientSessionCache},
-    std::sync::Arc,
-};
+use {crate::tls::boring::client::TlsClientSessionCache, std::sync::Arc};
 
 pub mod builder;
 #[doc(inline)]
@@ -128,9 +127,10 @@ impl EasyHttpWebClient<(), (), ()> {
 /// Rama's default asynchronous HTTP(S) client, including its default
 /// multiplexing connection pool.
 ///
-/// With BoringSSL or Rustls plus `ring`/`aws-lc`, HTTP/3 is available through
-/// alternative-service discovery or an explicit HTTP/3 request. Its shared UDP
-/// endpoint is bound lazily, so constructing the client requires no runtime.
+/// With the `quic` feature and BoringSSL or Rustls plus `ring`/`aws-lc`, HTTP/3
+/// is available through alternative-service discovery or an explicit HTTP/3
+/// request. Its shared UDP endpoint is bound lazily, so constructing the client
+/// requires no runtime.
 ///
 /// Like a browser it resumes TLS sessions (with BoringSSL, also over TCP), which
 /// lets servers link the connections of one client. It acts for a single user:
@@ -172,6 +172,7 @@ where
         feature = "boring" => {
             pub fn default_with_executor(exec: Executor) -> Self {
                 let tls_config = TlsClientConfig::default_http();
+                #[cfg(feature = "quic")]
                 #[expect(
                     clippy::expect_used,
                     reason = "fixed default H3 limits and the explicit BoringSSL provider are valid"
@@ -182,15 +183,18 @@ where
                     .build_lazy()
                     .expect("default BoringSSL HTTP/3 configuration is valid");
 
-                EasyHttpConnectorBuilder::new()
+                let builder = EasyHttpConnectorBuilder::new()
                     .with_default_transport_connector()
                     .with_default_dns_connector()
                     .with_tls_proxy_support_using_boringssl()
                     .with_proxy_support()
                     .with_tls_support_using_boringssl(tls_config)
                     .with_tls_session_store(Arc::new(TlsClientSessionCache::default()))
-                    .with_default_http_connector(exec)
-                    .with_http3_support(h3)
+                    .with_default_http_connector(exec);
+                #[cfg(feature = "quic")]
+                let builder = builder.with_http3_support(h3);
+
+                builder
                     .with_default_connection_pool()
                     .build_client()
             }
@@ -198,7 +202,7 @@ where
         feature = "rustls" => {
             pub fn default_with_executor(exec: Executor) -> Self {
                 let tls_config = TlsClientConfig::default_http();
-                #[cfg(any(feature = "ring", feature = "aws-lc"))]
+                #[cfg(all(feature = "quic", any(feature = "ring", feature = "aws-lc")))]
                 #[expect(
                     clippy::expect_used,
                     reason = "fixed default H3 limits and a compiled-in Rustls crypto provider are valid"
@@ -215,7 +219,7 @@ where
                     .with_proxy_support()
                     .with_tls_support_using_rustls(tls_config)
                     .with_default_http_connector(exec);
-                #[cfg(any(feature = "ring", feature = "aws-lc"))]
+                #[cfg(all(feature = "quic", any(feature = "ring", feature = "aws-lc")))]
                 let builder = builder.with_http3_support(h3);
 
                 builder
