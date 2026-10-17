@@ -27,7 +27,7 @@ async fn changed_policy_rejects_before_dial() {
                 EstablishedClientConnection<ServiceInput<tokio::io::DuplexStream>, ConnectRequest>,
                 _,
             >(ConnectionError::local(
-                invalid("unexpected dial"),
+                BoxError::from_static_str("unexpected dial"),
                 ConnectionErrorKind::Internal,
             ))
         }

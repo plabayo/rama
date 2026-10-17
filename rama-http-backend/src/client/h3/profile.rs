@@ -119,10 +119,6 @@ pub(super) struct Pending {
     prepared: Mutex<Option<Prepared>>,
 }
 
-fn invalid(message: &'static str) -> BoxError {
-    BoxError::from_static_str(message)
-}
-
 /// The same application requirement the ordinary H3 path applies. Native wire
 /// overrides stay in the returned configuration, never in the caller's store.
 pub(super) fn effective(input: &impl ExtensionsRef, base: &TlsClientConfig) -> TlsClientConfig {
@@ -152,18 +148,20 @@ where
         }
         let authority = input
             .target_authority()
-            .ok_or_else(|| invalid("captured H3 TLS requires a destination"))?;
+            .ok_or_else(|| BoxError::from_static_str("captured H3 TLS requires a destination"))?;
         let protocol = input
             .target_protocol()
             .filter(|protocol| protocol.is_secure())
-            .ok_or_else(|| invalid("captured H3 TLS requires a secure protocol"))?
+            .ok_or_else(|| BoxError::from_static_str("captured H3 TLS requires a secure protocol"))?
             .clone();
         let target = input
             .extensions()
             .get_ref::<TargetHttpVersion>()
             .map(|target| target.0);
         if target.is_some_and(|target| target != Version::HTTP_3) {
-            return Err(invalid("captured H3 TLS requires an HTTP/3 target"));
+            return Err(BoxError::from_static_str(
+                "captured H3 TLS requires an HTTP/3 target",
+            ));
         }
         let offers_h3 = capture.extensions.iter().any(|extension| {
             extension.id == u16::from(ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION)
@@ -171,7 +169,9 @@ where
                     if protocols.iter().any(|protocol| protocol.as_ref() == ApplicationProtocol::HTTP_3.as_bytes()))
         });
         if !offers_h3 {
-            return Err(invalid("captured TLS offer excludes HTTP/3 ALPN"));
+            return Err(BoxError::from_static_str(
+                "captured TLS offer excludes HTTP/3 ALPN",
+            ));
         }
         let tls = effective(input, &self.tls);
         let peer = tls
@@ -186,7 +186,7 @@ where
                     .connection
                     .is_some_and(|pin| pin != selection.variant)
             {
-                return Err(invalid(
+                return Err(BoxError::from_static_str(
                     "captured H3 TLS selection differs from its emulation context",
                 ));
             }
@@ -201,7 +201,9 @@ where
             .provider
             .pool_id(tls.as_extensions())
             .filter(TlsPoolId::is_reusable)
-            .ok_or_else(|| invalid("captured H3 TLS policy cannot be compared safely"))?;
+            .ok_or_else(|| {
+                BoxError::from_static_str("captured H3 TLS policy cannot be compared safely")
+            })?;
         Ok(CompiledConnection {
             pending: Some(Pending {
                 authority,
@@ -278,14 +280,13 @@ impl Pending {
                 != self.target
             || provider.pool_id(tls.as_extensions()).as_ref() != Some(&self.policy)
         {
-            return Err(invalid(
+            return Err(BoxError::from_static_str(
                 "prepared H3 TLS owner, destination or policy changed before handshake",
             ));
         }
-        self.prepared
-            .lock()
-            .take()
-            .ok_or_else(|| invalid("prepared H3 TLS configuration was already consumed"))
+        self.prepared.lock().take().ok_or_else(|| {
+            BoxError::from_static_str("prepared H3 TLS configuration was already consumed")
+        })
     }
 }
 

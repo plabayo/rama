@@ -11,10 +11,10 @@ use rama_ua::profile::capture::{
 };
 
 mod connection;
+mod offer;
 mod quic;
 #[cfg(feature = "http")]
 mod reuse;
-mod wire;
 
 fn capture() -> TlsCapture {
     // Large enough to avoid destination-dependent native TCP padding. The

@@ -12,7 +12,7 @@ use rama_tls::{
 };
 use rama_tls_boring::client::{
     BoringTlsConnectorConfig,
-    profile::tls::{self, TransportShape},
+    profile::wire::{self, TransportShape},
 };
 use rama_ua::profile::capture::{
     completeness::ProfileCaptureCompleteness,
@@ -58,7 +58,8 @@ pub fn prepare(
         )
         .ok_or_else(|| BoxError::from_static_str("QUIC TLS capture has no parameter shape"))?;
     let current = BoringTlsConnectorConfig::from_extensions(policy.as_extensions());
-    let wire = tls::compile_for_policy(TransportShape::Quic { parameters_len }, capture, &current)?;
+    let wire =
+        wire::compile_for_policy(TransportShape::Quic { parameters_len }, capture, &current)?;
     let expected = capture.clone();
     let effective = policy.clone().with_overrides(wire.as_extensions());
 

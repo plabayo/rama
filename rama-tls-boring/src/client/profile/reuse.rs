@@ -1,13 +1,16 @@
 //! Compare future pool requests before their connection-scoped compilation.
 
-use rama_core::extensions::Extensions;
+use rama_core::{
+    error::{BoxError, BoxErrorExt as _},
+    extensions::Extensions,
+};
 use rama_net::http::TargetHttpVersion;
 use rama_tls::client::TlsConnectionReuse;
 use rama_ua::profile::selection::variants::{
     ConnectionSelection, EmulationContext, ProfileConnectionReuse,
 };
 
-use super::{CompiledConnection, invalid};
+use super::CompiledConnection;
 use crate::client::BoringTlsClientConfigProvider;
 
 #[derive(Debug)]
@@ -20,7 +23,7 @@ pub(super) fn bind(
     mut compiled: CompiledConnection,
     request: &Extensions,
     selection: &ConnectionSelection,
-) -> Result<CompiledConnection, rama_core::error::BoxError> {
+) -> Result<CompiledConnection, BoxError> {
     let Some(context) = EmulationContext::of(request) else {
         return Ok(compiled);
     };
@@ -30,7 +33,7 @@ pub(super) fn bind(
             .connection
             .is_some_and(|pin| pin != selection.variant)
     {
-        return Err(invalid(
+        return Err(BoxError::from_static_str(
             "captured TLS selection differs from its emulation context",
         ));
     }

@@ -42,7 +42,7 @@ use rama_net::http::{TargetHttpVersion, Version};
 
 #[cfg(feature = "http")]
 pub(super) mod reuse;
-pub mod tls;
+pub mod wire;
 
 /// Backend compiler obtained from the TLS connector that will consume it.
 ///
@@ -73,10 +73,6 @@ pub(super) struct PendingTlsProfile {
     policy: TlsPoolId,
     metadata: HandshakeMetadata,
     prepared: Mutex<Option<PreparedHandshake>>,
-}
-
-fn invalid(message: &'static str) -> BoxError {
-    BoxError::from_static_str(message)
 }
 
 fn effective(extensions: &Extensions, base: Option<&TlsClientConfig>) -> Extensions {
@@ -124,21 +120,23 @@ impl ConnectionCompiler {
         // A fresh-only compiler cannot silently ignore a configured session
         // store, or offer a ticket absent from the selected captured variant.
         if self.sessions.is_some() {
-            return Err(invalid(
+            return Err(BoxError::from_static_str(
                 "captured TLS replay with a session store is not implemented",
             ));
         }
-        let authority = input
-            .target_authority()
-            .ok_or_else(|| invalid("captured TLS replay requires a destination"))?;
+        let authority = input.target_authority().ok_or_else(|| {
+            BoxError::from_static_str("captured TLS replay requires a destination")
+        })?;
         let protocol = input
             .target_protocol()
             .filter(|protocol| protocol.is_secure())
-            .ok_or_else(|| invalid("captured TLS replay requires a secure protocol"))?
+            .ok_or_else(|| {
+                BoxError::from_static_str("captured TLS replay requires a secure protocol")
+            })?
             .clone();
         let effective = effective(input.extensions(), self.base.as_ref());
         let current = BoringTlsConnectorConfig::from_extensions(&effective);
-        let wire = tls::compile_for_policy(tls::TransportShape::Tcp, capture, &current)?;
+        let wire = wire::compile_for_policy(wire::TransportShape::Tcp, capture, &current)?;
         let identity = current
             .server_name
             .map(|name| &name.0)
@@ -151,7 +149,7 @@ impl ConnectionCompiler {
             )
         });
         if sends_sni != captured_sni {
-            return Err(invalid(
+            return Err(BoxError::from_static_str(
                 "destination identity and captured SNI presence differ",
             ));
         }
@@ -166,13 +164,13 @@ impl ConnectionCompiler {
                 Version::HTTP_11 => rama_net::tls::ApplicationProtocol::HTTP_11,
                 Version::HTTP_2 => rama_net::tls::ApplicationProtocol::HTTP_2,
                 _ => {
-                    return Err(invalid(
+                    return Err(BoxError::from_static_str(
                         "captured TCP TLS target HTTP version is unsupported",
                     ));
                 }
             };
             if !wire.alpn().is_some_and(|offer| offer.0.contains(&wanted)) {
-                return Err(invalid(
+                return Err(BoxError::from_static_str(
                     "captured ALPN offer excludes the required HTTP version",
                 ));
             }
@@ -182,7 +180,9 @@ impl ConnectionCompiler {
         let policy = native
             .pool_id()
             .filter(TlsPoolId::is_reusable)
-            .ok_or_else(|| invalid("captured TLS policy cannot be compared safely"))?;
+            .ok_or_else(|| {
+                BoxError::from_static_str("captured TLS policy cannot be compared safely")
+            })?;
         let mut data = super::TlsConnectorData::try_from(native)?;
         if data.server_name.is_none() {
             data.server_name = Some(authority.host.clone());
@@ -228,7 +228,7 @@ impl PendingTlsProfile {
             || input.target_protocol() != Some(&self.protocol)
             || policy.as_ref() != Some(&self.policy)
         {
-            return Err(invalid(
+            return Err(BoxError::from_static_str(
                 "prepared TLS destination or policy changed before handshake",
             ));
         }
@@ -239,12 +239,14 @@ impl PendingTlsProfile {
             .map(|version| version.0)
             != self.target_version
         {
-            return Err(invalid(
+            return Err(BoxError::from_static_str(
                 "prepared TLS target HTTP version changed before handshake",
             ));
         }
         if self.prepared.lock().is_none() {
-            return Err(invalid("prepared TLS session was already consumed"));
+            return Err(BoxError::from_static_str(
+                "prepared TLS session was already consumed",
+            ));
         }
         Ok(())
     }
@@ -257,7 +259,7 @@ impl PendingTlsProfile {
         self.prepared
             .lock()
             .take()
-            .ok_or_else(|| invalid("prepared TLS session was already consumed"))
+            .ok_or_else(|| BoxError::from_static_str("prepared TLS session was already consumed"))
     }
 }
 

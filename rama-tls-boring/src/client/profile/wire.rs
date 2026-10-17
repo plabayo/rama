@@ -22,10 +22,6 @@ use super::super::{
     ech::EchGrease,
 };
 
-fn invalid(message: &'static str) -> BoxError {
-    BoxError::from(message)
-}
-
 fn protocols(values: &[Box<[u8]>]) -> impl Iterator<Item = ApplicationProtocol> + '_ {
     values.iter().map(|value| value.as_ref().into())
 }
@@ -75,7 +71,7 @@ pub fn compile(
     if capture.protocol_version != u16::from(ProtocolVersion::TLSv1_2)
         || capture.compression.as_ref() != [u8::from(CompressionAlgorithm::Null)]
     {
-        return Err(invalid("unsupported TLS transport or legacy fields"));
+        return Err(BoxError::from("unsupported TLS transport or legacy fields"));
     }
 
     // Return wire overrides only. The caller layers these over its current
@@ -169,7 +165,7 @@ pub fn compile(
                     .filter(|value| !is_grease_u16(*value));
                 let first = offered
                     .next()
-                    .ok_or_else(|| invalid("missing negotiable TLS version"))?;
+                    .ok_or_else(|| BoxError::from("missing negotiable TLS version"))?;
                 let (min, max) = offered.fold((first, first), |(min, max), value| {
                     (min.min(value), max.max(value))
                 });
@@ -189,7 +185,7 @@ pub fn compile(
                     };
                     expected != Some(share.length)
                 }) {
-                    return Err(invalid("unsupported TLS key-share shape"));
+                    return Err(BoxError::from("unsupported TLS key-share shape"));
                 }
                 config.set_key_shares(shares.iter().map(|share| share.group.into()).collect());
             }
@@ -203,11 +199,13 @@ pub fn compile(
                 );
             }
             (ExtensionId::TRUST_ANCHORS, Value::ConnectionLength(length)) => {
-                let anchors =
-                    anchors.ok_or_else(|| invalid("current trust-anchor binding required"))?;
+                let anchors = anchors
+                    .ok_or_else(|| BoxError::from("current trust-anchor binding required"))?;
                 anchors.identifier_list()?;
                 if anchors.extension_body().map(<[u8]>::len) != Some(usize::from(*length)) {
-                    return Err(invalid("current trust-anchor binding length differs"));
+                    return Err(BoxError::from(
+                        "current trust-anchor binding length differs",
+                    ));
                 }
                 config.set_requested_trust_anchors(anchors.clone());
             }
@@ -236,14 +234,16 @@ pub fn compile(
                 bodies.push((extension.id.into(), Bytes::copy_from_slice(body)));
             }
             _ => {
-                return Err(invalid(
+                return Err(BoxError::from(
                     "unsupported TLS captured extension or native binding",
                 ));
             }
         }
     }
     if !versions || extended_master_secret != renegotiation_info {
-        return Err(invalid("unsupported TLS version or legacy extension pair"));
+        return Err(BoxError::from(
+            "unsupported TLS version or legacy extension pair",
+        ));
     }
     config.set_legacy_extensions(extended_master_secret);
     config.set_extension_bodies(bodies);
@@ -271,7 +271,7 @@ pub fn compile_for_policy(
             .map(u16::from)
             .eq(capture.ciphers.iter().copied())
     {
-        return Err(invalid(
+        return Err(BoxError::from(
             "caller cipher policy conflicts with captured TLS ciphers",
         ));
     }
@@ -293,7 +293,7 @@ fn validate_transport(transport: TransportShape, capture: &TlsCapture) -> Result
                 }
             });
             if parameter_length.map(usize::from) != Some(parameters_len) {
-                return Err(invalid(
+                return Err(BoxError::from(
                     "current QUIC transport-parameter length differs or is absent",
                 ));
             }
@@ -312,11 +312,15 @@ fn validate_transport(transport: TransportShape, capture: &TlsCapture) -> Result
             if versions.iter().any(|&version| {
                 !is_grease_u16(version) && version != u16::from(ProtocolVersion::TLSv1_3)
             }) {
-                return Err(invalid("QUIC capture offers a version other than TLS 1.3"));
+                return Err(BoxError::from(
+                    "QUIC capture offers a version other than TLS 1.3",
+                ));
             }
             Ok(())
         }
-        _ => Err(invalid("captured TLS transport and current binding differ")),
+        _ => Err(BoxError::from(
+            "captured TLS transport and current binding differ",
+        )),
     }
 }
 
@@ -337,7 +341,7 @@ fn validate_native_lists(capture: &TlsCapture) -> Result<(), BoxError> {
             .iter()
             .any(|extension| extension.id == u16::from(required))
         {
-            return Err(invalid(
+            return Err(BoxError::from(
                 "captured TLS shape omits a required native first-hello field",
             ));
         }
@@ -365,7 +369,7 @@ fn validate_native_lists(capture: &TlsCapture) -> Result<(), BoxError> {
         .iter()
         .any(|extension| extension.id == u16::from(ExtensionId::EC_POINT_FORMATS));
     if offers_tls12 != has_point_formats {
-        return Err(invalid(
+        return Err(BoxError::from(
             "captured EC point formats differ from native version policy",
         ));
     }
@@ -375,7 +379,7 @@ fn validate_native_lists(capture: &TlsCapture) -> Result<(), BoxError> {
             .iter()
             .any(|extension| extension.id == u16::from(ExtensionId::SESSION_TICKET))
     {
-        return Err(invalid(
+        return Err(BoxError::from(
             "captured session-ticket extension requires a TLS 1.2 offer",
         ));
     }
@@ -391,7 +395,9 @@ fn validate_native_lists(capture: &TlsCapture) -> Result<(), BoxError> {
                     !alpn.contains(protocol) || protocols[..index].contains(protocol)
                 })
             {
-                return Err(invalid("captured ALPS offer cannot be emitted exactly"));
+                return Err(BoxError::from(
+                    "captured ALPS offer cannot be emitted exactly",
+                ));
             }
             alps_seen = true;
         }
@@ -401,7 +407,7 @@ fn validate_native_lists(capture: &TlsCapture) -> Result<(), BoxError> {
         .iter()
         .any(|&value| !is_grease_u16(value) && SslCipher::from_value(value).is_none())
     {
-        return Err(invalid(
+        return Err(BoxError::from(
             "captured cipher is not implemented by this backend",
         ));
     }
@@ -413,7 +419,7 @@ fn validate_native_lists(capture: &TlsCapture) -> Result<(), BoxError> {
                         SupportedGroup::from(value)
                             .rama_try_into()
                             .map_err(|_unsupported| {
-                                invalid("captured group is not implemented by this backend")
+                                BoxError::from("captured group is not implemented by this backend")
                             })?;
                 }
             }
@@ -425,7 +431,9 @@ fn validate_native_lists(capture: &TlsCapture) -> Result<(), BoxError> {
                     let _: SslSignatureAlgorithm = SignatureScheme::from(value)
                         .rama_try_into()
                         .map_err(|_unsupported| {
-                            invalid("captured signature scheme is not implemented by this backend")
+                            BoxError::from(
+                                "captured signature scheme is not implemented by this backend",
+                            )
                         })?;
                 }
             }
@@ -435,7 +443,7 @@ fn validate_native_lists(capture: &TlsCapture) -> Result<(), BoxError> {
                         || !crate::certificate_compression::SUPPORTED_CERTIFICATE_COMPRESSION
                             .contains(&CertificateCompressionAlgorithm::from(value))
                 }) {
-                    return Err(invalid(
+                    return Err(BoxError::from(
                         "captured certificate compression list cannot be emitted exactly",
                     ));
                 }
@@ -446,7 +454,7 @@ fn validate_native_lists(capture: &TlsCapture) -> Result<(), BoxError> {
                 if !values.iter().any(|&value| is_grease_u16(value))
                     && values.windows(2).any(|pair| pair[0] <= pair[1])
                 {
-                    return Err(invalid(
+                    return Err(BoxError::from(
                         "captured TLS version order needs a raw-list compiler",
                     ));
                 }
@@ -457,7 +465,7 @@ fn validate_native_lists(capture: &TlsCapture) -> Result<(), BoxError> {
                             ProtocolVersion::TLSv1_2 | ProtocolVersion::TLSv1_3
                         )
                 }) {
-                    return Err(invalid(
+                    return Err(BoxError::from(
                         "captured TLS version is not supported by this compiler",
                     ));
                 }
@@ -484,10 +492,10 @@ fn validate_native_lists(capture: &TlsCapture) -> Result<(), BoxError> {
                         .iter()
                         .position(|group| *group == share.group)
                         .ok_or_else(|| {
-                            invalid("captured key share is absent from supported groups")
+                            BoxError::from("captured key share is absent from supported groups")
                         })?;
                     if !raw_groups && previous.is_some_and(|previous| previous >= position) {
-                        return Err(invalid(
+                        return Err(BoxError::from(
                             "captured key-share order needs a raw-list compiler",
                         ));
                     }
@@ -511,13 +519,13 @@ pub(super) fn validate_version_bounds(
             continue;
         }
         let Value::U16List(versions) = &extension.value else {
-            return Err(invalid("captured TLS version list is malformed"));
+            return Err(BoxError::from("captured TLS version list is malformed"));
         };
         for &version in versions.iter().filter(|&&version| !is_grease_u16(version)) {
             if min.is_some_and(|min| version < u16::from(min))
                 || max.is_some_and(|max| version > u16::from(max))
             {
-                return Err(invalid(
+                return Err(BoxError::from(
                     "caller TLS version bounds conflict with captured offer",
                 ));
             }
