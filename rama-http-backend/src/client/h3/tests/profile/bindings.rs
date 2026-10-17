@@ -1,8 +1,11 @@
 use super::*;
-use rama_net::address::Host;
+use rama_net::{address::Host, tls::TlsAlpn};
 use rama_quic_proto::transport_parameters::TransportParameterId;
 use rama_tls::client::{ServerVerifyMode, TlsServerName, TlsServerVerify};
-use rama_ua::profile::{capture::order::ProtocolValue, replay::request::ProfilePreservationMode};
+use rama_ua::profile::{
+    capture::order::ProtocolValue, replay::request::ProfilePreservationMode,
+    selection::variants::ConnectionSelection,
+};
 
 #[tokio::test]
 async fn final_http_target_and_protocol_are_validated_without_pending_state() {
@@ -163,4 +166,52 @@ async fn destination_identity_must_preserve_captured_sni_presence() {
         error.to_string().contains("captured SNI presence differ"),
         "{error}"
     );
+}
+
+#[tokio::test]
+async fn explicit_caller_alpn_is_not_erased_by_captured_h3_settings() {
+    let fixture = fixture().await;
+    for offer in [TlsAlpn::empty(), TlsAlpn::http_2()] {
+        let input = fixture.input();
+        fixture.install(&input);
+        input.extensions().insert(offer.clone());
+        let error = fixture.serve(input.clone()).await.err().unwrap();
+        assert!(error.to_string().contains("explicit ALPN"), "{error}");
+        assert_eq!(input.extensions().get_ref::<TlsAlpn>(), Some(&offer));
+        assert!(!input.extensions().contains::<ConnectionSelection>());
+    }
+}
+
+#[tokio::test]
+async fn captured_alpn_must_preserve_explicit_order_and_extra_protocols() {
+    let mut fixture = fixture().await;
+    for protocols in [
+        vec![ApplicationProtocol::HTTP_3, ApplicationProtocol::HTTP_2],
+        vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_3],
+    ] {
+        let input = fixture.input();
+        fixture.install(&input);
+        let offer = TlsAlpn(protocols.into_iter().collect());
+        input.extensions().insert(offer.clone());
+        let error = fixture.serve(input.clone()).await.err().unwrap();
+        assert!(
+            error.to_string().contains("ALPN offers conflict"),
+            "{error}"
+        );
+        assert_eq!(input.extensions().get_ref::<TlsAlpn>(), Some(&offer));
+    }
+
+    // Wire-equivalent public aliases are accepted and actually reach the peer.
+    let input = fixture.input();
+    fixture.install(&input);
+    input.extensions().insert(TlsAlpn(
+        [ApplicationProtocol::Unknown(b"h3".to_vec())]
+            .into_iter()
+            .collect(),
+    ));
+    let transport = fixture.serve(input).await.unwrap().conn;
+    request(transport).await;
+    let captures = fixture.task.take().unwrap().await.unwrap();
+    assert_eq!(captures.len(), 2);
+    assert_eq!(captures[1].0, fixture.capture);
 }

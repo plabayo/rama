@@ -55,9 +55,15 @@ use rama_ua::profile::{
 use {
     crate::tls::BoringTlsProvider,
     rama_core::{error::BoxErrorExt as _, extensions::Extension},
-    rama_net::address::Host,
-    rama_tls::client::{
-        TlsClientConfigProvider as _, TlsConnectionReuse, TlsServerName, TlsSessionProfileScope,
+    rama_net::{
+        address::Host,
+        tls::{ApplicationProtocol, TlsAlpn},
+    },
+    rama_tls::{
+        alpn::required_alpn_override,
+        client::{
+            TlsClientConfigProvider as _, TlsConnectionReuse, TlsServerName, TlsSessionProfileScope,
+        },
     },
     rama_ua::profile::capture::tls::{TlsCaptureTransport, TlsCapturedExtensionValue},
     rama_utils::fmt::hex,
@@ -200,6 +206,10 @@ impl ConnectionProfileCompiler {
         let authority = input
             .target_authority()
             .ok_or_else(|| BoxError::from_static_str("captured QUIC requires a destination"))?;
+        // Admit the original caller offer before installing captured settings.
+        // Connector defaults may be replaced; an explicit offer may not.
+        let caller_alpn = input.extensions().get_ref::<TlsAlpn>();
+        required_alpn_override(ApplicationProtocol::HTTP_3, caller_alpn)?;
         let policy = self.policy.clone().with_overrides(input.extensions());
         let identity = policy
             .as_extensions()
@@ -236,6 +246,20 @@ impl ConnectionProfileCompiler {
             ));
         }
         let wire = tls::compile(&policy, &capture)?;
+        if let Some(caller) = caller_alpn {
+            let captured = wire.as_extensions().get_ref::<TlsAlpn>();
+            if captured.is_none_or(|captured| {
+                !caller
+                    .0
+                    .iter()
+                    .map(ApplicationProtocol::as_bytes)
+                    .eq(captured.0.iter().map(ApplicationProtocol::as_bytes))
+            }) {
+                return Err(BoxError::from_static_str(
+                    "caller and captured ALPN offers conflict",
+                ));
+            }
+        }
         let current_scope = policy.as_extensions().get_arc::<TlsSessionProfileScope>();
         let caller_scope = match input.extensions().get_ref::<AppliedSessionScope>() {
             Some(previous)
