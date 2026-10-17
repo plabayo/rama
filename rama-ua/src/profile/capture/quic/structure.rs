@@ -87,7 +87,6 @@ impl Shape {
     fn encode(&self, limits: QuicFlightCaptureLimits) -> Result<CanonicalValue, ProfileDataError> {
         self.validate(limits)?;
         let mut writer = CanonicalWriter::new(CanonicalDomain::QuicFlightStructure, limits.bytes)?;
-        writer.u8(FLIGHT_SCHEMA_REVISION)?;
         writer.u32(self.version)?;
         writer.u64(self.dcid as u64)?;
         writer.u64(self.scid as u64)?;
@@ -218,11 +217,6 @@ pub(super) fn validate(
 ) -> Result<(), ProfileDataError> {
     value.verify(CanonicalDomain::QuicFlightStructure, limits.bytes)?;
     let mut reader = CanonicalReader::new(&value.bytes, CanonicalDomain::QuicFlightStructure)?;
-    if reader.u8()? != FLIGHT_SCHEMA_REVISION {
-        return Err(ProfileDataError::Unsupported(
-            "QUIC flight structure revision",
-        ));
-    }
     let version = reader.u32()?;
     let dcid = reader.count(20)?;
     let scid = reader.count(20)?;

@@ -39,7 +39,7 @@ fn flight_roundtrip_retains_layout_without_connection_secrets() {
     .unwrap();
     assert_eq!(structure.bytes.as_ref(), expected.as_slice());
     assert_eq!(structure.id.0, <[u8; 32]>::from(Sha256::digest(&expected)));
-    assert_eq!(canonical.bytes.len(), 182);
+    assert_eq!(canonical.bytes.len(), 181);
 }
 
 #[test]

@@ -128,7 +128,10 @@ fn canonical_version(domain: CanonicalDomain) -> u16 {
         | CanonicalDomain::JointStructure
         | CanonicalDomain::Tls
         | CanonicalDomain::TlsStructure
-        | CanonicalDomain::OrderStructure => 2,
+        | CanonicalDomain::OrderStructure
+        // Flight v2 retains every observed Initial packet-number width.
+        | CanonicalDomain::QuicFlight
+        | CanonicalDomain::QuicFlightStructure => 2,
         _ => VERSION,
     }
 }

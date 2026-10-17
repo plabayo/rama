@@ -17,9 +17,6 @@ use rama_quic_proto::{
 use rama_utils::octets::kib;
 use serde::Serialize;
 
-// Both literal and structural encodings gain per-packet widths in revision2.
-const FLIGHT_SCHEMA_REVISION: u8 = 2;
-
 #[derive(Debug, Clone, Copy)]
 /// Resource limits for one retained QUIC first flight.
 pub struct QuicFlightCaptureLimits {
@@ -118,11 +115,6 @@ impl QuicFlightCapture {
     ) -> Result<Self, ProfileDataError> {
         value.verify(CanonicalDomain::QuicFlight, limits.bytes)?;
         let mut reader = CanonicalReader::new(&value.bytes, CanonicalDomain::QuicFlight)?;
-        if reader.u8()? != FLIGHT_SCHEMA_REVISION {
-            return Err(ProfileDataError::Unsupported(
-                "QUIC flight capture revision",
-            ));
-        }
         let completeness = ProfileCaptureCompleteness::from_tag(reader.u8()?)?;
         completeness.require_complete("QUIC first flight")?;
         let datagram_sizes = read_sizes(&mut reader, limits.datagrams, 65_527)?;
@@ -393,8 +385,6 @@ fn encode(
     completeness.require_complete("QUIC first flight")?;
     validate(flight, limits)?;
     let mut writer = CanonicalWriter::new(CanonicalDomain::QuicFlight, limits.bytes)?;
-    // Revision2 retains every Initial's packet-number width.
-    writer.u8(FLIGHT_SCHEMA_REVISION)?;
     writer.u8(completeness.tag())?;
     write_sizes(&mut writer, &flight.datagram_sizes)?;
     write_sizes(&mut writer, &flight.trailing_bytes)?;

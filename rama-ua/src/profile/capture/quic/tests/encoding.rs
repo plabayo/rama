@@ -1,4 +1,5 @@
 use super::*;
+use std::assert_matches;
 
 #[test]
 fn flight_import_rejects_noncanonical_runs_and_padding_placement() {
@@ -53,5 +54,28 @@ fn packet_number_widths_survive_capture_and_structure_without_inference() {
     for widths in [vec![], vec![1], vec![1, 0], vec![1, 5], vec![2, 2]] {
         captured.flight.packet_number_lengths = widths;
         captured.canonical(limits).unwrap_err();
+    }
+}
+
+/// Persisted capture bytes must have exactly the schema their domain expects.
+/// Re-signing the bytes rules out an identity mismatch masking a version error.
+#[test]
+fn persisted_flights_reject_unsupported_envelope_versions() {
+    let captured = capture();
+    let limits = QuicFlightCaptureLimits::default();
+    for original in [
+        captured.canonical(limits).unwrap(),
+        captured.structural(limits).unwrap(),
+    ] {
+        original.validated_domain(limits.bytes).unwrap();
+        for version in [0u16, 1, 3, u16::MAX] {
+            let mut bytes = original.bytes.to_vec();
+            let prefix_len = b"rama-profile\0".len();
+            bytes[prefix_len..prefix_len + 2].copy_from_slice(&version.to_be_bytes());
+            assert_matches!(
+                resign(bytes).validated_domain(limits.bytes),
+                Err(ProfileDataError::Unsupported("canonical format version"))
+            );
+        }
     }
 }

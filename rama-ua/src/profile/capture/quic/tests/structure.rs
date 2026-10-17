@@ -146,7 +146,7 @@ fn flight_structure_import_rejects_unclassified_cid_lengths() {
     let limits = QuicFlightCaptureLimits::default();
     let value = capture().structural(limits).unwrap();
     // The canonical domain/version prefix is followed by QUIC version and CID classes.
-    for (offset, lengths) in [(22, 9..=20u64), (30, 2..=20u64)] {
+    for (offset, lengths) in [(21, 9..=20u64), (29, 2..=20u64)] {
         for length in lengths {
             let mut bytes = value.bytes.to_vec();
             bytes[offset..offset + 8].copy_from_slice(&length.to_be_bytes());
