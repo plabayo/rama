@@ -17,7 +17,10 @@ use rama_ua::profile::capture::tls::{
     TlsCapture, TlsCaptureLimits, TlsCaptureTransport, TlsCapturedExtensionValue as Value,
 };
 
-use super::super::{BoringClientConfigExt as _, BoringRequestedTrustAnchors, ech::EchGrease};
+use super::super::{
+    BoringClientConfigExt as _, BoringRequestedTrustAnchors, BoringTlsConnectorConfig,
+    ech::EchGrease,
+};
 
 fn invalid(message: &'static str) -> BoxError {
     BoxError::from(message)
@@ -34,32 +37,34 @@ const NATIVE_RENEGOTIATION_INFO_LEN: u16 = 1;
 // Boring's GREASE key-share body is one byte; RFC 8701 does not fix its size.
 const NATIVE_GREASE_KEY_SHARE_LEN: u16 = 1;
 
-/// Current transport state against which a captured TLS offer is compiled.
+/// Transport shape required by a compiled TLS offer.
 ///
-/// QUIC parameters remain owned and encoded by the transport engine. The
-/// compiler checks their captured length without copying connection identities.
+/// The native connection owner binds this shape to its actual session before
+/// releasing handshake output. QUIC parameter bytes remain in the engine; wire
+/// compilation needs only their encoded length and never copies their identities.
 #[derive(Debug, Clone, Copy)]
-pub enum TransportBinding<'a> {
+#[non_exhaustive]
+pub enum TransportShape {
     /// A TLS connection over TCP.
     Tcp,
-    /// A QUIC connection with its current, fully encoded transport parameters.
+    /// A QUIC connection whose encoded parameter block has this length.
     Quic {
-        /// Exact encoding the transport engine will install on its native session.
-        parameters: &'a [u8],
+        /// Required byte length, checked again against the consuming native session.
+        parameters_len: usize,
     },
 }
 
 /// Compile native wire settings for the selected TLS capture.
 ///
-/// `transport` must describe the connection that will consume these overrides;
-/// QUIC callers must install those same parameter bytes on their native session.
+/// `transport` describes the required wire shape, not a prepared connection.
+/// QUIC callers must check the actual native parameter length before output.
 /// `anchors` supplies current trust-anchor identifiers when the capture contains
 /// their advertisement. Captured parameter, ticket and secret bytes are never
 /// reused. This function does not prepare an SSL session or establish backend
 /// support for an entire captured connection: the owning connector must also
 /// bind the destination, caller policy, session state and other selected slots.
 pub fn compile(
-    transport: TransportBinding<'_>,
+    transport: TransportShape,
     capture: &TlsCapture,
     anchors: Option<&BoringRequestedTrustAnchors>,
 ) -> Result<TlsClientConfig, BoxError> {
@@ -112,10 +117,10 @@ pub fn compile(
     for extension in &capture.extensions {
         match (ExtensionId::from(extension.id), &extension.value) {
             (ExtensionId::SERVER_NAME, Value::ServerName { present: true }) => {}
-            // Only the QUIC engine supplies these bytes. Admission above checked
-            // their presence and length against this connection's actual encoding.
+            // The engine supplies these bytes. Compilation checks the required
+            // shape; the native session owner validates its actual encoding.
             (ExtensionId::QUIC_TRANSPORT_PARAMETERS, Value::ConnectionLength(_))
-                if matches!(transport, TransportBinding::Quic { .. }) => {}
+                if matches!(transport, TransportShape::Quic { .. }) => {}
             (ExtensionId::STATUS_REQUEST, Value::ConnectionLength(NATIVE_OCSP_REQUEST_LEN)) => {
                 config.set_ocsp_stapling(true);
             }
@@ -245,15 +250,40 @@ pub fn compile(
     Ok(config)
 }
 
+/// Compile wire settings while retaining explicit caller version and cipher limits.
+/// Other caller policy, including verification and credentials, stays in the
+/// connection owner's effective configuration and is not returned as an override.
+pub fn compile_for_policy(
+    transport: TransportShape,
+    capture: &TlsCapture,
+    policy: &BoringTlsConnectorConfig<'_>,
+) -> Result<TlsClientConfig, BoxError> {
+    validate_version_bounds(
+        capture,
+        policy.min_version.map(|version| version.0),
+        policy.max_version.map(|version| version.0),
+    )?;
+    if let Some(ciphers) = policy.cipher_suites
+        && !ciphers
+            .0
+            .iter()
+            .copied()
+            .map(u16::from)
+            .eq(capture.ciphers.iter().copied())
+    {
+        return Err(invalid(
+            "caller cipher policy conflicts with captured TLS ciphers",
+        ));
+    }
+    compile(transport, capture, policy.requested_trust_anchors)
+}
+
 // QUIC's native handshake filters non-TLS-1.3 offers. Reject such captures
 // instead of silently changing their version list during native preparation.
-fn validate_transport(
-    transport: TransportBinding<'_>,
-    capture: &TlsCapture,
-) -> Result<(), BoxError> {
+fn validate_transport(transport: TransportShape, capture: &TlsCapture) -> Result<(), BoxError> {
     match (transport, capture.transport) {
-        (TransportBinding::Tcp, TlsCaptureTransport::Tcp) => Ok(()),
-        (TransportBinding::Quic { parameters }, TlsCaptureTransport::Quic) => {
+        (TransportShape::Tcp, TlsCaptureTransport::Tcp) => Ok(()),
+        (TransportShape::Quic { parameters_len }, TlsCaptureTransport::Quic) => {
             let parameter_length = capture.extensions.iter().find_map(|extension| {
                 match (ExtensionId::from(extension.id), &extension.value) {
                     (ExtensionId::QUIC_TRANSPORT_PARAMETERS, Value::ConnectionLength(length)) => {
@@ -262,7 +292,7 @@ fn validate_transport(
                     _ => None,
                 }
             });
-            if parameter_length.map(usize::from) != Some(parameters.len()) {
+            if parameter_length.map(usize::from) != Some(parameters_len) {
                 return Err(invalid(
                     "current QUIC transport-parameter length differs or is absent",
                 ));

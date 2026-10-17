@@ -2952,6 +2952,7 @@ dependencies = [
  "rama-tls",
  "rama-tls-boring",
  "rama-tls-rustls",
+ "rama-ua",
  "rama-udp",
  "rama-utils",
  "rand 0.10.3",

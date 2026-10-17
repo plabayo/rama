@@ -1,3 +1,5 @@
+#[cfg(feature = "ua")]
+mod captured_sessions;
 mod fresh_sessions;
 mod prepared_sessions;
 

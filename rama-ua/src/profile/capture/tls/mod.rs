@@ -18,7 +18,7 @@ use crate::profile::{
 mod codec;
 pub(in crate::profile) mod structure;
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum TlsCaptureTransport {
     Tcp,
     Quic,
@@ -38,14 +38,14 @@ impl Default for TlsCaptureLimits {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TlsKeyShareShape {
     pub group: u16,
     pub length: u16,
 }
 
 /// Request-bound cryptographic values retain lengths, never their original bytes.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum TlsCapturedExtensionValue {
     Literal(Box<[u8]>),
     U16List(Box<[u16]>),
@@ -70,13 +70,13 @@ pub enum TlsCapturedExtensionValue {
     ConnectionLength(u16),
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TlsCapturedExtension {
     pub id: u16,
     pub value: TlsCapturedExtensionValue,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TlsCapture {
     pub completeness: ProfileCaptureCompleteness,
     pub transport: TlsCaptureTransport,

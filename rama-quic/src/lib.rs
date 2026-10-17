@@ -72,6 +72,10 @@ pub mod tls {
     mod cache;
     pub use cache::ClientConfigCache;
 
+    /// Native preparation and validation for captured Boring QUIC TLS offers.
+    #[cfg(all(feature = "boring", feature = "ua"))]
+    pub mod profile;
+
     mod factory;
     pub use factory::*;
 

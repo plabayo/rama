@@ -16,7 +16,7 @@ use rama_tls::{
     },
 };
 use rama_ua::profile::capture::tls::TlsCapturedExtension;
-use tls::TransportBinding;
+use tls::TransportShape;
 
 #[derive(Default)]
 struct FirstFlight(Mutex<Vec<u8>>);
@@ -97,8 +97,8 @@ fn compiled_quic_offer_uses_fresh_keys_and_current_transport_parameters() {
     let current_parameters = [0x0f, 4, 5, 6, 7, 8];
     let source = source(&source_parameters);
     let config = tls::compile(
-        TransportBinding::Quic {
-            parameters: &current_parameters,
+        TransportShape::Quic {
+            parameters_len: current_parameters.len(),
         },
         &source,
         None,
@@ -147,14 +147,14 @@ fn compiled_quic_offer_uses_fresh_keys_and_current_transport_parameters() {
 fn quic_wire_compilation_rejects_wrong_transport_lengths_and_version_filtering() {
     let parameters = [0x0f, 4, 1, 2, 3, 4];
     let observation = source(&parameters);
-    let binding = TransportBinding::Quic {
-        parameters: &parameters,
+    let binding = TransportShape::Quic {
+        parameters_len: parameters.len(),
     };
-    tls::compile(TransportBinding::Tcp, &observation, None).unwrap_err();
+    tls::compile(TransportShape::Tcp, &observation, None).unwrap_err();
     tls::compile(binding, &capture(), None).unwrap_err();
     tls::compile(
-        TransportBinding::Quic {
-            parameters: &parameters[..5],
+        TransportShape::Quic {
+            parameters_len: parameters[..5].len(),
         },
         &observation,
         None,

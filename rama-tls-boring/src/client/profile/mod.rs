@@ -138,11 +138,7 @@ impl ConnectionCompiler {
             .clone();
         let effective = effective(input.extensions(), self.base.as_ref());
         let current = BoringTlsConnectorConfig::from_extensions(&effective);
-        let wire = tls::compile(
-            tls::TransportBinding::Tcp,
-            capture,
-            current.requested_trust_anchors,
-        )?;
+        let wire = tls::compile_for_policy(tls::TransportShape::Tcp, capture, &current)?;
         let identity = current
             .server_name
             .map(|name| &name.0)
@@ -157,23 +153,6 @@ impl ConnectionCompiler {
         if sends_sni != captured_sni {
             return Err(invalid(
                 "destination identity and captured SNI presence differ",
-            ));
-        }
-        tls::validate_version_bounds(
-            capture,
-            current.min_version.map(|version| version.0),
-            current.max_version.map(|version| version.0),
-        )?;
-        if let Some(ciphers) = current.cipher_suites
-            && !ciphers
-                .0
-                .iter()
-                .copied()
-                .map(u16::from)
-                .eq(capture.ciphers.iter().copied())
-        {
-            return Err(invalid(
-                "caller cipher policy conflicts with captured TLS ciphers",
             ));
         }
         #[cfg(feature = "http")]

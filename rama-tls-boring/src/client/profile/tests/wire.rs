@@ -5,7 +5,7 @@ use rama_ua::profile::capture::tls::TlsCapturedExtension;
 #[test]
 fn compiled_settings_reproduce_retained_tls_fields_with_fresh_crypto() {
     let capture = capture();
-    let config = tls::compile(tls::TransportBinding::Tcp, &capture, None).unwrap();
+    let config = tls::compile(tls::TransportShape::Tcp, &capture, None).unwrap();
     let mut observations = Vec::new();
     for _ in 0..2 {
         let hello = hello_from_data(TlsConnectorData::try_from(&config).unwrap());
@@ -47,11 +47,11 @@ fn unsupported_or_incomplete_native_shapes_reject() {
     let original = capture();
     let mut incomplete = original.clone();
     incomplete.completeness = ProfileCaptureCompleteness::Incomplete;
-    tls::compile(tls::TransportBinding::Tcp, &incomplete, None).unwrap_err();
+    tls::compile(tls::TransportShape::Tcp, &incomplete, None).unwrap_err();
 
     let mut unknown_cipher = original.clone();
     unknown_cipher.ciphers[0] = 0xffff;
-    tls::compile(tls::TransportBinding::Tcp, &unknown_cipher, None).unwrap_err();
+    tls::compile(tls::TransportShape::Tcp, &unknown_cipher, None).unwrap_err();
 
     let mut unknown_share = original.clone();
     let share = unknown_share
@@ -63,7 +63,7 @@ fn unsupported_or_incomplete_native_shapes_reject() {
         })
         .unwrap();
     share.length += 1;
-    tls::compile(tls::TransportBinding::Tcp, &unknown_share, None).unwrap_err();
+    tls::compile(tls::TransportShape::Tcp, &unknown_share, None).unwrap_err();
 
     let mut resumed = original;
     let mut extensions = resumed.extensions.into_vec();
@@ -75,7 +75,7 @@ fn unsupported_or_incomplete_native_shapes_reject() {
         },
     });
     resumed.extensions = extensions.into();
-    tls::compile(tls::TransportBinding::Tcp, &resumed, None).unwrap_err();
+    tls::compile(tls::TransportShape::Tcp, &resumed, None).unwrap_err();
 }
 
 #[test]
@@ -89,10 +89,10 @@ fn trust_advertisement_requires_a_current_binding_of_the_retained_length() {
         value: TlsCapturedExtensionValue::ConnectionLength(length),
     });
     captured.extensions = extensions.into();
-    tls::compile(tls::TransportBinding::Tcp, &captured, None).unwrap_err();
+    tls::compile(tls::TransportShape::Tcp, &captured, None).unwrap_err();
     let wrong = crate::client::BoringRequestedTrustAnchors::try_from_ids([vec![9; 8]]).unwrap();
-    tls::compile(tls::TransportBinding::Tcp, &captured, Some(&wrong)).unwrap_err();
-    tls::compile(tls::TransportBinding::Tcp, &captured, Some(&anchors)).unwrap();
+    tls::compile(tls::TransportShape::Tcp, &captured, Some(&wrong)).unwrap_err();
+    tls::compile(tls::TransportShape::Tcp, &captured, Some(&anchors)).unwrap();
 }
 
 #[test]
@@ -129,7 +129,7 @@ fn unsupported_algorithms_never_disappear_silently() {
             panic!("fixture must contain a typed algorithm list");
         };
         values[0] = 0xffff;
-        tls::compile(tls::TransportBinding::Tcp, &captured, None).unwrap_err();
+        tls::compile(tls::TransportShape::Tcp, &captured, None).unwrap_err();
     }
 }
 
@@ -144,7 +144,7 @@ fn native_lists_that_reorder_or_deduplicate_are_rejected() {
             .find(|extension| extension.id == u16::from(ExtensionId::SUPPORTED_VERSIONS))
             .unwrap();
         field.value = TlsCapturedExtensionValue::U16List(replacement.into());
-        tls::compile(tls::TransportBinding::Tcp, &captured, None).unwrap_err();
+        tls::compile(tls::TransportShape::Tcp, &captured, None).unwrap_err();
     }
     let mut captured = original;
     let field = captured
@@ -153,7 +153,7 @@ fn native_lists_that_reorder_or_deduplicate_are_rejected() {
         .find(|extension| extension.id == u16::from(ExtensionId::COMPRESS_CERTIFICATE))
         .unwrap();
     field.value = TlsCapturedExtensionValue::U16List(vec![2, 2].into());
-    tls::compile(tls::TransportBinding::Tcp, &captured, None).unwrap_err();
+    tls::compile(tls::TransportShape::Tcp, &captured, None).unwrap_err();
 }
 
 #[cfg(feature = "http")]
@@ -187,7 +187,7 @@ fn native_required_fields_and_alps_membership_are_checked() {
             .into_iter()
             .filter(|extension| extension.id != u16::from(id))
             .collect();
-        tls::compile(tls::TransportBinding::Tcp, &captured, None).unwrap_err();
+        tls::compile(tls::TransportShape::Tcp, &captured, None).unwrap_err();
     }
     let mut captured = original;
     let mut extensions = captured.extensions.into_vec();
@@ -196,7 +196,7 @@ fn native_required_fields_and_alps_membership_are_checked() {
         value: TlsCapturedExtensionValue::Protocols(vec![b"not-offered".to_vec().into()].into()),
     });
     captured.extensions = extensions.into();
-    tls::compile(tls::TransportBinding::Tcp, &captured, None).unwrap_err();
+    tls::compile(tls::TransportShape::Tcp, &captured, None).unwrap_err();
 }
 
 #[test]
@@ -238,7 +238,7 @@ fn key_share_sizes_follow_native_emission_and_compile_back_to_the_same_shape() {
         assert_eq!(shares[0].group, u16::from(group));
         assert_eq!(group.tls13_client_key_share_len(), Some(shares[0].length));
 
-        let config = tls::compile(tls::TransportBinding::Tcp, &original, None).unwrap();
+        let config = tls::compile(tls::TransportShape::Tcp, &original, None).unwrap();
         let replayed = TlsCapture::capture(
             ProfileCaptureCompleteness::Complete,
             TlsCaptureTransport::Tcp,

@@ -133,7 +133,7 @@ pub(crate) struct QuicClientConfig {
     sessions: Option<ClientSessions>,
     early_data: bool,
     initializer: Option<HandshakeInitializer>,
-    prepared: Option<PreparedClient>,
+    prepared: Option<Box<PreparedClient>>,
 }
 
 /// Preparation retains the first native SSL object; retries use the same context
@@ -248,11 +248,11 @@ impl QuicClientConfig {
         if let Some(initializer) = &config.initializer {
             (initializer.0)(&mut ssl)?;
         }
-        config.prepared = Some(PreparedClient {
+        config.prepared = Some(Box::new(PreparedClient {
             peer,
             first: Mutex::new(Some(ssl)),
             check: Box::new(check),
-        });
+        }));
         Ok(config)
     }
 
