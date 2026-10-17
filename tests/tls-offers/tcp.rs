@@ -98,6 +98,15 @@ where
         .into_iter()
         .collect(),
     );
+    // Public Unknown variants may carry standard protocol bytes. The native
+    // peer parses those bytes back into known variants; the offer must survive.
+    let aliases = TlsAlpn(
+        explicit
+            .0
+            .iter()
+            .map(|protocol| ApplicationProtocol::Unknown(protocol.as_bytes().to_vec()))
+            .collect(),
+    );
     for target in [Version::HTTP_11, Version::HTTP_2] {
         let required = ApplicationProtocol::try_from(target)?;
         let other = if target == Version::HTTP_2 {
@@ -109,6 +118,11 @@ where
             (
                 "explicit",
                 Some(explicit.clone()),
+                Some(explicit.0.clone().into_vec()),
+            ),
+            (
+                "public wire aliases",
+                Some(aliases.clone()),
                 Some(explicit.0.clone().into_vec()),
             ),
             ("defaults", None, Some(vec![required])),

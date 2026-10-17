@@ -53,7 +53,7 @@ async fn peer_offers() -> Result<(), BoxError> {
         Endpoint::bind_server(Executor::new(), config, SocketAddress::local_ipv4(0)).await?;
     let address = server.local_addr()?;
     let accepted = server.clone();
-    let count = 2 * providers.len();
+    let count = 3 * providers.len();
     let peer = tokio::spawn(async move {
         let mut observations = Vec::new();
         for _ in 0..count {
@@ -79,6 +79,13 @@ async fn peer_offers() -> Result<(), BoxError> {
         .into_iter()
         .collect(),
     );
+    let aliases = TlsAlpn(
+        explicit
+            .0
+            .iter()
+            .map(|protocol| ApplicationProtocol::Unknown(protocol.as_bytes().to_vec()))
+            .collect(),
+    );
     let mut expected = Vec::new();
     let mut transports = Vec::new();
     for provider in providers {
@@ -86,7 +93,7 @@ async fn peer_offers() -> Result<(), BoxError> {
             .with_tls_provider(provider)
             .with_tls_config(client_settings.clone())
             .build_lazy()?;
-        for offer in [Some(explicit.clone()), None] {
+        for offer in [Some(explicit.clone()), Some(aliases.clone()), None] {
             let input =
                 ConnectRequest::new(HostWithPort::localhost_domain_with_port(address.port()))
                     .with_application_protocol(Protocol::HTTPS);
@@ -95,7 +102,13 @@ async fn peer_offers() -> Result<(), BoxError> {
                 .insert(ConnectorTarget(HostWithPort::local_ipv4(address.port())));
             expected.push(match offer {
                 Some(offer) => {
-                    let protocols = offer.0.clone().into_vec();
+                    // Compare the independently parsed wire identifiers, not
+                    // whether the caller constructed known or Unknown variants.
+                    let protocols = offer
+                        .0
+                        .iter()
+                        .map(|protocol| ApplicationProtocol::from(protocol.as_bytes()))
+                        .collect();
                     input.extensions().insert(offer);
                     protocols
                 }

@@ -44,7 +44,14 @@ pub fn required_alpn_override(
     offered: Option<&TlsAlpn>,
 ) -> Result<Option<ApplicationProtocol>, BoxError> {
     match offered {
-        Some(offer) if offer.0.contains(&required) => Ok(None),
+        Some(offer)
+            if offer
+                .0
+                .iter()
+                .any(|protocol| protocol.as_bytes() == required.as_bytes()) =>
+        {
+            Ok(None)
+        }
         Some(_) => Err(BoxError::from_static_str(
             "explicit ALPN offer excludes the required application protocol",
         )),
@@ -78,6 +85,26 @@ pub fn validate_alpn<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn required_protocol_uses_wire_identity_for_public_aliases() {
+        for known in [
+            ApplicationProtocol::HTTP_11,
+            ApplicationProtocol::HTTP_2,
+            ApplicationProtocol::HTTP_3,
+        ] {
+            let alias = ApplicationProtocol::Unknown(known.as_bytes().to_vec());
+            for required in [&known, &alias] {
+                for offered in [&known, &alias] {
+                    let offer = TlsAlpn([offered.clone()].into_iter().collect());
+                    assert_eq!(
+                        required_alpn_override(required.clone(), Some(&offer)).unwrap(),
+                        None
+                    );
+                }
+            }
+        }
+    }
 
     /// The extension body is a 16-bit vector holding a 16-bit-length list, leaving 65533
     /// bytes for the entries themselves.
