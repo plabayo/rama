@@ -27,10 +27,17 @@ pub use pool::{HttpConnId, HttpConnIdentifier, HttpPooledConnector, HttpPooledCo
 
 pub mod proxy;
 
+#[cfg(feature = "http3")]
 mod h3;
+#[cfg(feature = "http3")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http3")))]
 #[doc(inline)]
 pub use h3::{Http3Connector, Http3ConnectorBuilder};
 
 mod transport;
+#[cfg(feature = "http3")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http3")))]
 #[doc(inline)]
-pub use transport::{Http3Transport, HttpTransport, HttpTransportConnector, IntoHttpTransport};
+pub use transport::{Http3Transport, HttpTransportConnector};
+#[doc(inline)]
+pub use transport::{HttpTransport, IntoHttpTransport};

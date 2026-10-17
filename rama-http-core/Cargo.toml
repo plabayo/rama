@@ -28,7 +28,9 @@ targets = [
 dial9 = ["rama-http/dial9"]
 default = []
 # Synchronous bounded harnesses for the HTTP/3 state machines.
-fuzz-utils = []
+fuzz-utils = ["http3"]
+# HTTP/3 over QUIC (the `h3` module), built on `rama-quic`.
+http3 = ["dep:rama-quic", "dep:rama-quic-proto"]
 tls = ["rama-http-types/tls"]
 
 # Enables **unstable** APIs. Any API exposed by this feature has no backwards
@@ -51,8 +53,8 @@ rama-core = { workspace = true, features = ["std"] }
 rama-http = { workspace = true }
 rama-http-types = { workspace = true }
 rama-net = { workspace = true, features = ["std"] }
-rama-quic = { workspace = true }
-rama-quic-proto = { workspace = true }
+rama-quic = { workspace = true, optional = true }
+rama-quic-proto = { workspace = true, optional = true }
 rama-utils = { workspace = true, features = ["std"] }
 slab = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }

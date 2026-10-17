@@ -33,11 +33,13 @@ targets = [
 dial9 = [
     "rama-http-core/dial9",
     "rama-http/dial9",
-    "rama-quic/dial9",
+    "rama-quic?/dial9",
     "rama-tcp/dial9",
     "rama-ws/dial9",
 ]
 default = []
+# HTTP/3 client and server support over QUIC, built on `rama-quic`.
+http3 = ["rama-http-core/http3", "dep:rama-quic", "dep:rama-quic-proto"]
 opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry"]
 # `rama-http-types/tls` is required so its `input_ext` protocol resolution sees the
 # real `rama_tls::SecureTransport` (not its tls-off dummy); otherwise an
@@ -53,8 +55,8 @@ rama-http-core = { workspace = true }
 rama-http-headers = { workspace = true }
 rama-http-types = { workspace = true }
 rama-net = { workspace = true, features = ["std"] }
-rama-quic = { workspace = true }
-rama-quic-proto = { workspace = true }
+rama-quic = { workspace = true, optional = true }
+rama-quic-proto = { workspace = true, optional = true }
 rama-tcp = { workspace = true }
 rama-tls = { workspace = true }
 rama-utils = { workspace = true, features = ["std"] }
@@ -71,6 +73,18 @@ rama-udp = { workspace = true, features = ["test-utils"] }
 rama-ws = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+
+[[test]]
+name = "http3_abandoned_body"
+required-features = ["http3"]
+
+[[test]]
+name = "http3_idle_recovery"
+required-features = ["http3"]
+
+[[test]]
+name = "ws_relay_versions"
+required-features = ["http3"]
 
 [lints]
 workspace = true

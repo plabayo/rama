@@ -35,9 +35,11 @@ More client examples:
 
 ## Alternative services and custom connectors
 
-The easy client enables Alt-Svc discovery by default. With a QUIC TLS provider,
-this can open UDP connections for HTTP/3. Use `without_alt_svc()` to disable
-advertised-endpoint selection; explicit HTTP/3 requests remain supported.
+The easy client enables Alt-Svc discovery by default. With the `quic` feature
+(part of `http-full`) and a QUIC TLS provider, this can open UDP connections for
+HTTP/3; `http-backend` alone covers HTTP/1.1 and HTTP/2 only. Use
+`without_alt_svc()` to disable advertised-endpoint selection; explicit HTTP/3
+requests remain supported.
 Clear shared discovery with `AltSvcCache::clear_all()`, and report network changes
 with `network_changed()`. Apply destination restrictions in your connector so
 they cover origins, advertisements and DNS results alike.

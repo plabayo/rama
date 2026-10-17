@@ -2,17 +2,17 @@ use rama_core::{
     Service,
     error::{BoxError, BoxErrorExt as _, ErrorExt, error_chain},
     extensions::{Egress, Extension, Extensions, ExtensionsRef},
-    rt::Executor,
     telemetry::tracing,
 };
 use rama_http::{
     StreamingBody, io::upgrade::OnUpgrade, layer::version_adapter::ensure_valid_request_for_version,
 };
+#[cfg(feature = "http3")]
+use rama_http_core::h3::{Error as Http3Error, client as http3, connection::Config as Http3Config};
 use rama_http_core::{
     Error as HttpError,
     client::conn::{http1, http2},
     h2::{Error as Http2Error, Reason as Http2Reason},
-    h3::{Error as Http3Error, client as http3, connection::Config as Http3Config},
 };
 use rama_http_types::{
     Body as ResponseBody, Method, Request, Response, Version,
@@ -21,20 +21,24 @@ use rama_http_types::{
 };
 use rama_net::{
     client::{ConnectionError, ConnectionErrorKind},
-    conn::{ConnectionHealthWatcher, MaxConcurrency, is_connection_error},
+    conn::{ConnectionHealthWatcher, is_connection_error},
 };
-use rama_quic::Connection as QuicConnection;
 use rama_utils::guard::DropGuard;
 use std::{
     fmt, io,
-    pin::pin,
     sync::atomic::{AtomicUsize, Ordering},
 };
 use tokio::sync::Mutex;
+#[cfg(feature = "http3")]
+use {
+    rama_core::rt::Executor, rama_net::conn::MaxConcurrency,
+    rama_quic::Connection as QuicConnection, std::pin::pin,
+};
 
 pub(super) enum SendRequest<Body> {
     Http1(Mutex<http1::SendRequest<Body>>),
     Http2(http2::SendRequest<Body>),
+    #[cfg(feature = "http3")]
     Http3(http3::SendRequest<Body>),
 }
 
@@ -44,6 +48,7 @@ impl<Body: fmt::Debug> fmt::Debug for SendRequest<Body> {
         match self {
             Self::Http1(send_request) => f.field(send_request).finish(),
             Self::Http2(send_request) => f.field(send_request).finish(),
+            #[cfg(feature = "http3")]
             Self::Http3(send_request) => f.field(send_request).finish(),
         }
     }
@@ -85,6 +90,7 @@ fn note_unprocessed(attempts: Option<&SendAttempts>, err: &HttpError) {
     }
 }
 
+#[cfg(feature = "http3")]
 fn note_http3_unprocessed(attempts: Option<&SendAttempts>, err: &Http3Error) {
     // Only rejection guarantees no processing; a closed connection may have sent it.
     if let Some(attempts) = attempts
@@ -143,12 +149,14 @@ where
         // Check if this http connection can actually be used for this request version
         match (&self.sender, req.version()) {
             (SendRequest::Http1(_), Version::HTTP_10 | Version::HTTP_11)
-            | (SendRequest::Http2(_), Version::HTTP_2)
-            | (SendRequest::Http3(_), Version::HTTP_3) => (),
+            | (SendRequest::Http2(_), Version::HTTP_2) => (),
+            #[cfg(feature = "http3")]
+            (SendRequest::Http3(_), Version::HTTP_3) => (),
             (SendRequest::Http1(_), version) => Err(BoxError::from_static_str(
                 "Http1 connector cannot send request with version",
             )
             .context_debug_field("version", version))?,
+            #[cfg(feature = "http3")]
             (SendRequest::Http3(_), version) => Err(BoxError::from_static_str(
                 "Http3 connector cannot send request with version",
             )
@@ -167,6 +175,7 @@ where
         ensure_valid_request_for_version(&mut req)?;
 
         let resp = match &self.sender {
+            #[cfg(feature = "http3")]
             SendRequest::Http3(sender) => {
                 let mut sender = sender.clone();
                 match Box::pin(sender.send_request(req)).await {
@@ -266,7 +275,9 @@ where
                 }))
             }
             // h2 recovers per stream: an abandoned body resets only its stream.
-            SendRequest::Http2(_) | SendRequest::Http3(_) => Ok(resp.map(ResponseBody::new)),
+            SendRequest::Http2(_) => Ok(resp.map(ResponseBody::new)),
+            #[cfg(feature = "http3")]
+            SendRequest::Http3(_) => Ok(resp.map(ResponseBody::new)),
         }
     }
 }
@@ -308,6 +319,7 @@ fn classify_http_error(error: HttpError) -> BoxError {
                     error.get_io().and_then(remote_io_failure)
                 };
             }
+            #[cfg(feature = "http3")]
             if let Some(error) = cause.downcast_ref::<Http3Error>() {
                 return error
                     .is_remote_failure()
@@ -334,6 +346,7 @@ fn remote_io_failure(error: &io::Error) -> Option<ConnectionErrorKind> {
     }
 }
 
+#[cfg(feature = "http3")]
 fn classify_http3_error(error: Http3Error) -> BoxError {
     if error.is_remote_failure() {
         ConnectionError::application(error, ConnectionErrorKind::Unavailable).into_box_error()
@@ -360,6 +373,7 @@ impl<B> ExtensionsRef for HttpClientService<B> {
     }
 }
 
+#[cfg(feature = "http3")]
 impl<Body> HttpClientService<Body> {
     /// Build an HTTP/3 service on an established QUIC connection and drive its critical streams.
     pub(super) fn http3(
@@ -394,12 +408,13 @@ impl<Body> HttpClientService<Body> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::{ServiceInput, bytes::Bytes, futures::stream};
+    use rama_core::{ServiceInput, bytes::Bytes, futures::stream, rt::Executor};
     use rama_http_core::h2::server as http2_server;
+    #[cfg(feature = "http3")]
+    use rama_http_types::proto::h3::Code;
     use rama_http_types::{
         Body,
         body::{Frame, util::StreamBody},
-        proto::h3::Code,
     };
     use rama_net::{
         address::ProxyAddress,
@@ -421,6 +436,7 @@ mod tests {
         rama_tls::SecureTransport,
     };
 
+    #[cfg(feature = "http3")]
     #[test]
     fn http3_only_explicit_request_rejection_is_unprocessed() {
         for (error, unprocessed) in [

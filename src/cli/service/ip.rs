@@ -42,7 +42,6 @@ use crate::{
         stream::layer::{ThrottleLayer, ThrottleMode},
     },
     proxy::haproxy::server::HaProxyLayer,
-    quic,
     rt::Executor,
     tcp::TcpStream,
     telemetry::tracing,
@@ -224,7 +223,7 @@ impl IpServiceBuilder<mode::Http> {
         self,
         executor: Executor,
     ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
-        self.build_with_http3(executor).map(|(tcp, _)| tcp)
+        self.build_services(executor).map(|(tcp, _)| tcp)
     }
 
     /// build a tcp service and an HTTP/3 service, for accepted QUIC connections, ready to
@@ -233,13 +232,28 @@ impl IpServiceBuilder<mode::Http> {
     /// Both serve one http service: they share its rate limit, the connection limit,
     /// the connection timeout and the per-connection throttle. TLS for QUIC is
     /// configured on its endpoint.
+    #[cfg(feature = "quic")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "quic")))]
     pub fn build_with_http3(
         self,
         executor: Executor,
     ) -> Result<
         (
             impl Service<TcpStream, Output = (), Error = Infallible>,
-            impl Service<quic::Connection, Output = (), Error = Infallible>,
+            impl Service<crate::quic::Connection, Output = (), Error = Infallible>,
+        ),
+        BoxError,
+    > {
+        self.build_services(executor)
+    }
+
+    fn build_services(
+        self,
+        executor: Executor,
+    ) -> Result<
+        (
+            impl Service<TcpStream, Output = (), Error = Infallible>,
+            impl super::MaybeHttp3Service,
         ),
         BoxError,
     > {
@@ -376,6 +390,7 @@ impl IpServiceBuilder<mode::Http> {
                     .context_debug_field("version", version));
             }
         };
+        #[cfg(feature = "quic")]
         let http3_service = (
             ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
             connection_limit,
@@ -384,6 +399,15 @@ impl IpServiceBuilder<mode::Http> {
             BodyLimitLayer::request_only(mib(1)),
         )
             .into_layer(HttpServer::new_http3(executor).service(http_service));
+        // Without HTTP/3 the shared per-connection state only serves TCP.
+        #[cfg(not(feature = "quic"))]
+        let http3_service = (
+            connection_limit,
+            connection_timeout,
+            throttle,
+            http_service,
+            executor,
+        );
 
         Ok((
             tcp_service_builder.into_layer(http_transport_service),

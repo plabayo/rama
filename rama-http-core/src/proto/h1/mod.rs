@@ -126,14 +126,17 @@ impl Wants {
 
 #[cfg(test)]
 pub(crate) mod test_util {
-    use super::{
-        ClientTransaction, Encode, EncodeHead, Http1Transaction, ParseContext, ParseResult,
-        ServerTransaction,
-    };
+    use super::{Http1Transaction, ParseContext, ParseResult, ServerTransaction};
     use crate::proto::RequestLine;
     use rama_core::{bytes::BytesMut, extensions::Extensions};
-    use rama_http_types::{HeaderMap, Method, Version};
+    use rama_http_types::HeaderMap;
     use rama_net::uri::Uri;
+    // The client-side helpers serve the HTTP/3 cross-protocol conformance tests.
+    #[cfg(feature = "http3")]
+    use {
+        super::{ClientTransaction, Encode, EncodeHead},
+        rama_http_types::{Method, Version},
+    };
 
     fn parse(raw: &str) -> ParseResult<RequestLine> {
         ServerTransaction::parse(
@@ -157,16 +160,19 @@ pub(crate) mod test_util {
     }
 
     /// Whether an HTTP/1 server refuses `raw` as malformed.
+    #[cfg(feature = "http3")]
     pub(crate) fn refuses(raw: &str) -> bool {
         parse(raw).is_err()
     }
 
     /// The request head an HTTP/1 client writes, or `None` when it refuses to.
+    #[cfg(feature = "http3")]
     pub(crate) fn send(method: Method, uri: Uri) -> Option<String> {
         send_with(method, uri, HeaderMap::new())
     }
 
     /// [`send`] with the request's own header fields.
+    #[cfg(feature = "http3")]
     pub(crate) fn send_with(method: Method, uri: Uri, headers: HeaderMap) -> Option<String> {
         let mut extensions = Extensions::default();
         let mut dst = Vec::new();

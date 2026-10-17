@@ -40,10 +40,7 @@ use rama_http_types::{
 use rama_net::{
     TargetHttpVersionInputExt,
     address::HostWithPort,
-    client::{
-        ConnectRequest, ConnectionError, ConnectionErrorDomain, ConnectionErrorKind,
-        EstablishedClientConnection,
-    },
+    client::{ConnectRequest, ConnectionErrorDomain, ConnectionErrorKind},
     test_utils::client::{MockConnectorService, MockSocket},
 };
 use rama_utils::octets::kib;
@@ -52,7 +49,7 @@ use tokio_util::sync::CancellationToken;
 use crate::proxy::mitm::DefaultErrorResponse;
 
 use super::{
-    client::{HttpConnectRequestAdapter, HttpConnectorLayer, HttpTransport, http_connect},
+    client::{HttpConnectRequestAdapter, HttpConnectorLayer, http_connect},
     proxy::mitm::HttpMitmRelay,
     server::HttpServer,
 };
@@ -78,8 +75,14 @@ async fn byte_stream_transport_rejects_http3_before_dialing() {
     assert_eq!(dials.load(Ordering::SeqCst), 0);
 }
 
+// Without `http3` the transport cannot claim HTTP/3, so preflight rejects it
+// before dialing (see `byte_stream_transport_rejects_http3_before_dialing`).
+#[cfg(feature = "http3")]
 #[tokio::test]
 async fn mixed_transport_rejects_a_byte_stream_for_required_http3_after_dialing() {
+    use crate::client::HttpTransport;
+    use rama_net::client::{ConnectionError, EstablishedClientConnection};
+
     let dials = Arc::new(AtomicUsize::new(0));
     let transport = service_fn({
         let dials = dials.clone();

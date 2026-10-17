@@ -24,7 +24,8 @@ use ::{rama_unix::server::UnixListener, std::path::Path};
 
 /// A builder for configuring and listening over HTTP using a [`Service`].
 ///
-/// Supported protocols: HTTP/1, H2, Auto (HTTP/1 + H2), and H3 over QUIC.
+/// Supported protocols: HTTP/1, H2, Auto (HTTP/1 + H2), and H3 over QUIC
+/// (the latter requires the `http3` feature).
 ///
 /// [`Service`]: rama_core::Service
 #[derive(Debug, Clone)]
@@ -270,6 +271,8 @@ where
     }
 }
 
+#[cfg(feature = "http3")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http3")))]
 impl HttpServer<rama_http_core::h3::connection::Config> {
     /// Create an HTTP/3 server for QUIC connections negotiated with the `h3` ALPN.
     #[must_use]
@@ -322,6 +325,8 @@ impl HttpServer<rama_http_core::h3::connection::Config> {
     }
 }
 
+#[cfg(feature = "http3")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http3")))]
 impl<S, Response> Service<rama_quic::Connection>
     for HttpService<rama_http_core::h3::connection::Config, S>
 where
