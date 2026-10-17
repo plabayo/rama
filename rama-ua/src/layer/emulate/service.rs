@@ -10,7 +10,7 @@ use rama_core::{
 use rama_http::headers::{ClientHint, all_client_hints};
 use rama_http::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Version,
-    conn::{H2ClientContextParams, Http1ClientContextParams, TargetHttpVersion},
+    conn::TargetHttpVersion,
     header::{CONTENT_TYPE, REFERER, SEC_WEBSOCKET_VERSION, StandardHeader, USER_AGENT},
 };
 use rama_net::{
@@ -31,6 +31,7 @@ use crate::{
         replay::{
             connection::{
                 compiler::{ConnectionProfileCompiler, InstalledConnectionProfile},
+                http,
                 preparation::ConnectionPreparation,
             },
             request::ProfilePreservationReport,
@@ -395,7 +396,7 @@ where
                         http.version = ?version,
                         "http profile found in context to use for http connection emulation, proceed",
                     );
-                    emulate_http_connect_settings(&req, version, &http_profile)
+                    http::apply_legacy_settings(&req, version, &http_profile)
                         .map_err(ConnectionError::unknown)?;
                 } else {
                     tracing::trace!(
@@ -445,71 +446,6 @@ impl<S, C: Clone> Layer<S> for UserAgentEmulateHttpConnectModifierLayer<C> {
             compiler: self.compiler.clone(),
         }
     }
-}
-
-fn emulate_http_connect_settings(
-    input: &impl ExtensionsRef,
-    version: Version,
-    profile: &HttpProfile,
-) -> Result<(), BoxError> {
-    match version {
-        Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => {
-            tracing::trace!("UA emulation add http1-specific settings",);
-            input.extensions().insert(Http1ClientContextParams {
-                title_header_case: profile
-                    .h1
-                    .as_ref()
-                    .and_then(|h1| h1.settings.as_ref())
-                    .ok_or_else(|| BoxError::from_static_str("missing HTTP/1 settings"))?
-                    .title_case_headers,
-            });
-        }
-        Version::HTTP_2 => {
-            let settings = profile
-                .h2
-                .as_ref()
-                .and_then(|h2| h2.settings.as_ref())
-                .ok_or_else(|| BoxError::from_static_str("missing HTTP/2 settings"))?;
-            let pseudo_headers = settings.http_pseudo_headers.clone();
-            let early_frames = settings.early_frames.clone();
-            let existing = input
-                .extensions()
-                .get_ref::<H2ClientContextParams>()
-                .cloned();
-            let replay_early_frames = existing
-                .as_ref()
-                .and_then(|params| params.replay_early_frames.clone());
-
-            if pseudo_headers.is_some() || early_frames.is_some() || replay_early_frames.is_some() {
-                tracing::trace!(
-                    "user agent emulation: insert h2 settings into extensions: (pseudo headers = {:?} ; early frames: {:?})",
-                    pseudo_headers,
-                    early_frames,
-                );
-                let mut params = existing.unwrap_or_default();
-                if let Some(pseudo_headers) = pseudo_headers {
-                    params.headers_pseudo_order = Some(pseudo_headers);
-                }
-                if let Some(early_frames) = early_frames {
-                    params.early_frames = Some(early_frames);
-                }
-                input.extensions().insert(params);
-            }
-        }
-        Version::HTTP_3 => {
-            tracing::debug!("legacy profile has no HTTP/3 connect settings; passing through");
-        }
-        // defensive forward-compat arm; native Version is currently exhaustive
-        #[expect(
-            unreachable_patterns,
-            reason = "forward-compat fallback for future Version variants"
-        )]
-        _ => tracing::debug!(
-            http.version = ?version,
-            "UA emulation not supported for unknown http version: not applying anything version-specific",
-        ),
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone, Default)]
@@ -987,11 +923,9 @@ mod tests {
     use rama_core::{Layer, ServiceInput, service::service_fn};
     use rama_http::{
         Body, HeaderMap, HeaderName, HeaderValue,
+        conn::{H2ClientContextParams, Http1ClientContextParams},
         header::ETAG,
-        proto::h2::{
-            PseudoHeaderOrder,
-            frame::{EarlyFrame, Settings},
-        },
+        proto::h2::PseudoHeaderOrder,
     };
     use rama_net::{
         address::{Domain, Host, HostWithPort},
@@ -1000,7 +934,6 @@ mod tests {
     };
     #[cfg(feature = "tls")]
     use rama_tls::{ProtocolVersion, client::ClientHello};
-    use rama_utils::octets::kib;
 
     use crate::layer::emulate::UserAgentEmulateLayer;
     #[cfg(feature = "tls")]
@@ -1047,63 +980,6 @@ mod tests {
                 result.unwrap();
             }
         }
-    }
-
-    #[test]
-    fn legacy_connect_modifier_passes_h3_without_applying_h1_or_h2_settings() {
-        let input = Request::new(());
-        let profile = HttpProfile { h1: None, h2: None };
-        emulate_http_connect_settings(&input, Version::HTTP_3, &profile).unwrap();
-        assert!(
-            input
-                .extensions()
-                .get_ref::<Http1ClientContextParams>()
-                .is_none()
-        );
-        assert!(
-            input
-                .extensions()
-                .get_ref::<H2ClientContextParams>()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn legacy_h2_settings_keep_existing_connection_parameters() {
-        let input = Request::new(());
-        let pseudo_order = PseudoHeaderOrder::new();
-        input.extensions().insert(H2ClientContextParams {
-            headers_pseudo_order: Some(pseudo_order.clone()),
-            replay_early_frames: Some(vec![EarlyFrame::Settings(Settings::default())].into()),
-            max_send_buf_size: Some(kib(128) as u32),
-            ..H2ClientContextParams::default()
-        });
-        let profile = HttpProfile {
-            h1: None,
-            h2: Some(Http2Profile {
-                headers: HttpHeadersProfile {
-                    navigate: None,
-                    fetch: None,
-                    xhr: None,
-                    form: None,
-                    ws: None,
-                },
-                settings: Some(Http2Settings {
-                    http_pseudo_headers: None,
-                    early_frames: None,
-                }),
-            }),
-        };
-
-        emulate_http_connect_settings(&input, Version::HTTP_2, &profile).unwrap();
-
-        let params = input
-            .extensions()
-            .get_ref::<H2ClientContextParams>()
-            .unwrap();
-        assert_eq!(params.headers_pseudo_order, Some(pseudo_order));
-        assert!(params.replay_early_frames.is_some());
-        assert_eq!(params.max_send_buf_size, Some(kib(128) as u32));
     }
 
     #[tokio::test]
