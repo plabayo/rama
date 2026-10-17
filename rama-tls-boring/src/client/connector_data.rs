@@ -39,11 +39,10 @@ use rama_core::{
 };
 use rama_crypto::dep::x509_parser::nom::AsBytes;
 use rama_net::{address::Host, tls::ApplicationProtocol};
-use rama_tls::client::ClientAuth;
-use rama_tls::client::TlsClientConfig;
-use rama_tls::client::{ServerTrustRoots, ServerVerifyMode};
-use rama_tls::client::{TlsPoolId, TlsServerCertPins};
-use rama_tls::client::{TlsServerTrust, TlsServerTrustAnchors};
+use rama_tls::client::{
+    ClientAuth, ClientHandshake, ServerTrustRoots, ServerVerifyMode, TlsClientConfig, TlsPoolId,
+    TlsServerCertPins, TlsServerTrust, TlsServerTrustAnchors,
+};
 use rama_tls::{ExtensionId, KeyLogIntent, SignatureScheme, SupportedGroup};
 use rama_utils::macros::generate_set_and_with;
 use std::{
@@ -62,6 +61,7 @@ pub struct TlsConnectorData {
     pub server_name: Option<Host>,
     pub server_verify_mode: ServerVerifyMode,
     pub server_cert_pins: Option<TlsServerCertPins>,
+    pub(super) client_handshake: ClientHandshake,
     remembers_sessions: bool,
     session_store: Option<SessionStore>,
 }
@@ -95,6 +95,7 @@ struct ConnectorOptions {
     server_verify_mode: ServerVerifyMode,
     server_cert_pins: Option<TlsServerCertPins>,
     wire: WirePlan,
+    client_handshake: ClientHandshake,
     remembers_sessions: bool,
     session_store: Option<SessionStore>,
 }
@@ -350,6 +351,7 @@ impl TlsConnectorContext {
             server_name: self.options.server_name.clone(),
             server_verify_mode: self.options.server_verify_mode,
             server_cert_pins: self.options.server_cert_pins.clone(),
+            client_handshake: self.options.client_handshake,
             remembers_sessions: self.options.remembers_sessions,
             session_store: self.options.session_store.clone(),
         })
@@ -358,7 +360,8 @@ impl TlsConnectorContext {
 
 impl TlsConnectorData {
     /// Prepare one TLS session, including peer identity verification and certificate pins.
-    /// The caller selects its transport and starts the handshake.
+    /// The caller selects its transport and starts the handshake. A transport
+    /// requiring a stored session must supply it before emitting handshake output.
     pub fn into_ssl(mut self) -> Result<rama_boring::ssl::Ssl, BoxError> {
         if self.server_verify_mode == ServerVerifyMode::Auto && self.server_name.is_none() {
             return Err(BoxError::from_static_str(
@@ -386,6 +389,7 @@ impl TlsConnectorData {
         if self.remembers_sessions
             && let Some(server) = &self.server_name
             && let Some(key) = session::bind_session_key(&mut ssl, server)?
+            && self.client_handshake != ClientHandshake::Full
             && let Some(SessionStore(store)) = &self.session_store
             && let Some(session) = store.take(&key)
         {
@@ -403,7 +407,7 @@ impl TlsConnectorData {
     /// Whether [`Self::into_ssl`] offers a stored session for resumption.
     #[must_use]
     pub fn resumes_sessions(&self) -> bool {
-        self.session_store.is_some()
+        self.session_store.is_some() && self.client_handshake == ClientHandshake::Auto
     }
 }
 
@@ -703,6 +707,7 @@ impl TryFrom<&BoringTlsConnectorConfig<'_>> for ConnectorOptions {
             server_verify_mode: value.verify.map(|v| v.0).unwrap_or_default(),
             server_cert_pins: value.server_cert_pins.cloned(),
             wire,
+            client_handshake: value.client_handshake.copied().unwrap_or_default(),
             remembers_sessions: false,
             session_store: None,
         })

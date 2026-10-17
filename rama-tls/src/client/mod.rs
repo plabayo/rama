@@ -9,7 +9,7 @@
 //! a Rustls proxy service but establish connections using BoringSSL.
 
 mod session;
-pub use session::TlsSessionProfileScope;
+pub use session::{ClientHandshake, TlsSessionProfileScope};
 
 mod hello;
 #[doc(inline)]

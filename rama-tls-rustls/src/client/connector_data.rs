@@ -1,16 +1,21 @@
 use crate::RamaTlsRustlsCrateMarker;
 use crate::client::config::RustlsTlsConnectorConfig;
 use crate::dep::rustls::RootCertStore;
-use crate::dep::rustls::{ALL_VERSIONS, ClientConfig, client::WebPkiServerVerifier};
+use crate::dep::rustls::{
+    ALL_VERSIONS, ClientConfig,
+    client::{Resumption, WebPkiServerVerifier},
+};
 use crate::key_log::RamaKeyLog;
 use crate::verify::{NoServerCertVerifier, PinnedServerCertVerifier};
 use moka::sync::Cache;
 use rama_core::conversion::{RamaTryFrom, RamaTryInto};
-use rama_core::error::{BoxError, ErrorContext, ErrorExt as _};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext, ErrorExt as _};
 use rama_core::telemetry::tracing;
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_net::address::Host;
-use rama_tls::client::{ClientAuth, ServerTrustRoots, ServerVerifyMode, TlsServerTrust};
+use rama_tls::client::{
+    ClientAuth, ClientHandshake, ServerTrustRoots, ServerVerifyMode, TlsServerTrust,
+};
 use rama_tls::keylog::open_intent_sink;
 use std::sync::{Arc, LazyLock};
 
@@ -190,6 +195,17 @@ pub(super) fn build_client_config(
         client_config = modify.apply(client_config)?;
     }
 
+    // Apply the explicit offer after custom configuration so a hook cannot
+    // silently turn a full-handshake request into a resumed offer.
+    match value.client_handshake.copied().unwrap_or_default() {
+        ClientHandshake::Auto => {}
+        ClientHandshake::Full => client_config.resumption = Resumption::disabled(),
+        ClientHandshake::Resumed => {
+            return Err(BoxError::from_static_str(
+                "required session offers are not supported by the TCP TLS backend",
+            ));
+        }
+    }
     Ok(client_config)
 }
 

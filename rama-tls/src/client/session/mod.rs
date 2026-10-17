@@ -1,8 +1,26 @@
-//! Optional profile identity in addition to mandatory TLS resumption policy.
+//! Client handshake offers and optional isolation within TLS resumption policy.
 
 use super::TlsPoolComponent;
 use rama_core::extensions::Extension;
 use rama_utils::str::arcstr::ArcStr;
+
+/// Session offer for a new TLS connection, independent of ticket retention.
+///
+/// Install this extension in a client TLS configuration. It neither carries a
+/// session nor changes reuse of an established connection. A backend must reject
+/// a mode it cannot support rather than silently changing the offer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Extension)]
+#[extension(tags(tls))]
+pub enum ClientHandshake {
+    /// Offer a compatible cached session when the backend has one.
+    #[default]
+    Auto,
+    /// Do not offer a cached session; newly issued tickets may still be retained.
+    Full,
+    /// Require a compatible stored session before emitting handshake output.
+    /// The peer can still decline its offer and perform a full handshake.
+    Resumed,
+}
 
 /// Stable emulation profile identity for TLS session resumption.
 ///

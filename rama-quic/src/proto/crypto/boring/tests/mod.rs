@@ -19,7 +19,7 @@ use rama_tls::{
     ExtensionId,
     client::{
         ClientHelloHandshakePrefix, ServerVerifyMode, TlsClientConfig, TlsServerCertPins,
-        TlsSessionProfileScope, parse_client_hello_message_prefix,
+        TlsSessionProfileScope, TlsStoreServerHello, parse_client_hello_message_prefix,
     },
     server::{
         CertificateIdentity, GeneratedServerAuthConfig, LeafCertConfig, LeafCertRequest,
@@ -391,7 +391,7 @@ fn a_client_reports_the_server_hello_it_was_asked_to_store() {
     let options = TlsOptions::default();
     for store in [false, true] {
         let (client_tls, server_tls) = configs();
-        client_tls.insert(rama_tls::client::TlsStoreServerHello(store));
+        client_tls.insert(TlsStoreServerHello(store));
         let client = Arc::new(QuicClientConfig::from_rama(&client_tls, options).unwrap());
         let server = Arc::new(QuicServerConfig::from_rama(&server_tls, options).unwrap());
         let mut c = client

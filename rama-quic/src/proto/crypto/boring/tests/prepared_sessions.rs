@@ -2,7 +2,7 @@
 
 use crate::tls::{ClientHandshake, ClientSessionPolicy};
 use rama_net::address::Host;
-use rama_tls::client::ClientHelloExtension;
+use rama_tls::client::{ClientHello, ClientHelloExtension};
 
 use super::*;
 
@@ -107,7 +107,7 @@ fn prepared_ssl_is_consumed_once_and_retries_keep_fresh_native_state() {
         let observed = observed.lock();
         assert_eq!(observed.len(), 3);
         for pair in observed.windows(2) {
-            let shares = |hello: &rama_tls::client::ClientHello| {
+            let shares = |hello: &ClientHello| {
                 hello
                     .extensions()
                     .iter()
@@ -285,6 +285,68 @@ fn native_handshake_requirements_preserve_tickets_without_ua_profiles() {
                 &policy,
                 policy.as_extensions(),
                 &Host::try_from("localhost").unwrap(),
+            )
+            .unwrap_err();
+    }
+}
+
+/// Direct native configuration consumes the same setting as the peer-bound cache.
+#[test]
+fn shared_handshake_settings_apply_without_peer_preparation() {
+    for version in [Version::V1, Version::V2] {
+        let (policy, server) = configs();
+        policy
+            .as_extensions()
+            .extend(&BoringTlsProvider.session_defaults().unwrap());
+        let server = BoringTlsProvider
+            .server_config(&server, TlsOptions::default())
+            .unwrap()
+            .crypto
+            .into_fixed();
+
+        policy.as_extensions().insert(ClientHandshake::Resumed);
+        let missing = BoringTlsProvider
+            .client_config(&policy, TlsOptions::default())
+            .unwrap();
+        assert!(
+            missing
+                .crypto
+                .start_session(version, "localhost", &params(Side::Client))
+                .is_err()
+        );
+
+        for _ in 0..2 {
+            policy.as_extensions().insert(ClientHandshake::Full);
+            let full = BoringTlsProvider
+                .client_config(&policy, TlsOptions::default())
+                .unwrap();
+            let mut client = full
+                .crypto
+                .start_session(version, "localhost", &params(Side::Client))
+                .unwrap();
+            let mut peer = server
+                .clone()
+                .start_session(version, &params(Side::Server))
+                .unwrap();
+            check_session(&mut *client, &mut *peer, false);
+        }
+
+        policy.as_extensions().insert(ClientHandshake::Resumed);
+        let resumed = BoringTlsProvider
+            .client_config(&policy, TlsOptions::default())
+            .unwrap();
+        let mut client = resumed
+            .crypto
+            .start_session(version, "localhost", &params(Side::Client))
+            .unwrap();
+        let mut peer = server
+            .start_session(version, &params(Side::Server))
+            .unwrap();
+        check_session(&mut *client, &mut *peer, true);
+        BoringTlsProvider
+            .client_config(
+                &policy,
+                TlsOptions::default().with_client_sessions(ClientSessionPolicy::Fresh),
             )
             .unwrap_err();
     }

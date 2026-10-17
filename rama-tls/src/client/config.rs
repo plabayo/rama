@@ -12,6 +12,7 @@ use std::{
     sync::Arc,
 };
 
+use super::{ClientHandshake, TlsSessionProfileScope};
 use crate::{KeyLogIntent, ProtocolVersion, TlsKeyLog, TlsSupportedVersions};
 use rama_net::{
     address::{Domain, Host},
@@ -29,9 +30,18 @@ pub struct TlsClientConfig(Extensions);
 
 impl TlsClientConfig {
     generate_set_and_with! {
+        /// Select the session offer for new connections. Ticket retention and
+        /// reuse of established connections remain independent.
+        pub fn client_handshake(mut self, mode: ClientHandshake) -> Self {
+            self.0.insert(mode);
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Add a stable emulation profile identity to TLS session and connection reuse.
         /// Server identity and the effective security policy remain mandatory.
-        pub fn session_profile_scope(mut self, scope: super::TlsSessionProfileScope) -> Self {
+        pub fn session_profile_scope(mut self, scope: TlsSessionProfileScope) -> Self {
             self.0.insert(scope);
             self
         }

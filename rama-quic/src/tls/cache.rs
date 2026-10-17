@@ -107,7 +107,11 @@ impl ClientConfigCache {
         config: &TlsClientConfig,
         overrides: &Extensions,
     ) -> Result<ClientConfig, TlsConfigError> {
-        if config.as_extensions().contains::<ClientHandshake>() {
+        if config
+            .as_extensions()
+            .get_ref::<ClientHandshake>()
+            .is_some_and(|mode| *mode != ClientHandshake::Auto)
+        {
             let peer = config
                 .as_extensions()
                 .get_ref::<TlsServerName>()
@@ -131,7 +135,11 @@ impl ClientConfigCache {
         overrides: &Extensions,
         peer: &Host,
     ) -> Result<ClientConfig, TlsConfigError> {
-        if let Some(handshake) = config.as_extensions().get_ref::<ClientHandshake>() {
+        if let Some(handshake) = config
+            .as_extensions()
+            .get_ref::<ClientHandshake>()
+            .filter(|mode| **mode != ClientHandshake::Auto)
+        {
             return self
                 .prepare_client_config(config, peer.clone(), *handshake)?
                 .ok_or_else(|| {
@@ -535,6 +543,25 @@ mod tests {
         });
         assert_eq!(provider.calls.load(Ordering::Relaxed), 2);
         assert!(Arc::ptr_eq(&first.crypto, &second.crypto));
+    }
+
+    #[test]
+    fn automatic_handshake_policy_uses_the_ordinary_configuration_cache() {
+        let provider = Arc::new(TestProvider::default());
+        let cache = ClientConfigCache::new(provider.clone(), TlsOptions::default());
+        let config = TlsClientConfig::new().with_client_handshake(ClientHandshake::Auto);
+        let first = cache
+            .client_config(&config, config.as_extensions())
+            .unwrap();
+        let second = cache
+            .client_config_for_peer(
+                &config,
+                config.as_extensions(),
+                &Host::from_static("localhost"),
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&first.crypto, &second.crypto));
+        assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]

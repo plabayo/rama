@@ -2,6 +2,7 @@ use super::fixture::selected;
 use super::*;
 use rama_core::extensions::Extensions;
 use rama_net::client::pool::ConnectionReuse;
+use rama_tls::client::ServerVerifyMode;
 use rama_ua::profile::format::canonical::ValueId;
 
 #[tokio::test]
@@ -18,7 +19,7 @@ async fn negotiated_profile_reuse_matches_the_caller_before_compilation() {
     );
 
     TlsClientConfig::new()
-        .with_server_verify(rama_tls::client::ServerVerifyMode::Disable)
+        .with_server_verify(ServerVerifyMode::Disable)
         .write_to(&next);
     assert!(
         !reuse.matches(&next),

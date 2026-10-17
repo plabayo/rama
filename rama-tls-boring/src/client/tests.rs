@@ -14,7 +14,10 @@ use rama_net::{address::Host, tls::ApplicationProtocol};
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, CompressionAlgorithm, ExtensionId,
     ProtocolVersion, SignatureScheme, SupportedGroup,
-    client::{ClientHello, ClientHelloExtension, TlsClientConfig, parse_client_hello_handshake},
+    client::{
+        ClientHello, ClientHelloExtension, ServerVerifyMode, TlsClientConfig,
+        parse_client_hello_handshake,
+    },
 };
 use rama_ua::{
     UserAgentKind,
@@ -566,7 +569,7 @@ fn wire_variants_of_one_policy_share_a_context_and_keep_their_own_hellos() {
     ));
     // A different policy gets its own.
     let insecure = TlsConnectorData::try_from(
-        &TlsClientConfig::new().with_server_verify(rama_tls::client::ServerVerifyMode::Disable),
+        &TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable),
     )
     .unwrap();
     assert!(!std::ptr::eq(

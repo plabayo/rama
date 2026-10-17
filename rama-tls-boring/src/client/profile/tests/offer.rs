@@ -1,5 +1,8 @@
 use super::*;
-use rama_tls::{ExtensionId, ProtocolVersion, SupportedGroup};
+use rama_tls::{
+    ExtensionId, ProtocolVersion, SupportedGroup,
+    client::{ClientHello, parse_client_hello_handshake},
+};
 use rama_ua::profile::capture::tls::TlsCapturedExtension;
 
 #[test]
@@ -27,7 +30,7 @@ fn compiled_settings_reproduce_retained_tls_fields_with_fresh_crypto() {
     }
     // Canonical equality above excludes cryptographic material, while the
     // original parsed key shares must differ across native sessions.
-    let key_shares = |hello: &rama_tls::client::ClientHello| {
+    let key_shares = |hello: &ClientHello| {
         format!(
             "{:?}",
             hello
@@ -261,7 +264,7 @@ fn key_share_sizes_follow_native_emission_and_compile_back_to_the_same_shape() {
 
 // Exercise the actual SSL retained by the compiler, including caller policy.
 // A mismatch is a bug even when the generic wire overrides look correct.
-fn prepared_hello(compiled: CompiledConnection) -> rama_tls::client::ClientHello {
+fn prepared_hello(compiled: CompiledConnection) -> ClientHello {
     #[derive(Default)]
     struct Sink(Vec<u8>);
 
@@ -288,7 +291,7 @@ fn prepared_hello(compiled: CompiledConnection) -> rama_tls::client::ClientHello
     else {
         panic!("native first flight must precede reading a server response");
     };
-    rama_tls::client::parse_client_hello_handshake(&stream.get_ref().0).unwrap()
+    parse_client_hello_handshake(&stream.get_ref().0).unwrap()
 }
 
 fn mixed_version_capture() -> TlsCapture {

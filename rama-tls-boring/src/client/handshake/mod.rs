@@ -7,8 +7,13 @@
 use std::fmt;
 
 use rama_boring::ssl::Ssl;
-use rama_core::{error::BoxError, extensions::ExtensionsRef, io::Io};
+use rama_core::{
+    error::{BoxError, BoxErrorExt as _},
+    extensions::ExtensionsRef,
+    io::Io,
+};
 use rama_net::address::Host;
+use rama_tls::client::ClientHandshake;
 
 use super::{TlsConnectError, TlsConnectorData};
 use crate::TlsStream;
@@ -35,6 +40,11 @@ impl TryFrom<TlsConnectorData> for PreparedClient {
     type Error = BoxError;
 
     fn try_from(data: TlsConnectorData) -> Result<Self, Self::Error> {
+        if data.client_handshake == ClientHandshake::Resumed {
+            return Err(BoxError::from_static_str(
+                "required session offers are not supported by the TCP TLS backend",
+            ));
+        }
         let server_name = data.server_name.clone();
         let mut ssl = data.into_ssl()?;
         // Clients do not renegotiate; release handshake configuration afterwards.

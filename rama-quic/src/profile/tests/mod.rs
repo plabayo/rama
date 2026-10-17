@@ -27,7 +27,9 @@ use rama_quic_proto::{
     transport_parameters::TransportParameterId,
     version::{ClientVersionPolicy, LongKind, Version},
 };
-use rama_tls::client::TlsClientConfig;
+use rama_tls::client::{ClientHello, TlsClientConfig};
+#[cfg(feature = "boring")]
+use rama_tls::client::{ClientHelloExtension, ServerVerifyMode};
 use rand::{SeedableRng, rngs::StdRng};
 use std::{
     cell::Cell,
@@ -142,7 +144,7 @@ fn rama_first_flight_with(
     profile: &QuicProfile,
     mut client_config: ClientConfig,
     server_name: &str,
-) -> (FirstFlight, bool, rama_tls::client::ClientHello) {
+) -> (FirstFlight, bool, ClientHello) {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -1260,7 +1262,7 @@ fn initial_peek_budgets_hold_at_a_real_flights_exact_need() {
 
 /// The ClientHello a captured first flight carried.
 #[cfg(feature = "boring")]
-fn captured_client_hello(names: [&str; 2]) -> rama_tls::client::ClientHello {
+fn captured_client_hello(names: [&str; 2]) -> ClientHello {
     let provider = provider();
     let keys = capture::ProviderKeys(provider.as_ref());
     let mut peek = InitialPeek::new(
@@ -1279,8 +1281,7 @@ fn captured_client_hello(names: [&str; 2]) -> rama_tls::client::ClientHello {
 /// key shares, ECH payloads and transport parameter bytes (connection IDs) reduced to what
 /// is not drawn per connection.
 #[cfg(feature = "boring")]
-fn wire_shape(hello: &rama_tls::client::ClientHello) -> Vec<String> {
-    use rama_tls::client::ClientHelloExtension;
+fn wire_shape(hello: &ClientHello) -> Vec<String> {
     fn listed<T: std::fmt::Debug>(items: impl Iterator<Item = (bool, T)>) -> String {
         items
             .map(|(grease, item)| {
@@ -1350,7 +1351,7 @@ fn a_captured_browser_client_hello_is_reproduced_over_quic() {
         let captured = captured_client_hello(files);
         let server_name = captured.ext_server_name().unwrap().to_string();
         let tls = TlsClientConfig::new_from_client_hello(&captured)
-            .with_server_verify(rama_tls::client::ServerVerifyMode::Disable);
+            .with_server_verify(ServerVerifyMode::Disable);
         let config = ClientConfig::try_from_rama_tls_with_provider(
             &tls,
             crate::tls::TlsOptions::default(),
@@ -1378,7 +1379,7 @@ fn a_permuting_browser_draws_its_extension_order_per_connection() {
     let captured = captured_client_hello(["chrome-153-initial-1.hex", "chrome-153-initial-2.hex"]);
     let server_name = captured.ext_server_name().unwrap().to_string();
     let tls = TlsClientConfig::new_from_client_hello(&captured)
-        .with_server_verify(rama_tls::client::ServerVerifyMode::Disable)
+        .with_server_verify(ServerVerifyMode::Disable)
         .with_permute_extensions(true);
     let config = ClientConfig::try_from_rama_tls_with_provider(
         &tls,
@@ -1386,7 +1387,7 @@ fn a_permuting_browser_draws_its_extension_order_per_connection() {
         &crate::tls::BoringTlsProvider,
     )
     .unwrap();
-    let sorted = |hello: &rama_tls::client::ClientHello| {
+    let sorted = |hello: &ClientHello| {
         let mut shape = wire_shape(hello);
         shape.sort();
         shape

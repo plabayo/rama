@@ -13,10 +13,10 @@ use rama_net::{
 #[cfg(test)]
 use rama_tls::KeyLogIntent;
 use rama_tls::client::{
-    ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsClientConfigProvider,
-    TlsComponentIdentity, TlsPoolComponent, TlsPoolId, TlsServerCertPins, TlsServerName,
-    TlsServerTrust, TlsServerVerify, TlsSessionProfileScope, TlsStoreServerCertChain,
-    TlsStoreServerHello,
+    ClientHandshake, ClientHello, ClientHelloExtension, ECHClientHello, ServerVerifyMode,
+    TlsClientAuth, TlsClientConfig, TlsClientConfigProvider, TlsComponentIdentity,
+    TlsPoolComponent, TlsPoolId, TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
+    TlsSessionProfileScope, TlsStoreServerCertChain, TlsStoreServerHello,
 };
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, ProtocolVersion, SignatureScheme,
@@ -36,6 +36,7 @@ use crate::RamaTlsBoringCrateMarker;
 pub struct BoringTlsConnectorConfig<'a> {
     pub session_domain: Option<&'a TlsClientSessionDomain>,
     pub session_profile_scope: Option<&'a TlsSessionProfileScope>,
+    pub client_handshake: Option<&'a ClientHandshake>,
     pub alpn: Option<&'a TlsAlpn>,
     pub versions: Option<&'a TlsSupportedVersions>,
     pub verify: Option<&'a TlsServerVerify>,
@@ -93,6 +94,7 @@ impl BoringTlsConnectorConfig<'_> {
         let Self {
             session_domain,
             session_profile_scope,
+            client_handshake: _,
             alpn,
             versions,
             verify,
@@ -236,12 +238,12 @@ impl BoringTlsConnectorConfig<'_> {
     where
         Self: 'a,
     {
-        static DEFAULT_VERIFY: TlsServerVerify =
-            TlsServerVerify(rama_tls::client::ServerVerifyMode::Auto);
+        static DEFAULT_VERIFY: TlsServerVerify = TlsServerVerify(ServerVerifyMode::Auto);
         // New fields must also be reviewed for whether they are security or wire.
         let Self {
             session_domain,
             session_profile_scope,
+            client_handshake: _,
             alpn: _,
             versions: _,
             verify,
@@ -284,6 +286,7 @@ impl BoringTlsConnectorConfig<'_> {
         BoringTlsConnectorConfig {
             session_domain,
             session_profile_scope,
+            client_handshake: None,
             alpn: None,
             versions: None,
             verify: Some(verify.unwrap_or(&DEFAULT_VERIFY)),
@@ -331,6 +334,7 @@ impl BoringTlsConnectorConfig<'_> {
         let Self {
             session_domain: _,
             session_profile_scope: _,
+            client_handshake: _,
             alpn: _,
             versions: _,
             verify,
@@ -369,7 +373,7 @@ impl BoringTlsConnectorConfig<'_> {
             max_version: _,
         } = self;
 
-        verify.is_none_or(|verify| verify.0 != rama_tls::client::ServerVerifyMode::Disable)
+        verify.is_none_or(|verify| verify.0 != ServerVerifyMode::Disable)
     }
 }
 
@@ -1005,7 +1009,7 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
                 }
                 ClientHelloExtension::EncryptedClientHello(ech) => {
                     encrypted_client_hello = true;
-                    if let rama_tls::client::ECHClientHello::Outer(outer) = ech {
+                    if let ECHClientHello::Outer(outer) = ech {
                         ech_grease = EchGrease::Shape {
                             kdf_id: outer.cipher_suite.kdf_id.into(),
                             aead_id: outer.cipher_suite.aead_id.into(),

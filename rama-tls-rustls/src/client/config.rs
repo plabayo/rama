@@ -6,7 +6,7 @@ use rama_net::{client::pool::ReuseKey, tls::TlsAlpn};
 #[cfg(test)]
 use rama_tls::KeyLogIntent;
 use rama_tls::client::{
-    TlsClientAuth, TlsClientConfig, TlsClientConfigProvider, TlsComponentIdentity,
+    ClientHandshake, TlsClientAuth, TlsClientConfig, TlsClientConfigProvider, TlsComponentIdentity,
     TlsPoolComponent, TlsPoolId, TlsServerCertPins, TlsServerName, TlsServerTrust, TlsServerVerify,
     TlsSessionProfileScope, TlsStoreServerCertChain,
 };
@@ -18,6 +18,7 @@ use std::sync::Arc;
 #[derive(Clone, FromExtensions)]
 pub struct RustlsTlsConnectorConfig<'a> {
     pub session_profile_scope: Option<&'a TlsSessionProfileScope>,
+    pub client_handshake: Option<&'a ClientHandshake>,
     pub alpn: Option<&'a TlsAlpn>,
     pub versions: Option<&'a TlsSupportedVersions>,
     pub verify: Option<&'a TlsServerVerify>,
@@ -45,6 +46,7 @@ impl RustlsTlsConnectorConfig<'_> {
         }
         let Self {
             session_profile_scope,
+            client_handshake: _,
             alpn,
             versions,
             verify,
@@ -84,6 +86,7 @@ impl RustlsTlsConnectorConfig<'_> {
         // New fields must also be reviewed for their effect on authentication.
         let Self {
             session_profile_scope: _,
+            client_handshake: _,
             alpn: _,
             versions: _,
             verify,
@@ -173,10 +176,11 @@ impl TlsPoolComponent for RustlsServerCertVerifier {
 #[extension(tags(tls))]
 /// Escape hatch: take over the final rustls [`ClientConfig`] build.
 ///
-/// Rama builds the config from the common [`TlsClientConfig`] pieces and as the
-/// last step of building, hands it to this function. Either tweak the input
-/// and return it, or ignore it and build a fresh one through the full rustls
-/// builder for anything the common pieces can't express.
+/// Rama builds the config from the common [`TlsClientConfig`] pieces and hands
+/// it to this function. Either tweak the input and return it, or build a fresh
+/// config through the full rustls builder for settings the common pieces cannot
+/// express. An explicit [`ClientHandshake`] offer policy is applied afterward.
+/// This backend supports automatic and full offers; required offers are rejected.
 ///
 /// For request overrides, pool reuse follows the shared extension owner. Share
 /// its `Arc` across requests to retain the same hook identity. Its TLS policy

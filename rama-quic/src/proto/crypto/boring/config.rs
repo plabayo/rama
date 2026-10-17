@@ -145,20 +145,13 @@ struct PreparedClient {
     first: Mutex<Option<Ssl>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TicketOffer {
-    IfAvailable,
-    Never,
-    Required,
-}
-
 // Keeping the cache and callback together makes Fresh incapable of consulting
 // a ticket store or retaining new tickets. Full offers can retain new
 // tickets while suppressing lookup of older ones.
 struct ClientSessions {
     tickets: Arc<Tickets>,
     ticket_index: Index<Ssl, TicketState>,
-    offer: TicketOffer,
+    offer: ClientHandshake,
 }
 
 impl ClientSessions {
@@ -170,9 +163,9 @@ impl ClientSessions {
         version: Version,
     ) -> Result<Option<TransportParameters>, BoxError> {
         let required = match self.offer {
-            TicketOffer::IfAvailable => false,
-            TicketOffer::Never => return Ok(None),
-            TicketOffer::Required => true,
+            ClientHandshake::Auto => false,
+            ClientHandshake::Full => return Ok(None),
+            ClientHandshake::Resumed => true,
         };
         if let Some(key) = context.session_key(host)
             && let Some(ticket) = self.tickets.pop(&(key, version))
@@ -219,6 +212,14 @@ impl QuicClientConfig {
         let pieces = BoringTlsConnectorConfig::from_extensions(config.as_extensions());
         validate_versions(pieces.versions)?;
         validate_alpn(pieces.alpn, options)?;
+        let handshake = pieces.client_handshake.copied().unwrap_or_default();
+        if handshake == ClientHandshake::Resumed
+            && options.client_sessions == ClientSessionPolicy::Fresh
+        {
+            return Err(TlsConfigError::InvalidConfiguration(BoxError::from(
+                "resumed TLS conflicts with the fresh client policy",
+            )));
+        }
         let mut builder = TlsConnectorContextBuilder::try_from(pieces)?;
         if builder
             .max_proto_version()
@@ -249,7 +250,7 @@ impl QuicClientConfig {
             Some(ClientSessions {
                 tickets,
                 ticket_index,
-                offer: TicketOffer::IfAvailable,
+                offer: handshake,
             })
         } else {
             None
@@ -287,9 +288,8 @@ impl QuicClientConfig {
     ) -> Result<Self, TlsConfigError> {
         let mut config = Self::from_rama(config, options)?;
         match (&mut config.sessions, handshake) {
-            (Some(sessions), ClientHandshake::Full) => sessions.offer = TicketOffer::Never,
-            (Some(sessions), ClientHandshake::Resumed) => sessions.offer = TicketOffer::Required,
-            (None, ClientHandshake::Full) => {}
+            (Some(sessions), offer) => sessions.offer = offer,
+            (None, ClientHandshake::Auto | ClientHandshake::Full) => {}
             (None, ClientHandshake::Resumed) => {
                 return Err(TlsConfigError::InvalidConfiguration(BoxError::from(
                     "resumed TLS conflicts with the fresh client policy",
@@ -389,7 +389,7 @@ impl crypto::ClientConfig for QuicClientConfig {
     }
     fn resumable_version(&self, server_name: &str) -> Option<Version> {
         let sessions = self.sessions.as_ref()?;
-        if sessions.offer == TicketOffer::Never {
+        if sessions.offer == ClientHandshake::Full {
             return None;
         }
         let host = Host::try_from(server_name).ok()?;
