@@ -6,9 +6,9 @@ use rama_core::{
 };
 use rama_http_types::{Version, conn::TargetHttpVersion};
 use rama_net::{ProtocolInputExt, client::ConnectRequest, tls::ApplicationProtocol};
-use rama_quic::tls::{
-    ClientConfigCache,
-    profile::{self, PreparedConfig},
+use rama_quic::{
+    profile::replay::{self, PreparedConfig},
+    tls::ClientConfigCache,
 };
 use rama_tls::{
     ExtensionId,
@@ -58,7 +58,7 @@ pub(super) fn prepare(
             .as_extensions()
             .get_ref::<TlsServerName>()
             .map_or_else(|| input.authority.host.clone(), |name| name.0.clone());
-        profile::prepare(cache, tls, peer, selection.profile, components)
+        replay::prepare(cache, tls, peer, selection.profile, components)
     })
 }
 

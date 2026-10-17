@@ -11,7 +11,7 @@ fn prepared(
     source: TlsCapture,
 ) -> ClientConfig {
     cache
-        .captured_client_config(policy, Host::try_from("localhost").unwrap(), source)
+        .captured_client_config(policy, Host::try_from("localhost").unwrap(), source, None)
         .unwrap()
         .unwrap()
 }
@@ -131,6 +131,7 @@ fn captured_resumed_offers_require_the_current_peer_version_and_policy() {
                 &policy,
                 Host::try_from("other.invalid").unwrap(),
                 resumed.clone(),
+                None,
             )
             .unwrap()
             .unwrap()
@@ -190,7 +191,7 @@ fn fresh_capture_cache_neither_retains_tickets_nor_allows_a_resumed_offer() {
             );
         }
         fresh
-            .captured_client_config(&policy, Host::try_from("localhost").unwrap(), resumed)
+            .captured_client_config(&policy, Host::try_from("localhost").unwrap(), resumed, None)
             .unwrap_err();
 
         // A sibling cache has its own domain, including when policy is identical.

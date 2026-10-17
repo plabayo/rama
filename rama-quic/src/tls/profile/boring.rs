@@ -19,6 +19,7 @@ use rama_ua::profile::capture::{
     tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport, TlsCapturedExtensionValue},
 };
 
+use crate::profile::replay::parameters::ParameterExpectation;
 use crate::{
     ClientConfig,
     proto::crypto::boring::{PreparedClientHandshake, QuicClientConfig},
@@ -37,13 +38,14 @@ use std::sync::Arc;
 ///
 /// Resumed captures require current peer-issued tickets. A full captured offer
 /// suppresses older tickets while retaining new ones unless the caller chose Fresh.
-/// QUIC parameters, first-flight layout and HTTP/3 state need their own compilers;
-/// successful TLS preparation does not claim support for those components.
+/// Optional parameter expectations validate the generated body from the same
+/// selected tuple. First-flight layout and HTTP/3 state need separate compilers.
 pub(crate) fn prepare(
     policy: &TlsClientConfig,
     options: TlsOptions,
     peer: Host,
     capture: TlsCapture,
+    expected_parameters: Option<ParameterExpectation>,
 ) -> Result<ClientConfig, BoxError> {
     if !matches!(capture.transport, TlsCaptureTransport::Quic) {
         return Err(BoxError::from_static_str(
@@ -100,6 +102,9 @@ pub(crate) fn prepare(
                     return Err(BoxError::from_static_str(
                         "native QUIC TLS parameters differ from the engine binding",
                     ));
+                }
+                if let Some(expected) = &expected_parameters {
+                    expected.validate(hello)?;
                 }
                 let actual = TlsCapture::capture(
                     ProfileCaptureCompleteness::Complete,

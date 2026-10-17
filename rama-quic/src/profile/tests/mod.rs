@@ -41,7 +41,7 @@ use crate::{ClientConfig, Endpoint, EndpointConfig};
 
 macro_rules! include_fixture {
     ($name:literal) => {
-        include_str!(concat!("fixtures/", $name))
+        include_str!(concat!("../fixtures/", $name))
     };
 }
 
@@ -1492,3 +1492,5 @@ fn sent_transport_parameters_compile_to_the_captured_layouts() {
         expected.datagram_receive_buffer_size
     );
 }
+
+mod versions;

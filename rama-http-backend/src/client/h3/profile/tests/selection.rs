@@ -1,4 +1,9 @@
 use super::*;
+use rama_quic_proto::{
+    capture::version_information,
+    profile::{ParameterId, RawParameter},
+};
+use rama_ua::profile::capture::order::ProtocolValue;
 use rama_ua::profile::{
     capture::{
         headers::{HeaderCapture, HeaderCapturePolicy},
@@ -30,6 +35,7 @@ use rama_ua::profile::{
 pub(super) fn selected(
     client: &str,
     capture: &TlsCapture,
+    parameters: Option<&OrderedProtocolCapture>,
 ) -> (EmulationContext, ConnectionSelection) {
     let flow = FlowKey::Http {
         version: Version::HTTP_3,
@@ -48,7 +54,7 @@ pub(super) fn selected(
                 completeness: ProfileCaptureCompleteness::Complete,
                 level,
                 slots: if level == CaptureLevel::Connection {
-                    vec![
+                    let mut slots = vec![
                         CapturedSlot {
                             kind: CapturedSlotKind::QuicTls,
                             value: capture.canonical(TlsCaptureLimits::default()).unwrap(),
@@ -63,8 +69,41 @@ pub(super) fn selected(
                             .canonical(OrderCaptureLimits::default())
                             .unwrap(),
                         },
-                    ]
-                    .into()
+                    ];
+                    if let Some(parameters) = parameters {
+                        slots.push(CapturedSlot {
+                            kind: CapturedSlotKind::QuicParameters,
+                            value: parameters.canonical(OrderCaptureLimits::default()).unwrap(),
+                        });
+                        let raw: Vec<_> = parameters
+                            .fields
+                            .iter()
+                            .filter_map(|field| match &field.value {
+                                ProtocolValue::Literal(value) => Some(RawParameter {
+                                    id: ParameterId(field.id),
+                                    value: value.to_vec(),
+                                }),
+                                ProtocolValue::ConnectionLength(_) => None,
+                            })
+                            .collect();
+                        let information = version_information(&raw).unwrap();
+                        slots.push(CapturedSlot {
+                            kind: CapturedSlotKind::QuicVersions,
+                            value: OrderedProtocolCapture::capture(
+                                ProfileCaptureCompleteness::Complete,
+                                OrderNamespace::QuicVersion,
+                                information
+                                    .available()
+                                    .iter()
+                                    .map(|version| (u64::from(version.as_u32()), [])),
+                                OrderCaptureLimits::default(),
+                            )
+                            .unwrap()
+                            .canonical(OrderCaptureLimits::default())
+                            .unwrap(),
+                        });
+                    }
+                    slots.into()
                 } else {
                     vec![CapturedSlot {
                         kind: CapturedSlotKind::Headers,
@@ -141,6 +180,7 @@ pub(super) fn selected(
                     required: CapabilitySet {
                         h3: true,
                         tls_quic: true,
+                        quic: parameters.is_some(),
                         ..CapabilitySet::default()
                     },
                     flow,
@@ -168,7 +208,7 @@ async fn current_context_supplies_selection_and_request_draws_share_the_connecti
     tokio::time::timeout(Duration::from_secs(15), async {
         let fixture = fixture().await;
         let input = fixture.input();
-        let (context, selected) = selected("native-h3-selection", &fixture.capture);
+        let (context, selected) = selected("native-h3-selection", &fixture.capture, None);
         let mut wrong_pin = context.clone();
         wrong_pin.pins.connection = Some(ValueId([8; 32]));
         wrong_pin.publish(input.extensions());

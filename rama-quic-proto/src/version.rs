@@ -486,6 +486,8 @@ pub enum VersionPolicyError {
     /// The TLS provider cannot change version during the handshake, so it can only offer the
     /// version it starts with.
     SwitchUnsupported,
+    /// A literal reserved-version choice must use the RFC 8999 reserved pattern.
+    NotReserved(Version),
 }
 
 impl fmt::Display for VersionPolicyError {
@@ -498,6 +500,7 @@ impl fmt::Display for VersionPolicyError {
             Self::Unknown(version) => write!(f, "QUIC version {version} is not implemented"),
             Self::Reserved(version) => write!(f, "reserved QUIC version {version} cannot be used"),
             Self::Incompatible(a, b) => write!(f, "QUIC versions {a} and {b} are not compatible"),
+            Self::NotReserved(version) => write!(f, "QUIC version {version} is not reserved"),
             Self::SwitchUnsupported => {
                 f.write_str("the TLS provider cannot switch QUIC version during the handshake")
             }
@@ -561,6 +564,40 @@ impl TryFrom<ClientVersionPolicyRepr> for ClientVersionPolicy {
     }
 }
 
+/// A literal reserved QUIC version, distinct from a usable protocol version.
+///
+/// Used when replaying an observed value rather than substituting the engine's
+/// generated choice. Construction and deserialization enforce the reserved pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "Version", into = "Version")]
+pub struct ReservedVersion(Version);
+
+impl TryFrom<Version> for ReservedVersion {
+    type Error = VersionPolicyError;
+
+    fn try_from(version: Version) -> Result<Self, Self::Error> {
+        if version.is_reserved() {
+            Ok(Self(version))
+        } else {
+            Err(VersionPolicyError::NotReserved(version))
+        }
+    }
+}
+
+impl From<ReservedVersion> for Version {
+    fn from(version: ReservedVersion) -> Self {
+        version.0
+    }
+}
+
+impl ReservedVersion {
+    /// The exact reserved value to put on the wire.
+    #[must_use]
+    pub const fn as_version(self) -> Version {
+        self.0
+    }
+}
+
 /// Where a reserved `0x?a?a?a?a` version goes in an advertised version list (RFC 9368 §3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -572,6 +609,10 @@ pub enum ReservedVersionGrease {
     /// After them.
     #[default]
     Last,
+    /// Retain this literal reserved value before the real versions.
+    FixedFirst(ReservedVersion),
+    /// Retain this literal reserved value after the real versions.
+    FixedLast(ReservedVersion),
 }
 
 impl Default for ClientVersionPolicy {
@@ -775,6 +816,8 @@ impl ClientVersionPolicy {
             ReservedVersionGrease::None => {}
             ReservedVersionGrease::First => available.insert(0, grease),
             ReservedVersionGrease::Last => available.push(grease),
+            ReservedVersionGrease::FixedFirst(version) => available.insert(0, version.as_version()),
+            ReservedVersionGrease::FixedLast(version) => available.push(version.as_version()),
         }
         VersionInformation::new(self.original, available)
     }

@@ -9,6 +9,8 @@ use rama_tls::client::{TlsClientConfig, TlsPoolId};
 use super::{ClientSessionPolicy, QuicClientConfigProvider, TlsConfigError, TlsOptions};
 use crate::ClientConfig;
 #[cfg(feature = "ua")]
+use crate::profile::replay::parameters::ParameterExpectation;
+#[cfg(feature = "ua")]
 use rama_net::address::Host;
 #[cfg(feature = "ua")]
 use rama_ua::profile::capture::tls::TlsCapture;
@@ -71,13 +73,16 @@ impl ClientConfigCache {
 
     /// Prepare one captured offer with this connector's ticket domain and options.
     /// Native prepared state bypasses the ordinary configuration cache: it belongs
-    /// to one peer and capture. Only bounded backend session metadata is shared.
+    /// to one peer and capture. Optional parameter expectations bind the same
+    /// selected tuple to its actual generated body. Only bounded backend session
+    /// metadata is shared.
     #[cfg(feature = "ua")]
     pub fn captured_client_config(
         &self,
         config: &TlsClientConfig,
         peer: Host,
         capture: TlsCapture,
+        parameters: Option<ParameterExpectation>,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
         let defaults = self.configs.lock().session_defaults.clone();
         let scoped;
@@ -89,7 +94,7 @@ impl ClientConfigCache {
             config
         };
         self.provider
-            .captured_client_config(config, self.options, peer, capture)
+            .captured_client_config(config, self.options, peer, capture, parameters)
     }
 
     /// Build or reuse the final TLS configuration, classified by this cache's provider.

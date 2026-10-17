@@ -17,8 +17,16 @@ pub(super) fn reference(policy: &TlsClientConfig, version: Version) -> TlsCaptur
 }
 
 pub(super) fn first_capture(client: Arc<dyn crypto::ClientConfig>, version: Version) -> TlsCapture {
+    capture(&first_hello(client, version, &params(Side::Client)))
+}
+
+pub(super) fn first_hello(
+    client: Arc<dyn crypto::ClientConfig>,
+    version: Version,
+    parameters: &TransportParameters,
+) -> ClientHello {
     let mut session = client
-        .start_session(version, "localhost", &params(Side::Client))
+        .start_session(version, "localhost", parameters)
         .unwrap();
     let mut bytes = Vec::new();
     while let Some(event) = session.poll_handshake().unwrap() {
@@ -31,7 +39,7 @@ pub(super) fn first_capture(client: Arc<dyn crypto::ClientConfig>, version: Vers
     else {
         panic!("native ClientHello incomplete");
     };
-    capture(&hello)
+    hello
 }
 
 pub(super) fn capture(hello: &ClientHello) -> TlsCapture {

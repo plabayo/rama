@@ -2,6 +2,7 @@ use super::*;
 use parking_lot::Mutex;
 use rama_core::extensions::Extensions;
 use rama_net::address::Host;
+use rama_quic::profile::replay::parameters::ParameterExpectation;
 use rama_quic::{
     ClientConfig,
     tls::{QuicClientConfigProvider, TlsConfigError},
@@ -54,10 +55,14 @@ async fn ordinary_provider_support_cannot_grant_captured_tls_support() {
             }))
             .build_lazy()
             .unwrap();
-        let input = fixture.input();
-        fixture.install(&input);
-        rejected(fixture.connector.prepare_connection(&input));
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        for parameters in [None, Some(&fixture.parameters)] {
+            let input = fixture.target();
+            let (context, _) =
+                selection::selected("unsupported-provider", &fixture.capture, parameters);
+            context.publish(input.extensions());
+            rejected(fixture.connector.prepare_connection(&input));
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+        }
     })
     .await
     .unwrap();
@@ -99,6 +104,7 @@ impl QuicClientConfigProvider for CaptureAware {
         options: TlsOptions,
         peer: Host,
         capture: TlsCapture,
+        parameters: Option<ParameterExpectation>,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
         self.captured_calls.fetch_add(1, Ordering::SeqCst);
         self.scopes.lock().push(
@@ -110,7 +116,7 @@ impl QuicClientConfigProvider for CaptureAware {
         );
         self.ordinary
             .inner
-            .captured_client_config(policy, options, peer, capture)
+            .captured_client_config(policy, options, peer, capture, parameters)
     }
 }
 
@@ -170,7 +176,7 @@ async fn current_profile_and_caller_scope_isolate_tickets_without_keying_each_dr
             ("profile A", "tenant B", 1),
         ] {
             let input = fixture.input();
-            let (mut context, _) = selection::selected(profile, &fixture.capture);
+            let (mut context, _) = selection::selected(profile, &fixture.capture, None);
             context.connection_key = DrawKey([draw; 32]);
             context.publish(input.extensions());
             let caller = TlsSessionProfileScope(caller.into());

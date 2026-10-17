@@ -10,6 +10,9 @@ use rama_quic_proto::{VarInt, profile::*};
 
 pub mod capture;
 
+#[cfg(feature = "ua")]
+pub mod replay;
+
 #[cfg(all(
     test,
     any(

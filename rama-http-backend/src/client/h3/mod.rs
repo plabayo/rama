@@ -386,14 +386,6 @@ impl Http3Connector {
         input: &ConnectRequest,
     ) -> Result<(PreparedTls, Arc<Config>), ConnectionError> {
         let profile = input.extensions().get_arc::<QuicProfile>();
-        if let Some(profile) = &profile
-            && profile.limits().initial_max_streams_uni < 3
-        {
-            return Err(invalid(
-                "HTTP/3 profiles must permit the peer's three critical streams",
-            ));
-        }
-
         let tls = self
             .tls
             .clone()
@@ -442,6 +434,34 @@ impl Http3Connector {
             }
             captured
         };
+        #[cfg(feature = "ua")]
+        let (profile_preparation, config, profile) = match captured {
+            Some((preparation, config)) => {
+                let (config, transport) = config.into_parts();
+                let profile = match transport {
+                    Some(transport) => {
+                        if profile
+                            .as_ref()
+                            .is_some_and(|caller| caller.as_ref() != &transport)
+                        {
+                            return Err(invalid("caller and captured QUIC profiles conflict"));
+                        }
+                        Some(Arc::new(transport))
+                    }
+                    None => profile,
+                };
+                (Some(preparation), config, profile)
+            }
+            None => (None, None, profile),
+        };
+        if let Some(profile) = &profile
+            && profile.limits().initial_max_streams_uni < 3
+        {
+            return Err(invalid(
+                "HTTP/3 profiles must permit the peer's three critical streams",
+            ));
+        }
+
         let h3_config = match input.extensions().get_ref::<ClientSettingsProfile>() {
             Some(profile) => Arc::new(
                 self.config
@@ -458,7 +478,7 @@ impl Http3Connector {
             .as_ref()
             .is_some_and(|settings| settings.h3_datagram())
         {
-            let datagrams = match input.extensions().get_ref::<QuicProfile>() {
+            let datagrams = match profile.as_deref() {
                 Some(profile) => TransportConfig::from_quic_profile(profile)
                     .map_err(|error| ConnectionError::local(error, InvalidInput))?
                     .datagram_receive_enabled(),
@@ -468,11 +488,6 @@ impl Http3Connector {
                 return Err(invalid("HTTP/3 SETTINGS require QUIC DATAGRAM reception"));
             }
         }
-        #[cfg(feature = "ua")]
-        let (profile_preparation, config) = match captured {
-            Some((preparation, config)) => (Some(preparation), config.into_config()),
-            None => (None, None),
-        };
         #[cfg(feature = "ua")]
         let mut config = match config {
             Some(config) => config,

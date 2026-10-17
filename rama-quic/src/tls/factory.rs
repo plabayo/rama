@@ -1,3 +1,5 @@
+#[cfg(feature = "ua")]
+use crate::profile::replay::parameters::ParameterExpectation;
 #[cfg(any(feature = "boring", feature = "ua"))]
 use rama_net::address::Host;
 #[cfg(feature = "ua")]
@@ -67,6 +69,9 @@ pub trait QuicClientConfigProvider: TlsClientConfigProvider {
     /// Errors reject the selected shape or current caller policy. Returning an
     /// actual prepared configuration establishes support; input flags do not.
     /// Honor the connector's `options`, including Fresh's ban on ticket use/storage.
+    /// When `parameters` is present, validate that correlated projection against
+    /// the actual generated ClientHello before output. Return `None` if this
+    /// provider cannot implement the requested TLS/parameter tuple.
     #[cfg(feature = "ua")]
     fn captured_client_config(
         &self,
@@ -74,6 +79,7 @@ pub trait QuicClientConfigProvider: TlsClientConfigProvider {
         _options: TlsOptions,
         _peer: Host,
         _capture: TlsCapture,
+        _parameters: Option<ParameterExpectation>,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
         Ok(None)
     }
@@ -256,8 +262,9 @@ impl QuicClientConfigProvider for BoringTlsProvider {
         options: TlsOptions,
         peer: Host,
         capture: TlsCapture,
+        parameters: Option<ParameterExpectation>,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
-        super::profile::boring::prepare(policy, options, peer, capture)
+        super::profile::boring::prepare(policy, options, peer, capture, parameters)
             .map(Some)
             .map_err(TlsConfigError::InvalidConfiguration)
     }

@@ -23,7 +23,7 @@ use rama_quic::{
 };
 use rama_quic_proto::{
     VarInt,
-    capture::CaptureLimits,
+    capture::{CaptureLimits, transport_parameters_from_hello},
     profile::{GreaseParameter, QuicProfile, TransportParameterProfile},
 };
 use rama_tls::{
@@ -34,6 +34,7 @@ use rama_ua::profile::{
     capture::{
         completeness::ProfileCaptureCompleteness,
         joint::CapturedSlotKind,
+        order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
         tls::{TlsCapture, TlsCaptureLimits},
     },
     model::identity::ConnectionContext,
@@ -50,8 +51,9 @@ struct Fixture {
     connector: Http3Connector,
     server: Endpoint,
     client_endpoint: Endpoint,
-    task: Option<JoinHandle<Vec<TlsCapture>>>,
+    task: Option<JoinHandle<Vec<(TlsCapture, OrderedProtocolCapture)>>>,
     capture: TlsCapture,
+    parameters: OrderedProtocolCapture,
     port: u16,
     profile: QuicProfile,
 }
@@ -68,7 +70,7 @@ impl Drop for Fixture {
 }
 
 impl Fixture {
-    fn input(&self) -> ConnectRequest {
+    fn target(&self) -> ConnectRequest {
         let input = ConnectRequest::new(HostWithPort::localhost_domain_with_port(self.port))
             .with_application_protocol(Protocol::HTTPS);
         input
@@ -77,12 +79,17 @@ impl Fixture {
         input
             .extensions()
             .insert(TargetHttpVersion(Version::HTTP_3));
+        input
+    }
+
+    fn input(&self) -> ConnectRequest {
+        let input = self.target();
         input.extensions().insert(self.profile.clone());
         input
     }
 
     fn install(&self, input: &ConnectRequest) {
-        let (context, _) = selection::selected("native-h3-selection", &self.capture);
+        let (context, _) = selection::selected("native-h3-selection", &self.capture, None);
         context.publish(input.extensions());
     }
 }
@@ -117,6 +124,16 @@ fn rejected(result: Result<(PreparedTls, Arc<Config>), ConnectionError>) {
 }
 
 async fn fixture() -> Fixture {
+    // Keep only connection-owned parameter values variable, not their lengths.
+    let profile = QuicProfile::standard().with_transport_parameters(
+        TransportParameterProfile::standard()
+            .try_with_grease(GreaseParameter::None)
+            .unwrap(),
+    );
+    fixture_with_profile(profile).await
+}
+
+async fn fixture_with_profile(profile: QuicProfile) -> Fixture {
     let identity = ServerAuthData::new_self_signed_leaf(LeafCertRequest::default()).unwrap();
     let server_tls = TlsServerConfig::new()
         .with_alpn([ApplicationProtocol::HTTP_3].into_iter().collect())
@@ -142,10 +159,19 @@ async fn fixture() -> Fixture {
                 TlsCaptureLimits::default(),
             )
             .unwrap();
+            let raw = transport_parameters_from_hello(&hello, &CaptureLimits::default()).unwrap();
+            let parameters = OrderedProtocolCapture::capture(
+                ProfileCaptureCompleteness::Complete,
+                OrderNamespace::QuicParameter,
+                raw.iter()
+                    .map(|parameter| (parameter.id.0, parameter.value.as_slice())),
+                OrderCaptureLimits::default(),
+            )
+            .unwrap();
             if let Some(send) = send.take() {
-                send.send(capture.clone()).unwrap();
+                send.send((capture.clone(), parameters.clone())).unwrap();
             }
-            captures.push(capture);
+            captures.push((capture, parameters));
             let connection = incoming.accept().unwrap().await.unwrap();
             let (mut http, driver) = h3_server::handshake(connection, Config::default()).unwrap();
             spawn(driver.run());
@@ -171,12 +197,6 @@ async fn fixture() -> Fixture {
         .with_tls_config(tls)
         .build_lazy()
         .unwrap();
-    // Keep only connection-owned parameter values variable, not their lengths.
-    let profile = QuicProfile::standard().with_transport_parameters(
-        TransportParameterProfile::standard()
-            .try_with_grease(GreaseParameter::None)
-            .unwrap(),
-    );
     let client_endpoint = connector
         .endpoint_for_profile(Some(&profile))
         .await
@@ -188,7 +208,7 @@ async fn fixture() -> Fixture {
         .insert(ConnectorTarget(HostWithPort::local_ipv4(port)));
     source.extensions().insert(profile.clone());
     request(connector.serve(source).await.unwrap().conn).await;
-    let mut capture = receive.await.unwrap();
+    let (mut capture, parameters) = receive.await.unwrap();
     // Select an unpadded TLS template. Explicit padding is not supported by the
     // wire compiler; this test does not claim byte-for-byte replay of that option.
     capture.extensions = capture
@@ -203,6 +223,7 @@ async fn fixture() -> Fixture {
         client_endpoint,
         task: Some(task),
         capture,
+        parameters,
         port,
         profile,
     }

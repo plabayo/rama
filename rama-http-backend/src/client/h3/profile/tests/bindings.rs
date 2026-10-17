@@ -1,5 +1,8 @@
 use super::*;
+use rama_quic::profile::replay;
+use rama_quic_proto::profile::ParameterId;
 use rama_tls::client::{ServerVerifyMode, TlsServerVerify};
+use rama_ua::profile::capture::order::ProtocolValue;
 
 #[tokio::test]
 async fn final_http_target_and_protocol_are_validated_without_pending_state() {
@@ -47,4 +50,69 @@ async fn final_tls_policy_is_used_without_rewriting_caller_settings() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn caller_and_captured_quic_recipes_cannot_silently_override_each_other() {
+    let fixture = fixture().await;
+    let input = fixture.input();
+    let (context, _) = selection::selected(
+        "parameter-policy",
+        &fixture.capture,
+        Some(&fixture.parameters),
+    );
+    context.publish(input.extensions());
+    let error = fixture.connector.prepare_connection(&input).err().unwrap();
+    assert!(
+        error.to_string().contains("QUIC profiles conflict"),
+        "{error}"
+    );
+    assert_eq!(
+        input.extensions().get_ref::<QuicProfile>().unwrap(),
+        &fixture.profile
+    );
+}
+
+#[tokio::test]
+async fn captured_quic_limits_must_admit_all_h3_critical_streams() {
+    let fixture = fixture().await;
+    let input = fixture.target();
+    let mut parameters = fixture.parameters.clone();
+    let streams = parameters
+        .fields
+        .iter_mut()
+        .find(|field| field.id == ParameterId::INITIAL_MAX_STREAMS_UNI.0)
+        .unwrap();
+    streams.value = ProtocolValue::Literal(vec![2].into());
+    let (context, _) = selection::selected("parameter-limits", &fixture.capture, Some(&parameters));
+    context.publish(input.extensions());
+    let error = fixture.connector.prepare_connection(&input).err().unwrap();
+    assert!(
+        error.to_string().contains("three critical streams"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn captured_versions_cannot_disagree_with_their_parameter_tuple() {
+    let fixture = fixture().await;
+    let input = fixture.target();
+    let (_, selected) =
+        selection::selected("version-tuple", &fixture.capture, Some(&fixture.parameters));
+    let mut components = selected.prepare_components().unwrap();
+    components.quic_versions.as_mut().unwrap().fields.swap(0, 1);
+    let error = replay::prepare(
+        &fixture.connector.tls_configs,
+        &fixture.connector.tls,
+        input.authority.host,
+        selected.profile,
+        &mut components,
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("version list and parameter tuple disagree"),
+        "{error}"
+    );
 }

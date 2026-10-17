@@ -72,9 +72,8 @@ pub mod tls {
     mod cache;
     pub use cache::ClientConfigCache;
 
-    /// Captured QUIC preparation using the consuming connector’s provider.
     #[cfg(feature = "ua")]
-    pub mod profile;
+    pub(crate) mod profile;
 
     mod factory;
     pub use factory::*;
