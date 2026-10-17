@@ -8,6 +8,10 @@ use rama_tls::client::{TlsClientConfig, TlsPoolId};
 
 use super::{ClientSessionPolicy, QuicClientConfigProvider, TlsConfigError, TlsOptions};
 use crate::ClientConfig;
+#[cfg(feature = "ua")]
+use rama_net::address::Host;
+#[cfg(feature = "ua")]
+use rama_ua::profile::capture::tls::TlsCapture;
 
 // Keep native override configurations bounded alongside the protected default context.
 const MAX_CACHED_OVERRIDES: usize = 64;
@@ -63,6 +67,29 @@ impl ClientConfigCache {
     /// The provider used both to classify policies and to construct configurations.
     pub fn provider(&self) -> &Arc<dyn QuicClientConfigProvider> {
         &self.provider
+    }
+
+    /// Prepare one captured offer with this connector's ticket domain and options.
+    /// Native prepared state bypasses the ordinary configuration cache: it belongs
+    /// to one peer and capture. Only bounded backend session metadata is shared.
+    #[cfg(feature = "ua")]
+    pub fn captured_client_config(
+        &self,
+        config: &TlsClientConfig,
+        peer: Host,
+        capture: TlsCapture,
+    ) -> Result<Option<ClientConfig>, TlsConfigError> {
+        let defaults = self.configs.lock().session_defaults.clone();
+        let scoped;
+        let config = if let Some(defaults) = defaults {
+            scoped = config.clone();
+            scoped.as_extensions().extend(&defaults);
+            &scoped
+        } else {
+            config
+        };
+        self.provider
+            .captured_client_config(config, self.options, peer, capture)
     }
 
     /// Build or reuse the final TLS configuration, classified by this cache's provider.

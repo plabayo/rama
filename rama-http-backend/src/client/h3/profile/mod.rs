@@ -7,7 +7,7 @@ use rama_core::{
 use rama_http_types::{Version, conn::TargetHttpVersion};
 use rama_net::{ProtocolInputExt, client::ConnectRequest, tls::ApplicationProtocol};
 use rama_quic::tls::{
-    QuicClientConfigProvider,
+    ClientConfigCache,
     profile::{self, PreparedConfig},
 };
 use rama_tls::{
@@ -22,9 +22,9 @@ use rama_ua::profile::{
 pub(super) fn prepare(
     input: &ConnectRequest,
     tls: &TlsClientConfig,
-    provider: &dyn QuicClientConfigProvider,
+    cache: &ClientConfigCache,
 ) -> Result<Option<(ConnectionPreparation, PreparedConfig)>, BoxError> {
-    ConnectionPreparation::prepare(input, |_, components, _| {
+    ConnectionPreparation::prepare(input, |selection, components, _| {
         if input
             .target_protocol()
             .is_none_or(|protocol| !protocol.is_secure())
@@ -58,7 +58,7 @@ pub(super) fn prepare(
             .as_extensions()
             .get_ref::<TlsServerName>()
             .map_or_else(|| input.authority.host.clone(), |name| name.0.clone());
-        profile::prepare(provider, tls, peer, components)
+        profile::prepare(cache, tls, peer, selection.profile, components)
     })
 }
 

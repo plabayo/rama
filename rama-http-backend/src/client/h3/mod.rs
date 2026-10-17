@@ -430,7 +430,7 @@ impl Http3Connector {
             .get_ref::<TlsStoreServerCertChain>()
             .is_some_and(|capture| capture.0);
         #[cfg(feature = "ua")]
-        let captured = profile::prepare(input, &tls, self.tls_provider().as_ref())
+        let captured = profile::prepare(input, &tls, &self.tls_configs)
             .map_err(|error| ConnectionError::local(error, InvalidInput))?;
         #[cfg(feature = "ua")]
         let captured = {

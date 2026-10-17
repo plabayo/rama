@@ -1,5 +1,9 @@
 #[cfg(feature = "ua")]
+mod capture_fixture;
+#[cfg(feature = "ua")]
 mod captured_sessions;
+#[cfg(feature = "ua")]
+mod captured_tickets;
 mod fresh_sessions;
 mod prepared_sessions;
 

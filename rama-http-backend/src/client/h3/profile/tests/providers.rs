@@ -1,11 +1,13 @@
 use super::*;
+use parking_lot::Mutex;
 use rama_core::extensions::Extensions;
 use rama_net::address::Host;
 use rama_quic::{
     ClientConfig,
     tls::{QuicClientConfigProvider, TlsConfigError},
 };
-use rama_tls::client::{TlsClientConfig, TlsClientConfigProvider};
+use rama_tls::client::{TlsClientConfig, TlsClientConfigProvider, TlsSessionProfileScope};
+use rama_ua::profile::selection::DrawKey;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug)]
@@ -65,6 +67,7 @@ async fn ordinary_provider_support_cannot_grant_captured_tls_support() {
 struct CaptureAware {
     ordinary: OrdinaryOnly,
     captured_calls: Arc<AtomicUsize>,
+    scopes: Arc<Mutex<Vec<TlsSessionProfileScope>>>,
 }
 
 impl TlsClientConfigProvider for CaptureAware {
@@ -93,13 +96,21 @@ impl QuicClientConfigProvider for CaptureAware {
     fn captured_client_config(
         &self,
         policy: &TlsClientConfig,
+        options: TlsOptions,
         peer: Host,
         capture: TlsCapture,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
         self.captured_calls.fetch_add(1, Ordering::SeqCst);
+        self.scopes.lock().push(
+            policy
+                .as_extensions()
+                .get_ref::<TlsSessionProfileScope>()
+                .unwrap()
+                .clone(),
+        );
         self.ordinary
             .inner
-            .captured_client_config(policy, peer, capture)
+            .captured_client_config(policy, options, peer, capture)
     }
 }
 
@@ -117,6 +128,7 @@ async fn ordinary_requests_skip_native_capture_preparation() {
                     calls: ordinary_calls.clone(),
                 },
                 captured_calls: captured_calls.clone(),
+                scopes: Arc::default(),
             }))
             .build_lazy()
             .unwrap();
@@ -129,6 +141,51 @@ async fn ordinary_requests_skip_native_capture_preparation() {
         fixture.connector.prepare_connection(&input).unwrap();
         assert_eq!(ordinary_calls.load(Ordering::SeqCst), 1);
         assert_eq!(captured_calls.load(Ordering::SeqCst), 1);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn current_profile_and_caller_scope_isolate_tickets_without_keying_each_draw() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let mut fixture = fixture().await;
+        let scopes = Arc::new(Mutex::new(Vec::new()));
+        fixture.connector = Http3Connector::builder(Executor::new())
+            .with_tls_config(fixture.connector.tls.clone())
+            .with_tls_provider(Arc::new(CaptureAware {
+                ordinary: OrdinaryOnly {
+                    inner: fixture.connector.tls_provider().clone(),
+                    calls: Arc::default(),
+                },
+                captured_calls: Arc::default(),
+                scopes: scopes.clone(),
+            }))
+            .build_lazy()
+            .unwrap();
+        for (profile, caller, draw) in [
+            ("profile A", "tenant A", 1),
+            ("profile A", "tenant A", 2),
+            ("profile B", "tenant A", 1),
+            ("profile A", "tenant B", 1),
+        ] {
+            let input = fixture.input();
+            let (mut context, _) = selection::selected(profile, &fixture.capture);
+            context.connection_key = DrawKey([draw; 32]);
+            context.publish(input.extensions());
+            let caller = TlsSessionProfileScope(caller.into());
+            input.extensions().insert(caller.clone());
+            fixture.connector.prepare_connection(&input).unwrap();
+            assert_eq!(
+                input.extensions().get_ref::<TlsSessionProfileScope>(),
+                Some(&caller)
+            );
+        }
+        let scopes = scopes.lock();
+        assert_eq!(scopes.len(), 4);
+        assert_eq!(scopes[0], scopes[1]);
+        assert_ne!(scopes[0], scopes[2]);
+        assert_ne!(scopes[0], scopes[3]);
     })
     .await
     .unwrap();

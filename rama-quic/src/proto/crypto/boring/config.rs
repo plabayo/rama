@@ -14,13 +14,13 @@ use rama_crypto::dep::boring::{
     ex_data::Index,
     ssl::{Ssl, SslAcceptorBuilder, SslContext, SslRef, SslVersion},
 };
-use rama_net::address::Host;
+use rama_net::{address::Host, tls::TlsAlpn};
 use rama_quic_proto::{
     ConnectionId, Side, TransportError, Version, transport_parameters::TransportParameters,
 };
 use rama_tls::{
     ProtocolVersion, TlsSupportedVersions,
-    alpn::{AlpnError, AlpnPolicy},
+    alpn::{self, AlpnError, AlpnPolicy},
     client::{ClientHello, TlsClientConfig},
     server::TlsServerConfig,
 };
@@ -147,11 +147,60 @@ struct PreparedClient {
 pub(super) type ClientHelloCheck =
     dyn Fn(&ClientHello, &[u8]) -> Result<(), BoxError> + Send + Sync;
 
-// Keeping the cache and its callback index together makes a fresh configuration
-// incapable of consulting a cache or installing a ticket-retention callback.
+/// The selected capture requires either a full offer or a current ticket.
+#[cfg(feature = "ua")]
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PreparedClientHandshake {
+    Full,
+    Resumed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TicketOffer {
+    IfAvailable,
+    #[cfg(feature = "ua")]
+    Never,
+    #[cfg(feature = "ua")]
+    Required,
+}
+
+// Keeping the cache and callback together makes Fresh incapable of consulting
+// a ticket store or retaining new tickets. Captured full offers can retain new
+// tickets while suppressing lookup of older ones.
 struct ClientSessions {
     tickets: Arc<Tickets>,
     ticket_index: Index<Ssl, TicketState>,
+    offer: TicketOffer,
+}
+
+impl ClientSessions {
+    fn resume(
+        &self,
+        context: &TlsConnectorContext,
+        ssl: &mut SslRef,
+        host: &Host,
+        version: Version,
+    ) -> Result<Option<TransportParameters>, BoxError> {
+        let required = match self.offer {
+            TicketOffer::IfAvailable => false,
+            #[cfg(feature = "ua")]
+            TicketOffer::Never => return Ok(None),
+            #[cfg(feature = "ua")]
+            TicketOffer::Required => true,
+        };
+        if let Some(key) = context.session_key(host)
+            && let Some(ticket) = self.tickets.pop(&(key, version))
+        {
+            ticket.session.resume_on(ssl)?;
+            return Ok(Some(ticket.params));
+        }
+        if required {
+            return Err(BoxError::from(
+                "captured resumed TLS requires a current peer-issued ticket",
+            ));
+        }
+        Ok(None)
+    }
 }
 
 fn validate_versions(versions: Option<&TlsSupportedVersions>) -> Result<(), TlsConfigError> {
@@ -161,11 +210,8 @@ fn validate_versions(versions: Option<&TlsSupportedVersions>) -> Result<(), TlsC
     Ok(())
 }
 
-fn validate_alpn(
-    alpn: Option<&rama_net::tls::TlsAlpn>,
-    options: TlsOptions,
-) -> Result<(), TlsConfigError> {
-    rama_tls::alpn::validate_alpn(
+fn validate_alpn(alpn: Option<&TlsAlpn>, options: TlsOptions) -> Result<(), TlsConfigError> {
+    alpn::validate_alpn(
         alpn.into_iter()
             .flat_map(|list| list.0.iter().map(|protocol| protocol.as_bytes())),
         AlpnPolicy::Require,
@@ -217,6 +263,7 @@ impl QuicClientConfig {
             Some(ClientSessions {
                 tickets,
                 ticket_index,
+                offer: TicketOffer::IfAvailable,
             })
         } else {
             None
@@ -240,20 +287,52 @@ impl QuicClientConfig {
         peer: Host,
         check: impl Fn(&ClientHello, &[u8]) -> Result<(), BoxError> + Send + Sync + 'static,
     ) -> Result<Self, TlsConfigError> {
-        let mut config = Self::from_rama(
+        Self::from_rama(
             config,
             TlsOptions::default().with_client_sessions(ClientSessionPolicy::Fresh),
-        )?;
-        let (_, mut ssl) = config.configure_ssl(peer.clone())?;
-        if let Some(initializer) = &config.initializer {
+        )?
+        .prepare_ssl(peer, check)
+    }
+
+    #[cfg(feature = "ua")]
+    pub(crate) fn prepare_captured(
+        config: &TlsClientConfig,
+        options: TlsOptions,
+        peer: Host,
+        handshake: PreparedClientHandshake,
+        check: impl Fn(&ClientHello, &[u8]) -> Result<(), BoxError> + Send + Sync + 'static,
+    ) -> Result<Self, TlsConfigError> {
+        let mut config = Self::from_rama(config, options)?;
+        match (&mut config.sessions, handshake) {
+            (Some(sessions), PreparedClientHandshake::Full) => sessions.offer = TicketOffer::Never,
+            (Some(sessions), PreparedClientHandshake::Resumed) => {
+                sessions.offer = TicketOffer::Required
+            }
+            (None, PreparedClientHandshake::Full) => {}
+            (None, PreparedClientHandshake::Resumed) => {
+                return Err(TlsConfigError::InvalidConfiguration(BoxError::from(
+                    "captured resumed TLS conflicts with the fresh client policy",
+                )));
+            }
+        }
+        config.prepare_ssl(peer, check)
+    }
+
+    fn prepare_ssl(
+        mut self,
+        peer: Host,
+        check: impl Fn(&ClientHello, &[u8]) -> Result<(), BoxError> + Send + Sync + 'static,
+    ) -> Result<Self, TlsConfigError> {
+        let (_, mut ssl) = self.configure_ssl(peer.clone())?;
+        if let Some(initializer) = &self.initializer {
             (initializer.0)(&mut ssl)?;
         }
-        config.prepared = Some(Box::new(PreparedClient {
+        self.prepared = Some(Box::new(PreparedClient {
             peer,
             first: Mutex::new(Some(ssl)),
             check: Box::new(check),
         }));
-        Ok(config)
+        Ok(self)
     }
 
     fn configure_ssl(&self, peer: Host) -> Result<(Host, Ssl), BoxError> {
@@ -308,17 +387,9 @@ impl crypto::ClientConfig for QuicClientConfig {
                     params: peer_params.clone(),
                 },
             );
-            if let Some(key) = self.context.session_key(&host)
-                && let Some(ticket) = sessions.tickets.pop(&(key, version))
-            {
-                ticket
-                    .session
-                    .resume_on(&mut ssl)
-                    .map_err(|error| ConnectError::Crypto(crypto_error(error)))?;
-                Some(ticket.params)
-            } else {
-                None
-            }
+            sessions
+                .resume(&self.context, &mut ssl, &host, version)
+                .map_err(|error| ConnectError::Crypto(crypto_error(error)))?
         } else {
             None
         };
@@ -345,6 +416,10 @@ impl crypto::ClientConfig for QuicClientConfig {
     }
     fn resumable_version(&self, server_name: &str) -> Option<Version> {
         let sessions = self.sessions.as_ref()?;
+        #[cfg(feature = "ua")]
+        if sessions.offer == TicketOffer::Never {
+            return None;
+        }
         let host = Host::try_from(server_name).ok()?;
         let key = self.context.session_key(&host)?;
         let keys = [Version::V1, Version::V2].map(|version| (key.clone(), version));

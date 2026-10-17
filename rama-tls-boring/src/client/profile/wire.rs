@@ -116,6 +116,7 @@ pub fn compile(
             // The engine supplies these bytes. Compilation checks the required
             // shape; the native session owner validates its actual encoding.
             (ExtensionId::QUIC_TRANSPORT_PARAMETERS, Value::ConnectionLength(_))
+            | (ExtensionId::PRE_SHARED_KEY, Value::PreSharedKeys { .. })
                 if matches!(transport, TransportShape::Quic { .. }) => {}
             (ExtensionId::STATUS_REQUEST, Value::ConnectionLength(NATIVE_OCSP_REQUEST_LEN)) => {
                 config.set_ocsp_stapling(true);
@@ -327,7 +328,7 @@ fn validate_transport(transport: TransportShape, capture: &TlsCapture) -> Result
 // Check backend capability separately from protocol encoding sizes. GREASE
 // is intentionally non-negotiable and remains literal.
 fn validate_native_lists(capture: &TlsCapture) -> Result<(), BoxError> {
-    // This compiler supports fresh TLS 1.3 first hellos. Native TLS emits
+    // This compiler supports TLS 1.3 first hellos. Native TLS emits
     // these fields, so omission cannot be advertised as an exact replay.
     for required in [
         ExtensionId::SUPPORTED_GROUPS,

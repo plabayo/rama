@@ -66,10 +66,12 @@ pub trait QuicClientConfigProvider: TlsClientConfigProvider {
     /// Return `None` when this provider does not implement captured TLS replay.
     /// Errors reject the selected shape or current caller policy. Returning an
     /// actual prepared configuration establishes support; input flags do not.
+    /// Honor the connector's `options`, including Fresh's ban on ticket use/storage.
     #[cfg(feature = "ua")]
     fn captured_client_config(
         &self,
         _policy: &TlsClientConfig,
+        _options: TlsOptions,
         _peer: Host,
         _capture: TlsCapture,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
@@ -251,10 +253,11 @@ impl QuicClientConfigProvider for BoringTlsProvider {
     fn captured_client_config(
         &self,
         policy: &TlsClientConfig,
+        options: TlsOptions,
         peer: Host,
         capture: TlsCapture,
     ) -> Result<Option<ClientConfig>, TlsConfigError> {
-        super::profile::boring::prepare(policy, peer, capture)
+        super::profile::boring::prepare(policy, options, peer, capture)
             .map(Some)
             .map_err(TlsConfigError::InvalidConfiguration)
     }

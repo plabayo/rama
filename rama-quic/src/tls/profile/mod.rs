@@ -6,15 +6,17 @@
 #[cfg(feature = "boring")]
 pub(crate) mod boring;
 
-use super::QuicClientConfigProvider;
+use super::ClientConfigCache;
 use crate::ClientConfig;
 use rama_core::error::BoxError;
 use rama_net::address::Host;
-use rama_tls::client::TlsClientConfig;
+use rama_tls::client::{TlsClientConfig, TlsSessionProfileScope};
 use rama_ua::profile::{
     capture::{joint::CapturedSlotKind, tls::TlsCaptureTransport},
+    format::canonical::ValueId,
     replay::connection::{PreparedConnectionComponents, compiler::CompiledConnectionProfile},
 };
+use rama_utils::fmt::hex;
 
 /// Native configuration prepared by the configured provider, if supported.
 #[derive(Debug)]
@@ -34,11 +36,14 @@ impl CompiledConnectionProfile for PreparedConfig {
 }
 
 /// Prepare TLS from already decoded components for this dial's final peer and
-/// security policy. Other QUIC components remain subject to whole-profile admission.
+/// security policy. `profile` is the stable client identity, independent of its
+/// connection draws; tickets remain isolated by both it and the caller's existing
+/// session scope. Other QUIC components still require whole-profile admission.
 pub fn prepare(
-    provider: &dyn QuicClientConfigProvider,
+    cache: &ClientConfigCache,
     policy: &TlsClientConfig,
     peer: Host,
+    profile: ValueId,
     components: &mut PreparedConnectionComponents,
 ) -> Result<PreparedConfig, BoxError> {
     let Some(capture) = components.tls.take() else {
@@ -47,7 +52,14 @@ pub fn prepare(
     if !matches!(capture.transport, TlsCaptureTransport::Quic) {
         return Ok(PreparedConfig(None));
     }
+    let scope = match policy.as_extensions().get_ref::<TlsSessionProfileScope>() {
+        Some(caller) => format!("rama-quic-profile:{}:scope:{}", hex(&profile.0), caller.0),
+        None => format!("rama-quic-profile:{}:none", hex(&profile.0)),
+    };
+    let scoped = policy
+        .clone()
+        .with_session_profile_scope(TlsSessionProfileScope(scope.into()));
     Ok(PreparedConfig(
-        provider.captured_client_config(policy, peer, capture)?,
+        cache.captured_client_config(&scoped, peer, capture)?,
     ))
 }

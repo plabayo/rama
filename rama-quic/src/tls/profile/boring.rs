@@ -19,10 +19,14 @@ use rama_ua::profile::capture::{
     tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport, TlsCapturedExtensionValue},
 };
 
-use crate::ClientConfig;
-use crate::tls::BoringTlsProvider;
+use crate::{
+    ClientConfig,
+    proto::crypto::boring::{PreparedClientHandshake, QuicClientConfig},
+    tls::TlsOptions,
+};
+use std::sync::Arc;
 
-/// Prepare a full captured TLS handshake for the current `peer` and `policy`.
+/// Prepare the captured TLS offer for the current `peer` and `policy`.
 ///
 /// The first dial consumes the prepared native SSL; address retries own fresh
 /// sibling sessions. Before any handshake output escapes, each session must
@@ -31,11 +35,13 @@ use crate::tls::BoringTlsProvider;
 /// identifiers. The returned configuration is bound to this peer and check, so
 /// it must bypass configuration caches that do not include those bindings.
 ///
-/// Resumed captures are rejected: they require current peer-issued ticket state.
+/// Resumed captures require current peer-issued tickets. A full captured offer
+/// suppresses older tickets while retaining new ones unless the caller chose Fresh.
 /// QUIC parameters, first-flight layout and HTTP/3 state need their own compilers;
 /// successful TLS preparation does not claim support for those components.
 pub(crate) fn prepare(
     policy: &TlsClientConfig,
+    options: TlsOptions,
     peer: Host,
     capture: TlsCapture,
 ) -> Result<ClientConfig, BoxError> {
@@ -60,41 +66,54 @@ pub(crate) fn prepare(
     let current = BoringTlsConnectorConfig::from_extensions(policy.as_extensions());
     let wire =
         wire::compile_for_policy(TransportShape::Quic { parameters_len }, &capture, &current)?;
+    let handshake = if capture
+        .extensions
+        .iter()
+        .any(|extension| extension.id == u16::from(ExtensionId::PRE_SHARED_KEY))
+    {
+        PreparedClientHandshake::Resumed
+    } else {
+        PreparedClientHandshake::Full
+    };
     let expected = capture;
     let effective = policy.clone().with_overrides(wire.as_extensions());
 
-    Ok(BoringTlsProvider.prepare_fresh_client_config(
-        &effective,
-        peer,
-        move |hello, parameters| {
-            let installed = hello
-                .extensions()
-                .iter()
-                .find_map(|extension| match extension {
-                    ClientHelloExtension::Opaque { id, data }
-                        if *id == ExtensionId::QUIC_TRANSPORT_PARAMETERS =>
-                    {
-                        Some(data.as_slice())
-                    }
-                    _ => None,
-                });
-            if installed != Some(parameters) {
-                return Err(BoxError::from_static_str(
-                    "native QUIC TLS parameters differ from the engine binding",
-                ));
-            }
-            let actual = TlsCapture::capture(
-                ProfileCaptureCompleteness::Complete,
-                TlsCaptureTransport::Quic,
-                hello,
-                TlsCaptureLimits::default(),
-            )?;
-            if actual != expected {
-                return Err(BoxError::from_static_str(
-                    "native QUIC ClientHello differs from the captured TLS shape",
-                ));
-            }
-            Ok(())
-        },
-    )?)
+    Ok(ClientConfig::new(Arc::new(
+        QuicClientConfig::prepare_captured(
+            &effective,
+            options,
+            peer,
+            handshake,
+            move |hello, parameters| {
+                let installed = hello
+                    .extensions()
+                    .iter()
+                    .find_map(|extension| match extension {
+                        ClientHelloExtension::Opaque { id, data }
+                            if *id == ExtensionId::QUIC_TRANSPORT_PARAMETERS =>
+                        {
+                            Some(data.as_slice())
+                        }
+                        _ => None,
+                    });
+                if installed != Some(parameters) {
+                    return Err(BoxError::from_static_str(
+                        "native QUIC TLS parameters differ from the engine binding",
+                    ));
+                }
+                let actual = TlsCapture::capture(
+                    ProfileCaptureCompleteness::Complete,
+                    TlsCaptureTransport::Quic,
+                    hello,
+                    TlsCaptureLimits::default(),
+                )?;
+                if actual != expected {
+                    return Err(BoxError::from_static_str(
+                        "native QUIC ClientHello differs from the captured TLS shape",
+                    ));
+                }
+                Ok(())
+            },
+        )?,
+    )))
 }
