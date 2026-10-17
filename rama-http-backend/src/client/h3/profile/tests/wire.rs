@@ -1,5 +1,8 @@
 use super::*;
-use rama_quic_proto::profile::{ConnectionIdProfile, TransportLimits};
+use rama_quic_proto::profile::{
+    ConnectionIdProfile, InitialFlightLayout, PacketNumberLength, PacketizationProfile,
+    TransportLimits, initial::RecordedInitialFlight,
+};
 use rama_ua::profile::selection::variants::ConnectionSelection;
 
 #[tokio::test]
@@ -48,7 +51,7 @@ async fn captured_parameters_reach_the_h3_peer_without_caller_wire_settings() {
             .try_with_limits(TransportLimits { max_udp_payload_size: 1400, ..TransportLimits::standard() }).unwrap();
         let mut fixture = fixture_with_profile(profile).await;
         let input = fixture.target();
-        let (context, _) = selection::selected("native-parameter-tuple", &fixture.capture, Some(&fixture.parameters));
+        let (context, _) = selection::selected("native-parameter-tuple", &fixture.capture, Some(&fixture.parameters), None);
         context.publish(input.extensions());
         let before = fixture.connector.tls_provider().pool_id(input.extensions());
         let caller = input.extensions().clone();
@@ -64,4 +67,61 @@ async fn captured_parameters_reach_the_h3_peer_without_caller_wire_settings() {
         assert_eq!(fixture.connector.tls_provider().pool_id(&caller), before);
         assert!(!caller.contains::<QuicProfile>(), "compiled wire settings stay local to the consumer");
     }).await.unwrap();
+}
+
+#[tokio::test]
+async fn counted_initial_layout_reaches_the_peer_with_fresh_tls() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let packetization = PacketizationProfile::standard()
+            .try_with_first_packet_number(1)
+            .unwrap()
+            .try_with_packet_number_length(PacketNumberLength::AtLeast(2))
+            .unwrap()
+            .with_layout(InitialFlightLayout::Chaos);
+        let profile = QuicProfile::standard()
+            .with_packetization(packetization)
+            .with_transport_parameters(
+                TransportParameterProfile::standard()
+                    .try_with_grease(GreaseParameter::None)
+                    .unwrap(),
+            );
+        let mut fixture = fixture_with_profile(profile).await;
+        let expected = RecordedInitialFlight::try_from(&fixture.flight.flight).unwrap();
+        let input = fixture.target();
+        let (context, _) = selection::selected(
+            "native-recorded-initial",
+            &fixture.capture,
+            Some(&fixture.parameters),
+            Some(&fixture.flight),
+        );
+        context.publish(input.extensions());
+        let caller = input.extensions().clone();
+        let transport = fixture.connector.serve(input).await.unwrap().conn;
+        request(transport).await;
+        let captures = fixture.task.take().unwrap().await.unwrap();
+        let actual = RecordedInitialFlight::try_from(&captures[1].2.flight).unwrap();
+        assert_eq!(
+            actual, expected,
+            "the selected native layout, not ordinary defaults, must reach the peer"
+        );
+        assert_eq!(captures[1].0, fixture.capture);
+        assert_eq!(
+            captures[1]
+                .1
+                .canonical(OrderCaptureLimits::default())
+                .unwrap()
+                .bytes,
+            fixture
+                .parameters
+                .canonical(OrderCaptureLimits::default())
+                .unwrap()
+                .bytes
+        );
+        assert!(
+            !caller.contains::<QuicProfile>(),
+            "native layout state stays in the consuming connector"
+        );
+    })
+    .await
+    .unwrap();
 }

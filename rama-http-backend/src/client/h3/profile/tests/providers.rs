@@ -7,7 +7,9 @@ use rama_quic::{
     tls::{ClientHandshake, ClientHelloCheck, QuicClientConfigProvider, TlsConfigError},
 };
 use rama_tls::client::{TlsClientConfig, TlsClientConfigProvider, TlsSessionProfileScope};
-use rama_ua::profile::selection::DrawKey;
+use rama_ua::profile::{
+    replay::connection::compiler::CompiledConnectionProfile as _, selection::DrawKey,
+};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug)]
@@ -57,7 +59,7 @@ async fn ordinary_provider_support_cannot_grant_captured_tls_support() {
         for parameters in [None, Some(&fixture.parameters)] {
             let input = fixture.target();
             let (context, _) =
-                selection::selected("unsupported-provider", &fixture.capture, parameters);
+                selection::selected("unsupported-provider", &fixture.capture, parameters, None);
             context.publish(input.extensions());
             rejected(fixture.connector.prepare_connection(&input));
             assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -175,7 +177,7 @@ async fn current_profile_and_caller_scope_isolate_tickets_without_keying_each_dr
             ("profile A", "tenant B", 1),
         ] {
             let input = fixture.input();
-            let (mut context, _) = selection::selected(profile, &fixture.capture, None);
+            let (mut context, _) = selection::selected(profile, &fixture.capture, None, None);
             context.connection_key = DrawKey([draw; 32]);
             context.publish(input.extensions());
             let caller = TlsSessionProfileScope(caller.into());
@@ -194,4 +196,26 @@ async fn current_profile_and_caller_scope_isolate_tickets_without_keying_each_dr
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn tls_and_parameters_do_not_claim_an_unprepared_initial_layout() {
+    let fixture = fixture().await;
+    let input = fixture.target();
+    let (context, _) = selection::selected(
+        "parameters-without-flight",
+        &fixture.capture,
+        Some(&fixture.parameters),
+        None,
+    );
+    context.publish(input.extensions());
+    let (_, compiled) = prepare(
+        &input,
+        &fixture.connector.tls,
+        &fixture.connector.tls_configs,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(compiled.supports(CapturedSlotKind::QuicParameters));
+    assert!(!compiled.supports(CapturedSlotKind::QuicFirstFlight));
 }

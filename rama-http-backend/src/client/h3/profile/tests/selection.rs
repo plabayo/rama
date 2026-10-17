@@ -36,6 +36,7 @@ pub(super) fn selected(
     client: &str,
     capture: &TlsCapture,
     parameters: Option<&OrderedProtocolCapture>,
+    flight: Option<&QuicFlightCapture>,
 ) -> (EmulationContext, ConnectionSelection) {
     let flow = FlowKey::Http {
         version: Version::HTTP_3,
@@ -101,6 +102,14 @@ pub(super) fn selected(
                             .unwrap()
                             .canonical(OrderCaptureLimits::default())
                             .unwrap(),
+                        });
+                    }
+                    if let Some(flight) = flight {
+                        slots.push(CapturedSlot {
+                            kind: CapturedSlotKind::QuicFirstFlight,
+                            value: flight
+                                .canonical(QuicFlightCaptureLimits::default())
+                                .unwrap(),
                         });
                     }
                     slots.into()
@@ -208,7 +217,7 @@ async fn current_context_supplies_selection_and_request_draws_share_the_connecti
     tokio::time::timeout(Duration::from_secs(15), async {
         let fixture = fixture().await;
         let input = fixture.input();
-        let (context, selected) = selected("native-h3-selection", &fixture.capture, None);
+        let (context, selected) = selected("native-h3-selection", &fixture.capture, None, None);
         let mut wrong_pin = context.clone();
         wrong_pin.pins.connection = Some(ValueId([8; 32]));
         wrong_pin.publish(input.extensions());

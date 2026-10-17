@@ -5,8 +5,8 @@ use rama_core::error::{BoxError, BoxErrorExt as _};
 use rama_quic_proto::{
     capture::version_information,
     profile::{
-        ConnectionIdProfile, ParameterOrder, QuicProfile, TransportLimits,
-        TransportParameterProfile,
+        ConnectionIdProfile, InitialFlightLayout, PacketizationProfile, ParameterOrder,
+        QuicProfile, TransportLimits, TransportParameterProfile, initial::RecordedInitialFlight,
     },
     transport_parameters::{RawParameter, TransportParameterId},
     version::{
@@ -92,7 +92,7 @@ pub(super) fn prepare(
     let layout = TransportParameterProfile::try_from_sent(&literals)?
         .try_with_order(ParameterOrder::fixed_with_explicit_defaults(order))?;
     let limits = TransportLimits::try_from_sent(&literals)?;
-    let profile = QuicProfile::standard()
+    let mut profile = QuicProfile::standard()
         .with_versions(version_policy)
         .with_transport_parameters(layout)
         .with_connection_ids(ids)
@@ -102,6 +102,12 @@ pub(super) fn prepare(
                 .any(|parameter| parameter.id == TransportParameterId::GreaseQuicBit),
         )
         .try_with_limits(limits)?;
+    if let Some(flight) = flight {
+        let layout = RecordedInitialFlight::try_from(&flight.flight)?;
+        profile = profile.with_packetization(
+            PacketizationProfile::standard().with_layout(InitialFlightLayout::Recorded(layout)),
+        );
+    }
     Ok((profile, expectation))
 }
 

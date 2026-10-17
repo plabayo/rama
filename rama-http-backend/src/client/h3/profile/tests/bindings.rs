@@ -60,6 +60,7 @@ async fn caller_and_captured_quic_recipes_cannot_silently_override_each_other() 
         "parameter-policy",
         &fixture.capture,
         Some(&fixture.parameters),
+        None,
     );
     context.publish(input.extensions());
     let error = fixture.connector.prepare_connection(&input).err().unwrap();
@@ -84,7 +85,12 @@ async fn captured_quic_limits_must_admit_all_h3_critical_streams() {
         .find(|field| field.id == u64::from(TransportParameterId::InitialMaxStreamsUni))
         .unwrap();
     streams.value = ProtocolValue::Literal(vec![2].into());
-    let (context, _) = selection::selected("parameter-limits", &fixture.capture, Some(&parameters));
+    let (context, _) = selection::selected(
+        "parameter-limits",
+        &fixture.capture,
+        Some(&parameters),
+        None,
+    );
     context.publish(input.extensions());
     let error = fixture.connector.prepare_connection(&input).err().unwrap();
     assert!(
@@ -97,8 +103,12 @@ async fn captured_quic_limits_must_admit_all_h3_critical_streams() {
 async fn captured_versions_cannot_disagree_with_their_parameter_tuple() {
     let fixture = fixture().await;
     let input = fixture.target();
-    let (_, selected) =
-        selection::selected("version-tuple", &fixture.capture, Some(&fixture.parameters));
+    let (_, selected) = selection::selected(
+        "version-tuple",
+        &fixture.capture,
+        Some(&fixture.parameters),
+        None,
+    );
     let mut components = selected.prepare_components().unwrap();
     components.quic_versions.as_mut().unwrap().fields.swap(0, 1);
     let error = replay::prepare(
@@ -115,4 +125,21 @@ async fn captured_versions_cannot_disagree_with_their_parameter_tuple() {
             .contains("version list and parameter tuple disagree"),
         "{error}"
     );
+}
+
+#[tokio::test]
+async fn unsupported_original_flight_is_refused_before_dial() {
+    let fixture = fixture().await;
+    let mut flight = fixture.flight.clone();
+    flight.flight.coalesced = true;
+    let input = fixture.target();
+    let (context, _) = selection::selected(
+        "unsupported-original-flight",
+        &fixture.capture,
+        Some(&fixture.parameters),
+        Some(&flight),
+    );
+    context.publish(input.extensions());
+    rejected(fixture.connector.prepare_connection(&input));
+    assert!(!input.extensions().contains::<QuicProfile>());
 }
