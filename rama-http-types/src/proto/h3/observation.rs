@@ -204,6 +204,8 @@ pub struct ObservedControlFrame {
     pub frame_type: u64,
     pub length: u64,
     pub element_id: Option<u64>,
+    /// Priority field bytes after the element ID, or a complete bounded
+    /// reserved-frame payload. Other unassigned bodies are not retained.
     pub value: Box<[u8]>,
 }
 
@@ -236,8 +238,9 @@ pub struct H3ObservationSnapshot {
 #[derive(Debug, Clone)]
 pub struct H3RequestObservation {
     pub connection: Arc<H3ObservationSnapshot>,
-    /// Published once both the first request and peer SETTINGS have arrived,
-    /// independent of which request an optional collector selects. Pending or
+    /// Published once both the first request and peer SETTINGS have arrived and
+    /// the available CONTROL chunk has been decoded. It is independent of which
+    /// request an optional collector selects. Pending or
     /// unavailable observations never imply a complete connection prefix.
     pub first_request: Arc<OnceLock<Arc<H3ObservationSnapshot>>>,
     pub fields: Vec<ObservedFieldRepresentation>,

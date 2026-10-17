@@ -1753,6 +1753,17 @@ impl Connection {
             .saturating_sub(state.reserved_streams[dir as usize])
     }
 
+    /// Exclusive cumulative stream-index limit permitted by the peer for `dir`.
+    ///
+    /// A locally initiated stream is within peer credit when its index
+    /// (`stream_id / 4`) is smaller than this value. Opened and reserved streams
+    /// do not reduce this limit; use [`available_streams`](Self::available_streams)
+    /// to determine how many additional streams can be opened immediately.
+    #[must_use]
+    pub fn local_stream_limit(&self, dir: Dir) -> u64 {
+        self.0.state.lock().inner.streams().local_stream_limit(dir)
+    }
+
     /// Exclusive cumulative stream-index limit advertised to the peer for `dir`.
     ///
     /// This is the initial transport limit or the latest transmitted MAX_STREAMS

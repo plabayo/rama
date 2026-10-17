@@ -20,6 +20,8 @@ use rama_http::{
 };
 use rama_http_types::proto::h3::{
     Code, FrameHeader, FrameType, SettingId, Settings, StreamType, VarInt, VarIntDecoder,
+    control::ClientControlPreferences,
+    critical_streams::{Order as CriticalStreamOrder, Preferences as CriticalStreamPreferences},
     observation::{
         H3ObservationSnapshot, H3RequestObservation, ObservationLimits, ObservedFieldRepresentation,
     },
@@ -48,7 +50,7 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 
-pub mod critical_streams;
+mod critical_streams;
 
 /// Local HTTP/3 connection budgets. Peer limits are negotiated independently.
 #[derive(Clone, Debug)]
@@ -64,7 +66,9 @@ pub struct Config {
     /// HTTP/3 control bytes are emitted. Ordinary connections allocate no profile.
     pub settings_profile: Option<Arc<Settings>>,
     /// QPACK stream allocation order and whether idle type prefixes are sent.
-    pub critical_streams: critical_streams::Profile,
+    pub critical_streams: CriticalStreamPreferences,
+    /// Additional client frames after SETTINGS; disabled by default.
+    pub client_control: Option<Arc<ClientControlPreferences>>,
     /// Local QPACK decoder limits, advertised where the protocol defines settings.
     pub decoder: DecoderConfig,
     /// Local encoder budgets. Peer capacity/blocked-stream settings override those fields.
@@ -109,7 +113,8 @@ impl Default for Config {
         Self {
             observation: None,
             settings_profile: None,
-            critical_streams: critical_streams::Profile::default(),
+            critical_streams: CriticalStreamPreferences::default(),
+            client_control: None,
             decoder: DecoderConfig::default(),
             encoder: EncoderConfig::default(),
             max_requests: 128,
@@ -185,6 +190,42 @@ impl Config {
         Ok(configured)
     }
 
+    /// Set optional client control frames without exceeding this configuration's budgets.
+    /// Invalid input leaves the existing configuration unchanged.
+    pub fn try_set_client_controls(
+        &mut self,
+        preferences: Option<Arc<ClientControlPreferences>>,
+    ) -> Result<(), Error> {
+        self.validate_client_controls(preferences.as_deref())?;
+        self.client_control = preferences;
+        Ok(())
+    }
+
+    fn validate_client_controls(
+        &self,
+        preferences: Option<&ClientControlPreferences>,
+    ) -> Result<(), Error> {
+        let Some(preferences) = preferences else {
+            return Ok(());
+        };
+        let bytes = preferences.frames.iter().try_fold(0usize, |total, frame| {
+            total.checked_add(frame.encoded_len()?)
+        });
+        if preferences.frames.len()
+            > self
+                .max_requests
+                .saturating_add(self.max_pushes)
+                .saturating_add(16)
+            || bytes.is_none_or(|bytes| bytes > self.max_frame_size)
+        {
+            return Err(Error::connection(
+                Code::H3_INTERNAL_ERROR,
+                "invalid or over-budget client control preferences",
+            ));
+        }
+        Ok(())
+    }
+
     /// Apply finite HTTP/3 receive budgets to a QUIC transport configuration.
     /// Configure the endpoint before establishing connections.
     pub fn configure_transport(&self, transport: &mut TransportConfig) -> Result<(), Error> {
@@ -207,6 +248,12 @@ impl Config {
     /// The SETTINGS this endpoint sends; Extended CONNECT is a server setting (RFC 8441 §3).
     /// `datagrams` is whether QUIC DATAGRAM was negotiated and datagrams are enabled.
     pub(crate) fn local_settings(&self, role: Role, datagrams: bool) -> Result<Settings, Error> {
+        if role != Role::Client && self.client_control.is_some() {
+            return Err(Error::connection(
+                Code::H3_INTERNAL_ERROR,
+                "client control preferences require a client connection",
+            ));
+        }
         let mut settings = self.settings()?;
         let extended_connect = role == Role::Server && self.extended_connect;
         if self.settings_profile.is_some() {
@@ -237,6 +284,7 @@ impl Config {
     }
 
     pub(crate) fn settings(&self) -> Result<Settings, Error> {
+        self.validate_client_controls(self.client_control.as_deref())?;
         if self.max_requests == 0
             || self.max_requests > tokio::sync::Semaphore::MAX_PERMITS
             || self.max_requests > u32::MAX as usize
@@ -354,10 +402,25 @@ pub(crate) struct Shared {
 }
 
 impl State {
+    fn begin_observation_control_batch(&mut self) {
+        if let Some(record) = &mut self.observation {
+            record.control_batch_active = true;
+        }
+    }
+
+    fn end_observation_control_batch(&mut self) {
+        if let Some(record) = &mut self.observation {
+            record.control_batch_active = false;
+        }
+        self.freeze_first_request_observation();
+    }
+
     fn freeze_first_request_observation(&mut self) {
         if self.control.settings().is_none()
             || self.observation.as_ref().is_none_or(|record| {
-                !record.first_request_seen || record.first_request.get().is_some()
+                !record.first_request_seen
+                    || record.control_batch_active
+                    || record.first_request.get().is_some()
             })
         {
             return;
@@ -401,9 +464,13 @@ impl Shared {
             {
                 let mut state = self.state.lock();
                 let received = state.control.settings().is_some();
+                let batching = state
+                    .observation
+                    .as_ref()
+                    .is_some_and(|record| record.control_batch_active);
                 let error = state.error;
                 let closed = error.is_some();
-                if received || closed || Instant::now() >= deadline {
+                if (received && !batching) || closed || Instant::now() >= deadline {
                     let snapshot = state
                         .observation_snapshot()
                         .unwrap_or_else(|| unavailable.clone());
@@ -1249,11 +1316,23 @@ pub(crate) async fn receive_uni(
     }
     let mut frames =
         FrameDecoder::with_input_limit(shared.config.max_frame_size, shared.config.read_chunk_size)
-            .with_header_events();
+            .with_header_events()
+            .with_reserved_payload_capture(
+                shared
+                    .state
+                    .lock()
+                    .observation
+                    .as_ref()
+                    .map_or(0, |record| record.control_payload_budget()),
+            );
     let mut budget = super::cooperative::Budget::default();
+    let observe_control = shared.config.observation.is_some();
     loop {
         budget.consume().await;
         if ty == StreamType::CONTROL {
+            if observe_control {
+                shared.state.lock().begin_observation_control_batch();
+            }
             frames.feed_bytes(&mut chunk).map_err(|_error| {
                 Error::connection(Code::H3_INTERNAL_ERROR, "frame input not drained")
             })?;
@@ -1268,6 +1347,7 @@ pub(crate) async fn receive_uni(
                 state.control.receive(&event)?;
                 if let Some(observation) = &mut state.observation {
                     observation.control(&event);
+                    frames.set_ignored_payload_limit(observation.control_payload_budget());
                 }
                 if let FrameEvent::Settings(ref settings) = event {
                     state
@@ -1337,6 +1417,10 @@ pub(crate) async fn receive_uni(
                 shared.progress.notify_waiters();
                 shared.push_ready.notify_waiters();
             }
+            if observe_control {
+                shared.state.lock().end_observation_control_batch();
+                shared.settings_ready.notify_waiters();
+            }
         } else {
             // Retry the same bytes on local output backpressure; codec feed is transactional.
             loop {
@@ -1393,6 +1477,14 @@ pub(crate) fn initial_control(
             "invalid SETTINGS length",
         ))?;
     output.extend_from_slice(&payload);
+    if let Some(preferences) = &config.client_control {
+        for frame in &preferences.frames {
+            frame.encode(&mut output).ok_or(Error::connection(
+                Code::H3_INTERNAL_ERROR,
+                "invalid client control frame",
+            ))?;
+        }
+    }
     Ok(output.freeze())
 }
 
@@ -1506,8 +1598,8 @@ impl Driver {
             let mut control = open().await?;
             let (first, second) = tokio::try_join!(open(), open())?;
             let (encoder, decoder) = match self.shared.config.critical_streams.order {
-                critical_streams::Order::EncoderFirst => (first, second),
-                critical_streams::Order::DecoderFirst => (second, first),
+                CriticalStreamOrder::EncoderFirst => (first, second),
+                CriticalStreamOrder::DecoderFirst => (second, first),
             };
             let encoder_task = critical_streams::encoder_task(self.shared.clone(), encoder)?;
             let control_task = async {
@@ -1726,11 +1818,74 @@ impl Drop for Driver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_http_types::proto::h3::control::ClientControlFrame;
+    use rama_quic_proto::{Side, StreamId};
     use std::{
         future::Future as _,
         sync::atomic::{AtomicUsize, Ordering},
         task::{Context, Wake, Waker},
     };
+
+    #[test]
+    fn client_control_preferences_enforce_roles_limits_and_transactional_updates() {
+        let valid = Arc::new(ClientControlPreferences {
+            frames: vec![ClientControlFrame::Ignored {
+                frame_type: FrameType::new(0x21),
+                payload: Bytes::from_static(b"ab"),
+            }]
+            .into(),
+        });
+        let mut config = Config {
+            max_frame_size: 4,
+            ..Config::default()
+        };
+        config.try_set_client_controls(Some(valid.clone())).unwrap();
+        for frame in [
+            ClientControlFrame::Ignored {
+                frame_type: FrameType::new(0x21),
+                payload: Bytes::from_static(b"abc"),
+            },
+            ClientControlFrame::Ignored {
+                frame_type: FrameType::SETTINGS,
+                payload: Bytes::new(),
+            },
+            ClientControlFrame::Ignored {
+                frame_type: FrameType::new(1 << 62),
+                payload: Bytes::new(),
+            },
+            ClientControlFrame::RequestPriority {
+                request: StreamId::new(Side::Server, Dir::Bi, 0),
+                value: Bytes::new(),
+            },
+        ] {
+            assert!(
+                config
+                    .try_set_client_controls(Some(Arc::new(ClientControlPreferences {
+                        frames: vec![frame].into()
+                    })))
+                    .is_err()
+            );
+            assert!(Arc::ptr_eq(config.client_control.as_ref().unwrap(), &valid));
+        }
+        config.max_frame_size = 1024;
+        config.max_requests = 0;
+        config.max_pushes = 0;
+        let too_many = ClientControlPreferences {
+            frames: vec![valid.frames[0].clone(); 17].into(),
+        };
+        assert!(
+            config
+                .try_set_client_controls(Some(Arc::new(too_many)))
+                .is_err()
+        );
+        assert!(Arc::ptr_eq(config.client_control.as_ref().unwrap(), &valid));
+        let config = Config {
+            client_control: Some(valid),
+            ..Config::default()
+        };
+        config.local_settings(Role::Server, false).unwrap_err();
+        config.local_settings(Role::Client, false).unwrap();
+    }
 
     #[test]
     fn client_settings_application_preserves_order_and_omitted_defaults() {
@@ -2040,6 +2195,50 @@ mod observation_tests {
     }
 
     #[test]
+    fn observation_first_request_waits_for_the_ready_control_batch() {
+        for headers_first in [false, true] {
+            let shared = shared(ObservationLimits::default());
+            shared.state.lock().begin_observation_control_batch();
+            let first = if headers_first {
+                Some(shared.request_observation(0, &[]).unwrap().1)
+            } else {
+                None
+            };
+            settings(&shared);
+            let first = first.unwrap_or_else(|| shared.request_observation(0, &[]).unwrap().1);
+            assert!(first.first_request.get().is_none());
+            {
+                let mut state = shared.state.lock();
+                let record = state.observation.as_mut().unwrap();
+                record.control(&FrameEvent::Header(FrameHeader::new(
+                    FrameType::new(0x21),
+                    1,
+                )));
+                record.control(&FrameEvent::Ignored {
+                    ty: FrameType::new(0x21),
+                    len: 1,
+                    payload: Some(Bytes::from_static(b"x")),
+                });
+                state.end_observation_control_batch();
+            }
+            let boundary = first.first_request.get().unwrap();
+            assert_eq!(boundary.control.len(), 2);
+            assert_eq!(boundary.control[1].frame_type, 0x21);
+            assert_eq!(boundary.control[1].value.as_ref(), b"x");
+            shared
+                .state
+                .lock()
+                .observation
+                .as_mut()
+                .unwrap()
+                .stream(6, StreamType::QPACK_ENCODER);
+            let later = shared.request_observation(4, &[]).unwrap().1;
+            assert!(Arc::ptr_eq(boundary, later.first_request.get().unwrap()));
+            assert!(boundary.streams.is_empty());
+        }
+    }
+
+    #[test]
     fn observation_first_request_boundary_does_not_follow_eligible_routes() {
         for settings_first in [false, true] {
             let shared = shared(ObservationLimits::default());
@@ -2338,6 +2537,24 @@ mod observation_tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn observation_settings_waits_for_the_ready_control_batch() {
+        let shared = shared(ObservationLimits::default());
+        let observer = observer(&shared);
+        shared.state.lock().begin_observation_control_batch();
+        settings(&shared);
+        let mut waiting = Box::pin(observer.settings(Instant::now() + Duration::from_secs(1)));
+        assert!(
+            waiting
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        shared.state.lock().end_observation_control_batch();
+        shared.settings_ready.notify_waiters();
+        assert!(matches!(waiting.await, SettingsObservation::Received(_)));
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn observation_settings_waits_through_receive_drain() {
         let shared = shared(ObservationLimits::default());
         let observer = observer(&shared);
@@ -2394,6 +2611,7 @@ mod observation_tests {
             record.control(&FrameEvent::Ignored {
                 ty: FrameType::new(0x21),
                 len: 0,
+                payload: None,
             });
         };
         record_event();
@@ -2430,6 +2648,7 @@ mod observation_tests {
                 record.control(&FrameEvent::Ignored {
                     ty: FrameType::new(0x21),
                     len: 1000,
+                    payload: None,
                 });
             }
             let snapshot = observer.snapshot();

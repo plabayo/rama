@@ -22,7 +22,7 @@ use rama_http_types::{
         RequestHeaders,
         ext::{HttpDatagrams, Protocol},
         h1::ext::informational::OnInformational,
-        h3::{Code, FrameType, Settings},
+        h3::{Code, FrameType, Settings, control::ClientControlFrame},
     },
 };
 use rama_net::{
@@ -112,6 +112,24 @@ pub fn handshake<B>(
         ));
     }
     config.settings()?;
+    // Priorities may name future requests, but never exceed peer stream credit.
+    // Ordinary connections without configured priorities need no extra lookup.
+    let highest_priority = config.client_control.as_ref().and_then(|preferences| {
+        preferences
+            .frames
+            .iter()
+            .filter_map(|frame| match frame {
+                ClientControlFrame::RequestPriority { request, .. } => Some(request.index()),
+                ClientControlFrame::Ignored { .. } => None,
+            })
+            .max()
+    });
+    if highest_priority.is_some_and(|index| index >= connection.local_stream_limit(Dir::Bi)) {
+        return Err(Error::connection(
+            Code::H3_ID_ERROR,
+            "client control priority exceeds peer stream limit",
+        ));
+    }
     let max_requests = config.max_requests;
     let admission = Arc::new(Semaphore::new(max_requests));
     let shared = Shared::from_connection(config, Role::Client, &connection)?;

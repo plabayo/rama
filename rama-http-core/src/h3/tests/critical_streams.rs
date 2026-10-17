@@ -3,20 +3,27 @@
 use super::{LIMIT, Pair};
 use crate::h3::{
     client,
-    connection::{
-        Config,
-        critical_streams::{Order, Profile, Startup},
-    },
+    connection::Config,
     observation::{H3Observer, SettingsObservation},
     server,
 };
 use rama_core::{
+    bytes::Bytes,
     extensions::ExtensionsRef as _,
     rt::{Executor, spawn},
 };
-use rama_http_types::{Body, Request, Response, body::util::BodyExt as _, proto::h3::StreamType};
+use rama_http_types::{
+    Body, Request, Response,
+    body::util::BodyExt as _,
+    proto::h3::{
+        Code, StreamType,
+        control::{ClientControlFrame, ClientControlPreferences},
+        critical_streams::{Order, Preferences, Startup},
+    },
+};
+use rama_quic::TransportConfig;
 use rama_quic_proto::{Dir, Side, StreamId};
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::time::{Instant, timeout};
 
 #[tokio::test(start_paused = true)]
@@ -29,7 +36,7 @@ async fn idle_prefixes_follow_startup_policy_and_reserved_stream_order() {
                     let (_sender, driver) = client::handshake::<Body>(
                         pair.client.clone(),
                         Config {
-                            critical_streams: Profile {
+                            critical_streams: Preferences {
                                 order,
                                 encoder,
                                 decoder,
@@ -112,7 +119,7 @@ async fn deferred_encoder_and_decoder_prefixes_follow_real_compression_work() {
             let pair = Pair::in_memory(None, None).await;
             let config = Config {
                 observation: Some(Default::default()),
-                critical_streams: Profile {
+                critical_streams: Preferences {
                     order,
                     encoder: Startup::OnDemand,
                     decoder: Startup::OnDemand,
@@ -215,4 +222,42 @@ async fn deferred_encoder_and_decoder_prefixes_follow_real_compression_work() {
         .await
         .unwrap();
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn startup_priority_targets_respect_cumulative_peer_credit() {
+    timeout(LIMIT, async {
+        for limit in [1u32, 2] {
+            let mut transport = TransportConfig::default();
+            Config::default()
+                .configure_transport(&mut transport)
+                .unwrap();
+            transport.set_max_concurrent_bidi_streams(limit);
+            let pair = Pair::in_memory(None, Some(transport)).await;
+            // An existing stream consumes opening credit, not the cumulative limit.
+            let held = pair.client.open_bi().await.unwrap();
+            assert_eq!(pair.client.available_streams(Dir::Bi), u64::from(limit - 1));
+            let config = Config {
+                client_control: Some(Arc::new(ClientControlPreferences {
+                    frames: vec![ClientControlFrame::RequestPriority {
+                        request: StreamId::new(Side::Client, Dir::Bi, 1),
+                        value: Bytes::from_static(b"u=1"),
+                    }]
+                    .into(),
+                })),
+                ..Config::default()
+            };
+            let result = client::handshake::<Body>(pair.client.clone(), config, Executor::new());
+            if limit == 1 {
+                let error = result.unwrap_err();
+                assert_eq!(error.code(), Code::H3_ID_ERROR);
+            } else {
+                let (_sender, _driver) = result.unwrap();
+            }
+            drop(held);
+            pair.close().await;
+        }
+    })
+    .await
+    .unwrap();
 }

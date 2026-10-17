@@ -56,7 +56,8 @@ impl H3Observer {
             .unwrap_or_else(|| self.unavailable.clone())
     }
 
-    /// Wait only until this explicit consumer's deadline; ordinary requests do not wait.
+    /// Wait for SETTINGS and the available CONTROL chunk, up to this consumer's deadline.
+    /// Ordinary requests do not wait for observation.
     pub async fn settings(&self, deadline: Instant) -> SettingsObservation {
         match self.shared.upgrade() {
             Some(shared) => {
@@ -80,6 +81,8 @@ pub(super) struct Recorder {
     current: Option<Arc<H3ObservationSnapshot>>,
     pub(super) first_request: Arc<OnceLock<Arc<H3ObservationSnapshot>>>,
     pub(super) first_request_seen: bool,
+    // A ready control-stream chunk must be decoded before publishing its prefix.
+    pub(super) control_batch_active: bool,
     live: Vec<Weak<H3ObservationSnapshot>>,
     pub(super) unavailable: Arc<H3ObservationSnapshot>,
 }
@@ -105,6 +108,7 @@ impl Recorder {
             current: None,
             first_request: Arc::new(OnceLock::new()),
             first_request_seen: false,
+            control_batch_active: false,
             live: Vec::new(),
             unavailable: Arc::new(H3ObservationSnapshot::default()),
         };
@@ -168,8 +172,18 @@ impl Recorder {
                 field_value,
                 ..
             } => (Some(*element_id), &field_value[..]),
+            FrameEvent::Ignored {
+                payload: Some(payload),
+                ..
+            } => (None, &payload[..]),
             _ => (None, &[][..]),
         };
+        if matches!(event, FrameEvent::Ignored { ty, len, payload: None } if ty.is_reserved() && *len != 0)
+            && self.value.completeness.control
+        {
+            self.value.completeness.control = false;
+            self.changed();
+        }
         if let FrameEvent::Settings(peer) = event {
             self.value.settings_received = true;
             self.changed();
@@ -199,6 +213,16 @@ impl Recorder {
             element_id,
             value: value.into(),
         });
+    }
+
+    pub(super) fn control_payload_budget(&self) -> usize {
+        if self.value.completeness.control {
+            self.limits
+                .bytes
+                .saturating_sub(self.bytes.saturating_add(size_of::<ObservedControlFrame>()))
+        } else {
+            0
+        }
     }
 
     pub(super) fn snapshot(

@@ -6,7 +6,10 @@ use std::{
 };
 
 use rama_core::bytes::{Bytes, BytesMut};
-use rama_http_types::proto::h3::qpack::prefix::{StringEncoder, encode_int, int_encoded_len};
+use rama_http_types::proto::h3::qpack::{
+    EncoderPreferences,
+    prefix::{StringEncoder, encode_int, int_encoded_len},
+};
 use rama_http_types::proto::h3::{
     VarInt,
     qpack::{DecoderInstruction, HeaderPrefix, PrefixError, static_table},
@@ -82,6 +85,8 @@ pub struct EncoderConfig {
     pub target_capacity: u64,
     /// Allow Huffman encoding when it reduces a literal's wire size; plain encoding wins ties.
     pub huffman: bool,
+    /// Start with a static/literal section, then permit ordinary dynamic compression.
+    pub defer_dynamic_first_section: bool,
     /// Maximum uncompressed section size, including 32 bytes per field.
     pub max_field_section_size: usize,
     /// Maximum queued encoder-stream bytes. When full, encoding falls back to literals.
@@ -92,6 +97,21 @@ pub struct EncoderConfig {
     pub max_outstanding_references: usize,
 }
 
+impl EncoderConfig {
+    /// Override encoding choices without replacing resource or peer limits.
+    pub fn apply_preferences(&mut self, preferences: EncoderPreferences) {
+        if let Some(capacity) = preferences.target_capacity {
+            self.target_capacity = capacity;
+        }
+        if let Some(huffman) = preferences.huffman {
+            self.huffman = huffman;
+        }
+        if let Some(defer) = preferences.defer_dynamic_first_section {
+            self.defer_dynamic_first_section = defer;
+        }
+    }
+}
+
 impl Default for EncoderConfig {
     fn default() -> Self {
         Self {
@@ -99,6 +119,7 @@ impl Default for EncoderConfig {
             max_blocked_streams: 16,
             target_capacity: kib_u64(4),
             huffman: true,
+            defer_dynamic_first_section: false,
             max_field_section_size: kib(64),
             max_encoder_stream_bytes: kib(64),
             max_outstanding_sections: 1024,
@@ -126,6 +147,7 @@ pub struct Encoder {
     encoder_output: BytesMut,
     known_received_count: u64,
     capacity_initialized: bool,
+    defer_dynamic_first_section: bool,
     sections: BTreeMap<u64, StreamSections>,
     // Counts sections by (Required Insert Count, stream). Advancing the Known
     // Received Count visits only newly unblocked sections, never unrelated ones.
@@ -156,6 +178,7 @@ impl Encoder {
             encoder_output: BytesMut::new(),
             known_received_count: 0,
             capacity_initialized: false,
+            defer_dynamic_first_section: config.defer_dynamic_first_section,
             sections: BTreeMap::new(),
             blocking_sections: BTreeMap::new(),
             section_count: 0,
@@ -309,7 +332,8 @@ impl Encoder {
     }
 
     fn ensure_capacity(&mut self) {
-        if !self.capacity_initialized
+        if !self.defer_dynamic_first_section
+            && !self.capacity_initialized
             && self.config.target_capacity > 0
             && self.output_fits(int_encoded_len(self.config.target_capacity, 5))
         {
@@ -367,7 +391,8 @@ impl Encoder {
         let was_blocking = self.is_stream_blocking(stream_id);
         let may_block = was_blocking || self.blocking_streams < self.config.max_blocked_streams;
         let cancelled_through = self.cancelled_through[(stream_id & STREAM_CLASS_MASK) as usize];
-        let may_track = self.section_count < self.config.max_outstanding_sections
+        let may_track = !self.defer_dynamic_first_section
+            && self.section_count < self.config.max_outstanding_sections
             && cancelled_through.is_none_or(|cancelled| stream_id > cancelled);
         let mut refs = Vec::new();
         let mut ric = 0;
@@ -461,6 +486,7 @@ impl Encoder {
                 }
             }
         }
+        self.defer_dynamic_first_section = false;
         Ok(out.freeze().slice(PREFIX_HEADROOM - prefix_len..))
     }
 

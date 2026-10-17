@@ -13,8 +13,15 @@ use rama_core::{
     rt::Executor,
     telemetry::tracing,
 };
-use rama_http_core::h3::connection::{Config, critical_streams::Profile as CriticalStreamProfile};
-use rama_http_types::{Version, conn::TargetHttpVersion, proto::h3::ClientSettingsProfile};
+use rama_http_core::h3::connection::Config;
+use rama_http_types::{
+    Version,
+    conn::TargetHttpVersion,
+    proto::h3::{
+        ClientSettingsProfile, control::ClientControlPreferences,
+        critical_streams::Preferences as CriticalStreamPreferences, qpack::EncoderPreferences,
+    },
+};
 use rama_net::{
     ConnectorTargetInputExt, ProtocolInputExt,
     address::{Host, SocketAddress},
@@ -433,8 +440,18 @@ impl Http3Connector {
             ),
             None => self.config.clone(),
         };
-        if let Some(preferences) = input.extensions().get_ref::<CriticalStreamProfile>() {
+        if let Some(preferences) = input.extensions().get_ref::<CriticalStreamPreferences>() {
             Arc::make_mut(&mut h3_config).critical_streams = *preferences;
+        }
+        if let Some(preferences) = input.extensions().get_ref::<EncoderPreferences>() {
+            Arc::make_mut(&mut h3_config)
+                .encoder
+                .apply_preferences(*preferences);
+        }
+        if let Some(preferences) = input.extensions().get_arc::<ClientControlPreferences>() {
+            Arc::make_mut(&mut h3_config)
+                .try_set_client_controls(Some(preferences))
+                .map_err(|error| ConnectionError::local(error, InvalidInput))?;
         }
         // A captured H3 DATAGRAM promise requires a nonzero local QUIC receive
         // limit. Check known configuration before TLS setup, socket binding or

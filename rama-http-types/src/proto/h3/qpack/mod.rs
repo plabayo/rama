@@ -16,3 +16,6 @@ pub use field::{FieldLine, HeaderPrefix, InvalidPrefix};
 
 pub mod instruction;
 pub use instruction::{DecoderInstruction, EncoderInstruction};
+
+mod preferences;
+pub use preferences::EncoderPreferences;

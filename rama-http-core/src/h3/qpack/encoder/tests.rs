@@ -2,8 +2,8 @@ use super::{EncodeField, Encoder, EncoderConfig};
 use crate::h3::qpack::{Decoder, DecoderConfig, ErrorScope, QpackError};
 use rama_core::bytes::{Bytes, BytesMut};
 use rama_http_types::proto::h3::{
-    Code, SettingId, Settings,
-    qpack::{DecoderInstruction, FieldLine, HeaderPrefix},
+    Code, Setting, SettingId, Settings,
+    qpack::{DecoderInstruction, EncoderPreferences, FieldLine, HeaderPrefix},
 };
 use rama_utils::octets::kib;
 use std::assert_matches;
@@ -676,5 +676,55 @@ fn a_zero_field_section_limit_refuses_each_message() {
         assert_eq!(enc.insert_count(), 0);
         assert_eq!(enc.encoder_stream_len(), 0);
         assert_eq!(enc.tracked_section_count(), 0);
+    }
+}
+
+#[test]
+fn deferred_first_section_preserves_later_dynamic_compression_and_input_atomicity() {
+    for settings_later in [false, true] {
+        let mut config = EncoderConfig {
+            max_field_section_size: 64,
+            ..EncoderConfig::default()
+        };
+        config.apply_preferences(EncoderPreferences {
+            defer_dynamic_first_section: Some(true),
+            ..EncoderPreferences::default()
+        });
+        let mut encoder = if settings_later {
+            Encoder::before_peer_settings(config)
+        } else {
+            Encoder::new(config)
+        };
+        // Rejected input must not consume the initial static/literal choice.
+        encoder
+            .encode(0, [(b"field".as_slice(), &[b'x'; 128][..])])
+            .unwrap_err();
+        let fields = [(b"custom".as_slice(), b"same-value".as_slice())];
+        let first = encoder.encode(0, fields).unwrap();
+        assert_eq!(
+            first[0], 0,
+            "first section has no required dynamic insert count"
+        );
+        assert_eq!(encoder.insert_count(), 0);
+        assert!(encoder.take_encoder_stream().is_empty());
+        let mut decoder = Decoder::new(DecoderConfig::default());
+        let first_fields = decoder.decode_field_section(0, first).unwrap().unwrap();
+
+        if settings_later {
+            let mut peer = Settings::new();
+            peer.insert(Setting::new(SettingId::QPACK_MAX_TABLE_CAPACITY, 4096))
+                .unwrap();
+            peer.insert(Setting::new(SettingId::QPACK_BLOCKED_STREAMS, 16))
+                .unwrap();
+            encoder.apply_peer_settings(&peer).unwrap();
+        }
+        let second = encoder.encode(4, fields).unwrap();
+        assert_ne!(second[0], 0, "later sections can use dynamic references");
+        assert_eq!(encoder.insert_count(), 1);
+        let instructions = encoder.take_encoder_stream();
+        assert!(!instructions.is_empty());
+        decoder.feed_encoder_stream(&instructions).unwrap();
+        let second_fields = decoder.decode_field_section(4, second).unwrap().unwrap();
+        assert_eq!(first_fields, second_fields);
     }
 }

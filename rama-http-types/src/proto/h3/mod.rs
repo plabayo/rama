@@ -18,6 +18,9 @@ pub use super::h2::{
     PseudoHeader, PseudoHeaderOrder, PseudoHeaderOrderIter, PseudoHeaderSensitivity,
 };
 
+pub mod control;
+pub mod critical_streams;
+
 mod error;
 pub use error::Code;
 

@@ -25,7 +25,13 @@ use rama_http_types::{
     Body, HeaderMap, HeaderName, HeaderValue, Method, Request, Response, Version,
     body::{Frame, util::BodyExt},
     header,
-    proto::{RequestHeaders, h3::Code},
+    proto::{
+        RequestHeaders,
+        h3::{
+            Code,
+            critical_streams::{Order, Preferences, Startup},
+        },
+    },
 };
 use rama_net::{address::SocketAddress, stream::SocketInfo};
 use rama_quic::{Endpoint, NegotiatedTlsParameters, TransportConfig, tls::TlsOptions};
@@ -770,12 +776,10 @@ struct ConnectionMetadata(u8);
 
 #[tokio::test]
 async fn tiny_windows_fall_back_without_qpack_deadlock() {
-    use super::connection::critical_streams::{Order, Profile, Startup};
-
     for window in [1u32, 3] {
         for critical_streams in [
-            Profile::default(),
-            Profile {
+            Preferences::default(),
+            Preferences {
                 order: Order::DecoderFirst,
                 encoder: Startup::OnDemand,
                 decoder: Startup::OnDemand,
