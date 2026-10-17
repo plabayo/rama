@@ -1,4 +1,5 @@
 use super::*;
+use rama_tls::client::{ServerVerifyMode, TlsServerVerify};
 
 #[tokio::test]
 async fn final_http_target_and_protocol_are_validated_without_pending_state() {
@@ -26,7 +27,6 @@ async fn final_http_target_and_protocol_are_validated_without_pending_state() {
 
 #[tokio::test]
 async fn final_tls_policy_is_used_without_rewriting_caller_settings() {
-    use rama_tls::client::{ServerVerifyMode, TlsServerVerify};
     tokio::time::timeout(Duration::from_secs(15), async {
         let fixture = fixture().await;
         for mode in [ServerVerifyMode::Disable, ServerVerifyMode::Auto] {

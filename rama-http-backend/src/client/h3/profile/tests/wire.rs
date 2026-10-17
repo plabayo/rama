@@ -1,4 +1,5 @@
 use super::*;
+use rama_ua::profile::selection::variants::ConnectionSelection;
 
 #[tokio::test]
 async fn captured_tls_reaches_a_rustls_h3_peer_with_the_admitted_selection() {
@@ -25,7 +26,7 @@ async fn captured_tls_reaches_a_rustls_h3_peer_with_the_admitted_selection() {
             transport
                 .connection
                 .extensions()
-                .contains::<rama_ua::profile::selection::variants::ConnectionSelection>()
+                .contains::<ConnectionSelection>()
         );
         request(transport).await;
         let captures = fixture.task.take().unwrap().await.unwrap();

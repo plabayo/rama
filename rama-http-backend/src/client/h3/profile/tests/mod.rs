@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use super::*;
-use crate::client::Http3Connector;
+use crate::client::{Http3Connector, h3::PreparedTls};
 use rama_core::{
     Service,
     rt::{Executor, spawn},
@@ -13,7 +13,7 @@ use rama_net::{
     Protocol,
     address::{HostWithPort, SocketAddress},
     client::{
-        ConnectorTarget,
+        ConnectionError, ConnectionErrorKind, ConnectorTarget,
         pool::{ConnectionReuse, ReuseKey},
     },
 };
@@ -109,16 +109,11 @@ async fn request(transport: crate::client::Http3Transport) {
     connection.close(VarInt::from_u32(0), b"request complete");
 }
 
-fn rejected(
-    result: Result<(super::super::PreparedTls, Arc<Config>), rama_net::client::ConnectionError>,
-) {
+fn rejected(result: Result<(PreparedTls, Arc<Config>), ConnectionError>) {
     let Err(error) = result else {
         panic!("invalid captured connection was accepted");
     };
-    assert_eq!(
-        error.kind(),
-        rama_net::client::ConnectionErrorKind::InvalidInput
-    );
+    assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
 }
 
 async fn fixture() -> Fixture {

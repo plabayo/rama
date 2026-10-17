@@ -40,6 +40,8 @@ use rama_tls::client::{
     TlsClientConfig, TlsConnectionReuse, TlsServerAuthentication, TlsServerName,
     TlsStoreServerCertChain,
 };
+#[cfg(feature = "ua")]
+use rama_ua::profile::replay::connection::preparation::ConnectionPreparation;
 use rama_utils::macros::generate_set_and_with;
 use std::{
     collections::VecDeque,
@@ -269,8 +271,7 @@ struct PreparedTls {
     policy_scope: ConnectionPolicyScope,
     reuse: TlsConnectionReuse<Arc<dyn QuicClientConfigProvider>>,
     #[cfg(feature = "ua")]
-    profile_preparation:
-        Option<rama_ua::profile::replay::connection::preparation::ConnectionPreparation>,
+    profile_preparation: Option<ConnectionPreparation>,
 }
 
 impl Http3Connector {

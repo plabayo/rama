@@ -11,7 +11,7 @@ use rama_http::headers::{ClientHint, all_client_hints};
 use rama_http::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Version,
     conn::{H2ClientContextParams, Http1ClientContextParams, TargetHttpVersion},
-    header::{CONTENT_TYPE, REFERER, SEC_WEBSOCKET_VERSION, USER_AGENT},
+    header::{CONTENT_TYPE, REFERER, SEC_WEBSOCKET_VERSION, StandardHeader, USER_AGENT},
 };
 use rama_net::{
     AuthorityInputExt, HttpVersionInputExt, Protocol, ProtocolInputExt, TargetHttpVersionInputExt,
@@ -30,7 +30,7 @@ use crate::{
         },
         replay::{
             connection::{
-                compiler::{ConnectionProfileCompiler, InstalledConnectionProfile as _},
+                compiler::{ConnectionProfileCompiler, InstalledConnectionProfile},
                 preparation::ConnectionPreparation,
             },
             request::ProfilePreservationReport,
@@ -312,7 +312,7 @@ impl<S, C, Input> Service<Input> for UserAgentEmulateHttpConnectModifier<S, C>
 where
     S: ConnectorService<Input>,
     C: ConnectionProfileCompiler<Input>,
-    C::Compiled: crate::profile::replay::connection::compiler::InstalledConnectionProfile,
+    C::Compiled: InstalledConnectionProfile,
     Input: ExtensionsRef + HttpVersionInputExt + TargetHttpVersionInputExt + Send + 'static,
 {
     type Error = ConnectionError;
@@ -811,29 +811,29 @@ fn merge_http_headers<'a>(
         let original_value = remove_original_header(&mut original_headers, base_header_name);
         match base_header_name.standard() {
             Some(
-                rama_http::header::StandardHeader::Accept
-                | rama_http::header::StandardHeader::AcceptLanguage
-                | rama_http::header::StandardHeader::SecWebSocketExtensions,
+                StandardHeader::Accept
+                | StandardHeader::AcceptLanguage
+                | StandardHeader::SecWebSocketExtensions,
             ) => {
                 let value = original_value.unwrap_or(base_value);
                 output_headers_ref.push((base_name, value));
             }
             Some(
-                rama_http::header::StandardHeader::Referer
-                | rama_http::header::StandardHeader::Cookie
-                | rama_http::header::StandardHeader::Authorization
-                | rama_http::header::StandardHeader::Host
-                | rama_http::header::StandardHeader::Origin
-                | rama_http::header::StandardHeader::ContentLength
-                | rama_http::header::StandardHeader::ContentType
-                | rama_http::header::StandardHeader::SecWebSocketProtocol
-                | rama_http::header::StandardHeader::SecWebSocketKey,
+                StandardHeader::Referer
+                | StandardHeader::Cookie
+                | StandardHeader::Authorization
+                | StandardHeader::Host
+                | StandardHeader::Origin
+                | StandardHeader::ContentLength
+                | StandardHeader::ContentType
+                | StandardHeader::SecWebSocketProtocol
+                | StandardHeader::SecWebSocketKey,
             ) => {
                 if let Some(value) = original_value {
                     output_headers_ref.push((base_name, value));
                 }
             }
-            Some(rama_http::header::StandardHeader::UserAgent) => {
+            Some(StandardHeader::UserAgent) => {
                 if preserve_ua_header {
                     let value = original_value.unwrap_or(base_value);
                     output_headers_ref.push((base_name, value));
@@ -986,12 +986,25 @@ mod tests {
     use rama_core::extensions::Extensions;
     use rama_core::{Layer, ServiceInput, service::service_fn};
     use rama_http::{
-        Body, HeaderMap, HeaderName, HeaderValue, header::ETAG, proto::h2::frame::EarlyFrame,
+        Body, HeaderMap, HeaderName, HeaderValue,
+        header::ETAG,
+        proto::h2::{
+            PseudoHeaderOrder,
+            frame::{EarlyFrame, Settings},
+        },
     };
-    use rama_net::address::{Domain, Host};
+    use rama_net::{
+        address::{Domain, Host, HostWithPort},
+        client::{ConnectRequest, EstablishedClientConnection},
+        http::HttpRequestVersion,
+    };
+    #[cfg(feature = "tls")]
+    use rama_tls::{ProtocolVersion, client::ClientHello};
     use rama_utils::octets::kib;
 
     use crate::layer::emulate::UserAgentEmulateLayer;
+    #[cfg(feature = "tls")]
+    use crate::profile::model::tls::TlsProfile;
     use crate::profile::model::{
         http::{
             Http1Profile, Http1Settings, Http2Profile, Http2Settings, HttpHeadersProfile,
@@ -1057,8 +1070,6 @@ mod tests {
 
     #[test]
     fn legacy_h2_settings_keep_existing_connection_parameters() {
-        use rama_http::proto::h2::{PseudoHeaderOrder, frame::Settings};
-
         let input = Request::new(());
         let pseudo_order = PseudoHeaderOrder::new();
         input.extensions().insert(H2ClientContextParams {
@@ -1097,13 +1108,6 @@ mod tests {
 
     #[tokio::test]
     async fn connect_emulation_uses_established_connection_version() {
-        use rama_http::proto::h2::PseudoHeaderOrder;
-        use rama_net::{
-            address::HostWithPort,
-            client::{ConnectRequest, EstablishedClientConnection},
-            http::HttpRequestVersion,
-        };
-
         let inner = service_fn(async |input: ConnectRequest| {
             let conn = ServiceInput::new(());
             conn.extensions().insert(TargetHttpVersion(Version::HTTP_2));
@@ -1796,9 +1800,9 @@ mod tests {
                 }),
             })),
             #[cfg(feature = "tls")]
-            tls: Some(Arc::new(crate::profile::model::tls::TlsProfile {
-                client_hello: rama_tls::client::ClientHello::new(
-                    rama_tls::ProtocolVersion::TLSv1_3,
+            tls: Some(Arc::new(TlsProfile {
+                client_hello: ClientHello::new(
+                    ProtocolVersion::TLSv1_3,
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),
@@ -1875,9 +1879,9 @@ mod tests {
                 }),
             })),
             #[cfg(feature = "tls")]
-            tls: Some(Arc::new(crate::profile::model::tls::TlsProfile {
-                client_hello: rama_tls::client::ClientHello::new(
-                    rama_tls::ProtocolVersion::TLSv1_3,
+            tls: Some(Arc::new(TlsProfile {
+                client_hello: ClientHello::new(
+                    ProtocolVersion::TLSv1_3,
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),
@@ -1952,9 +1956,9 @@ mod tests {
                 }),
             })),
             #[cfg(feature = "tls")]
-            tls: Some(Arc::new(crate::profile::model::tls::TlsProfile {
-                client_hello: rama_tls::client::ClientHello::new(
-                    rama_tls::ProtocolVersion::TLSv1_3,
+            tls: Some(Arc::new(TlsProfile {
+                client_hello: ClientHello::new(
+                    ProtocolVersion::TLSv1_3,
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),
@@ -2029,9 +2033,9 @@ mod tests {
                 }),
             })),
             #[cfg(feature = "tls")]
-            tls: Some(Arc::new(crate::profile::model::tls::TlsProfile {
-                client_hello: rama_tls::client::ClientHello::new(
-                    rama_tls::ProtocolVersion::TLSv1_3,
+            tls: Some(Arc::new(TlsProfile {
+                client_hello: ClientHello::new(
+                    ProtocolVersion::TLSv1_3,
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),
@@ -2131,9 +2135,9 @@ mod tests {
                 }),
             })),
             #[cfg(feature = "tls")]
-            tls: Some(Arc::new(crate::profile::model::tls::TlsProfile {
-                client_hello: rama_tls::client::ClientHello::new(
-                    rama_tls::ProtocolVersion::TLSv1_3,
+            tls: Some(Arc::new(TlsProfile {
+                client_hello: ClientHello::new(
+                    ProtocolVersion::TLSv1_3,
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),

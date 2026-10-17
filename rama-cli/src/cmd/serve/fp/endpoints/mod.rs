@@ -781,7 +781,7 @@ pub(super) async fn ws_api(state: State, ws: ServerWebSocket) -> Result<(), BoxE
 // endpoints: assets
 //------------------------------------------
 
-const STYLE_CSS: &str = include_str!("../../../../assets/style.css");
+const STYLE_CSS: &str = include_str!("../../../../../assets/style.css");
 
 pub(super) async fn get_assets_style() -> impl IntoResponse {
     (
@@ -790,7 +790,7 @@ pub(super) async fn get_assets_style() -> impl IntoResponse {
     )
 }
 
-const SCRIPT_JS: &str = include_str!("../../../../assets/script.js");
+const SCRIPT_JS: &str = include_str!("../../../../../assets/script.js");
 
 pub(super) async fn get_assets_script() -> impl IntoResponse {
     (

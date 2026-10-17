@@ -1,6 +1,10 @@
 use super::*;
 use rama_core::extensions::Extensions;
-use rama_quic::{ClientConfig, tls::QuicClientConfigProvider};
+use rama_net::address::Host;
+use rama_quic::{
+    ClientConfig,
+    tls::{QuicClientConfigProvider, TlsConfigError},
+};
 use rama_tls::client::{TlsClientConfig, TlsClientConfigProvider};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -29,7 +33,7 @@ impl QuicClientConfigProvider for OrdinaryOnly {
         &self,
         policy: &TlsClientConfig,
         options: TlsOptions,
-    ) -> Result<ClientConfig, rama_quic::tls::TlsConfigError> {
+    ) -> Result<ClientConfig, TlsConfigError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.inner.client_config(policy, options)
     }
@@ -82,16 +86,16 @@ impl QuicClientConfigProvider for CaptureAware {
         &self,
         policy: &TlsClientConfig,
         options: TlsOptions,
-    ) -> Result<ClientConfig, rama_quic::tls::TlsConfigError> {
+    ) -> Result<ClientConfig, TlsConfigError> {
         self.ordinary.client_config(policy, options)
     }
 
     fn captured_client_config(
         &self,
         policy: &TlsClientConfig,
-        peer: rama_net::address::Host,
+        peer: Host,
         capture: TlsCapture,
-    ) -> Result<Option<ClientConfig>, rama_quic::tls::TlsConfigError> {
+    ) -> Result<Option<ClientConfig>, TlsConfigError> {
         self.captured_calls.fetch_add(1, Ordering::SeqCst);
         self.ordinary
             .inner
