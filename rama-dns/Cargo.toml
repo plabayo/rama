@@ -25,7 +25,7 @@ targets = [
 ]
 
 [package.metadata.cargo-machete]
-ignored = ["bindgen", "cc"]
+ignored = ["cc"]
 
 [features]
 default = []
@@ -64,7 +64,6 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Network
 libc = { workspace = true }
 
 [build-dependencies]
-bindgen = { workspace = true }
 cc = { workspace = true }
 
 [dev-dependencies]
@@ -77,6 +76,10 @@ base64 = { workspace = true, default-features = true }
 rama-unix = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+
+# Local native fixtures are built only for development, never for consumers.
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dev-dependencies]
+rama-dns-native-tests = { path = "tests/native" }
 
 [lints]
 workspace = true

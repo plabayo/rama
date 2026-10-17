@@ -1,0 +1,15 @@
+[package]
+name = "rama-dns-native-tests"
+version = "0.0.0"
+publish = false
+edition = { workspace = true }
+license = { workspace = true }
+
+[lib]
+path = "lib.rs"
+
+[build-dependencies]
+cc = { workspace = true }
+
+[lints]
+workspace = true
