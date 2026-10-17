@@ -1,3 +1,8 @@
+#[cfg(any(feature = "boring", feature = "ua"))]
+use rama_net::address::Host;
+#[cfg(feature = "ua")]
+use rama_ua::profile::capture::tls::TlsCapture;
+
 use rama_core::extensions::Extensions;
 use std::{fmt, sync::Arc};
 
@@ -22,8 +27,7 @@ use rama_tls::{
 #[cfg(feature = "boring")]
 use {
     crate::proto::crypto::boring as boring_crypto, rama_core::error::BoxError,
-    rama_net::address::Host, rama_tls::client::ClientHello,
-    rama_tls_boring::client::BoringTlsConnectorConfig,
+    rama_tls::client::ClientHello, rama_tls_boring::client::BoringTlsConnectorConfig,
 };
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 use {
@@ -52,6 +56,24 @@ pub trait QuicClientConfigProvider: TlsClientConfigProvider {
     /// The default retains each native configuration's own session state.
     fn session_defaults(&self) -> Option<Extensions> {
         None
+    }
+
+    /// Prepare owned native state for the selected captured TLS shape, without
+    /// connection I/O. The result must remain bound to `peer` and check its
+    /// generated handshake before exposing output. It must bypass ordinary
+    /// configuration caches which do not classify those capture bindings.
+    ///
+    /// Return `None` when this provider does not implement captured TLS replay.
+    /// Errors reject the selected shape or current caller policy. Returning an
+    /// actual prepared configuration establishes support; input flags do not.
+    #[cfg(feature = "ua")]
+    fn captured_client_config(
+        &self,
+        _policy: &TlsClientConfig,
+        _peer: Host,
+        _capture: &TlsCapture,
+    ) -> Result<Option<ClientConfig>, TlsConfigError> {
+        Ok(None)
     }
 
     /// Apply the final TLS settings and client handshake policy in `options`.
@@ -225,6 +247,18 @@ impl TlsClientConfigProvider for BoringTlsProvider {
 
 #[cfg(feature = "boring")]
 impl QuicClientConfigProvider for BoringTlsProvider {
+    #[cfg(feature = "ua")]
+    fn captured_client_config(
+        &self,
+        policy: &TlsClientConfig,
+        peer: Host,
+        capture: &TlsCapture,
+    ) -> Result<Option<ClientConfig>, TlsConfigError> {
+        super::profile::prepare(policy, peer, capture)
+            .map(Some)
+            .map_err(TlsConfigError::InvalidConfiguration)
+    }
+
     fn session_defaults(&self) -> Option<Extensions> {
         Some(boring_crypto::SharedClientSessions::defaults())
     }

@@ -23,7 +23,7 @@ pub use pool::{HttpConnId, HttpConnIdentifier, HttpPooledConnector, HttpPooledCo
 
 pub mod proxy;
 
-mod h3;
+pub mod h3;
 #[doc(inline)]
 pub use h3::{Http3Connector, Http3ConnectorBuilder};
 

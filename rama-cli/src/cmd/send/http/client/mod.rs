@@ -388,10 +388,12 @@ async fn new_inner_client(
             .with_tls_provider(Arc::new(BoringTlsProvider))
             .with_tls_config(tls_config)
             .build_lazy()?;
+        let compiler = connector.profile_compiler();
         builder
             .with_http3_connector(
                 (
-                    UserAgentEmulateHttpConnectModifierLayer::default(),
+                    UserAgentEmulateHttpConnectModifierLayer::default()
+                        .with_connection_compiler(compiler),
                     DnsConnectorLayer::new(),
                 )
                     .into_layer(connector),

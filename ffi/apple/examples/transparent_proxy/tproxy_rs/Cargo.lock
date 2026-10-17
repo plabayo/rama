@@ -2720,6 +2720,7 @@ dependencies = [
  "rama-quic-proto",
  "rama-tcp",
  "rama-tls",
+ "rama-ua",
  "rama-unix",
  "rama-utils",
  "tokio",

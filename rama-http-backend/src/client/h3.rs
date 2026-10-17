@@ -1,5 +1,8 @@
 //! HTTP/3 establishment using Rama DNS candidates and the existing multiplex pool.
 
+#[cfg(feature = "ua")]
+pub mod profile;
+
 use super::Http3Transport;
 use parking_lot::Mutex;
 use rama_core::{
@@ -178,6 +181,16 @@ impl Http3Connector {
     pub fn tls_provider(&self) -> &Arc<dyn QuicClientConfigProvider> {
         self.tls_configs.provider()
     }
+
+    /// Compile captured TLS using this connector's actual provider and defaults.
+    /// Unsupported providers decline the capture; ordinary requests do not compile it.
+    #[cfg(feature = "ua")]
+    pub fn profile_compiler(&self) -> profile::ConnectionCompiler {
+        profile::ConnectionCompiler {
+            tls: self.tls.clone(),
+            provider: self.tls_provider().clone(),
+        }
+    }
 }
 
 impl Http3ConnectorBuilder {
@@ -265,6 +278,8 @@ struct PreparedTls {
     capture_chain: bool,
     policy_scope: ConnectionPolicyScope,
     reuse: TlsConnectionReuse<Arc<dyn QuicClientConfigProvider>>,
+    #[cfg(feature = "ua")]
+    profile_reuse: Option<Box<profile::ReusePolicy>>,
 }
 
 impl Http3Connector {
@@ -419,6 +434,25 @@ impl Http3Connector {
             .as_extensions()
             .get_ref::<TlsStoreServerCertChain>()
             .is_some_and(|capture| capture.0);
+        #[cfg(feature = "ua")]
+        let captured = input
+            .extensions()
+            .get_arc::<profile::Pending>()
+            .map(|pending| pending.take(input, &tls, self.tls_provider()))
+            .transpose()
+            .map_err(|error| ConnectionError::local(error, InvalidInput))?;
+        #[cfg(feature = "ua")]
+        let (mut config, profile_reuse) = if let Some(prepared) = captured {
+            (prepared.config, Some(prepared.reuse))
+        } else {
+            (
+                self.tls_configs
+                    .client_config(&tls, input.extensions())
+                    .map_err(|error| ConnectionError::local(error, InvalidInput))?,
+                None,
+            )
+        };
+        #[cfg(not(feature = "ua"))]
         let mut config = self
             .tls_configs
             .client_config(&tls, input.extensions())
@@ -446,6 +480,8 @@ impl Http3Connector {
             capture_chain,
             policy_scope,
             reuse: TlsConnectionReuse::new(self.tls_provider().clone(), input.extensions()),
+            #[cfg(feature = "ua")]
+            profile_reuse,
         })
     }
 
@@ -581,6 +617,11 @@ impl Http3Connector {
         let extensions = connection.extensions();
         prepared.reuse.publish(extensions);
         extensions.insert(TargetHttpVersion(Version::HTTP_3));
+        #[cfg(feature = "ua")]
+        if let Some(reuse) = prepared.profile_reuse {
+            reuse.publish(extensions);
+        }
+
         extensions.insert(TlsServerAuthentication(prepared.authenticated_identity));
         extensions.insert(prepared.policy_scope);
         extensions.insert(EstablishedProxyRoute::Direct);
