@@ -17,6 +17,7 @@ use rama_net::{
     AuthorityInputExt, HttpVersionInputExt, Protocol, ProtocolInputExt, TargetHttpVersionInputExt,
     address::{Host, HostWithOptPort},
     client::{ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection},
+    http::FallbackHttpVersion,
     uri::Uri,
 };
 use rama_utils::str::{starts_with_ignore_ascii_case, submatch_ignore_ascii_case};
@@ -356,6 +357,11 @@ where
                 .get_ref::<TargetHttpVersion>()
                 .map(|target| target.0)
                 .or_else(|| req.target_http_version())
+                .or_else(|| {
+                    req.extensions()
+                        .get_ref::<FallbackHttpVersion>()
+                        .map(|version| version.0)
+                })
                 .or_else(|| req.http_version())
                 .ok_or_else(|| {
                     ConnectionError::local(
@@ -393,6 +399,11 @@ where
                     .get_ref::<TargetHttpVersion>()
                     .map(|target| target.0)
                     .or_else(|| req.target_http_version())
+                    .or_else(|| {
+                        req.extensions()
+                            .get_ref::<FallbackHttpVersion>()
+                            .map(|version| version.0)
+                    })
                     .or_else(|| req.http_version());
                 if let Some(version) = version {
                     tracing::trace!(

@@ -46,6 +46,31 @@ fn captured_archive_for_flow(
     initiator: Option<RequestInitiator>,
     method: Method,
 ) -> Vec<u8> {
+    let slots = if unsupported_connection {
+        vec![CapturedSlot {
+            kind: CapturedSlotKind::QuicVersions,
+            value: OrderedProtocolCapture::capture(
+                ProfileCaptureCompleteness::Complete,
+                OrderNamespace::QuicVersion,
+                [(1, [])],
+                OrderCaptureLimits::default(),
+            )
+            .unwrap()
+            .canonical(OrderCaptureLimits::default())
+            .unwrap(),
+        }]
+        .into()
+    } else {
+        Box::default()
+    };
+    captured_archive_for_slots(slots, initiator, method)
+}
+
+pub(super) fn captured_archive_for_slots(
+    slots: Box<[CapturedSlot]>,
+    initiator: Option<RequestInitiator>,
+    method: Method,
+) -> Vec<u8> {
     let profile = ProfileKey::from_user_agent(&UserAgent::new(CUSTOM_PROFILE_USER_AGENT));
     let mut headers = HeaderMap::new();
     headers.insert("host", HeaderValue::from_static("capture.invalid"));
@@ -92,23 +117,7 @@ fn captured_archive_for_flow(
         joint: JointCapture {
             completeness: ProfileCaptureCompleteness::Complete,
             level: CaptureLevel::Connection,
-            slots: if unsupported_connection {
-                vec![CapturedSlot {
-                    kind: CapturedSlotKind::QuicVersions,
-                    value: OrderedProtocolCapture::capture(
-                        ProfileCaptureCompleteness::Complete,
-                        OrderNamespace::QuicVersion,
-                        [(1, [])],
-                        OrderCaptureLimits::default(),
-                    )
-                    .unwrap()
-                    .canonical(OrderCaptureLimits::default())
-                    .unwrap(),
-                }]
-                .into()
-            } else {
-                Box::default()
-            },
+            slots,
         },
     };
     let mut scopes = Vec::new();

@@ -37,7 +37,7 @@ pub trait ConnectionProfileCompiler<Input>: Send + Sync + 'static {
 ///
 /// Implementations report only components they actually prepared. Neither
 /// profile archives nor caller-supplied capability flags establish that claim.
-/// Native connectors retain and consume this output locally.
+/// The UA modifier consumes this output before invoking its native connector.
 pub trait CompiledConnectionProfile: Send + 'static {
     /// Whether this output implements the selected component's wire properties.
     fn supports(&self, component: CapturedSlotKind) -> bool;

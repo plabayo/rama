@@ -54,11 +54,6 @@ impl TryFrom<TlsConnectorData> for PreparedClient {
 }
 
 impl PreparedClient {
-    #[cfg(all(test, feature = "ua"))]
-    pub(super) fn into_ssl_for_test(self) -> Ssl {
-        self.ssl
-    }
-
     /// Establish TLS over `stream` using the already validated native session.
     pub async fn connect<T>(self, stream: T) -> Result<TlsStream<T>, TlsConnectError<T>>
     where

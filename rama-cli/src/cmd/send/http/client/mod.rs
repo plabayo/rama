@@ -43,7 +43,10 @@ use rama::{
     rt::Executor,
     tls::{
         ProtocolVersion,
-        boring::client::{BoringClientConfigExt, EmulateTlsProfileLayer},
+        boring::client::{
+            BoringClientConfigExt, EmulateTlsProfileLayer,
+            profile::compiler::ConnectionProfileCompiler as TcpProfileCompiler,
+        },
         client::{ServerVerifyMode, TlsClientConfig},
     },
     ua::{
@@ -390,6 +393,16 @@ async fn new_inner_client(
         .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
         .with_custom_proxy_connector(proxy_connector)
         .with_tls_support_using_boringssl(tls_config.clone())
+        .map_connector(|connector| {
+            if cfg.emulate.is_some() {
+                Either::A(
+                    UserAgentEmulateHttpConnectModifier::new(connector)
+                        .with_connection_compiler(TcpProfileCompiler::new(tls_config.clone())),
+                )
+            } else {
+                Either::B(connector)
+            }
+        })
         .with_default_http_connector(executor.clone());
 
     let uri = parse_user_uri(&cfg.uri)?;
@@ -402,7 +415,7 @@ async fn new_inner_client(
             captured.then(|| QuicProfileCompiler::new(tls_config.clone(), provider.clone()));
         let connector = Http3Connector::builder(executor)
             .with_tls_provider(provider)
-            .with_tls_config(tls_config);
+            .with_tls_config(tls_config.clone());
         let connector = if captured {
             connector.with_config(Http3Config::default().with_browser_emulation_limits())
         } else {
@@ -511,6 +524,7 @@ where
 #[cfg(test)]
 mod tests {
     mod captured;
+    mod tcp_profile;
     mod warmup;
     use std::assert_matches;
     use std::{

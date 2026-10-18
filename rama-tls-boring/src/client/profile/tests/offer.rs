@@ -1,7 +1,8 @@
 use super::*;
+use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 use rama_tls::{
-    ExtensionId, ProtocolVersion, SupportedGroup,
-    client::{ClientHello, parse_client_hello_handshake},
+    CipherSuite, ExtensionId, ProtocolVersion, SupportedGroup,
+    client::{ClientHandshake, ClientHello},
 };
 use rama_ua::profile::capture::tls::TlsCapturedExtension;
 
@@ -103,14 +104,63 @@ fn caller_version_and_cipher_restrictions_are_not_broadened() {
     let capture = capture();
     for policy in [
         TlsClientConfig::new().with_max_version(ProtocolVersion::TLSv1_2),
-        TlsClientConfig::new()
-            .with_cipher_suites(vec![rama_tls::CipherSuite::TLS13_AES_128_GCM_SHA256]),
+        TlsClientConfig::new().with_cipher_suites(vec![CipherSuite::TLS13_AES_128_GCM_SHA256]),
     ] {
-        let connector = TlsConnector::auto(()).with_base_config(policy);
-        connector
-            .profile_preparation()
-            .prepare(&input(), &capture)
+        let compiler = ConnectionProfileCompiler::new(policy);
+        compiler.prepare_capture(&input(), &capture).unwrap_err();
+    }
+}
+
+#[test]
+fn explicit_caller_alpn_is_never_replaced_by_the_captured_offer() {
+    let captured = capture();
+    let offer = wire::compile(wire::TransportShape::Tcp, &captured, None)
+        .unwrap()
+        .alpn()
+        .unwrap();
+    let compiler = ConnectionProfileCompiler::new(TlsClientConfig::new());
+    let request = input();
+    request.extensions().insert(offer.clone());
+    compiler.prepare_capture(&request, &captured).unwrap();
+    for protocols in [
+        Vec::new(),
+        vec![ApplicationProtocol::HTTP_3],
+        offer
+            .0
+            .iter()
+            .cloned()
+            .chain([ApplicationProtocol::HTTP_11])
+            .collect(),
+    ] {
+        let request = input();
+        request.extensions().insert(TlsAlpn(protocols.into()));
+        let error = compiler.prepare_capture(&request, &captured).unwrap_err();
+        assert!(
+            error.to_string().contains("ALPN offers conflict"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn required_session_offer_cannot_be_replaced_by_a_fresh_capture() {
+    for request_override in [false, true] {
+        let policy = if request_override {
+            TlsClientConfig::new()
+        } else {
+            TlsClientConfig::new().with_client_handshake(ClientHandshake::Resumed)
+        };
+        let request = input();
+        if request_override {
+            request.extensions().insert(ClientHandshake::Resumed);
+        }
+        let error = ConnectionProfileCompiler::new(policy)
+            .prepare_capture(&request, &capture())
             .unwrap_err();
+        assert!(
+            error.to_string().contains("required session offer"),
+            "{error}"
+        );
     }
 }
 
@@ -162,15 +212,12 @@ fn native_lists_that_reorder_or_deduplicate_are_rejected() {
 #[cfg(feature = "http")]
 #[test]
 fn required_http_version_must_be_in_the_captured_offer() {
-    let connector = TlsConnector::auto(());
+    let compiler = ConnectionProfileCompiler::new(TlsClientConfig::new());
     let request = input();
     request
         .extensions()
         .insert(TargetHttpVersion(Version::HTTP_11));
-    connector
-        .profile_preparation()
-        .prepare(&request, &capture())
-        .unwrap_err();
+    compiler.prepare_capture(&request, &capture()).unwrap_err();
 }
 
 #[test]
@@ -262,36 +309,19 @@ fn key_share_sizes_follow_native_emission_and_compile_back_to_the_same_shape() {
     }
 }
 
-// Exercise the actual SSL retained by the compiler, including caller policy.
-// A mismatch is a bug even when the generic wire overrides look correct.
+// Emit from the settings installed by the adapter. Native connection tests also
+// exercise the real connector's policy merging, authentication and negotiated ALPN.
 fn prepared_hello(compiled: CompiledConnection) -> ClientHello {
-    #[derive(Default)]
-    struct Sink(Vec<u8>);
-
-    impl std::io::Read for Sink {
-        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
-            Err(std::io::ErrorKind::WouldBlock.into())
-        }
-    }
-
-    impl std::io::Write for Sink {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    let prepared = compiled.tls.unwrap().prepared;
-    let ssl = prepared.client.into_ssl_for_test();
-    let Err(rama_boring::ssl::HandshakeError::WouldBlock(stream)) = ssl.connect(Sink::default())
-    else {
-        panic!("native first flight must precede reading a server response");
-    };
-    parse_client_hello_handshake(&stream.get_ref().0).unwrap()
+    let request = input();
+    let bindings = <CompiledConnection as InstalledConnectionProfile<ConnectRequest>>::apply(
+        compiled,
+        request.extensions(),
+    );
+    bindings.check(&request).unwrap();
+    let config = BoringTlsConnectorConfig::from_extensions(request.extensions());
+    let mut data = TlsConnectorData::try_from(config).unwrap();
+    data.server_name = Some(Host::from_static("prepared.test"));
+    hello_from_data(data)
 }
 
 fn mixed_version_capture() -> TlsCapture {
@@ -327,8 +357,8 @@ fn assert_admitted_emission_matches(
     policy: TlsClientConfig,
     must_admit: bool,
 ) {
-    let connector = TlsConnector::auto(()).with_base_config(policy);
-    let compiled = match connector.profile_preparation().prepare(&input(), captured) {
+    let compiler = ConnectionProfileCompiler::new(policy);
+    let compiled = match compiler.prepare_capture(&input(), captured) {
         Ok(compiled) => compiled,
         Err(error) => {
             assert!(!must_admit, "control shape must remain supported: {error}");
@@ -361,11 +391,11 @@ fn prepared_native_control_preserves_the_selected_first_flight() {
 #[test]
 fn caller_version_floor_cannot_silently_change_the_selected_first_flight() {
     // The captured TLS 1.2 offer must not weaken a TLS 1.3 caller floor.
-    let connector = TlsConnector::auto(())
-        .with_base_config(TlsClientConfig::new().with_min_version(ProtocolVersion::TLSv1_3));
-    let error = connector
-        .profile_preparation()
-        .prepare(&input(), &mixed_version_capture())
+    let compiler = ConnectionProfileCompiler::new(
+        TlsClientConfig::new().with_min_version(ProtocolVersion::TLSv1_3),
+    );
+    let error = compiler
+        .prepare_capture(&input(), &mixed_version_capture())
         .unwrap_err();
     assert!(
         error

@@ -1,20 +1,43 @@
-use super::*;
+use super::{
+    compiler::{CompiledConnection, ConnectionProfileCompiler},
+    wire,
+};
 use crate::client::{
-    BoringClientConfigExt as _, TlsConnector, TlsConnectorData,
+    BoringClientConfigExt as _, BoringTlsConnectorConfig, TlsConnector, TlsConnectorData,
     ech::EchGrease,
     tests::{hello_from_data, wire_variant},
 };
 use parking_lot::Mutex;
+use rama_core::extensions::ExtensionsRef;
+#[cfg(feature = "http")]
+use rama_core::{
+    error::{BoxError, BoxErrorExt as _},
+    extensions::Extensions,
+};
 use rama_net::client::ConnectRequest;
+#[cfg(feature = "http")]
+use rama_net::http::{TargetHttpVersion, Version};
+use rama_net::{Protocol, address::Host};
+use rama_tls::client::TlsClientConfig;
 use rama_ua::profile::capture::{
     completeness::ProfileCaptureCompleteness,
-    tls::{TlsCapture, TlsCaptureLimits},
+    joint::CapturedSlotKind,
+    tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport, TlsCapturedExtensionValue},
+};
+use rama_ua::profile::replay::connection::compiler::{
+    CompiledConnectionProfile, ConnectionProfileBindings as _, InstalledConnectionProfile,
 };
 use rama_ua::profile::selection::variants::ConnectionSelection;
+#[cfg(feature = "http")]
+use rama_ua::{
+    layer::emulate::UserAgentEmulateHttpConnectModifier, profile::model::http::HttpProfile,
+};
 use std::sync::Arc;
 
+#[cfg(feature = "http")]
 mod connection;
 mod fixture;
+mod native;
 mod offer;
 mod quic;
 #[cfg(feature = "http")]

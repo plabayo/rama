@@ -3,7 +3,9 @@ use super::*;
 use rama_core::extensions::Extensions;
 use rama_net::client::pool::ConnectionReuse;
 use rama_tls::client::ServerVerifyMode;
-use rama_ua::profile::format::canonical::ValueId;
+use rama_ua::profile::{
+    format::canonical::ValueId, replay::connection::preparation::ConnectionPreparation,
+};
 
 #[tokio::test]
 async fn negotiated_profile_reuse_matches_the_caller_before_compilation() {
@@ -54,8 +56,5 @@ fn mismatched_pin_cannot_supply_a_profile_reuse_witness() {
     context.pins.connection = Some(ValueId([99; 32]));
     let request = input();
     context.publish(request.extensions());
-    TlsConnector::auto(())
-        .profile_preparation()
-        .prepare_profile(&request)
-        .unwrap_err();
+    ConnectionPreparation::prepare(&request, |_, _, _| Ok(())).unwrap_err();
 }

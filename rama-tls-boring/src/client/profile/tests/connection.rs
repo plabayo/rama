@@ -1,6 +1,9 @@
 use super::fixture::selected;
 use super::*;
-use crate::server::TlsAcceptorData;
+use crate::{
+    client::{TlsClientSession, TlsClientSessionKey, TlsClientSessionStore},
+    server::TlsAcceptorData,
+};
 use rama_core::{Service, ServiceInput, service::service_fn};
 #[cfg(feature = "http")]
 use rama_net::{
@@ -20,7 +23,7 @@ use rama_tls::{
 };
 use rama_ua::profile::{
     model::identity::{ConnectionContext, ConnectionIpFamily, ResumptionContext},
-    selection::ProfileSeed,
+    selection::{ProfileSeed, variants::EmulationContext},
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -41,7 +44,8 @@ async fn incompatible_caller_policy_rejects_before_dial() {
             ))
         }
     });
-    let connector = TlsConnector::auto(inner);
+    let connector = UserAgentEmulateHttpConnectModifier::new(inner)
+        .with_connection_compiler(ConnectionProfileCompiler::new(TlsClientConfig::new()));
     let request = input();
     let (context, _) = selected("prepared-profile");
     context.publish(request.extensions());
@@ -54,7 +58,7 @@ async fn incompatible_caller_policy_rejects_before_dial() {
 }
 
 #[tokio::test]
-async fn changed_policy_after_transport_rejects_before_handshake() {
+async fn transport_adapter_rejects_changed_policy_before_tls() {
     let inner = service_fn(|input: ConnectRequest| async move {
         TlsClientConfig::new()
             .with_server_verify(ServerVerifyMode::Disable)
@@ -65,7 +69,8 @@ async fn changed_policy_after_transport_rejects_before_handshake() {
             conn: ServiceInput::new(client),
         })
     });
-    let connector = TlsConnector::secure(inner);
+    let connector = UserAgentEmulateHttpConnectModifier::new(inner)
+        .with_connection_compiler(ConnectionProfileCompiler::new(TlsClientConfig::new()));
     let request = input();
     let (context, _) = selected("prepared-profile");
     context.publish(request.extensions());
@@ -74,40 +79,33 @@ async fn changed_policy_after_transport_rejects_before_handshake() {
 }
 
 #[tokio::test]
-async fn transport_cannot_change_or_remove_the_prepared_destination_or_protocol() {
-    for secure in [false, true] {
-        for (protocol, change_authority) in [
-            (Some(Protocol::HTTP), false),
-            (None, false),
-            (Some(Protocol::WSS), false),
-            (Some(Protocol::HTTPS), true),
-        ] {
-            let inner = service_fn(move |mut input: ConnectRequest| {
-                input.application_protocol = protocol.clone();
-                if change_authority {
-                    input.authority = "other.test:443".parse().unwrap();
-                }
-                async move {
-                    let (client, _server) = tokio::io::duplex(1024);
-                    Ok::<_, ConnectionError>(EstablishedClientConnection {
-                        input,
-                        conn: ServiceInput::new(client),
-                    })
-                }
-            });
-            let auto = TlsConnector::auto(inner.clone());
-            let forced = TlsConnector::secure(inner);
-            let request = input();
-            let (context, _) = selected("prepared-profile");
-            context.publish(request.extensions());
-            let result = if secure {
-                forced.serve(request).await.map(|_| ())
-            } else {
-                auto.serve(request).await.map(|_| ())
-            };
-            let error = result.unwrap_err();
-            assert!(error.to_string().contains("policy changed"), "{error}");
-        }
+async fn transport_adapter_binds_destination_and_protocol() {
+    for (protocol, change_authority) in [
+        (Some(Protocol::HTTP), false),
+        (None, false),
+        (Some(Protocol::WSS), false),
+        (Some(Protocol::HTTPS), true),
+    ] {
+        let inner = service_fn(move |mut input: ConnectRequest| {
+            input.application_protocol = protocol.clone();
+            if change_authority {
+                input.authority = "other.test:443".parse().unwrap();
+            }
+            async move {
+                let (client, _server) = tokio::io::duplex(1024);
+                Ok::<_, ConnectionError>(EstablishedClientConnection {
+                    input,
+                    conn: ServiceInput::new(client),
+                })
+            }
+        });
+        let connector = UserAgentEmulateHttpConnectModifier::new(inner)
+            .with_connection_compiler(ConnectionProfileCompiler::new(TlsClientConfig::new()));
+        let request = input();
+        let (context, _) = selected("prepared-profile");
+        context.publish(request.extensions());
+        let error = connector.serve(request).await.unwrap_err();
+        assert!(error.to_string().contains("policy changed"), "{error}");
     }
 }
 
@@ -129,8 +127,36 @@ async fn ordinary_auto_connections_can_still_return_plaintext_after_transport() 
     }
 }
 
+#[derive(Default)]
+struct SessionAccess {
+    reads: AtomicUsize,
+    writes: AtomicUsize,
+}
+
+impl TlsClientSessionStore for SessionAccess {
+    fn put(&self, _: TlsClientSession) {
+        self.writes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn take(&self, _: &TlsClientSessionKey) -> Option<TlsClientSession> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        None
+    }
+}
+
 #[tokio::test]
-async fn connector_consumes_the_prepared_native_session_with_trust_and_alpn() {
+async fn a_configured_session_store_does_not_change_a_fresh_captured_offer() {
+    let store = Arc::new(SessionAccess::default());
+    established_with_store(None, Some(store.clone())).await;
+    assert_eq!(store.reads.load(Ordering::Relaxed), 0);
+    assert!(
+        store.writes.load(Ordering::Relaxed) > 0,
+        "new tickets still reach the configured store"
+    );
+}
+
+#[tokio::test]
+async fn outer_adapter_preserves_native_trust_and_negotiated_alpn() {
     let connection = established(None).await;
     #[cfg(not(feature = "http"))]
     {
@@ -150,11 +176,15 @@ async fn connector_consumes_the_prepared_native_session_with_trust_and_alpn() {
 }
 
 pub(super) async fn established(
-    context: Option<(
-        &rama_ua::profile::selection::variants::EmulationContext,
-        &ConnectionSelection,
-    )>,
+    context: Option<(&EmulationContext, &ConnectionSelection)>,
 ) -> rama_core::extensions::Extensions {
+    established_with_store(context, None).await
+}
+
+async fn established_with_store(
+    context: Option<(&EmulationContext, &ConnectionSelection)>,
+    store: Option<Arc<dyn TlsClientSessionStore>>,
+) -> Extensions {
     let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::GeneratedCa {
         ca: Default::default(),
         leaf: LeafCertRequest {
@@ -181,8 +211,8 @@ pub(super) async fn established(
     let io = Arc::new(Mutex::new(Some(client_io)));
     let inner = service_fn(move |input: ConnectRequest| {
         assert!(
-            BoringTlsConnectorConfig::from_extensions(input.extensions()).is_empty(),
-            "captured native wire overrides must not leak into caller TLS policy"
+            !BoringTlsConnectorConfig::from_extensions(input.extensions()).is_empty(),
+            "the UA adapter installs ordinary native settings before transport"
         );
         let io = io.lock().take().unwrap();
         async move {
@@ -192,7 +222,12 @@ pub(super) async fn established(
             })
         }
     });
-    let connector = TlsConnector::auto(inner).with_base_config(config);
+    let mut native = TlsConnector::auto(inner).with_base_config(config.clone());
+    if let Some(store) = store {
+        native.set_session_store(store);
+    }
+    let connector = UserAgentEmulateHttpConnectModifier::new(native)
+        .with_connection_compiler(ConnectionProfileCompiler::new(config));
     let request = input();
     let (default_context, default_selection) = selected("prepared-profile");
     let expected = context
@@ -271,7 +306,7 @@ pub(super) async fn established(
 }
 
 #[tokio::test]
-async fn changed_context_after_transport_rejects_before_handshake() {
+async fn transport_adapter_rejects_changed_context() {
     let inner = service_fn(|input: ConnectRequest| async move {
         let (mut context, _) = selected("prepared-profile");
         context.connection_key = rama_ua::profile::selection::DrawKey([88; 32]);
@@ -285,7 +320,8 @@ async fn changed_context_after_transport_rejects_before_handshake() {
     let request = input();
     let (context, _) = selected("prepared-profile");
     context.publish(request.extensions());
-    let error = TlsConnector::secure(inner)
+    let error = UserAgentEmulateHttpConnectModifier::new(inner)
+        .with_connection_compiler(ConnectionProfileCompiler::new(TlsClientConfig::new()))
         .serve(request)
         .await
         .unwrap_err();
@@ -294,7 +330,7 @@ async fn changed_context_after_transport_rejects_before_handshake() {
 
 #[cfg(feature = "http")]
 #[tokio::test]
-async fn changed_http_target_after_transport_rejects_before_handshake() {
+async fn transport_adapter_rejects_changed_http_target() {
     let inner = service_fn(|input: ConnectRequest| async move {
         input
             .extensions()
@@ -308,7 +344,8 @@ async fn changed_http_target_after_transport_rejects_before_handshake() {
     let request = input();
     let (context, _) = selected("prepared-profile");
     context.publish(request.extensions());
-    let error = TlsConnector::secure(inner)
+    let error = UserAgentEmulateHttpConnectModifier::new(inner)
+        .with_connection_compiler(ConnectionProfileCompiler::new(TlsClientConfig::new()))
         .serve(request)
         .await
         .unwrap_err();
@@ -320,7 +357,7 @@ async fn changed_http_target_after_transport_rejects_before_handshake() {
 
 #[cfg(feature = "http")]
 #[tokio::test]
-async fn plaintext_profiles_publish_selection_and_preserve_http_version_precedence() {
+async fn plaintext_profiles_publish_selection_and_configure_the_http_connector() {
     for (target, fallback, request_version) in [
         (
             Some(Version::HTTP_2),
@@ -350,13 +387,13 @@ async fn plaintext_profiles_publish_selection_and_preserve_http_version_preceden
                 conn: ServiceInput::new(io),
             })
         });
-        let connection = TlsConnector::auto(inner).serve(request).await.unwrap();
+        let connection = UserAgentEmulateHttpConnectModifier::new(TlsConnector::auto(inner))
+            .with_connection_compiler(ConnectionProfileCompiler::new(TlsClientConfig::new()))
+            .serve(request)
+            .await
+            .unwrap();
         assert!(connection.conn.ssl_ref().is_none());
         let facts = connection.conn.extensions();
-        assert_eq!(
-            facts.get_ref::<TargetHttpVersion>().unwrap().0,
-            Version::HTTP_2
-        );
         assert_eq!(
             facts.get_ref::<ConnectionSelection>().unwrap().variant,
             selection.variant
@@ -389,30 +426,13 @@ async fn plaintext_legacy_profiles_are_applied_before_http_output() {
                 conn: ServiceInput::new(io),
             })
         });
-        let error = TlsConnector::auto(inner).serve(request).await.unwrap_err();
+        let error = UserAgentEmulateHttpConnectModifier::new(TlsConnector::auto(inner))
+            .with_connection_compiler(ConnectionProfileCompiler::new(TlsClientConfig::new()))
+            .serve(request)
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("missing HTTP/"), "{error}");
     }
-}
-
-#[cfg(not(feature = "http"))]
-#[tokio::test]
-async fn a_plain_profile_without_http_cannot_publish_an_unrestricted_socket() {
-    let request = ConnectRequest::new("prepared.test:80".parse().unwrap())
-        .with_application_protocol(Protocol::HTTP);
-    let (context, _) = super::fixture::selected_with_tls("plaintext-profile", false);
-    context.publish(request.extensions());
-    let inner = service_fn(|input: ConnectRequest| async move {
-        let (io, _peer) = tokio::io::duplex(1024);
-        Ok::<_, ConnectionError>(EstablishedClientConnection {
-            input,
-            conn: ServiceInput::new(io),
-        })
-    });
-    let error = TlsConnector::auto(inner).serve(request).await.unwrap_err();
-    assert!(
-        error.to_string().contains("requires an HTTP version"),
-        "{error}"
-    );
 }
 
 #[tokio::test]
@@ -467,7 +487,8 @@ async fn reject_changed_draw_input(seed: Option<ProfileSeed>, connection: Connec
                 })
             }
         });
-        let attempt = TlsConnector::secure(inner);
+        let attempt = UserAgentEmulateHttpConnectModifier::new(inner)
+            .with_connection_compiler(ConnectionProfileCompiler::new(TlsClientConfig::new()));
         let peer = async move {
             let mut first = [0u8];
             assert_eq!(
