@@ -39,6 +39,8 @@
 //!   none.
 //! - `--ca-out <pem>`: where to write this proxy's CA certificate, which a client must trust
 //!   to talk to intercepted names.
+//! - `--mirror-client`: derive egress TLS and QUIC preferences from ingress, within the
+//!   native mirroring limits below. Off by default.
 //!
 //! # Expected output
 //!
@@ -160,6 +162,9 @@ struct Args {
     intercept: Vec<Domain>,
     #[arg(long)]
     ca_out: Option<PathBuf>,
+    /// Mirror ingress TLS and transport preferences within the relay limits.
+    #[arg(long)]
+    mirror_client: bool,
 }
 
 /// A client association once its egress is connected: what the ClientHello peek reads.
@@ -215,6 +220,7 @@ async fn main() -> Result<(), BoxError> {
         ArcLayer::new(),
     ));
     let terminate = QuicMitmRelay::new(issuer, exec.clone(), egress_tls, VarInt::from_u32(FAILURE))
+        .with_mirror_client(args.mirror_client)
         .into_layer(
             AlpnRouter::new(ApplicationProtocol::HTTP_3, h3)
                 .with_fallback(QuicRelay::new(VarInt::from_u32(FAILURE))),

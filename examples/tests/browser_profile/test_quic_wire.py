@@ -222,10 +222,24 @@ class QuicWireTests(unittest.TestCase):
             .replace(version_one, version_two)
             .replace(
                 computed("quic.long.packet_type", 0).encode(),
-                computed("quic.long.packet_type", 1).encode(),
+                computed("quic.long.packet_type_v2", 1).encode(),
             )
         )
         self.assertEqual(first_flights(data, 443)[0].flight["version"], 0x6B3343CF)
+        # A v1 display field must not silently override or masquerade as v2.
+        for malformed in (
+            data.replace(b"quic.long.packet_type_v2", b"quic.long.packet_type"),
+            data.replace(
+                computed("quic.long.packet_type_v2", 1).encode(),
+                (
+                    computed("quic.long.packet_type_v2", 1)
+                    + computed("quic.long.packet_type", 1)
+                ).encode(),
+            ),
+            document().replace(b"quic.long.packet_type", b"quic.long.packet_type_v2"),
+        ):
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                first_flights(malformed, 443)
         unknown = data.replace(
             version_two, scalar("quic.version", bytes.fromhex("ffffffff")).encode()
         )

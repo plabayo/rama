@@ -422,11 +422,22 @@ impl HopByHopHeaderContext {
     /// Capture connection-specific metadata and remove all hop-by-hop fields.
     #[must_use]
     pub fn take(headers: &mut HeaderMap, version: Version) -> Self {
+        Self::take_with_trailer_retention(headers, version, false)
+    }
+
+    // Relay sanitation keeps valid end-to-end declarations in their original
+    // positions. Explicit take() still removes every capability for adaptation.
+    fn take_with_trailer_retention(
+        headers: &mut HeaderMap,
+        version: Version,
+        retain_trailers: bool,
+    ) -> Self {
         let context = Self::capture(headers, version);
+        let keep_trailer = retain_trailers && !context.trailer_fields.is_empty();
         remove_hop_by_hop_headers_with_nominations(
             headers,
             context.nominated_headers.iter().cloned(),
-            known_hop_by_hop_headers(),
+            known_hop_by_hop_headers().filter(|name| !keep_trailer || *name != &header::TRAILER),
         );
         context
     }
@@ -561,7 +572,8 @@ pub enum HopByHopResponseDisposition {
 #[must_use]
 pub fn sanitize_hop_by_hop_request_headers<B>(request: &mut Request<B>) -> HopByHopHeaderContext {
     let version = request.version();
-    let context = HopByHopHeaderContext::take(request.headers_mut(), version);
+    let context =
+        HopByHopHeaderContext::take_with_trailer_retention(request.headers_mut(), version, true);
     context.restore_request(request.headers_mut(), version, &[]);
     context
 }
@@ -578,7 +590,8 @@ pub fn sanitize_hop_by_hop_response_headers<B>(
 ) -> HopByHopResponseDisposition {
     let version = response.version();
     let status = response.status();
-    let response_context = HopByHopHeaderContext::take(response.headers_mut(), version);
+    let response_context =
+        HopByHopHeaderContext::take_with_trailer_retention(response.headers_mut(), version, true);
     response_context.restore_trailer_headers(response.headers_mut(), version);
     if status != StatusCode::SWITCHING_PROTOCOLS {
         return HopByHopResponseDisposition::Forward;
@@ -975,6 +988,74 @@ mod tests {
             context.restore_response(&mut target, version, &[]);
             assert_eq!(target.contains_key(header::TRAILER), restored);
             assert_eq!(target.len(), usize::from(restored));
+        }
+    }
+
+    #[test]
+    fn relay_sanitation_preserves_trailer_field_positions() {
+        fn ordered(headers: &HeaderMap) -> Vec<(String, Vec<u8>, bool)> {
+            headers
+                .ordered_iter()
+                .map(|(name, value)| {
+                    (
+                        name.as_original_str().into_owned(),
+                        value.as_bytes().to_vec(),
+                        value.is_sensitive(),
+                    )
+                })
+                .collect()
+        }
+
+        for version in [
+            Version::HTTP_09,
+            Version::HTTP_10,
+            Version::HTTP_11,
+            Version::HTTP_2,
+            Version::HTTP_3,
+        ] {
+            for nominated in [false, true] {
+                let mut headers = HeaderMap::new();
+                headers.append("x-first", HeaderValue::from_static("first"));
+                let mut declaration = HeaderValue::from_static("X-Checksum");
+                declaration.set_sensitive(true);
+                headers.append(HeaderName::from_bytes(b"TrAiLeR").unwrap(), declaration);
+                headers.append("x-middle", HeaderValue::from_static("middle"));
+                headers.append(header::TRAILER, HeaderValue::from_static("X-Final"));
+                headers.append("x-last", HeaderValue::from_static("last"));
+                let keep = supports_trailer_fields(version) && !nominated;
+                let mut expected = headers.clone();
+                if !keep {
+                    expected.remove(header::TRAILER);
+                }
+                headers.append(
+                    header::CONNECTION,
+                    HeaderValue::from_static(if nominated { "trailer, x-hop" } else { "x-hop" }),
+                );
+                headers.append("x-hop", HeaderValue::from_static("hop-only"));
+
+                let mut request = Request::new(());
+                *request.version_mut() = version;
+                *request.headers_mut() = headers.clone();
+                let context = sanitize_hop_by_hop_request_headers(&mut request);
+                assert_eq!(
+                    ordered(request.headers()),
+                    ordered(&expected),
+                    "request: {version:?}, nominated={nominated}",
+                );
+
+                let mut response = Response::new(());
+                *response.version_mut() = version;
+                *response.headers_mut() = headers;
+                assert_eq!(
+                    sanitize_hop_by_hop_response_headers(&mut response, &context),
+                    HopByHopResponseDisposition::Forward,
+                );
+                assert_eq!(
+                    ordered(response.headers()),
+                    ordered(&expected),
+                    "response: {version:?}, nominated={nominated}",
+                );
+            }
         }
     }
 

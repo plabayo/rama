@@ -184,10 +184,22 @@ def first_flights(data, server_port):
             raise ValueError("invalid Initial datagram extent")
         for proto, packet_size in zip(protos, packet_sizes):
             version = integer(proto, "quic.version", 4)
-            packet_type = int(one(proto, "quic.long.packet_type"))
             initial_type = INITIAL_PACKET_TYPES.get(version)
             if initial_type is None:
                 raise ValueError("unsupported QUIC wire version")
+            # Tshark exposes the v2 bit mapping under its own dissector field.
+            type_field = (
+                "quic.long.packet_type_v2"
+                if version == VERSION_2
+                else "quic.long.packet_type"
+            )
+            packet_type = int(one(proto, type_field))
+            if any(
+                node.get("name") in ("quic.long.packet_type", "quic.long.packet_type_v2")
+                and node.get("name") != type_field
+                for node in proto.iter("field")
+            ):
+                raise ValueError("ambiguous QUIC packet-type representation")
             if packet_type != initial_type:
                 if connection not in flights:
                     raise ValueError("first QUIC packet is not Initial")
