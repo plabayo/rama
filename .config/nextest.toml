@@ -4,6 +4,12 @@ failure-output = "immediate-final"
 success-output = "never"
 
 [[profile.ci.overrides]]
+# This test transfers multi-megabyte WebSocket frames through child processes
+# over H1, H2 and H3. Keep its progress deadlines independent of competing tests.
+filter = 'package(rama-cli) & binary(send_ws) & test(/^the_executable_keeps_receiving_while_a_send_is_blocked$/)'
+threads-required = "num-test-threads"
+
+[[profile.ci.overrides]]
 # The ignored H2 suite should finish in seconds. Stop and retry an individual
 # H2 test instead of letting one blocked connection occupy a runner for hours.
 filter = 'test(/^h2::/)'
