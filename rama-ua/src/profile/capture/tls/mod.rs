@@ -297,6 +297,12 @@ impl TlsCapture {
                         values.iter().copied().map(u16::from).collect(),
                     )
                 }
+                ClientHelloExtension::ServerPaddingRequest(value) => {
+                    // Keep the existing literal canonical encoding for this
+                    // formerly opaque extension; its body contains no secrets.
+                    budget.take(0, size_of::<u16>())?;
+                    TlsCapturedExtensionValue::Literal(value.to_be_bytes().into())
+                }
                 ClientHelloExtension::RecordSizeLimit(value) => {
                     budget.take(1, 2)?;
                     TlsCapturedExtensionValue::U16List(Box::new([*value]))
@@ -330,6 +336,7 @@ impl TlsCapture {
                         | ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION
                         | ExtensionId::COMPRESS_CERTIFICATE
                         | ExtensionId::RECORD_SIZE_LIMIT
+                        | ExtensionId::SERVER_PADDING_REQUEST
                         | ExtensionId::DELEGATED_CREDENTIAL
                         | ExtensionId::SUPPORTED_VERSIONS
                         | ExtensionId::OLD_APPLICATION_SETTINGS

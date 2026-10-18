@@ -502,7 +502,8 @@ pub(super) async fn get_tls_display_info(
                     id: extension.id().to_string(),
                     data: multi(v),
                 },
-                ClientHelloExtension::RecordSizeLimit(v) => TlsDisplayInfoExtension {
+                ClientHelloExtension::RecordSizeLimit(v)
+                | ClientHelloExtension::ServerPaddingRequest(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
                     data: Some(TlsDisplayInfoExtensionData::Single(v.to_string())),
                 },

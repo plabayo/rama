@@ -55,50 +55,66 @@ fn server_auth() -> ServerAuthData {
 
 #[tokio::test]
 async fn prepared_session_connects_with_the_configured_trust_and_identity() {
-    let auth = server_auth();
-    let config = TlsClientConfig::new()
-        .with_server_name(Host::from_static("prepared.test"))
-        .try_with_server_trust_anchors([auth.cert_chain.last().unwrap().clone()])
-        .unwrap();
-    let data = TlsConnectorData::try_from(&config).unwrap();
-    let mut prepared = PreparedClient::try_from(data).unwrap();
-    let marker = Ssl::new_ex_index::<bool>().unwrap();
-    prepared.ssl.set_ex_data(marker, true);
-    let server = TlsAcceptorData::try_from(&TlsServerConfig::new().with_single_cert(auth))
-        .unwrap()
-        .into_static_acceptor_builder()
-        .unwrap()
-        .build();
+    for padding in [None, Some(0), Some(32), Some(16_384), Some(16_385)] {
+        for enabled in [false, true] {
+            let auth = server_auth();
+            let config = TlsClientConfig::new()
+                .with_server_padding_request(padding)
+                .with_server_name(Host::from_static("prepared.test"))
+                .try_with_server_trust_anchors([auth.cert_chain.last().unwrap().clone()])
+                .unwrap();
+            let data = TlsConnectorData::try_from(&config).unwrap();
+            let mut prepared = PreparedClient::try_from(data).unwrap();
+            let marker = Ssl::new_ex_index::<bool>().unwrap();
+            prepared.ssl.set_ex_data(marker, true);
+            let server = TlsAcceptorData::try_from(&TlsServerConfig::new().with_single_cert(auth))
+                .unwrap()
+                .into_static_acceptor_builder()
+                .unwrap()
+                .build();
 
-    // The transport is created only after native preparation has succeeded.
-    let (client_io, server_io) = tokio::io::duplex(16 * 1024);
-    let server = async move {
-        let mut stream = rama_boring_tokio::accept(&server, server_io).await.unwrap();
-        stream.write_all(b"server").await.unwrap();
-        let mut received = [0; 6];
-        stream.read_exact(&mut received).await.unwrap();
-        assert_eq!(&received, b"client");
-    };
-    let client = async move {
-        let mut stream = prepared
-            .connect(ServiceInput::new(client_io))
+            // The transport is created only after native preparation has succeeded.
+            let (client_io, server_io) = tokio::io::duplex(16 * 1024);
+            let server = async move {
+                let mut ssl = Ssl::new(server.context()).unwrap();
+                if enabled {
+                    ssl.set_server_padding_enabled(true);
+                }
+                let mut stream = rama_boring_tokio::SslStreamBuilder::new(ssl, server_io)
+                    .accept()
+                    .await
+                    .unwrap();
+                stream.write_all(b"server").await.unwrap();
+                let mut received = [0; 6];
+                stream.read_exact(&mut received).await.unwrap();
+                assert_eq!(&received, b"client");
+            };
+            let client = async move {
+                let mut stream = prepared
+                    .connect(ServiceInput::new(client_io))
+                    .await
+                    .unwrap();
+                let mut received = [0; 6];
+                stream.read_exact(&mut received).await.unwrap();
+                assert_eq!(&received, b"server");
+                assert_eq!(
+                    stream.ssl_ref().ex_data(marker),
+                    Some(&true),
+                    "the prepared native session and its attached state must survive"
+                );
+                assert_eq!(
+                    stream.ssl_ref().server_sent_requested_padding(),
+                    enabled && padding.is_some_and(|bytes| bytes <= 16_384),
+                );
+                stream.write_all(b"client").await.unwrap();
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                tokio::join!(server, client);
+            })
             .await
             .unwrap();
-        let mut received = [0; 6];
-        stream.read_exact(&mut received).await.unwrap();
-        assert_eq!(&received, b"server");
-        assert_eq!(
-            stream.ssl_ref().ex_data(marker),
-            Some(&true),
-            "the prepared native session and its attached state must survive"
-        );
-        stream.write_all(b"client").await.unwrap();
-    };
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        tokio::join!(server, client);
-    })
-    .await
-    .unwrap();
+        }
+    }
 }
 
 #[tokio::test]
@@ -111,6 +127,7 @@ async fn preparation_preserves_peer_authentication_failures() {
             } else {
                 "prepared.test"
             }));
+        config.set_server_padding_request(32);
         if trust_server {
             config = config
                 .try_with_server_trust_anchors([auth.cert_chain.last().unwrap().clone()])

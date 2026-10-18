@@ -65,6 +65,7 @@ pub struct BoringTlsConnectorConfig<'a> {
     pub cert_compression: Option<&'a BoringCertCompression>,
     pub delegated_credentials: Option<&'a BoringDelegatedCredentials>,
     pub record_size_limit: Option<&'a BoringRecordSizeLimit>,
+    pub server_padding_request: Option<&'a BoringServerPaddingRequest>,
     pub encrypted_client_hello: Option<&'a BoringEncryptedClientHello>,
     pub ech_grease: Option<&'a EchGrease>,
     pub ocsp_stapling: Option<&'a BoringOcspStapling>,
@@ -123,6 +124,7 @@ impl BoringTlsConnectorConfig<'_> {
             cert_compression,
             delegated_credentials,
             record_size_limit,
+            server_padding_request,
             encrypted_client_hello,
             ech_grease,
             ocsp_stapling,
@@ -180,6 +182,9 @@ impl BoringTlsConnectorConfig<'_> {
         }
         if let Some(padding) = client_hello_padding {
             builder.set_component(*padding);
+        }
+        if let Some(request) = server_padding_request {
+            builder.set_component(*request);
         }
         if let Some(legacy) = legacy_extensions {
             builder.set_component(*legacy);
@@ -272,6 +277,7 @@ impl BoringTlsConnectorConfig<'_> {
             cert_compression: _,
             delegated_credentials: _,
             record_size_limit: _,
+            server_padding_request: _,
             encrypted_client_hello: _,
             ech_grease: _,
             ocsp_stapling: _,
@@ -317,6 +323,7 @@ impl BoringTlsConnectorConfig<'_> {
             cert_compression: None,
             delegated_credentials: None,
             record_size_limit: None,
+            server_padding_request: None,
             encrypted_client_hello: None,
             ech_grease: None,
             ocsp_stapling: None,
@@ -363,6 +370,7 @@ impl BoringTlsConnectorConfig<'_> {
             cert_compression: _,
             delegated_credentials: _,
             record_size_limit: _,
+            server_padding_request: _,
             encrypted_client_hello: _,
             ech_grease: _,
             ocsp_stapling: _,
@@ -480,6 +488,12 @@ pub trait BoringClientConfigExt: Sized {
     generate_set_and_with! {
         /// Set the `record_size_limit` value; `0` omits the extension.
         fn record_size_limit(self, limit: u16) -> Self;
+    }
+    generate_set_and_with! {
+        /// Request experimental server certificate padding on each new SSL.
+        /// `None` omits it; `Some(0)` explicitly requests zero bytes. This does
+        /// not require the server to respond or change certificate verification.
+        fn server_padding_request(self, bytes: impl Into<Option<u16>>) -> Self;
     }
     generate_set_and_with! {
         /// Enable/disable Encrypted ClientHello (ECH) GREASE.
@@ -643,6 +657,12 @@ impl BoringClientConfigExt for TlsClientConfig {
     generate_set_and_with! {
         fn record_size_limit(mut self, limit: u16) -> Self {
             self.insert(BoringRecordSizeLimit(limit));
+            self
+        }
+    }
+    generate_set_and_with! {
+        fn server_padding_request(mut self, bytes: impl Into<Option<u16>>) -> Self {
+            self.insert(BoringServerPaddingRequest(bytes.into()));
             self
         }
     }
@@ -898,6 +918,21 @@ pub struct BoringDelegatedCredentials(pub Vec<SignatureScheme>);
 #[extension(tags(tls))]
 pub struct BoringRecordSizeLimit(pub u16);
 
+/// Experimental server certificate padding requested on a fresh SSL.
+/// `None` explicitly omits the extension; `Some(0)` requests zero bytes.
+/// A new native SSL is configured before its handshake; no live SSL is reset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(tls))]
+pub struct BoringServerPaddingRequest(pub Option<u16>);
+
+impl TlsPoolComponent for BoringServerPaddingRequest {
+    type Identity = Self;
+
+    fn pool_component_identity(&self) -> Self {
+        *self
+    }
+}
+
 /// Whether to GREASE the Encrypted ClientHello (ECH) extension.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
@@ -964,6 +999,7 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         let mut cert_compression = Vec::new();
         let mut delegated_credentials = Vec::new();
         let mut record_size_limit = 0;
+        let mut server_padding_request = None;
         let mut encrypted_client_hello = false;
         let mut ech_grease = EchGrease::Native;
         let mut ocsp_stapling = false;
@@ -1003,6 +1039,9 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
                 }
                 ClientHelloExtension::DelegatedCredentials(schemes) => {
                     delegated_credentials.clone_from(schemes);
+                }
+                ClientHelloExtension::ServerPaddingRequest(bytes) => {
+                    server_padding_request = Some(*bytes);
                 }
                 ClientHelloExtension::RecordSizeLimit(limit) => {
                     record_size_limit = *limit;
@@ -1073,6 +1112,7 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
         config.set_cert_compression(cert_compression);
         config.set_delegated_credentials(delegated_credentials);
         config.set_record_size_limit(record_size_limit);
+        config.set_server_padding_request(server_padding_request);
         config.set_encrypted_client_hello(encrypted_client_hello);
         config.set_ech_grease(ech_grease);
         config.set_ocsp_stapling(ocsp_stapling);

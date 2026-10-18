@@ -1,4 +1,5 @@
 use super::*;
+use rama_boring::ssl::Padding;
 use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 use rama_tls::{
     CipherSuite, ExtensionId, ProtocolVersion, SupportedGroup,
@@ -458,4 +459,64 @@ fn explicit_legacy_extension_pair_can_remain_in_a_tls13_only_first_flight() {
     )
     .unwrap();
     assert_admitted_emission_matches(&captured, TlsClientConfig::new(), true);
+}
+
+#[test]
+fn counted_server_padding_replays_exact_native_tcp_values() {
+    for bytes in [None, Some(0), Some(32), Some(16_384), Some(u16::MAX)] {
+        let original = wire_variant()
+            .with_client_hello_padding(Padding::Off)
+            .with_server_padding_request(bytes);
+        let source = TlsCapture::capture(
+            ProfileCaptureCompleteness::Complete,
+            TlsCaptureTransport::Tcp,
+            &hello_from_data(TlsConnectorData::try_from(&original).unwrap()),
+            TlsCaptureLimits::default(),
+        )
+        .unwrap();
+        let compiled = wire::compile(wire::TransportShape::Tcp, &source, None).unwrap();
+        // A captured omission must override an otherwise configured native
+        // request too, without trying to reset a previously used SSL.
+        let current = TlsClientConfig::new().with_server_padding_request(99);
+        current.as_extensions().extend(compiled.as_extensions());
+        let emitted = hello_from_data(TlsConnectorData::try_from(&current).unwrap());
+        let actual = TlsCapture::capture(
+            ProfileCaptureCompleteness::Complete,
+            TlsCaptureTransport::Tcp,
+            &emitted,
+            TlsCaptureLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            source.canonical(TlsCaptureLimits::default()).unwrap().bytes,
+            actual.canonical(TlsCaptureLimits::default()).unwrap().bytes,
+        );
+    }
+}
+
+#[test]
+fn counted_server_padding_rejects_malformed_retained_bodies() {
+    let original = wire_variant().with_server_padding_request(32);
+    let source = TlsCapture::capture(
+        ProfileCaptureCompleteness::Complete,
+        TlsCaptureTransport::Tcp,
+        &hello_from_data(TlsConnectorData::try_from(&original).unwrap()),
+        TlsCaptureLimits::default(),
+    )
+    .unwrap();
+    for body in [vec![], vec![0], vec![0, 1, 2]] {
+        let mut malformed = source.clone();
+        malformed
+            .extensions
+            .iter_mut()
+            .find(|extension| extension.id == u16::from(ExtensionId::SERVER_PADDING_REQUEST))
+            .unwrap()
+            .value = TlsCapturedExtensionValue::Literal(body.into());
+        assert!(
+            malformed
+                .validate_fields(TlsCaptureLimits::default())
+                .is_err()
+        );
+        wire::compile(wire::TransportShape::Tcp, &malformed, None).unwrap_err();
+    }
 }

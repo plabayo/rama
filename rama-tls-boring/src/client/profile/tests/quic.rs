@@ -8,6 +8,7 @@ use rama_boring::{
         quic::{EncryptionLevel, HandshakeStatus, QuicConnection, QuicMethod},
     },
 };
+use rama_net::tls::ApplicationProtocol;
 use rama_tls::{
     ExtensionId, ProtocolVersion,
     client::{
@@ -73,7 +74,7 @@ fn hello(config: &TlsClientConfig, parameters: &[u8]) -> ClientHello {
 
 fn source(parameters: &[u8]) -> TlsCapture {
     let config = wire_variant()
-        .with_alpn(vec![rama_net::tls::ApplicationProtocol::HTTP_3].into())
+        .with_alpn(vec![ApplicationProtocol::HTTP_3].into())
         .with_min_version(ProtocolVersion::TLSv1_3)
         .with_max_version(ProtocolVersion::TLSv1_3)
         .with_client_hello_padding(rama_boring::ssl::Padding::Off);
@@ -192,4 +193,33 @@ fn quic_wire_compilation_rejects_wrong_transport_lengths_and_version_filtering()
     });
     filtered.extensions = fields.into();
     wire::compile(binding, &filtered, None).unwrap_err();
+}
+
+#[test]
+fn counted_server_padding_replays_exact_native_quic_values() {
+    let parameters = [0x0f, 4, 1, 2, 3, 4];
+    for bytes in [None, Some(0), Some(32), Some(16_384), Some(u16::MAX)] {
+        let original = wire_variant()
+            .with_alpn(vec![ApplicationProtocol::HTTP_3].into())
+            .with_min_version(ProtocolVersion::TLSv1_3)
+            .with_max_version(ProtocolVersion::TLSv1_3)
+            .with_client_hello_padding(rama_boring::ssl::Padding::Off)
+            .with_server_padding_request(bytes);
+        let source = captured(&hello(&original, &parameters));
+        let compiled = wire::compile(
+            TransportShape::Quic {
+                parameters_len: parameters.len(),
+            },
+            &source,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            source.canonical(TlsCaptureLimits::default()).unwrap().bytes,
+            captured(&hello(&compiled, &parameters))
+                .canonical(TlsCaptureLimits::default())
+                .unwrap()
+                .bytes,
+        );
+    }
 }

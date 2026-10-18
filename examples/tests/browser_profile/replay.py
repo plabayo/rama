@@ -10,6 +10,7 @@ import json
 import os
 import secrets
 import subprocess
+from urllib.parse import urlsplit, urlunsplit
 
 from capture_fields import compare_capture_fields
 from connection_fields import compare_connection_fields, h2_prefixes
@@ -263,6 +264,45 @@ def check_missing_tls_bindings(command, environment, root, *, protocol, trust_id
             any(error in path.read_text().lower() for error in expected_errors),
             "unexpected missing-binding failure; see " + path.name,
         )
+
+    check_tls_hostname(command, environment, root)
+
+
+def check_tls_hostname(command, environment, root):
+    """Keep the fixture CA trusted while connecting with an unrelated identity."""
+    destination = urlsplit(command[-1])
+    require(
+        destination.hostname == "localhost",
+        "hostname control requires the local fixture",
+    )
+    port = destination.port or 443
+    hostname = "hostname-mismatch.invalid"
+    arguments = list(command[:-1]) + [
+        "--resolve",
+        f"{hostname}:{port}:127.0.0.1",
+        urlunsplit(destination._replace(netloc=f"{hostname}:{port}")),
+    ]
+    path = root / "wrong-hostname.log"
+    with path.open("w") as log:
+        result = subprocess.run(
+            arguments,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            timeout=30,
+        )
+    require(result.returncode != 0, "replay unexpectedly accepted the wrong hostname")
+    expected_errors = ("certificate",)
+    if "--http3" in command:
+        # The authenticated QUIC fixture reports bad_certificate as alert 42.
+        expected_errors += (
+            "the cryptographic handshake failed: error 42: tls handshake failed",
+        )
+    require(
+        any(error in path.read_text().lower() for error in expected_errors),
+        "unexpected hostname-control failure; see " + path.name,
+    )
 
 
 def verify_tls_replay(

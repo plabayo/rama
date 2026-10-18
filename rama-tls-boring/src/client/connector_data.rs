@@ -128,6 +128,7 @@ struct WirePlan {
     certificate_compression: Vec<NativeCertificateCompression>,
     alps: Option<(Vec<ApplicationProtocol>, bool)>,
     record_size_limit: Option<u16>,
+    server_padding_request: Option<u16>,
     delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
     encrypted_client_hello: bool,
     ech_grease: Option<EchGreaseShape>,
@@ -254,6 +255,9 @@ impl WirePlan {
         if let Some(limit) = self.record_size_limit {
             cfg.set_record_size_limit(limit)
                 .context("set record size limit")?;
+        }
+        if let Some(bytes) = self.server_padding_request {
+            cfg.set_server_padding_request(bytes);
         }
         if let Some(schemes) = &self.delegated_credential_schemes {
             cfg.set_delegated_credential_schemes(schemes)
@@ -688,6 +692,7 @@ impl TryFrom<&BoringTlsConnectorConfig<'_>> for ConnectorOptions {
                 .unwrap_or_default(),
             alps: value.alps.map(|p| (p.protocols.clone(), p.new_codepoint)),
             record_size_limit: value.record_size_limit.map(|p| p.0),
+            server_padding_request: value.server_padding_request.and_then(|request| request.0),
             delegated_credential_schemes,
             ech_grease: value
                 .ech_grease

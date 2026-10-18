@@ -363,6 +363,10 @@ fn parse_tls_client_hello_extension(i: &[u8]) -> IResult<&[u8], ClientHelloExten
             let (i, v) = be_u16(ext_data)?;
             Ok((i, ClientHelloExtension::RecordSizeLimit(v)))
         }
+        ExtensionId::SERVER_PADDING_REQUEST => {
+            let (i, bytes) = be_u16(ext_data)?;
+            Ok((i, ClientHelloExtension::ServerPaddingRequest(bytes)))
+        }
         ExtensionId::ENCRYPTED_CLIENT_HELLO => {
             let (i, ech) = parse_ech_client_hello(ext_data)?;
             Ok((i, ClientHelloExtension::EncryptedClientHello(ech)))
@@ -622,6 +626,28 @@ mod tests {
         body.extend_from_slice(&u16::try_from(value.len()).unwrap().to_be_bytes());
         body.extend_from_slice(value);
         body
+    }
+
+    #[test]
+    fn server_padding_request_requires_its_complete_u16_body() {
+        for bytes in [0u16, 32, 16_384, u16::MAX] {
+            let hello = parse_client_hello(&body_with_extension(
+                ExtensionId::SERVER_PADDING_REQUEST.into(),
+                &bytes.to_be_bytes(),
+            ))
+            .unwrap();
+            assert!(matches!(
+                hello.extensions(),
+                [ClientHelloExtension::ServerPaddingRequest(actual)] if *actual == bytes
+            ));
+        }
+        for body in [vec![], vec![0], vec![0, 1, 2]] {
+            parse_client_hello(&body_with_extension(
+                ExtensionId::SERVER_PADDING_REQUEST.into(),
+                &body,
+            ))
+            .unwrap_err();
+        }
     }
 
     #[test]

@@ -693,6 +693,8 @@ enum_builder! {
         DNSSEC_CHAIN => 59,
         SEQUENCE_NUMBER_ENCRYPTION_ALGORITHMS => 60,
         RRC => 61,
+        // Experimental server certificate padding request (u16 byte count).
+        SERVER_PADDING_REQUEST => 4832,
         NEXT_PROTOCOL_NEGOTIATION => 13172,
         OLD_APPLICATION_SETTINGS => 17513,
         APPLICATION_SETTINGS => 17613,

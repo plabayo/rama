@@ -76,6 +76,9 @@ impl TlsCapturedExtension {
                 {
                     return Err(ProfileDataError::Invalid("nonempty TLS empty extension"));
                 }
+                if id == ExtensionId::SERVER_PADDING_REQUEST && bytes.len() != size_of::<u16>() {
+                    return Err(ProfileDataError::Invalid("server padding request length"));
+                }
                 !client_hello_extension_is_connection_bound(id)
                     && !matches!(
                         id,

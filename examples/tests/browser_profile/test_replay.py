@@ -16,6 +16,7 @@ from replay import (
     connection_variants,
     connection_warmups,
     check_missing_tls_bindings,
+    check_tls_hostname,
     current_trust_ids,
     replay_environment,
     requests_from_wire,
@@ -130,9 +131,15 @@ class ReplayTests(unittest.TestCase):
             ("h3", "the cryptographic handshake failed: error 80: TLS handshake failed", False),
         ]:
             with self.subTest(protocol=protocol, error=error), tempfile.TemporaryDirectory() as root:
+                calls = []
+
                 def reject(arguments, **kwargs):
-                    self.assertNotIn("--cacert", arguments)
-                    kwargs["stdout"].write(error)
+                    calls.append(arguments)
+                    if "--cacert" in arguments:
+                        self.assertIn("--resolve", arguments)
+                        kwargs["stdout"].write("certificate verify failed: hostname mismatch")
+                    else:
+                        kwargs["stdout"].write(error)
                     return SimpleNamespace(returncode=1)
 
                 with patch("replay.subprocess.run", side_effect=reject):
@@ -140,11 +147,55 @@ class ReplayTests(unittest.TestCase):
                         check_missing_tls_bindings(
                             command, {}, Path(root), protocol=protocol, trust_ids=None,
                         )
+                        self.assertEqual(len(calls), 2)
+                        self.assertIn("--cacert", calls[-1])
                     else:
                         with self.assertRaisesRegex(ValueError, "unexpected missing-binding"):
                             check_missing_tls_bindings(
                                 command, {}, Path(root), protocol=protocol, trust_ids=None,
                             )
+
+    def test_hostname_control_keeps_trust_and_requires_a_certificate_failure(self):
+        command = [
+            "rama", "send", "--cacert", "fixture.pem",
+            "https://localhost:24443/report",
+        ]
+        bad_certificate = "the cryptographic handshake failed: error 42: TLS handshake failed"
+        for flag, code, message, accepted in [
+            ("--http2", 1, "CERTIFICATE_VERIFY_FAILED", True),
+            ("--http3", 1, bad_certificate, True),
+            ("--http2", 1, bad_certificate, False),
+            ("--http3", 1, bad_certificate.replace("42", "48"), False),
+            ("--http2", 0, "certificate", False),
+            ("--http2", 1, "connection refused", False),
+        ]:
+            arguments = [command[0], flag, *command[1:]]
+            with (
+                self.subTest(code=code, message=message),
+                tempfile.TemporaryDirectory() as root,
+            ):
+
+                def run(arguments, **kwargs):
+                    self.assertEqual(
+                        arguments[arguments.index("--cacert") + 1], "fixture.pem",
+                    )
+                    self.assertEqual(
+                        arguments[-3:],
+                        [
+                            "--resolve",
+                            "hostname-mismatch.invalid:24443:127.0.0.1",
+                            "https://hostname-mismatch.invalid:24443/report",
+                        ],
+                    )
+                    kwargs["stdout"].write(message)
+                    return SimpleNamespace(returncode=code)
+
+                with patch("replay.subprocess.run", side_effect=run):
+                    if accepted:
+                        check_tls_hostname(arguments, {}, Path(root))
+                    else:
+                        with self.assertRaises(ValueError):
+                            check_tls_hostname(arguments, {}, Path(root))
 
     def test_psk_priming_uses_a_full_recipe_from_the_same_profile(self):
         def variant(identifier, needs_ticket):

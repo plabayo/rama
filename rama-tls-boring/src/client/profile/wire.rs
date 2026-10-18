@@ -85,6 +85,7 @@ pub fn compile(
     config.set_cert_compression(Vec::new());
     config.set_delegated_credentials(Vec::new());
     config.set_record_size_limit(0);
+    config.set_server_padding_request(None);
     config.set_encrypted_client_hello(false);
     config.set_ech_grease(EchGrease::Native);
     config.set_ocsp_stapling(false);
@@ -147,6 +148,13 @@ pub fn compile(
                 if limit.len() == 1 && limit[0] != 0 =>
             {
                 config.set_record_size_limit(limit[0]);
+            }
+            (ExtensionId::SERVER_PADDING_REQUEST, Value::Literal(body)) => {
+                let bytes = body
+                    .as_ref()
+                    .try_into()
+                    .map_err(|_error| BoxError::from("invalid captured server padding request"))?;
+                config.set_server_padding_request(Some(u16::from_be_bytes(bytes)));
             }
             (ExtensionId::DELEGATED_CREDENTIAL, Value::U16List(schemes)) => {
                 config.set_delegated_credentials(schemes.iter().copied().map(Into::into).collect());

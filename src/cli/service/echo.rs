@@ -792,7 +792,8 @@ impl Service<Request> for EchoService {
                             "id": extension.id().to_string(),
                             "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                         }),
-                        ClientHelloExtension::RecordSizeLimit(v) => json!({
+                        ClientHelloExtension::RecordSizeLimit(v)
+                | ClientHelloExtension::ServerPaddingRequest(v) => json!({
                             "id": extension.id().to_string(),
                             "data": v.to_string(),
                         }),

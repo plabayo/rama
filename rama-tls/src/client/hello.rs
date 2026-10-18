@@ -359,6 +359,9 @@ pub enum ClientHelloExtension {
     ///
     /// - <https://datatracker.ietf.org/doc/html/rfc8449>
     RecordSizeLimit(u16),
+    /// Experimental requested server certificate padding, in bytes.
+    /// Zero is an explicit request; an absent extension makes no request.
+    ServerPaddingRequest(u16),
     /// Delegated credentials
     ///
     /// # Reference
@@ -403,6 +406,7 @@ impl ClientHelloExtension {
             Self::CertificateCompression(_) => ExtensionId::COMPRESS_CERTIFICATE,
             Self::DelegatedCredentials(_) => ExtensionId::DELEGATED_CREDENTIAL,
             Self::RecordSizeLimit(_) => ExtensionId::RECORD_SIZE_LIMIT,
+            Self::ServerPaddingRequest(_) => ExtensionId::SERVER_PADDING_REQUEST,
             Self::EncryptedClientHello(_) => ExtensionId::ENCRYPTED_CLIENT_HELLO,
             Self::Opaque { id, .. } => *id,
         }
