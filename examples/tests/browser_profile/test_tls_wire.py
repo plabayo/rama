@@ -324,5 +324,111 @@ class TlsWireTests(unittest.TestCase):
             compare_tls_captures(archive, [hello], [request, other])
 
 
+class FragmentedClientHelloTests(unittest.TestCase):
+    def fixture(self):
+        body = (
+            b"\x03\x03"
+            + bytes(32)
+            + b"\x00"
+            + vector(b"\x13\x01")
+            + b"\x01\x00"
+            + vector(b"")
+        )
+        raw = b"\x01" + vector(body, 3)
+        packet = ET.Element("packet")
+        ET.SubElement(packet, "field", name="frame.number", show="1")
+        ET.SubElement(packet, "field", name="quic.connection.number", show="7")
+        parent = ET.SubElement(packet, "proto", name="tls", pos="5", size="12")
+        # The fragment group and handshake retain the final packet offset.
+        group = ET.SubElement(
+            parent, "field", name="tls.handshake.fragments", pos="5", size=str(len(raw))
+        )
+        for offset, data in [(0, raw[:12]), (12, raw[12:])]:
+            ET.SubElement(
+                group, "field", name="tls.handshake.fragment",
+                pos=str(offset), size=str(len(data)), value=data.hex(),
+            )
+        ET.SubElement(group, "field", name="tls.handshake.fragment.count", show="2")
+        node = ET.SubElement(
+            parent, "field", name="tls.handshake", pos="5", size=str(len(raw))
+        )
+        # Its decoded children use the complete, reassembled source offset.
+        ET.SubElement(
+            node, "field", name="tls.handshake.type",
+            pos="0", size="1", show="1", value="01",
+        )
+        ET.SubElement(
+            node, "field", name="tls.handshake.source",
+            pos="0", size=str(len(raw)), value=raw.hex(),
+        )
+        root = ET.Element("pdml")
+        root.append(packet)
+        return root, parent, group, node
+
+    def test_reassembled_source_and_dissection_must_agree(self):
+        root, _, _, _ = self.fixture()
+        before = ET.tostring(root)
+        hellos = client_hellos(before, "Quic")
+        self.assertEqual(len(hellos), 1)
+        self.assertEqual(hellos[0].connection, 7)
+        self.assertEqual(hellos[0].capture["ciphers"], [4865])
+        self.assertEqual(hellos[0].capture["extensions"], [])
+        self.assertEqual(ET.tostring(root), before)
+
+    def test_fragment_source_cannot_hide_corrupt_or_ambiguous_dissection(self):
+        changes = (
+            "missing-count",
+            "wrong-count",
+            "wrong-total",
+            "wrong-handshake-size",
+            "fragment-gap",
+            "fragment-overlap",
+            "fragment-size",
+            "fragment-bytes",
+            "dissection-bytes",
+            "missing-origin",
+            "duplicate-group",
+            "missing-fragment",
+        )
+        for change in changes:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                root, parent, group, node = self.fixture()
+                fragments = group.findall("field[@name='tls.handshake.fragment']")
+                count = group.find("field[@name='tls.handshake.fragment.count']")
+                if change == "missing-count":
+                    group.remove(count)
+                elif change == "wrong-count":
+                    count.set("show", "3")
+                elif change == "wrong-total":
+                    group.set("size", str(int(group.get("size")) + 1))
+                elif change == "wrong-handshake-size":
+                    node.set("size", str(int(node.get("size")) + 1))
+                elif change == "fragment-gap":
+                    fragments[1].set("pos", "13")
+                elif change == "fragment-overlap":
+                    fragments[1].set("pos", "11")
+                elif change == "fragment-size":
+                    fragments[0].set("size", "11")
+                elif change == "fragment-bytes":
+                    # A changed random byte remains syntactically valid TLS.
+                    value = bytearray.fromhex(fragments[0].get("value"))
+                    value[10] ^= 1
+                    fragments[0].set("value", value.hex())
+                elif change == "dissection-bytes":
+                    field = node.find("field[@name='tls.handshake.source']")
+                    value = bytearray.fromhex(field.get("value"))
+                    value[10] ^= 1
+                    field.set("value", value.hex())
+                elif change == "missing-origin":
+                    node.remove(node.find("field[@name='tls.handshake.type']"))
+                    # A remaining type display still triggers handshake parsing.
+                    ET.SubElement(node, "field", name="tls.handshake.type", show="1")
+                elif change == "duplicate-group":
+                    parent.append(copy.deepcopy(group))
+                elif change == "missing-fragment":
+                    group.remove(fragments[1])
+                client_hellos(ET.tostring(root), "Quic")
+
+
 if __name__ == "__main__":
     unittest.main()

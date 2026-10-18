@@ -5,6 +5,7 @@ only profile-retained fields; cryptographic material is never returned.
 This checks retained TLS metadata; other connection slots have separate checks.
 """
 
+from copy import copy
 from dataclasses import dataclass
 from capture_fields import connection_user_agents
 from wire import MAX_PDML_BYTES, MAX_PACKETS, pdml_packets
@@ -97,7 +98,7 @@ class Reader:
 
 def byte_span(node):
     """Require complete, mutually consistent raw-byte coverage from tshark."""
-    start, size = int(node.get("pos")), int(node.get("size"))
+    start, size = int(node.get("pos")), int(node.get("size", "-1"))
     if not 0 <= size <= 65539:
         raise ValueError("TLS extension byte limit")
     values = [None] * size
@@ -117,6 +118,60 @@ def byte_span(node):
     if None in values:
         raise ValueError("incomplete tshark raw byte spans")
     return bytes(values)
+
+
+def handshake_bytes(node, parent):
+    """Cross-check reassembled fragments against the decoded handshake fields.
+
+    Tshark can keep the final packet's offset on a reassembled handshake while
+    its children use the reassembled source's offsets. Only an explicit, complete
+    fragment source permits that coordinate change; ordinary spans stay strict.
+    """
+    groups = parent.findall("field[@name='tls.handshake.fragments']")
+    if not groups:
+        return byte_span(node)
+    if len(groups) != 1:
+        raise ValueError("ambiguous TLS fragment source")
+
+    group = groups[0]
+    size = int(group.get("size", "-1"))
+    if size != int(node.get("size", "-1")) or not 4 <= size <= 65539:
+        raise ValueError("TLS fragment source size mismatch")
+    fragments = group.findall("field[@name='tls.handshake.fragment']")
+    counts = group.findall("field[@name='tls.handshake.fragment.count']")
+    if (
+        not 1 <= len(fragments) <= 128
+        or len(counts) != 1
+        or int(counts[0].get("show", "-1")) != len(fragments)
+    ):
+        raise ValueError("TLS fragment source count mismatch")
+
+    raw = bytearray()
+    for fragment in fragments:
+        data = bytes.fromhex(fragment.get("value", ""))
+        if (
+            int(fragment.get("pos", "-1")) != len(raw)
+            or not data
+            or len(data) != int(fragment.get("size", "-1"))
+            or len(raw) + len(data) > size
+        ):
+            raise ValueError("incomplete or overlapping TLS fragment source")
+        raw.extend(data)
+    if len(raw) != size:
+        raise ValueError("incomplete TLS fragment source")
+
+    # Check both representations instead of accepting whichever one parses.
+    kinds = node.findall("field[@name='tls.handshake.type']")
+    if len(kinds) != 1:
+        raise ValueError("ambiguous TLS handshake source origin")
+    origin = int(kinds[0].get("pos", "-1"))
+    if origin < 0:
+        raise ValueError("missing TLS handshake source origin")
+    normalized = copy(node)
+    normalized.set("pos", str(origin))
+    if byte_span(normalized) != raw:
+        raise ValueError("TLS fragment source differs from decoded fields")
+    return bytes(raw)
 
 
 def integers(data, width):
@@ -246,27 +301,28 @@ def client_hellos(data, transport):
     packets = pdml_packets(data, byte_limit=MAX_PDML_BYTES, packet_limit=MAX_PACKETS)
     results = []
     for packet in packets:
-        for node in packet.iter("field"):
-            if node.get("name") != "tls.handshake":
-                continue
-            kind = node.find("field[@name='tls.handshake.type']")
-            if kind is None or kind.get("show") != "1":
-                continue  # Fragment-only dissector nodes are not complete hellos.
-            capture = decode_client_hello(byte_span(node), transport)
-            results.append(
-                TlsHello(
-                    packet=identity(packet, "frame.number"),
-                    connection=identity(
-                        packet,
-                        (
-                            "tcp.stream"
-                            if transport == "Tcp"
-                            else "quic.connection.number"
+        for parent in packet.iter():
+            for node in parent:
+                if node.get("name") != "tls.handshake":
+                    continue
+                kind = node.find("field[@name='tls.handshake.type']")
+                if kind is None or kind.get("show") != "1":
+                    continue  # Fragment-only dissector nodes are not complete hellos.
+                capture = decode_client_hello(handshake_bytes(node, parent), transport)
+                results.append(
+                    TlsHello(
+                        packet=identity(packet, "frame.number"),
+                        connection=identity(
+                            packet,
+                            (
+                                "tcp.stream"
+                                if transport == "Tcp"
+                                else "quic.connection.number"
+                            ),
                         ),
-                    ),
-                    capture=capture,
+                        capture=capture,
+                    )
                 )
-            )
     if not results:
         raise ValueError("no complete ClientHello")
     return results
