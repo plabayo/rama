@@ -339,6 +339,10 @@ async fn explicit_h3_get_streamed_post_resolve_and_diagnostics() -> TestResult {
     succeeded(&output);
     assert_eq!(output.stdout, b"hello from rama");
     let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        stderr.contains("* Connection established over QUIC/UDP to peer with IPv4: 127.0.0.1"),
+        "{stderr}"
+    );
     let version_line = format!("* using {:?}", Version::HTTP_3);
     assert!(stderr.lines().any(|line| line == version_line), "{stderr}");
     let alpn_line = format!("* ALPN: server selected {}", ApplicationProtocol::HTTP_3);
@@ -590,6 +594,10 @@ async fn h1_h2_tls_limits_and_local_uri_schemes_remain_usable() -> TestResult {
         succeeded(&output);
         assert_eq!(server.requests.lock()[0].version, version);
         let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("* Connection established over TCP to peer with IPv4: 127.0.0.1"),
+            "{stderr}"
+        );
         let expected = format!("* using {version:?}");
         assert!(stderr.lines().any(|line| line == expected), "{stderr}");
         if version == Version::HTTP_2 {

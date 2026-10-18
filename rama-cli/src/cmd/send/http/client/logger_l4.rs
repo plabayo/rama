@@ -1,6 +1,7 @@
 use rama::{
     Service,
     extensions::ExtensionsRef,
+    http::{Version, conn::TargetHttpVersion},
     net::{
         client::{ConnectionError, ConnectorService, EstablishedClientConnection},
         stream::SocketInfo,
@@ -27,12 +28,17 @@ where
         if ec.input.extensions().contains::<VerboseLogs>()
             && let Some(socket) = ec.conn.extensions().get_ref::<SocketInfo>()
         {
+            // Use the established connection's version, never the requested one.
+            let transport = match ec.conn.extensions().get_ref::<TargetHttpVersion>() {
+                Some(TargetHttpVersion(Version::HTTP_3)) => "QUIC/UDP",
+                _ => "TCP",
+            };
             match socket.peer_addr().ip_addr {
                 IpAddr::V4(addr) => {
-                    eprintln!("* Connection established to peer with IPv4: {addr}")
+                    eprintln!("* Connection established over {transport} to peer with IPv4: {addr}")
                 }
                 IpAddr::V6(addr) => {
-                    eprintln!("* Connection established to peer with IPv6: {addr}")
+                    eprintln!("* Connection established over {transport} to peer with IPv6: {addr}")
                 }
             }
         }
