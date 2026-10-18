@@ -1,3 +1,7 @@
+import ast
+import hashlib
+import inspect
+import json
 from contextlib import contextmanager
 from dataclasses import replace
 import os
@@ -7,6 +11,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
+import capture as capture_module
 from capture import capture, capture_tls, tls_browser_options
 from flow_bodies import WEBSOCKET_PROBE
 from test_flow_bodies import fixture
@@ -14,6 +19,88 @@ from wire import HeaderBlock, drain_capture
 
 
 class PageProbeCaptureTests(unittest.TestCase):
+    def test_h1_serialized_summary_retains_driver_probe_digest_only_for_all_flows(self):
+        # Exercise the runner's real report statements without starting browsers.
+        tree = ast.parse(inspect.getsource(capture_module.capture_http1))
+        result_assignment = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "result"
+                for target in node.targets
+            )
+        )
+        probe_assignment = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Name)
+            and node.test.id == "all_flows"
+            and any(
+                isinstance(child, ast.Constant)
+                and child.value == "websocket_probe_sha256"
+                for child in ast.walk(node)
+            )
+        )
+        summary_write = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and node.value.func.attr == "write_text"
+            and any(
+                isinstance(child, ast.Constant) and child.value == "summary.json"
+                for child in ast.walk(node.value.func)
+            )
+        )
+        report = compile(
+            ast.Module(
+                body=[result_assignment, probe_assignment, summary_write],
+                type_ignores=[],
+            ),
+            capture_module.__file__,
+            "exec",
+        )
+        probe = "driver-known echo 🐬 #" + "87" * 16
+        for all_flows in (False, True):
+            with (
+                self.subTest(all_flows=all_flows),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                namespace = dict(
+                    root=root,
+                    capture_result=SimpleNamespace(
+                        browser_name="firefox",
+                        browser_version="158.0",
+                        protocols={"navigate": "h1"},
+                        websocket_probe=probe,
+                    ),
+                    all_flows=all_flows,
+                    browser_kind="firefox",
+                    flow_mode="all" if all_flows else "navigate",
+                    archive={"profiles": [{}]},
+                    hashlib=hashlib,
+                    json=json,
+                )
+                exec(report, namespace)
+                serialized = (root / "summary.json").read_text()
+                summary = json.loads(serialized)
+                self.assertEqual(summary["browser"], "firefox")
+                self.assertEqual(summary["version"], "158.0")
+                self.assertEqual(summary["protocols"], {"navigate": "h1"})
+                if all_flows:
+                    self.assertEqual(
+                        summary.get("websocket_probe_sha256"),
+                        hashlib.sha256(probe.encode()).hexdigest(),
+                    )
+                else:
+                    self.assertNotIn("websocket_probe_sha256", summary)
+                self.assertNotIn(probe, serialized)
+                self.assertNotIn("page_results", summary)
+
     def test_tls_capture_supplies_its_completed_page_probe_to_the_decoder(self):
         class DecoderReached(Exception):
             pass

@@ -488,7 +488,7 @@ def capture_http1(args):
                 {
                     "scope": f"{browser_kind.title()} H1 {flow_mode} capture/export and strict replay; see comparison.json for exact membership results",
                     "profiles": len(archive["profiles"]),
-                    "browser": result["browser"],
+                    **result,
                     "draw": {
                         "seed": "01" * 32,
                         "connection_key": "02" * 32,
