@@ -793,4 +793,6 @@ jobs:
             ${{ runner.temp }}/browser-evidence/comparison.json
             ${{ runner.temp }}/browser-evidence/summary.json
             ${{ runner.temp }}/browser-evidence/tls-comparison.json
+            ${{ runner.temp }}/browser-evidence/capture-fields.json
+            ${{ runner.temp }}/browser-evidence/replay-fields.json
             ${{ runner.temp }}/browser-evidence/wire-comparison.json

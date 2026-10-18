@@ -10,7 +10,7 @@ FLOWS = ("navigate", "fetch", "xhr", "ws", "form", "form_get")
 FLOW_NAMES = set(FLOWS)
 
 
-def flow_name(headers):
+def flow_name(headers, *, protocol=None):
     fields = dict(headers)
     method, path = fields.get(":method"), fields.get(":path", "")
     if method == "GET" and path.split("?", 1)[0] == "/report":
@@ -19,10 +19,9 @@ def flow_name(headers):
         return "fetch"
     if method == "POST" and re.fullmatch(r"/api/xml/number/\d+", path):
         return "xhr"
-    if (
-        method == "CONNECT"
-        and path == "/api/ws"
-        and fields.get(":protocol") == "websocket"
+    if path == "/api/ws" and (
+        (protocol == "h1" and method == "GET")
+        or (method == "CONNECT" and fields.get(":protocol") == "websocket")
     ):
         return "ws"
     if method == "POST" and path == "/form":
@@ -36,8 +35,9 @@ def scope_matches(scope, block, flow):
     context = (scope.get("flow") or {}).get("Http")
     if context is None:
         return False
-    headers = dict(block.headers)
-    if context["version"] != {"h2": "HTTP/2.0", "h3": "HTTP/3.0"}[block.protocol]:
+    headers = {name.lower(): value for name, value in block.headers}
+    versions = {"h1": "HTTP/1.1", "h2": "HTTP/2.0", "h3": "HTTP/3.0"}
+    if context["version"] != versions[block.protocol]:
         return False
     if context["method"] != headers[":method"] or context["initiator"] != (
         "form" if flow == "form_get" else flow

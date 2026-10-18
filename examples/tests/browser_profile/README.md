@@ -55,9 +55,11 @@ TLS H1 replays every retained connection variant, verifies the missing-CA refusa
 and checks the retained ClientHello fields/shapes on each request-bearing TCP
 stream against independently decrypted traffic. `tls-comparison.json` records
 these checks separately from exact H1 request tuples and archive comparisons.
-The header capture/export check is still an archive comparison, rather than the
-independent joint-header inspection used by H2/H3. H1 WebSocket application data
-still has the limitation described below. Daily CI includes plaintext and TLS
+Both the original and replayed H1 headers are independently compared with the
+original inspected archive: exact spelling/order/multiplicity and retained literal
+values must match one observation from the same browser and flow. Request-owned
+values remain checked by the separate wire bindings. H1 WebSocket application
+data still has the limitation described below. Daily CI includes plaintext and TLS
 H1 cells in debug and release; it runs this same entry point.
 
 Each run provisions a disposable database, captures original browser traffic,

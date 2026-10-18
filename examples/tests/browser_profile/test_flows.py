@@ -47,6 +47,13 @@ class FlowContextTests(unittest.TestCase):
                     )
                 )
 
+    def test_h1_upgrade_is_a_get_only_in_an_explicit_h1_context(self):
+        headers = ((":method", "GET"), (":path", "/api/ws"))
+        self.assertEqual(flow_name(headers, protocol="h1"), "ws")
+        for protocol in (None, "h2", "h3"):
+            with self.subTest(protocol=protocol):
+                self.assertIsNone(flow_name(headers, protocol=protocol))
+
     def test_websocket_without_fetch_metadata_matches(self):
         context = dict(version="HTTP/3.0", method="CONNECT", initiator="ws", fetch=None)
         block = SimpleNamespace(protocol="h3", headers=((":method", "CONNECT"),))

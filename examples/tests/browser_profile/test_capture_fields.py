@@ -3,6 +3,9 @@ import unittest
 from types import SimpleNamespace
 
 from capture_fields import matching_fields, compare_capture_fields
+from wire import h1_header_blocks
+from flows import FLOWS
+from test_wire_flows import fixture as h1_fixture
 
 
 def joint():
@@ -141,8 +144,83 @@ class CaptureFieldTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incomplete"):
             compare_capture_fields(inspected, blocks[:-1])
         inspected["profiles"][0]["key"]["user_agent"] = "other-client"
-        with self.assertRaisesRegex(ValueError, "no matching joint"):
+        with self.assertRaisesRegex(ValueError, "no matching scoped"):
             compare_capture_fields(inspected, blocks)
+
+    def test_h1_keeps_field_spelling_but_counts_duplicate_names_without_case(self):
+        capture = {
+            "version": "HTTP/1.1",
+            "fields": [
+                {"name": "Accept", "occurrence": 0, "value": {"Profile": list(b"first")}},
+                {"name": "aCcEpT", "occurrence": 1, "value": {"Profile": list(b"second")}},
+                {"name": "Host", "occurrence": 0, "value": {"Request": "Authority"}},
+            ],
+        }
+        headers = (
+            (":method", "GET"), (":path", "/report"),
+            ("Accept", "first"), ("aCcEpT", "second"), ("Host", "owned:443"),
+        )
+        self.assertEqual(matching_fields(capture, headers, protocol="h1"), (2, 1))
+        for altered in (
+            headers[:2] + (headers[3], headers[2], headers[4]),
+            headers[:2] + (("accept", "first"),) + headers[3:],
+            headers[:3] + (("aCcEpT", "wrong"),) + headers[4:],
+            headers[:-1],
+        ):
+            with self.subTest(altered=altered):
+                self.assertIsNone(matching_fields(capture, altered, protocol="h1"))
+        capture["fields"][1]["occurrence"] = 0
+        self.assertIsNone(matching_fields(capture, headers, protocol="h1"))
+        self.assertIsNone(matching_fields(capture, headers, protocol="h2"))
+
+    def test_h1_six_flows_require_their_own_browser_scope_and_observation(self):
+        rows, _ = h1_fixture()
+        for row in rows:
+            row["tcp.stream"] = "7"
+            row["http.request.line"] += "\x1fUser-Agent: fixture"
+        blocks = h1_header_blocks(rows)
+        scopes = []
+        for flow, block in zip(FLOWS, blocks):
+            fields = []
+            for name, value in block.headers:
+                if name.startswith(":"):
+                    continue
+                fields.append({
+                    "name": name, "occurrence": 0,
+                    "value": {"Request": "Authority"} if name == "Host" else {
+                        "Profile": list(value.encode("latin-1"))
+                    },
+                })
+            scopes.append({
+                "flow": {"Http": {
+                    "version": "HTTP/1.1", "method": dict(block.headers)[":method"],
+                    "initiator": "form" if flow == "form_get" else flow, "fetch": None,
+                }},
+                "variants": [{"capture": {"version": "HTTP/1.1", "fields": fields}}],
+            })
+        inspected = {
+            "format_version": 1,
+            "profiles": [{"key": {"user_agent": "fixture"}, "scopes": scopes}],
+        }
+        report = compare_capture_fields(inspected, blocks)
+        self.assertEqual(report["requests_checked"], 6)
+        self.assertEqual(report["request_bound_values_not_retained"], 6)
+        self.assertEqual(set(report["flows"]), set(FLOWS))
+        for change in ("agent", "version", "initiator", "literal"):
+            bad = copy.deepcopy(inspected)
+            if change == "agent":
+                bad["profiles"][0]["key"]["user_agent"] = "other"
+            elif change == "literal":
+                fields = bad["profiles"][0]["scopes"][1]["variants"][0]["capture"]["fields"]
+                fields[-1]["value"] = {"Profile": list(b"wrong")}
+            else:
+                bad["profiles"][0]["scopes"][1]["flow"]["Http"][change] = (
+                    "HTTP/2.0" if change == "version" else "xhr"
+                )
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, "no matching"):
+                compare_capture_fields(bad, blocks)
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            compare_capture_fields(inspected, blocks[:-1])
 
     def test_unknown_value_ownership_fails_closed(self):
         capture = copy.deepcopy(joint())

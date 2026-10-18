@@ -526,6 +526,44 @@ def read_capture(path, port, reference, *, keylog=None, expected_per_flow=1):
     )
 
 
+def h1_header_blocks(rows):
+    """Keep exact H1 field spelling/order and real TCP/frame coordinates.
+
+    Method/path classify an observation; they are not H1 pseudo-headers on wire.
+    The caller separately admits request/response/body bindings with decode_rows.
+    """
+    blocks = []
+    for row in rows:
+        uri = row["http.request.uri"]
+        if uri.startswith("/assets/") or uri == "/favicon.ico":
+            continue
+        require(row["http.request.version"] == "HTTP/1.1", "wire protocol")
+        require(row["frame.number"].isdecimal(), "ambiguous request frame")
+        require(row["tcp.stream"].isdecimal(), "ambiguous request TCP stream")
+        fields = []
+        for line in header_lines(row["http.request.line"]):
+            name, value = line.split(":", 1)
+            require(name and not name.startswith(":"), "invalid H1 field name")
+            fields.append((name, value.lstrip(" \t")))
+        blocks.append(HeaderBlock(
+            "h1", int(row["frame.number"]), int(row["tcp.stream"]),
+            int(row["frame.number"]), False,
+            ((":method", row["http.request.method"]), (":path", uri), *fields),
+        ))
+    require(blocks, "no decoded H1 fixture operations")
+    return blocks
+
+
+def read_h1_header_blocks(capture, port, *, keylog=None):
+    rows = field_rows(
+        capture, port, "http.request",
+        ["frame.number", "tcp.stream", "http.request.method", "http.request.uri",
+         "http.request.version", "http.request.line"],
+        keylog=keylog, output=capture.with_suffix(".headers.tsv"),
+    )
+    return h1_header_blocks(rows)
+
+
 def h1_tls_evidence(capture, keylog, port, output, inspected):
     """Check TCP TLS on streams carrying the six profiled fixture operations.
 

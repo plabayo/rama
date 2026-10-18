@@ -484,14 +484,24 @@ def capture_http1(args):
             flush=True,
         )
 
-        tls_reference = inspected = None
+        # Inspect the original archive against independently decoded H1 fields,
+        # retaining one browser/flow/header observation instead of mixing variants.
+        with (root / "inspected.json").open("w") as output:
+            subprocess.run(
+                [str(rama), "ua", "view", "--json", str(root / "profiles.json")],
+                stdout=output, check=True, timeout=30,
+            )
+        inspected = json.loads((root / "inspected.json").read_text())
+        if all_flows:
+            fields = compare_capture_fields(
+                inspected, wire.read_h1_header_blocks(
+                    root / "reference-wire.pcapng", port,
+                    keylog=root / "browser.keys" if secure else None,
+                ),
+            )
+            (root / "capture-fields.json").write_text(json.dumps(fields, indent=2) + "\n")
+        tls_reference = None
         if secure:
-            with (root / "inspected.json").open("w") as output:
-                subprocess.run(
-                    [str(rama), "ua", "view", "--json", str(root / "profiles.json")],
-                    stdout=output, check=True, timeout=30,
-                )
-            inspected = json.loads((root / "inspected.json").read_text())
             variants = connection_variants(inspected)
             tls_reference = wire.h1_tls_evidence(
                 root / "reference-wire.pcapng", root / "browser.keys", port,
@@ -600,6 +610,13 @@ def capture_http1(args):
             wire.verify_h1_flows(
                 root, port, replay_port, secure=secure, variants=len(variants)
             )
+            fields = compare_capture_fields(
+                inspected, wire.read_h1_header_blocks(
+                    root / "replay-wire.pcapng", replay_port,
+                    keylog=root / "replay.keys" if secure else None,
+                ),
+            )
+            (root / "replay-fields.json").write_text(json.dumps(fields, indent=2) + "\n")
         else:
             wire.verify_h1_navigation(root, port, replay_port)
         if secure:

@@ -7,7 +7,7 @@ import unittest
 import tempfile
 from unittest.mock import patch
 
-from wire import FLOWS, GUID, decode_rows, field_rows, h1_tls_evidence, http_decode_args
+from wire import FLOWS, GUID, decode_rows, field_rows, h1_tls_evidence, http_decode_args, h1_header_blocks
 from flows import ReplayTarget, compare_requests as compare, replay_args
 
 
@@ -212,6 +212,28 @@ class FlowWireTests(unittest.TestCase):
                     h1_tls_evidence(
                         capture, keylog, 24443, root / "wrong-agent.pdml", archive
                     )
+
+    def test_h1_header_blocks_preserve_wire_case_order_and_transport_identity(self):
+        rows, _ = fixture()
+        for index, row in enumerate(rows):
+            row["tcp.stream"] = str(index % 2)
+        blocks = h1_header_blocks(rows)
+        self.assertEqual(len(blocks), 6)
+        self.assertEqual(blocks[0].connection, 0)
+        self.assertEqual(blocks[1].connection, 1)
+        self.assertEqual(blocks[0].stream, 1)
+        self.assertEqual(blocks[0].headers[:4], (
+            (":method", "GET"), (":path", "/report"),
+            ("Host", "127.0.0.1:1234"), ("Connection", "keep-alive"),
+        ))
+        for field, value in (
+            ("tcp.stream", "0\x1f1"), ("frame.number", "1\x1f2"),
+            ("http.request.version", "HTTP/2.0"),
+        ):
+            bad = deepcopy(rows)
+            bad[0][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                h1_header_blocks(bad)
 
     def test_invalid_bindings_status_and_missing_flow_are_rejected(self):
         for field, value in [

@@ -1,8 +1,9 @@
 """Compare validated retained request fields with independent tshark headers.
 
 Input is `rama ua view --json ARCHIVE`, not the archive's saved analysis. Match
-one joint observation: combining unrelated regular/pseudo-header variants could
-otherwise accept a request that was never captured. Request-bound values are not
+one scoped observation: H1 stores ordered headers directly, while H2/H3 join
+regular and pseudo-header captures. Mixing variants could accept a request that
+was never captured. Request-bound values are not
 retained in a profile and are counted separately; replay checks must verify them.
 Compression, bodies and connection fingerprints require separate comparisons.
 """
@@ -12,16 +13,23 @@ from collections import Counter
 from flows import FLOW_NAMES, flow_name, scope_matches
 
 
-def matching_fields(capture, headers):
+def matching_fields(capture, headers, *, protocol=None):
     """Return literal/bound field counts, or None for a different observation."""
-    slots = {slot["kind"]: slot["capture"] for slot in capture.get("slots", [])}
-    if not {"Headers", "PseudoHeaders"} <= slots.keys():
-        return None
     regular = [(name, value) for name, value in headers if not name.startswith(":")]
-    pseudo = [name for name, _ in headers if name.startswith(":")]
-    if [field["name"] for field in slots["PseudoHeaders"]["fields"]] != pseudo:
-        return None
-    fields = slots["Headers"]["fields"]
+    if protocol == "h1":
+        # H1 retains one ordered header observation. Its request line has no
+        # pseudo-header slot; synthetic method/path fields only identify scope.
+        if capture.get("version") != "HTTP/1.1":
+            return None
+        fields = capture["fields"]
+    else:
+        slots = {slot["kind"]: slot["capture"] for slot in capture.get("slots", [])}
+        if not {"Headers", "PseudoHeaders"} <= slots.keys():
+            return None
+        pseudo = [name for name, _ in headers if name.startswith(":")]
+        if [field["name"] for field in slots["PseudoHeaders"]["fields"]] != pseudo:
+            return None
+        fields = slots["Headers"]["fields"]
     if len(fields) != len(regular):
         return None
 
@@ -29,9 +37,10 @@ def matching_fields(capture, headers):
     occurrences = Counter()
     literal = bound = 0
     for field, (name, value) in zip(fields, regular):
-        if field["name"] != name or field["occurrence"] != occurrences[name]:
+        ordinal_name = name.lower()
+        if field["name"] != name or field["occurrence"] != occurrences[ordinal_name]:
             return None
-        occurrences[name] += 1
+        occurrences[ordinal_name] += 1
         source = field["value"]
         if len(source) != 1:
             raise ValueError("ambiguous captured value source")
@@ -51,7 +60,10 @@ def matching_fields(capture, headers):
 
 def request_candidates(inspected, block, flow):
     """Keep one browser, HTTP flow context and joint variant together."""
-    user_agent = dict(block.headers).get("user-agent")
+    agents = [value for name, value in block.headers if name.lower() == "user-agent"]
+    if len(agents) != 1:
+        raise ValueError("missing or ambiguous request user agent")
+    user_agent = agents[0]
     return (
         variant["capture"]
         for profile in inspected["profiles"]
@@ -70,7 +82,7 @@ def compare_capture_fields(inspected, blocks):
     for block in blocks:
         if block.from_server:
             continue
-        flow = flow_name(block.headers)
+        flow = flow_name(block.headers, protocol=block.protocol)
         if flow is None:
             continue
 
@@ -80,13 +92,13 @@ def compare_capture_fields(inspected, blocks):
             (
                 counts
                 for capture in candidates
-                if (counts := matching_fields(capture, block.headers)) is not None
+                if (counts := matching_fields(capture, block.headers, protocol=block.protocol)) is not None
             ),
             None,
         )
         if match is None:
             raise ValueError(
-                f"{block.protocol} {flow} has no matching joint retained fields "
+                f"{block.protocol} {flow} has no matching scoped retained fields "
                 f"(connection={block.connection}, stream={block.stream})"
             )
         literal += match[0]
@@ -100,7 +112,7 @@ def compare_capture_fields(inspected, blocks):
             + str(sorted(FLOW_NAMES - covered))
         )
     return {
-        "scope": "joint header order, multiplicity and retained literal values",
+        "scope": "header order, multiplicity and retained literal values in one scoped observation",
         "flows": sorted(covered),
         "requests_checked": requests,
         "literal_values_checked": literal,
