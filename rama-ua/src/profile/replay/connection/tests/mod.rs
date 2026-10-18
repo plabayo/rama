@@ -265,6 +265,7 @@ fn unsupported_connection_components_never_certify_exact_replay() {
         h2_early_frames: None,
         quic_first_flight: None,
         h3_sequence: None,
+        h3_bootstrap: None,
         preservation_report: ProfilePreservationReport::default(),
     };
     for component in [
@@ -274,6 +275,7 @@ fn unsupported_connection_components_never_certify_exact_replay() {
         CapturedSlotKind::QuicVersions,
         CapturedSlotKind::QuicFirstFlight,
         CapturedSlotKind::Http3Sequence,
+        CapturedSlotKind::Http3Bootstrap,
     ] {
         let mut strict = ProfilePreservationReport::default();
         assert!(matches!(

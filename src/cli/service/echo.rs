@@ -964,6 +964,7 @@ mod tests {
                 .unwrap();
             if captured {
                 request.extensions().insert(H3RequestObservation {
+                    stream_id: 0,
                     connection: Arc::new(Default::default()),
                     first_request: Arc::new(Default::default()),
                     fields: Vec::new(),

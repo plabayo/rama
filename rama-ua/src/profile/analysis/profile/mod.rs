@@ -107,6 +107,7 @@ fn slot(
         CanonicalDomain::H2 => CapturedSlotKind::Http2EarlyFrames,
         CanonicalDomain::QuicFlight => CapturedSlotKind::QuicFirstFlight,
         CanonicalDomain::H3Sequence => CapturedSlotKind::Http3Sequence,
+        CanonicalDomain::H3Bootstrap => CapturedSlotKind::Http3Bootstrap,
         CanonicalDomain::Order => match OrderedProtocolCapture::from_canonical(
             value,
             OrderCaptureLimits {
@@ -299,7 +300,9 @@ pub fn analyze_profile_evidence(
                     | CapturedSlotKind::QuicVersions => {
                         components[5].insert(index);
                     }
-                    CapturedSlotKind::Http3Settings | CapturedSlotKind::Http3Sequence => {
+                    CapturedSlotKind::Http3Settings
+                    | CapturedSlotKind::Http3Sequence
+                    | CapturedSlotKind::Http3Bootstrap => {
                         components[2].insert(index);
                     }
                     CapturedSlotKind::Http2EarlyFrames => {

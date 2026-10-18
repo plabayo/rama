@@ -81,6 +81,7 @@ impl Serialize for CaptureView<'_> {
             DecodedCapture::Runtime(value) => value.serialize(serializer),
             DecodedCapture::Quic(value) => value.serialize(serializer),
             DecodedCapture::H3(value) => value.serialize(serializer),
+            DecodedCapture::H3Bootstrap(value) => value.serialize(serializer),
             DecodedCapture::Joint(joint) => {
                 if self.nested {
                     return Err(S::Error::custom("nested joint capture"));

@@ -532,6 +532,7 @@ impl Shared {
         Some((
             H3Observer::new(self, unavailable),
             H3RequestObservation {
+                stream_id,
                 connection: snapshot,
                 first_request,
                 fields: retained,
@@ -2290,6 +2291,7 @@ mod observation_tests {
                 .unwrap()
                 .unwrap();
             let (_, first) = shared.request_observation(0, &fields).unwrap();
+            assert_eq!(first.stream_id, 0);
             assert!(first.connection.revision > before.revision);
             let bound = first.connection.encoder_bindings.as_ref().unwrap();
             assert!(bound.complete);
@@ -2310,6 +2312,12 @@ mod observation_tests {
                 .feed_instructions(StreamType::QPACK_ENCODER, &later)
                 .unwrap();
             let (_, next) = shared.request_observation(4, &fields).unwrap();
+            assert_eq!(next.stream_id, 4);
+            assert_eq!(
+                next.view(&next.connection, SettingsStatus::Received, None)
+                    .request_stream_id,
+                4,
+            );
             assert!(Arc::ptr_eq(frozen, next.first_request.get().unwrap()));
             assert!(frozen.encoder_bindings.as_ref().unwrap().complete);
             assert!(!next.connection.encoder_bindings.as_ref().unwrap().complete);

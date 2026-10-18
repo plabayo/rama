@@ -14,7 +14,10 @@ use crate::profile::{
         completeness::ProfileCaptureCompleteness,
         headers::{HeaderCapture, HeaderCapturePolicy},
         http2::{H2Capture, H2CaptureLimits},
-        http3::{H3ClientSequenceCapture, H3SequenceCaptureLimits},
+        http3::{
+            H3ClientSequenceCapture, H3SequenceCaptureLimits,
+            bootstrap::{H3BootstrapCapture, H3BootstrapLimits},
+        },
         order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture, validate_structure},
         pseudo_headers::PseudoHeaderCapture,
         quic::{QuicFlightCapture, QuicFlightCaptureLimits},
@@ -70,6 +73,7 @@ pub enum CapturedSlotKind {
     QuicFirstFlight,
     Http3Sequence,
     LegacyField,
+    Http3Bootstrap,
 }
 
 impl CapturedSlotKind {
@@ -87,6 +91,7 @@ impl CapturedSlotKind {
             Self::QuicFirstFlight => 9,
             Self::Http3Sequence => 10,
             Self::LegacyField => 11,
+            Self::Http3Bootstrap => 12,
         }
     }
 
@@ -104,6 +109,7 @@ impl CapturedSlotKind {
             9 => Ok(Self::QuicFirstFlight),
             10 => Ok(Self::Http3Sequence),
             11 => Ok(Self::LegacyField),
+            12 => Ok(Self::Http3Bootstrap),
             _ => Err(ProfileDataError::Unsupported("joint slot kind")),
         }
     }
@@ -121,6 +127,7 @@ impl CapturedSlotKind {
             Self::LegacyField
             | Self::Headers
             | Self::Http3Sequence
+            | Self::Http3Bootstrap
             | Self::QuicFirstFlight
             | Self::RuntimeMetadata
             | Self::PseudoHeaders
@@ -147,6 +154,13 @@ impl CapturedSlot {
         if self.kind == CapturedSlotKind::LegacyField {
             return LegacyFieldCapture::from_canonical(&self.value, maximum_bytes)?
                 .structural(maximum_bytes);
+        }
+        if self.kind == CapturedSlotKind::Http3Bootstrap {
+            let limits = H3BootstrapLimits {
+                bytes: maximum_bytes,
+                ..Default::default()
+            };
+            return H3BootstrapCapture::from_canonical(&self.value, limits)?.structural(limits);
         }
         if self.kind == CapturedSlotKind::Http3Sequence {
             let limits = H3SequenceCaptureLimits {
@@ -281,6 +295,16 @@ fn validate_slot(
         #[cfg(not(feature = "tls"))]
         return Err(ProfileDataError::Unsupported("TLS profile component"));
     }
+    if slot.kind == CapturedSlotKind::Http3Bootstrap {
+        return slot.value.validate_content(
+            if structural {
+                CanonicalDomain::H3BootstrapStructure
+            } else {
+                CanonicalDomain::H3Bootstrap
+            },
+            maximum,
+        );
+    }
     if slot.kind == CapturedSlotKind::Http3Sequence {
         return slot.value.validate_content(
             if structural {
@@ -382,6 +406,7 @@ fn encode_joint(
             | CapturedSlotKind::LegacyField => None,
             CapturedSlotKind::TcpTls | CapturedSlotKind::Http2EarlyFrames => Some(0),
             CapturedSlotKind::Http3Sequence
+            | CapturedSlotKind::Http3Bootstrap
             | CapturedSlotKind::QuicFirstFlight
             | CapturedSlotKind::QuicTls
             | CapturedSlotKind::QuicParameters

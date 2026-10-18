@@ -399,6 +399,7 @@ mod tests {
         });
         Http3Info {
             request: Arc::new(H3RequestObservation {
+                stream_id: 0,
                 connection: connection.clone(),
                 first_request: Arc::new(OnceLock::from(connection.clone())),
                 fields: vec![],

@@ -19,7 +19,10 @@ use crate::profile::capture::tls::{TlsCapture, TlsCaptureLimits};
 use crate::profile::{
     capture::{
         http2::{H2Capture, H2CaptureLimits},
-        http3::{H3ClientSequenceCapture, H3SequenceCaptureLimits},
+        http3::{
+            H3ClientSequenceCapture, H3SequenceCaptureLimits,
+            bootstrap::{H3BootstrapCapture, H3BootstrapLimits},
+        },
         joint::{CaptureLevel, CapturedSlotKind, JointCapture, JointCaptureLimits},
         order::{OrderCaptureLimits, OrderNamespace, OrderedProtocolCapture},
         quic::{QuicFlightCapture, QuicFlightCaptureLimits},
@@ -48,6 +51,7 @@ pub struct PreparedConnectionComponents {
     pub h2_early_frames: Option<Arc<[EarlyFrame]>>,
     pub quic_first_flight: Option<QuicFlightCapture>,
     pub h3_sequence: Option<H3ClientSequenceCapture>,
+    pub h3_bootstrap: Option<H3BootstrapCapture>,
     /// Differences introduced while compiling the selected connection capture.
     pub preservation_report: ProfilePreservationReport,
 }
@@ -197,6 +201,7 @@ impl ConnectionSelection {
             h2_early_frames: None,
             quic_first_flight: None,
             h3_sequence: None,
+            h3_bootstrap: None,
             preservation_report: ProfilePreservationReport::default(),
         };
         for slot in &joint.slots {
@@ -255,6 +260,15 @@ impl ConnectionSelection {
                         },
                     )?);
                 }
+                CapturedSlotKind::Http3Bootstrap => {
+                    prepared.h3_bootstrap = Some(H3BootstrapCapture::from_canonical(
+                        &slot.value,
+                        H3BootstrapLimits {
+                            bytes: limits.value_bytes,
+                            ..Default::default()
+                        },
+                    )?);
+                }
                 CapturedSlotKind::Http3Sequence => {
                     prepared.h3_sequence = Some(H3ClientSequenceCapture::from_canonical(
                         &slot.value,
@@ -293,7 +307,8 @@ fn check_connection_component(
         | CapturedSlotKind::QuicTls
         | CapturedSlotKind::QuicParameters
         | CapturedSlotKind::QuicVersions
-        | CapturedSlotKind::QuicFirstFlight => compiled.supports(component),
+        | CapturedSlotKind::QuicFirstFlight
+        | CapturedSlotKind::Http3Bootstrap => compiled.supports(component),
         CapturedSlotKind::Http3Sequence => {
             h3_startup::supports(prepared.h3_sequence.as_ref()) || compiled.supports(component)
         }

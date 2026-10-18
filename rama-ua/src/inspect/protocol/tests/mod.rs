@@ -124,6 +124,7 @@ fn h3() -> H3RequestObservation {
         ..H3ObservationSnapshot::default()
     });
     H3RequestObservation {
+        stream_id: 0,
         first_request: Arc::new(OnceLock::from(connection.clone())),
         connection,
         fields: vec![literal(); 7],
@@ -380,3 +381,5 @@ fn pending_settings_do_not_cache_an_incomplete_connection_forever() {
         .unwrap();
     assert_eq!(facts.0.as_ref().unwrap().slots.len(), 4);
 }
+
+mod bootstrap;

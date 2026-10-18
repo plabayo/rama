@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime};
 use rama_http::{Version, inspect::capture::HttpExchangeSummary};
 use sha2::{Digest as _, Sha256};
 
-use super::super::protocol::{H3ProfileConnection, H3ProfileRequest};
+use super::super::protocol::{H3ProfileConnection, H3ProfileRequest, connection_slots};
 use super::*;
 #[cfg(feature = "tls")]
 use crate::profile::capture::tls::{TlsCapture, TlsCaptureLimits, TlsCaptureTransport};
@@ -190,7 +190,10 @@ impl ProfileExport {
                 {
                     continue;
                 }
-                let mut slots = h3.map(|facts| facts.slots.to_vec()).unwrap_or_default();
+                let mut slots = match h3 {
+                    Some(facts) => connection_slots(facts, metadata)?,
+                    None => Vec::new(),
+                };
                 if version == Version::HTTP_2
                     && let Some(early) = observed
                         .h2_settings

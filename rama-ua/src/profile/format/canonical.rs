@@ -14,7 +14,10 @@ use crate::profile::{
     capture::{
         headers::{HeaderCapture, HeaderCapturePolicy, structure::validate_header_structure},
         http2::{H2Capture, H2CaptureLimits},
-        http3::{H3ClientSequenceCapture, H3SequenceCaptureLimits},
+        http3::{
+            H3ClientSequenceCapture, H3SequenceCaptureLimits,
+            bootstrap::{H3BootstrapCapture, H3BootstrapLimits},
+        },
         joint::{JointCapture, JointCaptureLimits, validate_joint_structure},
         order::{OrderCaptureLimits, OrderedProtocolCapture, validate_structure},
         pseudo_headers::PseudoHeaderCapture,
@@ -57,6 +60,8 @@ pub enum CanonicalDomain {
     LegacyHeaders = 22,
     LegacyField = 23,
     LegacyFieldStructure = 24,
+    H3Bootstrap = 25,
+    H3BootstrapStructure = 26,
 }
 
 impl From<CanonicalDomain> for u16 {
@@ -99,6 +104,8 @@ impl TryFrom<u16> for CanonicalDomain {
             22 => Ok(Self::LegacyHeaders),
             23 => Ok(Self::LegacyField),
             24 => Ok(Self::LegacyFieldStructure),
+            25 => Ok(Self::H3Bootstrap),
+            26 => Ok(Self::H3BootstrapStructure),
             _ => Err(ProfileDataError::Unsupported("canonical content domain")),
         }
     }
@@ -237,6 +244,16 @@ impl CanonicalValue {
                         elements: maximum_bytes,
                         bytes: maximum_bytes,
                     },
+                )?;
+            }
+            CanonicalDomain::H3Bootstrap | CanonicalDomain::H3BootstrapStructure => {
+                H3BootstrapCapture::decode(
+                    self,
+                    H3BootstrapLimits {
+                        bytes: maximum_bytes,
+                        ..Default::default()
+                    },
+                    domain == CanonicalDomain::H3BootstrapStructure,
                 )?;
             }
             CanonicalDomain::H3Sequence | CanonicalDomain::H3SequenceStructure => {
@@ -516,6 +533,8 @@ mod tests {
             (22, CanonicalDomain::LegacyHeaders),
             (23, CanonicalDomain::LegacyField),
             (24, CanonicalDomain::LegacyFieldStructure),
+            (25, CanonicalDomain::H3Bootstrap),
+            (26, CanonicalDomain::H3BootstrapStructure),
         ] {
             assert_eq!(u16::from(domain), tag);
             assert_eq!(CanonicalDomain::try_from(tag).unwrap(), domain);
@@ -526,7 +545,7 @@ mod tests {
                 domain
             );
         }
-        for tag in [0, 25, u16::MAX] {
+        for tag in [0, 27, u16::MAX] {
             CanonicalDomain::try_from(tag).unwrap_err();
             serde_json::from_str::<CanonicalDomain>(&tag.to_string()).unwrap_err();
         }

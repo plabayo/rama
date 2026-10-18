@@ -10,7 +10,10 @@ use crate::profile::capture::tls::{TlsCapture, TlsCaptureLimits};
 use crate::profile::capture::{
     headers::{HeaderCapture, HeaderCapturePolicy},
     http2::{H2Capture, H2CaptureLimits},
-    http3::{H3ClientSequenceCapture, H3SequenceCaptureLimits},
+    http3::{
+        H3ClientSequenceCapture, H3SequenceCaptureLimits,
+        bootstrap::{H3BootstrapCapture, H3BootstrapLimits},
+    },
     joint::{JointCapture, JointCaptureLimits},
     order::{OrderCaptureLimits, OrderedProtocolCapture},
     pseudo_headers::PseudoHeaderCapture,
@@ -34,6 +37,8 @@ pub struct CaptureDecodeLimits {
     pub h2: H2CaptureLimits,
     /// HTTP/3 events, settings and QPACK instructions.
     pub h3: H3SequenceCaptureLimits,
+    /// Initial request references and insertion associations.
+    pub h3_bootstrap: H3BootstrapLimits,
     /// QUIC datagrams, packets, frame shapes and parameters.
     pub quic: QuicFlightCaptureLimits,
     /// Correlated component slots and their encoded values.
@@ -51,6 +56,7 @@ impl Default for CaptureDecodeLimits {
             order: OrderCaptureLimits::default(),
             h2: H2CaptureLimits::default(),
             h3: H3SequenceCaptureLimits::default(),
+            h3_bootstrap: H3BootstrapLimits::default(),
             quic: QuicFlightCaptureLimits::default(),
             joint: JointCaptureLimits::default(),
             #[cfg(feature = "tls")]
@@ -70,6 +76,7 @@ pub enum DecodedCapture<'a> {
     Order(OrderedProtocolCapture),
     H2(H2Capture),
     H3(H3ClientSequenceCapture),
+    H3Bootstrap(H3BootstrapCapture),
     PseudoHeaders(PseudoHeaderCapture),
     // Runtime metadata is substantially larger than the wire capture variants.
     Runtime(Box<RuntimeProfileCapture>),
@@ -100,6 +107,10 @@ impl<'a> DecodedCapture<'a> {
                 Self::Order(OrderedProtocolCapture::from_canonical(value, limits.order)?)
             }
             CanonicalDomain::H2 => Self::H2(H2Capture::from_canonical(value, limits.h2)?),
+            CanonicalDomain::H3Bootstrap => Self::H3Bootstrap(H3BootstrapCapture::from_canonical(
+                value,
+                limits.h3_bootstrap,
+            )?),
             CanonicalDomain::H3Sequence => {
                 Self::H3(H3ClientSequenceCapture::from_canonical(value, limits.h3)?)
             }

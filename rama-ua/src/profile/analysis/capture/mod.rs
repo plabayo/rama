@@ -290,6 +290,7 @@ pub fn analyze_capture_bucket(
             | CanonicalDomain::PseudoHeaders
             | CanonicalDomain::RuntimeMetadata
             | CanonicalDomain::QuicFlight
+            | CanonicalDomain::H3Bootstrap
             | CanonicalDomain::H3Sequence
             | CanonicalDomain::LegacyField
     ) {

@@ -10,8 +10,12 @@
 use crate::profile::capture::tls::TlsCaptureLimits;
 use crate::profile::{
     capture::{
-        headers::HeaderCapturePolicy, http2::H2CaptureLimits, http3::H3SequenceCaptureLimits,
-        joint::JointCaptureLimits, order::OrderCaptureLimits, quic::QuicFlightCaptureLimits,
+        headers::HeaderCapturePolicy,
+        http2::H2CaptureLimits,
+        http3::{H3SequenceCaptureLimits, bootstrap::H3BootstrapLimits},
+        joint::JointCaptureLimits,
+        order::OrderCaptureLimits,
+        quic::QuicFlightCaptureLimits,
     },
     format::{
         canonical::{CanonicalValue, ProfileDataError, ValueId},
@@ -177,6 +181,10 @@ fn decode(value: &CanonicalValue, bytes: usize) -> Result<DecodedCapture<'_>, Pr
             bytes,
             ..H3SequenceCaptureLimits::default()
         },
+        h3_bootstrap: H3BootstrapLimits {
+            bytes,
+            ..Default::default()
+        },
         quic: QuicFlightCaptureLimits {
             bytes,
             ..QuicFlightCaptureLimits::default()
@@ -213,6 +221,7 @@ fn diagnostic(value: DecodedCapture<'_>, bytes: usize) -> Result<Value, ProfileD
         DecodedCapture::Order(value) => json(value),
         DecodedCapture::H2(value) => json(value),
         DecodedCapture::H3(value) => json(value),
+        DecodedCapture::H3Bootstrap(value) => json(value),
         DecodedCapture::PseudoHeaders(value) => json(value),
         DecodedCapture::Runtime(value) => json(value),
         DecodedCapture::Quic(value) => json(value),

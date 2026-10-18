@@ -1,5 +1,7 @@
 //! HTTP/3 client stream/control prefixes and QPACK instruction shapes.
 
+pub mod bootstrap;
+
 use crate::profile::{
     capture::{
         completeness::ProfileCaptureCompleteness,

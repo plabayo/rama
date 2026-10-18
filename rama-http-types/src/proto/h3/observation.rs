@@ -279,6 +279,8 @@ pub struct H3ObservationSnapshot {
 /// Immutable connection and field-representation data at request-head delivery.
 #[derive(Debug, Clone)]
 pub struct H3RequestObservation {
+    /// The request stream that owns these field representations.
+    pub stream_id: u64,
     pub connection: Arc<H3ObservationSnapshot>,
     /// Published once both the first request and peer SETTINGS have arrived and
     /// the available CONTROL chunk has been decoded. It is independent of which
@@ -334,6 +336,7 @@ impl core::fmt::Display for SettingsStatus {
 /// Additive echo/fingerprint view. Missing SETTINGS remain `null`, with an explicit status.
 #[derive(Debug, Serialize)]
 pub struct H3ObservationView<'a> {
+    pub request_stream_id: u64,
     pub connection_revision: u64,
     pub request_revision: u64,
     pub settings_status: SettingsStatus,
@@ -359,6 +362,7 @@ impl H3RequestObservation {
         let mut completeness = connection.completeness;
         completeness.fields = self.fields_complete;
         H3ObservationView {
+            request_stream_id: self.stream_id,
             connection_revision: connection.revision,
             request_revision: self.connection.revision,
             settings_status: settings_status.for_snapshot(connection),
