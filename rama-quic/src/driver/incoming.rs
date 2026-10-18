@@ -121,12 +121,7 @@ impl Incoming {
     pub fn local_address(&self) -> Option<SocketAddr> {
         let state = self.state();
         let bound = state.endpoint.socket_addr(state.lease.id())?;
-        let ip = state
-            .inner
-            .local_ip()
-            .filter(|ip| !ip.is_unspecified())
-            .or_else(|| (!bound.ip().is_unspecified()).then_some(bound.ip()))?;
-        Some(SocketAddr::new(ip, bound.port()))
+        crate::driver::udp::known_local_address(bound, state.inner.local_ip())
     }
 
     /// The peer's UDP address

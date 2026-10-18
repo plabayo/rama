@@ -18,7 +18,10 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     telemetry::tracing::{Instrument, Span, debug, debug_span},
 };
-use rama_net::gate::{GateDirection, StreamGates};
+use rama_net::{
+    gate::{GateDirection, StreamGates},
+    stream::SocketInfo,
+};
 use rama_quic_proto::{ConnectionId, Dir, Side, StreamId, VarInt};
 use rama_udp::SendFailure;
 use rama_utils::reactive::{Change, ChangeListener, Changed, Reactive};
@@ -36,7 +39,7 @@ use crate::{
         send_stream::SendStream,
         sockets::SocketId,
         timer::{Deadline, DeadlineTimer},
-        udp::{FailureLog, SendError, Sender},
+        udp::{FailureLog, SendError, Sender, known_local_address},
     },
     proto::{
         AdmissionLease, ConnectionError, ConnectionHandle, ConnectionStats, EndpointEvent, Event,
@@ -171,6 +174,10 @@ impl Connecting {
     ) -> (Self, ConnectionDriver) {
         let (on_handshake_data_send, on_handshake_data_recv) = oneshot::channel();
         let (on_connected_send, on_connected_recv) = oneshot::channel();
+        let socket_info = SocketInfo::new(
+            known_local_address(socket.local_addr(), conn.local_ip()).map(Into::into),
+            conn.remote_address().into(),
+        );
         let conn = ConnectionRef::new(
             handle,
             conn,
@@ -182,6 +189,7 @@ impl Connecting {
             receive_queue,
             admission,
         );
+        conn.extensions.insert(socket_info);
         let driver = ConnectionDriver::new(conn.0.clone());
         (
             Self {
