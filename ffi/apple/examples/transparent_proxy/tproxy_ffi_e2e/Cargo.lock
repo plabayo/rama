@@ -2099,7 +2099,6 @@ dependencies = [
  "ahash",
  "arc-swap",
  "base64",
- "bindgen 0.73.2",
  "cc",
  "libc",
  "moka",

@@ -4154,7 +4154,6 @@ dependencies = [
  "ahash",
  "arc-swap",
  "base64 0.23.1",
- "bindgen 0.73.2",
  "cc",
  "dial9",
  "dial9-trace-format",
@@ -4164,6 +4163,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "rama-core",
+ "rama-dns-native-tests",
  "rama-net",
  "rama-unix",
  "rama-utils",
@@ -4172,6 +4172,13 @@ dependencies = [
  "serde_json",
  "tokio",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rama-dns-native-tests"
+version = "0.0.0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

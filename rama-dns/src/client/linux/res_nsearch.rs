@@ -1,10 +1,4 @@
-#![expect(
-    clippy::allow_attributes,
-    reason = "the bindgen-generated `mod bindings` include uses `#[allow(...)]` for a set of lints whose underlying triggers vary by libc/glibc shape; `#[expect]` would warn unfulfilled on some hosts"
-)]
-
 use std::{
-    mem,
     net::{Ipv4Addr, Ipv6Addr},
     time::{Duration, Instant},
 };
@@ -27,6 +21,7 @@ use crate::{
     wire::{Name, RecordType, ServiceBinding, Txt, parse_a_rdata, parse_aaaa_rdata},
 };
 
+mod ffi;
 mod walk;
 
 const INITIAL_RESPONSE_BUFFER_SIZE: usize = kib(16);
@@ -236,36 +231,33 @@ fn lookup_record_packet(
 ) -> Result<Option<Vec<u8>>, BoxError> {
     let max_response_size = response_buffer_limit(response_buffer_size)?;
     let deadline = Instant::now() + budget;
-    let mut state: ffi::ResState = unsafe { mem::zeroed() };
-
-    // SAFETY: `state` points to writable resolver context storage.
-    if unsafe { ffi::res_ninit(&mut state) } != 0 {
-        return Err(LinuxDnsResolverError::message("res_ninit failed").into());
-    }
-    // every later access goes through the guard, so its drop never aliases
-    let nscount = state.nscount;
-    let mut state = ResStateGuard(&mut state, nscount);
+    let mut state = ffi::ResState::new()?;
     #[cfg(test)]
-    stub_tests::use_stub(state.0, domain.as_str());
-    state.1 = state.0.nscount;
+    stub_tests::use_stub(&mut state, domain.as_str());
     // TCP is asked here, unlike by libc within the deadline: for a truncated
-    // answer, and for every name with `use-vc`
+    // answer, and for every name with `use-vc`.
     let tries = walk::Tries {
-        retrans: state.0.retrans,
-        retry: state.0.retry,
-        nscount: state.0.nscount,
-        tcp: state.0.options & ffi::RES_USEVC != 0,
+        retrans: state.config.retrans,
+        retry: state.config.retry,
+        nscount: state.config.nscount,
+        tcp: state.config.options & ffi::RES_USEVC != 0,
     };
-    state.0.options |= ffi::RES_IGNTC;
+    state.config.options |= ffi::RES_IGNTC;
 
     let alias = walk::hostalias(domain.as_str());
-    let walk = Walk::new(state.0, domain.as_str(), alias, walk::full_search_list)?;
+    let walk = Walk::new(
+        &state.config,
+        &state.search,
+        domain.as_str(),
+        alias,
+        walk::full_search_list,
+    )?;
     let mut outcomes = walk.outcomes();
     loop {
         let at = walk.run(&mut outcomes, deadline, |name, budget| {
-            let asked = walk::ask(state.0, tries, name, rrtype, max_response_size, budget);
+            let asked = walk::ask(&mut state, tries, name, rrtype, max_response_size, budget);
             // a short budget asks fewer nameservers, the next name all again
-            state.0.nscount = tries.nscount;
+            state.config.nscount = tries.nscount;
             asked
         });
         if matches!(outcomes[at], Some(Asked::Timeout)) {
@@ -274,7 +266,7 @@ fn lookup_record_packet(
                 .iter()
                 .filter(|outcome| matches!(outcome, Some(Asked::Timeout)))
                 .count();
-            if walk::another_try(state.0, deadline, timed_out) {
+            if walk::another_try(&state.config, deadline, timed_out) {
                 for outcome in &mut outcomes {
                     if matches!(outcome, Some(Asked::Timeout)) {
                         *outcome = None;
@@ -295,20 +287,11 @@ fn lookup_record_packet(
     }
 }
 
-/// libc leaves `errno` alone on success, so a value from an earlier call on
-/// this thread must not pass for this call's.
-fn clear_errno() {
-    // SAFETY: returns this thread's errno slot, valid for its lifetime
-    let errno = unsafe { libc::__errno_location() };
-    // SAFETY: the slot is this thread's own and writable
-    unsafe { *errno = 0 };
-}
-
 /// Shorten libc's retransmits so one name's tries land inside `budget`: by
 /// default one lost datagram would use up the whole budget.
 ///
 /// Fewer tries are made only when even a second per send does not fit.
-fn fit_retransmits(state: &mut ffi::ResState, budget: Duration) {
+fn fit_retransmits(state: &mut ffi::Config, budget: Duration) {
     let budget = whole_secs(budget).max(1);
     // libc waits a second per nameserver at least: ask fewer if all do not fit
     if state.nscount > budget {
@@ -374,20 +357,6 @@ fn grow_response_buffer(
     }
     buffer.resize(required, 0);
     Ok(true)
-}
-
-/// The state and its nameserver count: a lookup may ask fewer nameservers,
-/// but libc frees its copies of only those counted when it closes.
-struct ResStateGuard<'a>(&'a mut ffi::ResState, c_int);
-
-impl Drop for ResStateGuard<'_> {
-    fn drop(&mut self) {
-        self.0.nscount = self.1;
-        // SAFETY: the state was initialized by `res_ninit` and is closed once.
-        unsafe {
-            ffi::res_nclose(self.0);
-        }
-    }
 }
 
 fn parse_a_response(packet: &[u8], emit: &mut dyn FnMut(Ipv4Addr, u32)) -> Result<(), BoxError> {
@@ -601,134 +570,6 @@ fn skip_dns_name(packet: &[u8], mut offset: usize) -> Result<usize, BoxError> {
     }
 }
 
-mod ffi {
-    use libc::{c_char, c_int};
-
-    #[allow(
-        clippy::all,
-        clippy::multiple_unsafe_ops_per_block,
-        clippy::undocumented_unsafe_blocks,
-        non_camel_case_types,
-        non_snake_case,
-        non_upper_case_globals,
-        unsafe_op_in_unsafe_fn,
-        unreachable_pub,
-        unused
-    )]
-    mod bindings {
-        include!(concat!(env!("OUT_DIR"), "/resolv_bindings.rs"));
-    }
-
-    // DNS class/type constants mirrored from glibc's resolver headers.
-    //
-    // Sources:
-    // - https://codebrowser.dev/glibc/glibc/resolv/arpa/nameser_compat.h.html
-    // - https://codebrowser.dev/glibc/glibc/resolv/arpa/nameser.h.html
-
-    /// Internet
-    pub(super) const NS_C_IN: u16 = 1;
-
-    /// A (IPv4)
-    pub(super) const NS_T_A: u16 = 1;
-    /// CNAME (canonical name)
-    pub(super) const NS_T_CNAME: u16 = 5;
-    /// SOA (Start of Authority)
-    pub(super) const NS_T_SOA: u16 = 6;
-    /// TXT
-    pub(super) const NS_T_TXT: u16 = 16;
-    /// AAAA (IPv6)
-    pub(super) const NS_T_AAAA: u16 = 28;
-
-    // Resolver h_errno values from <netdb.h>.
-    //
-    // Source:
-    // - https://codebrowser.dev/glibc/glibc/resolv/netdb.h.html
-
-    /// Authoritative Answer Host not found.
-    pub(super) const HOST_NOT_FOUND: c_int = 1;
-    /// Non-authoritative failure: SERVFAIL, or no nameserver answered.
-    pub(super) const TRY_AGAIN: c_int = 2;
-    /// Non-recoverable failure, e.g. FORMERR or a name too long to ask.
-    #[cfg(test)]
-    pub(super) const NO_RECOVERY: c_int = 3;
-    /// Valid name, no data record of requested type.
-    pub(super) const NO_DATA: c_int = 4;
-
-    // Search options from glibc's <resolv.h>.
-
-    /// Search a name without dots in the default domain.
-    pub(super) const RES_DEFNAMES: libc::c_ulong = 0x80;
-    /// Search a dotted relative name in the search list.
-    pub(super) const RES_DNSRCH: libc::c_ulong = 0x200;
-    /// Take a truncated answer as is, rather than asking again over TCP.
-    pub(super) const RES_IGNTC: libc::c_ulong = 0x20;
-    /// Ask over TCP only (`use-vc`).
-    pub(super) const RES_USEVC: libc::c_ulong = 0x08;
-    /// Do not ask a name without dots as is once it was searched.
-    pub(super) const RES_NOTLDQUERY: libc::c_ulong = 0x0100_0000;
-
-    // Thread-safe resolver state generated from the target platform's
-    // `<resolv.h>` definition via bindgen.
-    //
-    // Sources:
-    // - https://codebrowser.dev/glibc/glibc/resolv/resolv.h.html
-    // - https://man7.org/linux/man-pages/man3/resolver.3.html
-    // - https://man.freebsd.org/cgi/man.cgi?query=resolver&sektion=3
-    // - https://man.openbsd.org/resolver.3
-    // - https://man.netbsd.org/resolver.3
-    pub(super) type ResState = bindings::__res_state;
-    pub(super) type SockaddrIn = bindings::sockaddr_in;
-
-    // GNU/Linux changed the public resolver symbol mapping in glibc 2.34.
-    // Compile a small C shim against the target's `<resolv.h>` so native and
-    // cross toolchains each select the mapping appropriate for their glibc ABI.
-    //
-    // Sources:
-    // - https://codebrowser.dev/glibc/glibc/resolv/res_init.c.html
-    // - https://codebrowser.dev/glibc/glibc/resolv/res-close.c.html
-    // - https://codebrowser.dev/glibc/glibc/resolv/res_query.c.html
-    // - https://man7.org/linux/man-pages/man3/resolver.3.html
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    #[link(name = "resolv")]
-    unsafe extern "C" {
-        #[link_name = "rama_res_ninit"]
-        pub(super) fn res_ninit(state: *mut ResState) -> c_int;
-        #[link_name = "rama_res_nclose"]
-        pub(super) fn res_nclose(state: *mut ResState);
-        #[link_name = "rama_res_nquery"]
-        pub(super) fn res_nquery(
-            state: *mut ResState,
-            dname: *const c_char,
-            class: c_int,
-            typ: c_int,
-            answer: *mut u8,
-            anslen: c_int,
-        ) -> c_int;
-    }
-
-    // BSDs expose the re-entrant libresolv APIs under their public `res_n*`
-    // symbol names.
-    //
-    // Sources:
-    // - https://man.freebsd.org/cgi/man.cgi?query=resolver&sektion=3
-    // - https://man.openbsd.org/resolver.3
-    // - https://man.netbsd.org/resolver.3
-    #[cfg(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
-    #[link(name = "resolv")]
-    unsafe extern "C" {
-        pub(super) fn res_ninit(state: *mut ResState) -> c_int;
-        pub(super) fn res_nclose(state: *mut ResState);
-        pub(super) fn res_nquery(
-            state: *mut ResState,
-            dname: *const c_char,
-            class: c_int,
-            typ: c_int,
-            answer: *mut u8,
-            anslen: c_int,
-        ) -> c_int;
-    }
-}
-
 #[cfg(test)]
 mod stub_tests {
     use std::assert_matches;
@@ -736,7 +577,6 @@ mod stub_tests {
         ffi::CStr,
         io::{Read as _, Write as _},
         net::{Ipv4Addr, TcpListener, TcpStream, UdpSocket},
-        ptr,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
@@ -793,31 +633,20 @@ mod stub_tests {
             return;
         };
         let options = stub.options;
-        // a second per send
-        state.retrans = 1;
-        state.retry = options.sends;
-        state.nscount = 0;
-        for port in [options.dead_first, Some(stub.port)].into_iter().flatten() {
-            let ns = usize::try_from(state.nscount).expect("a nameserver index");
-            let nameserver = &mut state.nsaddr_list[ns];
-            nameserver.sin_family = libc::AF_INET as _;
-            nameserver.sin_port = port.to_be();
-            nameserver.sin_addr.s_addr = u32::from(Ipv4Addr::LOCALHOST).to_be();
-            // an IPv6 nameserver from resolv.conf would take precedence
-            // SAFETY: `res_ninit` initialized `_ext`, the variant glibc uses
-            unsafe { state._u._ext.nsaddrs[ns] = ptr::null_mut() };
-            state.nscount += 1;
-        }
-        state.dnsrch = [ptr::null_mut(); 7];
-        if let Some(search) = options.search {
-            state.dnsrch[0] = search.as_ptr().cast_mut();
-        }
-        state.set_ndots(1);
-        // no OPT record after the question, which the stub matches on
-        state.options &= !RES_USE_EDNS0;
+        let ports: Vec<_> = [options.dead_first, Some(stub.port)]
+            .into_iter()
+            .flatten()
+            .collect();
+        state.override_ipv4_nameservers(&ports);
+        // A second per send, and no OPT record after the question.
+        state.config.retrans = 1;
+        state.config.retry = options.sends;
+        state.config.ndots = 1;
+        state.config.options &= !RES_USE_EDNS0;
         if options.tcp_only {
-            state.options |= ffi::RES_USEVC;
+            state.config.options |= ffi::RES_USEVC;
         }
+        state.search = options.search.into_iter().map(CStr::to_owned).collect();
     }
 
     /// A nameserver that takes queries, over UDP and TCP, and never answers.
@@ -1271,25 +1100,12 @@ mod stub_tests {
 
 #[cfg(test)]
 mod response_buffer_tests {
-    use std::{mem, time::Duration};
+    use std::time::Duration;
 
     use super::{
-        DNS_HEADER_SIZE, ResStateGuard, clear_errno, ffi, fit_retransmits, grow_response_buffer,
-        response_buffer_limit, try_secs, whole_secs,
+        DNS_HEADER_SIZE, ffi, fit_retransmits, grow_response_buffer, response_buffer_limit,
+        try_secs, whole_secs,
     };
-
-    #[test]
-    fn a_stale_errno_is_cleared() {
-        // SAFETY: closing an invalid fd only sets errno
-        let closed = unsafe { libc::close(-1) };
-        assert_eq!(closed, -1);
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::EBADF)
-        );
-        clear_errno();
-        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(0));
-    }
 
     /// `(retrans, retry)` after fitting, and the seconds one name may then wait.
     fn fitted(
@@ -1298,11 +1114,12 @@ mod response_buffer_tests {
         nscount: libc::c_int,
         budget: Duration,
     ) -> (libc::c_int, libc::c_int, libc::c_int) {
-        // SAFETY: `__res_state` is plain old data; zeroed is a valid value.
-        let mut state: ffi::ResState = unsafe { mem::zeroed() };
-        state.retrans = retrans;
-        state.retry = retry;
-        state.nscount = nscount;
+        let mut state = ffi::Config {
+            retrans,
+            retry,
+            nscount,
+            ..ffi::Config::default()
+        };
         fit_retransmits(&mut state, budget);
         let waited = state.retry.max(1) * try_secs(state.retrans, state.nscount.clamp(1, 3));
         (state.retrans, state.retry, waited)
@@ -1327,20 +1144,6 @@ mod response_buffer_tests {
         // the budget a 2s or 5s timeout leaves once the call starts
         assert_eq!(fitted(5, 2, 1, Duration::from_millis(1990)), (1, 2, 2));
         assert_eq!(fitted(1, 5, 1, Duration::from_millis(4980)), (1, 5, 5));
-    }
-
-    #[test]
-    fn closing_counts_every_nameserver_again() {
-        // SAFETY: `__res_state` is plain old data; zeroed is a valid value.
-        let mut state: ffi::ResState = unsafe { mem::zeroed() };
-        // SAFETY: `state` points to writable resolver context storage.
-        assert_eq!(unsafe { ffi::res_ninit(&mut state) }, 0);
-        let configured = state.nscount;
-        let guard = ResStateGuard(&mut state, configured);
-        // as a short budget leaves it
-        guard.0.nscount = 0;
-        drop(guard);
-        assert_eq!(state.nscount, configured);
     }
 
     #[test]
