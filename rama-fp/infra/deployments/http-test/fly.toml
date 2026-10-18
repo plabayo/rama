@@ -10,6 +10,14 @@ primary_region = 'fra'
   dockerfile = '../Dockerfile.h3'
 
 [env]
+# Recording remains opt-in through the DIAL9_ENABLED Fly secret.
+DIAL9_TRACE_DIR = '/tmp/dial9-traces'
+DIAL9_ROTATION_SECS = '60'
+DIAL9_MAX_FILE_SIZE_MB = '8'
+DIAL9_MAX_DISK_USAGE_MB = '64'
+DIAL9_S3_BUCKET = 'rama-endpoint-diagnostics'
+DIAL9_S3_PREFIX = 'dial9'
+DIAL9_SERVICE_NAME = 'rama-http-test'
   RUST_LOG = 'info'
 
 [processes]

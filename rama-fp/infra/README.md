@@ -64,6 +64,28 @@ supported ALPNs. H3 services use dedicated IPv4 addresses and a running
 `app_secure` Machine. Browsers reach the H2 origin through HTTPS and discover
 the H3-only origin through its HTTPS record.
 
+## Private diagnostics
+
+The published CLI image includes `dial9-s3`; recording stays off unless
+`DIAL9_ENABLED=true` is set as a Fly secret. Disable it with
+`fly secrets set DIAL9_ENABLED=false -a APP`. Re-enabling uses `true`.
+
+Endpoint recordings upload sealed segments to the private Tigris bucket
+`rama-endpoint-diagnostics`, separated by service, instance and process boot.
+The standard S3 environment settings are supplied through Fly secrets:
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION=auto` and
+`AWS_ENDPOINT_URL_S3=https://t3.storage.dev`. Never commit their values.
+
+Each process rotates every minute, with an 8 MiB segment limit and a 64 MiB
+local disk budget. Uploads run on Dial9's background worker; a storage outage
+can lose older recordings when that budget is exhausted. Files are removed
+locally after successful upload. These limits do not bound total RAM usage.
+
+The bucket lifecycle in `diagnostics-lifecycle.json` expires all objects after
+seven days; deletion is asynchronous. Keep the bucket private, with no
+retention snapshots. Download recordings through authenticated S3 access for
+offline Dial9 analysis. Treat recordings as private operational data.
+
 ## Remote healthchecks
 
 Run `just remote-healthcheck` from the repository root, locally or in scheduled

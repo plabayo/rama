@@ -1,0 +1,10 @@
+{
+  "Rules": [
+    {
+      "ID": "expire-diagnostics-after-seven-days",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "" },
+      "Expiration": { "Days": 7 }
+    }
+  ]
+}
