@@ -168,6 +168,8 @@ def handshake_bytes(node, parent):
     if origin < 0:
         raise ValueError("missing TLS handshake source origin")
     normalized = copy(node)
+    # Element copies share attributes; detach the dictionary before normalization.
+    normalized.attrib = dict(node.attrib)
     normalized.set("pos", str(origin))
     if byte_span(normalized) != raw:
         raise ValueError("TLS fragment source differs from decoded fields")
