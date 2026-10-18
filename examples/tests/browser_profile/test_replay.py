@@ -36,7 +36,7 @@ class ReplayTests(unittest.TestCase):
         def process(*_args, **_kwargs):
             yield SimpleNamespace(returncode=0)
 
-        variant = bytes([9] * 32).hex()
+        variant = bytes([10] * 32).hex()
         methods = {
             "navigate": "GET", "fetch": "POST", "xhr": "POST",
             "ws": "CONNECT", "form": "POST", "form_get": "GET",
@@ -60,22 +60,38 @@ class ReplayTests(unittest.TestCase):
                     "id": list(bytes.fromhex(variant)),
                     "capture": {"level": "Connection", "slots": [tls]},
                 }
+                connections = [connection]
+                variants = [variant]
+                plans = [[]]
+                if protocol == "h3":
+                    # Put PSK first: even then the certificate probe must use
+                    # the full recipe, and each main flow must prime in order.
+                    resumed = bytes([9] * 32).hex()
+                    connections.insert(0, {
+                        "id": list(bytes.fromhex(resumed)),
+                        "capture": {"level": "Connection", "slots": [{
+                            "kind": "QuicTls",
+                            "capture": {"extensions": [{"id": 41}]},
+                        }]},
+                    })
+                    variants = [resumed, variant]
+                    plans = [[variant, resumed], [variant]]
                 inspected = {"profiles": [
-                    {"scopes": [{"variants": [connection]}]},
+                    {"scopes": [{"variants": connections}]},
                 ]}
-                commands = []
+                commands, probes = [], []
                 args = SimpleNamespace(
                     output=root, rama=Path("rama"), protocol=protocol, interface="lo",
                 )
                 with patch.multiple(
                     "replay",
                     requests_from_wire=lambda _frames: reference,
-                    connection_variants=lambda _archive: [variant],
+                    connection_variants=lambda _archive: variants,
                     client_hellos=lambda *_args: [],
                     replay_environment=lambda _parent: {},
                     running=process,
                     wait_ready=lambda *_args, **_kwargs: None,
-                    check_missing_tls_bindings=lambda *_args, **_kwargs: None,
+                    check_missing_tls_bindings=lambda command, *_args, **_kwargs: probes.append(command),
                     run_replay=lambda command, **_kwargs: commands.append(command),
                 ), patch("replay.drain_capture", side_effect=CaptureReached) as capture:
                     with self.assertRaises(CaptureReached):
@@ -85,18 +101,23 @@ class ReplayTests(unittest.TestCase):
                             certificate=root / "fixture.pem", port=443,
                         )
 
-                self.assertEqual(len(commands), 6)
-                expected = [variant] if protocol == "h3" else []
-                for command in commands:
+                self.assertEqual(len(commands), 6 * len(variants))
+                self.assertEqual(len(probes), 1)
+                probe_pin = probes[0].index("--emulate-connection-variant") + 1
+                self.assertEqual(probes[0][probe_pin], variant)
+                for operation, command in enumerate(commands):
                     self.assertIn("--http3" if protocol == "h3" else "--http2", command)
                     recipes = [
                         command[index + 1]
                         for index, argument in enumerate(command)
                         if argument == "--emulate-warmup-connection-variant"
                     ]
-                    self.assertEqual(recipes, expected)
+                    self.assertEqual(recipes, plans[operation // 6])
+                    pin = command.index("--emulate-connection-variant") + 1
+                    self.assertEqual(command[pin], variants[operation // 6])
                 self.assertEqual(
-                    capture.call_args.kwargs["expected_warmups"], 6 * len(expected),
+                    capture.call_args.kwargs["expected_warmups"],
+                    6 * sum(map(len, plans)),
                 )
 
     def test_missing_ca_requires_a_certificate_error_or_quic_unknown_ca(self):
